@@ -1,16 +1,15 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import * as dispatchDeck from "./dispatch-deck.ts";
 import { execp } from "./exec.ts";
 import { resolveBudgetKey } from "./lens-budget-key.ts";
-import type { LensLedgerOutcome } from "./lens-ledger.ts";
 import { withLensModelSlot } from "./lens-model-slots.ts";
 import { carriedSummary, noReviewSummary } from "./lens-review-auto-delta.ts";
 import { resolveLensReviewBranch } from "./lens-review-branch-resolve.ts";
 import { capKillSummary } from "./lens-review-capkill.ts";
 import { diffBaseOf } from "./lens-review-changed-ranges.ts";
 import { runLensChild } from "./lens-review-child.ts";
-import { accountedFiles, expectedFilesOf, unaccountedFiles } from "./lens-review-coverage.ts";
+import { runLensFanOut, unreviewedLanesOf } from "./lens-review-fanout.ts";
+import type { LensReviewOptions } from "./lens-review-options.ts";
 import {
   type AutoDeltaInfo,
   type ForcedFullReason,
@@ -38,7 +37,6 @@ import {
 } from "./lens-review-format.ts";
 import { priorFindingsFor } from "./lens-review-memory.ts";
 import { installBlockRowsForRoster, skillsDirUsable } from "./lens-review-skills.ts";
-import type { Finding, LensRunResult } from "./lens-review-types.ts";
 import { CLAIM_SCAN, type RosterEntry, buildExpectedRoster } from "./lens-roster.ts";
 import { isFullCommitSha, resolveHeadSha } from "./review-head-sha.ts";
 import { makeRunId } from "./spawn.ts";
@@ -110,65 +108,7 @@ export { MAX_LENS_ATTEMPTS };
  * usually transient (process spawn pressure, provider-side rate limits). */
 const LENS_RETRY_BACKOFF_MS = 1000;
 
-export async function runLensReview(opts: {
-  diff?: string;
-  context?: string;
-  cwd?: string;
-  /** #859 — base ref for the tool-computed `git diff <base>...<head>` (with head). */
-  base?: string;
-  /** #859 — head ref for the tool-computed diff (with base). */
-  head?: string;
-  signal?: AbortSignal;
-  processGroup?: boolean;
-  /** #1666 — a headless /work cycle's lens children run under trust. */
-  workCycleTrust?: boolean;
-  /** #1242 — each lens child's run bound (default: lensChildBoundMs). */
-  childBoundMs?: number;
-  /** #973 — the delta base (see resolveReviewDiff for the full contract). */
-  since?: string;
-  /** #973 — force a full review (the automatic delta base is not consulted; an explicit `since` still wins when given). */
-  full?: boolean;
-  /**
-   * #966 — the per-lens spawner (the real `runLensChild` by default;
-   * tests inject a stub so an all-fail run is drivable offline, the issue's
-   * "start a lens job with stub children" acceptance criterion).
-   */
-  lensChildFn?: typeof import("./lens-review-child.ts").runLensChild;
-  /**
-   * Post-change content of files the diff touches, rendered for the prompt.
-   * Supplied by the caller because only it knows the branch ref; see
-   * `readFileAtBranch`.
-   */
-  evidence?: string;
-  /**
-   * Deterministic findings produced without a model — currently `claim-scan`.
-   * They join the lens findings before dedup and verdict, so they reach both
-   * `/work` and `/review` through this one path.
-   */
-  extraFindings?: Finding[];
-  /** #799 — the parent pi for the inner children's slow-run watch (the PM
-   * notice half; the watch site has no pi of its own). */
-  pi?: import("./async-jobs-lifecycle.ts").DispatchHost;
-  /** Blocking bar; defaults to MEDIUM. See `DEFAULT_REVIEW_THRESHOLD`. */
-  threshold?: Severity;
-  /**
-   * #912 — caller-supplied branch for the review-ledger write (the driver
-   * worktrees are detached, so `git rev-parse --abbrev-ref HEAD` cannot
-   * recover it). When absent the writer recovers the branch from `HEAD`
-   * and skips (traces) on a detached head.
-   */
-  branch?: string;
-  /** #973 — the PR/MR number for the residual-findings disclosure post. */
-  pr?: number;
-  /** #1127 — the operator bypassed the tool-side round budget; recorded on the ledger entry. */
-  overrideCap?: boolean;
-  /** #1127 — receives the run's ledger-write promise once the run has finished;
-   * the caller holds its round reservation until it settles. */
-  onLedgerWrite?: (ledgerWrite: Promise<LensLedgerOutcome>) => void;
-  /** #1127 — the round-budget key the tool admitted this run under (lens-budget-key.ts);
-   * keys the ledger entry when no branch resolves. */
-  ledgerKey?: string;
-}): Promise<LensReviewSummary> {
+export async function runLensReview(opts: LensReviewOptions): Promise<LensReviewSummary> {
   const runId = makeRunId();
   const skillsDir = piSkillsDir();
   // The RESOLVED threshold (computed once; both the verdict and the ledger
@@ -401,46 +341,26 @@ export async function runLensReview(opts: {
   const lensChildFn = opts.lensChildFn ?? runLensChild;
   const blocked = roster.filter((e) => e.error !== undefined);
   const healthy = roster.filter((e) => e.error === undefined);
-  const results = await Promise.all(
-    healthy.map((lens) =>
-      withLensModelSlot(
-        lens.name,
-        () =>
-          lensChildFn({
-            lens,
-            runId,
-            skillsDir,
-            context,
-            roster,
-            opts: { ...opts, diff: diff ?? "", priorFindings },
-            bumpBatch,
-            ...(opts.pi ? { pi: opts.pi } : {}),
-          }),
-        opts.signal,
-      ),
-    ),
-  );
-  const blockedRows = blocked.map(
-    (e): LensRunResult => ({
-      lens: e.name,
-      ok: false,
-      ms: 0,
-      startMs: Date.now(),
-      findings: [],
-      attempts: 0,
-      blocked: true,
-      parseError: e.error ?? "",
-    }),
-  );
-  const lensResults = [...results, ...blockedRows];
-  dispatchDeck.clearBatchEntry(batchKey);
-  // The round's coverage denominator, read from the diff the review itself
-  // resolved. Computed here, from the value the children were handed, so the
-  // denominator is the change set they were actually shown — and never from a
-  // caller-pasted string (`expectedFilesOf` refuses one). `undefined` when the
-  // round had no defensible denominator, which the accounting below reads as
-  // "nothing to check" rather than as "nothing was covered".
-  const expectedFiles = expectedFilesOf(resolved);
+  // The fan-out itself — children, blocked rows, the deck batch's clear, and the
+  // file-level coverage list — lives in lens-review-fanout.ts (pure move; that
+  // module owns the why of the two-level split).
+  const fanOut = await runLensFanOut({
+    healthy,
+    blocked,
+    lensChildFn,
+    runId,
+    skillsDir,
+    context,
+    roster,
+    opts: { ...opts, diff: diff ?? "", priorFindings },
+    bumpBatch,
+    batchKey,
+    ...(opts.signal ? { signal: opts.signal } : {}),
+    modelSlot: withLensModelSlot,
+    ...(opts.pi ? { pi: opts.pi } : {}),
+    resolved,
+  });
+  const lensResults = fanOut.lensResults;
   // Deterministic findings are merged BEFORE dedup and verdict so they are
   // indistinguishable downstream from a lens's own — same precedence rules,
   // same threshold, same rendering. They are findings, not a side channel.
@@ -473,27 +393,31 @@ export async function runLensReview(opts: {
   });
   const reported = found.reported;
   const verdict = computeVerdict(reported, lensResults, threshold);
-  // The denominator's answer, from recorded data only — findings and the closing
-  // summaries the prompt already requires, never a model. `undefined` when there
-  // was no denominator to check (a pasted diff, or a diff with no readable file
-  // section): the round is judged exactly as before, because a penalty, like a
-  // discount, is not granted on evidence that could not be read. An UNJUDGED
-  // selected file makes the round REVIEW_INCOMPLETE: the existing state for
-  // "this pass did not review the diff", which the ledger already refuses to
-  // record as passed and the driver already parks on — no new verdict, severity
-  // or ledger field. `hasCritical` below stays keyed to the findings verdict
-  // only: this override never claims a CRITICAL, it says the round read nothing.
-  const accounted = accountedFiles(lensResults, expectedFiles ?? new Set());
-  const uncovered =
-    expectedFiles === undefined ? [] : unaccountedFiles(expectedFiles, accounted ?? new Map());
-  // A CRITICAL/HIGH verdict outranks this: an unaccounted file says the round is
-  // incomplete, and a round that ALREADY found something at the project's bar
-  // has been refused on its merits — replacing that verdict with a coverage
-  // complaint would hide the finding behind an unrelated message. So the gate
-  // converts a would-be pass into REVIEW_INCOMPLETE (the whole point: silence
-  // about a file is not approval of it) and, on a round that already blocks,
-  // reports the gap without moving the verdict.
-  const coverageBlocking = uncovered.length > 0 && verdict === "APPROVED";
+  // The round's two coverage lists, read off recorded data only — findings and
+  // the closing summaries the prompt already requires, never a model. The levels
+  // are split deliberately, because the data supports a guarantee at one and not
+  // at the other:
+  //
+  //   LENS LEVEL — verdict-bearing. A lane that left neither a finding nor the
+  //   closing summary the prompt requires means nobody looked at all. The rule is
+  //   NOT restated here: `computeVerdict` above already asks `isReviewIncomplete`
+  //   and already returns REVIEW_INCOMPLETE for it, and `lensProducedEvidence`
+  //   must not be weakened. What `unreviewedLanes` adds is the NAMED list the
+  //   operator acts on — which lanes to re-run.
+  //
+  //   FILE LEVEL — disclosure only, never blocking, and nothing below can turn a
+  //   file list into a blocked verdict. Coverage is derivable only from findings,
+  //   so a clean round over genuinely good code has no rows and EVERY file reads
+  //   unaccounted: a blocking gate there fails precisely the case it exists to
+  //   pass. Measured: gating here refused rounds whose six lenses all completed,
+  //   redding three of this harness's own lens tests on a one-file diff answered
+  //   in prose. A gate that reddens correct work is not a gate. So `unaccounted`
+  //   ships as a note naming what no finding touched.
+  //
+  // `hasCritical` stays keyed to the findings verdict only: neither list claims a
+  // CRITICAL.
+  const uncovered = fanOut.unaccounted;
+  const unreviewedLanes = unreviewedLanesOf(lensResults);
   // #973 — the round-cap rule's inputs for the ledger write: `hasCritical`
   // from the BLOCKING findings (post-#1125: never an out-of-range one),
   // `headSha` from the ref the review actually covered. Both are undefined on
@@ -506,7 +430,15 @@ export async function runLensReview(opts: {
   // production; the await seam is for tests, not for the driver).
   return finishWith(
     {
-      verdict: coverageBlocking ? "REVIEW_INCOMPLETE" : verdict,
+      verdict,
+      // Lens-level liveness, named (see above). Verdict-bearing by the rule
+      // `computeVerdict` already applied — this field only names the lanes.
+      ...(unreviewedLanes.length > 0 ? { unreviewedLanes } : {}),
+      // File-level disclosure, never a verdict (see above). `coverageComplete`
+      // keeps "no files in scope" apart from "every file covered": when there
+      // was no denominator the round says so rather than claiming coverage.
+      ...(uncovered.length > 0 ? { unaccountedFiles: uncovered } : {}),
+      ...(fanOut.hasDenominator && uncovered.length === 0 ? { coverageComplete: true } : {}),
       totalFindings: reported.length,
       bySeverity: bySeverityCounts(reported),
       lenses: lensResults,
@@ -515,9 +447,6 @@ export async function runLensReview(opts: {
       ...(found.resolved.length > 0 ? { resolved: found.resolved } : {}),
       ...(found.setAside ? { setAside: found.setAside } : {}),
       ...found.fields,
-      // Named, not merely reflected in the verdict: a verdict the operator cannot
-      // trace to a lane is a verdict they cannot act on.
-      ...(uncovered.length > 0 ? { unaccountedFiles: uncovered } : {}),
       usage: aggregateLensUsage(lensResults),
       // #543 — a dispatch-cap kill on any lens child (loop detector / token
       // budget) is surfaced on the summary so the driver emits the fixed-literal

@@ -147,20 +147,33 @@ export interface LensReviewSummary {
    * toward the verdict, `bySeverity` or the ledger's `hasCritical`. */
   advisory?: Finding[];
   /**
-   * The round's COVERAGE DENOMINATOR: the files the diff changed that no lens
+   * The lanes this round never reviewed: they came back from the fan-out having
+   * produced NEITHER a reported finding NOR the closing summary the lens prompt
+   * is required to write. Non-empty when a lane left no evidence at all; absent
+   * otherwise. When this is non-empty and nothing else refused the round, the
+   * verdict is `REVIEW_INCOMPLETE` — a lens that reviewed nothing is not a lens
+   * that found nothing.
+   *
+   * This is the coverage gate's verdict-bearing half, and it is deliberately not
+   * `lensProducedEvidence` restated: that predicate already refuses a silent lane
+   * inside `computeVerdict`, and what this field adds is the NAMED list the
+   * operator acts on — which lanes to re-run.
+   */
+  unreviewedLanes?: string[];
+  /**
+   * The round's COVERAGE DISCLOSURE: the files the diff changed that no lens
    * accounted for — no `report_finding` call cited them and no closing summary
    * named them. Non-empty when the round had a denominator to check (the review
    * computed its own diff — never a caller-pasted string) and at least one
-   * selected file came back unjudged; absent otherwise, including the case
+   * selected file came back unnamed; absent otherwise, including the case
    * where every selected file was accounted for (a clean round says nothing).
    *
-   * This is NOT `lensProducedEvidence`'s question restated. That asks "did this
-   * lens produce findings or a summary" — output volume. This asks "which of
-   * the files the round was supposed to examine does the round's evidence
-   * actually speak about", and a lens can pass the first and fail the second:
-   * a complete, well-formed summary that never mentions one changed file is a
-   * lane that was not reviewed. When this is non-empty the verdict is
-   * `REVIEW_INCOMPLETE` — an unjudged file is never readable as APPROVED.
+   * DISCLOSURE, not a verdict — and the asymmetry against `unreviewedLanes` is
+   * the design. Each lens reads the whole diff through its own lens and owes the
+   * prompt a summary, not a file inventory, so a path nobody named is a gap to
+   * surface, not proof nobody read it. Measured: gating on this instead refused
+   * rounds whose six lenses all completed, redding three of this harness's own
+   * lens tests on a one-file diff whose lenses answered in prose.
    */
   unaccountedFiles?: string[];
 }
