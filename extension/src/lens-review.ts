@@ -4,7 +4,7 @@ import * as dispatchDeck from "./dispatch-deck.ts";
 import { execp } from "./exec.ts";
 import { resolveBudgetKey } from "./lens-budget-key.ts";
 import type { LensLedgerOutcome } from "./lens-ledger.ts";
-import { lensReviewPatchIdentity } from "./lens-ledger.ts";
+import { type LensPatchIdentity, lensPatchIdentityOf } from "./lens-ledger.ts";
 import { withLensModelSlot } from "./lens-model-slots.ts";
 import { carriedSummary, noReviewSummary } from "./lens-review-auto-delta.ts";
 import { resolveLensReviewBranch } from "./lens-review-branch-resolve.ts";
@@ -109,6 +109,7 @@ export { MAX_LENS_ATTEMPTS };
 /** Backoff between retries (ms). Small fixed delay — these failures are
  * usually transient (process spawn pressure, provider-side rate limits). */
 const LENS_RETRY_BACKOFF_MS = 1000;
+
 
 export async function runLensReview(opts: {
   diff?: string;
@@ -280,6 +281,8 @@ export async function runLensReview(opts: {
     // blocked or noReview: no headSha (no commit was reviewed).
     headSha = undefined;
   }
+  // #1934 — the one identity both consumers receive (see lensPatchIdentityOf).
+  const identityOf = lensPatchIdentityOf(opts.cwd);
   // #1000 — the single finish path for every exit of this run: the identical
   // `finishLensReview(...)` call (threshold, cwd, the ONE resolved branch,
   // the resolved headSha, the caller's head ref, and the #973 residual-
@@ -302,10 +305,7 @@ export async function runLensReview(opts: {
         head: opts.head,
         overrideCap: opts.overrideCap,
         ledgerKey: opts.ledgerKey,
-        // #1934 — the one identity this review resolved, shared with the findings
-        // record so the row it writes and the confirmations it acted on name the
-        // same patch.
-        ...(reviewIdentity !== undefined ? { identity: reviewIdentity } : {}),
+        identity: await identityOf(),
       },
       opts.pr,
     );
@@ -443,15 +443,6 @@ export async function runLensReview(opts: {
   // same threshold, same rendering. They are findings, not a side channel.
   const all = [...lensResults.flatMap((r) => r.findings), ...(opts.extraFindings ?? [])];
   const deduped = dedupeFindings(all, roster);
-  // #1934 — the review identity, resolved ONCE here and shared by the findings
-  // record (which compares each row's confirmations against it) and the ledger
-  // write (which stores it). Both halves must name the same patch or the binding
-  // the confirmation rule rests on is two computations that can disagree, so it
-  // is computed here rather than per consumer — and here rather than earlier so
-  // a round that returns before the fan-out never pays for a `git diff | git
-  // patch-id --stable`. Resolving it is read-only and cannot fail the round: no
-  // identity means no confirmations, which is the pre-#1934 outcome.
-  const reviewIdentity = await lensReviewPatchIdentity(opts.cwd ?? process.cwd());
   // #1105/#1140/#1125 — the round is recorded against the findings memory (the
   // memory seam's `recordRound`, so the round's evidence and its rows come from
   // one store read), accepted rows suppress, unchanged open rows carry, a refused
@@ -468,7 +459,7 @@ export async function runLensReview(opts: {
     branchResolved,
     headSha,
     diff,
-    ...(reviewIdentity !== undefined ? { identity: reviewIdentity } : {}),
+    identity: await identityOf(),
     // Who produced the diff above and over which range: the split trusts the text
     // only for a computed full-range review (#1125 — a pasted diff is not
     // evidence of what the PR changed).

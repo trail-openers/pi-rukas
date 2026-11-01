@@ -70,11 +70,12 @@
  * make ONE round's disclosure list a row as resolved.
  *
  * The provenance string it writes is therefore worth reading honestly rather
- * than trusting: `adversarial#<rowNonce> patch=<8> head=<8> round=<N>@<8>` is
- * written from the ledger row's own fields, and the fields it lacked are simply
- * absent from it. `rowNonce` in particular is TEST-FACING provenance
- * (`LedgerEntry.rowNonce`) and the merge guard is forbidden to consult it; here
- * it is rendered for a human, never compared.
+ * than trusting: `adversarial#<row id> patch=<8> head=<8> round=<N>@<8>` is
+ * written from the ledger row's own recorded fields, and a field the row lacked is
+ * simply absent from it. Every segment names data the ledger already stores, so a
+ * reader can go and check the row it came from. It is a DISCLOSURE, never a
+ * comparison: no rule in this module reads the provenance back, and nothing that
+ * decides a merge does.
  *
  * ## SECURITY rows
  *

@@ -197,3 +197,20 @@ export function writeLensLedgerEntry(
     return { recorded: false, reason };
   });
 }
+
+/**
+ * #1934 — the ONE review identity, resolved lazily and shared.
+ *
+ * ``lens-review`'s finish path and its findings record have two consumers of this value: the ledger row it writes and
+ * the findings record that reads confirmations back. Two computations could name
+ * two patches, and the confirmation binding (#1934) is worthless the moment they
+ * disagree — so `lensPatchIdentityOf` makes exactly one and hands it to both.
+ *
+ * Lazy because an early exit (blocked, noReview) must not pay for a `git diff |
+ * git patch-id --stable`, and memoised because the two consumers await it twice.
+ * Absent means no confirmations consulted: the pre-#1934 shape.
+ */
+export function lensPatchIdentityOf(cwd: string | undefined) {
+  let identity: Promise<LensPatchIdentity | undefined> | undefined;
+  return () => (identity ??= lensReviewPatchIdentity(cwd ?? process.cwd()));
+}
