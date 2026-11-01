@@ -134,6 +134,14 @@ const HOSTILE_ROW =
     /named by recorded evidence/.test(stamped),
     "the ✓ says what the per-file check is: named by recorded evidence",
   );
+  // The third clause of the ✓ — the disclaimer that tells the operator quoting
+  // is not reading. The other two clauses are asserted above; without this one
+  // the sentence the operator actually reads is pinned only by goodwill, and an
+  // edit that drops the clause would keep every existing assertion green.
+  assert(
+    /Prose that merely quotes a path is not reading it/.test(stamped),
+    "the ✓ keeps the quoting-is-not-reading disclaimer the operator reads",
+  );
   assert(stamped.includes("denominator"), "the ✓ still names the set it speaks about");
 }
 

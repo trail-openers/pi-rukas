@@ -173,5 +173,37 @@ export const META_UNESCAPED_FIT: [string, string, "summary" | undefined, string]
   "a metacharacter path is not matched by text that merely fits its UNESCAPED pattern (an empty capture group plus two single-character wildcards)",
 ];
 
+/** A denominator path followed by MORE path characters where the extra run is
+ * spelled with the HYPHEN: `src/b.ts-spec` is a different file, not `src/b.ts`
+ * with a `-` on it. The right flank's lookahead reads `PATH_CHAR`, and `-` is
+ * one of that class's own characters — with `-` in the class the path cannot
+ * close and this is NOT a citation; drop `-` from `PATH_CHAR` and the lookahead
+ * no longer sees the `-`, so the very next character satisfies it and this
+ * returns `summary`.
+ *
+ * **WITNESS for the `-` member of `PATH_CHAR`** — the only case in the suite
+ * that is. Sibling to the `.`-member case at
+ * `test-lens-coverage-denominator.ts:420` (`See src/b.ts.spec`, which pins the
+ * anchored-terminator arm), and deliberately NOT a duplicate of it: `.` is a
+ * legal `TERMINATOR`, so `src/b.ts.spec` is refused by BOTH arms, whereas `-`
+ * is not a terminator, so this case is refused by the lookahead ALONE. That is
+ * what makes `-` observable here and not there. Measured: GREEN under the
+ * shipped class, RED (`P: 4 F: 1`) with `-` deleted from `PATH_CHAR`.
+ *
+ * Scope note, stated so the header is not read as a class-wide claim: this case
+ * witnesses `-` only. `+`, `/`, `.` and the word characters in `PATH_CHAR` are
+ * NOT witnessed by any deletion of `PATH_CHAR` alone — measured on
+ * `test-lens-coverage-denominator.ts`: deleting `+` or `/` from the class
+ * reddens NOTHING (0 reds each), and `.` is refused in the `src/b.ts.spec` case
+ * by the anchored-terminator arm rather than the lookahead. The `+` the suite
+ * does pin sits in the LEFT flank's `NOT_PATH` (`+++ b/src/a.ts`), a different
+ * constant. The remaining members are therefore unpinned and stay so. */
+export const PATH_CHAR_HYPHEN: [string, string, "summary" | undefined, string] = [
+  "See src/b.ts-spec",
+  "src/b.ts",
+  undefined,
+  "a path followed by a hyphenated suffix is not a citation of the shorter file — the `-` is a PATH_CHAR, so the right-flank lookahead refuses to close (witness: red when `-` is deleted from PATH_CHAR)",
+];
+
 export const TEST_FLANK_ESCAPE_CASES: readonly [string, string, "summary" | undefined, string][] =
-  [NL_OPEN, CARET_OPEN, META_CITED, META_UNESCAPED_FIT];
+  [NL_OPEN, CARET_OPEN, META_CITED, META_UNESCAPED_FIT, PATH_CHAR_HYPHEN];

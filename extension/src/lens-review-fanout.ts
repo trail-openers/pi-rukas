@@ -214,9 +214,18 @@ export async function runLensFanOut(args: {
   const accountedEvidence: readonly CoverageEvidence[] = [...lensResults, ...harnessRows];
   // Defence-in-depth behind `allLanesProducedEvidence` (below), NOT the thing
   // that closes the lying-✓ hole: `coverageClaimEarned` already requires that
-  // flag, so on a zero-healthy round this gate is unreachable-by-construction
-  // and dropping it leaves every `test-lens-*`/`test-review-*` file green. It is
-  // kept as the second lock on the same door; do not cite it as a bug fix.
+  // flag, so on a zero-healthy round this gate is unreachable-by-construction.
+  // Measured under the drop, not asserted: deleting just this gate
+  // (`claimedEvidence = [...results]`, harness rows ungated) reddens ONLY
+  // `test-lens-vacuous-every` — 1 assertion, its `premise: a zero-healthy
+  // roster over a real denominator, with harness rows as its only evidence`
+  // — while `test-lens-fanout-batch-release`, `test-lens-coverage-denominator`
+  // and `test-lens-coverage-routing` all stay GREEN (exit 0). Those four are
+  // the files that exercise this spread; no claim is made about the rest of the
+  // suite. What the gate is worth is visible in the other direction: widen it
+  // instead (`harnessRows` ungated at its own definition) and
+  // `test-lens-vacuous-every` reddens twice. It is kept as the second lock on
+  // the same door; do not cite it as a bug fix.
   const claimedEvidence: readonly CoverageEvidence[] = [...results, ...harnessRows];
   const accounted = accountedFiles(accountedEvidence, expectedFiles ?? new Set());
   // `results.length > 0` is load-bearing: `[].every(...)` is TRUE, so without it

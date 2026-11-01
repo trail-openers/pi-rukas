@@ -233,16 +233,17 @@ const TERMINATOR = String.raw`[!?,.;:\-]`;
 // the mirror of the left flank's `NOT_PATH`, deliberately a SEPARATE class (the
 // right flank then reads `NOT_LINE_BREAK` on purpose). `-` last, in
 // `String.raw`, so it stays a literal.
-// The invariant the comment above promises is COMPILER-MAINTAINED, not
-// comment-maintained. Chosen form: an explicit string-literal type on each
-// constant. `String.raw` returns `string` and would widen the annotation away,
-// so each constant is the literal itself (the classes contain no escape
-// sequences, so `String.raw` and a plain literal are byte-identical here) and
-// the annotation is then a real check: change a character in either class and
-// `tsc` fails on that line instead of leaving the comment to assert an equality
-// nobody verifies. The class CHARACTERS are unchanged, and dropping `String.raw`
-// here changes nothing: neither class contains `$` or a backslash, so the tag
-// was a no-op and the two forms are byte-identical (verified).
+// What the annotation DOES and DOES NOT give. It pins each constant to one of
+// two exact spellings, so a single-character edit to either literal — adding,
+// removing or reordering a member — fails the build on that line. It does NOT
+// enforce the mirror relationship between `PATH_CHAR` and `NOT_PATH`: nothing
+// in the type says one is the negation of the other, and `as PathCharClass`
+// silences the annotation entirely for any string (measured: mutating
+// `PATH_CHAR` to a class `NOT_PATH` is not the mirror of produces no error with
+// the cast in place, and `TS2820` without it). So the mirror is a
+// reviewer-maintained invariant, and the cast is the escape that lets it drift.
+// What the type does buy is the narrow one: it turns a one-character typo in
+// either class into a compile error instead of a silent behaviour change.
 type PathCharClass = "[A-Za-z0-9_./+-]" | "[^A-Za-z0-9_./+-]";
 const PATH_CHAR: PathCharClass = "[A-Za-z0-9_./+-]";
 

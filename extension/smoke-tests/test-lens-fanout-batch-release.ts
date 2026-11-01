@@ -72,13 +72,40 @@ const slot = (_lens: string, fn: () => Promise<LensRunResult>) => fn();
 /** Open a batch exactly as `runLensReview` does, and hand back the key. */
 function openBatch(key: string, size: number) {
   dispatchDeck.reset();
+  // `startBatchEntry` early-returns under `PI_ENSEMBLE_QUIET_STATUS=1`, so the
+  // row these assertions measure would never exist and every pre-check below
+  // would go red for an environmental reason rather than a code one. The host
+  // exports this variable, so that is not hypothetical — see the PRE-ACQUIRE
+  // CONTROL in `leakingChildReleasesBatch`. Same guard the deck's own lifecycle
+  // tests apply. The delete is scoped to the acquire alone: `clearBatchEntry`
+  // deletes unconditionally (no quiet gate), so the release assertions stay
+  // meaningful while the acquire is real.
+  const savedQuiet = process.env.PI_ENSEMBLE_QUIET_STATUS;
+  delete process.env.PI_ENSEMBLE_QUIET_STATUS;
   dispatchDeck.startBatchEntry(key, { label: "code-review-specialist", size });
+  // The caller (`runLensReview`) runs with the host's quiet setting; restore it
+  // so the fan-out and these assertions observe the deck as production does.
+  if (savedQuiet !== undefined) process.env.PI_ENSEMBLE_QUIET_STATUS = savedQuiet;
 }
 
 /** (1) THE LEAK — a rejecting child must still release the deck batch. */
 async function leakingChildReleasesBatch() {
   const key = "rev1942g/leak";
   openBatch(key, 6);
+  // PRE-ACQUIRE POSITIVE CONTROL. `openBatch` above cannot witness its own
+  // acquire — `startBatchEntry` early-returns under `PI_ENSEMBLE_QUIET_STATUS=1`
+  // without throwing — so this is the one assertion that can tell "the row was
+  // registered" from "the deck silently never had it". Without it, `length === 0`
+  // under a quiet or otherwise unregistered deck reads as "released". That
+  // environment is not hypothetical: this host exports the variable, so the
+  // first run of these pre-checks went red for exactly that reason. Proved by
+  // setting the variable before `openBatch`: the three PRE-ACQUIRE checks below
+  // go red (the one here stays green because it sits before the `reset()` that
+  // clears the deck).
+  check(
+    dispatchDeck.batchSnapshot().some((b) => b.key === key),
+    "canary: the deck registered the batch the caller acquired (positive control: red when PI_ENSEMBLE_QUIET_STATUS suppresses the row entirely)",
+  );
   check(
     dispatchDeck.batchSnapshot().some((b) => b.key === key),
     "canary: the batch the caller acquired is present before the fan-out",
@@ -120,6 +147,10 @@ async function leakingChildReleasesBatch() {
 async function happyPathReleasesBatch() {
   const key = "rev1942g/happy";
   openBatch(key, 2);
+  check(
+    dispatchDeck.batchSnapshot().some((b) => b.key === key),
+    "canary: the batch the caller acquired is PRESENT before the fan-out — the positive counterpart to the release assertion below, without which `length === 0` is also true of a row that was never registered",
+  );
   const out = await runLensFanOut({
     healthy: LENS_ROSTER.slice(0, 2),
     blocked: [],
@@ -146,6 +177,12 @@ async function happyPathReleasesBatch() {
 async function extraFindingsCannotCarryClaimAlone() {
   const key = "rev1942g/ungated";
   openBatch(key, 0);
+  // PRE-ACQUIRE CONTROL: proves the row exists under the deck's real state.
+  // Red if the deck never registered it (see `openBatch` / the PI_ENSEMBLE_QUIET_STATUS note).
+  check(
+    dispatchDeck.batchSnapshot().some((b) => b.key === key),
+    "canary: the deck registered the batch before the zero-healthy fan-out ran",
+  );
   const out = await runLensFanOut({
     // ZERO healthy lanes: nobody ran. `claimedEvidence` used to merge the
     // caller's rows here ungated, so `hasFindingClaimedFile` saw a citation
@@ -183,6 +220,10 @@ async function extraFindingsCannotCarryClaimAlone() {
 async function extraFindingsCountWhenALaneRan() {
   const key = "rev1942g/gated-ok";
   openBatch(key, 1);
+  check(
+    dispatchDeck.batchSnapshot().some((b) => b.key === key),
+    "canary: the batch the caller acquired is PRESENT before the fan-out — the positive counterpart to the release assertion below, without which `length === 0` is also true of a row that was never registered",
+  );
   const out = await runLensFanOut({
     healthy: LENS_ROSTER.slice(0, 1),
     blocked: [],
@@ -206,6 +247,10 @@ async function extraFindingsCountWhenALaneRan() {
     "canary: with a lane that ran, a merged deterministic finding still earns the claim",
   );
   check(out.unaccounted.length === 0, "canary: both denominator files accounted for");
+  check(
+    dispatchDeck.batchSnapshot().filter((b) => b.key === key).length === 0,
+    "canary: the gated fan-out releases the deck batch too (paired with the pre-check above)",
+  );
   dispatchDeck.reset();
 }
 
