@@ -21,11 +21,22 @@
  * exit BEFORE the fan-out, and a `lensChildFn` stub that RETURNS blocked rows
  * fills the roster's blocked list, not `results`.
  *
- * MUTATION-PROOF: revert the guard to the bare `results.every(...)` and the
- * "earns NO positive coverage claim" assertion reddens (verified: 1 red, and
- * byte-identical on restore). Each `premise:` assertion is the other half — it
- * reddens if the round stops being a zero-healthy-lane round over a real
- * denominator, which is what would make the canary assert nothing.
+ * MUTATION PROOF — measured 2026-11-XX, each by editing the named product
+ * file, running this test, and restoring it byte-identically.
+ *   - revert the liveness guard to the bare `results.every(...)` → REDS the
+ *     "earns NO positive coverage claim" canary.
+ *   - drop the `results.length > 0` gate on the ACCOUNTING list → REDS the
+ *     `unaccounted` canary (both files come back accounted).
+ *   - delete the `extraFindings` rows from `claimedEvidence` in
+ *     `lens-review-fanout.ts` → REDS `extraFindingsOf`'s premise (`claimed`
+ *     flips true→false and the assertion below fails). Before this run the
+ *     field had NO positive witness at all — its only test reader was
+ *     `=== false` — so this is the mutation the file used to survive.
+ *   - `extraFindingsOf`'s third conjunct ("no lens row carries a finding for
+ *     that file") is a copy-paste guard over an input the other conjuncts
+ *     already pin; no single-input mutation falsifies it on its own. It is
+ *     harmless and stays, but the helper witnesses THREE things, not the four
+ *     this header used to claim.
  */
 
 import { runLensFanOut } from "../src/lens-review-fanout.ts";
@@ -68,19 +79,23 @@ function assert(cond: boolean, msg: string) {
  * fields, so the helper can be FALSE:
  *
  *   - the round had a denominator at all;
+ *   - the harness row earned the POSITIVE claim — `findingClaimedFile` is true,
+ *     which is the only place in the suite that reads that field in the
+ *     affirmative (its other readers assert `=== false`, so a regression that
+ *     stops a `CLAIM_SCAN` witness from ever earning the ✓ used to ship
+ *     silently);
  *   - the cited file is absent from `unaccounted` while the two nobody cited
  *     are present — the same accounting list, not an empty one;
  *   - no lens row carries a finding for that file (so the row that claimed it
  *     was the merged harness row, not a lane);
  *   - the lane really did speak the prose-only summary the probe is built on.
  *
+ * The last two are guards over an input the others already fix and are not
+ * independently falsifiable; see MUTATION PROOF at the top of the file.
+ *
  * The old body was `return true`, which asserted "the round was handed harness
  * rows" while checking NOTHING — in the test that exists to catch a coverage
- * claim earned by nobody, an always-true helper is the wrong shape, and it made
- * the premise below claim three things while witnessing two.
- * MUTATION-PROOF: dropping the harness rows from `accountedEvidence` in
- * `lens-review-fanout.ts` reddens this premise, and restoring that file
- * byte-identically greens it again (verified: 1 red → 8 green → `cmp` clean).
+ * claim earned by nobody, an always-true helper is the wrong shape.
  */
 async function extraFindingsOf(): Promise<boolean> {
   const probe = await runLensFanOut({
@@ -104,6 +119,10 @@ async function extraFindingsOf(): Promise<boolean> {
   });
   return (
     probe.hasDenominator &&
+    // The POSITIVE witness: this is the only assertion in the suite that asks
+    // whether the claim was EVER earned. Every other reader of
+    // `findingClaimedFile` asks whether it was refused.
+    probe.findingClaimedFile === true &&
     probe.unaccounted.join(",") === "src/b.ts,src/c.ts" &&
     probe.lensResults.every((r) => !r.findings.some((f) => f.path === "src/a.ts")) &&
     probe.lensResults.some((r) => r.summary === "the code is fine from this lens")
