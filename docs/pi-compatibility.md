@@ -2,7 +2,7 @@
 
 pi-rukas depends on Pi's CLI flags, JSON event stream shape, and `ExtensionAPI` surface. Since 1.0.0, `--no-extensions` also disables built-in extensions (including the built-in MCP), which pi-rukas compensates for by passing `-e builtin:mcp` (and, unless `PI_ENSEMBLE_CHILD_CODEMODE=0`, `-e builtin:codemode`, issue #1030) to every subagent spawn (see `extension/src/spawn-support.ts` `childArgsBase()`).
 
-## Last verified against pi 1.4.0 (2026-11-04)
+## Last verified against pi 1.4.0 (2026-11-01)
 
 Verified by running `extension/smoke-tests/test-pi-shape-live.ts` against the host's installed pi — all event-shape assertions (agent_end, message_end, toolCall blocks, tool_execution_start/end) and the tool-roster integrity check passed.
 

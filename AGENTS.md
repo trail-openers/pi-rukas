@@ -129,7 +129,7 @@ For extensions outside the canonical install location (dev-mode, monorepo paths)
 
 The extension depends on Pi's CLI flags, JSON event stream shape, and `ExtensionAPI` surface. The dev-dependency pins in `extension/package.json` (`@earendil-works/pi-coding-agent` + `@earendil-works/pi-tui`, co-pinned and moved in lockstep) are **deliberate and non-normative**: a CI-reproducibility device (so `bun install --frozen-lockfile` is reproducible), explicitly NOT a supported-version claim. Operators are free to upgrade Pi at any time — `pi` is a global install outside the extension's package manager. The single maintained version claim is the "Last verified against pi X.Y.Z" line in [docs/pi-compatibility.md](docs/pi-compatibility.md); this section and every other site reference or restate it, never carry an independent literal that can drift (enforced by `extension/smoke-tests/test-pi-version-drift.ts`).
 
-Last verified against `pi` **1.4.0 (2026-11-04)** — the line above in [docs/pi-compatibility.md](docs/pi-compatibility.md) is the single source of truth (verified via `test-pi-shape-live.ts`); this restatement must agree with it (and with the `extension/package.json` pins' co-pin state) or the drift gate fails.
+Last verified against `pi` **1.4.0 (2026-11-01)** — the line above in [docs/pi-compatibility.md](docs/pi-compatibility.md) is the single source of truth (verified via `test-pi-shape-live.ts`); this restatement must agree with it (and with the `extension/package.json` pins' co-pin state) or the drift gate fails.
 
 ### What the pin protects
 
