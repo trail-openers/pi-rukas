@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.43](https://github.com/trail-openers/pi-rukas/compare/v0.14.42...v0.14.43) (2026-11-01)
+
+
+### Bug Fixes
+
+* **pi:** correct the drift gate's floor rule and publish the verified 1.4.0 claim ([#1936](https://github.com/trail-openers/pi-rukas/issues/1936)) ([55f2560](https://github.com/trail-openers/pi-rukas/commit/55f2560a18376afe9a888dee8472dc8d91f7c520))
+
 ## [0.14.42](https://github.com/trail-openers/pi-rukas/compare/v0.14.41...v0.14.42) (2026-10-30)
 
 
