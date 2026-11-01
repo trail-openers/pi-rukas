@@ -212,27 +212,91 @@ export function unaccountedFiles(
 }
 
 /**
+/**
  * Does `summary` NAME `file` as a path, rather than merely CONTAIN its
- * characters? See the call site: the denominator is small, the diff is in the
- * lens's prompt, and an unanchored `includes` cannot tell a citation apart from
- * a recital. A path character set is `A-Za-z0-9_./-` (what a real path is made
- * of); the path must be flanked by things that are NOT path characters — or the
- * string's edges. So `Read src/a.ts and ...` names it, while the same bytes
- * buried inside a pasted diff (`@@ -1,2 +1,3 @@`, `load("src/b.ts")`, a `+++`
- * header) do not. `@` and `"` are deliberately outside the set: they are what
- * quoted/recapped diff text puts next to a path and a real citation never does.
- * Escapes every regex metacharacter, so a path with `+`, `.` or `(` matches
- * itself and nothing else.
+ * characters? See the call site: the denominator is a handful of paths and the
+ * diff is IN the lens's own prompt, so an unanchored `includes` cannot tell a
+ * citation apart from a recital.
+ *
+ * THE TWO FLANKS ARE DELIBERATELY ASYMMETRIC, and that asymmetry is the
+ * invariant this function exists to hold:
+ *
+ *   LEFT  — `(^|\n|NOT_PATH)`: the start of the summary, the start of a line,
+ *           or a character a path is not built from. THIS is the recital
+ *           guard: `--- a/x`, `+++ b/x`, `+++ "b/x"`, `<src/a.ts>`,
+ *           `load("src/a.ts")` and `src/b.ts@default` are all refused HERE,
+ *           because `-`, `"`, `<` and `@` cannot OPEN a citation.
+ *   RIGHT — `NOT_PATH|(?:TERMINATOR?$)`: the summary continues with a non-path
+ *           character, or the path runs to the end of the summary with at most
+ *           one sentence terminator after it.
+ *
+ * Why the right flank needs the terminator arm at all: `.` and `-` are PATH
+ * characters, so a plain `NOT_PATH` flank read "Reviewed src/a.ts." and "No
+ * issues in src/a.ts." — the way a lens actually closes — as unaccounted, and
+ * the report printed a gap that was not there. Why it is still safe: the
+ * `$` is the end of the WHOLE summary (no `m` flag — do not add one, it would
+ * turn every header line into an end and re-admit `+++ b/src/a.ts`), and a
+ * terminator is only tried AFTER the entire path matched. So a terminator can
+ * never OPEN a match and never re-admit a left-flank refusal: `src/b.ts.spec`
+ * stays unaccounted because its dot is followed by `spec`, not by the end.
+ *
+ * Both flanks read the SAME `NOT_PATH` constant on purpose — if the two lists
+ * drifted apart the recital guard would quietly widen.
+ */
+// The characters a real path is built from, negated: the LEFT flank. `+` sits
+// INSIDE the path set on purpose — a re-emitted diff line glues `+` or `+++`
+// straight onto the path (`"…\n+src/a.ts"`, `"…\n+++src/a.ts"`), and only
+// because those are path characters does this flank refuse them.
+const NOT_PATH = String.raw`[^A-Za-z0-9_./+-]`;
+// What may stand AFTER a cited path and still be a citation: anything that is
+// not a line break. Deliberately NOT the same set as the left flank — see the
+// doc comment for why reusing it would reject every natural citation.
+const NOT_LINE_BREAK = String.raw`[^\r\n]`;
+// One sentence terminator: `.` `,` `;` `:` `!` `?`, or the markdown bullet `-`.
+// `.` and `-` are ALSO path characters, which is exactly why the right flank
+// needs this arm: with `NOT_LINE_BREAK` alone a path followed by prose already
+// passes, but the ANCHORED terminator arm is what lets a path that ENDS a line
+// account — and anchoring it to `\r?\n`/`$` is what stops `src/b.ts` from
+// matching at the dot inside `src/b.ts.spec`.
+const TERMINATOR = String.raw`[!?,.;:\-]`;
+// A path character: the right flank refuses to close a citation while one of
+// these follows, so `src/b.ts.spec` and `src/b.tsx` are not `src/b.ts`/
+// `src/a.ts` named. `-` last, in `String.raw`, so it stays a literal.
+const PATH_CHAR = String.raw`[A-Za-z0-9_./+-]`;
+
+/**
+ * Does `summary` NAME `file` as a path, rather than merely CONTAIN its
+ * characters? See the call site: the denominator is a handful of paths and the
+ * diff is IN the lens's own prompt, so an unanchored `includes` cannot tell a
+ * citation apart from a recital.
+ *
+ * THE TWO FLANKS ARE NOT THE SAME TEST, and each carries its own load — do not
+ * "simplify" them into one shared set:
+ *
+ *   LEFT  — `(^|\n|NOT_PATH)`: start of the summary, start of a line, or a
+ *           non-path character. This half alone is the recital guard: `--- a/x`,
+ *           `+++ b/x`, `+++ "b/x"`, a re-emitted `"…\n+src/a.ts"`,
+ *           `load("src/a.ts")` and `src/b.ts@default` are all refused here,
+ *           because `-`, `+`, `"`, `@` cannot OPEN a citation.
+ *   RIGHT — `NOT_LINE_BREAK(?!PATH_CHAR)`, or one `TERMINATOR` and then the end
+ *           of the line or summary. Reusing the left flank's `NOT_PATH` here
+ *           would reject every natural citation whose path runs into prose or a
+ *           full stop ("Read src/a.ts and …", "Reviewed src/a.ts."). What makes
+ *           the loose right flank safe is the negative lookahead plus the line
+ *           anchor: a citation may be followed by prose, but NOT by more path
+ *           characters, so `src/b.ts.spec` and `src/b.tsx` stay unaccounted
+ *           rather than accounting for a shorter file.
+ *
+ * No `m` flag: `$` is the end of the WHOLE summary and `\r?\n` is the explicit
+ * line end. Adding `m` would make every recited header line an end and
+ * re-admit `+++ b/src/a.ts`.
  */
 function mentionsPath(summary: string, file: string): boolean {
   const escaped = file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  // The characters a real path is built from. A path flanked ONLY by path
-  // characters is a substring of something longer and is not a citation:
-  // `--- a/src/a.ts` and `src/b.ts@default` are diff/prompt scaffolding, not a
-  // lens naming a file. A path flanked by a non-path character (or a string
-  // edge) was named: `Read src/a.ts and src/b.ts`, `` `src/a.ts` ``, `(a.ts)`.
-  const notPath = "[^A-Za-z0-9_./-]";
-  return new RegExp(`(^|${notPath})${escaped}(${notPath}|$)`).test(summary);
+  const re = new RegExp(
+    `(?:^|\\n|${NOT_PATH})${escaped}(?:(?![A-Za-z0-9_./+-])${NOT_LINE_BREAK}|${TERMINATOR}?(?:\\r?\\n|$))`,
+  );
+  return re.test(summary);
 }
 
 function norm(p: string): string {

@@ -173,14 +173,26 @@ export async function runLensFanOut(args: {
   //   own finding does. Excluding it gave a grep-backed witness that DID look
   //   less standing than model prose that merely quotes a path.
   //
-  //   LIVENESS (`allLanesProducedEvidence`) — the LENS rows ONLY. A deterministic
-  //   extra finding is not a lane: it is a grep result the caller merged, with
-  //   no findings array of its own shape and no summary, so folding it into a
-  //   liveness test would read every CLAIM_SCAN as a silent reviewer.
+  //   LIVENESS (`allLanesProducedEvidence`) — the HEALTHY rows ONLY (`results`,
+  //   never `lensResults`). A deterministic extra finding is not a lane: it is a
+  //   grep result the caller merged, with no findings array of its own shape and
+  //   no summary, so folding it into a liveness test would read every CLAIM_SCAN
+  //   as a silent reviewer. And a BLOCKED lane contributed nothing to the round,
+  //   so its row cannot make the liveness test true either. The predicate that
+  //   answers this and the one `computeVerdict` refuses the round with (#1105)
+  //   are the same FUNCTION over DIFFERENT sets — this one over `results`,
+  //   `lensProducedEvidence` over `lensResults` (healthy + blocked). Today the
+  //   two agree because a blocked row carries neither finding nor summary and so
+  //   fails the predicate from both sides; they would diverge silently if either
+  //   list changed, which is why each reads a named list and not "the rows".
   const extraFindings = args.extraFindings ?? [];
+  // Harness rows join the accounting ONLY when at least one healthy lane
+  // actually ran (`results.length > 0`): on a zero-healthy round nobody read
+  // anything, and merged CLAIM_SCAN rows must not fill the denominator by
+  // themselves — that would report "no gap" for a round that reviewed nothing.
   const accountedEvidence: readonly CoverageEvidence[] = [
     ...lensResults,
-    ...extraFindings.map((f) => ({ findings: [f] })),
+    ...(results.length > 0 ? extraFindings.map((f) => ({ findings: [f] })) : []),
   ];
   const claimedEvidence: readonly CoverageEvidence[] = [
     ...results,
@@ -191,6 +203,9 @@ export async function runLensFanOut(args: {
   // a roster with ZERO healthy lanes (everything blocked) would sail the
   // liveness test and a single merged `extraFindings` row would satisfy
   // `hasFindingClaimedFile` — a round that reviewed nothing would earn the ✓.
+  // Same reason it gates the accounting list above: it is the fan-out's only
+  // witness that a lane ran at all, and the same expression must not mean "a
+  // lane ran" in one place and "every lane spoke" in the other.
   const allLanesProducedEvidence =
     results.length > 0 && results.every((r) => hasReviewEvidence(r.findings, r.summary));
   return {
@@ -203,10 +218,12 @@ export async function runLensFanOut(args: {
     // paths is not reading them — `hasFindingClaimedFile`), or some lane left
     // no evidence at all, in which case the round admits it did not review its
     // own denominator and cannot simultaneously claim to have covered it.
-    // `hasReviewEvidence` is the SAME predicate `lensProducedEvidence` /
-    // `computeVerdict` refuse the round with (#1105), restated here only for
-    // the positive claim: nothing here blocks, and the healthy rows are the
-    // ones that could have read anything (a blocked lane contributed nothing).
+    // `hasReviewEvidence` here is the same FUNCTION `lensProducedEvidence` /
+    // `computeVerdict` refuse the round with (#1105), read over the HEALTHY
+    // rows (`results`) rather than their set (`lensResults`, healthy + blocked):
+    // nothing here blocks, and the healthy rows are the ones that could have
+    // read anything. See the ACCOUNTING/LIVENESS note above for why the two
+    // lists differ and what would make them diverge.
     findingClaimedFile: coverageClaimEarned(
       expectedFiles,
       claimedEvidence,

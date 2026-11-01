@@ -89,3 +89,27 @@ export const TEST_SUMMARY_NAMES_BOTH_FILES = [
   FENCE,
   "All good.",
 ].join(String.fromCharCode(10));
+
+/** A summary built from git's OWN header spellings for both changed paths,
+ * each path occurring exactly twice and never outside a header line: once as
+ * the `+++ b/…` form git writes, once as the quoted-path form `+++ "b/…"` git
+ * emits for a path needing quoting. Neither is a citation, so neither may
+ * account — and the trailing flank must not rescue them by treating a line
+ * break as a right boundary, which is the shape a re-emitted header takes
+ * (`"…\n+src/a.ts"`, `"…\n+++src/a.ts"`, `"…<src/a.ts>"`).
+ */
+export const TEST_SUMMARY_GIT_HEADERS_ONLY = [
+  "Reviewed the change; the diff shows:",
+  PLUS + PLUS + " b/src" + SLASH + "a" + DOT + "ts",
+  PLUS + PLUS + " " + Q + "b/src" + SLASH + "b" + DOT + "ts" + Q,
+  "All good.",
+].join(String.fromCharCode(10));
+
+/** The natural sentence closings the old right flank lost: `.` and `-` are
+ * PATH characters, so a path that ends a sentence was followed by a path
+ * character and read as unaccounted. These must all account. */
+export const TEST_SENTENCE_CLOSINGS: readonly [string, string][] = [
+  ["src" + SLASH + "a" + DOT + "ts", "Reviewed src" + SLASH + "a" + DOT + "ts."],
+  ["src" + SLASH + "b" + DOT + "ts", "No issues in src" + SLASH + "b" + DOT + "ts."],
+  ["src" + SLASH + "c" + DOT + "ts", "Notes: src" + SLASH + "c" + DOT + "ts; fine."],
+];

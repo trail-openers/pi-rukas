@@ -28,7 +28,9 @@ import {
   unreviewedLanesSection,
 } from "../src/lens-review-coverage-report.ts";
 import {
+  TEST_SENTENCE_CLOSINGS,
   TEST_SUMMARY_CITES_BOTH_FILES,
+  TEST_SUMMARY_GIT_HEADERS_ONLY,
   TEST_SUMMARY_NAMES_BOTH_FILES,
 } from "./lib/lens-recital-probe.ts";
 import { coverageClaimEarned } from "../src/lens-review-fanout.ts";
@@ -357,6 +359,65 @@ assert(
       `a summary that NAMES a file as a path token still accounts for it (${spelling})`,
     );
   }
+  // FINDING 4 — a path that ENDS A SENTENCE. `.` and `-` are path characters,
+  // so the old right flank read "Reviewed src/a.ts." as unaccounted: 2 of the
+  // natural ways a lens closes a summary printed a gap that was not there.
+  // MUTATION-PROOF: drop the terminator arm from `endsPath` in
+  // `lens-review-coverage.ts` and the first two reddens.
+  for (const [spelling, prose] of TEST_SENTENCE_CLOSINGS) {
+    const out = accountedFiles([row({ summary: prose })], selectedFiles(THREE_FILE_DIFF));
+    assert(
+      out?.get(spelling) === "summary",
+      `canary: a path that ends a SENTENCE still accounts — the right flank admits punctuation (${JSON.stringify(prose)})`,
+    );
+  }
+  // FINDING 3 — git's own header spellings, kept as explicit negatives. Both
+  // paths occur in this summary and only inside a header line, so an accounted
+  // result is the right flank failing, not a stray mention.
+  const headers = accountedFiles(
+    [row({ summary: TEST_SUMMARY_GIT_HEADERS_ONLY })],
+    selectedFiles(THREE_FILE_DIFF),
+  );
+  assert(
+    headers?.get("src/a.ts") === undefined && headers?.get("src/b.ts") === undefined,
+    `canary: git's own headers — +++ b/src/a.ts and the quoted form +++ "b/src/b.ts" — account for NOTHING (got ${JSON.stringify(Array.from(headers ?? []))})`,
+  );
+  assert(
+    TEST_SUMMARY_GIT_HEADERS_ONLY.includes("src/a.ts") &&
+      TEST_SUMMARY_GIT_HEADERS_ONLY.includes("src/b.ts"),
+    "the header-only summary really does contain both paths, so an unaccounted result is the anchor's verdict and not an empty fixture",
+  );
+  // The bytes git's OWN headers take when a lens re-emits them without the
+  // separating space (`"…\n+src/a.ts"`, `"…\n+++src/a.ts"`) — the exact
+  // acceptances the adversarial review measured. They differ from a real
+  // citation only in the character before the path, and `+` is a path
+  // character, so the LEFT flank is what refuses them. `<src/a.ts>` and
+  // `require("src/a.ts")` are NOT in this list on purpose: `<` and `"` are not
+  // path characters, so those ARE citations — the left flank is a boundary
+  // test, not a punctuation ban.
+  for (const [spelling, prose] of [
+    ["src/a.ts", "the diff shows:\n+src/a.ts"],
+    ["src/a.ts", "the diff shows:\n+++src/a.ts"],
+    ["src/a.ts", "@@ -1,2 +1,3 @@\n+src/a.ts"],
+    ["src/a.ts", "--- a/src/a.ts"],
+    ["src/a.ts", "+++ b/src/a.ts"],
+    ["src/a.ts", '+++ "b/src/a.ts"'],
+  ] as const) {
+    const out = accountedFiles([row({ summary: prose })], selectedFiles(THREE_FILE_DIFF));
+    assert(
+      out?.get(spelling) === undefined,
+      `canary: a path inside git's own header spelling is not a citation (${JSON.stringify(prose)})`,
+    );
+  }
+  // A path followed by MORE path characters is still not a citation, even
+  // though the sentence terminator arm exists — `src/b.ts.spec` is a different
+  // file, not `src/b.ts` with a full stop on it.
+  assert(
+    accountedFiles([row({ summary: "See src/b.ts.spec" })], selectedFiles(THREE_FILE_DIFF))?.get(
+      "src/b.ts",
+    ) === undefined,
+    "canary: the terminator arm does not turn a LONGER path into a citation of a shorter one",
+  );
 }
 
 {

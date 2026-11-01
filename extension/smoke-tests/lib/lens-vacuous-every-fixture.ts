@@ -32,3 +32,10 @@ export const passthroughModelSlot = async (
   _lens: string,
   fn: () => Promise<unknown>,
 ): Promise<unknown> => fn();
+
+/** One roster entry with NO error, i.e. a lane that spawns. Paired with
+ * `blockedRosterEntry` to show the OTHER arm of the accounting guard: with a
+ * healthy lane having run, harness rows do account for what they cite. */
+export function healthyRosterEntry(name = "SECURITY"): RosterEntry {
+  return { name, skill: `code-review-${name.toLowerCase()}` };
+}
