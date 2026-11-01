@@ -238,10 +238,12 @@ const TERMINATOR = String.raw`[!?,.;:\-]`;
 // removing or reordering a member — fails the build on that line. It does NOT
 // enforce the mirror relationship between `PATH_CHAR` and `NOT_PATH`: nothing
 // in the type says one is the negation of the other, and `as PathCharClass`
-// silences the annotation entirely for any string (measured: mutating
-// `PATH_CHAR` to a class `NOT_PATH` is not the mirror of produces no error with
-// the cast in place, and `TS2820` without it). So the mirror is a
-// reviewer-maintained invariant, and the cast is the escape that lets it drift.
+// silences the annotation entirely for any string. Measured on a scratch tree:
+// a one-character typo in the `PATH_CHAR` LITERAL fails the build
+// (`TS2820: Type '"[A-Za-z0-9_/+-]"' is not assignable to type 'PathCharClass'`),
+// while the same typo behind `as PathCharClass` compiles clean (exit 0, no
+// diagnostic). So the mirror is a reviewer-maintained invariant and the cast is
+// the escape that lets it drift.
 // What the type does buy is the narrow one: it turns a one-character typo in
 // either class into a compile error instead of a silent behaviour change.
 type PathCharClass = "[A-Za-z0-9_./+-]" | "[^A-Za-z0-9_./+-]";
