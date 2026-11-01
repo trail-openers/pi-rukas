@@ -136,7 +136,6 @@ export function piVersionLiterals(text: string): string[] {
 // restored. The lib file is intentionally NOT named test-*.ts — verify-loop.sh
 // runs only test-*.ts as tests; coverage comes through this gate.
 import {
-  censusGroundingErrors,
   compareVersions,
   declaredGroundingTable,
   floorRuleViolated,
@@ -149,6 +148,7 @@ import {
   siteCensus,
   stripRangePrefix,
 } from "./lib/pi-version-census.ts";
+import { censusGroundingErrors } from "./lib/pi-version-grounding.ts";
 import type { GroundingCitation } from "./lib/pi-version-census.ts";
 
 // One detector for the whole gate: the census lib cannot import the file that
@@ -298,13 +298,16 @@ if (verified && pins.codingAgent) {
   // floor is still not violated, so only a line AT the floor separates them).
   //
   // What the census consequence ACTUALLY is, as the detector reports it: the
-  // `1.4.0-garbage` argument is NOT a second grounding of `1.4.0`. The version
-  // pattern matches the whole token, so `1.4.0-garbage` is one token that
-  // matches no literal at all - invisible to the census only because it sits
-  // outside every marker's claim window. Put a Pi marker within 20 chars of it
-  // and it becomes a claim this row would have to declare. What does ground
-  // `1.4.0` here are the two `MIN_PI_VERSION` mentions and the `pi-tui` pins;
-  // the census-consistency block at the foot of this file is the list, and the
+  // `1.4.0-garbage` argument is NOT a second grounding of `1.4.0`, and not for
+  // the reason it looks like. The literal regex is `(?<![\d.])1\.4\.0(?![\d.])`,
+  // and `-` is in neither guard, so the `1.4.0` PREFIX of `1.4.0-garbage` IS a
+  // token match - the detector's own claim pattern finds it. What makes it
+  // invisible to the census is only that this occurrence sits beyond the 20-char
+  // forward window of every Pi-claim marker, so `piClaimContexts` never calls it
+  // a claim. Move a marker within 20 chars of it and it becomes a claim this row
+  // would have to declare. What does ground `1.4.0` here are the two
+  // `MIN_PI_VERSION` mentions and the `pi-tui` pins; the census-consistency
+  // block at the foot of this file is the list, and the
   // `@earendil-works/pi-tui":"~1.4.0"` fixture string quoted above is what
   // keeps one of those occurrences inside a marker's window.
   const aboveFloor = floorRuleViolated("1.4.1", "1.0.0");
@@ -431,41 +434,44 @@ if (verified && pins.codingAgent) {
 }
 
 
-const groundingBlockMark = ["// ", "-".repeat(64), " ", "census", " consistency"].join("");
-
 // ---------------------------------------------------------------- census consistency
 // The grounding facts the census comments rely on are DERIVED here from the two
 // files' actual bytes: per cited literal the detector's CLAIM SET (`detected ==
-// declared`) plus, per occurrence, the MARKER NAME and FORWARD GAP the comment
-// claims. A fact the gate computes cannot rot - the ~26 lines of hand-copied
-// line numbers, marker names and gaps this replaces were wrong in three
-// consecutive rounds because transcription drifts and nothing checked it. No
-// comment cites a line address, so none can be off by one; occurrences are
-// identified by quoted text plus marker.
+// declared`) plus, per occurrence, the MARKER NAME, the QUOTED TEXT and the
+// FORWARD GAP the comment claims. A fact the gate computes cannot rot - the ~26
+// lines of hand-copied line numbers, marker names and gaps this replaces were
+// wrong in three consecutive rounds because transcription drifts and nothing
+// checked it. No comment cites a line address, so none can be off by one;
+// occurrences are identified by quoted text plus marker.
+//
+// Both files are read WHOLE - nothing is excised. Each citation is the text
+// immediately before a literal, so it never holds a literal of its own and can
+// never manufacture a claim; and a comment that edits the file can change a
+// claim, which is exactly what this block exists to notice.
 {
   const gateRel = "extension/smoke-tests/test-pi-version-drift.ts";
   const censusRel = "extension/smoke-tests/lib/pi-version-census.ts";
   const readExt = (rel: string) => readFileSync(path.join(REPO_ROOT, rel), "utf8");
-  // The grounding facts are the GATE's, not the described file's: they live in
-  // `declaredGroundingTable` and the detector answers for every one of them.
-  // This block's own region is excised from the text handed to the detector: a
-  // citation quotes the text around a literal, so leaving the table in the bytes
-  // would have the detector chase claims the assertion itself created. The census
-  // file is read verbatim — it carries no expected values.
-  const selfText = readExt(gateRel);
-  const cut = selfText.lastIndexOf(groundingBlockMark);
-  if (cut < 0) throw new Error("census grounding: cannot locate this block in the gate file to excise it");
-  const textByFile: Record<string, string> = { [gateRel]: selfText.slice(0, cut), [censusRel]: readExt(censusRel) };
+  const textByFile: Record<string, string> = { [gateRel]: readExt(gateRel), [censusRel]: readExt(censusRel) };
   const expected = declaredGroundingTable(gateRel, censusRel);
+  const literalCount = Object.values(expected).reduce((n, byLit) => n + Object.keys(byLit).length, 0);
+  const citationCount = Object.values(expected).reduce((n, byLit) => n + Object.values(byLit).reduce((m, list) => m + list.length, 0), 0);
+  // A coverage floor, the analogue of the `declared >= 10` floor on the site
+  // census above: the two canaries below count errors against a number DERIVED
+  // from this table, and a deleted (file, literal) row would shrink that number
+  // along with its own coverage - the table passing by shrinking is the
+  // "gate that passes by silence" this block exists to stop.
+  assert(literalCount >= 3 && citationCount >= 9, `census grounding: ${literalCount} literals / ${citationCount} citations checked — at least the three (file, literal) rows and the citations this gate documents; a row deleted here must redden rather than narrow the check`);
   const groundingErrors = censusGroundingErrors(textByFile, expected, piClaimContexts);
-  assert(groundingErrors.length === 0, `census grounding: the detector's claims match the cited markers and gaps${groundingErrors.length ? " — " + groundingErrors.join(" | ") : " (no hand-transcribed figure is stale)"}`);
+  assert(groundingErrors.length === 0, `census grounding: the detector's claims match the cited markers, quotes and gaps${groundingErrors.length ? " — " + groundingErrors.join(" | ") : " (no hand-transcribed figure is stale)"}`);
   // A gate never observed to fail is not a gate: with a detector that finds no
   // claims, every literal checked above must redden.
   const failClosed = censusGroundingErrors(textByFile, expected, () => []);
   assert(
-    failClosed.length === Object.values(expected).reduce((n, byLit) => n + Object.keys(byLit).length, 0),
+    failClosed.length === literalCount,
     `canary: census grounding fails CLOSED — a detector that finds no claims reddens every literal checked (got ${failClosed.length} errors, expected one per checked literal)`,
   );
+
 }
 
 console.log(exit === 0 ? "\nAll pi version-claim checks passed." : "\nFAILED");

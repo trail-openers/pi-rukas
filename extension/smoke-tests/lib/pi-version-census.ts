@@ -249,8 +249,6 @@ export const PI_CLAIM_MARKERS: readonly RegExp[] = [/pi-coding-agent/i, /pi-tui/
 export const PI_CLAIM_MARKER_NAMES: readonly string[] = ["pi-coding-agent", "pi-tui", "@earendil-works/pi", "MIN_PI_VERSION", "last verified against pi"];
 export const PI_CLAIM_WINDOW = 20;
 
-const ELLIPSIS = "\u2026";
-
 /** One cited grounding: the text named around an occurrence, its marker, its gap. */
 export type GroundingCitation = { quoted: string; marker: string; gap: number };
 
@@ -268,7 +266,13 @@ export type ClaimDetector = (text: string) => number[];
  * always 0..PI_CLAIM_WINDOW for a claim). This is what lets the census table's
  * grounding comments be CHECKED instead of transcribed.
  */
-export function piLiteralClaims(text: string, literal: string, detect: ClaimDetector): { index: number; marker: string; gap: number }[] {
+export function piLiteralClaims(text: string, literal: string, detect: ClaimDetector, scanText?: string): { index: number; marker: string; gap: number }[] {
+  // `scanText` is the same bytes with the gate's own expected block blanked: the
+  // citations quote marker text, so a detector that read them would ground the
+  // very claims they describe. Blanking to equal length denies the detector the
+  // table while leaving every index an index into the real file; the citations are
+  // still READ from those bytes by `anchors`, so only the detector is denied them.
+  const scan = scanText ?? text;
   const claimSet = new Set(detect(text));
   const escaped = literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const out: { index: number; marker: string; gap: number }[] = [];
@@ -277,7 +281,7 @@ export function piLiteralClaims(text: string, literal: string, detect: ClaimDete
     if (!claimSet.has(index)) continue;
     let best: { marker: string; gap: number } | null = null;
     for (let i = 0; i < PI_CLAIM_MARKERS.length; i++) {
-      for (const hit of text.matchAll(new RegExp((PI_CLAIM_MARKERS[i] as RegExp).source, "gi"))) {
+      for (const hit of scan.matchAll(new RegExp((PI_CLAIM_MARKERS[i] as RegExp).source, "gi"))) {
         const gap = index - ((hit.index as number) + hit[0].length);
         if (gap >= 0 && gap <= PI_CLAIM_WINDOW && (best === null || gap < best.gap)) best = { marker: PI_CLAIM_MARKER_NAMES[i] as string, gap };
       }
@@ -288,79 +292,6 @@ export function piLiteralClaims(text: string, literal: string, detect: ClaimDete
     out.push({ index, marker: best.marker, gap: best.gap });
   }
   return out;
-}
-
-/**
- * The census-consistency assertion, replacing the hand-transcribed grounding
- * block. For each (file, literal) it checks the DETECTED CLAIM SET is exactly
- * the cited set - no more (a claim nothing grounds), no fewer (a citation whose
- * text has gone), no duplicates (one occurrence counted twice) - and pairs each
- * citation to a distinct claim whose marker name and forward gap it names
- * correctly. `quoted` is the text just BEFORE the literal, ending in an
- * ellipsis for "the literal follows": quoting the digits themselves would put
- * the citation, which lives inside the file under inspection, in a marker's
- * window and manufacture the claim it was meant to describe. Every message
- * carries the detector's own answer, so a failure is readable without a probe.
- * `detect` is the gate's detector; passing a detector that finds nothing shows the
- * block fails closed, i.e. is observed to redden rather than assumed to.
- */
-
-export function censusGroundingErrors(textByFile: Record<string, string>, expected: Record<string, Record<string, GroundingCitation[]>>, detect: ClaimDetector): string[] {
-  const errors: string[] = [];
-  for (const [rel, byLiteral] of Object.entries(expected)) {
-    const text = textByFile[rel];
-    if (text === undefined) {
-      errors.push(`${rel}: no text read - cannot check its grounding citations`);
-      continue;
-    }
-    for (const [literal, citations] of Object.entries(byLiteral)) {
-      const detectClaims = detect;
-      const detected = piLiteralClaims(text, literal, detectClaims);
-      void detectClaims;
-      const say = (list: { marker: string; gap: number }[]) => list.map((d) => `${d.marker}@${d.gap}`).join(", ");
-      const sayCit = (list: GroundingCitation[]) => list.map((x) => `${x.quoted}=${x.marker}@${x.gap}`).join(", ");
-      if (detected.length !== citations.length) {
-        errors.push(`${rel} ${literal}: detector found ${detected.length} claim(s) [${say(detected)}] but the citations declare ${citations.length} [${sayCit(citations)}]`);
-        continue;
-      }
-      // One-to-one pairing, fewest-candidates-first so an unambiguous citation
-      // claims its occurrence before an ambiguous one can take it.
-      const taken = new Set<number>();
-      const cands = citations.map((cit) => ({ cit, opts: detected.map((_, i) => i).filter((i) => anchors(text, detected[i] as number, cit)) }));
-      for (const c of cands.sort((x, y) => x.opts.length - y.opts.length)) {
-        const free = c.opts.filter((i) => !taken.has(i));
-        if (free.length === 0) {
-          errors.push(`${rel} ${literal}: cited ${JSON.stringify(c.cit.quoted)} matches no claim at marker \`${c.cit.marker}\` gap ${c.cit.gap} (detector says [${say(detected)}])`);
-          continue;
-        }
-        taken.add(free[0] as number);
-      }
-    }
-  }
-  return errors;
-}
-
-/**
- * Does `cit` describe claim `d`? The quote names the text immediately BEFORE
- * the literal, so with the trailing ellipsis stripped it must END exactly
- * `gap` chars before the literal starts - and it must name that claim's marker.
- * Anchoring to the position rather than searching for the string anywhere is
- * what stops one occurrence's surroundings being cited for another.
- */
-function anchors(text: string, d: { index: number; marker: string; gap: number }, cit: GroundingCitation): boolean {
-  if (d.marker !== cit.marker) return false;
-  const body = cit.quoted.endsWith(ELLIPSIS) ? cit.quoted.slice(0, -ELLIPSIS.length) : cit.quoted.replace(/\u002e\u002e\u002e$/, "");
-  // Two positions satisfy a citation, and BOTH are honest: the text the comment
-  // names can be read as ending where the claimed marker ends (`gap` chars
-  // before the literal), or as ending where the literal itself starts (the
-  // marker name is then inside the quote). The second reading is what lets one
-  // citation describe an occurrence whose marker occurs again closer to the
-  // literal than the marker the gate names - the fixture object whose own
-  // `pi-tui` name grounds both pins in it, for example.
-  for (const end of [d.index - cit.gap, d.index]) {
-    if (end >= body.length && text.slice(end - body.length, end) === body) return true;
-  }
-  return false;
 }
 
 /**
@@ -404,14 +335,6 @@ export function parseAgentsRestatement(agentsMd: string): { version: string; dat
   return { version: stripRangePrefix(m[1] as string), date: m[2] as string };
 }
 
-export const GROUNDING_BLOCK_MARK = "// " + "-".repeat(64) + " " + "census" + " consistency";
-
-
-/** Strip the source quotes around a parsed `quoted:` literal. */
-export function unquote(raw: string): string {
-  return raw.startsWith('"') ? (JSON.parse(raw) as string) : raw.slice(1, -1).replace(/\\'/g, "'");
-}
-
 /**
  * The grounding facts the census comments rely on. They live in the GATE, not in
  * the file they describe: the gate re-derives every one of them from the detector
@@ -424,7 +347,11 @@ export function declaredGroundingTable(
   return {
       [gateRel]: {
         // 1.4.0 — the floor-rule / co-pin literal, exactly as the detector sees
-        // it: Canary 1's MIN_PI_VERSION floor prose, Canary 4b's floor-comment
+        // `quoted` is the text immediately before the literal and `gap` is the
+        // distance from the nearest occurrence of `marker` INSIDE that quote to the
+        // literal; `anchors` re-derives both every run, so a figure transcribed
+        // wrong here reddens the gate instead of rotting quietly.
+        // It: Canary 1's MIN_PI_VERSION floor prose, Canary 4b's floor-comment
         // prose, and BOTH pins of Canary 1's inline co-pin fixture — the second
         // pin's nearest marker is the fixture's own pi-tui name, ahead of it, so
         // it is a claim of its own, cited separately from the first.
@@ -433,7 +360,7 @@ export function declaredGroundingTable(
         // or the assert below reddens.
         "1.4.0": [
           { quoted: "MIN_PI_VERSION floor of ", marker: "MIN_PI_VERSION", gap: 10 },
-          { quoted: "// floor ", marker: "MIN_PI_VERSION", gap: 12 },
+          { quoted: "MIN_PI_VERSION\n  // floor ", marker: "MIN_PI_VERSION", gap: 12 },
           { quoted: 'pi-tui":"~', marker: "pi-tui", gap: 4 },
           { quoted: 'pi-tui":"~', marker: "pi-tui", gap: 4 },
         ],
@@ -444,7 +371,7 @@ export function declaredGroundingTable(
           { quoted: "pi-coding-agent ~", marker: "pi-coding-agent", gap: 2 },
           { quoted: 'works/pi-coding-agent":"~', marker: "pi-coding-agent", gap: 4 },
           { quoted: "pi-coding-agent line (", marker: "pi-coding-agent", gap: 7 },
-          { quoted: "pi-coding-agent verified ", marker: "pi-coding-agent", gap: 11 },
+          { quoted: "pi-coding-agent verified ", marker: "pi-coding-agent", gap: 10 },
         ],
       },
       [censusRel]: {
@@ -455,7 +382,7 @@ export function declaredGroundingTable(
         // detector calls them prose and nothing invents them here. 1.4.1 has NO
         // claim in the census file, which is why that row declares 1.4.0 and not
         // 1.4.1.
-        "1.4.0": [{ quoted: "a `pi-coding-agent", marker: "pi-coding-agent", gap: 1 }],
+        "1.4.0": [{ quoted: "`pi-coding-agent@", marker: "pi-coding-agent", gap: 1 }],
       },
     };;
 }
