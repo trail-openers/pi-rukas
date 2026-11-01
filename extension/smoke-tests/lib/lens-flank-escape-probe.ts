@@ -60,22 +60,35 @@
  *     not decoration (it can go red), but what it witnesses is the negated
  *     class, not a dedicated arm.
  *   - delete `^` from the left flank — left flank becomes `(?:NOT_PATH)`, i.e.
- *     the flank requires a character before the path — → 4 of
+ *     the flank requires a character before the path — → **3** of
  *     `test-lens-coverage-denominator.ts`'s
- *     64 assertions go RED (measured again 2026-11-03: 64 GREEN under the
- *     shipped file, 60 GREEN + 4 RED under the mutant; the 64 is a `grep -c`
- *     of `assert(` in the shipped test file, which is what the harness runs,
- *     not a hand count): the plain-citation cases at `:79` and `:89` (left
- *     neighbour is a SPACE), the unaccounted-file canary, and `CARET_OPEN`
- *     below. The last of those is the `^`-exclusive one: its assertion is
- *     distinguishable from `:79`/`:89` by its own text, which quotes the
- *     fixture summary (`a path that starts the summary itself is a citation —
- *     the one position NOT_PATH cannot supply a neighbour for
- *     ("src/c.ts is fine")`), so a red line naming a summary is this case and
- *     a red line that names no summary is one of the space-neighbour cases.
- *     `CARET_OPEN` is the witness: it is GREEN with `^` and RED with `^`
- *     deleted, so the `^` alternative is load-bearing. It was not, until its
- *     summary lost a leading `\n` — see that fixture's rationale. (2026-11-03.)
+ *     64 assertions go RED (re-measured 2026-11-03 by deleting the anchor in a
+ *     scratch copy and running the file directly: 64 GREEN under the shipped
+ *     file, 61 GREEN + 3 RED under the mutant, reproduced on two runs; the 64
+ *     is the number of lines the harness prints — `bun ./smoke-tests/…` prints
+ *     one `✓`/`✗` per `assert` that executes, four of them from the
+ *     `TEST_FLANK_ESCAPE_CASES` loop at `:427`, which a `grep -c` of `assert(`
+ *     under-counts as 54 — so it is a printed-line count, not a hand count).
+ *     The three reds, verbatim from the run:
+ *       1. `a closing summary naming the file accounts for it` (`:84`)
+ *       2. `canary: the file NO evidence mentions is the unaccounted one —
+ *          before this gate it was invisible` (`:88`)
+ *       3. `canary: a path that starts the summary itself is a citation — the
+ *          one position NOT_PATH cannot supply a neighbour for ("src/c.ts is
+ *          fine")` — the `CARET_OPEN` case below
+ *     Cases 1 and 2 are the two assertions over the ONE summary
+ *     `"src/b.ts is fine as written."` (the file at `:79`): that string's only
+ *     mention of `src/b.ts` starts at index 0, so the same mutant reddens both
+ *     halves of that block together. They are distinguishable from case 3 by
+ *     their own text — a red that quotes a summary is `CARET_OPEN`, a red that
+ *     names no summary is one of the two `:79` assertions. `CARET_OPEN` is the
+ *     `^`-exclusive one and the witness: GREEN with `^`, RED with `^` deleted,
+ *     while `NL_OPEN` — path at index 19, a `\n` neighbour `NOT_PATH` consumes
+ *     — stays GREEN under the same mutant. It was not a witness until its
+ *     summary lost a leading `\n` — see that fixture's rationale. The "4" this
+ *     row carried came from a regime whose fourth red sat outside the five
+ *     files this gate runs; no run of this file, under either spelling of the
+ *     file-level count, has produced a fourth. (2026-11-03.)
  *   - narrow the escape class to `/\./g`      → REDS: META_CITED **and**
  *     META_UNESCAPED_FIT (2 red). An earlier version of this header asserted
  *     the opposite — "META_CITED stays green, which is the point of pairing
