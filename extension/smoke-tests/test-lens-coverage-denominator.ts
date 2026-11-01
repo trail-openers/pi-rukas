@@ -33,6 +33,7 @@ import {
   TEST_SUMMARY_GIT_HEADERS_ONLY,
   TEST_SUMMARY_NAMES_BOTH_FILES,
 } from "./lib/lens-recital-probe.ts";
+import { TEST_FLANK_ESCAPE_CASES } from "./lib/lens-flank-escape-probe.ts";
 import { coverageClaimEarned } from "../src/lens-review-fanout.ts";
 import {
   accountedFiles,
@@ -418,6 +419,13 @@ assert(
     ) === undefined,
     "canary: the terminator arm does not turn a LONGER path into a citation of a shorter one",
   );
+  // FINDING — the LEFT flank's `\n` alternative, and the escape class: the two
+  // alternatives in `mentionsPath` that every case above leaves unpinned. Their
+  // fixtures and mutation proofs live in `lib/lens-flank-escape-probe.ts`.
+  for (const [summary, file, expected, why] of TEST_FLANK_ESCAPE_CASES) {
+    const out = accountedFiles([row({ summary })], new Set([file]));
+    assert(out?.get(file) === expected, `canary: ${why} (${JSON.stringify(summary)})`);
+  }
 }
 
 {

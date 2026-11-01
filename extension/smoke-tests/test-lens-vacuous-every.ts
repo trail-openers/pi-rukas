@@ -54,11 +54,60 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-/** The harness rows a fan-out was handed — `LensFanOut` keeps no copy of them,
- * so this only confirms the arm was built with them, not what it did with them
- * (the assertion under test reads `unaccounted` for that). */
-function extraFindingsOf(_out: unknown): boolean {
-  return true;
+/**
+ * Did the harness rows a fan-out was handed actually reach its ACCOUNTING list?
+ *
+ * `LensFanOut` keeps no copy of `extraFindings` and the accounting list itself
+ * is not returned, so this helper cannot read the rows back — it observes what
+ * their presence CHANGES. `runLensFanOut` merges each harness row as its own
+ * evidence row (`extraFindings.map(f => ({ findings: [f] }))`) into
+ * `accountedEvidence`, the only list the returned `unaccounted` is derived
+ * from. So in a probe round whose single healthy lane answers with PROSE ONLY
+ * and names no file, a denominator file coming back accounted for can only mean
+ * the harness row was merged. Four observations, all read off the returned
+ * fields, so the helper can be FALSE:
+ *
+ *   - the round had a denominator at all;
+ *   - the cited file is absent from `unaccounted` while the two nobody cited
+ *     are present — the same accounting list, not an empty one;
+ *   - no lens row carries a finding for that file (so the row that claimed it
+ *     was the merged harness row, not a lane);
+ *   - the lane really did speak the prose-only summary the probe is built on.
+ *
+ * The old body was `return true`, which asserted "the round was handed harness
+ * rows" while checking NOTHING — in the test that exists to catch a coverage
+ * claim earned by nobody, an always-true helper is the wrong shape, and it made
+ * the premise below claim three things while witnessing two.
+ * MUTATION-PROOF: dropping the harness rows from `accountedEvidence` in
+ * `lens-review-fanout.ts` reddens this premise, and restoring that file
+ * byte-identically greens it again (verified: 1 red → 8 green → `cmp` clean).
+ */
+async function extraFindingsOf(): Promise<boolean> {
+  const probe = await runLensFanOut({
+    // ONE healthy lane that answers with prose only, so the round is a LIVE
+    // one — `runLensFanOut` gates the harness rows behind `results.length > 0`,
+    // and with zero healthy lanes they never enter the accounting at all, which
+    // is the very rule the canary below pins.
+    healthy: [healthyRosterEntry()],
+    blocked: [],
+    lensChildFn: (async () => lens("SECURITY", [], "the code is fine from this lens")) as never,
+    runId: "vacuous-every-witness",
+    skillsDir: "unused",
+    context: "",
+    roster: [healthyRosterEntry()],
+    opts: { diff: "" } as never,
+    bumpBatch: () => {},
+    batchKey: "vacuous-every-witness/batch",
+    modelSlot: passthroughModelSlot as never,
+    resolved: { kind: "ok", diffSource: "computed", diff: THREE_FILE_DIFF },
+    extraFindings: [finding("src/a.ts")],
+  });
+  return (
+    probe.hasDenominator &&
+    probe.unaccounted.join(",") === "src/b.ts,src/c.ts" &&
+    probe.lensResults.every((r) => !r.findings.some((f) => f.path === "src/a.ts")) &&
+    probe.lensResults.some((r) => r.summary === "the code is fine from this lens")
+  );
 }
 
 // The fan-out itself — the seam that OWNS the liveness test.
@@ -120,7 +169,10 @@ function extraFindingsOf(_out: unknown): boolean {
   assert(
     bothCited.hasDenominator &&
       bothCited.lensResults.every((r) => r.blocked === true) &&
-      (extraFindingsOf(bothCited) ?? true) === true,
+      // The harness rows really do reach the fan-out's accounting list (see
+      // `extraFindingsOf`), so the `unaccounted` canary below is measuring a
+      // round that WAS handed them and refused to count them.
+      await extraFindingsOf(),
     "premise: a zero-healthy roster over a real denominator, with harness rows as its only evidence",
   );
   assert(
