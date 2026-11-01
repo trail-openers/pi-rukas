@@ -87,7 +87,7 @@ export const NL_OPEN: [string, string, "summary" | undefined, string] = [
   "Reviewed the delta.\nsrc/c.ts is fine",
   "src/c.ts",
   "summary",
-  "a path at the start of a line opens a citation — the line-initial position is admitted by the negated NOT_PATH class, which matches a newline (or by ^ at the very start)",
+  "a path at the start of a line opens a citation — the line-initial position is admitted by the negated NOT_PATH class, which matches a newline",
 ];
 
 /** The same path, spelled with regex metacharacters, cited as itself.
