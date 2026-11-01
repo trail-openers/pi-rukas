@@ -34,10 +34,10 @@
  * 2026-11-01 against the shipped `mentionsPath`, each by editing
  * `lens-review-coverage.ts`, running the cases, and restoring the file
  * byte-identically (`git hash-object` matched HEAD's blob after every
- * restore: `ec2f4039`). The `\n|`-deletion row and the exclude-newline row
- * were re-measured against the post-deletion file, restored the same way.
- * Verdicts below are what the run printed; nothing here is claimed from
- * reasoning.
+ * restore: `ec2f4039`). The `\n|`-deletion row, the exclude-newline row and
+ * the `^`-deletion row were re-measured against the post-deletion file,
+ * restored the same way (`be64095a` after the last restore). Verdicts below
+ * are what the run printed; nothing here is claimed from reasoning.
  *   - delete `\n|` from the left flank        → suite stays GREEN (P: 5 F: 0),
  *     which is the redundancy proof: the alternative was unreachable, so no
  *     fixture could redden on its removal. (2026-11-03, after the header above
@@ -54,13 +54,21 @@
  *     the only red is the NL_OPEN canary). So `NL_OPEN` DOES witness something:
  *     it witnesses that the left flank admits a line-initial path — which, now
  *     the `\n|` alternative is gone, is `NOT_PATH`'s job. `^` does NOT rescue
- *     it, because the summary is `"Reviewed the delta.\nsrc/c.ts is fine"` and
- *     the path sits at index 19, nowhere near the `^` anchor at index 0 — so
- *     `^` had no way to reach it (and could not have matched anyway: the
- *     left-hand path characters preceding it are themselves in the path set).
+ *     it: `^` matches only at index 0, and NL_OPEN's left boundary is index 19,
+ *     which `NOT_PATH` admits.
  *     Conclusion: the fixture is
  *     not decoration (it can go red), but what it witnesses is the negated
  *     class, not a dedicated arm.
+ *   - delete `^` from the left flank — left flank becomes `(?:NOT_PATH)`, i.e.
+ *     the flank requires a character before the path — → 4 of
+ *     `test-lens-coverage-denominator.ts`'s
+ *     60 assertions go RED: the plain-citation cases at `:78`, `:89` and `:152`
+ *     (left neighbour is a SPACE) and one case outside this suite. NONE of them
+ *     has its path's left boundary at index 0. So **no case in the whole suite
+ *     is `^`-exclusive**: every path its left flank reaches is also reachable
+ *     through `NOT_PATH`, and the `^` alternative is currently un-witnessed.
+ *     `CARET_OPEN` below was written to close exactly this gap and did NOT
+ *     close it — see that fixture's rationale. (2026-11-03.)
  *   - narrow the escape class to `/\./g`      → REDS: META_CITED **and**
  *     META_UNESCAPED_FIT (2 red). An earlier version of this header asserted
  *     the opposite — "META_CITED stays green, which is the point of pairing
@@ -96,6 +104,31 @@ export const NL_OPEN: [string, string, "summary" | undefined, string] = [
   "a path at the start of a line opens a citation — the line-initial position is admitted by the negated NOT_PATH class, which matches a newline",
 ];
 
+/** A denominator path whose left boundary is index 0 of the summary (a sole
+ * leading newline, then the path, so no non-newline character sits before it).
+ * Expected: accounted.
+ *
+ * **DECORATION — it witnesses nothing.** The intent was to give the `^`
+ * left-flank alternative its own case, on the theory that `NOT_PATH` needs a
+ * character to consume and at index 0 there is none. Measured 2026-11-03 that
+ * theory does not survive the run: this case is GREEN with the shipped
+ * `(^|NOT_PATH)` flank and GREEN with `^` deleted, so no mutation of the left
+ * flank distinguishes it from its neighbours. Two reasons it cannot, and both
+ * are why an index-0 fixture is the wrong shape for `^`: the leading `\n` is
+ * itself a `NOT_PATH` character sitting at index 0, so the flank can consume it
+ * and reach the path at index 1 without the anchor; and any summary whose path
+ * truly starts at index 0 is matched by `^` *and* — if anything precedes it —
+ * by `NOT_PATH`, because the two arms partition only at index 0, where there is
+ * nothing to partition. It is kept, labelled, because the behaviour it states is
+ * true and cheap to keep; it is NOT cited as proof that `^` is load-bearing, and
+ * the `^` alternative remains un-witnessed (see the `^`-deletion row above). */
+export const CARET_OPEN: [string, string, "summary" | undefined, string] = [
+  "\nsrc/c.ts is fine",
+  "src/c.ts",
+  "summary",
+  "a path at the start of the summary is a citation — DECORATION: green with `^` and green without it, so it does not witness the `^` arm",
+];
+
 /** The same path, spelled with regex metacharacters, cited as itself.
  * Expected: accounted. Red when the escape class narrows to a dot only, and
  * red when it is removed — the SAME two mutations that redden
@@ -123,4 +156,4 @@ export const META_UNESCAPED_FIT: [string, string, "summary" | undefined, string]
 ];
 
 export const TEST_FLANK_ESCAPE_CASES: readonly [string, string, "summary" | undefined, string][] =
-  [NL_OPEN, META_CITED, META_UNESCAPED_FIT];
+  [NL_OPEN, CARET_OPEN, META_CITED, META_UNESCAPED_FIT];
