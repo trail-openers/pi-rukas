@@ -33,20 +33,35 @@
  * only this test's files.
  */
 
-import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import * as os from "node:os";
 import path from "node:path";
-import type { Finding } from "../src/lens-review-types.ts";
+import { execp } from "../src/exec.ts";
 import { confirmationsFor } from "../src/review-confirmation.ts";
-import type { LedgerEntry } from "../src/review-ledger-entry.ts";
-import { lineHashAt, snippetHashAt } from "../src/review-findings-match.ts";
 import type { StoredFinding } from "../src/review-findings-file.ts";
-import { readBranchRows, recordFindingRunOutcome } from "../src/review-findings-store.ts";
+import { lineHashAt, snippetHashAt } from "../src/review-findings-match.ts";
+import { readBranchRows } from "../src/review-findings-store.ts";
+import type { LedgerEntry } from "../src/review-ledger-entry.ts";
 import { readLedgerAt } from "../src/review-ledger-read.ts";
 import { workingTreePatchId } from "../src/review-ledger.ts";
-import { execp } from "../src/exec.ts";
-import { resetFindingsStateCache } from "../src/review-state-path.ts";
+import { findingsStateDir, resetFindingsStateCache } from "../src/review-state-path.ts";
+// The SAME store-shaped fixture the three sibling confirmation tests build: its
+// `makeFixture` records BOTH env pins and its `releaseFixture` writes them back,
+// which is what makes nesting a fixture safe. This file used to carry its own
+// copy of the clone recipe, and that copy deleted both pins on teardown — see
+// the nesting witness below.
+import type { FixtureEnv } from "./lib/confirmation-store-fixture.ts";
+import {
+  CITED,
+  FINDING,
+  HEAD_LINES,
+  makeFixture,
+  reReport,
+  releaseFixture,
+  removeFixture,
+  seed,
+  writeLedger,
+} from "./lib/confirmation-store-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -57,14 +72,6 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-const HEAD_LINES = [
-  "// header",
-  "export function a() {",
-  "  return unsafe(raw);", // the cited line — never changed by any case here
-  "}",
-  "export const b = 2;",
-];
-const CITED = 3;
 /** The row the store-side round files, and the id its confirmation must name. */
 const ROW = "abcd1234";
 /** A row id no round ever holds — the stale ledger row's join key. */
@@ -72,7 +79,6 @@ const STALE_ROW = "eeee1111";
 const HEAD_SHA = "1111222233334444555566667777888899990000".slice(0, 40);
 const PATCH = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
 const SEEN = { firstSeen: 1000, lastSeen: 2000 };
-
 
 const good = (over: Partial<LedgerEntry> = {}): LedgerEntry => ({
   branch: "feature/work",
@@ -132,173 +138,203 @@ const ask = (
   // so a refusal here is the constant's answer and not a malformed row's.
   assert(
     ask([good({ kind: "test" as LedgerEntry["kind"] })]).size === 0,
-    "kind: a passing \"test\" row is NOT a confirming kind — no producer writes it",
+    'kind: a passing "test" row is NOT a confirming kind — no producer writes it',
   );
   assert(
     ask([good({ kind: "test" as LedgerEntry["kind"] })], PATCH, HEAD_SHA, SEEN, new Set([ROW]))
       .size === 0,
-    "kind: and the bound does not rescue a \"test\" row",
+    'kind: and the bound does not rescue a "test" row',
   );
 }
 
 // ---------------------------------------------------------------------------
-// The join at the production path: a real round over a real clone
+// The fixture's env pins are restorable, not destructive.
+//
+// `makeFixture` pins BOTH `PI_ENSEMBLE_REVIEW_LEDGER_FILE` (which also pins the
+// findings store — `review-state-path.ts` resolves the store beside the override)
+// and `PI_AGENT_DIR`. A teardown that DELETES both instead of restoring them
+// hands whatever scope is holding those pins back to the process, and the next
+// round resolves the store at the real `~/.pi/agent` and the ledger at the
+// clone's real git common dir. Nothing throws; the rows are simply written
+// outside the fixture, so an assertion that only reads env strings accepts any
+// assignment that happens to look right. Each arm below therefore asserts WHERE
+// THE BYTES LANDED, and each is in its own block because an assertion inside a
+// `finally` whose pins were just restored can be satisfied by the restoration
+// rather than by the behaviour under test.
+//
+// The shape this replaced was this file's own private copy of the clone recipe,
+// whose teardown was `delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE` plus
+// `delete process.env.PI_AGENT_DIR` — exactly the defect `fa63e18d` closed in the
+// shared fixture while this copy stayed open. `destructiveRelease` is that
+// teardown, kept here as the counter-behaviour both arms measure against.
 // ---------------------------------------------------------------------------
 
-const git = (cwd: string, ...args: string[]) =>
-  execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
-
-function makeFixture() {
-  const root = mkdtempSync(path.join(os.tmpdir(), "conf-join-"));
-  const dir = path.join(root, "repo");
-  mkdirSync(dir, { recursive: true });
-  const ledgerFile = path.join(root, "review-ledger.json");
-  git(dir, "init", "-q", "-b", "main");
-  git(dir, "config", "user.email", "t@t");
-  git(dir, "config", "user.name", "T");
-  git(dir, "config", "commit.gpgsign", "false");
-  mkdirSync(path.join(dir, "src"), { recursive: true });
-  writeFileSync(path.join(dir, "src", "a.ts"), `${HEAD_LINES.join("\n")}\n`);
-  git(dir, "add", "-A");
-  git(dir, "commit", "-q", "-m", "base");
-  // `workingTreePatchId` resolves the identity against `<remote>/<mainline>`, so
-  // the fixture needs the same origin the real clone has — without it there is
-  // no patch id, and a round with no identity consults no confirmation.
-  const origin = path.join(root, "origin.git");
-  git(root, "init", "--bare", "-q", "--initial-branch=main", origin);
-  git(dir, "remote", "add", "origin", origin);
-  git(dir, "push", "-q", "-u", "origin", "main");
-  git(dir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
-  git(dir, "checkout", "-q", "-b", "feature/work");
-  writeFileSync(path.join(dir, "src", "fix.ts"), "// the fix, in a DIFFERENT file\n");
-  git(dir, "add", "-A");
-  git(dir, "commit", "-q", "-m", "fix in another file");
-  const headSha = git(dir, "rev-parse", "HEAD");
-  // The env is pointed at THIS fixture only after every git call: a relative
-  // `git rev-parse --git-common-dir` answer is resolved against `cwd`.
-  process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = ledgerFile;
-  process.env.PI_AGENT_DIR = path.join(root, "agent");
+/** The teardown this file's private fixture had: both pins gone, whatever the
+ * fixture recorded. Typed by the shared fixture's own record shape, so it is a
+ * counterpart to `releaseFixture` and not a free-floating pair of `delete`s.
+ *
+ * `delete` and nothing else. Biome's `noDelete` autofix rewrites these to
+ * `process.env.X = undefined`, which on bun does NOT remove the variable — it
+ * stores the four-character string "undefined", which every consumer here reads
+ * through `?.trim()` and therefore treats as a real value. The override would
+ * stay "set" to a file nobody can open, and this witness would go green having
+ * measured nothing. The rule is suppressed rather than the behaviour changed. */
+function destructiveRelease(f: { priorEnv: FixtureEnv }): void {
+  // biome-ignore lint/performance/noDelete: assigning undefined stores the string "undefined" on bun; only `delete` unsets
+  delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
+  // biome-ignore lint/performance/noDelete: same reason — the string "undefined" is a truthy override to an unreadable file
+  delete process.env.PI_AGENT_DIR;
   resetFindingsStateCache();
-  return { root, dir, ledgerFile, headSha };
-}
-
-/** The finding round 1 files; identical line/path/title so round 2 re-reports it. */
-const FINDING: Finding = {
-  lens: "PERFORMANCE",
-  severity: "CRITICAL",
-  path: "src/a.ts",
-  line: CITED,
-  title: "Unvalidated input reaches the executor",
-};
-
-/** A row whose cited line still exists at head, byte for byte. */
-function stuckRow(id: string): StoredFinding {
-  return {
-    id,
-    branch: "feature/work",
-    path: "src/a.ts",
-    anchor: "a",
-    titleClass: "unvalidated input reaches executor",
-    title: "Unvalidated input reaches the executor",
-    severity: "CRITICAL",
-    lens: "PERFORMANCE",
-    line: CITED,
-    snippetHash: snippetHashAt(HEAD_LINES, CITED),
-    lineHash: lineHashAt(HEAD_LINES, CITED),
-    status: "open",
-    firstSeen: 1000,
-    lastSeen: 1000,
-  };
-}
-
-function writeLedger(file: string, entries: Array<Record<string, unknown>>): void {
-  writeFileSync(file, JSON.stringify({ entries }, null, 2), "utf8");
-}
-
-/** Seed an open CRITICAL row through the real store (real hashes, real ids). */
-async function seed(dir: string, headSha: string) {
-  const out = await recordFindingRunOutcome({
-    cwd: dir,
-    branch: "feature/work",
-    headSha,
-    findings: [FINDING],
-    review: "full",
-  });
-  if (!out.ok) throw new Error(`seed failed: ${out.reason}`);
-  const rows = await readBranchRows(dir, "feature/work");
-  const row = rows.find((r) => r.severity === "CRITICAL");
-  if (!row) throw new Error("seed produced no CRITICAL row");
-  return row;
-}
-
-/** A full round that re-reports the finding, with confirmations consulted. */
-async function reReport(dir: string, headSha: string, patchId: string) {
-  return recordFindingRunOutcome({
-    cwd: dir,
-    branch: "feature/work",
-    headSha,
-    findings: [FINDING],
-    review: "full",
-    confirmFixes: true,
-    patchId,
-    now: Date.now() + 10_000,
-  });
 }
 
 {
-  const f = makeFixture();
+  // ARM A — the shared `releaseFixture` nests. Outer fixture, inner fixture, and
+  // the inner's release must hand the OUTER its pins back. Red against a release
+  // that deletes: `ledger=undefined` is the unpinning, and the round after it is
+  // what proves the unpinning cost bytes rather than a string.
+  const hostDir = mkdtempSync(path.join(os.tmpdir(), "host-ledger-join-"));
+  const hostLedger = path.join(hostDir, "ledger.json");
+  const hostAgent = path.join(hostDir, "agent");
+  const savedLedger = process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
+  const savedAgent = process.env.PI_AGENT_DIR;
+  process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = hostLedger;
+  process.env.PI_AGENT_DIR = hostAgent;
+  resetFindingsStateCache();
+  const outer = makeFixture();
   try {
-    const row = await seed(f.dir, f.headSha);
-    // The shape the join must answer for, asserted rather than assumed: the
-    // cited line is byte-unchanged at head, so nothing but a confirmation can
-    // retire this row.
     assert(
-      row.lineHash === stuckRow(row.id).lineHash && row.status === "open",
-      "join store: the seeded row is open with the unchanged-cited-line hash",
+      process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE === outer.ledgerFile &&
+        process.env.PI_AGENT_DIR === path.join(outer.root, "agent"),
+      `env: makeFixture pins the ledger and the agent dir into its own fixture (${process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE})`,
     );
-    const pid = (await workingTreePatchId(execp, f.dir)).patchId;
-    assert(pid !== undefined, "join store: the review identity resolved");
-    writeLedger(f.ledgerFile, [
-      {
-        branch: "feature/work",
-        kind: "adversarial",
-        patchId: pid,
-        passed: true,
-        at: Date.now(),
-        headSha: f.headSha,
-        rowId: row.id,
-        round: 2,
-      },
-      {
-        branch: "feature/work",
-        kind: "adversarial",
-        patchId: pid,
-        passed: true,
-        // Later than the row the round holds: this is what the unbounded join
-        // keeps as the kind's `best`, so the round's own row never gets asked.
-        at: Date.now() + 500,
-        headSha: f.headSha,
-        rowId: STALE_ROW,
-      },
-    ]);
-    const out = await reReport(f.dir, f.headSha, pid!);
-    const after = (await readBranchRows(f.dir, "feature/work")).find((r) => r.id === row.id);
+    const inner = makeFixture();
+    try {
+      assert(
+        process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE === inner.ledgerFile,
+        "env: the inner fixture re-pins the ledger to its own dir",
+      );
+    } finally {
+      releaseFixture(inner);
+      removeFixture(inner);
+    }
     assert(
-      out.ok && after?.status === "resolved" && after.resolvedReason === "confirmed",
-      `join store: a stale rowId cannot hide the round's own confirmation (${after?.status}/${after?.resolvedReason})`,
+      process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE === outer.ledgerFile &&
+        process.env.PI_AGENT_DIR === path.join(outer.root, "agent"),
+      `env: the inner releaseFixture restores the OUTER fixture's pins (ledger=${String(process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE)}, agent=${String(process.env.PI_AGENT_DIR)})`,
+    );
+    const pid = (await workingTreePatchId(execp, outer.dir)).patchId;
+    assert(pid !== undefined, "env: the outer round's review identity resolved");
+    const row = await seed(outer.dir, outer.headSha);
+    assert(
+      (await readBranchRows(outer.dir, "feature/work")).some((r) => r.id === row.id),
+      "env: the outer fixture's store still round-trips after the inner release",
     );
     assert(
-      typeof after?.confirmedBy === "string" &&
-        after.confirmedBy.includes(`#${row.id}`) &&
-        /patch=/.test(after.confirmedBy) &&
-        /head=/.test(after.confirmedBy),
-      `join store: the provenance names THIS round's row and the reviewed commit (got ${JSON.stringify(after?.confirmedBy)})`,
+      existsSync(hostLedger) === false && existsSync(hostAgent) === false,
+      `env: ARM A leaked nothing to the host paths (${hostLedger}, ${hostAgent})`,
     );
   } finally {
-    delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
-    delete process.env.PI_AGENT_DIR;
+    process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = savedLedger;
+    process.env.PI_AGENT_DIR = savedAgent;
     resetFindingsStateCache();
-    rmSync(f.root, { recursive: true, force: true });
+    removeFixture(outer);
+    rmSync(hostDir, { recursive: true, force: true });
+  }
+}
+
+{
+  // ARM B — what the destructive teardown does to a REAL round. An outer round
+  // seeds a row and a ledger entry while correctly pinned, the inner fixture's
+  // teardown then runs the DESTRUCTIVE release (this file's old shape), and the
+  // assertions measure where the NEXT round's store resolves. This arm cannot
+  // assert the leaked bytes without writing them to the developer's real agent
+  // dir — the damage it is reporting — so it asserts the relocation, and ARM A is
+  // the arm that asserts the fix.
+  const hostDir = mkdtempSync(path.join(os.tmpdir(), "host-ledger-join-"));
+  const hostLedger = path.join(hostDir, "ledger.json");
+  const hostAgent = path.join(hostDir, "agent");
+  const savedLedger = process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
+  const savedAgent = process.env.PI_AGENT_DIR;
+  process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = hostLedger;
+  process.env.PI_AGENT_DIR = hostAgent;
+  resetFindingsStateCache();
+  const outer = makeFixture();
+  try {
+    const first = await seed(outer.dir, outer.headSha);
+    const pid = (await workingTreePatchId(execp, outer.dir)).patchId;
+    assert(pid !== undefined, "env: the outer round's review identity resolved");
+    // Non-empty BEFORE the inner teardown, so "the fixture's file" and "the
+    // host's file" are two different observable states, not two absences.
+    writeLedger(outer.ledgerFile, [
+      {
+        branch: "feature/work",
+        kind: "adversarial",
+        patchId: pid!,
+        passed: true,
+        at: 1500,
+        headSha: outer.headSha,
+        rowId: first.id,
+      },
+    ]);
+    const inner = makeFixture();
+    try {
+      assert(
+        process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE === inner.ledgerFile,
+        "env: the inner fixture re-pins the ledger to its own dir",
+      );
+    } finally {
+      destructiveRelease(inner);
+      removeFixture(inner);
+    }
+    const leaky =
+      process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE !== outer.ledgerFile ||
+      process.env.PI_AGENT_DIR !== path.join(outer.root, "agent");
+    assert(
+      leaky,
+      "env: ARM B's teardown really unpinned the process (witness that the harm is being measured, not imagined)",
+    );
+    // What the destructive teardown actually does, in the only form a test can
+    // observe without committing the damage it is reporting. With the pins gone
+    // the next round resolves its store at `findingsStateDir` with no override at
+    // all, which is the developer's real `~/.pi/agent`; asserting bytes are
+    // present there would WRITE them, so the assertion is the relocation itself.
+    //
+    // The `undefined` arms are not decoration and neither is the `"undefined"`
+    // arm: bun stores the literal string for an `= undefined` assignment, and
+    // every consumer reads the override through `?.trim()`, so a teardown that
+    // assigned instead of deleting leaves the pin "set" and the store inside the
+    // fixture. That arm is therefore red under an `= undefined` teardown and green
+    // under a real `delete` — it is the guard on the one edit that would silently
+    // defuse this whole block.
+    const unPinnedStore = await findingsStateDir(execp, outer.dir);
+    const pinsGone =
+      process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE === undefined &&
+      process.env.PI_AGENT_DIR === undefined;
+    const pinsStringified =
+      process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE === "undefined" ||
+      process.env.PI_AGENT_DIR === "undefined";
+    assert(
+      pinsGone,
+      `env: the destructive teardown really UNSET both pins (ledger=${JSON.stringify(process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE)}, agent=${JSON.stringify(process.env.PI_AGENT_DIR)})`,
+    );
+    assert(
+      !pinsStringified,
+      `env: no pin was left holding the literal string "undefined" — an =-undefined teardown rather than a delete (${JSON.stringify([process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE, process.env.PI_AGENT_DIR])})`,
+    );
+    assert(
+      unPinnedStore !== undefined && unPinnedStore.dir !== path.dirname(outer.ledgerFile),
+      `env: with the pins deleted the outer round's store relocates OUT of the fixture (${unPinnedStore?.file ?? "no location"})`,
+    );
+    assert(
+      existsSync(hostLedger) === false,
+      `env: and the host override file that was in place before the leak stayed untouched (${hostLedger})`,
+    );
+  } finally {
+    process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = savedLedger;
+    process.env.PI_AGENT_DIR = savedAgent;
+    resetFindingsStateCache();
+    removeFixture(outer);
+    rmSync(hostDir, { recursive: true, force: true });
   }
 }
 
@@ -377,10 +413,8 @@ async function reReport(dir: string, headSha: string, patchId: string) {
     } catch {
       // The dir removal below owns the file either way.
     }
-    delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
-    delete process.env.PI_AGENT_DIR;
-    resetFindingsStateCache();
-    rmSync(f.root, { recursive: true, force: true });
+    releaseFixture(f);
+    removeFixture(f);
   }
 }
 
