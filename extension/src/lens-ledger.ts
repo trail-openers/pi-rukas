@@ -48,9 +48,7 @@ export interface LensPatchIdentity {
 
 /** Resolve the review identity once. Never throws: a failed read returns no
  * `patchId`, which both consumers read as "nothing to bind to". */
-export async function lensReviewPatchIdentity(
-  cwd: string,
-): Promise<LensPatchIdentity | undefined> {
+export async function lensReviewPatchIdentity(cwd: string): Promise<LensPatchIdentity | undefined> {
   try {
     const computed = await workingTreePatchId(execp, cwd, { digest: true });
     return {
@@ -153,8 +151,7 @@ export function writeLensLedgerEntry(
     // gap is traced — see the warning's wording in workingTreePatchId.
     // #1934 — normally the identity the review already resolved; recomputed only
     // for a direct caller that did not resolve one.
-    const computed =
-      identity ?? (await workingTreePatchId(execp, c, { digest: true }));
+    const computed = identity ?? (await workingTreePatchId(execp, c, { digest: true }));
     if (computed.warning) trace(`lens-review: ${computed.warning}`);
     if (!computed.patchId) {
       traceWarn(

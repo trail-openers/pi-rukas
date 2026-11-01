@@ -27,7 +27,11 @@
  * write (see `writeLensLedgerEntry` — the promise is the #984 test seam).
  */
 
-import { type LensLedgerOutcome, type LensPatchIdentity, writeLensLedgerEntry } from "./lens-ledger.ts";
+import {
+  type LensLedgerOutcome,
+  type LensPatchIdentity,
+  writeLensLedgerEntry,
+} from "./lens-ledger.ts";
 import type { LensReviewSummary } from "./lens-review-format.ts";
 import { postLensResidualDisclosure } from "./lens-review-residuals.ts";
 import type { Severity } from "./lens-review.ts";

@@ -24,9 +24,9 @@
  * blocks and the note names the reason (lens-review-advisory.ts).
  */
 
+import type { LensPatchIdentity } from "./lens-ledger.ts";
 import { partitionDecisions } from "./lens-residuals.ts";
 import type { SuppressedFinding } from "./lens-residuals.ts";
-import type { LensPatchIdentity } from "./lens-ledger.ts";
 import { splitAdvisory } from "./lens-review-advisory.ts";
 import type { AutoDeltaInfo } from "./lens-review-delta-disclose.ts";
 import { isReviewIncomplete } from "./lens-review-incomplete.ts";
