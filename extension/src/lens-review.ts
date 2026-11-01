@@ -110,7 +110,6 @@ export { MAX_LENS_ATTEMPTS };
  * usually transient (process spawn pressure, provider-side rate limits). */
 const LENS_RETRY_BACKOFF_MS = 1000;
 
-
 export async function runLensReview(opts: {
   diff?: string;
   context?: string;
@@ -281,7 +280,6 @@ export async function runLensReview(opts: {
     // blocked or noReview: no headSha (no commit was reviewed).
     headSha = undefined;
   }
-  // #1934 — the one identity both consumers receive (see lensPatchIdentityOf).
   const identityOf = lensPatchIdentityOf(opts.cwd);
   // #1000 — the single finish path for every exit of this run: the identical
   // `finishLensReview(...)` call (threshold, cwd, the ONE resolved branch,

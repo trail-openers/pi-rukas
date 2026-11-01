@@ -198,6 +198,9 @@ export function writeLensLedgerEntry(
   });
 }
 
+/** A memoised getter for the review identity: one computation, awaited by both consumers. */
+export type LensIdentityGetter = () => Promise<LensPatchIdentity | undefined>;
+
 /**
  * #1934 — the ONE review identity, resolved lazily and shared.
  *
@@ -210,7 +213,10 @@ export function writeLensLedgerEntry(
  * git patch-id --stable`, and memoised because the two consumers await it twice.
  * Absent means no confirmations consulted: the pre-#1934 shape.
  */
-export function lensPatchIdentityOf(cwd: string | undefined) {
+export function lensPatchIdentityOf(cwd: string | undefined): LensIdentityGetter {
   let identity: Promise<LensPatchIdentity | undefined> | undefined;
-  return () => (identity ??= lensReviewPatchIdentity(cwd ?? process.cwd()));
+  return () => {
+    if (identity === undefined) identity = lensReviewPatchIdentity(cwd ?? process.cwd());
+    return identity;
+  };
 }
