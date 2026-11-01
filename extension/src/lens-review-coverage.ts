@@ -238,12 +238,22 @@ const TERMINATOR = String.raw`[!?,.;:\-]`;
 // removing or reordering a member — fails the build on that line. It does NOT
 // enforce the mirror relationship between `PATH_CHAR` and `NOT_PATH`: nothing
 // in the type says one is the negation of the other, and `as PathCharClass`
-// silences the annotation entirely for any string. Measured on a scratch tree:
-// a one-character typo in the `PATH_CHAR` LITERAL fails the build
-// (`TS2820: Type '"[A-Za-z0-9_/+-]"' is not assignable to type 'PathCharClass'`),
-// while the same typo behind `as PathCharClass` compiles clean (exit 0, no
-// diagnostic). So the mirror is a reviewer-maintained invariant and the cast is
-// the escape that lets it drift.
+// silences the annotation entirely for any string. Re-measured 2026-11-04 in a
+// scratch tree with the project's own compiler
+// (`node node_modules/typescript/bin/tsc --noEmit <file>`, blob-hashed before
+// and after):
+//   - a one-character typo in the `PATH_CHAR` LITERAL fails the build:
+//     `error TS2820: Type '"[A-Za-z0-9_/+-]"' is not assignable to type
+//      'PathCharClass'. Did you mean '"[A-Za-z0-9_./+-]"'?` (exit 2)
+//   - the same typo behind `as PathCharClass` compiles clean (exit 0, no
+//     diagnostic) — that cast is the escape that lets the mirror drift
+//   - a REORDERED literal is caught the same way as a typo (`"[A-Za-z0-9_./-+]"`
+//     → `TS2820 … Did you mean '"[A-Za-z0-9_./+-]"'?`, exit 2), because the type
+//     is an exact string union and member order is part of the string.
+// (A second escape, `as unknown as PathCharClass`, also compiles clean — the
+// `as PathCharClass` case above is the one the codebase's own style permits, so
+// it is the one named here.) So the mirror is a reviewer-maintained invariant
+// and the cast is the escape that lets it drift.
 // What the type does buy is the narrow one: it turns a one-character typo in
 // either class into a compile error instead of a silent behaviour change.
 type PathCharClass = "[A-Za-z0-9_./+-]" | "[^A-Za-z0-9_./+-]";

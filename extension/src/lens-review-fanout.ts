@@ -215,7 +215,8 @@ export async function runLensFanOut(args: {
   // Defence-in-depth behind `allLanesProducedEvidence` (below), NOT the thing
   // that closes the lying-✓ hole: `coverageClaimEarned` already requires that
   // flag, so on a zero-healthy round this gate is unreachable-by-construction.
-  // Measured under the drop, not asserted. Deleting just this gate
+  // Measured under the drop, not asserted — 2026-11-04, complete repo-root
+  // scratch copy, mutated blob re-hashed per run. Deleting just this gate
   // (`claimedEvidence = [...results]`, harness rows dropped) reddens exactly
   // ONE assertion in the whole set of files that read this spread —
   // `test-lens-vacuous-every`'s `premise: a zero-healthy roster over a real
@@ -225,9 +226,13 @@ export async function runLensFanOut(args: {
   // files that exercise it; no claim is made about the rest of the suite, and
   // the old "every test-lens-*/test-review-* file" wording is gone because
   // nobody ran them. Widen the gate instead (`harnessRows` ungated at its own
-  // definition, so it also feeds `accountedEvidence`) and
-  // `test-lens-vacuous-every` reddens twice. It is kept as the second lock on
-  // the same door; do not cite it as a bug fix.
+  // definition, so it also feeds `accountedEvidence`) and `test-lens-vacuous-every`
+  // reddens TWICE, both counted: `canary: harness rows alone disclose NO gap on
+  // a round where nobody ran — every denominator file stays unaccounted` and
+  // `premise: a real two-file denominator whose only evidence is a merged
+  // harness row, disclosed as a gap for BOTH files`. The same three sibling
+  // files stay GREEN (exit 0) under that mutant too. It is kept as the second
+  // lock on the same door; do not cite it as a bug fix.
   const claimedEvidence: readonly CoverageEvidence[] = [...results, ...harnessRows];
   const accounted = accountedFiles(accountedEvidence, expectedFiles ?? new Set());
   // `results.length > 0` is load-bearing: `[].every(...)` is TRUE, so without it
