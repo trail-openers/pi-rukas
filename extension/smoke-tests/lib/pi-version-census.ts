@@ -79,13 +79,20 @@ export function siteCensus(verifiedV: string): Record<string, string[]> {
     // The sandbox bind-mount table + troubleshooting entries that name the
     // post-#959 config path ("Pi 1.0.0's native MCP").
     "docs/sandbox.md": [...v, "1.0.0"],
-    // The 1.0.0-upgrade line + the `npm install -g …pi-coding-agent@1.0.0`
-    // fix, plus the "Pi 1.0.0's built-in MCP" config-path reference.
-    // Deliberately NOT [...v, "1.0.0"]: unlike docs/mcp.md et al. this file
-    // carries no Pi-claim-context literal for the tracked verified version
-    // (its 1.0.0s sit past the 20-char marker window), so a tracked `v` here
-    // would be a dead declaration — the census proves declared ⊆ detected, so
-    // a pin bump must not add a literal this file does not actually state.
+    // The two `npm install -g …pi-coding-agent@1.0.0` command lines are the
+    // ONLY detected literals in this file — both sit 0 chars past the
+    // `pi-coding-agent` marker (the 19-char marker, then the version), inside
+    // the 20-char claim window.
+    // Deliberately NOT [...v, "1.0.0"]. The applicable census direction here
+    // is **declared ⊆ detected** (the gate's `undetectable` check): a declared
+    // literal the detector cannot see is a dead declaration that would pass
+    // the gate by silence. The other five 1.0.0s in this file (the upgrade
+    // heading, "below 1.0.0", "under Pi 1.0.0", "pi < 1.0.0", "Pi 1.0.0's")
+    // all sit 193–105739 chars past the nearest marker, so none is a detected
+    // claim and a tracked `v` (currently 1.4.0) would be a dead declaration.
+    // That decision reverses if a future edit gives this file a Pi-claim-context
+    // literal for the tracked verified version — e.g. a `pi-coding-agent@1.4.0`
+    // command line — at which point `v` must be added back to this row.
     "docs/troubleshooting.md": ["1.0.0"],
     // The audit code-search policy's config-path reference ("Pi 1.0.0's
     // native MCP config") + the user-global native MCP config path.
@@ -102,15 +109,24 @@ export function siteCensus(verifiedV: string): Record<string, string[]> {
     // …plus this gate's own canary literals (0.82.1 stale-verified canary,
     // 0.84.3 floor canary, 0.83.9/0.85.0/0.84.5 numeric-matrix canaries,
     // 0.83.0 --exclude-tools canary, 0.86.0 gitignore-listing canary, 0.87.0
-    // undeclared-literal canary — all in canary strings, all must stay
-    // visible to the census; the 1.0.1/1.1.0 canaries sit in the
+    // undeclared-literal canary — 0.8x.y is detected unconditionally, so all
+    // stay visible; the 1.0.1/1.1.0 canaries sit in the
     // "pi-coding-agent"/"@earendil-works" claim-context strings, and the
     // 1.2.20 bun-floor canary string carries no Pi marker, so it is prose
     // to the detector and is not declared here — the 0.99.0 co-pin canary
-    // is likewise a prose literal). Canary 4b adds 1.4.1 (and its MIN_PI_VERSION
-    // comparator 1.4.0) — both sit inside the compareVersions("1.4.1", "1.4.0")
-    // call whose Pi-claim context is the "MIN_PI_VERSION"/"pi-coding-agent"
-    // markers in the surrounding canary prose.
+    // is likewise a prose literal).
+    // What actually grounds the floor-rule literals (Canary 4b and its inline
+    // co-pin fixture): 1.4.1 and 1.4.0 are detected ONLY at their comment and
+    // message occurrences — `// pi-coding-agent ~1.4.1 … floor of 1.4.0`, the
+    // `@earendil-works/pi-tui":"~1.4.0"` fixture string, and the canary's
+    // own "pi-coding-agent verified 1.4.1 …" message, each within 20 chars of
+    // a `pi-coding-agent` / `@earendil-works/pi-tui` / `MIN_PI_VERSION`
+    // marker. The `floorRuleViolated("1.4.1", "1.0.0")` CALL ARGUMENTS are
+    // NOT detected (nearest marker 66 chars away) — the detector sees the
+    // prose, not the call, so moving these literals into code alone would
+    // make this row dead. 1.0.0 is likewise detected only at its claim-line /
+    // `pi-coding-agent`-string occurrences; the compareVersions(...) arguments
+    // of 1.0.0 are all prose to the detector.
     // Self-census: if this file grows a new canary literal, the list must
     // grow here too — the gate fails otherwise (a self-census that cannot
     // see its own declaration is the "census that passes by silence"
@@ -166,9 +182,15 @@ export function siteCensus(verifiedV: string): Record<string, string[]> {
     // "@earendil-works/pi" marker in its own table literal puts the 1.x
     // row literals in a claim context; the 0.8x.y entries are the canaries
     // copied verbatim from the gate's own row (self-census of the census).
+    // 1.4.0/1.4.1 are the floor-rule literals documented in the
+    // test-pi-version-drift.ts row above; in THIS file they are grounded by
+    // the `pi-coding-agent` / `pi-tui` markers inside those comments (the
+    // `MIN_PI_VERSION` reference sits 24 chars from its version, so it is the
+    // package-name markers that put them in the 20-char window), not by the
+    // marker names being mentioned at all.
     // Declared literals are exactly the detected set — the gate's census
     // block proves declared ⊆ detected, so a literal the detector cannot
     // see is a gate failure, not a silent entry.
-    "pi-version-census.ts": ["0.82.1", "0.84.3", "0.83.9", "0.85.0", "0.84.5", "0.83.0", "0.86.0", "0.87.0", "0.84.4", "0.82.0", "1.0.0"],
+    "pi-version-census.ts": ["0.82.1", "0.84.3", "0.83.9", "0.85.0", "0.84.5", "0.83.0", "0.86.0", "0.87.0", "0.84.4", "0.82.0", "1.0.0", "1.4.0", "1.4.1"],
   };
 }

@@ -115,6 +115,30 @@ export function minorPrefix(v: string): string | null {
   return m ? m[1] : null;
 }
 
+/**
+ * The floor rule (d) itself, as a named predicate so Canary 4b can drive the
+ * RULE rather than its input comparator. `compareVersions` is a pure function
+ * of its arguments, so an assert on it cannot be flipped by anything the rule
+ * does — only this body is sensitive to the comparison direction.
+ *
+ * The two failure causes are separated: "unparseable" (either side is not
+ * plain dotted-numeric, so the rule cannot decide) and "below-floor" (the
+ * rule's own verdict). Folding them into one condition lets an unparseable
+ * version masquerade as a floor violation — the same trailing-reason split
+ * `test-prerequisite-drift.ts` uses for its floor asserts.
+ *
+ * The rule: the maintained verified line is a FLOOR, not a ceiling — it must
+ * be at or above `MIN_PI_VERSION` (`cmp >= 0`), because it is the version an
+ * operator downgrades to and ./install.sh must accept it. Reverting this to
+ * `cmp <= 0` (the pre-fix inversion) turns the gate RED through here.
+ */
+export function floorRuleViolated(verifiedV: string, floorV: string): { violated: boolean; reason: "unparseable" | "below-floor" | null } {
+  const cmp = compareVersions(verifiedV, floorV);
+  if (cmp === null) return { violated: true, reason: "unparseable" };
+  if (cmp < 0) return { violated: true, reason: "below-floor" };
+  return { violated: false, reason: null };
+}
+
 /** Major.minor distance between two versions; null if either is unparseable (major drift = Infinity). */
 export function minorDistance(a: string, b: string): number | null {
   const ma = minorPrefix(a);
@@ -243,10 +267,16 @@ if (verified) {
   const floor = read("install-preflight.sh").match(/\bMIN_PI_VERSION="?([0-9][0-9a-z.+-]*)"?/);
   const floorV = floor ? (floor[1] as string) : "";
   assert(floorV !== "", "install floor (MIN_PI_VERSION) parses");
-  const cmpFloor = compareVersions(verified.version, floorV);
+  const floorVerdict = floorRuleViolated(verified.version, floorV);
+  // Split per the sibling gate's convention: an unparseable version is a
+  // PARSE failure, never reported as an order violation.
   assert(
-    cmpFloor !== null && cmpFloor >= 0,
-    `the verified line (${verified.version}) is not OLDER than the install floor (${floorV}) — the published fallback an operator downgrades to must be a version ./install.sh accepts; a verified line below the floor is an unfall-backable claim`,
+    floorVerdict.reason !== "unparseable",
+    `the verified line (${verified.version}) and the install floor (${floorV}) both parse as plain dotted versions — an unparseable side means rule (d) cannot decide, so it must not print as a floor violation`,
+  );
+  assert(
+    !floorVerdict.violated,
+    `the verified line (${verified.version}) is not OLDER than the install floor (${floorV})${floorVerdict.reason === "below-floor" ? " (below floor)" : ""} — the published fallback an operator downgrades to must be a version ./install.sh accepts; a verified line below the floor is an unfall-backable claim`,
   );
 }
 
@@ -266,18 +296,27 @@ if (verified && pins.codingAgent) {
   if (Number.isFinite(days) && days > 365) {
     console.warn(`⚠ pi version-claim staleness: the maintained line is dated ${verified.date} (> 365 days old) — re-verify.`);
   }
+  // FATAL upper bound, the counterpart of the warn-only staleness nudge below
+  // it. Rule (b) binds the docs line and the AGENTS.md restatement to EACH
+  // OTHER, never to the real clock, so a claim dated in the future — a date no
+  // live test could have run on — agrees with itself and passed silently.
+  // Forward-dating is the dangerous direction: it fabricates provenance.
+  assert(
+    !Number.isFinite(days) || days >= 0,
+    `the maintained line's date (${verified.date}) is not in the future relative to the clock (${now}, ${days} days) — a forward-dated "Last verified against" claim asserts provenance no live test run supports; fix the date to the day the live tests actually ran`,
+  );
 }
 
 // ---------------------------------------------------------------- the gate CAN fail
 
 {
-  // Canary 1 — one-sided co-pin drift: the fixture package.json pins
-  // pi-coding-agent ~0.99.0 but pi-tui ~0.84.4. parseDevPins must surface
-  // both, and the mismatch is exactly what the lockstep assert above fails on.
-  // The canary fixture (one-sided co-pin: 0.99.0 vs 0.84.4).
-  const fixturePkg = parseDevPins(read(path.relative(REPO_ROOT, path.join(FIXTURES, "package.json"))));
-  assert(fixturePkg.codingAgent === "0.99.0", "canary fixture: pi-coding-agent declared pin parses as 0.99.0 (tilde stripped deliberately)");
-  assert(fixturePkg.tui === "0.84.4", "canary fixture: pi-tui declared pin parses as 0.84.4");
+  // Canary 1 — one-sided co-pin drift: the inline fixture pins
+  // pi-coding-agent ~1.4.1 above a MIN_PI_VERSION floor of 1.4.0 (the
+  // literals Canary 4b separates below); parseDevPins must surface both sides
+  // and the co-pin mismatch is what the lockstep assert above fails on.
+  const fixturePkg = parseDevPins('{"devDependencies":{"@earendil-works/pi-coding-agent":"~1.4.1","@earendil-works/pi-tui":"~1.4.0"}}');
+  assert(fixturePkg.codingAgent === "1.4.1", "canary fixture: pi-coding-agent declared pin parses as 1.4.1 (tilde stripped deliberately)");
+  assert(fixturePkg.tui === "1.4.0", "canary fixture: pi-tui declared pin parses as 1.4.0");
   // And the census must actually SEE a contradictory literal in a non-site
   // file (proving the surprise path is not passing by silence).
   assert(piVersionLiterals(read(path.relative(REPO_ROOT, path.join(FIXTURES, "package.json")))).length > 0, "canary: piVersionLiterals runs on raw file text");
@@ -317,13 +356,21 @@ if (verified && pins.codingAgent) {
   assert(compareVersions("1.0.0", "0.82.0") === 1, "canary: verified 1.0.0 > pin 0.82.0 → the nudge fires and the order assert would fail in the reverse direction");
   assert(compareVersions("1.0.1", "1.0.0") === 1, "canary: verified 1.0.1 > floor 1.0.0 → the 'not newer than floor' assert would fail");
 
-  // Canary 4b — the floor rule must fail in the REVERSE direction. A gate that only ever
-  // sees floor == verified cannot tell the corrected rule from the inverted one, so pin the
-  // direction with a pair that separates them: verified 1.4.1 above a MIN_PI_VERSION floor of
-  // 1.4.0 is what floor <= verified permits and verified <= floor forbids. Reverting the rule
-  // to `cmpFloor <= 0` flips this comparison, which is the assertion the gate then fails on.
-  assert(compareVersions("1.4.1", "1.4.0") === 1,
-    "canary: pi-coding-agent verified 1.4.1 above floor 1.4.0 compares +1 — the direction the corrected floor rule rejects");
+  // Canary 4b — drives the floor RULE (floorRuleViolated), not its input
+  // comparator, so the direction is pinned through the same body rule (d) calls:
+  // an above-floor verified pi-coding-agent line (1.4.1 over the MIN_PI_VERSION
+  // floor 1.4.0) is
+  // what `cmp >= 0` accepts and `cmp <= 0` forbids, and a below-floor one is
+  // what `cmp >= 0` rejects. Reverting the comparison direction turns the rule
+  // RED and then fails BOTH asserts below, because both read the rule's verdict.
+  assert(
+    floorRuleViolated("1.4.1", "1.0.0").violated === false,
+    "canary: pi-coding-agent verified 1.4.1 above the 1.0.0 install floor → the rule itself reports NOT violated (reverting `cmp >= 0` to `cmp <= 0` flips this to violated and the gate goes RED)",
+  );
+  assert(
+    floorRuleViolated("0.9.0", "1.0.0").violated === true && floorRuleViolated("0.9.0", "1.0.0").reason === "below-floor",
+    "canary: a 0.9.0 verified line under a 1.0.0 floor → the rule reports violated/below-floor (the forward direction; the unparseable reason is covered separately by the null case)",
+  );
 
   // Canary 5 — the nudge path is non-fatal: drive the date nudge with an
   // injected clock far in the future; the path above only ever warns (no
