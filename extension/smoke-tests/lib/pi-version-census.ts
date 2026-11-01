@@ -140,7 +140,8 @@ export function siteCensus(verifiedV: string): Record<string, string[]> {
     // its `Last verified against pi` claim line and its `pi-coding-agent` /
     // `pi-tui` string occurrences (the `"pi-coding-agent": "1.0.0"` canary
     // string and the `"@earendil-works/pi-tui": "~1.0.0"` half of the :335
-    // fixture, 5–9 chars past their markers); the compareVersions(...) arguments of 1.0.0 are all prose to the detector.
+    // fixture, 5–9 chars past their markers); the compareVersions(...)
+    // arguments of 1.0.0 are all prose to the detector.
     // Self-census: if this file grows a new canary literal, the list must
     // grow here too — the gate fails otherwise (a self-census that cannot
     // see its own declaration is the "census that passes by silence"
