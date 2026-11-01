@@ -206,17 +206,18 @@ export async function runLensFanOut(args: {
   // actually ran (`results.length > 0`): on a zero-healthy round nobody read
   // anything, and merged CLAIM_SCAN rows must not fill the denominator by
   // themselves — that would report "no gap" for a round that reviewed nothing.
-  const accountedEvidence: readonly CoverageEvidence[] = [
-    ...lensResults,
-    ...(results.length > 0 ? extraFindings.map((f) => ({ findings: [f] })) : []),
-  ];
-  // The SAME `results.length > 0` gate as the accounting list: an ungated merge
-  // let one caller-supplied row satisfy `hasFindingClaimedFile` on a round where
-  // no lane ran, which is the ✓ for a review that reviewed nothing.
-  const claimedEvidence: readonly CoverageEvidence[] = [
-    ...results,
-    ...(results.length > 0 ? extraFindings.map((f) => ({ findings: [f] })) : []),
-  ];
+  // One merge of the caller's rows, gated ONCE. Both lists below spread this and
+  // differ only in the base list, so the gate cannot drift between them — which
+  // is how the original defect happened (gated in one, ungated in the other).
+  const harnessRows: readonly CoverageEvidence[] =
+    results.length > 0 ? extraFindings.map((f) => ({ findings: [f] })) : [];
+  const accountedEvidence: readonly CoverageEvidence[] = [...lensResults, ...harnessRows];
+  // Defence-in-depth behind `allLanesProducedEvidence` (below), NOT the thing
+  // that closes the lying-✓ hole: `coverageClaimEarned` already requires that
+  // flag, so on a zero-healthy round this gate is unreachable-by-construction
+  // and dropping it leaves every `test-lens-*`/`test-review-*` file green. It is
+  // kept as the second lock on the same door; do not cite it as a bug fix.
+  const claimedEvidence: readonly CoverageEvidence[] = [...results, ...harnessRows];
   const accounted = accountedFiles(accountedEvidence, expectedFiles ?? new Set());
   // `results.length > 0` is load-bearing: `[].every(...)` is TRUE, so without it
   // a roster with ZERO healthy lanes (everything blocked) would sail the

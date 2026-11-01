@@ -36,11 +36,13 @@ import { neutraliseEvidence } from "./comment-evidence.ts";
  * `` `${r.lens}: ${laneReason(r)}` ``, and `laneReason` returns `r.parseError`
  * verbatim for a `child-bound` kill — text the child (or a findings file an
  * agent wrote) produced. `neutraliseMarkdownField` is deliberately NOT used
- * here: these sections reach a tool reply via `renderSummary`'s single
- * non-test caller, and the PR-visible post bodies (`lens-review-residuals.ts`,
- * `work-driver-lens-cap.ts`) build from findings/suppressed/resolved/set-aside/
- * advisory and never call either coverage section — so the markdown-post
- * neutraliser would be applied to a surface that does not go through a post.
+ * here: the load-bearing fact is that all THREE coverage sections have exactly
+ * one caller, `renderSummary` in `lens-review-render.ts`, and that function's
+ * only non-test caller is the tool reply — so the markdown-post neutraliser
+ * would be applied to a surface that does not go through a post. The PR-visible
+ * post bodies (`lens-review-residuals.ts` and the cap-handoff renderer) build
+ * from findings/suppressed/resolved/set-aside/advisory and never reach these
+ * sections at all.
  * `neutraliseEvidence` is also the stronger fit for a single line: it flattens
  * CR/LF, so a hostile lane cannot end its own bullet. */
 export function unreviewedLanesSection(lanes: readonly string[]): string[] {

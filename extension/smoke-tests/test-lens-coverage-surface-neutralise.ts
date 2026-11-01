@@ -51,7 +51,7 @@ import {
   unaccountedSection,
   unreviewedLanesSection,
 } from "../src/lens-review-coverage-report.ts";
-import type { LensReviewSummary } from "../src/lens-review-types.ts";
+import type { LensReviewSummary } from "../src/lens-review-format.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

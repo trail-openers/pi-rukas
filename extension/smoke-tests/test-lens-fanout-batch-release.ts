@@ -15,9 +15,14 @@
  *   2. THE UNGATED MERGE. `claimedEvidence` merged the caller's
  *      `extraFindings` while `accountedEvidence` gated the same merge behind
  *      `results.length > 0`. On a zero-healthy round one caller-supplied row
- *      could satisfy the POSITIVE coverage claim (`hasFindingClaimedFile`) with
- *      no lane evidence at all — the ✓ for a round that reviewed nothing. Both
- *      lists now read the same gate.
+ *      could satisfy the POSITIVE coverage claim (`hasFindingClaimedFile`)
+ *      with no lane evidence at all — the ✓ for a round that reviewed nothing.
+ *      Both lists now read the same gate. Stated honestly: this is
+ *      defence-in-depth, not the bug fix — `coverageClaimEarned` already
+ *      refuses on `allLanesProducedEvidence`, so the gate this test exercises
+ *      is unreachable-by-construction and the file stays green with it removed
+ *      (two independent rounds measured this). The test pins that the two lists
+ *      agree, not that a hole is closed.
  *
  * Offline: no child, no forge, no spawn — `lensChildFn` is a stub that either
  * answers or rejects.
@@ -86,10 +91,10 @@ async function leakingChildReleasesBatch() {
       blocked: [],
       // The first child rejects; `Promise.all` therefore rejects and the code
       // after it never runs — which is precisely the path that used to leak.
-      lensChildFn: (async (a: { lens: { name: string } }) => {
-        if (a.lens.name === LENS_ROSTER[0].name) throw boom;
+      lensChildFn: async (a: { lens: { name: string } }) => {
+        if (a.lens.name === LENS_ROSTER[0]?.name) throw boom;
         return healthyRow(a.lens.name);
-      }) as never,
+      },
       runId: "rev1942g",
       skillsDir: "/tmp/rev1942g",
       context: "",
@@ -118,8 +123,7 @@ async function happyPathReleasesBatch() {
   const out = await runLensFanOut({
     healthy: LENS_ROSTER.slice(0, 2),
     blocked: [],
-    lensChildFn: (async (a: { lens: { name: string } }) =>
-      healthyRow(a.lens.name)) as never,
+    lensChildFn: async (a: { lens: { name: string } }) => healthyRow(a.lens.name),
     runId: "rev1942g",
     skillsDir: "/tmp/rev1942g",
     context: "",
@@ -148,9 +152,9 @@ async function extraFindingsCannotCarryClaimAlone() {
     // and the round earned the positive claim with no lane evidence.
     healthy: [],
     blocked: LENS_ROSTER.slice(0, 2),
-    lensChildFn: (async () => {
+    lensChildFn: async () => {
       throw new Error("must not be called with a zero-healthy roster");
-    }) as never,
+    },
     runId: "rev1942g",
     skillsDir: "/tmp/rev1942g",
     context: "",
@@ -184,8 +188,8 @@ async function extraFindingsCountWhenALaneRan() {
     blocked: [],
     // The lane's own finding cites the OTHER file, so the only citation for
     // `src/a.ts` is the caller's merged row.
-    lensChildFn: (async (a: { lens: { name: string } }) =>
-      healthyRow(a.lens.name, [finding("src/b.ts")])) as never,
+    lensChildFn: async (a: { lens: { name: string } }) =>
+      healthyRow(a.lens.name, [finding("src/b.ts")]),
     runId: "rev1942g",
     skillsDir: "/tmp/rev1942g",
     context: "",

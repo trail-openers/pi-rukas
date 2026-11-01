@@ -181,6 +181,8 @@
     "smoke-tests/lib/lens-coverage-fixture.ts",
     "smoke-tests/test-lens-coverage-routing.ts",
     "smoke-tests/test-lens-vacuous-every.ts",
-    "smoke-tests/lib/lens-vacuous-every-fixture.ts"
+    "smoke-tests/lib/lens-vacuous-every-fixture.ts",
+    "smoke-tests/test-lens-fanout-batch-release.ts",
+    "smoke-tests/test-lens-coverage-surface-neutralise.ts"
   ]
 }
