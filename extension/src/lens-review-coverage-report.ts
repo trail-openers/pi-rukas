@@ -88,7 +88,10 @@ export function coverageDenominatorSection(state: {
   // Files left over: the disclosure above owns the report.
   if (state.unaccountedCount > 0) return [];
   if (state.hasDenominator) {
-    return ["", "✓ COVERAGE — every file in this round's denominator was named by a finding or a summary."];
+    return [
+      "",
+      "✓ COVERAGE — every file in this round's denominator was named by a finding or a summary.",
+    ];
   }
   return [
     "",

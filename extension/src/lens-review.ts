@@ -8,8 +8,6 @@ import { resolveLensReviewBranch } from "./lens-review-branch-resolve.ts";
 import { capKillSummary } from "./lens-review-capkill.ts";
 import { diffBaseOf } from "./lens-review-changed-ranges.ts";
 import { runLensChild } from "./lens-review-child.ts";
-import { runLensFanOut, unreviewedLanesOf } from "./lens-review-fanout.ts";
-import type { LensReviewOptions } from "./lens-review-options.ts";
 import {
   type AutoDeltaInfo,
   type ForcedFullReason,
@@ -23,6 +21,7 @@ import {
   resolveReviewDiff,
   startPersistentBatch,
 } from "./lens-review-diff.ts";
+import { runLensFanOut, unreviewedLanesOf } from "./lens-review-fanout.ts";
 import { resolveReportedFindings } from "./lens-review-findings.ts";
 import { finishLensReview } from "./lens-review-finish.ts";
 import {
@@ -36,6 +35,7 @@ import {
   piSkillsDir,
 } from "./lens-review-format.ts";
 import { priorFindingsFor } from "./lens-review-memory.ts";
+import type { LensReviewOptions } from "./lens-review-options.ts";
 import { installBlockRowsForRoster, skillsDirUsable } from "./lens-review-skills.ts";
 import { CLAIM_SCAN, type RosterEntry, buildExpectedRoster } from "./lens-roster.ts";
 import { isFullCommitSha, resolveHeadSha } from "./review-head-sha.ts";

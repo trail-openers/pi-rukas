@@ -287,7 +287,9 @@ function assert(cond: boolean, msg: string) {
       // One lane comes back with NEITHER a finding NOR the closing summary the
       // prompt requires: byte-identical to a careful review that found nothing,
       // until the lens-level rule is asked.
-      name === silent ? lens(name, [], "") : lens(name, [], "The diff is clean from my perspective."),
+      name === silent
+        ? lens(name, [], "")
+        : lens(name, [], "The diff is clean from my perspective."),
     );
     assert(
       out.verdict === "REVIEW_INCOMPLETE",

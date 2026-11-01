@@ -23,7 +23,9 @@ import type { RosterEntry } from "./lens-roster.ts";
 /** One lens child call, as `runLensReview` receives it through `lensChildFn`
  * (the real `runLensChild`, or a test stub). Structural so neither the real
  * spawner's args type nor a stub's has to be spelled here. */
-type LensChildCall = (args: any) => Promise<LensRunResult>;
+// The real `runLensChild`'s own args type, so a stub and the real spawner are
+// checked against the same contract rather than a hand-written approximation.
+type LensChildCall = typeof import("./lens-review-child.ts").runLensChild;
 
 /** The model/lane slot wrapper — `withLensModelSlot`, passed in rather than
  * imported so this module stays a leaf and the slot policy keeps living with
@@ -77,14 +79,14 @@ export interface LensFanOut {
  *     returns can turn a round into a blocked verdict.
  */
 export async function runLensFanOut(args: {
-  healthy: readonly RosterEntry[];
-  blocked: readonly RosterEntry[];
+  healthy: RosterEntry[];
+  blocked: RosterEntry[];
   lensChildFn: LensChildCall;
   runId: string;
   skillsDir: string;
   context: string;
-  roster: readonly RosterEntry[];
-  opts: Record<string, unknown>;
+  roster: RosterEntry[];
+  opts: Record<string, unknown> & { diff: string };
   bumpBatch: () => void;
   batchKey: string;
   signal?: AbortSignal;
@@ -108,7 +110,7 @@ export async function runLensFanOut(args: {
             skillsDir: args.skillsDir,
             context: args.context,
             roster: args.roster,
-            opts: { ...args.opts, diff: args.opts.diff ?? "" },
+            opts: args.opts,
             bumpBatch: args.bumpBatch,
             ...(args.pi ? { pi: args.pi } : {}),
           }),

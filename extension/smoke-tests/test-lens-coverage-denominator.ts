@@ -144,25 +144,24 @@ function assert(cond: boolean, msg: string) {
   assert(out?.get("src/a.ts") === "finding", "a finding's claim is never demoted to a summary's");
 }
 
-{
-  assert(
-    coverageDiffOf({ kind: "ok", diffSource: "caller", diff: THREE_FILE_DIFF }) === undefined,
-    "canary: a caller-pasted diff is not a denominator — pasted text is not evidence of what the PR changed",
-  );
-  assert(
-    coverageDiffOf({ kind: "blocked", diff: THREE_FILE_DIFF }) === undefined,
-    "a blocked round has no denominator",
-  );
-  assert(
-    coverageDiffOf({ kind: "ok", diffSource: "computed", diff: "  " }) === undefined,
-    "a blank computed diff is not a denominator either",
-  );
-  assert(
-    coverageDiffOf({ kind: "ok", diffSource: "computed", diff: THREE_FILE_DIFF }) ===
-      THREE_FILE_DIFF,
-    "the review's own computed diff is the denominator",
-  );
-}
+// The `coverageDiffOf` arms: a flat run of assertions over the four shapes a
+// denominator may or may not be read from (no local scope, so no block).
+assert(
+  coverageDiffOf({ kind: "ok", diffSource: "caller", diff: THREE_FILE_DIFF }) === undefined,
+  "canary: a caller-pasted diff is not a denominator — pasted text is not evidence of what the PR changed",
+);
+assert(
+  coverageDiffOf({ kind: "blocked", diff: THREE_FILE_DIFF }) === undefined,
+  "a blocked round has no denominator",
+);
+assert(
+  coverageDiffOf({ kind: "ok", diffSource: "computed", diff: "  " }) === undefined,
+  "a blank computed diff is not a denominator either",
+);
+assert(
+  coverageDiffOf({ kind: "ok", diffSource: "computed", diff: THREE_FILE_DIFF }) === THREE_FILE_DIFF,
+  "the review's own computed diff is the denominator",
+);
 
 {
   assert(
