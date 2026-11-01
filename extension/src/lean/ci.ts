@@ -17,18 +17,39 @@
  *
  * A red is a verdict and the machine routes it (one fix round, then handback).
  * A throw is infrastructure — an unreadable `gh`, a killed or un-startable
- * tier — which the engine turns into handed-back rather than a build round,
- * because a result nobody observed is not evidence that the code is wrong.
+ * tier, a worktree that is no longer the tree the gate certified — which the
+ * engine turns into handed-back rather than a build round, because a result
+ * nobody observed is not evidence that the code is wrong.
+ *
+ * **The architectural bound, stated plainly.** Between `build`/`verify` and this
+ * handler nothing is pushed, so the code the run produced exists ONLY in this
+ * worktree, and `ci` necessarily executes its full tier FROM DISK. "The full
+ * tier ran at the frozen head" is therefore NOT achievable by this shape — no
+ * frozen checkout ever happens here, and this step does not pretend otherwise
+ * (it never calls `checkout`, `switch`, `reset`, `clean` or `stash`). What IS
+ * achievable, and is what the green below actually claims, is that **the disk
+ * still matches the head the record says was built**: before the tier runs, the
+ * worktree's HEAD is re-read against the newest decided `verify`'s
+ * `verifiedHead`, HEAD must still sit on the run's branch, and the tree must
+ * pass lean's single clean-tree gate (`assertTreeClean` in `verify-recheck.ts`,
+ * the same porcelain the build/verify gate used). Anything else throws. So a
+ * `git checkout` of another commit, a detached HEAD, or bytes written into the
+ * tree between the build gate and this handler cannot produce a green — the
+ * step refuses, rather than reporting a green for code it never ran. Proving
+ * the disk matches the head it claims is the deliverable; a frozen checkout is
+ * not something this shape can do.
  */
 
 import { isFullCommitSha } from "../commit-sha.ts";
 import { type CiDeps, ghReads } from "./ci-deps.ts";
 import { DEFAULT_BUDGETS } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
+import { NO_HOOKS } from "./specify-reset.ts";
 import { neverStarted, wasKilled } from "./specify-proof.ts";
-import { specifyWorktreePath } from "./specify-tree.ts";
+import { specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
 import type { Outcome } from "./state.ts";
 import { oneLine } from "./text-fence.ts";
+import { assertTreeClean } from "./verify-recheck.ts";
 import { VerifyInfraError } from "./verify-types.ts";
 
 /** The last lines of a tier's output — the part that says what actually broke. */
@@ -142,6 +163,74 @@ async function checksRedReason(
   return undefined;
 }
 
+/**
+ * Is the disk still the head this run was certified at?
+ *
+ * `ci` runs its full tier as a shell command IN the worktree, so the tree it
+ * judges is whatever is on disk when the handler starts. Nothing is pushed
+ * between the build/verify gate and here, so the only way to make "the full
+ * tier ran at the verified head" honest is to PROVE the disk still holds that
+ * head — which is what this does, with the same reads `verify-recheck.ts` makes
+ * after every tier:
+ *
+ *   - HEAD is re-read and must equal `verified` — a `git checkout` of anything
+ *     else (or a commit made since the gate) is refused here rather than graded;
+ *   - HEAD must still sit on the run's own branch — `git checkout --detach`
+ *     leaves the same sha on no branch, and everything after this step pushes
+ *     the branch, not the sha;
+ *   - the tree must be clean, through lean's single clean-tree gate
+ *     ({@link assertTreeClean}) — a rewritten or untracked file means the tier
+ *     would run over bytes no commit holds.
+ *
+ * Every refusal throws. This is the machine having moved, not the code being
+ * wrong, so the engine hands the run back rather than spending a fix round on
+ * bytes nobody committed.
+ */
+async function assertDiskAtVerifiedHead(
+  deps: CiDeps,
+  wt: string,
+  verified: string,
+  branch: string,
+): Promise<void> {
+  const read = async (argv: string[], why: string): Promise<string> => {
+    const ran = await deps
+      .exec("git", {
+        argv: [...NO_HOOKS, ...argv],
+        cwd: wt,
+        timeout: 30_000,
+        maxBuffer: 1024 * 1024,
+      })
+      .catch(() => undefined);
+    if (ran === undefined)
+      throw new VerifyInfraError(`could not re-read ${why} in ${wt} before the full tier`);
+    return (ran.stdout ?? "").trim();
+  };
+  const head = await read(["rev-parse", "HEAD"], "HEAD");
+  if (head !== verified)
+    throw new VerifyInfraError(
+      `the worktree ${wt} is at ${head === "" ? "no readable head" : head.slice(0, 12)}, not the verified head ${verified.slice(0, 12)} — the full tier would run over a tree this run never certified`,
+    );
+  // `symbolic-ref -q` exits 1 with no output when HEAD is detached; any other
+  // failure is a git that would not answer, and is never blamed on the run.
+  const symbolic = await deps
+    .exec("git", {
+      argv: [...NO_HOOKS, "symbolic-ref", "--short", "-q", "HEAD"],
+      cwd: wt,
+      timeout: 30_000,
+      maxBuffer: 1024 * 1024,
+    })
+    .catch((err: unknown) => {
+      const e = err as { code?: unknown; stderr?: unknown };
+      if (e?.code === 1 && String(e.stderr ?? "").trim() === "") return { stdout: "" };
+      throw new VerifyInfraError(`could not re-read the branch in ${wt} before the full tier`);
+    });
+  if ((symbolic.stdout ?? "").trim() !== branch)
+    throw new VerifyInfraError(
+      `the worktree ${wt} is not on the run's branch ${branch} — the full tier would run on a tree taken off the ref everything after this step pushes`,
+    );
+  await assertTreeClean(deps.exec, wt, "ci");
+}
+
 /** Run the full tier in the worktree; a kill or an un-startable command throws. */
 async function tierFailure(
   deps: CiDeps,
@@ -179,7 +268,8 @@ async function tierFailure(
  * `verifiedHead`, which is also what `land` later compares to the PR head. A ci
  * green recorded over a tree nobody ran the full tier at is the shape this step
  * exists to make unreachable, so an absent head throws rather than falling back
- * to whatever the worktree happens to hold.
+ * to whatever the worktree happens to hold — and so does a worktree that has
+ * moved off it since (`assertDiskAtVerifiedHead`).
  */
 export async function ciOutcome(ctx: HandlerCtx, deps: CiDeps): Promise<Outcome> {
   const verified = verifiedHead(ctx);
@@ -209,6 +299,13 @@ export async function ciOutcome(ctx: HandlerCtx, deps: CiDeps): Promise<Outcome>
 
   const checks = await checksRedReason(deps, ctx.repoRoot, prNumber, verified);
   if (checks !== undefined) return { kind: "red", reason: checks };
+
+  // The disk is read AGAIN, immediately before the tier, because the tier runs
+  // from disk: see `assertDiskAtVerifiedHead` for the bound this proves (and the
+  // bound it cannot). Placed after the forge reads so a PR that is not the
+  // verified head stays a RED about the forge rather than becoming an
+  // infrastructure fault about the worktree — the two have different owners.
+  await assertDiskAtVerifiedHead(deps, wt, verified, specifyBranch(ctx.run.branch, ctx.issue));
 
   const minutes = DEFAULT_BUDGETS.ci?.minutes ?? 30;
   const timeoutMs = deps.tierTimeoutMs ?? minutes * 60_000;
