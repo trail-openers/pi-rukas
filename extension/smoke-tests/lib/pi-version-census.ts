@@ -119,27 +119,29 @@ export function siteCensus(verifiedV: string): Record<string, string[]> {
     // co-pin fixture) — measured with the gate's own piClaimContexts over this
     // branch's bytes, as a FORWARD gap from the end of the named marker to the
     // start of the literal (window 20):
-    //   test-pi-version-drift.ts:320 `@earendil-works/pi-tui":"~1.4.0"` — 4
+    //   test-pi-version-drift.ts:322 `@earendil-works/pi-tui":"~1.4.0"` — 4
     //   chars past the `pi-tui` marker (8 past `@earendil-works/pi`);
-    //   test-pi-version-drift.ts:322 "pi-tui declared pin parses as 1.4.0" — 4
-    //   past `pi-tui` and 24 past `pi-coding-agent`, so the `pi-tui` marker on
-    //   that line is what detects it; :374 (the comment naming the fixture
-    //   string) — 4 past `pi-tui`; :317 — 10 past `MIN_PI_VERSION`;
-    //   :365 — 12 past `MIN_PI_VERSION`.
-    // For 1.4.1: :320 — 4 past `pi-coding-agent`; :364 (the `// floor of 1.4.0`
-    // comment names `pi-coding-agent` itself) — 7 past `pi-coding-agent`; :378 —
-    // 10 past `pi-coding-agent`. The 1.4.1s in the :321 assert MESSAGES sit 24
-    // and 53 past the nearest marker end, so only the :320 occurrences of that
-    // line's pair are claims — which is why this row declares 1.4.1 at all.
+    //   test-pi-version-drift.ts:323 "pi-tui declared pin parses as 1.4.0" —
+    //   24 past `pi-coding-agent` (only :322's 1.4.0 sits 4 past `pi-tui`),
+    //   so the `pi-coding-agent` marker on
+    //   that line is what detects it; :376 (the comment naming the fixture
+    //   string) — 4 past `pi-tui`; :319 — 10 past `MIN_PI_VERSION`;
+    //   :367 — 12 past `MIN_PI_VERSION`.
+    // For 1.4.1: :319 — 2 past `pi-coding-agent`; :322 — 4 past
+    // `pi-coding-agent`; :366 (the `// floor of 1.4.0`
+    // comment names `pi-coding-agent` itself) — 7 past `pi-coding-agent`; :380 —
+    // 10 past `pi-coding-agent`. The 1.4.1s in the :323 assert MESSAGES sit 24
+    // and 53 past the nearest marker end, so only the :319 and :322 occurrences
+    // are claims — which is why this row declares 1.4.1 at all.
     // The `floorRuleViolated("1.4.1", "1.0.0")` CALL ARGUMENTS (the
     // test-pi-version-drift.ts:379 call site, which moved from :377 when this
     // block grew) are NOT detected: nearest marker end 112 chars ahead for
-    // 1.4.1, 120 for 1.0.0 — 92 and 100 past the 20-char window — so the
+    // 1.4.1, 121 for 1.0.0 — 92 and 101 past the 20-char window — so the
     // detector sees the prose, not the call, and moving these literals into
     // code alone would make this row dead. 1.0.0 is likewise detected only at
     // its `Last verified against pi` claim line and its `pi-coding-agent` /
     // `pi-tui` string occurrences (the `"pi-coding-agent": "1.0.0"` canary
-    // string and the `"@earendil-works/pi-tui": "~1.0.0"` half of the :335
+    // string and the `"@earendil-works/pi-tui": "~1.0.0"` half of the :337
     // fixture, 5–9 chars past their markers); the compareVersions(...)
     // arguments of 1.0.0 are all prose to the detector.
     // Self-census: if this file grows a new canary literal, the list must
