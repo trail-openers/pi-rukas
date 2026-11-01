@@ -428,14 +428,22 @@ const EDGE = "tests/AC1-edge-second-failure.test.sh";
 // A stub that returned an outcome kind the table does not list would end the run
 // on `no transition for <state> + "…"`, blaming the machine for a stage nobody
 // built. A throw is what the engine already turns into a handed-back run whose
-// reason names the missing stage. `verify`, `handback`, `publish` and `review`
-// are not in the list: each is a real step now, and `test-lean-verify-wiring.ts`
-// / `test-lean-publish.ts` / `test-lean-review-wiring.ts` assert each is the step
-// rather than the stub.
+// reason names the missing stage. `verify`, `handback`, `publish`, `review`,
+// `ci` and `land` are not in the list: each is a real step now, and
+// `test-lean-verify-wiring.ts` / `test-lean-publish.ts` /
+// `test-lean-review-wiring.ts` / `test-lean-ci-land-wiring.ts` assert each is
+// the step rather than the stub.
+//
+// `ci` and `land` came off this list when their steps landed. The assertion that
+// they were unbuilt was TRUE and is now false, so keeping it would mean keeping
+// a test that pins a stage back to a stub. Their replacement assertions — that
+// each is wired to a real handler and reaches its own refusal sentence — live in
+// `test-lean-ci-land-wiring.ts` (cases (n) and (o)), so the coverage moved, it
+// was not dropped. What is left here is the states nobody has built.
 {
   const built = challengeFixture(214);
   const handlers = phase1Handlers(built.repoRoot, 214);
-  const stubs = ["ci", "land"] as const;
+  const stubs = [] as const;
   const messages = await Promise.all(
     stubs.map((s) =>
       (handlers[s] as (c: never) => Promise<unknown>)(built.ctx as never).then(

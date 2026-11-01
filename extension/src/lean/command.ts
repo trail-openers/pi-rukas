@@ -39,11 +39,15 @@ import { proveBaseSha, unresolvedMainlineRule } from "./base-proof.ts";
 import { buildDeps, buildOutcome } from "./build.ts";
 import { challengeDeps, challengeOutcome } from "./challenge.ts";
 import { leanChildOpts } from "./child-opts.ts";
+import { ciDeps } from "./ci-deps.ts";
+import { ciOutcome } from "./ci.ts";
 import { type WorkConfig, loadWorkConfig } from "./config.ts";
 import { type LeanHandlers, type RunLeanResult, runLean } from "./engine.ts";
 import { handbackOutcome } from "./handback.ts";
 import { fetchIssueBody, mainlineSha, postNotReady } from "./io.ts";
 import { postHandback } from "./io.ts";
+import { landDeps } from "./land-deps.ts";
+import { landOutcome } from "./land.ts";
 import { HANDLER_STATES, REPORT_FAILED_KIND } from "./machine.ts";
 import { publishDeps } from "./publish-deps.ts";
 import { publishOutcome } from "./publish.ts";
@@ -321,6 +325,11 @@ export function phase1Handlers(
   handlers.build = (ctx) => buildOutcome(ctx, buildDeps(headless));
   handlers.challenge = (ctx) => challengeOutcome(ctx, challengeDeps(headless));
   handlers.verify = (ctx) => verifyOutcome(ctx, verifyDeps());
+  // The two post-publish steps, in the same one-line shape as the ones above:
+  // the step body is the algorithm and `<step>Deps()` is the production wiring,
+  // so a test drives them by injecting its own recorder and never touches a PR.
+  handlers.ci = (ctx) => ciOutcome(ctx, ciDeps());
+  handlers.land = (ctx) => landOutcome(ctx, landDeps());
   handlers.publish = (ctx) => publishOutcome(ctx, publishDeps());
   handlers.review = (ctx) => reviewOutcome(ctx, reviewDeps(headless));
   handlers.handback = (ctx) => handbackOutcome(ctx, postHandback);
