@@ -23,8 +23,10 @@
  *       agree with each other;
  *   (c) the verified line is not OLDER than the declared pin (the drift that
  *       got away: a "verified" claim trailing what CI type-checks against);
- *   (d) the verified line is not NEWER than the install floor (an "verified"
- *       claim for a release operators are never guaranteed to have);
+ *   (d) the verified line is not OLDER than the install floor (the fallback
+ *       version must be one install.sh accepts — a floor, never a ceiling;
+ *       #787 deleted the ceiling model for the pins, and this line is its
+ *       counterpart for the claim);
  *   (e) a staleness NUDGE (non-fatal console.warn) when the verified line
  *       lags the declared pin by more than one minor — a prompt to re-run
  *       the live shape tests, never a ceiling;
@@ -243,8 +245,8 @@ if (verified) {
   assert(floorV !== "", "install floor (MIN_PI_VERSION) parses");
   const cmpFloor = compareVersions(verified.version, floorV);
   assert(
-    cmpFloor !== null && cmpFloor <= 0,
-    `the verified line (${verified.version}) is not newer than the install floor (${floorV}) — a claim operators are never guaranteed to have`,
+    cmpFloor !== null && cmpFloor >= 0,
+    `the verified line (${verified.version}) is not OLDER than the install floor (${floorV}) — the published fallback an operator downgrades to must be a version ./install.sh accepts; a verified line below the floor is an unfall-backable claim`,
   );
 }
 
@@ -314,6 +316,14 @@ if (verified && pins.codingAgent) {
   assert(compareVersions("0.82.1", "1.0.0") === -1, "canary: verified 0.82.1 < pin 1.0.0 → the 'not older' assert would fail");
   assert(compareVersions("1.0.0", "0.82.0") === 1, "canary: verified 1.0.0 > pin 0.82.0 → the nudge fires and the order assert would fail in the reverse direction");
   assert(compareVersions("1.0.1", "1.0.0") === 1, "canary: verified 1.0.1 > floor 1.0.0 → the 'not newer than floor' assert would fail");
+
+  // Canary 4b — the floor rule must fail in the REVERSE direction. A gate that only ever
+  // sees floor == verified cannot tell the corrected rule from the inverted one, so pin the
+  // direction with a pair that separates them: verified 1.4.1 above a MIN_PI_VERSION floor of
+  // 1.4.0 is what floor <= verified permits and verified <= floor forbids. Reverting the rule
+  // to `cmpFloor <= 0` flips this comparison, which is the assertion the gate then fails on.
+  assert(compareVersions("1.4.1", "1.4.0") === 1,
+    "canary: pi-coding-agent verified 1.4.1 above floor 1.4.0 compares +1 — the direction the corrected floor rule rejects");
 
   // Canary 5 — the nudge path is non-fatal: drive the date nudge with an
   // injected clock far in the future; the path above only ever warns (no

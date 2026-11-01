@@ -79,7 +79,14 @@ export function siteCensus(verifiedV: string): Record<string, string[]> {
     // The sandbox bind-mount table + troubleshooting entries that name the
     // post-#959 config path ("Pi 1.0.0's native MCP").
     "docs/sandbox.md": [...v, "1.0.0"],
-    "docs/troubleshooting.md": [...v, "1.0.0"],
+    // The 1.0.0-upgrade line + the `npm install -g …pi-coding-agent@1.0.0`
+    // fix, plus the "Pi 1.0.0's built-in MCP" config-path reference.
+    // Deliberately NOT [...v, "1.0.0"]: unlike docs/mcp.md et al. this file
+    // carries no Pi-claim-context literal for the tracked verified version
+    // (its 1.0.0s sit past the 20-char marker window), so a tracked `v` here
+    // would be a dead declaration — the census proves declared ⊆ detected, so
+    // a pin bump must not add a literal this file does not actually state.
+    "docs/troubleshooting.md": ["1.0.0"],
     // The audit code-search policy's config-path reference ("Pi 1.0.0's
     // native MCP config") + the user-global native MCP config path.
     "docs/audit-code-search-policy.md": [...v, "1.0.0"],
@@ -91,7 +98,7 @@ export function siteCensus(verifiedV: string): Record<string, string[]> {
     // pins in a Pi-claim context). The 1.2.20 bun engines floor and the
     // 1.9.0 biome floor are 1.x literals with no Pi-claim context, so the
     // detector ignores them — and this row must not declare them.
-    "extension/package.json": ["1.0.0"],
+    "extension/package.json": ["1.4.0"],
     // …plus this gate's own canary literals (0.82.1 stale-verified canary,
     // 0.84.3 floor canary, 0.83.9/0.85.0/0.84.5 numeric-matrix canaries,
     // 0.83.0 --exclude-tools canary, 0.86.0 gitignore-listing canary, 0.87.0
@@ -100,12 +107,15 @@ export function siteCensus(verifiedV: string): Record<string, string[]> {
     // "pi-coding-agent"/"@earendil-works" claim-context strings, and the
     // 1.2.20 bun-floor canary string carries no Pi marker, so it is prose
     // to the detector and is not declared here — the 0.99.0 co-pin canary
-    // is likewise a prose literal).
+    // is likewise a prose literal). Canary 4b adds 1.4.1 (and its MIN_PI_VERSION
+    // comparator 1.4.0) — both sit inside the compareVersions("1.4.1", "1.4.0")
+    // call whose Pi-claim context is the "MIN_PI_VERSION"/"pi-coding-agent"
+    // markers in the surrounding canary prose.
     // Self-census: if this file grows a new canary literal, the list must
     // grow here too — the gate fails otherwise (a self-census that cannot
     // see its own declaration is the "census that passes by silence"
     // failure mode this gate exists to stop).
-    "test-pi-version-drift.ts": ["0.84.4", "0.82.0", "0.87.0", "0.84.5", "0.82.1", "0.86.0", "1.0.0", "1.0.1", "1.1.0"],
+    "test-pi-version-drift.ts": ["0.84.4", "0.82.0", "0.87.0", "0.84.5", "0.82.1", "0.86.0", "1.0.0", "1.0.1", "1.1.0", "1.4.0", "1.4.1"],
     // The preflight floor (MIN_PI_VERSION = 1.0.0) plus the 0.84.4
     // bug-window literal in the §4 provenance comment (the 0.84.3 in the §5
     // embargo comment is 30+ chars from every marker, so it is not a
@@ -142,10 +152,10 @@ export function siteCensus(verifiedV: string): Record<string, string[]> {
     // bun.lock resolves the declared pins (lockfile, not a claim — the gate
     // reads the DECLARED pin from package.json; the lock is listed so a
     // lockstep bump is visible here, not silent). The @earendil-works/pi
-    // package names put the 1.0.0 pins in a Pi-claim context; the typebox
+    // package names put the 1.4.0 pins in a Pi-claim context; the typebox
     // 1.3.27 sits outside the 20-char window of the marker, so it is not
     // declared here.
-    "extension/bun.lock": ["1.0.0"],
+    "extension/bun.lock": ["1.4.0"],
     // No claim: bump examples are relative (~0.XY.Z → ~0.XY.(Z+1)); the
     // "Pi 1.0.0's native MCP" prose is 23 chars past the marker, so nothing
     // in the file is a detected claim. (Other 1.x literals — bun, npm and
