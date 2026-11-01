@@ -273,7 +273,7 @@ export function piLiteralClaims(text: string, literal: string, detect: ClaimDete
   // table while leaving every index an index into the real file; the citations are
   // still READ from those bytes by `anchors`, so only the detector is denied them.
   const scan = scanText ?? text;
-  const claimSet = new Set(detect(text));
+  const claimSet = new Set(detect(scan));
   const escaped = literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const out: { index: number; marker: string; gap: number }[] = [];
   for (const m of text.matchAll(new RegExp(`(?<![\\d.])${escaped}(?![\\d.])`, "g"))) {

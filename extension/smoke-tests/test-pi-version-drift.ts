@@ -143,24 +143,25 @@ import {
   minorDistance,
   parseAgentsRestatement,
   parseDevPins,
+  PI_CLAIM_MARKER_NAMES,
   PI_CLAIM_MARKERS,
   PI_CLAIM_WINDOW,
   siteCensus,
   stripRangePrefix,
+  type GroundingCitation,
 } from "./lib/pi-version-census.ts";
 import { armRelaxed, armUnmatched, censusGroundingErrors, NO_CITATIONS_MARKER } from "./lib/pi-version-grounding.ts";
-import type { GroundingCitation } from "./lib/pi-version-census.ts";
 
 // One detector for the whole gate: the census lib cannot import the file that
-// imports it, so its grounding assertion is wired to the one below.
-
+// imports it, so its grounding assertion is wired to the one below; the two
+// PI_CLAIM arrays are shared the same way (never a second list an assertion
+// could stale) and checked for index correspondence in the census block.
 // Re-exported so the gate's public surface is unchanged (siteCensus is the
 // census table; gitRepoFiles is the ls-files listing — both documented in
 // their source-of-truth in ./lib/pi-version-census.ts).
 export { gitRepoFiles, siteCensus };
 
 // ---------------------------------------------------------------- the gate
-
 if (process.env.PI_ENSEMBLE_PI_VERSION_DRIFT === "0") {
   console.log("PI_ENSEMBLE_PI_VERSION_DRIFT=0 — pi version-claim gate skipped.");
   process.exit(0);
@@ -210,7 +211,6 @@ if (verified) {
     `the verified line (${verified.version}) is not OLDER than the install floor (${floorV})${floorVerdict.reason === "below-floor" ? " (below floor)" : ""} — the published fallback an operator downgrades to must be a version ./install.sh accepts; a verified line below the floor is an unfall-backable claim`,
   );
 }
-
 // Staleness nudge — NON-FATAL by design: a prompt to re-run the live shape
 // tests, never a ceiling. The gap is pin-relative so the gate stays offline
 // and CI-clock-independent; the wall-clock date nudge takes an injectable
@@ -230,16 +230,16 @@ if (verified && pins.codingAgent) {
   // FATAL upper bound, the counterpart of the warn-only staleness nudge below
   // it. Rule (b) binds the docs line and the AGENTS.md restatement to EACH
   // OTHER, never to the real clock, so a claim dated in the future — a date no
-  // live test could have run on — agrees with itself and passed silently.
+  // live test could have run on — agrees with itself and passed silently, and so
+  // does an unparseable date (NaN) unless `Number.isFinite` gates the order test.
   // Forward-dating is the dangerous direction: it fabricates provenance.
   assert(
-    !Number.isFinite(days) || days >= 0,
-    `the maintained line's date (${verified.date}) is not in the future relative to the clock (${now}, ${days} days) — a forward-dated "Last verified against" claim asserts provenance no live test run supports; fix the date to the day the live tests actually ran`,
+    Number.isFinite(days) && days >= 0,
+    `the maintained line's date (${verified.date}) is a REAL calendar date that is not in the future relative to the clock (${now}, ${days} days) — an unparseable date (NaN) is a broken claim, not an absence of evidence, and a forward-dated "Last verified against" asserts provenance no live test run supports; fix the date to the day the live tests actually ran`,
   );
 }
 
 // ---------------------------------------------------------------- the gate CAN fail
-
 {
   // Canary 1 — one-sided co-pin drift: the inline fixture pins
   // pi-coding-agent ~1.4.1 above a MIN_PI_VERSION floor of 1.4.0 (the
@@ -262,7 +262,6 @@ if (verified && pins.codingAgent) {
   assert(piVersionLiterals("post-#959 (Pi 1.0.0 native MCP), the adapter is REMOVED").length === 0, "canary: 'Pi 1.0.0' prose (version 6+ chars past 'Pi') is NOT detected — the 20-char window holds");
   assert(piVersionLiterals('"@earendil-works/pi-coding-agent": "~1.1.0", "@earendil-works/pi-tui": "~1.0.0"').includes("1.1.0"), "canary: a 1.x bump in a pi-coding-agent pin is a claim");
   assert(fixturePkg.codingAgent !== fixturePkg.tui, "canary: one-sided bump IS detected (the lockstep assert above would fail on this fixture)");
-
   // Canary 2 — the range-prefix strip is load-bearing: "~0.82.0" must
   // compare as 0.82.0, not fail closed as unparseable.
   assert(compareVersions(stripRangePrefix("~0.82.0"), "0.82.0") === 0, "canary: stripRangePrefix makes '~0.82.0' comparable (== 0.82.0)");
@@ -407,7 +406,6 @@ if (verified && pins.codingAgent) {
   // skips are implied by the git-based listing; fixtures stay explicitly
   // excluded below (they are tracked canary inputs, not claims).
   const allFiles = gitRepoFiles(REPO_ROOT);
-
   const surprises: string[] = [];
   let declared = 0;
   for (const f of allFiles) {
@@ -432,12 +430,10 @@ if (verified && pins.codingAgent) {
   );
   assert(declared >= 10, `site census: at least 10 declared sites actually matched (got ${declared}) — the census must be reading the tree, not passing by silence`);
 }
-
-
 // The single-citation edit each arm alone can refuse (a wrong gap is invisible to
 // the quote/marker tests, a wrong quote to the gap re-derivation). Declared above its
 // block because the block runs at module load: a `const` below it stays in its TDZ.
-const CORRUPT_FOR: Record<"gap" | "quote", (t: Record<string, Record<string, GroundingCitation[]>>) => void> = {
+const CORRUPT_FOR: Record<"gap" | "quote", (t: Record<string, Record<string, GroundingCitation>>) => void> = {
   // The first citation of the first row; the table is small and its rows are ordered,
   // so this is stable, and `armUnmatched` requires the shipped predicate to refuse it.
   gap: (t) => {
@@ -481,6 +477,10 @@ const CORRUPT_FOR: Record<"gap" | "quote", (t: Record<string, Record<string, Gro
     failClosedReal === literalCount,
     `canary: census grounding fails CLOSED — a detector that finds no claims reddens every literal checked (got ${failClosedReal} detector-vs-citation errors, expected one per checked literal; ${failClosed.length - failClosedReal} were vacuity refusals, which prove nothing)`,
   );
+  assert(
+    PI_CLAIM_MARKERS.length === PI_CLAIM_MARKER_NAMES.length && PI_CLAIM_MARKERS.every((r, i) => r.test(PI_CLAIM_MARKER_NAMES[i] as string)),
+    `PI_CLAIM marker arrays stay parallel: equal length, each regex matching the label at ITS OWN index (${PI_CLAIM_MARKERS.length} vs ${PI_CLAIM_MARKER_NAMES.length}) — consumers pair them only by findIndex`,
+  );
   // Same standard on the other half. `citesMarker`'s whole-name test is UNWITNESSED
   // (canary deleted, not grown): its citation's quote and gap are both derived FROM
   // that marker, so a wrong-family citation gets refused by the gap arm regardless —
@@ -493,7 +493,6 @@ const CORRUPT_FOR: Record<"gap" | "quote", (t: Record<string, Record<string, Gro
     );
   }
 }
-
 
 console.log(exit === 0 ? "\nAll pi version-claim checks passed." : "\nFAILED");
 process.exit(exit);
