@@ -280,6 +280,7 @@ export async function runLensReview(opts: {
     // blocked or noReview: no headSha (no commit was reviewed).
     headSha = undefined;
   }
+  // #1934 — the one identity, shared by the ledger write and the findings record.
   const identityOf = lensPatchIdentityOf(opts.cwd);
   // #1000 — the single finish path for every exit of this run: the identical
   // `finishLensReview(...)` call (threshold, cwd, the ONE resolved branch,
