@@ -239,8 +239,14 @@ export function renderSummary(s: LensReviewSummary, maxLensAttempts: number): st
     // And the denominator's own state, so the two silences are never confused:
     // "every file was accounted for" and "there were no files to account for"
     // both leave the disclosure above empty, and only one of them is coverage.
+    // The denominator's own state, read from the producer's field and NOT
+    // re-inferred from `coverageComplete`/`unaccountedFiles`: those two
+    // optionals are byte-identical for "denominator, all covered" and "no
+    // denominator", and a renderer that guesses turns a round that measured
+    // nothing into one that reports ✓ coverage.
     ...coverageDenominatorSection({
-      hasDenominator: s.coverageComplete !== undefined || (s.unaccountedFiles?.length ?? 0) > 0,
+      hasDenominator: s.hasDenominator === true,
+      coverageComplete: s.coverageComplete === true,
       unaccountedCount: s.unaccountedFiles?.length ?? 0,
     }),
     ...(s.memoryNote ? ["", neutraliseEvidence(s.memoryNote)] : []),

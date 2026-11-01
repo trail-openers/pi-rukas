@@ -188,6 +188,17 @@ export interface LensReviewSummary {
    * scope"). Disclosure either way: this field never decides a verdict.
    */
   coverageComplete?: boolean;
+  /**
+   * The producer's OWN record of whether this round had a coverage denominator
+   * at all — copied straight from `runLensFanOut`'s `hasDenominator`, never
+   * re-inferred downstream. It exists because the two optionals above cannot
+   * carry the tri-state: `coverageComplete: true` and `{}` are otherwise
+   * byte-identical objects for the two DIFFERENT facts "denominator, all
+   * covered" and "no denominator", and a renderer that guesses from them
+   * renders a ✓ next to a round that measured nothing. Disclosure either way:
+   * this field never decides a verdict.
+   */
+  hasDenominator?: boolean;
 }
 
 /**

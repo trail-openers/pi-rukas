@@ -29,6 +29,14 @@
  *      subtraction, and the only judgement it makes is whether a recorded string
  *      mentions a recorded path.
  *
+ * The two kinds of claim are NOT interchangeable, and the POSITIVE coverage
+ * claim reads only the strong one. A `summary` claim is a substring test over
+ * prose the model wrote, so a lens that merely QUOTED a path — "Reviewed
+ * `src/a.ts` and `src/b.ts`, all good" — accounts for files it may never have
+ * opened. Acceptable for a DISCLOSURE (naming a gap costs nothing); a lie as a
+ * WARRANTY ("every file in this round's denominator was named"), which is why
+ * `hasFindingClaimedFile` exists and why the ✓ line demands it.
+ *
  * What an unaccounted file DOES is decided by the caller (lens-review.ts), and
  * goes through the existing `REVIEW_INCOMPLETE` verdict — the state for "this
  * pass did not review the diff", which `lensPassed` (review-ledger.ts) already
@@ -140,12 +148,54 @@ export function accountedFiles(
     }
     const summary = r.summary?.trim();
     if (!summary) continue;
+    // Anchored, not a bare substring. The whole denominator is a handful of
+    // paths and the diff is IN the lens's prompt, so a summary that recites the
+    // prompt — "Reviewed `src/a.ts` and `src/b.ts`, all good", or one big code
+    // fence — used to account for every file in the set without any evidence a
+    // lens opened one. Requiring the path to appear as a token (bounded by
+    // non-path characters) still accepts every natural way of citing a file —
+    // `src/a.ts`, `a.ts`, `` `src/a.ts` ``, "(src/a.ts)", a bullet — and stops
+    // the path merely being embedded inside a quoted blob of diff or prompt
+    // text. The weaker guarantee for the DISCLOSURE is that a path nobody even
+    // typed stays unaccounted; the POSITIVE claim additionally demands a
+    // `finding`-class claim (`hasFindingClaimedFile`).
     for (const file of wanted) {
       if (out.get(file) === "finding") continue;
-      if (summary.includes(file)) claim(file, "summary");
+      if (mentionsPath(summary, file)) claim(file, "summary");
     }
   }
   return out;
+}
+
+/**
+ * Does at least one file in `expected` carry a `finding`-class claim — a
+ * `report_finding` call that cited it, from a lens row OR from a deterministic
+ * extra finding (the `CLAIM_SCAN` witness)?
+ *
+ * The one place a `summary` claim must not be trusted alone. A closing summary
+ * is free prose the child wrote after the fact and `accountedFiles` accepts
+ * `summary.includes(file)`, so a lane that recites the diff's file list
+ * accounts for every file in it without reading one. Findings are structured
+ * tool calls the child had to make; a path in one is a claim about code the
+ * lens located. Requiring one such claim per round is the difference between
+ * "no file was left unmentioned" and "the review showed its work on at least
+ * one file it was supposed to read".
+ *
+ * DISCLOSURE-LEVEL by design, like everything else at the file level: the
+ * caller blocks nothing on it — it gates only the POSITIVE claim.
+ */
+export function hasFindingClaimedFile(
+  lensResults: readonly CoverageEvidence[],
+  expected: ReadonlySet<string>,
+): boolean {
+  if (expected.size === 0) return false;
+  for (const r of lensResults) {
+    for (const f of r.findings) {
+      const path = norm(f.path);
+      if (path !== "" && expected.has(path)) return true;
+    }
+  }
+  return false;
 }
 
 /** The files the round was supposed to examine minus the ones its evidence
@@ -163,6 +213,37 @@ export function unaccountedFiles(
 
 /** Same normalisation `changedLineRanges` and `extractFindings` apply, so a
  * finding cited as `./a.ts` accounts for the diff's `a.ts`. */
+/**
+ * Does `summary` NAME `file` as a path, rather than merely CONTAIN its
+ * characters? See the call site: the denominator is small, the diff is in the
+ * lens's prompt, and an unanchored `includes` cannot tell a citation apart from
+ * a recital. Escapes every regex metacharacter, so a path with `+`, `.` or
+ * `(` in it matches itself and nothing else.
+ */
+/**
+ * Does `summary` NAME `file` as a path, rather than merely CONTAIN its
+ * characters? See the call site: the denominator is small, the diff is in the
+ * lens's prompt, and an unanchored `includes` cannot tell a citation apart from
+ * a recital. A path character set is `A-Za-z0-9_./-` (what a real path is made
+ * of); the path must be flanked by things that are NOT path characters — or the
+ * string's edges. So `Read src/a.ts and ...` names it, while the same bytes
+ * buried inside a pasted diff (`@@ -1,2 +1,3 @@`, `load("src/b.ts")`, a `+++`
+ * header) do not. `@` and `"` are deliberately outside the set: they are what
+ * quoted/recapped diff text puts next to a path and a real citation never does.
+ * Escapes every regex metacharacter, so a path with `+`, `.` or `(` matches
+ * itself and nothing else.
+ */
+function mentionsPath(summary: string, file: string): boolean {
+  const escaped = file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // The characters a real path is built from. A path flanked ONLY by path
+  // characters is a substring of something longer and is not a citation:
+  // `--- a/src/a.ts` and `src/b.ts@default` are diff/prompt scaffolding, not a
+  // lens naming a file. A path flanked by a non-path character (or a string
+  // edge) was named: `Read src/a.ts and src/b.ts`, `` `src/a.ts` ``, `(a.ts)`.
+  const notPath = "[^A-Za-z0-9_./-]";
+  return new RegExp(`(^|${notPath})${escaped}(${notPath}|$)`).test(summary);
+}
+
 function norm(p: string): string {
   return p.replace(/^\.\//, "").replace(/\/+$/, "");
 }

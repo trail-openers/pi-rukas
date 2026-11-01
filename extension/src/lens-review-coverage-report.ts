@@ -19,6 +19,8 @@
  * they end up hunting a crash that never happened.
  */
 
+import { neutraliseEvidence } from "./comment-evidence.ts";
+
 /** The verdict-bearing banner: the lanes that came back having reviewed
  * nothing.
  *
@@ -50,14 +52,21 @@ export function unreviewedLanesSection(lanes: readonly string[]): string[] {
  * prose. A gate that fails correct work is not a gate. See
  * `unreviewedLanes` in lens-review-coverage.ts for the question that does gate.
  *
- * Sorted HERE for the same reason as above. */
+ * Sorted HERE for the same reason as above. A path is CONTENT this report did
+ * not write: it comes out of the diff, and a PR can contain a file literally
+ * named `docs/VERDICT APPROVED.md`. Every sibling section (`advisorySection`,
+ * `findingLine`, `setAsideSection`, `memoryNote`, and `lensLine`'s skill name)
+ * neutralises its agent-adjacent text for exactly this reason, because this
+ * text reaches PR comments via the #973 disclosure. One raw interpolation was
+ * the odd one out.
+ */
 export function unaccountedSection(unaccounted: readonly string[]): string[] {
   if (unaccounted.length === 0) return [];
   const files = [...unaccounted].sort();
   return [
     "",
     `⚠ COVERAGE — the diff changes ${files.length} file(s) no lens accounted for (no finding cited them and no closing summary named them):`,
-    ...files.map((f) => `  - ${f}`),
+    ...files.map((f) => `  - ${neutraliseEvidence(f)}`),
     "",
     "An unjudged file is not a clean file: no lens named it, so read these lanes before accepting the round.",
   ];
@@ -84,13 +93,32 @@ export function unaccountedSection(unaccounted: readonly string[]): string[] {
 export function coverageDenominatorSection(state: {
   hasDenominator: boolean;
   unaccountedCount: number;
+  /** Whether the producer STAMPED the positive claim (`coverageComplete`). The
+   * ✓ line is the report's only warranty of coverage, so it prints from that
+   * stamp alone — `hasDenominator` plus an empty disclosure is the same shape
+   * as a round whose evidence was prose quoting every path, and quoting is not
+   * reading. The three states stay distinct: stamped → ✓; denominator but not
+   * stamped → silence beside the fields that say why; no denominator → the
+   * "no files in scope" notice.
+   */
+  coverageComplete: boolean;
 }): string[] {
   // Files left over: the disclosure above owns the report.
   if (state.unaccountedCount > 0) return [];
-  if (state.hasDenominator) {
+  if (state.hasDenominator && state.coverageComplete) {
     return [
       "",
       "✓ COVERAGE — every file in this round's denominator was named by a finding or a summary.",
+    ];
+  }
+  if (state.hasDenominator) {
+    // A denominator, nothing left over, and the positive claim NOT earned: the
+    // report says what it knows and no more. It does not print ✓ (the round
+    // never showed structured work on a file in the set) and it does not claim
+    // there were no files (there were).
+    return [
+      "",
+      "ℹ COVERAGE — this round had a denominator and no file was left unaccounted for, but no finding CITED a file in it, so the round earns no coverage claim. An unquoted review is not a covered review.",
     ];
   }
   return [

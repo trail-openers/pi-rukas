@@ -15,9 +15,15 @@
  */
 
 import * as dispatchDeck from "./dispatch-deck.ts";
-import { accountedFiles, expectedFilesOf, unaccountedFiles } from "./lens-review-coverage.ts";
-import { incompleteLanes } from "./lens-review-incomplete.ts";
-import type { LensRunResult } from "./lens-review-types.ts";
+import {
+  accountedFiles,
+  expectedFilesOf,
+  hasFindingClaimedFile,
+  unaccountedFiles,
+} from "./lens-review-coverage.ts";
+import type { CoverageEvidence } from "./lens-review-coverage.ts";
+import { hasReviewEvidence, incompleteLanes } from "./lens-review-incomplete.ts";
+import type { Finding, LensRunResult } from "./lens-review-types.ts";
 import type { RosterEntry } from "./lens-roster.ts";
 
 /** One lens child call, as `runLensReview` receives it through `lensChildFn`
@@ -50,8 +56,19 @@ export interface LensFanOut {
   /** Whether the round had a denominator at all. `unaccounted` is `[]` both
    * when there was none and when every file was accounted for, and those two
    * are different facts — the first has nothing to say, the second says the
-   * round covered everything it could measure. */
+   * round covered everything it could measure. Carried as a field rather than
+   * left for the renderer to re-infer from two independent optionals: the
+   * producer knows which of the three states happened, the renderer does not.
+   */
   hasDenominator: boolean;
+  /** Whether at least one denominator file carries a `finding`-class claim (a
+   * `report_finding` citation from a lens or from a deterministic extra
+   * finding), as opposed to only `summary`-class substring claims. The caller
+   * may print the positive "every file was covered" line only with this true:
+   * prose that quotes a path is not evidence the lens read it. See
+   * `hasFindingClaimedFile`.
+   */
+  findingClaimedFile: boolean;
 }
 
 /**
@@ -98,6 +115,12 @@ export async function runLensFanOut(args: {
    * change set the children were actually shown. `expectedFilesOf` refuses a
    * caller-pasted diff, which is the whole fail-open rule. */
   resolved: { kind: string; diffSource?: string; diff?: string } | undefined;
+  /** Deterministic findings the caller merges separately (e.g. `CLAIM_SCAN`).
+   * They are findings, so they account for the files they cite exactly as a
+   * lens's own do — omitting them would give a grep-backed witness that DID
+   * look less standing than model prose that merely quotes a path.
+   */
+  extraFindings?: readonly Finding[];
 }): Promise<LensFanOut> {
   const results = await Promise.all(
     args.healthy.map((lens) =>
@@ -137,13 +160,84 @@ export async function runLensFanOut(args: {
   // means "nothing to check", a different fact from "nothing covered", so it is
   // carried as `hasDenominator` rather than folded into the list.
   const expectedFiles = expectedFilesOf(args.resolved);
-  const accounted = accountedFiles(lensResults, expectedFiles ?? new Set());
+  // Deterministic extra findings account for files exactly as a lens's own
+  // rows do (see the field docs) — one evidence list for both coverage
+  // questions, so the disclosure and the positive claim cannot disagree about
+  // what was cited.
+  // The two evidence lists are deliberately DIFFERENT, and the asymmetry is
+  // the whole point of each:
+  //
+  //   ACCOUNTING (`accounted`, `claimed`) — lens rows PLUS the deterministic
+  //   extra findings. A CLAIM_SCAN row that cites a changed file shows the
+  //   change was looked at, so it accounts for that file exactly as a lens's
+  //   own finding does. Excluding it gave a grep-backed witness that DID look
+  //   less standing than model prose that merely quotes a path.
+  //
+  //   LIVENESS (`allLanesProducedEvidence`) — the LENS rows ONLY. A deterministic
+  //   extra finding is not a lane: it is a grep result the caller merged, with
+  //   no findings array of its own shape and no summary, so folding it into a
+  //   liveness test would read every CLAIM_SCAN as a silent reviewer.
+  const extraFindings = args.extraFindings ?? [];
+  const accountedEvidence: readonly CoverageEvidence[] = [
+    ...lensResults,
+    ...extraFindings.map((f) => ({ findings: [f] })),
+  ];
+  const claimedEvidence: readonly CoverageEvidence[] = [
+    ...results,
+    ...extraFindings.map((f) => ({ findings: [f] })),
+  ];
+  const accounted = accountedFiles(accountedEvidence, expectedFiles ?? new Set());
+  const allLanesProducedEvidence = results.every((r) => hasReviewEvidence(r.findings, r.summary));
   return {
     lensResults,
     unaccounted:
       expectedFiles === undefined ? [] : unaccountedFiles(expectedFiles, accounted ?? new Map()),
     hasDenominator: expectedFiles !== undefined,
+    // Two ways a round may NOT claim coverage positively: no healthy lane
+    // cited a denominator file in a STRUCTURED finding (prose that quotes the
+    // paths is not reading them — `hasFindingClaimedFile`), or some lane left
+    // no evidence at all, in which case the round admits it did not review its
+    // own denominator and cannot simultaneously claim to have covered it.
+    // `hasReviewEvidence` is the SAME predicate `lensProducedEvidence` /
+    // `computeVerdict` refuse the round with (#1105), restated here only for
+    // the positive claim: nothing here blocks, and the healthy rows are the
+    // ones that could have read anything (a blocked lane contributed nothing).
+    findingClaimedFile: coverageClaimEarned(
+      expectedFiles,
+      claimedEvidence,
+      allLanesProducedEvidence,
+    ),
   };
+}
+
+/**
+ * The one place the POSITIVE coverage claim is decided, kept separate from the
+ * fan-out so the rule is assertable without spawning anything.
+ *
+ * A round may claim "every file in this round's denominator was covered" only
+ * when ALL THREE hold:
+ *
+ *   1. it HAD a denominator (`expectedFiles` defined — a caller-pasted diff or
+ *      an unreadable diff earns nothing, positive or negative);
+ *   2. at least one denominator file was cited by a STRUCTURED finding
+ *      (`hasFindingClaimedFile`) — a closing summary that merely QUOTES the
+ *      paths is `summary.includes(file)` and proves nobody read them; and
+ *   3. no healthy lane came back silent (`allLanesProducedEvidence`) — a round
+ *      that admits one of its own reviewers produced nothing cannot also
+ *      certify that everything got reviewed.
+ *
+ * Everything here is DISCLOSURE: none of it blocks. It only decides whether the
+ * ✓ line is allowed to print, which is the field an adversarial review
+ * reproduced lying — `coverageComplete: true` beside a round whose evidence was
+ * prose quoting paths, and beside one carrying `REVIEW_INCOMPLETE`.
+ */
+export function coverageClaimEarned(
+  expectedFiles: ReadonlySet<string> | undefined,
+  claimedEvidence: readonly CoverageEvidence[],
+  allLanesProducedEvidence: boolean,
+): boolean {
+  if (expectedFiles === undefined) return false;
+  return allLanesProducedEvidence && hasFindingClaimedFile(claimedEvidence, expectedFiles);
 }
 
 /**

@@ -353,6 +353,11 @@ export async function runLensReview(opts: LensReviewOptions): Promise<LensReview
     context,
     roster,
     opts: { ...opts, diff: diff ?? "", priorFindings },
+    // The deterministic findings the round merges below are EVIDENCE for the
+    // file-level coverage bookkeeping: a CLAIM_SCAN row that cites a changed
+    // file shows somebody looked at it, and must count for the file exactly as
+    // a lens's own finding does (lens-review-fanout.ts).
+    ...(opts.extraFindings ? { extraFindings: opts.extraFindings } : {}),
     bumpBatch,
     batchKey,
     ...(opts.signal ? { signal: opts.signal } : {}),
@@ -434,11 +439,20 @@ export async function runLensReview(opts: LensReviewOptions): Promise<LensReview
       // Lens-level liveness, named (see above). Verdict-bearing by the rule
       // `computeVerdict` already applied — this field only names the lanes.
       ...(unreviewedLanes.length > 0 ? { unreviewedLanes } : {}),
-      // File-level disclosure, never a verdict (see above). `coverageComplete`
-      // keeps "no files in scope" apart from "every file covered": when there
-      // was no denominator the round says so rather than claiming coverage.
+      // File-level disclosure, never a verdict (see above). `hasDenominator`
+      // is the producer's own tri-state and `coverageComplete` is the positive
+      // claim; the renderer reads them instead of guessing from the optionals
+      // below. `coverageComplete` is stamped ONLY on a round that (i) had a
+      // denominator, (ii) left no file unaccounted, (iii) had at least one
+      // denominator file cited by a structured FINDING rather than merely
+      // quoted in prose, and (iv) had no lane come back silent — the ✓ line is
+      // a warranty and prose that recites the diff's file list cannot buy it
+      // (`findingClaimedFile`). Still disclosure-only: none of it blocks.
       ...(uncovered.length > 0 ? { unaccountedFiles: uncovered } : {}),
-      ...(fanOut.hasDenominator && uncovered.length === 0 ? { coverageComplete: true } : {}),
+      ...(fanOut.hasDenominator ? { hasDenominator: true } : {}),
+      ...(fanOut.hasDenominator && uncovered.length === 0 && fanOut.findingClaimedFile
+        ? { coverageComplete: true }
+        : {}),
       totalFindings: reported.length,
       bySeverity: bySeverityCounts(reported),
       lenses: lensResults,

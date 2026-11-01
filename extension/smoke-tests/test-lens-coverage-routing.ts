@@ -28,6 +28,10 @@
  */
 
 import { rmSync } from "node:fs";
+import {
+  TEST_SUMMARY_CITES_BOTH_FILES,
+  TEST_SUMMARY_QUOTES_BOTH_FILES,
+} from "./lib/lens-recital-probe.ts";
 import { renderSummary } from "../src/lens-review-render.ts";
 import { runLensReview } from "../src/lens-review.ts";
 import { LENS_ROSTER } from "../src/lens-roster.ts";
@@ -117,6 +121,14 @@ function assert(cond: boolean, msg: string) {
     assert(
       text.includes("no files in scope") === false,
       "(b) and does not misreport itself as having had no files in scope",
+    );
+    // The ✓ line must be EARNED, not merely consistent with the fields: at
+    // least one denominator file cited by a structured finding, and no lane
+    // that came back silent. (b)'s round has a real `report_finding` citation
+    // on CHANGED_A, so it earns it.
+    assert(
+      text.includes("COVERAGE — every file"),
+      "(b) the positive coverage line renders for the round that earned it — a real finding citation, no silent lane",
     );
   } finally {
     teardown(c);
@@ -304,6 +316,177 @@ function assert(cond: boolean, msg: string) {
     assert(
       text.includes("REVIEW INCOMPLETE") && text.includes("came back having reviewed nothing"),
       "(f) the report carries the lens-level banner, not the file-level warning",
+    );
+  } finally {
+    teardown(c);
+  }
+}
+
+// (g) THE LYING ✓. The whole point of the coverage field is that an absent
+// warning is not evidence of coverage — so the PRESENCE of the positive claim
+// must be backed by evidence stronger than prose. Two reproduced shapes where
+// the field used to be stamped on a round that never showed it read the files:
+//
+//   (g1) five lenses whose ONLY findings cite a file OUTSIDE the denominator
+//        (`src/elsewhere.ts` — discounted to advisory by #1125, so it decides
+//        nothing and accounts for nothing inside the set), each closing with a
+//        free-text recital of the two denominator paths. The finding is
+//        structured evidence about a file NOT in the set; the summary is prose
+//        about files in it. Quoting is the only thing standing between the ✓
+//        and a review that showed no work on either changed file. (The
+//        unquoted case — a real citation inside the denominator — is case (b).)
+//   (g2) a SILENT SECURITY lane plus five quoting lanes: `REVIEW_INCOMPLETE`
+//        and `coverageComplete: true` at once — the round admits nobody
+//        reviewed it while claiming it covered everything.
+//
+// Mutation-proof: the rule is `coverageClaimEarned` (lens-review-fanout.ts) and
+// the unit assertions in `test-lens-coverage-denominator.ts` redden directly on
+// it; these two cases reddens too when the stamp at `lens-review.ts` is
+// neutralised, which is what proves the round actually consults the rule.
+{
+  const c = mkClone();
+  try {
+    // A summary whose ONLY mention of each changed path is a quoted recital —
+    // no path token, so neither the `summary` nor the `finding` claim fires.
+    const quoting = TEST_SUMMARY_QUOTES_BOTH_FILES;
+    const out = await round(c, (name) =>
+      lens(
+        name,
+        reportFrom(name, [
+          // The lenses' ONLY findings cite a file the PR does not change: real
+          // structured evidence, in the wrong place — exactly the reproduced
+          // shape (the advisory split discounts it, so it decides nothing).
+          { severity: "HIGH", path: "src/elsewhere.ts", line: 1, title: "elsewhere" },
+        ]),
+        quoting,
+      ),
+    );
+    assert(
+      // The recital names neither file as a path token, so BOTH stay
+      // unaccounted: the disclosure still fires, and the ✓ must not.
+      out.unaccountedFiles?.join(",") === [CHANGED_A, CHANGED_B].join(",") &&
+        out.hasDenominator === true,
+      `(g1) the quoted recital accounts for nothing — both files stay DISCLOSED (got ${JSON.stringify(out.unaccountedFiles)})`,
+    );
+    assert(
+      out.coverageComplete === undefined,
+      `canary (g1): a round whose only evidence for the denominator is prose that QUOTES the paths earns NO positive coverage claim (got coverageComplete ${JSON.stringify(out.coverageComplete)})`,
+    );
+    const text = renderSummary(out, 4);
+    assert(
+      !text.includes("COVERAGE \u2014 every file"),
+      `canary (g1): NO coverage line renders beside a review that showed nothing but quoted paths — neither the ✓ claim nor a gap warning (got ${JSON.stringify(text.split("\n").filter((l) => l.includes("COVERAGE")))})`,
+    );
+    assert(
+      !text.includes("no files in scope"),
+      "(g1) it still is not misreported as having had no denominator — three states, not two",
+    );
+  } finally {
+    teardown(c);
+  }
+}
+
+{
+  const c = mkClone();
+  try {
+    const silent = LENS_ROSTER[0]?.name;
+    const quoting = TEST_SUMMARY_QUOTES_BOTH_FILES;
+    const out = await round(c, (name) =>
+      name === silent ? lens(name, [], "") : lens(name, [], quoting),
+    );
+    assert(
+      out.verdict === "REVIEW_INCOMPLETE",
+      `(g2) the silent lane still refuses the round (got ${out.verdict})`,
+    );
+    assert(
+      out.coverageComplete === undefined,
+      `canary (g2): a round that admits a lane reviewed nothing cannot simultaneously claim every file was covered (got coverageComplete ${JSON.stringify(out.coverageComplete)})`,
+    );
+    const g2text = renderSummary(out, 4);
+    assert(
+      !g2text.includes("COVERAGE \u2014 every file"),
+      `canary (g2): and no coverage line at all in that report — no ✓ claim (got ${JSON.stringify(g2text.split("\n").filter((l) => l.includes("COVERAGE")))})`,
+    );
+  } finally {
+    teardown(c);
+  }
+}
+
+// (h) A deterministic extra finding (the `CLAIM_SCAN` witness the caller merges
+// separately) accounts for the file it cites, exactly as a lens's own finding
+// does. Wrong polarity before: model prose that quotes a path could account and
+// a grep-backed witness that looked could not.
+{
+  const c = mkClone();
+  try {
+    let write: Promise<unknown> = Promise.resolve();
+    const summary = await runLensReview({
+      cwd: c.repo,
+      branch: "feat/x",
+      head: c.head,
+      base: c.base,
+      full: true,
+      // Every lens says the same three words — no lens accounts for anything.
+      lensChildFn: (async (args: { lens: { name: string } }) =>
+        lens(args.lens.name, [], "All clear")) as never,
+      extraFindings: [
+        { lens: "CLAIM_SCAN", severity: "LOW", path: CHANGED_A, title: "grounded claim" },
+      ],
+      onLedgerWrite: (w: Promise<unknown>) => {
+        write = w;
+      },
+    });
+    await write;
+    assert(
+      summary.unaccountedFiles?.join(",") === CHANGED_B,
+      `(h) a CLAIM_SCAN finding accounts for the file it cites: only the OTHER changed file is left over (got ${JSON.stringify(summary.unaccountedFiles)})`,
+    );
+    assert(
+      summary.coverageComplete === undefined,
+      "(h) and with a file still unaccounted, no positive claim either",
+    );
+  } finally {
+    teardown(c);
+  }
+}
+
+// (i) A summary that CITES both changed paths as path tokens, with its only
+// structured finding OUTSIDE the denominator: the DISCLOSURE is satisfied (no
+// gap to name) but nothing inside the set carries a `finding`-class claim, so
+// the ✓ line must stay unprinted. This is the case that pins the renderer's
+// tri-state input: neutralise `hasDenominator: s.hasDenominator === true` in
+// lens-review-render.ts back to the old inference and the "no files in scope"
+// assertion below reddens (the round re-infers itself into the ✓ arm).
+{
+  const c = mkClone();
+  try {
+    const out = await round(c, (name) =>
+      lens(
+        name,
+        reportFrom(name, [
+          { severity: "HIGH", path: "src/elsewhere.ts", line: 1, title: "elsewhere" },
+        ]),
+        // CITED as path tokens, so the disclosure is satisfied; the ✓ still
+        // requires a structured finding inside the set.
+        TEST_SUMMARY_CITES_BOTH_FILES,
+      ),
+    );
+    assert(
+      out.unaccountedFiles === undefined && out.hasDenominator === true,
+      `(i) both files are named as path tokens, so the disclosure is satisfied (got ${JSON.stringify(out.unaccountedFiles)})`,
+    );
+    assert(
+      out.coverageComplete === undefined,
+      `canary (i): no ✓ without a finding-class claim INSIDE the denominator (got coverageComplete ${JSON.stringify(out.coverageComplete)})`,
+    );
+    const text = renderSummary(out, 4);
+    assert(
+      !text.includes("COVERAGE \u2014 every file"),
+      `canary (i): the ✓ line stays unprinted for a round with no finding-class claim inside the denominator (got ${JSON.stringify(text.split("\n").filter((l) => l.includes("COVERAGE")))})`,
+    );
+    assert(
+      !text.includes("no files in scope"),
+      "(i) and the round does not misreport itself as having had no denominator",
     );
   } finally {
     teardown(c);
