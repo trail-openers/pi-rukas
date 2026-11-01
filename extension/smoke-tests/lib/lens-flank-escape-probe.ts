@@ -182,28 +182,96 @@ export const META_UNESCAPED_FIT: [string, string, "summary" | undefined, string]
  * returns `summary`.
  *
  * **WITNESS for the `-` member of `PATH_CHAR`** — the only case in the suite
- * that is. Sibling to the `.`-member case at
- * `test-lens-coverage-denominator.ts:420` (`See src/b.ts.spec`, which pins the
- * anchored-terminator arm), and deliberately NOT a duplicate of it: `.` is a
- * legal `TERMINATOR`, so `src/b.ts.spec` is refused by BOTH arms, whereas `-`
- * is not a terminator, so this case is refused by the lookahead ALONE. That is
- * what makes `-` observable here and not there. Measured: GREEN under the
- * shipped class, RED (`P: 4 F: 1`) with `-` deleted from `PATH_CHAR`.
+ * that is. Measured: GREEN under the shipped class, RED with `-` deleted from
+ * `PATH_CHAR` (the deletion must drop the trailing range endpoint, not the
+ * `\-` escape — dropping the escape instead yields an invalid character class
+ * and no witness at all).
  *
- * Scope note, stated so the header is not read as a class-wide claim: this case
- * witnesses `-` only. `+`, `/`, `.` and the word characters in `PATH_CHAR` are
- * NOT witnessed by any deletion of `PATH_CHAR` alone — measured on
- * `test-lens-coverage-denominator.ts`: deleting `+` or `/` from the class
- * reddens NOTHING (0 reds each), and `.` is refused in the `src/b.ts.spec` case
- * by the anchored-terminator arm rather than the lookahead. The `+` the suite
- * does pin sits in the LEFT flank's `NOT_PATH` (`+++ b/src/a.ts`), a different
- * constant. The remaining members are therefore unpinned and stay so. */
+ * What this case does NOT establish, stated because an earlier version of this
+ * header got it backwards: `-` is refused here by BOTH right-flank arms, not by
+ * the lookahead alone. `TERMINATOR` is `[!?,.;:\-]` and contains `-`, so the
+ * anchored-terminator arm refuses `src/b.ts-spec` too. Measured on a scratch
+ * copy with the terminator arm deleted from the alternation (leaving the
+ * lookahead) and with the lookahead deleted (leaving the terminator arm): this
+ * fixture stays `undefined` under EITHER arm alone. Deleting `\-` from
+ * `TERMINATOR` leaves this fixture and the whole `PATH_CHAR` question green
+ * (0 reds in `test-lens-coverage-denominator.ts` and `test-lens-coverage-routing.ts`),
+ * because the lookahead is what refuses it.
+ *
+ * PER-MEMBER `PATH_CHAR` DELETION — measured 2026-11-04 on a COMPLETE repo-root
+ * scratch copy (`/tmp/lcov-d`, `extension/` plus the sibling `skill/` that
+ * `BUNDLED_SKILL_DIR` resolves through), with the mutated blob hash printed per
+ * run and the shipped blob re-hashed after each restore. "suite reds" = failing
+ * assertions in `test-lens-coverage-denominator.ts` + `test-lens-coverage-routing.ts`
+ * (the only two coverage suites); "probe" = discriminating one-line fixtures
+ * under that mutant that the shipped class gets right, which is the ONLY signal
+ * for the two members no assertion reads.
+ *
+ *   member  class becomes        suite reds  probe
+ *   `+`     `[A-Za-z0-9_./+-]`→   0           `"See src/b.ts+"` and `"…b.ts+spec"` flip to `summary`
+ *           `[A-Za-z0-9_./+-]`                 (matcher moves, NO assertion did)
+ *   `/`     →`[A-Za-z0-9_.+-]`    0           `"See src/b.ts/"` and `"…b.ts/spec"` flip (same)
+ *   `.`     →`[A-Za-z0-9_/+-]`    1           `"See src/b.ts.spec"` flips
+ *   `-`     →`[A-Za-z0-9_./+-]`    0           none — `TERMINATOR` still refuses it
+ *           (range endpoint,                     (witnessed only via the `-spec` case)
+ *            escape kept)
+ *   word    (delete `A`/`9` etc.) 0           not measured separately
+ *
+ * Those "0 suite reds" for `+` and `/` are why `PATH_CHAR_PLUS` and
+ * `PATH_CHAR_SLASH` exist below: with those two fixtures added, the SAME two
+ * mutants each redden exactly ONE assertion in
+ * `test-lens-coverage-denominator.ts` (measured with the fixtures present —
+ * `+` → "a path followed by `+` is not a citation…", `/` → "a path followed by
+ * a trailing slash…"), so both members are now pinned by an assertion rather
+ * than only by the raw matcher. Before the fixtures, deleting either moved no
+ * test in either coverage suite.
+ *
+ * The one real suite red the `.` mutant moved was already there, and it fires
+ * in BOTH suites: `test-lens-coverage-denominator.ts` "canary: the terminator
+ * arm does not turn a LONGER path into a citation of a shorter one", and
+ * `test-lens-coverage-routing.ts` "(g1) the quoted recital accounts for nothing
+ * — both files stay DISCLOSED". It is NOT a lookahead witness: deleting `.`
+ * from `TERMINATOR` instead reddens two different assertions (the
+ * "ends a SENTENCE still accounts" pair), so `.` is pinned through the
+ * TERMINATOR arm, not `PATH_CHAR`. The `-` member of `TERMINATOR` is not pinned
+ * by any assertion in either coverage suite (0 reds), because the `PATH_CHAR`
+ * lookahead refuses `src/b.ts-spec` first. */
 export const PATH_CHAR_HYPHEN: [string, string, "summary" | undefined, string] = [
   "See src/b.ts-spec",
   "src/b.ts",
   undefined,
-  "a path followed by a hyphenated suffix is not a citation of the shorter file — the `-` is a PATH_CHAR, so the right-flank lookahead refuses to close (witness: red when `-` is deleted from PATH_CHAR)",
+  "a path followed by a hyphenated suffix is not a citation of the shorter file — `-` is a PATH_CHAR, and also a TERMINATOR, so BOTH right-flank arms refuse it (witness: red when the `-` range endpoint is dropped from PATH_CHAR; the `-` escape must stay or the class is invalid)",
 ];
 
-export const TEST_FLANK_ESCAPE_CASES: readonly [string, string, "summary" | undefined, string][] =
-  [NL_OPEN, CARET_OPEN, META_CITED, META_UNESCAPED_FIT, PATH_CHAR_HYPHEN];
+/** The `+` member of `PATH_CHAR`, pinned by an ASSERTION rather than only by
+ * the matcher. Deleting `+` from the class (the trailing range endpoint, escape
+ * kept) leaves BOTH coverage suites green — see the per-member table on
+ * `PATH_CHAR_HYPHEN` — so without this case the member is unpinned. With `+` in
+ * the class the lookahead refuses to close and this is NOT a citation. */
+export const PATH_CHAR_PLUS: [string, string, "summary" | undefined, string] = [
+  "See src/b.ts+",
+  "src/b.ts",
+  undefined,
+  "a path followed by `+` is not a citation of the shorter file — `+` is a PATH_CHAR so the lookahead refuses to close (witness: the ONLY assertion that reddens when `+` is deleted from PATH_CHAR; the suites alone stay green)",
+];
+
+/** The `/` member of `PATH_CHAR`, pinned by an ASSERTION. Deleting `/` from the
+ * class leaves both coverage suites green, so this case is the only witness;
+ * the trailing slash is a path character, not a terminator, so the lookahead is
+ * the arm that refuses it. */
+export const PATH_CHAR_SLASH: [string, string, "summary" | undefined, string] = [
+  "See src/b.ts/",
+  "src/b.ts",
+  undefined,
+  "a path followed by a trailing slash is not a citation of the shorter file — `/` is a PATH_CHAR so the lookahead refuses to close (witness: the ONLY assertion that reddens when `/` is deleted from PATH_CHAR)",
+];
+
+export const TEST_FLANK_ESCAPE_CASES: readonly [string, string, "summary" | undefined, string][] = [
+  NL_OPEN,
+  CARET_OPEN,
+  META_CITED,
+  META_UNESCAPED_FIT,
+  PATH_CHAR_HYPHEN,
+  PATH_CHAR_PLUS,
+  PATH_CHAR_SLASH,
+];
