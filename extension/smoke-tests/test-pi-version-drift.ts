@@ -130,7 +130,10 @@ export function minorPrefix(v: string): string | null {
  * The rule: the maintained verified line is a FLOOR, not a ceiling — it must
  * be at or above `MIN_PI_VERSION` (`cmp >= 0`), because it is the version an
  * operator downgrades to and ./install.sh must accept it. Reverting this to
- * `cmp <= 0` (the pre-fix inversion) turns the gate RED through here.
+ * `cmp <= 0` (the pre-fix inversion) turns the gate RED through here — the
+ * equality arm is what witnesses it: `cmp <= 0` reports a line exactly AT the
+ * floor as violated, which `cmp >= 0` must not, and Canary 4b asserts that
+ * case directly.
  */
 export function floorRuleViolated(verifiedV: string, floorV: string): { violated: boolean; reason: "unparseable" | "below-floor" | null } {
   const cmp = compareVersions(verifiedV, floorV);
@@ -362,14 +365,35 @@ if (verified && pins.codingAgent) {
   // floor 1.4.0) is
   // what `cmp >= 0` accepts and `cmp <= 0` forbids, and a below-floor one is
   // what `cmp >= 0` rejects. Reverting the comparison direction turns the rule
-  // RED and then fails BOTH asserts below, because both read the rule's verdict.
+  // RED and then fails the asserts below: the equality arm (two arms down)
+  // because `cmp <= 0` reports a line AT the floor as violated, and the
+  // below-floor arm because both read the rule's verdict.
+  //
+  // The new-literal census consequence: `1.0.0` is already listed below and
+  // `1.4.0-garbage` splits as 1.4.0 which is listed too, so the added arms
+  // introduce no unlisted literal. The `@earendil-works/pi-tui":"~1.4.0"`
+  // fixture string above keeps 1.4.0 within 20 chars of a marker.
   assert(
     floorRuleViolated("1.4.1", "1.0.0").violated === false,
     "canary: pi-coding-agent verified 1.4.1 above the 1.0.0 install floor → the rule itself reports NOT violated (reverting `cmp >= 0` to `cmp <= 0` flips this to violated and the gate goes RED)",
   );
   assert(
     floorRuleViolated("0.9.0", "1.0.0").violated === true && floorRuleViolated("0.9.0", "1.0.0").reason === "below-floor",
-    "canary: a 0.9.0 verified line under a 1.0.0 floor → the rule reports violated/below-floor (the forward direction; the unparseable reason is covered separately by the null case)",
+    "canary: a 0.9.0 verified line under a 1.0.0 floor → the rule reports violated/below-floor (the forward direction; the unparseable reason is witnessed by the arm below)",
+  );
+  // The equality case is the boundary the rule's own docblock names, so it is
+  // driven through the rule: a verified line exactly AT the floor is what
+  // `cmp >= 0` must accept and `cmp <= 0` wrongly reports as violated. Without
+  // this arm neither above-floor nor below-floor distinguishes the two.
+  assert(
+    floorRuleViolated("1.0.0", "1.0.0").violated === false,
+    "canary: a verified line exactly AT the floor 1.0.0 → the rule reports NOT violated (mutating `cmp < 0` to `cmp <= 0` flips this to violated and the gate goes RED)",
+  );
+  // And the unparseable reason is driven through this same function rather
+  // than only through the null-handling elsewhere, so the claim is witnessed.
+  assert(
+    floorRuleViolated("1.4.0-garbage", "1.0.0").reason === "unparseable",
+    "canary: an unparseable verified line → floorRuleViolated reports reason=unparseable, not below-floor (neutering the `cmp === null` arm makes this RED)",
   );
 
   // Canary 5 — the nudge path is non-fatal: drive the date nudge with an

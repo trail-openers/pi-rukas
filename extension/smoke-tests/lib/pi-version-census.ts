@@ -80,9 +80,9 @@ export function siteCensus(verifiedV: string): Record<string, string[]> {
     // post-#959 config path ("Pi 1.0.0's native MCP").
     "docs/sandbox.md": [...v, "1.0.0"],
     // The two `npm install -g …pi-coding-agent@1.0.0` command lines are the
-    // ONLY detected literals in this file — both sit 0 chars past the
-    // `pi-coding-agent` marker (the 19-char marker, then the version), inside
-    // the 20-char claim window.
+    // ONLY detected literals in this file — both sit 1 char past the
+    // `pi-coding-agent` marker (the `@` in `pi-coding-agent@1.0.0` is that one
+    // character), inside the 20-char claim window.
     // Deliberately NOT [...v, "1.0.0"]. The applicable census direction here
     // is **declared ⊆ detected** (the gate's `undetectable` check): a declared
     // literal the detector cannot see is a dead declaration that would pass
@@ -122,7 +122,7 @@ export function siteCensus(verifiedV: string): Record<string, string[]> {
     // own "pi-coding-agent verified 1.4.1 …" message, each within 20 chars of
     // a `pi-coding-agent` / `@earendil-works/pi-tui` / `MIN_PI_VERSION`
     // marker. The `floorRuleViolated("1.4.1", "1.0.0")` CALL ARGUMENTS are
-    // NOT detected (nearest marker 66 chars away) — the detector sees the
+    // NOT detected (nearest marker 65 chars away) — the detector sees the
     // prose, not the call, so moving these literals into code alone would
     // make this row dead. 1.0.0 is likewise detected only at its claim-line /
     // `pi-coding-agent`-string occurrences; the compareVersions(...) arguments
