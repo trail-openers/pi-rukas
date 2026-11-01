@@ -92,16 +92,31 @@ export interface Clone {
  * covered/uncovered distinction nearly tautological, and the field case this
  * closes was a lens that read one file of a two-file delta.
  */
-export function mkClone(): Clone {
+export function mkClone(opts: { skills?: "full" | "unusable" } = {}): Clone {
   const root = mkdtempSync(path.join(os.tmpdir(), "lens-coverage-"));
   const repo = path.join(root, "repo");
   const skills = path.join(root, "skills");
   const ledgerFile = path.join(root, "ledger", "review-ledger.json");
   mkdirSync(path.join(repo, "src"), { recursive: true });
   mkdirSync(path.join(root, "ledger"), { recursive: true });
+  // The installed skills dir always exists; `skills: "empty"` simply declares
+  // no `code-review-*` skill in it, so the roster has ZERO healthy entries and
+  // the fan-out runs with `results === []` — the vacuous-`every` shape the
+  // blocked-only arm of `test-lens-coverage-denominator.ts` pins. The EXPECTED
+  // (bundled) set still blocks each lens by name, so this is a real blocked-only
+  // review and not the empty-roster shortcut.
   let prec = 10;
   for (const l of LENS_ROSTER) {
     mkdirSync(path.join(skills, l.skill), { recursive: true });
+    // `skills: "unusable"` writes the six skill dirs but NO frontmatter, so
+    // every entry blocks on its own parse error. The roster is then six NAMED
+    // blocked lanes with ZERO healthy ones — `runLensFanOut` runs with
+    // `results === []`, the vacuous-`every` shape the blocked-only arm of
+    // `test-lens-coverage-denominator.ts` pins. This is the shape that reaches
+    // the fan-out at all: a skills dir with no `code-review-*` dir at all is
+    // diverted to the empty-roster install exit before the fan-out, and that
+    // path never computes a denominator, so it cannot pose the question.
+    if (opts.skills === "unusable") continue;
     writeFileSync(
       path.join(skills, l.skill, "SKILL.md"),
       `---\nname: ${l.skill}\nprecedence: ${prec}\n---\n`,
@@ -170,7 +185,11 @@ export function mkClone(): Clone {
  * to a range these scenarios never make; `base`+`head` (and no pasted `diff`)
  * is what makes the diff `computed`, and therefore what earns a denominator.
  */
-export async function round(c: Clone, evidence: (name: string) => LensRunResult) {
+export async function round(
+  c: Clone,
+  evidence: (name: string) => LensRunResult,
+  extra?: { extraFindings?: Finding[] },
+) {
   let write: Promise<unknown> = Promise.resolve();
   const summary = await runLensReview({
     cwd: c.repo,
@@ -179,6 +198,7 @@ export async function round(c: Clone, evidence: (name: string) => LensRunResult)
     base: c.base,
     full: true,
     lensChildFn: (async (args: { lens: { name: string } }) => evidence(args.lens.name)) as never,
+    ...(extra?.extraFindings ? { extraFindings: extra.extraFindings } : {}),
     onLedgerWrite: (w: Promise<unknown>) => {
       write = w;
     },

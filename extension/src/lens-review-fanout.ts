@@ -187,7 +187,12 @@ export async function runLensFanOut(args: {
     ...extraFindings.map((f) => ({ findings: [f] })),
   ];
   const accounted = accountedFiles(accountedEvidence, expectedFiles ?? new Set());
-  const allLanesProducedEvidence = results.every((r) => hasReviewEvidence(r.findings, r.summary));
+  // `results.length > 0` is load-bearing: `[].every(...)` is TRUE, so without it
+  // a roster with ZERO healthy lanes (everything blocked) would sail the
+  // liveness test and a single merged `extraFindings` row would satisfy
+  // `hasFindingClaimedFile` — a round that reviewed nothing would earn the ✓.
+  const allLanesProducedEvidence =
+    results.length > 0 && results.every((r) => hasReviewEvidence(r.findings, r.summary));
   return {
     lensResults,
     unaccounted:

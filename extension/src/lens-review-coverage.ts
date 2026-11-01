@@ -211,15 +211,6 @@ export function unaccountedFiles(
     .sort();
 }
 
-/** Same normalisation `changedLineRanges` and `extractFindings` apply, so a
- * finding cited as `./a.ts` accounts for the diff's `a.ts`. */
-/**
- * Does `summary` NAME `file` as a path, rather than merely CONTAIN its
- * characters? See the call site: the denominator is small, the diff is in the
- * lens's prompt, and an unanchored `includes` cannot tell a citation apart from
- * a recital. Escapes every regex metacharacter, so a path with `+`, `.` or
- * `(` in it matches itself and nothing else.
- */
 /**
  * Does `summary` NAME `file` as a path, rather than merely CONTAIN its
  * characters? See the call site: the denominator is small, the diff is in the
