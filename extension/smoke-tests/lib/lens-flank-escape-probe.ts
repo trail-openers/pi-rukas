@@ -31,17 +31,20 @@
  *     positive case can still be satisfied by an over-permissive match, and
  *     the negative case is the one that says so.
  *
- * MUTATION PROOF — measured 2026-11-XX against the shipped `mentionsPath`,
+ * MUTATION PROOF — measured 2026-11-01 against the shipped `mentionsPath`,
  * each by editing `lens-review-coverage.ts`, running the cases, and restoring
  * the file byte-identically (`git hash-object` matched HEAD's blob after every
- * restore). Verdicts below are what the run printed; nothing here is claimed
- * from reasoning.
+ * restore: `ec2f4039`). Verdicts below are what the run printed; nothing here
+ * is claimed from reasoning.
  *   - delete `\n|` from the left flank        → REDS: NL_OPEN alone.
  *   - widen `NOT_PATH` to include `\r`/`\n`   → REVERSES the above: NL_OPEN
  *     greens again. This is the measurement that KILLS the claim that
  *     `NL_OPEN` witnesses the arm: if a fixture witnessed an alternative,
  *     making that alternative redundant could not silence it. It did, so the
- *     arm is dead code kept for future-proofing, not a covered branch.
+ *     arm is dead code kept for future-proofing, not a covered branch. (The
+ *     shipped `NOT_PATH` already excludes `\r`/`\n` at this commit; this line
+ *     and the one above were run against the two variants side by side, so
+ *     "widen" means the variant that re-admits them.)
  *   - narrow the escape class to `/\./g`      → REDS: META_CITED **and**
  *     META_UNESCAPED_FIT (2 red). An earlier version of this header asserted
  *     the opposite — "META_CITED stays green, which is the point of pairing

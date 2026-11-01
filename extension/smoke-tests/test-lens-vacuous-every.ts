@@ -21,17 +21,25 @@
  * exit BEFORE the fan-out, and a `lensChildFn` stub that RETURNS blocked rows
  * fills the roster's blocked list, not `results`.
  *
- * MUTATION PROOF — measured 2026-11-XX, each by editing the named product
- * file, running this test, and restoring it byte-identically.
- *   - revert the liveness guard to the bare `results.every(...)` → REDS the
- *     "earns NO positive coverage claim" canary.
- *   - drop the `results.length > 0` gate on the ACCOUNTING list → REDS the
- *     `unaccounted` canary (both files come back accounted).
+ * MUTATION PROOF — measured 2026-11-01 by editing `lens-review-fanout.ts`,
+ * running this file, and restoring it byte-identically (`cmp` clean; sha256
+ * `6c2012be…` before and after every mutation). Verdicts below are the lines
+ * the runs printed. The accounting-list bullet was NOT re-run this dispatch and
+ * says so.
+ *   - revert the liveness guard to the bare `results.every(...)` → REDS:
+ *     `✗ canary: a blocked-only round earns NO positive coverage claim — an
+ *     empty healthy set is not liveness`
+ *   - drop the `results.length > 0` gate on the ACCOUNTING list → expected to
+ *     redden the `unaccounted` canary (both files come back accounted). NOT
+ *     re-run this dispatch — carried from the file's prior claims.
  *   - delete the `extraFindings` rows from `claimedEvidence` in
- *     `lens-review-fanout.ts` → REDS `extraFindingsOf`'s premise (`claimed`
- *     flips true→false and the assertion below fails). Before this run the
- *     field had NO positive witness at all — its only test reader was
- *     `=== false` — so this is the mutation the file used to survive.
+ *     `lens-review-fanout.ts` → REDS:
+ *     `✗ premise: a zero-healthy roster over a real denominator, with harness rows as its only evidence`
+ *     (the probe's `findingClaimedFile` flipped `true` → `false`). Before this
+ *     the field had NO positive witness at all — its only test reader was
+ *     `=== false` — so this is the mutation the file used to survive. The
+ *     header previously attributed it to `accountedEvidence`, the wrong list:
+ *     that deletion reddens the `unaccounted` canaries instead.
  *   - `extraFindingsOf`'s third conjunct ("no lens row carries a finding for
  *     that file") is a copy-paste guard over an input the other conjuncts
  *     already pin; no single-input mutation falsifies it on its own. It is
