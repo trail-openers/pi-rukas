@@ -116,17 +116,30 @@ export function siteCensus(verifiedV: string): Record<string, string[]> {
     // to the detector and is not declared here — the 0.99.0 co-pin canary
     // is likewise a prose literal).
     // What actually grounds the floor-rule literals (Canary 4b and its inline
-    // co-pin fixture): 1.4.1 and 1.4.0 are detected ONLY at their comment and
-    // message occurrences — `// pi-coding-agent ~1.4.1 … floor of 1.4.0`, the
-    // `@earendil-works/pi-tui":"~1.4.0"` fixture string, and the canary's
-    // own "pi-coding-agent verified 1.4.1 …" message, each within 20 chars of
-    // a `pi-coding-agent` / `@earendil-works/pi-tui` / `MIN_PI_VERSION`
-    // marker. The `floorRuleViolated("1.4.1", "1.0.0")` CALL ARGUMENTS are
-    // NOT detected (nearest marker 65 chars away) — the detector sees the
-    // prose, not the call, so moving these literals into code alone would
-    // make this row dead. 1.0.0 is likewise detected only at its claim-line /
-    // `pi-coding-agent`-string occurrences; the compareVersions(...) arguments
-    // of 1.0.0 are all prose to the detector.
+    // co-pin fixture) — measured with the gate's own piClaimContexts over this
+    // branch's bytes, as a FORWARD gap from the end of the named marker to the
+    // start of the literal (window 20):
+    //   test-pi-version-drift.ts:320 `@earendil-works/pi-tui":"~1.4.0"` — 4
+    //   chars past the `pi-tui` marker (8 past `@earendil-works/pi`);
+    //   test-pi-version-drift.ts:322 "pi-tui declared pin parses as 1.4.0" — 4
+    //   past `pi-tui` and 24 past `pi-coding-agent`, so the `pi-tui` marker on
+    //   that line is what detects it; :374 (the comment naming the fixture
+    //   string) — 4 past `pi-tui`; :317 — 10 past `MIN_PI_VERSION`;
+    //   :365 — 12 past `MIN_PI_VERSION`.
+    // For 1.4.1: :320 — 4 past `pi-coding-agent`; :364 (the `// floor of 1.4.0`
+    // comment names `pi-coding-agent` itself) — 7 past `pi-coding-agent`; :378 —
+    // 10 past `pi-coding-agent`. The 1.4.1s in the :321 assert MESSAGES sit 24
+    // and 53 past the nearest marker end, so only the :320 occurrences of that
+    // line's pair are claims — which is why this row declares 1.4.1 at all.
+    // The `floorRuleViolated("1.4.1", "1.0.0")` CALL ARGUMENTS (the :377/:380
+    // call site) are NOT detected: nearest marker end 112 chars ahead for
+    // 1.4.1, 120 for 1.0.0 — 92 and 100 past the 20-char window — so the
+    // detector sees the prose, not the call, and moving these literals into
+    // code alone would make this row dead. 1.0.0 is likewise detected only at
+    // its `Last verified against pi` claim line and its `pi-coding-agent` /
+    // `pi-tui` string occurrences (the `"pi-coding-agent": "1.0.0"` canary
+    // string and the `"@earendil-works/pi-tui": "~1.0.0"` half of the :335
+    // fixture, 5–9 chars past their markers); the compareVersions(...) arguments of 1.0.0 are all prose to the detector.
     // Self-census: if this file grows a new canary literal, the list must
     // grow here too — the gate fails otherwise (a self-census that cannot
     // see its own declaration is the "census that passes by silence"
@@ -183,11 +196,17 @@ export function siteCensus(verifiedV: string): Record<string, string[]> {
     // row literals in a claim context; the 0.8x.y entries are the canaries
     // copied verbatim from the gate's own row (self-census of the census).
     // 1.4.0/1.4.1 are the floor-rule literals documented in the
-    // test-pi-version-drift.ts row above; in THIS file they are grounded by
-    // the `pi-coding-agent` / `pi-tui` markers inside those comments (the
-    // `MIN_PI_VERSION` reference sits 24 chars from its version, so it is the
-    // package-name markers that put them in the 20-char window), not by the
-    // marker names being mentioned at all.
+    // test-pi-version-drift.ts row above; in THIS file they are grounded at
+    // exactly two occurrences each, measured with the gate's own detector as a
+    // forward gap from the end of the named marker to the start of the literal:
+    // the co-pin fixture string quoted in that comment is 4 chars past the
+    // `pi-tui` marker (8 past `@earendil-works/pi`) and 1.4.1 in the same
+    // quoted line is 2 past `pi-coding-agent`; and the canary message quoted
+    // just below it — "pi-coding-agent verified 1.4.1 …" — puts 1.4.1 10 chars
+    // past `pi-coding-agent`. The `MIN_PI_VERSION` mention sits 50 chars ahead
+    // of the nearest 1.0.0 in that block, well outside the 20-char window, so
+    // the package-name markers are what ground these literals — not the marker
+    // NAMES being mentioned in the prose.
     // Declared literals are exactly the detected set — the gate's census
     // block proves declared ⊆ detected, so a literal the detector cannot
     // see is a gate failure, not a silent entry.
