@@ -22,22 +22,23 @@ import {
 const ELLIPSIS = "\u2026";
 
 /**
- * The census-consistency assertion, replacing the hand-transcribed grounding
- * block. For each (file, literal) it checks the DETECTED CLAIM SET is exactly
- * the cited set - no more (a claim nothing grounds), no fewer (a citation whose
- * text has gone), no duplicates (one occurrence counted twice) - and pairs each
- * citation to a distinct claim whose marker name and forward gap it names
- * correctly. `quoted` is the text just BEFORE the literal, ending in an
- * ellipsis for "the literal follows": quoting the digits themselves would put
- * the citation, which lives inside the file under inspection, in a marker's
- * window and manufacture the claim it was meant to describe. Every message
- * carries the detector's own answer, so a failure is readable without a probe.
- * `detect` is the gate's detector; passing a detector that finds nothing shows the
- * block fails closed, i.e. is observed to redden rather than assumed to.
+ * The prefix on the ONE error that is a refusal to compare rather than a
+ * comparison that failed. The fail-closed canary must exclude these: the empty-row
+ * guard is the block's sole vacuity barrier, and with that guard neutered and the
+ * table emptied it still produced one error per row, so
+ * `failClosed.length === literalCount` held while `detected` was compared against
+ * nothing. Counting rows declared is not counting comparisons performed.
  */
+export const NO_CITATIONS_MARKER = "[no-citations]";
 
-export function censusGroundingErrors(textByFile: Record<string, string>, expected: Record<string, Record<string, GroundingCitation[]>>, detect: ClaimDetector): string[] {
+/** The pairing predicate's shape; `armRelaxed` produces a laxer copy of it. */
+export type ArmMutation = (text: string, d: { index: number; marker: string; gap: number }, cit: GroundingCitation) => boolean;
+
+/**
+ */
+export function censusGroundingErrors(textByFile: Record<string, string>, expected: Record<string, Record<string, GroundingCitation[]>>, detect: ClaimDetector, anchorsFn?: ArmMutation): string[] {
   const errors: string[] = [];
+  const anchors = anchorsFn ?? anchorsShips;
   // One masked scan text per file: the declarations `declaredGroundingTable`
   // writes for that file, blanked to equal length. Keyed on the table's own
   // content, not on a line number, so it cannot go stale when the file moves.
@@ -54,7 +55,7 @@ export function censusGroundingErrors(textByFile: Record<string, string>, expect
       // the row green without checking anything. Every entry in the table states
       // claims, so an empty list is a deletion, not a fact.
       if (citations.length === 0) {
-        errors.push(`${rel} ${literal}: declared no citations - a checked (file, literal) row must state at least one claim, or the count check compares two empties and passes by silence`);
+        errors.push(`${NO_CITATIONS_MARKER} ${rel} ${literal}: declared no citations - a checked (file, literal) row must state at least one claim, or the count check compares two empties and passes by silence`);
         continue;
       }
       // `scan` is this file's bytes with its own declarations blanked, so the
@@ -67,20 +68,108 @@ export function censusGroundingErrors(textByFile: Record<string, string>, expect
         continue;
       }
       // One-to-one pairing, fewest-candidates-first so an unambiguous citation
-      // claims its occurrence before an ambiguous one can take it.
-      const taken = new Set<number>();
-      const cands = citations.map((cit) => ({ cit, opts: detected.map((_, i) => i).filter((i) => anchors(text, detected[i] as number, cit)) }));
-      for (const c of cands.sort((x, y) => x.opts.length - y.opts.length)) {
-        const free = c.opts.filter((i) => !taken.has(i));
-        if (free.length === 0) {
-          errors.push(`${rel} ${literal}: cited ${JSON.stringify(c.cit.quoted)} matches no claim at marker \`${c.cit.marker}\` gap ${c.cit.gap} (detector says [${say(detected)}])`);
-          continue;
-        }
-        taken.add(free[0] as number);
+      // claims its occurrence before an ambiguous one can take it. Shared with
+      // `armUnmatched` so a relaxation is judged by the same pairing the gate runs.
+      const unmatched = pairCitations(text, detected, citations, anchors);
+      if (unmatched > 0) {
+        errors.push(`${rel} ${literal}: ${unmatched} cited claim(s) matched no distinct claim at their stated marker/gap/quote (detector says [${say(detected)}] / citations [${sayCit(citations)}])`);
       }
     }
   }
   return errors;
+}
+
+/**
+ */
+function pairCitations(text: string, detected: { index: number; marker: string; gap: number }[], citations: GroundingCitation[], anchors: ArmMutation): number {
+  const taken = new Set<number>();
+  const cands = citations.map((cit) => ({ cit, opts: detected.map((_, i) => i).filter((i) => anchors(text, detected[i] as number, cit)) }));
+  let unmatched = 0;
+  for (const c of cands.sort((x, y) => x.opts.length - y.opts.length)) {
+    const free = c.opts.filter((i) => !taken.has(i));
+    if (free.length === 0) {
+      unmatched++;
+      continue;
+    }
+    taken.add(free[0] as number);
+  }
+  return unmatched;
+}
+
+/**
+ * How many citations of `corrupt(base)` pair with no claim, under the shipped
+ * predicate and under a relaxed one. This is one arm's NEGATIVE witness.
+ *
+ * A relaxed predicate on the SHIPPED table proves nothing — correct citations
+ * satisfy any laxity, so every relaxation looks harmless. Corrupting one citation
+ * makes the refusing arm observable; relaxing that arm then lets the corrupted
+ * citation pair again, which is what "unwitnessed" means. The gate requires
+ * `shipped >= 1 && relaxed === 0`: both 0 means the corruption does not exercise
+ * the arm, both >=1 means the arm refuses nothing anyway.
+ *
+ * Counts CITATIONS, not error strings — a lax arm that pairs a corrupted citation
+ * with a different claim emits no message at all while never doing the work the arm
+ * exists to do, and only the pairing itself sees that.
+ */
+export function armUnmatched(textByFile: Record<string, string>, base: Record<string, Record<string, GroundingCitation[]>>, detect: ClaimDetector, corrupt: (table: Record<string, Record<string, GroundingCitation[]>>) => void, relaxed: ArmMutation): { shipped: number; relaxed: number } {
+  const table = structuredClone(base);
+  corrupt(table);
+  let shipped = 0;
+  let lax = 0;
+  for (const [rel, byLiteral] of Object.entries(base)) {
+    const text = textByFile[rel];
+    if (text === undefined) continue;
+    for (const literal of Object.keys(byLiteral)) {
+      const citations = (table[rel] as Record<string, GroundingCitation[]>)[literal] as GroundingCitation[];
+      const detected = piLiteralClaims(text, literal, detect);
+      if (detected.length !== citations.length) {
+        // The corruption moved the claim count, so nothing could pair: that IS the
+        // refusal, counted for both predicates so the arm cannot pass by muteness.
+        shipped += citations.length;
+        lax += citations.length;
+        continue;
+      }
+      shipped += pairCitations(text, detected, citations, anchorsShips);
+      lax += pairCitations(text, detected, citations, relaxed);
+    }
+  }
+  return { shipped, relaxed: lax };
+}
+
+/**
+ * The shipped pairing predicate with ONE arm neutered. The shipped citations are
+ * correct, so the three refusing arms never fire on the real table and the suite
+ * never saw them return false; each was measured (round 2 adversarial) to keep the
+ * gate green when relaxed — `nearest === cit.gap` → `nearest !== null` with the gap
+ * bumped, the quote-suffix comparison dropped with the quote corrupted, the
+ * whole-name marker guard dropped with a wrong-family marker. Pair each with the
+ * `corrupt` that names its own field and `armUnmatched` observes the refusal.
+ *
+ * Only the marker arm needs a branch: it lives in `citesMarker`, so that predicate
+ * is passed in as a parameter instead of closing over the module binding.
+ */
+export function armRelaxed(arm: "gap" | "quote"): ArmMutation {
+  return (text, d, cit) => {
+    if (!citesMarker(cit, d.marker)) return false;
+    const body = cit.quoted.endsWith(ELLIPSIS) ? cit.quoted.slice(0, -ELLIPSIS.length) : cit.quoted.replace(/\u002e\u002e\u002e$/, "");
+    // An empty quote is never vacuously true: it "matches" at every position, so
+    // accepting it would make the whole per-occurrence check unfalsifiable (that was
+    // the shipped defect - blanking every quote kept the gate green).
+    if (body === "" || d.index < body.length) return false;
+    if (arm !== "quote" && text.slice(d.index - body.length, d.index) !== body) return false;
+    const k = PI_CLAIM_MARKER_NAMES.findIndex((n) => n.toLowerCase() === cit.marker.trim().toLowerCase());
+    if (k < 0) return false;
+    const re = new RegExp((PI_CLAIM_MARKERS[k] as RegExp).source, "gi");
+    const lo = d.index - body.length;
+    let hit: RegExpExecArray | null;
+    let nearest: number | null = null;
+    while ((hit = re.exec(text.slice(lo, d.index))) !== null) {
+      const g = d.index - (lo + (hit.index as number) + hit[0].length);
+      if (g >= 0 && (nearest === null || g < nearest)) nearest = g;
+      if (hit.index === re.lastIndex) re.lastIndex++;
+    }
+    return arm === "gap" ? nearest !== null : nearest === cit.gap;
+  };
 }
 
 /**
@@ -129,8 +218,11 @@ function maskGroundingTable(textByFile: Record<string, string>, expected: Record
  * any gap in 0..window passed, and blanking all quotes passed too. The rule here
  * is what that one case actually is - the marker name sits inside the quote -
  * stated so that getting the number wrong still fails.
+ *
+ * Each arm is witnessed by `armRelaxed` + `armUnmatched` in the gate: an arm that
+ * stops refusing anything makes that canary red.
  */
-function anchors(text: string, d: { index: number; marker: string; gap: number }, cit: GroundingCitation): boolean {
+function anchorsShips(text: string, d: { index: number; marker: string; gap: number }, cit: GroundingCitation): boolean {
   if (!citesMarker(cit, d.marker)) return false;
   const body = cit.quoted.endsWith(ELLIPSIS) ? cit.quoted.slice(0, -ELLIPSIS.length) : cit.quoted.replace(/\u002e\u002e\u002e$/, "");
   // An empty quote is never vacuously true: it "matches" at every position, so
