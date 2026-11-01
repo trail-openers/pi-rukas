@@ -31,15 +31,11 @@ import {
   toolPathFields,
 } from "./adversarial-ledger-binding.ts";
 import { execp } from "./exec.ts";
+import { adversarialPassed } from "./review-ledger.ts";
 import { resolveReviewBranch } from "./review-branch.ts";
 import { resolveHeadSha } from "./review-head-sha.ts";
 import { identityBase } from "./review-ledger-path.ts";
-import {
-  type LedgerEntry,
-  adversarialPassed,
-  appendLedgerEntry,
-  workingTreePatchId,
-} from "./review-ledger.ts";
+import { type LedgerEntry, appendLedgerEntry, workingTreePatchId } from "./review-ledger.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
@@ -91,8 +87,7 @@ export function writeAdversarialLedgerEntry(
     /** #1360 — the reviewed base ref, and whether this row came from the
      * `adversarial_loop` tool rather than the /work driver. */
     base?: string;
-    toolPath?: boolean;
-    /** #1360 — what the approving round captured (range SHAs + the working-tree
+    toolPath?: boolean;    /** #1360 — what the approving round captured (range SHAs + the working-tree
      * identity at the time its diff was read). Absent = nothing was captured,
      * which a tool-path row reads as unverifiable, never as a pass. */
     binding?: LedgerBinding;

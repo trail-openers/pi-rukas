@@ -27,7 +27,7 @@
  * write (see `writeLensLedgerEntry` — the promise is the #984 test seam).
  */
 
-import { type LensLedgerOutcome, writeLensLedgerEntry } from "./lens-ledger.ts";
+import { type LensLedgerOutcome, type LensPatchIdentity, writeLensLedgerEntry } from "./lens-ledger.ts";
 import type { LensReviewSummary } from "./lens-review-format.ts";
 import { postLensResidualDisclosure } from "./lens-review-residuals.ts";
 import type { Severity } from "./lens-review.ts";
@@ -56,6 +56,10 @@ async function finish(
     /** #1127 — the round-budget key when the branch was not resolved (a
      * branch the commit sits on, the PR head, or `detached:<sha>`). */
     ledgerKey?: string;
+    /** #1934 — the identity the review resolved once, shared with the findings
+     * record so the row's `patchId` and the one its confirmations were compared
+     * against are the same string. */
+    identity?: LensPatchIdentity;
   } = {},
   pr?: number,
 ): Promise<LensFinishResult> {
@@ -77,6 +81,9 @@ async function finish(
     ledger.ledgerKey ?? branch,
     // #1127 — the operator's round-cap override, recorded on the entry.
     ledger.overrideCap,
+    // #1934 — the shared identity, so this row's `patchId` is the one the round
+    // recorded against.
+    ledger.identity,
   );
   // #973 — the residual-findings disclosure: posted ONLY when the verdict is
   // ISSUES_FOUND AND the branch's PR/MR resolves (see postLensResidual for

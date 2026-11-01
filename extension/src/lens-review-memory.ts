@@ -54,6 +54,13 @@ export function recordRound(opts: {
   review: ReviewKind;
   /** The delta diff, given only for a delta round (the ranges derive from it). */
   deltaDiff?: string;
+  /**
+   * #1934 — the round's patch id, and whether to consult the ledger for an
+   * independent confirmation. Both come from the caller that resolved the
+   * review identity; with either absent the round records without one.
+   */
+  patchId?: string;
+  confirmFixes?: boolean;
 }) {
   if (!opts.branch || !opts.headSha) return Promise.resolve(undefined);
   return recordFindingRunOutcome({
@@ -63,6 +70,8 @@ export function recordRound(opts: {
     findings: opts.findings,
     review: opts.review,
     ...(opts.deltaDiff !== undefined ? { deltaDiff: opts.deltaDiff } : {}),
+    ...(opts.patchId !== undefined ? { patchId: opts.patchId } : {}),
+    ...(opts.confirmFixes === true ? { confirmFixes: true } : {}),
   });
 }
 

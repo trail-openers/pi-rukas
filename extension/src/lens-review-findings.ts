@@ -26,6 +26,7 @@
 
 import { partitionDecisions } from "./lens-residuals.ts";
 import type { SuppressedFinding } from "./lens-residuals.ts";
+import type { LensPatchIdentity } from "./lens-ledger.ts";
 import { splitAdvisory } from "./lens-review-advisory.ts";
 import type { AutoDeltaInfo } from "./lens-review-delta-disclose.ts";
 import { isReviewIncomplete } from "./lens-review-incomplete.ts";
@@ -85,6 +86,17 @@ export async function resolveReportedFindings(opts: {
   branchResolved: string | undefined;
   headSha: string | undefined;
   diff: string;
+  /**
+   * #1934 — the branch's review identity (`lensReviewPatchIdentity`), resolved
+   * ONCE by `runLensReview`. When present the round asks whether an independent
+   * confirmation — a passing `adversarial` or `test` ledger row whose `patchId`
+   * and `headSha` both bind to this commit — retires a row whose cited line has
+   * NOT changed. Absent (no identity, no branch, no head, or a delta/incomplete
+   * round) means the round consults no ledger and retires exactly what the
+   * cited-line rules retire: the pre-#1934 shape, and the safe default for any
+   * caller without an identity.
+   */
+  identity?: LensPatchIdentity;
   /** The diff the review RESOLVED (`resolveReviewDiff`'s ok outcome): who
    * produced the text above, and which range it covers. A `"caller"` diff is a
    * pasted string the review never read from git; a `"computed"` one was read
@@ -96,7 +108,7 @@ export async function resolveReportedFindings(opts: {
    * never the PR's), are both judged against the git `base...head` read. */
   resolved: { diffSource: "caller" | "computed"; base?: string; head?: string };
 }): Promise<ReportedFindings> {
-  const { deduped, lensResults, delta, branchResolved, headSha } = opts;
+  const { deduped, lensResults, delta, branchResolved, headSha, identity } = opts;
   const review = reviewKind(delta, lensResults);
   // The round is recorded through the memory seam (#1408): the same module that
   // shows the lenses their prior findings writes the round, so the evidence the
@@ -109,6 +121,17 @@ export async function resolveReportedFindings(opts: {
     findings: deduped,
     review,
     ...(delta ? { deltaDiff: opts.diff } : {}),
+    // #1934 — only a round with all three can bind a confirmation: a branch to
+    // key the ledger on, a head to compare `headSha` against, and the patch id
+    // to compare `patchId` against; and only a COMPLETE FULL round may act on
+    // one. With any of them missing the round records exactly as it did before
+    // this field existed.
+    ...(identity?.patchId !== undefined &&
+    branchResolved !== undefined &&
+    headSha !== undefined &&
+    review === "full"
+      ? { confirmFixes: true, patchId: identity.patchId }
+      : {}),
   });
   // Fail open, and fail OPEN *visibly*: `memoryDisclosure` keeps "the round could
   // not be recorded, because …" distinct from "the store was empty", and carries

@@ -71,6 +71,11 @@ import {
   readBranchRowsRaw,
 } from "./review-findings-read.ts";
 import { applyFindingRound } from "./review-findings-round.ts";
+import { readLedgerAt } from "./review-ledger-read.ts";
+import { type ConfirmationLapse } from "./review-findings-store-types.ts";
+import { type LedgerEntry } from "./review-ledger-entry.ts";
+import { ledgerPathFor } from "./review-ledger-path.ts";
+import { workingTreePatchId } from "./review-ledger.ts";
 import { acquireLedgerLock } from "./review-ledger-lock.ts";
 import { type FindingsLocation, findingsStateDir } from "./review-state-path.ts";
 import { trace } from "./trace.ts";
@@ -142,6 +147,27 @@ export interface FindingRun {
    * module-global fault seam is not a thing: this is the only seam.
    */
   writeFn?: WriteRows;
+  /**
+   * #1934 — the patch id this round is reviewing, which an independent
+   * confirmation must equal for it to count. Supplied by the caller that
+   * already computed it for its own ledger write (`lens-ledger.ts`), so a round
+   * never pays for a second `git diff | git patch-id --stable`; when absent the
+   * store computes it itself for a `confirmFixes` round. No value at all (no
+   * clone, a failed identity read) means NO confirmation is consulted — the
+   * round retires nothing it would not have retired before #1934.
+   */
+  patchId?: string;
+  /**
+   * #1934 — ask this round to retire a row whose cited line has NOT changed on
+   * the strength of an INDEPENDENT confirmation recorded against this exact
+   * commit (review-confirmation.ts). Opt-IN, and opt-in per CALL: a caller that
+   * does not set it consults no ledger and gains no retirement, so the pre-#1934
+   * behaviour is the default rather than a mode something could forget to
+   * disable. The ledger path is resolved the same override-honouring way the
+   * store's own location is, so an isolated round reads the ledger it was
+   * isolated with.
+   */
+  confirmFixes?: boolean;
 }
 
 /** The result of recording one round: the decisions, or why nothing was recorded. */
@@ -159,11 +185,27 @@ export type RecordOutcome =
        * row the operator accepted by name must never vanish from that list.
        */
       setAside?: SetAsideNotice[];
+      /**
+       * #1934 AC4 — rows whose independent confirmation LAPSED this round: a row
+       * a previous round retired on a confirmation, which this round found no
+       * longer binds to the commit under review. The row stays `open` and its
+       * cited code is unchanged — what changed is the evidence — so the caller
+       * renders this and the row carries a `confirmationLapsed` notice on disk, so
+       * a later reader can see it was once retired and is not now. A row nobody
+       * ever confirmed is never listed.
+       */
+      lapsed?: ConfirmationLapse[];
     }
   | { ok: false; reason: string; setAside?: SetAsideNotice[] };
 
 /** The result of an acceptance: the accepted row, or why nothing was accepted. */
 export type AcceptOutcome = { ok: true; row: StoredFinding } | { ok: false; reason: string };
+
+// #1934 AC4 — the lapsed-confirmation notice is DECLARED in the leaf
+// (review-findings-store-types.ts) and re-exported here: the round produces it
+// and this store returns it, so a copy in either one made them import each
+// other (the same reason `Decision` lives in review-findings-file.ts).
+export type { ConfirmationLapse } from "./review-findings-store-types.ts";
 
 type MutateOutcome<T> =
   | { ok: true; value: T }
@@ -414,6 +456,56 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
     // The pre-lock set-asides travel with the write: if the write fails the
     // round never reaches its summary, and without these the operator loses the
     // disclosure of memory that had already been set aside (#1125).
+    //
+    // #1934 — the identity the round's own write and its confirmations key on.
+    // One computation for both: the caller that already computed it (the lens
+    // ledger write) threads it in, so a normal recorded round pays for exactly
+    // one `git diff | git patch-id --stable`. A failed identity read leaves it
+    // undefined, which reads as "no confirmation available" below — never as a
+    // match, because `confirmationsFor` compares by string equality against a
+    // ledger row that is always non-empty.
+    let patchId = run.patchId;
+    if (run.confirmFixes === true && patchId === undefined) {
+      try {
+        patchId = (await workingTreePatchId(execp, run.cwd)).patchId;
+      } catch (err) {
+        trace(
+          `review-findings: confirmations unavailable — the review identity could not be computed (${(
+            err as Error
+          ).message.slice(0, 120)})`,
+        );
+      }
+    }
+    // #1934 — the ledger rows an independent confirmation is read from, read
+    // ONCE here and threaded into the round: the same resolver the store's own
+    // location uses (`ledgerPathFor`, override-honouring), so a round isolated by
+    // `PI_ENSEMBLE_REVIEW_LEDGER_FILE` reads the ledger it was isolated with. Any
+    // fault answers "no rows", which is the answer that confirms nothing — a
+    // ledger the round cannot read never retires a row, exactly as it never
+    // satisfies the merge guard. Read BEFORE the lock: the findings write holds
+    // it, and taking a git read inside the critical section would widen the
+    // window the #1071 lock exists to shorten.
+    let ledgerRows: LedgerEntry[] = [];
+    if (run.confirmFixes === true && patchId !== undefined) {
+      try {
+        // One resolution, the same override-honouring resolver the store's own
+        // location is computed from (`ledgerPathFor` / `computeLocation` both read
+        // `PI_ENSEMBLE_REVIEW_LEDGER_FILE` first), so an isolated round reads the
+        // ledger it was isolated with — the read/write agreement #1125 requires.
+        const ledgerFile = await ledgerPathFor(execp, run.cwd);
+        if (ledgerFile) ledgerRows = readLedgerAt(ledgerFile);
+      } catch (err) {
+        trace(
+          `review-findings: confirmations unavailable — the ledger could not be read (${(
+            err as Error
+          ).message.slice(0, 120)})`,
+        );
+      }
+    }
+    const useConfirmations = run.confirmFixes === true && patchId !== undefined;
+    // The pre-lock set-asides travel with the write: if the write fails the
+    // round never reaches its summary, and without these the operator loses the
+    // disclosure of memory that had already been set aside (#1125).
     const out = await mutateFindings(
       loc,
       (all) => {
@@ -427,6 +519,15 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
           headOf: (p: string) => heads.get(p),
           review: run.review,
           ...(ranges ? { deltaRanges: ranges } : {}),
+          ...(useConfirmations
+            ? {
+                confirmations: {
+                  ledger: ledgerRows,
+                  patchId: patchId as string,
+                  headSha: run.headSha,
+                },
+              }
+            : {}),
           now,
         });
         return {
@@ -450,6 +551,7 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
       decisions: out.value.decisions,
       carried: out.value.carried,
       resolved: out.value.resolved,
+      ...(out.value.lapsed && out.value.lapsed.length > 0 ? { lapsed: out.value.lapsed } : {}),
       ...(out.value.setAside.length > 0 ? { setAside: out.value.setAside } : {}),
     };
   } catch (err) {

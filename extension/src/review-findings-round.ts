@@ -18,7 +18,15 @@
 
 import type { CarriedFinding, Finding } from "./lens-review-types.ts";
 import type { ChangedRanges } from "./review-diff.ts";
-import { type ReviewKind, outsideDelta, rowFate } from "./review-findings-fate.ts";
+import {
+  type ReviewKind,
+  isRetirableOpenCriticalRow,
+  outsideDelta,
+  rowFate,
+} from "./review-findings-fate.ts";
+import type { ConfirmationLapse } from "./review-findings-store-types.ts";
+import { type LedgerEntry } from "./review-ledger-entry.ts";
+import { confirmationsFor } from "./review-confirmation.ts";
 import type {
   Decision,
   ResolvedNotice,
@@ -26,6 +34,7 @@ import type {
   StoredFinding,
 } from "./review-findings-file.ts";
 import { newRowId } from "./review-findings-file.ts";
+import { trace } from "./trace.ts";
 import type { HeadState } from "./review-findings-head.ts";
 import { type FindingIdentity, identityOf, pickMatch, sameTitle } from "./review-findings-match.ts";
 
@@ -42,10 +51,28 @@ export interface RoundOutcome {
   resolved: ResolvedNotice[];
   /** Rows this round set aside: a lapsed acceptance, or a malformed row. */
   setAside: SetAsideNotice[];
+  /**
+   * #1934 AC4 — rows whose independent confirmation lapsed this round (see
+   * `ConfirmationLapse` in review-findings-store.ts, which this mirrors): the
+   * row is carried and stays `open`, and `confirmationLapsed` is written onto it
+   * so the state survives the round.
+   */
+  lapsed?: ConfirmationLapse[];
 }
 
 /** The head state of one path, as read by the store before the round ran. */
 export type HeadOf = (path: string) => HeadState | undefined;
+
+/** The commit identity a confirmation must bind to, and the ledger rows the
+ * confirmation is read from (#1934). */
+export interface ConfirmationSource {
+  /** The branch's ledger rows, as read by the store before the round ran. */
+  ledger: readonly LedgerEntry[];
+  /** The patch id of the range this round reviewed. */
+  patchId: string;
+  /** The full 40-char head this round reviewed. */
+  headSha: string;
+}
 
 /** The row with its acceptance withdrawn: open again, so it is reported again. */
 function reopen(r: StoredFinding): StoredFinding {
@@ -80,14 +107,25 @@ export function applyFindingRound(opts: {
   review: ReviewKind;
   /** The delta's changed line ranges; required for a delta round to resolve anything. */
   deltaRanges?: ChangedRanges;
+  /**
+   * #1934 — the ledger rows and the commit identity an independent confirmation
+   * is read against. Absent (the default, and every caller that has no ledger
+   * to hand) means NO confirmation is consulted: rows retire exactly as before,
+   * so a caller that does not thread this cannot accidentally gain the arm.
+   * Present but unmatching also retires nothing — see review-confirmation.ts.
+   */
+  confirmations?: ConfirmationSource;
   now: number;
 }): RoundOutcome {
-  const { branch, findings, mine, headOf, review, deltaRanges, now } = opts;
+  const { branch, findings, mine, headOf, review, deltaRanges, now, confirmations } = opts;
   // A working copy of the taken ids: a new row's id must not collide with an
   // earlier new row of the SAME round, and the caller's set stays untouched.
   let taken = new Set(opts.taken);
   const touched = new Set<string>();
   const decisions: Decision[] = [];
+  const carried: CarriedFinding[] = [];
+  const confirmationLapses: ConfirmationLapse[] = [];
+  const resolved: ResolvedNotice[] = [];
   // An acceptance that lapsed this round: reported again (below) AND named for
   // the operator, because the suppression it provided is gone.
   const lapsed: SetAsideNotice[] = [];
@@ -101,6 +139,90 @@ export function applyFindingRound(opts: {
     const head = headOf(p);
     return head?.kind === "lines" ? head.lines : [];
   };
+
+  // #1934 — the confirmations this round may act on. Only a COMPLETE FULL round
+  // asks: the evidence is "an independent review covered this commit", and a
+  // delta covered only its own range while an incomplete round reached no
+  // verdict, so neither can vouch for the commit a confirmation binds to.
+  const reviewable = review === "full" ? confirmations : undefined;
+  /** The confirmation for one row, bounded by the row's own stamps.
+   *
+   * `confirmationsFor` asks whether the ledger row binds to the reviewed commit
+   * and to this row; this adds the two facts only the round itself can supply,
+   * enforced here rather than trusted from the caller because the one outcome
+   * the rule must never produce is a CRITICAL the lenses still see disappearing
+   * from the store:
+   *
+   *   - `firstSeen < now` — the row predates this round, so the confirmation is
+   *     evidence about a review that came AFTER the finding was filed (#1934
+   *     decision 1: a LATER round is what confirms a fix);
+   *   - `lastSeen < now` — this round did NOT re-report it. The findings pass
+   *     above stamps `lastSeen: now` on every matched row, so a re-reported row
+   *     fails here even when a confirmation was written seconds before the
+   *     lenses reported it. A row the round did not touch keeps the `lastSeen`
+   *     an earlier round stamped, so a genuine confirmation — recorded after
+   *     that round and before this one — still passes.
+   */
+  
+const confirmedFor = (r: StoredFinding): string | undefined => {
+    if (reviewable === undefined) return undefined;
+    if (r.firstSeen >= now) return undefined;
+    // A row this round RE-REPORTED has its `lastSeen` already stamped to `now`
+    // by the findings pass above, and that stamp is not information about when
+    // the finding was last observed — the round itself just wrote it. The real
+    // bound for such a row is the round's own clock: a confirmation written
+    // after this round started is evidence recorded while (or after) the lenses
+    // were reporting the finding, and it confirms nothing. A row the round did
+    // not touch keeps an older `lastSeen`, and any confirmation recorded after
+    // that is evidence about a review that came later.
+    const lastSeen = r.lastSeen >= now ? now : r.lastSeen;
+    return confirmationsFor(
+      reviewable.ledger,
+      branch,
+      { patchId: reviewable.patchId, headSha: reviewable.headSha },
+      { firstSeen: r.firstSeen, lastSeen },
+    ).get(r.id);
+  };
+
+  // #1934 AC4 — a retirement is not a latch. A row a previous round retired on a
+  // confirmation is put back on the table by THIS round when (a) the round is a
+  // complete full one, so it actually looked at the commit, and (b) the
+  // confirmation no longer binds — same patchId and headSha absent, the row
+  // un-passed, or the confirmation gone from the ledger. The row itself is not
+  // touched: same `line`, same `lineHash`, same `firstSeen` — the row that was
+  // retired is the row that comes back, and only the evidence changed. A row
+  // that a confirmation retired and whose confirmation still binds is left alone
+  // (the matched pass below resolves it again), and a row nobody ever retired is
+  // untouched, which is every row in every round before this issue existed.
+  if (reviewable !== undefined) {
+    mine.forEach((r, i) => {
+      if (r.status !== "resolved" || r.resolvedReason !== "confirmed") return;
+      const stillBinds =
+        r.lastSeen < now &&
+        confirmationsFor(reviewable.ledger, branch, { patchId: reviewable.patchId, headSha: reviewable.headSha }, { firstSeen: r.firstSeen, lastSeen: r.lastSeen }).get(r.id) !== undefined;
+      if (stillBinds) return;
+      // `confirmationLapsed` marks which retirements this driver made and could
+      // now lapse, so a row written by another route is not claimed; and a row
+      // already carrying the notice is not re-stamped (the array would grow every
+      // round and the disclosure would stop being about an event).
+      // Two sources for the notice, and the rule is one: a row whose retirement
+      // was made by a confirmation is this driver's own, so its lapse is reportable.
+      // `confirmedBy` is the field that says so (written by both retirement sites
+      // and refused by the file's schema for any other reason), so it is the gate —
+      // and a row that already carries the notice is not re-stamped, because the
+      // array would grow every round and the disclosure would stop being about an
+      // event.
+      if (r.confirmationLapsed === true) return;
+      const provenance = r.confirmedBy;
+      if (provenance === undefined) return;
+      mine[i] = {
+        ...reopen(r),
+        confirmedBy: undefined,
+        confirmationLapsed: true,
+      };
+      confirmationLapses.push({ rowId: r.id, title: r.title, provenance });
+    });
+  }
   const normalised = findings.map((f) => (noFile(f.path) ? { ...f, line: undefined } : f));
   const identities = normalised.map((f) => identityOf(f, linesOf(f.path)));
   // The explicit no-line marker (#1469), derived from the IDENTITY rather than
@@ -108,7 +230,8 @@ export function applyFindingRound(opts: {
   // without a resolvable line - the lens omitted it, the path is not a readable
   // file at head, or the cited line is past the file's end - so the marker says
   // "this row cites no code" for all three, not just the first.
-  normalised.forEach((f, i) => {
+  normalised.forEach((f, idx) => {
+    const i = idx;
     const id = identities[i] as FindingIdentity;
     const critical = f.severity === "CRITICAL";
     const gone = noFile(f.path);
@@ -169,6 +292,62 @@ export function applyFindingRound(opts: {
       ...(f.suggestion ? { suggestion: f.suggestion } : {}),
     };
     if (kept.status === "resolved") kept = reopen(kept);
+    // #1934 AC1 — a row this round RE-REPORTED. A re-report is the lenses saying
+    // the problem is still there, so nothing retires on hash evidence: the cited
+    // line is byte-unchanged by construction, and #1832's rule already refuses to
+    // retire a re-reported CRITICAL on hashes. What retires it is an INDEPENDENT
+    // confirmation bound to this exact commit, and the round that consumed it
+    // needs no further work (AC1's "no further work needed"). The eligibility
+    // test is `rowFate`'s own arm, called rather than re-spelled: a re-reported
+    // row whose cited code survives retires on a confirmation and nothing else,
+    // so the round asks `rowFate` what it would make of the row WITH the
+    // confirmation and acts only on its answer. A row with no confirmation is
+    // carried exactly as it was before this issue existed.
+    if (
+      kept.status === "open" &&
+      isRetirableOpenCriticalRow(kept) &&
+      // Re-reported means the round just stamped `lastSeen: now`, so the
+      // confirmation must be older than the round's own clock: a confirmation
+      // recorded after this round began is evidence written while the lenses were
+      // still reporting the finding, and it confirms nothing.
+      (() => {
+        const cb = confirmedFor(kept);
+        if (cb === undefined) return false;
+        const head = headOf(kept.path);
+        if (head === undefined) return false;
+        return (
+          rowFate(kept, head, review, { deltaRanges, confirmedBy: cb }).kind === "resolve"
+        );
+      })()
+    ) {
+      const cb = confirmedFor(kept) as string;
+      // The re-report's own stamps are kept — the row's history is not rewritten
+      // by a retirement — and the retirement notice is written here rather than
+      // left over from an earlier retirement.
+      kept = {
+        ...kept,
+        status: "resolved",
+        acceptance: undefined,
+        resolvedReason: "confirmed",
+        confirmedBy: cb,
+        confirmationLapsed: undefined,
+      };
+      resolved.push({ rowId: kept.id, title: kept.title, reason: "confirmed" });
+      // The matched-row bookkeeping is unchanged: the row WAS matched, and its
+      // retirement is recorded in `resolved`, not by rewriting what this round
+      // observed.
+      decisions.push({ action: "matched", rowId: kept.id });
+      // `kept` is a `let` and the assignment above does not persist past this
+      // callback, so the row is written back explicitly — the same site the
+      // suppression paths below use.
+      mine[i] = kept;
+      return;
+    }
+    // #1934 AC4 — a row the round RE-REPORTED is evidence the problem is still
+    // there, so any confirmation that had retired it is no longer evidence about
+    // it: the lapse notice goes with the retirement rather than claiming a row
+    // the lenses are reporting right now was once confirmed fixed.
+    if (kept.confirmationLapsed !== undefined) kept = { ...kept, confirmationLapsed: undefined };
     // A line-bearing finding is bound to the snippet the operator accepted; a
     // no-line finding is bound to its title only (see sameTitle).
     if (
@@ -185,7 +364,10 @@ export function applyFindingRound(opts: {
       });
       kept = reopen(kept);
     }
-    mine[mine.indexOf(row)] = kept;
+    // Written by INDEX, not by `mine.indexOf(row)`: the lapse pass above may have
+    // replaced this slot with an opened copy, and `indexOf` would then find no
+    // match and silently drop the round's decision for the row (#1934).
+    mine[mine.indexOf(row) === -1 ? i : mine.indexOf(row)] = kept;
     // An accepted row's suppression does NOT depend on its path being a readable
     // file: a no-line row on a path missing at head is suppressed by title like
     // any other, and a finding on a path the operator has set aside must not come
@@ -213,8 +395,6 @@ export function applyFindingRound(opts: {
     }
     decisions.push({ action: "matched", rowId: row.id });
   });
-  const carried: CarriedFinding[] = [];
-  const resolved: ResolvedNotice[] = [];
   mine.forEach((r, i) => {
     if (r.status === "accepted") {
       // #1125 — an acceptance does not immortalise a row. An UNTOUCHED accepted
@@ -243,6 +423,13 @@ export function applyFindingRound(opts: {
             status: "resolved",
             acceptance: undefined,
             resolvedReason: fate.reason,
+            // #1934 — an ACCEPTED row never reaches the confirmation arm: the
+            // arm tests `status === "open"`, so this resolve reason is never
+            // "confirmed" and the provenance below must be cleared rather than
+            // inherited from a row that had been retired by a confirmation and
+            // was re-accepted since (review-findings-file.ts's rowProblem
+            // refuses a row carrying provenance without that reason).
+            confirmedBy: undefined,
           };
           resolved.push({ rowId: r.id, title: r.title, reason: fate.reason });
         }
@@ -255,12 +442,42 @@ export function applyFindingRound(opts: {
     // lock) has no head state. Carrying it is the safe outcome: nothing is
     // resolved on evidence never read.
     const head = headOf(r.path);
+    const confirmedBy = confirmedFor(r);
     const fate =
-      head === undefined ? ({ kind: "carry" } as const) : rowFate(r, head, review, { deltaRanges });
+      head === undefined
+        ? ({ kind: "carry" } as const)
+        : rowFate(r, head, review, {
+            deltaRanges,
+            ...(confirmedBy === undefined ? {} : { confirmedBy }),
+          });
     if (fate.kind === "resolve") {
-      mine[i] = { ...r, status: "resolved", acceptance: undefined, resolvedReason: fate.reason };
-      resolved.push({ rowId: r.id, title: r.title, reason: fate.reason });
+      mine[i] = {
+        ...r,
+        status: "resolved",
+        acceptance: undefined,
+        resolvedReason: fate.reason,
+        ...(fate.reason === "confirmed" && confirmedBy !== undefined ? { confirmedBy } : {}),
+        // A retirement erases the lapse notice: the row is retired, and a
+        // "lapsed" flag beside a resolved row would read as two histories.
+        confirmationLapsed: undefined,
+      };
+      resolved.push({
+        rowId: r.id,
+        title: r.title,
+        reason: fate.reason,
+        ...(fate.reason === "confirmed" && confirmedBy !== undefined ? { confirmedBy } : {}),
+      });
     } else {
+      // #1934 AC4 — the confirmation is RE-EVALUATED every round, never latched
+      // at first match: this is the round on which the row's confirmation did NOT
+      // bind, so a row a previous round retired on it is carried. The row itself
+      // is unchanged — same `line`, same `lineHash`, still `open` — what changed
+      // is the evidence, and a later reader must be able to tell that apart from
+      // a row that was never retired. So the row gains `confirmationLapsed`, and
+      // the round reports it. `retiredOn` names the confirmation it was retired
+      // on (the string the row carried while it stood), so the disclosure is a
+      // statement about a real review and not "something changed". A row nobody
+      // ever retired carries no field and is not listed.
       carried.push({
         carried: true,
         lens: r.lens,
@@ -276,9 +493,20 @@ export function applyFindingRound(opts: {
         ...(r.description === undefined ? {} : { description: r.description }),
         ...(r.suggestion === undefined ? {} : { suggestion: r.suggestion }),
       });
+      if (r.confirmationLapsed === undefined && r.confirmedBy !== undefined) {
+        trace(`DBG carry-lapse ${r.id}`);
+        mine[i] = { ...r, confirmationLapsed: true };
+        confirmationLapses.push({ rowId: r.id, title: r.title, provenance: r.confirmedBy });
+      }
     }
   });
-  return { decisions, carried, resolved, setAside: lapsed };
+  return {
+    decisions,
+    carried,
+    resolved,
+    setAside: lapsed,
+    ...(confirmationLapses.length > 0 ? { lapsed: confirmationLapses } : {}),
+  };
 }
 
 /** True when the head state names a readable file. */
