@@ -14,12 +14,24 @@
  * and a forge answer. So the fixture spends its effort on the two claims that
  * are load-bearing here — a real 40-hex head on the log, and a real PR URL —
  * and injects everything else.
+ *
+ * **One thing it does not inject: the worktree.** `ci` runs its full tier FROM
+ * DISK in `.worktrees/lean-<issue>` and re-reads that tree's HEAD, branch and
+ * porcelain before it will run (`assertDiskAtVerifiedHead`). A fixture that
+ * only `mkdir`s the directory gives the step no checkout to report, so every
+ * case that expects the tier to run dies on "no readable head" — and, worse,
+ * a recorder that answers HEAD for it can answer *anything* and stay green.
+ * So the fixture creates the worktree with real `git worktree add` at the
+ * commit the `verify` step records, exactly the way production does, and hands
+ * the oids back so a case can assert what the tree really holds rather than
+ * what it was told to say.
  */
 
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { isFullCommitSha } from "../../src/commit-sha.ts";
 import type { HandlerCtx } from "../../src/lean/engine.ts";
 import type { Outcome, Step } from "../../src/lean/state.ts";
 import { createRun } from "../../src/lean/state.ts";
@@ -56,7 +68,39 @@ export interface CiLandLog {
   head: string;
   /** What the branch is called, so a case can assert the step looked there. */
   branch: string;
+  /** `.worktrees/lean-<issue>` — the tree `ci` reads and runs its tier in. */
+  worktree: string;
+  /** The oid the worktree's HEAD really holds (a real `git rev-parse`). */
+  worktreeHead: string;
   ctx: HandlerCtx;
+}
+
+/** A second real commit, so a case can put the worktree on a commit that exists. */
+function secondCommit(repoRoot: string): string {
+  writeFileSync(path.join(repoRoot, "src/other.ts"), "export const other = 2;\n");
+  git(repoRoot, "add", "-A");
+  git(repoRoot, "commit", "-q", "-m", "chore: a commit the run never certified");
+  return git(repoRoot, "rev-parse", "HEAD");
+}
+
+/**
+ * Put a real checkout at the path `ci` will read, at the oid it must find.
+ *
+ * `git worktree add --detach <path> <oid>` is the production shape (`worktree.ts`
+ * `worktreeCreate`), and it is the only shape that gives the tree a HEAD git can
+ * read. Then HEAD is put back on the run's branch at that same commit, because
+ * `ci` refuses a detached tree and a real run's tree is not detached.
+ */
+function materialiseWorktree(
+  repoRoot: string,
+  issue: number,
+  oid: string,
+  branch: string,
+): { wt: string; head: string } {
+  const wt = path.join(repoRoot, ".worktrees", `lean-${String(issue)}`);
+  git(repoRoot, "worktree", "add", "--detach", wt, oid);
+  git(wt, "checkout", "-q", "-B", branch, oid);
+  return { wt, head: git(wt, "rev-parse", "HEAD") };
 }
 
 /**
@@ -77,6 +121,16 @@ export function ciLandLog(
     verifiedHead?: string;
     /** Drop the publish step (nothing was ever opened on the forge). */
     noPr?: boolean;
+    /** Leave the worktree an empty directory — no checkout, so no head to report. */
+    noWorktree?: boolean;
+    /** Check the worktree out at this oid instead of the certified head. Pass
+     *  `"other"` for a real second commit in the repo (a genuine `git checkout`
+     *  of something else), rather than an oid the repo has never held. */
+    worktreeHead?: string;
+    /** Detach the worktree's HEAD from the run's branch, keeping the commit. */
+    detached?: boolean;
+    /** Write this untracked file into the tree, so the porcelain is not empty. */
+    dirtyFile?: string;
   } = {},
 ): CiLandLog {
   const repoRoot = mkdtempSync(path.join(tmpdir(), "lean-ci-land-"));
@@ -89,6 +143,31 @@ export function ciLandLog(
   const head = git(repoRoot, "rev-parse", "HEAD");
   const branch = `lean/issue-${String(issue)}`;
   git(repoRoot, "branch", branch, head);
+
+  // The tree `ci` reads and runs its tier in. It is a real checkout at the head
+  // the `verify` step records — not an `mkdir` — because a fabricated head the
+  // repo has never held cannot be checked out, and a step that runs from disk
+  // must have a disk to run from.
+  const certified = opts.noVerifiedHead === true ? head : (opts.verifiedHead ?? head);
+  // "Someone checked out another commit" is a case about a tree that moved, so it
+  // gets a commit that really exists. A fabricated oid cannot be checked out at
+  // all, which is exactly why the fabricated-`verifiedHead` path above stays a
+  // pure string: that case is about OID EQUALITY, not about a disk.
+  const otherCommit = opts.worktreeHead === "other" ? secondCommit(repoRoot) : undefined;
+  const requested = otherCommit ?? (opts.worktreeHead === "other" ? head : opts.worktreeHead);
+  const checkoutAt = requested ?? (isFullCommitSha(certified) ? certified : head);
+  let wt = path.join(repoRoot, ".worktrees", `lean-${String(issue)}`);
+  let worktreeHead = "";
+  if (opts.noWorktree === true) {
+    mkdirSync(wt, { recursive: true });
+  } else {
+    const made = materialiseWorktree(repoRoot, issue, checkoutAt, branch);
+    wt = made.wt;
+    worktreeHead = made.head;
+    if (opts.detached === true) git(wt, "checkout", "-q", "--detach", made.head);
+    if (opts.dirtyFile !== undefined)
+      writeFileSync(path.join(wt, opts.dirtyFile), "written by hand, held by no commit\n");
+  }
 
   const verify: Outcome = {
     kind: "green",
@@ -118,6 +197,8 @@ export function ciLandLog(
     repoRoot,
     head,
     branch,
+    worktree: wt,
+    worktreeHead,
     ctx: {
       repoRoot,
       issue,

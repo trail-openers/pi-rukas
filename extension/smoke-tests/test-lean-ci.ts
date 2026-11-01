@@ -28,10 +28,12 @@
  */
 
 import { rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { defaultConfig } from "../src/lean/config.ts";
 import { ciOutcome } from "../src/lean/ci.ts";
 import type { CiDeps } from "../src/lean/ci-deps.ts";
 import { ROOTS, ciLandLog } from "./lib/lean-ci-land-fixture.ts";
+import { gitTestEnv } from "./lib/git-test-env.ts";
 import type { Outcome } from "../src/lean/state.ts";
 import { VerifyInfraError } from "../src/lean/verify-types.ts";
 
@@ -69,6 +71,41 @@ interface CiCase {
   prHead?: string;
   /** The log carries no publish step at all. */
   noPr?: boolean;
+  /** Check the worktree out at this oid (the disk gate must catch it). */
+  worktreeHead?: string;
+  /** Leave the worktree's HEAD detached from the run's branch. */
+  detached?: boolean;
+  /** Write this untracked file into the worktree, so the tree is not clean. */
+  dirtyFile?: string;
+  /** The worktree exists but holds no checkout at all. */
+  noWorktree?: boolean;
+}
+
+/**
+ * The fixture's OWN git, run for real.
+ *
+ * `ci` re-reads HEAD, the branch and the porcelain of the worktree before it will
+ * run its tier (`assertDiskAtVerifiedHead`), and the recorder receives those as
+ * `exec("git", { argv })`. Answering them from a scripted constant would make the
+ * step's whole disk guarantee unobservable: a recorder that returns whatever the
+ * test expects has proven only that the test agrees with itself. So the `git`
+ * branch below shells out to the fixture's real repo and returns what git really
+ * says about the tree on disk.
+ */
+function realGit(cwd: string, argv: string[]): { stdout: string } {
+  const r = spawnSync("git", argv, {
+    cwd,
+    encoding: "utf8",
+    env: {
+      ...gitTestEnv(),
+      GIT_AUTHOR_NAME: "t",
+      GIT_AUTHOR_EMAIL: "t@t",
+      GIT_COMMITTER_NAME: "t",
+      GIT_COMMITTER_EMAIL: "t@t",
+    },
+  });
+  if (r.status !== 0) throw new Error(`git ${argv.join(" ")}: ${(r.stderr ?? "").trim()}`);
+  return { stdout: r.stdout ?? "" };
 }
 
 /** The log a run carries when it arrives at `ci`, minus what the case removes. */
@@ -77,6 +114,10 @@ function logOpts(c: CiCase): Parameters<typeof ciLandLog>[1] {
     ...(c.noHead === true ? { noVerifiedHead: true } : {}),
     ...(c.noPr === true ? { noPr: true } : {}),
     ...(c.verifiedHead === undefined ? {} : { verifiedHead: c.verifiedHead }),
+    ...(c.worktreeHead === undefined ? {} : { worktreeHead: c.worktreeHead }),
+    ...(c.detached === true ? { detached: true } : {}),
+    ...(c.dirtyFile === undefined ? {} : { dirtyFile: c.dirtyFile }),
+    ...(c.noWorktree === true ? { noWorktree: true } : {}),
   };
 }
 
@@ -114,6 +155,10 @@ async function run(
         };
       if (cmd.startsWith("gh pr checks "))
         return { stdout: JSON.stringify(c.checks ?? [{ name: "ci", bucket: "pass" }]) };
+      // The disk re-reads go to the fixture's real repo. The alternative — a
+      // scripted answer — is what let a whole class of "green" mean nothing: the
+      // step would have been graded against a HEAD nobody read off a disk.
+      if (cmd === "git") return realGit(String(o?.cwd ?? f.repoRoot), (o?.argv ?? []) as string[]);
       return { stdout: "" };
     },
     loadConfig: async () => ({

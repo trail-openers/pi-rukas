@@ -33,8 +33,8 @@
  * captured payloads, the tier is an `sh` command, no PR and no merge exist.
  */
 
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { rmSync } from "node:fs";
 import { defaultConfig } from "../src/lean/config.ts";
 import { phase1Handlers } from "../src/lean/command.ts";
 import { ciOutcome } from "../src/lean/ci.ts";
@@ -42,6 +42,7 @@ import type { CiDeps } from "../src/lean/ci-deps.ts";
 import { ghReads } from "../src/lean/ci-deps.ts";
 import { VerifyInfraError } from "../src/lean/verify-types.ts";
 import { ROOTS, ciLandLog } from "./lib/lean-ci-land-fixture.ts";
+import { gitTestEnv } from "./lib/git-test-env.ts";
 import {
   REAL_CHECKS_FAIL,
   REAL_CHECKS_PASS,
@@ -74,6 +75,32 @@ interface Case {
   /** The tier runs and exits non-zero. */
   tierExit?: number;
   noTierAtAll?: boolean;
+  /** A porcelain line the tree reports, so the clean-tree gate can be made to bite. */
+  dirty?: string;
+  /** The name of an untracked file to actually write into the worktree. */
+  dirtyFile?: string;
+  /** The sha the worktree's HEAD holds, in place of the verified one. `"moved"`
+   *  puts it on a real second commit in the repo. */
+  headOnDisk?: string;
+  /** HEAD answers with no branch at all (a detached tree). */
+  detached?: boolean;
+}
+
+/** Run one git command in the fixture's real repo and report what git really says. */
+function realGit(cwd: string, argv: string[]): { stdout: string } {
+  const r = spawnSync("git", argv, {
+    cwd,
+    encoding: "utf8",
+    env: {
+      ...gitTestEnv(),
+      GIT_AUTHOR_NAME: "t",
+      GIT_AUTHOR_EMAIL: "t@t",
+      GIT_COMMITTER_NAME: "t",
+      GIT_COMMITTER_EMAIL: "t@t",
+    },
+  });
+  if (r.status !== 0) throw new Error(`git ${argv.join(" ")}: ${(r.stderr ?? "").trim()}`);
+  return { stdout: r.stdout ?? "" };
 }
 
 interface Ran {
@@ -93,12 +120,18 @@ interface Ran {
 async function run(
   c: Case,
 ): Promise<{ outcome?: Outcome; threw?: Error; ran: Ran; wt: string; head: string }> {
-  const f = ciLandLog(900 + Math.floor(Math.random() * 90000));
+  const f = ciLandLog(900 + Math.floor(Math.random() * 90000), {
+    ...(c.headOnDisk === undefined
+      ? {}
+      : { worktreeHead: c.headOnDisk === "moved" ? "other" : c.headOnDisk }),
+    ...(c.detached === true ? { detached: true } : {}),
+    ...(c.dirtyFile === undefined ? {} : { dirtyFile: c.dirtyFile }),
+  });
   const tier = c.full ?? "";
   const ran: Ran = { cmds: [], tierRuns: 0 };
   const reads = ghReads(77);
   const deps: CiDeps = {
-    exec: async (cmd) => {
+    exec: async (cmd, o) => {
       ran.cmds.push(cmd);
       if (cmd === tier && tier !== "") {
         ran.tierRuns++;
@@ -119,9 +152,11 @@ async function run(
         if (c.ghDown === true) throw new Error("gh: could not reach the API");
         return { stdout: typeof c.checks === "string" ? c.checks : JSON.stringify(c.checks ?? REAL_CHECKS_PASS) };
       }
-      // The disk re-reads (rev-parse / symbolic-ref / status) go to the REAL git
-      // in the fixture's own repo, so `ci`'s head/branch/clean gate is exercised
-      // against a real worktree rather than a scripted answer.
+      // The disk re-reads go to the fixture's OWN repo, through real git — every
+      // one of them, including HEAD. A scripted `rev-parse` would make the whole
+      // of (w6) a rehearsal: the step would be graded against a head the test
+      // asserted rather than a disk it read, and a no-op gate would stay green.
+      if (cmd === "git") return realGit(String(o?.cwd ?? f.repoRoot), (o?.argv ?? []) as string[]);
       return { stdout: "" };
     },
     loadConfig: async () => ({
@@ -279,41 +314,40 @@ async function run(
   );
 }
 
-// ── (w6) a tier that dirtied the tree cannot leave a green behind ────────
+// ── (w6) the disk gate bites: a moved head or a dirty tree cannot pass ───
 {
-  // The disk gate runs before the tier, so prove it bites: make the tier itself
-  // write a file, then re-run ci on the now-dirty tree. A green here would mean
-  // the step graded bytes no commit holds.
-  const f = ciLandLog(556);
-  const wt = path.join(f.repoRoot, ".worktrees", "lean-556");
-  mkdirSync(wt, { recursive: true });
-  writeFileSync(path.join(wt, "stray.txt"), "written after the gate\n");
-  const reads = ghReads(77);
-  const deps: CiDeps = {
-    exec: async (cmd) => {
-      if (cmd === reads.view) return { stdout: realPrViewReply(f.head) };
-      if (cmd === reads.checks) return { stdout: JSON.stringify(REAL_CHECKS_PASS) };
-      if (cmd.startsWith("git ") || cmd === "true") return { stdout: "" };
-      return { stdout: "" };
-    },
-    loadConfig: async () => ({ ...defaultConfig(), verify: { full: "true" } }),
-    tierTimeoutMs: 5_000,
-  };
-  // The fixture's repoRoot IS the tree `ci` inspects, and `stray.txt` is an
-  // untracked file in it: the clean-tree gate must refuse before the tier runs.
-  let threw: Error | undefined;
-  let outcome: Outcome | undefined;
-  try {
-    outcome = await ciOutcome(f.ctx, deps);
-  } catch (err) {
-    threw = err as Error;
-  }
-  const clean = (threw === undefined && outcome?.kind === "green") || threw !== undefined;
+  // HEAD no longer at the verified commit (someone checked out something else
+  // between the build gate and this handler): the step must throw, not grade.
+  // The tree is checked out to a REAL second commit, so this is a disk that moved
+  // rather than a recorder told to say a different sha.
+  const r = await run({ full: "true", headOnDisk: "moved" });
   assert(
-    !(outcome?.kind === "green"),
-    `(w6) a tree with uncommitted bytes never yields a ci green (${JSON.stringify({ kind: outcome?.kind, threw: threw?.message })})`,
+    r.threw instanceof VerifyInfraError,
+    `(w6) a tree checked out to another commit THROWS (${String(r.threw?.message)})`,
   );
-  assert(clean, "(w6) the outcome is a throw or a non-green, never a pass");
+  assert(r.ran.tierRuns === 0, "(w6) and the full tier never ran over it");
+}
+{
+  // HEAD detached from the run's branch: same sha, no ref — the case a bare
+  // head comparison cannot see.
+  const r = await run({ full: "true", detached: true });
+  assert(
+    r.threw instanceof VerifyInfraError &&
+      String(r.threw?.message).includes("branch"),
+    `(w6) a detached HEAD THROWS, naming the branch it lost (${String(r.threw?.message)})`,
+  );
+  assert(r.ran.tierRuns === 0, "(w6) no tier over a tree taken off its ref");
+}
+{
+  // Uncommitted bytes in the tree: the clean-tree gate is lean's ONE porcelain
+  // check, so this is the witness that `ci` actually calls it. The file is really
+  // written, so the porcelain line is git's, not the test's.
+  const r = await run({ full: "true", dirty: "?? stray.txt", dirtyFile: "stray.txt" });
+  assert(
+    r.threw instanceof VerifyInfraError && String(r.threw?.message).includes("dirty"),
+    `(w6) uncommitted bytes THROWS rather than yielding a green (${String(r.threw?.message)})`,
+  );
+  assert(r.ran.tierRuns === 0, "(w6) the tier never ran over bytes no commit holds");
 }
 
 for (const dir of ROOTS) rmSync(dir, { recursive: true, force: true });
