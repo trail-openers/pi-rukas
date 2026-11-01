@@ -118,6 +118,16 @@ export function applyFindingRound(opts: {
   now: number;
 }): RoundOutcome {
   const { branch, findings, mine, headOf, review, deltaRanges, now, confirmations } = opts;
+  // #1934 — the ids of the rows this round holds, handed to the confirmation
+  // join. The join in review-confirmation.ts matches a ledger row on its
+  // `rowId`; bounding that match to the rows the round owns is what keeps a
+  // stale rowId left in the ledger by an earlier round from winning the
+  // per-kind race and hiding the confirmation this round's own row needs.
+  // A round holding NO rows passes `undefined`, which is the unbounded scan —
+  // the same answer it had before this argument existed, so absence preserves
+  // today's no-match behaviour exactly. A caller that supplies no
+  // `confirmations` consults none, exactly as before.
+  const heldRowIds = new Set(mine.map((r) => r.id));
   // A working copy of the taken ids: a new row's id must not collide with an
   // earlier new row of the SAME round, and the caller's set stays untouched.
   let taken = new Set(opts.taken);
@@ -181,6 +191,7 @@ export function applyFindingRound(opts: {
       branch,
       { patchId: reviewable.patchId, headSha: reviewable.headSha },
       { firstSeen: r.firstSeen, lastSeen },
+      heldRowIds,
     ).get(r.id);
   };
 
@@ -204,6 +215,7 @@ export function applyFindingRound(opts: {
           branch,
           { patchId: reviewable.patchId, headSha: reviewable.headSha },
           { firstSeen: r.firstSeen, lastSeen: r.lastSeen },
+          heldRowIds,
         ).get(r.id) !== undefined;
       if (stillBinds) return;
       // Two sources for the notice, and the rule is one: a row whose retirement

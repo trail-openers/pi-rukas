@@ -191,21 +191,13 @@ const refusals: Array<[string, LedgerEntry | undefined]> = [
     const got = ask(entry ? [entry] : []);
     assert(got.size === 0, `AC2: ${why} → no confirmation (got ${[...got.values()].join(",")})`);
   }
-  // An unreadable ledger is answered by the async seam, not the pure query.
-  const dir = mkdtempSync(path.join(os.tmpdir(), "conf-ac2-"));
-  const ledger = path.join(dir, "review-ledger.json");
-  const origLedger = process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
-  try {
-    writeFileSync(ledger, "{ this is not json");
-    process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = ledger;
-    const { confirmationsForBranch } = await import("../src/review-confirmation.ts");
-    const r = await confirmationsForBranch(dir, "feature/work", { patchId: PATCH, headSha: HEAD_SHA }, SEEN);
-    assert(r.size === 0, "AC2: a ledger whose read FAILS retires nothing (confirmed: no rows)");
-  } finally {
-    if (origLedger === undefined) delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
-    else process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = origLedger;
-    rmSync(dir, { recursive: true, force: true });
-  }
+  // The two faults a ledger read used to be asserted against (`ledgerPathFor`
+  // and `readLedgerAt` throwing) belonged to `confirmationsForBranch`, whose
+  // only importer was this test. It is gone and the read now lives in
+  // `recordFindingRunOutcome` (review-findings-store.ts), whose catch hands the
+  // join an empty array — both faults, plus the `"test"` kind that has no
+  // producer, are asserted in that shape in test-review-confirmation-join.ts.
+  // The store's own round is the AC2 store block below.
 }
 
 // ---------------------------------------------------------------------------

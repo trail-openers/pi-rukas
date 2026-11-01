@@ -22,9 +22,12 @@
  *
  * ## The binding, and why each half is load-bearing
  *
- * - `kind` is `"adversarial"` or `"test"` — the two independent reviews the
- *   spec named. A `lens` row is never a confirmation: it is the round itself,
- *   and a round cannot confirm its own silence (that is #1832's failure).
+ * - `kind` is `"adversarial"` — the one independent review this harness records
+ *   today. A `lens` row is never a confirmation: it is the round itself, and a
+ *   round cannot confirm its own silence (that is #1832's failure). A green
+ *   named test run is the second independent review the spec named; it is not in
+ *   `CONFIRMING_KINDS` because nothing writes such a ledger row — see the note
+ *   on that constant.
  * - `passed` is true — a failing round confirms nothing.
  * - `patchId` equals the round's own patch id, and `headSha` equals the round's
  *   head. Both, not either. `patchId` is content (the patch against the
@@ -85,13 +88,22 @@
  * cited code gone.
  */
 
-import { execp } from "./exec.ts";
 import { isFullCommitSha } from "./review-head-sha.ts";
-import { type LedgerEntry, latestEntry, ledgerPathFor, readLedgerAt } from "./review-ledger.ts";
-import { trace } from "./trace.ts";
+import type { LedgerEntry } from "./review-ledger.ts";
 
-/** The two review kinds that may confirm a fix. A `lens` row is the round itself. */
-const CONFIRMING_KINDS: readonly string[] = ["adversarial", "test"];
+/** The review kinds that may confirm a fix. A `lens` row is the round itself.
+ *
+ * `"test"` is DELIBERATELY ABSENT, and the absence is a decision, not an
+ * oversight: nothing in this repo writes a ledger row of that kind, and
+ * `validEntries` (review-ledger-read.ts) drops any kind outside
+ * `adversarial|lens` — so a `"test"` member here could never match a row that
+ * survived the read. The missing half is the WRITER, not this list: a green
+ * project test run is an independent review, but recording one is the lean
+ * `toolPath` follow-up, which has to decide what a passing run binds to. Until
+ * that writer exists the kind stays out, so the constant names only what
+ * production can actually produce — a kind listed here with no writer is how a
+ * dead path gets mistaken for a shipped one. */
+const CONFIRMING_KINDS: readonly string[] = ["adversarial"];
 
 /** A confirmation older than this many characters of provenance is not rendered. */
 const PROVENANCE_MAX_CHARS = 160;
@@ -126,22 +138,33 @@ export interface ReviewedIdentity {
  * The confirmations on `branch`'s ledger that bind to `reviewed`, keyed by the
  * row each one proves.
  *
- * One read of the ledger, one pass. `at` is bounded per row by the two rows
- * `latestEntry` would return (the latest adversarial and the latest test row),
- * so the read is O(rows in the file) and a branch with a long review history
- * pays nothing extra: the ledger keeps one row per (branch, kind) anyway.
+ * One read of the ledger, one pass. `at` is bounded per row by the rows
+ * `latestEntry` would return (one per confirming kind), so the read is O(rows in
+ * the file) and a branch with a long review history pays nothing extra: the
+ * ledger keeps one row per (branch, kind) anyway.
  *
- * A row is a confirmation for row R when its kind is one of the two confirming
- * kinds, it passed, its `patchId` and `headSha` are both equal to the reviewed
- * commit's, it names R, and it was written between R being filed and R last
- * being reported (see the module header). Anything else is not one — and the
- * ledger being unreadable is not one either.
+ * A row is a confirmation for row R when its kind is a confirming kind, it
+ * passed, its `patchId` and `headSha` are both equal to the reviewed commit's,
+ * it names R — and, when `rowIds` is given, R is one of the rows the calling
+ * round holds — and it was written between R being filed and R last being
+ * reported (see the module header). Anything else is not one — and the ledger
+ * being unreadable is not one either. The read itself happens in the store
+ * (review-findings-store.ts), whose own try/catch answers "no rows" for every
+ * fault in resolving or parsing the file, so nothing here throws.
  */
 export function confirmationsFor(
   entries: readonly LedgerEntry[],
   branch: string,
   reviewed: ReviewedIdentity,
   seen: { firstSeen: number; lastSeen: number },
+  /** #1934 — the ids of the rows the calling round holds. When present, a
+   * ledger row is a candidate ONLY when it names one of them: bounding the
+   * join to the rows the round owns is what stops a stale rowId left in the
+   * ledger by an earlier round from winning the per-kind race and hiding the
+   * confirmation this round's own row needs. Absent (the default) the scan is
+   * unbounded and behaviour is exactly as before, so a caller that does not
+   * thread ids changes nothing. */
+  rowIds?: ReadonlySet<string>,
 ): Map<string, string> {
   const out = new Map<string, string>();
   if (!reviewed.patchId || !reviewed.headSha || !branch) return out;
@@ -153,6 +176,13 @@ export function confirmationsFor(
   for (const e of entries) {
     if (e.branch !== branch || !e.passed) continue;
     if (!CONFIRMING_KINDS.includes(e.kind)) continue;
+    // Skipped before the per-kind `best` race: a row naming a row this round
+    // does not hold can never be selected, and letting it win the race would
+    // hide a binding confirmation recorded under it.
+    if (rowIds !== undefined) {
+      const named = confirmedRowId(e);
+      if (named === undefined || !rowIds.has(named)) continue;
+    }
     const prev = best.get(e.kind);
     if (!prev || e.at >= prev.at) best.set(e.kind, e);
   }
@@ -182,37 +212,4 @@ export function confirmationsFor(
     );
   }
   return out;
-}
-
-/**
- * Read the branch's ledger and answer the same question. Never throws: an
- * unresolved ledger path, a missing file and an unreadable file all answer "no
- * confirmations", which is the answer that retires nothing.
- */
-export async function confirmationsForBranch(
-  cwd: string,
-  branch: string,
-  reviewed: ReviewedIdentity,
-  seen: { firstSeen: number; lastSeen: number },
-): Promise<Map<string, string>> {
-  let file: string | undefined;
-  try {
-    file = await ledgerPathFor(execp, cwd);
-  } catch (err) {
-    trace(
-      `review-confirmation: ledger path unresolved: ${err instanceof Error ? err.message : String(err)}`,
-    );
-    return new Map();
-  }
-  if (!file) return new Map();
-  let entries: LedgerEntry[];
-  try {
-    entries = readLedgerAt(file);
-  } catch (err) {
-    trace(
-      `review-confirmation: ledger unreadable: ${err instanceof Error ? err.message : String(err)}`,
-    );
-    return new Map();
-  }
-  return confirmationsFor(entries, branch, reviewed, seen);
 }
