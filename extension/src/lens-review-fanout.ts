@@ -215,15 +215,17 @@ export async function runLensFanOut(args: {
   // Defence-in-depth behind `allLanesProducedEvidence` (below), NOT the thing
   // that closes the lying-✓ hole: `coverageClaimEarned` already requires that
   // flag, so on a zero-healthy round this gate is unreachable-by-construction.
-  // Measured under the drop, not asserted: deleting just this gate
-  // (`claimedEvidence = [...results]`, harness rows ungated) reddens ONLY
-  // `test-lens-vacuous-every` — 1 assertion, its `premise: a zero-healthy
-  // roster over a real denominator, with harness rows as its only evidence`
-  // — while `test-lens-fanout-batch-release`, `test-lens-coverage-denominator`
-  // and `test-lens-coverage-routing` all stay GREEN (exit 0). Those four are
-  // the files that exercise this spread; no claim is made about the rest of the
-  // suite. What the gate is worth is visible in the other direction: widen it
-  // instead (`harnessRows` ungated at its own definition) and
+  // Measured under the drop, not asserted. Deleting just this gate
+  // (`claimedEvidence = [...results]`, harness rows dropped) reddens exactly
+  // ONE assertion in the whole set of files that read this spread —
+  // `test-lens-vacuous-every`'s `premise: a zero-healthy roster over a real
+  // denominator, with harness rows as its only evidence` — and leaves
+  // `test-lens-fanout-batch-release`, `test-lens-coverage-denominator` and
+  // `test-lens-coverage-routing` GREEN (exit 0 each). Those four are the only
+  // files that exercise it; no claim is made about the rest of the suite, and
+  // the old "every test-lens-*/test-review-* file" wording is gone because
+  // nobody ran them. Widen the gate instead (`harnessRows` ungated at its own
+  // definition, so it also feeds `accountedEvidence`) and
   // `test-lens-vacuous-every` reddens twice. It is kept as the second lock on
   // the same door; do not cite it as a bug fix.
   const claimedEvidence: readonly CoverageEvidence[] = [...results, ...harnessRows];
