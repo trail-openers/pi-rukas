@@ -168,13 +168,23 @@ function assert(cond: boolean, msg: string) {
   const banner = unaccountedSection(["src/c.ts"]);
   assert(
     banner.some((l) => l.includes("src/c.ts")) &&
-      banner.some((l) => l.includes("COVERAGE INCOMPLETE")) &&
-      // Names the outcome the gate produces, without claiming a verdict the
-      // caller may not have set: a round that already blocks keeps its findings
-      // verdict and still gets this disclosure, so the banner cannot assert
-      // "the verdict above is REVIEW_INCOMPLETE".
-      banner.some((l) => l.includes("does not count as a pass")),
-    "the banner names the file and the consequence it produces",
+      banner.some((l) => l.includes("COVERAGE")) &&
+      // DISCLOSURE wording, per the PM ruling that settles this section's
+      // semantics: file-level coverage is derivable only from findings, and a
+      // clean round has none, so naming an unaccounted file tells the operator
+      // to read it — it does NOT decide the round. The blocking guarantee lives
+      // at the LENS level (`unreviewedLanesSection` / a silent lens reads as
+      // REVIEW_INCOMPLETE), pinned end-to-end in
+      // `test-lens-coverage-routing.ts`; this banner must not claim a verdict
+      // the caller may not have set.
+      banner.some((l) => l.includes("no lens named it")) &&
+      banner.some((l) => l.includes("read these lanes before accepting")),
+    "the disclosure names the file and says what the operator does about it, without asserting a verdict",
+  );
+  assert(
+    !banner.some((l) => l.includes("REVIEW INCOMPLETE")) &&
+      !banner.some((l) => l.includes("does not count as a pass")),
+    "canary: the file-level disclosure never reads as a blocking verdict — that is the lens-level banner's job",
   );
   const ordered = unaccountedSection(["src/c.ts", "src/a.ts"]);
   const listed = ordered.filter((l) => l.startsWith("  - "));
