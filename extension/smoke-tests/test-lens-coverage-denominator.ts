@@ -45,7 +45,6 @@ import {
   THREE_FILE_DIFF,
   finding,
   row,
-  round,
 } from "./lib/lens-coverage-fixture.ts";
 
 let exit = 0;
