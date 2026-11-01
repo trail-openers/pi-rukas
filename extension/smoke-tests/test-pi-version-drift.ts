@@ -86,107 +86,16 @@ function read(rel: string): string {
 }
 
 /**
- * Strip a leading semver range operator (~ ^ >= <= =) so compareVersions sees
- * a plain dotted version. Deliberate: compareVersions returns null on
- * non-dotted input, so an unstripped "~0.82.0" would fail closed as
- * "unparseable" rather than compare. Returns "" for empty input.
+ * Bare 0.8x.y Pi version literals in a text blob (the current-claim space;
+ * 0.7x.y is historical). Pi-claim contexts: indexes at which a 1.x version
+ * literal starts within PI_CLAIM_WINDOW chars after a marker naming the Pi
+ * package/CLI (PI_CLAIM_MARKERS: pi-coding-agent, pi-tui, @earendil-works/pi,
+ * MIN_PI_VERSION, "Last verified against pi"). Both live in
+ * ./lib/pi-version-census.ts so the grounding assertion judges citations
+ * against the SAME list the detector uses - a second copy could go stale and
+ * assert a fact the detector no longer believes. A version past the window
+ * from "Pi 1.0.0's ... semantics" is prose, not a claim.
  */
-export function stripRangePrefix(v: string): string {
-  return v.replace(/^[~^><=]+/, "");
-}
-
-/** Dotted version comparison; -1/0/1 or null if either side is not plain dotted-numeric. */
-export function compareVersions(a: string, b: string): number | null {
-  const split = (s: string) => s.split(/[.+-]/).map((p) => Number(p));
-  const x = split(a);
-  const y = split(b);
-  if (x.some((n) => !Number.isFinite(n)) || y.some((n) => !Number.isFinite(n))) return null;
-  const len = Math.max(x.length, y.length);
-  for (let i = 0; i < len; i++) {
-    const p = (x[i] ?? 0) - (y[i] ?? 0);
-    if (p !== 0) return p > 0 ? 1 : -1;
-  }
-  return 0;
-}
-
-/** The major.minor prefix of a version ("0.84.4" → "0.84"); null if not dotted. */
-export function minorPrefix(v: string): string | null {
-  const m = v.match(/^([0-9]+\.[0-9]+)/);
-  return m ? m[1] : null;
-}
-
-/**
- * The floor rule (d) itself, as a named predicate so Canary 4b can drive the
- * RULE rather than its input comparator. `compareVersions` is a pure function
- * of its arguments, so an assert on it cannot be flipped by anything the rule
- * does — only this body is sensitive to the comparison direction.
- *
- * The two failure causes are separated: "unparseable" (either side is not
- * plain dotted-numeric, so the rule cannot decide) and "below-floor" (the
- * rule's own verdict). Folding them into one condition lets an unparseable
- * version masquerade as a floor violation — the same trailing-reason split
- * `test-prerequisite-drift.ts` uses for its floor asserts.
- *
- * The rule, as the body states it: violated only when `cmp < 0` (plus the
- * fail-closed `cmp === null` arm) — not a `cmp >= 0` expression, which is the
- * property those two arms enforce. The verified line is a FLOOR, not a ceiling
- * — it must be at or above `MIN_PI_VERSION`, because it is the
- * version an operator downgrades to and ./install.sh must accept it. The
- * mutation to watch is `cmp < 0` → `cmp <= 0`, which reports a line exactly AT
- * the floor as violated; Canary 4b's equality arm witnesses that boundary.
- * The comparator reversal `cmp < 0` → `cmp > 0` is witnessed separately, by
- * the above-floor arm.
- */
-export function floorRuleViolated(verifiedV: string, floorV: string): { violated: boolean; reason: "unparseable" | "below-floor" | null } {
-  const cmp = compareVersions(verifiedV, floorV);
-  if (cmp === null) return { violated: true, reason: "unparseable" };
-  if (cmp < 0) return { violated: true, reason: "below-floor" };
-  return { violated: false, reason: null };
-}
-
-/** Major.minor distance between two versions; null if either is unparseable (major drift = Infinity). */
-export function minorDistance(a: string, b: string): number | null {
-  const ma = minorPrefix(a);
-  const mb = minorPrefix(b);
-  if (!ma || !mb) return null;
-  const [maa, mab] = ma.split(".").map(Number);
-  const [mba, mbb] = mb.split(".").map(Number);
-  if (maa !== mba) return Infinity;
-  return Math.abs(mab - mbb);
-}
-
-/** Declared dev pins in extension/package.json (the DECLARED pin, never bun.lock). */
-export function parseDevPins(pkgJson: string): { codingAgent: string; tui: string } {
-  const m = pkgJson.match(/"@earendil-works\/pi-coding-agent":\s*"([^"]+)"/);
-  const t = pkgJson.match(/"@earendil-works\/pi-tui":\s*"([^"]+)"/);
-  return { codingAgent: m ? stripRangePrefix(m[1] as string) : "", tui: t ? stripRangePrefix(t[1] as string) : "" };
-}
-
-/** The restating "Last verified against `pi` **X.Y.Z (YYYY-MM-DD)**" line in AGENTS.md § 4. */
-export function parseAgentsRestatement(agentsMd: string): { version: string; date: string } | null {
-  const m = agentsMd.match(/Last verified against `pi` \*\*([0-9][0-9a-z.+-]*)\s*\((\d{4}-\d{2}-\d{2})\)\*\*/);
-  if (!m) return null;
-  return { version: stripRangePrefix(m[1] as string), date: m[2] as string };
-}
-
-/**
- * Bare 0.8x.y Pi version literals in a text blob (the current-claim space; 0.7x.y is historical).
- *
- * Pi-claim contexts: indexes at which a 1.x version literal starts within
- * 20 chars after a marker naming the Pi package/CLI (pi-coding-agent,
- * pi-tui, @earendil-works/pi, MIN_PI_VERSION, "Last verified against pi").
- * A version 20+ chars past "Pi 1.0.0's ... semantics" is prose, not a claim.
- */
-const PI_CLAIM_MARKERS = [
-  /pi-coding-agent/i,
-  /pi-tui/i,
-  /@earendil-works\/pi/i,
-  /MIN_PI_VERSION/i,
-  /last verified against[\s`*_]*pi/i,
-];
-
-const PI_CLAIM_WINDOW = 20;
-
 export function piClaimContexts(text: string): number[] {
   const found = new Set<number>();
   const versionRe = /(?<![\d.])\d+(?:\.\d+)+/g;
@@ -226,7 +135,24 @@ export function piVersionLiterals(text: string): string[] {
 // this gate file could stay under the 500-line cap while its comments were
 // restored. The lib file is intentionally NOT named test-*.ts — verify-loop.sh
 // runs only test-*.ts as tests; coverage comes through this gate.
-import { gitRepoFiles, siteCensus } from "./lib/pi-version-census.ts";
+import {
+  censusGroundingErrors,
+  compareVersions,
+  declaredGroundingTable,
+  floorRuleViolated,
+  gitRepoFiles,
+  minorDistance,
+  parseAgentsRestatement,
+  parseDevPins,
+  PI_CLAIM_MARKERS,
+  PI_CLAIM_WINDOW,
+  siteCensus,
+  stripRangePrefix,
+} from "./lib/pi-version-census.ts";
+import type { GroundingCitation } from "./lib/pi-version-census.ts";
+
+// One detector for the whole gate: the census lib cannot import the file that
+// imports it, so its grounding assertion is wired to the one below.
 
 // Re-exported so the gate's public surface is unchanged (siteCensus is the
 // census table; gitRepoFiles is the ls-files listing — both documented in
@@ -371,13 +297,20 @@ if (verified && pins.codingAgent) {
   // which the above-floor arm does not see (under `cmp <= 0` a line above the
   // floor is still not violated, so only a line AT the floor separates them).
   //
-  // The new-literal census consequence: `1.0.0` is already listed below and
-  // `1.4.0-garbage` splits as 1.4.0 which is listed too, so the added arms
-  // introduce no unlisted literal. The `@earendil-works/pi-tui":"~1.4.0"`
-  // fixture string above keeps 1.4.0 within 20 chars of a marker.
+  // What the census consequence ACTUALLY is, as the detector reports it: the
+  // `1.4.0-garbage` argument is NOT a second grounding of `1.4.0`. The version
+  // pattern matches the whole token, so `1.4.0-garbage` is one token that
+  // matches no literal at all - invisible to the census only because it sits
+  // outside every marker's claim window. Put a Pi marker within 20 chars of it
+  // and it becomes a claim this row would have to declare. What does ground
+  // `1.4.0` here are the two `MIN_PI_VERSION` mentions and the `pi-tui` pins;
+  // the census-consistency block at the foot of this file is the list, and the
+  // `@earendil-works/pi-tui":"~1.4.0"` fixture string quoted above is what
+  // keeps one of those occurrences inside a marker's window.
+  const aboveFloor = floorRuleViolated("1.4.1", "1.0.0");
   assert(
-    floorRuleViolated("1.4.1", "1.0.0").violated === false,
-    "canary: pi-coding-agent verified 1.4.1 above the 1.0.0 install floor → the rule reports NOT violated (the forward direction above the floor; this is the arm the comparator reversal `cmp < 0` → `cmp > 0` reddens — the `cmp < 0` → `cmp <= 0` boundary is witnessed by the equality arm, not this one)",
+    aboveFloor.violated === false && aboveFloor.reason === null,
+    "canary: pi-coding-agent verified 1.4.1 above the 1.0.0 install floor \u2192 the rule reports NOT violated with reason=null (the forward direction above the floor; this is the arm the comparator reversal `cmp < 0` \u2192 `cmp > 0` reddens \u2014 the `cmp < 0` \u2192 `cmp <= 0` boundary is witnessed by the equality arm, not this one)",
   );
   assert(
     floorRuleViolated("0.9.0", "1.0.0").violated === true && floorRuleViolated("0.9.0", "1.0.0").reason === "below-floor",
@@ -387,8 +320,9 @@ if (verified && pins.codingAgent) {
   // exactly AT the floor must not be violated. This arm witnesses the
   // `if (cmp < 0)` boundary alone — mutating it to `cmp <= 0` reddens here and
   // nowhere else (the other two arms read the same verdict either way).
+  const atFloor = floorRuleViolated("1.0.0", "1.0.0");
   assert(
-    floorRuleViolated("1.0.0", "1.0.0").violated === false,
+    atFloor.violated === false && atFloor.reason === null,
     "canary: a verified line exactly AT the floor 1.0.0 → the rule reports NOT violated (mutating the `if (cmp < 0)` test to `cmp <= 0` flips this to violated and the gate goes RED; this arm witnesses that boundary alone)",
   );
   // The unparseable reason is driven through this same function rather than
@@ -494,6 +428,44 @@ if (verified && pins.codingAgent) {
     `site census: no unknown Pi version literals${surprises.length ? " — " + surprises.join(" | ") : " (every 0.8x.y literal lives in a declared site)"}`,
   );
   assert(declared >= 10, `site census: at least 10 declared sites actually matched (got ${declared}) — the census must be reading the tree, not passing by silence`);
+}
+
+
+const groundingBlockMark = ["// ", "-".repeat(64), " ", "census", " consistency"].join("");
+
+// ---------------------------------------------------------------- census consistency
+// The grounding facts the census comments rely on are DERIVED here from the two
+// files' actual bytes: per cited literal the detector's CLAIM SET (`detected ==
+// declared`) plus, per occurrence, the MARKER NAME and FORWARD GAP the comment
+// claims. A fact the gate computes cannot rot - the ~26 lines of hand-copied
+// line numbers, marker names and gaps this replaces were wrong in three
+// consecutive rounds because transcription drifts and nothing checked it. No
+// comment cites a line address, so none can be off by one; occurrences are
+// identified by quoted text plus marker.
+{
+  const gateRel = "extension/smoke-tests/test-pi-version-drift.ts";
+  const censusRel = "extension/smoke-tests/lib/pi-version-census.ts";
+  const readExt = (rel: string) => readFileSync(path.join(REPO_ROOT, rel), "utf8");
+  // The grounding facts are the GATE's, not the described file's: they live in
+  // `declaredGroundingTable` and the detector answers for every one of them.
+  // This block's own region is excised from the text handed to the detector: a
+  // citation quotes the text around a literal, so leaving the table in the bytes
+  // would have the detector chase claims the assertion itself created. The census
+  // file is read verbatim — it carries no expected values.
+  const selfText = readExt(gateRel);
+  const cut = selfText.lastIndexOf(groundingBlockMark);
+  if (cut < 0) throw new Error("census grounding: cannot locate this block in the gate file to excise it");
+  const textByFile: Record<string, string> = { [gateRel]: selfText.slice(0, cut), [censusRel]: readExt(censusRel) };
+  const expected = declaredGroundingTable(gateRel, censusRel);
+  const groundingErrors = censusGroundingErrors(textByFile, expected, piClaimContexts);
+  assert(groundingErrors.length === 0, `census grounding: the detector's claims match the cited markers and gaps${groundingErrors.length ? " — " + groundingErrors.join(" | ") : " (no hand-transcribed figure is stale)"}`);
+  // A gate never observed to fail is not a gate: with a detector that finds no
+  // claims, every literal checked above must redden.
+  const failClosed = censusGroundingErrors(textByFile, expected, () => []);
+  assert(
+    failClosed.length === Object.values(expected).reduce((n, byLit) => n + Object.keys(byLit).length, 0),
+    `canary: census grounding fails CLOSED — a detector that finds no claims reddens every literal checked (got ${failClosed.length} errors, expected one per checked literal)`,
+  );
 }
 
 console.log(exit === 0 ? "\nAll pi version-claim checks passed." : "\nFAILED");
