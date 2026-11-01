@@ -14,6 +14,7 @@ import { neutraliseEvidence } from "./comment-evidence.ts";
 import type { Finding } from "./lens-review-types.ts";
 import type { ResolvedNotice, SetAsideNotice } from "./review-findings-file.ts";
 import type { StoredFinding } from "./review-findings-file.ts";
+import type { ConfirmationLapse } from "./review-findings-store-types.ts";
 import type { Decision } from "./review-findings-store.ts";
 
 /** At most this many prior rows reach a lens prompt. */
@@ -119,6 +120,16 @@ export function severityLabel(severity: string | undefined): string {
  * The "Resolved since last round" block (#1125): each row this round closed
  * because its cited code is gone, with the reason, so an operator can see a row
  * that closed by hash mismatch. Empty input renders nothing.
+ *
+ * #1934 — a `confirmed` retirement ALSO renders `confirmedBy`, the provenance
+ * that says WHO closed it: the independent `adversarial`/`test` review that
+ * confirmed the fix, with the `patchId`/`headSha` it bound to and the round and
+ * head that consumed it. The ticket makes this residual disclosure the surface
+ * that names who or what retired a CRITICAL, so a line that printed only the
+ * reason would leave the operator no patch, no head and no kind to audit. The
+ * value is FILE CONTENT (see the `StoredBase` jsdoc in review-findings-file.ts),
+ * so it goes through the same neutraliser as the row's title rather than
+ * reaching the report raw.
  */
 export function resolvedSection(resolved: readonly ResolvedNotice[] | undefined): string[] {
   if (!resolved || resolved.length === 0) return [];
@@ -126,7 +137,42 @@ export function resolvedSection(resolved: readonly ResolvedNotice[] | undefined)
     "",
     neutraliseEvidence(`Resolved since last round (${resolved.length}):`),
     ...resolved.map((r) =>
-      neutraliseEvidence(`- resolved (row ${r.rowId}): ${r.title} — ${r.reason}`),
+      neutraliseEvidence(
+        `- resolved (row ${r.rowId}): ${r.title} — ${r.reason}${
+          r.confirmedBy !== undefined ? ` [confirmed by: ${r.confirmedBy}]` : ""
+        }`,
+      ),
+    ),
+  ];
+}
+
+/**
+ * #1934 AC4 — the "confirmations that lapsed" block: each row a previous round
+ * retired on an INDEPENDENT confirmation which this round found no longer binds
+ * to the commit under review. The row is `open` again and its cited code is
+ * unchanged — what expired is the EVIDENCE — so this is a disclosure of a
+ * retirement that was revoked, and the provenance names the confirmation it
+ * stood on. Kept SEPARATE from `setAsideSection` (whose heading says "no longer
+ * suppress anything"): a confirmed row that lapsed had never been accepted, so
+ * filing it under a lapsed-acceptance heading would misdescribe it.
+ *
+ * `provenance` is file content carried up from the row, so every line here goes
+ * through the one neutraliser like the module's other untrusted-content lines.
+ * Empty input renders nothing.
+ */
+export function confirmationLapseSection(
+  lapsed: readonly ConfirmationLapse[] | undefined,
+): string[] {
+  if (!lapsed || lapsed.length === 0) return [];
+  return [
+    "",
+    neutraliseEvidence(
+      `Confirmations lapsed (${lapsed.length}) — retired by an independent review that no longer covers this commit; these rows are open again:`,
+    ),
+    ...lapsed.map((l) =>
+      neutraliseEvidence(
+        `- confirmation lapsed (row ${l.rowId}): ${l.title} [was: ${l.provenance}]`,
+      ),
     ),
   ];
 }
@@ -157,5 +203,25 @@ export function setAsideSection(setAside: readonly SetAsideNotice[] | undefined)
         `- ${s.wasAcceptance ? "acceptance lapsed" : "malformed row"} (row ${s.rowId ?? "?"}): [${s.severity}] ${s.path} — ${s.title}${s.problem ? ` (${s.problem})` : ""}`,
       ),
     ),
+  ];
+}
+
+/**
+ * The three findings-memory disclosure blocks a round may carry, in render order
+ * (#1125 resolved / set-aside, #1934 AC4 lapsed confirmations). Both renderers —
+ * the operator summary and the #973 residual comment — render all three, and this
+ * is the ONE place their order is stated, so a disclosure cannot reach one
+ * surface and be missing from the other. Empty blocks render nothing, so a round
+ * with no memory activity contributes no lines.
+ */
+export function memoryDisclosureSections(summary: {
+  resolved?: ResolvedNotice[];
+  setAside?: SetAsideNotice[];
+  lapsed?: ConfirmationLapse[];
+}): string[] {
+  return [
+    ...resolvedSection(summary.resolved),
+    ...setAsideSection(summary.setAside),
+    ...confirmationLapseSection(summary.lapsed),
   ];
 }

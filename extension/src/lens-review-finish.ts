@@ -37,6 +37,27 @@ import { postLensResidualDisclosure } from "./lens-review-residuals.ts";
 import type { Severity } from "./lens-review.ts";
 
 /**
+ * The findings-memory fields spread onto the finished summary (#1934), kept with
+ * the other disclosure this exit owns (the ledger write, the #973 residual post).
+ * An empty collection is OMITTED, not spread as `[]`: the renderers test
+ * presence, so an empty array reads as a round that resolved nothing. `lapsed` is
+ * the #1934 AC4 field — a confirmation this round found no longer binds to the
+ * commit under review, so its row is open again and the operator must see it.
+ */
+export function memorySummaryFields(
+  found: Pick<LensReviewSummary, "suppressed" | "resolved" | "setAside" | "lapsed">,
+): Pick<LensReviewSummary, "suppressed" | "resolved" | "setAside" | "lapsed"> {
+  const { suppressed, resolved, setAside, lapsed } = found;
+  const on = (v: unknown[] | undefined): boolean => v !== undefined && v.length > 0;
+  return {
+    ...(on(suppressed) ? { suppressed } : {}),
+    ...(on(resolved) ? { resolved } : {}),
+    ...(on(setAside) ? { setAside } : {}),
+    ...(on(lapsed) ? { lapsed } : {}),
+  };
+}
+
+/**
  * The result of the single `finishLensReview` exit. `summary` is the
  * LensReviewSummary (byte-identical to the pre-#984 shape). `ledgerWrite`
  * is the fire-and-forget write's promise (the #984 test seam — see

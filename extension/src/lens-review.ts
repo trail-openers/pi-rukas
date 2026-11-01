@@ -3,8 +3,11 @@ import { fileURLToPath } from "node:url";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import { execp } from "./exec.ts";
 import { resolveBudgetKey } from "./lens-budget-key.ts";
-import type { LensLedgerOutcome } from "./lens-ledger.ts";
-import { type LensPatchIdentity, lensPatchIdentityOf } from "./lens-ledger.ts";
+import {
+  type LensLedgerOutcome,
+  type LensPatchIdentity,
+  lensPatchIdentityOf,
+} from "./lens-ledger.ts";
 import { withLensModelSlot } from "./lens-model-slots.ts";
 import { carriedSummary, noReviewSummary } from "./lens-review-auto-delta.ts";
 import { resolveLensReviewBranch } from "./lens-review-branch-resolve.ts";
@@ -25,7 +28,7 @@ import {
   startPersistentBatch,
 } from "./lens-review-diff.ts";
 import { resolveReportedFindings } from "./lens-review-findings.ts";
-import { finishLensReview } from "./lens-review-finish.ts";
+import { finishLensReview, memorySummaryFields } from "./lens-review-finish.ts";
 import {
   DEFAULT_REVIEW_THRESHOLD,
   type LensReviewSummary,
@@ -47,17 +50,15 @@ import { trace } from "./trace.ts";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
- * Six-pass code review — fan out to one `code-review-specialist` child per
- * lens, each pinned to its lens-specific skill. Synthesise findings via
- * (path, line, title) dedup + precedence merging, then map worst severity to
- * an overall verdict.
+ * Six-pass code review — one `code-review-specialist` child per lens, each pinned
+ * to its lens-specific skill. Findings are synthesised by (path, line, title)
+ * dedup + precedence merging, then the worst severity maps to the verdict.
  *
  * Mirrors the Step 7 contract of the opencode `/work` command. Lens roster,
- * prompt construction, parsing, and dedup live in lens-review-format.ts, the
+ * prompt construction, parsing and dedup live in lens-review-format.ts, the
  * operator-facing report in lens-review-render.ts; this module owns spawning,
  * retries, and the async-job/tool wiring.
  */
-
 import { aggregateLensUsage } from "./lens-review-usage.ts";
 /** One roster entry — the shape a lens child receives per dispatch (#873). */
 export type LensDef = RosterEntry;
@@ -65,18 +66,15 @@ export type LensDef = RosterEntry;
  * definition lives in lens-review-format.ts. */
 export type { Verdict, Severity } from "./lens-review-format.ts";
 /**
- * The lens summary type, re-exported from its definition in
- * lens-review-format.ts. It is the output contract of `runLensReview` — every
- * consumer of this module names it (work-driver-*, lens-review-tool, the
- * residual/cap-kill renderers), so the type stays reachable here even though
- * the review is assembled across the format / render / incomplete / findings
- * modules.
+ * The lens summary type, re-exported from lens-review-format.ts: the output
+ * contract of `runLensReview`, named by every consumer (work-driver-*,
+ * lens-review-tool, the residual/cap-kill renderers), so it stays reachable here.
  */
 export type { LensReviewSummary } from "./lens-review-format.ts";
 
-/** Re-exported from lens-review-types.ts (#1000: the per-lens result shape
- * moved there so this file stays under the 500-line limit while keeping its
- * origin/main jsdoc comments verbatim). No consumer import path changes. */
+/** Re-exported from lens-review-types.ts (#1000: the per-lens result shape moved
+ * there so this file stays under the 500-line limit, comments verbatim). No
+ * consumer import path changes. */
 export type {
   Finding,
   FindingSource,
@@ -487,9 +485,7 @@ export async function runLensReview(opts: {
       bySeverity: bySeverityCounts(reported),
       lenses: lensResults,
       findings: reported,
-      ...(found.suppressed.length > 0 ? { suppressed: found.suppressed } : {}),
-      ...(found.resolved.length > 0 ? { resolved: found.resolved } : {}),
-      ...(found.setAside ? { setAside: found.setAside } : {}),
+      ...memorySummaryFields(found),
       ...found.fields,
       usage: aggregateLensUsage(lensResults),
       // #543 — a dispatch-cap kill on any lens child (loop detector / token

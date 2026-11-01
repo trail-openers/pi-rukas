@@ -34,6 +34,7 @@ import { type MemoryDisclosure, memoryDisclosure, recordRound } from "./lens-rev
 import type { Finding, LensRunResult } from "./lens-review-types.ts";
 import type { ReviewKind } from "./review-findings-fate.ts";
 import type { ResolvedNotice, SetAsideNotice } from "./review-findings-file.ts";
+import type { ConfirmationLapse } from "./review-findings-store-types.ts";
 
 /** The kind of review the findings memory records this round as (#1105): a
  * delta covers only its range, an incomplete one re-reported nothing reliably,
@@ -59,6 +60,12 @@ export interface ReportedFindings {
    * because its cited code changed (#1125). A suppression that vanished is
    * disclosed, never left to return as a "new" finding. */
   setAside?: SetAsideNotice[];
+  /** #1934 AC4 — rows whose INDEPENDENT confirmation lapsed this round: retired
+   * by a confirmation that no longer binds to the commit under review. Read out of
+   * the round's outcome by `memoryDisclosure`, rendered by
+   * `confirmationLapseSection`; without it a row that stopped being retired
+   * returned with no account of the retirement it lost. */
+  lapsed?: ConfirmationLapse[];
   /** Summary fields from the memory and the advisory split. Either note may be
    * set, and when BOTH are the round says both: `memoryNote` means the round was
    * not recorded at all (in words distinct from "the store was empty"), the
@@ -121,11 +128,8 @@ export async function resolveReportedFindings(opts: {
     findings: deduped,
     review,
     ...(delta ? { deltaDiff: opts.diff } : {}),
-    // #1934 — only a round with all three can bind a confirmation: a branch to
-    // key the ledger on, a head to compare `headSha` against, and the patch id
-    // to compare `patchId` against; and only a COMPLETE FULL round may act on
-    // one. With any of them missing the round records exactly as it did before
-    // this field existed.
+    // #1934 — a confirmation binds only with all four present: a branch, a head,
+    // the patch id, and a COMPLETE FULL review. Missing any: the pre-#1934 shape.
     ...(identity?.patchId !== undefined &&
     branchResolved !== undefined &&
     headSha !== undefined &&
@@ -182,6 +186,7 @@ export async function resolveReportedFindings(opts: {
     suppressed,
     resolved: recorded?.ok ? recorded.resolved : [],
     ...(memory.setAside ? { setAside: memory.setAside } : {}),
+    ...(memory.lapsed ? { lapsed: memory.lapsed } : {}),
     fields,
   };
 }

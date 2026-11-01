@@ -27,12 +27,16 @@ import { renderPriorFindingsBlock } from "./lens-residuals.ts";
 import type { Finding } from "./lens-review-types.ts";
 import type { ReviewKind } from "./review-findings-fate.ts";
 import type { SetAsideNotice } from "./review-findings-file.ts";
+import type { ConfirmationLapse } from "./review-findings-store-types.ts";
 import { readBranchRows, recordFindingRunOutcome } from "./review-findings-store.ts";
 
 /** The memory side of a finished round, ready for the summary's spread. */
 export interface MemoryDisclosure {
   memoryNote?: string;
   setAside?: SetAsideNotice[];
+  /** #1934 AC4 — rows whose independent confirmation lapsed this round (see
+   * `ReportedFindings.lapsed`). Read straight out of the round's outcome. */
+  lapsed?: ConfirmationLapse[];
 }
 
 /** The prior-findings block for the lens prompts ("" when there is no memory to show). */
@@ -87,8 +91,10 @@ export function memoryDisclosure(
   const note =
     recorded && !recorded.ok ? `findings memory unavailable: ${recorded.reason}` : undefined;
   const setAside = recorded?.setAside;
+  const lapsed = recorded?.ok === true ? recorded.lapsed : undefined;
   return {
     ...(note ? { memoryNote: note } : {}),
     ...(setAside && setAside.length > 0 ? { setAside } : {}),
+    ...(lapsed && lapsed.length > 0 ? { lapsed } : {}),
   };
 }
