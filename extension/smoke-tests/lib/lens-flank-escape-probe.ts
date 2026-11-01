@@ -43,8 +43,14 @@
  *     fixture could redden on its removal. (2026-11-03, after the header above
  *     was written; the earlier claim in this block — "REDS: NL_OPEN alone" —
  *     was measured never to hold and is corrected here.)
- *   - exclude `\r`/`\n` from `NOT_PATH` (`[^A-Za-z0-9_./+\-\r\n]`, i.e. make
- *     the left flank NOT match a newline) → NL_OPEN **FAILS** (`P: 4 F: 1`,
+ *   - exclude `\r`/`\n` from `NOT_PATH` while the `\n|` arm was still present
+ *     (`[^A-Za-z0-9_./+\-\r\n]`) → NL_OPEN stayed GREEN (P: 1 F: 0): the
+ *     explicit `\n` alternative was carrying it. That row and the one below
+ *     are the pair that identifies what the fixture witnesses — take away
+ *     BOTH ways the left flank can match a newline (the arm, and the negated
+ *     class) and only then does it go red.
+ *   - exclude `\r`/`\n` from `NOT_PATH` in the POST-DELETION file (`[^A-Za-z0-9_./+\-\r\n]`, i.e. make
+ *     the left flank NOT match a newline) → NL_OPEN **FAILS** (`P: 0 F: 1`,
  *     the only red is the NL_OPEN canary). So `NL_OPEN` DOES witness something:
  *     it witnesses that the left flank admits a line-initial path — which, now
  *     the `\n|` alternative is gone, is `NOT_PATH`'s job. `^` does NOT rescue
