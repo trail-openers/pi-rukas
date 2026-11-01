@@ -86,6 +86,7 @@
     "smoke-tests/test-review-findings-confirmed-retire.ts",
     "smoke-tests/test-review-findings-confirmed-store.ts",
     "smoke-tests/test-review-findings-untouched-confirm.ts",
+    "smoke-tests/test-review-findings-window-guards.ts",
     "smoke-tests/test-review-findings-disclosure-render.ts",
     "smoke-tests/lib/lens-fix-kill-cause-fixtures.ts",
     "smoke-tests/test-work-driver-lens-fix-kill-cause.ts",

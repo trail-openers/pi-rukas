@@ -157,45 +157,44 @@ export function applyFindingRound(opts: {
   // delta covered only its own range while an incomplete round reached no
   // verdict, so neither can vouch for the commit a confirmation binds to.
   const reviewable = review === "full" ? confirmations : undefined;
-  /** The confirmation for one row, bounded by the row's own stamps.
+  /** The confirmation for one row, whose window's UPPER bound is this ROUND's
+   * clock rather than the row's own stamps.
    *
    * `confirmationsFor` asks whether the ledger row binds to the reviewed commit
-   * and to this row; this adds the two facts only the round itself can supply,
-   * enforced here rather than trusted from the caller because the one outcome
-   * the rule must never produce is a CRITICAL the lenses still see disappearing
-   * from the store:
+   * and to this row; this adds the two ordering facts only the round itself can
+   * supply, enforced here rather than trusted from the caller because the one
+   * outcome the rule must never produce is a CRITICAL the lenses still see
+   * disappearing from the store.
    *
-   *   - `firstSeen < now` — the row predates this round, so the confirmation is
-   *     evidence about a review that came AFTER the finding was filed (#1934
-   *     decision 1: a LATER round is what confirms a fix);
-   *   - `lastSeen < now` — this round did NOT re-report it. The findings pass
-   *     above stamps `lastSeen: now` on every matched row, so a re-reported row
-   *     fails here even when a confirmation was written seconds before the
-   *     lenses reported it. A row the round did not touch keeps the `lastSeen`
-   *     an earlier round stamped, so a genuine confirmation — recorded after
-   *     that round and before this one — still passes.
+   * BOTH arms take the round's `now`; the arms differ in WHY they need it. Each
+   * sentence below names the line that enforces it:
+   *
+   *   - the lower bound is enforced by `if (r.firstSeen >= now) return undefined;`
+   *     just below: a row this round FILED is not evidence a LATER review fixed
+   *     it (#1934 decision 1 — a later round is what confirms a fix). Relaxing
+   *     that `>=` to `>` lets a row retire in the round that filed it, and is
+   *     witnessed by `guard:181` in smoke-tests/test-review-findings-window-guards.ts;
+   *   - the upper bound is `const lastSeen = now;` below, enforced by
+   *     `entry.at > seen.lastSeen` in review-confirmation.ts. For a row this round
+   *     RE-REPORTED the findings pass above already stamped `lastSeen` to that
+   *     same `now`, so the round's clock IS the re-report's stamp and a
+   *     confirmation written later is evidence recorded while (or after) the
+   *     lenses reported the finding — the shape `rowFate`'s CRITICAL arm must
+   *     never accept. For a row the round did NOT touch, the row's own `lastSeen`
+   *     is an EARLIER round's stamp and a genuine confirmation is by definition
+   *     recorded after that round, so closing the window there rejects every real
+   *     confirmation and the arm ships inert for untouched rows.
+   *
+   * The AC4 pass below is the mirror of the upper bound and is bounded the same
+   * way — `if (r.lastSeen >= now) return;` — because a row this round observed is
+   * a row whose retirement it must not second-guess on its own clock; witnessed
+   * by `guard:222` in that same test file.
    */
-
   const confirmedFor = (r: StoredFinding): string | undefined => {
     if (reviewable === undefined) return undefined;
     if (r.firstSeen >= now) return undefined;
-    // The window's upper bound is the ROUND's clock, and each arm is for a
-    // different failure:
-    //
-    //   - a row this round RE-REPORTED has had its `lastSeen` stamped to `now`
-    //     by the findings pass above, so `now` is both the round's clock and the
-    //     re-report's stamp. The bound that matters is the round's clock: a
-    //     confirmation written after this round started is evidence recorded
-    //     while (or after) the lenses were reporting the finding, and it confirms
-    //     nothing — that is the shape `rowFate`'s CRITICAL arm must never accept;
-    //   - a row this round did NOT touch still carries the `lastSeen` an EARLIER
-    //     round stamped. Closing the window there rejects every real
-    //     confirmation, because a genuine one is by definition recorded after
-    //     the round that last reported the row (the fix landed, an independent
-    //     review covered the commit, then this round ran). The bound for such a
-    //     row is the round it is being asked about — `now` — and the row's own
-    // Both arms read the ROUND's clock, and the reason each needs it is
-    // different — see `confirmedFor`, whose window this is.
+    // The upper bound is the ROUND's clock for both arms — the jsdoc above
+    // states the reason each arm needs it and quotes the enforcing comparison.
     const lastSeen = now;
     return confirmationsFor(
       reviewable.ledger,
