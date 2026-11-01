@@ -22,7 +22,11 @@
 import { neutraliseEvidence } from "./comment-evidence.ts";
 import { resolvedSection, setAsideSection, suppressedSection } from "./lens-residuals.ts";
 import { advisorySection } from "./lens-review-advisory.ts";
-import { unaccountedSection, unreviewedLanesSection } from "./lens-review-coverage-report.ts";
+import {
+  coverageDenominatorSection,
+  unaccountedSection,
+  unreviewedLanesSection,
+} from "./lens-review-coverage-report.ts";
 import { deltaFallbackText, forcedFullText } from "./lens-review-delta-disclose.ts";
 import { type LensReviewSummary, type Severity, findingDescription } from "./lens-review-format.ts";
 import {
@@ -232,6 +236,13 @@ export function renderSummary(s: LensReviewSummary, maxLensAttempts: number): st
     // The file-level disclosure: changed files no evidence accounts for. Warning,
     // not verdict — a lens owes a summary, not a file inventory.
     ...unaccountedSection(s.unaccountedFiles ?? []),
+    // And the denominator's own state, so the two silences are never confused:
+    // "every file was accounted for" and "there were no files to account for"
+    // both leave the disclosure above empty, and only one of them is coverage.
+    ...coverageDenominatorSection({
+      hasDenominator: s.coverageComplete !== undefined || (s.unaccountedFiles?.length ?? 0) > 0,
+      unaccountedCount: s.unaccountedFiles?.length ?? 0,
+    }),
     ...(s.memoryNote ? ["", neutraliseEvidence(s.memoryNote)] : []),
     "",
     "Transcripts:",

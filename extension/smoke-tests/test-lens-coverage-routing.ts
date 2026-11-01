@@ -1,21 +1,30 @@
 #!/usr/bin/env bun
 /**
- * The ROUTING half of the lens-coverage gate: what an unaccounted selected file
- * DOES to a round's verdict, over a real clone driven through the injected
- * `lensChildFn` seam (never a live spawn).
+ * The ROUTING half of the coverage gate, over a real clone driven through the
+ * injected `lensChildFn` seam (never a live spawn). It pins the two levels
+ * separately, because they have opposite verdicts and one file that conflates
+ * them defeats the design:
+ *
+ *   LENS LEVEL — verdict-bearing. A lane that left neither a finding nor the
+ *   closing summary the prompt requires makes the round `REVIEW_INCOMPLETE`.
+ *   Case (f) is the guarantee worth having: it is asserted end-to-end through
+ *   `runLensReview`, and it is mutation-proven in
+ *   `test-lens-silence.ts` (dropping the `lensProducedEvidence` arm reddens it).
+ *
+ *   FILE LEVEL — disclosure only. A changed file no finding cited and no
+ *   summary named is NAMED to the operator and decides nothing. Cases (a)/(b)/
+ *   (c) pin both directions of that: a clean round over uncovered files still
+ *   APPROVEDs with the gap disclosed, and the list is a real subtraction.
+ *   A blocking gate here would fail precisely the case it exists to pass —
+ *   coverage is derivable only from findings, so genuinely good code has none.
  *
  * The pure accounting — what the denominator is, and what counts as evidence
  * for a file — is pinned in `test-lens-coverage-denominator.ts`; the fixture
  * both files share is `lib/lens-coverage-fixture.ts`.
  *
- * Both directions are pinned here, because a denominator that always fails is
- * as useless as one that never fires:
- *   (a) a round with an unaccounted selected file does NOT read as a pass;
- *   (b) a round where every selected file is accounted for still APPROVEDs,
- *       with no coverage section in its report at all.
  * The denominator comes from a diff the review computed itself (`base...head`
  * from refs it resolved), which is the only shape that earns a denominator at
- * all; (d) pins the pasted-diff arm earns none.
+ * all; (d) pins that the pasted-diff arm earns none.
  */
 
 import { rmSync } from "node:fs";
@@ -43,29 +52,34 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-// (a) The uncovered round is not a pass. Every lens answers COMPLETELY — the
-// closing summary the prompt requires, no findings — and none names a file.
-// Pre-gate this is a byte-identical APPROVED.
+// (a) The uncovered round is DISCLOSED, not refused. Every lens answers
+// COMPLETELY — the closing summary the prompt requires, no findings — and none
+// names a file. Under the ruling that is a note naming both files and an
+// APPROVED verdict: gating here would refuse a clean round over good code.
 {
   const c = mkClone();
   try {
     const out = await round(c, (name) => lens(name, [], "The diff is clean from my perspective."));
     assert(
       out.lenses.length > 0 && out.lenses.every((l) => !l.blocked),
-      "(a) every lens ran — the incompleteness below is coverage, not a blocked roster",
+      "(a) every lens ran and left evidence — so this round is complete at the lens level",
     );
     assert(
-      out.verdict === "REVIEW_INCOMPLETE",
-      `canary (a): selected files no evidence accounts for do NOT read APPROVED (got ${out.verdict})`,
+      out.verdict === "APPROVED",
+      `canary (a): files no evidence accounts for do NOT block a round whose lenses all reviewed — it is disclosure, not a verdict (got ${out.verdict})`,
     );
     assert(
       out.unaccountedFiles?.join(",") === [CHANGED_A, CHANGED_B].join(","),
-      `(a) the unaccounted files are NAMED, not merely reflected in the verdict (got ${JSON.stringify(out.unaccountedFiles)})`,
+      `(a) the unaccounted files are NAMED, so a suspiciously quiet review is visible (got ${JSON.stringify(out.unaccountedFiles)})`,
     );
     const text = renderSummary(out, 4);
     assert(
-      text.includes("COVERAGE INCOMPLETE") && text.includes(CHANGED_A) && text.includes(CHANGED_B),
-      "(a) the operator's report names both uncovered lanes",
+      text.includes("COVERAGE") && text.includes(CHANGED_A) && text.includes(CHANGED_B),
+      "(a) the operator's report names both uncovered files",
+    );
+    assert(
+      !text.includes("REVIEW INCOMPLETE"),
+      "(a) canary: the file-level disclosure never renders the blocking banner",
     );
   } finally {
     teardown(c);
@@ -95,8 +109,14 @@ function assert(cond: boolean, msg: string) {
     );
     assert(out.unaccountedFiles === undefined, "(b) a covered round carries no coverage field");
     assert(
-      !renderSummary(out, 4).includes("COVERAGE INCOMPLETE"),
-      "(b) and no coverage section in its report",
+      out.coverageComplete === true,
+      "(b) and says so positively: this round had a denominator and covered it",
+    );
+    const text = renderSummary(out, 4);
+    assert(!text.includes("no lens accounted for"), "(b) and no coverage warning in its report");
+    assert(
+      text.includes("no files in scope") === false,
+      "(b) and does not misreport itself as having had no files in scope",
     );
   } finally {
     teardown(c);
@@ -135,11 +155,10 @@ function assert(cond: boolean, msg: string) {
       .filter((f) => f !== covered)
       .sort();
     assert(
-      // The HIGH is at the MEDIUM bar, so it blocks on its own merit: the
-      // coverage gate must not be able to make a real finding disappear, and
-      // must not be credited with a verdict the finding already earned.
-      out.verdict === "REVIEW_INCOMPLETE" || out.verdict === "ISSUES_FOUND",
-      `canary (c): ${covered} covered of 2 leaves the round NOT a pass (got ${out.verdict})`,
+      // A HIGH finding at the MEDIUM bar blocks on its own merit; the coverage
+      // disclosure neither adds to that nor takes anything away from it.
+      out.verdict === "ISSUES_FOUND",
+      `canary (c): the HIGH decides the verdict and the uncovered file does not change it (got ${out.verdict})`,
     );
     assert(
       out.unaccountedFiles?.join(",") === uncovered.join(","),
@@ -174,25 +193,24 @@ function assert(cond: boolean, msg: string) {
     });
     await write;
     assert(
-      out.verdict === "APPROVED" && out.unaccountedFiles === undefined,
-      `canary (d): a pasted diff earns NO denominator — unchanged behaviour (got ${out.verdict})`,
+      out.verdict === "APPROVED" &&
+        out.unaccountedFiles === undefined &&
+        out.coverageComplete === undefined,
+      `canary (d): a pasted diff earns NO denominator — unchanged verdict, no disclosure, and NOT the 'covered' claim (got ${out.verdict}, coverageComplete ${JSON.stringify(out.coverageComplete)})`,
+    );
+    // The report must say "no files in scope", never fall silent into looking
+    // fully covered: an absent warning is not evidence of coverage.
+    assert(
+      renderSummary(out, 4).includes("no files in scope"),
+      "(d) canary: a round with no denominator reports NO FILES IN SCOPE rather than claiming coverage",
     );
   } finally {
     teardown(c);
   }
 }
 
-// (e) ORIGINAL PREMISE, KEPT AS AN OPEN QUESTION RATHER THAN REDEFINED. The
-// intent was: a round carrying a CRITICAL must not have that verdict replaced
-// by a coverage complaint. Stated literally — a CRITICAL on `src/untouched.ts`,
-// a file the PR never changes — this CANNOT pass, and that is a finding about
-// how two gates interact, not a test to fix: the #1125 advisory split discounts
-// a CRITICAL outside the changed lines to ADVISORY, so it never reaches
-// `computeVerdict` and there is no blocking verdict for the coverage gate to
-// preserve. The assertion below therefore tests the case the mechanism DOES
-// cover (CRITICAL inside the diff, one file unaccounted: the blocking verdict
-// stands and the gap is still disclosed), and the final assertion PINS the
-// discounted case as a known gap so it cannot be mistaken for covered.
+// (e) A blocking verdict is never REPLACED by a coverage complaint, and the gap
+// is still disclosed on a round that already blocks on its own merits.
 {
   const c = mkClone();
   try {
@@ -218,10 +236,12 @@ function assert(cond: boolean, msg: string) {
       out.unaccountedFiles?.join(",") === CHANGED_B,
       `(e) and the gap is still DISCLOSED on a round that already blocks (got ${JSON.stringify(out.unaccountedFiles)})`,
     );
-    // The discounted case, PINNED as a known gap rather than asserted away: a
-    // CRITICAL on a file the PR never touches is advisory, so a round whose only
-    // CRITICAL sat there has no blocking verdict to preserve and the coverage
-    // gate is the only thing between it and a pass. Reported as an open question.
+    // The out-of-diff CRITICAL, now stated as what it is under the two-level
+    // ruling: the #1125 advisory split discounts a CRITICAL outside the changed
+    // lines, so nothing blocks on the merits — and the FILE-level gate is no
+    // longer there to refuse the round either. What refuses it is the LENS-level
+    // rule (a lane that left no evidence), which is the guarantee this file
+    // exists to keep.
     // Its OWN clone: the store keys on branch + headSha, so reusing `c` here
     // would carry the round's own CRITICAL row into the next round and make this
     // round's findings someone else's.
@@ -245,8 +265,43 @@ function assert(cond: boolean, msg: string) {
     rmSync(g.root, { recursive: true, force: true });
     assert(
       discounted.findings.every((f) => f.path !== "src/untouched.ts") &&
-        discounted.verdict === "REVIEW_INCOMPLETE",
-      `(e-gap) an OUT-OF-DIFF CRITICAL is discounted to advisory, leaving the coverage gate as the only thing that refuses the round (got ${discounted.verdict}, blocking ${JSON.stringify(discounted.findings.map((f) => f.path))}, advisory ${JSON.stringify((discounted.advisory ?? []).map((f) => f.path))}) — open question, not a covered case`,
+        discounted.verdict === "APPROVED" &&
+        discounted.unaccountedFiles?.join(",") === [CHANGED_A, CHANGED_B].join(","),
+      `(e-gap) an OUT-OF-DIFF CRITICAL is discounted to advisory and the file-level gate no longer refuses the round: the verdict is the findings' and the gap is DISCLOSED (got ${discounted.verdict}, blocking ${JSON.stringify(discounted.findings.map((f) => f.path))}, advisory ${JSON.stringify((discounted.advisory ?? []).map((f) => f.path))}, unaccounted ${JSON.stringify(discounted.unaccountedFiles)}) — open question, disclosed not blocked`,
+    );
+  } finally {
+    teardown(c);
+  }
+}
+
+// (f) THE GUARANTEE WORTH HAVING, end-to-end: a lens that emitted nothing makes
+// the round REVIEW_INCOMPLETE. This is the lens-level level, deliberately kept
+// separate from (a) — where every lens answered and the file list alone could
+// not refuse anything. Mutation-proven: making `lensProducedEvidence` return
+// true unconditionally turns this red (see the report).
+{
+  const c = mkClone();
+  try {
+    const silent = LENS_ROSTER[0]?.name;
+    const out = await round(c, (name) =>
+      // One lane comes back with NEITHER a finding NOR the closing summary the
+      // prompt requires: byte-identical to a careful review that found nothing,
+      // until the lens-level rule is asked.
+      name === silent ? lens(name, [], "") : lens(name, [], "The diff is clean from my perspective."),
+    );
+    assert(
+      out.verdict === "REVIEW_INCOMPLETE",
+      `canary (f): a lens that emitted neither a finding nor a summary yields REVIEW_INCOMPLETE (got ${out.verdict}) — the lens-level guarantee`,
+    );
+    assert(
+      (out.unreviewedLanes ?? []).length === 1 &&
+        (out.unreviewedLanes ?? []).some((l) => l.startsWith(String(silent))),
+      `(f) the silent lane is NAMED so the operator knows which to re-run (got ${JSON.stringify(out.unreviewedLanes)})`,
+    );
+    const text = renderSummary(out, 4);
+    assert(
+      text.includes("REVIEW INCOMPLETE") && text.includes("came back having reviewed nothing"),
+      "(f) the report carries the lens-level banner, not the file-level warning",
     );
   } finally {
     teardown(c);

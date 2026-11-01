@@ -22,7 +22,11 @@
  * `lib/lens-coverage-fixture.ts`.
  */
 
-import { unaccountedSection } from "../src/lens-review-coverage-report.ts";
+import {
+  coverageDenominatorSection,
+  unaccountedSection,
+  unreviewedLanesSection,
+} from "../src/lens-review-coverage-report.ts";
 import {
   accountedFiles,
   coverageDiffOf,
@@ -195,6 +199,49 @@ function assert(cond: boolean, msg: string) {
   assert(
     ordered.filter((l) => l.startsWith("  - ")).length === 2,
     "canary: exactly one line per unaccounted file (a dropped file would read as coverage)",
+  );
+}
+
+{
+  // THE EMPTY-DENOMINATOR REPORT. `unaccountedSection([])` is silent, so the
+  // denominator line is the only thing that keeps "there were no files in scope"
+  // from reading as "everything was covered" — the misreading a reviewer flagged.
+  const empty = coverageDenominatorSection({ hasDenominator: false, unaccountedCount: 0 });
+  assert(
+    empty.some((l) => l.includes("no files in scope")),
+    "canary: an empty expected set says NO FILES IN SCOPE rather than claiming coverage",
+  );
+  assert(
+    empty.some((l) => l.includes("Do NOT read")) && !empty.some((l) => l.includes("every file")),
+    "canary: the no-denominator line warns against reading it as coverage and never says 'every file'",
+  );
+  const complete = coverageDenominatorSection({ hasDenominator: true, unaccountedCount: 0 });
+  assert(
+    complete.some((l) => l.includes("every file") && l.includes("denominator")),
+    "only a round that HAD a denominator and covered it may read as fully covered",
+  );
+  assert(
+    coverageDenominatorSection({ hasDenominator: true, unaccountedCount: 2 }).length === 0,
+    "when files are left over the disclosure above owns the report and the denominator line stays out of it",
+  );
+  // The two silences are never the same text — the whole point of the split.
+  assert(
+    empty.join("|") !== complete.join("|"),
+    "canary: 'no files in scope' and 'every file covered' render differently",
+  );
+}
+
+{
+  // The lens-level banner: the one guarantee that stays verdict-bearing.
+  const lanes = unreviewedLanesSection(["TYPES: not reviewed — no findings or summary"]);
+  assert(
+    lanes.some((l) => l.includes("REVIEW INCOMPLETE")) &&
+      lanes.some((l) => l.includes("does not count as a pass")),
+    "canary: the LENS-level banner is the one that names the blocking outcome",
+  );
+  assert(
+    unreviewedLanesSection([]).length === 0,
+    "a round whose every lens left evidence behind carries no lens-level banner",
   );
 }
 

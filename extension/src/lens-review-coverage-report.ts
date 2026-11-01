@@ -62,3 +62,36 @@ export function unaccountedSection(unaccounted: readonly string[]): string[] {
     "An unjudged file is not a clean file: no lens named it, so read these lanes before accepting the round.",
   ];
 }
+
+/**
+ * The disclosure's honest statement about the DENOMINATOR, which is a different
+ * fact from the list above and must not be collapsed into it.
+ *
+ * `unaccountedSection([])` contributes nothing, so a round that had no files in
+ * scope at all would otherwise render the same silence as one that had files and
+ * covered every one of them — and "no files unaccounted for" reads as "fully
+ * covered" to whoever is deciding whether to merge. It is not: there was nothing
+ * to cover. Naming which of the two happened is the whole of this function, and
+ * it decides nothing either way (the lens-level rule is what gates).
+ *
+ *  - `"no-files"` — the round's expected set was empty (an empty diff, or a diff
+ *    with no readable file section), so there is no denominator to report on.
+ *  - `"complete"` — there was a denominator and every file in it was accounted
+ *    for; this is the only case allowed to read as coverage.
+ *  - `"unaccounted"` — files are left over; `unaccountedSection` renders them and
+ *    this function contributes nothing.
+ */
+export function coverageDenominatorSection(state: {
+  hasDenominator: boolean;
+  unaccountedCount: number;
+}): string[] {
+  // Files left over: the disclosure above owns the report.
+  if (state.unaccountedCount > 0) return [];
+  if (state.hasDenominator) {
+    return ["", "✓ COVERAGE — every file in this round's denominator was named by a finding or a summary."];
+  }
+  return [
+    "",
+    "ℹ COVERAGE — no files in scope: this round had no denominator to report on, so nothing here is covered and nothing is uncovered either. Do NOT read the absence of a coverage warning as complete coverage.",
+  ];
+}

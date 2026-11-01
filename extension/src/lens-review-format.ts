@@ -176,6 +176,18 @@ export interface LensReviewSummary {
    * lens tests on a one-file diff whose lenses answered in prose.
    */
   unaccountedFiles?: string[];
+  /**
+   * The denominator's own state, and the reason the report can tell "every file
+   * was covered" apart from "there were no files to cover". `unaccountedFiles`
+   * is absent in both cases, so without this field an empty expected set (an
+   * empty diff, or a diff with no readable file section) renders the same
+   * silence as a fully covered round — and an absent warning is not evidence of
+   * coverage. Set only when the round HAD a denominator and every file in it was
+   * accounted for; absent when files are left over (the disclosure names those)
+   * and when there was no denominator at all (the report then says "no files in
+   * scope"). Disclosure either way: this field never decides a verdict.
+   */
+  coverageComplete?: boolean;
 }
 
 /**
