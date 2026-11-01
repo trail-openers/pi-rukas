@@ -18,7 +18,19 @@ import { isFullCommitSha } from "../commit-sha.ts";
 import type { DispatchUsage } from "../types.ts";
 import { CRITERION_ID } from "./spec.ts";
 import { normaliseRelPath, pathProblem } from "./specify-path.ts";
+import {
+  DISPATCHES_MAX_ROWS,
+  dispatchesProblem,
+  isMeasure,
+  validatedDispatches,
+} from "./state-dispatches.ts";
 import type { LeanState, Outcome, Step } from "./state.ts";
+// The row validators moved to `state-dispatches.ts` when this file passed the size
+// cap, but their callers keep importing them from here. A re-export is the
+// smallest honest change: it is one line, it does not duplicate the rule, and it
+// leaves every consumer's import site untouched — a caller should not have to
+// learn where a validator lives in order to ask it a question.
+export { DISPATCHES_MAX_ROWS, validatedDispatches } from "./state-dispatches.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 
 /**
@@ -92,13 +104,37 @@ export function validPrUrl(url: unknown): string | undefined {
 }
 
 /**
- * The states whose dispatch may be stopped by its budget, hence own those fields.
+ * The states whose dispatch may be stopped by its budget, hence own the
+ * `limit`/`value`/`used` trio.
  *
- * Exported as the answer to "may this state record `dispatches`": `errorOutcome`
- * asks it before copying rows off a throw, so the ownership rule the loader
- * enforces has exactly one statement in the pipeline.
+ * The narrower set: a step that arms a ceiling can report which ceiling fired.
+ * `DISPATCH_STATES` below is the wider set of steps that may record cost — the
+ * two are deliberately not one constant, and `test-lean-state-dispatches.ts`
+ * pins both on the two paths a step's cost travels.
  */
 export const BUDGET_STATES: readonly LeanState[] = ["specify", "build", "challenge"];
+
+/**
+ * The states that may record what their children cost.
+ *
+ * The ONE statement of that set. Two readers used to hand-derive it from
+ * opposite directions — `OWNER_OF_FIELD.dispatches` below spelled it as a list
+ * built from `BUDGET_STATES` plus `"review"`, and `recordsDispatches` in
+ * `error-outcome.ts` re-wrote `state === "review" || BUDGET_STATES.includes(state)`
+ * — and two expressions of one rule is how a widening can land on one side and
+ * silently lose the step whose children cost the most: the loader would drop the
+ * rows, or the throw path would refuse to copy them, and either way a run's
+ * cost record just got smaller with nothing said.
+ *
+ * `review` is in this set but NOT in `BUDGET_STATES`: it pays for a reviewer,
+ * six lenses and a fixer per round, so it MUST record cost — and since this
+ * round it arms its ceiling through `armBudget` like the other three, so a
+ * breach routes as a budget verdict. `BUDGET_STATES` stays the narrower set that
+ * owns the `limit`/`value`/`used` trio for the pre-existing steps; widening it
+ * to include `review` would name `review` as the owner of a trio only a
+ * `budget`-kind outcome may carry.
+ */
+export const DISPATCH_STATES: readonly LeanState[] = [...BUDGET_STATES, "review"];
 
 /**
  * Which state is allowed to record which evidence-bearing field. One table, and
@@ -130,7 +166,7 @@ const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>>
   // The two steps that REPORT how a run ended are the only ones that may claim a
   // comment reached the forge.
   posted: REPORTING_STATES,
-  dispatches: BUDGET_STATES,
+  dispatches: DISPATCH_STATES,
   verifiedHead: "verify",
   commandCriteria: "verify",
   commandNotRunnable: "verify",
@@ -194,97 +230,6 @@ function commandCriteriaProblem(value: unknown): string | undefined {
       return `outcome commandCriteria[${JSON.stringify(id)}] must be "${COMMAND_CRITERION_KIND}"`;
   }
   return undefined;
-}
-
-/** The token-count fields of a usage row; `cost` is checked as a measure, not a count. */
-const USAGE_COUNTERS = ["input", "output", "cacheRead", "cacheWrite", "turns"] as const;
-
-/**
- * How many dispatch rows one step may record. Exported because `specify` folds
- * two attempts into ONE outcome and clips its merge here rather than keeping a
- * second copy of the bound the validator enforces.
- */
-export const DISPATCHES_MAX_ROWS = 16;
-
-/** Is this a duration a child can honestly report? Finite and never negative. */
-function isMeasure(value: unknown): boolean {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0;
-}
-
-/** Is this value a usage row of the shape `DispatchUsage` describes? */
-function isUsageRow(value: unknown): boolean {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const u = value as Record<string, unknown>;
-  // A count of tokens is never a fraction and never infinite: `1e400` arrives
-  // from JSON as `Infinity`, and an infinite total printed to a host is a
-  // record that reads as evidence and compares against nothing.
-  if (!["input", "output", "cacheRead", "cacheWrite", "turns"].every((k) => isCount(u[k])))
-    return false;
-  // `cost` is the one field that is NOT an integer count: `addUsage` in
-  // `pi-usage.ts` accumulates a currency total, so a real report carries
-  // fractions (0.00000625 for one small child) and refusing them would refuse
-  // every honest row. It is still a finite non-negative number — a negative
-  // cost would SUBTRACT from a host's total and an infinite one cannot print.
-  return isMeasure(u.cost);
-}
-
-/**
- * Why a `dispatches` array is not a cost record this run may report, or undefined.
- *
- * Each row is one child the step paid for, and the headless result sums these
- * into `usage.byRole`. A row with no role cannot be attributed to a role, a
- * negative cost would subtract from the total, and a row whose `ok` is not a
- * boolean leaves the reader unable to tell a stopped child from a finished one
- * — which is the distinction the whole per-role comparison between engines rests on.
- */
-function dispatchesProblem(value: unknown): string | undefined {
-  if (!Array.isArray(value)) return "outcome dispatches must be an array";
-  if (value.length > DISPATCHES_MAX_ROWS)
-    return `outcome dispatches must hold at most ${DISPATCHES_MAX_ROWS} rows`;
-  for (const [i, raw] of value.entries()) {
-    if (typeof raw !== "object" || raw === null || Array.isArray(raw))
-      return `outcome dispatches[${String(i)}] must be an object`;
-    const row = raw as Record<string, unknown>;
-    if (typeof row.role !== "string" || row.role === "")
-      return `outcome dispatches[${String(i)}].role must be a non-empty string`;
-    if (typeof row.ok !== "boolean") return `outcome dispatches[${String(i)}].ok must be a boolean`;
-    if (!isMeasure(row.ms))
-      return `outcome dispatches[${String(i)}].ms must be a finite number >= 0`;
-    if (!isUsageRow(row.usage))
-      return `outcome dispatches[${String(i)}].usage must carry non-negative integer input, output, cacheRead, cacheWrite, cost and turns`;
-  }
-  return undefined;
-}
-
-/** The `dispatches` rows, rebuilt from the ones this module actually checked. */
-export function validatedDispatches(value: unknown): DispatchUsageRow[] {
-  const out: DispatchUsageRow[] = [];
-  if (!Array.isArray(value)) return out;
-  for (const raw of value) {
-    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) continue;
-    const row = raw as Record<string, unknown>;
-    if (typeof row.role !== "string" || row.role === "") continue;
-    if (typeof row.ok !== "boolean" || !isMeasure(row.ms) || !isUsageRow(row.usage)) continue;
-    const u = row.usage as Record<string, unknown>;
-    // Each count is RE-DERIVED from the check rather than cast: `isUsageRow`
-    // already proved all six are non-negative safe integers, and reading them
-    // back through `unknown` keeps the rebuilt row a product of the validation.
-    const count = (k: (typeof USAGE_COUNTERS)[number] | "cost"): number => u[k] as number;
-    out.push({
-      role: row.role,
-      ms: row.ms as number,
-      ok: row.ok as boolean,
-      usage: {
-        input: count("input"),
-        output: count("output"),
-        cacheRead: count("cacheRead"),
-        cacheWrite: count("cacheWrite"),
-        cost: count("cost"),
-        turns: count("turns"),
-      },
-    });
-  }
-  return out;
 }
 
 /**

@@ -32,6 +32,11 @@ export const OUTCOME_KINDS = {
   challenge: ["new-tests", "none", "budget"],
   verify: ["green", "red"],
   publish: ["ok"],
+  // `done` is the only kind: both gates either clear or the step throws. A
+  // review that ran out of its budget, or a gate that could not run, is NOT a
+  // kind a handler returns — it is a throw, and the engine records it as the
+  // infrastructure handback it is rather than letting the table route an
+  // unreviewed head onward on a kind that reads like a verdict.
   review: ["done"],
   ci: ["green", "red"],
   land: ["merged", "refused"],

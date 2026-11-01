@@ -156,7 +156,10 @@ try {
       JSON.parse(readFileSync(loc.file, "utf8")).rows[0].title === "a stored finding",
       "the rows survived the move",
     );
-    assert(modeOf(loc.file) === 0o600, `the migrated file is 0600 (got ${modeOf(loc.file).toString(8)})`);
+    assert(
+      modeOf(loc.file) === 0o600,
+      `the migrated file is 0600 (got ${modeOf(loc.file).toString(8)})`,
+    );
 
     // Idempotence: put a file back and resolve again — the marker means the
     // second resolve does nothing at all.
@@ -250,7 +253,10 @@ try {
       loc?.file === path.join(ledgerDir, FINDINGS_FILE),
       "the findings file sits beside the overridden ledger",
     );
-    assert(!existsSync(path.join(agent, "review-state")), "…and nothing was created in the agent dir");
+    assert(
+      !existsSync(path.join(agent, "review-state")),
+      "…and nothing was created in the agent dir",
+    );
     delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
     rmSync(ledgerDir, { recursive: true, force: true });
     rmSync(path.dirname(repo), { recursive: true, force: true });
@@ -293,11 +299,17 @@ try {
     writeFileSync(oldFile, OLD, "utf8");
     resetFindingsStateCache();
     await findingsStateDir(execp, repo);
-    assert(existsSync(oldFile), "crash B: the fixture holds the old file beside an identical live file");
+    assert(
+      existsSync(oldFile),
+      "crash B: the fixture holds the old file beside an identical live file",
+    );
     rmSync(path.join(b_dir!, "MIGRATED"));
     resetFindingsStateCache();
     const b = await findingsStateDir(execp, repo);
-    assert(readFileSync(b!.file, "utf8") === OLD, "crash B (identical bytes): the live file holds the rows");
+    assert(
+      readFileSync(b!.file, "utf8") === OLD,
+      "crash B (identical bytes): the live file holds the rows",
+    );
     assert(!existsSync(oldFile), "crash B: the old file is unlinked");
     assert(existsSync(path.join(b!.dir, "MIGRATED")), "crash B: the marker follows the unlink");
     assert(
@@ -349,7 +361,10 @@ try {
       writeFileSync(tokenFile, bad, "utf8");
       resetFindingsStateCache();
       const fell = await findingsStateDir(execp, repo);
-      assert(fell!.fellBack, `a malformed token (${bad.length} chars) falls back beside the ledger`);
+      assert(
+        fell!.fellBack,
+        `a malformed token (${bad.length} chars) falls back beside the ledger`,
+      );
       assert(
         reviewStateRoots().some((r) => r.startsWith(agentDir())),
         "the guard builds its resolved root from the same agentDir the store writes into",
@@ -389,7 +404,8 @@ try {
     const immutable = path.join(root, STATE_LEAF);
     mkdirSync(immutable, { mode: 0o755 });
     chmodSync(immutable, 0o755);
-    const { execFileSync, spawnSync } = require("node:child_process") as typeof import("node:child_process");
+    const cp = require("node:child_process") as typeof import("node:child_process");
+    const { execFileSync, spawnSync } = cp;
     const chattr = spawnSync("chattr", ["+i", immutable], { encoding: "utf8" });
     if (chattr.status !== 0) {
       console.log(`- skipped: chattr +i unavailable (${chattr.stderr.trim() || chattr.status})`);
@@ -398,7 +414,10 @@ try {
         process.env.PI_AGENT_DIR = root;
         resetFindingsStateCache();
         const stuck = await findingsStateDir(execp, repo);
-        assert(stuck!.fellBack, "a state root that will not take 0700 falls back beside the ledger");
+        assert(
+          stuck!.fellBack,
+          "a state root that will not take 0700 falls back beside the ledger",
+        );
         assert(
           path.dirname(stuck!.file) === commonDir,
           "…and the fallback is the ledger's own directory, not a world-readable dir",

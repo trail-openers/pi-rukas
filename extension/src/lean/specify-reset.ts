@@ -55,6 +55,46 @@ export class SpecifyCommitError extends Error {
  */
 export const NO_HOOKS = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"] as const;
 
+/** The wall clock on a local git write (`checkout`, `reset`, `worktree add`). */
+export const LOCAL_GIT_MS = 120_000;
+/** The wall clock on a short local read (`rev-parse`). */
+export const QUICK_GIT_MS = 30_000;
+/** The largest git stdout a step will hold. */
+export const GIT_MAX_BUFFER = 16 * 1024 * 1024;
+
+/**
+ * One local git call as argv, or `undefined` when git refused rather than said no.
+ *
+ * The fourth copy of this wrapper is what put it here: the same six lines — the
+ * `NO_HOOKS` prefix, the 120s bound, the buffer cap, the swallow-to-`undefined`
+ * — existed twice in the review step and once in `build-git.ts`, each free to
+ * drift on any one of the four. `build` keeps its own because it needs a
+ * per-call timeout and an 8 MiB cap; this one is the shape every other lean step
+ * wants and nothing else enforces.
+ *
+ * A refusal is `undefined` rather than a throw by design: callers decide what a
+ * failed read means (the review step's reads distinguish "git could not run"
+ * from "git found nothing" themselves, through the outcome-returning resolver).
+ */
+export async function gitQuiet(
+  exec: ExecFn,
+  cwd: string,
+  argv: string[],
+  opts: { timeout?: number; maxBuffer?: number } = {},
+): Promise<{ stdout: string } | undefined> {
+  try {
+    const r = await exec("git", {
+      argv: [...NO_HOOKS, ...argv],
+      cwd,
+      timeout: opts.timeout ?? LOCAL_GIT_MS,
+      maxBuffer: opts.maxBuffer ?? GIT_MAX_BUFFER,
+    });
+    return { stdout: r.stdout ?? "" };
+  } catch {
+    return undefined;
+  }
+}
+
 /** Counter for temp names, so two files of one capture never share one. */
 let writeSeq = 0;
 
@@ -219,7 +259,7 @@ export async function resetWorktreeToBase(
   ];
   for (const argv of steps) {
     try {
-      await exec("git", { argv, cwd: wt, timeout: 120_000, maxBuffer: 4 * 1024 * 1024 });
+      await exec("git", { argv, cwd: wt, timeout: LOCAL_GIT_MS, maxBuffer: 4 * 1024 * 1024 });
     } catch (err) {
       throw new SpecifyResetError(
         `git ${argv.join(" ")} failed in ${wt}: ${(err as Error).message}`,
@@ -229,7 +269,7 @@ export async function resetWorktreeToBase(
   const head = await exec("git", {
     argv: [...NO_HOOKS, "rev-parse", "HEAD"],
     cwd: wt,
-    timeout: 30_000,
+    timeout: QUICK_GIT_MS,
     maxBuffer: 1024 * 1024,
   }).catch(() => undefined);
   const headSha = (head?.stdout ?? "").trim();
@@ -293,7 +333,7 @@ export async function commitTestFiles(
   const head = await exec("git", {
     argv: [...NO_HOOKS, "rev-parse", "HEAD"],
     cwd: wt,
-    timeout: 30_000,
+    timeout: QUICK_GIT_MS,
     maxBuffer: 1024 * 1024,
   }).catch(() => undefined);
   const headSha = (head?.stdout ?? "").trim();
@@ -351,7 +391,7 @@ export async function committedBlob(exec: ExecFn, wt: string, rel: string): Prom
   const r = await exec("git", {
     argv: ["show", `HEAD:${rel}`],
     cwd: wt,
-    timeout: 30_000,
+    timeout: QUICK_GIT_MS,
     maxBuffer: 8 * 1024 * 1024,
     stdoutEncoding: "latin1",
   }).catch(() => undefined);
