@@ -49,7 +49,10 @@
  *     it witnesses that the left flank admits a line-initial path — which, now
  *     the `\n|` alternative is gone, is `NOT_PATH`'s job. `^` does NOT rescue
  *     it, because the summary is `"Reviewed the delta.\nsrc/c.ts is fine"` and
- *     the path sits at offset 19, not at offset 0. Conclusion: the fixture is
+ *     the path sits at index 19, nowhere near the `^` anchor at index 0 — so
+ *     `^` had no way to reach it (and could not have matched anyway: the
+ *     left-hand path characters preceding it are themselves in the path set).
+ *     Conclusion: the fixture is
  *     not decoration (it can go red), but what it witnesses is the negated
  *     class, not a dedicated arm.
  *   - narrow the escape class to `/\./g`      → REDS: META_CITED **and**
