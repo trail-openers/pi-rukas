@@ -43,8 +43,14 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-const { FINDINGS_FILE, STATE_LEAF, agentDir, findingsStateDir, findingsStoreLocation, resetFindingsStateCache } =
-  await import("../src/review-state-path.ts");
+const {
+  FINDINGS_FILE,
+  STATE_LEAF,
+  agentDir,
+  findingsStateDir,
+  findingsStoreLocation,
+  resetFindingsStateCache,
+} = await import("../src/review-state-path.ts");
 
 const savedAgentDir = process.env.PI_AGENT_DIR;
 const savedLedgerOverride = process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
@@ -148,10 +154,7 @@ try {
       "an override: the read-only and creating answers both name the file beside the override",
     );
     assert(read?.exists === false, "…and say the store is not there yet");
-    assert(
-      !existsSync(path.join(agent, STATE_LEAF)),
-      "…and neither arm touched the agent dir",
-    );
+    assert(!existsSync(path.join(agent, STATE_LEAF)), "…and neither arm touched the agent dir");
     delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
     rmSync(ledgerDir, { recursive: true, force: true });
     rmSync(path.dirname(repo), { recursive: true, force: true });
@@ -217,7 +220,9 @@ try {
       "an unreadable token file: both arms name the beside-ledger fallback",
     );
     assert(
-      !existsSync(path.join(path.dirname(stateRootOf(agent, commonDir)), "DEADBEEFDEADBEEFDEADBEEFDEADBEEF")),
+      !existsSync(
+        path.join(path.dirname(stateRootOf(agent, commonDir)), "DEADBEEFDEADBEEFDEADBEEFDEADBEEF"),
+      ),
       "…and no private minted token directory was created by the read",
     );
     rmSync(tokenFile, { recursive: true, force: true });
