@@ -274,7 +274,7 @@ function visibilityLookupFor(exec: ExecFn | undefined): VisibilityFn | undefined
  *
  * A `--body-file` is relative to the directory the command runs in, which for
  * a /work developer is its detached worktree and not the repo root
- * (AGENTS.md §7, `lensWorktree()`). Pi's tool_call context does not carry a
+ * (`lensWorktree()`). Pi's tool_call context does not carry a
  * cwd, so the best available answer is this process's directory — the child's
  * own cwd, which is the worktree for a child — and the admissible-root rule
  * below is what makes a wrong guess refuse rather than publish.

@@ -1,12 +1,16 @@
 #!/usr/bin/env bun
 /**
- * AGENTS.md §7 is the single authoritative MAST block, and the other sites that
+ * `agents-base/project-manager.md` (the step-back section) is the single
+ * authoritative MAST block, and the other sites that
  * cite the paper (arXiv 2503.13657) restate a subset of it — so a figure that
- * silently leaves §7 orphans every pointer, and a pointer that drifts contradicts
- * the block it points at. Nothing enforced either direction until this file.
+ * silently leaves that block orphans every pointer, and a pointer that drifts
+ * contradicts the block it points at. Nothing enforced either direction until
+ * this file. The block moved out of AGENTS.md when that file was reduced to
+ * static rules (incident statistics are not a rule); AUTHORITATIVE names where
+ * it lives now.
  *
  * The branch these assertions came from removed statistics attributed to the
- * paper that the paper does not contain. When the citation was collapsed, §7's
+ * paper that the paper does not contain. When the citation was collapsed, the
  * step-back paragraph became the one place the real figures live.
  *
  * A gate that only asserts "the file mentions 15.7% somewhere" is worthless, and
@@ -67,7 +71,7 @@ function assert(cond: boolean, msg: string): void {
 const REPO_ROOT = path.resolve(import.meta.dirname, "..", "..");
 const SELF = "extension/smoke-tests/test-mast-authoritative-block.ts";
 const FIXTURES = "extension/smoke-tests/lib/mast-canary-fixtures.ts";
-const AUTHORITATIVE = "AGENTS.md";
+const AUTHORITATIVE = "agents-base/project-manager.md";
 
 /** Read a repository file by name, reporting an unreadable one as a named failure. */
 function readRepoFile(file: string): string | undefined {
@@ -84,11 +88,11 @@ function readRepoFile(file: string): string | undefined {
 
 const agentsMd = readRepoFile(AUTHORITATIVE);
 if (agentsMd === undefined) {
-  console.error("\nFATAL: AGENTS.md unreadable — the §7 assertions cannot run.");
+  console.error(`\nFATAL: ${AUTHORITATIVE} unreadable — the MAST assertions cannot run.`);
   process.exit(1);
 }
 
-// ------------------------------------------------------- the §7 block, located
+// ------------------------------------------------------- the judged block, located
 
 // Located by heading token and read to the next blank line, so a reflow of the
 // prose cannot narrow the gate. Exactly ONE paragraph may carry the heading:
@@ -97,16 +101,16 @@ if (agentsMd === undefined) {
 const HEADED = agentsMd.split("\n").filter(isStepBackHeading);
 assert(
   HEADED.length === 1,
-  `exactly one §7 step-back paragraph carries the heading token (got ${HEADED.length}) — a duplicate is an unchecked second authority`,
+  `exactly one step-back paragraph in the authoritative file carries the heading token (got ${HEADED.length}) — a duplicate is an unchecked second authority`,
 );
 const PARA = stepBackParagraph(agentsMd);
 assert(
   PARA !== undefined,
-  "§7's step-back paragraph is found — the assertions below are derived from it, so an absence fails loudly rather than vacuously",
+  `the authoritative step-back paragraph is found in ${AUTHORITATIVE} — the assertions below are derived from it, so an absence fails loudly rather than vacuously`,
 );
 if (PARA === undefined) {
   console.error(
-    "\nFATAL: §7 step-back paragraph not found — every figure assertion below is meaningless.",
+    "\nFATAL: the authoritative step-back paragraph not found — every figure assertion below is meaningless.",
   );
   process.exit(1);
 }
@@ -119,7 +123,7 @@ assert(
 // ------------------------------------------------------- the facts it must carry
 
 for (const fact of FACTS) {
-  assert(BLOCK.includes(fact.token), `§7's MAST block states "${fact.token}" (${fact.why})`);
+  assert(BLOCK.includes(fact.token), `the MAST block states "${fact.token}" (${fact.why})`);
 }
 
 // The superlative and its scope in the SAME clause: "largest single mode" two
@@ -375,7 +379,7 @@ for (const file of [
   const real = checkBlock(BLOCK);
   assert(
     real.length === 0,
-    `the checker passes the real §7 block — so a mutant it rejects below is a defect, not a broken checker (got ${JSON.stringify(real)})`,
+    `the checker passes the real MAST block — so a mutant it rejects below is a defect, not a broken checker (got ${JSON.stringify(real)})`,
   );
 
   let caught = 0;
@@ -394,11 +398,11 @@ for (const file of [
     const flagsIt = checkBlock(mutated).includes(defect.expectMissing);
     assert(
       error === "" && !hadIt && flagsIt,
-      `canary: the checker CATCHES a §7 block that ${defect.name} (expected to flag "${defect.expectMissing}"${error ? `; ${error}` : ""}, got ${JSON.stringify(checkBlock(mutated))})`,
+      `canary: the checker CATCHES a MAST block that ${defect.name} (expected to flag "${defect.expectMissing}"${error ? `; ${error}` : ""}, got ${JSON.stringify(checkBlock(mutated))})`,
     );
     if (error === "" && !hadIt && flagsIt) caught++;
   }
-  assert(caught === DEFECTS.length, `every §7 mutant caught (${caught}/${DEFECTS.length})`);
+  assert(caught === DEFECTS.length, `every MAST mutant caught (${caught}/${DEFECTS.length})`);
 }
 
 // The duplicate-authority mutant runs against the FILE: only the exactly-one

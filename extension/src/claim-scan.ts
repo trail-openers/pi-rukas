@@ -40,7 +40,7 @@
  * check useless in opposite directions:
  *
  *   - **Same-diff code counts.** This project requires documentation to ship in
- *     the same PR as the behaviour it describes (AGENTS.md §7). A rule that
+ *     the same PR as the behaviour it describes (this repo's docs policy). A rule that
  *     ignored same-diff referents would fire on nearly every honest PR here: a
  *     README line citing `POLICY_JUDGE_TIMEOUT_MS` added alongside the constant
  *     itself would be flagged as unsourced.

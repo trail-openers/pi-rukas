@@ -3,7 +3,8 @@
  * #1394 regression tests: worktree provisioning REPORTS a fault, it never
  * rejects and never accuses the wrong party.
  *
- * AGENTS.md §7 — "Provisioning never fails the branch step" — is a promise about
+ * The `worktree-provision.ts` contract — "Provisioning never fails the branch
+ * step" — is a promise about
  * the SHAPE of a failure, not just its visibility. A non-ENOENT errno on a
  * dependency source (chmod-000, a locked tree) escaped as a rejected promise
  * from the precondition probe, `worktreeCreate` propagated it, the mechanized
@@ -159,7 +160,7 @@ async function repoShapedFixture(hook: string | undefined): Promise<{ root: stri
 
 // ---- provisioning never rejects: an unreadable source dir is a reported problem (#1394)
 //
-// AGENTS.md §7: "Provisioning never fails the branch step." A non-ENOENT errno
+// `worktree-provision.ts`: provisioning never fails the branch step. A non-ENOENT errno
 // on a dependency SOURCE (chmod-000, so `readdir` gives EACCES) used to escape
 // as a rejected promise from the precondition probe, which sat OUTSIDE the try.
 // Rejection is the failure mode the contract forbids — so these assert the

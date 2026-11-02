@@ -272,8 +272,8 @@ that contradicts `agents.json` passes CI.
 statement, never restate it.** The assembled prompt is the concatenation of `agents-base/<role>.md`
 and the modules listed in `manifests/<role>.manifest`; a sentence written in two of those files
 reaches the model twice, and once the copies diverge the model is handed a contradiction about its
-own rules. AGENTS.md §11 forbids the duplication; §7 names the adversarial-gate verdict vocabulary
-as the defect class this rule exists to prevent.
+own rules. AGENTS.md §11 forbids the duplication; the defect class this rule exists to
+prevent is a verdict vocabulary stated in two files that then diverge.
 
 Two statements are consolidated as follows:
 

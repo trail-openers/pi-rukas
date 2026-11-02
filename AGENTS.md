@@ -1,8 +1,10 @@
 # Agent Guidelines for pi-rukas
 
-This document is auto-loaded by Pi when any agent works inside this repo. It establishes the rules, conventions, and project-specific constraints all development work follows. Read once; apply throughout.
+Auto-loaded by Pi when any agent works inside this repo. Static rules only: conventions and load-bearing constraints. No incident history, no dated measurements, no module registry — git and the PRs keep those, and the jsdoc header of a source file is the authoritative contract for that file.
 
-> ℹ️ **Recursive context.** pi-rukas both *uses* Pi (when you, the agent, run inside it) and *configures* Pi (its actual purpose — building role prompts and an orchestrator extension). When this file says "the agent", it means *you*, the one reading this. When it says "subagents" / "role prompts" / "specialists", it means pi-rukas's product surface.
+> ℹ️ **Recursive context.** pi-rukas both *uses* Pi (when you, the agent, run inside it) and *configures* Pi (its product — role prompts and an orchestrator extension). "The agent" means *you*, the reader. "Subagents" / "role prompts" / "specialists" mean pi-rukas's product surface.
+
+**Where else to look.** `docs/configuration.md` is the home of every `PI_ENSEMBLE_*` knob — this file lists none; `pi-rukas-headless --capabilities` prints the machine-readable list. `docs/troubleshooting.md` is symptom → cause → fix. `docs/headless.md` is the headless contract. A rule stated here in one sentence is a mechanism described there in full; never copy a mechanism description into this file, and never cite an issue number here — history belongs to git.
 
 ---
 
@@ -19,69 +21,36 @@ cd extension && node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json &
   bash smoke-tests/lib/verify-loop.sh smoke-tests/test-*.ts
 ```
 
-If any check fails: fix the issue, re-run, only then push. Do NOT:
+If any check fails: fix it, re-run, only then push. Do NOT:
 
 - ❌ Use `--no-verify`, `--no-gpg-sign`, or skip hooks
 - ❌ Add `// biome-ignore` or `// @ts-ignore` to bypass — fix the code
 - ❌ Push and hope CI catches it
 - ❌ Run only the smoke test that exercises your change — they're all fast offline
 
-### Live smoke tests are NOT in the pre-push set
+**Live smoke tests are NOT in the pre-push set.** `extension/smoke-tests/test-*-live.ts` spawn real Pi children and cost real tokens. Run them when you change child-process behaviour (`spawn.ts`), bump the Pi pin, or investigate a production-only failure. CI runs the offline tests only.
 
-Files matching `extension/smoke-tests/test-*-live.ts` spawn real Pi children and cost real tokens (a few cents per run on Cerebras GLM-4.7). Run them only when:
-
-- You changed `spawn.ts` (changes to child process behaviour)
-- You bumped the Pi version pin in `extension/package.json`
-- You're investigating a production-only failure mode
-
-CI runs the offline tests only. Live tests are dev-machine only.
+### Review findings and the round cap
 
 **Six-pass review findings are blocking at HIGH severity and above.** The fix loop continues until every finding at HIGH severity and above is resolved. MEDIUM and LOW findings are disclosed on the PR and may be deferred.
 
-The fix loop is bounded, and what happens at the bound depends on severity. A `CRITICAL` finding always parks. A round cap reached with only HIGH findings outstanding, an **approving** adversarial gate, and the residual findings **posted to the PR** carries on to CI instead of parking — measured: two of six outcomes in one overnight run parked here, and a human then judged both merge-worthy (one merged unchanged). Parking work that is fine costs a re-run and operator time; carrying findings forward silently would be worse, so disclosure is a precondition and a failure to post parks the cycle instead. A review that also exhausts its wall-clock budget parks regardless — running out of rounds says the loop is not converging, running out of time says nobody knows what it is doing.
+A `CRITICAL` finding always parks. At the round cap, a `ISSUES_FOUND` review carries on to CI instead of parking when the adversarial gate approved **and** the residual findings were posted to the PR — failed disclosure parks. Running out of rounds is not running out of time: the review wall-clock cap parks regardless. Mechanism and escape hatch: [docs/troubleshooting.md](docs/troubleshooting.md) → "A merge was refused: review ledger".
 
-**Agent-run PR/MR merges are gated on the review ledger (#912).** A mode-independent `tool_call` hook refuses `gh pr merge` / `glab mr merge` (and the REST doors) in every mode, for every role, unless the per-clone review ledger shows a passing `adversarial_loop` **and** a passing `dispatch_lens_review` for the branch's current changes. The `/work` driver's mechanized merge is exempt by construction (in-process exec, not a tool call); its own reviews are recorded. Carve-outs: release-please and dependabot PRs (`isCarveOut` in `extension/src/merge-guard.ts`). In strict/headless mode ops is granted only the plain `gh pr merge*` form; glab merges (accepted only with `--auto-merge=false`) are not pre-granted. The grammar, escape hatch and child-agent coverage are in [docs/troubleshooting.md](docs/troubleshooting.md) → "A merge was refused: review ledger".
-
-**The round-cap merge path (#973)** lets the guard allow a capped, merge-worthy PR (ISSUES_FOUND at the round cap, approving adversarial gate, residuals posted to the PR). Its conditions and escape hatch are documented in `extension/src/merge-guard-round-cap.ts`.
-
-**Child guards.** `buildChildArgs` appends the child-guards companion (`extension/src/child-guards.ts`) to every child in every mode, independent of `PI_ENSEMBLE_DISABLE_SUBAGENT_GUARD` and `PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD`. The companion no-ops under `PI_ENSEMBLE_SUBAGENT_MODE=1`, and a missing companion file fails the spawn with a named error rather than producing an unguarded child. The write fence (#1655, `write-fence.ts`) is registered from the companion BEFORE that no-op, so it runs in strict children too: it refuses a developer's `write`/`edit`/`multiedit`/`bash` write that resolves outside its worktree, and self-gates on `PI_ENSEMBLE_WRITE_ROOT`, which the driver sets only on develop and fix-developer dispatches. Escape hatch `PI_ENSEMBLE_WRITE_FENCE=0`.
+Child guards: every child loads the mode-independent guard companion in every mode, and a missing companion file fails the spawn rather than producing an unguarded child. The write fence keeps a develop or lens-fix child's writes inside its worktree. See the jsdoc of `child-guards.ts`, `write-fence.ts`.
 
 ---
 
 ## 2. Two change paths (READ FIRST before editing)
 
-pi-rukas has **two distinct codebases** that need different handling. Misidentifying the path is the #1 source of confusion.
+pi-rukas has **distinct codebases** that need different handling. Misidentifying the path is the most common source of confusion.
 
-### Path A — Extension TypeScript (`extension/src/*.ts`)
+**Path A — Extension TypeScript (`extension/src/*.ts`).** Loaded by Pi at runtime via jiti; no build step for the TS itself. Gates: tsc + biome + offline smoke tests.
 
-- The orchestrator code that gets loaded by Pi
-- Edit → Pi picks up changes on next launch (loaded via jiti at runtime)
-- No build step needed for the TS itself
-- Required gates: tsc + biome + offline smoke tests
+**Path B — Modular prompt layer (`modules/`, `manifests/`, `agents-base/`, `agents.json`).** Source-of-truth markdown that builds into per-role system prompts. **You MUST run `bun run build`** from the repo root after editing, to validate the assembled prompt. Artefacts land in `dist/prompts/standard/*.md`, which is **gitignored** — regenerated at install time and by CI. Commit the sources, never `dist/`.
 
-### Path B — Modular prompt layer (`modules/`, `manifests/`, `agents-base/`)
+**Slash-command bodies (`pi-prompts/*.md`).** Read at runtime, no build; effective on the next command invocation.
 
-- Source-of-truth markdown that builds into per-role system prompts
-- Edit → **MUST run `bun run build`** from repo root before changes take effect on your local machine
-- Built artefacts go to `dist/prompts/standard/*.md`
-- `dist/prompts/standard/` is **gitignored** — generated at install time (`./install.sh`) on each host, and CI runs `bun run build` itself before tests. Don't commit `dist/`.
-
-### Slash-command bodies (`pi-prompts/*.md`)
-
-- Read at runtime by the extension; no build step
-- Changes take effect on next `/work`, `/start`, etc. invocation
-
-**Rule**: if you edit anything under `modules/`, `manifests/`, `agents-base/`, or `agents.json`, run `bun run build` locally to validate the assembled prompt is well-formed. The source-of-truth files are what you commit; `dist/` is regenerated by CI and at install time.
-
-### Path D — Sandbox image (`.devcontainer/`, image-baked tools)
-
-- Sandbox Docker image: source in `.devcontainer/Dockerfile` + `.devcontainer/entrypoint.sh`.
-- Image is auto-published to GHCR (`ghcr.io/trail-openers/pi-rukas:latest` + `sha-<commit>` + `vX.Y.Z` on release) by `.github/workflows/publish-image.yml` after CI passes on a push to main (`workflow_run`), so `latest` is never built from a red commit.
-- Users run `./install.sh` → pulls the published image (~10-20s). Local builds happen only on pull failure or with `--build`.
-- Debounced: a main build is skipped when main has already moved past its commit (the newer commit publishes), and a newer build cancels an in-flight one. If the newest commit's CI fails, `latest` stays at the last green image until the next green merge.
-- Contributors do NOT need to manually `docker build` + push; the workflow handles it.
-- Retention: `.github/workflows/cleanup-images.yml` (weekly) prunes `sha-*` and untagged versions older than 14 days; `latest` and `v*` release tags are kept forever. Per-commit images are not reproducible (several tools install unpinned), so anything durable pins a release tag.
-- Layer order in the Dockerfile is a cost decision: everything after `COPY . /opt/pi-rukas` rebuilds and re-pushes on every merge, per arch. Steps that don't read the checkout go above it.
+**Path D — Sandbox image (`.devcontainer/`).** Built and published to GHCR by CI after a green push to main; `install.sh` pulls it. Contributors never `docker build` and push by hand. Layer order in the Dockerfile is a cost decision: anything after the repo `COPY` rebuilds per architecture on every merge, so steps that do not read the checkout go above it.
 
 ---
 
@@ -89,7 +58,7 @@ pi-rukas has **two distinct codebases** that need different handling. Misidentif
 
 ### Extension code (`extension/src/`)
 
-Each module's responsibilities are documented in the jsdoc header of its source file — that's the authoritative contract, and it evolves with the code. Run `ls extension/src/` to list modules; their names are self-documenting (`dispatch.ts`, `dispatch-deck.ts`, `lifecycle-events.ts`, `permission-guard.ts`, etc.). Read the top of any file you're about to edit; don't rely on a stale registry here.
+Each module's responsibilities are documented in the jsdoc header of its source file — that's the authoritative contract, and it evolves with the code. Read the top of any file you're about to edit; don't rely on a stale registry here.
 
 ### Modular prompt layer
 
@@ -102,47 +71,21 @@ Each module's responsibilities are documented in the jsdoc header of its source 
 | `skill/<name>/SKILL.md` | Skills auto-symlinked to `~/.pi/agent/skills/` |
 | `pi-prompts/*.md` | Slash-command body (read at runtime, no build) |
 
-**Permission model — trust mode is the default.**
+**Permission model — trust mode is the default.** The permission guard runs as trust (sandbox, or interactive without the strict opt-in), strict (the opt-in: project → global → `agents.json` verdict resolution, prompts on `ask`), or headless (no UI: as strict, but `ask` hard-denies, since there is no human to consent). Children of a `/work` cycle run as trust, as an interactive cycle's children do — the boundary there is the mode-independent guards and the write fence, not the allowlist. Mechanism: [docs/headless.md](docs/headless.md).
 
-pi-rukas's `permission-guard.ts` runs in one of three states. The active state is decided by `isInTrustMode(hasUI)`:
+*Why trust mode is the default in an interactive host:* pi-rukas runs as the user's own UID, so no agent-tool-layer gate can meaningfully constrain a misbehaving subagent — same filesystem, network and credential access. Per-call prompts at runtime volumes become theatre. The sandbox is the path for confined execution, and it is transparent to host capabilities by default (docker socket, SSH agent, host env forwarded), so it is the agent's runtime rather than the user's security boundary. Confine with it; don't trust it as a fence.
 
-| State | Trigger | Behavior |
-|---|---|---|
-| **Trust mode** | sandbox env, OR interactive (hasUI=true) without strict-opt-in, OR explicit `PI_ENSEMBLE_TRUST_MODE=1` | tool_call handler returns immediately. No verdict resolution, no prompts, no decisions cache. |
-| **Strict** | `PI_ENSEMBLE_STRICT_PERMISSIONS=1` in interactive mode | Legacy 3-layer verdict resolution (`.pi/permissions.json` project → `~/.pi/agent/permissions.json` global → `agents.json`), prompts on `ask`, caches "Allow always" / "Deny always" in `.pi/decisions.json`. |
-| **Headless safety** | `!hasUI` (e.g. `pi -p`), outside a /work cycle | Verdict resolution runs as in strict mode, but `ask` hard-denies (no human to consent). Safety boundary for automation contexts. |
-| **Headless /work cycle (#1666)** | `!hasUI` and the cycle's children are stamped as /work children, unless `PI_ENSEMBLE_STRICT_PERMISSIONS=1` | Each child runs as trust, as an interactive /work cycle's children do. `agents.json` is not consulted. The boundary is the mode-independent guards and the write fence, not the allowlist. Mechanism: [docs/headless.md](docs/headless.md) → "Children of a /work cycle run with interactive trust". |
-
-*Why trust mode is the default in interactive host:* pi-rukas running as the user's own UID has no agent-tool-layer gate that can meaningfully constrain a misbehaving subagent — same FS / network / credential access as the user. Per-call prompts at runtime volumes (~30/minute) become theatre: rubber-stamped or ignored. Sandbox is the path for confined execution.
-
-*The sandbox is transparent to host capabilities by default.* The wrapper bind-mounts the host docker socket (so `.pi/mcp.json` docker-based MCPs Just Work), `~/.ssh/` + `SSH_AUTH_SOCK` (so outbound SSH uses the same identities as host), AND forwards the **full host shell env** into the container (so `.pi/mcp.json` env-refs `${VAR}` / `{env:VAR}` resolve identically to host-mode `pi`). All three weaken the container-fence-as-trust-boundary story (#200 / #215) — together they mean the sandbox is the agent's runtime, not the user's security boundary. This is by design and consistent with trust mode: the user IS the trust authority. Opt out with `PI_ENSEMBLE_NO_DOCKER_SOCKET=1` / `PI_ENSEMBLE_NO_SSH=1` for tighter isolation. Env-forwarding has a static blocklist (PATH, HOME, SHELL, locale, etc. — see README env-vars table); to keep a specific var out, `unset` it before launching pi-rukas.
-
-*Subagents* (developer, ops, explore, code-review-specialist, adversarial-developer): when parent is in trust mode, `spawn.ts` propagates `PI_ENSEMBLE_TRUST_MODE=1` to the child env and skips the per-spawn broker socket. A headless /work cycle's children get the same marker per dispatch, without any process-wide trust (mechanism: [docs/headless.md](docs/headless.md)); develop and lens-fix children are write-fenced (bash included), explore/adversarial/lens children have the write, edit and multiedit tools structurally excluded but their bash is unfenced (a reviewer can still write through bash, as interactively), and ops is unfenced, as interactively. The boundary for every child is the mode-independent guards it loads, not a reviewer's read-only status. A bare `pi -p` child with no cycle stays on the strict broker path. When parent is in strict / headless mode, the subagent's pi-rukas extension is forwarded via `--extension` so the subagent guard can escalate `ask` verdicts to the parent over a Unix socket. Either way: **the role's system prompt is the actual behavioral guidance**; the runtime gate is either off (trust) or a soft fence (strict).
-
-*Extension auto-forward to subagents*: `discoverInstalledExtensions` in `extension/src/spawn.ts` scans `~/.pi/agent/extensions/` (or `$PI_AGENT_DIR/extensions`) and re-injects every installed extension into the subagent via `--extension <real-path>`, except pi-rukas itself (matched by `package.json.name === "@trail-openers/pi-rukas"` to prevent recursive spawn) and `pi-mcp-adapter` (issue #959: an installed extension that registers the `/mcp` command replaces Pi's built-in MCP for the whole session — a lingering adapter would silently disable the native MCP the subagent gets via `-e builtin:mcp`). This means `pi-claude-auth` (Anthropic Claude Code identity headers) and other user-installed extensions reach subagents automatically once installed in the canonical location — no env-var wiring needed. Native MCP itself is not forwarded as an extension: since 1.0.0 it is a built-in that the subagent spawn path re-enables explicitly (`--no-extensions -e builtin:mcp -e builtin:codemode` — the `childArgsBase()` in `spawn-support.ts`), so it is independent of `PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD`. The `-e builtin:codemode` flag (default on; `PI_ENSEMBLE_CHILD_CODEMODE=0` restores the pre-#1030 argv) is what makes codemode *register* in the child; the child-guards companion (trust mode) or the strict subagent guard (strict/headless mode) then *activates* it by appending it to the active tool set on `session_start` via `child-codemode.ts` (epic #1026, sub-issue #1030).
-
-For extensions outside the canonical install location (dev-mode, monorepo paths), `PI_ENSEMBLE_USER_EXTENSION` is still honoured as an additional forwarded extension. To disable auto-forward entirely (restoring the pre-#88 "subagents inherit nothing" behaviour), set `PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD=1`. MCP server-side credentials remain the real capability boundary regardless.
+*Subagents:* the role's system prompt is the actual behavioural guidance; the runtime gate is either off (trust) or a soft fence (strict). Reviewer roles have write/edit/multiedit structurally excluded, which does not make their bash read-only. Installed user extensions are auto-forwarded to children; MCP server-side credentials remain the real capability boundary. Mechanism: the jsdoc of `spawn.ts`, `spawn-support.ts`, `spawn-extension-forward.ts`, `child-guards.ts`.
 
 ---
 
 ## 4. Pi compatibility (load-bearing)
 
-The extension depends on Pi's CLI flags, JSON event stream shape, and `ExtensionAPI` surface. The dev-dependency pins in `extension/package.json` (`@earendil-works/pi-coding-agent` + `@earendil-works/pi-tui`, co-pinned and moved in lockstep) are **deliberate and non-normative**: a CI-reproducibility device (so `bun install --frozen-lockfile` is reproducible), explicitly NOT a supported-version claim. Operators are free to upgrade Pi at any time — `pi` is a global install outside the extension's package manager. The single maintained version claim is the "Last verified against pi X.Y.Z" line in [docs/pi-compatibility.md](docs/pi-compatibility.md); this section and every other site reference or restate it, never carry an independent literal that can drift (enforced by `extension/smoke-tests/test-pi-version-drift.ts`).
+The extension depends on Pi's CLI flags, JSON event stream shape, and `ExtensionAPI` surface. The dev-dependency pins in `extension/package.json` (`@earendil-works/pi-coding-agent` + `@earendil-works/pi-tui`, co-pinned and moved in lockstep) are **deliberate and non-normative**: a CI-reproducibility device, explicitly NOT a supported-version claim. Operators upgrade Pi freely — `pi` is a global install outside this package manager. The single maintained claim is the "Last verified against pi X.Y.Z" line in [docs/pi-compatibility.md](docs/pi-compatibility.md); every other site restates it and never carries an independent literal that can drift (enforced by `extension/smoke-tests/test-pi-version-drift.ts`).
 
-Last verified against `pi` **1.4.0 (2026-11-01)** — the line above in [docs/pi-compatibility.md](docs/pi-compatibility.md) is the single source of truth (verified via `test-pi-shape-live.ts`); this restatement must agree with it (and with the `extension/package.json` pins' co-pin state) or the drift gate fails.
+Last verified against `pi` **1.4.0 (2026-11-01)** — the line above in [docs/pi-compatibility.md](docs/pi-compatibility.md) is the single source of truth; this restatement must agree with it (and with the pins' co-pin state) or the drift gate fails.
 
-### What the pin protects
-
-1. **Type-checking.** Every import of `@earendil-works/pi-coding-agent` across the extension source is `import type` — erased at compile time, zero runtime footprint. The pin ensures the extension's types match the pinned package's shape. That's it.
-2. **pi-tui widget code.** `@earendil-works/pi-tui` has value imports (`Text`, `SelectList`, `Container` in `lifecycle-events.ts`, `model-picker.ts`, `dispatch-deck.ts`) that resolve to the pinned pi-tui code at runtime. So the pinned TUI widgets render inside whatever Pi version the user actually runs. This IS a real runtime footprint.
-
-### What the pin does NOT protect
-
-The runtime `ExtensionAPI` surface. `@earendil-works/pi-coding-agent` is a devDependency; it cannot fence runtime. `spawnSpecialist` re-invokes `process.argv[1]` — the **running pi binary** — never the pinned package. The extension is typed against the pinned package but called with the installed Pi's ExtensionAPI. If the user's Pi drifts past the pinned version, the pin is silent. Shape changes in the ExtensionAPI or CLI flags will only surface as runtime errors, not type errors.
-
-### The uncovered risk: runtime drift
-
-The actual risk is the runtime Pi version advancing while the pin sits still. The only detector is `test-pi-shape-live.ts`, but it is gated on a deliberate pin bump — so if nobody bumps the pin, the check never runs and drift accumulates silently. Bumping the pin once does not close this systemic gap; it must stay current. The live test spawns a single child that invokes a tool and verifies the event shapes (`agent_end`, `message_end.message.role/usage`, `model`, `text` blocks, `toolCall` (`id`/`name`/`arguments`), `tool_execution_start` (`toolName`/`args`)) we depend on. It also asserts **tool-roster integrity**: every tool the extension registers must be present in the live child's toolset, so a provider-side silent drop (the #571 class) fails the test instead of surfacing as missing tools in production.
+**What the pin protects:** type-checking only, for every `import type` of the Pi packages (erased at compile time), plus the `@earendil-works/pi-tui` **value** imports (`Text`, `SelectList`, `Container`), which really do resolve to the pinned TUI code at runtime. **What it does not protect:** the runtime `ExtensionAPI` surface. A devDependency cannot fence runtime — `spawnSpecialist` re-invokes the *running* pi binary. Shape changes surface as runtime errors, never type errors, and the offline tests do not exercise child processes: `test-pi-shape-live.ts` is the only detector, and it runs only when someone bumps the pin. Keep the pin current.
 
 ### Shapes we depend on
 
@@ -152,254 +95,67 @@ Don't assume these are stable across Pi versions — verify when bumping:
 - `message_end` events with `message.role` and `message.usage` (input, output, cacheRead, cacheWrite)
 - `tool_execution_start` events with `toolName` and `args`
 - CLI flags: `--mode rpc`, `--no-extensions`, `--append-system-prompt`, `--session`, `--skill`, `--extension`, `--model`, `--no-skills`
-- `--mode rpc` stdin commands: `{type:"prompt"|"steer"|"abort"|"follow_up"|"get_state", …}` (load-bearing for the initial-prompt path and `dispatch_steer` #152)
+- `--mode rpc` stdin commands: `{type:"prompt"|"steer"|"abort"|"follow_up"|"get_state", …}`
 - RPC commands: `prompt` (with `streamingBehavior: "steer" | "followUp"`), `steer`, `abort`
-- `pi.sendUserMessage(content, { deliverAs: "steer" })` — load-bearing for async push-callback
+- `pi.sendUserMessage(content, { deliverAs: "steer" })` — the behaviour is required, not optional (see `agent-message.ts`)
 
 ### Bumping the Pi pin
 
-1. Read the Pi changelog: `gh api repos/badlogic/pi-mono/releases | jq -r '.[0:5][] | "\(.tag_name): \(.body[0:200])"'`.
-2. Bump in `extension/package.json` — relative example: `~0.XY.Z` → `~0.XY.(Z+1)`. Bump `pi-coding-agent` and `pi-tui` together (lockstep); the drift gate fails on a one-sided bump.
-3. Run **live** smoke tests on the new version (offline tests won't catch shape changes):
-   - `bun run smoke-tests/test-pi-shape-live.ts` — load-bearing shape assertions (#7). Spawns a trivial PONG child and verifies the event shapes (`agent_end`, `message_end.message.role/usage`, `content[].type`, `model`) we depend on.
-   - `bun run smoke-tests/test-progress-live.ts` — multi-turn `onProgress` cadence.
-   - `bun run smoke-tests/test-lens-review-live.ts` — six-pass review against a synthetic diff.
-   - `bun run smoke-tests/test-codemode-reviewer-rejection.ts` — the codemode canary (#1030). Proves reviewer write/edit exclusion through codemode still holds on the new Pi version: it spawns a reviewer-shaped child (write/edit excluded, `-e builtin:codemode`) and asserts the excluded tools stay absent from the codemode sandbox's `tools.*` surface before and after a script that attempts `tools.write`/`tools.edit`. The mechanism it guards (Pi's `executeCodemode` building `sandboxTools` from `getCodemodeCallableTools(ctx.tools)`) is a Pi-internal seam, so it runs on every bump, not just on codemode changes.
-4. Update the "Last verified against" line in [docs/pi-compatibility.md](docs/pi-compatibility.md) (version + date) and the restating line in this section — the `test-pi-version-drift.ts` gate cross-checks both against the declared pins. The install floor (`MIN_PI_VERSION` in `install-preflight.sh`) is a **minimum** and is never equalised with the verified line — canonical statement: "Last verified against pi" in [docs/pi-compatibility.md](docs/pi-compatibility.md). Do NOT edit released CHANGELOG entries — those are historical records.
+1. Read the Pi changelog: `gh api repos/badlogic/pi-mono/releases --jq '.[0:5][] | "\(.tag_name): \(.body[0:200])"'`.
+2. Bump `pi-coding-agent` and `pi-tui` **together** in `extension/package.json`; the drift gate fails on a one-sided bump.
+3. Run the **live** smoke tests — the offline ones cannot see a shape change: `test-pi-shape-live.ts` (event shapes + tool-roster integrity), `test-progress-live.ts`, `test-lens-review-live.ts`, `test-codemode-reviewer-rejection.ts`.
+4. Update the "Last verified against" line in [docs/pi-compatibility.md](docs/pi-compatibility.md) **and** the restating line in this section; the drift gate cross-checks both against the pins. The install floor (`MIN_PI_VERSION` in `install-preflight.sh`) is a **minimum** and is never equalised with the verified line. Never edit a released CHANGELOG entry.
 5. PR with the bump + smoke-test evidence.
-
-When Pi changes a shape we depend on (this has happened: `tool_use` → `toolCall`), the offline smoke tests won't catch it — `test-pi-shape-live.ts` is the only detector. Since #319 it exercises tool-call shapes (`toolCall` blocks, `tool_execution_start`) and tool-roster integrity, so a rename or a silently dropped registered tool now fails the gate.
 
 ---
 
 ## 5. Supply-chain hygiene (4-day embargo)
 
-The extension's npm dependencies are guarded against zero-day supply-chain attacks (compromised maintainer publishes a malicious version, caught and yanked within hours).
+The extension's npm dependencies are guarded against zero-day supply-chain attacks.
 
-- `extension/bunfig.toml` sets `minimumReleaseAge = 345600` (4 days). Bun refuses anything published more recently. Requires bun ≥ 1.2.20.
-- `extension/.npmrc` mirrors this with `min-release-age=4` as defense-in-depth for the npm fallback path that `install.sh` uses when bun is absent (requires npm ≥ 11.10.0). Because `extension/bun.lock` is the sole committed lockfile and CI uses `bun install --frozen-lockfile`, bun is the primary, reproducibility-guaranteed package manager; npm is a functional fallback that gets the same embargo protection but no lockfile-pinned reproducibility — with no committed `package-lock.json`, npm-resolved versions are embargo-bounded but not pinned to bun's tree. (pnpm 9.0+ honors the same `.npmrc` key, but `install.sh` has no pnpm/yarn fallback — npm-only is the real second path.)
-- `extension/package.json` declares the engines floor — the npm `>=11.10.0` floor is what makes `.npmrc`'s `min-release-age` actually enforceable on the fallback path.
-- `extension/bun.lock` is committed; CI uses `bun install --frozen-lockfile`.
+- `extension/bunfig.toml` sets `minimumReleaseAge = 345600` (4 days); bun refuses anything newer. `extension/.npmrc` mirrors it as `min-release-age=4` for the npm fallback path. `extension/package.json` declares the engines floor that makes the npm floor enforceable.
+- `extension/bun.lock` is the sole committed lockfile; CI uses `bun install --frozen-lockfile`.
 - **Only npm-registry installs** — no `github:` or `git+` URLs (they bypass the embargo).
-
-Need a fresh release? Add the package name to `minimumReleaseAgeExcludes` in `bunfig.toml`. Keep the list short; review on every Dependabot PR.
-
-This discipline applies to **prerequisite CLIs** too (Pi, ctx7, parallel-cli, etc.):
-
-- Pin to specific versions in install instructions where possible
-- Use `npm install -g --ignore-scripts` (disables postinstall hooks)
-- Wait ≥4 days after a new release before bumping the recommended version in README
+- Need a fresh release? Add the package to `minimumReleaseAgeExcludes` in `bunfig.toml`. Keep the list short; review it on every Dependabot PR.
+- The same discipline applies to **prerequisite CLIs** (Pi, ctx7, parallel-cli): pin versions where instructions allow it, install with `--ignore-scripts`, and wait ≥4 days after a release before raising the recommended version in the README.
 
 ---
 
 ## 6. Minimalist engineering
 
-**CORE PRINCIPLE: Every line of code is a liability.** Question every addition.
+**Every line of code, every test and every comment is a liability. It must earn its place, and the burden is on the person adding it.**
 
-### Pre-creation checklist
-
-Before adding a new module, function, type, or feature:
-
-- [ ] Is it required by the GitHub issue?
-- [ ] Can existing code solve it (search with `mcp__codebase_memory__search_code` first)?
-- [ ] Is this the simplest solution?
-- [ ] Does it add essential capability or just convenience?
-- [ ] Will it be maintainable in 6 months?
-
-If you cannot justify the necessity, DO NOT CREATE IT.
-
-### Forbidden patterns
-
-- ❌ "Nice to have" features not in the issue
-- ❌ Premature abstractions / utility functions that appear once
-- ❌ Defensive coding for unlikely scenarios
-- ❌ Over-engineered solutions to simple problems
-- ❌ Backwards-compat shims for in-progress refactors (this project is alpha; break things deliberately and document)
+- **Prefer deleting to adding.** The smallest change that solves the issue wins. Elegance beats completeness.
+- Before creating a module, function, type, file or test, answer: is it required by the issue; can existing code do it (search first); is this the simplest way; would it be maintainable in six months. Any "no" → DO NOT CREATE IT.
+- A fix for a review finding may not grow the code more than the defect warrants. "This could theoretically fail" does not by itself justify new harness or test code — ask whether the risk is real, and show what breaks if you do not add it.
+- A new gate must be observed failing on a deliberate mutant, in the same change that ships it. A gate never run in a failing state proves nothing and is itself bloat.
+- **Reviewers apply the same rule.** A finding whose fix would add more than it protects is said to be so, with that reasoning, rather than filed as a demand.
+- ❌ "Nice to have" features not in the issue · premature abstractions that appear once · defensive coding for unlikely scenarios · backwards-compat shims for in-progress refactors (this project is alpha; break things deliberately and document it).
+- **Comments state the current WHY, in present tense.** No incident history, no "it used to…", no issue-number narration. Docs follow the same rule: history belongs to git, the PRs and `docs/troubleshooting.md`.
 
 ---
 
-## 7. The PM-self-coding failure mode (project-specific gotcha)
+## 7. The compiled pipeline and its gates
 
-When you (the agent) run inside the parent `pi` session triggered by a workflow slash command (`/work`, `/research`, `/plan`, `/review`), you are the **project manager (PM)**. The extension injects a sticky preamble on every PM turn telling you:
+**PM orchestrates; specialists execute.** When you run inside a parent `pi` session driven by `/work`, `/research`, `/plan`, `/review`, you are the **project manager** — the extension injects a sticky preamble forbidding `edit`, `write` and non-read-only bash. That is doctrine, not a hint: implementation, tests, debugging and file edits go to a `developer`, git/commits/PRs/deployment to `ops`, research and file reading to `explore`.
 
-> *You MUST NOT use edit, write, or non-vipune/git-read-only bash for implementation work. Dispatch to specialists instead.*
+**`/work`, `/plan` and `/research` are compiled drivers, never hand-rolled pipelines.** The step table, state file, queue, review-cap timer and handoff artifact are the driver's code. A PM (or any agent) that reimplements the pipeline by hand produces a cycle with no state file, no queue, no review gate and no handoff — and nothing in the transcript says so. Start a cycle with the driver's tool; never reconstruct it with dispatches. `/do`, `/audit`, `/review` and `/start` are prose commands PM does orchestrate; they are not the compiled pipeline and must not be imitated as one.
 
-This is real doctrine, not a hint. The PM exists to orchestrate; specialists exist to execute. Specifically:
+These principles apply to **every** gate in this repository:
 
-- **Implementation / tests / debugging / file edits** → `dispatch_specialist` with role `developer`, then `adversarial_loop` to gate the resulting diff
-- **Git operations / commits / PRs / branch creation / deployment** → `dispatch_specialist` with role `ops`
-- **Research / vipune searches / web / file reading** → `dispatch_specialist` with role `explore`
-
-PM can use `read`, `vipune`, `gh issue view`, and read-only `git status/diff/log/branch`. PM CANNOT use `edit`, `write`, or arbitrary bash.
-
-For PM behaviour rules (allowed tools, bash allowlist, bare-vs-`oo`, ticket lifecycle, subagent model-routing constraints), see `agents-base/project-manager.md` + `modules/core/*.md` — those are baked into the PM role prompt by `bun run build` and reach every PM session at runtime. This file (AGENTS.md) is loaded only when an agent's cwd is inside pi-rukas; runtime PM doctrine belongs in the role prompt, not here.
-
-**Role identity at the permission layer** (issue #104): the parent Pi session resolves to role `project-manager` directly — `permission-guard.ts` falls back to `"project-manager"` when `PI_ENSEMBLE_ROLE` is unset. There is no separate `default` role. Subagents get `developer` / `ops` / `explore` / `code-review-specialist` / `adversarial-developer` via `spawn.ts` setting `PI_ENSEMBLE_ROLE`. Six roles total; the parent is always one of them (project-manager).
-
-This rule does NOT apply when an agent works on pi-rukas itself (this repo's TypeScript). Then the agent IS a developer. The PM rule applies when running inside a `/work` cycle.
-
-**Prompt grounding:** Operational prompts must carry the authoritative context for the action — the issue title and body plus the current diff for branch and PR prose, explicit in-scope and out-of-scope paths for staging, and the captured branch name for CI — so agents never infer facts from branch names or unresolved placeholders.
-
-**Cap-hits don't ask the user**: when a deterministic loop cap fires (adversarial 3-round, `/work` Step 7f review-round, `/plan` Phase 4 iteration, wall-clock), PM produces a structured handoff artifact (PR/issue comment + `needs-human-attention` label + scrollback line with link) and ends the turn cleanly. No "should I continue?" question. Caps exist because rounds-beyond-cap produce diminishing returns; the data already answered. See `agents-base/project-manager.md` § Cap-hits are stop signals, not questions, plus the concrete recipes in `/work` Step 7g and `/plan` Phase 4g.
-
-**Theme-clustered cap-hits get a step-back**: when cap-hit findings cluster around a theme (same lens re-flagging the same shape across rounds — the empirical fingerprint of a spec-level problem — in the MAST taxonomy (Cemri et al., arXiv 2503.13657) the top-level categories are System Design Issues 41.8%, Inter-Agent Misalignment 36.9% and Task Verification 21.3%; the largest single FM-1.x mode is step repetition FM-1.3 at 15.7%, disobeying the task specification FM-1.1 is 11.8%, not recognising completion FM-1.5 is 12.4%, context loss FM-1.4 is 2.80% and disobeying the agent role FM-1.2 is 1.5%; the paper's best orchestration-layer intervention, a high-level objective-verification step, was worth +15.6% task success with completion rates still low — Appendix H states that tactical approaches get only limited results), PM dispatches one `@explore` with a Step-Back-framed prompt asking which of the six SDD spec elements (outcomes / scope boundaries / constraints / prior decisions / task breakdown / verification criteria) is underspecified. The analysis goes into the cap-hit handoff so the user reviews a thesis + proposed spec revision, not a wall of findings. See `agents-base/project-manager.md` § Step-back when cap-hit findings cluster around a theme + `/work` Step 7h.
-
-**Provider-timeout dispatches route through the same handoff**: when a subagent's final assistant message has `stopReason: "error"` (pi-ai turned an HTTP timeout into a synthetic empty message), the dispatch report is tagged `FAILED-PROVIDER-ERROR` and the scrollback line shows `⚠ <role> terminated mid-stream — provider request error`. PM treats this as a failed dispatch and routes through the cap-hit handoff doctrine — no separate code path needed. The provider-side fix is `~/.pi/agent/settings.json` `retry.provider.timeoutMs` (`install.sh` writes a 10-min default post-#295; the earlier 3-min default manufactured timeouts under thinking-heavy models). See `extension/src/spawn.ts` `collapseEvents` + `extension/src/async-jobs.ts` `formatSingleReport` + PR #236.
-
-**Reviewer subagents (post-#238) have structural write/edit/multiedit gating**: `spawn.ts` passes `--exclude-tools write,edit,multiedit` to children whose role is `explore`, `adversarial-developer`, or `code-review-specialist`. Doctrine still describes the intent in role prompts, but the runtime now enforces it — Flue/LangGraph research established prompt-level role boundaries leak under load; in the MAST taxonomy (arXiv 2503.13657) disobeying the task specification FM-1.1 is 11.8% and disobeying the role specification FM-1.2 is 1.5% — nearly an order of magnitude rarer than the task-level one. Executor roles (developer, ops) and the parent process are NOT gated; parent-process gating is part of the deferred Option C track (issue #237). See `extension/src/role-tools.ts` for the per-role exclude map.
-
-**Scratch hygiene convention** (PR2 fold-in). pi-rukas's /work cycles produce ephemeral artefacts that subagents historically dropped at the repo root (diff snapshots between adversarial rounds, captured screenshots, one-off verification scripts, analysis JSON, PR-body files passed to `gh pr create --body-file`). On one measured cycle, accumulated debris from earlier cycles caused the next /work's branch step to ABORT on a dirty `git status --porcelain`. The convention going forward:
-
-- Project-local scratch: **`<repo>/tmp/issue-<N>/`** (created by the driver on cycle start; `tmp/` added to `.git/info/exclude` per-clone — NOT committed `.gitignore` — so the project shape stays untouched).
-- Host-level fallback: `/tmp/pi-ensemble-<role>/` when no project tmp dir is named.
-- NEVER repo root, NEVER tracked dirs unless the file IS the deliverable.
-- Driver cleans the scratch dir on `merged` (success). Keeps on `handoff` / `aborted` for user inspection.
-
-`agents-base/developer.md`, `agents-base/ops.md`, `agents-base/explore.md` carry a "Scratch hygiene" section each so PM-driven dispatches from `/do` and the prose commands respect the convention too. The inline prompts the driver sends thread the absolute scratch-dir path into every dispatch so subagents see the expected location verbatim.
-
-**/work runs through the compiled driver.** `extension/src/work-driver.ts` owns the step-transition table — explore → plan → branch → develop → adversarial → commit-pr → lens-review ± lens-fix ± step-back → ci → merged/handoff. It dispatches subagents directly via `dispatchCore()` with `ownerKind: "driver"` (async-jobs skips the steer-back to PM), awaits each completion and routes the result through the state machine. State persists to `<project>/.pi/work-state/<issue>.json` (schema v1, mandatory: pipelineState + append-only eventLog). PM is the chat-side reporter, not the loop runner. Cap-hits, plumb-reports and step-back triggers are structured events, not prose judgments. #393 deleted the flag that used to bypass all of this — there is no prose `/work` flow any more, and `extension/src/work-driver.ts` is now the definition of a cycle rather than a translation of one. `/plan` and `/research` are also compiled at their deterministic spines (`start_plan_driver`; `start_research_driver` — inventory → parallel angles → deterministic verification → dated artifact + provenance under `outputs/` → typed vipune row), with judgement (angle choice, the post-artifact conversation, the dryRun confirmation) left to PM. The remaining commands (`/audit`, `/review`, `/start`, `/do`) stay PM-driven by design; `/do <description>` is the free-form counterpart to `/work` — same orchestration toolkit, no compiled driver, no GitHub issue required.
-
-*Grouping and the queue.* `/work N M P` runs a deterministic grouping pass first (`groupIssues()`): R1 link markers (`Depends-on: #N`), R2 path-overlap Jaccard ≥ 0.5, R3 split markers, R4 conventional-commit scope / `[tag]` prefixes, R5 default separate. Related issues share one PR; unrelated ones run as separate cycles, up to `PI_ENSEMBLE_PARALLEL_GROUPS` (default 3) concurrently. Components larger than `MAX_ISSUES_PER_GROUP` (3) split into singletons — empirical convergence ceiling. **#368 park-and-continue:** a group ending non-`merged` records its cap, failing step and required human action, and the queue moves on; only a systemic failure halts everything, because only those make the next group's attempt pointless (69% of halt-triggering failures are provider infrastructure that says nothing about the remaining work). Escape hatch `PI_ENSEMBLE_QUEUE_HALT_ON_FAILURE=1`. **#386:** `isSystemicFailure` used to read the last `dispatch-failed*` event unconditionally, so a quota window that was retried and recovered still halted every remaining group twenty minutes later; it now scans back only as far as the last successful `dispatch-completed`.
-
-*Isolation and integration.* Every workstream — including the degenerate N=1 `default` — develops in its own detached worktree under `.worktrees/`; repoRoot is an integration point only. Patches are applied there under a single integration lock (in-process promise chain + `O_EXCL` lockfile under `.git/`), so a second `/work` or a second Pi process on the same clone is serialised too. #393 removed the knob that restored the old repoRoot-as-dev-tree shape, which swept stale residue into a merged PR (#287). The driver-owned `.worktrees/issue-<N>-integrate` worktree is the only attached worktree exempted from the always-detached rule: it holds the integration branch for the commit-pr ops fallback and is audited post-dispatch (cap `integration-worktree-violation`); `runConsolidatedVerify` runs under the integration lock alongside every other repoRoot-mutating path.
-
-*Mechanization.* `mechanizedBranchSetup`, `mechanizedCommitPr` and `mechanizedMerge` execute the enumerable git/gh recipes as driver code rather than narrating them to an LLM. Every worst-class incident in this harness's history — #245/#253 silent merges, v0.12.13 shipping 1 of 3 workstreams — was LLM ops improvising these operations, and deleting the failure source beats detecting its failures. #393 removed the knob that forced the LLM path; the fallback **on mechanized failure** remains, because absorbing environment variance is recovery, not an opt-out. Fallback prompts ground commit/PR staging and prose in the cached issue and each workstream's in-scope and out-of-scope paths, while CI prompts use the captured branch or explicitly direct branch discovery.
-
-*Verification gates.* `verifyStepOutcome` checks executed evidence rather than a subagent's claim. After `develop`: a real diff exists in some worktree AND the project's verify command exits 0 (`.pi/verify-cmd` > package.json `typecheck`/`test` > `Cargo.toml` → `cargo check`); it also rejects a changed `outOfScope` path and, when `paths` is non-empty, rejects scope fanout beyond `max(declared paths × 3, 6)`; `PI_ENSEMBLE_SCOPE_GATE=0` disables the check and `PI_ENSEMBLE_SCOPE_FANOUT_FACTOR` / `PI_ENSEMBLE_SCOPE_FANOUT_MIN` tune its limits. After `commit-pr`: commits exist ahead of `origin/<base>` AND the PR resolves via `gh pr view`. Failure → `verify-failed:<step>` → handoff with per-check evidence. Plus a skip-ratchet (net additions of `#[ignore]` / `it.skip` fail the gate), a comment-retention check (#948, #1040 — a pre-existing comment line removed without reappearing under the grepped paths is LOST, never a develop failure: it is recorded as a note and handed to the adversarial reviewer and every one of the six lenses as a "Comments removed by this change" section to judge (a check that could not run reads NOT CHECKED, never silence); `PI_ENSEMBLE_COMMENT_RETENTION=0` disables it), and an optional product smoke command (`.pi/smoke-cmd`). #279 adds a second tier at `ci`: `.pi/verify-cmd-full` runs verbatim before the CI watch, emitting `verify-full-status` so "fast green, full unrun" is visible rather than invisible. Escape hatches `PI_ENSEMBLE_VERIFY=0`, `PI_ENSEMBLE_SKIP_RATCHET=0`, `PI_ENSEMBLE_COMMENT_RETENTION=0`, `PI_ENSEMBLE_SMOKE=0`, `PI_ENSEMBLE_VERIFY_FULL=0`. Every driver-spawned shell command, including the project's verify command, runs with the driver's own knobs (the headless inventory) scrubbed at the shell executor (`verifyChildEnv` via `work-driver-verify-shell.ts`), so a driver setting cannot change what a project's tests see; the argv form is not scrubbed; the verify loop's own `PI_ENSEMBLE_VERIFY_*` knobs pass through (see docs/troubleshooting.md).
-
-*Selected develop verify (#1647).* The develop round does not run the whole offline suite. `work-driver-verify-select.ts` selects the `smoke-tests/test-*.ts` files whose import graph reaches a file the cycle changed, plus the `ALWAYS_RUN` list (tests that read repository text), after `.pi/verify-cmd-fast` and a typecheck of the smoke tree. A change the graph cannot place (a doc, `agents.json`, a `smoke-tests/lib/` helper, a non-literal dynamic import, an empty selection) runs the full `.pi/verify-cmd`, and the reason is written to the gate's notes. A selected test that fails is rerun once: passing on the rerun records it *flaky*; failing twice, it is probed on the base commit by itself, twice, and red on both base runs records *baseline-red* (one red base run is not enough to excuse a test). Both are non-blocking and listed in the PR body. Everything else blocks: a test the cycle changed, a run with no parseable failing names (tsc, biome), an unresolved probe, a timeout. The full offline suite runs once at the `ci` step (`.pi/verify-cmd-full`), attributed by the same rule. Escape hatch `PI_ENSEMBLE_VERIFY_SELECT=0` restores the full develop command; it does not change the ci tier. Selection is opt-in: a project enables it by having `.pi/verify-select` (presence only; this repo has one), and without it the develop round and the ci tier run exactly as before #1647. The ALWAYS_RUN list is generated by `smoke-tests/lib/always-run-detector.ts`, never hand-edited; `-live.ts` tests are never selected, listed or run by the develop round or the ci tier. Residual risk and the decision table are in `docs/troubleshooting.md` → "A develop round parks on a test the diff cannot reach".
-
-*Review.* Lens-review fetches the integrated diff (`origin/<base>..origin/<branch>`) so it runs post-commit; the integrated diff is computed against the merge base (three-dot `origin/<base>...origin/<branch>`, #1134), so a base that moved after the branch was cut does not appear as a reversal. The base comes from origin/HEAD (or `gh repo view` when that is unset), and when neither resolves the review read halts with a named "mainline unresolved" reason instead of assuming `main`; adversarial uses the uncommitted worktree diff because it runs pre-commit. Both skip on a genuinely empty diff (`PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP=0`). **#384:** an empty diff means *approved*, and the read used to swallow every git error and return `""` — so a stale ref or a transient failure merged code unreviewed. `readIntegratedDiff` now returns a discriminated result and establishes empty POSITIVELY via `git rev-list --count`; an unreadable diff halts with `lens-diff-unreadable` carrying the git error. #279 also scans the diff for removed compiler-enforced invariants (`T` → `Option<T>`, added `| null`, removed `readonly`/`const`/`pub`/`mut`, narrowing to `any`) and routes findings to the ARCHITECTURE lens — route-only, never fails a cycle (`PI_ENSEMBLE_WIDENING_SCAN=0`).
-
-*Intent (#378).* The driver does not assume an issue says what to build. It resolves intent from ANY body — spec, paragraph or one-liner — grounds it against the code and the world, and returns `proceed` / `proceed-with-assumptions` / `park` with a machine-readable reason (`underspecified`, `contradicted-by-code`, `already-implemented`, `too-large`, `premise-unsound`). A park halts at `intent-park` before plan or branch, costing one explore dispatch rather than a cycle. **A missing or unreadable verdict parks** — silence is not permission to build. Assumptions surface in the PR body. The resolver runs in the `explore` role, structurally denied write/edit tools. Escape hatch `PI_ENSEMBLE_INTENT=0`.
-
-*Intent verdict channel (#397).* The explore prompt used to ask for TWO verdicts — the legacy `## Verdict` block and `INTENT-VERDICT:` — both labelled LOAD-BEARING. A resolver answered the legacy one, the driver read only the other, defaulted to `park` / `underspecified`, and told the operator a fully-resolved issue "does not say enough to build from". Each prompt now carries exactly one protocol (`inlineExplorePrompt`'s `intentEnabled` param; multi-issue is legacy-only because intent resolution yields ONE spec, not N — which also closes a latent bug where a multi-issue `## Spec` reply set neither `activeIssues` nor `droppedIssues`). `parseEvidence` tolerates the bolded verdicts resolvers actually write (`— **confirmed**`), anchored so prose is still `unverifiable`. And `reconcileVerdict` overrides an `underspecified` park when `specIsComplete` holds — intent, ≥1 deliverable, ≥1 acceptance criterion, ≥1 confirmed evidence row, no contradicted row, no blocking open question — resolving to `proceed-with-assumptions` with the override recorded as an assumption. Narrow by design: the other four park reasons are compatible with a complete spec and still park, and requiring confirmed evidence is what keeps #378's "silence is not permission" true.
-
-*Handoff recovery (#398).* Recovery options are cap-keyed. `intent-park` had no branch in either renderer and inherited `developer-timeout`'s block, so a cycle that wrote nothing was told to retry a timeout that never happened and `git push -u origin (branch not captured)`. Pre-branch caps now get their own block carrying `parkAction`'s text; the display fallback never reaches a command; `work-status.ts` gained the cap awareness it never had (one unconditional block served every cap); `/start`'s index carries the park-reason suffix `work-queue.ts` attaches, so two parks with different reasons no longer show the same action. All recovery commands are unchained — they land in the Pi chat, where the permission matcher cannot wildcard `a && b` and every unique chain re-prompts. `test-handoff-rendering.ts` is the first test to assert on rendered handoff content at all, which is why this shipped.
-
-*The handoff is bounded, because losing it is what a bound must not do.* The handoff dispatch was left unbounded on the reasoning that a killed handoff leaves the operator with nothing; one measured cycle spent 25.8 min on it, posting a comment whose body was written to disk before the dispatch started — and it *completed*, so neither the inactivity watchdog nor the 2 h backstop could see it. `handoffDispatchTimeoutMs()` (8 min, `PI_ENSEMBLE_HANDOFF_TIMEOUT_MS`) bounds the wait and the in-process `gh` path posts the identical file with the identical label, so exceeding the bound costs the parsed comment URL and nothing else. This is not the six deleted per-role wall-clock caps returning: those bounded open-ended work whose duration is a property of the model, and each kill destroyed the work. Enumerable work with a lossless fallback is the only shape a wall-clock number can honestly bound.
-
-*Park-reason provenance (#404).* `underspecified` was both the parser's null value and a real diagnosis, and #397's override acts on the diagnosis — so a reason the driver invented could license building something. One measured cycle emitted `### PARK-REASON` / `already-implemented` in heading form; the colon-anchored regex missed it, `underspecified` was substituted, and only an unrelated accident (deliverables written as prose, so `specIsComplete` was false) stopped the driver rebuilding a duplicate of another issue — with `OVERRIDE_ASSUMPTION` attached to the PR as justification. `readToken` now accepts both inline and heading forms, and `NormalisedSpec` carries `parkReasonSource` / `verdictSource` so the override requires either a verdict nobody stated (#337's case) or a reason the resolver actually wrote (#397's self-contradiction case). A stated park with an unreadable reason is honoured.
-
-*Merge authority (#380).* The `merged` step had no authority gate at all and decided on `text.includes("ci-status: success")` in an ops reply. It now needs BOTH an explicit grant — a recognised sentence in the project's `AGENTS.md` (see §9), or `/work N --merge` — AND evidence from `gh` (`mergeStateStatus`, `gh pr checks`, with `skipped`/`neutral` required checks treated as NOT passing). It fails closed: an unreadable `gh` blocks the merge. With no grant the cycle parks as `awaiting-human-merge`, PR open and work pushed. At `ci` the weaker rule applies — narration cannot promote a status, only executed evidence can demote one. Escape hatch `PI_ENSEMBLE_MERGE_AUTHORITY=0`.
-
-*Claim scan + evidence supply.* Six lenses passed a PR whose docs described the bug as intended behaviour and invented hardware specs. Not a missing lane — SIMPLICITY was already chartered for "contradictory documentation" — but a missing view: lens children run in a worktree **detached at `baseSha`**, so a file they open is the pre-change version, and the contradicting line was outside the diff. Two fixes, no seventh lens. `lens-evidence.ts` supplies the post-change content of changed prose files via `git show origin/<branch>:<path>` and warns every lens that its working tree is stale. `claim-scan.ts` deterministically grounds each checkable particular the diff adds to prose against the branch; a token is grounded only if it occurs **outside the prose asserting it**, which is what keeps §7's docs-ship-with-the-change rule from firing constantly. A `path` claim is the one exception, and the only one: it is also grounded when the named file exists at the branch, resolved against the citing file's directory OR the repo root — because a path's target is itself prose, the token-occurrence rule could never ground it, and one cycle reported eight MEDIUMs against six `references/*.md` files that all exist (#1002). The escape is kind-gated to `path`, so product/quantity/flag/env keep the prose-does-not-ground-prose rule; an invalid path token or a git failure is "could not tell", never a fabricated finding. Escape hatches `PI_ENSEMBLE_CLAIM_SCAN=0`, `PI_ENSEMBLE_LENS_EVIDENCE=0`.
-
-*The round cap routes, it does not only stop.* A cap that fires is normally a stop signal, but this one was stopping work that was already fine: two of six outcomes in one overnight run died at `lens-issues-found → cap-hit{round-cap} → handoff`, after which a human judged #457 merge-as-is and #680's PR merged unchanged. `work-driver-lens-cap.ts` now routes a round cap to `ci` when the verdict is `ISSUES_FOUND`, the adversarial gate approved, and the residual findings were posted to the PR — a failed disclosure parks, because a PR that silently swallows three rounds of unresolved findings is worse than a park. `CRITICAL_ISSUES_FOUND` and the 90-minute wall-clock cap still park; a review that ran out of time is a different signal from one that ran out of rounds. Merge authority is untouched — the cycle reaches the same default-deny gate below, so this decides where a capped cycle goes, never what it may do when it arrives.
-
-*Review blocking threshold.* The lens assigns severity; the **project** decides which severity blocks. §1's "blocking at HIGH severity and above" is now read by `review-threshold.ts` rather than being decorative. The bar was raised from MEDIUM on 2026-10-25 (operator decision): every PR over one weekend needed three or more lens rounds while most rounds had no HIGH finding, and the round-cap path then carried the MEDIUM findings forward anyway. Absent or silent doctrine yields the MEDIUM default — unlike merge authority, configuration does not fail closed, because a repo with no `AGENTS.md` is normal. Loosening needs a verified citation; `CRITICAL` always blocks. Override `PI_ENSEMBLE_REVIEW_THRESHOLD`.
-
-*Marker parsing (#408).* Every step asks a child to end with a structured marker, and each grew its own matcher; they all drifted into the same defect — a no-match produced a *confident wrong answer* rather than an obvious failure. `reply-markers.ts` is now the single tolerant reader (bold, case, heading form) and, crucially, reports **absence** distinctly from a parsed value, so callers can decide what silence means. Its `MARKER_CONTRACTS` registry declares every prose marker's token, values, consumer and on-absence policy, and `test-marker-contracts.ts` enforces the registry against the source — a new hand-rolled marker parser fails the gate. Four sites fixed with it: `parsePerIssueVerdicts` no longer defaults to "build it" when nothing parses (it asks); the adversarial `VERDICT` marker is case/emphasis tolerant and an unparsed reply is no longer passed off to the fix-developer as findings; `ci-status` no longer reads `**ci-status:** SUCCESS` as a CI failure; and the handoff label is applied mechanically instead of inferred from prose that matched "I could not apply the label". Grouping R1 gained GitHub's closing keywords (`closes`/`fixes`/`resolves`) and R2 gained the infra file extensions.
-
-*Policy judge (#407).* Merge authority was resolved by three English regexes over `AGENTS.md`, which got real files wrong in both directions — a measured cycle's *"Agents may squash-merge **a** PR to main"* matched nothing, and this repo's own *"does **NOT** merge to main"* escaped the deny matcher — and which assumed the operator writes English at all. It is now a judged seam (`work-driver-policy.ts`): a read-only child answers one question through a schema-validated `report_policy` tool call, and the answer is honoured only if the sentence it quotes is found verbatim in the file it named. A fabricated citation denies and is recorded as `citation-failed`. The judge never sees the developer's justification. Default deny, `--merge` and `PI_ENSEMBLE_MERGE_AUTHORITY=0` stay in code — prose grants the exception, never the rule. Escape hatch `PI_ENSEMBLE_POLICY_JUDGE=0` (denies; it does not fall back to guessing).
-
-*One decision seam (#1308).* Judged decisions go through one interface, `decide()` (`decision-seam.ts`), not through per-seam classifiers, because hand-rolled regex and marker readers kept producing confident wrong answers. Each seam registers once in `SEAMS` (`decision-seam-registry.ts`): a typed question, labels fixed by the seam rather than taken from state, the deterministic rule that is always computed, a composition policy and a default mode. Backends are tried in order — a configured classifier, then the session LLM through one schema-validated call over fenced, untrusted state, then the rule — and any failure abstains to the next, so a user with no model loses nothing. Composition is enforced centrally: a model answer never turns a fail-closed outcome into a pass except under `replace` with a verified evidence quote, `tie-break` is refused on a fail-closed seam, and new seams start in `shadow`, where the model is logged and never obeyed. Every call writes one redacted JSONL record under the main checkout (traced instead when a caller supplies no repo root), because a model is trusted on a seam only after its log shows it beats the rule. The policy judge is the grandfathered seam: `enforce` + `replace` with its citation check, and `decide()` is the only verifier of its outcome. Its judge child is the only backend, and that is enforced: a grandfathered seam with no owner backend answers from the rule (traced), never from the generic classifier or session llm, and `test-decision-seam-grep.ts` fails if a `decide("policy-judge")` call supplies anything but the judge. `decide()` aborts a backend at its bound and traces a late answer; an unknown seam id gets a fixed non-passing answer. So its behaviour is unchanged and `PI_ENSEMBLE_DECISIONS=0` (rule-only everywhere else) does not touch it. Only `decision-backends.ts` may call Pi's model APIs for a decision (`test-decision-seam-grep.ts`). The failure-cause (#1262) and security open-point (#1187) seams run in `shadow`: the synchronous rule (`classifyFailureCause`, the security term list) is still the acted-on answer, and the model is asked through `decision-shadow.ts`, which fires `decide()` without awaiting, bounded, with the session model `index.ts` attaches. Only callers that act on the answer ask (the step router via `shadowFailureCause`, the open-point gate) — `classifyFailureCause` itself stays pure; the tool-path retry, which runs once per attempt during an outage, does not ask, and every shadow call is bounded (16 in flight, the seam's timeout, five open points per open-point gate run) — and exact rule matches — a structured kill cause, a 429 or spend cap on the provider's own message — never ask a model.
-
-*Doctrine protection (#406).* The `merged` step runs after `commit-pr` integrates the developers' patches, so reading `AGENTS.md` from the working tree let a cycle grant itself merge authority. Doctrine is now read at the cycle's `baseSha` (`work-driver-doctrine.ts`), which makes a self-written grant inert without forbidding the edit. Separately, a develop patch touching `.github/`, `.pi/`, `CODEOWNERS` or `agents.json` halts the cycle — those change what verification means *within* the same cycle, so reading at base would not help. **Per-cycle grant (#1090):** when the issue's work *is* such a file, `/work N --allow-protected <path>` (repeatable or comma-separated) admits exactly the named paths for that single-issue cycle — exact, case-preserving match after `isProtectedPath`'s path normalisation (applied to rename destinations and to committed and uncommitted paths alike), so a grant for one workflow does not admit `CODEOWNERS`, and any ungranted protected path in the same diff still halts; the #285 scope fence still applies. It is operator-only on the same reasoning as `--merge`: `start_work_driver` has no parameter for it and forces it empty, nothing from the issue, explore or the planner is read as a grant, and the gate reads it from the `DriverContext`, never from the state file, which only records it for the handoff and the PR body. The halt message prints the exact `--allow-protected` command. Escape hatch `PI_ENSEMBLE_PROTECTED_PATHS=0` (process-wide, unchanged). A deferred protected path is removed from the plan's `paths` and fenced in `outOfScope`, so the developer is told not to touch it; an edit to it anyway halts at the protected-path gate with the grant command, as any protected path does (see [docs/troubleshooting.md](docs/troubleshooting.md) #1676).
-
-*PM can start a cycle (#408).* `/work` was reachable only by a human typing it. When a PM needed to restart one — it had killed a cycle over `needs-human-attention` labels — it had no way to, and reimplemented the driver by hand: no state file, no queue, no handoff artifact, no review-cap timer, and a branch the driver knew nothing about. Every guarantee the pipeline provides was absent and nothing in the transcript said so. `start_work_driver` gives PM the real thing to call; `work-entry.ts` holds the launch logic both it and the slash command share. **It has no `merge` parameter** — `--merge` is the one `AuthoritySource` that bypasses the #406/#407 policy judge, and an LLM-settable boolean there is a cycle granting itself merge authority; `mergeGrant` is forced false on the tool path regardless of input. The other four workflow commands are prose bodies PM already orchestrates, so they get one generic `load_workflow_doctrine(name)` rather than four redundant tools; `/work` is excluded from it because handing PM its prose invites exactly the hand-rolling this closes. The sticky preamble (re-injected every turn) now says `/work` is a compiled driver and must never be reconstructed — the pre-existing rule forbade editing files, not reimplementing the pipeline, which is the gap PM walked through.
-
-*Message delivery (#408).* `pi.sendUserMessage(text)` is not a notification API: it calls `AgentSession.prompt` with `streamingBehavior: options?.deliverAs`, and `prompt` **throws** when the agent is mid-turn and no behaviour was given. The `ExtensionAPI` binding catches that into `runner.emitError`, so the caller sees nothing and the message is gone. Twenty of twenty-one call sites passed no behaviour (`async-jobs.ts` was the sole exception, and documented why), so the driver's first message landed — sent while idle, it started a turn — and every progress message during that turn was discarded. `notifyAgent()` in `agent-message.ts` always passes `deliverAs: "steer"`, which is inert when the agent is idle. This is load-bearing for the tool path: a tool runs *during* a turn by definition, so a driver launched from `start_work_driver` is streaming for its entire life.
-
-*Provider backoff on the tool path (#408).* The #366/#433 taxonomy — which knows a 429 stating 59s is a burst worth waiting out and one stating 24h is a quota window that waiting cannot fix — was reachable only from the compiled driver. `dispatch_specialist` and `dispatch_parallel` had no retry at all. Pi's own in-process retry is not a substitute: measured on the real transcripts it backs off 2s/4s/8s, about 14.6s of waiting against a server asking for 59, so every attempt lands inside the same rate-limit window. `dispatch-retry.ts` wraps both tool paths, classifies with the same `classifyFailureCause`, and waits the delay the provider actually stated (capped at 120s). The wait sits inside the async job, which is already fire-and-forget, so the calling agent's turn never blocks. `jitteredMs` spreads N children so they do not re-arrive in unison — that is jitter, not a concurrency cap, and costs no throughput. A quota window is attempted exactly once; an abort wins mid-backoff; exhaustion returns the real failure rather than a synthesised one. Escape hatch `PI_ENSEMBLE_TRANSIENT_RETRY=0`.
-
-*The audit memory panel (#422).* `memory-stats.ts` shipped in v0.12.32 calibrated, documented and fully tested, imported by nothing — the second module to do that after `vipune.ts`. `/audit` is now its caller via `memory-panel.ts`, framed as findings rather than a number dump (a percentage is not an audit finding unless it says what to do about it), and appended so a repo with no memory store gets a byte-identical message. `test-seams-wired.ts` was generalised from the vipune-only version to a seam list, and now also fails when **any** module under `src/` is reachable only from its own smoke tests — the shape all three had when they shipped.
-
-*Granting a tool is three edits, not one (#408).* `agents.json` sets `"*": "ask"` for project-manager and then allowlists each tool by name, so **registering a tool does not make it usable** — it falls through to `ask` and prompts on every call, and headless `pi -p` hard-denies novel calls outright. `start_work_driver` and `load_workflow_doctrine` shipped registered, described, named in the sticky preamble and documented in README/AGENTS.md, and PM would still have been stopped at the permission layer. A new tool needs: the registration, the `agents.json` grant, and an entry in the PM doctrine (`agents-base/project-manager.md`) — the sticky preamble is a reminder, not the reference. `test-pm-tool-permissions.ts` now enforces the first two mechanically: every registered tool is granted to PM or listed with the reason it is not (`report_finding` / `report_policy` are companion extensions loaded into child processes, so PM never sees them), and a grant naming a tool that no longer exists fails too, since dead config hides a typo in a live one.
-
-*The adversarial gate's blocking level (#664 investigation).* The gate rejected code its own reviewer had approved in prose. `agents-base/adversarial-developer.md` defines four verdicts and calls two of them non-blocking — `ISSUES_FOUND` ("Should address, not blocking") and `MINOR_OBSERVATIONS` ("Non-blocking, author's discretion") — while `adversarial.ts` knew three of them and exited only on `APPROVED`. `MINOR_OBSERVATIONS` was not in the enum at all, so a reviewer using it fell through to the `ISSUES_FOUND` default and was punished as if it had malfunctioned. A third copy of the vocabulary lived in `modules/domains/adversarial-patterns.md`, offering three verdicts and telling the reviewer to approve "only when genuinely unable to find problems"; **both markdown files were composed into the same built prompt**, so the reviewer was handed contradictory instructions about its own words.
-
-Measured across 253 loops recovered from the durable session store: 49 ended REJECTED and **41 of those (83.7%) ended on `ISSUES_FOUND`** — the verdict the doctrine calls non-blocking. Only 8 ended on `CRITICAL`. A loop still alive at round 3 was roughly 2:1 to be rejected, because a reviewer told to "attack this implementation" always finds *something* and anything was enough.
-
-Now: mid-loop every unresolved verdict still earns a fix round (they produce real fixes), and at the last round **only `CRITICAL_ISSUES_FOUND` blocks**. Everything else passes, and the outstanding findings travel — to the PR body via `adversarial-findings.ts`, and into the six-lens review's context, where the gate that *does* apply the project's configurable threshold (`resolveReviewThreshold`) can weigh them with the issue, the lenses and the whole branch in view. Passing a finding on is not discarding it; that distinction is what keeps this from being a rubber stamp. The vocabulary now lives in exactly one place and `test-adversarial-verdict.ts` fails if the code and the composed prompt disagree, or if the built prompt states its menu more than once.
-
-Three supporting defects fixed with it: the diff was computed once and re-sent to every round (the reviewer noticed itself — *"the diff's original bugs were already fixed in the working tree"*); the fix-developer got the reviewer's entire reply as "findings" with no diff, no issue and no prior rounds; and `readMarker` used a non-global `match`, so the FIRST `VERDICT:` in a reply won rather than the last. The issue body now reaches both halves of the loop, which closes [#278](https://github.com/trail-openers/pi-rukas/issues/278) — on #664 an explicit constraint ("reuse `parse_assumptions`") went unflagged for three rounds because nobody in the loop could see it.
-
-*Four gates that could corrupt main (v0.12.38 audit).* A ten-agent audit of the pipeline found these on the **happy path**, not the error path.
-
-**A failing full verification reached `merged`.** `runCi` runs `.pi/verify-cmd-full` — strictly more than CI — and on failure appended `verify-full-status: failure` with no `ci-status` and no cap-hit, on the stated assumption that "the ci-retry cap will fire on the next iteration". There is no next iteration: `nextStep` had no branch for that event, so the tail fell through to the linear table where `ci: "merged"`. Probed: `verify-full-status:failure → merged` while `ci-status:failure → develop`. The check is opt-**out** and this repo ships the file, so it was live on every cycle. The two events now route identically, and are deliberately kept distinct rather than merged — `verify-full-status` carries the `evidenceTail` that says what broke.
-
-**`driver` is not a role, and `runMerged` dispatched it.** After a *successful* mechanized merge it called `runSingleDispatch(…, "driver", …)` with a thunk reading "no dispatch needed — short-circuit". That comment described an intention the code did not implement: `runSingleDispatch` really spawns, and `spawn.ts` throws `Unknown role: driver`. The throw became `dispatch-failed`, the step returned before the `merged` event / `restoreCheckout` / worktree teardown, and `STEP_FAILURE_POLICY.merged === "HALT"` routed a genuinely-merged PR to handoff. `work-driver-commit.ts` had it right all along — it builds the event directly — so that shape now lives once in `work-driver-events.ts`, and a canary fails if any `runSingleDispatch` call site names a non-role.
-
-**An unparsed verdict passed the adversarial gate.** Relaxing the terminal rule to "only CRITICAL blocks" (the #664 fix) silently relaxed it for the *no-verdict* case too, because a marker miss defaults to `ISSUES_FOUND`. A reviewer that crashed, was truncated, or wrote `VERDICT — CRITICAL_ISSUES_FOUND` with an em-dash the parser does not match would have PASSED on no signal at all. `decideLoopAction` now takes `verdictParsed` and returns `incomplete` — not an approval and not a rejection, because nothing was reviewed; it routes through the infra-failure path the router already retries.
-
-**The lens threshold moved with the length of the quote.** `severityIn` returned the most severe severity *named* in the judge's citation, which is the loosest bar. On this repo's own `AGENTS.md` §1, quoting the first sentence gave MEDIUM and quoting the passage gave CRITICAL — both honest citations that verify against the file, two levels apart. `severityFromQuote` now reads the *relation* ("at X and above", "X or higher"), falls back to the least severe severity named as blocking, and discounts a "may be deferred" exemption so the same passage cannot over-tighten to LOW instead.
-
-*Gates that could not fail, and a scope fence that never arrived (v0.12.38 audit, part 2).*
-
-**A silent lens read as clean.** A lens whose spawns all fail is correctly `blocked` → `REVIEW_INCOMPLETE`. A lens that exits 0 having made zero `report_finding` calls was indistinguishable from one that reviewed carefully and found nothing — so the six-pass review could be a six-way no-op and still report APPROVED. `lensProducedEvidence` now requires findings **or** the closing prose summary the lens prompt already asks for, and the `(thinking content only - no text output)` placeholder `collapseEvents` substitutes is explicitly not a summary — it describes the absence of output.
-
-**`proceed` was accepted with nothing to build.** `specIsComplete` had one caller, inside the `park` branch, where it exists to *refute* a park. Nothing asked the symmetric question, so `INTENT-VERDICT: proceed` passed with zero deliverables — and `work-driver-plan.ts` then falls back to `countEnumeratedFindings`, silently degrading #290's decomposition arithmetic. `specIsActionable` is deliberately a **lower** bar than `specIsComplete`: no confirmed-evidence requirement (that is the price of overturning a park, not of making a decision) and **no acceptance-criteria requirement** — demanding those looked right and was wrong, since `proceed-with-assumptions` exists for exactly a defensible gap, and two existing tests caught the over-tightening.
-
-**Explore could return nothing and mean yes.** With no `## Spec` block the driver falls back to the legacy verdict token — a deliberate degradation for older prompts. But on the single-issue intent path `work-driver-prompts-early.ts` never *asks* for that token, so the fallback could not fire by construction: a reply carrying neither signal fell through to `return next` and advanced to plan. `exploreProducedNoSignal` parks it. The degradation is untouched when the legacy token is present.
-
-**The N=1 developer never saw its scope.** `inlineDevelopPrompt` gated the whole scope block — scope sentence, in-scope files, out-of-scope fence, and the vipune memory brief — on `workstreamId !== "default"`, and `runDevelop` passes `undefined` for N=1. All 16 state files on this host are N=1, so on every real cycle the fence the plan step re-dispatches to produce, and an ~8s memory retrieval, were computed and thrown away. Only the "one of several parallel developers" framing is genuinely N>1.
-
-**Declared paths are prose, not `git` output.** `verifyConsolidation` compared `paths` to `git diff --name-only` by exact equality, and real state files carry planner annotations — `"…/work-driver-verify-cmd.ts (new)"`, `"…/role-tools.ts (no changes)"` — that never match. One-directional (a false alarm at commit-pr, never a false pass), which is why it survived. `normaliseDeclaredPath` strips a trailing parenthetical while leaving one inside a filename alone.
-
-**The grouped `needs-human-attention` check read only the primary.** `claimCycle` keys the registry on every issue in the group; the label check, added on the adjacent line in the same PR, keyed on `ctx.issue`. A grouped cycle for #10+#11 with #11 flagged started anyway.
-
-*Merge-target integrity (v0.12.38 audit, part 3).*
-
-**The PR the driver merges is now the PR the driver opened.** On the LLM-ops fallback path `prNumber` comes from `parsePrNumber` reading the ops child's reply, and that number is what `gh pr merge` acts on. The verification asked `gh pr view <N> --json state` and **discarded the answer**, checking only that the command did not throw — so it proved that *a* PR with that number exists, nothing more. In a busy repo the numbers around a real PR are all live PRs, so a plausible mistake is a valid one; a stale number from a previous cycle, or a CLOSED or already-MERGED PR, all passed. `judgePrIdentity` binds the number to the cycle's branch (driver-computed via `branchSlug`, and what `gh pr create --head` opened it against) and requires `OPEN`. It fails **closed** on anything unreadable — unlike the review threshold, because this guards the one irreversible act in the cycle.
-
-**The branch step can no longer adopt the mainline.** The ops fallback reads `git rev-parse --abbrev-ref HEAD` at `repoRoot` and records it as `ps.branchName`, which `integrate()` then force-pushes to. A grep across the write path found no mainline check anywhere; the only guard was a detached-HEAD test. `resolvedTheMainline` reuses the existing `detectMainline` rather than teaching a second module what a default branch is, and halts the cycle. It fails **open** on an unreadable mainline — this guards one specific mistake, and a repo whose default branch cannot be resolved is normal enough that halting would cost more than the risk.
-
-**`plumbReports` is rendered.** Written in two places on lens-fix git failures, read in none, with the write site's own comment saying the operator should see them "in handoff". They are deliberately kept out of the event log because appending there would change the tail that `nextStep()` routes on — so the handoff renderer reads the field directly. They matter precisely because the cycle continued: a lens-fix whose push failed means the PR under review does not contain the fix.
-
-*Worktrees need more than tracked files (#445, #481).* `git worktree add --detach` gives you tracked files and nothing else, and the develop step runs the project's verify command inside that tree — so every gitignored dependency directory is missing. How badly that bites is language-dependent, which is why it survived: Rust rebuilds from scratch (minutes per worktree per cycle, but it works), while a Node/bun command fails outright. #445 added `worktree-provision.ts` but its discovery looked only at `repoRoot`, so pi-rukas itself — whose tree is at `extension/node_modules` — could not dogfood `/work` on itself: an empty gitignored `node_modules/` at the root was linked and reported as a useful link while the real nested tree was never linked (#479 parked on exactly this). #481 made discovery scan depth-1 package directories (manifests/lockfiles), skip empty candidates, and set `ProvisionResult.problem` when a lockfile-bearing project has no findable tree — pi-rukas now provisions without a per-clone hook.
-
-`worktree-provision.ts` runs `.pi/worktree-setup` if the project provides one — no guessing, and anything the allowlist cannot express goes there. The hook receives no arguments and no environment and runs with `cwd` = the new worktree, so it must locate `repoRoot` itself (`git rev-parse --path-format=absolute --git-common-dir`); the hook path skips the symlink loop — including the `info/exclude` write — so a hook that symlinks must write its own exclude entry or `stagePorcelainPaths` stages the link into the PR (see `docs/troubleshooting.md` → "The `.pi/worktree-setup` hook — contract"). Otherwise provisioning symlinks `node_modules`, `.venv`, `vendor` that are gitignored and non-empty, discovered at `repoRoot` **and** in depth-1 package directories (a depth-1 dir containing any manifest/lockfile — `package.json`, `bun.lock`, `Cargo.toml`, `pyproject.toml`, `go.mod`, `Gemfile`, … — is scanned for a nested `node_modules`; #481). An empty candidate is never linked or reported as a useful link, and a lockfile-bearing project with no findable tree gets a `problem` the branch step traces. Build output — `target/`, `build/`, `dist/` — is deliberately excluded: sharing one write-heavy directory across a fan-out would serialise the parallel workstreams that always-worktree (#287) exists to enable. Provisioning never fails the branch step; a bare worktree is what shipped before, so a failure is the status quo and is traced and reported rather than thrown. A verify failure whose output matches the familiar dependency signatures now says so instead of implying the diff is at fault.
-
-*Two workstreams must not claim the same file (#444).* `runDevelop` fans one developer per workstream into its own worktree, so two `paths` lists naming the same file is two developers editing it in parallel — surfacing only at commit-pr, as a bare `git apply` failure during consolidation, after the whole develop and adversarial spend. Nothing checked. `findPathCollisions` (`work-driver-plan-paths.ts`) is now a third `planQualityReason`, so it inherits the existing one-shot corrective re-dispatch rather than adding a halt path: the planner can re-split, which is the better outcome. Containment counts (`src/foo` vs `src/foo/bar.ts`) but a shared prefix does not, and paths are normalised first so an annotation like `"src/a.ts (new)"` cannot hide an overlap.
-
-*This repo's develop gate is now the real §1 gate.* With no `.pi/verify-cmd`, `verifyCmdFor` fell through to `npm run test` — three smoke tests out of ~120, no typecheck, no lint. The gate that proves a developer's diff builds was proving almost nothing. `.pi/verify-cmd` now runs the typecheck, `bun run check` and the full offline suite; `.pi/verify-cmd-full` remains the deeper second tier the ci step runs once. The typecheck names the compiler by PATH (`node node_modules/typescript/bin/tsc`), never a launcher alias: `bun x tsc` is an npx-style lookup that on one host resolved a global TypeScript 7, printed usage and exited 0, so the gate passed every tree while judging nothing (#1414/#1118). Each verify tier also carries its own wall clock since #1509 — see docs/configuration.md.
-
-*Throughput, measured (v0.12.41).* An operator complaint — "/work doesn't finish work" — measured against 69 terminal cycles in the durable session store and 29 state files. **15 merged, 22%**; this repo 59%, one other project 12% (its last autonomous merge 26 June), two others 0. **Every one of the 10 autonomous merges ran with zero other cycles in flight, N=1, median 78.5 lines and 18.2 minutes.** Nothing outside that shape has ever merged. v0.12.41 moved `MAX_PARALLEL_GROUPS_DEFAULT` from 3 → 1 on this measurement: concurrency was the strongest predictor of failure, every role ran ~2.4× slower with another cycle in flight, and two of the four cycles in that measured batch reached commit-pr and were destroyed by each other through the shared repo root.
-
-**Default reverted to 3 concurrent groups (#547).** `MAX_PARALLEL_GROUPS_DEFAULT` moves 1 → 3, reversing the v0.12.41 default-1 decision. Three structural changes since that measurement remove its driving causes: `#544` shipped capability-preserving dispatch caps (loop detector, typed kill causes), eliminating the unbounded slow-dispatch behaviour that made concurrent cycles degrade each other; every workstream now develops in its own detached worktree under `.worktrees/` with patches applied under a single integration lock (in-process promise chain + `O_EXCL` lockfile), serialising the cross-process contention that drove the shared-repo-root collisions; and an operator decision (2026-08-26) — a 6-group queue ran sequential under cap=1, and the sequential default was too conservative for current workflow. `PI_ENSEMBLE_PARALLEL_GROUPS` still overrides. `PI_ENSEMBLE_PARALLEL_WORK=0` disables parallelism entirely.
-
-**The intent gate stopped parking work the resolver approved.** Measured over the 13 real resolver replies on this host, **7 of 13 had the resolver say `proceed` and the gate flip it to `park`**. Two causes, both introduced by #443/#448: `blockingQuestions` on the proceed path (5 of the 7) — the third time in that series a park-*refutation* predicate was priced as a decision, and `proceed-with-assumptions` exists precisely for a spec with open questions — and `bullets()` matching only `^[-*]\s+`, so a NUMBERED list emptied four spec fields at once and the spec could not even self-rescue through #397's complete-spec path. Deliverables remain the bar, so the gate can still fail. For the record: the field theory that the resolver needs a `D{N}:` prefix is **wrong** — ids fall back to `d${i+1}`, and 0 of 40 real issue bodies were affected. Reformatting issues fixes nothing.
-
-**A timed-out explore is no longer reported as a bad issue.** `runExplore` appended the completion event and continued into the verdict router without checking whether the dispatch had failed, so an empty reply produced `cap-hit: explore-needs-clarification` — overriding the `dispatch-failed` tail the router classifies. Two timed-out explores were reported as "this issue does not say enough to build from"; both issues were fine. Explore was the only step with this hole.
-
-**The lens fix is written where the driver looks for it.** `runSingleDispatch` built its spec with no `cwd`, so `spawn.ts` fell back to the Pi process directory and the lens-fix developer edited the repo root while `integrateLensFix` staged from the untouched worktree — 0 staged, silent `continue`, and the next round re-flagged the same findings at escalating severity. Live on one measured cycle: the pushed commit had deleted 1007 lines of `src/config/mod.rs`, the developer restored it correctly, and none of the 1174 restored lines were ever committed. One `lensWorktree()` now serves the review and the fix so they cannot disagree.
-
-**The handoff names the gate that actually capped.** The round cap and wall clock route from `nextStep`, which is pure and cannot append, so nothing recorded why and four renderers defaulted to `"adversarial-loop"`: **23 of 53 handoffs claimed the adversarial gate failed, and 14 of those died at lens-review with adversarial approving every round.** `round-cap` and `wall-clock` were already in the union with correct `explainCap` prose — dead members. They are emitted now, `REVIEW_INCOMPLETE` gets its own cap instead of a copy-pasted one, and `explainCap` is total, which is what makes removing the fallbacks safe: it previously **threw** on an absent cap, so the operator got no handoff at all.
-
-*Entry gates (#408).* Two signals the driver produced and never consulted.
-
-**`needs-human-attention` was write-only.** Ten references, all applying it, none reading it — so `/work N` on an issue a previous cycle handed off restarted the whole pipeline against an unchanged issue body, hit the same review cap, and produced the same handoff. The human the label was addressed to was never asked. `work-driver-attention.ts` now checks it before any dispatch is paid for; `--restart` is the override, because it already means "I revised the issue". An unreadable `gh` does **not** refuse — every later step needs `gh` anyway and would fail with a clearer error — but it does not silently pass either: the verdict carries `checked: false` and the driver traces that the gate did not run.
-
-**Same-process cycles could not refuse each other.** `classifyRunningState` refuses a live owner only when `owner.pid !== selfPid`, and that exclusion is load-bearing — a driver resuming its own crashed state must not refuse itself. The consequence is that two cycles started from the *same* process see a matching pid and both proceed. Unreachable while `/work` was only a slash command (you cannot type two at once); reachable the moment a tool can start a cycle. `work-driver-registry.ts` holds an in-process claim keyed by **every** issue in the group, not just the primary, so a grouped cycle for #10+#11 collides with a later single cycle for #11. Cross-process remains the state file's job, which it already does correctly.
-
-*Resume (#382).* The resume machinery was declared but inert: `resumable: false` was a literal in the TYPE, `inFlightJobIds` was validated and rendered but never written, and `dispatch-started` was never emitted anywhere. State persisted only at step boundaries while a dispatch can run 30 minutes, so a crash left the file at the previous boundary still claiming `running` — indistinguishable from a live cycle, forever. Every step now write-aheads (`beginDispatch`) before awaiting, including the four that bypass `runSingleDispatch` (`explore`, `plan`, `develop`, `handoff` — `develop` is the longest and the biggest window). Re-entry on a `running` file resolves to refuse (live owner), resume (dead owner + in-flight dispatch) or continue (clean boundary); an in-flight id with no `dispatch-started` is corrupt state and still halts. Queue outcomes persist to `.pi/work-state/queue-summary.json`; `/work-status` with no argument renders the multi-cycle index. Escape hatch `PI_ENSEMBLE_RESUME=0`.
-
-*Memory (#394).* Retrieval from vipune is calibrated on measurements, not on its docs. `--hybrid` returns RRF rank reciprocals (k=25): a perfect match scores 0.0769 on a 5-row and a 35-row corpus alike, so hybrid scores carry no relevance and cannot be thresholded — only the bit "both retrievers ranked this first" is usable. `--recency` mixes time into the score (`(1-r)*cosine + r*2^(-age/8)`), so every compiled read passes `--recency 0.0` and sorts on `created_at` in TypeScript. Injecting a guard requires the semantic floor (0.65) **AND** the agreement bit — measured on three corpora, the floor alone admits a guard about an unrelated file, and a union cannot fix that because it is monotone. `extension/src/vipune.ts` is the only seam: argv arrays with `--` before the query (a query beginning with a dash otherwise lands in the overloaded exit-2 branch), exit-2 discrimination on stdout rather than the code, secrets refused before the binary is reached (by shape-with-context, never raw entropy — an earlier entropy rule ate git SHAs), and `--force` nowhere. Upstream: randomm/vipune#177, #178, #179.
-
-*Memory — the argv contract and permissions.* Two defects made the calibrated seam unreachable while a broken invocation ran daily. **vipune's config default is `recency_weight = 0.3`**, so every score is `(1-w)*raw + w*decay` unless `--recency 0` is passed — and the prompt tree prescribed `--hybrid --recency 0.3` in seven places, which measured as a pure age sort (the one correct memory came back rank 44 of 50; rank 1 at `--recency 0`). 66 further documented lines pass no `--recency` at all and silently inherit 0.3, which no prompt edit can fix — so every specialist child is now spawned with `VIPUNE_RECENCY_WEIGHT=0` (`vipuneChildEnv`), making the safe value the default for anything a child runs or composes itself. `searchArgv` is the single source of the argv, and `test-vipune-argv.ts` is an offline gate asserting no documented line pairs `--hybrid` with a non-zero recency, and no similarity band is applied to a recency-blended score. Recency itself is **not** banned — `--recency 0.9 --memory-type observation` to recall what a sibling stored minutes ago is a correct use. Separately, `"vipune *": "allow"` appeared six times in `agents.json` and granted every role `vipune delete` (irreversible, no confirmation) and `vipune mcp`; the allowlist is now explicit per verb.
-
-*Memory — the read path, and why it does not use the seam's defaults.* The develop step injects prior memory about its in-scope files. Three departures from `selectResults`, each measured over 940 observations: reads are **unfiltered** (filtered by `--memory-type guard`, a query for `permission-guard.ts` scores 0.0385 and misses; unfiltered it scores 0.076923 and finds it — and guards are 5 of 111 rows); selection is the **agreement bit alone**, no `SIM_FLOOR` (re-adding it drops files-hit 22/24 → 8/24 while removing zero false positives); and there is **one query per basename plus a stem fallback**, never a concatenated list (which scored the target 0.6301 against 0.6513 for the basename alone). The threshold stays at `HYBRID_AGREEMENT` rather than the measured-clean 0.04 separator: 0.075 gives precision 1.00 against 0.04's 0.85, and an agent adopts a retrieved claim at first exposure and recovers poorly from a wrong one. The mechanism underneath is exact — when BM25 matches nothing, RRF returns the semantic list unchanged with scores of precisely `1/(25+r)`, so `1/26 = 0.038462` is the ceiling for a row BM25 never saw. Any vipune failure degrades to an empty brief; a memory problem never costs a cycle whose code work is done.
-
-*Memory — what the driver writes, and how we know it helps.* The driver persists what it already holds rather than asking an agent to remember: `lens-issues-found` findings become `<basename>: <title>` rows, capped at 3 per cycle, always `candidate` (invisible to a default read, so a wrong row influences nothing until promoted), always typed `observation` — never `guard`, which `vipune prune` never demotes, so an unpromoted driver row could never age out (#1103; the invariant-removal rows follow the same rule) — always carrying metadata that is `JSON.parse`-validated before the binary is reached — vipune accepts `-m '{not json'` at exit 0 and stores it, which would corrupt every later reader. Rows are short for **injection cost**, not findability: measured on the live store, length and retrieval are unrelated (the four most-retrieved rows are 731, 241, 626 and 1598 chars), but a brief carries up to 10 hits and the corpus median is 742. `memory-stats.ts` answers the operator's condition — "as long as it provides value" — by reading `retrieval_count`, `status` and `type` **read-only from SQLite**, because no vipune command aggregates them per project (`search --json` returns retrievals per hit since upstream #179 closed; per-row `last_retrieved_at` lives in `vipune list --json`, which the panel does not read). The `/audit` panel also lists candidates with their ids: promotion is an operator decision (no agent role is granted the update verb in `agents.json`, so this is an operator action, see `skill/vipune/SKILL.md` — in trust mode that grant is doctrine, not a runtime gate), and `/audit` is where the operator finds what awaits it. Baseline at the time of writing: 111 rows, 1186 retrievals, 8 never retrieved — a corpus in heavy use by other tools and none of it by this harness.
-
-*Memory — no agent rewrites a memory in place.* `vipune update <id> -t "…"` REPLACES a row's content: one row before, one row after, no lineage, no undo — and the id survives, so anything that cited that memory now cites different text. That is quieter than `delete`, and worse. #418 narrowed the wildcards but kept `"vipune update *": "allow"` for all six roles; it is now granted to none. The memory-write guard (`extension/src/memory-write-guard.ts`) refuses `vipune update -t`, `delete` and `prune` in every child, trust or strict (#1666), and any verb it cannot read, so the refusal does not depend on the `agents.json` verdict. No escape hatch: the repair path is `vipune add --supersedes`, which preserves the original row — the same reasoning as #406: an agent must not silently rewrite the record it is judged against. `test-seams-wired.ts` additionally asserts the seam is reachable from the driver and that every unwired export is declared with the issue that will wire it; the seam shipped twice, fully tested, imported by nothing. `test-vipune-seam-loop.ts` is the round trip against a scratch database (skipped without the binary): a driver write lands as an `observation` candidate and the developer brief stays silent about it.
-
-*Memory — closing the read/write loop, and staleness.* `vipuneSearch` passed no `--status`, so vipune defaulted to `active` while every driver write is a `candidate` — 100% of what the driver stored was invisible to its own reads. `SearchOpts.includeCandidates` threads vipune's first-class boolean (preferred over `--status active,candidate`: measured identical result sets, but a comma list degrades silently into a narrower query when a member is misspelled). The developer brief does **not** pass it (#1103): reading candidates there made every automatic write reach a developer prompt the moment it landed, contradicting the premise that a candidate influences nothing until promoted. The loop closes through promotion, not through reading the candidate tier; the flag remains for lookups of the driver's own rows (research supersession). `MemoryHit` now carries `created_at`, which `search --json` always returned and the seam discarded. Staleness is resolved AFTER retrieval by `preferNewest`, never blended into the score — mixing time into the ranking is what made retrieval useless in the first place. Volatile types (`fact`, `preference`, `observation`) collapse near-duplicates to the newest; `guard` and `procedure` do not, because two guards about one file are usually two distinct hazards. The durable fix for a contradiction remains `--supersedes` at write time; this is the read-side backstop for rows already in the store.
-
-*Surviving a transient blip.* Three defects made recoverable failures terminal. (1) `spawn.ts` closed the child's stdin on ANY `agent_end`, and rpc mode exits when stdin ends — so Pi's own in-process retry (3 attempts, 2s/4s/8s, `"terminated"` retryable) was killed at the instant it fired. Measured on a real 35-minute dispatch: one error message where three retries would have left four, and exit 0.4s later. It is now gated on the `willRetry` flag Pi already stamps (`willRetryAfter`, `spawn-support.ts`); the child's retry is preferred because it is in-process and keeps the context, where a driver retry re-dispatches from scratch. (2) `routeStepOutcome` classified only the LAST event, which works for a single dispatch but not a fan-out — `runDevelop` ends on `branches-converged`, burying the per-child failures. Three developers hit a 429 carrying a 59s retry-after, a delay the taxonomy already waits out for single dispatches, and develop halted with `transientRetryAttempts: {}` — never attempted. `failureEventOf` now scans back to `branches-fanned-out`, and declines when any workstream succeeded so a partial fan-out is never re-run wholesale. (3) `failedStep` reported `lastCompletedStep` — the last step that SUCCEEDED — sending an operator chasing a failed develop to `branch`; it now prefers the `step-failed:<step>` the cap already carries.
-
-*Host suspend is not a provider failure.* `terminated` is undici's mid-stream body abort, and on a laptop it usually means the machine slept: measured, every such failure landed seconds after a DarkWake, `cargo test` burned 34s of CPU across 937s of wall clock, the same error appeared on two unrelated providers, and terminations stopped entirely once the machine was on AC. `pmset -g custom` showing `sleep 1` with only "Prevent sleep while display is on" holding it off is the shape to look for. Run `caffeinate -dimsu` alongside a long `/work`.
-
-*Reaching the operator (#388, #390).* Nothing `/work` produced used to reach a human outside the Pi session. `PI_ENSEMBLE_NOTIFY_CMD` now runs on parked / halted / `awaiting-human-merge` / crashed, once per group, never on a clean merge, with the message on stdin (never interpolated into the command — issue titles and provider errors are untrusted). It fails open in every direction: a missing binary, a non-zero exit and a hanging hook are all swallowed after a 5s timeout, and the queue outcome is byte-identical with a completely broken hook. `/start` reads `.pi/work-state/` and leads its readiness line with parks and their actions; `test-start-prompt.ts` enforces that file's bash rule (no `&&`/`|`/`;`/`>`/backticks/`$(…)`), because `permission-guard` DENIES those silently and a chained command would disable its step with no visible symptom.
-
-See `extension/src/workflow-state.ts` for the schema, `extension/src/work-driver.ts` for the state machine, and `docs/troubleshooting.md` for state-file recovery.
+1. **A gate checks executed evidence, never a child's claim.** What a subagent *says* it did is narration.
+2. **Silence is never a pass.** An absent or unparsable reply must be distinguishable from any parsed value, and the caller decides what absence means. Collapsing "absent" into a default is how a gate begins reporting a confident wrong answer.
+3. **Fail in the direction of the blast radius.** The irreversible act (a merge) fails closed: an unreadable answer blocks. A routine absence (no doctrine file, no optional config) gets the shipped default, because that is the normal case.
+4. **Doctrine is read at the cycle's base commit, never from the working tree,** so a cycle cannot rewrite the rules it is judged by mid-cycle. Documentation still ships with the PR — this repo's own "docs ship with the PR" rule is what that preserves.
+5. **A cap is a stop signal that produces a handoff, never a question.** No "should I continue?" — the artifact *is* the answer, and the turn ends.
+6. **Deterministic git/gh work is mechanized in driver code, not narrated to an LLM.** Every worst-class incident in this harness was an LLM improvising an enumerable shell recipe; deleting that failure source beats detecting its failures. A fallback to an LLM path is recovery from mechanized failure, never an opt-out.
+7. **Prose is convention; a hook or a test is enforcement.** A rule that must hold gets a deterministic check, not a sentence. When a natural-language document must be consulted, it is consulted through one judged seam whose answer is honoured only against a verified quote — never through hand-rolled regexes over operator prose.
 
 ---
 
 ## 8. Transcript discipline
 
-Per-child subagent transcripts auto-save to `~/.pi/agent/ensemble-runs/<date>/<runId>-<role>.json`. These are for **post-hoc inspection by the human user** via `/runs`. The PM (and any agent in a workflow) must NEVER read these files via the `read` tool — that re-imports thousands of tokens of raw events, defeating the bounded-summary invariant the dispatch tools enforce.
+Per-child subagent transcripts auto-save to `~/.pi/agent/ensemble-runs/<date>/<runId>-<role>.json`, for **post-hoc inspection by the human user** via `/runs`. The PM (and any agent in a workflow) must NEVER read these files with the `read` tool — that re-imports tens of thousands of tokens of raw events, defeating the bounded-summary invariant the dispatch tools enforce.
 
 Surface transcript paths in your reply verbatim; let the user browse via `/runs`.
 
@@ -407,51 +163,34 @@ Surface transcript paths in your reply verbatim; let the user browse via `/runs`
 
 ## 9. Git workflow
 
-Forge note: this section describes this repo's own workflow, and this repo lives on GitHub — so `gh` commands and `PR` are used throughout. A project on GitLab gets the same doctrine with `gh` swapped for `glab` and PR for MR.
+This repo lives on GitHub, so `gh` and "PR" are used throughout. A GitLab project gets the same doctrine with `glab` and MR.
 
-### Conventional commits with issue numbers
+### Conventional commits
 
 ```
 <type>(<scope>): <description>
 ```
 
-**Never put an issue number in the scope position.** Alphabetic subsystem scopes (`fix(spawn):`) are the prescribed form; a bare type (`fix:`) is used only where no subsystem applies. Issue linkage goes in the PR body via `Closes #N` / `Fixes #N` — the scope-position number is decorative (no parser reads it) and downstream changelog tooling mangles headers that carry one.
+**Never put an issue number in the scope position.** Alphabetic subsystem scopes (`fix(spawn):`) are the prescribed form; a bare type (`fix:`) only where no subsystem applies. Issue linkage goes in the PR body via `Closes #N` / `Fixes #N` — the scope-position number is decorative (no parser reads it) and downstream changelog tooling mangles headers that carry one.
 
-Types: `feat` (MINOR post-1.0; PATCH pre-1.0) | `fix` (PATCH) | `refactor` | `docs` | `test` | `chore` | `ci` | `perf` | `feat!` / `fix!` (BREAKING — MAJOR post-1.0; MINOR pre-1.0).
-
-Scope conventions for this repo:
-
-- `feat(work):` change to `/work` flow
-- `feat(review):` change to six-pass review
-- `feat(model):` model resolution
-- `fix(spawn):` spawn / child-process bugs
-- `chore(deps):` dependency bumps
-- `docs(readme):` README only
-
-Examples:
+Types: `feat` | `fix` | `refactor` | `docs` | `test` | `chore` | `ci` | `perf` | `feat!` / `fix!` (BREAKING). Scopes for this repo name the subsystem: `feat(work):`, `feat(review):`, `feat(model):`, `fix(spawn):`, `chore(deps):`, `docs(readme):`.
 
 ```
 feat(review): add per-lens retry on parse failure
 fix(spawn): close stdin to prevent hang on macOS
-feat(work)!: replace dispatch_parallel max with PI_ENSEMBLE_MAX_PARALLEL env
-
-BREAKING CHANGE: hardcoded 10-slot limit is now configurable via env var.
+feat(work)!: make the parallel group ceiling configurable
 ```
 
-Versioning is automated by [release-please](https://github.com/googleapis/release-please). Conventional commit messages drive `CHANGELOG.md` entries and the version bump in the release PR.
+Versioning is automated by [release-please](https://github.com/googleapis/release-please). While the project is pre-1.0, `release-please-config.json` sets `bump-minor-pre-major` and `bump-patch-for-minor-pre-major`, so `feat:` bumps PATCH and only `!` / `BREAKING CHANGE:` moves the minor digit.
 
-**Release PRs authenticate with `RELEASE_PAT` (#337).** `release-please-action` gets `token: ${{ secrets.RELEASE_PAT }}` rather than the default `GITHUB_TOKEN`. This is not a permissions fix — nothing was being denied. A PR authored with `GITHUB_TOKEN` does not trigger `on: pull_request` workflows at all, by GitHub's anti-recursion rule, so every release PR up to v0.12.25 merged with **zero CI runs**: the runs existed but reported `total_count: 0` jobs and concluded `action_required` in 0s. Dependabot's PRs worked throughout, because `app/dependabot` is a distinct identity.
-
-The secret needs `Contents: write` (push the branch, tag the release) and `Pull requests: write` (open and update the PR). It does **not** need `workflows` — that scope only governs pushing changes *to* `.github/workflows/`, and a release PR touches only `CHANGELOG.md`, the manifest and the two `package.json`s. If the PAT ever expires the symptom returns exactly: a release PR reporting "no checks reported".
-
-**Pre-1.0 versioning model**: while the project is in alpha (`0.x`), `release-please-config.json` sets both `bump-minor-pre-major: true` and `bump-patch-for-minor-pre-major: true`. This means `feat:` bumps PATCH (not MINOR) and BREAKING changes bump MINOR (not MAJOR). Only `feat!` / `fix!` / explicit `BREAKING CHANGE:` footers move the minor digit. Once we cut `1.0.0`, both flags become inert and standard semver resumes (`feat:` → MINOR, BREAKING → MAJOR).
+Release PRs authenticate with a `RELEASE_PAT`, not the default `GITHUB_TOKEN`: a PR authored with `GITHUB_TOKEN` does not trigger `on: pull_request` workflows at all, so a release PR merges with zero CI runs and reports "no checks reported". The PAT needs `Contents: write` and `Pull requests: write`; it does **not** need `workflows` (a release PR touches no workflow file).
 
 ### Branch naming
 
 ```
-feature/issue-{N}-brief-description   # for issue-driven work
+feature/issue-{N}-brief-description   # issue-driven work
 fix/issue-{N}-...                     # bug fixes
-docs/...                              # docs-only changes (no issue required)
+docs/...                              # docs-only (no issue required)
 chore/...                             # tooling / config (no issue required)
 ```
 
@@ -464,19 +203,19 @@ chore/...                             # tooling / config (no issue required)
 
 ### Spike branches
 
-Experimental architectural work lives on a feature branch. Stack spikes on top of foundational PRs if needed; rebase onto fresh main after the foundation merges.
+Experimental architectural work lives on its own feature branch. Stack spikes on foundational PRs when needed; rebase onto fresh main after the foundation merges.
+
+### Gate files
+
+**Gate files: `AGENTS.md`, `.github/`, `.pi/` and `agents.json`.** These define what verification, review and permission mean for a cycle. `.github/`, `.pi/` and `agents.json` halt a cycle that changes them, and the operator admits the path deliberately for the single run that is genuinely about that file (`/work <issue> --allow-protected <path>`). An `AGENTS.md` edit ships in the PR alongside the behaviour it documents, and grants that cycle nothing: the driver reads doctrine at the cycle's base commit, so the governing copy is the one on `main` and the edit takes effect for later cycles once an operator merges it. **A PR that changes a gate file is merged by the operator** — agents hold merge authority for everything else (see the grant below).
 
 ### LLMs are allowed to squash merge PRs/MRs
 
 If all project quality gates have been met (code reviews, CI, linters, type checks etc) LLMs / agents are allowed to squash merge PRs (GitLab: MRs).
 
-There is no retained human merge gate: humans do not merge and need only to be consulted if there are PRs that are somehow problematic that cannot be resolved through further research and steering — consultation is an escalation path for problems, not an approval step in the normal merge path.
+There is no retained human merge gate: merging is not a human approval step. Humans are consulted only when a PR is problematic in a way that further research and steering cannot resolve — escalation, not sign-off.
 
-**This sentence is load-bearing, not decorative.** Since #380 the `/work` driver reads this file at the `merged` step and refuses to merge without an explicit grant like the heading above. Deleting or softening it turns auto-merge off for this repo; an unquoted prohibition anywhere in this file (of the `never merge` / `do not merge` / `automerge: false` shape) turns it off regardless of the grant. Other projects opt in the same way, or per-run with `/work <issue> --merge`; with neither, `/work` opens the PR and parks as `awaiting-human-merge`.
-
-Authority alone is not sufficient — the driver also requires executed evidence from `gh` (`mergeStateStatus` + `gh pr checks`), and treats required checks reporting `skipped`/`neutral` as NOT passing. See `docs/troubleshooting.md` → "Merge authority".
-
-**This file is read at the cycle's base commit, not from the working tree (#406).** A `/work` cycle that edits this section grants itself nothing: the merge gate reads the version that existed before the cycle started. The edit still ships in the PR and takes effect for the *next* cycle, once it has merged. That is deliberate — it keeps §7's "docs ship with the PR" rule working while closing the self-escalation path.
+**This grant is load-bearing.** The `/work` driver reads this file at the `merged` step and parks as `awaiting-human-merge` without a grant like the sentence above, so state a rule about merging positively — a negation anywhere in this file reads as a refusal and turns auto-merge off regardless of the grant. Other projects opt in the same way, or per run with `/work <issue> --merge`. Authority is not sufficient — the merge needs executed `gh` evidence (`mergeStateStatus` + `gh pr checks`), and required checks reporting `skipped`/`neutral` count as not passing. See [docs/troubleshooting.md](docs/troubleshooting.md) → "Merge authority".
 
 ---
 
@@ -484,20 +223,20 @@ Authority alone is not sufficient — the driver also requires executed evidence
 
 ### Before starting
 
-1. GitHub issue exists for the work
-2. Issue clearly describes the requirement
-3. Your approach matches issue scope exactly
+1. A GitHub issue exists for the work
+2. The issue clearly describes the requirement
+3. Your approach matches the issue scope exactly
 4. No scope expansion without updating the issue or filing a new one
 
 ### During development
 
-- Keep changes focused on the issue
-- PM surfaces related work via the forge CLI (`gh issue create` on GitHub, `glab issue create` on GitLab); specialists report it to PM and PM decides — don't bundle
-- One PR per issue (per concern); small + reviewable beats Big Bang
+- Keep changes focused on the issue.
+- PM surfaces related work via the forge CLI (`gh issue create` / `glab issue create`); specialists report it to PM and PM decides — don't bundle.
+- One PR per issue (per concern); small + reviewable beats Big Bang.
 
 ### When the issue text drifts
 
-Refinements/corrections to a research issue go in the **body** (`gh issue edit --body-file` on GitHub; GitLab has no issue-edit subcommand — `glab api -X PUT projects/:id/issues/:iid` with the new body), not as comments. Comments get buried. Comments are for progress notes, not design corrections.
+Refinements and corrections go in the **body** (`gh issue edit --body-file`; GitLab: `glab api -X PUT projects/:id/issues/:iid`), not as comments. Comments get buried — they are for progress notes, not design corrections.
 
 ---
 
@@ -507,8 +246,8 @@ Refinements/corrections to a research issue go in the **body** (`gh issue edit -
 
 Before adding documentation: *"Will this be true in 200 PRs?"*
 
-- **YES** (principle that endures) → Document the principle (WHY)
-- **NO** (implementation detail) → Skip, or use code comments (WHAT/HOW)
+- **YES** (enduring principle) → document the principle (WHY)
+- **NO** (implementation detail) → skip, or use a code comment (WHAT/HOW)
 
 ### What to document
 
@@ -517,39 +256,30 @@ Before adding documentation: *"Will this be true in 200 PRs?"*
 - ✅ Core concepts and terminology
 - ✅ Non-obvious algorithms (code comments — short, focused)
 - ✅ Architectural decisions tied to a load-bearing rationale
-- ✅ Operator troubleshooting (`docs/troubleshooting.md`) — symptom → fix → PR-ref entries for sandbox / install / wiring issues that recur. Update on every PR that resolves a class of user-facing failure.
+- ✅ Operator troubleshooting (`docs/troubleshooting.md`) — symptom → cause → fix entries for failures that recur. Update it on every PR that resolves a class of user-facing failure.
 
 ### Forbidden documentation
 
-- ❌ Issue drafts (`issue_*.md`)
-- ❌ Implementation summaries (`*_IMPLEMENTATION.md`)
-- ❌ Fix notes (`fix_*.md`)
-- ❌ Research scratch (`research_*.md`)
-- ❌ Design documents (`DESIGN.md`)
-- ❌ Plans (`PLAN.md`, `IMPLEMENTATION_PLAN.md`)
-- ❌ `TODO` comments — create GitHub issues instead
+- ❌ Issue drafts (`issue_*.md`), implementation summaries (`*_IMPLEMENTATION.md`), fix notes (`fix_*.md`), research scratch (`research_*.md`), design documents (`DESIGN.md`), plans (`PLAN.md`, `IMPLEMENTATION_PLAN.md`)
+- ❌ `TODO` comments — create issues instead
 
-If it changes frequently or is task-specific, don't document it as a file. Use GitHub issues / PR descriptions / vipune memory.
+If it changes frequently or is task-specific, don't document it as a file. Use issues, PR descriptions, or vipune memory.
 
 ### Module-level descriptions live in source jsdoc, not in tables
 
-Don't add file-by-file "what does X own" tables to AGENTS.md or CONTRIBUTING.md. Such tables drift away from the code with every refactor — each PR ends up tweaking the row to match the new shape, and the description becomes a second source of truth that's perpetually out of date.
-
-The authoritative module contract lives in the **jsdoc header of the source file itself**. It evolves with the code that imports it. When a contributor (human or agent) wants to know what `dispatch-deck.ts` does, the right answer is "open the file" — not "consult AGENTS.md row 47".
-
-This file enforces principles, conventions, and load-bearing constraints. It's not a module registry.
+Don't add file-by-file "what does X own" tables to AGENTS.md or CONTRIBUTING.md. Such tables drift with every refactor and become a second source of truth that is perpetually stale. The authoritative module contract is the **jsdoc header of the source file itself**; the answer to "what does `dispatch-deck.ts` do?" is "open the file". This file enforces principles and load-bearing constraints — it is not a module registry, and each statement here lives in exactly one file: a role prompt may point at a rule, it does not restate it.
 
 ### Public repository hygiene
 
-This repository and its issues, pull requests, comments and releases are public. Never include the maintainers private hosts, networks, addresses, private projects, personal paths, or field-run identifiers in files, commit messages, PR or issue text. Field evidence is summarised generically; detail lives outside this repository.
+This repository and its issues, pull requests, comments and releases are public. Never include the maintainers' private hosts, networks, addresses, private projects, personal paths, or field-run identifiers in files, commit messages, PR or issue text. Summarise field evidence generically; detail lives outside this repository.
 
-**This rule is enforced, not just stated (#1788).** AGENTS.md prose is what failed: agent-written issues, PR bodies, comments and commit messages carried private names while this section said not to. The `public-hygiene-guard.ts` `tool_call` hook refuses a `gh` publish, a `git commit` message, or a github.com `git push` (its outgoing commit messages plus added diff lines) whose text matches an entry in the operator's private denylist at `~/.config/pi-rukas/public-denylist` (`$PI_ENSEMBLE_PUBLIC_DENYLIST`); a publish surface a command *carries* is additionally refused on an address or path from the built-in generic set (private IPv4 in `10/8`, `172.16/12`, `192.168/16`, `100.64/10`, and personal home paths), while everything the push scan reads out of git is private-denylist only, so a fixture or a commit message that merely describes an address is not a refusal. It applies to **public repositories only**: each surface's target repository is resolved (the pushed remote, the segment's `origin`, a `-R`/`--repo` flag, a `gh api` `repos/OWNER/REPO` endpoint, or the forge's own slug) and asked of `gh api repos/OWNER/REPO --jq .private`, cached per repository for the process; a positive `private` answer skips that surface, and every other answer — no remote, unparseable URL, non-GitHub host, no `gh`, a network failure, an unknown repo — checks. It is registered in the mode-independent guard block, so it fires in trust, sandbox, strict and headless modes, where the permission layer checks nothing. It **never** prints the matched term: a refusal names a denylist line, a path, or a category. A surface it cannot read is refused, never assumed clean. `bin/pre-push-hygiene.sh` is the human-side counterpart for a `git push` typed in a terminal. Escape hatch `PI_ENSEMBLE_PUBLIC_HYGIENE=0`; mechanism in [docs/troubleshooting.md](docs/troubleshooting.md) → "Public repository hygiene".
+The rule is enforced, not just stated: a mode-independent hook refuses a publish, commit message, or push to a public GitHub remote whose text matches the operator's private denylist, and refuses a surface it cannot read rather than assuming it is clean. It never prints the matched term. Mechanism: `public-hygiene-guard.ts`, `public-denylist.ts`; operator-facing form: [docs/troubleshooting.md](docs/troubleshooting.md) → "Public repository hygiene".
 
 ---
 
 ## 12. Code style
 
-### TypeScript (extension/)
+### TypeScript (`extension/`)
 
 - Biome (lint + format) is the single source of truth: `bun run check`
 - No `// @ts-ignore`, no `// @ts-expect-error` without an explicit reason in the comment
@@ -558,94 +288,62 @@ This repository and its issues, pull requests, comments and releases are public.
 
 ### File size limits
 
-- **Hard limit**: 500 lines per source file
-- **Ideal target**: 300 lines or fewer
-- **Refactor trigger**: Exceeds 500 lines OR has 3+ distinct responsibilities
+- **Hard limit**: 500 lines per source file · **ideal**: 300 or fewer · **refactor trigger**: over the cap, or 3+ distinct responsibilities
 
-The gate scans the **whole repository** — every `.ts`, `.sh` and workflow `.yml`, not just `extension/`. It previously covered TypeScript in two directories, so `install.sh`, `build.sh` and everything in `.github/workflows/` went unmeasured; `build.sh` sits at 499 lines, one under the cap, while the gate reported compliance. Markdown and JSON are excluded deliberately — the limit is about logic a person has to hold in their head, and `docs/troubleshooting.md` is legitimately long. Excluded directories are named explicitly in the test, because an implicit exclusion is indistinguishable from a gap. Enforcement is mechanical: `extension/smoke-tests/test-file-size-limit.ts` runs in the same offline pre-push/CI loop as every other smoke test (§1) and fails the gate if any file regresses past the limit. It asserts in BOTH directions: that the repo is clean, and that a deliberately oversized fixture is actually caught — a gate never observed to fail is worthless. It also prints the file closest to the limit, so the next breach is known before it happens. Escape hatch: `PI_ENSEMBLE_SIZE_RATCHET=0`. Large modules split along natural seams (e.g. `work-driver.ts`'s per-step handlers each got their own `work-driver-<step>.ts` file importing a shared `work-driver-context.ts`) — when a file is heading toward the limit, look for the same kind of seam before reaching for the escape hatch.
+The gate scans the **whole repository** — every `.ts`, `.sh` and workflow `.yml`, not just `extension/`. Markdown and JSON are excluded deliberately: the limit is about logic a person holds in their head, and `docs/troubleshooting.md` is legitimately long. Excluded directories are named explicitly in the test, because an implicit exclusion is indistinguishable from a gap. Enforcement is `extension/smoke-tests/test-file-size-limit.ts`, in the same offline loop as every other smoke test (§1); it asserts both directions — the repo is clean, and a deliberately oversized fixture is caught — and prints the file closest to the cap. Split large modules along a natural seam (per-step handlers each in their own file behind a shared context module is the house pattern) and keep the comment that explains the seam: a size cap is never met by shortening prose.
 
-### Markdown (prompts/)
+### Markdown (`modules/`)
 
-- Modules under `modules/<category>/` should be self-contained and composable
-- Use heading levels consistently: `# Section` for top-level, `##` for subsections
-- Keep modules focused (one behaviour per module)
-- Don't reference other modules by path — Pi assembles them, but the assembled order is the manifest's call
+- Modules under `modules/<category>/` are self-contained and composable
+- Heading levels: `# Section` top-level, `##` subsections
+- One behaviour per module
+- Don't reference other modules by path — Pi assembles them, and the assembled order is the manifest's call
 
 ### Commit messages
 
 - Conventional commits with an alphabetic subsystem scope (`feat(work):`), or a bare type (`fix:`) where no subsystem applies — issue linkage goes in the PR body via `Closes #N`
-- First line ≤ 72 chars; wrap body at ~72
-- "Why" in the body, not just "What" (the diff shows what changed)
+- First line ≤ 72 chars; wrap the body at ~72
+- "Why" in the body, not just "What" — the diff shows what changed
 
 ---
 
 ## 13. Common pitfalls
 
-### 🚨 "None" placeholder text from GLM family
+### 🚨 Model-specific placeholder text
 
-GLM-4.x / 5.x emits literal `{type: "text", text: "None"}` blocks between tool calls. The `model-adapters.ts` registry filters these in `spawn.ts:collapseEvents`. **Do NOT add inline GLM-specific filtering in shared paths.** If a new family has quirks, add an entry to `FAMILY_DETECTORS` in `model-adapters.ts`.
+Some model families emit literal placeholder text blocks between tool calls (GLM emits `{type: "text", text: "None"}`). The `model-adapters.ts` registry filters these in `spawn.ts:collapseEvents`. **Never add model-specific filtering in shared paths** — add an entry to `FAMILY_DETECTORS`.
 
 ### 🚨 PM trying to code
 
-The sticky preamble injection (`commands.ts:PM_STICKY_PREAMBLE`) is prompt-layer enforcement. Mechanism-layer enforcement (strip edit/write tools via `setActiveTools`) is tracked in [#26](https://github.com/trail-openers/pi-rukas/issues/26). If you see the PM reach for `edit` / `write` / `bash` (beyond vipune/git-read-only), the sticky preamble didn't land — file a bug.
+The sticky preamble injection (`commands.ts:PM_STICKY_PREAMBLE`) is prompt-layer enforcement; structural tool-stripping is tracked separately. If you see the PM reach for `edit` / `write` / arbitrary bash, the preamble didn't land — file a bug.
 
 ### 🚨 AGENTS.md re-read habit
 
-Pi auto-loads this file into every agent's context. Doctrine code (PM, /work, etc.) should NOT instruct agents to re-read AGENTS.md — that wastes a tool call and tokens. State requirements from AGENTS.md directly; don't reference "as documented in AGENTS.md".
+Pi auto-loads this file into every agent's context. Doctrine code must NOT instruct agents to re-read AGENTS.md — state the requirement directly, don't reference "as documented in AGENTS.md".
 
 ### 🚨 Transcript context bloat
 
-Reading `~/.pi/agent/ensemble-runs/*.json` directly is forbidden for the orchestrating agent (PM). Each transcript is 50k-300k tokens of raw events. Use the dispatch-tool report's final assistant text instead — it's the bounded summary by design.
+Reading `~/.pi/agent/ensemble-runs/*.json` directly is forbidden for the orchestrating agent. Each transcript is 50k–300k tokens of raw events; the dispatch tool's report is the bounded summary by design.
 
 ### 🚨 Pi version shape drift
 
-CLI flags and event shapes change between Pi minor versions. The dev pins in `extension/package.json` (non-normative — a CI-reproducibility device) keep CI stable, but bumping requires live tests + manual transcript inspection. The offline smoke tests don't exercise child-process behaviour; they won't catch a Pi shape regression. The single maintained version claim lives in [docs/pi-compatibility.md](docs/pi-compatibility.md); `test-pi-version-drift.ts` cross-checks it against the declared pins and the other docs.
+CLI flags and event shapes change between Pi versions. The dev pins keep CI reproducible; they do not fence runtime, and the offline tests do not exercise child processes. The maintained claim lives in [docs/pi-compatibility.md](docs/pi-compatibility.md) and `test-pi-version-drift.ts` cross-checks the restatements against it (§4).
 
 ### 🚨 Branching off stale main
 
-`/work` step 3 explicitly requires ops to: detect mainline, verify clean working tree, fast-forward via `git pull --ff-only`. Skipping this and branching off whatever HEAD points at burns time on phantom conflicts.
+Ops must detect the mainline, verify a clean working tree, and fast-forward via `git pull --ff-only` before branching. Branching off whatever HEAD points at burns time on phantom conflicts.
 
 ### 🚨 `dispatch_parallel` with 1 spec
 
-`dispatch_parallel` enforces ≥2 specs at runtime. For single-subagent work, use `dispatch_specialist`. Tool descriptions make the cardinality explicit.
+`dispatch_parallel` enforces ≥2 specs at runtime. For a single subagent, use `dispatch_specialist`.
 
 ---
 
 ## 14. Quick commands reference
 
-| Task | Command |
-|---|---|
-| Install (after clone) | `./install.sh` |
-| Build role prompts | `bun run build` |
-| Type-check extension | `cd extension && node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json` |
-| Lint + format check | `cd extension && bun run check` |
-| Apply format | `cd extension && bun x biome format --write src/` |
-| All offline smoke tests | (see § 1 pre-push) |
-| Single offline smoke test | `cd extension && bun run smoke-tests/<test>.ts` |
-| Live spawn test (real tokens) | `cd extension && bun run smoke-tests/test-spawn-live.ts` |
-| Live lens review (real tokens) | `cd extension && bun run smoke-tests/test-lens-review-live.ts` |
-| View Pi compat surface | `grep -r 'pi.sendUserMessage\|toolCall\|message_end' extension/src/` |
-| Check current model lineup before referencing | WebSearch for "current frontier LLMs <year>" — training data is stale |
+The authoritative set is §1. One-offs: `./install.sh` (install), `cd extension && bun run smoke-tests/<test>.ts` (one offline test).
 
 ---
 
-## Summary — pi-rukas at a Glance
-
-1. **Quality gates BLOCKING** — tsc + biome + 57 offline smoke tests pass locally before push
-2. **Two change paths** — extension code (no build) vs modular prompt layer (`bun run build` required, commit `dist/`)
-3. **Pi compatibility is load-bearing** — pin is deliberate; bumps require live tests
-4. **4-day npm embargo** — applies to `extension/` deps via bunfig; recommend pinning for prerequisite CLIs too
-5. **PM never codes** — orchestrate via dispatch tools; the sticky preamble enforces this
-6. **Conventional commits + issue-driven** — alphabetic scopes like `feat(work): …`, branch `feature/issue-N-…`, issue linked via `Closes #N` in the PR body
-7. **Spike branches** — experimental work on its own branch, rebased after foundations land
-8. **LLMs may squash-merge when gates pass** (see §9) — no retained human merge gate
-9. **200-PR test for docs** — endures or doesn't get written
-10. **Transcript discipline** — orchestrator reads dispatch-tool summaries, never raw transcript files
-11. **File size limits** — 500 lines hard cap, 300 ideal; fully compliant repo-wide, mechanically enforced by `test-file-size-limit.ts`
-
-**Golden rule**: Question every addition. Simplest solution wins. When in doubt, the doctrine in this file is authoritative — including for me.
-
----
-
-*For human contributors: see [CONTRIBUTING.md](CONTRIBUTING.md) for human-targeted workflow (dev setup, commit conventions in more detail, supply-chain notes).*
+*For human contributors: see [CONTRIBUTING.md](CONTRIBUTING.md) for the human-targeted workflow (dev setup, commit conventions, supply-chain notes).*
 *For Pi compatibility: see [CONTRIBUTING.md § Pi compatibility](CONTRIBUTING.md#pi-compatibility).*

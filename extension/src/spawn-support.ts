@@ -63,7 +63,7 @@ export {
  * productive child never is silent) and this backstop is 2 h of wall clock
  * (a 186-minute run, and every individual child inside the silent span,
  * sat under it). Both are KILLS on hang/runaway — deliberately the only
- * kind of bound this project keeps on open-ended work (AGENTS.md §7: six
+ * kind of bound this project keeps on open-ended work: six
  * per-role wall-clock caps were deleted because each kill destroyed work
  * whose duration is a property of the model). A watchdog that cannot fire
  * on a productive-but-endless dispatch is working as designed; the gap the

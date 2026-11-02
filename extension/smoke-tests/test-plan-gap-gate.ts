@@ -188,7 +188,7 @@ installNoPlanCacheStub();
   // D2: at the iteration cap, zero CRITICAL gaps remaining → FILE the
   // spec with the residual MEDIUM/LOW gaps disclosed in a "## Residual
   // gap-gate findings" section. Direct precedent: /work's lens round cap
-  // (AGENTS.md §7: "The round cap routes, it does not only stop").
+  // the round cap routes, it does not only stop.
 
   // Case 1: zero CRITICAL at the cap → file with disclosure.
   const mediumOnly =

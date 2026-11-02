@@ -66,7 +66,7 @@
  * 1 MiB. All three bounds exist because the path is agent-named input. The temp
  * dir is admissible because that is where the forge adapter legitimately writes a
  * body (`forge.ts`'s `withBodyFile` → `mkdtempSync`), and the repository because
- * the scratch convention in AGENTS.md §7 puts the driver's own body files there —
+ * the scratch convention (`tmp/issue-<N>/`) puts the driver's own body files there —
  * a rule that admitted only the temp dir refused a normal handoff comment. A path
  * outside every root is refused on its PATH alone and never opened. The roots are
  * owned by `public-hygiene-cwd.ts` (`admissibleRoots`), which is also what decides

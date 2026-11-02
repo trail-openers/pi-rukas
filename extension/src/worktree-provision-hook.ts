@@ -150,7 +150,7 @@ function bound(s: string, budget: number): string {
  * filesystem what it actually did.
  *
  * **Never throws, and never rejects** — and #1394 is the reason that sentence
- * needs its own paragraph. AGENTS.md §7 promises provisioning never fails the
+ * needs its own paragraph. `worktree-provision.ts` promises provisioning never fails the
  * branch step, and a rejection here broke exactly that promise: the precondition
  * probe (`anyLinkableSharedSource` → `probeNonEmptyDirectory`) re-threw `EACCES`
  * and its call sat OUTSIDE the `try`, so one unreadable gitignored
