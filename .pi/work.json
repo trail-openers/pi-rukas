@@ -1,8 +1,9 @@
 {
   "version": 1,
-  "autoMerge": false,
+  "autoMerge": true,
   "verify": {
     "fast": "cd extension && node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json && node node_modules/typescript/bin/tsc --noEmit -p tsconfig.smoke-tests.json && bun run check",
+    "full": "cd extension && node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json && cd .. && bun run check && cd extension && PI_ENSEMBLE_VIPUNE_REQUIRED=1 bun smoke-tests/test-vipune-capability.ts && PI_ENSEMBLE_VIPUNE_REQUIRED=1 bun smoke-tests/test-memory-brief.ts && { files=$(ls \"$PWD\"/smoke-tests/test-*.ts | grep -v -- '-live[.]ts$'); [ -n \"$files\" ] || { echo \"verify-cmd-full: no offline smoke tests enumerated, refusing to pass an empty suite\" >&2; exit 1; }; } && bash smoke-tests/lib/verify-loop.sh --jobs-from-host $files",
     "test": "bun {file}",
     "testDir": "extension/smoke-tests",
     "testGlob": "test-*.ts"
