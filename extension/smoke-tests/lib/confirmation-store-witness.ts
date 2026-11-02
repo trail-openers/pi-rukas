@@ -63,18 +63,37 @@ const AGENT_DIR_ENV = "PI_AGENT_DIR";
  * gone. A member that recorded a string is a RESTORE, judged by `assertUnset`'s
  * set-arms, and asserting absence there would be wrong on its face.
  *
- * ARM BY ARM, measured (compiler-valid mutants on the shared function, whole
- * repo copy under /tmp, `bun run` of the two witness files, red line recorded):
- * - ledger / was-unset assign-instead-of-delete → RED
- *   (`release: … deletes it rather than storing the undefined literal`)
- * - agent  / was-unset assign-instead-of-delete → RED
- *   (`release: … AGENT_DIR pin …` — the arm the ledger-only probe left unjudged,
- *   which is why the two pins are checked SEPARATELY rather than in one
- *   condition: a single `problems.length === 1` reading let the ledger's problem
- *   cover for the agent's, measured `reds=0` on that arm.)
- * - the sentinel arm → NOT reachable here, and it must not be: a fixture that
- *   installed nothing has no pin of ours to remove, so this witness reports the
- *   release judged nothing rather than reporting `[]` for a branch it skipped.
+ * ARM BY ARM, measured — the sentence above used to claim this and was not
+ * true of it. What was actually measured on these two bodies was an `in`-read
+ * mutant, and the red line quoted for it was the CALLER'S assertion message
+ * from `unset-arms` (`release: a fixture whose pin was UNSET deletes it rather
+ * than storing "undefined"`), not a line this function prints — a reader
+ * grepping the quoted text finds it in a test file and concludes the arms are
+ * witnessed when they are not. Measured here instead: whole repo copy under
+ * /tmp, one `problems.push` body deleted at a time (compiler-clean; each arm's
+ * `if` then matches nothing and the function returns `[]`), then
+ * `bun run smoke-tests/test-review-findings-{unset-arms,release-discriminant,
+ * never-built}.ts`. Both arms came back `reds=0` in all three files.
+ *
+ * WHY THEY WERE GREEN, and why the shape of the reading mattered: the only call
+ * that reads this function on an installed record is
+ * `test-review-findings-unset-arms.ts`'s, and it asserts `unpin.length === 0`
+ * inside a conjunction with the caller's own direct `!(NAME in process.env)`
+ * tests. Delete an arm and `unpin` is `[]`, so that clause passes, and the
+ * sibling's `in` tests were already the thing catching Biome's `noDelete`
+ * autofix — which is why the autofix was caught while this module's stated
+ * reason for existing went unwitnessed. A release that reports nothing for a
+ * pin it left behind is exactly the silent `[]` the sentinel arm above exists to
+ * refuse, so the two arms are now asserted BY THEIR OWN STRING, the way H5 does
+ * for `assertUnset`'s four arms: each probe sets one pin to the 9-character
+ * string and requires `releaseUnpinProblems` to answer with THAT pin's message
+ * and not the other pin's. An arm with no red is not coverage.
+ *
+ * WHAT THE TWO PREDICATES DO NOT COVER, so the next reader does not assume
+ * otherwise: `in process.env` is not a witness of anything on its own, and the
+ * probes require the arm's sentence rather than a substring, for the reason the
+ * `assertUnset` section below records — an arm's output is only separable from
+ * another arm's by the words only it prints.
  */
 export function releaseUnpinProblems(f: ReleaseTarget, label: string): string[] {
   const problems: string[] = [];
@@ -153,6 +172,27 @@ export function releaseUnpinProblems(f: ReleaseTarget, label: string): string[] 
  * nothing), and `releaseFixture`'s own `delete` branches are witnessed by
  * `releaseUnpinProblems` rather than here — this function reads the env a caller
  * hands it, so it can only ever report what it sees, not what the release did.
+ *
+ * THE SENTINEL ARM GETS THE SAME TREATMENT AS THE FOUR, and the reason is worth
+ * stating precisely because the obvious argument for it is FALSE. "A cross-
+ * emitting mutant — the sentinel arm printing a was-unset arm's message
+ * verbatim — slips past a `length === 1` plus own-subject reading" does not
+ * hold: those arms' messages contain `still present`, which both witnesses of
+ * the sentinel refusal already exclude, so that mutant was ALREADY red (measured
+ * on the pre-edit witnesses: `reds=1` in
+ * `test-review-findings-release-discriminant.ts` and `reds=1` in
+ * `test-review-findings-never-built.ts`). And no arm's message can satisfy
+ * BOTH `length === 1` + `"never installed"` and the two exclusions at once,
+ * because the word `installed` appears in no other arm's string and in neither
+ * excluded string — so an anti-clause-only reading is not merely weaker, it is
+ * unsatisfiable. What is genuinely weak is the own-subject alone: the witnesses
+ * read one substring of a sentence, so a mutant that KEEPS that substring and
+ * changes the rest is a refusal of something else wearing this arm's one good
+ * word. Measured: an arm rewritten to
+ * `… the fixture never installed the pins, judged clean` passed the pre-edit
+ * witnesses of BOTH files (`reds=0` in all three fixture-family files) and
+ * reddens both once each witness requires the arm's full sentence and excludes
+ * every other arm's spelling. That mutant is the reason the clauses are here.
  */
 export function assertUnset(f: ReleaseTarget, label: string): string[] {
   const problems: string[] = [];

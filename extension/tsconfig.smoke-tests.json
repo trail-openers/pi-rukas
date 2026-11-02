@@ -92,6 +92,7 @@
     "smoke-tests/test-review-findings-window-guards-env.ts",
     "smoke-tests/test-review-findings-unset-arms.ts",
     "smoke-tests/test-review-findings-release-discriminant.ts",
+    "smoke-tests/test-review-findings-lapsed-arm.ts",
     "smoke-tests/test-review-findings-never-built.ts",
     "smoke-tests/test-review-findings-window-guards-slack.ts",
     "smoke-tests/lib/window-guards-clock.ts",

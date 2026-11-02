@@ -325,6 +325,29 @@ export function releaseFixture(f: ReleaseTarget): void {
   // === false` IS the whole condition: `installed: false` always carries `null`
   // on both members BY THE TYPE, and the second test would be a tautology or
   // dead code. It is deleted rather than kept behind a comment.
+  //
+  // A BOUND, RECORDED RATHER THAN WITNESSED (#1934 adversarial round 2). That
+  // paragraph is a claim about the TYPE, and no runtime assertion of this
+  // predicate exists: rewriting this line to `f.priorEnv.ledgerFile === null`
+  // is type-legal, `tsc`-clean under both projects, and leaves the whole fixture
+  // family green — measured 40 greens and 0 reds across
+  // `test-review-findings-{unset-arms,release-discriminant,never-built}.ts`.
+  // The reason is arithmetic, not missing ingenuity. `FixtureEnv` admits exactly
+  // three record shapes — `{installed: false, null, null}` and the
+  // member-combinations of `{installed: true, …}` — and the two predicates
+  // return the same boolean on every one of them; an exhaustive sweep of the
+  // 324 combinations of `{installed, ledgerFile, agentDir} × {both pins absent,
+  // both present}` over `releaseUnpinProblems`' observable output found 0
+  // divergences, and the env effect of `releaseFixture` matches on all three
+  // admissible records. The mutants separate ONLY on a record the type forbids,
+  // so a witness would have to forge it with `as never` — an assertion that
+  // tests the cast rather than the guard, which is the shape this file's whole
+  // comment discipline exists to avoid. The safety the mutant would remove is
+  // therefore not this call site's to own: it is `FixtureEnv`'s, that the
+  // half-installed record is a compile error, and `discriminant_case`'s WITNESS
+  // 1 asserts exactly that on the shipped field. A future widening of the union
+  // (a third arm, or a nullable member) is what would make this predicate live
+  // — and `tsc` reddens on the widening, which is the ratchet that matters.
   if (f.priorEnv.installed === false) {
     // A fixture that never installed the pins leaves the ENV exactly as it found
     // it: no delete, no write. See `FixtureEnv` for the hazard this arm exists

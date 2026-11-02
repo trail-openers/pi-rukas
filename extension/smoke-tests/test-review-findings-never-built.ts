@@ -253,11 +253,21 @@ nullarm_case: {
     // two was-unset arms also return a one-element array, and a fallthrough into
     // them would otherwise read as this witness passing.
     const refusal = assertUnset(f, "null-arm");
+    // The same structural independence WITNESS 5 of
+    // `test-review-findings-release-discriminant.ts` now applies to its copy of
+    // this arm, and the same reasoning as H5's four probes: `"never installed"`
+    // alone is not a witness of this branch, because `length === 1` plus one
+    // own-substring is satisfied by another arm's message. The `!=` exclusion
+    // already caught the was-SET cross-emission (measured red on it); the
+    // `its release judges nothing` clause is what pins the witness to THIS
+    // sentence rather than to any text that happens to contain the first phrase.
     assert(
       refusal.length === 1 &&
         refusal[0]?.includes("never installed") === true &&
+        refusal[0]?.includes("its release judges nothing") === true &&
         refusal[0]?.includes("still present") === false &&
-        refusal[0]?.includes("!=") === false,
+        refusal[0]?.includes("!=") === false &&
+        refusal[0]?.includes("still in process.env after the release") === false,
       `null-arm: assertUnset reports the faulted fixture as un-auditable rather than clean, and not via either was-unset arm (problems=${JSON.stringify(refusal)})`,
     );
   } finally {
@@ -265,7 +275,5 @@ nullarm_case: {
   }
   break nullarm_case;
 }
-
-process.exit(exit);
 
 process.exit(exit);

@@ -297,6 +297,79 @@ unset_case: {
         invertedAgent[0]?.includes("!=") === false,
       `release: an "unset" AGENT_DIR pin re-pinned to the literal string is exactly one problem naming that pin AND its value, and not the was-set arm's comparison (problems=${JSON.stringify(invertedAgent)})`,
     );
+    // ---------------------------------------------------------------------
+    // The SAME probes over the OTHER witness — `releaseUnpinProblems`, the
+    // release answering for its own branch. H5 gave `assertUnset`'s four arms
+    // this treatment and these two arms were left with the single
+    // `unpin.length === 0` in the conjunction above, which is why deleting
+    // EITHER `problems.push` body measured `reds=0` in all three fixture-family
+    // files: the sibling's direct `!(NAME in process.env)` tests were catching
+    // Biome's `noDelete` autofix all along, and this module's stated reason for
+    // existing — being the release's own post-condition rather than a caller's
+    // reconstruction — was never witnessed. Each arm now answers for its own
+    // string, with the other arm's spelling excluded, for the reason H5 states:
+    // an `include`s-the-other-arm's-message reading lets one arm certify the
+    // other. The probes run on the env state `releaseFixture` just left — both
+    // pins ABSENT — so each has exactly one candidate cause, and setting the
+    // other pin back to absent between them is the same discipline as the two
+    // `assertUnset` probes above.
+    // ---------------------------------------------------------------------
+    // `releaseFixture` proved both pins ABSENT above, and the two `assertUnset`
+    // probes between then and here left the AGENT pin holding the literal string.
+    // Put it back to ABSENT so this probe's array has exactly ONE candidate cause:
+    // the same single-cause discipline the two probes above state, and for the
+    // same reason — with both pins poisoned the array holds two problems, one per
+    // arm, and neither arm can be told apart from the other by a reader that only
+    // checks the array's contents.
+    delete process.env.PI_AGENT_DIR;
+    process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = "undefined";
+    const unpinLedger = releaseUnpinProblems(f, "release-unpin-ledger");
+    // The clauses below name the substrings by which the two arms are TOLD
+    // APART, and they are not the two full env names: each body interpolates
+    // only its OWN `LEDGER_ENV` / `AGENT_DIR_ENV`, so the LEDGER arm's line
+    // contains `PI_ENSEMBLE_REVIEW_LEDGER_FILE` and never `PI_AGENT_DIR`, and
+    // vice versa. The shared word of each pair (`LEDGER` / `AGENT_DIR`) is what
+    // the arm's own sentence prints even where the interpolated name is the
+    // other constant's spelling, so `an "unset" LEDGER pin` is the arm's own
+    // spelling and `AGENT` is the other arm's. An earlier draft of this probe
+    // required the full `PI_ENSEMBLE_REVIEW_LEDGER_FILE` and could not pass for
+    // any implementation — a witness nobody can satisfy is as useless as one
+    // nothing can fail, so each clause here is matched against the string the
+    // shipped body actually prints.
+    assert(
+      unpinLedger.length === 1 &&
+        unpinLedger[0]?.includes('an "unset" LEDGER pin') === true &&
+        unpinLedger[0]?.includes("still in process.env after the release") === true &&
+        // The value the release failed to remove, quoted: an arm that named the
+        // pin but not what it left behind would not distinguish the autofix's
+        // 9-character string from any other residue.
+        unpinLedger[0]?.includes('"undefined"') === true &&
+        unpinLedger[0]?.includes("only a delete expression unsets") === true &&
+        // The AGENT arm must not have answered for the LEDGER pin. The two
+        // bodies differ only in which name they interpolate, so an
+        // `unpin.length >= 1` or "some problem mentions a pin" reading accepts
+        // the wrong arm and this witness certifies nothing.
+        unpinLedger[0]?.includes("AGENT") === false,
+      `release: releaseUnpinProblems answers for the LEDGER unpin with its own message naming that pin and its leftover value, and not the AGENT_DIR arm's (problems=${JSON.stringify(unpinLedger)})`,
+    );
+    delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
+    process.env.PI_AGENT_DIR = "undefined";
+    const unpinAgent = releaseUnpinProblems(f, "release-unpin-agent");
+    assert(
+      unpinAgent.length === 1 &&
+        unpinAgent[0]?.includes('an "unset" AGENT_DIR pin') === true &&
+        unpinAgent[0]?.includes("still in process.env after the release") === true &&
+        unpinAgent[0]?.includes('"undefined"') === true &&
+        unpinAgent[0]?.includes("only a delete expression unsets") === true &&
+        // Mirror of the clause above: with the AGENT body deleted the ledger
+        // arm's problem is not available here (the ledger pin is absent), so a
+        // length-only reading would go green on an empty array instead — the
+        // point of requiring the arm's OWN spelling is that the array being
+        // empty and the array holding the other arm's answer must both redden.
+        unpinAgent[0]?.includes("LEDGER") === false,
+      `release: releaseUnpinProblems answers for the AGENT_DIR unpin with its own message naming that pin and its leftover value, and not the LEDGER arm's (problems=${JSON.stringify(unpinAgent)})`,
+    );
+    delete process.env.PI_AGENT_DIR;
     removeFixture(f);
     if (savedLedger === undefined) delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
     else process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = savedLedger;
