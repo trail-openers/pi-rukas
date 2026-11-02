@@ -136,17 +136,43 @@ export interface SetAsideNotice {
   wasAcceptance: boolean;
 }
 
-/** A stored row. Only an `accepted` row carries an acceptance; only open/resolved rows carry a resolution reason. */
+/** A stored row. The status decides which fields the row MAY carry, and the
+ * three arms are written so an impossible combination is a type error rather
+ * than a field a validator has to remember to refuse:
+ *
+ *   - `open`   — no acceptance, no resolve reason, and NO `confirmedBy`. #1934:
+ *     provenance is the record of a CONFIRMED retirement, so a row that is open
+ *     while carrying it is the stale-provenance resurrection this issue exists
+ *     to prevent. It used to live in the `open | resolved` arm, where the type
+ *     permitted it and `rowProblem` could only ever see rows the type had
+ *     already let through, so its `confirmedBy`-without-`confirmed` rule was
+ *     unreachable for the one case it was written for (measured: with that rule
+ *     disabled, an open+confirmed+provenance row was ACCEPTED by `splitRows`
+ *     and every confirmation test stayed green).
+ *   - `resolved` — carries the resolve reason, and carries `confirmedBy` only
+ *     beside `resolvedReason: "confirmed"`.
+ *   - `accepted` — carries the operator's acceptance and no resolve reason.
+ */
 export type StoredFinding =
   | (StoredBase & {
-      status: "open" | "resolved";
+      status: "open";
       acceptance?: undefined;
-      resolvedReason?: ResolveReason | undefined;
+      resolvedReason?: undefined;
+      confirmedBy?: undefined;
+    })
+  | (StoredBase & {
+      status: "resolved";
+      acceptance?: undefined;
+      resolvedReason: ResolveReason;
+      /** Provenance rides a CONFIRMED retirement and nothing else; beside any
+       * other reason it is a second, unearned claim (see `rowProblem`). */
+      confirmedBy?: string;
     })
   | (StoredBase & {
       status: "accepted";
       acceptance: Acceptance;
       resolvedReason?: undefined;
+      confirmedBy?: undefined;
     });
 
 /** The shortest reason an operator may give when accepting a finding. */
@@ -244,7 +270,19 @@ function rowProblem(v: unknown): string | undefined {
   }
   // #1934 — a provenance string beside any OTHER resolve reason would be read
   // as "this line is gone" plus "a confirmation retired it": two claims, one
-  // of them not earned. Refuse the combination rather than store it.
+  // of them not earned. Refuse the combination rather than store it. This is
+  // the RUNTIME half of the rule the `StoredFinding` arms state in types: a row
+  // reaching here came from `JSON.parse`, not from the compiler, so the type
+  // alone cannot refuse it (measured — with only the type changed, an
+  // open+`confirmed`+`confirmedBy` row was still ACCEPTED by `splitRows`). The
+  // `status === "open"` test is reached from below, where `status` has already
+  // been narrowed, and also guards the file an agent wrote directly.
+  if (r.status === "open" && (r.resolvedReason !== undefined || r.confirmedBy !== undefined)) {
+    return "an open row carries a resolve reason or a confirmed provenance";
+  }
+  if (r.status === "accepted" && r.confirmedBy !== undefined) {
+    return "an accepted row carries a confirmed provenance";
+  }
   if (r.confirmedBy !== undefined && r.resolvedReason !== "confirmed") {
     return "confirmedBy is carried without the confirmed resolve reason";
   }

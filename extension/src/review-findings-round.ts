@@ -34,6 +34,7 @@ import type {
 import { newRowId } from "./review-findings-file.ts";
 import type { HeadState } from "./review-findings-head.ts";
 import { type FindingIdentity, identityOf, pickMatch, sameTitle } from "./review-findings-match.ts";
+import { reopen } from "./review-findings-reopen.ts";
 import { applyUntouchedRowFate } from "./review-findings-round-untouched.ts";
 import type { ConfirmationLapse } from "./review-findings-store-types.ts";
 import type { LedgerEntry } from "./review-ledger-entry.ts";
@@ -72,11 +73,6 @@ export interface ConfirmationSource {
   patchId: string;
   /** The full 40-char head this round reviewed. */
   headSha: string;
-}
-
-/** The row with its acceptance withdrawn: open again, so it is reported again. */
-function reopen(r: StoredFinding): StoredFinding {
-  return { ...r, status: "open", acceptance: undefined, resolvedReason: undefined };
 }
 
 /**

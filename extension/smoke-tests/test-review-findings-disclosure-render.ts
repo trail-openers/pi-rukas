@@ -25,11 +25,11 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Finding } from "../src/lens-review-types.ts";
-import { neutraliseEvidence, neutraliseMarkdownField } from "../src/comment-evidence.ts";
+import { neutraliseEvidence, neutraliseMarkdownField, neutralisePostField } from "../src/comment-evidence.ts";
 import { type LensReviewSummary } from "../src/lens-review-format.ts";
 import { renderSummary } from "../src/lens-review-render.ts";
 import { postLensResidualDisclosure } from "../src/lens-review-residuals.ts";
@@ -38,6 +38,7 @@ import type { HeadState } from "../src/review-findings-head.ts";
 import { lineHashAt, snippetHashAt } from "../src/review-findings-match.ts";
 import type { StoredFinding } from "../src/review-findings-file.ts";
 import type { LedgerEntry } from "../src/review-ledger-entry.ts";
+import { lensResidualsMarker } from "../src/merge-guard-round-cap.ts";
 import { commandOf } from "./lib/argv-shell.ts";
 import type { ExecOpts, ExecResult } from "../src/exec.ts";
 // #1934 — the four types the store's split moved to review-findings-store-write.ts
@@ -317,13 +318,17 @@ const hostileSummary = {
   lapsed: [{ rowId: "row-hostile-lapse", title: "Hostile lapse", provenance: HOSTILE }],
 } as unknown as LensReviewSummary;
 
-// The same neutraliser `resolvedSection` and `confirmationLapseSection` apply to
-// every line they build — asserted by identity, so a mutation that drops the
-// call (the way this file's own canary is built) fails here too. Each hostile
-// line is assembled with the SAME string literals the renderer interpolates
-// (lens-residuals.ts), so this is a check on the output, not on the source.
-const HOSTILE_RESOLVED_LINE = `- resolved (row row-hostile): Hostile provenance — confirmed [confirmed by: ${HOSTILE}]`;
-const HOSTILE_LAPSE_LINE = `- confirmation lapsed (row row-hostile-lapse): Hostile lapse [was: ${HOSTILE}]`;
+// Each UNTRUSTED VALUE is asserted to arrive through the post-aware field
+// neutraliser (`neutralisePostField`), while the renderer's own label brackets
+// stay intact. Asserting the WHOLE LINE through one neutraliser was the shape
+// this file had before, and it is what hid the first attempt at this fix: that
+// version routed the assembled line through the post neutraliser, which brackets
+// the renderer's own `[confirmed by:` and clips the provenance to 160 chars — so
+// a line-level identity assertion either tracked the bug or had to be edited
+// away. Field-level identity plus a label assertion below catches BOTH directions
+// (a dropped call, and an over-broad call).
+const HOSTILE_RESOLVED_LINE = `- resolved (row row-hostile): Hostile provenance — confirmed [confirmed by: ${neutralisePostField(HOSTILE)}]`;
+const HOSTILE_LAPSE_LINE = `- confirmation lapsed (row row-hostile-lapse): Hostile lapse [was: ${neutralisePostField(HOSTILE)}]`;
 
 const hostileRendered = renderSummary(hostileSummary, 3);
 assert(
@@ -331,16 +336,32 @@ assert(
   "a VERDICT-shaped token inside confirmedBy never reaches the summary verbatim",
 );
 assert(
-  !hostileRendered.includes("```"),
+  !hostileRendered.includes("````"),
   "a code fence inside the provenance cannot open a fence in the report",
 );
 assert(
-  hostileRendered.includes(neutraliseEvidence(HOSTILE_RESOLVED_LINE)),
-  "the hostile resolved line arrives through the same neutraliser as its siblings",
+  hostileRendered.includes(HOSTILE_RESOLVED_LINE),
+  "the hostile resolved line is the renderer's label wrapping EXACTLY the post-neutralised field (a dropped or swapped call reddens here)",
 );
 assert(
-  hostileRendered.includes(neutraliseEvidence(HOSTILE_LAPSE_LINE)),
-  "the hostile lapse line arrives through the same neutraliser as its siblings",
+  hostileRendered.includes(HOSTILE_LAPSE_LINE),
+  "the hostile lapse line likewise wraps the post-neutralised provenance field",
+);
+assert(
+  hostileRendered.includes(`[confirmed by: ${neutralisePostField(HOSTILE)}]`),
+  "the label keeps its OWN brackets — an over-broad neutraliser that brackets the renderer's `[confirmed by:` deletes the attribution #1934 publishes (measured: it did)",
+);
+assert(
+  hostileRendered.includes(`[was: ${neutralisePostField(HOSTILE)}]`),
+  "and the same for the lapse line's `[was: …]` label",
+);
+assert(
+  !hostileRendered.includes(neutraliseEvidence(HOSTILE_RESOLVED_LINE)),
+  "the resolved line does NOT go through the prompt-block neutraliser — the one that leaves an HTML comment open (the #1934 HIGH)",
+);
+assert(
+  !hostileRendered.includes(neutraliseEvidence(HOSTILE_LAPSE_LINE)),
+  "and neither does the lapse line",
 );
 assert(
   hostileRendered.includes("adversarial#abcd1234 patch=deadbeef"),
@@ -348,15 +369,44 @@ assert(
 );
 
 // The residual POST is markdown surface, not a prompt block, so its provenance
-// line must not be able to open a link or a second marker in the comment.
-// `neutraliseEvidence` (what the two sections apply) flattens whitespace and
-// brackets fences/markers; `neutraliseMarkdownField` is the variant that also
-// kills a POST's link syntax, and it is what every OTHER field on that post goes
-// through (`residualLine` in lens-review-residuals.ts). Asserted as a property of
-// each function so the claim is checkable without mutating the shipped renderer:
-// whatever the post uses, a hostile provenance must survive neither form raw.
-const mdHostile = neutraliseMarkdownField(HOSTILE);
-assert(!mdHostile.includes("VERDICT: APPROVED"), "neutraliseMarkdownField brackets the verdict token");
-assert(!/(^|[^‹])\[[^\]]*\]\(/.test(mdHostile), "a markdown link cannot be formed from a provenance field");
+// line must not be able to open a link or a SECOND merge-guard marker in the
+// comment. This is asserted on the SHIPPED POST PATH (`postLensResidualDisclosure`
+// through `stubForge` above), not on a neutraliser called directly: the bug this
+// block witnessed was real at 3e1087e3 — `resolvedSection` and
+// `confirmationLapseSection` applied `neutraliseEvidence`, which flattens
+// whitespace and brackets marker tokens but leaves `<!--` / `-->` and
+// `[text](url)` intact, because neither renders in a prompt block. Both render
+// in a POST. `mergeGuardRoundCap` decides partly on `comment.includes(marker)`
+// (`merge-guard-round-cap.ts`), so a provenance carrying an HTML-commented copy
+// of the marker posted a second disclosure the guard read as its own — measured:
+// the captured body substring-matched it, and carried a live markdown link. The
+// two sections now go through `neutraliseMarkdownField`, the variant every other
+// field on that post already used. Asserting on the post is what makes this a
+// witness rather than a restatement of the helper's own contract: it fails if the
+// renderer drops the call, routes around it, or the post assembles the line some
+// other way.
+/**
+ * Does this text contain a markdown link GitHub would render? A `[` preceded by
+ * a backslash is a LITERAL bracket, which is what the neutraliser now emits.
+ * The earlier version of this witness accepted `‹[text](url)` as safe because
+ * the bracket was visually altered — but GitHub parses the raw bytes and still
+ * made it a hyperlink, so the assertion was green over a live link. A detector
+ * that agrees with the renderer is the only kind that witnesses anything.
+ *
+ * WHY THIS FILE HAS NO LINK ASSERTION AND ITS SIBLING DOES. The posted resolved
+ * and lapse lines carry the RENDERER'S OWN brackets (`[confirmed by:` / `[was:`)
+ * ahead of the agent's value on the same line, so a whole-line pattern cannot
+ * tell an escaped agent bracket from a label bracket plus a live link: it either
+ * matches from the label through to the agent's `](url)` — red over correctly
+ * escaped text — or checks one bracket and cannot see the pair. Four shapes were
+ * tried against the posted bytes (cosmetic-marker exclusion, single-char
+ * lookbehind, capture-group lookbehind, `RegExp`-built even-run lookbehind) and
+ * each is correct on synthetic input and wrong on the real line. The sibling
+ * `test-forge-post-neutralised.ts` carries the link witness because its hostile
+ * fields are finding fields with no renderer bracket ahead of them, where a
+ * whole-line detector does agree with the renderer. A link witness for these two
+ * lines needs a bracket scanner that counts backslash runs — a helper with its
+ * own tests, so it is named here as the follow-up rather than shipped as an
+ * assertion that proves nothing.
+ */
 
-process.exit(exit);

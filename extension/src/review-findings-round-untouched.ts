@@ -144,10 +144,21 @@ export function applyUntouchedRowFate(opts: UntouchedRowSinks): void {
         ...(r.description === undefined ? {} : { description: r.description }),
         ...(r.suggestion === undefined ? {} : { suggestion: r.suggestion }),
       });
-      if (r.confirmationLapsed === undefined && r.confirmedBy !== undefined) {
-        mine[i] = { ...r, confirmationLapsed: true };
-        confirmationLapses.push({ rowId: r.id, title: r.title, provenance: r.confirmedBy });
-      }
+      // #1934 — the AC4 lapse notice for an UNTOUCHED row is produced by the
+      // `resolved` pass earlier in the round (review-findings-round.ts:233-260),
+      // and this `else` arm can never produce one. Probed, not reasoned: driving
+      // the real store path (a re-reported CRITICAL retired by a ledger row whose
+      // `at` sits inside the row's `[firstSeen, lastSeen]` window, then rounds
+      // that report NOTHING and whose confirmation no longer binds) fires the
+      // lapse on the round where the row is still `resolved`+`confirmed`, and the
+      // row comes back `open` with the notice already reported and no
+      // `confirmedBy` on it. So the state this block judged — an `open` row that
+      // still carries a retirement's provenance — is not a state the round ever
+      // produces, and the `open` arm of `StoredFinding` now refuses to store it
+      // either. The prior dispatch deleted it on a static-narrowing argument, and
+      // static narrowing cannot prove a runtime state unreachable: the proof is
+      // the probe above, and the block stays deleted so no future reader trusts
+      // a lapse notice to come from here.
     }
   });
 }

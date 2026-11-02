@@ -10,7 +10,11 @@
  * module only reads those decisions back.
  */
 
-import { neutraliseEvidence } from "./comment-evidence.ts";
+import {
+  neutraliseEvidence,
+  neutraliseMarkdownField,
+  neutralisePostField,
+} from "./comment-evidence.ts";
 import type { Finding } from "./lens-review-types.ts";
 import type { ResolvedNotice, SetAsideNotice } from "./review-findings-file.ts";
 import type { StoredFinding } from "./review-findings-file.ts";
@@ -80,6 +84,18 @@ export function partitionDecisions(
  * residual comment. Each line names the row id, where the finding points and the
  * reason it was dropped. The title and reason come from agent output, so every
  * line goes through `neutraliseEvidence`. Empty input renders nothing.
+ *
+ * WHY THIS ONE SECTION KEEPS THE PROMPT NEUTRALISER while the three memory
+ * sections below moved to `neutraliseMarkdownField`. It is the only section here
+ * whose text is never posted: `postLensResidualDisclosure` renders findings,
+ * carried rows, the three memory sections and the advisory block, and a
+ * suppressed row appears in none of them (test-forge-post-neutralised.ts asserts
+ * the posted body has none of this section's `- suppressed` lines). It is also
+ * the one section whose own witness demands the prompt neutraliser specifically:
+ * `test-review-accept-layers.ts` puts a ``` ``` ``` fence in a suppressed title
+ * and requires it collapsed, and `neutraliseMarkdownField` deliberately does not
+ * collapse fewer than three backticks. So switching it would trade a posted-surface
+ * risk it does not have for a green test that stops witnessing anything.
  */
 export function suppressedSection(
   suppressed: readonly SuppressedFinding[] | undefined,
@@ -91,7 +107,7 @@ export function suppressedSection(
     neutraliseEvidence(heading),
     ...suppressed.map((s) =>
       neutraliseEvidence(
-        `- suppressed (row ${s.rowId}): [${s.finding.severity}] ${s.finding.path}:${s.finding.line ?? "?"} — ${s.finding.title} — ${s.reason}`,
+        `- suppressed (row ${s.rowId}): [${severityLabel(s.finding.severity)}] ${s.finding.path}:${s.finding.line ?? "?"} — ${s.finding.title} — ${s.reason}`,
       ),
     ),
   ];
@@ -128,20 +144,25 @@ export function severityLabel(severity: string | undefined): string {
  * that names who or what retired a CRITICAL, so a line that printed only the
  * reason would leave the operator no patch, no head and no kind to audit. The
  * value is FILE CONTENT (see the `StoredBase` jsdoc in review-findings-file.ts),
- * so it goes through the same neutraliser as the row's title rather than
- * reaching the report raw.
+ * so every field is neutralised before it reaches the report — with
+ * `neutralisePostField`, not `neutraliseEvidence`, for the reason in
+ * {@link memoryDisclosureSections}.
  */
 export function resolvedSection(resolved: readonly ResolvedNotice[] | undefined): string[] {
   if (!resolved || resolved.length === 0) return [];
   return [
     "",
-    neutraliseEvidence(`Resolved since last round (${resolved.length}):`),
-    ...resolved.map((r) =>
-      neutraliseEvidence(
-        `- resolved (row ${r.rowId}): ${r.title} — ${r.reason}${
-          r.confirmedBy !== undefined ? ` [confirmed by: ${r.confirmedBy}]` : ""
+    neutraliseMarkdownField(`Resolved since last round (${resolved.length}):`),
+    // The `[confirmed by: …]` label is THIS function's text, so only the values
+    // are neutralised — see `neutralisePostField` for why the whole line must
+    // not go through the post neutraliser.
+    ...resolved.map(
+      (r) =>
+        `- resolved (row ${neutralisePostField(r.rowId)}): ${neutralisePostField(r.title)} — ${neutralisePostField(r.reason)}${
+          r.confirmedBy !== undefined
+            ? ` [confirmed by: ${neutralisePostField(r.confirmedBy)}]`
+            : ""
         }`,
-      ),
     ),
   ];
 }
@@ -157,8 +178,9 @@ export function resolvedSection(resolved: readonly ResolvedNotice[] | undefined)
  * filing it under a lapsed-acceptance heading would misdescribe it.
  *
  * `provenance` is file content carried up from the row, so every line here goes
- * through the one neutraliser like the module's other untrusted-content lines.
- * Empty input renders nothing.
+ * through `neutraliseMarkdownField` like the module's other untrusted-content
+ * lines — see {@link memoryDisclosureSections} for why that is the variant this
+ * surface needs. Empty input renders nothing.
  */
 export function confirmationLapseSection(
   lapsed: readonly ConfirmationLapse[] | undefined,
@@ -169,10 +191,9 @@ export function confirmationLapseSection(
     neutraliseEvidence(
       `Confirmations lapsed (${lapsed.length}) — retired by an independent review that no longer covers this commit; these rows are open again:`,
     ),
-    ...lapsed.map((l) =>
-      neutraliseEvidence(
-        `- confirmation lapsed (row ${l.rowId}): ${l.title} [was: ${l.provenance}]`,
-      ),
+    ...lapsed.map(
+      (l) =>
+        `- confirmation lapsed (row ${neutralisePostField(l.rowId)}): ${neutralisePostField(l.title)} [was: ${neutralisePostField(l.provenance)}]`,
     ),
   ];
 }
@@ -185,23 +206,24 @@ export function confirmationLapseSection(
  * reappears as a "new" finding next round with no explanation. Every line names
  * the row and why, so the operator can re-accept it or fix the row. The row's
  * title and problem text come from a file an agent could have written, so every
- * line goes through `neutraliseEvidence`. Empty input renders nothing.
+ * line goes through the one neutraliser — `neutraliseMarkdownField`, for the
+ * reason stated on {@link memoryDisclosureSections}. Empty input renders nothing.
  */
 export function setAsideSection(setAside: readonly SetAsideNotice[] | undefined): string[] {
   if (!setAside || setAside.length === 0) return [];
   return [
     "",
-    neutraliseEvidence(
+    neutraliseMarkdownField(
       `Findings memory set aside (${setAside.length}) — these rows no longer suppress anything:`,
     ),
-    ...setAside.map((s) =>
+    ...setAside.map(
       // `severity` is already narrowed to the schema's four or `?` by
-      // `describeSetAside`, and `problem` is this module's own vocabulary, so
-      // the whole line — the row's untrusted path and title included — goes
-      // through the one neutraliser rather than field by field.
-      neutraliseEvidence(
-        `- ${s.wasAcceptance ? "acceptance lapsed" : "malformed row"} (row ${s.rowId ?? "?"}): [${s.severity}] ${s.path} — ${s.title}${s.problem ? ` (${s.problem})` : ""}`,
-      ),
+      // `describeSetAside`, and `problem` is this module's own vocabulary; each
+      // untrusted VALUE is neutralised and the renderer's own label
+      // (`malformed row` / `acceptance lapsed`, the `[severity]` bracket) is
+      // written here and left alone.
+      (s) =>
+        `- ${s.wasAcceptance ? "acceptance lapsed" : "malformed row"} (row ${neutralisePostField(s.rowId ?? "?")}): [${s.severity}] ${s.path} — ${s.title}${s.problem ? ` (${s.problem})` : ""}`,
     ),
   ];
 }
@@ -213,6 +235,25 @@ export function setAsideSection(setAside: readonly SetAsideNotice[] | undefined)
  * is the ONE place their order is stated, so a disclosure cannot reach one
  * surface and be missing from the other. Empty blocks render nothing, so a round
  * with no memory activity contributes no lines.
+ *
+ * WHY THESE THREE USE `neutraliseMarkdownField` AND NOT `neutraliseEvidence`.
+ * `memoryDisclosureSections` has exactly two callers (`lens-review-render.ts`
+ * and `lens-review-residuals.ts`, asserted in
+ * `test-review-findings-disclosure-render.ts`), and ONE of them is
+ * `postLensResidualDisclosure` — the forge comment the #973 round-cap merge
+ * guard reads. `neutraliseEvidence` brackets marker tokens and closes the
+ * `<<<`/`>>>` prompt fence, but it leaves `<!--` and `-->` intact and leaves
+ * `[text](url)` intact, because for a prompt block neither renders anything.
+ * On a POST both do: the guard decides partly on `comment.includes(marker)`
+ * (`merge-guard-round-cap.ts`), so a `confirmedBy` string an agent wrote into
+ * the per-clone ledger that carried an HTML-commented copy of that marker
+ * posted a SECOND marker the guard read as its own disclosure — measured at
+ * 3e1087e3: the posted body substring-matched the guard's marker. And a
+ * `[text](url)` provenance became a clickable link on a public artefact.
+ * `neutraliseMarkdownField` is what every OTHER field on that post already
+ * went through (`residualLine` in `lens-review-residuals.ts`,
+ * `renderOne` in `lens-findings-render.ts`), so this aligns the two surfaces
+ * that share one writer rather than inventing a third neutraliser.
  */
 export function memoryDisclosureSections(summary: {
   resolved?: ResolvedNotice[];

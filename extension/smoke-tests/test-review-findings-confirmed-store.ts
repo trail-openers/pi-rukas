@@ -32,7 +32,7 @@ import {
   seed,
   writeLedger,
 } from "./lib/confirmation-store-fixture.ts";
-import { parseFindingsFile } from "../src/review-findings-file.ts";
+import { parseFindingsFile, splitRows } from "../src/review-findings-file.ts";
 import { workingTreePatchId } from "../src/review-ledger.ts";
 import { execp } from "../src/exec.ts";
 
@@ -159,6 +159,40 @@ function assert(cond: boolean, msg: string) {
   } finally {
     releaseFixture(f);
     removeFixture(f);
+  }
+}
+
+{
+  // #1934 — the RUNTIME half of the `StoredFinding` split, which the type cannot
+  // provide a witness for. A row read off disk arrives through `JSON.parse`, so
+  // the compiler never sees it: `open` + `resolvedReason: "confirmed"` + a
+  // `confirmedBy` is a shape a hand-edited or corrupted store can hold, and the
+  // three-arm union would let `confirmedBy` sit on an open row that no code ever
+  // wrote. `rowProblem` refuses it, and a refusal nobody reddens is a refusal
+  // nobody verified: removing that clause leaves every other test in the suite
+  // green, which is how a validation gate ships as decoration.
+  const bad = (over: Record<string, unknown>) => ({
+    id: "r1", branch: "b", path: "src/a.ts", anchor: "a", titleClass: "t", title: "T",
+    severity: "CRITICAL", lens: "PERFORMANCE", line: 3, snippetHash: "h", lineHash: "l",
+    firstSeen: 1, lastSeen: 2, ...over,
+  });
+  const refusals: Array<[string, Record<string, unknown>, boolean]> = [
+    ["open + confirmed + provenance", bad({ status: "open", resolvedReason: "confirmed", confirmedBy: "adv#r1 patch=aa" }), true],
+    ["open + provenance alone", bad({ status: "open", confirmedBy: "adv#r1 patch=aa" }), true],
+    ["accepted + provenance", bad({ status: "accepted", confirmedBy: "adv#r1 patch=aa" }), true],
+    // The legal shapes, so the clause above cannot be satisfied by refusing
+    // EVERYTHING: a legitimate retirement and a plain open row both still read.
+    ["resolved + confirmed + provenance", bad({ status: "resolved", resolvedReason: "confirmed", confirmedBy: "adv#r1 patch=aa" }), false],
+    ["plain open", bad({ status: "open" }), false],
+    ["accepted without provenance", bad({ status: "accepted", acceptance: { by: "author", reason: "wontfix", at: 2, snippetHash: "h" } }), false],
+  ];
+  for (const [label, row, expectRefused] of refusals) {
+    const r = splitRows([row]);
+    const refused = r.malformed.length === 1 && r.rows.length === 0;
+    assert(
+      refused === expectRefused,
+      `#1934 validator: ${label} ${expectRefused ? "is refused" : "is accepted"} (${JSON.stringify({ rows: r.rows.length, malformed: r.malformed.length })})`,
+    );
   }
 }
 

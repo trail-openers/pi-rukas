@@ -93,6 +93,7 @@
     "smoke-tests/lib/window-guards-helpers.ts",
     "smoke-tests/test-review-findings-tsconfig-registration.ts",
     "smoke-tests/test-review-findings-disclosure-render.ts",
+    "smoke-tests/test-review-findings-forge-post.ts",
     "smoke-tests/lib/lens-fix-kill-cause-fixtures.ts",
     "smoke-tests/test-work-driver-lens-fix-kill-cause.ts",
     "smoke-tests/test-work-driver-lens-fix-kill-cause-window.ts",
