@@ -54,11 +54,51 @@ async function headNow(exec: VerifyExec, wt: string, when: string): Promise<stri
  * A porcelain that fails is not a clean tree: it is git that would not say, and a
  * step that read that silence as "nothing changed" would certify a tree it never
  * looked at.
+ *
+ * `when` names the moment inside the refusal. The two post-run passes say what ran
+ * immediately before ("the tiers", "the command criteria") and read as "could not
+ * re-check the tree after X"; the pre-run gate (`ci`, via {@link assertTreeClean})
+ * passes `before: true` so its message reads "the tree before ci" rather than "the
+ * tree after ci" — a handback that blames a step for work it has not done yet sends
+ * the operator to the wrong place.
  */
-async function porcelainNow(exec: VerifyExec, wt: string, when: string): Promise<string> {
+async function porcelainNow(
+  exec: VerifyExec,
+  wt: string,
+  when: string,
+  before?: boolean,
+): Promise<string> {
   return await porcelain(exec, wt).catch((err: unknown) => {
-    throw unreadable(`the tree after ${when}`, err);
+    throw unreadable(`the tree ${before === true ? "before" : "after"} ${when}`, err);
   });
+}
+
+/**
+ * THE clean-tree check, for a step that is about to run something and holds no
+ * frozen contract to re-hash.
+ *
+ * `ci` calls it immediately before its full tier: the clean-tree gate that ran at
+ * the build/verify boundary says nothing about the bytes sitting on disk when a
+ * later step starts a command in this same worktree, and a tier that passes over a
+ * checked-out or hand-edited tree reports green for code the step never claimed to
+ * judge.
+ *
+ * This is the ONE clean-tree check — it goes through `porcelainNow` above, the same
+ * `porcelain` call with `--untracked-files=all` that every other gate in lean uses
+ * (and the same one {@link recheckAfterRuns} makes after every tier). A step that wants
+ * the same question calls this rather than writing a third `git status` invocation
+ * that can drift from the first.
+ *
+ * A dirty tree is INFRASTRUCTURE and throws, for the reason this module's header
+ * states: uncommitted bytes are not evidence that the code is wrong, so the engine
+ * hands the run back rather than routing a fix round over bytes nobody committed.
+ */
+export async function assertTreeClean(exec: VerifyExec, wt: string, who: string): Promise<void> {
+  const dirty = await porcelainNow(exec, wt, who, true);
+  if (dirty !== "")
+    throw new VerifyInfraError(
+      `${who} found the worktree ${wt} dirty — refusing to run on uncommitted bytes: ${dirty.slice(0, 500)}`,
+    );
 }
 
 /**

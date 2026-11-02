@@ -39,14 +39,15 @@ import { proveBaseSha, unresolvedMainlineRule } from "./base-proof.ts";
 import { buildDeps, buildOutcome } from "./build.ts";
 import { challengeDeps, challengeOutcome } from "./challenge.ts";
 import { leanChildOpts } from "./child-opts.ts";
+import { ciLandHandlers, publishHandler } from "./command-post-publish.ts";
 import { type WorkConfig, loadWorkConfig } from "./config.ts";
 import { type LeanHandlers, type RunLeanResult, runLean } from "./engine.ts";
 import { handbackOutcome } from "./handback.ts";
 import { fetchIssueBody, mainlineSha, postNotReady } from "./io.ts";
 import { postHandback } from "./io.ts";
 import { HANDLER_STATES, REPORT_FAILED_KIND } from "./machine.ts";
-import { publishDeps } from "./publish-deps.ts";
-import { publishOutcome } from "./publish.ts";
+import { reviewDeps } from "./review-deps.ts";
+import { reviewOutcome } from "./review.ts";
 import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
 import { type SpecifyDeps, specifyOutcome } from "./specify.ts";
 import type { Outcome, Step } from "./state.ts";
@@ -319,7 +320,11 @@ export function phase1Handlers(
   handlers.build = (ctx) => buildOutcome(ctx, buildDeps(headless));
   handlers.challenge = (ctx) => challengeOutcome(ctx, challengeDeps(headless));
   handlers.verify = (ctx) => verifyOutcome(ctx, verifyDeps());
-  handlers.publish = (ctx) => publishOutcome(ctx, publishDeps());
+  // The two post-publish steps, in the same one-line shape as the ones above:
+  // the step body is the algorithm and `<step>Deps()` is the production wiring,
+  // so a test drives them by injecting its own recorder and never touches a PR.
+  Object.assign(handlers, ciLandHandlers(repoRoot, issue), publishHandler());
+  handlers.review = (ctx) => reviewOutcome(ctx, reviewDeps(headless));
   handlers.handback = (ctx) => handbackOutcome(ctx, postHandback);
   handlers.decline = async (ctx) => {
     // From the log, not from a closure: see `failedRulesFromLog`.
