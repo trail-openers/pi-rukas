@@ -27,6 +27,7 @@ import { ReviewInfraError, reviewOutcome } from "../../src/lean/review.ts";
 import type { Outcome } from "../../src/lean/state.ts";
 import { createRun } from "../../src/lean/state.ts";
 import { FIXER_ROLE } from "../../src/lean/step-budget.ts";
+import { PASS_KINDS } from "../../src/lean/review-log.ts";
 import { FIX_RUN_ID_SHAPE } from "../../src/lean/review-log.ts";
 import type { LensName, LensRunResult } from "../../src/lens-review-types.ts";
 import { aggregateLensUsage } from "../../src/lens-review-usage.ts";
@@ -216,6 +217,20 @@ export async function setup(opts: {
   }
   git(wt, "push", "-q", "origin", `refs/heads/${opts.branch}`);
   return git(wt, "rev-parse", "HEAD");
+}
+
+/**
+ * Did the review step PASS, on either of its two kinds?
+ *
+ * `done` is a clean pass and `fixed` is a pass whose loop integrated a fix round,
+ * so every case that asks "did the step clear its gates" must accept both — a
+ * fixture that compares against `"done"` alone silently stops covering the arm
+ * that fixed anything, which is the arm the table re-verifies. The set is read
+ * from the module that writes it, so a third kind cannot make these assertions
+ * quietly pass on nothing.
+ */
+export function passed(kind: string | undefined): boolean {
+  return kind !== undefined && PASS_KINDS.includes(kind);
 }
 
 export const BRANCH = "lean/issue-7";

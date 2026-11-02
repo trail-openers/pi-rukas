@@ -34,14 +34,32 @@
  * in `.pi/work.json` is the money, armed on every child the step dispatches
  * through the same `armBudget` the other three dispatching steps use.
  *
- * **What ends the step.** Both gates clean is `done`, and the run goes to `ci`.
+ * **What ends the step.** Both gates clean ends it, on one of two kinds that
+ * differ only in what the step did to the branch: `done` when no fix round ran and
+ * the run goes to `ci`, or `fixed` when a fix round pushed commits and the run
+ * must re-verify the head it now has. Which of the two is read from the durable
+ * log, not from a variable — see `fixedFromLog` in `review-log.ts` for why a
+ * closure cannot answer that question for a resumed attempt.
+ *
  * Anything else THROWS: findings still open at the bound, a gate that produced
  * no verdict, a head that moved or vanished mid-round, a fix round that changed
  * nothing, a fixer that rewrote the frozen contract, an integration that could
- * not be proven. A throw is the engine's infrastructure path — the run hands
- * back at exit 10 with the cause named, rather than carrying an unreviewed head
- * forward on a `done` it did not earn. A gate that did not run is never a gate
- * that passed.
+ * not be proven — and a child the operator's budget stopped. A throw is the
+ * engine's infrastructure path — the run hands back at exit 10 with the cause
+ * named, rather than carrying an unreviewed head forward on a pass it did not
+ * earn. A gate that did not run is never a gate that passed.
+ *
+ * **A budget stop is a throw here, not a routed kind — which is the opposite of
+ * `specify`, `build` and `challenge`.** Those three have a table arrow for
+ * `budget` and decide with it: `specify`/`build` hand back, `challenge` continues
+ * to `verify` (#1883). `review` has two kinds and neither is a stop: anything that
+ * is not both gates clearing must not route onward. So all three reads of a
+ * stopped child — the adversarial reviewer, and the fixer on each of the two fix
+ * arms — throw {@link ReviewInfraError} whose message is the shared
+ * `budgetSentence` and whose rows are the children the step bought. Returned as
+ * `{kind: "budget"}` instead it reaches `settle` with no arrow for the pair and
+ * the run's cause reads `no transition for review + "budget"`: a broken-looking
+ * table where the truth is a stopped child.
  */
 
 import type { LensReviewSummary, Verdict } from "../lens-review-format.ts";
@@ -58,7 +76,13 @@ import type { HandlerCtx } from "./engine.ts";
 import { assertReviewEntry } from "./review-entry.ts";
 import { adversarialGate, lensGate } from "./review-gates.ts";
 import { fixRound, reviewedHead } from "./review-git.ts";
-import { fixRunId, fixRunIdFromLog, prNumberFromLog, reviewAttemptFromLog } from "./review-log.ts";
+import {
+  fixRunId,
+  fixRunIdFromLog,
+  fixedFromLog,
+  prNumberFromLog,
+  reviewAttemptFromLog,
+} from "./review-log.ts";
 import { assertFixAdvanced, stagnantAgainstFix } from "./review-progress.ts";
 import { closeFixTrees } from "./review-tree.ts";
 import { specifyBranch } from "./specify-tree.ts";
@@ -70,12 +94,36 @@ export { ReviewInfraError } from "./review-errors.ts";
 import { ReviewInfraError } from "./review-errors.ts";
 import type { Outcome } from "./state.ts";
 import type { BudgetArms, BudgetFired, DispatchUsageRow, FixRunId } from "./step-budget.ts";
-import { armBudget, budgetFor, budgetVerdictWithRows } from "./step-budget.ts";
+import { armBudget, budgetFor, budgetSentence } from "./step-budget.ts";
 
 /** The step's own throw: the run hands back, with this sentence as its cause. */
 
-/** The state this step records under, for its budget verdict and its cause lines. */
+/**
+ * The state this step records under — its budget's row in `budgets`, and the
+ * state name every cause line and cost row is keyed by.
+ */
 const STEP_NAME = "review";
+
+/**
+ * The cause for a child the operator's ceiling stopped, with the rows the step
+ * paid for attached.
+ *
+ * The message IS `budgetSentence` — the one renderer of a breach, shared with
+ * `handback`'s cause and the headless result's `failure.message` — and nothing
+ * else. Every other step reports a breach as a `budget` outcome carrying the
+ * typed `limit`/`value`/`used` trio, which is what those two readers build the
+ * sentence FROM; `review` has no `budget` kind in the table, so the trio would be
+ * fields no reader consults and the sentence is what this step can actually hand
+ * back. A message of its own wording is how the three surfaces start disagreeing
+ * about which lever fired.
+ *
+ * What rides on the error rather than in the message is the cost: the rows go to
+ * `errorOutcome`, which puts them on the step record, and a handback that cannot
+ * say what the stopped children cost understates the run.
+ */
+function budgetStopped(fired: BudgetFired, rows: DispatchUsageRow[]): ReviewInfraError {
+  return new ReviewInfraError(budgetSentence(STEP_NAME, fired), rows);
+}
 
 /**
  * How many fix rounds this step will pay for. A module constant, not an
@@ -85,13 +133,14 @@ const STEP_NAME = "review";
  * stated.** The constant bounds the ROUNDS (reviewer + six lenses + fixer), and
  * the budget bounds the MONEY. They are never divided into each other. Deriving
  * the round cap from the turn budget (`turns / TURNS_PER_ROUND`) shipped a
- * default 150-turn budget a `max(1, 150/300)` = **one round**, and one round can
+ * default budget a `max(1, 150/300)` = **one round**, and one round can
  * fix but can never re-review — so the step certified a head no gate had looked
  * at since its own fixer moved it. That is the defect this constant closes. The
  * budget stays fully live and stays the stop condition the operator owns: it is
- * armed on every child through `armBudget`, and a child that spends it returns a
- * routed `budget` verdict (`{kind: "budget", limit, value, used}`) rather than a
- * clean round, exactly as `build`/`challenge`/`specify` route theirs.
+ * armed on every child through `armBudget`. A child that spends it is NOT a
+ * routed verdict the way `build`/`challenge`/`specify` route theirs — this step
+ * has no `budget` arrow to route on, so the stop throws with the rows it paid for
+ * (see this file's header for why the two shapes differ).
  */
 export const MAX_REVIEW_ROUNDS = 3;
 
@@ -325,6 +374,19 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
    */
   const openFindings = (): string => carried ?? lastFix?.findings ?? "";
 
+  /**
+   * How many fix rounds THIS visit integrated, counted as they land. A round
+   * reaches the increment only past `assertFixAdvanced`, and `integrate` throws on
+   * every path that did not push — so this counter and "the branch moved" are the
+   * same fact, held by the code that observed it.
+   *
+   * It is the step's own answer, and the one the reason line prints. The pass at
+   * the end of the loop ORs it with {@link fixedFromLog}, which is the same
+   * question asked of the durable record: the only case the counter cannot answer
+   * is the resume, where the attempt that pushed is gone and origin kept its head.
+   */
+  let fixRounds = 0;
+
   try {
     for (let round = 1; ; round++) {
       // **THE ROUND BOUND, ON BOTH ARMS, BEFORE ANY CHILD IS PAID.** This guard
@@ -351,10 +413,10 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
         rows,
         budget,
       });
-      // The operator's ceiling stopping this step is a VERDICT, not a verdict on
-      // the work — read before the gate's own infra throw could mistake a
-      // stopped reviewer for "no verdict at all".
-      if (gate.stop !== undefined) return budgetVerdictWithRows(STEP_NAME, gate.stop, rows);
+      // The operator's ceiling stopping this step is read BEFORE the gate's own
+      // infra throw could mistake a stopped reviewer for "no verdict at all", and
+      // it THROWS: the table has one arrow out of `review` and it is a clean pass.
+      if (gate.stop !== undefined) throw budgetStopped(gate.stop, rows);
 
       if (gate.findings !== "") {
         carried = gate.findings;
@@ -370,7 +432,7 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
           rows,
           budget,
         });
-        if (fix.stop !== undefined) return budgetVerdictWithRows(STEP_NAME, fix.stop, rows);
+        if (fix.stop !== undefined) throw budgetStopped(fix.stop, rows);
         // The stagnation check reads what the fix round was asked for, so it is
         // recorded before the head moves: after the move, the round's own request
         // is no longer recoverable and the comparison would be against nothing.
@@ -380,6 +442,7 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
           from: head,
         };
         head = await assertFixAdvanced(head, fix.head, rows);
+        fixRounds++;
         // Same gate, same findings, a head that moved: the fixer answered the
         // round and the gate did not move. One more round buys the same reply.
         if (stagnantAgainstFix(lastFix, requested, head))
@@ -437,13 +500,23 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
         // The success path is BOUNDED like every other surface that reports rows.
         // `DISPATCHES_MAX_ROWS` is the validator's own cap — `specify` clips its
         // merged rows with it and `error-outcome.ts` clips the throw path, and an
-        // unbounded `done` was the one arm that could hand the engine a record the
+        // unbounded pass was the one arm that could hand the engine a record the
         // loader then rejects, which does not report an over-long run: it drops
         // the step's cost rows entirely, silently under-billing the child that
         // costs the most.
+        //
+        // **`fixed` or `done`.** The two kinds differ in one fact: did a fix round
+        // push commits, in which case the newest `verify` certifies a head that is
+        // no longer the branch tip and `ci` refuses to look at it. The loop's own
+        // count answers that; `fixedFromLog` answers it of the durable log for the
+        // one case the count cannot see — the attempt that resumes after a crash,
+        // which remembers nothing and still stands on a moved head.
+        const fixed = fixRounds > 0 || fixedFromLog(ctx.steps);
         return {
-          kind: "done",
-          reason: `adversarial and six-lens review clean at ${lens.head.slice(0, 12)} (${String(round)} round(s))${owed}`,
+          kind: fixed ? "fixed" : "done",
+          reason: `adversarial and six-lens review clean at ${lens.head.slice(0, 12)} (${String(round)} round(s)${
+            fixed ? `, ${String(fixRounds)} with a fix round` : ""
+          })${owed}`,
           dispatches: rows.slice(-DISPATCHES_MAX_ROWS),
         };
       }
@@ -469,13 +542,14 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
         rows,
         budget,
       });
-      if (fix.stop !== undefined) return budgetVerdictWithRows(STEP_NAME, fix.stop, rows);
+      if (fix.stop !== undefined) throw budgetStopped(fix.stop, rows);
       const lensRequested = {
         gate: `six-lens review (${lens.verdict})`,
         findings: lens.findings,
         from: lens.head,
       };
       head = await assertFixAdvanced(lens.head, fix.head, rows);
+      fixRounds++;
       if (stagnantAgainstFix(lastFix, lensRequested, head))
         throw new ReviewInfraError(
           `the six-lens review reported the same findings again after the fix round moved the head to ${head.slice(0, 12)} — the findings are: ${lens.findings.slice(0, 500)}`,

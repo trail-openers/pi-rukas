@@ -45,6 +45,7 @@ import {
   rejectsThenClears,
   result,
   runStep as run,
+  passed,
   setup,
 } from "./lib/lean-review-fixtures.ts";
 
@@ -442,7 +443,10 @@ for (const { name, bothShip } of UNSAFE) {
   };
   const { threw, outcome } = await run(ctxFor(repoRoot, baseSha, BRANCH), deps);
   assert(threw === undefined, `(x4) an honest lean/ run still completes (${threw?.message})`);
-  assert(outcome?.kind === "done", `(x4) and it reports done (${outcome?.kind})`);
+  assert(
+    passed(outcome?.kind),
+    `(x4) and the step passed, on whichever kind its rounds earned (${String(outcome?.kind)})`,
+  );
   assert(
     pushed.length === 1,
     `(x4) exactly one push ran for the legitimate run (${JSON.stringify(pushed)})`,

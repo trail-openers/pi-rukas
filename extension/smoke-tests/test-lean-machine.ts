@@ -112,7 +112,7 @@ for (const state of HANDLER_STATES) {
   }
 }
 assert(
-  pairs === 22,
+  pairs === 23,
   `all ${pairs} forward-routed pairs enumerated — the registry grew or shrank, check the spec`,
 );
 
@@ -217,6 +217,8 @@ const refused: Array<[LeanState, string]> = [
   ["verify", "exhausted"],
   ["publish", "red"],
   ["review", "ok"],
+  ["review", "budget"],
+  ["review", "green"],
   ["ci", "done"],
   ["land", "ok"],
   ["handback", "ok"],
@@ -306,14 +308,63 @@ assert(
   next(run("review"), { kind: "done" }).counters.reviewDone === true,
   "review done sets reviewDone",
 );
-// The step's single kind is the ONLY way out of it. Both gates clearing is what
-// a handler returns; everything else — a gate that could not run, findings still
-// open at the bound, a fix round that broke the frozen contract — is a throw the
-// engine turns into a handback. A second kind would be a route for an unreviewed
-// head to reach `ci`, so the table having exactly one is the thing asserted.
+// A review that ran a fix round has PUSHED: `review-git.ts`'s `integrate` moves
+// origin onto the fixer's commits. The newest `verify` then describes a commit
+// that is no longer the head, and `ci` refuses exactly that (its `verifiedHead`
+// read and `assertDiskAtVerifiedHead`), so routing that run to `ci` ends it in a
+// throw and its fix commits are never verified. The step says which of the two
+// happened with its KIND — `fixed` re-verifies, `done` ships — and the fact comes
+// from the durable log (`fixedFromLog` in `review-log.ts`), not a counter: the
+// log is what a resumed attempt can read, and a counter in the snapshot would be
+// a second copy of a fact the step log already records.
+{
+  // Both arms asserted as a PAIR, because a table that always went to `verify`
+  // would pass a single positive assertion — and the `done` arm is the one every
+  // clean run takes, so it is the arm a regression here would silently park.
+  const moved = next(run("review"), { kind: "fixed" });
+  const still = next(run("review"), { kind: "done" });
+  assert(
+    moved.state === "verify",
+    `review fixed → verify, so the pushed fix commits are certified before CI (got ${moved.state})`,
+  );
+  assert(
+    still.state === "ci",
+    `review done still → ci, the edge that ships every clean run (got ${still.state})`,
+  );
+  // A green verify on that re-verification publishes, and the SECOND publish
+  // must go to `ci` and not back for another six-lens pass: the run would
+  // otherwise loop review forever. `reviewDone` is set on BOTH arms out of
+  // review, so the pair is what proves it — an edit that set it only on the
+  // unmoved arm would route this publish back to `review`.
+  const publishedAgain = next(
+    run("publish", { counters: { ...INITIAL_COUNTERS, reviewDone: true } }),
+    { kind: "ok" },
+  );
+  assert(
+    publishedAgain.state === "ci",
+    `and the run that re-verified goes publish → ci, not back through review again (got ${publishedAgain.state})`,
+  );
+  assert(
+    moved.counters.reviewDone === true && still.counters.reviewDone === true,
+    "both review arms spend the review round, so neither can re-rehearse the six lenses",
+  );
+  // `fixed` must be a PLAIN move: a re-verification is not a build round, and a
+  // run that spent its build attempts before the review would otherwise find this
+  // green verify routed to a draft (or a handback) instead of to publish.
+  assert(
+    moved.counters.buildAttempts === 0,
+    `review fixed spends NO build attempt (got ${String(moved.counters.buildAttempts)})`,
+  );
+}
+// The step's two kinds are the ONLY way out of it. What a handler returns is
+// both gates clearing, with or without a fix round; everything else — a gate that
+// could not run, findings still open at the bound, a fix round that broke the
+// frozen contract, a child the budget stopped — is a throw the engine turns into a
+// handback. A third kind would be a route for an unreviewed head to reach `ci`, so
+// the table having exactly these two is the thing asserted.
 assert(
-  outcomeKindsFor("review").length === 1 && outcomeKindsFor("review")[0] === "done",
-  `review has exactly one outcome kind, "done" (got ${JSON.stringify(outcomeKindsFor("review"))})`,
+  JSON.stringify(outcomeKindsFor("review")) === JSON.stringify(["done", "fixed"]),
+  `review has exactly the two kinds a pass can carry, "done" and "fixed" (got ${JSON.stringify(outcomeKindsFor("review"))})`,
 );
 assert(next(run("ci"), { kind: "green" }).state === "land", "ci green → land");
 assert(next(run("land"), { kind: "merged" }).state === "landed", "land merged → landed");

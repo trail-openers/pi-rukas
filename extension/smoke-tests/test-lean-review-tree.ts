@@ -38,7 +38,6 @@ import path from "node:path";
 import { defaultConfig } from "../src/lean/config.ts";
 import { FIX_RUN_ID_SHAPE, reviewAttemptFromLog } from "../src/lean/review-log.ts";
 import { fixTreeName } from "../src/lean/review-tree.ts";
-import type { DispatchUsageRow } from "../src/lean/step-budget.ts";
 import { ReviewInfraError } from "../src/lean/review.ts";
 import type { DispatchSpec } from "../src/types.ts";
 import { put } from "./lib/lean-build-fixture.ts";
@@ -271,30 +270,29 @@ const { assert, failures } = makeAssert();
         result({ loopOutcome: "approved", killCause: "child-bound", ms: 31 * 60_000 }),
     }),
   );
-  // The assertion is on the VERDICT'S FIELDS, not on a sentence this step does
-  // not own: `budgetVerdict` renders its wording in `step-budget.ts`, which three
-  // renderers already share, and a review test pinning that wording is a fourth
-  // copy of one fact. What this step owes is that the stop it read reaches the
-  // engine as the review step's budget verdict, naming the lever and the number
-  // the operator set.
+  // The assertion is on the STOP'S FIELDS, not on a sentence this step does not
+  // own: `budgetSentence` renders its wording in `step-budget.ts`, which the
+  // handback and the headless result share, and a review test pinning that
+  // wording is a fourth copy of one fact. What this step owes is that the stop it
+  // read reaches the engine as the review step's own throw, naming the lever and
+  // the number the operator set — NOT a routed `{kind: "budget"}`: `review` has
+  // one outcome kind, `done`, and a returned `budget` reaches the table with no
+  // arrow for the pair (`test-lean-review-budget-stop.ts` drives the engine half).
   assert(
-    stopped.threw === undefined && stopped.outcome?.kind === "budget",
-    `(t) a reviewer the bound stopped yields a BUDGET verdict, not an error or a pass (${stopped.threw?.message ?? `kind ${String(stopped.outcome?.kind)}`})`,
+    stopped.outcome === undefined && stopped.threw instanceof ReviewInfraError,
+    `(t) a reviewer the bound stopped is the step's throw, never a verdict the table must route (${stopped.threw?.message ?? `kind ${String(stopped.outcome?.kind)}`})`,
   );
-  const stop = stopped.outcome as {
-    kind: "budget";
-    limit: string;
-    value: number;
-    used: number;
-    dispatches?: DispatchUsageRow[];
-  } & Record<string, unknown>;
+  const stop = stopped.threw as ReviewInfraError;
   assert(
-    stop.limit === "minutes" && stop.value === reviewMinutes && stop.used === 31,
-    `(t) and the verdict names the lever, the ceiling from \`budgets.review\` and the usage the child reported, so the operator can see which number to raise (got ${JSON.stringify([stop.limit, stop.value, stop.used])})`,
+    stop.message.includes("review stopped") &&
+      stop.message.includes("minutes") &&
+      stop.message.includes(String(reviewMinutes)) &&
+      stop.message.includes("31"),
+    `(t) and the cause names the review budget, its lever, the ceiling from \`budgets.review\` and the usage the child reported, so the operator can see which number to raise (${stop.message})`,
   );
   assert(
-    stop.dispatches !== undefined && stop.dispatches.length > 0,
-    "(t) and the children it paid for ride on the verdict rather than dying with the stop",
+    stop.dispatches.length > 0,
+    "(t) and the children it paid for ride on the throw rather than dying with the stop",
   );
 }
 

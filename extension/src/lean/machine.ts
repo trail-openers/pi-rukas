@@ -16,9 +16,10 @@
  * times build may run before a run ships a draft rather than grinding;
  * `challengeDone` makes the challenge step run at most once; `reviewDone`
  * makes review run at most once, so a CI fix round re-verifies without
- * re-rehearsing the review; `ciFixUsed` gives a red CI exactly one fix round.
- * All four are counters in the run, so a resumed run sees the same caps a live
- * one did.
+ * re-rehearsing the review AND so the re-verification a review fix round earns
+ * publishes on to `ci` rather than back into the six lenses; `ciFixUsed` gives a
+ * red CI exactly one fix round. All four are counters in the run, so a resumed
+ * run sees the same caps a live one did.
  */
 
 import type { LeanRun, LeanState, Outcome } from "./state.ts";
@@ -32,12 +33,31 @@ export const OUTCOME_KINDS = {
   challenge: ["new-tests", "none", "budget"],
   verify: ["green", "red"],
   publish: ["ok"],
-  // `done` is the only kind: both gates either clear or the step throws. A
-  // review that ran out of its budget, or a gate that could not run, is NOT a
-  // kind a handler returns — it is a throw, and the engine records it as the
-  // infrastructure handback it is rather than letting the table route an
-  // unreviewed head onward on a kind that reads like a verdict.
-  review: ["done"],
+  // Two kinds, and the difference between them is whether the step moved the
+  // head:
+  //
+  //   - `done` — both gates cleared without a fix round. Nothing was pushed, the
+  //     newest `verify` still describes the head, and the run goes to `ci`.
+  //   - `fixed` — at least one fix round integrated commits, which `integrate`
+  //     in `review-git.ts` PUSHES to origin. The newest `verify` now certifies a
+  //     commit that is no longer the head, and `ci` refuses exactly that twice
+  //     over (its `verifiedHead` read and `assertDiskAtVerifiedHead`), so routing
+  //     that run to `ci` ended it at exit 10 with the fix commits never verified.
+  //     A `fixed` run goes back through `verify`.
+  //
+  // `viaBuild` is deliberately NOT used: no build round is owed here (the builder
+  // never ran) and the cap is a build-round budget, not a re-verification budget.
+  //
+  // Both kinds set `reviewDone`, and the re-verification arm is the one that needs
+  // it asserted: the green verify that follows publishes again, and a second
+  // publish that did not see `reviewDone` would route back through the six lenses
+  // and the run would loop review forever buying a fixer each pass.
+  //
+  // The destination of `fixed` is `verify` and nothing else, which is what keeps
+  // the `land`-only-from-`ci`+`green` invariant intact: the exhaustive pair
+  // enumeration in `test-lean-machine.ts` proves it, as it proves every other
+  // edge.
+  review: ["done", "fixed"],
   ci: ["green", "red"],
   land: ["merged", "refused"],
   handback: ["done"],
@@ -229,6 +249,7 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
 
     case "review":
       if (outcome.kind === "done") return to(run, "ci", { reviewDone: true });
+      if (outcome.kind === "fixed") return to(run, "verify", { reviewDone: true });
       break;
 
     case "ci":
