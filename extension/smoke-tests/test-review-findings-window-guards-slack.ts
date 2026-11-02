@@ -56,15 +56,15 @@ import { execp } from "../src/exec.ts";
 import {
   FINDING,
   makeFixture,
-  recordFindingRunOutcome,
+  okFixture,
   releaseFixture,
   removeFixture,
-  rowsOf,
 } from "./lib/confirmation-store-fixture.ts";
 import { NOW } from "./lib/window-guards-clock.ts";
 import {
   HEAD_OF,
   confirmRow,
+  openRowAtFirstSeen,
 } from "./lib/window-guards-helpers.ts";
 import { applyFindingRound } from "../src/review-findings-round.ts";
 import type { StoredFinding } from "../src/review-findings-file.ts";
@@ -94,56 +94,6 @@ function assertSetup(
   const ok = setup.problem === "" && setup.row !== undefined;
   assert(ok, `${label}: the shared setup built the fixture (${setup.problem || "ok"})`);
   return ok;
-}
-
-/** File an OPEN row through the real store at the caller's clock, then hand back
- * its stored bytes with `firstSeen` set to the caller's exact value. The store
- * stamps `firstSeen` with the filing round's `now`, so a store-driven row's
- * `firstSeen` can never sit STRICTLY AFTER a later round's clock — and the
- * operator is only decided by a case that does. The row is real (real id, real
- * hashes, filed by a real round); only its filing stamp is moved. */
-async function openRowAtFirstSeen(
-  dir: string,
-  headSha: string,
-  patchId: string,
-  firstSeen: number,
-): Promise<{ row?: StoredFinding; problem: string }> {
-  const fault = (why: string) => ({ problem: `setup: ${why}` });
-  const filed = await recordFindingRunOutcome({
-    cwd: dir,
-    branch: "feature/work",
-    headSha,
-    findings: [FINDING],
-    review: "full",
-    patchId,
-    now: firstSeen,
-  });
-  if (!filed.ok) return fault(`filing round failed: ${filed.ok ? "" : filed.reason}`);
-  const row = (await rowsOf(dir)).find((r) => r.title === FINDING.title);
-  if (!row) return fault("filing round filed no row");
-  if (row.firstSeen !== firstSeen || row.status !== "open") {
-    return fault(`filing round stamped ${row.firstSeen}/${row.status}`);
-  }
-  // Built per discriminated arm rather than as `{ ...row, firstSeen }` over the
-  // UNION-typed row: a spread of a union is itself an unresolved union, so the
-  // choices were a cast (which erases the arm distinction `StoredFinding` exists
-  // to keep) or this. The narrowing above pins `status === "open"`, so the
-  // compiler judges the open arm field by field, and an arm that quietly wrote
-  // the wrong status is caught by the check below rather than shipped.
-  const stamped: StoredFinding =
-    row.status === "open"
-      ? {
-          ...row,
-          status: "open",
-          acceptance: undefined,
-          resolvedReason: undefined,
-          firstSeen,
-        }
-      : { ...row, status: "open", resolvedReason: undefined, firstSeen };
-  if (stamped.firstSeen !== firstSeen || stamped.status !== "open") {
-    return fault(`stamping did not take (${stamped.firstSeen} != ${firstSeen})`);
-  }
-  return { row: stamped, problem: "" };
 }
 
 /** Re-report `row` through the real entry point with a confirmation for it on
@@ -193,6 +143,7 @@ guard_case: {
   // only thing standing between the guard and a blanket `return undefined`.
   const f = makeFixture();
   try {
+    if (!okFixture(f, "guard:181 between", (m) => assert(false, m))) break guard_case;
     const pid = (await workingTreePatchId(execp, f.dir)).patchId;
     assert(pid !== undefined, "guard:181 between: the review identity resolved");
     const setup = await openRowAtFirstSeen(f.dir, f.headSha, pid!, NOW - 1001);
@@ -220,6 +171,7 @@ guard_case: {
   // script share: change one and the other's red is the signal to change both.
   const f = makeFixture();
   try {
+    if (!okFixture(f, "guard:181 slack", (m) => assert(false, m))) break guard_case;
     const pid = (await workingTreePatchId(execp, f.dir)).patchId;
     assert(pid !== undefined, "guard:181 slack: the review identity resolved");
     const setup = await openRowAtFirstSeen(f.dir, f.headSha, pid!, NOW - 11);
@@ -250,6 +202,7 @@ guard_case: {
   // `>` disagree, this case reddens under one of them.
   const f = makeFixture();
   try {
+    if (!okFixture(f, "guard:181 future", (m) => assert(false, m))) break guard_case;
     const pid = (await workingTreePatchId(execp, f.dir)).patchId;
     assert(pid !== undefined, "guard:181 future: the review identity resolved");
     const setup = await openRowAtFirstSeen(f.dir, f.headSha, pid!, NOW + 5_000);

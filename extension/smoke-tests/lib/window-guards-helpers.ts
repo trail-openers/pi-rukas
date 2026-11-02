@@ -24,6 +24,19 @@ import {
 } from "./confirmation-store-fixture.ts";
 import { NOW } from "./window-guards-clock.ts";
 
+/**
+ * The `open` arm of a stamping construction that the surrounding narrowing has
+ * already made unreachable. It THROWS rather than builds: since #1934 the `open`
+ * arm of `StoredFinding` declares `confirmedBy?: undefined`, so spreading a
+ * not-yet-narrowed union into it is a type error — which is the schema refusing
+ * an open row that carries a retirement's provenance, asserted by the compiler
+ * at the fixture rather than papered over with a cast. Named, not `as`-ed, for
+ * the same reason the callers refuse `as StoredFinding`.
+ */
+export function neverArm(status: never): StoredFinding {
+  throw new Error(`setup: row is ${String(status)}, not open`);
+}
+
 /** Read the ledger file's bytes. A named helper so the file that OWNS the
  * witness (`test-review-findings-window-guards.ts`) keeps a repository-path text
  * read of its own: the #1647 ALWAYS_RUN detector classifies a test as a reader
@@ -65,8 +78,7 @@ export async function retiredRowAtLastSeen(
   headSha: string,
   patchId: string,
   lastSeen: number,
-):
-  Promise<{ row?: StoredFinding; ledger?: LedgerEntry[]; problem: string }> {
+): Promise<{ row?: StoredFinding; ledger?: LedgerEntry[]; problem: string }> {
   const fault = (why: string) => ({ problem: `setup: ${why}` });
   const filed = await recordFindingRunOutcome({
     cwd: dir,
@@ -78,7 +90,9 @@ export async function retiredRowAtLastSeen(
     now: 400_000,
   });
   if (!filed.ok) return fault(`filing round failed: ${filed.reason}`);
-  const row = (await rowsOf(dir)).find((r) => r.title === FINDING.title);
+  const read = await rowsOf(dir);
+  if (read.problem !== "") return fault(read.problem);
+  const row = read.rows.find((r) => r.title === FINDING.title);
   if (!row) return fault("filing round filed no row");
   writeLedger(process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE!, [
     confirmRow(patchId, headSha, row.id, 450_000),
@@ -94,7 +108,9 @@ export async function retiredRowAtLastSeen(
     now: 490_000,
   });
   if (!retire.ok) return fault(`retire round failed: ${retire.reason}`);
-  const retired = (await rowsOf(dir)).find((r) => r.id === row.id);
+  const after = await rowsOf(dir);
+  if (after.problem !== "") return fault(after.problem);
+  const retired = after.rows.find((r) => r.id === row.id);
   // EVERY field the returned row is built from is pinned before the
   // construction below, not just the stamp. The narrowing this throw supplies
   // is what makes the two arms of `stamped` type-check WITHOUT a cast, and
@@ -129,14 +145,13 @@ export async function retiredRowAtLastSeen(
           resolvedReason: "confirmed",
           lastSeen,
         }
-      : {
-          ...retired,
-          status: "open",
-          acceptance: undefined,
-          resolvedReason: undefined,
-          confirmedBy: undefined,
-          lastSeen,
-        };
+      // Unreachable by the narrowing above: the `open` arm of
+      // `StoredFinding` now declares `confirmedBy?: undefined`, so a spread of
+      // the not-yet-narrowed union is a TYPE ERROR (#1934's rule, asserted by the
+      // compiler at the fixture). Spreading the narrowed `never` instead yields an
+      // empty object, so the arm calls a never-typed helper and can never be
+      // silently constructed.
+      : neverArm(retired);
   // Each field the construction is supposed to have placed is checked against
   // the value the CALLER supplied, so a construction that silently kept the
   // store's own stamp — or the store's own status — is a named fault.
@@ -162,6 +177,76 @@ export async function retiredRowAtLastSeen(
     JSON.parse(readLedgerText(process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE!)) as LedgerFile
   ).entries;
   return { row: stamped, ledger, problem: "" };
+}
+
+/** File an OPEN row through the real store at the caller's clock, then hand back
+ * its stored bytes with `firstSeen` set to the caller's exact value.
+ *
+ * WHY ONE COPY LIVES HERE. The two window-guards files each carried a local copy
+ * and the copies had DIVERGED: the slack file's returned `{ problem }` while the
+ * main file's `throw`ed out of a call site whose `try` had not opened — the exact
+ * defect the shared helper exists to remove, kept alive by being written twice.
+ * Two copies of one setup recipe also mean a fix applied to one leaves the other
+ * silently faulty, which is what happened here. Same reason as
+ * `window-guards-clock.ts`: a test file imported by another test file runs its
+ * top level, including its `process.exit(exit)`, inside the importer's run.
+ *
+ * WHY THE STAMP IS INJECTED. `retiredRowAtLastSeen`'s reason, restated because
+ * the two are not interchangeable: the store stamps `firstSeen` with the filing
+ * round's `now`, so a store-driven row can never sit STRICTLY AFTER a later
+ * round's clock — and `>=` versus `>` is only decided by a case that does. The
+ * row is real (real id, real hashes, filed by a real round); only its filing
+ * stamp is moved. */
+export async function openRowAtFirstSeen(
+  dir: string,
+  headSha: string,
+  patchId: string,
+  firstSeen: number,
+): Promise<{ row?: StoredFinding; problem: string }> {
+  const fault = (why: string) => ({ problem: `setup: ${why}` });
+  const filed = await recordFindingRunOutcome({
+    cwd: dir,
+    branch: "feature/work",
+    headSha,
+    findings: [FINDING],
+    review: "full",
+    patchId,
+    now: firstSeen,
+  });
+  if (!filed.ok) return fault(`filing round failed: ${filed.ok ? "" : filed.reason}`);
+  const read = await rowsOf(dir);
+  if (read.problem !== "") return fault(read.problem);
+  const row = read.rows.find((r) => r.title === FINDING.title);
+  if (!row) return fault("filing round filed no row");
+  if (row.firstSeen !== firstSeen || row.status !== "open") {
+    return fault(`filing round stamped ${row.firstSeen}/${row.status}`);
+  }
+  // Built per discriminated arm rather than as `{ ...row, firstSeen }` over the
+  // UNION-typed row: a spread of a union is itself an unresolved union, so the
+  // choices were a cast (which erases the arm distinction `StoredFinding` exists
+  // to keep) or this. The narrowing above pins `status === "open"`, so the
+  // compiler judges the open arm field by field, and an arm that quietly wrote
+  // the wrong status is caught by the check below rather than shipped.
+  const stamped: StoredFinding =
+    row.status === "open"
+      ? {
+          ...row,
+          status: "open",
+          acceptance: undefined,
+          resolvedReason: undefined,
+          firstSeen,
+        }
+      // Unreachable by the narrowing above: the `open` arm of `StoredFinding`
+      // declares `confirmedBy?: undefined`, so spreading the not-yet-narrowed
+      // union is a TYPE ERROR — #1934's rule, asserted by the compiler at the
+      // fixture rather than papered over with a cast. Spreading the narrowed
+      // `never` instead yields an empty object, so the arm calls a never-typed
+      // helper and can never be silently constructed.
+      : neverArm(row);
+  if (stamped.firstSeen !== firstSeen || stamped.status !== "open") {
+    return fault(`stamping did not take (${stamped.firstSeen} != ${firstSeen})`);
+  }
+  return { row: stamped, problem: "" };
 }
 
 /** A passing adversarial ledger row naming `rowId`, stamped at `at`.

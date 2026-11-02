@@ -74,21 +74,19 @@ import type { LedgerEntry } from "../src/review-ledger-entry.ts";
 import { workingTreePatchId } from "../src/review-ledger.ts";
 import { resetFindingsStateCache } from "../src/review-state-path.ts";
 import {
-  assertUnset,
   FINDING,
   HEAD_LINES,
   makeFixture,
-  recordFindingRunOutcome,
+  okFixture,
   releaseFixture,
   removeFixture,
-  rowsOf,
-  seed,
   writeLedger,
 } from "./lib/confirmation-store-fixture.ts";
 import { NOW } from "./lib/window-guards-clock.ts";
 import {
   HEAD_OF,
   confirmRow,
+  openRowAtFirstSeen,
   readLedgerText,
   retiredRowAtLastSeen,
   runRound,
@@ -103,23 +101,23 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-/** A precondition the case CANNOT proceed without. Unlike `assert` this both
- * prints a named `✗` line AND throws, so a setup fault is visible in the run
- * output and stops the case: continuing past a failed precondition means the
- * later assertions judge a fixture that is not the one they name. The shape
- * this replaces — a bare `throw` in the shared setup helper, called BEFORE the
- * caller's `try/finally` — aborted the whole file on an unhandled exception, so
- * the run reported zero `✗` lines and every case green, including the one whose
- * fixture never built. A silent witness is worse than a red one, and this is
- * the helper's failure channel: a fault lands as a red rather than as a green
- * run over twelve cases that did not include this one.
+/** The one channel this file has for a setup fault that CANNOT be skipped past.
+ * Every other fault goes through `assert` / `assertSetup` / `okFixture` and
+ * becomes a named red followed by a `break` out of the case's labelled block.
+ * This exists for the two preconditions where continuing would judge a fixture
+ * that is not the one the case names — a row whose stamp never landed, so the
+ * comparison below would silently be about a different clock. It is NOT the
+ * channel the shared setup helpers report through: they return `{ problem }`, so
+ * nothing they raise reaches a case whose `try` has not opened — which is the
+ * defect this file used to have and no longer does (measured on the pre-channel
+ * shape: one neutralised `git` step printed 2 lines and the cases after it never
+ * ran). Kept, therefore, for the two sites inside a live `try`, where throwing
+ * still reaches the `finally` that releases the fixture.
  *
  * The `asserts` predicate is what makes it usable at a call site rather than
- * merely loud: without it the compiler still sees `setup.row` as possibly
- * undefined after the guard, and the honest fix would have been a cast — the
- * same erasure the discriminated-arm construction above exists to avoid. So the
- * narrowing the guard has always implied is now stated in its type, and the
- * call sites pass the value through with no `!` and no `as`.
+ * merely loud: without it the compiler still sees a guarded value as possibly
+ * undefined, and the honest fix would have been a cast — the same erasure the
+ * discriminated-arm construction in the helpers exists to avoid.
  */
 function require(cond: boolean, msg: string): asserts cond {
   if (!cond) {
@@ -130,11 +128,12 @@ function require(cond: boolean, msg: string): asserts cond {
 }
 
 /** Record a shared-setup helper's fault as a NAMED RED, and tell the caller to
- * skip the rest of its case. Deliberately NOT `require`: a helper that throws
- * out of a case whose `try` has not opened yet aborts the whole file on an
- * unhandled exception, which is precisely the defect these helpers were given a
- * failure channel to remove — measured, neutralising `retiredRowAtLastSeen`'s
- * seed while the call site used `require` left the run with 2 output lines and
+ * skip the rest of its case. Deliberately NOT `require`: a helper whose fault
+ * reaches a `throw` at a call site whose `try` has not opened yet aborts the
+ * whole file on an unhandled exception, which is precisely the defect these
+ * helpers were given a failure channel to remove — measured, neutralising
+ * `retiredRowAtLastSeen`'s filing step while the call site used `require` left
+ * the run with 2 output lines and
  * the other two `guard:222` cases never executed. An assertion plus a `continue`
  * gives the red, sets the exit code, and lets every other case in the file still
  * run, so a broken fixture can report a failure without silencing its witnesses.
@@ -173,6 +172,7 @@ guard_case: {
   // AC4 pass skips the row and the round reports NOTHING about it.
   const f = makeFixture();
   try {
+    if (!okFixture(f, "guard:222 boundary", (m) => assert(false, m))) break guard_case;
     const pid = (await workingTreePatchId(execp, f.dir)).patchId;
     assert(pid !== undefined, "guard:222 boundary: the review identity resolved");
     // The ledger the round reads, WRITTEN here rather than probed. A prior
@@ -221,6 +221,7 @@ guard_case: {
   // skips the pass; `>` runs it, re-opens the row and pushes a lapse notice.
   const f = makeFixture();
   try {
+    if (!okFixture(f, "guard:222 relax", (m) => assert(false, m))) break guard_case;
     const pid = (await workingTreePatchId(execp, f.dir)).patchId;
     assert(pid !== undefined, "guard:222 relax: the review identity resolved");
     const setup = await retiredRowAtLastSeen(f.dir, f.headSha, pid!, NOW + 60_000);
@@ -249,6 +250,7 @@ guard_case: {
   // measured: the blanket-return mutant reddens here and nowhere else.
   const f = makeFixture();
   try {
+    if (!okFixture(f, "guard:222 live", (m) => assert(false, m))) break guard_case;
     const pid = (await workingTreePatchId(execp, f.dir)).patchId;
     assert(pid !== undefined, "guard:222 live: the review identity resolved");
     const setup = await retiredRowAtLastSeen(f.dir, f.headSha, pid!, NOW - 60_000);
@@ -285,69 +287,6 @@ guard_case: {
 // guard:181 — `if (r.firstSeen >= now) return undefined;` in `confirmedFor`
 // ---------------------------------------------------------------------------
 
-/** File an OPEN row through the real store at the caller's clock, then hand back
- * its stored bytes with `firstSeen` set to the caller's exact value.
- *
- * Same reason as `retiredRowAtLastSeen`: the store stamps `firstSeen` with the
- * filing round's `now`, so a store-driven row can never sit STRICTLY AFTER a
- * later round's clock — and `>=` versus `>` is only decided by a case that
- * does. The row is real (real id, hashes, filed by a real round); only its
- * filing stamp is moved. */
-async function openRowAtFirstSeen(
-  dir: string,
-  headSha: string,
-  patchId: string,
-  firstSeen: number,
-): Promise<StoredFinding> {
-  const filed = await recordFindingRunOutcome({
-    cwd: dir,
-    branch: "feature/work",
-    headSha,
-    findings: [FINDING],
-    review: "full",
-    patchId,
-    now: firstSeen,
-  });
-  // A setup fault is a NAMED RED before it is an exception: these helpers run
-  // BEFORE the caller's `try` in the older shape, so a bare throw aborted the
-  // whole file with zero `✗` lines and the run reported every case green
-  // including the one that never ran. `require` prints first, then throws.
-  require(filed.ok, `guard:181 setup: filing round failed: ${filed.ok ? "" : filed.reason}`);
-  const row = (await rowsOf(dir)).find((r) => r.title === FINDING.title);
-  require(row !== undefined, "guard:181 setup: filing round filed no row");
-  require(
-    row!.firstSeen === firstSeen && row!.status === "open",
-    `guard:181 setup: filing round stamped ${row!.firstSeen}/${row!.status}`,
-  );
-  // Built per discriminated arm, not as a spread of the union. `{ ...row,
-  // firstSeen }` over a UNION-typed row is itself a union the compiler will not
-  // resolve, so the only ways to hand it back were a cast (which erases exactly
-  // the arm distinction `StoredFinding` exists to keep — an `accepted` row
-  // arriving as `open` would have type-checked) or a runtime throw after an
-  // unchecked construction. The narrowing above pins `status === "open"`, so the
-  // open arm is the one the compiler judges, and the still-unreachable cases are
-  // named faults rather than casts.
-  const stamped: StoredFinding =
-    row!.status === "open"
-      ? {
-          ...row!,
-          status: "open",
-          acceptance: undefined,
-          resolvedReason: undefined,
-          firstSeen,
-        }
-      : (() => {
-          throw new Error(`guard:181 setup: row is ${row!.status}, not open`);
-        })();
-  // The stamp itself: a construction that quietly kept the store's own value is
-  // a named red, not a case that judges a different clock than it claims.
-  require(
-    stamped.firstSeen === firstSeen && stamped.status === "open",
-    `guard:181 setup: stamping did not take (${stamped.firstSeen} != ${firstSeen}, status=${stamped.status})`,
-  );
-  return stamped;
-}
-
 /** Re-report `row` through the real entry point with a confirmation for it on
  * file, stamped at `at`. */
 const reReportWithConfirmation = (
@@ -374,16 +313,19 @@ const reReportWithConfirmation = (
     now: NOW,
   });
 
-{
+guard_case: {
   // The boundary: the row was FILED at the round's clock (`firstSeen === now`).
   // `>=` refuses the confirmation; relaxing to `>` lets the row retire on a
   // confirmation stamped at its own filing instant — a row this round filed is
   // never evidence a LATER review fixed it.
   const f = makeFixture();
   try {
+    if (!okFixture(f, "guard:181 boundary", (m) => assert(false, m))) break guard_case;
     const pid = (await workingTreePatchId(execp, f.dir)).patchId;
     assert(pid !== undefined, "guard:181 boundary: the review identity resolved");
-    const row = await openRowAtFirstSeen(f.dir, f.headSha, pid!, NOW);
+    const setup = await openRowAtFirstSeen(f.dir, f.headSha, pid!, NOW);
+    if (!assertSetup(setup, "guard:181 boundary")) break guard_case;
+    const row = setup.row;
     assert(
       row.firstSeen === NOW,
       `guard:181 boundary: the row's stamp IS the round's clock (${row.firstSeen})`,
@@ -398,17 +340,21 @@ const reReportWithConfirmation = (
     releaseFixture(f);
     removeFixture(f);
   }
+  break guard_case;
 }
 
-{
+guard_case: {
   // The relaxation witness: the row's `firstSeen` is STRICTLY LATER than the
   // round's clock. `>=` still refuses; `>` admits the confirmation and the row
   // retires — which is the shape this guard exists to refuse.
   const f = makeFixture();
   try {
+    if (!okFixture(f, "guard:181 relax", (m) => assert(false, m))) break guard_case;
     const pid = (await workingTreePatchId(execp, f.dir)).patchId;
     assert(pid !== undefined, "guard:181 relax: the review identity resolved");
-    const row = await openRowAtFirstSeen(f.dir, f.headSha, pid!, NOW + 60_000);
+    const setup = await openRowAtFirstSeen(f.dir, f.headSha, pid!, NOW + 60_000);
+    if (!assertSetup(setup, "guard:181 relax")) break guard_case;
+    const row = setup.row;
     assert(
       row.firstSeen === NOW + 60_000,
       `guard:181 relax: the row's stamp is STRICTLY AFTER the round's clock (${row.firstSeen} > ${NOW})`,
@@ -432,16 +378,20 @@ const reReportWithConfirmation = (
     releaseFixture(f);
     removeFixture(f);
   }
+  break guard_case;
 }
 
-{
+guard_case: {
   // Anti-dead-code arm: a row filed STRICTLY BEFORE the round's clock IS
   // the row AC1 exists for, and the guard must not skip it.
   const f = makeFixture();
   try {
+    if (!okFixture(f, "guard:181 live", (m) => assert(false, m))) break guard_case;
     const pid = (await workingTreePatchId(execp, f.dir)).patchId;
     assert(pid !== undefined, "guard:181 live: the review identity resolved");
-    const row = await openRowAtFirstSeen(f.dir, f.headSha, pid!, NOW - 60_000);
+    const setup = await openRowAtFirstSeen(f.dir, f.headSha, pid!, NOW - 60_000);
+    if (!assertSetup(setup, "guard:181 live")) break guard_case;
+    const row = setup.row;
     const out = reReportWithConfirmation(row, pid!, f.headSha, NOW - 30_000);
     assert(
       out.resolved.some((r) => r.rowId === row.id && r.reason === "confirmed") &&
@@ -452,6 +402,7 @@ const reReportWithConfirmation = (
     releaseFixture(f);
     removeFixture(f);
   }
+  break guard_case;
 }
 
 process.exit(exit);

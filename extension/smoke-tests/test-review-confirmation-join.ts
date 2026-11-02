@@ -56,12 +56,29 @@ import {
   FINDING,
   HEAD_LINES,
   makeFixture,
+  okFixture,
+  rowsOk,
+  seedOk,
+  setupOk,
   reReport,
   releaseFixture,
   removeFixture,
   seed,
   writeLedger,
 } from "./lib/confirmation-store-fixture.ts";
+import type { SeedResult, SetupOutcome } from "./lib/confirmation-store-fixture.ts";
+
+/** Setup channels (see `confirmation-store-fixture.ts`): a fault is a NAMED RED
+ * plus a `break` out of the case's labelled block, never a `throw` that escapes
+ * a case whose `try` has not opened. */
+const needSeed = (s: SeedResult, label: string) => seedOk(s, label, (m) => assert(false, m));
+const needRows = (
+  r: { rows: StoredFinding[]; problem: string },
+  label: string,
+): r is { rows: StoredFinding[]; problem: "" } => rowsOk(r, label, (m) => assert(false, m));
+const needRound = (o: SetupOutcome, label: string) =>
+  setupOk(o, label, (m) => assert(false, m));
+void needRows;
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -190,7 +207,7 @@ function destructiveRelease(f: { priorEnv: FixtureEnv }): void {
   resetFindingsStateCache();
 }
 
-{
+arm_a_case: {
   // ARM A — the shared `releaseFixture` nests. Outer fixture, inner fixture, and
   // the inner's release must hand the OUTER its pins back. Red against a release
   // that deletes: `ledger=undefined` is the unpinning, and the round after it is
@@ -205,6 +222,7 @@ function destructiveRelease(f: { priorEnv: FixtureEnv }): void {
   resetFindingsStateCache();
   const outer = makeFixture();
   try {
+    if (!okFixture(outer, "ARM A", (m) => assert(false, m))) break arm_a_case;
     assert(
       process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE === outer.ledgerFile &&
         process.env.PI_AGENT_DIR === path.join(outer.root, "agent"),
@@ -227,7 +245,9 @@ function destructiveRelease(f: { priorEnv: FixtureEnv }): void {
     );
     const pid = (await workingTreePatchId(execp, outer.dir)).patchId;
     assert(pid !== undefined, "env: the outer round's review identity resolved");
-    const row = await seed(outer.dir, outer.headSha);
+    const seeded = await seed(outer.dir, outer.headSha);
+    if (!needSeed(seeded, "ARM A: seed")) break arm_a_case;
+    const row = seeded.row;
     assert(
       (await readBranchRows(outer.dir, "feature/work")).some((r) => r.id === row.id),
       "env: the outer fixture's store still round-trips after the inner release",
@@ -250,9 +270,10 @@ function destructiveRelease(f: { priorEnv: FixtureEnv }): void {
     removeFixture(outer);
     rmSync(hostDir, { recursive: true, force: true });
   }
+  break arm_a_case;
 }
 
-{
+arm_b_case: {
   // ARM B — what the destructive teardown does to a REAL round. An outer round
   // seeds a row and a ledger entry while correctly pinned, the inner fixture's
   // teardown then runs the DESTRUCTIVE release (this file's old shape), and the
@@ -270,7 +291,10 @@ function destructiveRelease(f: { priorEnv: FixtureEnv }): void {
   resetFindingsStateCache();
   const outer = makeFixture();
   try {
-    const first = await seed(outer.dir, outer.headSha);
+    if (!okFixture(outer, "ARM B", (m) => assert(false, m))) break arm_b_case;
+    const seededFirst = await seed(outer.dir, outer.headSha);
+    if (!needSeed(seededFirst, "ARM B: seed")) break arm_b_case;
+    const first = seededFirst.row;
     const pid = (await workingTreePatchId(execp, outer.dir)).patchId;
     assert(pid !== undefined, "env: the outer round's review identity resolved");
     // Non-empty BEFORE the inner teardown, so "the fixture's file" and "the
@@ -353,6 +377,7 @@ function destructiveRelease(f: { priorEnv: FixtureEnv }): void {
     removeFixture(outer);
     rmSync(hostDir, { recursive: true, force: true });
   }
+  break arm_b_case;
 }
 
 // ---------------------------------------------------------------------------
@@ -360,7 +385,7 @@ function destructiveRelease(f: { priorEnv: FixtureEnv }): void {
 // own catch produces
 // ---------------------------------------------------------------------------
 
-{
+unreadable_case: {
   // The assertion this file's split was reported as having inherited, and had
   // not: the retired `confirmationsForBranch` used to be asserted against a
   // `readLedgerAt` that threw (malformed JSON / unreadable file). That read now
@@ -373,7 +398,10 @@ function destructiveRelease(f: { priorEnv: FixtureEnv }): void {
   // fault (`readLedgerFileSafe`), so the round reaches the join with no rows.
   const f = makeFixture();
   try {
-    const row = await seed(f.dir, f.headSha);
+    if (!okFixture(f, "unreadable ledger", (m) => assert(false, m))) break unreadable_case;
+    const seededRow = await seed(f.dir, f.headSha);
+    if (!needSeed(seededRow, "unreadable ledger: seed")) break unreadable_case;
+    const row = seededRow.row;
     // The identity the round will key on, and the row it would confirm: both
     // come from the fixture's own accessors, so the ONLY difference from the
     // green case above is the read fault — a red below cannot be blamed on a
@@ -415,10 +443,13 @@ function destructiveRelease(f: { priorEnv: FixtureEnv }): void {
       "fault: the store's own reader answers an unreadable ledger with NO rows",
     );
     const out = await reReport(f.dir, f.headSha, pid!);
+    const recorded = needRound(out, "unreadable ledger: round");
+    assert(recorded, `unreadable ledger: the round recorded (${out.problem || "ok"})`);
+    if (!recorded) break unreadable_case;
     const after = (await readBranchRows(f.dir, "feature/work")).find((r) => r.id === row.id);
     assert(
-      out.ok && after?.status === "open",
-      `unreadable ledger: the round still records, and the row the ledger would have confirmed stays open (${out.ok ? after?.status : out.reason})`,
+      after?.status === "open",
+      `unreadable ledger: the round still records, and the row the ledger would have confirmed stays open (${after?.status})`,
     );
     assert(
       after?.resolvedReason === undefined && after?.confirmedBy === undefined,
@@ -433,6 +464,7 @@ function destructiveRelease(f: { priorEnv: FixtureEnv }): void {
     releaseFixture(f);
     removeFixture(f);
   }
+  break unreadable_case;
 }
 
 process.exit(exit);

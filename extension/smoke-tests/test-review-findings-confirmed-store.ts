@@ -24,15 +24,22 @@ import {
   HEAD_LINES,
   git,
   makeFixture,
+  okFixture,
   recordFindingRunOutcome,
   releaseFixture,
   removeFixture,
   reReport,
   rowsOf,
+  rowsOk,
   seed,
+  seedOk,
+  setupOk,
   writeLedger,
+  type SeedResult,
+  type SetupOutcome,
 } from "./lib/confirmation-store-fixture.ts";
 import { parseFindingsFile, splitRows } from "../src/review-findings-file.ts";
+import type { StoredFinding } from "../src/review-findings-file.ts";
 import { workingTreePatchId } from "../src/review-ledger.ts";
 import { execp } from "../src/exec.ts";
 
@@ -45,12 +52,31 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-{
+/** The setup channels this file's cases use: a fault is a NAMED RED plus a
+ * `break` out of the case's labelled block, never a `throw`. Bound to this
+ * file's own `assert` because a helper module cannot own a test file's exit code
+ * (an imported test file runs its top level, and its `process.exit`, inside the
+ * importer). `throw`ing is what this replaces: these calls sit before the case's
+ * `try` is entered, so the exception escaped the file and the run reported ZERO
+ * `✗` lines while the cases after the fault silently did not run — measured on
+ * the pre-channel shape: 2 lines printed, remaining cases absent. */
+const needSeed = (s: SeedResult, label: string) => seedOk(s, label, (m) => assert(false, m));
+const needRows = (
+  r: { rows: StoredFinding[]; problem: string },
+  label: string,
+): r is { rows: StoredFinding[]; problem: "" } => rowsOk(r, label, (m) => assert(false, m));
+const needRound = (o: SetupOutcome, label: string) =>
+  setupOk(o, label, (m) => assert(false, m));
+
+store_case: {
   // AC1 through the store: the row is re-reported every round, its cited line
   // never changes, and a bound adversarial row retires it with provenance.
   const f = makeFixture();
   try {
-    const row = await seed(f.dir, f.headSha);
+    if (!okFixture(f, "AC1 store", (m) => assert(false, m))) break store_case;
+    const seeded = await seed(f.dir, f.headSha);
+    if (!needSeed(seeded, "AC1 store: seed")) break store_case;
+    const row = seeded.row;
     assert(
       row.lineHash !== undefined && row.status === "open",
       "AC1 store: the seeded row is open and hash-bearing",
@@ -85,8 +111,11 @@ function assert(cond: boolean, msg: string) {
       },
     ]);
     const out = await reReport(f.dir, f.headSha, pid!);
-    assert(out.ok, `AC1 store: the round recorded (${out.ok ? "" : out.reason})`);
-    const after = (await rowsOf(f.dir)).find((r) => r.id === row.id);
+    assert(needRound(out, "AC1 store: re-report"), `AC1 store: the round recorded (${out.problem || "ok"})`);
+    if (!needRound(out, "AC1 store: re-report")) break store_case;
+    const read1 = await rowsOf(f.dir);
+    if (!needRows(read1, "AC1 store: read after re-report")) break store_case;
+    const after = read1.rows.find((r) => r.id === row.id);
     assert(
       after?.status === "resolved" && after.resolvedReason === "confirmed",
       `AC1 store: the re-reported row is resolved as "confirmed" (${after?.status}/${after?.resolvedReason})`,
@@ -111,8 +140,10 @@ function assert(cond: boolean, msg: string) {
         rowId: row.id,
       },
     ]);
-    // Narrowed by the assert below (`second.ok`): a round that did not record has
-    // no lapse list to report, so the arm it must be read through is the `ok` arm.
+    // A round that did not record has no lapse list to report, so the arms below
+    // are read through the recorded arm only: the shared channel reports a
+    // non-recording round as a named red and skips the case rather than throwing
+    // past this block's `finally`.
     const second = await recordFindingRunOutcome({
       cwd: f.dir,
       branch: "feature/work",
@@ -128,8 +159,10 @@ function assert(cond: boolean, msg: string) {
       now: Date.now() + 20_000,
     });
     assert(second.ok, "AC4 store: the follow-up round recorded");
-    if (!second.ok) throw new Error(`AC4 store: ${second.reason}`);
-    const again = (await rowsOf(f.dir)).find((r) => r.id === row.id);
+    if (!second.ok) break store_case;
+    const read2 = await rowsOf(f.dir);
+    if (!needRows(read2, "AC4 store: read after reopen")) break store_case;
+    const again = read2.rows.find((r) => r.id === row.id);
     assert(
       again?.status === "open" && again.line === CITED && again.lineHash === row.lineHash,
       `AC4 store: the next round re-opens the row and leaves line+hashes UNCHANGED (${again?.status}, line ${again?.line})`,
@@ -160,6 +193,7 @@ function assert(cond: boolean, msg: string) {
     releaseFixture(f);
     removeFixture(f);
   }
+  break store_case;
 }
 
 {
@@ -196,11 +230,14 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-{
+ac2_case: {
   // AC2 through the store: an UNBOUND confirmation retires nothing.
   const f = makeFixture();
   try {
-    const row = await seed(f.dir, f.headSha);
+    if (!okFixture(f, "AC2 store", (m) => assert(false, m))) break ac2_case;
+    const seeded = await seed(f.dir, f.headSha);
+    if (!needSeed(seeded, "AC2 store: seed")) break ac2_case;
+    const row = seeded.row;
     writeLedger(f.ledgerFile, [
       {
         branch: "feature/work",
@@ -213,8 +250,11 @@ function assert(cond: boolean, msg: string) {
       },
     ]);
     const out = await reReport(f.dir, f.headSha, "the-reviewed-patch-not-the-stored-one");
-    assert(out.ok, "AC2 store: the round recorded");
-    const after = (await rowsOf(f.dir)).find((r) => r.id === row.id);
+    assert(needRound(out, "AC2 store: re-report"), "AC2 store: the round recorded");
+    if (!needRound(out, "AC2 store: re-report")) break ac2_case;
+    const read = await rowsOf(f.dir);
+    if (!needRows(read, "AC2 store: read")) break ac2_case;
+    const after = read.rows.find((r) => r.id === row.id);
     assert(
       after?.status === "open" && after.resolvedReason === undefined,
       `AC2 store: a mismatched patchId retires NOTHING — the row carries exactly as today (${after?.status}/${after?.resolvedReason})`,
@@ -227,6 +267,7 @@ function assert(cond: boolean, msg: string) {
     releaseFixture(f);
     removeFixture(f);
   }
+  break ac2_case;
 }
 
 process.exit(exit);

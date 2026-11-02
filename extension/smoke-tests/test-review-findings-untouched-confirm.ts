@@ -41,20 +41,42 @@ function assert(cond: boolean, msg: string) {
 
 import {
   makeFixture,
+  okFixture,
   releaseFixture,
   removeFixture,
   rowsOf,
+  rowsOk,
   seed,
+  seedOk,
+  setupOk,
   silentRound,
   writeLedger,
+  type SeedResult,
+  type SetupOutcome,
 } from "./lib/confirmation-store-fixture.ts";
+import { asSetup } from "./lib/confirmation-store-fixture.ts";
+import type { StoredFinding } from "../src/review-findings-file.ts";
 import { workingTreePatchId } from "../src/review-ledger.ts";
 import { execp } from "../src/exec.ts";
 import path from "node:path";
 import { FINDING, recordFindingRunOutcome } from "./lib/confirmation-store-fixture.ts";
 
+/** Setup channels: a fault is a NAMED RED plus a `break` out of the case's
+ * labelled block, never a `throw` that escapes a case whose `try` has not
+ * opened. Bound to this file's `assert` because an imported helper module cannot
+ * own a test file's exit code. See `confirmation-store-fixture.ts` for the shape
+ * and for the measurement behind it (pre-channel, one neutralised setup step
+ * printed 2 lines and every later case silently did not run). */
+const needSeed = (s: SeedResult, label: string) => seedOk(s, label, (m) => assert(false, m));
+const needRows = (
+  r: { rows: StoredFinding[]; problem: string },
+  label: string,
+): r is { rows: StoredFinding[]; problem: "" } => rowsOk(r, label, (m) => assert(false, m));
+const needRound = (o: SetupOutcome, label: string) =>
+  setupOk(o, label, (m) => assert(false, m));
 
-{
+
+untouched_case: {
   // HIGH 2 — the UNTOUCHED-row arm. A row this round did NOT re-report is the
   // case #1934 was written for (a fix in another file, the lenses silent about
   // it), and the confirmation that retires it is by definition written AFTER
@@ -67,7 +89,10 @@ import { FINDING, recordFindingRunOutcome } from "./lib/confirmation-store-fixtu
   try {
     // Round 1 reports the finding, so the row's `firstSeen`/`lastSeen` are both
     // in the PAST by the time the round under test runs.
-    const row = await seed(f.dir, f.headSha);
+    if (!okFixture(f, "untouched", (m) => assert(false, m))) break untouched_case;
+    const seeded = await seed(f.dir, f.headSha);
+    if (!needSeed(seeded, "untouched: seed")) break untouched_case;
+    const row = seeded.row;
     const pid = (await workingTreePatchId(execp, f.dir)).patchId;
     assert(pid !== undefined, "untouched: the review identity resolved");
     // The confirmation is recorded BETWEEN the two rounds: after the round that
@@ -85,7 +110,9 @@ import { FINDING, recordFindingRunOutcome } from "./lib/confirmation-store-fixtu
         round: 2,
       },
     ]);
-    const reReported = (await rowsOf(f.dir)).find((r) => r.id === row.id);
+    const read1 = await rowsOf(f.dir);
+    if (!needRows(read1, "untouched: baseline read")) break untouched_case;
+    const reReported = read1.rows.find((r) => r.id === row.id);
     assert(
       reReported?.status === "open" && reReported.lastSeen <= Date.now(),
       `untouched baseline: the seeded row is open with a stale lastSeen (${reReported?.status}/${reReported?.lastSeen})`,
@@ -93,8 +120,18 @@ import { FINDING, recordFindingRunOutcome } from "./lib/confirmation-store-fixtu
     // Round 2: a complete full round that does NOT report the finding at all —
     // the row is untouched — with the confirmation consulted.
     const out = await silentRound(f.dir, f.headSha, pid!, Date.now() + 10_000);
-    assert(out.ok, `untouched: the round recorded (${out.ok ? "" : out.reason})`);
-    const after = (await rowsOf(f.dir)).find((r) => r.id === row.id);
+    // The channel is CALLED at each use, not captured once into a boolean. The
+    // narrowing a type predicate produces belongs to the CALL, so `const ok =
+    // needRound(out, …)` left the compiler on both arms of the union below and
+    // the disclosure read beside it would not have type-checked.
+    assert(needRound(out, "untouched: silent round"), `untouched: the round recorded (${out.problem || "ok"})`);
+    if (!needRound(out, "untouched: silent round")) break untouched_case;
+    // First point where the compiler knows `out` is the recorded arm, so
+    // `out.resolved` below is read through the guard rather than beside it.
+    const recorded = out;
+    const read2 = await rowsOf(f.dir);
+    if (!needRows(read2, "untouched: read after retire")) break untouched_case;
+    const after = read2.rows.find((r) => r.id === row.id);
     assert(
       after?.status === "resolved" && after.resolvedReason === "confirmed",
       `untouched: a confirmation written after the last report retires the row the round did NOT touch (${after?.status}/${after?.resolvedReason})`,
@@ -107,10 +144,10 @@ import { FINDING, recordFindingRunOutcome } from "./lib/confirmation-store-fixtu
     // only in the render sibling, because this is the path that produced no
     // notice at all while the row was retired.
     assert(
-      (out.ok ? out.resolved : []).some(
+      (recorded ? out.resolved : []).some(
         (r) => r.rowId === row.id && r.reason === "confirmed" && r.confirmedBy !== undefined,
       ),
-      `untouched: the resolved notice carries its provenance (${JSON.stringify(out.ok ? out.resolved : null)})`,
+      `untouched: the resolved notice carries its provenance (${JSON.stringify(recorded ? out.resolved : null)})`,
     );
     // --- and the trust boundary in the SAME run: a row this round RE-REPORTED
     // must not retire on a confirmation written while the round was running.
@@ -131,7 +168,9 @@ import { FINDING, recordFindingRunOutcome } from "./lib/confirmation-store-fixtu
         process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE === f2.ledgerFile,
         `nested fixture: the inner makeFixture re-pins the ledger to its own dir (${process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE})`,
       );
-      const row2 = await seed(f2.dir, f2.headSha);
+      const seeded2 = await seed(f2.dir, f2.headSha);
+      if (!needSeed(seeded2, "re-reported: seed")) break untouched_case;
+      const row2 = seeded2.row;
       const pid2 = (await workingTreePatchId(execp, f2.dir)).patchId;
       assert(pid2 !== undefined, "re-reported: the review identity resolved");
       const roundNow = Date.now() + 10_000;
@@ -149,19 +188,25 @@ import { FINDING, recordFindingRunOutcome } from "./lib/confirmation-store-fixtu
           round: 2,
         },
       ]);
-      const during = await recordFindingRunOutcome({
-        cwd: f2.dir,
-        branch: "feature/work",
-        headSha: f2.headSha,
-        findings: [FINDING],
-        review: "full",
-        confirmFixes: true,
-        patchId: pid2!,
-        now: roundNow,
-      });
-      assert(during.ok, `re-reported: the round recorded (${during.ok ? "" : during.reason})`);
+      const during = asSetup(
+        await recordFindingRunOutcome({
+          cwd: f2.dir,
+          branch: "feature/work",
+          headSha: f2.headSha,
+          findings: [FINDING],
+          review: "full",
+          confirmFixes: true,
+          patchId: pid2!,
+          now: roundNow,
+        }),
+        "re-reported",
+      );
+      assert(needRound(during, "re-reported: round"), `re-reported: the round recorded (${during.problem || "ok"})`);
+      if (!needRound(during, "re-reported: round")) break untouched_case;
 
-      const stillOpen = (await rowsOf(f2.dir)).find((r) => r.id === row2.id);
+      const readF2 = await rowsOf(f2.dir);
+      if (!needRows(readF2, "re-reported: read")) break untouched_case;
+      const stillOpen = readF2.rows.find((r) => r.id === row2.id);
       assert(
         stillOpen?.status === "open" && stillOpen.resolvedReason === undefined,
         `trust boundary: a re-reported row does NOT retire on a confirmation written during the round (${stillOpen?.status}/${stillOpen?.resolvedReason})`,
@@ -192,7 +237,10 @@ import { FINDING, recordFindingRunOutcome } from "./lib/confirmation-store-fixtu
     // the round never retires anything.
     const f3 = makeFixture();
     try {
-      const row3 = await seed(f3.dir, f3.headSha);
+      if (!okFixture(f3, "untouched-trust", (m) => assert(false, m))) break untouched_case;
+      const seeded3 = await seed(f3.dir, f3.headSha);
+      if (!needSeed(seeded3, "untouched-trust: seed")) break untouched_case;
+      const row3 = seeded3.row;
       const pid3 = (await workingTreePatchId(execp, f3.dir)).patchId;
       assert(pid3 !== undefined, "untouched-trust: the review identity resolved");
       const when = Date.now() + 10_000;
@@ -212,8 +260,11 @@ import { FINDING, recordFindingRunOutcome } from "./lib/confirmation-store-fixtu
       // post-dates the round. Silence is not evidence and a late confirmation is
       // not evidence; the row carries.
       const late = await silentRound(f3.dir, f3.headSha, pid3!, when);
-      assert(late.ok, `untouched-trust: the round recorded (${late.ok ? "" : late.reason})`);
-      const openStill = (await rowsOf(f3.dir)).find((r) => r.id === row3.id);
+      assert(needRound(late, "untouched-trust: round"), `untouched-trust: the round recorded (${late.problem || "ok"})`);
+      if (!needRound(late, "untouched-trust: round")) break untouched_case;
+      const readF3 = await rowsOf(f3.dir);
+      if (!needRows(readF3, "untouched-trust: read")) break untouched_case;
+      const openStill = readF3.rows.find((r) => r.id === row3.id);
       assert(
         openStill?.status === "open" && openStill.resolvedReason === undefined,
         `trust boundary: an UNTOUCHED row does NOT retire on a confirmation written after the round began (${openStill?.status}/${openStill?.resolvedReason})`,
@@ -225,6 +276,7 @@ import { FINDING, recordFindingRunOutcome } from "./lib/confirmation-store-fixtu
     releaseFixture(f);
     removeFixture(f);
   }
+  break untouched_case;
 }
 
 process.exit(exit);
