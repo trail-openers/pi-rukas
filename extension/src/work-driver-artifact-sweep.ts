@@ -27,7 +27,10 @@
  * hash, not creation order — so an unsorted sweep visits orphans, and reports
  * `swept`, in an order no reader can predict. The sort is numeric rather than
  * lexicographic because the names are issue numbers: `1000` is the newer orphan
- * and a string comparison would visit it before `25`.
+ * and a string comparison would visit it before `25`. Only a name Rule 1 admits
+ * (`/^\d+$/`) gets a numeric key; anything else sorts after them, in name order,
+ * so the comparator's domain is the sweep's own — `Number()` would order junk
+ * names by coercion (`" 25 "` with the twenties, `"1e3"` with the thousands).
  *
  * Style follows the sibling `work-driver-worktree-sweep.ts`: `execFn`-
  * based removal, trace lines, never throws.
@@ -88,6 +91,24 @@ export interface ArtifactSweepResult {
 }
 
 /**
+ * Numeric order for the names the sweep can act on, name order after them.
+ *
+ * A non-conforming name has no numeric key: `attemptOfStrict` in `lean/state.ts`
+ * is the repo's precedent for refusing to invent one, and here the consequence
+ * of inventing one is that junk sorts in among the issue numbers it pretends to
+ * occupy. They land last so the numeric head of the read is the whole ordered
+ * sweep, whatever else sits in the directory.
+ */
+function compareSweepNames(a: string, b: string): number {
+  const na = /^\d+$/.test(a);
+  const nb = /^\d+$/.test(b);
+  if (na && nb) return Number(a) - Number(b);
+  if (na) return -1;
+  if (nb) return 1;
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/**
  * Run the sweep. Scans `.pi/work-state/` and removes directories matching
  * the orphan rules above. Never throws.
  */
@@ -102,7 +123,7 @@ export async function runArtifactSweep(opts: ArtifactSweepOpts): Promise<Artifac
   const dir = join(repoRoot, ".pi", "work-state");
   let names: string[];
   try {
-    names = readdirSync(dir).sort((a, b) => Number(a) - Number(b));
+    names = readdirSync(dir).sort(compareSweepNames);
   } catch {
     // No .pi/work-state directory — nothing to sweep.
     trace("artifact-sweep: no .pi/work-state directory — nothing to sweep");

@@ -398,10 +398,14 @@ export function budgetVerdict(state: LeanState, fired: BudgetFired): Outcome {
  * reach the host instead of vanishing with the child.
  *
  * The rows are CLIPPED to the validator's own bound, keeping the newest, exactly
- * as `review.ts`'s `done` path does: a review round accumulates a row per lens
- * child and per fixer across rounds, so the stopped arm is the one that can hand
- * back more than `dispatchesProblem` admits — and an over-long array is not
- * reported, it makes the loader drop the step's cost rows entirely.
+ * as `review.ts`'s `done` path and `errorOutcome` do: a review round accumulates a
+ * row per lens child and per fixer across rounds, so the stopped arm is the one
+ * that can hand back more than `dispatchesProblem` admits — and an over-long array
+ * is not reported, it makes the loader drop the step's cost rows entirely. That is
+ * why the clip lives HERE and not at the call sites: every arm that reports rows
+ * reaches this function, so there is one bound and nothing to forget at a new call
+ * site. `test-lean-build-error-outcome.ts` case (q) pins the same clip through
+ * `saveRun`/`loadRun`, because this function's own test cannot import it.
  */
 export function budgetVerdictWithRows(
   state: LeanState,

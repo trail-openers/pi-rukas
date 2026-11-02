@@ -14,6 +14,9 @@
  *       throw with rows on it must not make the run's own state file unloadable
  *   (p) a throw carrying more rows than the validator allows still loads — the
  *       engine clips to the bound instead of producing an unreadable record
+ *   (q) the budget verdict's rows, clipped by `budgetVerdictWithRows`, survive
+ *       `saveRun`/`loadRun` — the load path is where an over-cap array would be
+ *       refused, and no other suite carries a budget verdict into a state file
  *
  * (n) runs against the same real repo as the build suite, so the row it follows
  * out of the step is one a real dispatch produced, and is read back through
@@ -24,10 +27,11 @@
 import { BuildInfraError } from "../src/lean/build-errors.ts";
 import { type LeanHandlers, runLean } from "../src/lean/engine.ts";
 import { errorOutcome } from "../src/lean/error-outcome.ts";
-import { loadRun } from "../src/lean/state.ts";
 import { DISPATCHES_MAX_ROWS } from "../src/lean/state-outcome.ts";
+import { INITIAL_COUNTERS, loadRun, saveRun } from "../src/lean/state.ts";
+import { budgetVerdictWithRows } from "../src/lean/step-budget.ts";
 import { ROOTS, runBuild } from "./lib/lean-build-fixture.ts";
-import { tempDir } from "./lib/lean-engine-fixtures.ts";
+import { FIXTURE_BASE_SHA, tempDir } from "./lib/lean-engine-fixtures.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -162,6 +166,57 @@ function assert(cond: boolean, msg: string): void {
     assert(
       loaded !== undefined,
       "(p) a throw carrying 17 rows still lets loadRun load the run's state file",
+    );
+  } finally {
+    cleanup();
+  }
+}
+
+// -------------------- (q) a budget verdict's rows are durable, not just well-shaped
+//
+// `test-AC1-budget-verdict-rows-cap.ts` proves the clip at the function, but a
+// clipped array is only USEFUL if the one path that judges it — `loadRun`, which
+// refuses over-cap rows rather than reporting them — accepts it. That proof needs
+// `saveRun`, which the frozen AC1 suite may not import, so it lives beside (p),
+// the sibling that already pins the throw path the same way: write the verdict the
+// step hands the engine, read the file back, and check the newest rows are the
+// ones that came out.
+{
+  const many = Array.from({ length: DISPATCHES_MAX_ROWS * 2 }, (_, i) => ({
+    role: `role-${String(i)}`,
+    ms: 1000 + i,
+    ok: true,
+    usage: { input: 11, output: 2, cacheRead: 3, cacheWrite: 1, cost: 0.5, turns: 4 },
+  }));
+  const verdict = budgetVerdictWithRows("build", { limit: "turns", value: 40, used: 41 }, many);
+  const { dir, cleanup } = tempDir();
+  try {
+    saveRun(dir, {
+      schema: 1,
+      issue: 132,
+      version: "test",
+      models: {},
+      baseSha: FIXTURE_BASE_SHA,
+      branch: "feature/issue-132",
+      state: "handback",
+      counters: INITIAL_COUNTERS,
+      steps: [
+        { key: "132:build:0", state: "build", startedAt: 1000, endedAt: 2000, outcome: verdict },
+      ],
+    });
+    const loaded = loadRun(dir, 132);
+    const rows = loaded?.steps[0]?.outcome?.dispatches;
+    assert(
+      loaded !== undefined && loaded.steps[0]?.outcome?.kind === "budget",
+      "(q) the run whose build stopped on budget loads its own state file",
+    );
+    assert(
+      rows?.length === DISPATCHES_MAX_ROWS,
+      `(q) a budget verdict from ${String(many.length)} rows keeps ${String(DISPATCHES_MAX_ROWS)} through saveRun/loadRun (got ${String(rows?.length)})`,
+    );
+    assert(
+      rows?.[DISPATCHES_MAX_ROWS - 1]?.role === `role-${String(many.length - 1)}`,
+      `(q) the durable rows are the NEWEST — the clip survived the round-trip (got ${String(rows?.[DISPATCHES_MAX_ROWS - 1]?.role)})`,
     );
   } finally {
     cleanup();
