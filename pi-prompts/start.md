@@ -40,7 +40,7 @@ argument-hint: ""
      - GitHub: `gh issue list --limit 15`, `gh pr list`, `gh run list --branch main --limit 3`
      - GitLab: `glab issue list --limit 15`, `glab mr list`, `glab ci list --limit 3`
 
-   These are read-only — no dispatch, no subagent spawn, no GLM summarisation dependency. The output is yours to synthesise in step 6.
+   These are read-only — no dispatch, no subagent spawn, no LLM summarisation step. The output is yours to synthesise in step 6.
 
    **Bounded-timeout doctrine for the forge calls:** `gh`/`glab` can stall on a half-open connection with no error at all, and a stalled forge call blocks the whole readiness sweep. Run every forge call above with a time bound (e.g. `timeout 60 gh issue list --limit 15`) so a stuck call settles on its own instead of hanging the step. A call that exits on its timeout is not a benign absence — it is a **data gap**: report it in the Output section per the rule below ("say so explicitly in the line"), and continue with the sources that worked.
 

@@ -311,7 +311,7 @@ The gate scans the **whole repository** — every `.ts`, `.sh` and workflow `.ym
 
 ### 🚨 Model-specific placeholder text
 
-Some model families emit literal placeholder text blocks between tool calls (GLM emits `{type: "text", text: "None"}`). The `model-adapters.ts` registry filters these in `spawn.ts:collapseEvents`. **Never add model-specific filtering in shared paths** — add an entry to `FAMILY_DETECTORS`.
+Some model families emit literal placeholder text blocks between tool calls. The `model-adapters.ts` registry filters these in `spawn.ts:collapseEvents`. **Never add model-specific filtering in shared paths** — add an entry to `FAMILY_DETECTORS`, which is also where the concrete family evidence for the existing entry lives.
 
 ### 🚨 PM trying to code
 
