@@ -8,17 +8,16 @@
  *
  * WHAT LIVES HERE, and why this is the seam. The guard witnesses in the sibling
  * file judge the ROUND; every case here judges the FIXTURE the rounds are built
- * with — the two `delete` branches of `releaseFixture` and their `assertUnset`
- * counterparts, the two "was set" arms of `assertUnset`, and the nesting property
- * that an inner release hands the OUTER fixture its pins back. Four branches of
- * one helper and a nesting invariant: all four are asserted here, two by the
- * "was set" case and two by the "was UNSET" case at the foot of the file. They
- * share nothing but the fixture and the `assert`/setup channel, so the split is
- * along a real concern rather than at an arbitrary line count. The setup channel
- * is duplicated rather than imported for the same reason the helpers live in
- * `lib/`: a test file imported by another test file runs its top level —
- * including its `process.exit(exit)` — inside the importer's run, so a test file
- * cannot export its assertion channel.
+ * with — that `releaseFixture` nests, that it writes back exactly what it
+ * recorded, and that a fixture which NEVER BUILT leaves the host's pins alone.
+ * The four arms of `assertUnset` are judged in
+ * `test-review-findings-unset-arms.ts`, split off by the same 500-line gate: the
+ * cases there preset the pins and drive the witness in both directions, the two
+ * here build fixtures in pairs and read the env back, so they share no local and
+ * no fixture instance. The setup channel is duplicated rather than imported for
+ * the same reason the helpers live in `lib/`: a test file imported by another
+ * test file runs its top level — including its `process.exit(exit)` — inside the
+ * importer's run, so a test file cannot export its assertion channel.
  *
  * WHY THESE CASES MATTER AT ALL: every witness of a delete-vs-assign-the-
  * `undefined`-literal inversion is one of these. On bun assigning `undefined`
@@ -39,7 +38,6 @@ import { execp } from "../src/exec.ts";
 import { workingTreePatchId } from "../src/review-ledger.ts";
 import { resetFindingsStateCache } from "../src/review-state-path.ts";
 import {
-  assertUnset,
   makeFixture,
   okFixture,
   releaseFixture,
@@ -215,177 +213,6 @@ env_case: {
     rmSync(hostDir, { recursive: true, force: true });
   }
   break env_case;
-}
-
-
-// ---------------------------------------------------------------------------
-// assertUnset's OTHER half: the "was set" arms, which no fixture in the repo
-// reached until this case (HIGH 2)
-// ---------------------------------------------------------------------------
-
-{
-  // `assertUnset` has two arms per pin: a "was unset" arm that requires the
-  // variable to be ABSENT, and a "was set" arm that requires it to EQUAL what
-  // the fixture recorded. Every caller in the tree forced `priorEnv` to two
-  // `undefined`s, so the set-arms had no witness anywhere — measured: deleting
-  // the whole ledger set-branch (the `else if` that compares against
-  // `f.priorEnv.ledgerFile`) left every confirmation test green. A branch that
-  // cannot fail while reading as coverage is dead code with a green tick on it,
-  // so this case builds a fixture whose pins were ALREADY SET (both to
-  // sentinels a correct restore must put back verbatim) and drives the arm in
-  // both directions: a correct restore reports nothing, and a corrupted
-  // restore — the value `releaseFixture` should have written replaced by a
-  // different path, exactly what a re-derived value or an `= undefined` teardown
-  // produces — reports one, naming the pin.
-  //
-  // The fixture comes from the SHARED `makeFixture` with both pins set, so
-  // `priorEnv` holds two strings BY CONSTRUCTION rather than through a
-  // hand-built record: this judges the function's real record, not a stand-in
-  // shaped like one.
-  const hostDir = mkdtempSync(path.join(os.tmpdir(), "host-ledger-restore-"));
-  const sentinelLedger = path.join(hostDir, "sentinel-ledger.json");
-  const sentinelAgent = path.join(hostDir, "sentinel-agent");
-  const savedLedger = process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
-  const savedAgent = process.env.PI_AGENT_DIR;
-  process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = sentinelLedger;
-  process.env.PI_AGENT_DIR = sentinelAgent;
-  resetFindingsStateCache();
-  const f = makeFixture();
-  try {
-    // The precondition every earlier case could not state: BOTH members of the
-    // record are strings, which is what selects the set-arms below.
-    assert(
-      f.priorEnv.ledgerFile === sentinelLedger && f.priorEnv.agentDir === sentinelAgent,
-      `restore: the fixture recorded both pins as SET to the sentinels (${JSON.stringify(f.priorEnv)})`,
-    );
-    releaseFixture(f);
-    assert(
-      process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE === sentinelLedger &&
-        process.env.PI_AGENT_DIR === sentinelAgent,
-      `restore: the release put both sentinels back verbatim (ledger=${String(process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE)}, agent=${String(process.env.PI_AGENT_DIR)})`,
-    );
-    // The set-arms over a correct restore: NOTHING to report. This is the arm's
-    // positive witness — an implementation that returned `[]` unconditionally
-    // would pass here and fail the assertions below.
-    const clean = assertUnset(f, "restore");
-    assert(
-      clean.length === 0,
-      `restore: a correct restore of SET pins reports no problems (problems=${JSON.stringify(clean)})`,
-    );
-    // Corrupt the LEDGER side of the restore: the env now holds a different
-    // string than the record says.
-    process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = path.join(hostDir, "other.json");
-    const ledgerProblems = assertUnset(f, "restore-corrupt");
-    assert(
-      ledgerProblems.length === 1 &&
-        ledgerProblems[0]?.includes("PI_ENSEMBLE_REVIEW_LEDGER_FILE") === true,
-      `restore: a corrupted LEDGER restore is exactly one problem naming that pin (problems=${JSON.stringify(ledgerProblems)})`,
-    );
-    // Repair it and corrupt the AGENT side in turn: the second set-arm must
-    // answer for its own pin rather than inheriting the first's verdict. The
-    // corrupting value here is the literal string "undefined" — the exact value
-    // bun leaves behind for an `= undefined` teardown, so this arm also witnesses
-    // that `assertUnset` does not read the pin through `?.trim()` and accept it.
-    process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = sentinelLedger;
-    process.env.PI_AGENT_DIR = "undefined";
-    const agentProblems = assertUnset(f, "restore-corrupt-agent");
-    assert(
-      agentProblems.length === 1 && agentProblems[0]?.includes("PI_AGENT_DIR") === true,
-      `restore: a corrupted AGENT_DIR restore is exactly one problem naming that pin (problems=${JSON.stringify(agentProblems)})`,
-    );
-  } finally {
-    // `releaseFixture` cannot repair this block: its own record was already
-    // spent inside the `try`. The pins go back the way every other block here
-    // does it — the two-branch restore, `delete` for a pin the host did not set.
-    if (savedLedger === undefined) delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
-    else process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = savedLedger;
-    if (savedAgent === undefined) delete process.env.PI_AGENT_DIR;
-    else process.env.PI_AGENT_DIR = savedAgent;
-    resetFindingsStateCache();
-    removeFixture(f);
-    rmSync(hostDir, { recursive: true, force: true });
-  }
-}
-
-// ---------------------------------------------------------------------------
-// assertUnset's OTHER half: the two "was UNSET" arms, restored
-// ---------------------------------------------------------------------------
-
-unset_case: {
-  // The fixture's "was unset" branches, witnessed on the SHARED function. Both
-  // pins are removed before `makeFixture`, so `priorEnv` holds two `undefined`s
-  // and `releaseFixture` must reach its two `delete` branches. The assertion is
-  // `!(NAME in process.env)` — NOT `=== undefined` — because on bun assigning
-  // `undefined` leaves the key present holding the literal string "undefined",
-  // which any consumer reading through `?.trim()` treats as a truthy path.
-  // Biome's autofix for `delete x` produces exactly that assignment; measured,
-  // all four confirmation tests stayed green under it while this case reddens —
-  // which is why the property is asserted on `releaseFixture` itself.
-  //
-  // WHY THIS CASE IS HERE AND NOT ONLY IN A TEST FILE'S PRIVATE COPY: the
-  // counter-witness `assertUnset` documents was deleted in the split that moved
-  // these cases out of the sibling file, and the split left the jsdoc claiming
-  // all four branches were witnessed while only the two "was set" arms still
-  // were. A branch with no red is a branch nobody verified, and the autofix that
-  // inverts it is silent, so the witnesses are restored here and the jsdoc now
-  // says what is actually asserted.
-  const savedLedger = process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
-  const savedAgent = process.env.PI_AGENT_DIR;
-  delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
-  delete process.env.PI_AGENT_DIR;
-  resetFindingsStateCache();
-  const f = makeFixture();
-  try {
-    if (!okFixture(f, "release", (m) => assert(false, m))) break unset_case;
-    // WITNESS 1 of 3 — the record itself. A `priorEnv` that held strings would
-    // drive the "was set" arms instead, and the two `delete` branches below would
-    // go unexecuted while every assertion still read green.
-    assert(
-      f.priorEnv.ledgerFile === undefined && f.priorEnv.agentDir === undefined,
-      `release: the fixture recorded both pins as unset (${JSON.stringify(f.priorEnv)})`,
-    );
-    // WITNESS 2 of 3 — they were really installed first, so the absence asserted
-    // in the finally is something `releaseFixture` did and not the state the
-    // process happened to be in.
-    assert(
-      "PI_ENSEMBLE_REVIEW_LEDGER_FILE" in process.env &&
-        "PI_AGENT_DIR" in process.env,
-      "release: makeFixture installed both pins as own keys",
-    );
-  } finally {
-    releaseFixture(f);
-    // WITNESS 3 of 3 — the two `delete` branches, judged through the SHARED
-    // `assertUnset` (so a mutation of those branches reddens here) AND by direct
-    // `in` tests (so a mutation of `assertUnset` itself cannot quietly stop
-    // reporting them). The two together are the point: an `assertUnset` that
-    // returned `[]` unconditionally passes its own arm and fails these.
-    const problems = assertUnset(f, "release");
-    assert(
-      problems.length === 0 &&
-        !("PI_ENSEMBLE_REVIEW_LEDGER_FILE" in process.env) &&
-        !("PI_AGENT_DIR" in process.env),
-      `release: a fixture whose pin was UNSET deletes it rather than storing "undefined" (${JSON.stringify([process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE, process.env.PI_AGENT_DIR])}, problems=${JSON.stringify(problems)})`,
-    );
-    // And the helper must ANSWER for the inversion, not merely miss it: with the
-    // pins written back as the literal string bun leaves behind, `assertUnset`
-    // reports exactly the pin it names. Without this arm a faulting
-    // `releaseFixture` that assigned instead of deleting would satisfy the
-    // absence test above only because the assignment happened to be absent.
-    process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = "undefined";
-    const inverted = assertUnset(f, "release-inverted");
-    assert(
-      inverted.length === 1 &&
-        inverted[0]?.includes("PI_ENSEMBLE_REVIEW_LEDGER_FILE") === true,
-      `release: an "unset" pin re-pinned to the literal string is exactly one problem naming that pin (problems=${JSON.stringify(inverted)})`,
-    );
-    removeFixture(f);
-    if (savedLedger === undefined) delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
-    else process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = savedLedger;
-    if (savedAgent === undefined) delete process.env.PI_AGENT_DIR;
-    else process.env.PI_AGENT_DIR = savedAgent;
-    resetFindingsStateCache();
-  }
-  break unset_case;
 }
 
 process.exit(exit);

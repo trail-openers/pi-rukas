@@ -24,18 +24,24 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import path from "node:path";
 import type { Finding } from "../../src/lens-review-types.ts";
-import { readBranchRows, recordFindingRunOutcome } from "../../src/review-findings-store.ts";
+import { readBranchRows } from "../../src/review-findings-store.ts";
+// Re-exported for the round-driving consumers that import the store's entry
+// point from the fixture module rather than from `src/` (window-guards-helpers,
+// the confirmed-store and untouched-confirm files). Removing it would be an API
+// change dressed as a refactor.
 export { recordFindingRunOutcome } from "../../src/review-findings-store.ts";
-import type {
-  Decision,
-  ResolvedNotice,
-  SetAsideNotice,
-  StoredFinding,
-} from "../../src/review-findings-file.ts";
-import type { ConfirmationLapse } from "../../src/review-findings-store-types.ts";
-import type { RecordOutcome } from "../../src/review-findings-store.ts";
+import type { StoredFinding } from "../../src/review-findings-file.ts";
 import type { LedgerEntry } from "../../src/review-ledger-entry.ts";
 import { resetFindingsStateCache } from "../../src/review-state-path.ts";
+// The store-round drivers live in `confirmation-store-rounds.ts` (the §12
+// 500-line gate split them along the seam this file's jsdoc names: clone recipe
+// here, store traffic there). They are RE-EXPORTED rather than moved out of
+// reach so every consumer keeps ONE import for the fixture and the channels that
+// guard it — the split is a file boundary, not an API change, and no call site
+// had to learn the new module's name.
+export type { SeedResult, SetupOutcome } from "./confirmation-store-rounds.ts";
+export { asSetup, seed, seedOk, reReport, silentRound } from "./confirmation-store-rounds.ts";
+import type { SeedResult } from "./confirmation-store-rounds.ts";
 
 /** The head content of `src/a.ts` every case cites line 3 of. */
 export const HEAD_LINES = [
@@ -91,7 +97,9 @@ export interface ConfirmationFixture {
    * build's output, so an empty one IS the fault signal — see `problem`. */
   headSha: string;
   /** The values BOTH env pins had BEFORE this fixture set them, so
-   * `releaseFixture` can restore them. `undefined` means "was not set". */
+   * `releaseFixture` can restore them. `undefined` means "was not set" and
+   * `null` means "this fixture never installed the pins" — see `FixtureEnv`.
+   * A fixture that did not build carries `null` on BOTH members. */
   priorEnv: FixtureEnv;
   /** "" when the fixture is usable; otherwise why it is not. A fixture that
    * could not be built is a SETUP FAULT, reported here rather than thrown:
@@ -130,11 +138,35 @@ const LEDGER_ENV = "PI_ENSEMBLE_REVIEW_LEDGER_FILE";
 const AGENT_DIR_ENV = "PI_AGENT_DIR";
 
 /** The two env values a fixture saved, so `releaseFixture` can put them back.
- * `undefined` on either member means "this variable was not set when the
- * fixture made it", which release restores as an actual delete. */
+ *
+ * THREE states per member, and the third is the one that keeps the teardown
+ * safe:
+ * - a string  — the pin was set, so release restores exactly that value;
+ * - `undefined` — the pin was NOT set when this fixture installed its own,
+ *   so release deletes it (it is the fixture's own pin being removed);
+ * - `null` — THIS FIXTURE NEVER INSTALLED THE PINS, so release does nothing at
+ *   all with that member.
+ *
+ * WHY `null` AND NOT `undefined` OR A MISSING FIELD. The fault arm of
+ * `makeFixture` returns a fixture whose recipe died BEFORE the pins were
+ * installed (the pins are the last thing the recipe sets). Every consumer calls
+ * `releaseFixture` unconditionally in its `finally`, and a member that meant
+ * "was unset" makes that release `delete` the HOST's pin — so a fixture that
+ * never set anything tears down pins it never touched, and every case after it
+ * resolves through the non-override branch and writes rows into the real
+ * per-clone review ledger or the developer's `~/.pi`, exactly the hazard this
+ * file's jsdoc calls load-bearing. Measured on the shipped functions with both
+ * host pins set: `before=["/host/ledger.json","/host/agent"] after=[null,null]`.
+ * It is NEW behaviour — before the `{problem}` channel a faulting `makeFixture`
+ * threw, so no `finally` ever ran. `undefined` cannot carry both meanings,
+ * because it already means "delete" and that is the dangerous one; so the skip
+ * signal is a distinct value the type makes unmissable: `priorEnv` cannot
+ * express "unset the host's value" for a fixture that never set it. The two
+ * representations are one keystroke apart and only one is safe, which is why the
+ * sentinel is spelled out here rather than inferred at the call site. */
 export interface FixtureEnv {
-  ledgerFile: string | undefined;
-  agentDir: string | undefined;
+  ledgerFile: string | undefined | null;
+  agentDir: string | undefined | null;
 }
 
 /** Build an isolated clone whose head carries a fix in a DIFFERENT file, so the
@@ -151,7 +183,12 @@ export function makeFixture(): ConfirmationFixture {
     dir,
     ledgerFile,
     headSha: "",
-    priorEnv: { ledgerFile: undefined, agentDir: undefined },
+    // `null`, NOT `undefined`, on both members. `undefined` is the record that
+    // says "this pin was unset when I installed mine, so delete it on release" —
+    // and this fixture installed NOTHING. `null` is the sentinel `releaseFixture`
+    // reads as "leave this variable alone": see `FixtureEnv` for the measurement
+    // of what the one-keystroke difference does to the host's pins.
+    priorEnv: { ledgerFile: null, agentDir: null },
     problem: `fixture: ${why}`.slice(0, 240),
   });
   try {
@@ -213,12 +250,27 @@ export function makeFixture(): ConfirmationFixture {
  * than unpinning the process. */
 /** What `releaseFixture` needs from its argument: the record `makeFixture` kept
  * of the env it replaced. A test that owns its own pins (it set them itself
- * rather than through `makeFixture`) hands back an object of this shape. */
+ * rather than through `makeFixture`) hands back an object of this shape. A
+ * faulted fixture's record carries `null` on both members, which `releaseFixture`
+ * reads as "leave the host's pins alone" — see `FixtureEnv`. */
 export interface ReleaseTarget {
   priorEnv: FixtureEnv;
 }
 
 export function releaseFixture(f: ReleaseTarget): void {
+  // A `null` member means this fixture never installed the pins, so there is
+  // nothing of ours to take back and NO reason to touch the variable — the
+  // host's value stays exactly as it is. Checked FIRST, because `null` must
+  // never fall through to the `delete` arm below. Both members are tested in
+  // one condition: the only value that produces a `null` is `unusable()`, which
+  // sets both, and a half-installed release is not a state this type allows.
+  if (f.priorEnv.ledgerFile === null || f.priorEnv.agentDir === null) {
+    // A fixture that never installed the pins leaves the env exactly as it found
+    // it: no delete, no write, and no cache reset — nothing this call would
+    // change is state the failed build moved. See `FixtureEnv` for the hazard
+    // this arm exists to close.
+    return;
+  }
   if (f.priorEnv.ledgerFile === undefined) delete process.env[LEDGER_ENV];
   else process.env[LEDGER_ENV] = f.priorEnv.ledgerFile;
   if (f.priorEnv.agentDir === undefined) delete process.env[AGENT_DIR_ENV];
@@ -241,19 +293,45 @@ export function releaseFixture(f: ReleaseTarget): void {
  * function is the counter-witness on the SHARED original — a test asserts
  * absence through it, so the autofix reddens here and not only there.
  *
- * ALL FOUR BRANCHES ARE JUDGED, and where each is judged. The two "was unset"
- * arms (a pin the fixture found absent must be ABSENT after release) are
- * witnessed by the `unset_case` at the foot of
- * `test-review-findings-window-guards-env.ts`, including an arm that writes the
- * literal string back and requires exactly one problem naming that pin; the two
- * "was set" arms (a pin the fixture found set must EQUAL what it recorded) by the
- * `restore` case in the same file. The split that moved these cases out of
- * `test-review-findings-window-guards.ts` deleted the unset-arm witnesses and
- * left this comment claiming they existed — the claim is now the fact, and a
- * future split that drops one case reddens nothing but this paragraph, which is
- * the only place the four-branch contract is stated. */
+ * WHAT IS JUDGED, ARM BY ARM — measured, not asserted. There are four arms and
+ * each was tested by deleting its BODY in a compiler-valid mutant (whole copy
+ * of the repo under /tmp, `bun run` of the witness file, red line recorded):
+ * - ledger / was-set   → RED   (`restore: a corrupted LEDGER restore is exactly
+ *   one problem naming that pin`) — witnessed by the `restore` case.
+ * - ledger / was-unset → RED   (`release: an "unset" pin re-pinned to the
+ *   literal string is exactly one problem naming that pin`) — witnessed by the
+ *   `unset_case`, whose inverted probe writes the literal string back and
+ *   requires exactly one problem naming that pin.
+ * - agent  / was-set   → RED   (`restore: a corrupted AGENT_DIR restore is
+ *   exactly one problem naming that pin`) — witnessed by the `restore` case's
+ *   agent-side corruption, which the split left in place.
+ * - agent  / was-unset → **NOT WITNESSED by the arms below on its own.** The
+ *   `unset_case`'s inverted probe corrupts only the LEDGER pin, so with the
+ *   agent arm body deleted that case still sees "exactly one problem naming
+ *   PI_ENSEMBLE_REVIEW_LEDGER_FILE" and stays green; the mutant measured
+ *   `reds=0, greens=17`. The `unset_case`'s direct `!(NAME in process.env)`
+ *   check does fail under the same mutant, because the release is the thing
+ *   that must have deleted the key — so the BEHAVIOUR is caught even where this
+ *   predicate's arm is not. What was added is the mirror of the ledger probe for
+ *   `PI_AGENT_DIR`, which makes the arm itself able to go red.
+ *
+ * A future split that drops one of these cases reddens nothing but this
+ * paragraph, which is the only place the arm-by-arm contract is stated — so it
+ * states what is measured and names the one arm that needed its own probe.
+ * A branch that cannot go red is not coverage, whatever this comment says. */
 export function assertUnset(f: ReleaseTarget, label: string): string[] {
   const problems: string[] = [];
+  if (f.priorEnv.ledgerFile === null || f.priorEnv.agentDir === null) {
+    // A fixture that never installed the pins has no release to audit. Without
+    // this arm the sentinel would fall into the `=== undefined` branch below and
+    // report the host's own pin as a leak — `null` means "nothing to judge",
+    // which is a different answer from "nothing wrong", and a witness that
+    // returns `[]` for a case it never ran is the silent-green shape this file
+    // exists to remove.
+    return [
+      `${label}: the fixture never installed the pins (priorEnv=${JSON.stringify(f.priorEnv)}), so its release judges nothing`,
+    ];
+  }
   if (f.priorEnv.ledgerFile === undefined) {
     if (LEDGER_ENV in process.env) {
       problems.push(
@@ -306,18 +384,6 @@ export function setupOk<T extends { problem: string }>(
   return ok;
 }
 
-/** `setupOk` specialised to the shape `seed` returns, so a call site narrows to
- * `s.row` instead of re-declaring the record. */
-export function seedOk(
-  s: SeedResult,
-  label: string,
-  note: (msg: string) => void,
-): s is { row: StoredFinding; problem: "" } {
-  const ok = s.problem === "" && (s as { row?: StoredFinding }).row !== undefined;
-  if (!ok) note(`${label}: setup failed (${s.problem || "seed produced no row"})`);
-  return ok;
-}
-
 /** `setupOk` specialised to `rowsOf`'s shape. */
 export function rowsOk(
   r: { rows: StoredFinding[]; problem: string },
@@ -339,128 +405,4 @@ export function rowsOk(
  * signature, and a second serializer is a second thing to get wrong. */
 export function writeLedger(file: string, entries: LedgerEntry[]): void {
   writeFileSync(file, JSON.stringify({ entries }, null, 2), "utf8");
-}
-
-/** What `seed` hands back: the filed row, or the reason it is not there. */
-export type SeedResult = { row: StoredFinding; problem: "" } | { problem: string };
-
-/** The store's own answer for one round, widened with a `problem` channel.
- *
- * WHY THE CHANNEL IS ON THE RETURN AND NOT IN A `throw`. `RecordOutcome` is
- * already `{ ok: false, reason }` for a round the STORE refused, and every one
- * of these three helpers had a caller that treated that as "assert it and carry
- * on" — so a refused round reached the assertions below it as a row that was
- * never filed. A `throw` was worse: these helpers are called before the case's
- * `try` is entered, so the exception escaped the file and bun printed ZERO `✗`
- * lines over a run in which the faulted case — and, because the file aborted,
- * every case after it — did not run. `{ problem }` is the shape that reddens by
- * name, sets the exit code, and still lets the rest of the file run.
- *
- * `problem` is the DISCRIMINANT, not just a field: `""` means the round
- * recorded and its `decisions` / `resolved` / `lapsed` are present, any other
- * string means it did not. A single-armed `problem: string` would leave the
- * compiler unable to settle which arm a guarded value is on once the guard
- * crosses a `finally` — a real shape in these files, where the case body is
- * inside `try` and its teardown is not. */
-export type SetupOutcome =
-  | {
-      problem: "";
-      ok: true;
-      decisions: Decision[];
-      carried: Finding[];
-      resolved: ResolvedNotice[];
-      setAside?: SetAsideNotice[];
-      lapsed?: ConfirmationLapse[];
-    }
-  // A PLAIN object type on the fault arm, not an intersection. `setupOk` below
-  // narrows with `T & { problem: "" }`, and if the fault arm were itself an
-  // intersection the narrowed union is `{…} | (A & B & {problem:""})` — an arm
-  // whose discriminant sits inside an intersection, which TypeScript will not
-  // discriminate. The symptom is not a confusing error but NO error: `out.resolved`
-  // reported as absent on an arm that has it, which is how a guard that works
-  // becomes a guard that silently does not.
-  | { problem: string; ok?: false; reason?: string };
-
-/** Widen a round the caller drove DIRECTLY through the store's entry point into
- * the same `{ problem }` shape `reReport` / `silentRound` return. Exported so a
- * call site that needs `recordFindingRunOutcome` verbatim (this repo's untouched
- * file drives a round with its own `findings` / `now`) gets ONE failure
- * convention rather than inventing a second beside the first — the divergence
- * this file's channels exist to prevent. */
-export const asSetup = (out: RecordOutcome, label: string): SetupOutcome =>
-  // Written as two returns, not `{ problem: "" as const, ...out }`: spreading a
-  // discriminated union makes the RESULT a union again and the compiler cannot
-  // settle which arm it is — the same reason the row constructions in
-  // `window-guards-helpers.ts` branch per arm instead of spreading. Each return
-  // here is one arm, checked field by field against it.
-  out.ok
-    ? {
-        problem: "",
-        ok: true,
-        decisions: out.decisions,
-        carried: out.carried,
-        resolved: out.resolved,
-        setAside: out.setAside,
-        lapsed: out.lapsed,
-      }
-    : { problem: `${label}: ${out.reason}`, ok: false, reason: out.reason };
-
-/** Seed an open CRITICAL row through the real store (real hashes, real ids). */
-export async function seed(dir: string, headSha: string): Promise<SeedResult> {
-  const out = await recordFindingRunOutcome({
-    cwd: dir,
-    branch: "feature/work",
-    headSha,
-    findings: [FINDING],
-    review: "full",
-  });
-  if (!out.ok) return { problem: `seed: filing round failed: ${out.reason}` };
-  const read = await rowsOf(dir);
-  if (read.problem !== "") return { problem: read.problem };
-  const row = read.rows.find((r) => r.severity === "CRITICAL");
-  if (!row) return { problem: "seed: filing round produced no CRITICAL row" };
-  return { row, problem: "" };
-}
-
-/** A round that re-reports the finding, with confirmations consulted. */
-export async function reReport(
-  dir: string,
-  headSha: string,
-  patchId: string,
-): Promise<SetupOutcome> {
-  return asSetup(
-    await recordFindingRunOutcome({
-      cwd: dir,
-      branch: "feature/work",
-      headSha,
-      findings: [FINDING],
-      review: "full",
-      confirmFixes: true,
-      patchId,
-      now: Date.now() + 10_000,
-    }),
-    "reReport",
-  );
-}
-
-/** A round SILENT about the finding (the untouched-row shape), confirmations on. */
-export async function silentRound(
-  dir: string,
-  headSha: string,
-  patchId: string,
-  now: number,
-): Promise<SetupOutcome> {
-  return asSetup(
-    await recordFindingRunOutcome({
-      cwd: dir,
-      branch: "feature/work",
-      headSha,
-      findings: [],
-      review: "full",
-      confirmFixes: true,
-      patchId,
-      now,
-    }),
-    "silentRound",
-  );
 }
