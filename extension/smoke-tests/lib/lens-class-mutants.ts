@@ -48,6 +48,14 @@
  *   `\n`-in-class (`[a\t\r]`)  an escape-aware tokenizer that un-escapes yields
  *              literal `n`, so the class silently becomes `{a,t,r}`.
  *   trailing escape (`[a-z-\]`)  an escape with nothing after it.
+ *   lone quantifier (`[]++]`, `[]?+]`)  a member deletion can leave a quantifier
+ *              with nothing to repeat. The round-trip reproduces the text, so P0
+ *              passes, and `new RegExp` throws `nothing to repeat`. `admits` now
+ *              wraps that construction in the same `ClassRefused` as every other
+ *              refusal, so this shape names itself too — before it it was a bare
+ *              `SyntaxError`, which is loud but not named, and "loud" is not what
+ *              the sentence below promises. (No shipped class reaches it: the
+ *              three that the tables use generate 5/5/7 rows.)
  *
  * The refusal is a THROW naming the shape. A generator that quietly produced a
  * different set is the failure mode this whole branch exists to close.
@@ -182,19 +190,49 @@ function representativeOf(token: ClassToken): string {
 
 /** Does `ch` fall inside this class literal, evaluated the way JS evaluates it? */
 function admits(literal: string, ch: string): boolean {
-  return new RegExp(`^(?:${literal})$`).test(ch);
+  // Wrapped, not left raw. `assertCompilesAsClass` below already refuses a
+  // mutant that does not COMPILE, but P3 evaluates `admits` on a shape the
+  // compile check never sees: a lone quantifier left behind where a member was
+  // deleted (`[]++]`, `[^]++]`, `[]?+]`, `[]+*]`) round-trips through
+  // `render(tokenize(…))` untouched and then makes `new RegExp` throw
+  // `Invalid regular expression: nothing to repeat`. Left raw that is a bare
+  // `SyntaxError` with no name in it, while this file's header promises "the
+  // refusal is a THROW naming the shape" — the two disagreed, and the promise
+  // is the one a reader relies on. Same `ClassRefused` the other preconditions
+  // raise, and the message carries the shape, the offending form, and the
+  // underlying reason.
+  const form = `^(?:${literal})$`;
+  let re: RegExp;
+  try {
+    re = new RegExp(form);
+  } catch (e) {
+    throw new ClassRefused(
+      `${JSON.stringify(literal)} cannot be evaluated as a class member test: ${form} does not compile — ${(e as Error).message} (a lone quantifier with nothing to repeat, which a member deletion can leave behind)`,
+    );
+  }
+  return re.test(ch);
 }
 
 /** P2's probe characters. Deliberately NOT derived from the shipped matcher's own
  * alphabet: `TERMINATOR`'s `?`, `,`, `;` and `:` are covered by no `PATH_CHAR`
  * representative, and the table publishes three of them as measured UNPINNED 0s.
  * A refusal keyed to "the probes cannot see this deletion" would delete rows whose
- * 0 is a measurement (a sweep over 7350 spellings found no summary whose verdict
- * moves), not a blind spot — the same error inverted. What this gate refuses is a
- * class that admits NOTHING or EVERYTHING, which no wider probe set can rescue
- * because such a class is broken for every character. A fixed set (rather than
- * hard-coding `a`/`\u0000`) is what lets one check serve a positive class (admits
- * `a`, refuses `\n`) and a negated one (`TERMINATOR` admits `!`, refuses `a`). */
+ * 0 is a measurement — the corpus carries the neighbour-sweep fixtures that a
+ * reader can re-run (`lens-mutant-corpus.ts`, and `runMutant` names the fixtures
+ * each mutant reddens) — and not a blind spot: the same error inverted. What this
+ * gate refuses is a class that admits NOTHING or EVERYTHING, which no wider probe
+ * set can rescue because such a class is broken for every character. A fixed set
+ * (rather than hard-coding `a`/`\u0000`) is what lets one check serve a positive
+ * class (admits `a`, refuses `\n`) and a negated one (`TERMINATOR` admits `!`,
+ * refuses `a`).
+ *
+ * WHICH GATE THIS IS, since the name invites the wrong reading: P2 is an
+ * admits-nothing / admits-everything gate, NOT a discriminating-power gate. A
+ * mutant that separates only two of these eleven probes passes — `[\ta!]` is
+ * accepted — because refusing a weak-but-legal class is P3's and the corpus's
+ * job, not this gate's, and P3 is what makes a deletion whose verdict no fixture
+ * moves visible rather than silently accepted. Read this gate as "is this still
+ * a class at all", not as "does this class still decide anything". */
 const PROBE_CHARS = ["a", "Z", "0", "_", ".", "/", "+", "-", "!", " ", "\n"];
 
 /** Does this literal compile as a class, in BOTH positions the matcher puts one?

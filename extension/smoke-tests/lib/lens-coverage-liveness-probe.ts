@@ -122,9 +122,21 @@ export function acquireTickerArms(
  * the children rather than passed in. This is the only arm that can see
  * `allLanesProducedEvidence` hard-wired to `true` at its definition site — the
  * direct arms above pass the flag as an argument and measure 0 reds under that
- * mutant (shipped `16a748e9…` vs mutant `3b1b7868…`, both fetchable with
- * `git cat-file -p`; `findingClaimedFile` `false → true`, and the three sibling
- * coverage suites stay green — see this file's header for the run).
+ * mutant (`findingClaimedFile` goes `false → true`, and the three sibling
+ * coverage suites stay green).
+ *
+ * What this arm's figure is NOT, stated because the last two revisions of this
+ * header got it wrong: the shipped/mutant pair is not a pair of hashes a reader
+ * fetches. The shipped file is `git rev-parse
+ * HEAD:extension/src/lens-review-fanout.ts` and the mutant is
+ * `LIVENESS_MUTANT_BLOB`, and the only one of those two a run verifies is the
+ * mutant — `assertLivenessMutantReds` persists it with `git hash-object -w`,
+ * checks `git cat-file -t` answers `blob`, and drives it. The third hash an
+ * earlier revision cited here (`3b1b7868…`) was never a git object at all
+ * (`git cat-file -t 3b1b7868` answers `fatal: Not a valid object name`), which
+ * is why no claim in this file rests on it any more: a blob a reader cannot
+ * fetch is a claim, not a witness — the same rule `lens-mutant-corpus.ts` states
+ * for a number whose script was never committed.
  *
  * `openBatch` is injected by the caller so the deck's acquire/release bookkeeping
  * stays with the file that owns the deck; `check` likewise stays with the
@@ -201,7 +213,14 @@ export function coverageClaimUnitArms(
  * not a claim. */
 export const LIVENESS_MUTANT_BLOB = "6b0864600b237430c596810b6439c601becba149";
 
-/** The shipped `lens-review-fanout.ts` blob, the other half of the pair. */
+/** The shipped `lens-review-fanout.ts` blob, the other half of the pair.
+ *
+ * VERIFIED BY A RUN, the way `LIVENESS_MUTANT_BLOB` is: `assertLivenessMutantReds`
+ * reads this exact path out of the working tree, asserts the bytes hash to it, and
+ * drives the shipped `runLensFanOut` through the same scenario as the mutant. It is
+ * a constant rather than a `git rev-parse` in a comment so the assertion is one
+ * comparison a reader can see fail: the file moves whenever anyone edits it, and a
+ * stale hash here used to be the half of the pair nobody checked. */
 export const LIVENESS_SHIPPED_BLOB = "16a748e9579ba7238e52cc96e52da4906bb8feac";
 
 /**
@@ -228,6 +247,27 @@ export async function assertLivenessMutantReds(
 ): Promise<void> {
   const fanoutPath = new URL("../../src/lens-review-fanout.ts", import.meta.url);
   const shipped = readFileSync(fanoutPath, "utf8");
+
+  // The shipped half of the pair, verified the same way the mutant half is. The
+  // header cites this blob and a reader is entitled to fetch it, so the run
+  // confirms the bytes it is about to mutate ARE that object — before any
+  // mutation, so a mismatch names the shipped file rather than the mutant. A
+  // constant nobody checks is how the `3b1b7868…` claim survived two revisions.
+  const shippedHash = execFileSync("git", ["hash-object", "--stdin"], {
+    encoding: "utf8",
+    input: shipped,
+  }).trim();
+  check(
+    shippedHash === LIVENESS_SHIPPED_BLOB,
+    `canary: the shipped fan-out on disk hashes to the blob this file cites (${LIVENESS_SHIPPED_BLOB}; this tree reads ${shippedHash}) — the pair a reader fetches is the pair that was measured, and a product edit that moved the file makes this red rather than leaving the header citing a stale object`,
+  );
+  const shippedType = execFileSync("git", ["cat-file", "-t", LIVENESS_SHIPPED_BLOB], {
+    encoding: "utf8",
+  }).trim();
+  check(
+    shippedType === "blob",
+    `canary: \`git cat-file -t ${LIVENESS_SHIPPED_BLOB.slice(0, 8)}\` answers \`blob\` — the shipped half is a fetchable git object too, not just the mutant`,
+  );
 
   // The two-line initialiser, matched exactly — a replacement that found nothing
   // would be a no-op mutant that stays green for the wrong reason, which is the
