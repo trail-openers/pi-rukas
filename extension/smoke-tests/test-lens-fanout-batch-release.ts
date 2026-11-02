@@ -37,6 +37,7 @@ import {
   coverageClaimUnitArms,
   acquireTickerArms,
   silentLaneRoundArms,
+  assertLivenessMutantReds,
 } from "./lib/lens-coverage-liveness-probe.ts";
 import type { Finding, LensRunResult } from "../src/lens-review-types.ts";
 import { LENS_ROSTER } from "../src/lens-roster.ts";
@@ -455,19 +456,18 @@ await clearIsNotQuietGated();
  * pin the conjunction's shape (they pass the flag in, so dropping the conjunct
  * from the AND reddens them). The END-TO-END round below pins the flag as the
  * fan-out COMPUTES it: hard-wiring `allLanesProducedEvidence = true` at its
- * definition site (blob `3b1b7868…`) reddens NOTHING among the direct arms —
- * they judge the argument, not the expression — and only this round catches it.
+ * definition site reddens NOTHING among the direct arms — they judge the argument,
+ * not the expression — and only this round catches it.
  *
- * Measured pair, same fixture, only the flag's expression differing. Both blobs
- * are fetchable (`git cat-file -p <hash>`); an earlier revision cited a mutant
- * blob that does not exist in the object store, so the proof half of the pair
- * could not be checked, and the numbers were re-measured to write these:
+ * Measured pair, same fixture, only the flag's expression differing. The mutant
+ * is no longer a hash a reviewer must trust: `assertLivenessMutantReds` (below)
+ * builds it, persists it with `git hash-object -w`, and drives the silent round
+ * through it, so the pair is a run, not a citation:
  *   shipped  (`16a748e9579ba7238e52cc96e52da4906bb8feac`) → `findingClaimedFile === false`
- *   mutant   (`3b1b78683c9e6e1993316a68fc57f60d591f30c5`) → `findingClaimedFile === true`
- * The mutant is that file with the two-line initialiser replaced by
- * `const allLanesProducedEvidence = true;`, and under it this file prints exactly
- * one red — the `findingClaimedFile` canary — while the denominator, routing and
- * vacuous-every suites print none. */
+ *   mutant   (`6b0864600b237430c596810b6439c601becba149`) → `findingClaimedFile === true`
+ * (An earlier revision cited a mutant blob `3b1b7868…` that was never a git object
+ * — the `hash-object`-without-`-w` defect — so its "1 red" was a pasted line; that
+ * claim is now an executable assertion instead.) */
 coverageClaimUnitArms(check);
 
 /** (4b) THE END-TO-END WITNESS for the same flag, driving the fan-out rather
@@ -482,6 +482,13 @@ coverageClaimUnitArms(check);
  * built in `lib/lens-coverage-liveness-probe.ts`, next to the direct arms it
  * complements. */
 await silentLaneRoundArms(check, openBatch);
+
+/** (4c) THE EXECUTABLE MUTANT PROOF for the liveness conjunct: the SAME scenario
+ * run through the `allLanesProducedEvidence = true` mutant, so the red is SEEN,
+ * not transcribed — and its blob is checked against `LIVENESS_MUTANT_BLOB` so a
+ * `git cat-file -p 6b086460…` fetches the exact bytes measured (see the probe lib
+ * for why that replaced two unfetchable hash citations). */
+await assertLivenessMutantReds(check, openBatch);
 
 // A stale assertion import keeps the module's contract honest: `assert` is
 // used for the invariant that must throw loudly rather than report softly.

@@ -27,196 +27,174 @@
  * string, which is the defect class this branch exists to close.
  */
 
+import { readFileSync } from "node:fs";
 import { accountedFiles } from "../../src/lens-review-coverage.ts";
 import { mutantsFor, type ClassMutant } from "./lens-class-mutants.ts";
+import { CORPUS, type Fixture } from "./lens-mutant-corpus.ts";
 
-/** The three classes `mentionsPath` interpolates, at their shipped values.
- * Read them from the source rather than trusting this list:
- * `grep -n '^const \(NOT_PATH\|TERMINATOR\|PATH_CHAR\)' src/lens-review-coverage.ts`. */
+// Re-exported so the coverage suites and `test-lens-class-mutants.ts` keep a
+// single import site (`./lens-mutant-harness.ts`) for the corpus the mutants run
+// over; the corpus DATA itself lives in `lens-mutant-corpus.ts` along the AGENTS
+// §12 size seam.
+export { CORPUS, type Fixture } from "./lens-mutant-corpus.ts";
+
+/**
+ * The FOUR classes `mentionsPath` interpolates, at their shipped values — read
+ * them from the source rather than trusting this list:
+ * `grep -n '^const \(NOT_PATH\|NOT_LINE_BREAK\|TERMINATOR\|PATH_CHAR\)' src/lens-review-coverage.ts`.
+ *
+ * `NOT_LINE_BREAK` is here for the reason the branch exists: the earlier
+ * version of this file carried THREE, hard-coded the `[^\r\n]` position in the
+ * template instead, and printed a per-member table that had never mutated a
+ * class the matcher actually reads. A class nobody deletes is a class whose
+ * mutations are invisible, and the corpus proved blind to it (see
+ * `test-lens-class-mutants.ts`). It is not in `PathCharClass` in the source —
+ * that union types only the two mirror constants — so it is NOT a member of
+ * `Flank`: `mutantsFor` refuses a negated class as an `assertStillAClass`
+ * admits-everything case, so there is no generated `NOT_LINE_BREAK` table yet.
+ * Its fidelity is instead gated two ways: `assertHarnessFidelity` refuses to
+ * run the corpus until the four values, the escape regex, and the template
+ * literal all match the source verbatim, and the corpus carries the `\r`
+ * boundary fixtures that redden when `[^\r\n]` loses its `\r` member.
+ */
 export const SHIPPED = {
   PATH_CHAR: "[A-Za-z0-9_./+-]",
   NOT_PATH: "[^A-Za-z0-9_./+-]",
   TERMINATOR: "[!?,.;:\\-]",
+  NOT_LINE_BREAK: "[^\\r\\n]",
 } as const;
 
-/** Which of the constants a table row mutated. */
-export type Flank = keyof typeof SHIPPED;
+/** Which of the constants a per-member table row mutated. Deliberately EXCLUDES
+ * `NOT_LINE_BREAK`: its class is negated, so `mutantsFor` would refuse every
+ * mutant of it as an admits-everything case, and printing a row for it would be
+ * a `0` that was never measured. It is still a member of `SHIPPED`, and
+ * `assertHarnessFidelity` judges all four. */
+export type Flank = Exclude<keyof typeof SHIPPED, "NOT_LINE_BREAK">;
 
-/** One fixture: a summary, a denominator file, and the claim the suites expect. */
-export interface Fixture {
-  readonly name: string;
-  readonly summary: string;
-  readonly file: string;
-  readonly expected: "summary" | undefined;
-  /** The denominator this fixture asserts against. One file for the flank cases,
-   * the three-file set for the accounting cases — kept per-fixture so a red names
-   * one flank, exactly as the suites do. */
-  readonly denominator: readonly string[];
-}
-
-const THREE = ["src/a.ts", "src/b.ts", "src/c.ts"] as const;
-
-const f = (
-  name: string,
-  summary: string,
-  file: string,
-  expected: "summary" | undefined,
-  singleFile = false,
-): Fixture => ({
-  name,
-  summary,
-  file,
-  expected,
-  denominator: singleFile ? [file] : THREE,
-});
+/** The escape regex `mentionsPath` uses for the interpolated path. Spelled from
+ * char codes so this file has no regex-literal to drift: the fidelity assertion
+ * compares its SOURCE TEXT against the source's own `/…/g`, and a literal whose
+ * escapes were re-flowed by a formatter would compare unequal to itself. */
+const HARNESS_ESCAPE =
+  "/[" +
+  String.fromCharCode(46, 42, 43, 63, 94, 36, 123, 125, 40, 41, 124, 91, 92, 93, 92, 92) +
+  "]/g";
 
 /**
- * The corpus: every `summary`-claim assertion the two coverage suites make about
- * `mentionsPath`, plus the fixtures each flank member needs and the earlier
- * table did not have. Each entry maps 1:1 to an `assert` in a suite (or, for the
- * rows this branch adds, to an assertion this branch adds).
- *
- * A terminal-character fixture is always paired with a sibling in which the same
- * character is followed by a space. Without the sibling, `undefined` is the
- * answer for every mutation of the class — an assertion that cannot go the other
- * way witnesses nothing.
+ * The `mentionsPath` template with its four classes as `${placeholder}` markers,
+ * assembled by READING the product's own `mentionsPath` line and swapping its four
+ * interpolations for markers. It is not hand-typed, so it cannot drift from the
+ * source it mirrors; `assertHarnessFidelity` still compares it byte-for-byte, so a
+ * product edit to the template (adding a flank, changing the lookahead, dropping an
+ * arm) makes the swap produce something other than the four-marker form and reddens
+ * the run instead of letting `runMutant` measure a stale template while `runShipped`
+ * still read green against the real `accountedFiles`.
  */
-export const CORPUS: readonly Fixture[] = [
-  // — the shared `"src/b.ts is fine as written."` block —
-  f("a closing summary naming the file accounts for it", "src/b.ts is fine as written.", "src/b.ts", "summary"),
-  f(
-    "canary: the file NO evidence mentions is the unaccounted one — before this gate it was invisible",
-    "src/b.ts is fine as written.",
-    "src/c.ts",
-    undefined,
-  ),
-  // — natural citations —
-  f("a summary that NAMES a file as a path token (src/a.ts)", "Looked at src/a.ts and it is fine.", "src/a.ts", "summary"),
-  f("a summary that NAMES a file as a path token (src/c.ts)", "Notes:\n- src/c.ts", "src/c.ts", "summary"),
-  f(
-    "canary: a summary that NAMES both files as path tokens still accounts for both (src/a.ts)",
-    "Read src/a.ts and src/b.ts line by line; no issues from this lens.",
-    "src/a.ts",
-    "summary",
-  ),
-  f(
-    "canary: a summary that NAMES both files as path tokens still accounts for both (src/b.ts)",
-    "Read src/a.ts and src/b.ts line by line; no issues from this lens.",
-    "src/b.ts",
-    "summary",
-  ),
-  // — sentence closings, one row per TERMINATOR member a fixture exercises —
-  f("canary: a path that ends a SENTENCE still accounts — src/a.ts", "Reviewed src/a.ts.", "src/a.ts", "summary"),
-  f("canary: a path that ends a SENTENCE still accounts — src/b.ts", "No issues in src/b.ts.", "src/b.ts", "summary"),
-  f("canary: a path that ends a SENTENCE still accounts — src/c.ts (;)", "Notes: src/c.ts; fine.", "src/c.ts", "summary"),
-  f(
-    "canary: a path that ends a line with the markdown bullet still accounts — src/a.ts",
-    "Reviewed src/a.ts-",
-    "src/a.ts",
-    "summary",
-  ),
-  // — recitals: the path occurs, and only inside quoted diff text —
-  f("canary: a path that occurs ONLY inside a recited code-block diff accounts for nothing", recitalDiff(), "src/a.ts", undefined),
-  f("canary: a path that occurs ONLY inside a recited code-block diff accounts for nothing (src/b.ts)", recitalDiff(), "src/b.ts", undefined),
-  // — git's own header spellings, kept as negatives —
-  f("canary: git's own headers — +++ b/src/a.ts and +++ \"b/src/b.ts\" — account for nothing (a)", gitHeaders(), "src/a.ts", undefined),
-  f("canary: git's own headers — +++ b/src/a.ts and +++ \"b/src/b.ts\" — account for nothing (b)", gitHeaders(), "src/b.ts", undefined),
-  f("canary: a path inside git's own header spelling is not a citation (\"+src/a.ts\")", "the diff shows:\n+src/a.ts", "src/a.ts", undefined, true),
-  f("canary: a path inside git's own header spelling is not a citation (\"+++src/a.ts\")", "the diff shows:\n+++src/a.ts", "src/a.ts", undefined, true),
-  f("canary: a path inside git's own header spelling is not a citation (\"@@ … @@\\n+src/a.ts\")", "@@ -1,2 +1,3 @@\n+src/a.ts", "src/a.ts", undefined, true),
-  f("canary: a path inside git's own header spelling is not a citation (\"--- a/src/a.ts\")", "--- a/src/a.ts", "src/a.ts", undefined, true),
-  f("canary: a path inside git's own header spelling is not a citation (\"+++ b/src/a.ts\")", "+++ b/src/a.ts", "src/a.ts", undefined, true),
-  f("canary: a path inside git's own header spelling is not a citation ('+++ \"b/src/a.ts\"')", '+++ "b/src/a.ts"', "src/a.ts", undefined, true),
-  // — the right flank refusing a LONGER path —
-  f(
-    "canary: the terminator arm does not turn a LONGER path into a citation of a shorter one",
-    "See src/b.ts.spec",
-    "src/b.ts",
-    undefined,
-  ),
-  // — the flank-escape probe's own cases —
-  f("canary: a path at the start of a line opens a citation (NL_OPEN)", "Reviewed the delta.\nsrc/c.ts is fine", "src/c.ts", "summary", true),
-  f("canary: a path that starts the summary itself is a citation (CARET_OPEN)", "src/c.ts is fine", "src/c.ts", "summary", true),
-  f(
-    "canary: a denominator path containing regex metacharacters is matched LITERALLY",
-    "Reviewed src/(legacy).ts and fixed it",
-    "src/(legacy).ts",
-    "summary",
-    true,
-  ),
-  f(
-    "canary: a metacharacter path is not matched by text that merely fits its UNESCAPED pattern",
-    "see src/legacy.ts now",
-    "src/(legacy).ts",
-    undefined,
-    true,
-  ),
-  f("canary: a path followed by a hyphenated suffix is not a citation (PATH_CHAR_HYPHEN)", "See src/b.ts-spec", "src/b.ts", undefined, true),
-  f("canary: a path followed by a terminal `+` is not a citation (PATH_CHAR_PLUS)", "See src/b.ts+", "src/b.ts", undefined, true),
-  f("canary: a path followed by a terminal slash is not a citation (PATH_CHAR_SLASH)", "See src/b.ts/", "src/b.ts", undefined, true),
-  // — THE LEFT-FLANK AND TERMINAL-MEMBER FIXTURES the old table never had.
-  //    Each terminal row is paired with a sibling that must still account, so
-  //    the pair says "this character is a path character" and not "this text
-  //    never matches". —
-  f("canary: a path terminated by a DIGIT is not a citation of the shorter file", "See src/b.ts0", "src/b.ts", undefined, true),
-  f("canary: a path followed by a space and a digit still accounts", "See src/b.ts 0 days later", "src/b.ts", "summary", true),
-  f("canary: a path terminated by an UNDERSCORE is not a citation of the shorter file", "See src/b.ts_", "src/b.ts", undefined, true),
-  f("canary: a path followed by a space and an underscore still accounts", "See src/b.ts _reviewed_", "src/b.ts", "summary", true),
-  f("canary: a path terminated by an UPPERCASE letter is not a citation of the shorter file", "See src/b.tsT", "src/b.ts", undefined, true),
-  f("canary: a path followed by a space and an uppercase letter still accounts", "See src/b.ts TODO later", "src/b.ts", "summary", true),
-  // — the LEFT flank's own boundary: a neighbour that is a path character must
-  //    refuse, and the same neighbour after a space must not — which is the pair
-  //    that makes a NOT_PATH member row a witness rather than a tautology. —
-  f("canary: a digit glued to the left of a path refuses the citation", "x0src/b.ts is fine", "src/b.ts", undefined, true),
-  f("canary: a digit after a space opens the citation", "x0 src/b.ts is fine", "src/b.ts", "summary", true),
-  f("canary: an underscore glued to the left of a path refuses the citation", "x_src/b.ts is fine", "src/b.ts", undefined, true),
-  f("canary: an underscore after a space opens the citation", "x_ src/b.ts is fine", "src/b.ts", "summary", true),
-  f("canary: a `/` glued to the left of a path refuses the citation", "x/src/b.ts is fine", "src/b.ts", undefined, true),
-  f("canary: a `/` after a space opens the citation", "x/ src/b.ts is fine", "src/b.ts", "summary", true),
-  f("canary: a `+` glued to the left of a path refuses the citation", "x+src/b.ts is fine", "src/b.ts", undefined, true),
-  f("canary: a `+` after a space opens the citation", "x+ src/b.ts is fine", "src/b.ts", "summary", true),
-  f("canary: a `-` glued to the left of a path refuses the citation", "x-src/b.ts is fine", "src/b.ts", undefined, true),
-  f("canary: a `-` after a space opens the citation", "x- src/b.ts is fine", "src/b.ts", "summary", true),
-  // The `.` member of NOT_PATH needs its own pair: with `.` in the class a path
-  // glued after a full stop is not a citation, and with `.` dropped from the
-  // class it becomes one. Found by a sweep over left/right neighbour spellings
-  // (a 35-character neighbour alphabet under six lead-ins), which is also the
-  // evidence that no OTHER spelling moves for this mutant. The sweep script lived
-  // only in an uncommitted scratch dir and its printed count did not reproduce, so
-  // no figure is quoted here: the claim this fixture carries is the one a reader
-  // can check in two calls — `mutantsFor(SHIPPED.NOT_PATH)` gives the `.` mutant
-  // and `runMutant("NOT_PATH", "[^A-Za-z0-9_/+-]")` names the fixtures it reddens,
-  // this pair among them. A number whose script was never committed is a claim, not
-  // a witness; the run is.
-  f("canary: a full stop glued to the left of a path refuses the citation", ".src/b.ts is fine", "src/b.ts", undefined, true),
-  f("canary: a path after a full stop and a space still accounts", ". src/b.ts is fine", "src/b.ts", "summary", true),
-  // — the `+`/`+++` re-emission cases, spelled on their own so a NOT_PATH `+`
-  //    deletion has single-file-denominator reds and not only the multi-file
-  //    header ones —
-  f("canary: a re-emitted `+` header with no space is not a citation", "notes\n+src/a.ts", "src/a.ts", undefined, true),
-  f("canary: a re-emitted `+++` header with no space is not a citation", "notes\n+++src/a.ts", "src/a.ts", undefined, true),
-];
-
-function recitalDiff(): string {
-  const FENCE = String.fromCharCode(96, 96, 96);
-  return [
-    "Here is the diff I read, verbatim:",
-    FENCE + "diff",
-    "--- a/src/a.ts",
-    "+++ b/src/a.ts",
-    "@@ -1,2 +1,3 @@",
-    '+const spec = require("src/b.ts.spec");',
-    FENCE,
-    "All good.",
-  ].join("\n");
+function buildHarnessTemplate(src: string): string | null {
+  const raw = src.match(/`\(\?:\^\|\$\{NOT_PATH\}\)[\s\S]*?\$\{TERMINATOR\}[\s\S]*?`/);
+  if (!raw) return null;
+  return raw[0]
+    .slice(1, -1)
+    .replace("${NOT_PATH}", "§NOT_PATH§")
+    .replace("${escaped}", "§escaped§")
+    .replace("${PATH_CHAR}", "§PATH_CHAR§")
+    .replace("${NOT_LINE_BREAK}", "§NOT_LINE_BREAK§")
+    .replace("${TERMINATOR}", "§TERMINATOR§");
 }
 
-function gitHeaders(): string {
-  const Q = String.fromCharCode(34);
-  return ["Reviewed the change; the diff shows:", "+++ b/src/a.ts", `+++ ${Q}b/src/b.ts${Q}`, "All good."].join(
-    "\n",
-  );
+/** Where the product source lives, resolved from this file so the fidelity gate
+ * cannot be pointed at a stale copy by the caller's cwd. */
+const PRODUCT_SOURCE = new URL("../../src/lens-review-coverage.ts", import.meta.url);
+
+/**
+ * The gate that makes this harness's fidelity a RUN rather than a header
+ * sentence. It refuses, by throwing, whenever the mirror this file builds from
+ * has drifted from the source it claims to mirror. Four things are compared
+ * against the real `lens-review-coverage.ts`:
+ *
+ *   1. each of the four class literals (`const NAME = …`), so a member added,
+ *      removed, or re-spelled in the product reddens the run rather than
+ *      leaving `SHIPPED` measuring a class the matcher no longer uses;
+ *   2. the path-escape regex `/…/g`, so the harness cannot escape a metacharacter
+ *      path differently from the product it measures;
+ *   3. the whole `mentionsPath` template line, with the `\${…}` placeholders
+ *      restored, so the harness's template is the source's template verbatim.
+ *
+ * It runs at the top of `runShipped` and `runMutant`, the two entry points that
+ * consume the mirror. That placement is the point: `runShipped` drives the REAL
+ * `accountedFiles`, so if the mirror drifted it is `runMutant` that would be
+ * measuring a stale template — and this is what stops the pair from disagreeing
+ * silently, which is the exact failure class the earlier THREE-class version
+ * shipped with.
+ */
+export function assertHarnessFidelity(): void {
+  const src = readFileSync(PRODUCT_SOURCE, "utf8");
+  for (const name of ["PATH_CHAR", "NOT_PATH", "TERMINATOR", "NOT_LINE_BREAK"] as const) {
+    // The product spells two of the four as `String.raw\`…\`` and two as plain
+    // `"…"` string literals, so a value with `\r`/`\-` inside reads as two
+    // DIFFERENT byte sequences depending on which. The `SHIPPED` value is the
+    // JS-runtime class the matcher interpolates, so each spelling is decoded
+    // the way the compiler does before comparing — otherwise the harness would
+    // measure `[^\r\n]` (a caret + r + n, not a carriage return) and the
+    // baseline would silently agree with the wrong string.
+    const m = src.match(
+      new RegExp("const " + name + "(?::[^=\\n]+)? = (?:String\\.raw)?(?:`([^`]*)`|\"((?:[^\\\\\"]|\\\\.)*)\")"),
+    );
+    if (!m)
+      throw new Error(
+        `harness fidelity: no \`const ${name} = …\` found in lens-review-coverage.ts — the product removed or renamed the class this harness mirrors`,
+      );
+    const raw = m[1] ?? m[2] ?? "";
+    const productValue = m[1] !== undefined ? raw : raw.replace(/\\(.)/g, "$1");
+    if (productValue !== SHIPPED[name])
+      throw new Error(
+        `harness fidelity: SHIPPED.${name} = ${JSON.stringify(SHIPPED[name])} but the product reads ${JSON.stringify(productValue)} (raw ${JSON.stringify(raw)}) — the table measures a class the matcher no longer interpolates`,
+      );
+  }
+  const esc = src.match(/file\.replace\((\/[^\n]*?\/g), "\\\\\$&"\)/);
+  if (!esc)
+    throw new Error(
+      "harness fidelity: could not find the product's `file.replace(/…/g, …)` escape call in lens-review-coverage.ts",
+    );
+  if (esc[1] !== HARNESS_ESCAPE)
+    throw new Error(
+      `harness fidelity: the harness escapes with ${JSON.stringify(HARNESS_ESCAPE)} but the product uses ${JSON.stringify(esc[1])}`,
+    );
+  const tmpl = src.match(/`\(\?:\^\|\$\{NOT_PATH\}\)[\s\S]*?\$\{TERMINATOR\}[\s\S]*?\)`/);
+  if (!tmpl)
+    throw new Error(
+      "harness fidelity: could not find the product's `mentionsPath` template line in lens-review-coverage.ts",
+    );
+  // The independent expectations the product's template line must satisfy, in
+  // the source's own `\\`-spelling. These are hand-written constants, not derived
+  // from `tmpl`, so this is a real gate: if a product edit rewrites the template
+  // (reorders the arms, drops `\\r?`, changes the lookahead) the matched line no
+  // longer equals the expected line and the run reddens instead of `runMutant`
+  // silently measuring a stale template against a `runShipped` that read green.
+  const EXPECTED_LINE =
+    "`(?:^|${NOT_PATH})${escaped}(?:(?!${PATH_CHAR})${NOT_LINE_BREAK}|${TERMINATOR}?(?:\\\\r?\\\\n|$))`";
+  if (tmpl[0] !== EXPECTED_LINE)
+    throw new Error(
+      `harness fidelity: the product's mentionsPath template is not the one the harness mirrors —\n  source: ${JSON.stringify(tmpl[0])}\n  want:   ${JSON.stringify(EXPECTED_LINE)}\nUpdate the harness (SHIPPED/escape/template) to match; the table must measure the matcher, not a stale copy of it.`,
+    );
+  // And the marker-derivation used by runMutant's template must have extracted
+  // all five placeholders — a template whose interpolation was renamed would
+  // otherwise slip through the byte check above only because it still matched.
+  const markers = buildHarnessTemplate(src);
+  if (
+    !markers ||
+    !markers.includes("§NOT_PATH§") ||
+    !markers.includes("§escaped§") ||
+    !markers.includes("§PATH_CHAR§") ||
+    !markers.includes("§NOT_LINE_BREAK§") ||
+    !markers.includes("§TERMINATOR§")
+  )
+    throw new Error(
+      "harness fidelity: the product template did not carry all five interpolations the harness substitutes, so runMutant would measure a template with a missing class",
+    );
 }
+
+/** One fixture: a summary, a denominator file, and the claim the suites expect. */
 
 /** The shipped `mentionsPath` template, with the three classes as arguments.
  * Kept as ONE template literal so it cannot drift from the source it mirrors —
@@ -224,11 +202,11 @@ function gitHeaders(): string {
 function mentionsPathWith(
   summary: string,
   file: string,
-  classes: { PATH_CHAR: string; NOT_PATH: string; TERMINATOR: string },
+  classes: { PATH_CHAR: string; NOT_PATH: string; TERMINATOR: string; NOT_LINE_BREAK: string },
 ): boolean {
   const escaped = file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const re = new RegExp(
-    `(?:^|${classes.NOT_PATH})${escaped}(?:(?!${classes.PATH_CHAR})[^\\r\\n]|${classes.TERMINATOR}?(?:\\r?\\n|$))`,
+    `(?:^|${classes.NOT_PATH})${escaped}(?:(?!${classes.PATH_CHAR})${classes.NOT_LINE_BREAK}|${classes.TERMINATOR}?(?:\\r?\\n|$))`,
   );
   return re.test(summary);
 }
@@ -237,6 +215,7 @@ function mentionsPathWith(
  * anywhere. A corpus this function rejects is a wrong corpus, not a broken
  * matcher — which is why `runTable` refuses to print a table until it is clean. */
 export function runShipped(corpus: readonly Fixture[] = CORPUS): string[] {
+  assertHarnessFidelity();
   const reds: string[] = [];
   for (const fx of corpus) {
     const out = accountedFiles([{ findings: [], summary: fx.summary }], new Set(fx.denominator));
@@ -253,6 +232,7 @@ export function runMutant(
   mutated: string,
   corpus: readonly Fixture[] = CORPUS,
 ): string[] {
+  assertHarnessFidelity();
   const classes = { ...SHIPPED, [flank]: mutated };
   const reds: string[] = [];
   for (const fx of corpus) {
@@ -296,7 +276,7 @@ export function measuredTable(flank: Flank): MutantRow[] {
 function mentionsPathWithoutTerminatorArm(summary: string, file: string): boolean {
   const escaped = file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const re = new RegExp(
-    `(?:^|${SHIPPED.NOT_PATH})${escaped}(?:(?!${SHIPPED.PATH_CHAR})[^\\r\\n])`,
+    `(?:^|${SHIPPED.NOT_PATH})${escaped}(?:(?!${SHIPPED.PATH_CHAR})${SHIPPED.NOT_LINE_BREAK})`,
   );
   return re.test(summary);
 }

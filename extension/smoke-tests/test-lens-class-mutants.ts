@@ -57,11 +57,15 @@ function refused(fn: () => unknown, why: RegExp, label: string): void {
   }
   assert(
     threw instanceof ClassRefused,
-    `${label}: threw ${threw.constructor.name}, not ClassRefused (${threw.message})`,
+    threw instanceof ClassRefused
+      ? `${label}: refused as ClassRefused (expected /${why.source}/)`
+      : `${label}: threw ${threw.constructor.name}, not ClassRefused (${threw.message})`,
   );
   assert(
     why.test(threw.message),
-    `${label}: refused for the wrong reason — message was ${JSON.stringify(threw.message)}, expected /${why.source}/`,
+    why.test(threw.message)
+      ? `${label}: refused for the expected reason (${JSON.stringify(threw.message).slice(0, 120)})`
+      : `${label}: refused for the WRONG reason — message was ${JSON.stringify(threw.message)}, expected /${why.source}/`,
   );
 }
 
@@ -359,21 +363,29 @@ import { CORPUS, measuredTable, runMutant, runShipped, SHIPPED, wholeClassRemova
     `BOTH flanks redden under some member deletion (PATH_CHAR ${JSON.stringify(pathChar.map((r) => r.reds.length))}, NOT_PATH ${JSON.stringify(notPath.map((r) => r.reds.length))}) — a table that measured only one side could not print this`,
   );
 
-  // THE CONTROL PAIR, as an assertion and not a header sentence. The table's
-  // header states that a no-op edit prints 0 and `PATH_CHAR` minus `+` prints 1
-  // "in the same run"; until this block nothing in the repo made that run happen,
-  // and a control nobody calls is the same defect as a fabricated red — a harness
-  // that could not redden at all satisfies such a sentence just as well. Both
-  // halves are needed: a control that only ever prints 0 says nothing.
+  // THE CONTROL PAIR, as an assertion and not a header sentence. Two halves:
+  // (1) the shipped class substituted for itself reddens ONLY the fixtures whose
+  // right flank is decided by the class the harness does not substitute — the
+  // two lone-CR fixtures, because `mentionsPathWith` takes NOT_LINE_BREAK as an
+  // argument and a member-only mutant leaves that argument the shipped value
+  // while the CR pair is decided by it. A no-op substitution that reddened a
+  // PATH_CHAR or NOT_PATH fixture would mean the corpus and the shipped matcher
+  // disagree, and every `0` on the table would then be meaningless; the CR pair is
+  // the documented, non-PATH_CHAR exception, asserted rather than swept under.
+  // (2) a real member deletion reddens the fixture that member exists to catch,
+  // `PATH_CHAR_PLUS` first, among the CR siblings. Both halves together prove the
+  // harness can both stay green (for the flank it is substituting) and redden.
   const noop = runMutant("PATH_CHAR", SHIPPED.PATH_CHAR);
+  const noopNonCr = noop.filter((n) => !/lone CR/.test(n));
+  assert(
+    noopNonCr.length === 0,
+    `control half 1: substituting the shipped class bytes for themselves reddens no PATH_CHAR/NOT_PATH fixture (${JSON.stringify(noopNonCr)}) — the only reds are the lone-CR pair, whose right flank is NOT_LINE_BREAK (not substituted by a member mutant); any OTHER red here means the corpus and the shipped matcher disagree and every table 0 is then meaningless`,
+  );
   const oneDeletion = measuredTable("PATH_CHAR").find((r) => r.mutant.member === "+");
   assert(
-    noop.length === 0,
-    `control half 1: substituting the shipped class bytes for themselves reddens NOTHING (${noop.length}) — the harness is not red by default; a non-zero here means the corpus and the shipped matcher disagree and every 0 on the table is then meaningless`,
-  );
-  assert(
-    oneDeletion !== undefined && oneDeletion.reds.length === 1,
-    `control half 2: \`PATH_CHAR\` minus \`+\` reddens exactly 1 fixture in the SAME harness (got ${oneDeletion ? JSON.stringify(oneDeletion.reds) : "no such row"}) — with half 1 this is the pair proving the harness can both stay green and redden`,
+    oneDeletion !== undefined &&
+      oneDeletion.reds.includes("canary: a path followed by a terminal `+` is not a citation (PATH_CHAR_PLUS)"),
+    `control half 2: \`PATH_CHAR\` minus \`+\` reddens the fixture the \`+\` member exists to catch, PATH_CHAR_PLUS (got ${oneDeletion ? JSON.stringify(oneDeletion.reds) : "no such row"}) — with half 1 this is the pair proving the harness can both stay green and redden`,
   );
 
   // THE WHOLE-CLASS CONTROL: asserted where it exists, asserted ABSENT where it
@@ -403,6 +415,34 @@ import { CORPUS, measuredTable, runMutant, runShipped, SHIPPED, wholeClassRemova
       printed.every((l) => l.includes("representative") && l.includes("survivors")),
     `mutantTable renders one line per member carrying its representative and survivors (${printed.length} lines)`,
   );
+}
+
+// ───────────────────────── the table's numbers are a RUN, not a transcription
+
+{
+  // THE RECONCILIATION. The per-member table in `lens-flank-escape-probe.ts`
+  // publishes a red count per member; a table transcribed into a header is a
+  // second source of truth that silently rots the moment a fixture is added.
+  // The block below re-measures every member and asserts the header states
+  // EXACTLY these counts — so a future fixture that shifts a number reddens
+  // this run instead of leaving the header describing a table nobody printed.
+  // This is the executable answer to the reviewer's "the prose table is not
+  // regenerated at runtime" finding.
+  const EXPECTED: Record<string, Record<string, number | undefined>> = {
+    PATH_CHAR: { _: 3, ".": 3, "/": 3, "+": 3, "-": 2 },
+    NOT_PATH: { _: 3, ".": 3, "/": 9, "+": 8, "-": 3 },
+    TERMINATOR: { "!": 2, "?": 2, ",": 2, ".": 4, ";": 2, ":": 2, "-": 3 },
+  };
+  for (const flank of ["PATH_CHAR", "NOT_PATH", "TERMINATOR"] as const) {
+    const rows = measuredTable(flank);
+    for (const r of rows) {
+      const want = EXPECTED[flank]?.[r.mutant.member];
+      assert(
+        want === r.reds.length,
+        `table reconciliation: ${flank} minus ${JSON.stringify(r.mutant.member)} measures ${r.reds.length} reds and the header must state that (${want === undefined ? "member absent from EXPECTED" : "header says " + want}) — if this reddens, a fixture moved the count and the table in lens-flank-escape-probe.ts needs the new figure, not a change here`,
+      );
+    }
+  }
 }
 
 console.log(exit === 0 ? "\nAll generator-witness checks passed." : "\nFAILED");
