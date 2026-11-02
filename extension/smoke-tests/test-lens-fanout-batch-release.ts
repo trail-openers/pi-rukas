@@ -30,7 +30,7 @@
 
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import * as dispatchDeck from "../src/dispatch-deck.ts";
 import { runLensFanOut } from "../src/lens-review-fanout.ts";
 import type { Finding, LensRunResult } from "../src/lens-review-types.ts";
@@ -306,7 +306,7 @@ async function clearIsNotQuietGated() {
 
   // (a) STRUCTURAL pin — read the shipped source, fail if the release grew a
   // quiet gate. Anchored on the function declaration, not the word "clear".
-  const deckPath = join(dirname(import.meta.path), "..", "src", "dispatch-deck.ts");
+  const deckPath = join(import.meta.dirname, "..", "src", "dispatch-deck.ts");
   const deckSrc = readFileSync(deckPath, "utf8");
   const decl = deckSrc.indexOf("export function clearBatchEntry");
   check(decl >= 0, "canary: dispatch-deck.ts declares clearBatchEntry (structural pin anchor)");
