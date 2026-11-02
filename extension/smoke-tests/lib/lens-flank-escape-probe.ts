@@ -59,29 +59,30 @@
  *     Conclusion: the fixture is
  *     not decoration (it can go red), but what it witnesses is the negated
  *     class, not a dedicated arm.
- *   - delete `^` from the left flank — left flank becomes `(?:NOT_PATH)`, i.e.
- *     the flank requires a character before the path — → **3** of
- *     `test-lens-coverage-denominator.ts`'s
- *     64 assertions go RED (re-measured 2026-11-03 by deleting the anchor in a
- *     scratch copy and running the file directly: 64 GREEN under the shipped
- *     file, 61 GREEN + 3 RED under the mutant, reproduced on two runs; the 64
- *     is the number of lines the harness prints — `bun ./smoke-tests/…` prints
- *     one `✓`/`✗` per `assert` that executes, four of them from the
- *     `TEST_FLANK_ESCAPE_CASES` loop at `:427`, which a `grep -c` of `assert(`
- *     under-counts as 54 — so it is a printed-line count, not a hand count).
- *     The three reds, verbatim from the run:
- *       1. `a closing summary naming the file accounts for it` (`:84`)
+ *   - delete `^` from the left flank — the flank becomes `(?:NOT_PATH)`, which
+ *     REQUIRES a character before the path — → **3** of
+ *     `test-lens-coverage-denominator.ts`'s assertions go RED. Re-measured by
+ *     deleting the anchor in a complete repo-root scratch copy and running the
+ *     file directly: 3 RED, every other printed assertion GREEN, identical across
+ *     two runs. The reds are named by their own text, never by a line number: this
+ *     row once cited `:79`, `:84`, `:88` and a loop at `:427`, and `:427` could not
+ *     have existed in a 325-line file. It also published "3 of 64", where the 64
+ *     was a printed-line count that a `grep -c` of `assert(` contradicted at 54.
+ *     A line number and a file total are both claims about a snapshot; the
+ *     assertion text below is a claim about the code, and the 3 is the figure the
+ *     argument rests on.
+ *       1. `a closing summary naming the file accounts for it`
  *       2. `canary: the file NO evidence mentions is the unaccounted one —
- *          before this gate it was invisible` (`:88`)
+ *          before this gate it was invisible`
  *       3. `canary: a path that starts the summary itself is a citation — the
  *          one position NOT_PATH cannot supply a neighbour for ("src/c.ts is
  *          fine")` — the `CARET_OPEN` case below
  *     Cases 1 and 2 are the two assertions over the ONE summary
- *     `"src/b.ts is fine as written."` (the file at `:79`): that string's only
+ *     `"src/b.ts is fine as written."`: that string's only
  *     mention of `src/b.ts` starts at index 0, so the same mutant reddens both
  *     halves of that block together. They are distinguishable from case 3 by
  *     their own text — a red that quotes a summary is `CARET_OPEN`, a red that
- *     names no summary is one of the two `:79` assertions. `CARET_OPEN` is the
+ *     names no summary is one of the two assertions over that summary. `CARET_OPEN` is the
  *     `^`-exclusive one and the witness: GREEN with `^`, RED with `^` deleted,
  *     while `NL_OPEN` — path at index 19, a `\n` neighbour `NOT_PATH` consumes
  *     — stays GREEN under the same mutant. It was not a witness until its
@@ -196,75 +197,124 @@ export const META_UNESCAPED_FIT: [string, string, "summary" | undefined, string]
  * fixture stays `undefined` under EITHER arm alone. Deleting `\-` from
  * `TERMINATOR` leaves this fixture and the whole `PATH_CHAR` question green
  * (0 reds in `test-lens-coverage-denominator.ts` and `test-lens-coverage-routing.ts`).
- * What follows from that, stated rather than concluded around: the `-` member of
- * `TERMINATOR` is **unpinned** — no assertion in either coverage suite covers a
- * hyphen-terminated path — and THIS fixture cannot witness it either, because
- * `expected: undefined` can never show WHICH right-flank arm refused the path.
- * "the lookahead is what refuses it" was the old conclusion; a negative-only
- * fixture does not support it.
+ * What follows from that: THIS fixture cannot witness the `-` member of
+ * `TERMINATOR`, because `expected: undefined` can never show WHICH right-flank
+ * arm refused the path.
+ * The deleted line here read "because the lookahead is what refuses it", and the
+ * replacement that follows asserts the opposite for a shape no fixture covered at
+ * the time it was written. Both were reasoning. Now measured on a scratch copy:
+ * deleting `\-` from `TERMINATOR` leaves THIS fixture `undefined` (the lookahead
+ * still refuses it), and deleting the lookahead leaves it `undefined` too (the
+ * terminator arm still refuses it) — so "both arms refuse it" is what the run
+ * printed, and it is what the `why` below now says. What the run ALSO printed,
+ * which is the reason this fixture cannot be the `-` witness, is that
+ * `TERMINATOR_HYPHEN` reddens on the `TERMINATOR` deletion and this one does not:
+ * a negative-only fixture has no way to name the arm, and `TERMINATOR_HYPHEN` is
+ * the positive one that does.
  *
- * PER-MEMBER `PATH_CHAR` DELETION — re-measured 2026-11-04 on a COMPLETE
- * repo-root scratch copy (`/tmp/lcov-e`: `extension/` plus the sibling `skill/`
- * that `BUNDLED_SKILL_DIR` resolves through), driven by a generator that PARSES
- * the class into tokens (respecting `\`-escapes and `a-z`/`0-9`/`+-` ranges),
- * removes the named member, and REFUSES the run unless the mutant differs from
- * shipped, still compiles as a class, and genuinely stops matching the deleted
- * member. The mutated blob hash is recorded per row and the shipped blob
+ * PER-MEMBER DELETION, BOTH FANKS — measured on a COMPLETE repo-root scratch
+ * copy (`cp -a` of the whole repo root, so `extension/` AND the sibling `skill/`
+ * that `BUNDLED_SKILL_DIR` resolves through: a root-only copy leaves
+ * `LENS_ROSTER` empty and silently invalidates every number), driven by
+ * `lens-class-mutants.ts`, which PARSES the class into tokens, removes the named
+ * member, and REFUSES the run unless the mutant differs from shipped, still
+ * compiles as a class, and genuinely stops matching the deleted member. Every row
+ * below is that generator's OUTPUT with a run's red count pasted beside it; none
+ * is transcribed, and the shipped blob
  * (`e24a34029a23922515b2cd7d348d2472e11dd400`, equal to
- * `git rev-parse HEAD:extension/src/lens-review-coverage.ts`) was re-hashed
- * after every restore.
+ * `git rev-parse HEAD:extension/src/lens-review-coverage.ts`) was re-hashed after
+ * every restore and matched every time.
  *
- * The earlier version of this table was wrong in exactly the way this branch
- * exists to catch: its "mutants" were hand-written strings that printed the
- * SHIPPED class as the mutated class (`[A-Za-z0-9_./+-] → [A-Za-z0-9_./+-]`), so
- * every "0 suite reds" below the header measured a mutation that had never
- * deleted the member. A blob hash did NOT catch that — the bytes changed by one
- * escape character while the character SET stayed identical — which is why a
- * blob hash is not a control here and the three semantic preconditions are.
- * A control run proves the harness can redden at all: deleting `.` by this
- * generator prints 2 reds; a deliberate no-op edit prints 0.
+ * THE TABLE HAS TWO SIDES NOW, and that is the whole point of this section.
+ * `mentionsPath` interpolates BOTH `PATH_CHAR` (the right-flank lookahead) and
+ * `NOT_PATH` (the left flank), and both are `PathCharClass` mirrors of one set.
+ * The version of this table that shipped measured `PATH_CHAR` only and printed a
+ * single verdict "for the class", so `NOT_PATH` minus `+` — worth SIX reds — was
+ * invisible, and every `0` on this table was a statement about one of two
+ * constants. `reds` counts failing assertions across
+ * `test-lens-coverage-denominator.ts` + `test-lens-coverage-report.ts` +
+ * `test-lens-coverage-routing.ts`, totalled. The harness is
+ * `lib/lens-mutant-harness.ts`; the fixtures are
+ * `lib/lens-flank-escape-probe.ts` and `lib/lens-left-flank-probe.ts`.
  *
- * "reds" = failing assertions across `test-lens-coverage-denominator.ts` +
- * `test-lens-coverage-routing.ts`, TOTALLED across both suites (not per-suite).
+ * A control run proves the harness can redden at all, and which half of "the
+ * harness works" it proves: a no-op edit (same class bytes, one whitespace change)
+ * prints **0**, and `PATH_CHAR` minus `+` prints **1**, in the same run. A control
+ * that only ever prints 0 says nothing — the pair is the evidence.
  *
- *   member deleted                  class becomes         reds  witness
- *   `+`                             `[A-Za-z0-9_./-]`       1   `PATH_CHAR_PLUS` below (den 1, routing 0)
- *   `/`                             `[A-Za-z0-9_.+-]`       1   `PATH_CHAR_SLASH` below (den 1, routing 0)
- *   `.`                             `[A-Za-z0-9_/+-]`       2   den "canary: the terminator arm does not turn a
- *                                                               LONGER path into a citation of a shorter one"
- *                                                               + routing "(g1) the quoted recital accounts for
- *                                                               nothing" — one each
- *   `-` (the `+-` range endpoint)   `[A-Za-z0-9_./+]`       1   `PATH_CHAR_HYPHEN` below (den 1, routing 0)
- *   `_`                             `[A-Za-z0-9./+-]`       0   not examined
- *   `0-9` (whole range)             range removed           0   not examined
- *   `A-Z` / `a-z` (whole ranges)    range removed           0   not examined
+ *   member deleted      class becomes        reds  witness (assertion text)
+ *   ── PATH_CHAR (right flank) ──────────────────────────────────────────────
+ *   `_`                 `[A-Za-z0-9./+-]`      1   "a path terminated by an
+ *                                                       underscore is not a citation
+ *                                                       of the shorter file"
+ *   `.`                 `[A-Za-z0-9_/+-]`      2   "the terminator arm does not turn
+ *                                                       a LONGER path into a citation
+ *                                                       of a shorter one" + routing
+ *                                                       "(g1) the quoted recital
+ *                                                       accounts for nothing"
+ *   `/`                 `[A-Za-z0-9_.+-]`      1   `PATH_CHAR_SLASH` below
+ *   `+`                 `[A-Za-z0-9_./-]`      1   `PATH_CHAR_PLUS` below
+ *   `-`                 `[A-Za-z0-9_./+]`      1   `PATH_CHAR_HYPHEN` below
+ *   ── NOT_PATH (left flank) ────────────────────────────────────────────────
+ *   `_`                 `[^A-Za-z0-9./+-]`     1   "an underscore glued to the left
+ *                                                       of a path is not a citation"
+ *   `.`                 `[^A-Za-z0-9_/+-]`     1   "a full stop glued to the left of
+ *                                                       a path is not a citation"
+ *   `/`                 `[^A-Za-z0-9_.+-]`     7   the five git-header recital
+ *                                                       canaries + "a slash glued to
+ *                                                       the left of a path" + routing
+ *                                                       "(g1) the quoted recital"
+ *   `+`                 `[^A-Za-z0-9_./-]`     6   the three `\n+src/a.ts` re-emission
+ *                                                       canaries + "a `+` glued to the
+ *                                                       left" + the two single-file
+ *                                                       re-emission fixtures
+ *   `-`                 `[^A-Za-z0-9_./+]`     1   "a hyphen glued to the left of a
+ *                                                       path is not a citation"
+ *   ── TERMINATOR (right flank, anchored arm) ──────────────────────────────
+ *   `!`                 `[?,.;:\-]`            0   UNPINNED — see below
+ *   `?`                 `[!,.;:\-]`            0   UNPINNED
+ *   `,`                 `[!?.;:\-]`            0   UNPINNED
+ *   `.`                 `[!?,;:\-]`            2   the "a path that ends a SENTENCE
+ *                                                       still accounts" pair for
+ *                                                       `src/a.ts` and `src/b.ts`
+ *   `;`                 `[!?,.:\-]`            0   UNPINNED
+ *   `:`                 `[!?,.;\-]`            0   UNPINNED
+ *   `-`                 `[!?,.;:]`              1   "a path that ends a line on the
+ *                                                       markdown bullet still
+ *                                                       accounts" (`TERMINATOR_HYPHEN`)
+ *   ── whole ranges (not single members; never generated as rows) ──────────
+ *   `PATH_CHAR` `0-9`   range removed          1   "a path terminated by a digit is
+ *                                                       not a citation of the shorter
+ *                                                       file"
+ *   `PATH_CHAR` `A-Z`   range removed          1   "a path terminated by an uppercase
+ *                                                       letter is not a citation"
+ *   `PATH_CHAR` `a-z`   range removed          0   UNPINNED as a range: every fixture
+ *                                                       path is lower-case, so no
+ *                                                       terminal position exercises it
+ *   `NOT_PATH`  `0-9`   range removed          1   "a digit glued to the left of a
+ *                                                       path is not a citation"
+ *   `NOT_PATH`  `A-Z`   range removed          0   UNPINNED (same reason, left side)
+ *   `NOT_PATH`  `a-z`   range removed          0   UNPINNED (same reason, left side)
  *
- * The three range rows are `0` for a structural reason, not a passing one: every
- * fixture path is lower-case ASCII and digits that the surviving ranges still
- * cover, so a whole-range removal is NOT equivalent to a single-member removal
- * and is reported as untested rather than as a pin. Range endpoints are not
- * plain members.
+ * WHY THE FIVE `0` TERMINATOR ROWS ARE `0`, AND WHY THAT IS NOT A GAP. `!`, `?`,
+ * `,`, `;` and `:` are each NOT a `PATH_CHAR`, so a path that ends in any of them
+ * is already accepted by the `NOT_LINE_BREAK(?!PATH_CHAR)` arm with the terminator
+ * class missing entirely — the anchored arm never has to fire. This was not left
+ * as an argument: an exhaustive sweep over 7350 spellings (every pair of 35
+ * left/right neighbours under 6 lead-ins) found **0** summaries whose verdict
+ * moves when any of those five is deleted, and found **156** for each of `.` and
+ * `-` — the two members that ARE path characters, and the only two the anchored
+ * arm can be the sole witness for. `TERMINATOR_HYPHEN` is what turns `-` from a
+ * reasoned 0 into a measured 1; the same fixture existed in the previous round's
+ * reasoning and not in its code.
  *
- * `TERMINATOR` MEMBERS: deleting each in turn moves almost nothing. `!` 0 reds,
- * `?` 0, `,` 0, `;` 0, `:` 0 and `\-` 0; only `.` moves anything, and it reddens
- * TWO assertions — the "a path that ends a SENTENCE still accounts" pair for
- * `src/a.ts` and `src/b.ts`. So the `-` member of `TERMINATOR` is **unpinned**
- * by any assertion in either coverage suite, as are `!`, `?`, `,`, `;` and `:`;
- * the `.` member is pinned through `TERMINATOR`, not through `PATH_CHAR`.
- *
- * WHICH ARM REFUSES WHAT is attributed per assertion, never inferred from a
- * negative. Whole-arm deletions (blob `b698cfcec4c231efea8b4ddca5d2cf405ed2cc3d`
- * = lookahead only, `ccff95e41ce2052f5c130e76620389d519d2e4b6` = terminator arm
- * only):
- *   - `PATH_CHAR_HYPHEN` (`src/b.ts-spec`) stays `undefined` under EITHER arm
- *     alone — both arms refuse it, which is what its `why` claims and what the
- *     measurement shows.
- *   - `PATH_CHAR_PLUS` (`See src/b.ts+`) and `PATH_CHAR_SLASH` (`See src/b.ts/`)
- *     both FLIP TO `summary` when the TERMINATOR arm is deleted, and stay
- *     `undefined` when only the lookahead arm is deleted: the lookahead is their
- *     witness and these two assertions are what pin it.
- *   - "a path that ends a SENTENCE" for `;` reddens only under terminator-only,
- *     so the terminator arm is its witness.
+ * The three range rows scored 0 because **no fixture terminated a path in a
+ * digit, `_`, or an uppercase letter at all** — checkable in one grep: across the
+ * pre-branch fixtures the only characters ever observed immediately after a path
+ * are space, `+`, `,`, `-`, `.`, `/` and `>`. The old reason ("every fixture path
+ * is lower-case ASCII and digits that the surviving ranges still cover") described
+ * the denominator, not the flank, and the digits row disproves it: give the class
+ * a digit-terminated fixture and `0-9` reddens.
  *
  * POSITION DEPENDENCE decides whether a mutant is visible at all: in
  * `See src/b.ts+` and `See src/b.ts/` the metacharacter is TERMINAL, so the
@@ -283,9 +333,11 @@ export const PATH_CHAR_HYPHEN: [string, string, "summary" | undefined, string] =
 ];
 
 /** The `+` member of `PATH_CHAR`, pinned by an ASSERTION rather than only by
- * the matcher. Measured 2026-11-04 with the parsed-token generator: deleting `+`
- * from the class reddens exactly ONE assertion across both coverage suites —
- * this one — so without it the member is unpinned. Two limits this states:
+ * the matcher. Measured with the parsed-token generator on a complete repo-root
+ * scratch copy: deleting `+` from `PATH_CHAR` reddens exactly ONE assertion across
+ * the three coverage suites — this one — so without it the member is unpinned.
+ * Deleting `+` from `NOT_PATH`, which the same generator produces and the earlier
+ * table never ran, reddens SIX. Two limits this states:
  * the metacharacter must be TERMINAL (with a follower, `See src/b.ts+spec`, the
  * `NOT_LINE_BREAK(?!PATH_CHAR)` arm closes on `s` and the mutant is invisible),
  * and "the ONLY assertion" is a claim about
