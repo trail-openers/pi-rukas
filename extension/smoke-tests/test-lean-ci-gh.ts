@@ -302,15 +302,18 @@ async function run(
     !String(landMsg).includes("not built yet"),
     `(w5) the land handler is the step, not the stub (${landMsg})`,
   );
-  // And a genuinely unbuilt stage keeps answering with the stub's reason, so the
-  // two shapes above cannot be produced by a mis-wired table entry.
+  // And a stage that became real keeps answering with its OWN refusal, so the
+  // two shapes above cannot be produced by a mis-wired table entry. `review` is
+  // a real step on this branch (it landed before `ci`/`land`), so the sentence
+  // it produces is the step's, not the stub's — the assertion is that it is NOT
+  // `not built yet`, which is what the stub would have said.
   const review = await (handlers.review as (c: never) => Promise<unknown>)(f.ctx as never).then(
     String,
     (e: unknown) => (e as Error).message,
   );
   assert(
-    review === "work-lean stage review is not built yet",
-    `(w5) an unbuilt stage still throws the stub's reason (${review})`,
+    !String(review).includes("not built yet"),
+    `(w5) the review handler is the step, not the stub (${String(review).slice(0, 160)})`,
   );
 }
 

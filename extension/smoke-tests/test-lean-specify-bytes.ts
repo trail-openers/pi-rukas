@@ -143,13 +143,20 @@ const shaOf = (b: Buffer): string => createHash("sha256").update(b).digest("hex"
 // `no transition for <state> + "done"` instead of naming the stage that was
 // missing — a handler bug by the engine's own definition, reported as a table
 // bug. They throw now, so this asserts the reason reaches the operator.
-// `verify`, `handback`, `publish` and `review` are real steps now (see
-// `test-lean-verify-wiring.ts`, `test-lean-publish.ts` and
-// `test-lean-review-wiring.ts`), so the stub asserted on is `ci`, which is still
-// unbuilt — and the real `review` step is asserted NOT to be a stub below.
+// `verify`, `handback`, `publish`, `review`, `ci` and `land` are real steps now
+// (see `test-lean-verify-wiring.ts`, `test-lean-publish.ts`,
+// `test-lean-review-wiring.ts` and `test-lean-ci-land-wiring.ts`). No stage is
+// left to assert as a stub, so the `threw ===` form this case had ("the stub's
+// exact sentence") no longer has a stage to name; what it is really testing —
+// that a handler does NOT hand the engine an invented outcome kind the table
+// cannot route — is carried by asserting each step answers with its OWN refusal
+// instead of `not built yet`, for `ci` here and `review` below.
 {
   const { phase1Handlers } = await import("../src/lean/command.ts");
-  const unbuilt = ["ci", "land"] as const;
+  const unbuilt = ["ci", "land", "review"] as const;
+  // `ci` is a real step now, so a garbage context must produce the STEP's own
+  // refusal, not the stub's sentence — the same claim the `review` case below
+  // makes, and the reason this no longer drives `notBuilt("ci")`.
   const stub = phase1Handlers("/nonexistent", 1).ci as (ctx: unknown) => Promise<unknown>;
   let threw = "";
   try {
@@ -159,8 +166,8 @@ const shaOf = (b: Buffer): string => createHash("sha256").update(b).digest("hex"
     threw = (err as Error).message;
   }
   assert(
-    threw === "work-lean stage ci is not built yet",
-    `stubs: an unbuilt stage THROWS its reason rather than returning an outcome (${threw})`,
+    !/not built yet/.test(threw),
+    `stubs: the ci step answers for its own state rather than the stub (${threw})`,
   );
   assert(
     unbuilt.every((name) => typeof phase1Handlers("/nonexistent", 1)[name] === "function"),

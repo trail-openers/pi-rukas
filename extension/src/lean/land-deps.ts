@@ -15,10 +15,10 @@
  */
 
 import { execp } from "../exec.ts";
-import { clipTitle } from "../work-driver-pr-body-definition.ts";
 import { deriveConsolidationSubject } from "../work-driver-handoff-subject.ts";
 import type { MergeEvidence } from "../work-driver-merge-evidence.ts";
 import { gatherMergeEvidence } from "../work-driver-merge-evidence.ts";
+import { clipTitle } from "../work-driver-pr-body-definition.ts";
 import { loadWorkConfig } from "./config.ts";
 import { forgeFor } from "./io.ts";
 

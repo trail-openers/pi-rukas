@@ -72,7 +72,13 @@ async function call(state: "ci" | "land", issue: number): Promise<unknown> {
   );
 }
 
-// ── (p) the states nobody built still answer with the stub's reason ──────
+// ── (p) a stage that became real keeps its own refusal, not the stub's ──
+//
+// `review` is built on this branch — it landed before `ci` and `land`, so the
+// case this replaced (an unbuilt stage still throwing the stub's reason) has no
+// stage left to name. What it proved is kept in the direction that still means
+// something: a wired step answers with its OWN sentence, so the (n)/(o) shapes
+// above are not what a mis-wired table entry would produce.
 {
   const f = ciLandLog(303);
   const handlers = phase1Handlers(f.repoRoot, 303);
@@ -86,8 +92,8 @@ async function call(state: "ci" | "land", issue: number): Promise<unknown> {
     ),
   );
   assert(
-    stubs.every((s, i) => messages[i] === `work-lean stage ${s} is not built yet`),
-    `(p) an unbuilt stage still THROWS the reason the engine reports (got ${JSON.stringify(messages)})`,
+    stubs.every((_, i) => !String(messages[i]).includes("not built yet")),
+    `(p) the review step answers with its own reason, not the stub's (got ${JSON.stringify(messages)})`,
   );
 }
 
