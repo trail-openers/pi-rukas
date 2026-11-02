@@ -11,7 +11,11 @@
  * is the same corpus driven through the REAL `accountedFiles`, which is how the
  * table's baseline row is printed by shipped code rather than asserted by this
  * file — and why a harness that got the template wrong could not report a clean
- * baseline.
+ * baseline. "REAL" is only worth what its read is worth: the product is loaded
+ * with a cache-busting query on every call (`loadAccountedFiles`), so the
+ * baseline cannot be served from a module instance another test in the same
+ * process loaded before this branch's edits. It re-reads the source every time,
+ * and `runShipped`/`measuredTable` are async for that reason.
  *
  * WHY THE TABLES SPLIT BY FLANK. `mentionsPath` interpolates BOTH `PATH_CHAR`
  * (the right-flank lookahead) and `NOT_PATH` (the left flank), and both are
@@ -28,7 +32,7 @@
  */
 
 import { readFileSync } from "node:fs";
-import { accountedFiles } from "../../src/lens-review-coverage.ts";
+import type { CoverageEvidence, FileAccountability } from "../../src/lens-review-coverage.ts";
 import { mutantsFor, type ClassMutant } from "./lens-class-mutants.ts";
 import { CORPUS, type Fixture } from "./lens-mutant-corpus.ts";
 
@@ -105,6 +109,53 @@ function buildHarnessTemplate(src: string): string | null {
 /** Where the product source lives, resolved from this file so the fidelity gate
  * cannot be pointed at a stale copy by the caller's cwd. */
 const PRODUCT_SOURCE = new URL("../../src/lens-review-coverage.ts", import.meta.url);
+
+/** The product's `accountedFiles`, read from the source AS IT IS ON DISK at the
+ * moment of the call — never from a module instance the loader cached earlier.
+ *
+ * WHY THIS IS NOT `import { accountedFiles } from "../../src/…"`. A top-level
+ * import is resolved once when this module is first evaluated, and every later
+ * `import("…")` of the SAME specifier hands back that same instance: Bun caches
+ * ES modules by resolved URL, query included. The consequence was measured, on a
+ * complete repo-root scratch copy of `393bc99a`, by rewriting the call site at
+ * `src/lens-review-coverage.ts:164` from
+ * `if (mentionsPath(summary, file)) claim(file, "summary");` to
+ * `if (true) claim(file, "summary");`:
+ *
+ *   static top-level import  -> `runShipped()` reported 0 reds (product broken)
+ *   cache-busting query      -> `runShipped()` reported 28 reds
+ *
+ * A baseline that reports 0 while the matcher claims every file is not a clean
+ * baseline, it is the corpus being read by a module the edit never reached — and
+ * `assertHarnessFidelity` cannot catch it, because it matches the four class
+ * literals, the escape regex and the template line, and the call site is none of
+ * those. The same shape this file's sibling already uses for the liveness mutant
+ * (`assertLivenessMutantReds` in `lens-coverage-liveness-probe.ts` does
+ * `await import(mutantFile)` for exactly this reason), with a unique query
+ * because here the specifier is the shipped path rather than a distinct file.
+ *
+ * The read is `import.meta.url`-relative, so a caller's cwd cannot point it at
+ * another copy. The fidelity gate runs before this is called, so a source the
+ * harness no longer mirrors throws rather than getting measured. */
+type AccountedFiles = (
+  lensResults: readonly CoverageEvidence[],
+  expected: ReadonlySet<string>,
+) => Map<string, FileAccountability> | undefined;
+
+async function loadAccountedFiles(): Promise<AccountedFiles> {
+  const bust = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const mod = (await import(`../../src/lens-review-coverage.ts?harness=${bust}`)) as {
+    accountedFiles: AccountedFiles;
+  };
+  // Loud, not silent: a product that removed the export would otherwise leave
+  // every row measuring `undefined` and reporting 0 reds, the same wrong-green
+  // this function exists to refuse.
+  if (typeof mod.accountedFiles !== "function")
+    throw new Error(
+      "harness fidelity: lens-review-coverage.ts no longer exports a callable `accountedFiles`, so runShipped has nothing to measure",
+    );
+  return mod.accountedFiles;
+}
 
 /**
  * The gate that makes this harness's fidelity a RUN rather than a header
@@ -211,14 +262,22 @@ function mentionsPathWith(
   return re.test(summary);
 }
 
-/** The baseline row: the REAL `accountedFiles`, shipped classes, no substitution
- * anywhere. A corpus this function rejects is a wrong corpus, not a broken
- * matcher — which is why `runTable` refuses to print a table until it is clean. */
-export function runShipped(corpus: readonly Fixture[] = CORPUS): string[] {
+/** The baseline row: the REAL `accountedFiles`, read fresh from the source at
+ * call time (`loadAccountedFiles` — not a cached module instance), shipped
+ * classes, no substitution anywhere. A corpus this function rejects is a wrong
+ * corpus, not a broken matcher — which is why `measuredTable` refuses to print a
+ * table until it is clean.
+ *
+ * ASYNC because the read is a dynamic import: it cannot be a top-level import
+ * without reintroducing the cached-instance defect `loadAccountedFiles` records.
+ * `measuredTable` is async for the same reason; the three call sites in
+ * `test-lens-class-mutants.ts` await it. */
+export async function runShipped(corpus: readonly Fixture[] = CORPUS): Promise<string[]> {
   assertHarnessFidelity();
+  const accounted = await loadAccountedFiles();
   const reds: string[] = [];
   for (const fx of corpus) {
-    const out = accountedFiles([{ findings: [], summary: fx.summary }], new Set(fx.denominator));
+    const out = accounted([{ findings: [], summary: fx.summary }], new Set(fx.denominator));
     if (out?.get(fx.file) !== fx.expected) reds.push(fx.name);
   }
   return reds;
@@ -253,8 +312,8 @@ export interface MutantRow {
  * are the generator's output; the reds are a run's. Nothing here is transcribed,
  * and the baseline is checked first: a corpus that fails under the shipped
  * classes yields no table, because every "0 reds" in it would be meaningless. */
-export function measuredTable(flank: Flank): MutantRow[] {
-  const baseline = runShipped();
+export async function measuredTable(flank: Flank): Promise<MutantRow[]> {
+  const baseline = await runShipped();
   if (baseline.length > 0)
     throw new Error(
       `refusing to measure ${flank}: the shipped classes already fail ${baseline.length} fixture(s): ${baseline.join(" | ")}`,

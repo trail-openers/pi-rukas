@@ -181,6 +181,8 @@
     "smoke-tests/lib/lens-coverage-fixture.ts",
     "smoke-tests/lib/lens-coverage-liveness-probe.ts",
     "smoke-tests/lib/lens-class-mutants.ts",
+    "smoke-tests/lib/lens-class-mutants-arms.ts",
+    "smoke-tests/test-lens-class-refusals.ts",
     "smoke-tests/lib/lens-flank-escape-probe.ts",
     "smoke-tests/lib/lens-mutant-harness.ts",
     "smoke-tests/lib/lens-mutant-corpus.ts",
