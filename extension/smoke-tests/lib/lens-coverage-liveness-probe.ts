@@ -21,11 +21,26 @@
  *     conjunction's SHAPE: hold the denominator and the citation constant and
  *     move only the flag, and the claim must move with it.
  *   - the END-TO-END case computes the flag from the children, which is the only
- *     way to see the mutation that matters. Measured 2026-11-04 on a scratch
- *     copy: hard-wiring `allLanesProducedEvidence = true` at its definition site
- *     (blob `6b086460…`) reddens NOTHING among the direct arms — they judge the
- *     argument, not the expression. The end-to-end case reddens on it, and the
- *     shipped/mutant pair is `false → true` on `findingClaimedFile`.
+ *     way to see the mutation that matters. Hard-wiring
+ *     `allLanesProducedEvidence = true` at its definition site reddens NOTHING
+ *     among the direct arms — they judge the argument, not the expression. The
+ *     end-to-end case reddens on it, and the shipped/mutant pair is `false → true`
+ *     on `findingClaimedFile`.
+ *
+ * THE MUTANT IS A BLOB A REVIEWER CAN FETCH. Shipped is
+ * `16a748e9579ba7238e52cc96e52da4906bb8feac` (= `git rev-parse
+ * HEAD:extension/src/lens-review-fanout.ts`); the mutant is
+ * `3b1b78683c9e6e1993316a68fc57f60d591f30c5`, which is that file with the
+ * two-line initialiser replaced by `const allLanesProducedEvidence = true;`.
+ * An earlier revision of this header cited `6b086460…`, and that object does
+ * not exist in the repository — `git cat-file -t 6b086460` is a fatal — so the
+ * half of the pair that carried the proof was unverifiable, which is the same
+ * defect as a fabricated red. Both blobs above were produced and re-measured in
+ * the round that wrote this: patching the working file to the mutant blob, run
+ * `test-lens-fanout-batch-release` (1 red, the `findingClaimedFile` canary, and
+ * nothing else), then `test-lens-vacuous-every`, `test-lens-coverage-denominator`
+ * and `test-lens-coverage-routing` (0 reds each), then restore; `git hash-object`
+ * matched `16a748e9…` after the restore.
  *
  * So neither kind replaces the other: drop the conjunct from the AND and the
  * direct FALSE arms redden; force the flag true at its definition and only the
@@ -97,8 +112,9 @@ export function acquireTickerArms(
  * the children rather than passed in. This is the only arm that can see
  * `allLanesProducedEvidence` hard-wired to `true` at its definition site — the
  * direct arms above pass the flag as an argument and measure 0 reds under that
- * mutant (both measured 2026-11-04, blobs `16a748e9…` shipped vs `6b086460…`
- * mutant, `findingClaimedFile` `false → true`).
+ * mutant (shipped `16a748e9…` vs mutant `3b1b7868…`, both fetchable with
+ * `git cat-file -p`; `findingClaimedFile` `false → true`, and the three sibling
+ * coverage suites stay green — see this file's header for the run).
  *
  * `openBatch` is injected by the caller so the deck's acquire/release bookkeeping
  * stays with the file that owns the deck; `check` likewise stays with the

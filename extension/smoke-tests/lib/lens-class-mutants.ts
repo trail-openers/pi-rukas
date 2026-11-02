@@ -16,9 +16,15 @@
  *
  *   P1  MUTATED ≠ SHIPPED — the rendered class is not byte-identical to the
  *       shipped one, so something was genuinely removed.
- *   P2  STILL A CLASS — the mutant compiles as a character class in both
+ *   P2  STILL A CLASS — the MUTANT compiles as a character class in both
  *       positions the matcher uses it (bare and negated), so a mutant that
- *       merely breaks `new RegExp` cannot masquerade as "0 reds".
+ *       merely breaks `new RegExp` cannot masquerade as "0 reds"; and the MUTANT
+ *       still discriminates, admitting some probe characters and refusing others.
+ *       BOTH readings are of the MUTANT, never of the shipped class: `[]` compiles
+ *       (an empty class is a legal regex) and admits NOTHING, which is exactly the
+ *       "0 reds" fabrication P2 exists to refuse. Moving the probe back onto the
+ *       shipped class makes this throw unreachable — `test-lens-class-mutants.ts`
+ *       pins it with `[!]`, which is ACCEPTED as a row if that regression returns.
  *   P3  THE MEMBER REALLY LEFT — the deleted member's canonical representative
  *       matches the shipped class and NOT the mutant, and every other member
  *       still matches the mutant.
@@ -32,9 +38,13 @@
  *              swallows `,-.…:;<=>?@A-Z[\]`; the round-trip does not reproduce
  *              the shipped text, so the mutant is refused. This is the shape
  *              that caused the original incident.
- *   `[^]a`     round-trips to `[^]`/`[^]]` — a class with a different MEANING
- *              (an unterminated/doubled bracket) that is still not byte-equal
- *              to the shipped literal, so P1 alone passes and the set is wrong.
+ *   `[^]a`     is refused one step EARLIER than the round-trip, by `splitClass`:
+ *              the first `]` closes the class, so the body is `]` and the text is
+ *              not a class at all. Its admits-nothing sibling `[^]a]` is what the
+ *              round-trip gate is for — it deletes `a` and leaves `[^]]`, a class
+ *              with a different MEANING (an unterminated/doubled bracket) still
+ *              not byte-equal to the shipped literal, so P1 alone passes and the
+ *              set is wrong.
  *   `\n`-in-class (`[a\t\r]`)  an escape-aware tokenizer that un-escapes yields
  *              literal `n`, so the class silently becomes `{a,t,r}`.
  *   trailing escape (`[a-z-\]`)  an escape with nothing after it.
@@ -175,30 +185,58 @@ function admits(literal: string, ch: string): boolean {
   return new RegExp(`^(?:${literal})$`).test(ch);
 }
 
-/** P2 — the literal must still COMPILE as a character class. `new RegExp` is the
- * same construction the matcher uses, so a mutant that merely breaks the pattern
- * cannot reach the table as a "0 reds" row: it throws here instead. */
-function assertStillAClass(literal: string, literalSource?: string): void {
-  let compiled: RegExp;
-  try {
-    compiled = new RegExp(`^(?:${literal})$`);
-  } catch (e) {
-    throw new ClassRefused(
-      `${JSON.stringify(literal)} does not compile as a character class: ${(e as Error).message}`,
-    );
+/** P2's probe characters. Deliberately NOT derived from the shipped matcher's own
+ * alphabet: `TERMINATOR`'s `?`, `,`, `;` and `:` are covered by no `PATH_CHAR`
+ * representative, and the table publishes three of them as measured UNPINNED 0s.
+ * A refusal keyed to "the probes cannot see this deletion" would delete rows whose
+ * 0 is a measurement (a sweep over 7350 spellings found no summary whose verdict
+ * moves), not a blind spot — the same error inverted. What this gate refuses is a
+ * class that admits NOTHING or EVERYTHING, which no wider probe set can rescue
+ * because such a class is broken for every character. A fixed set (rather than
+ * hard-coding `a`/`\u0000`) is what lets one check serve a positive class (admits
+ * `a`, refuses `\n`) and a negated one (`TERMINATOR` admits `!`, refuses `a`). */
+const PROBE_CHARS = ["a", "Z", "0", "_", ".", "/", "+", "-", "!", " ", "\n"];
+
+/** Does this literal compile as a class, in BOTH positions the matcher puts one?
+ * The shipped classes appear bare (`PATH_CHAR`, `TERMINATOR`) and as the source of
+ * a negation (`NOT_PATH`), so a mutant that survives only one reading is still a
+ * mutant the table must not print. */
+function assertCompilesAsClass(literal: string, negatedOfShipped: boolean): void {
+  const forms = negatedOfShipped ? [literal] : [literal, `[^${literal.slice(1, -1)}]`];
+  for (const form of forms) {
+    try {
+      void new RegExp(`^(?:${form})$`);
+    } catch (e) {
+      throw new ClassRefused(
+        `${JSON.stringify(literal)} does not compile as a character class${
+          form === literal ? "" : ` in its negated form ${JSON.stringify(form)}`
+        }: ${(e as Error).message}`,
+      );
+    }
   }
-  void compiled;
-  // A class that matches NOTHING and a class that matches EVERYTHING are both
-  // broken in a way the table must not report as "0 reds", so the probe is a
-  // pair: one character the shipped class admits and one it refuses. Deriving
-  // both from a fixed set (rather than hard-coding `a`/`\u0000`) is what lets the
-  // same check serve a terminator class, which admits `!` and refuses `a`.
-  const PROBE_CHARS = ["a", "Z", "0", "_", ".", "/", "+", "-", "!", " ", "\n"];
-  const admitted = PROBE_CHARS.filter((c) => admits(literalSource ?? literal, c));
-  const refused = PROBE_CHARS.filter((c) => !admits(literalSource ?? literal, c));
-  if (admitted.length === 0 || refused.length === 0)
+}
+
+/**
+ * P2 — the MUTANT is still a usable class. `new RegExp` is the same construction
+ * the matcher uses, so a mutant that merely breaks the pattern cannot reach the
+ * table as a "0 reds" row: it throws here instead.
+ *
+ * The parameter is the MUTANT and nothing else. The previous signature took a
+ * second, optional `literalSource` and read every probe against `literalSource ??
+ * literal`; `mutantsFor` always passed the SHIPPED class there, so both probes
+ * counted the shipped class, any shipped class with a member and a non-member
+ * among the probes made the throw UNREACHABLE, and an `[]` mutant — which compiles,
+ * since an empty class is a legal regex, and matches no character at all — entered
+ * the table as a row whose red count was 0 by construction for EVERY fixture. A
+ * precondition that cannot fire is the defect this branch exists to close, wearing
+ * the shape of a precondition.
+ */
+function assertStillAClass(mutated: string, negatedOfShipped: boolean): void {
+  assertCompilesAsClass(mutated, negatedOfShipped);
+  const mutantAdmits = PROBE_CHARS.filter((c) => admits(mutated, c));
+  if (mutantAdmits.length === 0 || mutantAdmits.length === PROBE_CHARS.length)
     throw new ClassRefused(
-      `${JSON.stringify(literal)} is not a usable class — from ${PROBE_CHARS.length} probes it admitted ${admitted.length} and refused ${refused.length}`,
+      `${JSON.stringify(mutated)} is not a usable class — from ${PROBE_CHARS.length} probes it admitted ${mutantAdmits.length} and refused ${PROBE_CHARS.length - mutantAdmits.length}: an admits-nothing (or admits-everything) class is the "0 reds" fabrication this gate refuses`,
     );
 }
 
@@ -249,10 +287,10 @@ export function mutantsFor(literal: string): ClassMutant[] {
         `deleting ${JSON.stringify(member)} from ${JSON.stringify(literal)} leaves ${JSON.stringify(mutated)}, which starts with a bare - or escape and reads as a range or an escape, not a member`,
       );
 
-    // P2 — still a class. The reference for "usable" is the SHIPPED class, so a
-    // mutant is refused only when it stopped discriminating, not when the shipped
-    // class itself happens to admit or refuse a probe.
-    assertStillAClass(mutated, literal);
+    // P2 — still a class, and still discriminating. Judged against the MUTANT
+    // alone: no shipped class is passed (see assertStillAClass for what reading
+    // the probe against shipped made unreachable).
+    assertStillAClass(mutated, negated);
 
     // P3 — the member really left, and nothing else did. Read the class the way
     // JS does: a NEGATED class EXCLUDES its tokens, so `[^…+-]` admits `_` and

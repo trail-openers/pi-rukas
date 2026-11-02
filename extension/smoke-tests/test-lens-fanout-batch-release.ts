@@ -132,8 +132,13 @@ async function leakingChildReleasesBatch() {
   // ticker stop — so the row arm tells you the acquire happened and the ticker
   // arm tells you the timer actually started. Measured 2026-11-04 in a scratch
   // copy: blinding `isTicking()` to `return false` (dispatch-deck.ts, the
-  // `tickHandle !== undefined` read) reddens BOTH ticker pre-checks in this
-  // file while leaving every row assertion green — which is the proof that the
+  // `tickHandle !== undefined` read) reddens the THREE ticker pre-checks this
+  // file prints — the two `acquireTickerArms` labels `leak-path` and
+  // `zero-healthy`, and `canary: the acquired batch started the deck ticker (paired
+  // with the release assertion below)` — while leaving every row assertion green.
+  // The reds are named by their own text, not by line number: a line number is a
+  // claim about a snapshot and this file has already been edited twice since the
+  // figure was first written. That is the proof that the
   // ticker arm observes something the row arm cannot, and that collapsing the
   // pair as "byte-duplicates" would have deleted a live witness.
   check(
@@ -450,12 +455,19 @@ await clearIsNotQuietGated();
  * pin the conjunction's shape (they pass the flag in, so dropping the conjunct
  * from the AND reddens them). The END-TO-END round below pins the flag as the
  * fan-out COMPUTES it: hard-wiring `allLanesProducedEvidence = true` at its
- * definition site (blob `6b086460…`) reddens NOTHING among the direct arms —
+ * definition site (blob `3b1b7868…`) reddens NOTHING among the direct arms —
  * they judge the argument, not the expression — and only this round catches it.
  *
- * Measured pair, same fixture, only the flag's expression differing:
- *   shipped  (blob `16a748e9…`) → `findingClaimedFile === false`
- *   mutant   (blob `6b086460…`) → `findingClaimedFile === true` */
+ * Measured pair, same fixture, only the flag's expression differing. Both blobs
+ * are fetchable (`git cat-file -p <hash>`); an earlier revision cited a mutant
+ * blob that does not exist in the object store, so the proof half of the pair
+ * could not be checked, and the numbers were re-measured to write these:
+ *   shipped  (`16a748e9579ba7238e52cc96e52da4906bb8feac`) → `findingClaimedFile === false`
+ *   mutant   (`3b1b78683c9e6e1993316a68fc57f60d591f30c5`) → `findingClaimedFile === true`
+ * The mutant is that file with the two-line initialiser replaced by
+ * `const allLanesProducedEvidence = true;`, and under it this file prints exactly
+ * one red — the `findingClaimedFile` canary — while the denominator, routing and
+ * vacuous-every suites print none. */
 coverageClaimUnitArms(check);
 
 /** (4b) THE END-TO-END WITNESS for the same flag, driving the fan-out rather

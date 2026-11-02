@@ -23,6 +23,7 @@
 
 import {
   ClassRefused,
+  mutantTable,
   mutantsFor,
   render,
   singleMembers,
@@ -117,6 +118,67 @@ refused(
   "`[a-z-\\]` (trailing escape)",
 );
 
+// THE `range out of order` EXONERATION, asserted rather than argued. The round
+// brief records a scratch probe that died on `SyntaxError: range out of order in
+// character class` and attributes it to the probe's OWN escaping bug (collapsing
+// `\\-` to a literal `-`) rather than to the generator. `[a---]` is that shape: it
+// is not one of the three shipped classes, and its mutant `[a--]` is the pattern
+// that raises the error. Two things must both hold, and asserting only the second
+// would let a generator that merely threw the SyntaxError through unhandled pass:
+// the refusal is a ClassRefused naming the compile failure (P2), not a raw
+// SyntaxError escaping the generator.
+refused(
+  () => mutantsFor("[a---]"),
+  /does not compile as a character class.*range out of order/,
+  "`[a---]` is REFUSED by P2 with a ClassRefused naming `range out of order` (the scratch probe's own escaping bug, not a generator defect: the generator turns it into a refusal rather than letting the SyntaxError escape)",
+);
+assert(
+  (() => {
+    // The claim is about WHERE the SyntaxError is raised: from `new RegExp` on the
+    // mutant, not from the generator. Compiling the pattern through the
+    // constructor is the thing under test, so the string is built from parts — a
+    // pattern LITERAL with a reversed range is rejected when this file is parsed,
+    // before any `try` runs, which would turn the fact being observed into a crash
+    // on import. (This is also why the lint rule that prefers literals over the
+    // constructor does not apply here: the deferral to runtime is the point.)
+    const mutant = String.fromCharCode(94, 63, 63, 58, 91, 97, 45, 45, 93, 36);
+    try {
+      new RegExp(mutant);
+      return false;
+    } catch (e) {
+      return (e as Error) instanceof SyntaxError;
+    }
+  })(),
+  "the `range out of order` SyntaxError really does come from `new RegExp` on `[a--]` — so the scratch probe's crash was the input's, and the generator's job is to refuse it, which the assertion above shows it does",
+);
+
+// P2's second position, stated rather than witnessed — and the distinction is the
+// point. `assertCompilesAsClass` builds the mutant in BOTH positions the matcher
+// uses a class in (bare for `PATH_CHAR`/`TERMINATOR`, and the negated reading
+// `NOT_PATH` occupies), which is what makes the header's "both positions" claim
+// code rather than prose. No witness is asserted for the negated arm, because none
+// exists to write: probed over bracket/escape/range shapes, there is no JS class
+// that compiles bare and fails negated (negation is applied to a well-formed class
+// body), so the arm can only ever agree with the bare one. A test that asserted a
+// refusal there would be pinning an input that cannot be built. The arm is kept
+// because it is the position `NOT_PATH` actually occupies, not because a run
+// distinguishes it.
+assert(
+  (() => {
+    // The arm is at least REACHED: a positive shipped class must be compiled in
+    // its negated reading too, and a body that cannot compile negated must refuse.
+    // `[a--]` is the one JS shape that fails both, so it proves the loop iterates
+    // past the bare form rather than short-circuiting on it.
+    try {
+      mutantsFor("[a--a]");
+      return false;
+    } catch (e) {
+      return /does not compile as a character class/.test((e as Error).message);
+    }
+  })(),
+  "P2 reaches its compile check for a class whose body cannot compile (the both-positions loop is entered, not short-circuited on the bare form)",
+);
+
 // ───────────────────────── the shipped classes are accepted, and correctly
 
 const PATH_CHAR = "[A-Za-z0-9_./+-]";
@@ -175,8 +237,13 @@ for (const [label, lit, members] of [
         mutantTokens.length === shippedTokens.length - 1,
       `${label} -${JSON.stringify(m.member)}: ${m.mutated} is ${mutantTokens?.length} tokens to shipped's ${shippedTokens.length} (bytes ${m.shipped.length} -> ${m.mutated.length}; a two-byte delta is correct when the member was written as an escape)`,
     );
+    // The dangling-range witness. The class was previously written `[]]` — an
+    // EMPTY character class, which matches nothing — so this assertion could never
+    // fire for any input, and a real dangling range (`[Q-]]`) printed green. It is
+    // escaped now so the check can actually fail: `-` immediately before the
+    // closing `]` is the shape P1's own refusal exists to stop.
     assert(
-      !/(^|[^\\])-[]]/.test(m.mutated.slice(1, -1)),
+      !/(^|[^\\])-[[\]]]/.test(m.mutated.slice(1, -1)),
       `${label} -${JSON.stringify(m.member)}: ${m.mutated} leaves no dangling range`,
     );
   }
@@ -220,6 +287,38 @@ refused(
   "`[^]a` is refused as a malformed class (the first `]` closes it, so the body is `]`)",
 );
 
+// P2, shape three: THE DISCRIMINATOR ITSELF. `[^]a]` above is refused because
+// `splitClass` reads its body as `^` and P3 then sees an admits-nothing class —
+// but the shipped classes have a member and a non-member among the probes, so
+// reading the probe against the SHIPPED class keeps the throw unreachable for any
+// mutant of them. `[!]` is the shape that separates the two readings: its only
+// mutant is `[]`, which COMPILES (an empty class is a legal regex, contrary to the
+// claim this file's harness header used to make about `nothing to repeat`) and
+// admits no character at all. Under the shipped-class reading of the probe, `[!]`
+// was ACCEPTED and `[]` entered the table as a row — the row whose red count is 0
+// for every fixture in the corpus, i.e. the fabrication wearing a precondition.
+// Asserting the refusal, by message, is what pins the probe to the mutant.
+refused(
+  () => mutantsFor("[!]"),
+  /is not a usable class.*admitted 0/,
+  "a single-member class whose only mutant is the empty class `[]` is refused (P2 reads the MUTANT: `[]` compiles and admits nothing — the 0-reds fabrication)",
+);
+// The companion: `[^!]`'s mutant is `[^]`, which compiles and admits EVERYTHING.
+// Same gate, opposite polarity — a class that matches every character also makes
+// every "is this still a citation" fixture answer the same way.
+refused(
+  () => mutantsFor("[^!]"),
+  /is not a usable class.*admitted 11/,
+  "a negated single-member class whose mutant `[^]` admits EVERY probe is refused (P2's other polarity — an admits-everything class decides nothing)",
+);
+// And the shipped classes still generate rows under the mutant-reading probe: if
+// the check were simply too strict, the two refusals above and these three rows
+// could not coexist.
+assert(
+  mutantsFor(PATH_CHAR).length === 5 && mutantsFor(NOT_PATH).length === 5,
+  "the shipped mirror classes still generate all ten member rows under the mutant-reading probe (P2 refuses broken mutants, not real ones)",
+);
+
 // P3's companion: a deletion that changes MORE than the named member. `[-+a]`
 // deletes `+` and leaves `[-a]`, whose leading `-` is now read as a range or an
 // escape rather than a member — the class changed meaning, not just membership.
@@ -232,7 +331,7 @@ refused(
 
 // ───────────────────────── the harness that feeds the tables
 
-import { CORPUS, measuredTable, runShipped, SHIPPED } from "./lib/lens-mutant-harness.ts";
+import { CORPUS, measuredTable, runMutant, runShipped, SHIPPED, wholeClassRemoval } from "./lib/lens-mutant-harness.ts";
 
 {
   const baseline = runShipped();
@@ -258,6 +357,51 @@ import { CORPUS, measuredTable, runShipped, SHIPPED } from "./lib/lens-mutant-ha
   assert(
     anyPathCharRed && anyNotPathRed,
     `BOTH flanks redden under some member deletion (PATH_CHAR ${JSON.stringify(pathChar.map((r) => r.reds.length))}, NOT_PATH ${JSON.stringify(notPath.map((r) => r.reds.length))}) — a table that measured only one side could not print this`,
+  );
+
+  // THE CONTROL PAIR, as an assertion and not a header sentence. The table's
+  // header states that a no-op edit prints 0 and `PATH_CHAR` minus `+` prints 1
+  // "in the same run"; until this block nothing in the repo made that run happen,
+  // and a control nobody calls is the same defect as a fabricated red — a harness
+  // that could not redden at all satisfies such a sentence just as well. Both
+  // halves are needed: a control that only ever prints 0 says nothing.
+  const noop = runMutant("PATH_CHAR", SHIPPED.PATH_CHAR);
+  const oneDeletion = measuredTable("PATH_CHAR").find((r) => r.mutant.member === "+");
+  assert(
+    noop.length === 0,
+    `control half 1: substituting the shipped class bytes for themselves reddens NOTHING (${noop.length}) — the harness is not red by default; a non-zero here means the corpus and the shipped matcher disagree and every 0 on the table is then meaningless`,
+  );
+  assert(
+    oneDeletion !== undefined && oneDeletion.reds.length === 1,
+    `control half 2: \`PATH_CHAR\` minus \`+\` reddens exactly 1 fixture in the SAME harness (got ${oneDeletion ? JSON.stringify(oneDeletion.reds) : "no such row"}) — with half 1 this is the pair proving the harness can both stay green and redden`,
+  );
+
+  // THE WHOLE-CLASS CONTROL: asserted where it exists, asserted ABSENT where it
+  // does not. `wholeClassRemoval` used to hand back a red count for all three
+  // flanks, produced by interpolating `""` into the class position — `(?!|…)` and
+  // `(?:^|)`, which redden 17 fixtures each for a reason unrelated to membership.
+  // That is a whole-class figure wearing a label it did not earn, so those two
+  // flanks now return null and an assertion holds them there.
+  const termWhole = wholeClassRemoval("TERMINATOR");
+  assert(
+    termWhole !== null && termWhole.length > 0,
+    `whole-class control: deleting the anchored TERMINATOR arm reddens ${termWhole?.length ?? "null"} fixture(s) — the figure the table's TERMINATOR rows are read against (${JSON.stringify(termWhole)})`,
+  );
+  for (const flank of ["PATH_CHAR", "NOT_PATH"] as const) {
+    assert(
+      wholeClassRemoval(flank) === null,
+      `${flank}: NO whole-class control is offered — an empty class in that position changes the ARM rather than the membership, so any figure printed for it would be red for the wrong reason (got ${JSON.stringify(wholeClassRemoval(flank))})`,
+    );
+  }
+
+  // The formatter the header's table rows are built from. Called here so a change
+  // that makes it throw, or drops the representative/survivors a row is audited
+  // by, is a red rather than a header describing a function nobody ran.
+  const printed = mutantTable(SHIPPED.PATH_CHAR);
+  assert(
+    printed.length === 5 &&
+      printed.every((l) => l.includes("representative") && l.includes("survivors")),
+    `mutantTable renders one line per member carrying its representative and survivors (${printed.length} lines)`,
   );
 }
 

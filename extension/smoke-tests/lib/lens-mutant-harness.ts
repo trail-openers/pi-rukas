@@ -179,9 +179,15 @@ export const CORPUS: readonly Fixture[] = [
   f("canary: a `-` after a space opens the citation", "x- src/b.ts is fine", "src/b.ts", "summary", true),
   // The `.` member of NOT_PATH needs its own pair: with `.` in the class a path
   // glued after a full stop is not a citation, and with `.` dropped from the
-  // class it becomes one. Found by an exhaustive sweep over left/right
-  // neighbours (`tmp/issue-1942/dot-notpath.ts`, 1632 spellings), which is also
-  // the evidence that no OTHER spelling moves for this mutant.
+  // class it becomes one. Found by a sweep over left/right neighbour spellings
+  // (a 35-character neighbour alphabet under six lead-ins), which is also the
+  // evidence that no OTHER spelling moves for this mutant. The sweep script lived
+  // only in an uncommitted scratch dir and its printed count did not reproduce, so
+  // no figure is quoted here: the claim this fixture carries is the one a reader
+  // can check in two calls — `mutantsFor(SHIPPED.NOT_PATH)` gives the `.` mutant
+  // and `runMutant("NOT_PATH", "[^A-Za-z0-9_/+-]")` names the fixtures it reddens,
+  // this pair among them. A number whose script was never committed is a claim, not
+  // a witness; the run is.
   f("canary: a full stop glued to the left of a path refuses the citation", ".src/b.ts is fine", "src/b.ts", undefined, true),
   f("canary: a path after a full stop and a space still accounts", ". src/b.ts is fine", "src/b.ts", "summary", true),
   // — the `+`/`+++` re-emission cases, spelled on their own so a NOT_PATH `+`
@@ -280,24 +286,50 @@ export function measuredTable(flank: Flank): MutantRow[] {
   }));
 }
 
-/**
- * The whole-class control the tables report alongside the per-member rows.
- * `TERMINATOR` is where the earlier table printed a whole-class figure under a
- * per-member label, so this is a separate call and never a substitute for a
- * member row. An empty class is not a valid regex fragment (`nothing to
- * repeat`), so the control deletes the ARM rather than emptying the class.
+/** The template with the anchored-terminator ARM deleted — the `|TERMINATOR?`
+ * alternative and everything after it gone, leaving the lookahead arm alone. This
+ * is the whole-class control for `TERMINATOR` and the only well-formed one:
+ * substituting `""` into the class position leaves `|(?:\r?\n|$)`, which compiles
+ * and quietly changes what the ARM means instead of removing it. Kept apart from
+ * `mentionsPathWith` so `measuredTable` cannot reach it by defaulting a class.
  */
-export function wholeClassRemoval(flank: Flank): string[] {
-  const classes = { ...SHIPPED };
-  if (flank === "TERMINATOR") {
-    // Drop the anchored arm entirely: `…|TERMINATOR?(?:\r?\n|$)` → nothing.
-    const reds: string[] = [];
-    for (const fx of CORPUS) {
-      const escaped = fx.file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const re = new RegExp(`(?:^|${classes.NOT_PATH})${escaped}(?:(?!${classes.PATH_CHAR})[^\\r\\n])`);
-      if ((re.test(fx.summary) ? "summary" : undefined) !== fx.expected) reds.push(fx.name);
-    }
-    return reds;
+function mentionsPathWithoutTerminatorArm(summary: string, file: string): boolean {
+  const escaped = file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(
+    `(?:^|${SHIPPED.NOT_PATH})${escaped}(?:(?!${SHIPPED.PATH_CHAR})[^\\r\\n])`,
+  );
+  return re.test(summary);
+}
+
+/**
+ * The whole-class control the tables report alongside the per-member rows, and the
+ * figure `test-lens-class-mutants.ts` asserts so the header's control claim is a
+ * run rather than a sentence about a run. `TERMINATOR` is where the earlier table
+ * printed a whole-class figure under a per-member label, so this is a separate call
+ * and never a substitute for a member row.
+ *
+ * For `TERMINATOR` the control deletes the ARM rather than emptying the class:
+ * interpolating `""` there yields `…|?(?:\r?\n|$)`, and `?` with nothing to repeat
+ * is a compile error (`Invalid regular expression: nothing to repeat`, verified by
+ * building that exact pattern), so emptying it is not an experiment the harness can
+ * run at all.
+ *
+ * For the two lookahead classes there is NO whole-class control, and saying so is
+ * the point — the previous version of this function reported one, by interpolating
+ * `""`. An empty `PATH_CHAR` makes the lookahead `(?!|…)`, always true, so every
+ * path is refused and 17 of 48 fixtures redden for a reason that has nothing to do
+ * with the class's membership; an empty `NOT_PATH` is `(?:^|)`, red for the same
+ * wrong reason. Printing 17 as "whole-class removal" is a whole-class figure
+ * wearing a label it did not earn. Deleting a whole flank is a different mutant
+ * with its own red count, and this harness does not measure it, so `null` means
+ * "no such control exists" and the caller must not print a number for it.
+ */
+export function wholeClassRemoval(flank: Flank): string[] | null {
+  if (flank !== "TERMINATOR") return null;
+  const reds: string[] = [];
+  for (const fx of CORPUS) {
+    const got = mentionsPathWithoutTerminatorArm(fx.summary, fx.file) ? "summary" : undefined;
+    if (got !== fx.expected) reds.push(fx.name);
   }
-  return runMutant(flank, classes[flank] === SHIPPED[flank] ? "" : classes[flank]);
+  return reds;
 }

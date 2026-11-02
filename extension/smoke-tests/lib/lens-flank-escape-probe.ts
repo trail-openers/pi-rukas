@@ -31,18 +31,30 @@
  *     the negative case is the one that says so.
  *
  * MUTATION PROOF — the `NOT_PATH` and escape-class rows below were measured
- * 2026-11-01 against the shipped `mentionsPath`, each by editing
- * `lens-review-coverage.ts`, running the cases, and restoring the file
- * byte-identically (`git hash-object` matched HEAD's blob after every
- * restore: `ec2f4039`). The `\n|`-deletion row, the exclude-newline row and
- * the `^`-deletion row were re-measured against the post-deletion file,
- * restored the same way (`be64095a` after the last restore). Verdicts below
- * are what the run printed; nothing here is claimed from reasoning.
- *   - delete `\n|` from the left flank        → suite stays GREEN (P: 5 F: 0),
- *     which is the redundancy proof: the alternative was unreachable, so no
- *     fixture could redden on its removal. (2026-11-03, after the header above
- *     was written; the earlier claim in this block — "REDS: NL_OPEN alone" —
- *     was measured never to hold and is corrected here.)
+ * against `mentionsPath` by editing `lens-review-coverage.ts`, running the cases,
+ * and restoring the file byte-identically (`git hash-object` matched the blob it
+ * started from after every restore). Each row names its own BEFORE-STATE by blob,
+ * and the two hashes this block carries name two DIFFERENT files: `ec2f4039` is
+ * the pre-deletion `lens-review-coverage.ts` (its flank still reads
+ * `(?:^|\n|${NOT_PATH})`, blob of commit `80169608`'s parent) and `be64095a` is
+ * the file AFTER the `\n|` alternative was deleted (`(?:^|${NOT_PATH})`, the blob
+ * `80169608` itself shipped). An earlier revision cited them as one restore
+ * pair, which made the `\n|` row read as measured on a tree that had already lost
+ * the arm — a redundancy proof about a file with no arm to prove redundant. Each
+ * row below names its own before-state; `be64095a` is cited only for the rows
+ * measured on the post-deletion file.
+ *   - delete `\n|` from the left flank (before-state `ec2f4039`, the file that
+ *     still carries the arm) → suite stays GREEN (`P: 5 F: 0`). The figure is
+ *     the flank-escape block's own printed assertion count — five lines, and a
+ *     `grep -c` of the block confirms five, so the number is checkable rather than
+ *     remembered. WHAT THE ROW DOES NOT CLAIM, stated because an earlier revision
+ *     claimed more of it: a GREEN run is the EXPECTED result of deleting a
+ *     redundant arm and is therefore not by itself evidence the arm was ever
+ *     there — measuring the ADDITION of an arm product code never had prints the
+ *     identical `P: 5 F: 0` and proves the same nothing. The witness that actually
+ *     identifies the arm is the PAIR below: exclude newline from `NOT_PATH` with
+ *     the arm present and `NL_OPEN` is green; in the post-deletion file it is the
+ *     only red. That pair moves, and `NL_OPEN` is the fixture both halves read.
  *   - exclude `\r`/`\n` from `NOT_PATH` while the `\n|` arm was still present
  *     (`[^A-Za-z0-9_./+\-\r\n]`) → NL_OPEN stayed GREEN (P: 1 F: 0): the
  *     explicit `\n` alternative was carrying it. That row and the one below
@@ -300,13 +312,24 @@ export const META_UNESCAPED_FIT: [string, string, "summary" | undefined, string]
  * `,`, `;` and `:` are each NOT a `PATH_CHAR`, so a path that ends in any of them
  * is already accepted by the `NOT_LINE_BREAK(?!PATH_CHAR)` arm with the terminator
  * class missing entirely — the anchored arm never has to fire. This was not left
- * as an argument: an exhaustive sweep over 7350 spellings (every pair of 35
- * left/right neighbours under 6 lead-ins) found **0** summaries whose verdict
- * moves when any of those five is deleted, and found **156** for each of `.` and
- * `-` — the two members that ARE path characters, and the only two the anchored
- * arm can be the sole witness for. `TERMINATOR_HYPHEN` is what turns `-` from a
- * reasoned 0 into a measured 1; the same fixture existed in the previous round's
- * reasoning and not in its code.
+ * as an argument: an exhaustive sweep over neighbour spellings (every pair of a
+ * 35-character left/right neighbour alphabet under 6 lead-ins) found **0**
+ * summaries whose verdict moves when any of those five is deleted. RE-MEASURED
+ * 2026-11-04 by an independent re-run of that sweep (12 696 spellings: 35x35
+ * neighbour pairs under six lead-ins, the shipped `NOT_PATH`/`PATH_CHAR` and the
+ * shipped six-member `TERMINATOR`, only the deleted member varying), which
+ * reproduced the five zeros exactly — `!`, `?`, `,`, `;`, `:` each moved **0**
+ * verdicts — and found **276** for `.` and **138** for `-`. The two figures the
+ * row used to carry ("7350 spellings", "156 for each of `.` and `-`") did not
+ * reproduce and the script that printed them was never committed, so the counts
+ * above are the re-run's; the CONCLUSION is unchanged and is what the row rests on:
+ * five members move nothing, the two that ARE path characters move a lot, and they
+ * are the only two the anchored arm can be the sole witness for. The asymmetry
+ * between `.` and `-` is itself consistent with the table — `-` is also a
+ * `PATH_CHAR`, so half of the spellings that `-` moves are refused by the
+ * lookahead regardless of the terminator arm. `TERMINATOR_HYPHEN` is what turns
+ * `-` from a reasoned 0 into a measured 1; the same fixture existed in the previous
+ * round's reasoning and not in its code.
  *
  * The three range rows scored 0 because **no fixture terminated a path in a
  * digit, `_`, or an uppercase letter at all** — checkable in one grep: across the
