@@ -35,7 +35,7 @@
  * than as "nothing to check".
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 
@@ -92,8 +92,7 @@ function withoutComments(src: string): string {
   return out;
 }
 
-/** The string entries of the `"include": [ … ]` array, in file order. */
-function includeEntries(src: string): { found: boolean; entries: string[] } {
+/** The string entries of the `"include": [ … ]` array, in file order. */function includeEntries(src: string): { found: boolean; entries: string[] } {
   const stripped = withoutComments(src);
   const anchor = stripped.match(/"include"\s*:\s*\[/);
   if (!anchor || anchor.index === undefined) return { found: false, entries: [] };
@@ -154,6 +153,95 @@ const stillStale = [...KNOWN_STALE_ENTRIES].filter(
 assert(
   stillStale.length === 0,
   `tsconfig-registration (a): the pinned stale entries are still stale — delete the pin when one is fixed (${JSON.stringify(stillStale)})`,
+);
+
+// (a2) Every GLOB entry in `include` matches at least one real file. Arm (a)
+// skips anything containing `*`, so before this a glob that matched nothing was
+// invisible to BOTH the gate and the compiler: `tsc -p` over such an entry
+// prints nothing and exits 0 (the same silent-unjudged shape as a misspelt
+// explicit path), and the list keeps the entry as if it were doing work. A
+// glob is registered precisely to pull a set of files into the type-check, so
+// an empty match means the type-check silently excludes them all.
+//
+// How many real files an `include` glob entry resolves to, counted from the
+// tsconfig's own directory the way tsc resolves it. Implemented over the file
+// system rather than a shell: an entry is untrusted text this gate reads out of
+// a config file, and handing it to `bash -c` would make the gate a command
+// injection surface for the very file it audits. Only `*` is honoured as a
+// wildcard (every glob entry this project has uses it). `**` is expanded the
+// way TypeScript's `include` expands it — a `**/` segment also matches ZERO
+// directories, so `scripts/**/*.ts` reaches `scripts/a.ts`. A matcher that
+// required `**` to consume a directory reported this project's own
+// `src/**/*` and `scripts/**/*` as empty, which would have made the gate fail
+// on entries that are working. The gate's complaint is about an entry that
+// could match and does not, so an entry whose WHOLE match set is empty is what
+// reddens below, not one traversal step.
+function globMatches(pattern: string): number {
+  // Translate the entry to a regular expression over a whole repo-relative path,
+  // which is what makes the semantics stateable instead of hopeful:
+  //   `**/`  -> `(?:.*/)?`   a directory path, OR nothing — TS lets the last
+  //                          segment of `scripts/**/*.ts` name `scripts/a.ts`,
+  //                          and this project's real `scripts/**/*` judges the
+  //                          two files directly under `scripts/`.
+  //   `**`   -> `.*`         crosses `/`.
+  //   `*`    -> `[^/]*`      stays inside one segment.
+  //   `?`    -> `[^/]`       one character inside one segment.
+  // Three earlier readings of this all failed the same way and for the same
+  // reason — they treated `**` as a thing that must consume a directory (and,
+  // before that, as a literal directory), so this project's own `src/**/*` and
+  // `scripts/**/*` came back empty. Those two entries are the positive controls:
+  // `tsc --listFilesOnly` judges files under both, so any translation that
+  // calls them empty is wrong, and a ratchet whose first red is a working entry
+  // gets its first assertion edited rather than its bug fixed.
+  const body = pattern
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*\*\//g, "\u0000DIR\u0000")
+    .replace(/\*+/g, (m) => (m.length > 1 ? ".*" : "[^/]*"))
+    .replace(/\?/g, "[^/]")
+    .replace(/\u0000DIR\u0000/g, "(?:.*/)?");
+  const re = new RegExp(`^${body}$`);
+  let count = 0;
+  const seen = new Set<string>();
+  const walk = (dir: string, depth: number) => {
+    if (depth > 24) return; // a symlink cycle would otherwise recurse forever
+    let names: string[];
+    try {
+      names = readdirSync(dir);
+    } catch {
+      return;
+    }
+    for (const name of names) {
+      const full = path.join(dir, name);
+      const rel = path.relative(EXT_ROOT, full);
+      let isFile = false;
+      try {
+        isFile = statSync(full).isFile();
+      } catch {
+        continue;
+      }
+      if (isFile) {
+        if (re.test(rel) && !seen.has(rel)) {
+          seen.add(rel);
+          count++;
+        }
+        continue;
+      }
+      if (name === "node_modules" || name === ".git") continue;
+      walk(full, depth + 1);
+    }
+  };
+  walk(EXT_ROOT, 0);
+  return count;
+}
+const globs = entries.filter((e) => e.includes("*"));
+const emptyGlobs = globs.filter((g) => globMatches(g) === 0);
+assert(
+  globs.length > 0,
+  `tsconfig-registration (a2): \`include\` carries glob entries to judge (found ${globs.length})`,
+);
+assert(
+  emptyGlobs.length === 0,
+  `tsconfig-registration (a2): every glob entry matches at least one real file (${JSON.stringify(globs)}; empty=${JSON.stringify(emptyGlobs)})`,
 );
 
 // (b) Every test file this branch added is listed. `include` is relative to the

@@ -87,6 +87,8 @@
     "smoke-tests/test-review-findings-confirmed-store.ts",
     "smoke-tests/test-review-findings-untouched-confirm.ts",
     "smoke-tests/test-review-findings-window-guards.ts",
+    "smoke-tests/lib/window-guards-clock.ts",
+    "smoke-tests/lib/window-guards-helpers.ts",
     "smoke-tests/test-review-findings-tsconfig-registration.ts",
     "smoke-tests/test-review-findings-disclosure-render.ts",
     "smoke-tests/lib/lens-fix-kill-cause-fixtures.ts",
