@@ -201,9 +201,11 @@ async function runTests() {
       `checked 6 dirs (100, 200, 300, 500, 600, issue-553-notes), got ${res.checked}`,
     );
     assertTrue(sweptNames.length === 2, `two rm's issued, got ${sweptNames.length}`);
+    // Set membership, not position: the sweep's removal order is its own
+    // business, so which rm landed first is not what this asserts.
     assertTrue(
-      sweptNames[0]?.includes(JSON.stringify(bDir)) === true,
-      `rm targeted the orphan path: ${sweptNames[0]}`,
+      sweptNames.some((cmd) => cmd.includes(JSON.stringify(bDir))) === true,
+      `an rm targeted the orphan path: ${sweptNames.join(" | ")}`,
     );
 
     assertTrue(existsSync(aDir), "(a) numeric dir with sibling .json survives");
