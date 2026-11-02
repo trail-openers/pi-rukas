@@ -4,65 +4,40 @@
  * the AC4 re-observation pass (`review-findings-round.ts`).
  *
  * WHY THIS FILE EXISTS. Both guards were measured as un-witnessed: deleting
- * `if (r.lastSeen >= now) return;` (the AC4 re-observation guard, the pass the `guard:222` cases below drive) left
- * all five confirmation tests green, and relaxing either guard's `>=` to `>`
- * changed nothing under the whole suite. Two comparisons whose entire job is a
- * time ordering had no test that could see them.
+ * `if (r.lastSeen >= now) return;` (the AC4 re-observation guard the
+ * `guard:222` cases drive) left all five confirmation tests green, and relaxing
+ * either guard's `>=` to `>` changed nothing under the whole suite. Two
+ * comparisons whose entire job is a time ordering had no test that saw them.
  *
- * HOW THE BOUNDARY IS MADE OBSERVABLE — the round's clock is a frozen clock.
- * `recordFindingRunOutcome` takes `now`, and the store hands that same value to
- * `applyFindingRound` (review-findings-store.ts: `const now = run.now ??
- * Date.now()`, then `now,` in the round's opts). Row stamps are therefore exact
- * integers the test picks, not `Date.now()` readings. A `Date.now()` fixture
- * would make `>=` and `>` differ only by a millisecond of adjacency, which is a
- * coincidence of the clock rather than a discrimination of the operator — so
- * every case below writes its stamps as literals and the adversarial ledger row
- * is stamped at the boundary minus one.
- *
+ * HOW THE BOUNDARY IS MADE OBSERVABLE — the round's clock is frozen:
+ * `recordFindingRunOutcome` takes `now` and the store hands it to
+ * `applyFindingRound`, so stamps are exact integers the test picks. A
+ * `Date.now()` fixture would make `>=` and `>` differ only by a millisecond of
+ * adjacency — a clock coincidence, not a discrimination of the operator — so
+ * every case below stamps with literals and names the boundary explicitly.
  * WHAT IS WITNESSED, and what is not — measured per mutation, not asserted.
- * Every line below was produced by rewriting the ONE comparison in a scratch
- * copy of `src/review-findings-round.ts` (a complete repo-root worktree under
- * /tmp, the product tree untouched) and running this file. A mutation is called
- * a witness only for the cases that actually reddened; the mutant was also
- * checked to differ from shipped in the code line and nowhere else (blob hash
- * + one-line diff), because a mutant whose strings differ only by an escape
- * byte reports a green it did not earn.
+ * Each line came from rewriting the ONE comparison in a scratch copy of
+ * `src/review-findings-round.ts` (a complete repo-root worktree under /tmp) and
+ * running this file. A mutation is a witness only for the cases that actually
+ * reddened, and each mutant was checked to differ from shipped in the code line
+ * and nowhere else (blob hash plus a one-line diff): a mutant whose strings
+ * differ only by an escape byte reports a green it did not earn.
  *
- *   - `guard:222` DELETED            → `guard:222 boundary` AND `guard:222 relax`
- *     both redden (the AC4 pass runs, re-opens the retired row and stamps a lapse
- *     notice it must not have — the notice is the only observable, which is why
- *     the round here is SILENT about the row);
- *   - `guard:222` RELAXED `>=` → `>` → `guard:222 boundary` reddens ALONE (only a
- *     stamp exactly AT the clock separates the operators; `relax`'s row carries
+ *   - `guard:222` DELETED            → `boundary` AND `relax` both redden (the
+ *     AC4 pass runs, re-opens the retired row and stamps a lapse notice it must
+ *     not have — the notice is the only observable, which is why the round here
+ *     is SILENT about the row);
+ *   - `guard:222` RELAXED `>=` → `>` → `boundary` reddens ALONE (only a stamp
+ *     exactly AT the clock separates the operators; `relax`'s row carries
  *     `lastSeen = NOW + 60_000`, so both operators skip it and its witness is
  *     the deletion, not the relaxation);
- *   - `guard:222` SLACK `>= now` → `>= now - 1000` → nothing reddens (see the
- *     constant paragraph below);
- *   - `guard:181` DELETED            → `guard:181 boundary` reddens (the row filed
- *     AT the round's clock retires on a confirmation stamped at its own filing);
- *   - `guard:181` RELAXED `>=` → `>` → `guard:181 boundary` reddens;
- *   - `guard:181` SLACK `>= now` → `>= now - 100` → `guard:181 slack` reddens —
- *     the case that pins the compared CONSTANT, not just its operator.
- *
- * `guard:181 relax` (a row whose `firstSeen` is strictly LATER than the round's
- * clock) is NOT a witness to the operator, and the argument is structural
- * rather than measured, which is what makes it falsifiable: with
- * `firstSeen > now` the join's window `[firstSeen, now]` is EMPTY, so no stamp
- * reaches this guard at all — every `at` is either `< firstSeen` (dropped by
- * review-confirmation.ts's lower bound) or `> now` (dropped by the round's own
- * upper bound). `guard:181 future` below is the falsification test for that
- * claim: it drives both boundary-adjacent stamps and asserts both are refused.
- * The prior round deleted this arm on exactly this reasoning and the adversarial
- * gate agreed; two lenses then claimed a discriminating case existed. Both were
- * describing a DIFFERENT construction — `firstSeen` strictly BEFORE the clock
- * with the stamp landing between the bounds — which is `guard:181 between` and
- * `guard:181 slack` below, built and measured rather than adjudicated. `relax`
- * stays as the PRECONDITION it is: it pins the join's lower bound, and it is
- * excluded from the witness count.
- *
- * What no earlier version of this file pinned: a shift of the compared
- * constant — `>= now - 1000` stayed green across the suite. `guard:181 slack`
- * (a row 11ms outside the guard's margin) is what reddens under such a shift.
+ *   - `guard:222` SLACK `>= now - 1000` → nothing reddens here. The constant is
+ *     pinned by `guard:181 slack` in the sibling slack file (the §12 500-line
+ *     split), where the `firstSeen < now` constructions, the full `guard:181`
+ *     matrix, and the falsification case for the empty-interval argument that
+ *     `guard:181 relax` below rests on all now live;
+ *   - `guard:181` DELETED, RELAXED (`>=` → `>`) and NEVER (`if (false)`) →
+ *     `boundary` reddens in each case.
  *
  * The `live` cases are not witnesses to any mutation either; they are the
  * anti-dead-code arms, the ones that keep each guard from being a `return`
@@ -70,15 +45,13 @@
  * re-opened by AC4 (`guard:222 live`) and a row filed BEFORE it IS retired by a
  * bound confirmation (`guard:181 live`).
  *
- * Also not this file's job: the `guard:181` arm is witnessed by four sibling
- * files (confirmed-store, untouched-confirm, confirmation-join,
- * disclosure-render), which together hold the neutralisation of that guard red
- * across the suite. The arms here are the two boundary cases plus the two
- * anti-dead-code arms; the rest belongs to the siblings and is not re-witnessed.
+ * Also not this file's job: four sibling files (confirmed-store,
+ * untouched-confirm, confirmation-join, disclosure-render) together hold the
+ * neutralisation of the `guard:181` arm red across the suite. The arms here are
+ * the boundary and anti-dead-code cases; the rest is not re-witnessed.
  *
- * Isolation comes from the shared fixture (`lib/confirmation-store-fixture.ts`):
- * `PI_ENSEMBLE_REVIEW_LEDGER_FILE` pins both the ledger and the findings store
- * into the fixture dir, so a round reads and writes only this test's files.
+ * Isolation: the shared fixture pins both the ledger and the findings store
+ * into its own dir, so a round reads and writes only this test's files.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -122,40 +95,34 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-/** The environment as this file found it — the final assertion compares against this. */
-/** The environment as this file found it. The LAST block compares the teardown
+/** The environment as this file found it. The LAST block compares its teardown
  * against the value the host-teardown block installed — NOT against this
- * snapshot, which the same block would then be asserting its own writes back. */
+ * snapshot, which that block would then be asserting its own writes back. */
 const ENV_AT_ENTRY = {
   PI_ENSEMBLE_REVIEW_LEDGER_FILE: process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE,
   PI_AGENT_DIR: process.env.PI_AGENT_DIR,
 };
-/** One round through the real store, with every clock value a literal. */
-
 // ---------------------------------------------------------------------------
 // guard:222 — `if (r.lastSeen >= now) return;` in the AC4 re-observation pass
 // ---------------------------------------------------------------------------
 
 {
-  // The boundary itself: the retired row's `lastSeen` EQUALS the round's clock,
-  // and the round is SILENT about the row. Silence is the only shape that
-  // witnesses this guard: a round that re-reports the row takes it through the
-  // matched pass, which stamps the lapse notice whether or not the AC4 pass ran
-  // at all (measured — both mutations of this guard left a re-reporting case
-  // green). With the guard in place the AC4 pass skips the row, and the round
-  // reports NOTHING about it.
+  // The boundary: the retired row's `lastSeen` EQUALS the round's clock and the
+  // round is SILENT about the row. Silence is the only shape that witnesses this
+  // guard — a round that re-reports the row takes it through the matched pass,
+  // which stamps the lapse notice whether or not the AC4 pass ran (measured:
+  // both mutations left a re-reporting case green). With the guard in place the
+  // AC4 pass skips the row and the round reports NOTHING about it.
   const f = makeFixture();
   try {
     const pid = (await workingTreePatchId(execp, f.dir)).patchId;
     assert(pid !== undefined, "guard:222 boundary: the review identity resolved");
-    // The ledger the round will read, written HERE rather than probed. A prior
+    // The ledger the round reads, WRITTEN here rather than probed. A prior
     // version asserted `entries.length === 0` on a file `makeFixture` never
-    // creates: `existsSync` answered false, the `||` short-circuited to "", and
-    // the assertion passed on an absent file — vacuous, and it would have passed
-    // unchanged had the fixture shipped a pre-seeded ledger. So the file is
-    // created empty first and the assertion reads the PARSED entries of a file
-    // the test knows exists, which is also the file `retiredRowAtLastSeen` then
-    // overwrites with the confirmation this round joins against.
+    // creates: the `existsSync ? … : ""` short-circuit passed the assertion on
+    // an absent file — vacuous, and unchanged had the fixture shipped a seeded
+    // ledger. So the file is created empty first and the assertion reads the
+    // parsed entries of a file the test knows exists.
     writeLedger(f.ledgerFile, []);
     const ledgerText = readFileSync(f.ledgerFile, "utf8");
     assert(
@@ -205,10 +172,10 @@ const ENV_AT_ENTRY = {
 }
 
 {
-  // The other side of the same guard, and the reason it is not dead code: a row
-  // stamped STRICTLY BEFORE the round's clock is exactly the row AC4 exists for,
-  // and the guard must NOT skip it. Without this case a `return;` stuffed into
-  // the top of the pass would satisfy both witnesses above.
+  // The anti-dead-code arm: a row stamped STRICTLY BEFORE the round's clock is
+  // the row AC4 exists for and the guard must NOT skip it. Without this arm a
+  // blanket `return;` at the top of the pass satisfied both witnesses above —
+  // measured: the blanket-return mutant reddens here and nowhere else.
   const f = makeFixture();
   try {
     const pid = (await workingTreePatchId(execp, f.dir)).patchId;
@@ -216,18 +183,17 @@ const ENV_AT_ENTRY = {
     const { row, ledger } = await retiredRowAtLastSeen(f.dir, f.headSha, pid!, NOW - 60_000);
     const mine = [row];
     const out = runRound(mine, [], ledger, pid!, f.headSha);
-    // Three observables, not one, and all three read from the array the ROUND
-    // mutated (`mine` is written in place — see applyFindingRound's doc) rather
-    // than from the snapshot `retiredRowAtLastSeen` handed back. The element
-    // `mine` holds after the call IS the post-round row, so the state
-    // assertions judge the product of the pass and not of the setup.
+    // Three observables, all read from the array the ROUND mutated (`mine` is
+    // written in place — see applyFindingRound's doc) rather than from the
+    // snapshot `retiredRowAtLastSeen` handed back, so they judge the product of
+    // the pass and not of the setup.
     //   - `out.lapsed` — the NOTICE exists and names this row;
     //   - `status === "open"` — the reopen happened (`reopen()`,
     //     review-findings-round.ts); a mutant that pushed the notice without
     //     reopening reddens here and nowhere else;
     //   - `confirmedBy === undefined` — the provenance moved into the notice,
-    //     which is the AC4 pass's own write (the file's schema refuses
-    //     provenance on an open row), so it is this pass's work, not the row's.
+    //     the AC4 pass's own write (the schema refuses provenance on an open
+    //     row), so it is this pass's work and not the row's.
     const after = mine[0]!;
     assert(
       out.lapsed?.some((l) => l.rowId === row.id) === true &&
@@ -248,11 +214,11 @@ const ENV_AT_ENTRY = {
 /** File an OPEN row through the real store at the caller's clock, then hand back
  * its stored bytes with `firstSeen` set to the caller's exact value.
  *
- * The same reason as `retiredRowAtLastSeen`: the store stamps `firstSeen` with
- * the filing round's `now`, so a store-driven row's `firstSeen` can never sit
- * STRICTLY AFTER a later round's clock — and `>=` versus `>` is only decided by
- * a case that does. The row is real (real id, real hashes, filed by a real
- * round); only its filing stamp is moved. */
+ * Same reason as `retiredRowAtLastSeen`: the store stamps `firstSeen` with the
+ * filing round's `now`, so a store-driven row can never sit STRICTLY AFTER a
+ * later round's clock — and `>=` versus `>` is only decided by a case that
+ * does. The row is real (real id, hashes, filed by a real round); only its
+ * filing stamp is moved. */
 async function openRowAtFirstSeen(
   dir: string,
   headSha: string,
@@ -342,19 +308,16 @@ const reReportWithConfirmation = (
       row.firstSeen === NOW + 60_000,
       `guard:181 relax: the row's stamp is STRICTLY AFTER the round's clock (${row.firstSeen} > ${NOW})`,
     );
-    // The confirmation must sit INSIDE the join's window. `entry.at` below
-    // `firstSeen` is dropped by review-confirmation.ts:201
-    // (`entry.at < seen.firstSeen || entry.at > seen.lastSeen`) BEFORE this
-    // round's `firstSeen >= now` guard is ever reached, so a stamp below the
-    // lower bound makes the case a tautology: it stays green under `>=` → `>`
-    // because the candidate never gets far enough to be judged. That is what the
-    // previous version of this case did (stamp `NOW + 30_000` against
-    // `firstSeen = NOW + 60_000` — adversarial review, reproduced by arithmetic
-    // and by re-running with an in-window stamp). It is DELETED rather than kept:
-    // no stamp can make the case discriminate, because with `firstSeen > now` the
-    // only reason a join can refuse this row is its own bound. What is asserted
-    // here is therefore the PRECONDITION, stated as the assertion it is, so the
-    // decorative claim cannot come back.
+    // PRECONDITION, stated as the assertion it is so the decorative claim
+    // cannot come back. A confirmation below the row's own `firstSeen` is
+    // dropped by review-confirmation.ts's `entry.at < seen.firstSeen` BEFORE
+    // this round's guard is reached, so it stays green under `>=` → `>` for a
+    // reason that has nothing to do with the operator: the candidate never gets
+    // far enough to be judged. The prior version of this case asserted exactly
+    // that (stamp `NOW + 30_000` against `firstSeen = NOW + 60_000`), and the
+    // discriminating construction it was mistaken for now lives in
+    // `test-review-findings-window-guards-slack.ts`. With `firstSeen > now` the
+    // join's window is empty, so no stamp here can witness the operator.
     const tooEarly = reReportWithConfirmation(row, pid!, f.headSha, NOW + 30_000);
     assert(
       tooEarly.resolved.length === 0,
@@ -367,9 +330,8 @@ const reReportWithConfirmation = (
 }
 
 {
-  // The other side of the same guard: a row filed STRICTLY BEFORE the round's
-  // clock IS the row AC1 exists for, and the guard must not skip it. Without
-  // this, `if (true) return undefined;` would satisfy both witnesses above.
+  // Anti-dead-code arm: a row filed STRICTLY BEFORE the round's clock IS
+  // the row AC1 exists for, and the guard must not skip it.
   const f = makeFixture();
   try {
     const pid = (await workingTreePatchId(execp, f.dir)).patchId;
@@ -387,107 +349,16 @@ const reReportWithConfirmation = (
   }
 }
 
-// --- candidates for the `guard:181 relax` witness the last round deleted ----
-//
-// The last round deleted `guard:181 relax` on the reasoning that with
-// `firstSeen > now` no confirmation stamp makes the case discriminate: the
-// join's own lower bound (`entry.at < seen.firstSeen`, review-confirmation.ts)
-// drops the candidate before this round's guard is reached. Three reviewers
-// then disagreed about whether ANY discriminating case exists, so the question
-// was settled by construction rather than by adjudication — see the header for
-// which candidates redden under which mutation.
-
-{
-  // CANDIDATE A — `firstSeen` strictly BEFORE the round's clock, with the
-  // confirmation stamped strictly BETWEEN the two bounds
-  // (`firstSeen < at <= now`). This is the interval the two lenses described
-  // and the last round never constructed: it never tested `firstSeen < now`
-  // with an in-between stamp, only `firstSeen > now` with an out-of-window one.
-  // `>=` accepts it (a row filed before the round may be retired); `>` also
-  // accepts it, so the mutation that reddens this case is the guard's DELETION
-  // paired with `boundary` — it is the arm that keeps `boundary` from being the
-  // only thing standing between the guard and a blanket `return undefined`.
-  const f = makeFixture();
-  try {
-    const pid = (await workingTreePatchId(execp, f.dir)).patchId;
-    assert(pid !== undefined, "guard:181 between: the review identity resolved");
-    const row = await openRowAtFirstSeen(f.dir, f.headSha, pid!, NOW - 1001);
-    const out = reReportWithConfirmation(row, pid!, f.headSha, NOW - 900);
-    assert(
-      out.resolved.some((r) => r.rowId === row.id && r.reason === "confirmed"),
-      `guard:181 between: a row filed 1001ms BEFORE the round IS retired by a confirmation stamped between the bounds (resolved=${JSON.stringify(out.resolved)})`,
-    );
-  } finally {
-    releaseFixture(f);
-    removeFixture(f);
-  }
-}
-
-{
-  // CANDIDATE B — the `+ slack` witness, and the case that pins the compared
-  // CONSTANT rather than the operator. The row is filed 11ms BEFORE the round's
-  // clock, i.e. just OUTSIDE the 10ms margin the guard's `now - 10` mutant
-  // would hand it. Shipped `firstSeen >= now` retires it (11ms is old enough);
-  // `>= now - 10` refuses it. No other test in the repo measures a shift of
-  // that constant — `>= now - 1000` was measured green across the suite before
-  // this case existed. The margin is a constant this file and the mutation
-  // script share: change one and the other's red is the signal to change both.
-  const f = makeFixture();
-  try {
-    const pid = (await workingTreePatchId(execp, f.dir)).patchId;
-    assert(pid !== undefined, "guard:181 slack: the review identity resolved");
-    const row = await openRowAtFirstSeen(f.dir, f.headSha, pid!, NOW - 11);
-    assert(
-      NOW - row.firstSeen === 11,
-      `guard:181 slack: filed 11ms before the round's clock (${row.firstSeen} vs ${NOW})`,
-    );
-    const out = reReportWithConfirmation(row, pid!, f.headSha, NOW - 5);
-    assert(
-      out.resolved.some((r) => r.rowId === row.id && r.reason === "confirmed"),
-      `guard:181 slack: a row 11ms outside the guard's margin IS retired, so any `+`-slack on the compared constant refuses it (resolved=${JSON.stringify(out.resolved)})`,
-    );
-  } finally {
-    releaseFixture(f);
-    removeFixture(f);
-  }
-}
-
-{
-  // CANDIDATE C — the shape the other two lenses named: `firstSeen` STRICTLY
-  // AFTER the round's clock, with a confirmation stamped between the round's
-  // clock and the row's stamp. The prior round's claim was that the interval
-  // is empty — every `at` is either `< firstSeen` (dropped by the join's lower
-  // bound) or `> now` (dropped by the round's upper bound). This case is the
-  // falsification test for that claim: if a stamp existed that made `>=` and
-  // `>` disagree, this case reddens under one of them.
-  const f = makeFixture();
-  try {
-    const pid = (await workingTreePatchId(execp, f.dir)).patchId;
-    assert(pid !== undefined, "guard:181 future: the review identity resolved");
-    const row = await openRowAtFirstSeen(f.dir, f.headSha, pid!, NOW + 5_000);
-    const between = reReportWithConfirmation(row, pid!, f.headSha, NOW + 2_500);
-    const atNow = reReportWithConfirmation(row, pid!, f.headSha, NOW);
-    assert(
-      between.resolved.length === 0 && atNow.resolved.length === 0,
-      `guard:181 future: with firstSeen AFTER the clock, every stamp is refused — by the join below firstSeen, by the round above it (between=${JSON.stringify(between.resolved)}, atNow=${JSON.stringify(atNow.resolved)})`,
-    );
-  } finally {
-    releaseFixture(f);
-    removeFixture(f);
-  }
-}
-
 {
   // The fixture's "was unset" branches, witnessed on the SHARED function. Both
-  // pins are removed from the process before `makeFixture`, so `priorEnv` holds
-  // two `undefined`s and `releaseFixture` must reach its two `delete` branches.
-  // The assertion is `!(NAME in process.env)` — NOT `=== undefined` — because
-  // on bun an assignment of `undefined` leaves the key present holding the
-  // literal string "undefined", which every consumer reading through
-  // `?.trim()` treats as a truthy path. Biome's autofix for `delete x` produces
-  // exactly that assignment; measured, all four confirmation tests stayed green
-  // under it while this case reddens, which is why the property is asserted on
-  // `releaseFixture` and not only on a test's private copy.
+  // pins are removed before `makeFixture`, so `priorEnv` holds two `undefined`s
+  // and `releaseFixture` must reach its two `delete` branches. The assertion is
+  // `!(NAME in process.env)` — NOT `=== undefined` — because on bun assigning
+  // `undefined` leaves the key present holding the literal string "undefined",
+  // which any consumer reading through `?.trim()` treats as a truthy path.
+  // Biome's autofix for `delete x` produces exactly that assignment; measured,
+  // all four confirmation tests stayed green under it while this case reddens —
+  // which is why the property is asserted on `releaseFixture` itself.
   const savedLedger = process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
   const savedAgent = process.env.PI_AGENT_DIR;
   delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
