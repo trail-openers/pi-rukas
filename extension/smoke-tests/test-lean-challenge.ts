@@ -37,6 +37,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { ChallengeInfraError } from "../src/lean/challenge.ts";
 import { phase1Handlers } from "../src/lean/command.ts";
+import { HANDLER_STATES } from "../src/lean/machine.ts";
 import {
   ROOTS,
   RUNNER,
@@ -434,18 +435,21 @@ const EDGE = "tests/AC1-edge-second-failure.test.sh";
 // `test-lean-review-wiring.ts` / `test-lean-ci-land-wiring.ts` assert each is
 // the step rather than the stub.
 //
-// `ci` and `land` came off this list when their steps landed. The assertion that
-// they were unbuilt was TRUE and is now false, so keeping it would mean keeping
-// a test that pins a stage back to a stub. Their replacement assertions — that
-// each is wired to a real handler and reaches its own refusal sentence — live in
-// `test-lean-ci-land-wiring.ts` (cases (n) and (o)), so the coverage moved, it
-// was not dropped. What is left here is the states nobody has built.
+// `ci` and `land` came off this list when their steps landed, and `review` was
+// already real. Every state in `HANDLER_STATES` now has a handler, so there is
+// no stage left to assert as a stub: this case asserts the property the empty
+// list would have asserted vacuously (every state has a handler at all, so the
+// engine reaches it) plus the one that still means something now — that no
+// handler still answers with the stub's `not built yet`, which is how a
+// half-landed step looks from the outside. A stub that RETURNED an outcome kind
+// the table does not list is caught by `test-lean-machine.ts`, which enumerates
+// the graph; this case catches the other shape, a step wired to the stub.
 {
   const built = challengeFixture(214);
   const handlers = phase1Handlers(built.repoRoot, 214);
-  const stubs = [] as const;
+  const states = HANDLER_STATES;
   const messages = await Promise.all(
-    stubs.map((s) =>
+    states.map((s) =>
       (handlers[s] as (c: never) => Promise<unknown>)(built.ctx as never).then(
         String,
         (e: unknown) => (e as Error).message,
@@ -453,8 +457,12 @@ const EDGE = "tests/AC1-edge-second-failure.test.sh";
     ),
   );
   assert(
-    stubs.every((s, i) => messages[i] === `work-lean stage ${s} is not built yet`),
-    `(n) each unbuilt stage's handler THROWS the reason, not an illegal outcome (got ${JSON.stringify(messages)})`,
+    states.length > 0 && states.every((s) => typeof handlers[s] === "function"),
+    `(n) every state in the table has a handler, so the engine reaches it rather than falling off the table (got ${String(states.length)})`,
+  );
+  assert(
+    messages.every((m, i) => !String(m).includes(`work-lean stage ${states[i]} is not built yet`)),
+    `(n) no handler still answers with the notBuilt stub's reason for its own state (got ${JSON.stringify(messages.map((m) => String(m).slice(0, 40)))})`,
   );
 }
 

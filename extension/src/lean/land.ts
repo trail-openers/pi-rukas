@@ -71,7 +71,7 @@ export async function landOutcome(ctx: HandlerCtx, deps: LandDeps): Promise<Outc
     .catch((err: unknown) => ({ why: (err as Error)?.message ?? String(err) }));
   if ("why" in grant)
     return refuse(
-      `the project config at the run's base could not be READ (${grant.why}) — the merge stays refused because the grant could not be established, which is NOT the same as the project declining to grant it`,
+      `the project config at the run's base could not be read (${grant.why}) — the merge stays refused because the grant could not be established, which is NOT the same as the project declining to grant it`,
     );
   if (grant.autoMerge !== true)
     return refuse(
