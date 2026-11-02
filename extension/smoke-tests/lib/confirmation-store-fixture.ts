@@ -111,6 +111,10 @@ export interface ConfirmationFixture {
    * later case was absent. A caller asks `okFixture` and skips its case, which
    * reddens BY NAME and lets the other cases still run. */
   problem: string;
+  /** The caught error's `code` when the build faulted and it had one, else
+   * absent. See the site below for why a case matches on this and not on the
+   * wording in `problem`. */
+  faultCode?: string;
 }
 
 /** A fixture the caller may actually use: built, with a head sha in hand. */
@@ -139,15 +143,27 @@ const AGENT_DIR_ENV = "PI_AGENT_DIR";
 
 /** The two env values a fixture saved, so `releaseFixture` can put them back.
  *
- * THREE states per member, and the third is the one that keeps the teardown
- * safe:
- * - a string  — the pin was set, so release restores exactly that value;
- * - `undefined` — the pin was NOT set when this fixture installed its own,
- *   so release deletes it (it is the fixture's own pin being removed);
- * - `null` — THIS FIXTURE NEVER INSTALLED THE PINS, so release does nothing at
- *   all with that member.
+ * A TWO-ARM DISCRIMINATED UNION, and the arms are the whole design. `{installed:
+ * true}` says this fixture put its own pins in and remembers what it replaced;
+ * `{installed: false}` says it put nothing anywhere and may therefore touch
+ * nothing. The two states a single object type allowed — `{ledgerFile: null,
+ * agentDir: undefined}`, or both members nullable on ONE record — are a compile
+ * error here, which is the point:
  *
- * WHY `null` AND NOT `undefined` OR A MISSING FIELD. The fault arm of
+ * - `null` on a member of the INSTALLED arm is not a thing. Only the release
+ *   reads these members, and an installed fixture has exactly two legal answers
+ *   per pin: a string (restore it) or `undefined` (delete the pin the fixture
+ *   itself installed). A `null` there would be a third meaning with no
+ *   definition.
+ * - A HALF-INSTALLED record is not a thing. `{ledgerFile: null, agentDir:
+ *   undefined}` is the state the previous shape of this type accepted, and the
+ *   reviewer measured what it costs: with the release guard's `||` flipped to
+ *   `&&` every file in the fixture family stayed green except `unset-arms.ts`.
+ *   A release that deleted one host pin and restored the other is exactly the
+ *   hazard the `null` sentinel exists to prevent, half-executed — and one arm of
+ *   the guard was all that stood between it and the developer's `~/.pi`.
+ *
+ * WHY THE SENTINEL MEANS "NEVER INSTALLED" AND NOT "WAS UNSET". The fault arm of
  * `makeFixture` returns a fixture whose recipe died BEFORE the pins were
  * installed (the pins are the last thing the recipe sets). Every consumer calls
  * `releaseFixture` unconditionally in its `finally`, and a member that meant
@@ -160,14 +176,31 @@ const AGENT_DIR_ENV = "PI_AGENT_DIR";
  * It is NEW behaviour — before the `{problem}` channel a faulting `makeFixture`
  * threw, so no `finally` ever ran. `undefined` cannot carry both meanings,
  * because it already means "delete" and that is the dangerous one; so the skip
- * signal is a distinct value the type makes unmissable: `priorEnv` cannot
- * express "unset the host's value" for a fixture that never set it. The two
- * representations are one keystroke apart and only one is safe, which is why the
- * sentinel is spelled out here rather than inferred at the call site. */
-export interface FixtureEnv {
-  ledgerFile: string | undefined | null;
-  agentDir: string | undefined | null;
-}
+ * signal is a SEPARATE ARM rather than a third value, and the release's sentinel
+ * check reads the discriminant — see `releaseFixture` for why the old two-member
+ * `||` is now provably redundant and is gone. */
+export type FixtureEnv =
+  | { installed: true; ledgerFile: string | undefined; agentDir: string | undefined }
+  | { installed: false; ledgerFile: null; agentDir: null };
+
+/** A SETUP fault's env record, exposed for the witness that has to drive the
+ * sentinel arm without a fixture that faulted on purpose.
+ *
+ * WHY A FUNCTION AND NOT A LITERAL AT THE CALL SITE. `assertUnset` and
+ * `releaseFixture` pick their arm off the discriminant, and a witness written
+ * against the OLD two-member type could only reach that arm by *relying* on
+ * `null` — so the branch was tested by a value rather than by the field that
+ * selects it, and the reviewer measured the consequence: flipping the release
+ * guard's `||` to `&&` left all six files of the fixture family green. A
+ * `FixtureEnv` built by this function is the same record `makeFixture`'s fault
+ * arm returns (both go through here), so a case that asserts on
+ * `neverInstalledEnv().installed` is asserting on the field the shipped code
+ * branches on — which is the thing the mutant moved. */
+export const neverInstalledEnv = (): FixtureEnv => ({
+  installed: false,
+  ledgerFile: null,
+  agentDir: null,
+});
 
 /** Build an isolated clone whose head carries a fix in a DIFFERENT file, so the
  * cited line is byte-unchanged at head for every case built on it. */
@@ -178,18 +211,30 @@ export function makeFixture(): ConfirmationFixture {
   // A fault still hands back a `root`, so the caller's `finally` can
   // `removeFixture` it: a failed build that leaked its temp dir would turn one
   // fault into a disk leak multiplied by every remaining case.
-  const unusable = (why: string): ConfirmationFixture => ({
+  const unusable = (why: string, code?: string): ConfirmationFixture => ({
     root,
     dir,
     ledgerFile,
     headSha: "",
-    // `null`, NOT `undefined`, on both members. `undefined` is the record that
-    // says "this pin was unset when I installed mine, so delete it on release" —
-    // and this fixture installed NOTHING. `null` is the sentinel `releaseFixture`
-    // reads as "leave this variable alone": see `FixtureEnv` for the measurement
-    // of what the one-keystroke difference does to the host's pins.
-    priorEnv: { ledgerFile: null, agentDir: null },
+    // `installed: false`, NOT an `undefined`-valued record. "was unset" is the
+    // record that says "this pin was unset when I installed mine, so delete it on
+    // release" — and this fixture installed NOTHING. The discriminant is the
+    // sentinel `releaseFixture` reads as "leave the host's pins alone": see
+    // `FixtureEnv` for the measurement of what the one-keystroke difference does
+    // to the host's pins, and for why the half-installed record this replaces is
+    // now a compile error rather than a convention.
+    priorEnv: neverInstalledEnv(),
     problem: `fixture: ${why}`.slice(0, 240),
+    // The fault's machine-readable cause, kept SEPARATE from the prose in
+    // `problem` because the prose is not matchable. The case that claims "the
+    // recipe died at the git step" must be able to tell an executable-not-found
+    // from a `mkdir` blow-up, and the message it would match on is not stable:
+    // the same `execFileSync("git", …)` on a `PATH` with no `git` reports
+    // `spawnSync git ENOENT` under node and `Executable not found in $PATH:
+    // "git"` under bun 1.4.3 (both measured on this repo's own runtime). The
+    // one thing both agree on is `error.code === "ENOENT"`, and this is it,
+    // copied off the caught error. Absent for a fault that carried no `code`.
+    faultCode: code,
   });
   try {
     mkdirSync(dir, { recursive: true });
@@ -225,7 +270,8 @@ export function makeFixture(): ConfirmationFixture {
     // paths the moment an inner case finished — and a round then writes rows into
     // the real per-clone review ledger or the developer's `~/.pi` state. Nothing
     // here would fail; the data is simply gone.
-    const priorEnv = {
+    const priorEnv: FixtureEnv = {
+      installed: true,
       ledgerFile: process.env[LEDGER_ENV],
       agentDir: process.env[AGENT_DIR_ENV],
     };
@@ -239,7 +285,17 @@ export function makeFixture(): ConfirmationFixture {
     // holds its own ledger and agent dir — restoring them here would be an
     // unnecessary write over state nothing changed, and a `priorEnv` recorded
     // before the failure would claim a swap that never happened.
-    return unusable(`git/fixture step failed: ${(err as Error)?.message ?? String(err)}`);
+    return unusable(
+      `git/fixture step failed: ${(err as Error)?.message ?? String(err)}`,
+      // `(err as {code?: unknown}).code` rather than `err.code`: the catch is
+      // typed on `Error`, which has no `code`, and the two runtimes that raise
+      // this one (node's `spawnSync … ENOENT`, bun's `Executable not found
+      // in $PATH`) both stamp the string on the error object rather than on a
+      // subclass the compiler could narrow to.
+      typeof (err as { code?: unknown }).code === "string"
+        ? ((err as { code?: unknown }).code as string)
+        : undefined,
+    );
   }
 }
 
@@ -258,17 +314,40 @@ export interface ReleaseTarget {
 }
 
 export function releaseFixture(f: ReleaseTarget): void {
-  // A `null` member means this fixture never installed the pins, so there is
-  // nothing of ours to take back and NO reason to touch the variable — the
-  // host's value stays exactly as it is. Checked FIRST, because `null` must
-  // never fall through to the `delete` arm below. Both members are tested in
-  // one condition: the only value that produces a `null` is `unusable()`, which
-  // sets both, and a half-installed release is not a state this type allows.
-  if (f.priorEnv.ledgerFile === null || f.priorEnv.agentDir === null) {
-    // A fixture that never installed the pins leaves the env exactly as it found
-    // it: no delete, no write, and no cache reset — nothing this call would
-    // change is state the failed build moved. See `FixtureEnv` for the hazard
-    // this arm exists to close.
+  // The `installed: false` arm means this fixture never installed the pins, so
+  // there is nothing of ours to take back and NO reason to touch a variable —
+  // the host's value stays exactly as it is. Read off the DISCRIMINANT, not off
+  // the members: the old shape tested `ledgerFile === null || agentDir === null`
+  // because each member carried its own meaning, and the reviewer measured that
+  // flipping that `||` to `&&` left every file in the fixture family green but
+  // `unset-arms.ts` — a half-installed record released one host pin and left the
+  // other. The union makes that record unrepresentable, so `f.priorEnv.installed
+  // === false` IS the whole condition: `installed: false` always carries `null`
+  // on both members BY THE TYPE, and the second test would be a tautology or
+  // dead code. It is deleted rather than kept behind a comment.
+  if (f.priorEnv.installed === false) {
+    // A fixture that never installed the pins leaves the ENV exactly as it found
+    // it: no delete, no write. See `FixtureEnv` for the hazard this arm exists
+    // to close.
+    //
+    // The cache reset, though, DOES run — because the caches it clears are not
+    // fixture state. `resetFindingsStateCache` empties `resolved` and `attempted`
+    // (review-state-path.ts:417-419), both keyed on a clone's git common dir and
+    // both PROCESS-GLOBAL: whoever set them last owns them, and the last writer
+    // here was the PREVIOUS fixture's healthy `makeFixture` (which resets on its
+    // way in, at the foot of its own try block). Returning without the reset
+    // leaks that fixture's store location into the next case, which then resolves
+    // its state through a directory its own pins no longer name.
+    //
+    // "Nothing this call moved" is the wrong test — the arm has to ask what the
+    // PROCESS still believes, not what this fixture touched. Witnessed by the
+    // `cache_case` in `test-review-findings-release-discriminant.ts`, which
+    // releases a sentinel fixture and then asks a SECOND fixture to resolve the
+    // same clone: with this line deleted that case reddens by name
+    // (`cache: the sentinel release cleared the PROCESS-GLOBAL caches…`, measured
+    // `reds=1` there and `reds=0` in every sibling fixture-family file, so the
+    // witness is this arm's and not something that happens to fail anyway).
+    resetFindingsStateCache();
     return;
   }
   if (f.priorEnv.ledgerFile === undefined) delete process.env[LEDGER_ENV];
@@ -278,80 +357,16 @@ export function releaseFixture(f: ReleaseTarget): void {
   resetFindingsStateCache();
 }
 
-/** The witness that `releaseFixture`'s two "was unset" branches really UNSET, and
- * that its two "was set" branches really compare.
- *
- * WHY IT LIVES HERE AND NOT ONLY IN A TEST. Biome's autofix for `delete x`
- * rewrites it to `x = undefined`, and on **bun** that assignment does not
- * remove the variable — it stores the 9-character string `"undefined"`. Every
- * consumer that reads the pin through `?.trim()` then sees a truthy path and
- * resolves state to a file literally named `undefined`, so the guard INVERTS
- * rather than defuses: the fixture looks unpinned and is in fact pinned
- * somewhere worse. Measured: applying that autofix to `releaseFixture` itself
- * left all four confirmation tests green, because the only witnesses of these
- * two branches lived in a test file's private copy of the same shape. This
- * function is the counter-witness on the SHARED original — a test asserts
- * absence through it, so the autofix reddens here and not only there.
- *
- * WHAT IS JUDGED, ARM BY ARM — measured, not asserted. There are four arms and
- * each was tested by deleting its BODY in a compiler-valid mutant (whole copy
- * of the repo under /tmp, `bun run` of the witness file, red line recorded):
- * - ledger / was-set   → RED   (`restore: a corrupted LEDGER restore is exactly
- *   one problem naming that pin`) — witnessed by the `restore` case.
- * - ledger / was-unset → RED   (`release: an "unset" pin re-pinned to the
- *   literal string is exactly one problem naming that pin`) — witnessed by the
- *   `unset_case`, whose inverted probe writes the literal string back and
- *   requires exactly one problem naming that pin.
- * - agent  / was-set   → RED   (`restore: a corrupted AGENT_DIR restore is
- *   exactly one problem naming that pin`) — witnessed by the `restore` case's
- *   agent-side corruption, which the split left in place.
- * - agent  / was-unset → **NOT WITNESSED by the arms below on its own.** The
- *   `unset_case`'s inverted probe corrupts only the LEDGER pin, so with the
- *   agent arm body deleted that case still sees "exactly one problem naming
- *   PI_ENSEMBLE_REVIEW_LEDGER_FILE" and stays green; the mutant measured
- *   `reds=0, greens=17`. The `unset_case`'s direct `!(NAME in process.env)`
- *   check does fail under the same mutant, because the release is the thing
- *   that must have deleted the key — so the BEHAVIOUR is caught even where this
- *   predicate's arm is not. What was added is the mirror of the ledger probe for
- *   `PI_AGENT_DIR`, which makes the arm itself able to go red.
- *
- * A future split that drops one of these cases reddens nothing but this
- * paragraph, which is the only place the arm-by-arm contract is stated — so it
- * states what is measured and names the one arm that needed its own probe.
- * A branch that cannot go red is not coverage, whatever this comment says. */
-export function assertUnset(f: ReleaseTarget, label: string): string[] {
-  const problems: string[] = [];
-  if (f.priorEnv.ledgerFile === null || f.priorEnv.agentDir === null) {
-    // A fixture that never installed the pins has no release to audit. Without
-    // this arm the sentinel would fall into the `=== undefined` branch below and
-    // report the host's own pin as a leak — `null` means "nothing to judge",
-    // which is a different answer from "nothing wrong", and a witness that
-    // returns `[]` for a case it never ran is the silent-green shape this file
-    // exists to remove.
-    return [
-      `${label}: the fixture never installed the pins (priorEnv=${JSON.stringify(f.priorEnv)}), so its release judges nothing`,
-    ];
-  }
-  if (f.priorEnv.ledgerFile === undefined) {
-    if (LEDGER_ENV in process.env) {
-      problems.push(
-        `${label}: ${LEDGER_ENV} still present (${JSON.stringify(process.env[LEDGER_ENV])})`,
-      );
-    }
-  } else if (process.env[LEDGER_ENV] !== f.priorEnv.ledgerFile) {
-    problems.push(`${label}: ${LEDGER_ENV} != ${f.priorEnv.ledgerFile}`);
-  }
-  if (f.priorEnv.agentDir === undefined) {
-    if (AGENT_DIR_ENV in process.env) {
-      problems.push(
-        `${label}: ${AGENT_DIR_ENV} still present (${JSON.stringify(process.env[AGENT_DIR_ENV])})`,
-      );
-    }
-  } else if (process.env[AGENT_DIR_ENV] !== f.priorEnv.agentDir) {
-    problems.push(`${label}: ${AGENT_DIR_ENV} != ${f.priorEnv.agentDir}`);
-  }
-  return problems;
-}
+// The two witnesses over the release moved to `confirmation-store-witness.ts`
+// (the §12 500-line gate; the seam is the direction of judgement — that module
+// audits this one and owns no state). Re-exported so every consumer keeps ONE
+// import for the fixture and the predicates that guard it: the split is a file
+// boundary, not an API change, and no call site had to learn the new name.
+export {
+  assertUnset,
+  releaseUnpinProblems,
+} from "./confirmation-store-witness.ts";
+
 
 export function removeFixture(f: ConfirmationFixture): void {
   rmSync(f.root, { recursive: true, force: true });

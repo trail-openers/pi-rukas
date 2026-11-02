@@ -410,3 +410,6 @@ assert(
  * assertion that proves nothing.
  */
 
+
+console.log(`\nexit ${exit}`);
+process.exit(exit);

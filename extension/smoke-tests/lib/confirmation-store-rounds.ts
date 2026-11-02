@@ -59,8 +59,38 @@ export type SetupOutcome =
       decisions: Decision[];
       carried: Finding[];
       resolved: ResolvedNotice[];
+      /** #1125 — memory the round set aside. OPTIONAL, and deliberately so: the
+       * store omits the key rather than writing an empty list
+       * (review-findings-store.ts:375-377), and no test in this branch reads a
+       * *missing* `setAside` as a finding. Where an absent field means "nothing
+       * happened", the helper supplies `[]` instead — see `lapsed`. */
       setAside?: SetAsideNotice[];
-      lapsed?: ConfirmationLapse[];
+      /**
+       * #1934 AC4 — the rows whose independent confirmation lapsed. REQUIRED on
+       * the success arm, and that requirement is the whole point of the field
+       * being here rather than a `?:` beside `setAside`.
+       *
+       * `lapsed` is the ONLY disclosure of the AC4 event: the row itself keeps
+       * `confirmationLapsed: true` but the proof of WHAT lapsed — the provenance
+       * of the confirmation it was retired on — lives in this notice, and
+       * `test-review-findings-confirmed-store.ts`'s AC4 witness reads exactly one
+       * thing (`second.lapsed?.some(l => … && /patch=/.test(l.provenance))`). With
+       * the field optional, a helper that dropped it — an `asSetup` that stopped
+       * forwarding `out.lapsed`, or a `{...}` spread that lost the key — made
+       * #1934's central disclosure vanish with ZERO reds: `?.some(...)` on
+       * `undefined` is `undefined`, `=== true` is false, and the one assertion
+       * that would notice is in a different file's `break`-guarded block. Making
+       * it required turns "the helper forgot to carry the lapse" into a compile
+       * error at the helper, which is the only place the bug can be caught cheaply.
+       *
+       * EMPTY IS NOT ABSENT, and the type keeps them apart: an empty array is a
+       * round that found no lapse (a real, reportable answer) and `undefined`
+       * cannot be written here at all. The helpers therefore pass `[]` rather
+       * than omitting, so a case that never reads the field is still a case whose
+       * lapse disclosure exists to be read. Proven non-vacuous by the
+       * `lapsed-dropped` mutant in `test-review-findings-release-discriminant.ts`.
+       */
+      lapsed: ConfirmationLapse[];
     }
   // A PLAIN object type on the fault arm, not an intersection. `setupOk` in the
   // fixture module narrows with `T & { problem: "" }`, and if the fault arm were
@@ -91,7 +121,14 @@ export const asSetup = (out: RecordOutcome, label: string): SetupOutcome =>
         carried: out.carried,
         resolved: out.resolved,
         setAside: out.setAside,
-        lapsed: out.lapsed,
+        // `?? []` and not `out.lapsed`: the store omits the key when the list is
+        // empty (review-findings-store.ts:375-377), so the round's own answer for
+        // "no lapse" is `undefined`, and forwarding it would put that `undefined`
+        // on the arm whose whole job is to say "this round reported its lapses".
+        // `[]` is the same answer in the shape the type can carry, and it is what
+        // keeps an empty disclosure distinguishable from a missing one — see the
+        // field's docstring on `SetupOutcome`.
+        lapsed: out.lapsed ?? [],
       }
     : { problem: `${label}: ${out.reason}`, ok: false, reason: out.reason };
 
