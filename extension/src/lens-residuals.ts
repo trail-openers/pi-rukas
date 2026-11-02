@@ -208,6 +208,15 @@ export function confirmationLapseSection(
  * title and problem text come from a file an agent could have written, so every
  * line goes through the one neutraliser — `neutraliseMarkdownField`, for the
  * reason stated on {@link memoryDisclosureSections}. Empty input renders nothing.
+ *
+ * EVERY field on the line, not just the row id. `path`, `title` and `problem`
+ * are all `describeSetAside`'s `text()` reads out of the findings file, so they
+ * are as untrusted as `rowId` is; leaving any one raw lets a malformed row's
+ * own content carry an HTML-comment copy of `lensResidualsMarker` into the PR
+ * comment this module posts, which is what `merge-guard-round-cap.ts` substring-
+ * matches to decide a round-cap merge. `severity` is the exception because it is
+ * NOT file text: the schema narrows it to its four values or `?` before it
+ * reaches this renderer. Witnessed by `test-review-findings-setaside-neutralise.ts`.
  */
 export function setAsideSection(setAside: readonly SetAsideNotice[] | undefined): string[] {
   if (!setAside || setAside.length === 0) return [];
@@ -223,7 +232,7 @@ export function setAsideSection(setAside: readonly SetAsideNotice[] | undefined)
       // (`malformed row` / `acceptance lapsed`, the `[severity]` bracket) is
       // written here and left alone.
       (s) =>
-        `- ${s.wasAcceptance ? "acceptance lapsed" : "malformed row"} (row ${neutralisePostField(s.rowId ?? "?")}): [${s.severity}] ${s.path} — ${s.title}${s.problem ? ` (${s.problem})` : ""}`,
+        `- ${s.wasAcceptance ? "acceptance lapsed" : "malformed row"} (row ${neutralisePostField(s.rowId ?? "?")}): [${s.severity}] ${neutralisePostField(s.path)} — ${neutralisePostField(s.title)}${s.problem ? ` (${neutralisePostField(s.problem)})` : ""}`,
     ),
   ];
 }

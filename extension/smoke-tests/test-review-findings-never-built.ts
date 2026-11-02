@@ -33,11 +33,32 @@ import path from "node:path";
 import { resetFindingsStateCache } from "../src/review-state-path.ts";
 import {
   assertUnset,
+  FIXTURE_GIT_EXEC_ENV,
   makeFixture,
   okFixture,
   releaseFixture,
   removeFixture,
 } from "./lib/confirmation-store-fixture.ts";
+
+/** Put the fixture's `git` out of reach for the calls made while the returned
+ * restore fn is not called. The fault is forced by an EXECUTABLE PATH the case
+ * owns — see `fixtureGitExecutable` in the fixture module for why the previous
+ * shape (`process.env.PATH = "/nonexistent…"`) is not a fault a test can count
+ * on: on the CI runners it did not fault at all three times, and the case read
+ * green while judging nothing.
+ *
+ * The restore is a fn rather than a `savedPath`/`finally` pair because this file
+ * has three owners of the same variable and each must be able to put it back
+ * without an `if (it moved)` guard — the guarded form was measured to be a
+ * tautology, comparing the variable against the value the block itself wrote. */
+const forceGitFault = (): (() => void) => {
+  const saved = process.env[FIXTURE_GIT_EXEC_ENV];
+  process.env[FIXTURE_GIT_EXEC_ENV] = "/nonexistent-1934/git";
+  return () => {
+    if (saved === undefined) delete process.env[FIXTURE_GIT_EXEC_ENV];
+    else process.env[FIXTURE_GIT_EXEC_ENV] = saved;
+  };
+};
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -65,36 +86,30 @@ never_built_case: {
   // NEW behaviour: before the `{problem}` channel a faulting `makeFixture` threw
   // and no `finally` ran.
   //
-  // The fault is forced by taking `git` off PATH: the recipe's first call is
-  // `git init`, so the try block faults BEFORE the two env assignments at its
-  // foot — exactly the window the fix covers. `PATH` is put back in the finally
-  // (a process-wide mutation this case owns, so it restores it the way every
-  // block here restores its own pins).
+  // The fault is forced by an unspawnable git executable: the recipe's first
+  // call is `git init`, so the try block faults BEFORE the two env assignments
+  // at its foot — exactly the window the fix covers. The env is put back
+  // immediately after the call and again in the finally.
   const hostDir = mkdtempSync(path.join(os.tmpdir(), "host-ledger-neverbuilt-"));
   const hostLedger = path.join(hostDir, "ledger.json");
   const hostAgent = path.join(hostDir, "agent");
   const savedLedger = process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
   const savedAgent = process.env.PI_AGENT_DIR;
-  const savedPath = process.env.PATH;
   process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = hostLedger;
   process.env.PI_AGENT_DIR = hostAgent;
   resetFindingsStateCache();
-  // Force the fault by taking `git` off PATH: the recipe's first call is
+  // Force the fault by an unspawnable git executable: the recipe's first call is
   // `git init`, so the try block faults at its HEAD — before the two env
   // assignments at its foot, which is exactly the window the fix covers.
-  process.env.PATH = "/nonexistent-bin-dir-for-1934";
+  const unforce = forceGitFault();
   const f = makeFixture();
-  // The host's PATH goes back IMMEDIATELY, before any assertion or control
-  // fixture runs. Keeping it neutered across the control below would make the
-  // control's `makeFixture` fault for the wrong reason — a control that cannot
-  // build proves nothing about the release, and the red it reports would be
-  // about PATH rather than about the thing under test. The `finally` restores it
-  // UNCONDITIONALLY from the entry snapshot: this block owns `PATH` exclusively
-  // (no other block in this file touches it), so a guard on "did it move" was a
-  // tautology — the variable was compared against the very value the block had
-  // just written there, and the backstop could only ever have fired for a move
-  // this block itself made.
-  process.env.PATH = savedPath;
+  // The host's git executable goes back IMMEDIATELY, before any assertion or
+  // control fixture runs. Keeping it neutered across the control below would make
+  // the control's `makeFixture` fault for the wrong reason — a control that cannot
+  // build proves nothing about the release, and the red it reports would be about
+  // the injection rather than about the thing under test. The `finally` restores
+  // it UNCONDITIONALLY as well: this block owns the variable exclusively.
+  unforce();
   try {
     // WITNESS 1 of 3 — the fixture really faulted, AND faulted at the step this
     // case claims to install. "Any fault" proved only that something failed: with
@@ -167,10 +182,10 @@ never_built_case: {
     // fixture, and a control built from the same call whose PATH was just
     // restored shares nothing with it but the function name.
   } finally {
-    // Unconditional restore from the entry snapshot — see the note above the
-    // `try`. This block owns `PATH` exclusively, so there is no other owner's
-    // value to preserve and no condition worth writing.
-    process.env.PATH = savedPath;
+    // Unconditional restore — see the note above the `try`. This block owns the
+    // variable exclusively, so there is no other owner's value to preserve and no
+    // condition worth writing.
+    unforce();
     if (savedLedger === undefined) delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
     else process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = savedLedger;
     if (savedAgent === undefined) delete process.env.PI_AGENT_DIR;
@@ -231,18 +246,17 @@ nullarm_case: {
   // this witness audits the record of a fixture that never installed the pins,
   // so it needs a faulted fixture of its own, and taking one from the case above
   // would put it behind that case's skips.
-  const savedPath = process.env.PATH;
-  process.env.PATH = "/nonexistent-bin-dir-for-1934-nullarm";
+  const unforce = forceGitFault();
   const f = makeFixture();
-  process.env.PATH = savedPath;
+  unforce();
   try {
     // The INVERSE gate: every other case in this file requires the fixture to
     // have BUILT, and this one requires it NOT to have. Both directions need a
-    // named red — a `makeFixture` that silently succeeded here (PATH restored
-    // early, a stale PATH) would leave `priorEnv` installed and `assertUnset`
-    // auditing a real record, which is the same silent-green in the other
-    // direction. `okFixture` is deliberately NOT used: it reports the opposite
-    // fault.
+    // named red — a `makeFixture` that silently succeeded here (the injection
+    // cleared early, a stale env) would leave `priorEnv` installed and
+    // `assertUnset` auditing a real record, which is the same silent-green in the
+    // other direction. `okFixture` is deliberately NOT used: it reports the
+    // opposite fault.
     assert(
       f.problem !== "" && f.headSha === "" && f.faultCode === "ENOENT",
       `null-arm: the witness's own fixture faulted at the git step, so its record is the one this witness audits (faultCode=${JSON.stringify(f.faultCode)}, problem=${JSON.stringify(f.problem.slice(0, 80))})`,

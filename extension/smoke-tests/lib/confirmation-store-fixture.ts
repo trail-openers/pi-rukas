@@ -83,11 +83,55 @@ export async function rowsOf(dir: string): Promise<{ rows: StoredFinding[]; prob
  * this file's setup channel exists to remove, reached by a different road. */
 const GIT_TIMEOUT_MS = 30_000;
 
-export const git = (cwd: string, ...args: string[]) =>
-  execFileSync("git", ["-C", cwd, ...args], {
+/** The env var that forces the fixture's `git` to be an unspawnable path. Named
+ * by `fixtureGitExecutable` below and read by the cases that need a fixture that
+ * CANNOT build — see it for why the forcing is an executable path rather than a
+ * `PATH` the case rewrites. */
+export const FIXTURE_GIT_EXEC_ENV = "PI_ENSEMBLE_SMOKE_FIXTURE_GIT";
+
+/** The executable every fixture `git` call runs. Normally `git`; a case that
+ * needs the recipe to FAULT at the git step sets {@link FIXTURE_GIT_EXEC_ENV} to
+ * a path nothing can spawn.
+ *
+ * WHY THE INJECTION IS AN EXECUTABLE AND NOT `process.env.PATH = "/nonexistent"`.
+ * That was the previous shape, and CI ran it to green-by-accident three times
+ * (`41360539846`, `41361939737`, `41359102518`): the `never-built` witness
+ * reported `faultCode=undefined, problem=""` and `priorEnv={"installed":true}`,
+ * i.e. the recipe COMPLETED, so the case judged nothing while its own assertion
+ * text promised it had. Whether a `PATH` rewrite removes `git` from reach is a
+ * property of the runtime, not of the test — the same assignment faults under one
+ * bun build and not under another. An absolute path the CASE chose is not a
+ * property of anything: no runtime resolves it, so it cannot resolve it
+ * differently somewhere else. */
+const fixtureGitExecutable = (): string => process.env[FIXTURE_GIT_EXEC_ENV] ?? "git";
+
+/** One line on stderr when a case's fault injection is IN EFFECT at the moment
+ * the recipe runs, so the fault's own witness can be seen to be judging the
+ * injected path rather than a fixture that quietly built.
+ *
+ * It goes to `process.stderr`, never `console.log`: the suite's digest
+ * (lib/verify-report.sh) treats a `✓`-prefixed stdout line as a passing
+ * assertion, so a helper that announces itself on stdout manufactures a green
+ * that no assertion earned. The word `FAULT` is not a marker the digest anchors
+ * on, and this line says nothing about whether the case passed.
+ *
+ * It reads the env AT CALL TIME inside `git`, not once in `makeFixture`, so it
+ * cannot lie: the line appears exactly when the executable the recipe is about
+ * to spawn is the injected one. */
+const announceFaultInjection = (): void => {
+  const forced = process.env[FIXTURE_GIT_EXEC_ENV];
+  if (forced !== undefined) {
+    process.stderr.write(`fault-injection [confirmation-store-fixture]: git = ${forced}\n`);
+  }
+};
+
+export const git = (cwd: string, ...args: string[]) => {
+  announceFaultInjection();
+  return execFileSync(fixtureGitExecutable(), ["-C", cwd, ...args], {
     encoding: "utf8",
     timeout: GIT_TIMEOUT_MS,
   }).trim();
+};
 
 export interface ConfirmationFixture {
   root: string;
@@ -229,11 +273,16 @@ export function makeFixture(): ConfirmationFixture {
     // `problem` because the prose is not matchable. The case that claims "the
     // recipe died at the git step" must be able to tell an executable-not-found
     // from a `mkdir` blow-up, and the message it would match on is not stable:
-    // the same `execFileSync("git", …)` on a `PATH` with no `git` reports
-    // `spawnSync git ENOENT` under node and `Executable not found in $PATH:
-    // "git"` under bun 1.4.3 (both measured on this repo's own runtime). The
-    // one thing both agree on is `error.code === "ENOENT"`, and this is it,
-    // copied off the caught error. Absent for a fault that carried no `code`.
+    // `faultCode`, NOT on the wording in `problem`, and that is a correction
+    // rather than a preference: the brief asked for the substring
+    // `execFile` "actually reports", and what it actually reports depends on the
+    // runtime. A missing executable gives `spawnSync git ENOENT` under node and
+    // `Executable not found in $PATH: "git"` under bun 1.4.3 — both measured
+    // here, in this repo, on the same fixture. A substring match on either greens
+    // the case on the other runtime, which is the same fail-open shape as
+    // accepting any fault. `error.code === "ENOENT"` is what both agree on, and
+    // this is it, copied off the caught error. Absent for a fault that carried no
+    // `code`.
     faultCode: code,
   });
   try {
@@ -330,8 +379,9 @@ export function releaseFixture(f: ReleaseTarget): void {
   // paragraph is a claim about the TYPE, and no runtime assertion of this
   // predicate exists: rewriting this line to `f.priorEnv.ledgerFile === null`
   // is type-legal, `tsc`-clean under both projects, and leaves the whole fixture
-  // family green — measured 40 greens and 0 reds across
-  // `test-review-findings-{unset-arms,release-discriminant,never-built}.ts`.
+  // family green — measured 32 greens and 0 reds across
+  // `test-review-findings-{unset-arms,release-discriminant,never-built}.ts`
+  // (12 + 13 + 7, the `✓` count of one `bun run` of each file at f384e013).
   // The reason is arithmetic, not missing ingenuity. `FixtureEnv` admits exactly
   // three record shapes — `{installed: false, null, null}` and the
   // member-combinations of `{installed: true, …}` — and the two predicates

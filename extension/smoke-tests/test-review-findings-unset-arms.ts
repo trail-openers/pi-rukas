@@ -211,11 +211,6 @@ unset_case: {
     // `in` tests (so a mutation of `assertUnset` itself cannot quietly stop
     // reporting them). The two together are the point: an `assertUnset` that
     // returned `[]` unconditionally passes its own arm and fails these.
-    // WITNESS 3 of 3 — the two `delete` branches, judged through the SHARED
-    // `assertUnset` (so a mutation of those branches reddens here) AND by direct
-    // `in` tests (so a mutation of `assertUnset` itself cannot quietly stop
-    // reporting them). The two together are the point: an `assertUnset` that
-    // returned `[]` unconditionally passes its own arm and fails these.
     //
     // And a THIRD reading, from `releaseUnpinProblems` — the unpin asserted as
     // the release's OWN post-condition on the variable it just wrote, rather than

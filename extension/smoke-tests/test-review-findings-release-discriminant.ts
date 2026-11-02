@@ -43,6 +43,7 @@ import {
 import {
   assertUnset,
   CITED,
+  FIXTURE_GIT_EXEC_ENV,
   makeFixture,
   neverInstalledEnv,
   okFixture,
@@ -232,12 +233,15 @@ discriminant_case: {
   );
   // WITNESS 2 — the fault arm of `makeFixture` builds the SAME record, so the
   // arm this case drives is the one the shipped fault path produces rather than
-  // a stand-in shaped like it. Forced the same way `never_built_case` does it:
-  // `git` off PATH, so the recipe dies before the pins.
-  const savedPath = process.env.PATH;
-  process.env.PATH = "/nonexistent-bin-dir-for-1934-discriminant";
+  // a stand-in shaped like it. Forced the same way `never_built_case` does it: an
+  // unspawnable git executable the case owns, so the recipe dies before the pins
+  // (NOT a `PATH` rewrite — see `fixtureGitExecutable` for the CI runs where that
+  // silently did not fault and this witness read green on a built fixture).
+  const savedGit = process.env[FIXTURE_GIT_EXEC_ENV];
+  process.env[FIXTURE_GIT_EXEC_ENV] = "/nonexistent-1934-discriminant/git";
   const faulted = makeFixture();
-  process.env.PATH = savedPath;
+  if (savedGit === undefined) delete process.env[FIXTURE_GIT_EXEC_ENV];
+  else process.env[FIXTURE_GIT_EXEC_ENV] = savedGit;
   assert(
     faulted.problem !== "" && faulted.priorEnv.installed === false,
     `discriminant: makeFixture's fault arm records installed:false, the same tag (${JSON.stringify(faulted.priorEnv)}, problem=${faulted.problem.slice(0, 40)})`,

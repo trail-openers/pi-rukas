@@ -27,7 +27,6 @@ import { execp } from "../src/exec.ts";
 import { workingTreePatchId } from "../src/review-ledger.ts";
 import { rowsOf, writeLedger } from "./lib/confirmation-store-fixture.ts";
 import {
-  CITED,
   FINDING,
   makeFixture,
   okFixture,

@@ -131,7 +131,12 @@ const SELF = "smoke-tests/test-review-findings-tsconfig-registration.ts";
 
 // (a) Every explicit, non-glob entry resolves to a real file — every entry
 // this branch did not add, plus any earlier entry that has since gone stale.
-const addedSet = new Set(branchAddedTestFiles().paths);
+/** Resolved ONCE, high in the file: (a) needs its set of branch-added paths and
+ * (b) needs the whole result, and two calls would run the same four git probes
+ * twice and could disagree if the clone moved in between. */
+const added = branchAddedTestFiles();
+const addedPaths = added.ok ? added.paths : [];
+const addedSet = new Set(addedPaths);
 const explicit = entries.filter((e) => !e.includes("*") && e !== SELF && !addedSet.has(e));
 const missing = explicit.filter((e) => !existsSync(path.join(EXT_ROOT, e)));
 // The stale entry this gate found on the branch it was written for, recorded
@@ -278,27 +283,133 @@ for (const control of ["src/**/*", "scripts/**/*"]) {
 // (b) Every test file this branch added is listed. `include` is relative to the
 // tsconfig's own directory (`extension/`), so the branch paths are rebased
 // before comparison.
-function branchAddedTestFiles(): { ok: boolean; paths: string[] } {
-  const repoRoot = path.join(EXT_ROOT, "..");
-  const base = process.env.PI_ENSEMBLE_TSCONFIG_BASE ?? "origin/main";
-  let out = "";
+/** The base `branchAddedTestFiles` compares against, or why it could not be
+ * named. Every arm is REPORTED, not swallowed: the whole reason (b) exists is
+ * that a registration check which quietly judges nothing reads as one that
+ * passed, and the arm that used to answer "no base" was a bare `catch` that
+ * printed nothing about WHICH precondition failed. */
+type BaseResolution =
+  /** The base ref `git merge-base` resolved against, for the message. */
+  | { ok: true; base: string; paths: string[] }
+  | { ok: false; reason: string };
+
+/** Run one git command, returning its stdout, or a named reason it failed.
+ * `--quiet` is not enough on its own: `git rev-parse --verify --quiet` on a
+ * missing object exits 0 and prints NOTHING, so every caller of this tests the
+ * stdout and not only the exit code — a check on "the command did not throw"
+ * would treat a `git merge-base <base> HEAD` against a shallow checkout as a
+ * success and hand back an empty base. */
+function gitOut(repoRoot: string, args: string[]): { out?: string; reason: string } {
   try {
-    const mergeBase = execFileSync("git", ["-C", repoRoot, "merge-base", base, "HEAD"], {
-      encoding: "utf8",
-    }).trim();
-    out = execFileSync("git", ["-C", repoRoot, "diff", "--name-only", mergeBase, "HEAD"], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-  } catch {
-    // No base to compare against (shallow clone, missing remote ref). (b) then
-    // checks nothing, and says so — a gate that silently narrows is the defect
-    // this file exists to prevent.
-    return { ok: false, paths: [] };
+    return { out: execFileSync("git", ["-C", repoRoot, ...args], { encoding: "utf8" }), reason: "" };
+  } catch (err) {
+    const detail = String((err as Error)?.message ?? err).split("\n")[0] ?? "";
+    return { reason: `\`git ${args.join(" ")}" failed: ${detail}`.slice(0, 220) };
+  }
+}
+
+/** Every ref in the clone that points at the mainline, by name. A `git
+ * for-each-ref` over BOTH namespaces, because the two are set by different
+ * things: `refs/remotes/origin/<m>` exists when the remote-tracking ref was
+ * fetched, `refs/heads/<m>` when the branch was checked out locally. Neither is
+ * a precondition the previous code was willing to assume and none was reported.
+ */
+function mainlineRefs(repoRoot: string, mainline: string): string[] {
+  const res = gitOut(repoRoot, [
+    "for-each-ref",
+    "--format=%(refname)",
+    `refs/remotes/*/${mainline}`,
+    `refs/heads/${mainline}`,
+  ]);
+  if (!res.out) return [];
+  return res.out.split("\n").map((l) => l.trim()).filter((l) => l !== "");
+}
+
+/** Resolve the ref (s) compares HEAD against. Explicit `PI_ENSEMBLE_TSCONFIG_BASE`
+ * wins; otherwise the first of `origin/<m>`, `remotes/origin/<m>`, `<m>` that
+ * resolves, where `<m>` is the clone's own mainline — and the mainline itself
+ * comes from `origin/HEAD`, then `git symbolic-ref HEAD`, rather than from a
+ * hard-coded `main`.
+ *
+ * WHY NOT THE SINGLE HARD-CODED `origin/main` THIS USED TO ASSUME, and what it
+ * cost: the CI checkout is `actions/checkout@v7` at its default `fetch-depth: 1`,
+ * which fetches only the PR merge ref — so `origin/main` is not a valid object
+ * there, `git merge-base` throws, the `catch` returned `{ ok: false }`, and the
+ * one assertion that says "(b) is judging something" was red on EVERY CI run of
+ * this file while the file's own green count hid that (b) had never run. It is
+ * not a checkout bug to route around (and `.github/` is a protected path this
+ * change must not edit): it is the assumption being load-bearing. The fix is to
+ * resolve whatever base the clone ACTUALLY has and, when it has none, to name
+ * the reason — fail-closed, never silently green.
+ */
+function resolveBaseRef(repoRoot: string): { base?: string; reason: string } {
+  const forced = process.env.PI_ENSEMBLE_TSCONFIG_BASE;
+  if (forced !== undefined && forced !== "") {
+    const verify = gitOut(repoRoot, ["rev-parse", "--verify", "--quiet", `${forced}^{commit}`]);
+    return verify.out?.trim()
+      ? { base: forced, reason: "" }
+      : { reason: `PI_ENSEMBLE_TSCONFIG_BASE=${JSON.stringify(forced)} is not a commit` };
+  }
+  // The mainline's NAME, from the two places a clone records it. A detached
+  // checkout with no `origin/HEAD` yields neither, which is reported below
+  // rather than answered with a guess at `main`.
+  const candidates: string[] = [];
+  for (const args of [
+    ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+    ["symbolic-ref", "--quiet", "HEAD"],
+  ]) {
+    const res = gitOut(repoRoot, args);
+    const ref = res.out?.trim();
+    if (ref) candidates.push(ref.replace(/^refs\/(remotes\/)?/, "").replace(/^origin\//, ""));
+  }
+  const mainlines = [...new Set(candidates.filter((c) => c !== ""))];
+  if (mainlines.length === 0) {
+    return {
+      reason:
+        "this clone names no mainline: no refs/remotes/origin/HEAD and HEAD is detached, " +
+        "so there is no <m> to compare against. Set PI_ENSEMBLE_TSCONFIG_BASE to a commit " +
+        "this branch diverged from (a shallow CI checkout that fetched only the PR ref " +
+        "lands here, and (b) then judges nothing).",
+    };
+  }
+  for (const m of mainlines) {
+    for (const ref of mainlineRefs(repoRoot, m)) {
+      const verify = gitOut(repoRoot, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
+      if (verify.out?.trim()) return { base: ref, reason: "" };
+    }
+  }
+  return {
+    reason: `no mainline ref resolves in this clone: looked for ${JSON.stringify(
+      mainlines.flatMap((m) => [`origin/${m}`, m]),
+    )} — a fetch-depth:1 checkout that took only the PR ref has neither, so (b) judges " +
+      "nothing. Set PI_ENSEMBLE_TSCONFIG_BASE to a reachable commit.`,
+  };
+}
+
+function branchAddedTestFiles(): BaseResolution {
+  const repoRoot = path.join(EXT_ROOT, "..");
+  const resolved = resolveBaseRef(repoRoot);
+  if (!resolved.base) return { ok: false, reason: resolved.reason };
+  const mergeBase = gitOut(repoRoot, ["merge-base", resolved.base, "HEAD"]);
+  const baseSha = mergeBase.out?.trim();
+  if (!baseSha) {
+    return {
+      ok: false,
+      reason: `\`git merge-base ${resolved.base} HEAD\` produced nothing (${mergeBase.reason || "empty output"}) — HEAD may not share history with the base`,
+    };
+  }
+  const diff = gitOut(repoRoot, ["diff", "--name-only", baseSha, "HEAD"]);
+  // `out === undefined` is the failure; the EMPTY string is the legitimate
+  // answer for a HEAD that is the base (a shallow checkout whose only object is
+  // HEAD, or a branch with no test-file changes). `!diff.out` would call a real
+  // empty diff a fault and print a reason that blames a readable diff.
+  if (diff.out === undefined) {
+    return { ok: false, reason: `the diff against ${baseSha} could not be read: ${diff.reason}` };
   }
   return {
     ok: true,
-    paths: out
+    base: `${resolved.base}@${baseSha.slice(0, 12)}`,
+    paths: diff.out
       .split("\n")
       .map((l) => l.trim())
       .filter((l) => /^extension\/smoke-tests\/(test-.*|lib\/.*)\.ts$/.test(l))
@@ -313,13 +424,12 @@ assert(
   entries.includes(SELF),
   `tsconfig-registration: this file is listed in \`include\` (${SELF})`,
 );
-const added = branchAddedTestFiles();
 assert(
   added.ok,
-  "tsconfig-registration (b): the branch diff against the base is readable, so the registration check is actually judging something",
+  `tsconfig-registration (b): the branch diff against the base is readable, so the registration check is actually judging something${added.ok ? ` (base=${JSON.stringify(added.base)})` : ` — ${added.reason}`}`,
 );
 const listed = new Set(entries);
-const unlisted = added.ok ? added.paths.filter((p) => !listed.has(p)) : [];
+const unlisted = addedPaths.filter((p) => !listed.has(p));
 // The one legitimate reason a branch-touched test sits outside this project is
 // that it carries the pre-existing type-error backlog — which is why the file
 // is a ratchet and not the whole tree (its own header says so). A file named
@@ -328,7 +438,7 @@ const BACKLOG_EXEMPT = new Set(["smoke-tests/test-review-accept-layers.ts"]);
 const unregistered = unlisted.filter((p) => !BACKLOG_EXEMPT.has(p));
 assert(
   unregistered.length === 0,
-  `tsconfig-registration (b): every test/lib file this branch added is in \`include\` or declared backlog-exempt (${added.paths.length} added; unregistered=${JSON.stringify(unregistered)})`,
+  `tsconfig-registration (b): every test/lib file this branch added is in \`include\` or declared backlog-exempt (${addedPaths.length} added; unregistered=${JSON.stringify(unregistered)})`,
 );
 
 process.exit(exit);

@@ -99,6 +99,7 @@
     "smoke-tests/lib/window-guards-helpers.ts",
     "smoke-tests/test-review-findings-tsconfig-registration.ts",
     "smoke-tests/test-review-findings-disclosure-render.ts",
+    "smoke-tests/test-review-findings-setaside-neutralise.ts",
     "smoke-tests/test-review-findings-forge-post.ts",
     "smoke-tests/test-forge-post-neutralised.ts",
     "smoke-tests/lib/lens-fix-kill-cause-fixtures.ts",

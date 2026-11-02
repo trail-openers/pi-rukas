@@ -33,7 +33,21 @@ const LEDGER_ENV = "PI_ENSEMBLE_REVIEW_LEDGER_FILE";
 const AGENT_DIR_ENV = "PI_AGENT_DIR";
 
 /** The witness that `releaseFixture`'s two "was unset" branches really UNSET —
- * asserted BY `releaseFixture`, not merely reported by a caller.
+ * asserted on the state `releaseFixture` LEAVES, by a caller that runs it right
+ * after the release.
+ *
+ * WHO CALLS THIS (corrected, #1934 review round). An earlier revision of this
+ * header said the check was asserted BY `releaseFixture` and that the absence
+ * test "runs INSIDE `releaseFixture`". It does not, and never did: nothing under
+ * `src/` names this function (a grep for `releaseUnpinProblems` across `src/`
+ * returns zero hits). Its callers are the two test files, each of which calls it
+ * AFTER `releaseFixture` has returned — `test-review-findings-unset-arms.ts` in
+ * its `unset_case` (twice, one probe per pin) and
+ * `test-review-findings-release-discriminant.ts` for its sentinel arm. What the
+ * paragraph below actually established is that the ORIGINAL witnesses read a
+ * `process.env` a mutant had already poisoned, and that requiring each pin's own
+ * sentence instead of a falsy value is what closes it — not that the check was
+ * ever hoisted into the release itself.
  *
  * WHY IT IS A POST-CONDITION OF THE RELEASE AND NOT A PREDICATE A TEST CALLS.
  * The previous shape of this function returned `string[]` and every witness of
@@ -41,7 +55,9 @@ const AGENT_DIR_ENV = "PI_AGENT_DIR";
  * puts the checking OUTSIDE the thing under test, and the reviewer measured what
  * it costs: with `delete process.env[X]` replaced by the assignment Biome's
  * autofix produces, the release left the key present holding the 9-character
- * string `"undefined"` and BOTH fixture-family files stayed green — the caller's
+ * string `"undefined"` and the two files that witness the release
+ * (`test-review-findings-unset-arms.ts`, `test-review-findings-release-
+ * discriminant.ts`) stayed green — the caller's
  * `problems` array was computed from a `process.env` the mutant had already
  * poisoned, and `=== falsy` accepted it. So the absence check now runs INSIDE
  * `releaseFixture`, on the variable it just wrote, and returns a problem the
@@ -190,7 +206,9 @@ export function releaseUnpinProblems(f: ReleaseTarget, label: string): string[] 
  * changes the rest is a refusal of something else wearing this arm's one good
  * word. Measured: an arm rewritten to
  * `… the fixture never installed the pins, judged clean` passed the pre-edit
- * witnesses of BOTH files (`reds=0` in all three fixture-family files) and
+ * witnesses of the two files that witness it (`reds=0` in each of the three
+ * fixture-family files read individually: unset-arms 12 ✓, release-discriminant
+ * 13 ✓, never-built 7 ✓) and
  * reddens both once each witness requires the arm's full sentence and excludes
  * every other arm's spelling. That mutant is the reason the clauses are here.
  */
