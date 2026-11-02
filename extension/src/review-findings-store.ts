@@ -71,9 +71,34 @@ import {
   readBranchRowsRaw,
 } from "./review-findings-read.ts";
 import { applyFindingRound } from "./review-findings-round.ts";
+import type { ConfirmationLapse } from "./review-findings-store-types.ts";
+import {
+  type AcceptOutcome,
+  type FindingRun,
+  type RecordOutcome,
+  defaultWriteRows,
+  mutateFindings,
+} from "./review-findings-store-write.ts";
+import type { LedgerEntry } from "./review-ledger-entry.ts";
 import { acquireLedgerLock } from "./review-ledger-lock.ts";
+import { ledgerPathFor } from "./review-ledger-path.ts";
+import { readLedgerAt } from "./review-ledger-read.ts";
+import { workingTreePatchId } from "./review-ledger.ts";
 import { type FindingsLocation, findingsStateDir } from "./review-state-path.ts";
 import { trace } from "./trace.ts";
+
+// The findings store's PUBLIC SURFACE is this module: callers import the round's
+// input and outcome shapes from here, not from the write half. #1934 moved those
+// declarations to review-findings-store-write.ts for the AGENTS.md §12 size gate
+// and the re-exports went with them, so four types silently left the public
+// surface while the file still documented itself as the store. Re-exported so a
+// caller that named `FindingRun` before the split still names it after it.
+export type {
+  AcceptOutcome,
+  FindingRun,
+  RecordOutcome,
+  WriteRows,
+} from "./review-findings-store-write.ts";
 
 /**
  * What a round decided for one finding, aligned by index with the findings it
@@ -95,156 +120,6 @@ export { FINDINGS_FILE } from "./review-state-path.ts";
 
 const FULL_SHA = /^[0-9a-f]{40}$/;
 const ROW_ID = /^[0-9a-f]{8}$/;
-
-/**
- * The write primitive, injectable per CALL (never module-global): a test that
- * must exercise the failed-write disclosure hands `recordFindingRunOutcome` /
- * `acceptFinding` its own `writeFn`, and every other caller gets `defaultWriteRows`.
- *
- * A module-global fault hook would have made "which round failed to write" a
- * property of process state rather than of the call, so two rounds in one
- * process — or a test that forgot to clear it — would fault a round nobody
- * meant to fault.
- */
-export type WriteRows = (file: string, rows: StoredFinding[]) => void;
-
-/** The real write: serialize, cap per branch, tmp file, atomic rename. */
-function defaultWriteRows(file: string, rows: StoredFinding[]): void {
-  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
-  try {
-    writeFileSync(tmp, JSON.stringify({ rows: capPerBranch(rows) }, null, 2), "utf8");
-    renameSync(tmp, file);
-  } catch (err) {
-    rmSync(tmp, { force: true });
-    throw err;
-  }
-}
-
-export interface FindingRun {
-  cwd: string;
-  branch: string;
-  /** The full commit the round reviewed; identities are read from it. */
-  headSha: string;
-  /** Deduplicated findings, in the order the decisions must align with. */
-  findings: Finding[];
-  /** How this round reviewed the branch, computed once by the caller (lens-review.ts). */
-  review: ReviewKind;
-  /** The delta diff (`git diff since..head`); required when `review` is `delta`.
-   * The changed line ranges are DERIVED from it here (`changedLineRanges`) and
-   * never supplied by the caller: a diff is the round's evidence, and ranges
-   * quoted separately could disagree with the diff they came from (#1125
-   * decision 5). */
-  deltaDiff?: string;
-  /** When to stamp the rows (defaults to `Date.now()`). */
-  now?: number;
-  /**
-   * The write to perform, supplied per call (tests inject a failing one). A
-   * module-global fault seam is not a thing: this is the only seam.
-   */
-  writeFn?: WriteRows;
-}
-
-/** The result of recording one round: the decisions, or why nothing was recorded. */
-export type RecordOutcome =
-  | {
-      ok: true;
-      decisions: Decision[];
-      carried: Finding[];
-      resolved: ResolvedNotice[];
-      /**
-       * #1125 — memory the round set aside and disclosed: a malformed row the
-       * store refuses to act on, and an operator acceptance whose cited code
-       * changed so its suppression lapsed. A non-empty list means the round's
-       * suppression did NOT apply to these rows; the caller renders them, and a
-       * row the operator accepted by name must never vanish from that list.
-       */
-      setAside?: SetAsideNotice[];
-    }
-  | { ok: false; reason: string; setAside?: SetAsideNotice[] };
-
-/** The result of an acceptance: the accepted row, or why nothing was accepted. */
-export type AcceptOutcome = { ok: true; row: StoredFinding } | { ok: false; reason: string };
-
-type MutateOutcome<T> =
-  | { ok: true; value: T }
-  | { ok: false; reason: string; setAside?: SetAsideNotice[] };
-
-/** Copy one malformed row aside, named by its content, so a repeat never duplicates it. */
-function setAside(file: string, row: unknown): void {
-  const text = JSON.stringify(row, null, 2);
-  const copy = copyBytesAside(file, text, "a malformed findings row");
-  trace(
-    copy.copied
-      ? `review-findings: a malformed row was set aside in ${copy.path}`
-      : `review-findings: a malformed row was set aside but the copy failed (${copy.reason})`,
-  );
-}
-
-/**
- * Read-modify-write the findings file under the ledger lock. `fn` gets the
- * stored rows and returns the rows to keep plus a value. Private: the only
- * callers are `acceptFinding` and `recordFindingRunOutcome` in this module.
- * Never throws.
- *
- * `loc` is the pair the CALLER resolved, threaded in so the read it acted on and
- * the write this performs cannot name two different files — a second `locate`
- * here would re-read the environment between the two, and a round whose read
- * came from one ledger and whose write landed in another is exactly the shape
- * #1125 spent a round removing elsewhere. `writeFn` is likewise the caller's,
- * per call, defaulting to the real atomic write.
- */
-async function mutateFindings<T>(
-  loc: FindingsLocation,
-  fn: (rows: StoredFinding[]) => { rows: StoredFinding[]; result: T },
-  /** Memory the caller had already read and set aside BEFORE this write: on a
-   * failed write the round never reaches its summary, so these notices would be
-   * lost with it (#1125). Attaching them to the `{ok:false}` outcome keeps the
-   * disclosure alive exactly as far as the successful one's does. */
-  preLockSetAside?: SetAsideNotice[],
-  writeFn: WriteRows = defaultWriteRows,
-): Promise<MutateOutcome<T>> {
-  let release: (() => void) | undefined;
-  try {
-    release = await acquireLedgerLock(loc.ledger);
-    const parsed = parseFindingsFile(loc.file);
-    if (!parsed.ok) {
-      // The bytes are re-read here rather than reused from the caller's read:
-      // this is the read UNDER THE LOCK, and the copy must be of what the writer
-      // was about to overwrite. A copy that cannot be made still refuses, and
-      // says the copy failed rather than pretending the bytes are safe.
-      const copy: CorruptCopy = copyBytesAside(
-        loc.file,
-        readFileSync(loc.file, "utf8"),
-        "the corrupt findings file",
-      );
-      trace(`review-findings: ${loc.file} is corrupt (${parsed.reason})`);
-      return {
-        ok: false,
-        reason: `the findings file is corrupt (${parsed.reason}); it was not overwritten — ${corruptDisclosure(loc.file, copy)}`,
-        ...(preLockSetAside && preLockSetAside.length > 0 ? { setAside: preLockSetAside } : {}),
-      };
-    }
-    for (const bad of parsed.malformed) setAside(loc.file, bad);
-    const { rows, result } = fn(parsed.rows);
-    writeFn(loc.file, rows);
-    return { ok: true, value: result };
-  } catch (err) {
-    // The disclosure outlives the write: a failed write means the round records
-    // nothing and never reaches its summary, so the memory the round had already
-    // set aside would otherwise vanish along with the refusal (#1125).
-    return {
-      ok: false,
-      reason: `write failed: ${(err as Error).message.slice(0, 160)}`,
-      ...(preLockSetAside && preLockSetAside.length > 0 ? { setAside: preLockSetAside } : {}),
-    };
-  } finally {
-    try {
-      release?.();
-    } catch (err) {
-      trace(`review-findings: lock release failed: ${(err as Error).message}`);
-    }
-  }
-}
 
 /**
  * Resolve the findings file's path and the ledger path that guards it. Both are
@@ -414,6 +289,52 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
     // The pre-lock set-asides travel with the write: if the write fails the
     // round never reaches its summary, and without these the operator loses the
     // disclosure of memory that had already been set aside (#1125).
+    //
+    // #1934 — the identity the round's own write and its confirmations key on.
+    // One computation for both: the caller that already computed it (the lens
+    // ledger write) threads it in, so a normal recorded round pays for exactly
+    // one `git diff | git patch-id --stable`. A failed identity read leaves it
+    // undefined, which reads as "no confirmation available" below — never as a
+    // match, because `confirmationsFor` compares by string equality against a
+    // ledger row that is always non-empty.
+    let patchId = run.patchId;
+    if (run.confirmFixes === true && patchId === undefined) {
+      try {
+        patchId = (await workingTreePatchId(execp, run.cwd)).patchId;
+      } catch (err) {
+        trace(
+          `review-findings: confirmations unavailable — the review identity could not be computed (${(err as Error).message.slice(0, 120)})`,
+        );
+      }
+    }
+    // #1934 — the ledger rows an independent confirmation is read from, read
+    // ONCE here and threaded into the round: the same resolver the store's own
+    // location uses (`ledgerPathFor`, override-honouring), so a round isolated by
+    // `PI_ENSEMBLE_REVIEW_LEDGER_FILE` reads the ledger it was isolated with. Any
+    // fault answers "no rows", which is the answer that confirms nothing — a
+    // ledger the round cannot read never retires a row, exactly as it never
+    // satisfies the merge guard. Read BEFORE the lock: the findings write holds
+    // it, and taking a git read inside the critical section would widen the
+    // window the #1071 lock exists to shorten.
+    let ledgerRows: LedgerEntry[] = [];
+    if (run.confirmFixes === true && patchId !== undefined) {
+      try {
+        // One resolution, the same override-honouring resolver the store's own
+        // location is computed from (`ledgerPathFor` / `computeLocation` both read
+        // `PI_ENSEMBLE_REVIEW_LEDGER_FILE` first), so an isolated round reads the
+        // ledger it was isolated with — the read/write agreement #1125 requires.
+        const ledgerFile = await ledgerPathFor(execp, run.cwd);
+        if (ledgerFile) ledgerRows = readLedgerAt(ledgerFile);
+      } catch (err) {
+        trace(
+          `review-findings: confirmations unavailable — the ledger could not be read (${(err as Error).message.slice(0, 120)})`,
+        );
+      }
+    }
+    const useConfirmations = run.confirmFixes === true && patchId !== undefined;
+    // The pre-lock set-asides travel with the write: if the write fails the
+    // round never reaches its summary, and without these the operator loses the
+    // disclosure of memory that had already been set aside (#1125).
     const out = await mutateFindings(
       loc,
       (all) => {
@@ -427,6 +348,15 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
           headOf: (p: string) => heads.get(p),
           review: run.review,
           ...(ranges ? { deltaRanges: ranges } : {}),
+          ...(useConfirmations
+            ? {
+                confirmations: {
+                  ledger: ledgerRows,
+                  patchId: patchId as string,
+                  headSha: run.headSha,
+                },
+              }
+            : {}),
           now,
         });
         return {
@@ -450,6 +380,7 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
       decisions: out.value.decisions,
       carried: out.value.carried,
       resolved: out.value.resolved,
+      ...(out.value.lapsed && out.value.lapsed.length > 0 ? { lapsed: out.value.lapsed } : {}),
       ...(out.value.setAside.length > 0 ? { setAside: out.value.setAside } : {}),
     };
   } catch (err) {

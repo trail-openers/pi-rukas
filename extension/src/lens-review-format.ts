@@ -18,6 +18,7 @@ import { isReviewIncomplete } from "./lens-review-incomplete.ts";
 import type { Finding, FindingSource, LensRunResult } from "./lens-review-types.ts";
 import { CLAIM_SCAN, CLAIM_SCAN_PRECEDENCE, type RosterEntry } from "./lens-roster.ts";
 import type { ResolvedNotice, SetAsideNotice } from "./review-findings-file.ts";
+import type { ConfirmationLapse } from "./review-findings-store-types.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult, DispatchUsage } from "./types.ts";
 
@@ -142,6 +143,15 @@ export interface LensReviewSummary {
    * its return to look like a new finding.
    */
   setAside?: SetAsideNotice[];
+  /**
+   * #1934 AC4 — rows whose INDEPENDENT confirmation lapsed this round: retired
+   * by a confirmation that no longer binds to the commit under review, so the
+   * row is open again while its cited code is unchanged. A disclosure that the
+   * operator must see — without it a row that stopped being retired returns with
+   * no account of the retirement it lost. Rendered by
+   * `confirmationLapseSection` in the summary and the residual disclosure.
+   */
+  lapsed?: ConfirmationLapse[];
   /** #1140 (#1125, at LINE level) — reported findings whose cited code is outside
    * the PR's changed lines: listed under the advisory heading, never counted
    * toward the verdict, `bySeverity` or the ledger's `hasCritical`. */

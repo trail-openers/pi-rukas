@@ -37,7 +37,11 @@ import {
   recordFindingRunOutcome,
 } from "../src/review-findings-store.ts";
 import { decide } from "./lib/review-findings-fixtures.ts";
-import { FINDINGS_FILE, findingsStateDir, resetFindingsStateCache } from "../src/review-state-path.ts";
+import {
+  FINDINGS_FILE,
+  findingsStateDir,
+  resetFindingsStateCache,
+} from "../src/review-state-path.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -83,23 +87,29 @@ assert(
 // ── layer 2: the write path is outside src/ ─────────────────────────────────
 
 const srcFiles = readdirSync(path.join(repoExt, "src")).filter((f) => f.endsWith(".ts"));
+const srcText = (f: string) => readFileSync(path.join(repoExt, "src", f), "utf8");
 const importers = srcFiles.filter((f) =>
-  /from\s+["'][^"']*scripts\/review-accept/.test(
-    readFileSync(path.join(repoExt, "src", f), "utf8"),
-  ),
+  /from\s+["'][^"']*scripts\/review-accept/.test(srcText(f)),
 );
 assert(importers.length === 0, "boundary: no src/ module imports the acceptance write path");
-const storeSrc = readFileSync(path.join(repoExt, "src", "review-findings-store.ts"), "utf8");
+const storeSrc = srcText("review-findings-store.ts");
+const writeSrc = srcText("review-findings-store-write.ts");
+// #1934 — `mutateFindings` moved to `review-findings-store-write.ts` (the
+// 500-line gate) and is EXPORTED there, so the module-privacy claim above names
+// the store PAIR: no other src module may name it (`others` proves that, both
+// files excluded there). Not a door: `-write` never grows an acceptance, so the
+// acceptance write stays `acceptFinding` in the store entry point alone.
+const STORE_PAIR = ["review-findings-store.ts", "review-findings-store-write.ts"];
 assert(
-  !/export\s+(?:async\s+)?function\s+mutateFindings\b/.test(storeSrc),
-  "boundary: mutateFindings is module-private in the findings store",
+  !/\bfunction\s+accept(?:Finding|Row)\b/.test(writeSrc) &&
+    !/\bexport\b[^\n]*\baccept(?:Finding|Row)\b/.test(writeSrc),
+  "boundary: the write half declares/exports no acceptance door (acceptFinding/acceptRow)",
 );
 assert(
   !storeSrc.includes("export async function acceptRow"),
   "boundary: the findings store does not export acceptRow",
 );
-const others = srcFiles.filter((f) => f !== "review-findings-store.ts");
-const srcText = (f: string) => readFileSync(path.join(repoExt, "src", f), "utf8");
+const others = srcFiles.filter((f) => !STORE_PAIR.includes(f));
 assert(
   others.every((f) => !/\b(?:acceptFinding|acceptRow|mutateFindings)\b/.test(srcText(f))),
   "boundary: no src/ module other than the store names acceptFinding or a write primitive",
@@ -169,10 +179,7 @@ for (const c of [
   "bun test --preload ./x.ts smoke-tests/review-findings-store*",
   "bun test smoke-tests/review-accept.ts",
 ]) {
-  assert(
-    !bashRefused(c),
-    `guard: a command naming no location runs — ${c.slice(0, 44)}`,
-  );
+  assert(!bashRefused(c), `guard: a command naming no location runs — ${c.slice(0, 44)}`);
 }
 assert(stateRoot !== "", "guard: the state root resolves for this process");
 assert(
@@ -186,10 +193,7 @@ assert(
 
 // #1764 — the guard must not swallow the reads it was never about.
 for (const c of ["git diff HEAD -- extension/src/review-accept-guard.ts", "gh pr view 1105"]) {
-  assert(
-    !bashRefused(c),
-    `guard: a plain git/gh read is allowed — ${c.slice(0, 44)}`,
-  );
+  assert(!bashRefused(c), `guard: a plain git/gh read is allowed — ${c.slice(0, 44)}`);
 }
 
 // ── temp clone for the store-backed rules ───────────────────────────────────

@@ -27,6 +27,44 @@ import { trace, traceWarn } from "./trace.ts";
 import { execp } from "./exec.ts";
 
 /**
+ * The branch's review identity, computed ONCE per lens review and shared by the
+ * ledger write and the confirmed-fix retirement (#1934).
+ *
+ * Why it lives here rather than at each call site: `workingTreePatchId` is the
+ * ONE construction of the id (`git merge-base`, then `git diff | git patch-id
+ * --stable` against it), and a confirmation only counts when the ledger row's
+ * `patchId` EQUALS the reviewed round's. If the record path and the write path
+ * each computed it, they would do so at two moments with two answers, and the
+ * equality the whole rule rests on would be a coin flip. So `runLensReview`
+ * resolves it once and hands the same object to both.
+ */
+export interface LensPatchIdentity {
+  patchId?: string;
+  /** Non-empty when the identity could not be computed; for the writer's trace. */
+  warning?: string;
+  /** The diff digest the lens row stores for the #1176 carry (best-effort). */
+  diffSha256?: string;
+}
+
+/** Resolve the review identity once. Never throws: a failed read returns no
+ * `patchId`, which both consumers read as "nothing to bind to". */
+export async function lensReviewPatchIdentity(cwd: string): Promise<LensPatchIdentity | undefined> {
+  try {
+    const computed = await workingTreePatchId(execp, cwd, { digest: true });
+    return {
+      ...(computed.patchId !== undefined ? { patchId: computed.patchId } : {}),
+      ...(computed.warning !== undefined ? { warning: computed.warning } : {}),
+      ...(computed.diffSha256 !== undefined ? { diffSha256: computed.diffSha256 } : {}),
+    };
+  } catch (err) {
+    trace(
+      `lens-review: review identity unavailable: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return undefined;
+  }
+}
+
+/**
  * Write a lens-review entry to the review ledger. Fire-and-forget in
  * PRODUCTION: callers (runLensReview's single finish path) may discard the
  * returned promise — the internal `catch(trace)` below swallows every
@@ -85,6 +123,14 @@ export function writeLensLedgerEntry(
   resolvedBranch?: string,
   /** #1127 — the operator passed `overrideCap: true`; recorded on the entry. */
   overrideCap?: boolean,
+  /**
+   * #1934 — the identity `runLensReview` resolved ONCE for this review (see
+   * `lensReviewPatchIdentity`). When present the write uses it instead of
+   * recomputing, so the row's `patchId` is byte-identical to the one the
+   * findings record compared its confirmations against. Absent = pre-#1934
+   * behaviour: compute it here.
+   */
+  identity?: LensPatchIdentity,
 ): Promise<LensLedgerOutcome> {
   const write = async (): Promise<LensLedgerOutcome> => {
     const c = cwd ?? process.cwd();
@@ -103,7 +149,9 @@ export function writeLensLedgerEntry(
     // The shared working-tree patch id (review-ledger.ts). When untracked
     // files exist the entry is still written for the tracked content, but the
     // gap is traced — see the warning's wording in workingTreePatchId.
-    const computed = await workingTreePatchId(execp, c, { digest: true });
+    // #1934 — normally the identity the review already resolved; recomputed only
+    // for a direct caller that did not resolve one.
+    const computed = identity ?? (await workingTreePatchId(execp, c, { digest: true }));
     if (computed.warning) trace(`lens-review: ${computed.warning}`);
     if (!computed.patchId) {
       traceWarn(
@@ -148,4 +196,28 @@ export function writeLensLedgerEntry(
     trace(`lens-review: ledger write failed: ${reason}`);
     return { recorded: false, reason };
   });
+}
+
+/** A memoised getter for the review identity: one computation, awaited by both consumers. */
+export type LensIdentityGetter = () => Promise<LensPatchIdentity | undefined>;
+
+/**
+ * #1934 — the ONE review identity, resolved lazily and shared.
+ *
+ * `runLensReview`'s finish path and its findings record have two consumers of
+ * this value: the ledger row it writes and the findings record that reads
+ * confirmations back. Two computations could name two patches, and the
+ * confirmation binding (#1934) is worthless the moment they disagree — so
+ * `lensPatchIdentityOf` makes exactly one and hands it to both.
+ *
+ * Lazy because an early exit (blocked, noReview) must not pay for a `git diff |
+ * git patch-id --stable`, and memoised because the two consumers await it twice.
+ * Absent means no confirmations consulted: the pre-#1934 shape.
+ */
+export function lensPatchIdentityOf(cwd: string | undefined): LensIdentityGetter {
+  let identity: Promise<LensPatchIdentity | undefined> | undefined;
+  return () => {
+    if (identity === undefined) identity = lensReviewPatchIdentity(cwd ?? process.cwd());
+    return identity;
+  };
 }

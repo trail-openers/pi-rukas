@@ -27,10 +27,35 @@
  * write (see `writeLensLedgerEntry` — the promise is the #984 test seam).
  */
 
-import { type LensLedgerOutcome, writeLensLedgerEntry } from "./lens-ledger.ts";
+import {
+  type LensLedgerOutcome,
+  type LensPatchIdentity,
+  writeLensLedgerEntry,
+} from "./lens-ledger.ts";
 import type { LensReviewSummary } from "./lens-review-format.ts";
 import { postLensResidualDisclosure } from "./lens-review-residuals.ts";
 import type { Severity } from "./lens-review.ts";
+
+/**
+ * The findings-memory fields spread onto the finished summary (#1934), kept with
+ * the other disclosure this exit owns (the ledger write, the #973 residual post).
+ * An empty collection is OMITTED, not spread as `[]`: the renderers test
+ * presence, so an empty array reads as a round that resolved nothing. `lapsed` is
+ * the #1934 AC4 field — a confirmation this round found no longer binds to the
+ * commit under review, so its row is open again and the operator must see it.
+ */
+export function memorySummaryFields(
+  found: Pick<LensReviewSummary, "suppressed" | "resolved" | "setAside" | "lapsed">,
+): Pick<LensReviewSummary, "suppressed" | "resolved" | "setAside" | "lapsed"> {
+  const { suppressed, resolved, setAside, lapsed } = found;
+  const on = (v: unknown[] | undefined): boolean => v !== undefined && v.length > 0;
+  return {
+    ...(on(suppressed) ? { suppressed } : {}),
+    ...(on(resolved) ? { resolved } : {}),
+    ...(on(setAside) ? { setAside } : {}),
+    ...(on(lapsed) ? { lapsed } : {}),
+  };
+}
 
 /**
  * The result of the single `finishLensReview` exit. `summary` is the
@@ -56,6 +81,10 @@ async function finish(
     /** #1127 — the round-budget key when the branch was not resolved (a
      * branch the commit sits on, the PR head, or `detached:<sha>`). */
     ledgerKey?: string;
+    /** #1934 — the identity the review resolved once, shared with the findings
+     * record so the row's `patchId` and the one its confirmations were compared
+     * against are the same string. */
+    identity?: LensPatchIdentity;
   } = {},
   pr?: number,
 ): Promise<LensFinishResult> {
@@ -77,6 +106,9 @@ async function finish(
     ledger.ledgerKey ?? branch,
     // #1127 — the operator's round-cap override, recorded on the entry.
     ledger.overrideCap,
+    // #1934 — the shared identity, so this row's `patchId` is the one the round
+    // recorded against.
+    ledger.identity,
   );
   // #973 — the residual-findings disclosure: posted ONLY when the verdict is
   // ISSUES_FOUND AND the branch's PR/MR resolves (see postLensResidual for

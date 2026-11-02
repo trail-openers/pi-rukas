@@ -47,6 +47,16 @@ interface StoredBase {
   description?: string;
   /** The lens's suggested fix, kept for the same reason as `description`. */
   suggestion?: string;
+  /**
+   * #1934 — the PROVENANCE of a `resolvedReason: "confirmed"` retirement:
+   * `"adversarial"` or `"test"`, then the `patchId` and the `headSha` the
+   * confirmation bound to, and the round number and head of the review that
+   * consumed it. Written only beside that reason (see `rowProblem`), because a
+   * retirement a later reader cannot attribute is a retirement nobody can
+   * audit. It is FILE CONTENT, so nothing may interpolate it into a prompt or
+   * a commit message without going through the renderers' neutralisation.
+   */
+  confirmedBy?: string;
   severity: Severity;
   lens: string;
   line?: number;
@@ -62,6 +72,16 @@ interface StoredBase {
   snippetHash: string;
   /** Hash of the cited line alone (#1300). Absent on rows written before it existed. */
   lineHash?: string;
+  /**
+   * #1934 — this row's confirmed fix has LAPSED. Set when a round re-evaluated
+   * the confirmation that had retired this row and found it no longer binds to
+   * the commit under review (see `confirmationsFor` in review-confirmation.ts).
+   * The row itself is `open` again and its cited code is unchanged — the lapse
+   * happened to the evidence, not to the code — so a later reader can tell the
+   * two apart instead of concluding the row was never retired. Cleared when a
+   * confirmation retires the row again.
+   */
+  confirmationLapsed?: boolean;
   firstSeen: number;
   lastSeen: number;
 }
@@ -75,6 +95,11 @@ export const RESOLVE_REASONS = [
   // only evidence that can close it is a COMPLETE full review that no longer
   // reports it (same lens, path and title).
   "not-reported",
+  // #1934: the cited line may be byte-unchanged at head, so no cited-line rule
+  // can ever speak for the row. The evidence that closes it is an INDEPENDENT
+  // confirmation (#1934) whose `patchId` and `headSha` both bind to the commit
+  // this round reviewed. Its provenance rides on the row as `confirmedBy`.
+  "confirmed",
 ] as const;
 export type ResolveReason = (typeof RESOLVE_REASONS)[number];
 
@@ -83,6 +108,12 @@ export interface ResolvedNotice {
   rowId: string;
   title: string;
   reason: ResolveReason;
+  /**
+   * #1934 — the provenance a `confirmed` retirement carries, same string that
+   * lands on the row. The residual disclosure's "Resolved since last round"
+   * section renders it, which is the surface that names WHO closed a CRITICAL.
+   */
+  confirmedBy?: string;
 }
 
 /**
@@ -105,17 +136,43 @@ export interface SetAsideNotice {
   wasAcceptance: boolean;
 }
 
-/** A stored row. Only an `accepted` row carries an acceptance; only open/resolved rows carry a resolution reason. */
+/** A stored row. The status decides which fields the row MAY carry, and the
+ * three arms are written so an impossible combination is a type error rather
+ * than a field a validator has to remember to refuse:
+ *
+ *   - `open`   — no acceptance, no resolve reason, and NO `confirmedBy`. #1934:
+ *     provenance is the record of a CONFIRMED retirement, so a row that is open
+ *     while carrying it is the stale-provenance resurrection this issue exists
+ *     to prevent. It used to live in the `open | resolved` arm, where the type
+ *     permitted it and `rowProblem` could only ever see rows the type had
+ *     already let through, so its `confirmedBy`-without-`confirmed` rule was
+ *     unreachable for the one case it was written for (measured: with that rule
+ *     disabled, an open+confirmed+provenance row was ACCEPTED by `splitRows`
+ *     and every confirmation test stayed green).
+ *   - `resolved` — carries the resolve reason, and carries `confirmedBy` only
+ *     beside `resolvedReason: "confirmed"`.
+ *   - `accepted` — carries the operator's acceptance and no resolve reason.
+ */
 export type StoredFinding =
   | (StoredBase & {
-      status: "open" | "resolved";
+      status: "open";
       acceptance?: undefined;
-      resolvedReason?: ResolveReason | undefined;
+      resolvedReason?: undefined;
+      confirmedBy?: undefined;
+    })
+  | (StoredBase & {
+      status: "resolved";
+      acceptance?: undefined;
+      resolvedReason: ResolveReason;
+      /** Provenance rides a CONFIRMED retirement and nothing else; beside any
+       * other reason it is a second, unearned claim (see `rowProblem`). */
+      confirmedBy?: string;
     })
   | (StoredBase & {
       status: "accepted";
       acceptance: Acceptance;
       resolvedReason?: undefined;
+      confirmedBy?: undefined;
     });
 
 /** The shortest reason an operator may give when accepting a finding. */
@@ -208,8 +265,29 @@ function rowProblem(v: unknown): string | undefined {
   for (const key of ["firstSeen", "lastSeen"] as const) {
     if (typeof r[key] !== "number") return `${key} is not a number`;
   }
-  for (const key of ["description", "suggestion"] as const) {
+  for (const key of ["description", "suggestion", "confirmedBy"] as const) {
     if (r[key] !== undefined && typeof r[key] !== "string") return `${key} is not a string`;
+  }
+  // #1934 — a provenance string beside any OTHER resolve reason would be read
+  // as "this line is gone" plus "a confirmation retired it": two claims, one
+  // of them not earned. Refuse the combination rather than store it. This is
+  // the RUNTIME half of the rule the `StoredFinding` arms state in types: a row
+  // reaching here came from `JSON.parse`, not from the compiler, so the type
+  // alone cannot refuse it (measured — with only the type changed, an
+  // open+`confirmed`+`confirmedBy` row was still ACCEPTED by `splitRows`). The
+  // `status === "open"` test is reached from below, where `status` has already
+  // been narrowed, and also guards the file an agent wrote directly.
+  if (r.status === "open" && (r.resolvedReason !== undefined || r.confirmedBy !== undefined)) {
+    return "an open row carries a resolve reason or a confirmed provenance";
+  }
+  if (r.status === "accepted" && r.confirmedBy !== undefined) {
+    return "an accepted row carries a confirmed provenance";
+  }
+  if (r.confirmedBy !== undefined && r.resolvedReason !== "confirmed") {
+    return "confirmedBy is carried without the confirmed resolve reason";
+  }
+  if (r.confirmationLapsed !== undefined && typeof r.confirmationLapsed !== "boolean") {
+    return "confirmationLapsed is not a boolean";
   }
   if (r.status === "accepted") {
     if (!isAcceptance(r.acceptance)) return "acceptance is missing or malformed";

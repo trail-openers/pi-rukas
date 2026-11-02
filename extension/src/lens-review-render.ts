@@ -20,7 +20,7 @@
  */
 
 import { neutraliseEvidence } from "./comment-evidence.ts";
-import { resolvedSection, setAsideSection, suppressedSection } from "./lens-residuals.ts";
+import { memoryDisclosureSections, suppressedSection } from "./lens-residuals.ts";
 import { advisorySection } from "./lens-review-advisory.ts";
 import { deltaFallbackText, forcedFullText } from "./lens-review-delta-disclose.ts";
 import { type LensReviewSummary, type Severity, findingDescription } from "./lens-review-format.ts";
@@ -219,8 +219,7 @@ export function renderSummary(s: LensReviewSummary, maxLensAttempts: number): st
       s.suppressed,
       `Suppressed as already known (${s.suppressed?.length ?? 0}, not re-reported):`,
     ),
-    ...resolvedSection(s.resolved),
-    ...setAsideSection(s.setAside),
+    ...memoryDisclosureSections(s),
     ...advisorySection(s.advisory),
     ...(s.memoryNote ? ["", neutraliseEvidence(s.memoryNote)] : []),
     "",

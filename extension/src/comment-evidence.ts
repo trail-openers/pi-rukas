@@ -93,12 +93,58 @@ export function neutraliseEvidence(s: string): string {
 const HTML_COMMENT_OPEN = /<!--/g;
 const HTML_COMMENT_CLOSE = /-->/g;
 /**
- * A markdown link or image's opening bracket, with its optional `!`. Replacing
- * the `[` rather than the whole `](url)` keeps the target visible as text (a
- * link must not silently become a URL an operator clicks) while the surrounding
- * brackets make the pair render literally instead of as a hyperlink.
+ * A markdown link or image's opening bracket, with its optional `!`.
+ *
+ * It is BACKSLASH-escaped, not replaced with a look-alike. The earlier shape
+ * substituted `‹[` — a visual marker only, and GitHub parses markdown on the
+ * RAW bytes, so `‹[text](url)` still rendered as a hyperlink: measured at
+ * 3e1087e3 a provenance carrying `[click](http://…)` posted a live link and the
+ * witness that claimed otherwise was matching on the cosmetic `‹`. `\[` is what
+ * markdown actually defines for "show a literal bracket", it keeps the target
+ * visible as text (a link must not silently become a URL an operator clicks and
+ * it must not silently lose the text an operator may want to look up), and it is
+ * inert inside a prompt block, where the same function's text is also read.
+ *
+ * `<!--` is handled separately above because HTML is not markdown: no backslash
+ * stops an HTML comment.
  */
-const MD_LINK_OPEN = /!?(?=\[)/g;
+const MD_LINK_OPEN = /(!?)(?=\[)/g;
+const escapeMdLinkOpen = (_m: string, bang: string): string => (bang ? `\\${bang}` : "\\");
+
+/** Collapse the whitespace a stored field could use to break the line the
+ * renderer is building. Newlines and tabs become single spaces (a stored
+ * newline would otherwise end a bullet and start a paragraph the renderer never
+ * wrote); runs of spaces collapse to one. Unlike `neutraliseEvidence` this does
+ * NOT touch `<<<`/`>>>` or backticks — those belong to `neutraliseMarkdownField`,
+ * which every caller below also runs the field through. */
+const collapseField = (s: string): string => s.replace(/[\r\n\t]+/g, " ").replace(/ {2,}/g, " ");
+
+/**
+ * The post-aware neutraliser for ONE FIELD, to be interpolated into a line the
+ * renderer itself assembles.
+ *
+ * `neutraliseMarkdownField` is the right call when the whole LINE is the
+ * renderer's and only the values are untrusted (`residualLine` in
+ * `lens-review-residuals.ts`). It is the wrong call when the renderer writes
+ * brackets of its own, and it has a second, quieter cost: `clip` counts the
+ * WHOLE string handed to it, so neutralising the assembled line spends the
+ * 160-char budget on the renderer's own prefix and cuts the tail — which is
+ * where the provenance sits. Measured at 3e1087e3, switching the two #1934
+ * sections to the whole-line variant reddened the file's own pre-existing
+ * assertions on `[confirmed by: <provenance>]` and `[was: <provenance>]`: the
+ * label came out `‹[confirmed by: …]` and the attribution was clipped away, so
+ * the fix for one forge bug silently destroyed the audit content #1934 exists
+ * to publish. Neutralising each field separately, then assembling, neutralises
+ * exactly what came from the file, costs the budget to the renderer's prefix
+ * only in the field that needs it, and leaves the label readable.
+ *
+ * The one property `neutraliseMarkdownField` has and this does not is the
+ * whitespace flattening (a whole line has to stay one line). That job moves to
+ * the caller, where `collapseField` above does it per field.
+ */
+export function neutralisePostField(s: string): string {
+  return neutraliseMarkdownField(collapseField(s));
+}
 
 /**
  * The markdown-post variant of `neutraliseEvidence`, for agent-authored text
@@ -129,7 +175,7 @@ export function neutraliseMarkdownField(s: string): string {
     .replace(/\t/g, " ")
     .replace(HTML_COMMENT_OPEN, "‹--")
     .replace(HTML_COMMENT_CLOSE, "--›")
-    .replace(MD_LINK_OPEN, "‹");
+    .replace(MD_LINK_OPEN, escapeMdLinkOpen);
   return clip(kept.replace(MARKER_RE, (m) => `‹${m}›`));
 }
 

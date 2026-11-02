@@ -112,6 +112,17 @@ const NO_LINE_SNIPPET = snippetHashAt([], undefined);
  *     CRITICAL only with its cited-line hash to compare (`rowFate` step 6/7),
  *     and a line-less CRITICAL retires as `not-reported` (#1469) on any complete
  *     full review, delta veto or not.
+ *
+ * #1934 adds no conjunct, and deliberately so. A row retired by an independently
+ * confirmed fix is `RESOLVED`, so a confirmation cannot be seen from this
+ * predicate's four fields — it is an input to the fate rule, not a property of
+ * the row. The veto therefore keeps demanding the full round for any row this
+ * accepts, which is the round the confirmation arm below consumes: an accepted
+ * row's forced full round now retires something whenever a confirmation binds
+ * (AC3), and the agreement test in
+ * `smoke-tests/test-review-findings-confirmed-retire.ts` is what stops the two
+ * from drifting apart again (the #1832 round-2 failure — a full round demanded
+ * that retires nothing).
  */
 export function isRetirableOpenCriticalRow(row: StoredFinding): boolean {
   return (
@@ -153,6 +164,19 @@ export interface FateContext {
    * thing that separates a reviewed line from an unreviewed one is this map.
    */
   deltaRanges?: ChangedRanges;
+  /**
+   * #1934 — the provenance of an independently confirmed fix for THIS row, as
+   * answered by `confirmationsFor` (review-confirmation.ts) for the commit this
+   * round is reviewing. Present only when the confirmation's `patchId` and
+   * `headSha` BOTH equal the reviewed commit's, its kind is `adversarial` or
+   * `test`, it passed, and it was recorded after the row was filed and before
+   * this round stamped it — `applyFindingRound` enforces the last two itself
+   * rather than trusting the caller to have filtered them, because a
+   * confirmation handed to a round that re-reported the row is the one shape
+   * that would retire a CRITICAL the lenses still see. Absent means no
+   * confirmation, which is the ordinary case and retires nothing new.
+   */
+  confirmedBy?: string;
 }
 
 /** Is `line` of `path` inside the delta's changed ranges? */
@@ -202,7 +226,7 @@ export function rowFate(
     case "missing":
       return full ? { kind: "resolve", reason: "path-gone" } : CARRY;
     case "lines":
-      return linesFate(row, head.lines, full, review, ctx.deltaRanges);
+      return linesFate(row, head.lines, full, review, ctx);
   }
 }
 
@@ -256,14 +280,26 @@ function linesFate(
   lines: string[],
   full: boolean,
   review: ReviewKind,
-  deltaRanges: ChangedRanges | undefined,
+  ctx: FateContext,
 ): RowFate {
+  const deltaRanges = ctx.deltaRanges;
   if (row.line === undefined || row.snippetHash === NO_LINE_SNIPPET) {
     return linelessFate(review, { accepted: row.status === "accepted" });
   }
   const index = indexOf(lines);
-  if (index.windows.has(row.snippetHash)) return CARRY;
-  if (row.lineHash !== undefined && index.lineHashes.has(row.lineHash)) return CARRY;
+  // #1934 — the two survival tests are computed once and reused: the CRITICAL
+  // arms below ask the SAME question the carries ask, and a second copy of
+  // "does the cited code still occur at head" is a second rule that can drift
+  // from the first. A row's code SURVIVES when its ±2 window hash or its
+  // cited-line hash occurs anywhere in the head file.
+  const survives =
+    index.windows.has(row.snippetHash) ||
+    (row.lineHash !== undefined && index.lineHashes.has(row.lineHash));
+  // #1934 — a CRITICAL whose cited code still survives is NOT carried here: it
+  // falls through to the CRITICAL arm below, which carries it when nothing
+  // confirmed the fix and resolves it when a confirmation binds to this commit.
+  // Every other row that survives is carried exactly as before.
+  if (survives && !isRetirableOpenCriticalRow(row)) return CARRY;
   if (row.line > lines.length) return full ? { kind: "resolve", reason: "line-past-eof" } : CARRY;
   // #1832 — a CRITICAL retires on evidence, but on the strongest evidence the
   // round can offer and nothing weaker: BOTH hashes absent (steps 3-4 already
@@ -280,8 +316,40 @@ function linesFate(
   // predicate: a row the probe forced a round for and this arm then carried is a
   // forced round that retires nothing. Both sides now call the one predicate, so
   // the veto and the rule that consumes the forced round agree by construction.
+  //
+  // #1934 — the two arms of that one shape test are decided HERE, together, and in
+  // this order. A CRITICAL the cited-line rule retires on a complete full review
+  // keeps that reason (`code-gone`): it is the stronger, code-proven evidence and
+  // the reason must not be crowded out by a confirmation the round also had. The
+  // confirmation arm is what the cited-line rule cannot reach — a correct fix in
+  // ANOTHER FILE leaves the cited line byte-unchanged, so steps 3 and 4 carry the
+  // row forever and the round that confirmed the fix has nowhere to land it. Both
+  // arms consume THE SAME predicate, which is what keeps the open-CRITICAL delta
+  // veto from forcing a full round that retires nothing (AC3).
   if (isRetirableOpenCriticalRow(row)) {
-    return full ? { kind: "resolve", reason: "code-gone" } : CARRY;
+    if (!full) return CARRY;
+    // `!survives` is #1832's `code-gone` exit and keeps its reason: code-proven
+    // evidence is stronger than a confirmation and must not be crowded out by a
+    // confirmation the round also had.
+    if (!survives) return { kind: "resolve", reason: "code-gone" };
+    // The cited code is STILL THERE. Only an independently confirmed fix retires
+    // it now, and the refusals this arm inherits are each a rule that already
+    // exists and is called rather than re-spelled:
+    //   - SECURITY rows never retire on a confirmation — same carve-out as step 9,
+    //     one constant, because a security row's cited line is evidence of a risk;
+    //   - an ACCEPTED row never retires on anything short of proof about its code —
+    //     `linelessFate`'s `accepted` rule and the untouched-accepted pass both
+    //     honour it, and a confirmation must not lapse an operator acceptance;
+    //   - a row WITHOUT a confirmation retires on nothing: this is the pre-#1934
+    //     carry, and it is still the answer for every round that has no binding.
+    if (
+      ctx.confirmedBy !== undefined &&
+      row.status === "open" &&
+      row.lens.trim().toUpperCase() !== SECURITY_LENS
+    ) {
+      return { kind: "resolve", reason: "confirmed" };
+    }
+    return CARRY;
   }
   if (row.lineHash === undefined) return CARRY;
   // Did this round review the stored line? A full review covers the whole
