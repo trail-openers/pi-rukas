@@ -16,7 +16,7 @@ import type { ExecFn } from "./worktree.ts";
  *
  * Written to `.git/info/exclude` (per-clone) rather than `.gitignore`
  * (committed) so the driver never alters the project's tracked shape — the
- * same convention AGENTS.md §7 already mandates for `tmp/`.
+ * same convention this module keeps for `.worktrees/`.
  *
  * Not cosmetic: without it, the very worktrees this step creates read as
  * untracked residue at repoRoot, and `integrate()`'s dirty-root preflight
@@ -41,8 +41,8 @@ export async function ensureWorktreesExcluded(_execFn: ExecFn, repoRoot: string)
  * never observes a half-written file.
  *
  * `.git/info/exclude` rather than `.gitignore`: per-clone, so the driver never
- * alters the project's tracked shape — the convention AGENTS.md §7 already
- * mandates for `tmp/`.
+ * alters the project's tracked shape — the same convention as `tmp/`, which
+ * the driver excludes the same way.
  */
 let excludeChain: Promise<unknown> = Promise.resolve();
 

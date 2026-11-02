@@ -5,7 +5,7 @@
  *
  * - **The body-file roots.** The guard admitted the cwd tree and the OS temp
  *   dir, but the /work driver and its agents write PR and handoff bodies under
- *   the REPOSITORY's scratch dir (`<repo>/tmp/issue-<N>/`, AGENTS.md §7), so a
+ *   the REPOSITORY's scratch dir (`<repo>/tmp/issue-<N>/`), so a
  *   normal handoff comment was refused as unreadable. The repository's git
  *   top-level is now a third root, and a path outside all three is still refused
  *   on its PATH and never opened.

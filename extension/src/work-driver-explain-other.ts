@@ -72,7 +72,8 @@ export function explainOther(cap: Cap, state: WorkState): string {
       // "MAST 41.77%" is nowhere in Cemri et al., arXiv 2503.13657 — it was a
       // fabrication, and the paper makes no cross-category ranking, so the
       // superlative this line prints stays scoped to the FM-1.x list. Full
-      // figures: AGENTS.md §7 — a pointer kept in this comment, which a
+      // figures: the authoritative MAST block in agents-base/project-manager.md —
+      // a pointer kept in this comment, which a
       // maintainer reads with the repo open, not in the emitted line, which
       // reaches the operator through `/work-status` with no repository in front
       // of them.

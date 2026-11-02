@@ -440,7 +440,7 @@ export async function runAdversarialFixPass(
       // The diff is against the base, so it also carries what earlier passes
       // removed: the pre-pass diff, read at the same head, tells those apart.
       const prior = dropped.length > 0 ? await read(p.before.diff) : lost;
-      // A check that could not run reads NOT CHECKED, never silence (AGENTS.md §7).
+      // A check that could not run reads NOT CHECKED, never silence (AGENTS.md §7 principle 2).
       if (!lost.ok || !prior.ok) {
         // #1760 — the admissions this pass made are disclosed on this park too,
         // not only on the green path: a park that shows the refusals and hides

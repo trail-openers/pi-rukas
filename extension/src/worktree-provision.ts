@@ -272,7 +272,7 @@ async function findDepDirs(
  * on either way.
  *
  * #1394 — "rather than throwing" is the contract, not an aspiration, and it is
- * total. AGENTS.md §7 says provisioning never fails the branch step, and a
+ * total. The contract above says provisioning never fails the branch step, and a
  * rejected promise here did exactly that: `worktreeCreate` propagated it, the
  * mechanized branch setup failed, and the branch step fell to the LLM ops
  * dispatch — or halted. So EVERY filesystem probe and every git call this

@@ -9,7 +9,7 @@
  * `<slug>.md` + `<slug>.provenance.md` convention.
  *
  * `outputs/` is ensured into `.git/info/exclude` (the per-clone mechanism
- * the scratch-hygiene convention uses for `tmp/` — AGENTS.md §7) so an
+ * the scratch-hygiene convention uses for `tmp/` — `work-driver-git-exclude.ts`) so an
  * untracked artifact can never dirty a later /work cycle's clean-tree check.
  * The project's own .gitignore is NEVER edited — whether artifacts get
  * committed is the operator's call.

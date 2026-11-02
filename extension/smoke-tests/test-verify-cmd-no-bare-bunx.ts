@@ -37,7 +37,7 @@ const BARE_BUNX = /\bbunx\b/;
  *
  * Matched on the LAUNCHER form, not on the word `tsc`: a comment may explain
  * the bug by naming `bun x tsc`, and prose is what tells the next reader why
- * the pinned path exists (AGENTS.md §11: write the why). The rule fires on
+ * the pinned path exists (AGENTS.md §12: write the why). The rule fires on
  * lines that actually PRESCRIBE running it, and `MENTIONS_TSC` keeps the
  * shape honest — a line has to name tsc for the launcher pattern to matter.
  */

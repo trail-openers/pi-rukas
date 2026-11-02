@@ -10,7 +10,7 @@
  * fault is a reported value, never a rejection.** Every `fs` call in this file
  * funnels through `probeNonEmptyDirectory`, which returns
  * `{ nonEmpty, empty, fault? }`. That matters because `provisionWorktree` sits
- * on the branch step's critical path and AGENTS.md §7 promises provisioning
+ * on the branch step's critical path and `worktree-provision.ts` promises provisioning
  * never fails it: when `isNonEmptyDirectory` re-threw `EACCES`, an unreadable
  * gitignored `node_modules` — a directory, not a file, so `access`-style checks
  * do not cover it — turned `provisionWorktree` into a rejected promise, which

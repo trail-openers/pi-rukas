@@ -282,7 +282,7 @@ installNoPlanCacheStub();
   // residual section in the filed issue body AND the inline cap-message
   // list. Under the CRITICAL-only terminal rule, disclosure IS the
   // precondition for filing, so silent under-disclosure breaks the D2
-  // guarantee (AGENTS.md §7: "passing a finding on is not discarding it").
+  // guarantee: passing a finding on is not discarding it.
   //
   // TDD: this test MUST FAIL before the fix (dedupe on the truncated
   // string drops the second finding) and pass after (dedupe on the FULL

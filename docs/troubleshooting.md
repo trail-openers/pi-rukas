@@ -3140,7 +3140,7 @@ Symptoms people hit, and what they actually mean:
 
 ### A plan child hit the 30-minute bound
 
-The dispatch is killed and routed through paths that already existed: an angle fails closed (`ok=false`; if ALL angles fail, the pipeline halts with `skipped-all-angles-failed` and files nothing), a timed-out duplicate-risk child yields no risk verdict (traced, pipeline proceeds), and a timed-out gap-gate reviewer routes `gate-unavailable` (spec NOT filed — no reviewer saw it; re-run `start_plan_driver`). A child that repeatedly times out usually means a hung tool call or a suspended host (see "Host suspend is not a provider failure" in AGENTS.md §7) — check the per-phase timings line to see which phase ate the budget.
+The dispatch is killed and routed through paths that already existed: an angle fails closed (`ok=false`; if ALL angles fail, the pipeline halts with `skipped-all-angles-failed` and files nothing), a timed-out duplicate-risk child yields no risk verdict (traced, pipeline proceeds), and a timed-out gap-gate reviewer routes `gate-unavailable` (spec NOT filed — no reviewer saw it; re-run `start_plan_driver`). A child that repeatedly times out usually means a hung tool call or a suspended host (see "The machine went to sleep" above) — check the per-phase timings line to see which phase ate the budget.
 
 ### "Not filed (by policy): the descriptor is under the word floor…" (needs-clarification)
 
