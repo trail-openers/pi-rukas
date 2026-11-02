@@ -180,7 +180,9 @@ function assert(cond: boolean, msg: string): void {
 // `saveRun`, which the frozen AC1 suite may not import, so it lives beside (p),
 // the sibling that already pins the throw path the same way: write the verdict the
 // step hands the engine, read the file back, and check the newest rows are the
-// ones that came out.
+// ones that came out. `DISPATCHES_MAX_ROWS` comes from `state-outcome.ts`, where
+// the row rules live — reading the cap from the module that enforces it is how
+// this suite avoids a second copy of the bound.
 {
   const many = Array.from({ length: DISPATCHES_MAX_ROWS * 2 }, (_, i) => ({
     role: `role-${String(i)}`,
