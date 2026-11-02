@@ -169,8 +169,8 @@ export function applyFindingRound(opts: {
    * BOTH arms take the round's `now`; the arms differ in WHY they need it. The
    * tests are named by the prefix their assert messages carry (line numbers rot):
    * `guard:181 …` in smoke-tests/test-review-findings-window-guards.ts witnesses
-   * this arm (`boundary` reddens under the guard's deletion, `relax` under a
-   * `+ slack` on the comparison, `live` under a blanket `return undefined`).
+   * this arm (`boundary` AND `slack` redden under deletion; `slack` alone under a
+   * `+ 1000` slack; `between` under a `+ 10000` one — pinning the constant).
    *
    *   - the lower bound is enforced by `if (r.firstSeen >= now) return undefined;`
    *     just below: a row this round FILED is not evidence a LATER review fixed
@@ -194,8 +194,8 @@ export function applyFindingRound(opts: {
    * after `now` was seen by this round and it has no standing to call that
    * retirement lapsed; a row stamped before it is the one AC4 exists for. The
    * join gets a different bound there too (`{ lastSeen: r.lastSeen }`), which is
-   * why the arms share no helper. Witnessed by the `guard:222 …` assertions in
-   * that same test file, under the same three mutations.
+   * why the arms share no helper. The same file's `guard:222 …` judge it
+   * under DIFFERENT mutations: its deletion reddens `boundary` AND `relax`.
    */
   const confirmedFor = (r: StoredFinding): string | undefined => {
     if (reviewable === undefined) return undefined;

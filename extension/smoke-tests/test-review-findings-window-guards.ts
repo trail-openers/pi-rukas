@@ -20,31 +20,49 @@
  * is stamped at the boundary minus one.
  *
  * WHAT IS WITNESSED, and what is not — measured per mutation, not asserted.
- * Three discriminating witnesses, each reproduced against the pre-fix source
- * (scratch copy of the repo under /tmp, the product tree untouched):
+ * Every line below was produced by rewriting the ONE comparison in a scratch
+ * copy of `src/review-findings-round.ts` (a complete repo-root worktree under
+ * /tmp, the product tree untouched) and running this file. A mutation is called
+ * a witness only for the cases that actually reddened; the mutant was also
+ * checked to differ from shipped in the code line and nowhere else (blob hash
+ * + one-line diff), because a mutant whose strings differ only by an escape
+ * byte reports a green it did not earn.
  *
  *   - `guard:222` DELETED            → `guard:222 boundary` AND `guard:222 relax`
  *     both redden (the AC4 pass runs, re-opens the retired row and stamps a lapse
  *     notice it must not have — the notice is the only observable, which is why
  *     the round here is SILENT about the row);
- *   - `guard:222` RELAXED `>=` → `>` → `guard:222 boundary` reddens (a stamp
- *     exactly AT the clock is what the two operators disagree about);
+ *   - `guard:222` RELAXED `>=` → `>` → `guard:222 boundary` reddens ALONE (only a
+ *     stamp exactly AT the clock separates the operators; `relax`'s row carries
+ *     `lastSeen = NOW + 60_000`, so both operators skip it and its witness is
+ *     the deletion, not the relaxation);
+ *   - `guard:222` SLACK `>= now` → `>= now - 1000` → nothing reddens (see the
+ *     constant paragraph below);
  *   - `guard:181` DELETED            → `guard:181 boundary` reddens (the row filed
  *     AT the round's clock retires on a confirmation stamped at its own filing);
  *   - `guard:181` RELAXED `>=` → `>` → `guard:181 boundary` reddens;
- *     `guard:181 relax` does **not** — see below.
+ *   - `guard:181` SLACK `>= now` → `>= now - 100` → `guard:181 slack` reddens —
+ *     the case that pins the compared CONSTANT, not just its operator.
  *
- * WHAT IS NOT A WITNESS, stated because two previous versions of this header
- * over-claimed. `guard:181 relax` cannot discriminate the operator: its row's
- * `firstSeen` is already strictly later than the round's clock, so `>=` and `>`
- * both refuse it, and its confirmation stamp only decides whether the row would
- * have been eligible. Earlier versions paired it with a stamp BELOW the row's own
- * `firstSeen`, where review-confirmation.ts:201 drops the candidate before this
- * round's guard is reached — a tautology that stayed green under the mutation.
- * That assertion is kept, but labelled a PRECONDITION and excluded from the
- * witness count; nothing here claims it witnesses the operator. No case in this
- * file pins a small shift of the compared constant (`>= now - 1000` was measured
- * and nothing here catches it); the operator's *boundary* is what is pinned.
+ * `guard:181 relax` (a row whose `firstSeen` is strictly LATER than the round's
+ * clock) is NOT a witness to the operator, and the argument is structural
+ * rather than measured, which is what makes it falsifiable: with
+ * `firstSeen > now` the join's window `[firstSeen, now]` is EMPTY, so no stamp
+ * reaches this guard at all — every `at` is either `< firstSeen` (dropped by
+ * review-confirmation.ts's lower bound) or `> now` (dropped by the round's own
+ * upper bound). `guard:181 future` below is the falsification test for that
+ * claim: it drives both boundary-adjacent stamps and asserts both are refused.
+ * The prior round deleted this arm on exactly this reasoning and the adversarial
+ * gate agreed; two lenses then claimed a discriminating case existed. Both were
+ * describing a DIFFERENT construction — `firstSeen` strictly BEFORE the clock
+ * with the stamp landing between the bounds — which is `guard:181 between` and
+ * `guard:181 slack` below, built and measured rather than adjudicated. `relax`
+ * stays as the PRECONDITION it is: it pins the join's lower bound, and it is
+ * excluded from the witness count.
+ *
+ * What no earlier version of this file pinned: a shift of the compared
+ * constant — `>= now - 1000` stayed green across the suite. `guard:181 slack`
+ * (a row 11ms outside the guard's margin) is what reddens under such a shift.
  *
  * The `live` cases are not witnesses to any mutation either; they are the
  * anti-dead-code arms, the ones that keep each guard from being a `return`
@@ -104,28 +122,14 @@ function assert(cond: boolean, msg: string) {
 }
 
 /** The environment as this file found it — the final assertion compares against this. */
+/** The environment as this file found it. The LAST block compares the teardown
+ * against the value the host-teardown block installed — NOT against this
+ * snapshot, which the same block would then be asserting its own writes back. */
 const ENV_AT_ENTRY = {
   PI_ENSEMBLE_REVIEW_LEDGER_FILE: process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE,
   PI_AGENT_DIR: process.env.PI_AGENT_DIR,
 };
 /** One round through the real store, with every clock value a literal. */
-const round = async (
-  dir: string,
-  headSha: string,
-  patchId: string,
-  findings: (typeof FINDING)[],
-  now: number,
-) =>
-  recordFindingRunOutcome({
-    cwd: dir,
-    branch: "feature/work",
-    headSha,
-    findings,
-    review: "full",
-    confirmFixes: true,
-    patchId,
-    now,
-  });
 
 // ---------------------------------------------------------------------------
 // guard:222 — `if (r.lastSeen >= now) return;` in the AC4 re-observation pass
@@ -143,16 +147,19 @@ const round = async (
   try {
     const pid = (await workingTreePatchId(execp, f.dir)).patchId;
     assert(pid !== undefined, "guard:222 boundary: the review identity resolved");
-    // Read the ledger's bytes from THIS file. Two reasons, both load-bearing: a
-    // round's join and the file on disk must not be able to disagree, and the
-    // #1647 develop-gate selector classifies a test as a repository-text reader
-    // from ITS OWN lexed source — a read that lived only in `lib/` dropped this
-    // witness file out of the selection for a change to the fixture or its docs.
-    // The file does not exist until the first round writes it, hence the probe.
-    const ledgerText = existsSync(f.ledgerFile) ? readFileSync(f.ledgerFile, "utf8") : "";
+    // The ledger the round will read, written HERE rather than probed. A prior
+    // version asserted `entries.length === 0` on a file `makeFixture` never
+    // creates: `existsSync` answered false, the `||` short-circuited to "", and
+    // the assertion passed on an absent file — vacuous, and it would have passed
+    // unchanged had the fixture shipped a pre-seeded ledger. So the file is
+    // created empty first and the assertion reads the PARSED entries of a file
+    // the test knows exists, which is also the file `retiredRowAtLastSeen` then
+    // overwrites with the confirmation this round joins against.
+    writeLedger(f.ledgerFile, []);
+    const ledgerText = readFileSync(f.ledgerFile, "utf8");
     assert(
-      ledgerText === "" || JSON.parse(ledgerText).entries.length === 0,
-      `guard:222 boundary: the fixture's ledger holds no rows before the first round (${ledgerText.slice(0, 40)})`,
+      JSON.parse(ledgerText).entries.length === 0,
+      `guard:222 boundary: the fixture's ledger exists and holds no rows before the first round (${ledgerText.slice(0, 40)})`,
     );
     const { row, ledger } = await retiredRowAtLastSeen(f.dir, f.headSha, pid!, NOW);
     readLedgerText(f.ledgerFile);
@@ -206,10 +213,26 @@ const round = async (
     const pid = (await workingTreePatchId(execp, f.dir)).patchId;
     assert(pid !== undefined, "guard:222 live: the review identity resolved");
     const { row, ledger } = await retiredRowAtLastSeen(f.dir, f.headSha, pid!, NOW - 60_000);
-    const out = runRound([row], [], ledger, pid!, f.headSha);
+    const mine = [row];
+    const out = runRound(mine, [], ledger, pid!, f.headSha);
+    // Three observables, not one, and all three read from the array the ROUND
+    // mutated (`mine` is written in place — see applyFindingRound's doc) rather
+    // than from the snapshot `retiredRowAtLastSeen` handed back. The element
+    // `mine` holds after the call IS the post-round row, so the state
+    // assertions judge the product of the pass and not of the setup.
+    //   - `out.lapsed` — the NOTICE exists and names this row;
+    //   - `status === "open"` — the reopen happened (`reopen()`,
+    //     review-findings-round.ts); a mutant that pushed the notice without
+    //     reopening reddens here and nowhere else;
+    //   - `confirmedBy === undefined` — the provenance moved into the notice,
+    //     which is the AC4 pass's own write (the file's schema refuses
+    //     provenance on an open row), so it is this pass's work, not the row's.
+    const after = mine[0]!;
     assert(
-      out.lapsed?.some((l) => l.rowId === row.id) === true,
-      `guard:222 live: a row stamped BEFORE the round's clock IS re-opened by AC4 and reported (lapsed=${JSON.stringify(out.lapsed)})`,
+      out.lapsed?.some((l) => l.rowId === row.id) === true &&
+        after.status === "open" &&
+        after.confirmedBy === undefined,
+      `guard:222 live: a row stamped BEFORE the round's clock IS re-opened by AC4 and reported (lapsed=${JSON.stringify(out.lapsed)}, status=${after.status}, confirmedBy=${String(after.confirmedBy)})`,
     );
   } finally {
     releaseFixture(f);
@@ -250,7 +273,7 @@ async function openRowAtFirstSeen(
   if (row.firstSeen !== firstSeen || row.status !== "open") {
     throw new Error(`filing round stamped ${row.firstSeen}/${row.status}`);
   }
-  return { ...row, firstSeen } as StoredFinding;
+  return { ...row, firstSeen };
 }
 
 /** Re-report `row` through the real entry point with a confirmation for it on
@@ -360,6 +383,96 @@ const reReportWithConfirmation = (
   }
 }
 
+// --- candidates for the `guard:181 relax` witness the last round deleted ----
+//
+// The last round deleted `guard:181 relax` on the reasoning that with
+// `firstSeen > now` no confirmation stamp makes the case discriminate: the
+// join's own lower bound (`entry.at < seen.firstSeen`, review-confirmation.ts)
+// drops the candidate before this round's guard is reached. Three reviewers
+// then disagreed about whether ANY discriminating case exists, so the question
+// was settled by construction rather than by adjudication — see the header for
+// which candidates redden under which mutation.
+
+{
+  // CANDIDATE A — `firstSeen` strictly BEFORE the round's clock, with the
+  // confirmation stamped strictly BETWEEN the two bounds
+  // (`firstSeen < at <= now`). This is the interval the two lenses described
+  // and the last round never constructed: it never tested `firstSeen < now`
+  // with an in-between stamp, only `firstSeen > now` with an out-of-window one.
+  // `>=` accepts it (a row filed before the round may be retired); `>` also
+  // accepts it, so the mutation that reddens this case is the guard's DELETION
+  // paired with `boundary` — it is the arm that keeps `boundary` from being the
+  // only thing standing between the guard and a blanket `return undefined`.
+  const f = makeFixture();
+  try {
+    const pid = (await workingTreePatchId(execp, f.dir)).patchId;
+    assert(pid !== undefined, "guard:181 between: the review identity resolved");
+    const row = await openRowAtFirstSeen(f.dir, f.headSha, pid!, NOW - 1001);
+    const out = reReportWithConfirmation(row, pid!, f.headSha, NOW - 900);
+    assert(
+      out.resolved.some((r) => r.rowId === row.id && r.reason === "confirmed"),
+      `guard:181 between: a row filed 1001ms BEFORE the round IS retired by a confirmation stamped between the bounds (resolved=${JSON.stringify(out.resolved)})`,
+    );
+  } finally {
+    releaseFixture(f);
+    removeFixture(f);
+  }
+}
+
+{
+  // CANDIDATE B — the `+ slack` witness, and the case that pins the compared
+  // CONSTANT rather than the operator. The row is filed 11ms BEFORE the round's
+  // clock, i.e. just OUTSIDE the 10ms margin the guard's `now - 10` mutant
+  // would hand it. Shipped `firstSeen >= now` retires it (11ms is old enough);
+  // `>= now - 10` refuses it. No other test in the repo measures a shift of
+  // that constant — `>= now - 1000` was measured green across the suite before
+  // this case existed. The margin is a constant this file and the mutation
+  // script share: change one and the other's red is the signal to change both.
+  const f = makeFixture();
+  try {
+    const pid = (await workingTreePatchId(execp, f.dir)).patchId;
+    assert(pid !== undefined, "guard:181 slack: the review identity resolved");
+    const row = await openRowAtFirstSeen(f.dir, f.headSha, pid!, NOW - 11);
+    assert(
+      NOW - row.firstSeen === 11,
+      `guard:181 slack: filed 11ms before the round's clock (${row.firstSeen} vs ${NOW})`,
+    );
+    const out = reReportWithConfirmation(row, pid!, f.headSha, NOW - 5);
+    assert(
+      out.resolved.some((r) => r.rowId === row.id && r.reason === "confirmed"),
+      `guard:181 slack: a row 11ms outside the guard's margin IS retired, so any `+`-slack on the compared constant refuses it (resolved=${JSON.stringify(out.resolved)})`,
+    );
+  } finally {
+    releaseFixture(f);
+    removeFixture(f);
+  }
+}
+
+{
+  // CANDIDATE C — the shape the other two lenses named: `firstSeen` STRICTLY
+  // AFTER the round's clock, with a confirmation stamped between the round's
+  // clock and the row's stamp. The prior round's claim was that the interval
+  // is empty — every `at` is either `< firstSeen` (dropped by the join's lower
+  // bound) or `> now` (dropped by the round's upper bound). This case is the
+  // falsification test for that claim: if a stamp existed that made `>=` and
+  // `>` disagree, this case reddens under one of them.
+  const f = makeFixture();
+  try {
+    const pid = (await workingTreePatchId(execp, f.dir)).patchId;
+    assert(pid !== undefined, "guard:181 future: the review identity resolved");
+    const row = await openRowAtFirstSeen(f.dir, f.headSha, pid!, NOW + 5_000);
+    const between = reReportWithConfirmation(row, pid!, f.headSha, NOW + 2_500);
+    const atNow = reReportWithConfirmation(row, pid!, f.headSha, NOW);
+    assert(
+      between.resolved.length === 0 && atNow.resolved.length === 0,
+      `guard:181 future: with firstSeen AFTER the clock, every stamp is refused — by the join below firstSeen, by the round above it (between=${JSON.stringify(between.resolved)}, atNow=${JSON.stringify(atNow.resolved)})`,
+    );
+  } finally {
+    releaseFixture(f);
+    removeFixture(f);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // the fixture's env pins are restorable, not destructive (HIGH 1)
 // ---------------------------------------------------------------------------
@@ -424,23 +537,41 @@ const reReportWithConfirmation = (
       `env: no fixture state reached the host agent dir (${hostAgent})`,
     );
   } finally {
-    // HIGH 1's own property, in the shape the nesting bug breaks: the pins a
-    // `makeFixture` found are the pins its `releaseFixture` restores.
-    // What the outer `makeFixture` FOUND was the host pair this case installed.
-    // A correct `releaseFixture` writes those back; the destructive one deletes
-    // them, which is the red below.
+    // The pins the fixture is expected to put back are `f.priorEnv` — the values
+    // `makeFixture` RECORDED when it made this fixture. They are not values this
+    // block assigned inside the `try`, so the comparison is against state the
+    // asserted function had to move, not against a constant the same block
+    // wrote. (`hostLedger` above is what the case installed BEFORE the fixture
+    // existed; `f.priorEnv` is what the fixture itself captured, and a release
+    // that ignored its own record and re-derived from elsewhere is caught here
+    // and not by the earlier assertion.)
     releaseFixture(f);
     assert(
-      process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE === hostLedger &&
-        process.env.PI_AGENT_DIR === hostAgent,
-      `env: releaseFixture writes back the host values makeFixture found (host=${hostLedger}) instead of deleting them (ledger=${String(process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE)}, agent=${String(process.env.PI_AGENT_DIR)})`,
+      process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE === f.priorEnv.ledgerFile &&
+        process.env.PI_AGENT_DIR === f.priorEnv.agentDir &&
+        f.priorEnv.ledgerFile === hostLedger &&
+        f.priorEnv.agentDir === hostAgent,
+      `env: releaseFixture writes back the values it recorded (recorded=${JSON.stringify(f.priorEnv)}) instead of deleting them (ledger=${String(process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE)}, agent=${String(process.env.PI_AGENT_DIR)})`,
     );
-    // One assignment each, no `delete` branch: assigning `undefined` removes the
-    // variable in Node, which is exactly the "was not set at entry" case, so the
-    // two branches were one behaviour written twice.
-    process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = savedLedger;
-    process.env.PI_AGENT_DIR = savedAgent;
-    resetFindingsStateCache();
+    // Restore the host env with the two-branch form. On bun an assignment of
+    // `undefined` does NOT remove the variable — it stores the 9-character
+    // string "undefined", which every consumer that reads through `?.trim()`
+    // treats as a truthy path. `delete` is the only shape that unsets.
+    if (savedLedger === undefined) delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
+    else process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = savedLedger;
+    if (savedAgent === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = savedAgent;
+    // And the restore is asserted, not assumed: a variable the entry found
+    // unset must be absent from the env object, not present-and-"undefined".
+    assert(
+      (savedLedger === undefined
+        ? !("PI_ENSEMBLE_REVIEW_LEDGER_FILE" in process.env)
+        : process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE === savedLedger) &&
+        (savedAgent === undefined
+          ? !("PI_AGENT_DIR" in process.env)
+          : process.env.PI_AGENT_DIR === savedAgent),
+      `env: the host teardown restores the entry state exactly (ledger=${JSON.stringify(process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE)}, agent=${JSON.stringify(process.env.PI_AGENT_DIR)}, entry=${JSON.stringify([ENV_AT_ENTRY.PI_ENSEMBLE_REVIEW_LEDGER_FILE, ENV_AT_ENTRY.PI_AGENT_DIR])})`,
+    );
     removeFixture(f);
     rmSync(hostDir, { recursive: true, force: true });
   }
