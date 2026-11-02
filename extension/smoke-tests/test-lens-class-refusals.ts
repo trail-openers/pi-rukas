@@ -24,7 +24,7 @@
  * "refused for the right reason" means.
  */
 
-import { mutantsFor, render, singleMembers, tokenize } from "./lib/lens-class-mutants.ts";
+import { mutantsFor, render, singleMembers, tokenize, RANGE_ONLY_CLASSES } from "./lib/lens-class-mutants.ts";
 import { assert, refused, state } from "./lib/lens-class-mutants-arms.ts";
 
 // ───────────────────────── the four shapes that corrupt silently
@@ -364,6 +364,33 @@ assert(
   mutantsFor(SHIPPED_MIRROR_PATH).length === 5 && mutantsFor(SHIPPED_MIRROR_NOT_PATH).length === 5,
   "the shipped mirror classes still generate all ten member rows under the mutant-reading probe (P2 refuses broken mutants, not real ones)",
 );
+
+// A class whose every token is a RANGE has no member to delete. `mutantsFor` used
+// to fall through its `if (token.kind !== "char") return;` filter and hand back
+// `[]` — an empty table that a caller reads exactly like "measured, nothing found".
+// `[]` is the same value a fully-measured-but-red-free class would print, so the
+// refusal has to be the answer and the empty list must be unreachable.
+for (const [label, lit] of Object.entries(RANGE_ONLY_CLASSES)) {
+  refused(
+    () => mutantsFor(lit),
+    /carries no single-character member to delete|all ranges/,
+    `${label} \`${lit}\` is REFUSED rather than answered with an empty table (a range-only class has no member to delete, so an empty list would read as a measured zero)`,
+  );
+  // The companion: `singleMembers` still answers `[]` — it is a query, not a
+  // generator, and "no single-character members" is its honest answer. Pinning
+  // the split keeps the two from being conflated by a later edit that "fixes" one
+  // to match the other.
+  assert(
+    (() => {
+      try {
+        return singleMembers(lit).length === 0;
+      } catch {
+        return false;
+      }
+    })(),
+    `${label} \`${lit}\`: singleMembers still answers [] (a query, not a generator) while mutantsFor refuses — the split is deliberate`,
+  );
+}
 
 // P3's companion: a deletion that changes MORE than the named member. `[-+a]`
 // deletes `+` and leaves `[-a]`, whose leading `-` is now read as a range or an
