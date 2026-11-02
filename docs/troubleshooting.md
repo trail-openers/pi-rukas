@@ -70,7 +70,7 @@ PM dispatches a subagent (developer / explore / ops); the `[ensemble:async]` rep
 
 The provider HTTP request hung mid-stream. pi-ai turned the timeout into a synthetic assistant message with `stopReason: "error"` and empty content. Pre-#236 the dispatch report treated that as a normal completion and displayed the agent's last successful thinking block as if it were the final reply. Pi's default HTTP timeout is ~10 minutes (provider SDK default), so a degraded provider could burn 4 retry attempts × 10 min = 40 min before failing — and the failure looked like a success.
 
-This is **independent of the LLM backend**: across recent runs, Anthropic Claude Sonnet 4.6 and Cerebras `zai-glm-4.7` produced this failure roughly equally.
+This is **independent of the LLM backend**: across recent runs on more than one provider and model, these failures occurred roughly equally.
 
 ### Fix
 
@@ -1950,7 +1950,7 @@ There is no fourth row: **no role has a built-in token budget**. The only ceilin
 
 **Symptom.** A six-pass review reports `review-incomplete` naming one or more lanes, and those lanes' replies contain substantive findings — the lane was doing its job. The lane's dispatch report says `killed: token-budget`, usually a few minutes in.
 
-**Cause** ([#952](https://github.com/trail-openers/pi-rukas/issues/952), fixed under [#1642](https://github.com/trail-openers/pi-rukas/issues/1642)). Before this fix `code-review-specialist` shipped a built-in cumulative budget of 8 000 000 tokens — a single measured number from one repo on one model lineup. That sum counts `cacheRead` on every turn, so it is dominated by re-reading context rather than by work: qwen lens children measured 20–40 M tokens and a large codebase moves the whole distribution up. The healthy children on those models were the ones being killed, and because a killed lens leaves the review incomplete the cycle re-runs it — the capped spend paid twice.
+**Cause** ([#952](https://github.com/trail-openers/pi-rukas/issues/952), fixed under [#1642](https://github.com/trail-openers/pi-rukas/issues/1642)). Before this fix `code-review-specialist` shipped a built-in cumulative budget of 8 000 000 tokens — a single measured number from one repo on one model lineup. That sum counts `cacheRead` on every turn, so it is dominated by re-reading context rather than by work: lens children measured 20–40 M tokens and a large codebase moves the whole distribution up. The healthy children on those models were the ones being killed, and because a killed lens leaves the review incomplete the cycle re-runs it — the capped spend paid twice.
 
 **Fixed.** The default is now OFF for every role (`tokenBudgetFor` in `extension/src/spawn-token-budget.ts` returns 0 when the env is unset). What still bounds a lens is unchanged and unrelated to this cap: the loop detector, the two inactivity watchdogs, and the lens run bound (`PI_ENSEMBLE_LENS_BOUND_MS`, 30 min) — a *stuck* reviewer is still bounded; a merely expensive one is not.
 

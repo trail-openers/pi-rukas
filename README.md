@@ -177,7 +177,7 @@ The 28 modules under `modules/` (vipune memory patterns, output standards, async
 ## Caveats (alpha)
 
 - **Three permission modes.** **Sandbox** (recommended): container fence IS the trust boundary; no per-call gating. **Interactive host**: also no per-call gating by default — the agent runs as your UID with the same FS / network / creds as you, so per-call prompts at runtime volumes are theatre. **Headless** (`pi -p`) or **`PI_ENSEMBLE_STRICT_PERMISSIONS=1`**: 3-tier allow/deny/ask policy applies (`agents.json` + per-host and per-project overlays); headless hard-denies on ask. Use sandbox for confined execution, interactive host when you trust the agent, headless or strict-opt-in for automation / paranoia.
-- **Cost.** Six-pass review on a typical PR is roughly 6 × ~2K tokens output per child plus context — order of `$0.02–$0.10` per cycle on cheap Cerebras models, more on Anthropic.
+- **Cost.** Six-pass review on a typical PR is roughly 6 × ~2K tokens output per child plus context — order of `$0.02–$0.10` per cycle on an economical provider tier, more on a premium one.
 - **Worktrees are git CLI calls.** Will be migrated to the safer [`pi-worktree`](https://github.com/randomm/pi-worktree) plugin when its programmatic API stabilises.
 - **Smoke tests** live in `extension/smoke-tests/`; `*-live.ts` files spawn real Pi children (a few cents per run), CI runs the offline ones.
 
