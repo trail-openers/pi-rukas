@@ -93,6 +93,7 @@ import type { LedgerEntry } from "../src/review-ledger-entry.ts";
 import { workingTreePatchId } from "../src/review-ledger.ts";
 import { resetFindingsStateCache } from "../src/review-state-path.ts";
 import {
+  assertUnset,
   FINDING,
   HEAD_LINES,
   makeFixture,
@@ -292,7 +293,10 @@ const reReportWithConfirmation = (
     headOf: HEAD_OF,
     review: "full",
     confirmations: {
-      ledger: [confirmRow(patchId, headSha, row.id, at)] as LedgerEntry[],
+      // No `as LedgerEntry[]`: the object literal is checked against the entry
+      // type, so a field the ledger's own reader would drop is a compile error
+      // here rather than a fixture that silently stops being a candidate.
+      ledger: [confirmRow(patchId, headSha, row.id, at)],
       patchId,
       headSha,
     },
@@ -470,6 +474,51 @@ const reReportWithConfirmation = (
   } finally {
     releaseFixture(f);
     removeFixture(f);
+  }
+}
+
+{
+  // The fixture's "was unset" branches, witnessed on the SHARED function. Both
+  // pins are removed from the process before `makeFixture`, so `priorEnv` holds
+  // two `undefined`s and `releaseFixture` must reach its two `delete` branches.
+  // The assertion is `!(NAME in process.env)` — NOT `=== undefined` — because
+  // on bun an assignment of `undefined` leaves the key present holding the
+  // literal string "undefined", which every consumer reading through
+  // `?.trim()` treats as a truthy path. Biome's autofix for `delete x` produces
+  // exactly that assignment; measured, all four confirmation tests stayed green
+  // under it while this case reddens, which is why the property is asserted on
+  // `releaseFixture` and not only on a test's private copy.
+  const savedLedger = process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
+  const savedAgent = process.env.PI_AGENT_DIR;
+  delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
+  delete process.env.PI_AGENT_DIR;
+  resetFindingsStateCache();
+  const f = makeFixture();
+  try {
+    assert(
+      f.priorEnv.ledgerFile === undefined && f.priorEnv.agentDir === undefined,
+      `release: the fixture recorded both pins as unset (${JSON.stringify(f.priorEnv)})`,
+    );
+    assert(
+      "PI_ENSEMBLE_REVIEW_LEDGER_FILE" in process.env &&
+        "PI_AGENT_DIR" in process.env,
+      "release: makeFixture installed both pins as own keys",
+    );
+  } finally {
+    releaseFixture(f);
+    const problems = assertUnset(f, "release");
+    assert(
+      problems.length === 0 &&
+        !("PI_ENSEMBLE_REVIEW_LEDGER_FILE" in process.env) &&
+        !("PI_AGENT_DIR" in process.env),
+      `release: a fixture whose pin was UNSET deletes it rather than storing "undefined" (${JSON.stringify([process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE, process.env.PI_AGENT_DIR])}, problems=${JSON.stringify(problems)})`,
+    );
+    removeFixture(f);
+    if (savedLedger === undefined) delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
+    else process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = savedLedger;
+    if (savedAgent === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = savedAgent;
+    resetFindingsStateCache();
   }
 }
 

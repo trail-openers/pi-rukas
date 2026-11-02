@@ -10,7 +10,7 @@
  * once the SLACK witnesses landed.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import type { Finding } from "../../src/lens-review-types.ts";
 import type { StoredFinding } from "../../src/review-findings-file.ts";
 import { applyFindingRound } from "../../src/review-findings-round.ts";
@@ -20,7 +20,6 @@ import {
   HEAD_LINES,
   recordFindingRunOutcome,
   rowsOf,
-  writeLedger,
 } from "./confirmation-store-fixture.ts";
 import { NOW } from "./window-guards-clock.ts";
 
@@ -35,6 +34,17 @@ import { NOW } from "./window-guards-clock.ts";
  */
 export function readLedgerText(file: string): string {
   return readFileSync(file, "utf8");
+}
+
+/** Write ledger rows through the SAME serializer the fixture uses, but typed on
+ * `LedgerEntry[]` rather than on the fixture's `Array<Record<string, unknown>>`.
+ * That widening is what let a fixture row whose `kind` had been erased to
+ * `string` reach the file and still type-check; `validEntries`
+ * (review-ledger-read.ts) would then have dropped the row and the witness would
+ * have passed on an empty join. Here the compiler checks every field against
+ * the entry type the reader enforces. */
+function writeLedgerRows(file: string, entries: LedgerEntry[]): void {
+  writeFileSync(file, JSON.stringify({ entries }, null, 2), "utf8");
 }
 
 /** The head content the fixture's `src/a.ts` carries, so `headOf` answers with
@@ -78,7 +88,7 @@ export async function retiredRowAtLastSeen(
   if (!filed.ok) throw new Error(`filing round failed: ${filed.reason}`);
   const row = (await rowsOf(dir)).find((r) => r.title === FINDING.title);
   if (!row) throw new Error("filing round filed no row");
-  writeLedger(process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE!, [
+  writeLedgerRows(process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE!, [
     confirmRow(patchId, headSha, row.id, 450_000),
   ]);
   const retire = await recordFindingRunOutcome({
@@ -100,11 +110,25 @@ export async function retiredRowAtLastSeen(
   ) {
     throw new Error(`setup did not retire the row (${retired?.status}/${retired?.resolvedReason})`);
   }
-  const stamped: StoredFinding = { ...retired, lastSeen } as StoredFinding;
+  // The stamped copy the round judges. Constructed as a fresh object rather
+  // than a cast over a spread: `StoredFinding` is a discriminated union (the
+  // resolve-reason / provenance fields are tied to `status` by the file's
+  // schema), and `as StoredFinding` over `{ ...retired, lastSeen }` silences
+  // exactly the disagreement the compiler would otherwise raise — which is the
+  // one thing this witness must not hide. The three fields the caller's stamp
+  // is meant to place are asserted before the return, so a construction that
+  // silently kept the store's own stamp is a throw, not a green.
+  const stamped: StoredFinding = {
+    ...retired,
+    lastSeen,
+  };
+  if (stamped.lastSeen !== lastSeen) {
+    throw new Error(`stamping did not take (${stamped.lastSeen} != ${lastSeen})`);
+  }
   // The confirmation now names an id NO round holds, so the join's bound
   // rejects it and this row's retirement no longer binds — which is what AC4
   // acts on.
-  writeLedger(process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE!, [
+  writeLedgerRows(process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE!, [
     confirmRow(patchId, headSha, "ffffffff", 450_000),
   ]);
   // The ledger the round reads, from the file the store itself reads: written
@@ -116,18 +140,34 @@ export async function retiredRowAtLastSeen(
   return { row: stamped, ledger };
 }
 
-/** A passing adversarial ledger row naming `rowId`, stamped at `at`. The shape
- * is the one `recordAdversarialRun` writes, minus `toolPath`: that field is the
- * #1360 tool-path PROVENANCE marker, and nothing on the confirmation join's
- * read path looks at it. `readLedgerAt` → `readLedgerFileSafe` → `validEntries`
- * (review-ledger-read.ts) keeps a row on `branch` / `kind` / `patchId` / `at`
- * / `passed` only, and `confirmationsFor` (review-confirmation.ts) selects on
- * `branch`, `passed`, `kind`, `patchId`, `headSha`, `at` and `confirmedRowId`.
- * Deleting `toolPath` from this fixture reddens nothing in either consumer
- * (measured: the whole file stays green without it), so the field is not carried
- * here for any reason a test can see. */
-export const confirmRow = (patchId: string, headSha: string, rowId: string, at: number) => ({
+/** A passing adversarial ledger row naming `rowId`, stamped at `at`.
+ *
+ * The producer this shape stands in for is `writeAdversarialLedgerEntry`
+ * (`adversarial-ledger.ts:83`), the only writer of `kind: "adversarial"` rows
+ * this codebase has; the fields below are named directly rather than asserted
+ * by appeal to it. `toolPath` is deliberately NOT carried: it is the #1360
+ * tool-path PROVENANCE marker that writer takes as an optional parameter, and
+ * nothing on the confirmation join's read path looks at it. The read chain is
+ * `readLedgerFile` → `validEntries` (review-ledger-read.ts:30, applied by
+ * `readLedgerFile`, not by `readLedgerAt`) and, for a caller that must not
+ * throw, `readLedgerFileSafe` → the same `readLedgerFile`; `validEntries` keeps
+ * a row on `branch` / `kind` / `patchId` / `at` / `passed` only, and
+ * `confirmationsFor` (review-confirmation.ts) selects on `branch`, `passed`,
+ * `kind`, `patchId`, `headSha`, `at` and `confirmedRowId`. Deleting `toolPath`
+ * from this fixture reddens nothing in either consumer (measured: the whole
+ * file stays green without it), so the field is not carried here for any reason
+ * a test can see. */
+export const confirmRow = (
+  patchId: string,
+  headSha: string,
+  rowId: string,
+  at: number,
+): LedgerEntry => ({
   branch: "feature/work",
+  // Typed at the source as `LedgerEntry` (declared return type above), so the
+  // object literal is checked against the entry type HERE. Callers therefore
+  // need no `as LedgerEntry[]` — the annotation is what lets the compiler judge
+  // `kind` against `ReviewKind` instead of widening it to `string`.
   kind: "adversarial",
   patchId,
   passed: true,

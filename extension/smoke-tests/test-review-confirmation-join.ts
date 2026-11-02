@@ -234,8 +234,15 @@ function destructiveRelease(f: { priorEnv: FixtureEnv }): void {
       `env: ARM A leaked nothing to the host paths (${hostLedger}, ${hostAgent})`,
     );
   } finally {
-    process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = savedLedger;
-    process.env.PI_AGENT_DIR = savedAgent;
+    // The two-branch restore. On bun an assignment of `undefined` does NOT
+    // remove the variable — it stores the literal string "undefined", which
+    // every consumer reading the pin through `?.trim()` treats as a truthy
+    // path, so the teardown would leave the process pinned at a file named
+    // `undefined`. `delete` is the only shape that unsets.
+    if (savedLedger === undefined) delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
+    else process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = savedLedger;
+    if (savedAgent === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = savedAgent;
     resetFindingsStateCache();
     removeFixture(outer);
     rmSync(hostDir, { recursive: true, force: true });
@@ -330,8 +337,15 @@ function destructiveRelease(f: { priorEnv: FixtureEnv }): void {
       `env: and the host override file that was in place before the leak stayed untouched (${hostLedger})`,
     );
   } finally {
-    process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = savedLedger;
-    process.env.PI_AGENT_DIR = savedAgent;
+    // The two-branch restore. On bun an assignment of `undefined` does NOT
+    // remove the variable — it stores the literal string "undefined", which
+    // every consumer reading the pin through `?.trim()` treats as a truthy
+    // path, so the teardown would leave the process pinned at a file named
+    // `undefined`. `delete` is the only shape that unsets.
+    if (savedLedger === undefined) delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
+    else process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = savedLedger;
+    if (savedAgent === undefined) delete process.env.PI_AGENT_DIR;
+    else process.env.PI_AGENT_DIR = savedAgent;
     resetFindingsStateCache();
     removeFixture(outer);
     rmSync(hostDir, { recursive: true, force: true });

@@ -148,6 +148,38 @@ export function releaseFixture(f: ReleaseTarget): void {
   resetFindingsStateCache();
 }
 
+/** The witness that `releaseFixture`'s "was unset" branches really UNSET.
+ *
+ * WHY IT LIVES HERE AND NOT ONLY IN A TEST. Biome's autofix for `delete x`
+ * rewrites it to `x = undefined`, and on **bun** that assignment does not
+ * remove the variable — it stores the 9-character string `"undefined"`. Every
+ * consumer that reads the pin through `?.trim()` then sees a truthy path and
+ * resolves state to a file literally named `undefined`, so the guard INVERTS
+ * rather than defuses: the fixture looks unpinned and is in fact pinned
+ * somewhere worse. Measured: applying that autofix to `releaseFixture` itself
+ * left all four confirmation tests green, because the only witnesses of these
+ * two branches lived in a test file's private copy of the same shape. This
+ * function is the counter-witness on the SHARED original — a test asserts
+ * absence through it, so the autofix reddens here and not only there. */
+export function assertUnset(f: ReleaseTarget, label: string): string[] {
+  const problems: string[] = [];
+  if (f.priorEnv.ledgerFile === undefined) {
+    if (LEDGER_ENV in process.env) {
+      problems.push(`${label}: ${LEDGER_ENV} still present (${JSON.stringify(process.env[LEDGER_ENV])})`);
+    }
+  } else if (process.env[LEDGER_ENV] !== f.priorEnv.ledgerFile) {
+    problems.push(`${label}: ${LEDGER_ENV} != ${f.priorEnv.ledgerFile}`);
+  }
+  if (f.priorEnv.agentDir === undefined) {
+    if (AGENT_DIR_ENV in process.env) {
+      problems.push(`${label}: ${AGENT_DIR_ENV} still present (${JSON.stringify(process.env[AGENT_DIR_ENV])})`);
+    }
+  } else if (process.env[AGENT_DIR_ENV] !== f.priorEnv.agentDir) {
+    problems.push(`${label}: ${AGENT_DIR_ENV} != ${f.priorEnv.agentDir}`);
+  }
+  return problems;
+}
+
 export function removeFixture(f: ConfirmationFixture): void {
   rmSync(f.root, { recursive: true, force: true });
 }
