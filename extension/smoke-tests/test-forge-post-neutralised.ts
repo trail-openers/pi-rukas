@@ -24,7 +24,7 @@
  * Offline: no child, no real forge call, no network.
  */
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { neutraliseMarkdownField } from "../src/comment-evidence.ts";
@@ -200,7 +200,7 @@ function makeStub(): {
     if (cmd.includes("patch-id")) return { stdout: "p42 0000\n" };
     if (cmd.includes("pr comment")) {
       const file = /--body-file\s+(\S+)/.exec(cmd)?.[1];
-      if (file) bodies.push(await Bun.file(file).text());
+      if (file) bodies.push(readFileSync(file, "utf8"));
       return { stdout: "" };
     }
     return { stdout: "" };
@@ -253,13 +253,13 @@ try {
       const cmd = commandOf(cmd0, o);
       if (cmd.includes("issue comment")) {
         const file = /--body-file\s+(\S+)/.exec(cmd)?.[1];
-        if (file) posted.push(await Bun.file(file).text());
+        if (file) posted.push(readFileSync(file, "utf8"));
         return { stdout: "" };
       }
       return issueStub.execFn(cmd0, o);
     },
   } as unknown as DriverContext;
-  const base = initialState(1, dir);
+  const base = initialState(1);
   const state = {
     ...base,
     pipelineState: { ...base.pipelineState, prNumber: 12, branchName: "feature/x" },
