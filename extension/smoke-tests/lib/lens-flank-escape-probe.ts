@@ -195,47 +195,86 @@ export const META_UNESCAPED_FIT: [string, string, "summary" | undefined, string]
  * lookahead) and with the lookahead deleted (leaving the terminator arm): this
  * fixture stays `undefined` under EITHER arm alone. Deleting `\-` from
  * `TERMINATOR` leaves this fixture and the whole `PATH_CHAR` question green
- * (0 reds in `test-lens-coverage-denominator.ts` and `test-lens-coverage-routing.ts`),
- * because the lookahead is what refuses it.
+ * (0 reds in `test-lens-coverage-denominator.ts` and `test-lens-coverage-routing.ts`).
+ * What follows from that, stated rather than concluded around: the `-` member of
+ * `TERMINATOR` is **unpinned** — no assertion in either coverage suite covers a
+ * hyphen-terminated path — and THIS fixture cannot witness it either, because
+ * `expected: undefined` can never show WHICH right-flank arm refused the path.
+ * "the lookahead is what refuses it" was the old conclusion; a negative-only
+ * fixture does not support it.
  *
- * PER-MEMBER `PATH_CHAR` DELETION — measured 2026-11-04 on a COMPLETE repo-root
- * scratch copy (`/tmp/lcov-d`, `extension/` plus the sibling `skill/` that
- * `BUNDLED_SKILL_DIR` resolves through), with the mutated blob hash printed per
- * run and the shipped blob re-hashed after each restore. "suite reds" = failing
- * assertions in `test-lens-coverage-denominator.ts` + `test-lens-coverage-routing.ts`
- * (the only two coverage suites); "probe" = discriminating one-line fixtures
- * under that mutant that the shipped class gets right, which is the ONLY signal
- * for the two members no assertion reads.
+ * PER-MEMBER `PATH_CHAR` DELETION — re-measured 2026-11-04 on a COMPLETE
+ * repo-root scratch copy (`/tmp/lcov-e`: `extension/` plus the sibling `skill/`
+ * that `BUNDLED_SKILL_DIR` resolves through), driven by a generator that PARSES
+ * the class into tokens (respecting `\`-escapes and `a-z`/`0-9`/`+-` ranges),
+ * removes the named member, and REFUSES the run unless the mutant differs from
+ * shipped, still compiles as a class, and genuinely stops matching the deleted
+ * member. The mutated blob hash is recorded per row and the shipped blob
+ * (`e24a34029a23922515b2cd7d348d2472e11dd400`, equal to
+ * `git rev-parse HEAD:extension/src/lens-review-coverage.ts`) was re-hashed
+ * after every restore.
  *
- *   member  class becomes        suite reds  probe
- *   `+`     `[A-Za-z0-9_./+-]`→   0           `"See src/b.ts+"` and `"…b.ts+spec"` flip to `summary`
- *           `[A-Za-z0-9_./+-]`                 (matcher moves, NO assertion did)
- *   `/`     →`[A-Za-z0-9_.+-]`    0           `"See src/b.ts/"` and `"…b.ts/spec"` flip (same)
- *   `.`     →`[A-Za-z0-9_/+-]`    1           `"See src/b.ts.spec"` flips
- *   `-`     →`[A-Za-z0-9_./+-]`    0           none — `TERMINATOR` still refuses it
- *           (range endpoint,                     (witnessed only via the `-spec` case)
- *            escape kept)
- *   word    (delete `A`/`9` etc.) 0           not measured separately
+ * The earlier version of this table was wrong in exactly the way this branch
+ * exists to catch: its "mutants" were hand-written strings that printed the
+ * SHIPPED class as the mutated class (`[A-Za-z0-9_./+-] → [A-Za-z0-9_./+-]`), so
+ * every "0 suite reds" below the header measured a mutation that had never
+ * deleted the member. A blob hash did NOT catch that — the bytes changed by one
+ * escape character while the character SET stayed identical — which is why a
+ * blob hash is not a control here and the three semantic preconditions are.
+ * A control run proves the harness can redden at all: deleting `.` by this
+ * generator prints 2 reds; a deliberate no-op edit prints 0.
  *
- * Those "0 suite reds" for `+` and `/` are why `PATH_CHAR_PLUS` and
- * `PATH_CHAR_SLASH` exist below: with those two fixtures added, the SAME two
- * mutants each redden exactly ONE assertion in
- * `test-lens-coverage-denominator.ts` (measured with the fixtures present —
- * `+` → "a path followed by `+` is not a citation…", `/` → "a path followed by
- * a trailing slash…"), so both members are now pinned by an assertion rather
- * than only by the raw matcher. Before the fixtures, deleting either moved no
- * test in either coverage suite.
+ * "reds" = failing assertions across `test-lens-coverage-denominator.ts` +
+ * `test-lens-coverage-routing.ts`, TOTALLED across both suites (not per-suite).
  *
- * The one real suite red the `.` mutant moved was already there, and it fires
- * in BOTH suites: `test-lens-coverage-denominator.ts` "canary: the terminator
- * arm does not turn a LONGER path into a citation of a shorter one", and
- * `test-lens-coverage-routing.ts` "(g1) the quoted recital accounts for nothing
- * — both files stay DISCLOSED". It is NOT a lookahead witness: deleting `.`
- * from `TERMINATOR` instead reddens two different assertions (the
- * "ends a SENTENCE still accounts" pair), so `.` is pinned through the
- * TERMINATOR arm, not `PATH_CHAR`. The `-` member of `TERMINATOR` is not pinned
- * by any assertion in either coverage suite (0 reds), because the `PATH_CHAR`
- * lookahead refuses `src/b.ts-spec` first. */
+ *   member deleted                  class becomes         reds  witness
+ *   `+`                             `[A-Za-z0-9_./-]`       1   `PATH_CHAR_PLUS` below (den 1, routing 0)
+ *   `/`                             `[A-Za-z0-9_.+-]`       1   `PATH_CHAR_SLASH` below (den 1, routing 0)
+ *   `.`                             `[A-Za-z0-9_/+-]`       2   den "canary: the terminator arm does not turn a
+ *                                                               LONGER path into a citation of a shorter one"
+ *                                                               + routing "(g1) the quoted recital accounts for
+ *                                                               nothing" — one each
+ *   `-` (the `+-` range endpoint)   `[A-Za-z0-9_./+]`       1   `PATH_CHAR_HYPHEN` below (den 1, routing 0)
+ *   `_`                             `[A-Za-z0-9./+-]`       0   not examined
+ *   `0-9` (whole range)             range removed           0   not examined
+ *   `A-Z` / `a-z` (whole ranges)    range removed           0   not examined
+ *
+ * The three range rows are `0` for a structural reason, not a passing one: every
+ * fixture path is lower-case ASCII and digits that the surviving ranges still
+ * cover, so a whole-range removal is NOT equivalent to a single-member removal
+ * and is reported as untested rather than as a pin. Range endpoints are not
+ * plain members.
+ *
+ * `TERMINATOR` MEMBERS: deleting each in turn moves almost nothing. `!` 0 reds,
+ * `?` 0, `,` 0, `;` 0, `:` 0 and `\-` 0; only `.` moves anything, and it reddens
+ * TWO assertions — the "a path that ends a SENTENCE still accounts" pair for
+ * `src/a.ts` and `src/b.ts`. So the `-` member of `TERMINATOR` is **unpinned**
+ * by any assertion in either coverage suite, as are `!`, `?`, `,`, `;` and `:`;
+ * the `.` member is pinned through `TERMINATOR`, not through `PATH_CHAR`.
+ *
+ * WHICH ARM REFUSES WHAT is attributed per assertion, never inferred from a
+ * negative. Whole-arm deletions (blob `b698cfcec4c231efea8b4ddca5d2cf405ed2cc3d`
+ * = lookahead only, `ccff95e41ce2052f5c130e76620389d519d2e4b6` = terminator arm
+ * only):
+ *   - `PATH_CHAR_HYPHEN` (`src/b.ts-spec`) stays `undefined` under EITHER arm
+ *     alone — both arms refuse it, which is what its `why` claims and what the
+ *     measurement shows.
+ *   - `PATH_CHAR_PLUS` (`See src/b.ts+`) and `PATH_CHAR_SLASH` (`See src/b.ts/`)
+ *     both FLIP TO `summary` when the TERMINATOR arm is deleted, and stay
+ *     `undefined` when only the lookahead arm is deleted: the lookahead is their
+ *     witness and these two assertions are what pin it.
+ *   - "a path that ends a SENTENCE" for `;` reddens only under terminator-only,
+ *     so the terminator arm is its witness.
+ *
+ * POSITION DEPENDENCE decides whether a mutant is visible at all: in
+ * `See src/b.ts+` and `See src/b.ts/` the metacharacter is TERMINAL, so the
+ * `NOT_LINE_BREAK(?!PATH_CHAR)` arm has nothing to close on and only the
+ * lookahead decision remains. Give the same character a follower
+ * (`See src/b.ts+spec`) and the non-line-break arm closes on `s`, making the
+ * mutant invisible to a fixture spelled that way. The `"…b.ts+spec"` and
+ * `"…b.ts/spec"` probes the old table named DO NOT EXIST as fixtures and were
+ * never run; they are removed rather than kept as decoration — a table promising
+ * probes that do not exist is the same defect as a fabricated red. */
 export const PATH_CHAR_HYPHEN: [string, string, "summary" | undefined, string] = [
   "See src/b.ts-spec",
   "src/b.ts",
@@ -244,26 +283,35 @@ export const PATH_CHAR_HYPHEN: [string, string, "summary" | undefined, string] =
 ];
 
 /** The `+` member of `PATH_CHAR`, pinned by an ASSERTION rather than only by
- * the matcher. Deleting `+` from the class (the trailing range endpoint, escape
- * kept) leaves BOTH coverage suites green — see the per-member table on
- * `PATH_CHAR_HYPHEN` — so without this case the member is unpinned. With `+` in
- * the class the lookahead refuses to close and this is NOT a citation. */
+ * the matcher. Measured 2026-11-04 with the parsed-token generator: deleting `+`
+ * from the class reddens exactly ONE assertion across both coverage suites —
+ * this one — so without it the member is unpinned. Two limits this states:
+ * the metacharacter must be TERMINAL (with a follower, `See src/b.ts+spec`, the
+ * `NOT_LINE_BREAK(?!PATH_CHAR)` arm closes on `s` and the mutant is invisible),
+ * and "the ONLY assertion" is a claim about
+ * `test-lens-coverage-denominator.ts` specifically — the routing suite stays
+ * green under this mutant. */
 export const PATH_CHAR_PLUS: [string, string, "summary" | undefined, string] = [
   "See src/b.ts+",
   "src/b.ts",
   undefined,
-  "a path followed by `+` is not a citation of the shorter file — `+` is a PATH_CHAR so the lookahead refuses to close (witness: the ONLY assertion that reddens when `+` is deleted from PATH_CHAR; the suites alone stay green)",
+  "a path followed by a terminal `+` is not a citation of the shorter file — `+` is a PATH_CHAR so the lookahead refuses to close (witness: the ONLY assertion in `test-lens-coverage-denominator.ts` that reddens when `+` is deleted from PATH_CHAR; routing stays green; the `+` must be terminal or the non-line-break arm closes and the mutant is invisible)",
 ];
 
-/** The `/` member of `PATH_CHAR`, pinned by an ASSERTION. Deleting `/` from the
- * class leaves both coverage suites green, so this case is the only witness;
- * the trailing slash is a path character, not a terminator, so the lookahead is
- * the arm that refuses it. */
+/** The `/` member of `PATH_CHAR`, pinned by an ASSERTION. Measured 2026-11-04:
+ * deleting `/` reddens exactly ONE assertion across both coverage suites — this
+ * one — so this case is its only witness; the trailing slash is a path
+ * character, not a terminator, so the lookahead is the arm that refuses it
+ * (deleting the TERMINATOR arm instead flips this fixture to `summary`, which is
+ * what identifies the lookahead as the witness rather than the terminator).
+ * Terminal position is load-bearing for the same reason as `PATH_CHAR_PLUS`, and
+ * "the ONLY assertion" names `test-lens-coverage-denominator.ts` — routing stays
+ * green. */
 export const PATH_CHAR_SLASH: [string, string, "summary" | undefined, string] = [
   "See src/b.ts/",
   "src/b.ts",
   undefined,
-  "a path followed by a trailing slash is not a citation of the shorter file — `/` is a PATH_CHAR so the lookahead refuses to close (witness: the ONLY assertion that reddens when `/` is deleted from PATH_CHAR)",
+  "a path followed by a terminal slash is not a citation of the shorter file — `/` is a PATH_CHAR so the lookahead refuses to close (witness: the ONLY assertion in `test-lens-coverage-denominator.ts` that reddens when `/` is deleted from PATH_CHAR; routing stays green; the slash must be terminal or the non-line-break arm closes and the mutant is invisible)",
 ];
 
 export const TEST_FLANK_ESCAPE_CASES: readonly [string, string, "summary" | undefined, string][] = [
