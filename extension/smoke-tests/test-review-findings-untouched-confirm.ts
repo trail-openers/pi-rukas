@@ -77,7 +77,7 @@ import { FINDING, recordFindingRunOutcome } from "./lib/confirmation-store-fixtu
       {
         branch: "feature/work",
         kind: "adversarial",
-        patchId: pid,
+        patchId: pid!,
         passed: true,
         at: Date.now(),
         headSha: f.headSha,
@@ -139,7 +139,7 @@ import { FINDING, recordFindingRunOutcome } from "./lib/confirmation-store-fixtu
         {
           branch: "feature/work",
           kind: "adversarial",
-          patchId: pid2,
+          patchId: pid2!,
           passed: true,
           // Recorded AFTER this round began: evidence written while (or after)
           // the lenses were reporting the finding. Confirms nothing.
@@ -156,7 +156,7 @@ import { FINDING, recordFindingRunOutcome } from "./lib/confirmation-store-fixtu
         findings: [FINDING],
         review: "full",
         confirmFixes: true,
-        patchId: pid2,
+        patchId: pid2!,
         now: roundNow,
       });
       assert(during.ok, `re-reported: the round recorded (${during.ok ? "" : during.reason})`);
@@ -200,7 +200,7 @@ import { FINDING, recordFindingRunOutcome } from "./lib/confirmation-store-fixtu
         {
           branch: "feature/work",
           kind: "adversarial",
-          patchId: pid3,
+          patchId: pid3!,
           passed: true,
           at: when + 5_000,
           headSha: f3.headSha,

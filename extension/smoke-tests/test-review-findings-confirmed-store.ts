@@ -76,7 +76,7 @@ function assert(cond: boolean, msg: string) {
       {
         branch: "feature/work",
         kind: "adversarial",
-        patchId: pid,
+        patchId: pid!,
         passed: true,
         at: Date.now(),
         headSha: f.headSha,

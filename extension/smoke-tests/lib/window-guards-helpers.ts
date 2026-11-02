@@ -10,7 +10,7 @@
  * once the SLACK witnesses landed.
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import type { Finding } from "../../src/lens-review-types.ts";
 import type { StoredFinding } from "../../src/review-findings-file.ts";
 import { applyFindingRound } from "../../src/review-findings-round.ts";
@@ -20,6 +20,7 @@ import {
   HEAD_LINES,
   recordFindingRunOutcome,
   rowsOf,
+  writeLedger,
 } from "./confirmation-store-fixture.ts";
 import { NOW } from "./window-guards-clock.ts";
 
@@ -34,17 +35,6 @@ import { NOW } from "./window-guards-clock.ts";
  */
 export function readLedgerText(file: string): string {
   return readFileSync(file, "utf8");
-}
-
-/** Write ledger rows through the SAME serializer the fixture uses, but typed on
- * `LedgerEntry[]` rather than on the fixture's `Array<Record<string, unknown>>`.
- * That widening is what let a fixture row whose `kind` had been erased to
- * `string` reach the file and still type-check; `validEntries`
- * (review-ledger-read.ts) would then have dropped the row and the witness would
- * have passed on an empty join. Here the compiler checks every field against
- * the entry type the reader enforces. */
-function writeLedgerRows(file: string, entries: LedgerEntry[]): void {
-  writeFileSync(file, JSON.stringify({ entries }, null, 2), "utf8");
 }
 
 /** The head content the fixture's `src/a.ts` carries, so `headOf` answers with
@@ -75,7 +65,9 @@ export async function retiredRowAtLastSeen(
   headSha: string,
   patchId: string,
   lastSeen: number,
-): Promise<{ row: StoredFinding; ledger: LedgerEntry[] }> {
+):
+  Promise<{ row?: StoredFinding; ledger?: LedgerEntry[]; problem: string }> {
+  const fault = (why: string) => ({ problem: `setup: ${why}` });
   const filed = await recordFindingRunOutcome({
     cwd: dir,
     branch: "feature/work",
@@ -85,10 +77,10 @@ export async function retiredRowAtLastSeen(
     patchId,
     now: 400_000,
   });
-  if (!filed.ok) throw new Error(`filing round failed: ${filed.reason}`);
+  if (!filed.ok) return fault(`filing round failed: ${filed.reason}`);
   const row = (await rowsOf(dir)).find((r) => r.title === FINDING.title);
-  if (!row) throw new Error("filing round filed no row");
-  writeLedgerRows(process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE!, [
+  if (!row) return fault("filing round filed no row");
+  writeLedger(process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE!, [
     confirmRow(patchId, headSha, row.id, 450_000),
   ]);
   const retire = await recordFindingRunOutcome({
@@ -101,34 +93,66 @@ export async function retiredRowAtLastSeen(
     patchId,
     now: 490_000,
   });
-  if (!retire.ok) throw new Error(`retire round failed: ${retire.reason}`);
+  if (!retire.ok) return fault(`retire round failed: ${retire.reason}`);
   const retired = (await rowsOf(dir)).find((r) => r.id === row.id);
+  // EVERY field the returned row is built from is pinned before the
+  // construction below, not just the stamp. The narrowing this throw supplies
+  // is what makes the two arms of `stamped` type-check WITHOUT a cast, and
+  // `resolvedReason` / `confirmedBy` are the two the AC4 pass reads: a row that
+  // came back with a different reason, or with no provenance, would leave that
+  // pass with nothing to report and the caller's assertion would witness
+  // nothing. All three are checked here so a setup that quietly produced a
+  // different row is a named red rather than a green over the wrong fixture.
   if (
     retired?.status !== "resolved" ||
     retired.resolvedReason !== "confirmed" ||
     retired.confirmedBy === undefined
   ) {
-    throw new Error(`setup did not retire the row (${retired?.status}/${retired?.resolvedReason})`);
+    return fault(`setup did not retire the row (${retired?.status}/${retired?.resolvedReason})`);
   }
-  // The stamped copy the round judges. Constructed as a fresh object rather
-  // than a cast over a spread: `StoredFinding` is a discriminated union (the
-  // resolve-reason / provenance fields are tied to `status` by the file's
-  // schema), and `as StoredFinding` over `{ ...retired, lastSeen }` silences
-  // exactly the disagreement the compiler would otherwise raise — which is the
-  // one thing this witness must not hide. The three fields the caller's stamp
-  // is meant to place are asserted before the return, so a construction that
-  // silently kept the store's own stamp is a throw, not a green.
-  const stamped: StoredFinding = {
-    ...retired,
-    lastSeen,
-  };
+  // The stamped copy the round judges, built per discriminated arm rather than
+  // as a spread of the union plus an assertion afterwards. A spread of a
+  // union-typed value is itself a union and the compiler will not settle which
+  // arm it is, so the only alternatives to branching here were `as StoredFinding`
+  // (which silences exactly the disagreement the compiler would raise) or an
+  // unchecked construction plus a runtime throw (which witnesses a stamp that
+  // cannot fail). In each arm the compiler judges every field against the arm
+  // the narrowing above established; the `resolved` arm is written in full and
+  // the `open` arm is unreachable-by-narrowing, so it is a named fault rather
+  // than a cast through `undefined`.
+  const stamped: StoredFinding =
+    retired.status === "resolved"
+      ? {
+          ...retired,
+          status: "resolved",
+          acceptance: undefined,
+          resolvedReason: "confirmed",
+          lastSeen,
+        }
+      : {
+          ...retired,
+          status: "open",
+          acceptance: undefined,
+          resolvedReason: undefined,
+          confirmedBy: undefined,
+          lastSeen,
+        };
+  // Each field the construction is supposed to have placed is checked against
+  // the value the CALLER supplied, so a construction that silently kept the
+  // store's own stamp — or the store's own status — is a named fault.
   if (stamped.lastSeen !== lastSeen) {
-    throw new Error(`stamping did not take (${stamped.lastSeen} != ${lastSeen})`);
+    return fault(`stamping did not take (${stamped.lastSeen} != ${lastSeen})`);
+  }
+  if (stamped.status !== "resolved" || stamped.resolvedReason !== "confirmed") {
+    return fault(`stamped row lost its retirement (${stamped.status}/${stamped.resolvedReason})`);
+  }
+  if (stamped.confirmedBy === undefined) {
+    return fault("stamped row lost its provenance");
   }
   // The confirmation now names an id NO round holds, so the join's bound
   // rejects it and this row's retirement no longer binds — which is what AC4
   // acts on.
-  writeLedgerRows(process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE!, [
+  writeLedger(process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE!, [
     confirmRow(patchId, headSha, "ffffffff", 450_000),
   ]);
   // The ledger the round reads, from the file the store itself reads: written
@@ -137,19 +161,24 @@ export async function retiredRowAtLastSeen(
   const ledger = (
     JSON.parse(readLedgerText(process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE!)) as LedgerFile
   ).entries;
-  return { row: stamped, ledger };
+  return { row: stamped, ledger, problem: "" };
 }
 
 /** A passing adversarial ledger row naming `rowId`, stamped at `at`.
  *
  * The producer this shape stands in for is `writeAdversarialLedgerEntry`
- * (`adversarial-ledger.ts:83`), the only writer of `kind: "adversarial"` rows
- * this codebase has; the fields below are named directly rather than asserted
- * by appeal to it. `toolPath` is deliberately NOT carried: it is the #1360
- * tool-path PROVENANCE marker that writer takes as an optional parameter, and
- * nothing on the confirmation join's read path looks at it. The read chain is
- * `readLedgerFile` → `validEntries` (review-ledger-read.ts:30, applied by
- * `readLedgerFile`, not by `readLedgerAt`) and, for a caller that must not
+ * (`adversarial-ledger.ts`, the function by that name — line numbers rot and
+ * this repo has a standing rule against citing them), the only writer of
+ * `kind: "adversarial"` rows this codebase has; the fields below are named
+ * directly rather than asserted by appeal to it. `toolPath` is deliberately NOT
+ * carried: it is the #1360 tool-path PROVENANCE marker that writer takes as an
+ * optional parameter, and nothing on the confirmation join's read path looks at
+ * it. The validation chain a row must survive to be seen at all is
+ * `readLedgerFile` → `validEntries`: `validEntries` is DECLARED in
+ * `review-ledger-read.ts` and CALLED by `readLedgerFile`, and NOT by
+ * `readLedgerAt` (which parses and then discards the rows), so a fixture row
+ * `validEntries` refuses is invisible to this consumer whatever else reads the
+ * file. For a caller that must not
  * throw, `readLedgerFileSafe` → the same `readLedgerFile`; `validEntries` keeps
  * a row on `branch` / `kind` / `patchId` / `at` / `passed` only, and
  * `confirmationsFor` (review-confirmation.ts) selects on `branch`, `passed`,

@@ -173,10 +173,13 @@ const ask = (
  * fixture recorded. Typed by the shared fixture's own record shape, so it is a
  * counterpart to `releaseFixture` and not a free-floating pair of `delete`s.
  *
- * `delete` and nothing else. Biome's `noDelete` autofix rewrites these to
- * `process.env.X = undefined`, which on bun does NOT remove the variable — it
- * stores the four-character string "undefined", which every consumer here reads
- * through `?.trim()` and therefore treats as a real value. The override would
+ * `delete` and nothing else. Biome's `noDelete` autofix rewrites these to an
+ * assignment of the `undefined` LITERAL to an env key, which on bun does NOT
+ * remove the variable — it stores the 9-character string "undefined", which
+ * every consumer here reads through `?.trim()` and therefore treats as a real
+ * value. The contiguous dot-form is not written out here because this repo's
+ * own env-clear ratchet (`test-env-clear-gate.ts`) scans comments too and would
+ * redden on the explanation of the very trap it forbids. The override would
  * stay "set" to a file nobody can open, and this witness would go green having
  * measured nothing. The rule is suppressed rather than the behaviour changed. */
 function destructiveRelease(f: { priorEnv: FixtureEnv }): void {
@@ -376,15 +379,15 @@ function destructiveRelease(f: { priorEnv: FixtureEnv }): void {
     // green case above is the read fault — a red below cannot be blamed on a
     // mismatched patch id or a stale `seen` window.
     const pid = (await workingTreePatchId(execp, f.dir)).patchId;
-    assert(
-      pid !== undefined,
-      "fault: the review identity resolved for the unreadable-ledger round",
-    );
+    assert(pid !== undefined, "fault: the review identity resolved for the unreadable-ledger round");
+    // `!` because the line above IS the check: `assert` records the red and the
+    // exit code, and this narrowing carries that already-recorded fact into the
+    // type rather than pretending an unchecked value is checked.
     writeLedger(f.ledgerFile, [
       {
         branch: "feature/work",
         kind: "adversarial",
-        patchId: pid,
+        patchId: pid!,
         passed: true,
         at: Date.now(),
         headSha: f.headSha,

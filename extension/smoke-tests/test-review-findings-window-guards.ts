@@ -37,7 +37,15 @@
  *     matrix, and the falsification case for the empty-interval argument that
  *     `guard:181 relax` below rests on all now live;
  *   - `guard:181` DELETED, RELAXED (`>=` → `>`) and NEVER (`if (false)`) →
- *     `boundary` reddens in each case.
+ *     `boundary` reddens in each case, and it is the ONLY case in the repo
+ *     that reddens for any of the three. Measured again this round against the
+ *     construction two lenses named as a second `>` witness (`firstSeen = NOW -
+ *     1001`, confirmation `at = NOW - 900`): it is `guard:181 between` in the
+ *     sibling slack file and it stayed GREEN under `>=` → `>`, along with every
+ *     other case there. So `>=` versus `>` is decided at EXACTLY ONE point —
+ *     `firstSeen === now` — and that point is `boundary` alone; `slack` and
+ *     `between` witness the guard's presence and the compared constant, not the
+ *     operator.
  *
  * The `live` cases are not witnesses to any mutation either; they are the
  * anti-dead-code arms, the ones that keep each guard from being a `return`
@@ -95,9 +103,59 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-/** The environment as this file found it. The LAST block compares its teardown
- * against the value the host-teardown block installed — NOT against this
- * snapshot, which that block would then be asserting its own writes back. */
+/** A precondition the case CANNOT proceed without. Unlike `assert` this both
+ * prints a named `✗` line AND throws, so a setup fault is visible in the run
+ * output and stops the case: continuing past a failed precondition means the
+ * later assertions judge a fixture that is not the one they name. The shape
+ * this replaces — a bare `throw` in the shared setup helper, called BEFORE the
+ * caller's `try/finally` — aborted the whole file on an unhandled exception, so
+ * the run reported zero `✗` lines and every case green, including the one whose
+ * fixture never built. A silent witness is worse than a red one, and this is
+ * the helper's failure channel: a fault lands as a red rather than as a green
+ * run over twelve cases that did not include this one.
+ *
+ * The `asserts` predicate is what makes it usable at a call site rather than
+ * merely loud: without it the compiler still sees `setup.row` as possibly
+ * undefined after the guard, and the honest fix would have been a cast — the
+ * same erasure the discriminated-arm construction above exists to avoid. So the
+ * narrowing the guard has always implied is now stated in its type, and the
+ * call sites pass the value through with no `!` and no `as`.
+ */
+function require(cond: boolean, msg: string): asserts cond {
+  if (!cond) {
+    console.error(`✗ ${msg}`);
+    exit = 1;
+    throw new Error(msg);
+  }
+}
+
+/** Record a shared-setup helper's fault as a NAMED RED, and tell the caller to
+ * skip the rest of its case. Deliberately NOT `require`: a helper that throws
+ * out of a case whose `try` has not opened yet aborts the whole file on an
+ * unhandled exception, which is precisely the defect these helpers were given a
+ * failure channel to remove — measured, neutralising `retiredRowAtLastSeen`'s
+ * seed while the call site used `require` left the run with 2 output lines and
+ * the other two `guard:222` cases never executed. An assertion plus a `continue`
+ * gives the red, sets the exit code, and lets every other case in the file still
+ * run, so a broken fixture can report a failure without silencing its witnesses.
+ * Returns true when the setup is usable. */
+function assertSetup(
+  setup: { row?: StoredFinding; ledger?: LedgerEntry[]; problem: string },
+  label: string,
+): setup is { row: StoredFinding; ledger: LedgerEntry[]; problem: string } {
+  const ok = setup.problem === "" && setup.row !== undefined;
+  assert(ok, `${label}: the shared setup built the fixture (${setup.problem || "ok"})`);
+  return ok;
+}
+
+/** The environment as this file found it, captured at load, before any case ran.
+ * The LAST block's teardown asserts against this alongside the values its own
+ * block saved, which is what makes it a process-level invariant — "the file
+ * exits with the env it entered" — rather than a comparison of `process.env`
+ * against the same two locals that block had just installed. The snapshot is
+ * read by that assertion, so it is not a print-only variable dressed as a check;
+ * deleting it reddens that arm, and a value the entry did not have cannot be
+ * written back into the predicate without reddening it too. */
 const ENV_AT_ENTRY = {
   PI_ENSEMBLE_REVIEW_LEDGER_FILE: process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE,
   PI_AGENT_DIR: process.env.PI_AGENT_DIR,
@@ -106,7 +164,7 @@ const ENV_AT_ENTRY = {
 // guard:222 — `if (r.lastSeen >= now) return;` in the AC4 re-observation pass
 // ---------------------------------------------------------------------------
 
-{
+guard_case: {
   // The boundary: the retired row's `lastSeen` EQUALS the round's clock and the
   // round is SILENT about the row. Silence is the only shape that witnesses this
   // guard — a round that re-reports the row takes it through the matched pass,
@@ -129,7 +187,16 @@ const ENV_AT_ENTRY = {
       JSON.parse(ledgerText).entries.length === 0,
       `guard:222 boundary: the fixture's ledger exists and holds no rows before the first round (${ledgerText.slice(0, 40)})`,
     );
-    const { row, ledger } = await retiredRowAtLastSeen(f.dir, f.headSha, pid!, NOW);
+    const setup = await retiredRowAtLastSeen(f.dir, f.headSha, pid!, NOW);
+    // A setup fault is a NAMED RED and then a SKIP — never a throw. `require`
+    // would abort the file on an unhandled exception, which is the exact defect
+    // this helper exists to remove: measured, neutralising the helper's seed
+    // under `require` left the run with 2 lines and the other two `guard:222`
+    // cases never executed. `assert` records the red, `exit = 1`, and the case
+    // reports its problem and moves on, so every case still runs and the file
+    // still cannot go green on a fixture that never built.
+    if (!assertSetup(setup, "guard:222 boundary")) break guard_case;
+    const { row, ledger } = setup;
     readLedgerText(f.ledgerFile);
     assert(
       row.lastSeen === NOW,
@@ -144,9 +211,10 @@ const ENV_AT_ENTRY = {
     releaseFixture(f);
     removeFixture(f);
   }
+  break guard_case;
 }
 
-{
+guard_case: {
   // The relaxation witness: the retired row's `lastSeen` is STRICTLY LATER than
   // the round's clock — a stamp no store-driven round can produce, which is why
   // the row's own stamp is injected (see `retiredRowAtLastSeen`). `>=` still
@@ -155,7 +223,9 @@ const ENV_AT_ENTRY = {
   try {
     const pid = (await workingTreePatchId(execp, f.dir)).patchId;
     assert(pid !== undefined, "guard:222 relax: the review identity resolved");
-    const { row, ledger } = await retiredRowAtLastSeen(f.dir, f.headSha, pid!, NOW + 60_000);
+    const setup = await retiredRowAtLastSeen(f.dir, f.headSha, pid!, NOW + 60_000);
+    if (!assertSetup(setup, "guard:222 relax")) break guard_case;
+    const { row, ledger } = setup;
     assert(
       row.lastSeen === NOW + 60_000,
       `guard:222 relax: the row's stamp is STRICTLY AFTER the round's clock (${row.lastSeen} > ${NOW})`,
@@ -169,9 +239,10 @@ const ENV_AT_ENTRY = {
     releaseFixture(f);
     removeFixture(f);
   }
+  break guard_case;
 }
 
-{
+guard_case: {
   // The anti-dead-code arm: a row stamped STRICTLY BEFORE the round's clock is
   // the row AC4 exists for and the guard must NOT skip it. Without this arm a
   // blanket `return;` at the top of the pass satisfied both witnesses above —
@@ -180,7 +251,9 @@ const ENV_AT_ENTRY = {
   try {
     const pid = (await workingTreePatchId(execp, f.dir)).patchId;
     assert(pid !== undefined, "guard:222 live: the review identity resolved");
-    const { row, ledger } = await retiredRowAtLastSeen(f.dir, f.headSha, pid!, NOW - 60_000);
+    const setup = await retiredRowAtLastSeen(f.dir, f.headSha, pid!, NOW - 60_000);
+    if (!assertSetup(setup, "guard:222 live")) break guard_case;
+    const { row, ledger } = setup;
     const mine = [row];
     const out = runRound(mine, [], ledger, pid!, f.headSha);
     // Three observables, all read from the array the ROUND mutated (`mine` is
@@ -205,6 +278,7 @@ const ENV_AT_ENTRY = {
     releaseFixture(f);
     removeFixture(f);
   }
+  break guard_case;
 }
 
 // ---------------------------------------------------------------------------
@@ -234,13 +308,44 @@ async function openRowAtFirstSeen(
     patchId,
     now: firstSeen,
   });
-  if (!filed.ok) throw new Error(`filing round failed: ${filed.reason}`);
+  // A setup fault is a NAMED RED before it is an exception: these helpers run
+  // BEFORE the caller's `try` in the older shape, so a bare throw aborted the
+  // whole file with zero `✗` lines and the run reported every case green
+  // including the one that never ran. `require` prints first, then throws.
+  require(filed.ok, `guard:181 setup: filing round failed: ${filed.ok ? "" : filed.reason}`);
   const row = (await rowsOf(dir)).find((r) => r.title === FINDING.title);
-  if (!row) throw new Error("filing round filed no row");
-  if (row.firstSeen !== firstSeen || row.status !== "open") {
-    throw new Error(`filing round stamped ${row.firstSeen}/${row.status}`);
-  }
-  return { ...row, firstSeen };
+  require(row !== undefined, "guard:181 setup: filing round filed no row");
+  require(
+    row!.firstSeen === firstSeen && row!.status === "open",
+    `guard:181 setup: filing round stamped ${row!.firstSeen}/${row!.status}`,
+  );
+  // Built per discriminated arm, not as a spread of the union. `{ ...row,
+  // firstSeen }` over a UNION-typed row is itself a union the compiler will not
+  // resolve, so the only ways to hand it back were a cast (which erases exactly
+  // the arm distinction `StoredFinding` exists to keep — an `accepted` row
+  // arriving as `open` would have type-checked) or a runtime throw after an
+  // unchecked construction. The narrowing above pins `status === "open"`, so the
+  // open arm is the one the compiler judges, and the still-unreachable cases are
+  // named faults rather than casts.
+  const stamped: StoredFinding =
+    row!.status === "open"
+      ? {
+          ...row!,
+          status: "open",
+          acceptance: undefined,
+          resolvedReason: undefined,
+          firstSeen,
+        }
+      : (() => {
+          throw new Error(`guard:181 setup: row is ${row!.status}, not open`);
+        })();
+  // The stamp itself: a construction that quietly kept the store's own value is
+  // a named red, not a case that judges a different clock than it claims.
+  require(
+    stamped.firstSeen === firstSeen && stamped.status === "open",
+    `guard:181 setup: stamping did not take (${stamped.firstSeen} != ${firstSeen}, status=${stamped.status})`,
+  );
+  return stamped;
 }
 
 /** Re-report `row` through the real entry point with a confirmation for it on
@@ -346,154 +451,6 @@ const reReportWithConfirmation = (
   } finally {
     releaseFixture(f);
     removeFixture(f);
-  }
-}
-
-{
-  // The fixture's "was unset" branches, witnessed on the SHARED function. Both
-  // pins are removed before `makeFixture`, so `priorEnv` holds two `undefined`s
-  // and `releaseFixture` must reach its two `delete` branches. The assertion is
-  // `!(NAME in process.env)` — NOT `=== undefined` — because on bun assigning
-  // `undefined` leaves the key present holding the literal string "undefined",
-  // which any consumer reading through `?.trim()` treats as a truthy path.
-  // Biome's autofix for `delete x` produces exactly that assignment; measured,
-  // all four confirmation tests stayed green under it while this case reddens —
-  // which is why the property is asserted on `releaseFixture` itself.
-  const savedLedger = process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
-  const savedAgent = process.env.PI_AGENT_DIR;
-  delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
-  delete process.env.PI_AGENT_DIR;
-  resetFindingsStateCache();
-  const f = makeFixture();
-  try {
-    assert(
-      f.priorEnv.ledgerFile === undefined && f.priorEnv.agentDir === undefined,
-      `release: the fixture recorded both pins as unset (${JSON.stringify(f.priorEnv)})`,
-    );
-    assert(
-      "PI_ENSEMBLE_REVIEW_LEDGER_FILE" in process.env &&
-        "PI_AGENT_DIR" in process.env,
-      "release: makeFixture installed both pins as own keys",
-    );
-  } finally {
-    releaseFixture(f);
-    const problems = assertUnset(f, "release");
-    assert(
-      problems.length === 0 &&
-        !("PI_ENSEMBLE_REVIEW_LEDGER_FILE" in process.env) &&
-        !("PI_AGENT_DIR" in process.env),
-      `release: a fixture whose pin was UNSET deletes it rather than storing "undefined" (${JSON.stringify([process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE, process.env.PI_AGENT_DIR])}, problems=${JSON.stringify(problems)})`,
-    );
-    removeFixture(f);
-    if (savedLedger === undefined) delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
-    else process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = savedLedger;
-    if (savedAgent === undefined) delete process.env.PI_AGENT_DIR;
-    else process.env.PI_AGENT_DIR = savedAgent;
-    resetFindingsStateCache();
-  }
-}
-
-// ---------------------------------------------------------------------------
-// the fixture's env pins are restorable, not destructive (HIGH 1)
-// ---------------------------------------------------------------------------
-
-{
-  // An OUTER fixture records the host's real env; an inner makeFixture/release
-  // pair runs inside it. If release deletes instead of restoring, the outer
-  // round's next write lands in the real per-clone ledger / the developer's
-  // ~/.pi state. `hostLedger` is a path OUTSIDE any fixture and outside the
-  // process env, so a leaked write is observable as a file that must never
-  // exist. The env is set back to `ENV_AT_ENTRY` in the finally rather than
-  // through the fixture's own release: this case's fixture was created with
-  // this case's pins in place, so those pins are what a correct release puts
-  // back (that is the HIGH 1 property, asserted below), not the pre-entry
-  // values — restoring those is the last block's job.
-  const hostDir = mkdtempSync(path.join(os.tmpdir(), "host-ledger-"));
-  const hostLedger = path.join(hostDir, "ledger.json");
-  const hostAgent = path.join(hostDir, "agent");
-  // The host's real values, saved so this case can put them back at the end.
-  const savedLedger = process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
-  const savedAgent = process.env.PI_AGENT_DIR;
-  process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = hostLedger;
-  process.env.PI_AGENT_DIR = hostAgent;
-  resetFindingsStateCache();
-  const f = makeFixture();
-  const outerLedger = f.ledgerFile;
-  const outerAgent = path.join(f.root, "agent");
-  try {
-    assert(
-      process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE === outerLedger,
-      `env: makeFixture pins the ledger into the fixture (${process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE})`,
-    );
-    const inner = makeFixture();
-    try {
-      assert(
-        process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE === inner.ledgerFile,
-        "env: the inner fixture re-pins the ledger to its own dir",
-      );
-    } finally {
-      releaseFixture(inner);
-      removeFixture(inner);
-    }
-    assert(
-      process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE === outerLedger &&
-        process.env.PI_AGENT_DIR === outerAgent,
-      `env: an inner release restores the OUTER fixture's pins rather than deleting them (ledger=${process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE}, agent=${String(process.env.PI_AGENT_DIR)})`,
-    );
-    // The outer round still works on ITS file after the inner release, and no
-    // row from any fixture reached the host path.
-    const pid = (await workingTreePatchId(execp, f.dir)).patchId;
-    const row = await seed(f.dir, f.headSha);
-    assert(
-      pid !== undefined && (await rowsOf(f.dir)).some((r) => r.id === row.id),
-      "env: the outer fixture's store still round-trips after an inner release",
-    );
-    assert(
-      existsSync(hostLedger) === false,
-      `env: no row from any fixture reached the host ledger path (${hostLedger})`,
-    );
-    assert(
-      existsSync(hostAgent) === false,
-      `env: no fixture state reached the host agent dir (${hostAgent})`,
-    );
-  } finally {
-    // The pins the fixture is expected to put back are `f.priorEnv` — the values
-    // `makeFixture` RECORDED when it made this fixture. They are not values this
-    // block assigned inside the `try`, so the comparison is against state the
-    // asserted function had to move, not against a constant the same block
-    // wrote. (`hostLedger` above is what the case installed BEFORE the fixture
-    // existed; `f.priorEnv` is what the fixture itself captured, and a release
-    // that ignored its own record and re-derived from elsewhere is caught here
-    // and not by the earlier assertion.)
-    releaseFixture(f);
-    assert(
-      process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE === f.priorEnv.ledgerFile &&
-        process.env.PI_AGENT_DIR === f.priorEnv.agentDir &&
-        f.priorEnv.ledgerFile === hostLedger &&
-        f.priorEnv.agentDir === hostAgent,
-      `env: releaseFixture writes back the values it recorded (recorded=${JSON.stringify(f.priorEnv)}) instead of deleting them (ledger=${String(process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE)}, agent=${String(process.env.PI_AGENT_DIR)})`,
-    );
-    // Restore the host env with the two-branch form. On bun an assignment of
-    // `undefined` does NOT remove the variable — it stores the 9-character
-    // string "undefined", which every consumer that reads through `?.trim()`
-    // treats as a truthy path. `delete` is the only shape that unsets.
-    if (savedLedger === undefined) delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
-    else process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = savedLedger;
-    if (savedAgent === undefined) delete process.env.PI_AGENT_DIR;
-    else process.env.PI_AGENT_DIR = savedAgent;
-    // And the restore is asserted, not assumed: a variable the entry found
-    // unset must be absent from the env object, not present-and-"undefined".
-    assert(
-      (savedLedger === undefined
-        ? !("PI_ENSEMBLE_REVIEW_LEDGER_FILE" in process.env)
-        : process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE === savedLedger) &&
-        (savedAgent === undefined
-          ? !("PI_AGENT_DIR" in process.env)
-          : process.env.PI_AGENT_DIR === savedAgent),
-      `env: the host teardown restores the entry state exactly (ledger=${JSON.stringify(process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE)}, agent=${JSON.stringify(process.env.PI_AGENT_DIR)}, entry=${JSON.stringify([ENV_AT_ENTRY.PI_ENSEMBLE_REVIEW_LEDGER_FILE, ENV_AT_ENTRY.PI_AGENT_DIR])})`,
-    );
-    removeFixture(f);
-    rmSync(hostDir, { recursive: true, force: true });
   }
 }
 

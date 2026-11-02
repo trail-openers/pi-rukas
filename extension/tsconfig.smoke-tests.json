@@ -87,6 +87,7 @@
     "smoke-tests/test-review-findings-confirmed-store.ts",
     "smoke-tests/test-review-findings-untouched-confirm.ts",
     "smoke-tests/test-review-findings-window-guards.ts",
+    "smoke-tests/test-review-findings-window-guards-env.ts",
     "smoke-tests/test-review-findings-window-guards-slack.ts",
     "smoke-tests/lib/window-guards-clock.ts",
     "smoke-tests/lib/window-guards-helpers.ts",

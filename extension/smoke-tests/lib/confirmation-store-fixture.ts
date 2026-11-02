@@ -27,6 +27,7 @@ import type { Finding } from "../../src/lens-review-types.ts";
 import { readBranchRows, recordFindingRunOutcome } from "../../src/review-findings-store.ts";
 export { recordFindingRunOutcome } from "../../src/review-findings-store.ts";
 import type { StoredFinding } from "../../src/review-findings-file.ts";
+import type { LedgerEntry } from "../../src/review-ledger-entry.ts";
 import { resetFindingsStateCache } from "../../src/review-state-path.ts";
 
 /** The head content of `src/a.ts` every case cites line 3 of. */
@@ -184,7 +185,15 @@ export function removeFixture(f: ConfirmationFixture): void {
   rmSync(f.root, { recursive: true, force: true });
 }
 
-export function writeLedger(file: string, entries: Array<Record<string, unknown>>): void {
+/** Write a ledger file. Typed on the reader's OWN entry type rather than on
+ * `Array<Record<string, unknown>>`: a fixture row whose `kind` had been widened
+ * to `string` used to reach the file and still type-check, and `validEntries`
+ * (review-ledger-read.ts) then dropped the row, so the witness passed on an
+ * empty join. Here the compiler checks every field against the type the reader
+ * enforces. The shared fixture's writer and `window-guards-helpers.ts`'s local
+ * copy are the SAME function now — the local copy existed only to narrow this
+ * signature, and a second serializer is a second thing to get wrong. */
+export function writeLedger(file: string, entries: LedgerEntry[]): void {
   writeFileSync(file, JSON.stringify({ entries }, null, 2), "utf8");
 }
 

@@ -234,15 +234,53 @@ function globMatches(pattern: string): number {
   return count;
 }
 const globs = entries.filter((e) => e.includes("*"));
-const emptyGlobs = globs.filter((g) => globMatches(g) === 0);
+// Each entry's scan is judged INDIVIDUALLY, and a throw is a named red for THAT
+// entry rather than an exception that ends the run. The pattern is untrusted
+// text read out of a config file, and `new RegExp` is the one step that can
+// reject: an entry carrying a stray `(` or a dangling `\` throws `SyntaxError`
+// out of `globMatches`, and unhandled that aborts the whole file — the same
+// silent-green shape as a setup throw outside a `try`, where the run reports
+// every other check green and this one never ran. `RegExp` validity is also
+// asserted separately below so a broken pattern is named as a broken pattern
+// and not only as "no files matched".
 assert(
   globs.length > 0,
   `tsconfig-registration (a2): \`include\` carries glob entries to judge (found ${globs.length})`,
 );
+const globProblems: string[] = [];
+const globCounts = new Map<string, number>();
+for (const g of globs) {
+  try {
+    globCounts.set(g, globMatches(g));
+  } catch (err) {
+    globProblems.push(`${g}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+// A malformed pattern is a CONFIGURATION fault and must be said as one: a
+// throw from `new RegExp` would otherwise be swallowed into the empty-match
+// bucket below and blamed on the entry matching nothing.
+assert(
+  globProblems.length === 0,
+  `tsconfig-registration (a2): every glob entry compiles as a pattern (${JSON.stringify(globProblems)})`,
+);
+const emptyGlobs = globs.filter((g) => (globCounts.get(g) ?? -1) === 0);
 assert(
   emptyGlobs.length === 0,
   `tsconfig-registration (a2): every glob entry matches at least one real file (${JSON.stringify(globs)}; empty=${JSON.stringify(emptyGlobs)})`,
 );
+// The positive controls, asserted rather than described. `src/**/*` and
+// `scripts/**/*` are the two entries this project depends on being NON-EMPTY:
+// `tsc --listFilesOnly` judges files under both, so an empty count means this
+// gate's own matcher is wrong, not that the config is. Without these two lines
+// the (a2) arm above passed vacuously whenever the entry scan yielded nothing
+// — a matcher that returns 0 for everything is green, exactly the failure mode
+// the header says three earlier readings had.
+for (const control of ["src/**/*", "scripts/**/*"]) {
+  assert(
+    (globCounts.get(control) ?? 0) > 0,
+    `tsconfig-registration (a2) self-witness: the positive control \`${control}\` matches NON-ZERO files (count=${String(globCounts.get(control))})`,
+  );
+}
 
 // (b) Every test file this branch added is listed. `include` is relative to the
 // tsconfig's own directory (`extension/`), so the branch paths are rebased

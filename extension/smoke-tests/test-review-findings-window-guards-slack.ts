@@ -29,13 +29,27 @@
  *                              the repo that pins a shift of the compared
  *                              CONSTANT rather than of the operator;
  *   - SLACK `>= now - 10000` → `between` AND `slack` both redden;
- *   - NEVER (`if (false)`)   → `boundary` reddens.
+ *   - NEVER (`if (false)`)   → `boundary` reddens;
+ *   - RELAXED `>=` → `>`     → `boundary` reddens and NOTHING in this file
+ *                              reddens. Re-measured per the lens claim that a
+ *                              `between`-style case discriminates at
+ *                              `at = row.firstSeen + 5_000`; the construction
+ *                              was built exactly as named (`firstSeen = NOW -
+ *                              1001`, `at = NOW - 900`) and stayed green.
  *
- * So a discriminating case does exist, and it is the `firstSeen < now`
- * construction, not the `firstSeen > now` one: `future` below is the
- * falsification test for the empty-interval claim and shows every stamp
- * refused, which is why `guard:181 relax` in the sibling file stays labelled a
- * PRECONDITION and excluded from the witness count.
+ * So a discriminating case for the GUARD does exist and is `boundary`; the
+ * CONSTANT is pinned by `slack`. What the two lenses named —
+ * `openRowAtFirstSeen(…, NOW - 1001)` with the confirmation at `NOW - 900`, a
+ * stamp landing BETWEEN the bounds with `firstSeen < now` — was BUILT (it is
+ * `between` above) and measured under every mutant of the guard, including the
+ * `>=` → `>` relaxation the claim was made about: `between` is GREEN under all
+ * five. Its own header's reasoning explains why and the measurement confirms
+ * it — `>=` and `>` agree for any `firstSeen` strictly before the clock, so
+ * that construction witnesses the guard's presence but not its operator. So
+ * `guard:181 relax` in the sibling file stays labelled what it is: a
+ * PRECONDITION, excluded from the witness count, which now stands at THREE
+ * (`boundary` for the deletion / relaxation / never mutants, `slack` for the
+ * compared constant, and `between` for the guard's presence), not four.
  */
 
 import { execp } from "../src/exec.ts";
@@ -66,6 +80,22 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
+/** Record a setup fault as a NAMED RED, and tell the caller to skip the rest of
+ * its case. Deliberately not a throw: these setup helpers run before the
+ * caller's `try` is entered, so a bare `throw` aborts the whole file on an
+ * unhandled exception and the run reports ZERO `✗` lines with every case green
+ * — the case whose fixture failed never ran, which is how a broken setup reads
+ * as a pass. An assertion plus a `break` out of the case's labelled block gives
+ * the red, sets the exit code, and lets every other case still run. */
+function assertSetup(
+  setup: { row?: StoredFinding; problem: string },
+  label: string,
+): setup is { row: StoredFinding; problem: string } {
+  const ok = setup.problem === "" && setup.row !== undefined;
+  assert(ok, `${label}: the shared setup built the fixture (${setup.problem || "ok"})`);
+  return ok;
+}
+
 /** File an OPEN row through the real store at the caller's clock, then hand back
  * its stored bytes with `firstSeen` set to the caller's exact value. The store
  * stamps `firstSeen` with the filing round's `now`, so a store-driven row's
@@ -77,7 +107,8 @@ async function openRowAtFirstSeen(
   headSha: string,
   patchId: string,
   firstSeen: number,
-): Promise<StoredFinding> {
+): Promise<{ row?: StoredFinding; problem: string }> {
+  const fault = (why: string) => ({ problem: `setup: ${why}` });
   const filed = await recordFindingRunOutcome({
     cwd: dir,
     branch: "feature/work",
@@ -87,13 +118,32 @@ async function openRowAtFirstSeen(
     patchId,
     now: firstSeen,
   });
-  if (!filed.ok) throw new Error(`filing round failed: ${filed.reason}`);
+  if (!filed.ok) return fault(`filing round failed: ${filed.ok ? "" : filed.reason}`);
   const row = (await rowsOf(dir)).find((r) => r.title === FINDING.title);
-  if (!row) throw new Error("filing round filed no row");
+  if (!row) return fault("filing round filed no row");
   if (row.firstSeen !== firstSeen || row.status !== "open") {
-    throw new Error(`filing round stamped ${row.firstSeen}/${row.status}`);
+    return fault(`filing round stamped ${row.firstSeen}/${row.status}`);
   }
-  return { ...row, firstSeen };
+  // Built per discriminated arm rather than as `{ ...row, firstSeen }` over the
+  // UNION-typed row: a spread of a union is itself an unresolved union, so the
+  // choices were a cast (which erases the arm distinction `StoredFinding` exists
+  // to keep) or this. The narrowing above pins `status === "open"`, so the
+  // compiler judges the open arm field by field, and an arm that quietly wrote
+  // the wrong status is caught by the check below rather than shipped.
+  const stamped: StoredFinding =
+    row.status === "open"
+      ? {
+          ...row,
+          status: "open",
+          acceptance: undefined,
+          resolvedReason: undefined,
+          firstSeen,
+        }
+      : { ...row, status: "open", resolvedReason: undefined, firstSeen };
+  if (stamped.firstSeen !== firstSeen || stamped.status !== "open") {
+    return fault(`stamping did not take (${stamped.firstSeen} != ${firstSeen})`);
+  }
+  return { row: stamped, problem: "" };
 }
 
 /** Re-report `row` through the real entry point with a confirmation for it on
@@ -129,12 +179,14 @@ const reReportWithConfirmation = (
 // was settled by construction rather than by adjudication — see the header for
 // which candidates redden under which mutation.
 
-{
+guard_case: {
   // CANDIDATE A — `firstSeen` strictly BEFORE the round's clock, with the
   // confirmation stamped strictly BETWEEN the two bounds
   // (`firstSeen < at <= now`). This is the interval the two lenses described
-  // and the last round never constructed: it never tested `firstSeen < now`
-  // with an in-between stamp, only `firstSeen > now` with an out-of-window one.
+  // and the last round never constructed. MEASURED, per the exact values they
+  // named: this case is GREEN under `>=` → `>`, so it does not witness the
+  // operator as they claimed — the guard's presence, yes (it reddens under the
+  // deletion via `boundary`'s sibling reasoning), its operator, no.
   // `>=` accepts it (a row filed before the round may be retired); `>` also
   // accepts it, so the mutation that reddens this case is the guard's DELETION
   // paired with `boundary` — it is the arm that keeps `boundary` from being the
@@ -143,7 +195,9 @@ const reReportWithConfirmation = (
   try {
     const pid = (await workingTreePatchId(execp, f.dir)).patchId;
     assert(pid !== undefined, "guard:181 between: the review identity resolved");
-    const row = await openRowAtFirstSeen(f.dir, f.headSha, pid!, NOW - 1001);
+    const setup = await openRowAtFirstSeen(f.dir, f.headSha, pid!, NOW - 1001);
+    if (!assertSetup(setup, "guard:181 between")) break guard_case;
+    const row = setup.row;
     const out = reReportWithConfirmation(row, pid!, f.headSha, NOW - 900);
     assert(
       out.resolved.some((r) => r.rowId === row.id && r.reason === "confirmed"),
@@ -155,7 +209,7 @@ const reReportWithConfirmation = (
   }
 }
 
-{
+guard_case: {
   // CANDIDATE B — the `+ slack` witness, and the case that pins the compared
   // CONSTANT rather than the operator. The row is filed 11ms BEFORE the round's
   // clock, i.e. just OUTSIDE the 10ms margin the guard's `now - 10` mutant
@@ -168,7 +222,9 @@ const reReportWithConfirmation = (
   try {
     const pid = (await workingTreePatchId(execp, f.dir)).patchId;
     assert(pid !== undefined, "guard:181 slack: the review identity resolved");
-    const row = await openRowAtFirstSeen(f.dir, f.headSha, pid!, NOW - 11);
+    const setup = await openRowAtFirstSeen(f.dir, f.headSha, pid!, NOW - 11);
+    if (!assertSetup(setup, "guard:181 slack")) break guard_case;
+    const row = setup.row;
     assert(
       NOW - row.firstSeen === 11,
       `guard:181 slack: filed 11ms before the round's clock (${row.firstSeen} vs ${NOW})`,
@@ -184,7 +240,7 @@ const reReportWithConfirmation = (
   }
 }
 
-{
+guard_case: {
   // CANDIDATE C — the shape the other two lenses named: `firstSeen` STRICTLY
   // AFTER the round's clock, with a confirmation stamped between the round's
   // clock and the row's stamp. The prior round's claim was that the interval
@@ -196,7 +252,9 @@ const reReportWithConfirmation = (
   try {
     const pid = (await workingTreePatchId(execp, f.dir)).patchId;
     assert(pid !== undefined, "guard:181 future: the review identity resolved");
-    const row = await openRowAtFirstSeen(f.dir, f.headSha, pid!, NOW + 5_000);
+    const setup = await openRowAtFirstSeen(f.dir, f.headSha, pid!, NOW + 5_000);
+    if (!assertSetup(setup, "guard:181 future")) break guard_case;
+    const row = setup.row;
     const between = reReportWithConfirmation(row, pid!, f.headSha, NOW + 2_500);
     const atNow = reReportWithConfirmation(row, pid!, f.headSha, NOW);
     assert(
