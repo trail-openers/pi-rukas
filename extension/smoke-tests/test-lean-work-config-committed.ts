@@ -137,10 +137,15 @@ if (parsed === undefined) {
 const config: WorkJson = parsed;
 
 assert(config.version === 1, "version is 1 — the value loadWorkConfig requires");
-// Read by nothing yet — the land step will read it — but `loadWorkConfig`
-// folds an absent field to false, so the committed file says so explicitly
-// rather than relying on the default.
-assert(config.autoMerge === false, "autoMerge is false (the land step reads it when it lands)");
+// The land step reads this, so the pin means something now: an absent field
+// folds to false in `loadWorkConfig`, and `land` refuses on anything but a
+// literal `true`. It is pinned to `true` because THAT is this project's
+// committed state — the operator's grant, recorded in AGENTS.md §9 ("LLMs are
+// allowed to squash merge PRs/MRs"), which the land step's own authority model
+// reads. The gate judges the committed bytes, so a run cannot grant itself the
+// merge by editing the working tree, and canary "flipped to false" below is what
+// keeps this from being an assertion that merely agrees with whatever is there.
+assert(config.autoMerge === true, "autoMerge is true (the land step reads it when it lands)");
 
 const verify = config.verify ?? {};
 const fast = verify.fast;
@@ -268,7 +273,11 @@ function check(text: string): number {
   const tg = v.testGlob;
   let n = 0;
   if (obj.version !== 1) n++;
-  if (obj.autoMerge !== false) n++;
+  // The rot direction is "the grant went missing", not "the grant was made":
+  // this project granted the merge, and `land` reads the field. A config that
+  // lost `true` (or dropped the field to the false default) is the failure this
+  // rule catches.
+  if (obj.autoMerge !== true) n++;
   if (typeof f !== "string" || f.length === 0) n++;
   else if (f !== FAST_EXACT) n++;
   if (typeof t !== "string" || t.length === 0) n++;
@@ -282,7 +291,7 @@ function check(text: string): number {
 
 const GOOD = JSON.stringify({
   version: 1,
-  autoMerge: false,
+  autoMerge: true,
   verify: {
     fast: FAST_EXACT,
     test: "bun {file}",
@@ -305,7 +314,7 @@ const MUTATIONS: Array<[string, string]> = [
   ["verify.test back to `bun run {file}`", GOOD.replace('"bun {file}"', '"bun run {file}"')],
   ["verify.fast without the smoke-tree typecheck", GOOD.replace(` && ${TYPECHECK_SMOKE}`, "")],
   ["version bumped to 2", GOOD.replace('"version":1', '"version":2')],
-  ["autoMerge flipped to true", GOOD.replace('"autoMerge":false', '"autoMerge":true')],
+  ["autoMerge flipped to false", GOOD.replace('"autoMerge":true', '"autoMerge":false')],
   ["verify.fast with biome moved first", SWAPPED],
   // #1883: the adversary writes wherever the config says, so a config that lost
   // the pair (or points at a folder this project's CI never runs) freezes tests
