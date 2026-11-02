@@ -14,10 +14,34 @@ import { ClassRefused } from "./lens-class-mutants.ts";
 
 export const state = { exit: 0 };
 
-export function assert(cond: boolean, msg: string): void {
-  if (cond) console.log(`✓ ${msg}`);
+/**
+ * Evaluate `cond`, treating a THROW as a failed assertion.
+ *
+ * WHY THIS IS HERE AND NOT JUST `if (cond)`. A witness that computes its condition
+ * can throw — and the witness that most needs to run is the one that throws
+ * specifically when the thing under test is broken: `wholeClassRemoval` now throws
+ * when the whole-class helper has been hollowed into a copy of the shipped matcher,
+ * and if that throw escaped the assertion the suite would die before printing any
+ * `✗` and before its exit code, which a mutation harness reads as "nothing failed".
+ * A witness that cannot report its own failure is the defect this branch exists to
+ * close, relocated into the assertion helper. The message carries the exception so
+ * the throw is visible rather than laundered into a bare false.
+ */
+function evalCond(cond: boolean | (() => boolean), msg: string): [boolean, string | null] {
+  if (typeof cond !== "function") return [cond, null];
+  try {
+    return [cond(), null];
+  } catch (e) {
+    return [false, `threw ${(e as Error).constructor.name}: ${(e as Error).message}`];
+  }
+}
+
+/** `cond` may be a boolean or a thunk; a thunk that throws is a RED, not a crash. */
+export function assert(cond: boolean | (() => boolean), msg: string): void {
+  const [ok, thrown] = evalCond(cond, msg);
+  if (ok) console.log(`✓ ${msg}`);
   else {
-    console.error(`✗ ${msg}`);
+    console.error(`✗ ${msg}${thrown ? ` — assertion ${thrown}` : ""}`);
     state.exit = 1;
   }
 }
@@ -26,10 +50,20 @@ export function assert(cond: boolean, msg: string): void {
 export function refused(fn: () => unknown, why: RegExp, label: string): void {
   let threw: Error | undefined;
   let value: unknown;
+  let callFailure: string | null = null;
   try {
     value = fn();
   } catch (e) {
     threw = e as Error;
+    // A generator that throws something other than an Error (or dies in a way that
+    // is not a refusal) must still be reported, not propagated: this helper's whole
+    // job is to distinguish "the generator refused" from "this test file has a
+    // typo", and propagating conflates the two by killing the run either way.
+    if (!(e instanceof Error)) callFailure = `threw non-Error: ${String(e)}`;
+  }
+  if (callFailure) {
+    assert(false, `${label}: ${callFailure}`);
+    return;
   }
   if (!threw) {
     assert(

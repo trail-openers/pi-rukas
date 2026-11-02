@@ -26,10 +26,12 @@
  */
 
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   EXTENSION_ROOT,
+  assertNoSymlinkInScratchTree,
   HARNESS_MUTANTS,
   NothingToProve,
   indistinguishablePairs,
@@ -125,6 +127,18 @@ const results = HARNESS_MUTANTS.map(measureMutant);
 
 for (const r of results) {
   check(r.baselineGreen, `${r.id}: its suite is GREEN in the unmutated scratch rig (${r.detail})`);
+  if (r.unobservable) {
+    // The entry says its mutation cannot change observable output, and the ratchet
+    // already refused the run if it turned out to redden anything (that throw happens
+    // inside `measureMutant`). What is still owed here is the weaker-but-real half:
+    // the mutation APPLIED and LANDED and the suite still ran, so the entry is a
+    // measured statement about dead code rather than an unchecked exemption.
+    check(
+      !r.reddened && !r.detail.includes("MUTATION DID NOT APPLY") && !r.detail.includes("did not land"),
+      `${r.id}: declared UNOBSERVABLE and the measurement agrees — the mutation applied and landed, the suite ran, and nothing reddened (${r.detail}). Reason on record: ${r.unobservableReason}`,
+    );
+    continue;
+  }
   check(
     r.reddened && r.matchedRed !== null,
     `${r.id}: the mutation reddens ITS OWN assertion (reddened=${r.reddened}, matched=${r.matchedRed === null ? "none" : "yes"}) — ${r.detail}`,
@@ -165,3 +179,50 @@ for (const r of results) {
 
 console.log(exit === 0 ? "\nAll harness-fidelity ratchet checks passed." : "\nFAILED");
 process.exit(exit);
+
+// ───────────────────────── the rig is itself a harness entry point
+//
+// The class of defect this whole file exists to close is "a verification step runs
+// and is never shown able to fail". A rig that can write into the tree it measures
+// is that class wearing the rig's own shape, and it happened here twice: one
+// revision symlinked `smoke-tests/lib` as a directory and wrote the mutant through
+// the link, and `rmSync` of the target deleted the real `lens-mutant-harness.ts`;
+// a second revision wrote a P1 mutant into `lens-class-mutants.ts` through a LEAF
+// symlink, because `writeFileSync` follows it. So the rig's containment property is
+// asserted, not assumed — with its own failing probe, because a containment check
+// that cannot fail is exactly the thing being checked.
+{
+  const probe = mkdtempSync(path.join(tmpdir(), "ratchet-probe-"));
+  const ext = path.join(probe, "extension");
+  mkdirSync(ext, { recursive: true });
+  const leaky = path.join(ext, "leaky.ts");
+  const victim = path.join(EXTENSION_ROOT, "smoke-tests", "lib", "lens-class-mutants.ts");
+  symlinkSync(victim, leaky, "file");
+  let contained = false;
+  let why = "";
+  try {
+    assertNoSymlinkInScratchTree(ext, ["leaky.ts"]);
+  } catch (e) {
+    contained = true;
+    why = (e as Error).message;
+  }
+  check(
+    contained && why.includes("back into the source tree"),
+    `canary: assertNoSymlinkInScratchTree REFUSES a scratch tree whose leaf links into the source tree (${why.slice(0, 110) || "no throw"}) — a rig that writes through a leaf symlink mutates the file under measurement`,
+  );
+  // The companion, so the refusal above is not a check that fires on everything:
+  // a tree of real files must pass, or the guard would simply always throw.
+  rmSync(leaky, { force: true });
+  writeFileSync(leaky, "export const x = 1;\n");
+  let falseAlarm = false;
+  try {
+    assertNoSymlinkInScratchTree(ext, ["leaky.ts"]);
+  } catch {
+    falseAlarm = true;
+  }
+  check(
+    !falseAlarm,
+    "canary: a scratch tree of real files is ACCEPTED by the same guard (the refusal above is about links into the source, not about any tree) — without this the guard could pass by always throwing",
+  );
+  rmSync(probe, { recursive: true, force: true });
+}

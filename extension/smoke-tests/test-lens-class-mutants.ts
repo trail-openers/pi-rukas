@@ -51,6 +51,29 @@ import { CORPUS, measuredTable, runMutant, runShipped, SHIPPED, wholeClassRemova
     // The two mirror constants must BOTH produce rows: a harness that silently
     // measured one side is the defect this branch closes.
     assert(rows.length >= 5, `${flank}: ${rows.length} measured rows generated`);
+    // THE ROWS ARE THE GENERATOR'S, NOT THE HARNESS'S. `rows.every(r =>
+    // r.mutant.shipped === SHIPPED[flank])` and the count above are both satisfied by
+    // hand-typed rows, and replacing the harness's `mutantsFor` call with a
+    // hand-typed table left the suite green (measured: 0 reds across the class-mutants,
+    // refusals and denominator suites). So the harness now reports a refusal whenever
+    // the generator produced nothing, and printing a table whose rows no generator
+    // made is the fabrication this whole branch was opened for.
+    // A TABLE IS NOT THE GENERATOR UNLESS THE GENERATOR SAYS SO. The count and the
+    // `mutant.shipped === SHIPPED[flank]` checks around this one are all satisfied by
+    // hand-typed rows, and replacing the harness's `mutantsFor` call with a fabricated
+    // table left the suite green (measured: 0 reds across the class-mutants, refusals
+    // and denominator suites). The harness now carries the generator's own report on
+    // every row and it is compared against the printed table: a fabricated table
+    // cannot forge the count, and neither can an empty one — `rows.every(…)` over zero
+    // rows is vacuously true, the trap `test-lens-vacuous-every.ts` exists for, so the
+    // printed count and the reported count must BOTH be non-zero and equal.
+    assert(
+      rows.length > 0 &&
+        rows.every(
+          (r) => r.generatorReport.produced === rows.length && r.generatorReport.refusal === null,
+        ),
+      `${flank}: the printed table is the generator's — ${rows.length} row(s) printed and mutantsFor reported producing ${rows[0]?.generatorReport.produced ?? "no report"} with no refusal (${JSON.stringify(rows.map((r) => r.generatorReport.refusal).filter(Boolean))})`,
+    );
   }
   const pathChar = await measuredTable("PATH_CHAR");
   const notPath = await measuredTable("NOT_PATH");

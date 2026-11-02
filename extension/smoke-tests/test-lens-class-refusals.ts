@@ -24,8 +24,37 @@
  * "refused for the right reason" means.
  */
 
-import { mutantsFor, render, singleMembers, tokenize, RANGE_ONLY_CLASSES } from "./lib/lens-class-mutants.ts";
+import { mutantsFor, p1WitnessProvable, probeReachesOtherPreconditions, render, singleMembers, tokenize, RANGE_ONLY_CLASSES, ClassRefused } from "./lib/lens-class-mutants.ts";
 import { assert, refused, state } from "./lib/lens-class-mutants-arms.ts";
+
+// ───────────────────────── P1: the guard that cannot fire, asserted to be dead
+//
+// Round 8 reported "precondition P1: disabling it reddens nothing". The cause is
+// stronger than a missing witness: P1's throw is UNREACHABLE. `p1WitnessProvable()`
+// brute-forces every class of 1–4 members over the 15-character alphabet the shipped
+// classes use, in both polarities, and asks whether any input makes the generator
+// report a NO-OP deletion. It found none in 45,240 inputs — because deleting one
+// token always removes at least one character, so `render(rest)` can never equal the
+// literal. The assertion below pins that measurement, which is the only honest thing
+// to assert about an unreachable guard: it stays green while the guard is dead, and
+// it REDDENS the moment a future `render` normalises spellings and makes a no-op
+// deletion possible — at which point the guard becomes live and this sentence stops
+// being true. See the header on `p1WitnessProvable` for the full account.
+{
+  const firing = p1WitnessProvable();
+  assert(
+    firing === null,
+    `P1 is confirmed dead code: no reachable class makes it fire (first firing input: ${JSON.stringify(firing)}) — if this reddens, render() has become spelling-normalising, P1 is now live, and the header on p1WitnessProvable that calls it unreachable is wrong and must be corrected with the guard`,
+  );
+  // The companion that keeps the assertion above from being vacuous: the same
+  // brute-force enumeration DOES reach every other precondition, so `mutantsFor`
+  // is not simply never being called. Without this arm, a broken probe would report
+  // "nothing fires P1" for an empty search and read as a proof.
+  assert(
+    probeReachesOtherPreconditions(),
+    "the same 45,240-input enumeration DOES fire the other preconditions, so the null above is a measurement and not an empty search (see probeReachesOtherPreconditions) — without it, P1's null could be 'the probe never ran'",
+  );
+}
 
 // ───────────────────────── the four shapes that corrupt silently
 
@@ -370,7 +399,13 @@ assert(
 // `[]` — an empty table that a caller reads exactly like "measured, nothing found".
 // `[]` is the same value a fully-measured-but-red-free class would print, so the
 // refusal has to be the answer and the empty list must be unreachable.
-for (const [label, lit] of Object.entries(RANGE_ONLY_CLASSES)) {
+// `as const` on the map gives `unknown` through Object.entries under this
+// project's `noUncheckedIndexedAccess`; naming the entries keeps the loop honest
+// without a cast.
+for (const { label, lit } of [
+  { label: "LOWER", lit: RANGE_ONLY_CLASSES.LOWER },
+  { label: "UPPER_DIGIT", lit: RANGE_ONLY_CLASSES.UPPER_DIGIT },
+]) {
   refused(
     () => mutantsFor(lit),
     /carries no single-character member to delete|all ranges/,

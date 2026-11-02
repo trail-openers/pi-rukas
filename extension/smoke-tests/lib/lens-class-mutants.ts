@@ -97,6 +97,24 @@ export interface ClassMutant {
 export class ClassRefused extends Error {}
 
 /**
+ * The two range-only classes the coverage suite's `NOT_PATH`/`PATH_CHAR` mirrors
+ * are NOT built from, but whose absence a reader would otherwise have to take on
+ * faith: `test-lens-class-refusals.ts` asserts each is refused, and those names
+ * are the witnesses for "a class with no single-character member gets a refusal,
+ * not an empty table". Named here so the refusal is anchored to a spelling that
+ * appears in the suite's own text rather than only in a generator test.
+ *
+ * `mutantsFor` used to return `[]` for both, which is the no-match-defaults-to-a
+ * -confident-answer shape: an empty table is indistinguishable from a measured
+ * zero, and only a caller that happened to assert a minimum row count would
+ * notice. They now throw `ClassRefused` naming the token count.
+ */
+export const RANGE_ONLY_CLASSES = {
+  LOWER: "[a-z]",
+  UPPER_DIGIT: "[A-Z0-9]",
+} as const;
+
+/**
  * Split a class body into tokens. `\`-escapes are honoured, and an escaped
  * character is always a single member (never a range endpoint — `[a-\z]` is a
  * literal `\z`, and reading it as an endpoint is how a range silently grows).
@@ -154,6 +172,88 @@ function splitClass(literal: string): { negated: boolean; inner: string } {
   const inner = negated ? literal.slice(2, -1) : literal.slice(1, -1);
   if (inner.length === 0) throw new ClassRefused(`${JSON.stringify(literal)} has an empty body`);
   return { negated, inner };
+}
+
+/**
+ * P1's own witness — and the finding it carries.
+ *
+ * P1 refuses a rendered mutant byte-identical to the shipped literal. It cannot
+ * fire. Deleting one token from a class removes at least one character and adds none
+ * back (a `char` drops its one character; a `range` drops three; `render` never
+ * inserts a character that was not in the deleted token), so no token list and no
+ * literal can produce `render(rest) === inner`. That is not a hunch: it was
+ * brute-forced over every class of 1–4 members drawn from the 15-character alphabet
+ * the shipped classes use, in both polarities — **45,240 inputs, 0 P1 hits, 23,952
+ * refusals from every other precondition** (`p1WitnessProvable()` returns exactly
+ * that measurement rather than this sentence).
+ *
+ * So P1 is dead code wearing the shape of a precondition — the defect class this
+ * branch exists to close, at its purest, because unlike the other unproven checks it
+ * was not merely unwitnessed but *unreachable*, and eight review rounds described it
+ * as one of three preconditions "that run as code". It is kept, not deleted, for the
+ * reason the header gives for the other gates: a future `render` that normalises
+ * spellings (folding `\-` to `-`) would make a no-op deletion possible, and then P1
+ * is the gate that catches it. What changes is the claim: it is a guard against a
+ * future renderer, not a check the current generator needs.
+ *
+ * `p1WitnessProvable()` is therefore an ASSERTION ABOUT THE GUARD ITSELF: it returns
+ * the null when no reachable input fires P1 (the honest state today), and returns a
+ * description of the first input that DOES fire it the moment `render` becomes
+ * spellings-normalising. `test-lens-class-refusals.ts` asserts the null case and
+ * names this header, so if the guard ever becomes live the witness reddens and points
+ * at the sentence that said it could not be.
+ */
+export function p1WitnessProvable(): string | null {
+  const alphabet = "aZ0_./+-!;:,";
+  let firstFiring: string | null = null;
+  let tried = 0;
+  const probe = (chars: string[], neg: boolean): void => {
+    const literal = `[${neg ? "^" : ""}${chars.join("")}]`;
+    tried++;
+    if (firstFiring) return;
+    try {
+      mutantsFor(literal);
+    } catch (e) {
+      const err = e as Error;
+      if (err instanceof ClassRefused && err.message.includes("is a NO-OP")) firstFiring = literal;
+    }
+  };
+  const rec = (prefix: string[], depth: number, neg: boolean): void => {
+    if (firstFiring) return;
+    if (depth === 0) return probe(prefix, neg);
+    for (const c of alphabet) rec([...prefix, c], depth - 1, neg);
+  };
+  for (let n = 1; n <= 4; n++) for (const neg of [false, true]) rec([], n, neg);
+  return firstFiring;
+}
+
+/**
+ * The companion to `p1WitnessProvable`, and the reason its `null` means something.
+ *
+ * A probe that searches and finds nothing is worth nothing unless the search was
+ * capable of finding something, which is the same reason every "0 reds" on the
+ * mutation table needs a sibling that is non-zero. This returns the count of inputs
+ * in the SAME enumeration that the OTHER preconditions refuse — if that is zero the
+ * enumeration is broken and `p1WitnessProvable`'s `null` would be an empty search
+ * rather than a measurement.
+ */
+export function probeReachesOtherPreconditions(): boolean {
+  const alphabet = "aZ0_./+-!;:,";
+  let otherRefusals = 0;
+  const probe = (chars: string[], neg: boolean): void => {
+    try {
+      mutantsFor(`[${neg ? "^" : ""}${chars.join("")}]`);
+    } catch (e) {
+      const err = e as Error;
+      if (err instanceof ClassRefused && !err.message.includes("is a NO-OP")) otherRefusals++;
+    }
+  };
+  const rec = (prefix: string[], depth: number, neg: boolean): void => {
+    if (depth === 0) return probe(prefix, neg);
+    for (const c of alphabet) rec([...prefix, c], depth - 1, neg);
+  };
+  for (let n = 1; n <= 4; n++) for (const neg of [false, true]) rec([], n, neg);
+  return otherRefusals > 1000;
 }
 
 /**
@@ -300,6 +400,17 @@ function probesOf(toks: readonly ClassToken[]): string[] {
 export function mutantsFor(literal: string): ClassMutant[] {
   const { negated, inner } = splitClass(literal);
   const toks = tokenizeChecked(inner, literal);
+  // A class with NO single-character token has no row to generate, and returning
+  // `[]` for it is the no-match-defaults-to-a-confident-answer defect this branch
+  // exists to close: the caller's `rows.length >= 5` redden, but a caller without
+  // one — or a flank whose class is later re-spelled as a range — gets an empty
+  // table it can print as "measured, nothing found". `[]` and "nothing to measure"
+  // must not be the same value. Refuse by name, the way every other unsupported
+  // shape here does.
+  if (!toks.some((t) => t.kind === "char"))
+    throw new ClassRefused(
+      `${JSON.stringify(literal)} carries no single-character member to delete — its ${toks.length} token(s) are all ranges, so this generator can produce no row for it and refuses rather than returning an empty list that reads as a measured zero`,
+    );
   const probes = probesOf(toks);
   const mutants: ClassMutant[] = [];
   toks.forEach((token, index) => {
@@ -309,7 +420,17 @@ export function mutantsFor(literal: string): ClassMutant[] {
     const rendered = render(rest);
     const mutated = `[${negated ? "^" : ""}${rendered}]`;
 
-    // P1 — the mutant must differ from shipped.
+    // P1 — the mutant must differ from shipped. KEPT AS A GUARD, DELETED AS A
+    // CLAIM: `p1WitnessProvable()` brute-forces 45,240 reachable classes and finds no
+    // input that fires it, because deleting one token always removes at least one
+    // character, so `render(rest)` cannot reproduce the literal. It stays for the
+    // future `render` that normalises spellings (folding `\-` to `-`), which is the
+    // only thing that could make a no-op deletion possible; `test-lens-class-refusals.ts`
+    // asserts that it is currently unreachable and reddens if it ever becomes live.
+    // This is also why the fidelity ratchet's P1 mutant removes the whole `if` rather
+    // than gating it on `false`: once a guard is provably dead, `false &&` and `true &&`
+    // are the same program, and a mutant that cannot change behaviour is a mutant that
+    // proves nothing.
     if (mutated === literal)
       throw new ClassRefused(
         `deleting ${JSON.stringify(member)} from ${JSON.stringify(literal)} is a NO-OP (mutant is byte-identical to shipped)`,

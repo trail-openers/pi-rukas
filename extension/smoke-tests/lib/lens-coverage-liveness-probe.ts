@@ -147,6 +147,18 @@ export async function silentLaneRoundArms(
 ): Promise<void> {
   const key = "rev1942g/silent-lane";
   openBatch(key, 2);
+  // THE ACQUIRE IS ITSELF AN OBSERVABLE, AND UNTIL NOW IT WAS NOT ONE.
+  // `openBatch` sits three lines above the round whose refusal this arm exists to
+  // prove, and deleting the call left every lens suite green — measured: 35 passes,
+  // 0 reds in test-lens-fanout-batch-release.ts. The reason is that nothing in the
+  // probe read the deck: `batchSnapshot()` is what records the row, and the release
+  // assertions that use it can only see a row that was opened, so a suppressed
+  // acquire made the leak it guards against unfalsifiable. Asserting presence here is
+  // the positive half those release checks were missing.
+  check(
+    dispatchDeck.batchSnapshot().some((b) => b.key === key),
+    `canary: the silent-lane round acquires the deck batch its round is measured on (batch ${key} present in batchSnapshot) — red when the acquire is deleted or suppressed, which would also make every release assertion below vacuously true`,
+  );
   const silent = LENS_ROSTER[0]?.name;
   const citing = LENS_ROSTER[1]?.name;
   check(
@@ -314,7 +326,7 @@ export async function assertLivenessMutantReds(
     const mod = (await import(/* @vite-ignore */ mutantFile)) as {
       runLensFanOut: typeof runLensFanOut;
     };
-    const out = await runSilentRound(mod.runLensFanOut, openBatch, "rev1942mut/silent");
+    const out = await runSilentRound(mod.runLensFanOut, openBatch, "rev1942mut/silent", check);
     check(
       out.hasDenominator === true && out.unaccounted.length > 0,
       `canary: the MUTANT round still had a denominator and unaccounted files (hasDenominator ${out.hasDenominator}) — so the claim below is the liveness flag, not an empty set`,
@@ -327,7 +339,7 @@ export async function assertLivenessMutantReds(
     );
     // …and the shipped code, driven identically, still refuses it: the pair is
     // the witness, not the single mutant run.
-    const shippedOut = await runSilentRound(runLensFanOut, openBatch, "rev1942mut/shipped");
+    const shippedOut = await runSilentRound(runLensFanOut, openBatch, "rev1942mut/shipped", check);
     check(
       shippedOut.findingClaimedFile === false,
       "canary: the SHIPPED fan-out, driven through the identical scenario, still refuses the claim (false) — the false→true flip under the mutant is what makes this a comparison and not a tautology",
@@ -349,8 +361,20 @@ async function runSilentRound(
   fanout: typeof runLensFanOut,
   openBatch: (key: string, size: number) => void,
   key: string,
+  // Passed in rather than imported so the round reports through the caller's counter.
+  // It exists because the acquire below had no observable until now: deleting it left
+  // every lens suite green (measured: 0 reds in test-lens-fanout-batch-release.ts),
+  // since the release assertions read `batchSnapshot()` and a row that was never
+  // opened makes "it was released" trivially true. The acquire is the positive half
+  // those checks were missing, and both the shipped and mutant halves assert it, so a
+  // suppressed acquire cannot quietly make the leak this witness guards unfalsifiable.
+  check: (cond: boolean, msg: string) => void,
 ): Promise<{ hasDenominator: boolean; unaccounted: string[]; findingClaimedFile: boolean }> {
   openBatch(key, 2);
+  check(
+    dispatchDeck.batchSnapshot().some((b) => b.key === key),
+    `canary: the ${key} round acquires the deck batch its round is measured on (batch present in batchSnapshot) — red when the acquire is deleted or suppressed, which would also make every release assertion in this file vacuously true`,
+  );
   const silent = LENS_ROSTER[0]?.name;
   const out = await fanout({
     healthy: LENS_ROSTER.slice(0, 2),

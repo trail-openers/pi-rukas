@@ -194,6 +194,11 @@
     "smoke-tests/test-lens-vacuous-every.ts",
     "smoke-tests/lib/lens-vacuous-every-fixture.ts",
     "smoke-tests/test-lens-fanout-batch-release.ts",
-    "smoke-tests/test-lens-coverage-surface-neutralise.ts"
+    "smoke-tests/test-lens-coverage-surface-neutralise.ts",
+    "smoke-tests/lib/lens-fidelity-rig.ts",
+    "smoke-tests/lib/lens-fidelity-ratchet-types.ts",
+    "smoke-tests/lib/lens-fidelity-ratchet-mutants.ts",
+    "smoke-tests/lib/lens-harness-fidelity-ratchet.ts",
+    "smoke-tests/test-lens-harness-fidelity-ratchet.ts",
   ]
 }

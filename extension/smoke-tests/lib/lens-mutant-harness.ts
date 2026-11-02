@@ -306,6 +306,12 @@ export interface MutantRow {
   readonly flank: Flank;
   readonly mutant: ClassMutant;
   readonly reds: string[];
+  /** Non-null when the harness refuses to call this table a measurement, with the
+   * reason. Reported rather than thrown on purpose: a harness refusal that throws
+   * kills the suite before any `✗` prints, and a mutation harness reads a crashed run
+   * as "nothing failed" — so a refusal that cannot be observed is a refusal that
+   * protects nothing. The caller asserts this field is null. */
+  readonly generatorReport: GeneratorReport;
 }
 
 /** Every generated mutant for one flank, each with its measured reds. The rows
@@ -318,11 +324,54 @@ export async function measuredTable(flank: Flank): Promise<MutantRow[]> {
     throw new Error(
       `refusing to measure ${flank}: the shipped classes already fail ${baseline.length} fixture(s): ${baseline.join(" | ")}`,
     );
-  return mutantsFor(SHIPPED[flank]).map((mutant) => ({
+  // THE TABLE IS THE GENERATOR'S, AND THAT IS NOW ASSERTED RATHER THAN ASSERTED-IN-PROSE.
+  // Deleting the `mutantsFor` call below kept every existing assertion green —
+  // measured, not reasoned: replacing it with five hand-typed rows left the
+  // class-mutants, refusals and denominator suites at 0 reds, because a hand-typed row
+  // can carry the shipped class in `shipped` and the members the reconciliation
+  // expects, so each downstream assertion is satisfied by a table no generator ever
+  // produced. What separates the two is a property only the generator has: it REFUSES
+  // a class it cannot prove it understands. So an empty row list is the generator
+  // declining, and printing it as a table of measured figures would turn a refusal
+  // into a zero — the same `[]`-means-green defect this branch closes for a range-only
+  // class in `mutantsFor` itself.
+  const generated = mutantsFor(SHIPPED[flank]);
+  // A TABLE IS NOT THE GENERATOR UNLESS THE GENERATOR SAYS SO.
+  // Before this round the suite could not see a hand-typed table: replacing the
+  // `mutantsFor` call with five fabricated rows left every existing assertion green
+  // (measured: 0 reds across the class-mutants, refusals and denominator suites),
+  // because a fabricated row can carry the shipped class in `shipped` and the members
+  // the reconciliation expects — so each downstream assertion is satisfied by a table
+  // no generator produced. An empty list is not the answer either: `rows.every(…)` on
+  // zero rows is vacuously true, which is the same `every`-over-nothing trap
+  // `test-lens-vacuous-every.ts` exists to catch. So the harness publishes what the
+  // generator reported — its count, and any refusal — and the suite compares that
+  // against the table it prints. A hand-typed table cannot forge the report, and an
+  // empty one cannot pass a count check.
+  const generatorReport: GeneratorReport = {
+    flank,
+    produced: generated.length,
+    refusal:
+      generated.length === 0
+        ? `refusing to print an empty ${flank} table: mutantsFor produced no rows, so every ${flank} figure below would be a measurement of nothing`
+        : null,
+  };
+  return generated.map((mutant) => ({
     flank,
     mutant,
     reds: runMutant(flank, mutant.mutated),
+    generatorReport,
   }));
+}
+
+/** What `mutantsFor` reported for one flank, carried on every row so the suite can
+ * check the table against the generator rather than against the harness's own output. */
+export interface GeneratorReport {
+  readonly flank: Flank;
+  /** How many mutants the generator returned. */
+  readonly produced: number;
+  /** Non-null when the generator refused to produce a table at all. */
+  readonly refusal: string | null;
 }
 
 /** The template with the anchored-terminator ARM deleted — the `|TERMINATOR?`
@@ -370,5 +419,32 @@ export function wholeClassRemoval(flank: Flank): string[] | null {
     const got = mentionsPathWithoutTerminatorArm(fx.summary, fx.file) ? "summary" : undefined;
     if (got !== fx.expected) reds.push(fx.name);
   }
-  return reds;
+  // THE CONTROL DOES THE JOB IT IS CALLED A CONTROL FOR, OR IT IS NOT A CONTROL.
+  // `mentionsPathWithoutTerminatorArm` deletes the anchored `|TERMINATOR?(…)` arm, so
+  // the deleted-arm matcher and the shipped matcher must DISAGREE somewhere on the
+  // corpus — and that disagreement is what makes the figure above a measurement of an
+  // arm removal rather than a restatement of the baseline. Hollowing the helper to
+  // `return mentionsPathWith(summary, file, SHIPPED)` (the bypass round 8 named) left
+  // 36 passes and 0 reds, because an assertion that only demands `reds.length > 0`
+  // cannot tell a control from a copy: it is satisfied by whatever the shipped matcher
+  // happens to print. Demanding a discriminating fixture is the assertion a copy
+  // cannot satisfy, and it is also the thing that makes the row readable — a
+  // whole-class control with no fixture it uniquely reddens tells you nothing about
+  // the arm it removed.
+  const discriminating = CORPUS.filter(
+    (fx) =>
+      mentionsPathWith(fx.summary, fx.file, SHIPPED) !==
+      mentionsPathWithoutTerminatorArm(fx.summary, fx.file),
+  );
+  // Exposed for the suite to assert, rather than thrown: a control that dies takes
+  // the whole table's assertions with it, and a mutation harness reads a crashed run
+  // as "nothing failed". See `MutantRow.refusal` for the same reasoning.
+  return discriminating.length === 0
+    ? [...reds, WHOLE_CLASS_NOT_A_CONTROL]
+    : reds;
 }
+
+/** The marker `wholeClassRemoval` appends when the arm-deleted matcher is
+ * indistinguishable from the shipped one — see the call site. */
+export const WHOLE_CLASS_NOT_A_CONTROL =
+  "WHOLE-CLASS CONTROL IS NOT A CONTROL: no fixture distinguishes the shipped matcher from the arm-deleted one, so the helper is not deleting the arm and the figure is the baseline re-labelled";
