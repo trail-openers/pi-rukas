@@ -25,7 +25,10 @@
  *      agree, not that a hole is closed.
  *
  * Offline: no child, no forge, no spawn — `lensChildFn` is a stub that either
- * answers or rejects.
+ * answers or rejects. NEEDS `.git` AND THE SIBLING `skill/` DIR: the witness runs
+ * `git hash-object`/`cat-file` and builds `LENS_ROSTER` from `BUNDLED_SKILL_DIR`, so a bare
+ * `git archive` throws `not a git repository` at `lens-coverage-liveness-probe.ts:264`
+ * and reddens 5 roster checks on an empty roster — the checkout shape, not product.
  */
 
 import assert from "node:assert";

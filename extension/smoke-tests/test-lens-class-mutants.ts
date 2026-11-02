@@ -22,6 +22,7 @@ import { assert, state } from "./lib/lens-class-mutants-arms.ts";
 
 // ───────────────────────── the harness that feeds the tables
 
+import { assertBaselineLoopWitnessed } from "./lib/lens-baseline-witness.ts";
 import { CORPUS, measuredTable, runMutant, runShipped, SHIPPED, wholeClassRemoval } from "./lib/lens-mutant-harness.ts";
 
 {
@@ -30,6 +31,16 @@ import { CORPUS, measuredTable, runMutant, runShipped, SHIPPED, wholeClassRemova
     baseline.length === 0,
     `the shipped matcher satisfies every harness fixture — a corpus that fails here would make every "0 reds" in the table meaningless (failing: ${JSON.stringify(baseline)})`,
   );
+  // THE BASELINE LOOP'S OWN WITNESS. `baseline.length === 0` above is satisfied
+  // by an empty array of ANY provenance, so it cannot tell a loop that measured
+  // every fixture from one hollowed out to `void accounted; void corpus;` — a
+  // mutation a reviewer measured as `exit=0` on all three lens suites, with every
+  // `0` on the table surviving and `refusing to measure ${flank}` unreachable.
+  // The four `check`s the helper below fires are the arms that read the loop's
+  // OUTPUT rather than its length: two independent of the loop (so a loop that
+  // runs and computes nothing reddens) and one propagating a manufactured red (so
+  // a loop that keeps its shape but returns a constant reddens).
+  await assertBaselineLoopWitnessed(assert);
   assert(CORPUS.length > 40, `the corpus is broad enough to name a flank: ${CORPUS.length} fixtures`);
   for (const flank of ["PATH_CHAR", "NOT_PATH", "TERMINATOR"] as const) {
     const rows = await measuredTable(flank);

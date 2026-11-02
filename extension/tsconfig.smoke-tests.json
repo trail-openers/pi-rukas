@@ -186,6 +186,7 @@
     "smoke-tests/lib/lens-flank-escape-probe.ts",
     "smoke-tests/lib/lens-mutant-harness.ts",
     "smoke-tests/lib/lens-mutant-corpus.ts",
+    "smoke-tests/lib/lens-baseline-witness.ts",
     "smoke-tests/lib/lens-left-flank-probe.ts",
     "smoke-tests/test-lens-coverage-report.ts",
     "smoke-tests/test-lens-class-mutants.ts",
