@@ -18,7 +18,7 @@ import { capsEnabled } from "../spawn-child-bound.ts";
 import { traceWarn } from "../trace.ts";
 import type { DispatchResult, DispatchUsage } from "../types.ts";
 import type { Budget, WorkConfig } from "./config.ts";
-import { DISPATCHES_MAX_ROWS } from "./state-dispatches.ts";
+import { DISPATCHES_MAX_ROWS } from "./state-outcome.ts";
 import type { LeanState, Outcome } from "./state.ts";
 
 /** Which ceiling was crossed, with what it was and what the child used. */

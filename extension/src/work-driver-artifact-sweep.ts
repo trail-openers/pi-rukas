@@ -22,10 +22,12 @@
  * error, in-use directory) is traced and swallowed. This sweep runs at cycle
  * start and must never cost a cycle.
  *
- * The scan is over a SORTED directory read. `readdirSync` returns the order the
- * entries happen to sit in the directory — on ext4 that is the dir_lock hash, not
- * creation order and not lexicographic — so an unsorted sweep reports `swept` in
- * an order no reader can predict and a caller cannot assert against.
+ * The scan is over a NUMERICALLY SORTED directory read. `readdirSync` returns the
+ * order the entries happen to sit in the directory — on ext4 that is the dir_lock
+ * hash, not creation order — so an unsorted sweep visits orphans, and reports
+ * `swept`, in an order no reader can predict. The sort is numeric rather than
+ * lexicographic because the names are issue numbers: `1000` is the newer orphan
+ * and a string comparison would visit it before `25`.
  *
  * Style follows the sibling `work-driver-worktree-sweep.ts`: `execFn`-
  * based removal, trace lines, never throws.
@@ -100,7 +102,7 @@ export async function runArtifactSweep(opts: ArtifactSweepOpts): Promise<Artifac
   const dir = join(repoRoot, ".pi", "work-state");
   let names: string[];
   try {
-    names = readdirSync(dir).sort();
+    names = readdirSync(dir).sort((a, b) => Number(a) - Number(b));
   } catch {
     // No .pi/work-state directory — nothing to sweep.
     trace("artifact-sweep: no .pi/work-state directory — nothing to sweep");
