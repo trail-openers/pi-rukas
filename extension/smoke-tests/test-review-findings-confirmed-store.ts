@@ -196,7 +196,11 @@ store_case: {
   break store_case;
 }
 
-{
+// Labelled, not bare: every case block in this file is labelled so a setup
+// fault skips the rest of the case with `break <label>`. A bare `{` makes that
+// `break` a syntax error, so the next person who adds a skip path here
+// discovers the convention by being unable to write it.
+validator_case: {
   // #1934 — the RUNTIME half of the `StoredFinding` split, which the type cannot
   // provide a witness for. A row read off disk arrives through `JSON.parse`, so
   // the compiler never sees it: `open` + `resolvedReason: "confirmed"` + a
@@ -228,6 +232,7 @@ store_case: {
       `#1934 validator: ${label} ${expectRefused ? "is refused" : "is accepted"} (${JSON.stringify({ rows: r.rows.length, malformed: r.malformed.length })})`,
     );
   }
+  break validator_case;
 }
 
 ac2_case: {

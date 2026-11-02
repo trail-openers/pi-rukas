@@ -101,42 +101,16 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-/** The one channel this file has for a setup fault that CANNOT be skipped past.
- * Every other fault goes through `assert` / `assertSetup` / `okFixture` and
- * becomes a named red followed by a `break` out of the case's labelled block.
- * This exists for the two preconditions where continuing would judge a fixture
- * that is not the one the case names — a row whose stamp never landed, so the
- * comparison below would silently be about a different clock. It is NOT the
- * channel the shared setup helpers report through: they return `{ problem }`, so
- * nothing they raise reaches a case whose `try` has not opened — which is the
- * defect this file used to have and no longer does (measured on the pre-channel
- * shape: one neutralised `git` step printed 2 lines and the cases after it never
- * ran). Kept, therefore, for the two sites inside a live `try`, where throwing
- * still reaches the `finally` that releases the fixture.
- *
- * The `asserts` predicate is what makes it usable at a call site rather than
- * merely loud: without it the compiler still sees a guarded value as possibly
- * undefined, and the honest fix would have been a cast — the same erasure the
- * discriminated-arm construction in the helpers exists to avoid.
- */
-function require(cond: boolean, msg: string): asserts cond {
-  if (!cond) {
-    console.error(`✗ ${msg}`);
-    exit = 1;
-    throw new Error(msg);
-  }
-}
-
 /** Record a shared-setup helper's fault as a NAMED RED, and tell the caller to
- * skip the rest of its case. Deliberately NOT `require`: a helper whose fault
- * reaches a `throw` at a call site whose `try` has not opened yet aborts the
- * whole file on an unhandled exception, which is precisely the defect these
- * helpers were given a failure channel to remove — measured, neutralising
- * `retiredRowAtLastSeen`'s filing step while the call site used `require` left
- * the run with 2 output lines and
- * the other two `guard:222` cases never executed. An assertion plus a `continue`
- * gives the red, sets the exit code, and lets every other case in the file still
- * run, so a broken fixture can report a failure without silencing its witnesses.
+ * skip the rest of its case. There is no throwing variant of this channel in the
+ * file: a helper whose fault reaches a `throw` at a call site whose `try` has not
+ * opened yet aborts the whole file on an unhandled exception, which is precisely
+ * the defect these helpers were given a failure channel to remove — measured,
+ * neutralising `retiredRowAtLastSeen`'s filing step while the call site threw
+ * left the run with 2 output lines and the other two `guard:222` cases never
+ * executed. An assertion plus a `break` out of the case's labelled block gives
+ * the red, sets the exit code, and lets every other case in the file still run,
+ * so a broken fixture can report a failure without silencing its witnesses.
  * Returns true when the setup is usable. */
 function assertSetup(
   setup: { row?: StoredFinding; ledger?: LedgerEntry[]; problem: string },

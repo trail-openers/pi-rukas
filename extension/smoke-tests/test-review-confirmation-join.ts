@@ -38,7 +38,6 @@ import * as os from "node:os";
 import path from "node:path";
 import { execp } from "../src/exec.ts";
 import { confirmationsFor } from "../src/review-confirmation.ts";
-import type { StoredFinding } from "../src/review-findings-file.ts";
 import { lineHashAt, snippetHashAt } from "../src/review-findings-match.ts";
 import { readBranchRows } from "../src/review-findings-store.ts";
 import type { LedgerEntry } from "../src/review-ledger-entry.ts";
@@ -57,7 +56,6 @@ import {
   HEAD_LINES,
   makeFixture,
   okFixture,
-  rowsOk,
   seedOk,
   setupOk,
   reReport,
@@ -72,13 +70,17 @@ import type { SeedResult, SetupOutcome } from "./lib/confirmation-store-fixture.
  * plus a `break` out of the case's labelled block, never a `throw` that escapes
  * a case whose `try` has not opened. */
 const needSeed = (s: SeedResult, label: string) => seedOk(s, label, (m) => assert(false, m));
-const needRows = (
-  r: { rows: StoredFinding[]; problem: string },
-  label: string,
-): r is { rows: StoredFinding[]; problem: "" } => rowsOk(r, label, (m) => assert(false, m));
 const needRound = (o: SetupOutcome, label: string) =>
   setupOk(o, label, (m) => assert(false, m));
-void needRows;
+// `needRows` — the sibling channel for a store read that produced nothing — is
+// NOT here, and the gap is deliberate rather than an oversight to paper over.
+// Every case in this file drives the ledger through `writeLedger` and reads it
+// back through `readLedgerAt` / `findingsStateDir`, never through the store's
+// `rowsOf`, so there is no read to guard. The `void needRows;` that used to sit
+// beside this kept the wrapper alive purely to satisfy lint, which reads as
+// though the file had a store-read channel it did not. If a case here ever does
+// read the store, import `rowsOf` and `rowsOk` and declare the wrapper — do not
+// restore the `void`.
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
