@@ -18,7 +18,7 @@ import { capsEnabled } from "../spawn-child-bound.ts";
 import { traceWarn } from "../trace.ts";
 import type { DispatchResult, DispatchUsage } from "../types.ts";
 import type { Budget, WorkConfig } from "./config.ts";
-import { DISPATCHES_MAX_ROWS } from "./state-dispatches.ts";
+import { DISPATCHES_MAX_ROWS, validatedDispatches } from "./state-dispatches.ts";
 import type { LeanState, Outcome } from "./state.ts";
 
 /** Which ceiling was crossed, with what it was and what the child used. */
@@ -397,12 +397,14 @@ export function budgetVerdict(state: LeanState, fired: BudgetFired): Outcome {
  * is taught to read — with the cost rows attached, so a stopped round's tokens
  * reach the host instead of vanishing with the child.
  *
- * The rows are clipped to the loader's own cap, keeping the TAIL, as every
- * other rows-carrying outcome does (`review.ts`'s done arm, `errorOutcome`,
- * `specify`'s `mergedRows`): a step whose children accumulate across rounds
- * passes the whole array here, and an over-cap array is a record the loader
- * will not read back. The tail, because rows arrive in dispatch order and the
- * child that ran last is the one the ceiling stopped.
+ * The rows first go through the loader's own validator and are then clipped to
+ * its cap, keeping the TAIL, exactly as `errorOutcome` does for a throw: a step
+ * passes its raw accumulated array here, so a row the record may not carry (a
+ * NaN duration, a runId `Number()` cannot read) would otherwise reach
+ * `Outcome.dispatches`, where `dispatchesProblem` refuses the WHOLE array — the
+ * loader then drops the run rather than the row, and the run cannot be resumed.
+ * The tail, because rows arrive in dispatch order and the child that ran last
+ * is the one the ceiling stopped.
  */
 export function budgetVerdictWithRows(
   state: LeanState,
@@ -410,5 +412,6 @@ export function budgetVerdictWithRows(
   rows: DispatchUsageRow[],
 ): Outcome {
   const verdict = budgetVerdict(state, fired);
-  return rows.length === 0 ? verdict : { ...verdict, dispatches: rows.slice(-DISPATCHES_MAX_ROWS) };
+  const kept = validatedDispatches(rows).slice(-DISPATCHES_MAX_ROWS);
+  return kept.length === 0 ? verdict : { ...verdict, dispatches: kept };
 }
