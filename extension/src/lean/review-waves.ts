@@ -157,8 +157,8 @@ export const CAUSE_NEW_CRITICAL = "review: fix introduced a CRITICAL";
  * Does a row reach the bar the step was told to review at?
  *
  * THE ONE PREDICATE both bars read — the wave bar in {@link lensBlocks} and the
- * re-review's carried-row bar in `review.ts` — because two rules over
- * the same `SEVERITY_RANK` are two rules that drift apart, and the drift only
+ * re-review's carried-row scan in `review.ts` — because two rules over the same
+ * `SEVERITY_RANK` are two rules that drift apart, and the drift only
  * shows up when a round's verdict and the step's decision disagree about the same
  * row. The bar is the `Severity` `ReviewDeps.reviewThreshold` resolved once at the
  * run's base commit, never a constant here: `AGENTS.md §1` states HIGH and above
