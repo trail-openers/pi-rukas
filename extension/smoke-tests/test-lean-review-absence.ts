@@ -58,6 +58,7 @@ import { sha256 } from "../src/lean/specify-proof.ts";
 import type { DispatchSpec } from "../src/types.ts";
 import { put } from "./lib/lean-build-fixture.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
+import { frozenRunFor } from "./lib/lean-review-roundtrip-helpers.ts";
 import {
   BRANCH,
   FIXER_ROLE,
@@ -280,18 +281,7 @@ const { assert, failures } = makeAssert();
   // BEFORE the throw, because `fail` awaits the restore rather than firing it.
   const { repoRoot, baseSha } = makeRepo();
   await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 2;\n" });
-  const frozenRun = (root: string, issue: number) => {
-    const ctx = ctxFor(root, baseSha, BRANCH);
-    const frozen = { "tests/AC1.test.ts": frozenSha(root) };
-    ctx.run.steps.push({
-      key: "7:specify:0",
-      state: "specify",
-      startedAt: 1,
-      endedAt: 2,
-      outcome: { kind: "ok", frozen, tests: { AC1: ["tests/AC1.test.ts"] } },
-    });
-    return ctx;
-  };
+  const frozenRun = (root: string) => frozenRunFor(root, baseSha);
   const cheating = async (spec: DispatchSpec) => {
     const wt = spec.cwd as string;
     put(wt, "tests/AC1.test.ts", "// rewritten\n");
@@ -300,7 +290,7 @@ const { assert, failures } = makeAssert();
     return result({ role: FIXER_ROLE });
   };
   const { threw: tk } = await runStep(
-    frozenRun(repoRoot, 7),
+    frozenRun(repoRoot),
     depsWith({
       adversarial: async () => blockingReject("1. silent catch"),
       // Same reason as (k2): a clean round dispatches no fixer, and this case is
@@ -327,7 +317,15 @@ const { assert, failures } = makeAssert();
   // branch left at the fixer's head, with `verify` and `publish` about to read it.
   const { repoRoot: rr2, baseSha: bs2 } = makeRepo();
   await setup({ repoRoot: rr2, baseSha: bs2, branch: BRANCH, feature: "export const f = 2;\n" });
-  const ctx2 = frozenRun(rr2, 7);
+  // Its own repo AND its own frozen record, and both are load-bearing.
+  //
+  // `frozenRun` above hashes `HEAD` of the repo it is handed — (k1)'s HEAD, which
+  // its cheating fixer's commit moved. Reusing it here recorded a frozen blob for
+  // bytes this clone never had, and `git show <fixHead>:tests/AC1.test.ts` then
+  // failed the frozen proof. Whether the run died there or reached the restore this
+  // case names depended on which HEAD the earlier case had left behind, so (k2)
+  // measured (k1)'s leftovers rather than its own refusal.
+  const ctx2 = frozenRunFor(rr2, bs2);
   const runTree = path.join(rr2, ".worktrees", "lean-7");
   // Take the run's tree away while the fixer runs, so the restore finds nothing.
   const removeTree = async (spec: DispatchSpec) => {
