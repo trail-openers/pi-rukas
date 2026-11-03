@@ -246,7 +246,10 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("LENS_FIX_LAND_AHEAD", true),
   // Unset or 0: no bound on concurrent lens children per model.
   int("LENS_MODEL_CONCURRENCY", null),
-  int("LENS_ROUND_CAP", 3),
+  // The reader's default is the driver's MAX_REVIEW_ROUNDS (lens-round-cap.ts);
+  // the leaf here cannot import it without a cycle, so the literal is pinned
+  // against that constant by test-headless-inputs.ts.
+  int("LENS_ROUND_CAP", 2),
   flag("LENS_ROUND_CAP_MERGE", true),
   flag("LENS_ROUND_CAP_OVERRIDE", false),
   flag("LOOP_DETECTOR", true),
