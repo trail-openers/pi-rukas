@@ -64,8 +64,8 @@ import { fetchIssueBody } from "./io.ts";
 import { type PiSpec, parsePiSpec } from "./spec.ts";
 import { CaptureBudget } from "./specify-capture.ts";
 import { assertSpecifyWorktreeOwned, specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
-import type { Outcome, Step } from "./state.ts";
 import { BLOCKED_PATH_CAP, BLOCKED_REASON_CAP } from "./state-outcome.ts";
+import type { Outcome, Step } from "./state.ts";
 import {
   type BudgetArms,
   type BudgetOpts,
@@ -84,16 +84,12 @@ const REENTRY_CLIP = 4096;
 const CHALLENGE_LIST_CLIP = 20;
 
 /**
- * The ceiling on the recorded cause LINE. `handback` prints the map with these
- * two caps; the sentence around them is fixed, so the bound is the sum of what
- * this function composes rather than a fourth literal nothing derives. The path
- * segment is counted at its printed width, so the bound holds whatever `oneLine`
- * did to either segment.
+ * The ceiling on the recorded cause LINE: the two caps the renderers share (see
+ * `state-outcome-maps.ts`) plus the fixed sentence around them, so the bound is
+ * the sum of what this function composes rather than a fourth literal nothing
+ * derives.
  */
-const CAUSE_PREFIX = "frozen tests cannot all pass together: ";
-const CAUSE_SEPARATOR = " — ";
-const BLOCKED_CAUSE_CAP =
-  CAUSE_PREFIX.length + CAUSE_SEPARATOR.length + BLOCKED_PATH_CAP + BLOCKED_REASON_CAP;
+const BLOCKED_CAUSE_CAP = BLOCKED_PATH_CAP + BLOCKED_REASON_CAP + 44;
 
 export interface BuildDeps {
   exec: BuildExec;
@@ -107,13 +103,6 @@ export interface BuildDeps {
    * shortens it to observe a hang; absent, `runTestFile`'s own ceiling applies.
    */
   blockedTimeoutMs?: number;
-  /**
-   * A test seam forwarded to {@link blockedProved}: it widens the set of frozen
-   * tests the driver re-runs beyond the child's report. Production passes nothing.
-   * A case passes it to prove the RECORD still refuses a path the child never
-   * named, whatever else the driver was talked into executing.
-   */
-  rerunPaths?: (vetted: string[], perFileMs: number) => string[];
 }
 
 /** The step log's frozen map: every `specify:ok` / `challenge:new-tests`, in order. */
@@ -230,22 +219,10 @@ async function blockedReport(opts: {
   exec: BuildExec;
   wt: string;
   template: string | undefined;
-  /**
-   * The run's frozen map, VERBATIM — the only set a reported path may be
-   * recorded from is this one intersected with the files the driver re-ran, so
-   * a caller widening it must not widen the record with it. `blockedProved`
-   * vetted the same map before running a single runner; the two uses are read
-   * from one binding on purpose.
-   */
   frozen: Record<string, string>;
   toolUses: unknown[];
   issue: number;
   timeoutMs?: number;
-  /**
-   * The test seam forwarded to {@link blockedProved} — see it. Production passes
-   * nothing and the driver re-runs exactly the vetted report.
-   */
-  rerunPaths?: (vetted: string[], perFileMs: number) => string[];
 }): Promise<{ reason: string; blockedBy: Record<string, string> } | undefined> {
   const extracted = extractBlockedReport(opts.toolUses);
   if (extracted.rows.length === 0) {
@@ -263,20 +240,14 @@ async function blockedReport(opts: {
     frozen: opts.frozen,
     paths,
     ...(opts.timeoutMs === undefined ? {} : { timeoutMs: opts.timeoutMs }),
-    ...(opts.rerunPaths === undefined ? {} : { rerunPaths: opts.rerunPaths }),
   });
   if (!proved.honoured) {
     traceWarn(`lean build #${String(opts.issue)}: blocked report ignored — ${proved.why}`);
     return undefined;
   }
-  // The map is built from the INTERSECTION of two sets, both read from the
-  // vetted list this gate already refused anything outside: the files the child
-  // NAMED and the files the driver ACTUALLY RAN (`proved.ran` stops at the red,
-  // so an entry the driver never executed cannot enter the record as though the
-  // run had proved it). `vetted` is that list, so the test that admits a row is
-  // one membership test over what the gate judged rather than a local set built
-  // from `ran` alone — which would let a widened `ran` admit a name that is in
-  // neither the report nor the frozen contract. The reason is rendered
+  // The map is rebuilt from the files the driver ACTUALLY RAN, and only those:
+  // `proved.ran` stops at the red, so an entry the driver never executed cannot
+  // enter the record as though the run had proved it. The reason is rendered
   // through `oneLine` with the caps `handback`'s `blockedCause` uses — the value
   // is the child's prose and this is the durable record a public comment prints,
   // so it is sanitised HERE rather than relying on every reader to do it: the
@@ -286,6 +257,11 @@ async function blockedReport(opts: {
   // The
   // record's own bounds are enforced on read (`blockedByProblem`), so the map is
   // not re-counted here: the gate already refused a wider report.
+  // `vetted` is the list the gate above already refused anything outside — the
+  // rows the child named, `usableConflicts` accepted and `blockedProved` checked
+  // against the frozen map. `ran` alone is not enough: an entry the driver never
+  // executed may not enter the record, and neither may a name the child never
+  // reported, whatever else the re-run touched.
   const vetted = new Set(paths);
   const ran = new Set(proved.ran);
   const blockedBy: Record<string, string> = {};
@@ -303,7 +279,10 @@ async function blockedReport(opts: {
   // returns on its first red, so anything else in the sentence is a file the
   // driver ran green, or never ran. The full map rides on `blockedBy`.
   return {
-    reason: oneLine(`${CAUSE_PREFIX}${red} ${CAUSE_SEPARATOR}${blockedBy[red] ?? ""}`, BLOCKED_CAUSE_CAP),
+    reason: oneLine(
+      `frozen tests cannot all pass together: ${red} — ${blockedBy[red] ?? ""}`,
+      BLOCKED_CAUSE_CAP,
+    ),
     blockedBy,
   };
 }
@@ -393,7 +372,6 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
     toolUses: read.result.toolUses ?? [],
     issue,
     ...(deps.blockedTimeoutMs === undefined ? {} : { timeoutMs: deps.blockedTimeoutMs }),
-    ...(deps.rerunPaths === undefined ? {} : { rerunPaths: deps.rerunPaths }),
   });
   if (blocked !== undefined) {
     // No reset and no commit, exactly as the budget stop: the child's work goes

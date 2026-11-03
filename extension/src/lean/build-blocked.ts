@@ -111,16 +111,6 @@ export async function blockedProved(opts: {
   paths: string[];
   /** Bounds the whole re-run loop; a test shortens it to observe a hang. */
   timeoutMs?: number;
-  /**
-   * A test seam that widens the re-run set: called with the vetted paths and the
-   * loop's real per-file bound, returns the list to execute. Production passes
-   * nothing, so the loop runs the vetted list. It exists so a case can put a path
-   * in `ran` that the child never named — the exact shape a future caller that
-   * unioned another source into the list would create — and check that the
-   * RECORD still refuses it. The loop below reads this list, so what it executes
-   * and what lands in `ran` stay one thing.
-   */
-  rerunPaths?: (vetted: string[], perFileMs: number) => string[];
 }): Promise<BlockedVerdict> {
   const { exec, wt, template, frozen, paths } = opts;
   // One readable list is all the loop can spend time on, so the ceiling that
@@ -153,10 +143,9 @@ export async function blockedProved(opts: {
   // inside one budget, and it is why the bound lives here rather than per call.
   const perFile = opts.timeoutMs ?? TEST_TIMEOUT_MS;
   const deadline = Date.now() + perFile;
-  const queue = opts.rerunPaths === undefined ? paths : opts.rerunPaths(paths, perFile);
   const ran: string[] = [];
   const skipped: string[] = [];
-  for (const file of queue) {
+  for (const file of paths) {
     const left = deadline - Date.now();
     if (left <= 0) {
       return {
