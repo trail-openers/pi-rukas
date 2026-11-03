@@ -81,8 +81,21 @@ function startOf(clock: { past: number }): number {
   // process that deadline, and left the parent with a clock it could not read
   // back. So this asserts BOTH halves: the engine received the arm, and the env
   // it did not.
-  await withEnv({}, async () => {
+  // The sentinel must be a key the run could clobber and the reader does NOT
+  // read. A numeric `PI_ENSEMBLE_CYCLE_BUDGET_MS` cannot serve: the host's
+  // exported budget OUTRANKS the caller's flag, so a numeric sentinel becomes the
+  // arm and this case would assert a 5-minute deadline on a run armed with `1`.
+  // `""` is the reader's own "no env input" spelling (`resolveCycleDeadline`
+  // treats both absent and empty as unset), so the flag stays the arm WHILE the
+  // key still exists: `withEnv({})` deletes it, and an assertion against
+  // `undefined` then compares undefined to undefined — true whether or not the
+  // run wrote the environment.
+  await withEnv({ PI_ENSEMBLE_CYCLE_BUDGET_MS: "" }, async () => {
     const before = process.env.PI_ENSEMBLE_CYCLE_BUDGET_MS;
+    assert(
+      before === "",
+      `(a) the sentinel is present before the run (got ${JSON.stringify(before)})`,
+    );
     const r = await verbRun(["7", "--timeout", "5"], wellFormedHandback());
     // The arm is a DURATION resolved to an epoch, so its absolute value is the
     // instant the engine asked; what must be exact is the duration the reader was
@@ -432,3 +445,4 @@ await withEnv({}, async () => {
 });
 
 cleanScratch();
+process.exit(state.exit);

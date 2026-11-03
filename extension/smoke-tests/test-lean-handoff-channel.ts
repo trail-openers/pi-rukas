@@ -54,6 +54,11 @@ for (const channel of ["host", "forge"] as const) {
     {
       PI_ENSEMBLE_HANDOFF_CHANNEL: channel,
       PI_ENSEMBLE_CYCLE_BUDGET_MS: String(240 * MINUTE_MS),
+      // The forge arm must not depend on whether the host has a resolvable forge:
+      // with `gh` present the post succeeds and the not-delivered pair below never
+      // appears. Pinning the forge off makes the arm's answer the same on CI and
+      // off it, as (g′) already does.
+      PI_ENSEMBLE_FORGE: "none",
     },
     async () => {
       assert(
