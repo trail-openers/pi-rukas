@@ -46,6 +46,7 @@ import path from "node:path";
 import { adversarialGateApproved } from "./adversarial-findings.ts";
 import { execp } from "./exec.ts";
 import { FORGE_EXEC_TIMEOUT_MS } from "./forge-detect.ts";
+import { noCarriedFindingAtOrAbove } from "./lens-findings-render.ts";
 import { lensResidualsMarker } from "./merge-guard-round-cap.ts";
 import { reviewWallClockMs } from "./review-budget.ts";
 import { type ReviewSeverity, isBlockingSeverity } from "./review-threshold.ts";
@@ -293,7 +294,7 @@ async function discloseResidualFindings(
  */
 /**
  * Does this verdict's findings blob carry NO row that the findings store handed
- * back as OPEN (`carried: true`) at or above the blocking bar? (An empty blob
+ * back as OPEN (`carried: true`) at or above the HIGH bar? (An empty blob
  * answers yes: nothing carried, nothing outstanding.)
  *
  * The `ci` route's question, asked in the direction the route may answer yes.
@@ -301,29 +302,17 @@ async function discloseResidualFindings(
  * unchanged, so a fix pass that ignored a finding cannot be rewarded with a
  * merge that discloses it as settled.
  *
- * Reads the serialised blob rather than `Finding[]` because the cap's input is
- * the event's own `findings` field — the same string the disclosure renders, so
- * the route and the comment cannot disagree. A row whose severity the driver
- * cannot rank counts as blocking, and an unreadable blob counts as holding one:
+ * The reading itself lives with the blob's parser (`noCarriedFindingAtOrAbove`,
+ * lens-findings-render.ts) so the truncation rule and the storage cap are one
+ * constant in one place: a blob that filled the cap has lost whatever the cut
+ * fell past, the cut is not carried-first, and the stored JSON records neither
+ * a marker nor a total — so such a blob cannot prove nothing at the bar was
+ * carried, and the route parks. An unreadable blob counts as holding one too:
  * the route is an allowance, and an allowance is never granted on evidence the
  * driver cannot read.
  */
 export function noBlockingCarriedFinding(findingsBlob: string | undefined): boolean {
-  if (!findingsBlob?.trim()) return true;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(findingsBlob);
-  } catch {
-    return false;
-  }
-  if (!Array.isArray(parsed)) return false;
-  return !parsed.some(
-    (f) =>
-      typeof f === "object" &&
-      f !== null &&
-      (f as { carried?: unknown }).carried === true &&
-      isBlockingSeverity((f as { severity?: unknown }).severity, "HIGH"),
-  );
+  return noCarriedFindingAtOrAbove(findingsBlob, "HIGH") ?? false;
 }
 
 export async function appendReviewCapHit(

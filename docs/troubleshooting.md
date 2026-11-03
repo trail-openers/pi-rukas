@@ -2046,6 +2046,8 @@ Since [#1537](https://github.com/trail-openers/pi-rukas/issues/1537) the cap fir
 - the adversarial gate's latest verdict was an approval;
 - the residual findings were successfully posted to the PR. If `gh pr comment` fails, or no PR number was captured, the cycle parks and a `plumb-report` says which — a PR that silently swallows unresolved findings is worse than a park.
 
+The merge guard's own round-cap path has a second arm for a **round-1** row: it merges below the cap when the row's `blockingCounts` show nothing at or above its recorded `blockingBar`. That arm **fails closed on an absent or unreadable field** — no `blockingBar`, a rank the row never recorded, or a count that is not a whole number ≥ 0 all mean "cannot verify", and the round condition decides. So a row written by an older build, or by a caller that recorded no bar, is refused rather than waved through.
+
 The **wall-clock** cap (90 min) is unchanged and still parks: a review that ran out of time says nothing about how small the remaining findings are.
 
 **It still will not merge for you.** The cycle reaches `runMerged`'s gate as usual — default-deny, needing both an operator grant and executed `gh` evidence — and then a round cap that routed to `ci` holds the merge *on top of that*, however permissively the grant is worded. So the cycle parks as `awaiting-human-merge` with `mergeHold.unresolvedReviewFindings`, PR open, CI run, findings posted.

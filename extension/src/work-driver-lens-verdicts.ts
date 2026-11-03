@@ -3,6 +3,7 @@
  * split out of work-driver-lens.ts (AGENTS.md §12 file-size limit).
  */
 
+import { MAX_STORED_FINDINGS } from "./lens-findings-render.ts";
 import { incompleteLanes } from "./lens-review-incomplete.ts";
 import type { runLensReview } from "./lens-review.ts";
 import { capKilledString, isCapKilled } from "./work-driver-cap-killed.ts";
@@ -55,10 +56,10 @@ export async function applyLensVerdict(
       // here. Carry them in the same shape as `lens-issues-found` so "the
       // lenses found nothing" stays distinct from "found sub-threshold and
       // kept no record".
-      findings: JSON.stringify(summary.findings.slice(0, 50)),
+      findings: JSON.stringify(summary.findings.slice(0, MAX_STORED_FINDINGS)),
     });
   } else if (summary.verdict === "ISSUES_FOUND" || summary.verdict === "CRITICAL_ISSUES_FOUND") {
-    const findingsBlob = JSON.stringify(summary.findings.slice(0, 50));
+    const findingsBlob = JSON.stringify(summary.findings.slice(0, MAX_STORED_FINDINGS));
     state = appendEvent(state, {
       kind: "lens-issues-found",
       at: Date.now(),
