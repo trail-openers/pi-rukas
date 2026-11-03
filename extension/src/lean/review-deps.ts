@@ -155,6 +155,11 @@ export function reviewDeps(headless: boolean): ReviewDeps {
         // severity counts and the ledger's `hasCritical` were computed from — a
         // second reading here would be a second definition of "blocking".
         reported: summary.findings,
+        // The rows the layer RESOLVED this round, carried through untouched: the
+        // step reads a blocking row as ADDRESSED only when it appears here (see
+        // `LensRound.resolved`), so dropping it would make every resolved row a
+        // handback. The layer's field, not a restatement of it.
+        ...(summary.resolved === undefined ? {} : { resolved: summary.resolved }),
         usage: summary.usage,
         // The per-lens records, so the step bills one row per child that ran
         // rather than one row per round (see `lensRows` in `step-budget.ts`).

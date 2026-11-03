@@ -70,6 +70,7 @@ import {
   frozenBlob,
   fixRunId,
   git,
+  lensRoundFor,
   lensRoundWith,
   makeRepo,
   result,
@@ -204,7 +205,7 @@ const { assert, failures } = makeAssert();
       adversarial: async () => result({ loopOutcome: "approved" }),
       // The wave needs a BLOCKING round to be dispatched for at all; the row is
       // never carried, so the ONLY thing that can stop this run is the tree.
-      lens: async () => lensRoundWith("CRITICAL_ISSUES_FOUND", [blockingFinding()]),
+      lens: async (a) => lensRoundFor(a, "CRITICAL_ISSUES_FOUND", [blockingFinding()]),
       dispatch: async (spec: DispatchSpec) => {
         fixerDispatched++;
         put(spec.cwd as string, "fix.ts", "export const x = 1;\n");
@@ -304,7 +305,7 @@ const { assert, failures } = makeAssert();
       adversarial: async () => blockingReject("1. silent catch"),
       // Same reason as (k2): a clean round dispatches no fixer, and this case is
       // about what a fixer's integration does when it cheated.
-      lens: async () => lensRoundWith("ISSUES_FOUND", [blockingFinding()]),
+      lens: async (a) => lensRoundFor(a, "ISSUES_FOUND", [blockingFinding()]),
       dispatch: cheating,
     }),
   );
@@ -343,7 +344,7 @@ const { assert, failures } = makeAssert();
       // is the lever for. The clean default would dispatch nobody and the restore
       // would never be attempted, making this case about a tree nobody tried to
       // put back.
-      lens: async () => lensRoundWith("CRITICAL_ISSUES_FOUND", [blockingFinding()]),
+      lens: async (a) => lensRoundFor(a, "CRITICAL_ISSUES_FOUND", [blockingFinding()]),
       dispatch: removeTree,
     }),
   );

@@ -56,7 +56,9 @@ import {
   depsWith,
   fixRunId,
   git,
+  lensRoundFor,
   lensRoundWith,
+  resolvedLensRound,
   makeRepo,
   rejectsThenClears,
   result,
@@ -150,7 +152,7 @@ const { assert, failures } = makeAssert();
       // return a pass, which has no `dispatches` to assert on. The wave is bought
       // by the gate's blocking record, not by the round's mere findings.
       adversarial: async () => blockingReject("1. the carried row the wave must answer"),
-      lens: async () => lensRoundWith("ISSUES_FOUND", [carriedFinding()]),
+      lens: async (a) => lensRoundFor(a, "ISSUES_FOUND", [carriedFinding()]),
       dispatch: async (spec: DispatchSpec) => {
         put(spec.cwd as string, "fix.ts", "export const x = 1;\n");
         git(spec.cwd as string, "add", "-A");
@@ -322,11 +324,11 @@ const { assert, failures } = makeAssert();
     depsWith({
       adversarial: async () => result({ loopOutcome: "approved" }),
       // One wave, one fixer: the full round blocks, the fix lands, the re-review
-      // resolves it by omission and the step passes.
-      lens: async () =>
-        trees.length === 0
-          ? lensRoundWith("CRITICAL_ISSUES_FOUND", [blockingFinding()])
-          : cleanLensRound(),
+      // RESOLVES the row (its own notice, not its silence) and the step passes.
+      lens: async (a) =>
+        a.wave === "fix"
+          ? resolvedLensRound(a, [blockingFinding()])
+          : lensRoundWith("CRITICAL_ISSUES_FOUND", [blockingFinding()]),
       dispatch: async (spec: DispatchSpec) => {
         const wt = spec.cwd as string;
         trees.push(wt);

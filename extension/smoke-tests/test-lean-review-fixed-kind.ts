@@ -26,6 +26,7 @@ import {
   blockingFinding,
   cleanLensRound,
   lensRoundWith,
+  resolvedLensRound,
   cleanupRoots,
   ctxFor,
   depsWith,
@@ -90,18 +91,17 @@ const { assert, failures } = makeAssert();
 {
   const { repoRoot, baseSha } = makeRepo();
   await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 3;\n" });
-  let lensAsks = 0;
   const { outcome, threw } = await run(
     ctxFor(repoRoot, baseSha, BRANCH),
     depsWith({
       adversarial: async () => result({ loopOutcome: "approved" }),
-      lens: async () =>
-        lensAsks++ === 0
-          ? {
+      lens: async (a) =>
+        a.wave === "fix"
+          ? resolvedLensRound(a, [blockingFinding()])
+          : {
               ...lensRoundWith("CRITICAL_ISSUES_FOUND", [blockingFinding()]),
               findings: "- [HIGH] SECURITY a.ts:1: leak",
-            }
-          : cleanLensRound(),
+            },
       dispatch: fixerThatCommits("lens-arm"),
     }),
   );

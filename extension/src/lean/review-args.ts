@@ -38,7 +38,6 @@
  */
 
 import type { LensReviewSummary, Severity } from "../lens-review-format.ts";
-import { isCarried } from "../lens-review-types.ts";
 import type { Finding, LensRunResult } from "../lens-review-types.ts";
 import type { runLensReview } from "../lens-review.ts";
 import type { DispatchResult } from "../types.ts";
@@ -70,7 +69,7 @@ export type { FixRunId };
  */
 export type LensRound = Pick<
   LensReviewSummary,
-  "verdict" | "usage" | "note" | "noReview" | "deltaReview"
+  "verdict" | "usage" | "note" | "noReview" | "deltaReview" | "resolved"
 > & {
   /** The round's findings as the text a fixer is handed — one line each. */
   findings: string;
@@ -94,6 +93,17 @@ export type LensRound = Pick<
    * protocol of its own.
    */
   reported: Finding[];
+  /**
+   * The rows this round RESOLVED, as the review layer's own per-row record states
+   * them (`resolved` on the summary, the sibling of the `reported` set above).
+   *
+   * The step needs them to answer item-for-item: a blocking row the wave was
+   * asked about is ADDRESSED only when the layer positively resolved it, and a
+   * row absent from BOTH sets has no evidence either way (see `classifyFates`).
+   * Read from the layer rather than re-derived here, because a resolution is the
+   * layer's call — `rowFate` owns it, and this step has no second one.
+   */
+  resolved?: LensReviewSummary["resolved"];
 };
 
 /**
@@ -101,13 +111,15 @@ export type LensRound = Pick<
  *
  * `addressed` and `carried` are the review layer's EXISTING per-row fates, not a
  * lean protocol: `reported` holds only blocking rows, so a first-round row the
- * delta round did not re-report is a row the layer resolved, and a row carrying
- * `carried: true` is one the layer refused to resolve. `new-critical` is the
+ * delta round listed in its own `resolved` notices is a row the layer resolved,
+ * and a row carrying `carried: true` is one the layer refused to resolve. A row
+ * in neither set is `carried` too — no proof, no answer. `new-critical` is the
  * third fate the step needs and the only one it computes itself, because the
  * re-review's CRITICAL check is scoped to the fix range and only the step knows
- * which rows were known before the fix.
+ * which rows were known before the fix. `disclosed` is a row the re-review raised
+ * that is neither — it travels to the layer's residual post and never blocks.
  */
-export type FindingFate = "addressed" | "carried" | "new-critical";
+export type FindingFate = "addressed" | "carried" | "new-critical" | "disclosed";
 
 /** One blocking finding and what became of it. */
 export interface FindingOutcome {
@@ -223,20 +235,6 @@ export interface ReviewDeps {
   adversarial: (args: AdversarialArgs) => Promise<DispatchResult>;
   /** One round of the six-lens pass. */
   lens: (args: LensArgs) => Promise<LensRound>;
-  /**
-   * A verdict from a gate that was never read, for the handback causes only.
-   *
-   * A gate that produced no readable verdict is infrastructure, not an approval —
-   * so the step must be able to name WHY it has no verdict, rather than guess
-   * whether findings were outstanding. The adversarial loop is the one gate that
-   * cannot answer for itself: in report-only mode it returns after its FIRST
-   * round, so `adversarialRounds` holds exactly the record that ended it, and a
-   * loop that never got a readable one carries a record whose `verdictParsed`
-   * is false or none at all. The six-lens round answers the same question from
-   * its own verdict (`REVIEW_INCOMPLETE` etc.), and its wiring leaves this
-   * undefined — the step's `unanswered` falls back to that verdict in that case.
-   */
-  unanswered?: () => string | undefined;
   /**
    * The fixer, in the tree its `cwd` names.
    *

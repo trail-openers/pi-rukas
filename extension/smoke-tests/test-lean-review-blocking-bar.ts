@@ -42,7 +42,9 @@ import {
   ctxFor,
   depsWith,
   git,
+  lensRoundFor,
   lensRoundWith,
+  resolvedLensRound,
   makeRepo,
   result,
   runStep as run,
@@ -213,13 +215,15 @@ const { assert, failures } = makeAssert();
     ctxFor(rr3, bs3, BRANCH),
     depsWith({
       adversarial: async () => result({ loopOutcome: "approved" }),
-      lens: async () => {
+      lens: async (a) => {
         r2cLensRounds++;
-        // The full round raises a blocking row; the re-review of the fix reports
-        // none of them, which is the layer's resolve and the step's ADDRESSED.
+        // The full round raises a blocking row; the re-review of the fix resolves
+        // it. Resolving is the layer's own `resolved` notice — a re-review that
+        // reported nothing is a round that said nothing, and the step now refuses
+        // to read that silence as ADDRESSED.
         return r2cLensRounds === 1
           ? lensRoundWith("CRITICAL_ISSUES_FOUND", [blockingFinding()])
-          : cleanLensRound();
+          : resolvedLensRound(a, [blockingFinding()]);
       },
       dispatch: async (spec: DispatchSpec) => {
         r2cFixers++;
@@ -261,7 +265,8 @@ const { assert, failures } = makeAssert();
               adversarialRounds: [{ round: 2, status: "APPROVED", verdictParsed: true }],
             });
       },
-      lens: async () => cleanLensRound(),
+      lens: async (a) =>
+        a.wave === "fix" ? resolvedLensRound(a, [blockingFinding()]) : lensRoundFor(a, "APPROVED", []),
       dispatch: async (spec: DispatchSpec) => {
         r2aPrimeFixers++;
         const wt = spec.cwd as string;

@@ -60,7 +60,7 @@ import {
   DISPATCHES_MAX_ROWS,
   FIXER_ROLE,
   LENS_ROLE,
-  MAX_REVIEW_ROUNDS,
+  REVIEW_PASSES,
   cleanLensRound,
   cleanupRoots,
   ctxFor,

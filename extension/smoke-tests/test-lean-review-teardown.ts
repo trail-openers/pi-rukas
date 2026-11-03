@@ -41,9 +41,9 @@ const { assert, failures } = makeAssert();
   const { repoRoot, baseSha } = makeRepo();
   await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 6;\n" });
   const EPOCH = "1793451347919";
-  const mine = fixTreeName(repoRoot, 7, "l", 1, 0, fixRunId(EPOCH));
-  const sibling = fixTreeName(repoRoot, 7, "l", 1, 1, fixRunId(EPOCH));
-  const otherIssue = fixTreeName(repoRoot, 8, "l", 1, 0, fixRunId(EPOCH));
+  const mine = fixTreeName(repoRoot, 7, "l", "full", 0, fixRunId(EPOCH));
+  const sibling = fixTreeName(repoRoot, 7, "l", "full", 1, fixRunId(EPOCH));
+  const otherIssue = fixTreeName(repoRoot, 8, "l", "full", 0, fixRunId(EPOCH));
   for (const wt of [mine, sibling, otherIssue]) {
     git(repoRoot, "worktree", "add", "--force", "--detach", wt, baseSha);
     assert(fs.existsSync(wt), `(w) precondition: ${path.basename(wt)} was created`);
@@ -64,14 +64,14 @@ const { assert, failures } = makeAssert();
     fs.existsSync(otherIssue),
     `(w) and another issue's fix tree survives too — the selector is this issue's, not the whole \`.worktrees\` dir (${path.basename(otherIssue)})`,
   );
-  // And the attempt-scoped teardown must still clear its OWN round: a leftover from
-  // a killed round of the same attempt is precisely what a resume must not adopt.
-  const myRound2 = fixTreeName(repoRoot, 7, "a", 2, 0, fixRunId(EPOCH));
+  // And the attempt-scoped teardown must still clear this attempt's OWN trees: a
+  // leftover from a killed wave of the same attempt is what a resume must not adopt.
+  const myRound2 = fixTreeName(repoRoot, 7, "a", "fix", 0, fixRunId(EPOCH));
   git(repoRoot, "worktree", "add", "--force", "--detach", myRound2, baseSha);
   await closeFixTrees(dw({}), ctxFor(repoRoot, baseSha, BRANCH), 0, fixRunId(EPOCH));
   assert(
     gone(myRound2),
-    `(w) and a second round of THIS attempt is still cleared, so the scope did not spare the leftover a resume would adopt (${path.basename(myRound2)})`,
+    `(w) and the other wave's tree of THIS attempt is still cleared, so the scope did not spare the leftover a resume would adopt (${path.basename(myRound2)})`,
   );
 }
 cleanupRoots();

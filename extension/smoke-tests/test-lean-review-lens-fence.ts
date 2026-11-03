@@ -56,7 +56,7 @@ const carried = [
   INJECT_CR,
 ].join("\n");
 
-const ctx = lensContext(7, 2, { carried });
+const ctx = lensContext(7, "fix", { carried });
 
 /**
  * The brief with the carried block's own fence — and everything between its two
@@ -179,11 +179,11 @@ assert(
 
 // ── (4) NO CARRIED BLOCK, NO BLOCK AT ALL ───────────────────────────────────
 //
-// `carried` is undefined on every round that did not come off the pass-with-
-// findings arm. A fence opened around nothing would be a block the lens reads as
+// `carried` is undefined on every round that did not come off the non-blocking
+// pass. A fence opened around nothing would be a block the lens reads as
 // "the gate left something open, here is nothing".
 for (const empty of [undefined, "", "   \n  "]) {
-  const bare = lensContext(7, 1, { carried: empty });
+  const bare = lensContext(7, "full", { carried: empty });
   assert(
     !bare.includes("OUTSTANDING FROM THE ADVERSARIAL GATE"),
     `(4) a ${JSON.stringify(empty)} carried value opens no outstanding-findings block at all`,
@@ -200,7 +200,7 @@ for (const empty of [undefined, "", "   \n  "]) {
 // from git and which is deliberately NOT fenced (it is a diff section the lens
 // prompt already parses). Clamping it too would break the delta reader.
 {
-  const withDelta = lensContext(7, 1, { fixDelta: "## Fixed\n- src/a.ts:12 guarded" });
+  const withDelta = lensContext(7, "full", { fixDelta: "## Fixed\n- src/a.ts:12 guarded" });
   assert(
     withDelta.includes("## Fixed"),
     "(5) the fix delta still prints as a heading — only the carried reviewer prose is fenced, not the step's own section",

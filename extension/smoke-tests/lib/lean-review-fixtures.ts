@@ -23,13 +23,14 @@ import { defaultConfig } from "../../src/lean/config.ts";
 import type { HandlerCtx } from "../../src/lean/engine.ts";
 import { ADVERSARIAL_GATE_ROLE } from "../../src/lean/review-gates.ts";
 import { FIX_RUN_ID_SHAPE, PASS_KINDS } from "../../src/lean/review-log.ts";
-import { DEFAULT_REVIEW_THRESHOLD } from "../../src/lens-review-format.ts";
-import type { Finding } from "../../src/lens-review-types.ts";
 import type { LensRound, ReviewDeps } from "../../src/lean/review.ts";
+import type { ReviewWave } from "../../src/lean/review-args.ts";
 import { ReviewInfraError, reviewOutcome } from "../../src/lean/review.ts";
 import type { Outcome } from "../../src/lean/state.ts";
 import { createRun } from "../../src/lean/state.ts";
 import { FIXER_ROLE } from "../../src/lean/step-budget.ts";
+import { DEFAULT_REVIEW_THRESHOLD } from "../../src/lens-review-format.ts";
+import type { Finding } from "../../src/lens-review-types.ts";
 import type { LensName, LensRunResult } from "../../src/lens-review-types.ts";
 import { aggregateLensUsage } from "../../src/lens-review-usage.ts";
 import type { DispatchResult, DispatchSpec } from "../../src/types.ts";
@@ -165,10 +166,7 @@ export function carriedFinding(over: Partial<Finding> = {}): Finding {
  * always ran (each with its own usage), because a round that ran nobody is a
  * round the step refuses, and a fixture must not be able to fake an approval.
  */
-export function lensRoundWith(
-  verdict: LensRound["verdict"],
-  rows: Finding[],
-): LensRound {
+export function lensRoundWith(verdict: LensRound["verdict"], rows: Finding[]): LensRound {
   const lenses = LENS_NAMES.map((_, i) => lensRowResult(i));
   return {
     verdict,
@@ -176,6 +174,55 @@ export function lensRoundWith(
     reported: rows,
     lenses,
     usage: aggregateLensUsage(lenses),
+  };
+}
+
+/**
+ * The same round, stamped with the range the layer says it ranged over.
+ *
+ * `runLensReview` sets `deltaReview` whenever it reviewed a `since..head` delta,
+ * and the step now refuses a re-review that did not range over the fix it named —
+ * so a re-review stub that leaves the field out is a round that reviewed the whole
+ * branch, and the step is right to refuse it. Only a stub that sets it drives the
+ * fix path, exactly as the production layer does.
+ *
+ * The step, not the caller, chooses the range: `lensGate` passes `since` only on
+ * the fix wave, so the stamp is derived from the argument the step handed the
+ * layer rather than from a value a test invented — a fixture that set `since` on
+ * the full round would be writing the step's answer for it.
+ */
+export function lensRoundFor(
+  args: { wave: ReviewWave; since?: string; head: string },
+  verdict: LensRound["verdict"],
+  rows: Finding[],
+): LensRound {
+  const round = lensRoundWith(verdict, rows);
+  // A full round is the layer's ordinary whole-branch review: no delta, no stamp.
+  if (args.wave !== "fix" || args.since === undefined) return round;
+  return { ...round, deltaReview: { since: args.since, head: args.head } };
+}
+
+/**
+ * A re-review that positively RESOLVED the wave's blocking rows.
+ *
+ * The step reads a blocking row as ADDRESSED only when the layer says so — a row
+ * missing from both `reported` and `resolved` is NOT ADDRESSED (see
+ * `classifyFates`). So a fixture that means "the fix answered it" has to carry the
+ * layer's own resolve notice for that row, and one that carries nothing is a round
+ * that said nothing, which the step refuses. `rows` are the first round's rows: the
+ * titles the notices name are the identities the step matched on.
+ */
+export function resolvedLensRound(
+  args: { wave: ReviewWave; since?: string; head: string },
+  resolvedRows: readonly Finding[],
+): LensRound {
+  return {
+    ...lensRoundFor(args, "APPROVED", []),
+    resolved: resolvedRows.map((f) => ({
+      rowId: `${f.path}:${String(f.line ?? "?")} ${f.title}`,
+      title: f.title,
+      reason: "code-gone",
+    })),
   };
 }
 
@@ -236,7 +283,8 @@ export function depsWith(over: Partial<ReviewDeps>): ReviewDeps {
     // usage. A round with no lens records is a round that ran nobody, and the
     // step refuses it (`test-lean-review-absence.ts`).
     lens: async () => cleanLensRound(),
-    dispatch: async () => result({ role: FIXER_ROLE }),    fetchIssueBody: async () => "body",
+    dispatch: async () => result({ role: FIXER_ROLE }),
+    fetchIssueBody: async () => "body",
     loadConfig: async () => defaultConfig(),
     // The harness's stand-in for the doctrine judge: a step that resolves the
     // project's bar gets the shipped default rather than a child process. A case

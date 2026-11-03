@@ -244,19 +244,34 @@ export async function adversarialGate(
     // report-only loop returns that defaulted record verbatim; reading it as
     // "the findings the loop refuses to clear" would let the step spend its one
     // fix wave on prose that was never a judgement, and then hand back that same
-    // prose as "a blocking finding the fix did not address". A round the loop
-    // could not parse leaves `verdictParsed` false (or carries no record at all),
-    // and this gate has no fixer of its own to blame — it is the same
-    // "no verdict is not a pass" the no-verdict arm below already refuses, read
-    // off the records the loop judged rather than guessed from the reply.
+    // prose as "a blocking finding the fix did not address". So BOTH shapes of
+    // "nothing was judged" are refused here: a rejection whose loop carried no
+    // record at all, and one whose trailing record is unparsed. This gate has no
+    // fixer of its own to blame, which is why it throws rather than routing — the
+    // same "no verdict is not a pass" the no-verdict arm below already refuses,
+    // read off the records the loop judged rather than guessed from the reply.
     const lastRecord = result.adversarialRounds?.[result.adversarialRounds.length - 1];
-    if (lastRecord !== undefined && lastRecord.verdictParsed !== true)
+    if (lastRecord === undefined || lastRecord.verdictParsed !== true)
       throw new ReviewInfraError(
-        `the adversarial gate returned no readable VERDICT marker on its reviewed round (status ${String(lastRecord.status)} defaulted) — findings that were never a verdict cannot be fixed against: ${result.text.slice(0, 300)}`,
+        `the adversarial gate returned a rejection with ${
+          lastRecord === undefined
+            ? "no reviewed round to read a verdict from"
+            : `no readable VERDICT marker on its reviewed round (status ${String(lastRecord.status)} defaulted)`
+        } — findings that were never a verdict cannot be fixed against: ${result.text.slice(0, 300)}`,
         opts.rows,
       );
-    // An unparsed rejection is refused above, so at this point the record really
-    // was judged: its findings are open, and blocking only if its status says so.
+    // An unparsed or record-less rejection is refused above, so at this point the
+    // record really was judged. One shape is still incoherent: a `rejected`
+    // outcome whose parsed record says `APPROVED` is a loop that refused a run it
+    // also certified, and no reading of it is safe — the step would either buy a
+    // fixer for an approval or clear a head the loop rejected. Refused like the
+    // others, in the direction of the blast radius.
+    if (lastRecord.status === CLEAN_PASS)
+      throw new ReviewInfraError(
+        `the adversarial gate's outcome says rejected but its own trailing record reads ${CLEAN_PASS} — the loop rejected a head it also approved, and neither reading can be acted on: ${result.text.slice(0, 300)}`,
+        opts.rows,
+      );
+    // Its findings are open, and blocking only if its status says so.
     return { findings: result.text, open: true, blocking: blockingRecord(result) };
   }
   throw new ReviewInfraError(

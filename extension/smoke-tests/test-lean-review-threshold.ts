@@ -66,7 +66,7 @@ async function deliver(over: {
     head: HEAD,
     branch: "lean/issue-7",
     cwd: "/tmp",
-    round: 1,
+    wave: "full",
     pr: undefined,
     context: "ctx",
     evidence: undefined,

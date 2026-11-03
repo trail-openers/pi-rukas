@@ -59,6 +59,7 @@ import {
   fixerThatCommits,
   frozenBlob,
   git,
+  lensRoundFor,
   lensRoundWith,
   lensRowResult,
   makeRepo,
@@ -233,7 +234,7 @@ const { assert, failures } = makeAssert();
         if (seen2.length === 1) return blockingReject("1. leak");
         return result({ loopOutcome: "approved" });
       },
-      lens: async () => cleanLensRound(),
+      lens: async (a) => lensRoundFor(a, "APPROVED", []),
       dispatch: async (spec: DispatchSpec) => {
         put(spec.cwd as string, "second-fix.ts", "export const s = 1;\n");
         git(spec.cwd as string, "add", "-A");
@@ -353,7 +354,7 @@ const { assert, failures } = makeAssert();
   await setup({ repoRoot: rr2, baseSha: bs2, branch: BRANCH, feature: "export const f = 4;\n" });
   const neverClears = depsWith({
     adversarial: async () => blockingReject("1. the carried row the wave must answer"),
-    lens: async () => lensRoundWith("ISSUES_FOUND", [carriedFinding()]),
+    lens: async (a) => lensRoundFor(a, "ISSUES_FOUND", [carriedFinding()]),
     // The fixer commits, so the wave is not refused for fixing nothing, and each
     // carries its tree's `runId` — the field the resume path matches on.
     dispatch: fixerThatCommits("f"),
