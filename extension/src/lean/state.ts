@@ -19,11 +19,19 @@
  * safe to reason about: the engine re-runs exactly that step and no other.
  */
 
-import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import path from "node:path";
 import { isFullCommitSha } from "../commit-sha.ts";
+import type { HandoffChannel } from "../work-driver-handoff-channel.ts";
+import { assertDeadline } from "./deadline-record.ts";
 import { buildOutcome, outcomeProblem } from "./state-outcome.ts";
+// The store is re-exported so every caller of the record keeps one import site;
+// the layout of `.pi/lean-state/` is stated once, in `state-store.ts`.
+export {
+  leanLockFile,
+  leanStateDir,
+  leanStateFile,
+  loadRun,
+  saveRun,
+} from "./state-store.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 
 export const SCHEMA_VERSION = 1;
@@ -119,6 +127,11 @@ export interface LeanRun {
   steps: Step[];
   /** Set once the run is over: the exit code and the reason it ended there. */
   result?: { code: number; reason: string };
+  /** The caller's whole-cycle deadline, in epoch ms. `readCycleDeadline`/`resolveCycleDeadline`
+   *  accept only an epoch at least `EPOCH_MS_FLOOR`, so a smaller persisted value is read
+   *  as NO arm: the run keeps working and the caller's own kill ends it — a loud, bounded
+   *  failure, never a wrong park. */
+  deadlineMs?: number;
 }
 
 /**
@@ -200,6 +213,39 @@ export interface Outcome {
    */
   posted?: boolean;
   /**
+   * `handback` only: the comment the step built, in full, on the record.
+   *
+   * What the step is FOR, not a description of it. Before this field the only
+   * account of a handback was `posted` plus the prose `handbackOutcome` wrote
+   * about its own post ("handback comment posted"), so on the host channel —
+   * where the result document IS the delivery and a host has to print the comment
+   * itself — the host was handed a sentence about the harness instead of the
+   * report: what the run still needs, the frozen acceptance tests, the branch and
+   * the PR. Those live in the body the step assembled and then threw away.
+   *
+   * The same string the forge is handed, recorded BEFORE the post is attempted, so
+   * a run that could not post still reports what it tried to say. Untrusted child
+   * text, which is why every reader of it redacts before publishing.
+   */
+  report?: string;
+  /**
+   * `handback` and `decline` only (#1920 item 3): the CHANNEL this reporting step
+   * acted on. `"host"` means the run addressed its report to the host that drives
+   * it and posted nothing to the forge, by contract; `"forge"` means the step
+   * tried to post and `posted` says whether the forge took it.
+   *
+   * Typed beside `posted` because the two are ONE fact written once — "who owns
+   * the channel" and "did anything reach them" — and the projection that tells a
+   * host which half of the contract it owes reads the record, never
+   * `PI_ENSEMBLE_HANDOFF_CHANNEL`. A projection that re-read the env could
+   * contradict what the step did (a host that clears the var before reading the
+   * document would be told to post a comment the forge already took, or left with
+   * no body at all), which is the double-post this field exists to prevent.
+   * Absent means the step recorded no channel, which every reader treats as
+   * `"forge"` — the channel with a forge to post to.
+   */
+  channel?: HandoffChannel;
+  /**
    * `specify`, `build` and `challenge` only: one row per dispatch the step
    * paid for, including the ones that died or were stopped by their budget.
    * #1920 slice A groundwork for the lean result's per-role usage: a row is
@@ -226,14 +272,6 @@ export const INITIAL_COUNTERS: RunCounters = {
 
 export class LeanStateError extends Error {
   override readonly name = "LeanStateError";
-}
-
-export function leanStateDir(repoRoot: string): string {
-  return path.join(repoRoot, ".pi", "lean-state");
-}
-
-export function leanStateFile(repoRoot: string, issue: number): string {
-  return path.join(leanStateDir(repoRoot), `${issue}.json`);
 }
 
 export function stepKey(issue: number, state: LeanState, n: number): string {
@@ -289,28 +327,11 @@ export function createRun(
   };
 }
 
-/** A run as found on disk, or `undefined` when no file exists yet. Throws on garbage. */
-export function loadRun(repoRoot: string, issue: number): LeanRun | undefined {
-  const file = leanStateFile(repoRoot, issue);
-  let raw: string;
-  try {
-    raw = readFileSync(file, "utf8");
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === "ENOENT" || code === "ENOTDIR") return undefined;
-    throw new LeanStateError(`cannot read ${file}: ${(err as Error).message}`);
-  }
-  let obj: unknown;
-  try {
-    obj = JSON.parse(raw);
-  } catch (err) {
-    throw new LeanStateError(`${file} is not valid JSON: ${(err as Error).message}`);
-  }
-  return assertRun(obj, file);
-}
-
 /** Field-by-field so a partial file names the missing field instead of `undefined`. */
-function assertRun(obj: unknown, file: string): LeanRun {
+// Exported for `state-store.ts`, the only reader of the file on disk: the record's
+// shape is this module's, the file's is the store's. Called through the store so
+// a resume never drives a record the validator refused.
+export function assertRunFile(obj: unknown, file: string): LeanRun {
   const bad = (msg: string): never => {
     throw new LeanStateError(`${file}: ${msg}`);
   };
@@ -429,6 +450,7 @@ function assertRun(obj: unknown, file: string): LeanRun {
     },
     steps,
     ...(r.result !== undefined ? { result: assertResult(r.result, bad) } : {}),
+    ...(r.deadlineMs === undefined ? {} : { deadlineMs: assertDeadline(r.deadlineMs) }),
   };
 }
 
@@ -447,9 +469,6 @@ function assertResult(
 }
 
 /** Lock file path for a run. One per issue, alongside the state file. */
-export function leanLockFile(repoRoot: string, issue: number): string {
-  return `${leanStateFile(repoRoot, issue)}.lock`;
-}
 
 /** Every state a run can be sitting in mid-flight. */
 const NON_TERMINAL: readonly LeanState[] = [
@@ -473,28 +492,3 @@ const NON_TERMINAL: readonly LeanState[] = [
  * would be a cycle), and `test-lean-state-outcome.ts` pins the two equal.
  */
 export const REPORT_STATES: readonly LeanState[] = ["handback", "decline"];
-
-/**
- * Persist atomically. A failed write cleans up its tmp file and rethrows: the
- * caller keeps the previous good file and learns the save did not happen,
- * rather than believing a step was durable when it was not.
- */
-export function saveRun(repoRoot: string, run: LeanRun): void {
-  const file = leanStateFile(repoRoot, run.issue);
-  mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
-  try {
-    writeFileSync(tmp, `${JSON.stringify(run, null, 2)}\n`, "utf8");
-    renameSync(tmp, file);
-  } catch (err) {
-    // Only ever our own file, at a path we generated, and `renameSync` either
-    // fully replaced the target or did not run — so removing it cannot destroy
-    // durable state.
-    try {
-      rmSync(tmp, { force: true });
-    } catch {
-      /* the tmp file is left behind; the caller already has the real error */
-    }
-    throw err;
-  }
-}

@@ -31,6 +31,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { execp } from "../exec.ts";
 import { spawnSpecialist } from "../spawn.ts";
 import type { DispatchSpec } from "../types.ts";
+import { type CycleBudgetMs, flagBudgetMs } from "../work-driver-deadline.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
 import { proveBaseSha, unresolvedMainlineRule } from "./base-proof.ts";
 import { buildDeps, buildOutcome } from "./build.ts";
@@ -39,10 +40,8 @@ import { leanChildOpts } from "./child-opts.ts";
 import { ciLandHandlers, publishHandler } from "./command-post-publish.ts";
 import { type WorkConfig, loadWorkConfig } from "./config.ts";
 import { type LeanHandlers, type RunLeanResult, runLean } from "./engine.ts";
-import { handbackOutcome } from "./handback.ts";
-import { fetchIssueBody, mainlineSha, postNotReady } from "./io.ts";
-import { postHandback } from "./io.ts";
-import { REPORT_FAILED_KIND } from "./machine.ts";
+import { fetchIssueBody, mainlineSha } from "./io.ts";
+import { reportHandlers } from "./report-handlers.ts";
 import { reviewDeps } from "./review-deps.ts";
 import { reviewOutcome } from "./review.ts";
 import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
@@ -69,6 +68,7 @@ export interface ReadyFacts {
 
 /** What the run is seeded with, and what the seed learned about the base. */
 export type { LeanSeed } from "./seed.ts";
+
 // Re-exported rather than imported-and-returned: `leanSeed` is the run-start
 // seam and the suites that pin it (`test-lean-seed-base.ts`,
 // `test-lean-base-infra.ts`, `test-lean-seed-infra.ts`) reach it through the
@@ -203,34 +203,6 @@ export async function readyOutcome(
 }
 
 /**
- * The rules the run's own record says it failed.
- *
- * The newest DECIDED `ready` or `specify` step whose outcome carries
- * `failedRules` — read from the step log, which is the durable record, rather
- * than from a closure that only a live `ready` fills. A run that crashed
- * between `ready` and `decline` resumes with nothing in the closure, and a
- * comment that said "ready never ran" on an issue whose spec had been refused
- * for three named rules would be both wrong and unrecoverable: the step log
- * already records the outcome that decided the verdict, so the comment posts
- * exactly those rules whether this process ran `ready` or not.
- *
- * `specify` is consulted as well as `ready` because it is the other state that
- * can refuse a run (`no-red-test`), and `ready` is asked LAST so its rules
- * shadow an earlier round's — a run whose `ready` passed after an earlier
- * refusal is not a run that posts the old rules.
- */
-export function failedRulesFromLog(steps: Step[]): string[] {
-  for (let i = steps.length - 1; i >= 0; i--) {
-    const step = steps[i];
-    if (step === undefined || step.outcome === undefined) continue;
-    if (step.state !== "ready" && step.state !== "specify") continue;
-    const rules = step.outcome.failedRules;
-    if (Array.isArray(rules) && rules.length > 0) return rules;
-  }
-  return ["no failed rule was recorded on the step log"];
-}
-
-/**
  * The specify step's dependencies: the outside world, injected.
  *
  * `dispatch` is the only model call the step makes and `exec` the only thing
@@ -272,6 +244,9 @@ export function specifyDeps(headless: boolean): SpecifyDeps {
  * `test-lean-challenge.ts` (n) rather than by a placeholder that kept the shape
  * safe by answering for a step nobody wrote.
  *
+ * The step's own `posted`/`reason` on the host channel are stamped by the caller,
+ * not left to the step: see `handlers.handback` below.
+ *
  * `headless` is the run's mode, threaded from `runWorkLean` to the three
  * dispatching deps builders. It is NOT remembered anywhere: two lean runs in one
  * process each carry their own, so a headless run cannot lend its trust stamp to
@@ -283,6 +258,14 @@ export function specifyDeps(headless: boolean): SpecifyDeps {
  * hands the run back instead of posting the not-ready comment — see
  * `LeanSeed.infra`. Both are read from the seed the run was given, so a resumed
  * run (which never ran this process's seed) keeps the refusal path.
+ *
+ * On `PI_ENSEMBLE_HANDOFF_CHANNEL=host` neither reporting step posts (#1920 item
+ * 3): the host owns that channel, exactly as `work`'s handoff step declines to
+ * post there. The body each step would have sent stays on the step's record, and
+ * `headless/work-lean-result.ts` publishes it in the result's `handoff` with
+ * `channel: "host"`. The claim `posted` is false because nothing reached the
+ * forge — a host must be able to tell a report it still has to deliver from one
+ * the forge took.
  */
 export function phase1Handlers(
   repoRoot: string,
@@ -321,29 +304,10 @@ export function phase1Handlers(
   // so a test drives them by injecting its own recorder and never touches a PR.
   Object.assign(handlers, ciLandHandlers(repoRoot, issue), publishHandler());
   handlers.review = (ctx) => reviewOutcome(ctx, reviewDeps(headless));
-  handlers.handback = (ctx) => handbackOutcome(ctx, postHandback);
-  handlers.decline = async (ctx) => {
-    // From the log, not from a closure: see `failedRulesFromLog`.
-    const rules = failedRulesFromLog(ctx.steps);
-    try {
-      await postNotReady(repoRoot, issue, rules);
-      // The comment reached the forge — the typed claim `leanHandoff` reads.
-      return { kind: "done", posted: true };
-    } catch (err) {
-      // NOT `done`: the step log memoizes a completed step forever, so a
-      // swallowed throw here would read as "the comment was posted" when it
-      // meant "the network dropped". `report-failed` is the kind that records
-      // the attempt honestly: the run still ends `not-ready` at exit 11 — the
-      // spec refused it whether or not the forge took the comment — and the
-      // reason on the record says the comment never went out. It is NOT
-      // retried on resume: the step log and the reason are the record.
-      return {
-        kind: REPORT_FAILED_KIND,
-        posted: false,
-        reason: `comment not posted: ${(err as Error).message}`,
-      };
-    }
-  };
+  // The two steps that REPORT how the run ended live in `lean/report-handlers.ts`:
+  // they are the only handlers that read the host channel, claim `posted`, or send
+  // text outside the process.
+  Object.assign(handlers, reportHandlers(repoRoot, issue));
   return handlers;
 }
 
@@ -366,11 +330,19 @@ export function summarize(result: RunLeanResult, issue: number): string {
  * `ctx.run.baseSha` have a base. The seed lands only on a NEW run: `runLean`
  * ignores it when a state file exists, which is what keeps a resume on the
  * commit its first round pinned.
+ *
+ * `timeoutMs` (the headless verb's `--timeout <minutes>`) is the THIRD input to
+ * the SAME deadline contract `work` reads (#1920 item 2): the shared reader
+ * (`resolveCycleDeadline`) weighs it as a duration BELOW an exported
+ * `PI_ENSEMBLE_CYCLE_BUDGET_MS` and below an exported `PI_ENSEMBLE_CYCLE_DEADLINE`,
+ * resolves it to an absolute epoch once, and the engine persists that arm on the
+ * record. It is passed as a value, not written to `process.env`: the env stays the
+ * host's input, and one run's budget cannot arm a later run in the same process.
  */
 export async function runWorkLean(
   repoRoot: string,
   issue: number,
-  opts: { headless?: boolean } = {},
+  opts: { headless?: boolean; timeoutMs?: number } = {},
 ): Promise<{ summary: string; result: RunLeanResult }> {
   const seed = await leanSeed(repoRoot);
   const result = await runLean({
@@ -378,6 +350,12 @@ export async function runWorkLean(
     issue,
     handlers: handlersFor(repoRoot, issue, opts, seed),
     seed: { version: seed.version, baseSha: seed.baseSha },
+    // The flag travels as a VALUE (`flagBudgetMs` mints the brand from the
+    // verb's parsed minutes), never as an env write: one run's `--timeout` must
+    // not become the deadline of every later dispatch this process makes.
+    ...(opts.timeoutMs === undefined
+      ? {}
+      : { budgetMs: flagBudgetMs(opts.timeoutMs) as CycleBudgetMs }),
   });
   return { summary: summarize(result, issue), result };
 }

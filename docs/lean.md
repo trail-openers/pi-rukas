@@ -179,14 +179,50 @@ against.
 ## Running it
 
 **Interactive.** `/work-lean <issue>` — one positional issue number, nothing
-else. It seeds the run with the mainline sha, drives it to a terminal state and
-notifies one summary line: `work-lean #<issue>: handed-back (exit 10) — <reason>`.
+else (the `--timeout` flag is the headless verb's; the interactive command takes
+the deadline from the environment, exactly as the headless one does). It seeds the
+run with the mainline sha, drives it to a terminal state and notifies one summary
+line: `work-lean #<issue>: handed-back (exit 10) — <reason>`.
 
-**Headless.** `pi-rukas-headless work-lean <issue> [--json]` — exactly one
-positional issue number; `--json` is accepted and changes nothing, as with every
-other subcommand. Stderr carries only NDJSON v1 log lines; stdout carries
-exactly one JSON document. The run's own code is the exit code; the verb adds no
-policy of its own.
+**Headless.** `pi-rukas-headless work-lean <issue> [--timeout <minutes>] [--json]`
+— exactly one positional issue number; `--json` is accepted and changes nothing,
+as with every other subcommand. Stderr carries only NDJSON v1 log lines; stdout
+carries exactly one JSON document. The run's own code is the exit code; the verb
+adds no policy of its own.
+
+**The caller's clock.** `--timeout <minutes>`, or `PI_ENSEMBLE_CYCLE_DEADLINE` /
+`PI_ENSEMBLE_CYCLE_BUDGET_MS` exported by the host, arms the same whole-cycle
+deadline `work` reads — one reader, so the two engines cannot disagree about what
+one environment means (`features.leanDeadline`). Step work ends at
+`deadline − PI_ENSEMBLE_HANDOFF_TIMEOUT_MS`: the run starts no new step after
+that and ends `handed-back` at 10 with its document, the way `work` parks. The
+resolved absolute deadline is persisted on the run's state record (`deadlineMs`)
+at the first boundary that resolves it, so a resume keeps the clock its first
+round started and a host can tell a deadline stop from any other handback. A
+step already running is bounded by its own budget (`WorkConfig.budgets`) alone:
+unlike `work`, lean opens no cycle clock, so the deadline decides only when a step
+may START and never shortens a child that is already up. Size the step budgets
+under the caller's kill, and pass the deadline so the run reports before it.
+
+**Who delivers the report.** On `PI_ENSEMBLE_HANDOFF_CHANNEL=host`
+(`features.leanHandoffHost`) neither reporting step posts to the forge: `handback`
+and `decline` still run and still leave their text on the step log, and the
+result publishes it as `issues[].handoff.body` with `handoff.channel: "host"` and
+`handoff.labelSkipped: "host-channel"` (`labelApplied` stays `false` — lean has no
+label step). On the default `forge` channel both post, as before, and a post the
+forge refused is reported by the contract's own pair (`handoff.bodyError:
+"not-recorded"`, no body), which is how a host tells "the forge took nothing" from
+"the host owns this".
+
+**Why it stopped.** `failure.kind` is `timeout` for a step that blew its own
+budget, `verify` for a red gate, `crashed` for a handler that threw and `process`
+for exhaustion or a forge refusal. `failure.cause` (`features.leanFailureCause`)
+is added only where the run recorded a kill it can attribute — a `minutes` ceiling
+whose child row reported `ok: false` — and it comes from the same classifier
+`work` uses (`self-killed:child-bound`). A `turns` or `tokens` ceiling stops a
+child at a turn boundary and is not a kill, so it gets no cause: `failure.message`
+already names the lever, and a cause the run never observed would send a host's
+retry ladder off a fact nobody recorded.
 
 With `features.workLeanResultSchema` in `--capabilities` (value `5`) that
 document is the **schema-5 result** — `schemaVersion` and `issues[]` with one

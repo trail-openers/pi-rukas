@@ -103,6 +103,15 @@ export const HEADLESS_FEATURES = {
    * and has no `prState` to switch on — refuse the image rather than guess.
    */
   workLeanResultSchema: RESULT_SCHEMA_VERSION,
+  // #1920 item 2: `work-lean` honours the cycle deadline (`--timeout` and
+  // `PI_ENSEMBLE_CYCLE_DEADLINE`) and stops short of it with a result document.
+  leanDeadline: true,
+  // #1920 item 3: on `PI_ENSEMBLE_HANDOFF_CHANNEL=host` neither reporting step
+  // posts and the result carries `handoff.channel: "host"` with the body.
+  leanHandoffHost: true,
+  // #1920 item 6: `failure.cause` where lean recorded one, classified by the
+  // same taxonomy `work` uses (undefined where the run recorded nothing).
+  leanFailureCause: true,
 } as const;
 
 export interface Capabilities {

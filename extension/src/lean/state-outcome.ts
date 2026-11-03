@@ -16,6 +16,7 @@
 
 import { isFullCommitSha } from "../commit-sha.ts";
 import type { DispatchUsage } from "../types.ts";
+import { HANDOFF_CHANNELS, type HandoffChannel } from "../work-driver-handoff-channel.ts";
 import { CRITERION_ID } from "./spec.ts";
 import { normaliseRelPath, pathProblem } from "./specify-path.ts";
 import {
@@ -167,6 +168,14 @@ const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>>
   // The two steps that REPORT how a run ended are the only ones that may claim a
   // comment reached the forge.
   posted: REPORTING_STATES,
+  // …and only `handback` may carry the comment it built: it is the run's report,
+  // and a gate that stamped one would put a child's prose on the record as the
+  // run's own closing statement.
+  report: "handback",
+  // …and the only ones that may name the channel they reported on (#1920 item 3).
+  // A `verify` step claiming `channel: "host"` would make the projection publish
+  // a gate verdict as a report the host still has to deliver.
+  channel: REPORTING_STATES,
   dispatches: DISPATCH_STATES,
   verifiedHead: "verify",
   commandCriteria: "verify",
@@ -372,6 +381,15 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
   // print a handoff as delivered when the forge refused it.
   if (oc.posted !== undefined && typeof oc.posted !== "boolean")
     return "outcome posted must be a boolean";
+  // `channel` is the report steps' channel claim, so it is one of the two the
+  // contract publishes or nothing: a hand-edited `"hostt"` would read as a forge
+  // post to the projection and drop the body the host was owed.
+  if (oc.channel !== undefined && !HANDOFF_CHANNELS.some((channel) => channel === oc.channel))
+    return `outcome channel must be one of ${HANDOFF_CHANNELS.join(" | ")}`;
+  // `report` is the comment the handback step built, so it is a string or nothing
+  // — a number or an object would reach the host's document as `[object Object]`.
+  if (oc.report !== undefined && typeof oc.report !== "string")
+    return "outcome report must be a string";
   return undefined;
 }
 
@@ -438,6 +456,12 @@ export function buildOutcome(oc: Record<string, unknown>): Outcome {
     ...(typeof oc.publishedHead === "string" ? { publishedHead: oc.publishedHead } : {}),
     ...(typeof oc.draft === "boolean" ? { draft: oc.draft } : {}),
     ...(typeof oc.posted === "boolean" ? { posted: oc.posted } : {}),
+    // Rebuilt beside `posted`, because the two are ONE fact — who owns the channel,
+    // and did anything reach them. A resume that kept `posted: false` and dropped
+    // `channel: "host"` would read as a forge post the forge refused, and the host
+    // would never be handed the body it was owed.
+    ...(oc.channel === "host" || oc.channel === "forge" ? { channel: oc.channel } : {}),
+    ...(typeof oc.report === "string" ? { report: oc.report } : {}),
     ...rowsField(validatedDispatches(oc.dispatches)),
     ...(isBudgetLimit(oc.limit) ? { limit: oc.limit } : {}),
     ...(isCount(oc.value) ? { value: oc.value as number } : {}),

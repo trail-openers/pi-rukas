@@ -1,0 +1,302 @@
+/**
+ * lib/lean-host-contract-fixture — the shared rig for the two files that test
+ * lean's side of the host contract (#1920 items 2, 3, 6):
+ * `test-lean-deadline-host-channel.ts` (the engine and its reporting steps) and
+ * `test-lean-failure-cause.ts` (the projection's `failure.cause`).
+ *
+ * Both need the same three things and must not each keep a private copy: a clock
+ * that crosses a deadline mid-drive, a handler set that RECORDS what it was asked
+ * to do, and an env scope that leaves the process as it found it. A fixture that
+ * drifts in one of the two files turns a real stop into an assertion about the
+ * rig.
+ */
+
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { runWorkLeanVerb } from "../../src/headless/work-lean.ts";
+import type { LeanRunOutcome } from "../../src/headless/work-lean.ts";
+import { runWorkLean } from "../../src/lean/command.ts";
+import type { LeanHandlers } from "../../src/lean/engine.ts";
+import {
+  type LeanRun,
+  type LeanState,
+  type Outcome,
+  type Step,
+  leanStateFile,
+  loadRun,
+} from "../../src/lean/state.ts";
+import { runVerb } from "../headless-verb-harness.ts";
+import { fakeRun } from "./work-lean-verb-fixture.ts";
+import { REPO } from "./work-lean-verb-fixture.ts";
+
+/** The clock the cases that must NOT move use, so an env deadline in `Date.now()`
+ *  terms is reliably inside their handoff allowance. */
+export const CLOCK = 1_700_000_000_000;
+
+/** Far enough out that the handoff allowance never bites: a deadline that must
+ *  NOT stop anything. */
+export const DAY = 24 * 60 * 60_000;
+
+/** The env keys these cases write, restored after every case. */
+export const ENV_KEYS = [
+  "PI_ENSEMBLE_CYCLE_DEADLINE",
+  "PI_ENSEMBLE_CYCLE_BUDGET_MS",
+  "PI_ENSEMBLE_HANDOFF_CHANNEL",
+  // A case may pin the forge off for its own duration: the post seam is asserted
+  // to be the WHOLE post path, which is only falsifiable when no adapter can be
+  // resolved underneath it.
+  "PI_ENSEMBLE_FORGE",
+] as const;
+
+const saved: Record<string, string | undefined> = {};
+for (const k of ENV_KEYS) saved[k] = process.env[k];
+
+/** Run `body` with exactly `vars` set for the three contract keys, then restore. */
+export async function withEnv(
+  vars: Record<string, string | undefined>,
+  body: () => Promise<void>,
+): Promise<void> {
+  for (const k of ENV_KEYS) {
+    if (vars[k] === undefined) delete process.env[k];
+    else process.env[k] = vars[k];
+  }
+  try {
+    await body();
+  } finally {
+    for (const k of ENV_KEYS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  }
+}
+
+/** Throwaway repo roots, so each case owns its own `.pi/lean-state` file. */
+const dirs: string[] = [];
+export function scratch(name: string): string {
+  const dir = mkdtempSync(path.join(tmpdir(), `lean-host-${name}-`));
+  dirs.push(dir);
+  return dir;
+}
+export function cleanScratch(): void {
+  for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+}
+
+/**
+ * A clock that crosses the deadline while the run stands at its REPORTING step.
+ *
+ * The deadline cases need a run that starts INSIDE the handoff allowance and
+ * arrives at its reporting step AFTER the clock has passed: an instant drive
+ * never notices the difference, and a run stopped before it reached the report
+ * tests the wrong rule. A duration is resolved to an epoch by the shared reader
+ * at the first boundary and persisted, so what has to move is the clock it is
+ * compared against — not the arm.
+ *
+ * The crossing is keyed on the STEP and on the read the STOP TEST sees, not on a
+ * count of ticks. Each boundary of the loop consumes four reads of this clock:
+ * the one that writes the step's `startedAt`, then three after the handler
+ * returns (its `endedAt`, and the two the NEXT boundary takes for the deadline
+ * resolution and the stop test). So a read is the stop test's exactly when the
+ * reads so far are `2 mod 4` while the run stands at `at`. That is the read
+ * `deadlineStopsSteps` answers — the one that decides whether a non-exempt step
+ * may start — and the one a reporting exemption has to survive. A case calibrated
+ * on a tick count instead can be delivered to its report while still INSIDE the
+ * allowance, where "the reporting step ran" passes identically with or without
+ * the rule it advertises and the claim goes unenforced.
+ *
+ * The position therefore comes from the run's own RECORD (the newest step's
+ * `state`, which is the step whose outcome the loop still owes and hence the
+ * state the next boundary will judge), and it crosses once `times` boundaries of
+ * `at` have been entered. Callers pass the REPORT's predecessor as `at`, so the
+ * run enters its report already past the line.
+ *
+ * A budget has to EXCEED the handoff allowance for the early steps to be allowed
+ * at all: the comparison at every boundary is `arm(now) - now <= allowance`, so
+ * a budget equal to the allowance stops the run before its first step.
+ */
+export function crossing(opts: {
+  /** The state whose boundaries drive the crossing: the step this case must
+   *  reach on its own. The state whose run must survive the clock is normally
+   *  the REPORT's predecessor — the boundary the stop test governs. */
+  at: LeanState;
+
+  /** Where the run's own record lives: the case's `repoRoot` and `issue`. */
+  repoRoot: string;
+  issue: number;
+  /** Cross after this many boundaries AT `at` (default: the first one). */
+  times?: number;
+}): { now: () => number; past: number; crossed: () => boolean } {
+  const start = Date.now();
+  const budget = 240 * 60_000;
+  const past = start + budget - 60_000;
+  let crossed = false;
+  let boundariesAtState = 0;
+  // Read on EVERY clock read, so the clock cannot go stale against the position
+  // the loop is about to judge. No record yet (a brand-new run) means no log, and
+  // nothing has crossed.
+  let run: LeanRun | undefined;
+  const standingOn = (): LeanState | undefined => {
+    try {
+      run = loadRun(opts.repoRoot, opts.issue);
+      const last = run?.steps[run.steps.length - 1];
+      return last?.state;
+    } catch {
+      run = undefined;
+      // An unreadable record is not a crossing: the engine's own loader is the
+      // one that refuses a corrupt file, and the clock must not turn that into
+      // an early deadline.
+      return undefined;
+    }
+  };
+  // One boundary of the loop consumes FOUR reads of this clock: the read that
+  // writes the step's `startedAt`, then three after the handler returns (the
+  // outcome's `endedAt`, and the two the next boundary's deadline resolution and
+  // stop test take). So `count % 4 === 1` is the read the STOP TEST sees, and it
+  // is only counted while the run stands at `at` — which makes the crossing
+  // belong to a step of that state rather than to a number of ticks nobody owns.
+  let reads = 0;
+  return {
+    now: () => {
+      const standing = standingOn();
+      // The stop test's read: two reads into a boundary (index 1 of 0,4,8… and
+      // index 5 of the pre-handler offset — see the header), while the loop
+      // stands at a step of `at`.
+      const isStopTest = standing === opts.at && reads % 4 === 1;
+      if (isStopTest) boundariesAtState++;
+      const gone = boundariesAtState > (opts.times ?? 0);
+      const t = gone ? past : start;
+      if (t === past) crossed = true;
+      reads++;
+      return t;
+    },
+    past,
+    // Read after the drive: the clock was asked for `past` at least once, so a
+    // case whose run never reached `at` cannot read as a deadline case. The
+    // caller's own assertions decide whether that is enough for its claim.
+    crossed: () => crossed,
+  };
+}
+
+/** Handlers that record every call and answer whatever the table needs to keep
+ *  walking. A state the case did not script throws, so a run that reached a
+ *  state nobody answered is loud rather than quietly `ok`. */
+export function recording(
+  calls: string[],
+  answers: Partial<Record<LeanState, Outcome[]>>,
+): LeanHandlers {
+  const handlers: LeanHandlers = {};
+  for (const [state, queue] of Object.entries(answers) as [LeanState, Outcome[]][]) {
+    const remaining = [...queue];
+    handlers[state] = async () => {
+      calls.push(state);
+      const next = remaining.shift();
+      if (next === undefined) throw new Error(`no scripted outcome for ${state}`);
+      return next;
+    };
+  }
+  return handlers;
+}
+
+/** The outcomes a green run's walk needs, in order. */
+export const WALK: Partial<Record<LeanState, Outcome[]>> = {
+  ready: [{ kind: "ok" }],
+  specify: [{ kind: "ok" }],
+  build: [{ kind: "ok" }, { kind: "ok" }],
+  challenge: [{ kind: "none" }],
+  verify: [{ kind: "green" }],
+  publish: [{ kind: "ok" }],
+  review: [{ kind: "done" }],
+  ci: [{ kind: "green" }],
+  land: [{ kind: "merged" }],
+  handback: [{ kind: "done" }],
+  decline: [{ kind: "done" }],
+};
+
+/**
+ * A verb reply `wellFormed` accepts: `fakeRun`'s record carries no terminal
+ * stamp, and the stamp is part of what makes a reply a run's answer rather than
+ * a shape, so the fixture adds the one the state requires.
+ */
+export function wellFormedHandback(): LeanRunOutcome {
+  const base = fakeRun({
+    code: 10,
+    state: "handed-back",
+    steps: [
+      {
+        key: "7:handback:0",
+        state: "handback",
+        startedAt: CLOCK,
+        endedAt: CLOCK + 1,
+        outcome: { kind: "done", posted: true, reason: "handback comment posted" },
+      },
+    ],
+  });
+  return { summary: "work-lean #7: handed-back (exit 10)", result: base };
+}
+
+/** The verb's own issue number, which no case of this suite drives a record for. */
+const SCRATCH_ISSUE = 9993;
+
+/**
+ * Drive the verb with the standard reply and report what its injected engine saw.
+ *
+ * `ran` is the claim the argv cases turn on: a refusal that still called the
+ * engine would run a cycle on arguments the parser refused. `engine` is what
+ * `runWorkLean` passed on to `runLean` — the arm `--timeout` becomes, and the
+ * run's mode — so the flag's DESTINATION is observed rather than inferred from
+ * an env var somebody else could have written.
+ */
+export async function verbRun(
+  argv: string[],
+  reply: LeanRunOutcome,
+): Promise<{
+  code: number;
+  mode?: { headless?: boolean; timeoutMs?: number };
+  engine?: { budgetMs?: number };
+  ran: boolean;
+  violations: string[];
+}> {
+  let ran = false;
+  let mode: { headless?: boolean; timeoutMs?: number } | undefined;
+  let engine: { budgetMs?: number } | undefined;
+  const r = await runVerb("work-lean", argv, REPO, (a, ctx) =>
+    runWorkLeanVerb(a, ctx, async (root, issue, opts) => {
+      ran = true;
+      mode = opts ?? {};
+      // The flag's whole job is to reach `runLean`'s clock as a VALUE, and the
+      // record the run leaves behind is the only evidence of what the engine was
+      // given: `runWorkLean` threads `--timeout` into `RunLeanOpts.budgetMs` and
+      // the engine persists the epoch it resolves to. `issue: 0` puts that record
+      // in the fixture's own repo and keeps the real engine out of any repo a
+      // later case reads; nothing here runs a cycle — the reply is the fixture's.
+      // A record left from an earlier case makes `loadRun` refuse BEFORE a step
+      // runs, and the caller would then see "no arm" for a defect that has
+      // nothing to do with the clock — so the scratch record is removed first and
+      // the arm is read back from a file this call wrote. The issue number is one
+      // no case of this suite drives, so nothing later reads the record this makes.
+      rmSync(leanStateFile(root, SCRATCH_ISSUE), { force: true });
+      const driven = await runWorkLean(root, SCRATCH_ISSUE, opts).catch(() => undefined);
+      engine =
+        driven === undefined
+          ? undefined
+          : { budgetMs: budgetFromArm(driven.result.run, opts?.timeoutMs) };
+      return reply;
+    }),
+  );
+  return { code: r.code, mode, engine, ran, violations: r.violations };
+}
+
+/**
+ * The arm `budgetMs` must have produced, measured off the record the run wrote:
+ * the persisted `deadlineMs` minus the duration the flag carried is the instant
+ * the engine resolved it at, so an arm that arrived is distinguishable from one
+ * that was dropped on the floor — and from an env var some other case exported.
+ * `undefined` when the run recorded no arm at all.
+ */
+function budgetFromArm(
+  run: { deadlineMs?: number },
+  timeoutMs: number | undefined,
+): number | undefined {
+  if (run.deadlineMs === undefined || timeoutMs === undefined) return undefined;
+  return run.deadlineMs - timeoutMs;
+}

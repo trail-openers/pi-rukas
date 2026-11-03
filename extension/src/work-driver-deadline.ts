@@ -68,6 +68,83 @@ export const MIN_USEFUL_MS: Partial<Record<WorkStep, number>> = {
 const EPOCH_MS_FLOOR = 1e12;
 
 /**
+ * A duration in ms: the shape `PI_ENSEMBLE_CYCLE_BUDGET_MS` carries and the
+ * shape the lean verb's `--timeout <minutes>` arrives as. The reader resolves it
+ * to an epoch — it is never written to the environment, which is what keeps one
+ * run's budget from becoming every later dispatch's deadline.
+ */
+export type CycleBudgetMs = number & { readonly __cycleBudgetMs: unique symbol };
+
+/**
+ * The caller's duration, branded for the reader. Minted HERE and nowhere else:
+ * the one place a `--timeout` becomes an arm is the same place the shared reader
+ * consumes it, so no caller can hand `resolveCycleDeadline` an ordinary number
+ * that was never the host's word for how long the cycle may run.
+ */
+export function flagBudgetMs(timeoutMs: number | undefined): CycleBudgetMs | undefined {
+  return timeoutMs === undefined ? undefined : (timeoutMs as CycleBudgetMs);
+}
+
+/**
+ * The deadline rules, applied to a caller's environment, the flag's arm, and the
+ * one arm this run already persisted. `readCycleDeadline` is `work`'s entry point
+ * (it reads the cycle state's field); `lean/deadline.ts` calls THIS one with the
+ * record's own `deadlineMs` and the verb's `--timeout` duration, because a lean
+ * run has no cycle state and minting a fake one to reach the rules would be a
+ * second claim about a shape the writer owns — and because a caller that writes
+ * the flag into the environment hands one run's budget to the whole process.
+ *
+ * Precedence, highest first: `PI_ENSEMBLE_CYCLE_DEADLINE` (an absolute epoch ms)
+ * outranks everything; then `PI_ENSEMBLE_CYCLE_BUDGET_MS`, which the host exported
+ * itself; then the `flagBudgetMs` duration a caller passed. Each of the two
+ * durations resolves to an epoch ONCE, with the persisted arm winning while a
+ * duration is still set — re-resolving it at every boundary (or on resume)
+ * restarts the clock and never parks. A cleared env var clears the deadline's
+ * env half: no env input and no flag, no deadline.
+ *
+ * A malformed value — including an epoch in seconds — is UNSET, traced, never a
+ * failure: the deadline is an operator affordance, not a correctness gate.
+ */
+export function resolveCycleDeadline(
+  env: Record<string, string | undefined>,
+  persisted: number | undefined,
+  now: number,
+  flagBudgetMs?: CycleBudgetMs,
+): number | undefined {
+  const abs = env.PI_ENSEMBLE_CYCLE_DEADLINE;
+  if (abs !== undefined && abs !== "") {
+    const v = Number(abs);
+    if (Number.isFinite(v) && v >= EPOCH_MS_FLOOR) return v;
+    trace(
+      Number.isFinite(v) && v > 0
+        ? `work-driver: PI_ENSEMBLE_CYCLE_DEADLINE=${abs} looks like epoch SECONDS — it must be epoch ms; ignored`
+        : `work-driver: PI_ENSEMBLE_CYCLE_DEADLINE=${abs} is not a finite positive epoch ms — ignored`,
+    );
+    return undefined;
+  }
+  const budget = env.PI_ENSEMBLE_CYCLE_BUDGET_MS;
+  if (budget !== undefined && budget !== "") {
+    if (!Number.isFinite(Number(budget)) || Number(budget) <= 0) {
+      trace(
+        `work-driver: PI_ENSEMBLE_CYCLE_BUDGET_MS=${budget} is not a finite positive duration — ignored`,
+      );
+      return undefined;
+    }
+  }
+  // The host's exported budget outranks the caller's flag, and a malformed one
+  // still traces: a budget that reads as an arm but is not a number is an
+  // operator typo worth one stderr line.
+  const duration = budget !== undefined && budget !== "" ? Number(budget) : flagBudgetMs;
+  if (duration === undefined) return undefined;
+  // The persisted absolute wins while a duration is set: re-resolving it at
+  // every boundary (or on resume) would restart the clock and never park.
+  if (typeof persisted === "number" && Number.isFinite(persisted) && persisted > 0) {
+    return persisted;
+  }
+  return now + duration;
+}
+
+/**
  * Read the caller's deadline. `PI_ENSEMBLE_CYCLE_DEADLINE` is an absolute
  * epoch ms. `PI_ENSEMBLE_CYCLE_BUDGET_MS` is a duration resolved to an epoch
  * ONCE; the persisted `pipelineState.cycleDeadlineMs` is used only while the
@@ -79,33 +156,7 @@ const EPOCH_MS_FLOOR = 1e12;
  * the deadline is an operator affordance, not a correctness gate.
  */
 export function readCycleDeadline(state: WorkState, now: number): number | undefined {
-  const abs = process.env.PI_ENSEMBLE_CYCLE_DEADLINE;
-  if (abs !== undefined && abs !== "") {
-    const v = Number(abs);
-    if (Number.isFinite(v) && v >= EPOCH_MS_FLOOR) return v;
-    trace(
-      Number.isFinite(v) && v > 0
-        ? `work-driver: PI_ENSEMBLE_CYCLE_DEADLINE=${abs} looks like epoch SECONDS — it must be epoch ms; ignored`
-        : `work-driver: PI_ENSEMBLE_CYCLE_DEADLINE=${abs} is not a finite positive epoch ms — ignored`,
-    );
-    return undefined;
-  }
-  const budget = process.env.PI_ENSEMBLE_CYCLE_BUDGET_MS;
-  if (budget === undefined || budget === "") return undefined;
-  const v = Number(budget);
-  if (!Number.isFinite(v) || v <= 0) {
-    trace(
-      `work-driver: PI_ENSEMBLE_CYCLE_BUDGET_MS=${budget} is not a finite positive duration — ignored`,
-    );
-    return undefined;
-  }
-  // The persisted absolute wins while the budget is set: re-resolving it at
-  // every boundary (or on resume) would restart the clock and never park.
-  const persisted = state.pipelineState.cycleDeadlineMs;
-  if (typeof persisted === "number" && Number.isFinite(persisted) && persisted > 0) {
-    return persisted;
-  }
-  return now + v;
+  return resolveCycleDeadline(process.env, state.pipelineState.cycleDeadlineMs, now);
 }
 
 /**
