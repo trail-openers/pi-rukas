@@ -125,9 +125,6 @@ async function finish(
     cwd,
     branch,
     ledger.hasCritical,
-    // #1537 — the round-cap rule's second arm: how many blocking findings the
-    // verdict carried, per severity.
-    blockingCountsOf(summary),
     ledger.headSha,
     ledger.head,
     // #988 — the finish path IS `runLensReview`'s single resolution site;
@@ -136,8 +133,11 @@ async function finish(
     ledger.ledgerKey ?? branch,
     // #1127 — the operator's round-cap override, recorded on the entry.
     ledger.overrideCap,
-    // #1537 — the bar the counts above were scored at, from the same resolved
-    // threshold that decided `passed`.
+    // #1537 — the round-cap rule's second arm: how many blocking findings the
+    // verdict carried, per severity, and the bar those counts were scored at
+    // (from the same resolved threshold that decided `passed`). New fields go
+    // LAST so the pre-#1537 positional order above stays intact.
+    blockingCountsOf(summary),
     blockingBarOf(threshold),
     // #1934 — the shared identity, so this row's `patchId` is the one the round
     // recorded against.

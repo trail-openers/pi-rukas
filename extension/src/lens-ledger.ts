@@ -118,9 +118,6 @@ export function writeLensLedgerEntry(
   cwd: string | undefined,
   branch?: string,
   hasCritical?: boolean,
-  /** #1537 — per-severity counts of the BLOCKING findings (see
-   * `LedgerEntry.blockingCounts`). Undefined on callers that predate it. */
-  blockingCounts?: LedgerBlockingCounts,
   headSha?: string,
   head?: string,
   /** #988 — the branch ALREADY resolved by `runLensReview` (threaded by the
@@ -128,6 +125,11 @@ export function writeLensLedgerEntry(
   resolvedBranch?: string,
   /** #1127 — the operator passed `overrideCap: true`; recorded on the entry. */
   overrideCap?: boolean,
+  /** #1537 — per-severity counts of the BLOCKING findings (see
+   * `LedgerEntry.blockingCounts`). Undefined on callers that predate it.
+   * NEW FIELDS GO LAST: the pre-#1537 positional order of everything above is
+   * load-bearing for direct callers (tests) that pass positionally. */
+  blockingCounts?: LedgerBlockingCounts,
   /**
    * #1537 — the bar `threshold` was scored at, resolved by the caller. Read
    * from the SAME value `lensPassed` derives `passed` from, so the row's
