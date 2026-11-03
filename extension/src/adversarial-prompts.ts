@@ -162,13 +162,14 @@ export function buildAdversarialPrompt(opts: {
     : "";
   const bounded = boundDiffForPrompt(opts.diff, opts.diffRange);
   const note = bounded.note ? NOTE_SEP + bounded.note : "";
-  // #1992 — the same lane rules the gateCmd arm spells out, for the tool path
-  // where nobody has run a gate: a check is still run only on the changed paths.
+  // #1992 — one constant for both arms: the lane rules AND the targeted-checks
+  // sentence are the same on the driver path and the tool path, so they cannot
+  // drift apart. The gateCmd arm adds only its own clause about the named gate.
   const laneRules =
-    "Do not debug a failure in code this diff did not change — report it in one line (tag it `OUT_OF_DIFF`, per your role prompt). Do not re-run an unchanged command against an unchanged tree to see whether its result changes. Do not create, edit or revert files in the worktree. Report your findings before your time runs out; an unfinished investigation is itself a finding that states what is known. When you have decided you are done, your very next message is the verdict report, with no further tool calls.";
+    "Run only targeted checks — one test file, or a lint or type check of the changed files — never the whole-project suite. Do not debug a failure in code this diff did not change: report it in one line as a MINOR_OBSERVATION tagged `OUT_OF_DIFF`. Do not re-run an unchanged command against an unchanged tree to see whether its result changes. Do not create, edit or revert files in the worktree. Report your findings before your time runs out; an unfinished investigation is itself a finding that states what is known. When you have decided you are done, your very next message is the verdict report, with no further tool calls.";
   const checks = opts.gateCmd
-    ? `Do NOT run the project's full gate — \`${opts.gateCmd}\` — or anything that wraps it or the whole test suite: the driver runs that exact command itself. Its verify gate had to clear this tree before you were dispatched, and it runs again on the consolidated tree before the pull request opens, so a re-run here costs the whole gate's wall-clock and proves nothing new. Run only targeted checks — the single test file, lint or type check that exercises the behaviour you are attacking.`
-    : "Run only targeted checks — the single test file, lint or type check that exercises the changed files; never the whole-project suite.";
+    ? `Do NOT run the project's full gate — \`${opts.gateCmd}\` — or anything that wraps it or the whole test suite: the driver runs that exact command itself. Its verify gate had to clear this tree before you were dispatched, and it runs again on the consolidated tree before the pull request opens, so a re-run here costs the whole gate's wall-clock and proves nothing new.`
+    : "";
   return `You are reviewing the diff below. Context: ${opts.context}
 Round: ${opts.round} of ${opts.maxRounds}.
 

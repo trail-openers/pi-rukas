@@ -288,7 +288,7 @@ If you find nothing in your lane: do not call the tool. Conclude with a one-sent
 
 ## Stay in the review lane
 
-Review the diff above. Run only targeted checks — one test file, or a lint or type check of the changed files; never a whole-project suite. Do not debug a failure in code this diff did not change: report it in one line. Do not re-run an unchanged command against an unchanged tree to see whether its result changes. Do not create, edit or revert files in the worktree. Report your findings before your time runs out; an unfinished investigation is itself a finding that states what is known. When you have decided you are done, your very next message is that report, with no further tool calls.
+Review the diff above. Run only targeted checks — one test file, or a lint or type check of the changed files; never a whole-project suite. Do not debug a failure in code this diff did not change: file it with \`report_finding\` in one line (path + title). Do not re-run an unchanged command against an unchanged tree to see whether its result changes. Do not create, edit or revert files in the worktree. Report your findings before your time runs out; an unfinished investigation is itself a finding that states what is known. When you have decided you are done, your very next message is that report, with no further tool calls.
 
 When you have finished all findings, write a short prose summary as your final reply.
 
