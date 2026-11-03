@@ -46,16 +46,17 @@
  * has no `budget` arrow to route on, so the stop throws with the rows it paid for
  * (see below for why the two shapes differ).
  *
- * **What a gate must say to buy a fixer.** Only a blocking verdict. The
- * adversarial gate's doctrine calls `CRITICAL_ISSUES_FOUND` the blocking one and
- * `ISSUES_FOUND`/`MINOR_OBSERVATIONS` explicitly non-blocking; the six-lens layer
- * reserves its CRITICAL verdict the same way and reaches `ISSUES_FOUND` for
- * anything at or above the project's bar (`computeVerdict`). A non-blocking verdict
- * from either gate therefore ENDS the step clean — no fixer, no re-review, no
- * second gate pass — and its findings are disclosed by the review layer's own
- * residual post, which is where non-blocking findings have always gone. The step
- * pays for a fix only where the reviewing layer itself said the branch must not
- * proceed.
+ * **What a gate must say to buy a fixer.** A blocking row or a CRITICAL verdict,
+ * never a verdict name. The adversarial gate's doctrine calls `CRITICAL_ISSUES_FOUND`
+ * the blocking one and `ISSUES_FOUND`/`MINOR_OBSERVATIONS` explicitly non-blocking;
+ * the six-lens layer reserves its CRITICAL verdict the same way and reaches
+ * `ISSUES_FOUND` for anything at or above the project's bar (`computeVerdict`), so the
+ * lens arm is judged on its rows (`lensBlocks`) rather than on that name. The step
+ * therefore ENDS clean only when neither gate produced a blocking row or record — no
+ * fixer, no re-review, no second gate pass — and its findings are disclosed by the
+ * review layer's own residual post, which is where non-blocking findings have always
+ * gone. The step pays for a fix only where the reviewing layer itself said the branch
+ * must not proceed.
  *
  * **What ends the step.** Both gates clean ends it, on one of two kinds that
  * differ only in what the step did to the branch: `done` when no fix wave ran
@@ -125,7 +126,7 @@ import {
   CAUSE_NOT_ADDRESSED,
   CAUSE_NO_CHANGE,
   LENS_DID_NOT_RUN,
-  blockingSeverity,
+  atOrAboveBar,
   lensBlocks,
   renderFinding,
   renderRows,
@@ -298,10 +299,11 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
       // Neither gate blocked, so there is no wave and no re-review: the run goes
       // on as it always did. Both halves of the bar are the reviewing layers' own:
       // `gate.blocking` is the loop's trailing record read by `blockingRecord`, and
-      // `lensBlocks` is the layer's CRITICAL verdict — a reviewer that
-      // reported findings without stopping the run has them carried to the lenses
-      // above and disclosed by the review layer, and the step pays nobody to fix
-      // what the reviewing layer itself declined to block on.
+      // `lensBlocks` is the layer's CRITICAL verdict or a reported row at the
+      // project's bar — a reviewer that reported findings below the bar without
+      // stopping the run has them carried to the lenses above and disclosed by the
+      // review layer, and the step pays nobody to fix what the reviewing layer itself
+      // declined to block on.
       return cleanPass(review, rows, fixedFromLog(ctx.steps));
     }
 
@@ -414,7 +416,7 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
     // advisory tier is excluded from the verdict, the counts and `hasCritical`. A
     // carried row is the layer saying "not addressed", whatever tier it sits in.
     const unresolved = [...reReview.reported, ...reReview.advisory].filter(
-      (f) => isCarried(f) && blockingSeverity(f, threshold),
+      (f) => isCarried(f) && atOrAboveBar(f, threshold),
     );
     // The gate's own words join the refusal only when that pass BLOCKED — the
     // re-gate's CRITICAL record is a demand on the fix, and its wording survives
@@ -460,15 +462,15 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
     // row below the bar does reach here — reported by a round the step is calling
     // clean, and disclosed by the layer's residual post under its carried heading.
     // `reported` also excludes the rows `splitAdvisory` moved out of it, and those
-    // are the layer's to account for, in its own post. `blockingSeverity` is the
-    // same predicate the refusal reads, so the two arms cannot disagree about which
+    // are the layer's to account for, in its own post. `atOrAboveBar` is the same
+    // predicate the wave reads, so the two arms cannot disagree about which
     // rows blocked: what is neither carried nor blocking is disclosed.
     return cleanPass(
       reReview,
       rows,
       true,
       disclosureNote(
-        reReview.reported.filter((f) => !isCarried(f) && !blockingSeverity(f, threshold)).length,
+        reReview.reported.filter((f) => !isCarried(f) && !atOrAboveBar(f, threshold)).length,
         reGate.open ? reGate.findings : "",
       ),
     );

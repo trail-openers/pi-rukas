@@ -101,7 +101,7 @@ export type LensRound = Pick<
    * severity counts and the ledger's `hasCritical`, so a CARRIED HIGH that the split
    * moved here would clear a fix wave while the layer still holds the row open and
    * prints it under its carried heading — the step would call that round clean.
-   * The step therefore reads `isCarried && blockingSeverity` over `reported` AND
+   * The step therefore reads `isCarried && atOrAboveBar` over `reported` AND
    * these rows. It states no rule of its own about the advisory tier otherwise:
    * a fresh advisory row is the layer's to disclose, exactly as an advisory row is
    * not the step's to block on.

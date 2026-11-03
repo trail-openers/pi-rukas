@@ -6,8 +6,9 @@
  * procedure reads, so the numbers and the words that state them have one home
  * that a test can import rather than a string in a loop body. The facts that
  * live here are the child budget (`reviewPasses`, `REVIEW_CHILD_BUDGET`), the
- * named handback causes, the bar a carried row must reach to hand the run back,
- * and the rendering of a row into a handback line.
+ * named handback causes, the one bar a row must reach to block — read by the wave
+ * and by the re-review's carried-row check — and the rendering of a row into a
+ * handback line.
  *
  * **One full review, one fix wave, one re-review of the fix diff.** There is no
  * round loop, so there is no round constant, no stagnation tie-breaker and no
@@ -78,9 +79,9 @@ export const PASS_ROWS = 1 + LENSES_PER_PASS;
  * own residual post. The adversarial role's doctrine is unchanged by this — only
  * `CRITICAL_ISSUES_FOUND` is "Must fix before proceeding" there, and
  * `decideLoopAction` in `adversarial-verdict.ts` still passes on `ISSUES_FOUND` and
- * `MINOR_OBSERVATIONS`: the gate's own verdict buys no wave; the rows do. What a non-blocking verdict reports is not discarded — the adversarial
- * pass's findings travel to the lenses as `carried` and the lens round's go to the
- * layer's own residual post, which is where non-blocking findings have always gone.
+ * `MINOR_OBSERVATIONS`: the gate's own verdict buys no wave; the rows do. What a
+ * non-blocking verdict reports is not discarded — it takes the disclosure path
+ * stated above.
  *
  * **`LENS_DID_NOT_RUN`** is the other side of the same enum, and the reason the bar
  * is an allowlist: a round that hit `REVIEW_INCOMPLETE` or a round cap reviewed
@@ -107,6 +108,11 @@ export const LENS_BLOCKING_VERDICTS: readonly Verdict[] = ["CRITICAL_ISSUES_FOUN
  * sit below the threshold therefore does not block even when its verdict is
  * `ISSUES_FOUND` — the verdict is reached from the rows, so a fixture that said
  * otherwise would be asserting a state the layer cannot produce.
+ *
+ * The asymmetry with the re-review is policy, not an oversight: the wave reads
+ * `reported` only because an advisory row sits outside the PR's changed lines and the
+ * layer already excludes it from its verdict, whereas a CARRIED advisory row is still
+ * caught — by the re-review's NOT ADDRESSED scan, which reads both tiers.
  */
 export function lensBlocks(
   round: { verdict: Verdict; reported: readonly Finding[] },
@@ -151,7 +157,7 @@ export const CAUSE_NEW_CRITICAL = "review: fix introduced a CRITICAL";
  * Does a row reach the bar the step was told to review at?
  *
  * THE ONE PREDICATE both bars read — the wave bar in {@link lensBlocks} and the
- * re-review's carried-row bar in {@link blockingSeverity} — because two rules over
+ * re-review's carried-row bar in `review.ts` — because two rules over
  * the same `SEVERITY_RANK` are two rules that drift apart, and the drift only
  * shows up when a round's verdict and the step's decision disagree about the same
  * row. The bar is the `Severity` `ReviewDeps.reviewThreshold` resolved once at the
@@ -167,21 +173,12 @@ export const CAUSE_NEW_CRITICAL = "review: fix introduced a CRITICAL";
  * counts as blocking — the direction every other absence in this step goes.
  */
 export function atOrAboveBar(f: { severity: Finding["severity"] }, threshold: Severity): boolean {
-  const rank = SEVERITY_RANK[f.severity];
+  // An own-property lookup, not a bare subscript: a row is parsed model output, and
+  // `SEVERITY_RANK["__proto__"]`/`SEVERITY_RANK["constructor"]` resolve to prototype
+  // members rather than `undefined`. Read as a rank they would clear the bar, so the
+  // inherited arm is the same fail-closed case as the missing one.
+  const rank = Object.hasOwn(SEVERITY_RANK, f.severity) ? SEVERITY_RANK[f.severity] : undefined;
   return rank === undefined || rank <= SEVERITY_RANK[threshold];
-}
-
-/**
- * Is a row of the re-review blocking, by the same bar the wave was bought at?
- *
- * The alias exists so the two call sites say what they are asking ("is this
- * carried row blocking?") while sharing {@link atOrAboveBar}'s one rule.
- */
-export function blockingSeverity(
-  f: { severity: Finding["severity"] },
-  threshold: Severity,
-): boolean {
-  return atOrAboveBar(f, threshold);
 }
 
 /**
