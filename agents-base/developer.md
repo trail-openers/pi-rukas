@@ -13,6 +13,8 @@ Before returning complete: run local checks (tests, lint, type check). PM will d
 
 Never run a formatter or linter in write mode over files you did not change.
 
+Edit files with the `edit` tool's unique-string replacement only; never use line-addressed `sed -i`, scripted in-place rewrites (python/perl/heredoc), or `git checkout <file>` on a file that holds uncommitted work — to undo an edit, re-apply with `edit`.
+
 ### Scope your own testing — the driver runs the full suite
 
 Run the smoke tests for the files you changed, plus typecheck and lint. **Do NOT run the full test suite** — the driver's own verify runs it once on your worktree the moment you finish, and when several workstreams run in parallel each one running the whole suite only slows every gate down. Measured on a `/work` fan-out: developers each ran the full offline suite in their own worktree and the driver ran it again anyway, and one child stuck ~20 minutes on a single suite call with no bound at all.

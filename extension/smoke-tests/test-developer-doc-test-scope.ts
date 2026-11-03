@@ -20,8 +20,8 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { suiteTimeoutSeconds } from "../src/work-driver-verify-fast.ts";
-import { withEnv } from "./lib/env-scope.ts";
 import { assertSuiteBoundDerivation } from "./lib/developer-test-scope.ts";
+import { withEnv } from "./lib/env-scope.ts";
 
 const KNOB = "PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS";
 
@@ -91,6 +91,16 @@ await withWatchdog(undefined, async () => {
   assert(
     /never run a formatter or linter in write mode over files you did not change/i.test(src),
     "#1989 review: the role prompt forbids a formatter/linter write-mode run over files the developer did not change (~600 untouched files reformatted in one cycle)",
+  );
+  // #1989 — the sibling of the formatter ban: the other way a child destroys
+  // work it did not author is an in-place rewrite addressed by line number,
+  // which cannot fail loudly the way `edit`'s unique-string match does.
+  assert(
+    /edit` tool's unique-string replacement only/i.test(src) &&
+      /sed -i/i.test(src) &&
+      /git checkout <file>/i.test(src) &&
+      /re-apply with `edit`/i.test(src),
+    "#1989: the role prompt restricts edits to the `edit` tool's unique-string replacement and forbids line-addressed `sed -i`, scripted in-place rewrites and `git checkout <file>` over uncommitted work",
   );
   assert(
     /run tests and linting before you report back to pm/i.test(src) &&
