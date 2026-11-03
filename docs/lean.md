@@ -152,7 +152,7 @@ pins the table against literals, so changing a number is a deliberate edit):
 **When a budget fires.** `turns` and `tokens` abort at once at a turn boundary.
 `minutes` arms the child bound (`spawn-child-bound.ts`): a **wrap-up steer at the
 bound**, then a kill at **bound + grace (`PI_ENSEMBLE_CHILD_BOUND_GRACE_MS`,
-10 min)**. `turns` bounds ONE CHILD, not a step's whole spend. For
+10 min)**. Every lever bounds ONE CHILD, not a step's whole spend. For
 `specify`, `build` and `challenge` a breach is a **verdict** the table routes:
 the step returns `{kind: "budget"}` with `limit`, `value` and `used`, a
 `specify` or `build` breach ends the run (`handback`, **10**), and a
