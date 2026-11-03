@@ -13,6 +13,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { FixFence } from "./adversarial-fix-guard.ts";
 import type { ReportPolicy } from "./adversarial-policy.ts";
 import type { SiblingScope } from "./adversarial-prompts.ts";
+import type { RunningState } from "./progress.ts";
 import type { OnSlowCallback } from "./slow-notice.ts";
 import type { ExecFn } from "./worktree.ts";
 
@@ -113,4 +114,28 @@ export type AdversarialLoopParams = ReportPolicy & {
    * The driver path never sets it and runs no capture at all.
    */
   toolPath?: ToolPathProvenance;
+  /**
+   * The REVIEWER's wall clock in ms. Set ONLY by lean's review step (the
+   * `adversarial` seam in `lean/review-deps.ts`), which is what makes `budgets
+   * .review.minutes` real for the reviewer child; the other two callers — the
+   * `adversarial_loop` tool and the /work driver — never set it and keep the
+   * reviewer's own `PI_ENSEMBLE_ADVERSARIAL_BOUND_MS` knob untouched. It can
+   * only ever TIGHTEN that knob: the phase takes the smaller of the two.
+   */
+  childBoundMs?: number;
+  /**
+   * An extra abort for the reviewer child. Set ONLY by lean's review step, so
+   * `budgets.review.turns` / `tokens` can stop a runaway reviewer at a turn
+   * boundary. Reviewer-only, like {@link AdversarialLoopParams.childBoundMs}:
+   * the fix-pass arm keeps no budget arms, which is what
+   * `test-adversarial-reviewer-bound.ts` asserts.
+   */
+  signal?: AbortSignal;
+  /**
+   * A progress hook composed with (never replacing) the deck / slow-run feed
+   * the phase already installs. Set ONLY by lean's review step — it is what
+   * measures the turns / tokens levers and aborts the child through
+   * {@link AdversarialLoopParams.signal}.
+   */
+  onProgress?: (s: RunningState) => void;
 };

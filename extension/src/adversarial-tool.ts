@@ -85,8 +85,22 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
       // `toolPath` property, but Pi passes the parsed argument object through
       // as-is, so a caller CAN put one in its raw args. Stripping it from the
       // spread means only THIS statement can ever set the field.
-      const { toolPath: _forged, ...callerParams } = params as typeof params & {
+      const {
+        toolPath: _forged,
+        // Defence in depth beside the `toolPath` strip: the loop now declares
+        // budget arms (#1978), and the tool must never become a way to arm a
+        // reviewer with a caller-supplied bound, abort or progress hook. Lean's
+        // review step is the only writer, so a raw arg carrying them is
+        // dropped here rather than forwarded.
+        childBoundMs: _budgetBound,
+        signal: _budgetSignal,
+        onProgress: _budgetProgress,
+        ...callerParams
+      } = params as typeof params & {
         toolPath?: unknown;
+        childBoundMs?: unknown;
+        signal?: unknown;
+        onProgress?: unknown;
       };
       // #1154 — the verdict policy is set after the raw spread, so a caller
       // cannot spoof it: reportOnly picks "terminal"; anything else gets none.
