@@ -2,33 +2,26 @@
  * work-driver-lens-policy — #1537: the driver-side half of the review loop.
  *
  * `lens-review-policy.ts` states the policy as data (what a round IS, what a
- * scoped round may block on). This module is the half that touches a cycle:
+ * scoped round may block on, what a fix wave may be given). This module is the
+ * half that touches a cycle — the two points where the loop could keep going and
+ * the policy is what stops it:
  *
- *  - `lensFixFindingsFor` narrows the blob the ONE fix wave is given, so the
- *    fixer is handed every blocking finding and nothing else. The disclosure
- *    still carries the MEDIUM and LOW rows: disclosed is the policy's word for
- *    them, and a fixer paid to write prose is a fixer with less time for the
- *    findings that block. The blob's shape is the fixer's contract
- *    (`inlineLensFixPrompt` prints it as a JSON array of `{path, line, severity,
- *    title, suggestion}`) and the same field carries the round-cap disclosure, so
- *    the narrowing happens on a COPY of the array and never on the event or the
- *    state's own record.
- *  - `lensRoundOverBudget` is the stop that replaces the round counter. Under the
- *    policy a cycle gets one full review, one fix wave and one re-review, so the
- *    third round of the loop is the last one any route may take: it ends the
- *    review either way — to `ci` when the policy's conditions hold, to `handoff`
- *    when they do not. A round PAST it has no route, because there is nothing
- *    left for a review to conclude that the policy has not already priced; the
- *    caller that would have started one parks with the cause named. The
- *    wall-clock gate in `work-driver-lens-fix-budget.ts` still owns every time
- *    bound and is unchanged; this owns the SHAPE bound only.
+ *  - `lensRoundOverBudget` refuses a THIRD review: one full review, one fix wave
+ *    and one re-review is the whole budget, so the step that would start another
+ *    parks with the cause named.
+ *  - `nextLensFixStep` stops the FIX side by the same shape: a re-review's own
+ *    verdict does not buy a second fix wave. It is the counterpart of the first,
+ *    and it is what the router calls — see `nextStep`'s `lens-issues-found` arm
+ *    in `work-driver-context.ts`.
  *
- * Reading it is one function over the event log, so the answer cannot depend on
- * a counter a crash, a resume or a retry might have left out of step.
+ * Both read the event log, never a mutable round counter, so a crash, a resume or
+ * a step retry cannot leave the cycle one increment away from an extra review.
+ * The wall clock, the per-child bounds and the findings memory still own every
+ * time and cost bound; nothing here loosens them.
  */
 
 import { notifyAgent } from "./agent-message.ts";
-import { blockingFindings, lensPolicyOf } from "./lens-review-policy.ts";
+import { blockingFindings, lensFixWaveDispatched, lensPolicyOf } from "./lens-review-policy.ts";
 import type { Finding } from "./lens-review-types.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext } from "./work-driver-context.ts";
@@ -45,10 +38,9 @@ export const POLICY_EXHAUSTED_CAP = "lens-policy-exhausted" as const;
 const SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW"] as const;
 
 /** A row of the fixer's blob: `{path, line, severity, title, suggestion}` as
- * `inlineLensFixPrompt` prints it, i.e. a `Finding` with its non-severity fields
- * untyped. `blockingFindings` reads `severity` and nothing else, and the rows are
- * copied through untouched, so every field the fixer's prompt promises survives
- * the narrowing. */
+ * `inlineLensFixPrompt` prints it. `blockingFindings` reads `severity` and
+ * nothing else, and rows are copied through untouched, so every field the
+ * fixer's prompt promises survives the narrowing. */
 type BlobRow = { severity: Finding["severity"] } & Record<string, unknown>;
 
 /**
@@ -92,30 +84,41 @@ export function lensFixFindingsFor(blob: string): string {
  * third review a fix wave does not buy.
  *
  * The phase is deliberately NOT consulted here, even though the same module
- * reads it for the cap route: `closed` is the state in which the owed re-review
- * is *about to run*, so treating it as "over budget" would refuse the very round
- * the policy requires and no cycle would ever finish its review. The counter is
- * the budget, and the shape decides what the counter's last value MEANS — that
- * is the division of labour, and the two readers live apart on purpose
- * (`appendReviewCapHit` reads the shape, this refuses on the count).
- */
-/**
- * Is the round about to start past the policy's budget?
- *
- * `round` is the number `runLens` would stamp on this round (`reviewRound + 1`).
- * Rounds 1 and 2 are the full review and its re-review; anything higher is the
- * third review a fix wave does not buy.
- *
- * The phase is deliberately NOT consulted here, even though the same module
- * reads it for the cap route: `closed` is the state in which the owed re-review
- * is *about to run*, so treating it as "over budget" would refuse the very round
- * the policy requires and no cycle would ever finish its review. The counter is
- * the budget, and the shape decides what the counter's last value MEANS — that
- * is the division of labour, and the two readers live apart on purpose
- * (`appendReviewCapHit` reads the shape, this refuses on the count).
+ * family reads it for the cap route: `closed` is the state in which the owed
+ * re-review is *about to run*, so treating it as "over budget" would refuse the
+ * very round the policy requires and no cycle would ever finish its review. The
+ * counter is the budget; the shape decides what the counter's last value MEANS.
+ * The two readers live apart on purpose — `appendReviewCapHit` reads the shape,
+ * this refuses on the count.
  */
 export function lensRoundOverBudget(_state: WorkState, round: number): boolean {
   return round > POLICY_ROUNDS;
+}
+
+/**
+ * Where a `lens-issues-found` tail routes: another fix wave, or no fix at all.
+ *
+ * Returns `"lens-fix"` only while the cycle still owes the re-review its ONE fix
+ * wave was bought for — i.e. a blocking verdict is outstanding and no fixer has
+ * been dispatched for it (`lensFixWaveDispatched`, which reads the log the way
+ * `lensPolicyOf` does). Once a wave has run, a further blocking verdict is the
+ * re-review's own answer and the loop is over: dispatching a second fixer would
+ * buy a third review, which `lensRoundOverBudget` then refuses, and the cycle
+ * would end having paid for a fix nobody re-read. `"handoff"` is what the router
+ * uses for that; `appendReviewCapHit` is the one that decides ci-vs-handoff.
+ *
+ * The wave's ground truth is the DISPATCH, not the `lens-fix-rereviewed` record:
+ * that one is written only when the fixer committed (a fixer that committed
+ * nothing leaves the head unchanged, and the round stays owed so the budget is
+ * not spent), which is right for the review budget and wrong for the dispatch
+ * gate — re-dispatching a fixer that already ran and committed nothing is the
+ * spinning the dispatch bound exists to stop.
+ *
+ * The budget's other stop (a round the wall clock cannot fit) is unaffected:
+ * `work-driver-lens-fix-budget.ts` owns the clock and is unchanged.
+ */
+export function nextLensFixStep(state: WorkState): "lens-fix" | "handoff" {
+  return lensFixWaveDispatched(state.eventLog) ? "handoff" : "lens-fix";
 }
 
 /**
@@ -134,7 +137,7 @@ export async function parkLensPolicyExhausted(
 ): Promise<WorkState> {
   if (!lensRoundOverBudget(state, round)) return state;
   const blocking = lensPolicyOf(state.eventLog).blockingRound;
-  const evidence = `a third lens round is not in the policy: one full review, one fix wave and one scoped re-review is the whole review budget (PI_ENSEMBLE_REVIEW_ROUNDS does not exist; see lens-review-policy.ts). Round ${blocking?.round ?? "?"} verdict ${blocking?.verdict ?? "?"} is the loop's final word${blocking?.headSha === undefined ? ", recorded without a head" : ` on head ${blocking.headSha.slice(0, 8)}`}.`;
+  const evidence = `a third lens round is not in the policy: one full review, one fix wave and one scoped re-review is the whole review budget. Round ${blocking?.round ?? "?"} verdict ${blocking?.verdict ?? "?"} is the loop's final word${blocking?.headSha === undefined ? ", recorded without a head" : ` on head ${blocking.headSha.slice(0, 8)}`}.`;
   trace(`work-driver: lens-review — the policy's one re-review is spent — parking round ${round}`);
   const next = appendEvent(state, {
     kind: "cap-hit",

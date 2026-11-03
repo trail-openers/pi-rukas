@@ -25,17 +25,17 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { readPrCommentBodies } from "../src/merge-guard-reads.ts";
+import type { MergeTarget } from "../src/merge-target.ts";
 import {
   assert,
+  TARGET,
   exit,
+  hookDecision,
   setupLedgerPath,
   teardownLedger,
-  hookDecision,
-  TARGET,
 } from "./merge-guard-helpers.ts";
 import type { LedgerEntry } from "./merge-guard-helpers.ts";
-import type { MergeTarget } from "../src/merge-target.ts";
-import { readPrCommentBodies } from "../src/merge-guard-reads.ts";
 
 await setupLedgerPath();
 
@@ -114,7 +114,7 @@ await setupLedgerPath();
       // #1000 — a malformed PR number (fail closed, mirroring the repo-value
       // check): non-integer and non-positive values are refused before any
       // exec → [] (the marker check fails, the merge is refused).
-      const badPr = await readPrCommentBodies(fn, dir, T, NaN, "o/r");
+      const badPr = await readPrCommentBodies(fn, dir, T, Number.NaN, "o/r");
       assert(
         badPr.length === 0 && calls.length === 1,
         "an invalid PR number (NaN) returns [] with NO new exec",

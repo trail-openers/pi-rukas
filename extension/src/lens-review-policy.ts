@@ -155,10 +155,19 @@ export function lensPolicyOf(log: readonly WorkEvent[]): LensPolicy {
   // before recording it), where a dispatched fix is the best evidence available.
   const answered = log.some((e) => e.kind === "lens-fix-rereviewed" && e.round === verdict.round);
   if (answered) return { phase: "closed", blockingRound };
-  const fixDispatched = log
-    .slice(verdictAt + 1)
-    .some((e) => e.kind === "dispatch-started" && e.step === "lens-fix");
+  const fixDispatched = lensFixWaveDispatched(log, verdictAt + 1);
   return { phase: fixDispatched ? "scoped" : "closed", blockingRound };
+}
+
+/**
+ * Was a fixer dispatched for the blocking verdict? The step name is the fact —
+ * `dispatch-started` is emitted by the dispatch layer before the child runs, so
+ * it records the attempt itself, independent of what the child went on to do.
+ * `from` bounds the search to the events after the blocking verdict so an older
+ * round's wave cannot answer for a newer one.
+ */
+export function lensFixWaveDispatched(log: readonly WorkEvent[], from = 0): boolean {
+  return log.slice(from).some((e) => e.kind === "dispatch-started" && e.step === "lens-fix");
 }
 
 /** True when the round about to run is the re-review a fix wave owes: the

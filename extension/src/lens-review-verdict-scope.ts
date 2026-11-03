@@ -27,10 +27,10 @@
  *    project's own doctrine: such a round keeps its own verdict.
  */
 
-import { atOrAboveThreshold, type Severity } from "./lens-review-format.ts";
+import { type Severity, atOrAboveThreshold } from "./lens-review-format.ts";
 import { isReviewIncomplete } from "./lens-review-incomplete.ts";
 import { BLOCKING_SEVERITY } from "./lens-review-policy.ts";
-import { type Finding, isCarried, type LensRunResult } from "./lens-review-types.ts";
+import { type Finding, type LensRunResult, isCarried } from "./lens-review-types.ts";
 
 /**
  * The rows the verdict is computed from. `reported` is the blocking half of the

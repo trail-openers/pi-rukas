@@ -201,10 +201,7 @@ assert(
   "round 4 runs with a ROUND_CAP_REACHED warning naming the round and the cap",
 );
 assert(/Code review verdict \(/.test(report), "the past-cap run returns the review's real verdict");
-assert(
-  report.split("WARNING: ROUND_CAP_REACHED").length - 1 === 1,
-  "the warning is reported once",
-);
+assert(report.split("WARNING: ROUND_CAP_REACHED").length - 1 === 1, "the warning is reported once");
 assert(
   /Last recorded round before this one: 3 — verdict ISSUES_FOUND/.test(report),
   "the warning names the last round's verdict",
@@ -371,9 +368,7 @@ const rejected = await admitLensRound({ cwd: repo });
 if (rejected.admitted) await rejected.release(Promise.reject(new Error("disk full")));
 const afterReject = await admitLensRound({ cwd: repo });
 assert(
-  afterReject.admitted &&
-    afterReject.round === 4 &&
-    /round 4 exceeds/.test(afterReject.note ?? ""),
+  afterReject.admitted && afterReject.round === 4 && /round 4 exceeds/.test(afterReject.note ?? ""),
   "a rejected ledger write frees the slot but its round is not reused",
 );
 if (afterReject.admitted) afterReject.release();

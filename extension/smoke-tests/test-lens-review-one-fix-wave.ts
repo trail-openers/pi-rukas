@@ -25,20 +25,20 @@
  * that has never been seen failing in a failing state proves nothing.
  */
 
-import { reportedForVerdict } from "../src/lens-review-findings.ts";
 import type { Severity } from "../src/lens-review-format.ts";
 import {
   BLOCKING_SEVERITY,
   blockingFindings,
+  hasOpenCarriedFinding,
   isBlockingSeverity,
   lensPolicyOf,
   owesReReview,
-  hasOpenCarriedFinding,
   reReviewSpent,
   scopedBlocking,
 } from "../src/lens-review-policy.ts";
 import type { Finding } from "../src/lens-review-types.ts";
 import type { LensRunResult } from "../src/lens-review-types.ts";
+import { reportedForVerdict } from "../src/lens-review-verdict-scope.ts";
 import { lensFixFindingsFor, lensRoundOverBudget } from "../src/work-driver-lens-policy.ts";
 import type { WorkEvent, WorkState } from "../src/workflow-state.ts";
 
@@ -285,6 +285,50 @@ assert(
   lensRoundOverBudget(state(log(verdict(1), fixDispatch())), 3),
   "…and the round after it is refused",
 );
+
+// ------------------------------------- 6b. the FIX side stops by the same shape
+//
+// The router's `lens-issues-found` arm asks this before it dispatches a fixer.
+// A re-review's own verdict must not buy a second fix wave: the cycle would pay
+// for a fix nobody re-reads, since the review that would have read it is refused
+// by the rule just above. Read from the log, so a resume or a step retry cannot
+// restore the allowance a counter would have.
+{
+  const { nextLensFixStep } = await import("../src/work-driver-lens-policy.ts");
+  assert(
+    nextLensFixStep(state(log(verdict(1)))) === "lens-fix",
+    "a blocking verdict with no fix yet routes to the ONE fix wave",
+  );
+  assert(
+    nextLensFixStep(state(log(verdict(1), fixDispatch(), verdict(2)))) === "handoff",
+    "the re-review's own verdict buys no second fix wave — the loop ends there",
+  );
+  assert(
+    nextLensFixStep(state(log(verdict(1), fixDispatch(), answered(1), verdict(2)))) === "handoff",
+    "…same once the landing arm recorded the fix: still no second wave",
+  );
+  assert(
+    nextLensFixStep(state(log(verdict(1), fixDispatch(), verdict(2), verdict(3)))) === "handoff",
+    "mutant: three blocking verdicts in the log still do not reopen the wave — it is one fact, not a counter",
+  );
+
+  // The router itself, through `nextStep`, so the canary covers the arm the
+  // driver actually runs rather than only the helper it calls.
+  const { nextStep } = await import("../src/work-driver-context.ts");
+  const routeOf = (events: WorkEvent[]) => {
+    const s = state(events);
+    const d = nextStep(s);
+    return d.kind === "step" ? d.step : d.kind;
+  };
+  assert(
+    routeOf(log(verdict(1))) === "lens-fix",
+    "router: a blocking round 1 with no fix yet goes to the fix wave",
+  );
+  assert(
+    routeOf(log(verdict(1), fixDispatch(), verdict(2))) === "handoff",
+    "mutant: router: a blocking re-review does NOT get a second fixer",
+  );
+}
 
 // ------------------------------------------- 7. an open carried row holds the ci route
 assert(

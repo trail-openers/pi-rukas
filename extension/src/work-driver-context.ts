@@ -21,6 +21,7 @@ import { routeCiTier } from "./work-driver-context-ci-route.ts";
 import type { DriverPublishContextFields } from "./work-driver-context-publish.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
 import type { DriverHost } from "./work-driver-host.ts";
+import { nextLensFixStep } from "./work-driver-lens-policy.ts";
 import type { EmitSink } from "./work-state-emit.ts";
 import { KNOWN_STATUSES } from "./workflow-state-validate.ts";
 import { WORK_STEPS, type WorkState, type WorkStep } from "./workflow-state.ts";
@@ -427,12 +428,18 @@ export function nextStep(state: WorkState): StepDecision {
   if (lastEvent?.kind === "lens-issues-found") {
     // A capped review never reaches here: `appendReviewCapHit` appends a
     // cap-hit AFTER the lens-issues-found event, and the cap-hit branch above
-    // is what routes it — including to "ci" for a round cap on a non-critical
-    // verdict whose findings were disclosed on the PR. These two checks are
-    // the uncapped fallback, and both must stay pessimistic: a tail that
-    // somehow reached the cap without a cap-hit recorded has nothing that says
-    // where it should go, and "stop" is the only safe answer to that.
-    if (ps.reviewRound >= MAX_REVIEW_ROUNDS) return { kind: "step", step: "handoff" };
+    // is what routes it — including to "ci" for a cap on a non-critical verdict
+    // whose findings were disclosed on the PR. These checks are the uncapped
+    // fallback, and all must stay pessimistic: a tail that somehow reached the
+    // cap without a cap-hit recorded has nothing that says where it should go,
+    // and "stop" is the only safe answer to that.
+    //
+    // #1537 — the fix loop is stopped by SHAPE, not by a counter. The wave is
+    // owed exactly once, so a `lens-issues-found` tail routes to `lens-fix` only
+    // while the re-review that wave bought is still outstanding; a re-review's
+    // own verdict does not buy a second fixer (`nextLensFixStep`, which reads the
+    // event log, so a resume or a step retry cannot restore the allowance).
+    if (nextLensFixStep(state) === "handoff") return { kind: "step", step: "handoff" };
     if (ps.reviewCapStartedAt && Date.now() - ps.reviewCapStartedAt > reviewWallClockMs()) {
       return { kind: "step", step: "handoff" };
     }

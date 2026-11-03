@@ -334,10 +334,31 @@ setupSpawnGuard();
     );
     assert(capHit === undefined, "round 2 does not emit repeat-finding-seam cap-hit");
 
-    const dispatchStarted = after?.eventLog.find(
+    // #1537 — round 2 is the loop's LAST WORD: a re-review's own verdict does not
+    // buy another fixer, so the old assertion (a lens-fix dispatch at round 2)
+    // pinned a second wave the policy removed. The reverse is asserted here; the
+    // `adversarial-loop` cap this cycle can also reach belongs to another gate.
+    const lensFixDispatches = after?.eventLog.filter(
       (e) => e.kind === "dispatch-started" && e.step === "lens-fix",
     );
-    assert(dispatchStarted !== undefined, "round 2 routes to lens-fix (normal fix loop)");
+    assert(
+      lensFixDispatches !== undefined && lensFixDispatches.length === 0,
+      `round 2 dispatches no second fix wave — the budget is one wave, already spent (got ${lensFixDispatches?.length})`,
+    );
+    const terminal = after?.eventLog.some(
+      (e) => e.kind === "cap-hit" || e.kind === "lens-approved",
+    );
+    assert(
+      terminal === true,
+      "…and the cycle ends at a terminal event instead of looping back into lens-review",
+    );
+    const reviewStarts = after?.eventLog.filter(
+      (e) => e.kind === "step-started" && e.step === "lens-review",
+    ).length;
+    assert(
+      reviewStarts !== undefined && reviewStarts <= 2,
+      `…and never a third lens round (got ${reviewStarts} round starts)`,
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

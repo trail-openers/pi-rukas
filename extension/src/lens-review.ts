@@ -28,7 +28,6 @@ import {
   startPersistentBatch,
 } from "./lens-review-diff.ts";
 import { resolveReportedFindings } from "./lens-review-findings.ts";
-import { reportedForVerdict } from "./lens-review-verdict-scope.ts";
 import { makeFinishWith, memorySummaryFields } from "./lens-review-finish.ts";
 import {
   DEFAULT_REVIEW_THRESHOLD,
@@ -43,6 +42,7 @@ import {
 import { priorFindingsFor } from "./lens-review-memory.ts";
 import { installBlockRowsForRoster, skillsDirUsable } from "./lens-review-skills.ts";
 import type { Finding, LensRunResult } from "./lens-review-types.ts";
+import { reportedForVerdict } from "./lens-review-verdict-scope.ts";
 import { CLAIM_SCAN, type RosterEntry, buildExpectedRoster } from "./lens-roster.ts";
 import { isFullCommitSha, resolveHeadSha } from "./review-head-sha.ts";
 import { makeRunId } from "./spawn.ts";

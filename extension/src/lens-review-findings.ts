@@ -77,7 +77,6 @@ export interface ReportedFindings {
   fields: { advisory?: Finding[]; memoryNote?: string };
 }
 
-
 /**
  * Record the round (through `recordRound`, the memory seam), apply the
  * operator's decisions, carry the standing rows and split them into blocking and
