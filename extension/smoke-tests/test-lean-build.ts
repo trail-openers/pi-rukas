@@ -33,16 +33,15 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { BuildInfraError } from "../src/lean/build-errors.ts";
+import { SPEC_BODY, commitPaths, status, subject, subjectsAbove } from "./lib/lean-build-asserts.ts";
 import { phase1Handlers } from "../src/lean/command.ts";
 import {
   AGENTS_JSON,
   ROOTS,
   RUNNER,
-  SPEC_BODY,
   TEST,
   buildFixture,
   childCommit,
-  commitPaths,
   git,
   hardlinkFromOutside,
   outsideDir,
@@ -50,9 +49,6 @@ import {
   putOutside,
   runBuild,
   sha,
-  status,
-  subject,
-  subjectsAbove,
   symlink,
 } from "./lib/lean-build-fixture.ts";
 

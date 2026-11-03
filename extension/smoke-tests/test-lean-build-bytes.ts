@@ -20,14 +20,13 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { BuildInfraError } from "../src/lean/build-errors.ts";
+import { commitPaths, status } from "./lib/lean-build-asserts.ts";
 import {
   ROOTS,
   buildFixture,
-  commitPaths,
   put,
   runBuild,
   sha,
-  status,
 } from "./lib/lean-build-fixture.ts";
 
 let exit = 0;

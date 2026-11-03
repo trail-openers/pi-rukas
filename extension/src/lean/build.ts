@@ -44,11 +44,13 @@
 import { existsSync } from "node:fs";
 import { execp } from "../exec.ts";
 import { spawnSpecialist } from "../spawn.ts";
-import { traceWarn } from "../trace.ts";
+import { trace, traceWarn } from "../trace.ts";
 import type { DispatchResult, DispatchSpec } from "../types.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import type { ExecFn } from "../worktree.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
+import { extractBlockedReport } from "./build-blocked-extract.ts";
+import { blockedProved, usableConflicts } from "./build-blocked.ts";
 import { dispatchBuilder } from "./build-dispatch.ts";
 import { BuildInfraError } from "./build-errors.ts";
 import { headSha } from "./build-git.ts";
@@ -62,6 +64,7 @@ import { fetchIssueBody } from "./io.ts";
 import { type PiSpec, parsePiSpec } from "./spec.ts";
 import { CaptureBudget } from "./specify-capture.ts";
 import { assertSpecifyWorktreeOwned, specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
+import { BLOCKED_PATH_CAP, BLOCKED_REASON_CAP } from "./state-outcome.ts";
 import type { Outcome, Step } from "./state.ts";
 import {
   type BudgetArms,
@@ -72,9 +75,21 @@ import {
   budgetVerdictWithRows,
   readDispatched,
 } from "./step-budget.ts";
+import { oneLine } from "./text-fence.ts";
 
 /** The re-entry reason the child is given, clipped so a log dump cannot bloat a prompt. */
 const REENTRY_CLIP = 4096;
+
+/** How of the adversary's files a re-entry line names. Beyond it, the count. */
+const CHALLENGE_LIST_CLIP = 20;
+
+/**
+ * The ceiling on the recorded cause LINE: the two caps the renderers share (see
+ * `state-outcome-maps.ts`) plus the fixed sentence around them, so the bound is
+ * the sum of what this function composes rather than a fourth literal nothing
+ * derives.
+ */
+const BLOCKED_CAUSE_CAP = BLOCKED_PATH_CAP + BLOCKED_REASON_CAP + 44;
 
 export interface BuildDeps {
   exec: BuildExec;
@@ -83,6 +98,11 @@ export interface BuildDeps {
   loadConfig: (repoRoot: string, baseSha: string) => Promise<WorkConfig>;
   /** The aggregate capture ceiling in bytes; absent, the production ceiling applies. */
   captureCeiling?: number;
+  /**
+   * The bound on each of the driver's re-runs of a reported frozen test. A test
+   * shortens it to observe a hang; absent, `runTestFile`'s own ceiling applies.
+   */
+  blockedTimeoutMs?: number;
 }
 
 /** The step log's frozen map: every `specify:ok` / `challenge:new-tests`, in order. */
@@ -127,6 +147,11 @@ export function testsFromLog(steps: Step[]): Record<string, string[]> {
 /**
  * Why this round exists, in the gate's own words: the newest decided
  * `verify:red` reason, or the newest `ci:red` one, clipped.
+ *
+ * A build re-entered after a `challenge` round that ADDED tests gets the same
+ * treatment from {@link addedByChallengeFromLog} rather than a reason: nobody
+ * judged those files, the adversary simply froze them, and a builder that is not
+ * told which files are new treats them as the contract it already knew.
  */
 export function reentryFromLog(steps: Step[]): string | undefined {
   for (const state of ["verify", "ci"] as const) {
@@ -137,6 +162,33 @@ export function reentryFromLog(steps: Step[]): string | undefined {
       if (typeof reason !== "string" || reason.trim() === "") continue;
       return reason.length > REENTRY_CLIP ? `${reason.slice(0, REENTRY_CLIP)}…` : reason;
     }
+  }
+  return undefined;
+}
+
+/**
+ * What the adversary added, in the builder's own brief: the frozen paths of the
+ * newest decided `challenge:new-tests` step, or `undefined` when the log holds
+ * none.
+ *
+ * `reentryFromLog` answers "what did the gate complain about", and an adversary
+ * that froze a stricter test has complained about nothing yet — it just made the
+ * contract bigger. The paths come from the same decided outcomes `frozenFromLog`
+ * reads, so the two readers of the run's test record cannot disagree.
+ */
+export function addedByChallengeFromLog(steps: Step[]): string | undefined {
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const step = steps[i];
+    if (step?.state !== "challenge" || step.outcome?.kind !== "new-tests") continue;
+    const paths = Object.keys(step.outcome.frozen ?? {});
+    if (paths.length === 0) continue;
+    const kept = paths.slice(0, CHALLENGE_LIST_CLIP).map((p) => `- \`${p}\``);
+    const more =
+      paths.length > CHALLENGE_LIST_CLIP
+        ? `\n- …and ${paths.length - CHALLENGE_LIST_CLIP} more`
+        : "";
+    const line = `the adversary's challenge round added these frozen tests:\n${kept.join("\n")}${more}`;
+    return line.length > REENTRY_CLIP ? `${line.slice(0, REENTRY_CLIP)}…` : line;
   }
   return undefined;
 }
@@ -154,7 +206,86 @@ async function specOf(deps: BuildDeps, repoRoot: string, issue: number): Promise
   return parsed.spec;
 }
 
-/** The `build` step. Returns `ok` | `exhausted`; THROWS on infrastructure. */
+/**
+ * The child's blocked report, judged. Returns the outcome's two fields when the
+ * driver itself proved the claim, and `undefined` when it did not — in which
+ * case the caller continues as though no call were made.
+ *
+ * Split from `buildOutcome` because the judgement has its own three steps (read,
+ * vet the names, re-run them) and its own failure direction: everything here
+ * says "not honoured", never "the contract is unsatisfiable".
+ */
+async function blockedReport(opts: {
+  exec: BuildExec;
+  wt: string;
+  template: string | undefined;
+  frozen: Record<string, string>;
+  toolUses: unknown[];
+  issue: number;
+  timeoutMs?: number;
+}): Promise<{ reason: string; blockedBy: Record<string, string> } | undefined> {
+  const extracted = extractBlockedReport(opts.toolUses);
+  if (extracted.rows.length === 0) {
+    if (extracted.skipped > 0)
+      trace(
+        `lean build #${String(opts.issue)}: ignored ${String(extracted.skipped)} unreadable report_blocked call(s)`,
+      );
+    return undefined;
+  }
+  const paths = usableConflicts(extracted.rows);
+  const proved = await blockedProved({
+    exec: opts.exec,
+    wt: opts.wt,
+    template: opts.template,
+    frozen: opts.frozen,
+    paths,
+    ...(opts.timeoutMs === undefined ? {} : { timeoutMs: opts.timeoutMs }),
+  });
+  if (!proved.honoured) {
+    traceWarn(`lean build #${String(opts.issue)}: blocked report ignored — ${proved.why}`);
+    return undefined;
+  }
+  // The map is rebuilt from the files the driver ACTUALLY RAN, and only those:
+  // `proved.ran` stops at the red, so an entry the driver never executed cannot
+  // enter the record as though the run had proved it. The reason is rendered
+  // through `oneLine` with the caps `handback`'s `blockedCause` uses — the value
+  // is the child's prose and this is the durable record a public comment prints,
+  // so it is sanitised HERE rather than relying on every reader to do it: the
+  // cause LINE below goes through the same fence as the map, since the path it
+  // leads with is the child's string and `frozenKeyProblem` refuses control
+  // characters and traversals but not the markdown structure in `a test.md`.
+  // The
+  // record's own bounds are enforced on read (`blockedByProblem`), so the map is
+  // not re-counted here: the gate already refused a wider report.
+  // `proved.ran` is already the vetted list: `blockedProved` receives only what
+  // `usableConflicts` accepted and refuses a report naming anything outside the
+  // frozen map, so `ran` cannot contain a name the child never reported. One
+  // filter, at the layer that actually observed the run.
+  const ran = new Set(proved.ran);
+  const blockedBy: Record<string, string> = {};
+  // `row.path in blockedBy` keeps the FIRST reason the child gave for a path it
+  // named twice: `usableConflicts` de-dupes the path list, so without this the
+  // later row silently overwrites the earlier one's words.
+  for (const row of extracted.rows) {
+    if (!ran.has(row.path) || row.path in blockedBy) continue;
+    blockedBy[oneLine(row.path, BLOCKED_PATH_CAP)] = oneLine(row.reason, BLOCKED_REASON_CAP);
+  }
+  const red = proved.red;
+  if (!(red in blockedBy)) return undefined;
+  // The cause line leads with the file the DRIVER watched come back red, not the
+  // first name the child typed and not the last entry of the map: `blockedProved`
+  // returns on its first red, so anything else in the sentence is a file the
+  // driver ran green, or never ran. The full map rides on `blockedBy`.
+  return {
+    reason: oneLine(
+      `frozen tests cannot all pass together: ${red} — ${blockedBy[red] ?? ""}`,
+      BLOCKED_CAUSE_CAP,
+    ),
+    blockedBy,
+  };
+}
+
+/** The `build` step. Returns `ok` | `exhausted` | `blocked`; THROWS on infrastructure. */
 export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Outcome> {
   const { repoRoot, issue } = ctx;
 
@@ -207,6 +338,7 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
   //    (see `error-outcome.ts`, #1920 A). Nothing here catches them: the original
   //    error already carries them, and re-wrapping it could only drop them.
   const reentry = reentryFromLog(ctx.steps);
+  const added = addedByChallengeFromLog(ctx.steps);
   const budget = armBudget(budgetFor(config, "build"));
   if (budget.warning !== undefined) traceWarn(`lean build #${String(issue)}: ${budget.warning}`);
   const [dispatched, row] = await dispatchBuilder(deps.dispatch, {
@@ -219,10 +351,37 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
     testRunner: config.verify.test,
     budget,
     ...(reentry === undefined ? {} : { reentry }),
+    ...(added === undefined ? {} : { added }),
   });
   const rows = [row];
   const read = readDispatched(dispatched);
   if ("stop" in read) return budgetVerdictWithRows("build", read.stop, rows);
+
+  // 4b. The child's own "these cannot all pass together", if it made one. The
+  //     report is a CLAIM: it is honoured only once the driver has run the named
+  //     frozen tests itself on the child's tree and seen one come back red. An
+  //     ignored report traces one line and records nothing, and the step
+  //     continues its ordinary path — there is no third verdict.
+  const blocked = await blockedReport({
+    exec: deps.exec,
+    wt,
+    template: config.verify.test,
+    frozen,
+    toolUses: read.result.toolUses ?? [],
+    issue,
+    ...(deps.blockedTimeoutMs === undefined ? {} : { timeoutMs: deps.blockedTimeoutMs }),
+  });
+  if (blocked !== undefined) {
+    // No reset and no commit, exactly as the budget stop: the child's work goes
+    // back with the tree, and `verify` is not asked to judge a tree this step
+    // cannot account for.
+    return {
+      kind: "blocked",
+      reason: blocked.reason,
+      blockedBy: blocked.blockedBy,
+      dispatches: rows,
+    };
+  }
 
   // 5 + 6. Capture, reset, rewrite, commit — or say there was nothing to commit.
   const report = await normaliseBuild({

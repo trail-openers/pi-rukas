@@ -25,6 +25,21 @@ import {
   isMeasure,
   validatedDispatches,
 } from "./state-dispatches.ts";
+import {
+  BLOCKED_PATH_CAP,
+  BLOCKED_REASON_CAP,
+  blockedByProblem,
+  commandCriteriaProblem,
+  commandNotRunnableProblem,
+  validatedBlockedBy,
+  validatedCommandCriteria,
+  validatedCommandNotRunnable,
+} from "./state-outcome-maps.ts";
+// The two print caps for a `blockedBy` entry live with the validator that enforces
+// the record's own bound, and reach their two render sites through here — the same
+// re-export shape `validatedDispatches` above uses, so a caller does not have to
+// learn which file in the pair holds the constant.
+export { BLOCKED_PATH_CAP, BLOCKED_REASON_CAP } from "./state-outcome-maps.ts";
 import type { LeanState, Outcome, Step } from "./state.ts";
 // The row validators moved to `state-dispatches.ts` when this file passed the size
 // cap, but their callers keep importing them from here. A re-export is the
@@ -62,8 +77,12 @@ const CONTROL_CHARS = /\p{Cc}/u;
  * injection into the comment. The rules are `specify-path`'s own — one
  * definition of "is this a git-relative path" for the whole pipeline — plus
  * the absolute and non-normalised forms that module's callers reject earlier.
+ *
+ * Exported because the build step's blocked report is judged by the same rule
+ * before the driver spends a runner on it: a name that could never be a frozen
+ * record is not worth executing.
  */
-function frozenKeyProblem(key: string): string | undefined {
+export function frozenKeyProblem(key: string): string | undefined {
   if (key === "") return "empty path";
   if (CONTROL_CHARS.test(key)) return "path contains a control character";
   if (key.startsWith("/") || key.startsWith("\\") || /^[a-zA-Z]:[\\/]/.test(key))
@@ -180,6 +199,10 @@ const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>>
   verifiedHead: "verify",
   commandCriteria: "verify",
   commandNotRunnable: "verify",
+  // The build step's own account of which frozen tests it proved cannot all
+  // pass together. `handback` prints it as the run's cause, so a step that never
+  // ran those tests may not carry it.
+  blockedBy: "build",
   // Owned by whichever dispatching step hit its ceiling: a handback inventing a
   // ceiling the step never crossed would print it as the run's cause.
   limit: BUDGET_STATES,
@@ -208,39 +231,6 @@ function isBudgetLimit(value: unknown): value is LeanLimit {
 
 /** The ceiling kinds a budget verdict may carry — the form `Outcome.limit` uses. */
 type LeanLimit = (typeof LIMITS)[number];
-
-/** The one value a recorded `command` criterion may carry: it held. */
-const COMMAND_CRITERION_KIND = "passed";
-
-/** One why-a-command-was-not-run is prose; the record must not grow without bound. */
-const COMMAND_NOT_RUNNABLE_MAX_CHARS = 300;
-
-/** How many entries either command record may hold. */
-const COMMAND_RECORD_MAX_ENTRIES = 32;
-
-/**
- * Why a `commandCriteria` map is not evidence this run may print, or undefined.
- *
- * The map is what licenses `passed (command)` in the PR body, so a value that is
- * not the word `passed` — or an id that is not a criterion id — is refused rather
- * than carried: it would read as evidence for a check the gate never made. The
- * entry bound is the tier's own (`COMMAND_CRITERION_MAX` in `verify-commands`):
- * a record with more entries than the gate can execute was not written by it.
- */
-function commandCriteriaProblem(value: unknown): string | undefined {
-  if (typeof value !== "object" || value === null || Array.isArray(value))
-    return "outcome commandCriteria must be an object";
-  const entries = Object.entries(value as Record<string, unknown>);
-  if (entries.length > COMMAND_RECORD_MAX_ENTRIES)
-    return `outcome commandCriteria must hold at most ${COMMAND_RECORD_MAX_ENTRIES} criteria`;
-  for (const [id, kind] of entries) {
-    if (!CRITERION_ID.test(id))
-      return `outcome commandCriteria key ${JSON.stringify(id)} is not AC<n>`;
-    if (kind !== COMMAND_CRITERION_KIND)
-      return `outcome commandCriteria[${JSON.stringify(id)}] must be "${COMMAND_CRITERION_KIND}"`;
-  }
-  return undefined;
-}
 
 /**
  * The rows of a step's dispatches, attached only when the step paid for one.
@@ -342,26 +332,13 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
     const problem = commandCriteriaProblem(oc.commandCriteria);
     if (problem !== undefined) return problem;
   }
-  // Each not-runnable reason reaches its own row of the PR body, so every key is
-  // a criterion id and every value a bounded string — the same rules the
-  // `commandCriteria` map and the reason field follow, since prose out of a tree
-  // check has no business widening a durable record. Per-criterion rather than a
-  // single slot because a spec's command criteria each fail for their own reason,
-  // and a reader who is told only the first cannot fix the other two.
   if (oc.commandNotRunnable !== undefined) {
-    if (typeof oc.commandNotRunnable !== "object" || oc.commandNotRunnable === null)
-      return "outcome commandNotRunnable must be an object";
-    const entries = Object.entries(oc.commandNotRunnable as Record<string, unknown>);
-    if (entries.length > COMMAND_RECORD_MAX_ENTRIES)
-      return `outcome commandNotRunnable must hold at most ${COMMAND_RECORD_MAX_ENTRIES} criteria`;
-    for (const [id, why] of entries) {
-      if (!CRITERION_ID.test(id))
-        return `outcome commandNotRunnable key ${JSON.stringify(id)} is not AC<n>`;
-      if (typeof why !== "string")
-        return `outcome commandNotRunnable[${JSON.stringify(id)}] must be a string`;
-      if (why.length > COMMAND_NOT_RUNNABLE_MAX_CHARS)
-        return `outcome commandNotRunnable[${JSON.stringify(id)}] must be at most ${COMMAND_NOT_RUNNABLE_MAX_CHARS} characters`;
-    }
+    const problem = commandNotRunnableProblem(oc.commandNotRunnable);
+    if (problem !== undefined) return problem;
+  }
+  if (oc.blockedBy !== undefined) {
+    const problem = blockedByProblem(oc.blockedBy);
+    if (problem !== undefined) return problem;
   }
   if (oc.dispatches !== undefined) {
     const problem = dispatchesProblem(oc.dispatches);
@@ -394,36 +371,6 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
 }
 
 /**
- * The `commandCriteria` map, rebuilt from entries this module actually checked.
- *
- * Rebuilt rather than spread-and-cast: `buildOutcome`'s claim is that every field
- * it returns was looked at, and `{...(x as Record<string,string>)}` hands back the
- * raw object — an entry the caller read off a `Record<string, unknown>` with a
- * nested value or a stray word still in it. Each entry is re-derived from its own
- * validation here, so the type the caller receives is produced by the check rather
- * than asserted past it.
- */
-function validatedCommandCriteria(value: unknown): Record<string, string> {
-  const out: Record<string, string> = {};
-  if (typeof value !== "object" || value === null) return out;
-  for (const [id, kind] of Object.entries(value as Record<string, unknown>)) {
-    if (kind === COMMAND_CRITERION_KIND && CRITERION_ID.test(id)) out[id] = COMMAND_CRITERION_KIND;
-  }
-  return out;
-}
-
-/** The `commandNotRunnable` map, rebuilt the same way — strings only, bounded. */
-function validatedCommandNotRunnable(value: unknown): Record<string, string> {
-  const out: Record<string, string> = {};
-  if (typeof value !== "object" || value === null) return out;
-  for (const [id, why] of Object.entries(value as Record<string, unknown>)) {
-    if (typeof why !== "string" || why.length > COMMAND_NOT_RUNNABLE_MAX_CHARS) continue;
-    if (CRITERION_ID.test(id)) out[id] = why;
-  }
-  return out;
-}
-
-/**
  * The validated outcome, rebuilt field by field.
  *
  * Rebuilt rather than cast: `assertRun`'s whole claim is that a caller can
@@ -452,6 +399,7 @@ export function buildOutcome(oc: Record<string, unknown>): Outcome {
     ...(oc.commandNotRunnable === undefined
       ? {}
       : { commandNotRunnable: validatedCommandNotRunnable(oc.commandNotRunnable) }),
+    ...(oc.blockedBy === undefined ? {} : { blockedBy: validatedBlockedBy(oc.blockedBy) }),
     ...(typeof oc.prUrl === "string" ? { prUrl: oc.prUrl } : {}),
     ...(typeof oc.publishedHead === "string" ? { publishedHead: oc.publishedHead } : {}),
     ...(typeof oc.draft === "boolean" ? { draft: oc.draft } : {}),

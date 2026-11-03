@@ -18,6 +18,7 @@
  */
 
 import { neededFromLog } from "../src/lean/handback.ts";
+import { handbackBody } from "../src/lean/handback.ts";
 import { decided } from "./lib/lean-verify-fixture.ts";
 
 let exit = 0;
@@ -137,6 +138,128 @@ function breach(state: "build" | "challenge") {
   assert(
     needed.includes("the real reason"),
     `a breach with no value or used falls through to the red (got ${needed})`,
+  );
+}
+
+// ── a blocked build outranks the budget AND a stale red (the run-5 shape) ──
+{
+  // The post-mortem this rule exists for: the child hit the turn kill, and the
+  // run's log carried a breach and an older red. The operator's line has to name
+  // the CONFLICT, because that is the only thing in the record a developer can
+  // act on — and it is typed, so unlike a breach it is not position gated.
+  const steps = [
+    decided("verify", { kind: "red", reason: "AC1 exited 1 — an earlier round's red" }),
+    decided("build", breach("build")),
+    decided("build", {
+      kind: "blocked",
+      blockedBy: {
+        "tests/AC1-identity.test.ts": "case 2 needs the array mutable, case 3 mutates it in place",
+      },
+    }),
+  ];
+  const needed = neededFromLog(steps);
+  assert(
+    needed.includes("tests/AC1-identity.test.ts") && needed.includes("case 3 mutates it in place"),
+    `the conflict is the cause line (got ${needed})`,
+  );
+  assert(
+    !needed.includes("minutes budget 15"),
+    `the breach the run survived does not bury the conflict (got ${needed})`,
+  );
+  assert(
+    !needed.includes("an earlier round's red"),
+    `and neither does a stale red (got ${needed})`,
+  );
+}
+
+// ── the blocked cause is the comment's fenced line, not just an outcome ───
+{
+  const longReason = "z".repeat(400);
+  const body = handbackBody(9, {
+    needed: neededFromLog([
+      decided("build", {
+        kind: "blocked",
+        blockedBy: {
+          "tests/a.test.ts": "### INJECTED HEADING\n- looks like a bullet",
+          "tests/b.test.ts": longReason,
+        },
+      }),
+    ]),
+    frozen: ["tests/a.test.ts"],
+    branch: "lean/issue-9",
+  });
+  assert(body.includes("tests/a.test.ts"), `the comment names the conflicting file (got ${body})`);
+  assert(
+    !/^### INJECTED HEADING$/m.test(body),
+    `the child's prose cannot write a heading into the comment (got ${body})`,
+  );
+  assert(
+    body.includes("```text"),
+    `the cause is fenced like every other untrusted field (got ${body})`,
+  );
+  // The record allows 300 characters per reason; the PUBLIC comment does not
+  // print that much of the child's prose — it clips to its own, smaller bound.
+  assert(
+    !body.includes(longReason),
+    "a 400-char reason is not printed whole in the public comment",
+  );
+  assert(body.includes(`${"z".repeat(160)}…`), "and the clip is marked rather than silent");
+}
+
+// ── a blocked step the run carried past is NOT the cause ─────────────────
+{
+  // Position is the only true test of "this is why the run ended", and
+  // `blockedCause` applies it the way `budgetCause` does. The engine itself never
+  // writes this log — `next()` routes `build + blocked` straight to `handback` —
+  // so this is the resumed / hand-edited shape, where a stale blockedBy must not
+  // outrank the verdict that actually ended the run.
+  const needed = neededFromLog([
+    decided("build", {
+      kind: "blocked",
+      blockedBy: { "tests/a.test.ts": "a conflict from a round the run carried past" },
+    }),
+    decided("build", { kind: "ok", reason: "implemented" }),
+    decided("verify", { kind: "red", reason: "AC1 exited 1 — the newest verdict" }),
+  ]);
+  assert(
+    needed.includes("the newest verdict"),
+    `a carried-past blocked verdict does not bury the newest red (got ${needed})`,
+  );
+  assert(
+    !needed.includes("round the run carried past"),
+    `and its stale map is not printed (got ${needed})`,
+  );
+}
+
+// ── the newest working step may be a later report-free step, but a REPORT is not ─
+{
+  // A `handback` step newer than the blocked verdict is the run REPORTING how it
+  // ended, not work it went on to do — the same exclusion `budgetCause` makes, so
+  // the cause still speaks.
+  const needed = neededFromLog([
+    decided("build", {
+      kind: "blocked",
+      blockedBy: { "tests/a.test.ts": "case 2 and case 3 contradict" },
+    }),
+    decided("handback", { kind: "done", reason: "handback comment posted" }),
+  ]);
+  assert(
+    needed.includes("case 2 and case 3 contradict"),
+    `a reporting step after the blocked verdict does not hide it (got ${needed})`,
+  );
+}
+
+// ── a blocked step with no typed map is not a sentence this prints ────────
+{
+  // Same rule as the budget trio: a half-record falls through rather than
+  // printing "cannot all pass together:" with nothing after it.
+  const needed = neededFromLog([
+    decided("verify", { kind: "red", reason: "AC2 exited 1 — the real reason" }),
+    decided("build", { kind: "blocked" }),
+  ]);
+  assert(
+    needed.includes("the real reason"),
+    `a blocked step with no blockedBy falls through to the red (got ${needed})`,
   );
 }
 

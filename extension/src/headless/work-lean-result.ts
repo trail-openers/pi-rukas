@@ -98,7 +98,18 @@ function outcomeText(outcome: Outcome | undefined): string | undefined {
 function newestFailureStep(steps: Step[]): Step | undefined {
   for (let i = steps.length - 1; i >= 0; i--) {
     const kind = steps[i]?.outcome?.kind;
-    if (kind === "error" || kind === "red" || kind === "exhausted" || kind === "refused")
+    // `blocked` is a failure of the same family as `red` — a real judgement
+    // about the contract, reached by re-running the tests, not a step that ran
+    // out of rounds — so it must be recognised here or a blocked run's document
+    // carries no `failure` at all and the one cause a host could branch on is
+    // silent.
+    if (
+      kind === "error" ||
+      kind === "red" ||
+      kind === "blocked" ||
+      kind === "exhausted" ||
+      kind === "refused"
+    )
       return steps[i];
   }
   return undefined;
@@ -210,8 +221,10 @@ function leanFailure(run: LeanRun): ResultFailure | undefined {
         kind === "error"
           ? // A handler threw: the engine recorded its message and handed back.
             "crashed"
-          : kind === "red"
-            ? // The run's own gate judged the code.
+          : kind === "red" || kind === "blocked"
+            ? // The run's own gate judged the code, or the builder proved the
+              // frozen tests cannot all pass together (the driver ran them). Both
+              // are a judgement about the code, so a host routes them the same way.
               "verify"
             : // `exhausted` / `refused`: the step ran out of rounds, or the forge
               // refused. Neither is a judge of the code and none is transient.

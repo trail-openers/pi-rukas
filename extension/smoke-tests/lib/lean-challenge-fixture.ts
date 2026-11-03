@@ -35,15 +35,8 @@ import { foldLog } from "../../src/lean/resume.ts";
 import { specifyWorktreePath } from "../../src/lean/specify-tree.ts";
 import type { Outcome, Step } from "../../src/lean/state.ts";
 import type { DispatchResult, DispatchSpec } from "../../src/types.ts";
-import {
-  type Built,
-  RUNNER,
-  SPEC_BODY,
-  buildFixture,
-  git,
-  gitEnvFor,
-  sha,
-} from "./lean-build-fixture.ts";
+import { SPEC_BODY } from "./lean-build-asserts.ts";
+import { type Built, RUNNER, buildFixture, git, gitEnvFor, sha } from "./lean-build-fixture.ts";
 
 /**
  * `git show <ref>:<rel>` as RAW BYTES.
@@ -73,7 +66,6 @@ export function blobSha(wt: string, ref: string, rel: string): string {
 export {
   ROOTS,
   RUNNER,
-  SPEC_BODY,
   childCommit as childCommitOf,
   git,
   put,

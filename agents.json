@@ -400,7 +400,8 @@
         "question": "allow",
         "task": {
           "*": "deny"
-        }
+        },
+        "report_blocked": "allow"
       }
     },
     "ops": {

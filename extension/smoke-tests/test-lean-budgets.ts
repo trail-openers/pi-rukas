@@ -34,7 +34,8 @@ import { armBudget, budgetFor, budgetStop, readDispatched } from "../src/lean/st
 import type { BudgetStop } from "../src/lean/step-budget.ts";
 import type { RunningState } from "../src/progress.ts";
 import type { DispatchResult } from "../src/types.ts";
-import { buildFixture, configWithRunner, runBuild } from "./lib/lean-build-fixture.ts";
+import { buildFixture, runBuild } from "./lib/lean-build-fixture.ts";
+import { configWithRunner } from "./lib/lean-build-asserts.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {

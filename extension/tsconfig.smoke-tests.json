@@ -229,6 +229,13 @@
     "smoke-tests/test-lean-handoff-channel.ts",
     "smoke-tests/test-lean-deadline-record.ts",
     "smoke-tests/test-lean-failure-cause.ts",
+    "smoke-tests/test-lean-build-blocked.ts",
+    "smoke-tests/test-lean-build-blocked-rerun.ts",
+    "smoke-tests/test-lean-state-blocked-by.ts",
+    "smoke-tests/test-lean-machine-caps.ts",
+    "smoke-tests/test-lean-handback-cause.ts",
+    "smoke-tests/lib/lean-build-asserts.ts",
+    "smoke-tests/lib/lean-build-artifacts.ts",
     "smoke-tests/test-lean-state-outcome.ts",
     "smoke-tests/test-lean-state-base.ts"
   ]
