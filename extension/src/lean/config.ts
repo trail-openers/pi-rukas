@@ -161,15 +161,13 @@ async function gitType(
 }
 
 /**
- * Per-state ceilings, each of which bounds ONE CHILD and never a step's total.
- * `turns` is that child's ceiling; `tokens` counts all usage including cache
- * re-reads, so on the 400-turn rows the measured ~150k per turn puts 60M behind
- * `turns` as a runaway backstop (`specify` ships tighter on purpose). `minutes`
- * is the child wall clock, only ever as a cap the child's own knob may tighten:
- * lens children get `min(minutes, PI_ENSEMBLE_LENS_BOUND_MS)`, the fixer
- * `min(minutes, FIX_BOUND_MS)`. The review step has no wall clock of its own —
- * `MAX_REVIEW_ROUNDS` times those per-child bounds is what ends it — and `ci`
- * arms no child: `ci.ts` reads that row's minutes as the verify tier timeout.
+ * Per-state ceilings, each bounding ONE CHILD and never a step's total: a step
+ * with several children pays for each separately. `tokens` counts all usage
+ * including cache re-reads (~150k per turn measured), which is why the 400-turn
+ * rows carry 60M. A child's own bound knob can only ever lower `minutes`, never
+ * raise it. `ci`'s minutes is the verify tier timeout, not a child bound; the
+ * review row bounds the lens and fixer children, and has no wall clock of its
+ * own — `MAX_REVIEW_ROUNDS` × the per-child bounds end it.
  */
 export const DEFAULT_BUDGETS: Readonly<Record<string, Budget>> = Object.freeze({
   specify: Object.freeze({ turns: 250, tokens: 30_000_000, minutes: 20 }),

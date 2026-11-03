@@ -84,9 +84,10 @@ export function reviewDeps(headless: boolean): ReviewDeps {
           branch: a.branch,
           commentTimeoutMs: verifyTimeoutMs(),
           processGroup: true,
-          // The step's budget, on the loop's own children: the wall clock, the
-          // abort the turns/tokens levers fire, and the progress hook that fires
-          // it. `runAdversarialLoop` forwards all three to every phase it spawns.
+          // What the loop's params shape accepts of this step's budget (it
+          // declares no child bound, abort or progress hook). The loop's own
+          // inner children are bounded by their own knobs, not this budget,
+          // until the budget is threaded through — separate ticket.
           ...a.budget.opts,
           ...leanChildOpts(a.headless),
         },
