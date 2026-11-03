@@ -180,11 +180,17 @@ await setupLedgerPath();
 
     // And the `applies: true` condition-N refusal does NOT carry the "not
     // evaluated" wording — the two situations are textually distinct.
+    // #1537 — the condition it fails on is the disclosure marker (condition 5),
+    // not a round count: the round condition is gone, so a marker carrying a
+    // different patch identity is what refuses here.
     const condN = await hook("gh pr merge 12", [ADV, { ...lens({ at: 2 }), round: 1 }], {
-      ghComments: commentsWith("feature/x", "p1"),
+      ghComments: commentsWith("feature/x", "other-patch"),
     });
-    assert(condN.block === true, "condition-N: round 1 → refused");
-    assert(/round 1/.test(condN.reason ?? ""), "…naming the round condition");
+    assert(condN.block === true, "condition-N: a marker for another patch → refused");
+    assert(
+      /no disclosure marker/.test(condN.reason ?? ""),
+      "…naming the disclosure condition (the round condition was removed by #1537)",
+    );
     assert(
       !/round-cap path was not evaluated/.test(condN.reason ?? ""),
       "…the condition-N refusal does NOT say the path was not evaluated",
