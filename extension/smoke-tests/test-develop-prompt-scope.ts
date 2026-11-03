@@ -23,6 +23,7 @@ import { initialState } from "../src/workflow-state.ts";
 import { fixPassFence, fixPassFenceLines } from "../src/work-driver-fix-pass-admission.ts";
 import { fanoutLimitFor } from "../src/work-driver-scope-fanout.ts";
 import {
+  assertDevelopCommitEarly,
   assertDevelopPromptTestScope,
   assertSuiteBoundDerivation,
 } from "./lib/developer-test-scope.ts";
@@ -412,6 +413,9 @@ const BRIEF = "Prior memory: #394 calibrated the retrieval floor; do not re-deri
     );
   assertDevelopPromptTestScope(assert, render);
   assertSuiteBoundDerivation(assert);
+  // #1989 — the develop prompt's commit seam is the sibling of the lens-fix
+  // one and used to carry the suite-gated wording the lens-fix arms had shed.
+  assertDevelopCommitEarly(assert, render());
 }
 
 // ------------------------------------------- #1468: the continue-PR note

@@ -20,8 +20,8 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { suiteTimeoutSeconds } from "../src/work-driver-verify-fast.ts";
-import { withEnv } from "./lib/env-scope.ts";
 import { assertSuiteBoundDerivation } from "./lib/developer-test-scope.ts";
+import { withEnv } from "./lib/env-scope.ts";
 
 const KNOB = "PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS";
 
@@ -74,6 +74,51 @@ await withWatchdog(undefined, async () => {
   assert(
     /smoke tests? for the files you changed/i.test(src),
     "#1156: the role prompt scopes the developer to the smoke tests for files it changed",
+  );
+  // #1989 AC4 — committing is never gated on a suite run. ANCHORED: the line
+  // must sit between the two headings that really bracket the commit seam
+  // (Development Workflow above it, Quality Requirements below). `between`
+  // throws on a missing heading rather than slicing to an empty window, which
+  // is how this assertion used to pass against a heading that does not exist.
+  // The clause lives in the step-4 list ("Three runs of the same red test…")
+  // precisely because that list is what tells the child what to run.
+  assert(
+    /do not change the test, its fixture or its fake to make it pass/i.test(
+      between("## Development Workflow", "## Quality Requirements"),
+    ),
+    "#1989 AC4: the red-test stop rule sits inside the workflow section, so the targeted-tests rule cannot become a reason to delay the commit",
+  );
+  assert(
+    /never run a formatter or linter in write mode over files you did not change/i.test(src),
+    "#1989 review: the role prompt forbids a formatter/linter write-mode run over files the developer did not change (~600 untouched files reformatted in one cycle)",
+  );
+  // #1989 — the sibling of the formatter ban: the other way a child destroys
+  // work it did not author is an in-place rewrite addressed by line number,
+  // which cannot fail loudly the way `edit`'s unique-string match does.
+  assert(
+    /edit` tool's unique-string replacement only/i.test(src) &&
+      /sed -i/i.test(src) &&
+      /git checkout <file>/i.test(src) &&
+      /re-apply with `edit`/i.test(src),
+    "#1989: the role prompt restricts edits to the `edit` tool's unique-string replacement and forbids line-addressed `sed -i`, scripted in-place rewrites and `git checkout <file>` over uncommitted work",
+  );
+  assert(
+    /run tests and linting before you report back to pm/i.test(src) &&
+      !/run tests and linting \(all must pass\)/i.test(src),
+    "#1989 review: the step-5 checklist is re-scoped to 'before you report back to PM' — the old '(all must pass)' gate contradicted the commit-first rule",
+  );
+  assert(
+    !/--amend/.test(src) &&
+      !/git commit[^\n]*--amend/.test(src) &&
+      /never amend or rebase a commit/i.test(src) &&
+      /squash-merged/i.test(src),
+    "#1989 review: no `--amend` prescription survives in the role prompt — the boundary 'your own unpushed commits, never the starting HEAD' cannot be checked on a resumed or merged tree and an amend can rewrite a reviewed commit",
+  );
+  assert(
+    /commit as soon as the change exists/i.test(src) &&
+      /add further commits as you go/i.test(src) &&
+      /git commit -m/i.test(src),
+    "#1989 review: the role prompt prescribes NEW commits as the work grows, each with its message on the command line",
   );
   assert(
     /typecheck and lint/i.test(src),
