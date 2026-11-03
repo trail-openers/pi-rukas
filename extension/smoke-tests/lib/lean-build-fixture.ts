@@ -282,7 +282,7 @@ function shaAll(entries: Record<string, string>): Record<string, string> {
 // `reRunStub` is the fixture's executor, with the blocked gate's re-run seam
 // beside the artifact writers it drives; the four writers are re-exported for
 // every fixture and case that imported them from here before the 500-line split.
-import { reRunStub } from "./lean-build-artifacts.ts";
+import { execObserver, reRunStub } from "./lean-build-artifacts.ts";
 
 export { hardlinkFromOutside, put, putOutside, symlink } from "./lean-build-artifacts.ts";
 
@@ -322,11 +322,9 @@ export interface RunOpts {
   child?: (wt: string) => void;
   /**
    * Acts performed after the child's dispatch and before the step's next read of
-   * the tree. A case needs this to place a file that is NOT part of the child's
-   * commit: the blocked gate re-runs the reported frozen files at exactly this
-   * moment — before normalisation's `clean -fdx`, which would delete an untracked
-   * one — so a case about "what the driver actually sees when it re-runs the named
-   * tests" plants its tree change here rather than in `child`.
+   * the tree: a case plants a file that is NOT part of the child's commit, at the
+   * instant the blocked gate re-runs the reported frozen files (before
+   * normalisation's `clean -fdx` would delete an untracked one).
    */
   afterDispatch?: (wt: string) => void;
   /** Extra steps to append to the log (a re-entry `verify:red` for case (i)). */
@@ -364,9 +362,7 @@ export interface RunOpts {
   /**
    * The child's tool calls, verbatim on the `DispatchResult` the stub returns.
    * A function is called at the instant of dispatch, so a case can build its
-   * call from the tree the child's own `child` callback just wrote. The shape
-   * `runChallenge` already carries; build's reporter tool (`report_blocked`)
-   * needs it, and a case that wants a report cannot fake it any other way.
+   * call from the tree the child's own `child` callback just wrote.
    */
   toolUses?: unknown[] | (() => unknown[]);
   /** Bounds the driver's re-run of a reported frozen test (a case observes a hang). */
@@ -378,11 +374,8 @@ export interface RunOpts {
    */
   hungExec?: (cmd: string, o?: unknown) => Promise<unknown>;
   /**
-   * Watches every non-git exec the step makes WITHOUT replacing it: the real
-   * `execp` still runs the project's runner, so a case can read what the driver
-   * handed the runner (an env, a timeout) while the runner's verdict stays the
-   * real one. The `hungExec` seam replaces the runner, which is the wrong shape
-   * for an assertion about the arguments.
+   * Watches every non-git exec the step makes WITHOUT replacing it, so a case can
+   * read what the driver handed the runner while its verdict stays the real one.
    */
   execSpy?: (cmd: string, o?: unknown) => void;
 }
@@ -408,11 +401,10 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
   let dispatched = 0;
   /** Whether the one-shot `afterDispatch` hook has fired (see `deps` below). */
   let planted = false;
-  const exec: BuildDeps["exec"] = reRunStub(opts.hungExec, () => dispatched, gitArgvs);
-  const observed: BuildDeps["exec"] = async (cmd, o) => {
-    if (cmd !== "git") opts.execSpy?.(cmd, o);
-    return exec(cmd, o);
-  };
+  const exec: BuildDeps["exec"] = execObserver(
+    reRunStub(opts.hungExec, () => dispatched, gitArgvs),
+    opts.execSpy,
+  );
   const dispatch: BuildDeps["dispatch"] = async (spec: DispatchSpec, o) => {
     dispatched++;
     specs.push(spec);
@@ -437,7 +429,7 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
     return result;
   };
   const inner: BuildDeps = {
-    exec: observed,
+    exec,
     dispatch,
     fetchIssueBody: async () => SPEC_BODY,
     loadConfig: async () => {

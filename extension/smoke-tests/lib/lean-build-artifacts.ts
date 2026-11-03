@@ -70,3 +70,19 @@ export function reRunStub(
     return execp(cmd, { ...o, env: gitEnvFor() });
   };
 }
+
+/**
+ * Watches every non-git exec WITHOUT replacing it: the real runner still runs,
+ * so a case can read what the driver handed it (an env, a timeout) while the
+ * runner's verdict stays the real one. `reRunStub`'s stub REPLACES the runner,
+ * which is the wrong shape for an assertion about the arguments.
+ */
+export function execObserver(
+  inner: BuildExec,
+  spy: ((cmd: string, o?: unknown) => void) | undefined,
+): BuildExec {
+  return async (cmd, o) => {
+    if (cmd !== "git") spy?.(cmd, o);
+    return inner(cmd, o);
+  };
+}
