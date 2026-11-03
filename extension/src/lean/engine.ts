@@ -128,11 +128,9 @@ const DEFAULT_MAX_STEPS = 100;
  * anything else too. `""` is therefore the one value that passes without the
  * shape check; any other value must be a full lowercase oid, which is the same
  * rule the loader enforces on the read path.
- */
-/**
- * `newRun`, split out of `engine.ts` at AGENTS.md §12's line cap: a run's
- * START facts (its issue number and its seed) are validated here while the
- * runner stays the runner.
+ *
+ * Split out of `engine.ts` at AGENTS.md §12's line cap: a run's START facts (its
+ * issue number and its seed) are validated here while the runner stays the runner.
  */
 function newRun(opts: RunLeanOpts): LeanRun {
   if (!Number.isInteger(opts.issue) || opts.issue <= 0)

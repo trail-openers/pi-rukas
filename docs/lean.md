@@ -199,8 +199,10 @@ that and ends `handed-back` at 10 with its document, the way `work` parks. The
 resolved absolute deadline is persisted on the run's state record (`deadlineMs`)
 at the first boundary that resolves it, so a resume keeps the clock its first
 round started and a host can tell a deadline stop from any other handback. A
-run's own step budgets (`WorkConfig.budgets`) still bind the step in flight; the
-cycle deadline bounds when a step may START.
+step already running is bounded by its own budget (`WorkConfig.budgets`) alone:
+unlike `work`, lean opens no cycle clock, so the deadline decides only when a step
+may START and never shortens a child that is already up. Size the step budgets
+under the caller's kill, and pass the deadline so the run reports before it.
 
 **Who delivers the report.** On `PI_ENSEMBLE_HANDOFF_CHANNEL=host`
 (`features.leanHandoffHost`) neither reporting step posts to the forge: `handback`

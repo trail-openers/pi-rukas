@@ -26,10 +26,10 @@ export interface CycleDeadline {
  * The resolved deadline: a positive finite epoch ms, or nothing.
  *
  * The loop re-reads this as its clock, so a hand-edited `0` would stop every
- * step and `"1e18"` would stop none: both are refused on load like any other
- * corruption rather than read as a deadline the run chose. Exported because
- * `resume.ts` is where `runLean` reads a loaded record, and one rule for one
- * field is the difference between refusing a corrupt file and driving it.
+ * step and `"1e18"` would stop none. The ONE site that enforces it is
+ * `state.ts`'s record validator, which every load passes through; a corrupt
+ * value therefore never reaches a drive, and there is no second copy of the
+ * rule to drift from the first.
  */
 export function assertDeadline(value: unknown, where = "deadlineMs"): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0)

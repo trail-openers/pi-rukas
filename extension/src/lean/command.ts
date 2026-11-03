@@ -338,9 +338,10 @@ export function phase1Handlers(
   // and `posted: false` is stamped HERE rather than left to the step's own claim,
   // because `handbackOutcome` returns `posted: true` for a `post` that returns
   // normally and it has no way to know the post was deliberately nothing. The
-  // result's `handoff.channel: "host"` is read by the projection from
-  // `handoffChannel()`, so the pair — "the host owns it" and "nothing was sent" —
-  // always says the same thing.
+  // reason is stamped with it for the same reason: `headless/work-lean-handoff.ts`
+  // reads the CHANNEL off the step's record, so the pair — "the host owns it" and
+  // "nothing was sent" — is one fact written once, and a projection that re-read
+  // the environment could not disagree with what this run actually did.
   const hostChannel = handoffChannel() === "host";
   const noPost = async (): Promise<void> => {
     /* the host delivers the body from the result */

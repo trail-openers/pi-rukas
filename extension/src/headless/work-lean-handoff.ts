@@ -16,13 +16,15 @@
  *     `delivery` records where a post that HAPPENED came from, so its absence is
  *     "nobody posted", and `channel` stays `forge` because the report was
  *     addressed to the forge and never got there;
- *   - on `PI_ENSEMBLE_HANDOFF_CHANNEL=host` the report was ADDRESSED to the host
- *     (#1920 item 3): `delivery: "host"`, `labelSkipped: "host-channel"`, and the
- *     body published whatever `posted` says, because on that channel the body in
- *     the result IS the delivery — nothing was ever meant to reach the forge, so
- *     `posted: false` there is the contract rather than the not-delivered pair
+ *   - on the channel the STEP says it was on, the report was ADDRESSED to the
+ *     host (#1920 item 3): `delivery: "host"`, `labelSkipped: "host-channel"`, and
+ *     the body published whatever `posted` says, because on that channel the body
+ *     in the result IS the delivery — nothing was ever meant to reach the forge,
+ *     so `posted: false` there is the contract rather than the not-delivered pair
  *     `bodyError: "not-recorded"`, which stays the answer for a forge post that
- *     failed (`handback`'s own reason says which of the two happened);
+ *     failed (`handback`'s own reason says which of the two happened); the channel
+ *     is read from the record, not from `PI_ENSEMBLE_HANDOFF_CHANNEL` again, so
+ *     the projection and the step cannot disagree;
  *   - `labelApplied` is false on every path — lean has no label step, so `true`
  *     would be a claim the run has no step to make (and `labelSkipped:
  *     "host-channel"` is set only on the host channel, where a false label is the
@@ -36,6 +38,12 @@
  * redaction, to the room the composed body has left, because the reason is a
  * child's text and a host prints this document.
  *
+ * The channel is read from the STEP, never from the environment: the step that
+ * decided whether to post is the record of what happened, so a host reading this
+ * document is told what the run did rather than what `PI_ENSEMBLE_HANDOFF_CHANNEL`
+ * happened to say when the projection ran. A step says host by carrying
+ * `posted: false` with the host-channel reason its handler stamped (#1920 item 3).
+ *
  * A report with text reaches `handoffOf` through `makeHandoffEmittedEvent`, the
  * driver's own producer of that event, so it is a real `WorkEvent`; the state
  * around it is `initialState`'s own value with its `eventLog` replaced by that one
@@ -47,7 +55,7 @@
 import { redactClip } from "../decision-log.ts";
 import { type Outcome, type Step, newestDecided } from "../lean/state.ts";
 import type { LeanRun } from "../lean/state.ts";
-import { handoffChannel, handoffMarker } from "../work-driver-handoff-channel.ts";
+import { handoffMarker } from "../work-driver-handoff-channel.ts";
 import { makeHandoffEmittedEvent } from "../work-driver-handoff-post.ts";
 import { initialState } from "../workflow-state.ts";
 import type { HeadlessCap } from "./caps.ts";
@@ -60,6 +68,20 @@ const TEXT_MAX = 500;
 
 /** The gap between the marker line and the reason. */
 const BODY_GAP = "\n\n";
+
+/**
+ * The words both host-channel reporting steps put in front of their reason
+ * (`lean/command.ts`): "nobody posted, and that was the contract". Matched on
+ * the REASON rather than on `posted` alone, because a forge post the forge
+ * refused also carries `posted: false` — and that one must keep the contract's
+ * not-delivered pair instead of the host channel's body.
+ */
+const HOST_CHANNEL_MARK = "the host owns the handoff channel";
+
+/** Did this run's reporting step stand on the host channel? Read off the step. */
+function hostChannelStep(outcome: Outcome | undefined): boolean {
+  return outcome?.posted === false && String(outcome.reason ?? "").includes(HOST_CHANNEL_MARK);
+}
 
 /** The run's own words for why it ended, preferring the outcome's reason. */
 function outcomeText(outcome: Outcome | undefined): string | undefined {
@@ -85,7 +107,8 @@ export function leanHandoff(run: LeanRun, cap: HeadlessCap | undefined): Handoff
   const at = reported?.endedAt ?? reported?.startedAt ?? 0;
   const marker = handoffMarker(run.issue, cap);
   const posted = reported?.outcome?.posted === true;
-  const host = handoffChannel() === "host";
+  // The channel the run acted on, read from its own record — see the header.
+  const host = hostChannelStep(reported?.outcome);
   // ONE clip, sized so the COMPOSED body fits `TEXT_MAX`; clipping the reason to
   // the whole budget and bounding the body again cut the reason away once the
   // marker was added.

@@ -26,7 +26,6 @@
  * never touches a handler.
  */
 
-import { assertDeadline } from "./deadline-record.ts";
 import { hasTransition, next } from "./machine.ts";
 import {
   INITIAL_COUNTERS,
@@ -90,10 +89,6 @@ export function foldLog(
   decided: boolean;
 } {
   const log = run.steps;
-  // The deadline is a separate clock, not part of the position the log folds
-  // to, so it is judged here — where `runLean` reads a loaded record — rather
-  // than at a loop boundary where a bad value would already have driven steps.
-  if (run.deadlineMs !== undefined) assertDeadline(run.deadlineMs, "deadlineMs");
   let pos: Position = { state: "ready", counters: { ...INITIAL_COUNTERS } };
   let before = pos;
   // How many entries of each state precede the entry being folded — the

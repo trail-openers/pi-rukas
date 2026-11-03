@@ -20,12 +20,18 @@
  *     and the step that reports the run (`handback`/`decline`) is never stopped,
  *     exactly as `work` never parks its own handoff.
  *
+ * What this module does NOT do is bound a child already running: `work` does
+ * that through the AsyncLocalStorage cycle clock (`cycle-deadline-clock.ts`),
+ * and lean has no frame to open — its children are built by `lean/build.ts`
+ * through `spawnSpecialist`, and the step's own `WorkConfig.budgets` bound
+ * `childBoundMs` is what stops them. The deadline therefore decides only when a
+ * step may START.
+ *
  * A run stopped at the deadline is not a crash and not a signal: it is the same
  * answer `work` gives a cycle its deadline cut off, so it ends `handed-back` at
  * exit 10 with a result document.
  */
 
-import { noteCycleDeadline } from "../cycle-deadline-clock.ts";
 import { readCycleDeadline } from "../work-driver-deadline.ts";
 import { handoffDispatchTimeoutMs } from "../work-driver-handoff.ts";
 import type { WorkState } from "../workflow-state.ts";
@@ -83,18 +89,8 @@ export function deadlineStopsSteps(
   next: string,
 ): boolean {
   if (deadline === undefined) return false;
-  const allowance = handoffDispatchTimeoutMs();
-  // The same note `work`'s boundary writes before it parks: the children this
-  // cycle spawns are then bounded by what the deadline leaves instead of by
-  // their own (much longer) backstops, so a step already running stops before
-  // the host's kill rather than under it.
-  noteCycleDeadline(
-    deadline,
-    allowance,
-    (REPORT_STATES as readonly string[]).includes(next) ? "handoff" : "steps",
-  );
   if ((REPORT_STATES as readonly string[]).includes(next)) return false;
-  return deadline - now <= allowance;
+  return deadline - now <= handoffDispatchTimeoutMs();
 }
 
 /**
