@@ -6,8 +6,9 @@
  * procedure reads, so the numbers and the words that state them have one home
  * that a test can import rather than a string in a loop body. The facts that
  * live here are the child budget (`reviewPasses`, `REVIEW_CHILD_BUDGET`), the
- * named handback causes, the bar a carried row must reach to hand the run back,
- * and the rendering of a row into a handback line.
+ * named handback causes, the one bar a row must reach to block — read by the wave
+ * and by the re-review's carried-row check — and the rendering of a row into a
+ * handback line.
  *
  * **One full review, one fix wave, one re-review of the fix diff.** There is no
  * round loop, so there is no round constant, no stagnation tie-breaker and no
@@ -63,18 +64,24 @@ export const PASS_ROWS = 1 + LENSES_PER_PASS;
  * The two gates' verdicts, partitioned the way the reviewing layers partition
  * them — because which verdict buys a wave is policy, not loop mechanics.
  *
- * **`lensBlocks`** is the bar. The lens layer's `computeVerdict` reserves
- * `CRITICAL_ISSUES_FOUND` for "this must not proceed" and reaches `ISSUES_FOUND`
- * for anything merely at or above the project's bar, and the adversarial role's
- * doctrine calls only `CRITICAL_ISSUES_FOUND` "Must fix before proceeding"
- * (`agents-base/adversarial-developer.md`; `decideLoopAction` in
- * `adversarial-verdict.ts` passes on `ISSUES_FOUND` and `MINOR_OBSERVATIONS`).
- * The step mirrors that split rather than inventing its own: a step that paid a
- * fixer for findings the reviewing layer itself declined to block on bought a
- * child, a re-review and a second gate pass to answer a verdict that did not ask
- * for one. What a non-blocking verdict reports is not discarded — the adversarial
- * pass's findings travel to the lenses as `carried` and the lens round's go to the
- * layer's own residual post, which is where non-blocking findings have always gone.
+ * **`lensBlocks`** is the bar, and it is ONE bar: `SEVERITY_RANK` against the
+ * threshold the step resolved at the base commit. A CRITICAL verdict blocks, and
+ * so does any row the round reported at or above the project's own bar — which is
+ * what `AGENTS.md §1` means when it says HIGH and above is blocking, and what this
+ * issue's one-wave policy means when it says the wave answers blocking findings. A
+ * round whose verdict is `ISSUES_FOUND` because one row sat at the bar is a demand
+ * for the wave, not a disclosure: `computeVerdict` reaches `ISSUES_FOUND` for
+ * findings at or above the threshold, so reading only the verdict would let a HIGH
+ * ship disclosed while the step called the round clean.
+ * `MINOR_OBSERVATIONS` and an `ISSUES_FOUND` whose rows all sit BELOW the bar buy
+ * nothing, and the disclosure path for them already exists: the adversarial pass's
+ * findings travel to the lenses as `carried` and the lens round's go to the layer's
+ * own residual post. The adversarial role's doctrine is unchanged by this — only
+ * `CRITICAL_ISSUES_FOUND` is "Must fix before proceeding" there, and
+ * `decideLoopAction` in `adversarial-verdict.ts` still passes on `ISSUES_FOUND` and
+ * `MINOR_OBSERVATIONS`: the gate's own verdict buys no wave; the rows do. What a
+ * non-blocking verdict reports is not discarded — it takes the disclosure path
+ * stated above.
  *
  * **`LENS_DID_NOT_RUN`** is the other side of the same enum, and the reason the bar
  * is an allowlist: a round that hit `REVIEW_INCOMPLETE` or a round cap reviewed
@@ -90,9 +97,31 @@ export const PASS_ROWS = 1 + LENSES_PER_PASS;
  */
 export const LENS_BLOCKING_VERDICTS: readonly Verdict[] = ["CRITICAL_ISSUES_FOUND"];
 
-/** Did this six-lens round block the run? The layer's own CRITICAL verdict. */
-export function lensBlocks(round: { verdict: Verdict }): boolean {
-  return LENS_BLOCKING_VERDICTS.includes(round.verdict);
+/**
+ * Did this six-lens round block the run? Its own CRITICAL verdict, or a reported
+ * row at the project's bar.
+ *
+ * The row scan reads `reported` and nothing else, because that is the tier the
+ * layer itself calls blocking: `splitAdvisory` has already moved the rows whose
+ * cited line sits outside the reviewed range out of it, and the layer excludes
+ * those from its verdict, its counts and its `hasCritical`. A round whose rows all
+ * sit below the threshold therefore does not block even when its verdict is
+ * `ISSUES_FOUND` — the verdict is reached from the rows, so a fixture that said
+ * otherwise would be asserting a state the layer cannot produce.
+ *
+ * The asymmetry with the re-review is policy, not an oversight: the wave reads
+ * `reported` only because an advisory row sits outside the PR's changed lines and the
+ * layer already excludes it from its verdict, whereas a CARRIED advisory row is still
+ * caught — by the re-review's NOT ADDRESSED scan, which reads both tiers.
+ */
+export function lensBlocks(
+  round: { verdict: Verdict; reported: readonly Finding[] },
+  threshold: Severity,
+): boolean {
+  return (
+    LENS_BLOCKING_VERDICTS.includes(round.verdict) ||
+    round.reported.some((f) => atOrAboveBar(f, threshold))
+  );
 }
 
 /**
@@ -125,30 +154,31 @@ export const CAUSE_NOT_ADDRESSED = "review: blocking finding not addressed";
 export const CAUSE_NEW_CRITICAL = "review: fix introduced a CRITICAL";
 
 /**
- * The severity a carried row must reach to hand the run back. HIGH is the bar
- * `AGENTS.md §1` states for this repo, and the same `Severity` value
- * `ReviewDeps.reviewThreshold` resolves per project — a project that states a
- * looser bar in its doctrine gets a looser handback bar than this, rather than a
- * step that blocks below the threshold it was told to review at. The comparison
- * is the review layer's own `SEVERITY_RANK`, imported rather than restated: two
- * copies of a severity order is two rules that can drift, and the drift only
- * shows up when a round's verdict and the step's decision disagree.
- */
-const BLOCKING_ROW_SEVERITY: Severity = "HIGH";
-
-/**
- * Is a row of the re-review blocking, by the layer's own bar?
+ * Does a row reach the bar the step was told to review at?
+ *
+ * THE ONE PREDICATE both bars read — the wave bar in {@link lensBlocks} and the
+ * re-review's carried-row scan in `review.ts` — because two rules over the same
+ * `SEVERITY_RANK` are two rules that drift apart, and the drift only
+ * shows up when a round's verdict and the step's decision disagree about the same
+ * row. The bar is the `Severity` `ReviewDeps.reviewThreshold` resolved once at the
+ * run's base commit, never a constant here: `AGENTS.md §1` states HIGH and above
+ * for this repo, and a project that states a looser bar in its doctrine gets a
+ * looser wave AND a looser handback bar, rather than a step that blocks below the
+ * threshold it was told to review at.
  *
  * The unknown-severity arm is why this is a function and not a comparison at the
- * call site. A re-review row is parsed model output: a row whose `severity` is
- * missing or outside the four schema values is not a row below the bar, and
- * reading it as one would let a malformed carried row clear the wave. An
- * unrecognised severity therefore counts as blocking — the direction every other
- * absence in this step goes.
+ * call site. A row is parsed model output: one whose `severity` is missing or
+ * outside the four schema values is not a row below the bar, and reading it as one
+ * would let a malformed row clear the wave. An unrecognised severity therefore
+ * counts as blocking — the direction every other absence in this step goes.
  */
-export function blockingSeverity(f: { severity: Finding["severity"] }): boolean {
-  const rank = SEVERITY_RANK[f.severity];
-  return rank === undefined || rank <= SEVERITY_RANK[BLOCKING_ROW_SEVERITY];
+export function atOrAboveBar(f: { severity: Finding["severity"] }, threshold: Severity): boolean {
+  // An own-property lookup, not a bare subscript: a row is parsed model output, and
+  // `SEVERITY_RANK["__proto__"]`/`SEVERITY_RANK["constructor"]` resolve to prototype
+  // members rather than `undefined`. Read as a rank they would clear the bar, so the
+  // inherited arm is the same fail-closed case as the missing one.
+  const rank = Object.hasOwn(SEVERITY_RANK, f.severity) ? SEVERITY_RANK[f.severity] : undefined;
+  return rank === undefined || rank <= SEVERITY_RANK[threshold];
 }
 
 /**

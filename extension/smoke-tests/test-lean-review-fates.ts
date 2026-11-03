@@ -39,7 +39,7 @@
  *       operator chasing "where is my work" is pointed at the pushed commits.
  *
  *   (i2) a fresh row BELOW the bar is disclosure, never a handback: the step must
- *       not hand a run back for a MEDIUM the layer itself would disclose.
+ *       not hand a run back for a LOW the layer itself would disclose.
  *
  * Real temp repos, stubbed models, no child spawned, no token spent.
  */
@@ -211,7 +211,7 @@ assert(
 // not one of the four schema values has no rank, and a comparison against a missing
 // rank is how a malformed row slips under a HIGH bar. Fail closed, the direction
 // every other absence in this step goes. The mutant is `rank === undefined ||` in
-// `blockingSeverity`: with it deleted this case goes red.
+// `atOrAboveBar`: with it deleted this case goes red.
 {
   const { repoRoot, baseSha } = makeRepo();
   await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 19;\n" });
@@ -240,6 +240,11 @@ assert(
   );
 }
 
+// The bar itself — a row at one bar and a step that reads another, at the wave and
+// at the handback — is `test-lean-review-bar-threshold.ts`, split out along the
+// same seam the 500-line cap asked for. The cases here hold the fate rules that do
+// not depend on which bar the project named.
+
 // ── (h3) a carried row the ADVISORY split moved out of `reported` still hands back ─
 //
 // `splitAdvisory` (#1140/#1125) discounts every finding whose cited line sits
@@ -249,7 +254,7 @@ assert(
 // open, and a NOT ADDRESSED check that read only `reported` would certify that wave
 // clean. That is the discount deciding a question the layer never put to the step:
 // the layer said "not addressed", and said it in the tier, not in the tier's
-// exclusion. The step reads `isCarried && blockingSeverity` over both row sets.
+// exclusion. The step reads `isCarried && atOrAboveBar` over both row sets.
 //
 // Two mutants, both red here and green nowhere else: drop `advisory` from the
 // concatenation (the discounted row then clears the wave), or drop the
@@ -344,9 +349,11 @@ assert(
 // ── (i2) a fresh row below the bar is disclosure, never a handback ───────────
 //
 // Only a row the layer itself carried, or the layer's own CRITICAL verdict, ends the
-// wave. A fresh MEDIUM on the fix range is a finding the layer discloses through its
+// wave. A fresh LOW on the fix range is a finding the layer discloses through its
 // residual post, and a step that handed the run back for it would be holding its own
-// bar above the layer's.
+// bar above the layer's. (LOW is the row's severity and MEDIUM the harness default
+// bar: a row at the bar is a demand for the wave, which is (b1) of
+// `test-lean-review-bar-threshold.ts`.)
 {
   const { repoRoot, baseSha } = makeRepo();
   await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 10;\n" });
@@ -357,7 +364,7 @@ assert(
       lens: async (a) =>
         a.wave === "fix"
           ? lensRoundFor(a, "APPROVED", [
-              blockingFinding({ title: "unguarded write", line: 2, severity: "MEDIUM" }),
+              blockingFinding({ title: "unguarded write", line: 2, severity: "LOW" }),
             ])
           : lensRoundWith("CRITICAL_ISSUES_FOUND", [blockingFinding()]),
       dispatch: fixerThatCommits("i2"),
@@ -365,7 +372,7 @@ assert(
   );
   assert(
     threw === undefined && outcome?.kind === "fixed",
-    `(i2) a fresh MEDIUM in the fix range is disclosed and the wave still clears (${threw?.message ?? `kind ${String(outcome?.kind)}`})`,
+    `(i2) a fresh LOW in the fix range is disclosed and the wave still clears (${threw?.message ?? `kind ${String(outcome?.kind)}`})`,
   );
   assert(
     outcome?.reason !== undefined && /DISCLOSED/.test(outcome.reason),
@@ -377,7 +384,7 @@ assert(
 //
 // `reported` is every row the round reported at the bar, and a row can reach the
 // clean return while carried, as long as its severity sits below the blocking one —
-// the NOT ADDRESSED arm refuses only `carried && blockingSeverity`. So a count that
+// the NOT ADDRESSED arm refuses only `carried && atOrAboveBar`. So a count that
 // took `reported.length` told the operator that a row the layer still holds OPEN was
 // disclosed, and inflated the number by every such row. The mutant is that count
 // restored (`reported.length`): this case goes red on it and nothing else does.
@@ -391,11 +398,11 @@ assert(
       lens: async (a) =>
         a.wave === "fix"
           ? lensRoundFor(a, "APPROVED", [
-              // One fresh MEDIUM: disclosed, and the only row the count may state.
-              blockingFinding({ title: "unguarded write", severity: "MEDIUM" }),
-              // One CARRIED MEDIUM: below the blocking bar, so it does not hand the
+              // One fresh LOW: disclosed, and the only row the count may state.
+              blockingFinding({ title: "unguarded write", severity: "LOW" }),
+              // One CARRIED LOW: below the blocking bar, so it does not hand the
               // run back, but it is a row the layer holds open — not a disclosure.
-              carriedFinding({ title: "still open below the bar", severity: "MEDIUM" }),
+              carriedFinding({ title: "still open below the bar", severity: "LOW" }),
             ])
           : lensRoundWith("CRITICAL_ISSUES_FOUND", [blockingFinding()]),
       dispatch: fixerThatCommits("i3"),

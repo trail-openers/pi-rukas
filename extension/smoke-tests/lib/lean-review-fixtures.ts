@@ -136,8 +136,10 @@ const LENS_NAMES: LensName[] = [
  *
  * The step reads structured rows now (`LensRound.reported`), not only the
  * rendered line a fixer is handed, so a fixture that built only the string could
- * not drive the re-review's decision at all. The only row property the step reads
- * is `carried` — the layer's own "still open" — so a case that wants a row to hand
+ * not drive the re-review's decision at all. The row properties the step reads are
+ * `carried` — the layer's own "still open" — and `severity`, through
+ * `atOrAboveBar`, which decides both whether a row buys the wave and whether a
+ * carried row hands the run back. So a case that wants a row to hand
  * the run back re-reports it carried (the re-review stubs in the `test-lean-review-*`
  * suites do this through `lensRoundFor`/`lensRoundWith`), and one that wants
  * it answered reports nothing.

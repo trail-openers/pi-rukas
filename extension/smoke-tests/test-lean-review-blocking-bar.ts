@@ -1,28 +1,30 @@
 #!/usr/bin/env bun
 /**
- * lean/review — the step's BLOCKING BAR: only a blocking verdict buys a wave.
+ * lean/review — the step's BLOCKING BAR: only a row at the project's bar buys a wave.
  *
  * Split from `test-lean-review-consolidation.ts` by the 500-line cap (AGENTS.md
  * §12), along the seam that file's own case groups describe: everything there
  * folds values and drives gates the step already agreed with, and everything here
- * drives the one question the step's cost turns on — whether a given verdict is a
+ * drives the one question the step's cost turns on — whether a given round is a
  * demand for a fixer. The seam is real, not convenient: a bar case fails for a
  * reason a fold case cannot produce.
  *
- * Both reviewing layers' doctrine says the same thing in different words: only the
- * CRITICAL verdict blocks. `agents-base/adversarial-developer.md` calls
+ * The bar is the project's own, read from the threshold the step resolved at the
+ * base commit: `AGENTS.md §1` states HIGH and above as blocking, and
+ * `computeVerdict` reaches `ISSUES_FOUND` for any finding at or above that
+ * threshold. So a lens round that reported a row at the bar buys the one wave —
+ * exactly as a `CRITICAL_ISSUES_FOUND` round does — and a round whose rows all sit
+ * below it is disclosed by the review layer's residual post and buys nobody. The
+ * adversarial gate's own verdict buys nothing on its own: its doctrine calls
  * `ISSUES_FOUND` "Should address, not blocking" and `MINOR_OBSERVATIONS`
- * "Non-blocking, author's discretion", and `decideLoopAction` passes on both at the
- * terminal round; the lens layer's `computeVerdict` reserves
- * `CRITICAL_ISSUES_FOUND` and reaches `ISSUES_FOUND` for anything merely at or
- * above the project's bar. A step that paid a fixer for those findings was paying
- * for a child, a re-review and a second gate pass against findings the reviewing
- * layer itself declined to block on, and the disclosure path that already exists
- * for them — the layer's residual post — said nothing about the extra wave.
+ * "Non-blocking, author's discretion", and `decideLoopAction` passes on both; only
+ * its trailing blocking record does. Paying a fixer for findings the reviewing
+ * layers declined to block on bought a child, a re-review and a second gate pass to
+ * answer a verdict that did not ask for one.
  *
  * Both gates are driven, because the two arms read their bar from different places
  * and each broke separately: the adversarial arm's bar is the trailing record's
- * status, the lens arm's is the round's verdict. And the blocking direction is
+ * status, the lens arm's is its verdict AND its rows. And the blocking direction is
  * driven too — without it every non-blocking assertion here is also satisfied by a
  * step that never fixes anything.
  *
@@ -54,8 +56,10 @@ import {
 const { assert, failures } = makeAssert();
 // ── (r2) a NON-BLOCKING verdict buys no fixer, from EITHER gate ─────────────
 //
-// Both roles' doctrine says the same thing in different words: only the CRITICAL
-// verdict blocks. `agents-base/adversarial-developer.md` calls `ISSUES_FOUND`
+// Both roles' doctrine says the same thing in different words: only CRITICAL blocks
+// on its own.
+// verdict blocks; a lens round is judged on its rows as well, at the project's bar.
+// `agents-base/adversarial-developer.md` calls `ISSUES_FOUND`
 // "Should address, not blocking" and `MINOR_OBSERVATIONS` "Non-blocking, author's
 // discretion", and `decideLoopAction` passes on both at the terminal round; the
 // lens layer's `computeVerdict` reserves `CRITICAL_ISSUES_FOUND` and reaches
@@ -162,12 +166,11 @@ const { assert, failures } = makeAssert();
     `(r2a) and the reason names the round's own verdict, so the operator can see what was reported and left unfixed (${r2a.outcome?.reason})`,
   );
 
-  // (r2b) the lens arm: an ISSUES_FOUND round whose rows sit BELOW the project's
-  // bar. That is exactly what the layer's own `ISSUES_FOUND` verdict means, and
-  // `reported` holds only the BLOCKING half post-advisory-split — so an empty
-  // `reported` beside the verdict is the production shape, not a fixture invention
-  // (`work-driver-lens-verdicts.ts` #456: `computeVerdict` partitions, it does not
-  // filter, and the advisory half goes to the residual disclosure).
+  // (r2b) the lens arm: an ISSUES_FOUND round whose rows all sit BELOW the
+  // project's bar. That is exactly what the layer's own `ISSUES_FOUND` verdict
+  // means when the project's bar is looser than the rows it reports — here the bar
+  // is CRITICAL and the only row is MEDIUM. `reported` holds only the BLOCKING half
+  // post-advisory-split, so the rows the round names are the rows it reports.
   const { repoRoot: rr2, baseSha: bs2 } = makeRepo();
   await setup({ repoRoot: rr2, baseSha: bs2, branch: BRANCH, feature: "export const f = 8;\n" });
   let r2bLensRounds = 0;
@@ -176,13 +179,14 @@ const { assert, failures } = makeAssert();
     ctxFor(rr2, bs2, BRANCH),
     depsWith({
       adversarial: async () => result({ loopOutcome: "approved" }),
+      reviewThreshold: async () => "CRITICAL" as const,
       lens: async () => {
         r2bLensRounds++;
         return {
           ...cleanLensRound(),
           verdict: "ISSUES_FOUND" as const,
-          findings: "- [LOW] SIMPLICITY a.ts:1: naming",
-          reported: [],
+          findings: "- [MEDIUM] SIMPLICITY a.ts:1: naming",
+          reported: [blockingFinding({ severity: "MEDIUM", lens: "SIMPLICITY", title: "naming" })],
         };
       },
       dispatch: async (spec: DispatchSpec) => {
@@ -197,11 +201,49 @@ const { assert, failures } = makeAssert();
   );
   assert(
     r2b.threw === undefined && r2b.outcome?.kind === "done",
-    `(r2b) a lens ISSUES_FOUND at the project's bar ENDS done, and a CRITICAL round still does not (${r2b.threw?.message ?? `kind ${String(r2b.outcome?.kind)}`})`,
+    `(r2b) a lens ISSUES_FOUND with every row below the project's bar ENDS done, and a CRITICAL round still does not (${r2b.threw?.message ?? `kind ${String(r2b.outcome?.kind)}`})`,
   );
   assert(
     r2bFixers === 0,
-    `(r2b) and the lens arm buys no fixer for non-blocking rows either (${String(r2bFixers)} fixer dispatches)`,
+    `(r2b) and the lens arm buys no fixer for rows below the bar (${String(r2bFixers)} fixer dispatches)`,
+  );
+
+  // (r2b′) THE PAIR FOR THE ROWS: the same round, the same `ISSUES_FOUND` verdict,
+  // and a row AT the bar. This is the defect the follow-up names — a HIGH in round 1
+  // used to buy nobody and ship disclosed, against `AGENTS.md §1` — and without it
+  // every below-bar assertion above is also satisfied by a step that never buys a
+  // wave at all.
+  const { repoRoot: rr2p, baseSha: bs2p } = makeRepo();
+  await setup({ repoRoot: rr2p, baseSha: bs2p, branch: BRANCH, feature: "export const f = 85;\n" });
+  let r2bPrimeFixers = 0;
+  let r2bPrimeLensRounds = 0;
+  const r2bPrime = await run(
+    ctxFor(rr2p, bs2p, BRANCH),
+    depsWith({
+      adversarial: async () => result({ loopOutcome: "approved" }),
+      lens: async (a) => {
+        r2bPrimeLensRounds++;
+        return r2bPrimeLensRounds === 1
+          ? lensRoundWith("ISSUES_FOUND", [blockingFinding()])
+          : lensRoundFor(a, "APPROVED", []);
+      },
+      dispatch: async (spec: DispatchSpec) => {
+        r2bPrimeFixers++;
+        const wt = spec.cwd as string;
+        put(wt, `r2b-prime-fix-${String(r2bPrimeFixers)}.ts`, "export const x = 85;\n");
+        git(wt, "add", "-A");
+        git(wt, "commit", "-q", "-m", "fix: r2b prime");
+        return result({ role: FIXER_ROLE });
+      },
+    }),
+  );
+  assert(
+    r2bPrime.threw === undefined && r2bPrime.outcome?.kind === "fixed" && r2bPrimeFixers === 1,
+    `(r2b′) a lens ISSUES_FOUND with a HIGH row buys exactly ONE fixer — HIGH and above is blocking (${r2bPrime.threw?.message ?? `kind ${String(r2bPrime.outcome?.kind)}, ${String(r2bPrimeFixers)} fixers`})`,
+  );
+  assert(
+    r2bPrimeLensRounds === 2,
+    `(r2b′) and the wave re-reviews the fix, as it does for a CRITICAL round (${String(r2bPrimeLensRounds)} lens rounds)`,
   );
 
   // (r2c) the bar still blocks: a CRITICAL lens round on the SAME fixture must
