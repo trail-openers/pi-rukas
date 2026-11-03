@@ -130,6 +130,34 @@ export async function runAdversarialLoop(
 
   const reportTerminal = params.reportVerdict === "terminal";
 
+  /**
+   * #1978 — the kill cause the reviewer child died of, projected onto every
+   * result this loop synthesises.
+   *
+   * `armBudget`'s `fired()` reports the minutes lever ONLY on a result whose
+   * `killCause` is `"child-bound"` (`step-budget.ts`), and the loop's own
+   * results never carried one: `synthesizeResult` was handed no `killCause`, so
+   * a reviewer the step's `budgets.review.minutes` killed came back as an
+   * ordinary verdict and the lean gate's budget read stayed `undefined` — the
+   * step merged a head its own ceiling had stopped. Mirroring
+   * `capKillOrWatchdogKillCause` in `adversarial-retry.ts`, the projection keeps
+   * only the causes that mean "the caller's clock ended this child": a bound
+   * kill, or a budget abort. The loop's cap kills (`loop` / `token-budget`) and
+   * the watchdog's provider-shaped kills are NOT projected — those already reach
+   * the /work fan-out through `infraFailureResult` with their own semantics, and
+   * here they would misreport an infrastructure fault as a budget the operator
+   * set. The one field is written by the reviewer arm and read at CALL time, so
+   * a round whose fix pass died of its own bound cannot be reported as a budget
+   * stop. Only the report-only path (lean's gate, the tool) ever writes it: a
+   * loop that dispatches fix passes is the /work driver's own review, and its
+   * results must stay byte-identical for the fan-out's cap-kill readers.
+   */
+  let reviewerKillCause: DispatchResult["killCause"] | undefined;
+  const projectedKillCause = (): DispatchResult["killCause"] | undefined =>
+    reviewerKillCause === "child-bound" || reviewerKillCause === "abort"
+      ? reviewerKillCause
+      : undefined;
+
   // #1161 — the reportOnly verdict policy is checked and resolved ONCE, at
   // loop entry. An untyped caller with no recognised policy gets an infra
   // failure, never a verdict judged as a routed round.
@@ -363,6 +391,10 @@ export async function runAdversarialLoop(
     if (advCls.cause !== "success") {
       return ledgerWrite(infraFailureResult(round, "review", adv, advCls, infraCtxNow()));
     }
+    // #1978 — the projection is scoped to the report-only gate that reads it:
+    // a loop that dispatches fix passes is the /work driver's own review, whose
+    // results must stay byte-identical for the fan-out's cap-kill readers.
+    if (params.reportOnly) reviewerKillCause = adv.killCause;
 
     const verdict = parseVerdict(adv.text);
     rounds.push({ round, verdict, ms: adv.ms });
@@ -393,6 +425,7 @@ export async function runAdversarialLoop(
           transcriptPath: tally.lastTranscript,
           model: tally.lastModel,
           adversarialRounds: toRoundRecords(rounds),
+          ...(projectedKillCause() ? { killCause: projectedKillCause() } : {}),
         }),
       );
     }
@@ -416,6 +449,10 @@ export async function runAdversarialLoop(
       );
     }
     if (action === "pass") {
+      // #1978 — the projection is scoped to the report-only gate that reads it:
+      // a loop that ran a fix pass is the /work driver's own review, whose
+      // results must stay byte-identical for the fan-out's cap-kill readers.
+      if (params.reportOnly) reviewerKillCause = undefined;
       // `PASSED WITH FINDINGS` rather than `APPROVED` when something is still
       // outstanding — the operator (and the lens gate) must tell the two apart;
       // `commit-pr` carries the findings into the PR body.

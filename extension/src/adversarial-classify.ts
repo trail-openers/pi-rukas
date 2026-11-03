@@ -82,6 +82,27 @@ export function classifyDispatchOutcome(r: DispatchResult): {
       headline: "killed by pi-rukas (token budget crossed) — a cost cap, not a provider fault",
     };
   }
+  // #1978 — the child the step's turns / tokens lever aborted: failed, with no
+  // provider error and a clean exit. `armChildBound` is INERT under
+  // `PI_ENSEMBLE_DISPATCH_CAPS=0` and the minutes lever has no hook of its own, so
+  // a budget kill can arrive cause-less, and the `!r.ok` → `crashed` fallback
+  // below would retry it — spending an operator ceiling twice, the bug
+  // `test-adversarial-child-bound-cap.ts` exists for, now reachable through the
+  // budget rather than the loop's own bound. No killCause arm above covers this
+  // shape, so the check is structural: a provider severance carries `errorStop`
+  // and a real crash a non-zero exit, both read below, and every labelled kill is
+  // answered earlier. What is left is a child this harness ended through the
+  // controller `makeRunPhase` owns — fed by the loop signal and the step's budget
+  // arms and nothing else — which for lean's gate is the budget.
+  if (!r.ok && !r.errorStop && (r.exitCode === null || r.exitCode === 0)) {
+    return {
+      cause: "self-killed:abort",
+      shouldRetry: false,
+      maxRetries: 0,
+      headline:
+        "cancelled by the caller's budget (the child was ended with no verdict and no fault) — re-spawning would spend the ceiling again",
+    };
+  }
   // #1863 — the per-child run bound (#1560): the reviewer was steered to wrap
   // up at its bound and ended a grace period later. Without this branch it
   // fell to the `!r.ok` → `crashed` fallback below, which returns
