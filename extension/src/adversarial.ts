@@ -280,6 +280,13 @@ export async function runAdversarialLoop(
     ...(params.pi ? { pi: params.pi } : {}),
     processGroup: params.processGroup,
     workCycleTrust: params.workCycleTrust,
+    // #1978 — lean's review step is the only caller that sets these; the other
+    // two pass nothing and the options stay absent, so their phases (and the
+    // reviewer's own knob) are untouched. An absent optional stays absent rather
+    // than becoming `undefined`, as for `onSlow` / `pi` above.
+    ...(params.childBoundMs === undefined ? {} : { budgetChildBoundMs: params.childBoundMs }),
+    ...(params.signal === undefined ? {} : { budgetSignal: params.signal }),
+    ...(params.onProgress === undefined ? {} : { onBudgetProgress: params.onProgress }),
   });
 
   const firstRound = params.reportRound ?? 1;

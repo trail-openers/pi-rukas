@@ -15,6 +15,7 @@ import { setOrchestratorActiveChild } from "./async-jobs.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import { type SteerSource, steerChild } from "./dispatch-steer.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
+import type { RunningState } from "./progress.ts";
 import { adversarialChildBoundMs, isReviewerRole } from "./review-bounds.ts";
 import { type OnSlowCallback, feedSlowProgress, watchSlowDispatch } from "./slow-notice.ts";
 import { spawnSpecialist } from "./spawn.ts";
@@ -45,8 +46,26 @@ export function makeRunPhase(opts: {
   onSlow?: OnSlowCallback;
   /** The parent pi for the slow-run watch (the PM notice half). */
   pi?: ExtensionAPI;
+  /**
+   * #1978 — the step's budget arms, read ONLY inside the reviewer branch.
+   * `childBoundMs` can only tighten `adversarialChildBoundMs()`; `signal` and
+   * `onProgress` join the reviewer child's abort and compose with the deck /
+   * slow-run feed. The fix-pass arm takes none of them.
+   */
+  budgetChildBoundMs?: number;
+  budgetSignal?: AbortSignal;
+  onBudgetProgress?: (state: RunningState) => void;
 }): RunPhase {
-  const { runId, signal, orchestratorJobId, processGroup, workCycleTrust } = opts;
+  const {
+    runId,
+    signal,
+    orchestratorJobId,
+    processGroup,
+    workCycleTrust,
+    budgetChildBoundMs,
+    budgetSignal,
+    onBudgetProgress,
+  } = opts;
   return async (role, tag, prompt, cwd) => {
     const deckKey = `${runId}/${tag}`;
     const label = `${role}[${tag}]`;
@@ -73,6 +92,13 @@ export function makeRunPhase(opts: {
     // This child's own abort, so dispatch_kill <deckKey> can stop a hung
     // round — the driver passes a loop signal that nothing ever aborts.
     const kill = new AbortController();
+    // #1978 — the step's budget abort ends THIS child too: `armBudget`'s turns /
+    // tokens hook aborts its own controller, and without this listener that
+    // abort reached nothing, which is the half of the bug that let a reviewer
+    // run past `budgets.review.turns`.
+    const onBudgetAbort = () => kill.abort();
+    if (budgetSignal?.aborted === true) kill.abort();
+    else budgetSignal?.addEventListener("abort", onBudgetAbort, { once: true });
     // #1827 — set true by the spawn the first time one of the reviewer's
     // killing bounds (the re-read kill, the post-verdict stop) arms.
     let boundArmed = false;
@@ -99,7 +125,14 @@ export function makeRunPhase(opts: {
           tag,
           ...(reviewer
             ? {
-                childBoundMs: adversarialChildBoundMs(),
+                // #1978 — the smaller of the step's budget and the operator's own
+                // reviewer knob: a budget may only TIGHTEN the wall clock, never
+                // lengthen it, so `PI_ENSEMBLE_ADVERSARIAL_BOUND_MS` stays the
+                // single source of the default and an absent budget changes nothing.
+                childBoundMs: Math.min(
+                  budgetChildBoundMs ?? Number.POSITIVE_INFINITY,
+                  adversarialChildBoundMs(),
+                ),
                 // #1827 round 4 — OPT IN to the post-verdict stop. Only this
                 // dispatch speaks the `VERDICT_STATUSES` protocol: the plan gap
                 // gate spawns the same role with `READY / NEEDS_ITERATION`, and
@@ -126,6 +159,10 @@ export function makeRunPhase(opts: {
           onProgress: (state) => {
             dispatchDeck.updateEntry(deckKey, state);
             feedSlowProgress(deckKey, state);
+            // #1978 — COMPOSED, not substituted: the deck row and the slow-run
+            // watch read this same feed, so replacing it with the budget's hook
+            // would silently lose both while arming the turns/tokens lever.
+            onBudgetProgress?.(state);
           },
           onRawEvent: stopSlow.onRawEvent ?? slowRaw,
           onStdin: (stdin) => {
@@ -145,6 +182,7 @@ export function makeRunPhase(opts: {
       );
     } finally {
       signal.removeEventListener("abort", onLoopAbort);
+      budgetSignal?.removeEventListener("abort", onBudgetAbort);
       stopSlow.stop();
       dispatchDeck.clearEntry(deckKey);
       childHandles.delete(deckKey);
