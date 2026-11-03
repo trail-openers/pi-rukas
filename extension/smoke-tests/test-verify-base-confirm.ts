@@ -323,11 +323,9 @@ for (const [label, second, want, ranSecond] of secondRunCases) {
 
 // ── the name rule compares a wide pair exactly (round 1) ──
 //
-// `compareNames` re-walks every root and every name through `realpath` unless it
-// is handed a memo. The 300-name case below asserts the overlap it computes; the
-// cost of computing it is not asserted — a wall-clock bound cannot tell a
-// quadratic regression from a loaded host, so it reports failures that are not
-// defects.
+// The case asserts the overlap result of a wide 300/200 name pair. No test bounds
+// the cost of computing it; the `realpath` memo roughly halves that cost. A
+// wall-clock bound is not used because it cannot tell that from host load.
 {
   // The roots must be roots the comparison can actually strip: this repo's own
   // `smoke-tests` directory exists in both spellings of every tree, so a name
