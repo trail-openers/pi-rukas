@@ -22,6 +22,11 @@ import {
   registerPermissionGuard,
 } from "../src/permission-guard.js";
 
+// The devcontainer sets PI_ENSEMBLE_SANDBOX_MODE=1, and with it the guard
+// bypasses all gating, so the round-trip below never runs. This test is
+// about the gate itself, so it runs with the gate on.
+delete process.env.PI_ENSEMBLE_SANDBOX_MODE;
+
 let exitCode = 0;
 function assert(cond: boolean, msg: string) {
   if (cond) {
