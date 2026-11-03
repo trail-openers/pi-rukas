@@ -21,6 +21,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { MAX_REVIEW_ROUNDS } from "../src/work-driver-context.ts";
 import { renderHandoffMarkdown } from "../src/work-driver-handoff-markdown.ts";
 import { renderHandoffUserMessage } from "../src/work-driver-handoff-message.ts";
 import { captureWorktreeSnapshot } from "../src/work-driver-handoff-snapshot.ts";
@@ -125,13 +126,15 @@ try {
   // The Rounds line says what it counts, and reports the adversarial rounds
   // the log already holds.
   assert(
-    !/\*\*Rounds\*\*: 0 of 3 review rounds$/m.test(surfaces.markdown),
+    !new RegExp(`\\*\\*Rounds\\*\\*: 0 of ${String(MAX_REVIEW_ROUNDS)} review rounds$`, "m").test(
+      surfaces.markdown,
+    ),
     "canary — markdown: no bare '0 of 3 review rounds' after an adversarial round ran",
   );
   assert(
-    /\*\*Rounds\*\*: 0 of 3 review rounds \(six-lens review; the adversarial gate ran 1 round\(s\), last: ISSUES_FOUND\)/.test(
-      surfaces.markdown,
-    ),
+    new RegExp(
+      `\\*\\*Rounds\\*\\*: 0 of ${String(MAX_REVIEW_ROUNDS)} review rounds \\(six-lens review; the adversarial gate ran 1 round\\(s\\), last: ISSUES_FOUND\\)`,
+    ).test(surfaces.markdown),
     "markdown: names the counter and the adversarial round that ran",
   );
   const noAdv = renderHandoffMarkdown({
@@ -139,7 +142,10 @@ try {
     eventLog: state.eventLog.filter((e) => e.kind !== "adversarial-round"),
   });
   assert(
-    /\*\*Rounds\*\*: 0 of 3 review rounds \(six-lens review\)$/m.test(noAdv),
+    new RegExp(
+      `\\*\\*Rounds\\*\\*: 0 of ${String(MAX_REVIEW_ROUNDS)} review rounds \\(six-lens review\\)$`,
+      "m",
+    ).test(noAdv),
     "markdown: with no adversarial-round record it claims no adversarial rounds",
   );
 

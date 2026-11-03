@@ -17,6 +17,7 @@
  * on the event the whole time.
  */
 
+import { MAX_REVIEW_ROUNDS } from "../src/work-driver-context.ts";
 import { renderHandoffMarkdown } from "../src/work-driver-handoff-markdown.ts";
 import type { WorkState } from "../src/workflow-state.ts";
 
@@ -83,7 +84,7 @@ const state = (cap: string, extra: unknown[] = []): WorkState =>
   s.pipelineState.reviewRound = 2;
   const md = renderHandoffMarkdown(s);
   assert(
-    /\*\*Rounds\*\*: 2 of 3 review rounds/.test(md),
+    new RegExp(`\\*\\*Rounds\\*\\*: 2 of ${String(MAX_REVIEW_ROUNDS)} review rounds`).test(md),
     "a lens-review cap still reports the review round — the fix is targeted, not a blanket rewrite",
   );
   assert(!/adversarial round/.test(md), "...and does not claim adversarial rounds it never ran");

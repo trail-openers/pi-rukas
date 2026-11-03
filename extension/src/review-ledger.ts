@@ -49,7 +49,7 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { dedupeLatest } from "./review-ledger-core.ts";
-import type { LedgerEntry } from "./review-ledger-entry.ts";
+import type { LedgerBlockingCounts, LedgerEntry } from "./review-ledger-entry.ts";
 import { acquireLedgerLock, runLedgerCriticalSectionHook } from "./review-ledger-lock.ts";
 import { mergeAfterRace } from "./review-ledger-merge.ts";
 import {
@@ -86,7 +86,12 @@ export { bumpLensRound } from "./review-ledger-round.ts";
 export { dedupeLatest } from "./review-ledger-core.ts";
 // #1557 size split: the row record lives in review-ledger-entry.ts; the
 // ledger's public surface stays one module - importers keep their paths.
-export type { LedgerEntry, LedgerFile, ReviewKind } from "./review-ledger-entry.ts";
+export type {
+  LedgerBlockingCounts,
+  LedgerEntry,
+  LedgerFile,
+  ReviewKind,
+} from "./review-ledger-entry.ts";
 export { mergeAfterRace } from "./review-ledger-merge.ts";
 export { remoteName } from "./review-ledger-path.ts";
 

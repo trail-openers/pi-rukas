@@ -98,7 +98,7 @@ const lensRow = (extra: Entry): Entry => ({
 });
 
 // ---------------------------------------------------- 1. cap parsing (env)
-assert(MAX_REVIEW_ROUNDS === 3, "the driver's MAX_REVIEW_ROUNDS is 3 (the default source)");
+assert(MAX_REVIEW_ROUNDS === 2, "the driver's MAX_REVIEW_ROUNDS is 2 (the default source)");
 assert(lensRoundCap({}) === MAX_REVIEW_ROUNDS, "unset PI_ENSEMBLE_LENS_ROUND_CAP → driver default");
 assert(lensRoundCap({ PI_ENSEMBLE_LENS_ROUND_CAP: "5" }) === 5, "a positive integer overrides");
 for (const bad of ["", "abc", "0", "-2", "2.5", "NaN"]) {
@@ -186,7 +186,7 @@ async function waitFor(pred: () => boolean, ms = 5000): Promise<void> {
   while (!pred() && Date.now() < until) await new Promise((r) => setTimeout(r, 20));
 }
 
-seed([lensRow({ round: 3, at: 1000 })]);
+seed([lensRow({ round: 2, at: 1000 })]);
 const before = readEntries().length;
 const before2 = sent.length;
 const res = (await tool().execute("t1", { cwd: repo })) as Captured;
@@ -197,8 +197,8 @@ assert(
 await waitFor(() => sent.length > before2);
 const report = sent.slice(before2).join("\n");
 assert(
-  /WARNING: ROUND_CAP_REACHED — round 4 exceeds the 3-round cap/.test(report),
-  "round 4 runs with a ROUND_CAP_REACHED warning naming the round and the cap",
+  /WARNING: ROUND_CAP_REACHED — round 3 exceeds the 2-round cap/.test(report),
+  "round 3 runs with a ROUND_CAP_REACHED warning naming the round and the cap",
 );
 assert(/Code review verdict \(/.test(report), "the past-cap run returns the review's real verdict");
 assert(
@@ -206,7 +206,7 @@ assert(
   "the warning is reported once",
 );
 assert(
-  /Last recorded round before this one: 3 — verdict ISSUES_FOUND/.test(report),
+  /Last recorded round before this one: 2 — verdict ISSUES_FOUND/.test(report),
   "the warning names the last round's verdict",
 );
 assert(/CRITICAL in that round: not open/.test(report), "the warning says CRITICAL is not open");
@@ -219,7 +219,7 @@ assert(
 
 // #1127 — a model-supplied overrideCap is not a bypass: the schema has no such
 // parameter and execute never reads it, so the warning stands.
-seed([lensRow({ round: 3, at: 1000 })]);
+seed([lensRow({ round: 2, at: 1000 })]);
 const sentBeforeParam = sent.length;
 await tool().execute("t1b", { cwd: repo, overrideCap: true });
 await waitFor(() => sent.length > sentBeforeParam);
@@ -228,14 +228,14 @@ assert(
   "a tool call's overrideCap parameter cannot silence the round-cap warning",
 );
 
-// ----------------------------------------- 4. CRITICAL open allows round 4
-seed([lensRow({ round: 3, hasCritical: true, at: 1000 })]);
+// ----------------------------------------- 4. CRITICAL open allows round 3
+seed([lensRow({ round: 2, hasCritical: true, at: 1000 })]);
 const adm4 = await admitLensRound({ cwd: repo });
-assert(adm4.admitted, "CRITICAL open in round 3 lets the gate pass (round 4)");
+assert(adm4.admitted, "CRITICAL open in round 2 lets the gate pass (round 3)");
 if (adm4.admitted) adm4.release();
 
 // ---------------------- 5. overrideCap bypasses and is recorded on the entry
-seed([lensRow({ round: 3, at: 1000 })]);
+seed([lensRow({ round: 2, at: 1000 })]);
 const OVERRIDE_ON = { PI_ENSEMBLE_LENS_ROUND_CAP_OVERRIDE: "1" };
 const overridden = await admitLensRound({ cwd: repo, env: OVERRIDE_ON });
 assert(
@@ -265,11 +265,11 @@ assert(
 );
 
 // -------------------------- 6. the counter survives a fresh read (new session)
-seed([lensRow({ round: 2, at: 1000 })]);
+seed([lensRow({ round: 1, at: 1000 })]);
 const fresh = await readRecordedLens(repo, "feature/x");
-assert(fresh.ok && fresh.latest?.round === 2, "a fresh read of the ledger recovers round 2");
+assert(fresh.ok && fresh.latest?.round === 1, "a fresh read of the ledger recovers round 1");
 const gated = await admitLensRound({ cwd: repo });
-assert(gated.admitted, "round 3 is still allowed after a fresh read");
+assert(gated.admitted, "round 2 is still allowed after a fresh read");
 if (gated.admitted) gated.release();
 
 // ------------------------------------------- 7. unreadable ledger fails closed
@@ -286,28 +286,27 @@ const shaped = await admitLensRound({ cwd: repo });
 assert(!shaped.admitted, "a ledger without an entries array refuses");
 
 // -------------- 8. streak, in-flight, no-branch
-seed([lensRow({ round: 2, incompleteRuns: 3, at: 1000 })]);
+seed([lensRow({ round: 1, incompleteRuns: 3, at: 1000 })]);
 const streakRun = await admitLensRound({ cwd: repo });
 assert(
   streakRun.admitted &&
-    streakRun.round === 3 &&
+    streakRun.round === 2 &&
     /WARNING: REVIEW_INCOMPLETE_STREAK/.test(streakRun.note ?? "") &&
     /3 consecutive run\(s\) ended REVIEW_INCOMPLETE/.test(streakRun.note ?? "") &&
     !/ROUND_CAP_REACHED/.test(streakRun.note ?? ""),
   "three consecutive incomplete runs are admitted with a REVIEW_INCOMPLETE_STREAK warning naming the streak",
 );
 if (streakRun.admitted) streakRun.release();
-seed([lensRow({ round: 2, incompleteRuns: 0, at: 1000 })]);
+seed([lensRow({ round: 1, incompleteRuns: 0, at: 1000 })]);
 const afterDone = await admitLensRound({ cwd: repo });
 assert(afterDone.admitted, "a completed run resets the streak: the next run is admitted");
 if (afterDone.admitted) afterDone.release();
-seed([lensRow({ round: 2, incompleteRuns: 3, at: 1000 })]);
 
-seed([lensRow({ round: 2, at: 1000 })]);
+seed([lensRow({ round: 1, at: 1000 })]);
 const first = await admitLensRound({ cwd: repo });
 const second = await admitLensRound({ cwd: repo });
 assert(
-  first.admitted && second.admitted && first.round === 3 && second.round === 4,
+  first.admitted && second.admitted && first.round === 2 && second.round === 3,
   "a concurrent call in this process cannot claim the same round",
 );
 assert(
@@ -395,7 +394,7 @@ const guardEntry = (round: number) =>
 const capFailure = (round: number) =>
   evaluateRoundCapMerge([guardEntry(round)], "feature/x", "p1", [], "a".repeat(40))
     .failedCondition ?? "";
-assert(/below the 3-round cap/.test(capFailure(2)), "the merge guard's default cap is 3");
+assert(/below the 2-round cap/.test(capFailure(1)), "the merge guard's default cap is 2");
 process.env.PI_ENSEMBLE_LENS_ROUND_CAP = "5";
 try {
   assert(

@@ -35,12 +35,24 @@
  */
 
 import { neutraliseMarkdownField } from "./comment-evidence.ts";
+import { type Finding, isCarried } from "./lens-review-types.ts";
+import { type ReviewSeverity, isBlockingSeverity } from "./review-threshold.ts";
 
 /** Worst first. Anything unrecognised sorts last but is still shown. */
 const SEVERITY_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW"] as const;
 
 /** How many findings to print in full before summarising the tail. */
 const MAX_RENDERED = 12;
+
+/**
+ * The cap the verdict site puts on the findings it stores on the event, and the
+ * row count `parseFindings` returns (`lens-findings-render.ts` parses the same
+ * blob and sees at most this many rows, so it cannot tell a full list from a
+ * truncated one). The constant lives with the PARSER — the reader that has to
+ * know the blob may be a truncation — and the writer imports it, so the two
+ * cannot drift.
+ */
+export const MAX_STORED_FINDINGS = 50;
 
 interface StoredFinding {
   lens?: string;
@@ -63,10 +75,46 @@ export function parseFindings(blob: string | undefined): StoredFinding[] {
   if (!blob) return [];
   try {
     const parsed: unknown = JSON.parse(blob);
-    return Array.isArray(parsed) ? (parsed as StoredFinding[]) : [];
+    return Array.isArray(parsed) ? parsed.slice(0, MAX_STORED_FINDINGS) : [];
   } catch {
     return [];
   }
+}
+
+/**
+ * Does this stored-findings blob hold NO row the findings store handed back as
+ * OPEN (`carried: true`) at or above `bar`?
+ *
+ * The caller asks it in the direction an ALLOWANCE may answer yes, so it fails
+ * closed on everything it cannot read: an unparseable blob, an element that is
+ * not an object, and a blob that FILLED the storage cap — whose rows past the
+ * cut are lost and whose severity order is not carried-first, so a carried row
+ * may simply not be in what the driver can see.
+ *
+ * A row whose severity the caller cannot rank counts as blocking (see
+ * `isBlockingSeverity`). Reads the serialised blob rather than `Finding[]`
+ * because its input is the event's own `findings` field — the same string the
+ * disclosure renders, so a route and its comment cannot disagree.
+ *
+ * A round that filled the 50-row cap therefore always parks, by design: an
+ * unverifiable disclosure is not a disclosure, and parking is cheap next to
+ * merging past findings nobody read.
+ */
+export function noCarriedFindingAtOrAbove(blob: string | undefined, bar: ReviewSeverity): boolean {
+  if (blob === undefined || blob.trim() === "") return true;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(blob);
+  } catch {
+    return false;
+  }
+  if (!Array.isArray(parsed)) return false;
+  if (parsed.length >= MAX_STORED_FINDINGS) return false;
+  if (parsed.some((f) => typeof f !== "object" || f === null)) return false;
+  return !parsed.some((f) => {
+    const row = f as Partial<Finding>;
+    return isCarried(row as Finding) && isBlockingSeverity(row.severity, bar);
+  });
 }
 
 function rank(severity: string | undefined): number {

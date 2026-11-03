@@ -415,7 +415,8 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
     }
     // Lens: the strict rule first — the LATEST entry must be `passed`
     // (any patchId). When it refuses, the #973 round-cap path is consulted:
-    // an ISSUES_FOUND entry with no CRITICAL, >= 3 rounds, an approving
+    // an ISSUES_FOUND entry with no CRITICAL, at the round cap (or with
+    // nothing at or above the blocking bar), an approving
     // adversarial review (already checked above), and the residual findings
     // disclosed on the PR (marker + matching patch) allows the merge — the
     // same rule AGENTS.md §1 and work-driver-lens-cap.ts apply to the

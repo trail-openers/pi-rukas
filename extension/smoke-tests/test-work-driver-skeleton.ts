@@ -11,7 +11,10 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { DriverContext } from "../src/work-driver-context.ts";
+import {
+  type DriverContext,
+  MAX_REVIEW_ROUNDS,
+} from "../src/work-driver-context.ts";
 import { parseAbort, parseBranchName } from "../src/work-driver-diff.ts";
 import {
   scratchDir,
@@ -291,7 +294,10 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
   assert(out.includes("/work #553"), "widget renders issue number");
   assert(out.includes("step 5/9 adversarial"), "widget renders step ordinal + name");
   assert(out.includes("1m45s"), "widget renders step elapsed");
-  assert(out.includes("round 1/3"), "widget renders review round cap");
+  assert(
+    out.includes(`round 1/${MAX_REVIEW_ROUNDS}`),
+    "widget renders review round cap",
+  );
   assert(out.includes("cap "), "widget renders wall-clock cap when timer is set");
   assert(out.includes("ci-retry 1/2"), "widget renders ci-retry counter when nonzero");
 }

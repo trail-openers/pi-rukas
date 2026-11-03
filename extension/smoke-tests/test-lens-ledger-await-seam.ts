@@ -19,6 +19,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { finishLensReview } from "../src/lens-review-finish.ts";
+import { latestEntry, readLedgerAt } from "../src/review-ledger.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -93,6 +94,20 @@ function setupRepo(): { repo: string; branch: string; cleanup: () => void } {
   });
   try {
     eq(r.summary.verdict, "REVIEW_INCOMPLETE", "(2e) finish returns REVIEW_INCOMPLETE");
+    // #1537 review — the row records the bar its counts were scored at, taken
+    // from the SAME resolved threshold `lensPassed` used (not a bar a later
+    // process re-reads from the environment), and every rank is a non-negative
+    // integer. Read back from the ledger the write actually landed in: the
+    // clone's own `.git/review-ledger.json` (no override is set in this case).
+    await r.ledgerWrite;
+    const ledgerFile = path.join(repo.repo, ".git", "review-ledger.json");
+    const written = latestEntry(readLedgerAt(ledgerFile), repo.branch, "lens");
+    eq(written?.blockingBar, "MEDIUM", "#1537 the row records the resolved bar it was scored at");
+    eq(
+      written?.blockingCounts,
+      { CRITICAL: 0, HIGH: 0, MEDIUM: 0 },
+      "#1537 the row records integer blocking counts for every rank",
+    );
     // Snapshot the summary SYNCHRONOUSLY before the await — the two sides
     // must be independent (a shared r.summary on both sides would compare
     // the value against itself).

@@ -109,7 +109,7 @@ async function withRepo(fn: (repo: string) => Promise<void>): Promise<void> {
  * other command (all of them git) runs for real, because the diff, the evidence
  * and the claim scan are what make this an end-to-end exercise.
  */
-function mkCtx(repo: string, verdict: string, ghCalls: string[]) {
+function mkCtx(repo: string, verdict: string, ghCalls: string[], findings = FINDINGS) {
   return {
     repoRoot: repo,
     issue: 901,
@@ -119,8 +119,8 @@ function mkCtx(repo: string, verdict: string, ghCalls: string[]) {
     lensReviewFn: async () =>
       mkLensSummary({
         verdict: verdict as "ISSUES_FOUND",
-        findings: FINDINGS,
-        totalFindings: FINDINGS.length,
+        findings,
+        totalFindings: findings.length,
       }),
     verifyExecFn: async (cmd: string, opts?: { argv?: string[] }) => {
       if (/^gh\b/.test(commandOf(cmd, opts))) {
@@ -159,7 +159,8 @@ const capOf = (s: WorkState) => {
 
 // ---------------------------------------------------------------- the canary
 //
-// Three rounds of ISSUES_FOUND with the adversarial gate approved. Pre-fix this
+// The terminal round (the re-review that answered one fix wave) of
+// ISSUES_FOUND with the adversarial gate approved. Pre-fix this
 // emits cap-hit{round-cap, nextStep:"handoff"} and parks; the whole point of the
 // change is that it routes to `ci`.
 
@@ -183,6 +184,36 @@ await withRepo(async (repo) => {
 
 // ------------------------------------------------------------- invariant #1
 //
+// #1537 — a row the findings store CARRIED and this round did not resolve parks
+// at HIGH or above: the fix wave failed to land the thing it was sent to fix, so
+// the cycle must not be rewarded with a merge that discloses it as settled. A
+// carried MEDIUM is disclosed like any other sub-blocking row and still routes.
+
+/** The canary's findings plus a carried row at `severity`. */
+const withCarried = (severity: string) => [
+  ...FINDINGS,
+  { lens: "SECURITY", severity, path: "a.txt", line: 3, title: "still open", carried: true },
+];
+
+for (const [severity, want] of [
+  ["HIGH", "handoff"],
+  ["CRITICAL", "handoff"],
+  ["MEDIUM", "ci"],
+] as const) {
+  await withRepo(async (repo) => {
+    const ghCalls: string[] = [];
+    const after = await runLens(
+      mkCtx(repo, "ISSUES_FOUND", ghCalls, withCarried(severity)),
+      stateAt(2),
+      Date.now(),
+    );
+    assert(
+      capOf(after)?.cap === "round-cap" && stepOf(after) === want,
+      `invariant #1537: a carried ${severity} row at the terminal round routes to ${want} (got ${stepOf(after)})`,
+    );
+  });
+}
+
 // CRITICAL_ISSUES_FOUND still parks. This must hold BOTH before and after the
 // change — it is what catches an over-broad fix that routes every capped review
 // onward.

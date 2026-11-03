@@ -22,9 +22,17 @@
  *    different signal from one that ran out of rounds: it says nothing about
  *    how small the remaining findings are, only that the loop was slow.
  *  - The residual findings are posted to the PR **first**, and a disclosure
- *    that fails parks. A PR that silently swallows three rounds of unresolved
- *    findings is worse than a park, so the disclosure is the condition for
+ *    that fails parks. A PR that silently swallows unresolved findings is
+ *    worse than a park, so the disclosure is the condition for
  *    routing on, not a courtesy alongside it.
+ *  - **No row carried from the round before is still open at HIGH or above.**
+ *    A carried row is one this round saw, did not resolve, and whose cited
+ *    code is unchanged (the findings store stamps it — review-findings-round.ts),
+ *    so the fix wave failed to land the thing it was sent to fix. A carried
+ *    MEDIUM or LOW is disclosed like any other sub-blocking row: the bar never
+ *    asked the fix wave to answer it. An unreadable blob counts as holding a
+ *    blocking carried row — the `ci` route is an allowance and an allowance is
+ *    never granted on evidence the driver cannot read.
  *
  * Routing to `ci` does not merge anything. The cycle still passes the CI gate
  * and then `runMerged`'s merge-authority gate, which is default-deny and needs
@@ -38,7 +46,7 @@ import path from "node:path";
 import { adversarialGateApproved } from "./adversarial-findings.ts";
 import { execp } from "./exec.ts";
 import { FORGE_EXEC_TIMEOUT_MS } from "./forge-detect.ts";
-import { renderLensFindings } from "./lens-findings-render.ts";
+import { noCarriedFindingAtOrAbove } from "./lens-findings-render.ts";
 import { lensResidualsMarker } from "./merge-guard-round-cap.ts";
 import { reviewWallClockMs } from "./review-budget.ts";
 import { trace } from "./trace.ts";
@@ -46,152 +54,22 @@ import { type CycleContext, type DriverContext, MAX_REVIEW_ROUNDS } from "./work
 import { recordLensResidualsPosted } from "./work-driver-draft-disclosure.ts";
 import { type PatchIdentity, currentPatchIdentity } from "./work-driver-draft-pr.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
+import {
+  type ResidualDisclosureRoute,
+  renderResidualFindings,
+  routeShape,
+} from "./work-driver-lens-cap-comment.ts";
+// Re-export: the comment's shape is part of what the cap route licenses, and the
+// tests that pin the marker have always taken the renderer from here.
+export {
+  OWED_ROUND_DISCLOSURE_PREFIX,
+  ROUND_CAP_DISCLOSURE_PREFIX,
+  type ResidualDisclosureRoute,
+  renderResidualFindings,
+} from "./work-driver-lens-cap-comment.ts";
 import { residualDisclosureBody } from "./work-driver-lens-cap-hygiene.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
-
-/**
- * The PR comment a round-capped cycle leaves behind.
- *
- * Deliberately the same renderer the handoff surfaces use: the operator reading
- * this on the PR and the operator reading a handoff comment should be looking
- * at the same list in the same order, worst first. Empty string when the stored
- * findings blob yields nothing renderable — the caller treats that as a failed
- * disclosure, because an empty comment discloses nothing.
- *
- * #1398 round 3 — the caller passes the patch identity in and the marker goes on
- * the END of the body, exactly as `lens-review-residuals.ts` appends it. The
- * disclosure is only a disclosure if the PR carries the identity the guard and
- * the draft gate both compare: a body without the marker is prose that reads
- * like a disclosure and is invisible to both readers, and the round-cap route
- * used to post precisely that while recording the `lens-residuals-posted` fact.
- * The fact then licensed a ready the PR itself could not show.
- */
-export function renderResidualFindings(
-  findingsBlob: string | undefined,
-  round: number,
-  verdict: string,
-  marker?: string,
-  wording?: { owedRound: true; budgetLeftMin: number },
-): string {
-  const rendered = renderLensFindings(findingsBlob, verdict);
-  if (rendered.length === 0) return "";
-  return [
-    // #1742 — the owed-round route says what actually happened. A round-cap
-    // text on this route told the operator the fix LOOP had stopped, when it
-    // was the re-review that never started, and named the wrong round.
-    ...(wording?.owedRound
-      ? [
-          `## Six-pass review — findings from round ${round} unverified against the current head`,
-          "",
-          `The re-review of round ${round}'s fix was refused with ${wording.budgetLeftMin}m of review`,
-          `budget left; these findings from round ${round} are unverified against the current`,
-          "head. None is CRITICAL and the adversarial gate passed the diff, so the cycle carried",
-          "on to CI instead of parking — but nothing listed here has been verified since the fix.",
-          "Decide them before merging.",
-        ]
-      : [
-          "## Six-pass review — findings still open at the round cap",
-          "",
-          `The lens review ran its ${round}-round fix loop and stopped with these`,
-          "outstanding. None is CRITICAL and the adversarial gate passed the diff, so the",
-          "cycle carried on to CI instead of parking — but nothing listed here has been",
-          "fixed. Decide them before merging.",
-        ]),
-    "",
-    ...rendered,
-    // The marker is the renderer's own line (never passed through the
-    // neutraliser, never sourced from a finding) and is what
-    // `prCarriesDisclosure` / `mergeGuardRoundCap` substring-match.
-    ...(marker ? ["", marker, ""] : []),
-  ].join("\n");
-}
-
-/**
- * The round cap's undisclosed-disclosure plumb line, as one constant: the
- * event body and the `plumbReports` row are the same string, and the dedupe
- * compares against it. Kept prefix + reason so a test can pin the prefix while
- * the reason stays whatever the post actually reported.
- */
-export const ROUND_CAP_DISCLOSURE_PREFIX =
-  "Round cap with non-critical findings: could not post them to the PR (";
-
-/**
- * #1742 — the owed round's own prefix. The step that was refused is the
- * re-review a fix owed, not the round cap, so the plumb report the handoff
- * renders must name the gate that actually refused it (a "Round cap" line on a
- * wall-clock refusal sends the operator to the wrong gate — the #398 class of
- * bug).
- */
-export const OWED_ROUND_DISCLOSURE_PREFIX =
-  "Refused lens re-review with non-critical findings: could not post them to the PR (";
-
-/**
- * How one disclosure route words its comment, its trace lines and its plumb
- * report. Both routes share the mechanics (identity, marker, fact, decline);
- * only the prose differs, and the prose is what the operator reads. #1774 —
- * a DISCRIMINATED union: `kind` selects every wording/label/suffix in one
- * derivation (`routeShape`), so a field cannot arrive on the wrong route and
- * no caller can assemble a half-owed route by omission.
- */
-export type ResidualDisclosureRoute =
-  | {
-      kind: "round-cap";
-      /** #1774 — the round the comment names and the fact records. On BOTH arms
-       *  now: the round used to be a positional argument beside the route, so
-       *  the loop counter and the round the findings came from could disagree
-       *  between the posted comment and the recorded fact. */
-      round: number;
-      /** The identity already computed by the caller's own gate, so the
-       *  disclosure is keyed on the SAME string the route was licensed on
-       *  rather than a second git read that could disagree with the first
-       *  (#1742). Absent ⇒ computed here. */
-      identity?: PatchIdentity;
-    }
-  | {
-      kind: "owed-round";
-      /** Minutes of review budget left at the refusal — the owed-round wording
-       *  names it, so it must not be omissible. */
-      budgetLeftMin: number;
-      /** The round whose findings are disclosed: the comment names it, so the
-       *  route carries it rather than trusting a positional argument. */
-      round: number;
-      /** Required: the owed route is only reachable after
-       *  `owedVerdictOnCurrentHead` computed it — the disclosure keys on the
-       *  SAME string the head gate licensed on (#1742). */
-      identity: PatchIdentity;
-    };
-
-/** Everything the two routes differ on, derived from `kind` in ONE place
- *  (#1774): prefix, trace label, comment wording, scratch-file suffix, and the
- *  round both the comment and the fact name. A new route-shape field is added
- *  here or not at all. */
-function routeShape(route: ResidualDisclosureRoute): {
-  prefix: string;
-  traceLabel: string;
-  scratchSuffix: string;
-  commentRound: number;
-  wording?: { owedRound: true; budgetLeftMin: number };
-} {
-  if (route.kind === "owed-round") {
-    return {
-      prefix: OWED_ROUND_DISCLOSURE_PREFIX,
-      traceLabel: "lens-review-timeout",
-      // The owed-round post is a different comment on a different subject (one
-      // round's unverified findings, not the loop's residuals) — it must not
-      // overwrite the round-cap file of the same round number.
-      scratchSuffix: "-owed",
-      commentRound: route.round,
-      wording: { owedRound: true, budgetLeftMin: route.budgetLeftMin },
-    };
-  }
-  return {
-    prefix: ROUND_CAP_DISCLOSURE_PREFIX,
-    traceLabel: "round-cap",
-    scratchSuffix: "",
-    commentRound: route.round,
-  };
-}
 
 /**
  * The one disclosure path the two cap routes share (#1742).
@@ -413,6 +291,29 @@ async function discloseResidualFindings(
  * Returns the state unchanged when no cap applies; the caller's tail is then
  * still `lens-issues-found` and the loop goes round again into lens-fix.
  */
+/**
+ * Does this verdict's findings blob carry NO row that the findings store handed
+ * back as OPEN (`carried: true`) at or above the HIGH bar? (An empty blob
+ * answers yes: nothing carried, nothing outstanding.)
+ *
+ * The `ci` route's question, asked in the direction the route may answer yes.
+ * A carried row is one this round saw, did not resolve, and whose cited code is
+ * unchanged, so a fix pass that ignored a finding cannot be rewarded with a
+ * merge that discloses it as settled.
+ *
+ * The reading itself lives with the blob's parser (`noCarriedFindingAtOrAbove`,
+ * lens-findings-render.ts) so the truncation rule and the storage cap are one
+ * constant in one place: a blob that filled the cap has lost whatever the cut
+ * fell past, the cut is not carried-first, and the stored JSON records neither
+ * a marker nor a total — so such a blob cannot prove nothing at the bar was
+ * carried, and the route parks. An unreadable blob counts as holding one too:
+ * the route is an allowance, and an allowance is never granted on evidence the
+ * driver cannot read.
+ */
+export function noBlockingCarriedFinding(findingsBlob: string | undefined): boolean {
+  return noCarriedFindingAtOrAbove(findingsBlob, "HIGH");
+}
+
 export async function appendReviewCapHit(
   ctx: CycleContext,
   state: WorkState,
@@ -436,6 +337,7 @@ export async function appendReviewCapHit(
     if (
       !wallClockExceeded &&
       verdict === "ISSUES_FOUND" &&
+      noBlockingCarriedFinding(findingsBlob) &&
       adversarialGateApproved(state.eventLog)
     ) {
       const routed = await discloseResidualsAndRoute(ctx, next, verdict, findingsBlob, {

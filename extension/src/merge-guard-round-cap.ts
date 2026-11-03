@@ -14,7 +14,7 @@
  *
  * This module is that alignment, evaluated by the guard (merge-guard.ts)
  * AFTER the adversarial check has already passed. It mirrors
- * * work-driver-lens-cap.ts's constants (MAX_REVIEW_ROUNDS = 3, the
+ * * work-driver-lens-cap.ts's constants (MAX_REVIEW_ROUNDS, the
  * ISSUES_FOUND-only condition, the CRITICAL-always-refuses rule) rather than
  * introducing a second independently-tuned number, and it reuses
  * `latestEntry` from review-ledger.ts for the round count (the new `round`
@@ -33,9 +33,14 @@
  *   3. The latest lens entry has `hasCritical === false`. A legacy entry
  *      without the field (pre-#973) cannot satisfy this — conservative
  *      refusal (design decision 3).
- *   4. The latest lens entry's `round >= lensRoundCap()` (3 by default). A legacy
- *      entry without `round` counts as round 1 — never enough (design
- *      decision 3; the acceptance criterion's "existing entries count as
+ *   4. Either the latest lens entry's `round >= lensRoundCap()` (#1537: 2 by
+ *      default — one full review, one fix wave, one scoped re-review), OR the
+ *      row shows nothing at or above the blocking threshold (`hasCritical ===
+ *      false` and, when the row carries the severity counts that
+ *      `lens-review-finish.ts` writes, no count above the bar). The second case
+ *      is a round 1 whose findings never blocked, so no fix wave is owed. A
+ *      legacy entry without `round` counts as round 1 — never enough on its own
+ *      (design decision 3; the acceptance criterion's "existing entries count as
  *      rounds but cannot satisfy 'no CRITICAL'" is covered by condition 3,
  *      which is the stricter of the two on a legacy row).
  *   5. The PR/MR carries the disclosure marker (see `lensResidualsMarker`
@@ -82,6 +87,55 @@
 import { lensRoundCap } from "./lens-round-cap.ts";
 import { isFullCommitSha } from "./review-head-sha.ts";
 import { type LedgerEntry, latestEntry } from "./review-ledger.ts";
+import { type ReviewSeverity, SEVERITIES, isBlockingSeverity } from "./review-threshold.ts";
+
+/** The severity ranks a blocking count can be recorded for. LOW is never
+ * blocking, so a row that counts none of these has nothing at any bar. */
+const BLOCKING_RANKS = ["CRITICAL", "HIGH", "MEDIUM"] as const;
+
+/**
+ * Does this lens row show no finding at or above the blocking bar?
+ *
+ * `hasCritical` is the only severity signal a lens row has ever carried, so on
+ * a row without `blockingCounts` it is all the rule can read. Rows written by
+ * `lens-review-finish.ts` carry the counts AND the bar they were scored at
+ * (`blockingBar`, the resolved threshold of the round that wrote the row) and
+ * are checked at THAT bar — the bar the lenses answered to, not whatever
+ * `PI_ENSEMBLE_REVIEW_THRESHOLD` says at merge time.
+ *
+ * Fails closed on every unreadable shape: counts with no bar recorded (the rule
+ * cannot know which bar the counts meant), a missing rank (a partial count is
+ * not a complete answer), and a non-numeric or negative count (JSON off disk is
+ * untrusted text). Absent counts, absent bar or a partial read all mean "not
+ * nothing blocking", so the round condition decides.
+ */
+function nothingBlocking(lens: LedgerEntry): boolean {
+  if (lens.hasCritical !== false) return false;
+  // The counts are absent whenever they could not describe the verdict — on a
+  // legacy row, on a hand-built one, and on every row whose writer recorded a
+  // review whose lens children never answered. Absent means the rule cannot
+  // verify that nothing blocks, so it says "not nothing blocking" and the round
+  // condition decides, exactly as it did before #1537.
+  const counts = lens.blockingCounts;
+  if (!counts || typeof counts !== "object") return false;
+  // The bar comes off the ROW, never from the environment: a bar the operator
+  // moved after the review ran is not a bar the lenses answered to, and a row
+  // the writer recorded without one cannot be scored at any bar we invent.
+  const bar = lens.blockingBar;
+  if (!isSeverityName(bar)) return false;
+  return BLOCKING_RANKS.every((s) => {
+    if (!isBlockingSeverity(s, bar)) return true;
+    const count: unknown = counts[s];
+    return Number.isInteger(count) && (count as number) === 0;
+  });
+}
+
+/** The bar stored on a row is untrusted JSON: only a name from the canonical
+ * severity list is a bar. `LOW` is never a blocking bar, so a row recorded at
+ * LOW is not a row whose counts prove anything, and it fails closed too. */
+function isSeverityName(v: unknown): v is ReviewSeverity {
+  return typeof v === "string" && (SEVERITIES as readonly string[]).includes(v) && v !== "LOW";
+}
 
 /**
  * The escape hatch (design decision 7): `PI_ENSEMBLE_LENS_ROUND_CAP_MERGE=0`
@@ -205,7 +259,7 @@ export function evaluateRoundCapMerge(
   }
   // Condition 4: the round must be >= the resolved lens round cap (#1127:
   // lensRoundCap() — the SAME value the tool-side budget enforces, so
-  // PI_ENSEMBLE_LENS_ROUND_CAP moves both; default MAX_REVIEW_ROUNDS = 3).
+  // PI_ENSEMBLE_LENS_ROUND_CAP moves both; default MAX_REVIEW_ROUNDS).
   // A legacy entry without `round` counts as round 1 — never enough (design
   // decision 3). A malformed row (a non-integer
   // `round` that slipped past the loader) counts as round 1 the same way a
@@ -215,11 +269,11 @@ export function evaluateRoundCapMerge(
   // and must refuse, never throw (no cast).
   const round = typeof lens.round === "number" && Number.isInteger(lens.round) ? lens.round : 1;
   const cap = lensRoundCap();
-  if (round < cap) {
+  if (round < cap && !nothingBlocking(lens)) {
     return {
       applies: true,
       allowed: false,
-      failedCondition: `the latest lens entry is round ${round}, below the ${cap}-round cap (PI_ENSEMBLE_LENS_ROUND_CAP; default MAX_REVIEW_ROUNDS) — re-run the review`,
+      failedCondition: `the latest lens entry is round ${round}, below the ${cap}-round cap (PI_ENSEMBLE_LENS_ROUND_CAP; default MAX_REVIEW_ROUNDS), and the row does not establish that nothing at or above the blocking bar is open — re-run the review`,
     };
   }
   // Condition 5: the disclosure marker. The guard fetches the PR's comments
