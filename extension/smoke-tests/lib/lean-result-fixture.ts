@@ -114,6 +114,10 @@ export interface LeanLogOpts {
    *  kill (#1920 item 6). A step that merely survived a ceiling goes AFTER the
    *  gate instead, where position makes the verdict the cause. */
   minutesBreach?: boolean;
+  /** Rows on the minutes-breach step, replacing the single killed row. Pass a
+   *  healthy row LAST to ask whether a kill observed on an EARLIER row of the
+   *  same step still gets blamed on the last one — the attribution case. */
+  breachRows?: DispatchUsageRow[];
 }
 
 /** The whole log one ending is made of — see the module header for its rules. */
@@ -138,8 +142,12 @@ export function leanLog(opts: LeanLogOpts): Step[] {
             used: 1,
             reason: "build stopped: minutes budget 1 exceeded (used 1)",
             // The child's own `ok: false` is the single fact the kill classifier
-            // reads: a row that says ok is a run that never observed a kill.
-            dispatches: [{ ...row("developer", { input: 10 }), ok: false, ms: 60_000 }],
+            // reads: a row that says ok is a run that never observed a kill. A
+            // case that wants more than one row says so — the LAST row is the
+            // child the projection blames, which is what the kill is attributed to.
+            dispatches: opts.breachRows ?? [
+              { ...row("developer", { input: 10 }), ok: false, ms: 60_000 },
+            ],
           }),
         ]
       : [

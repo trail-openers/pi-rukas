@@ -32,9 +32,16 @@
  * real `work-lean` verb, so neither is testing a hand-built projection.
  */
 
-import { makeAssert } from "./headless-verb-harness.ts";
-import { CHILDREN, URL, driveLean, leanLog, stepWith, withReason } from "./lib/lean-result-fixture.ts";
 import type { Step } from "../src/lean/state.ts";
+import { makeAssert } from "./headless-verb-harness.ts";
+import {
+  CHILDREN,
+  URL,
+  driveLean,
+  leanLog,
+  stepWith,
+  withReason,
+} from "./lib/lean-result-fixture.ts";
 
 const { assert, state } = makeAssert();
 
@@ -185,26 +192,68 @@ const log = leanLog;
   );
 }
 
+// ── (3g′) the HOST channel's body is redacted like the forge's. The forge post is
+// the leg that carries the public-hygiene check; on the host channel the result
+// document IS the delivery, so a projection that published the report unredacted
+// would hand the host the credential bytes the forge was about to refuse — and a
+// host that posts the document verbatim puts them on a public issue.
+{
+  const steps = log({ prUrl: URL, draft: false });
+  // A GitHub token welded into the report the step built — the shape a child's
+  // pasted output takes. `report` is untrusted text by contract.
+  (steps[steps.length - 1] as Step).outcome = {
+    kind: "done",
+    posted: false,
+    channel: "host",
+    reason: "handback comment posted",
+    report: `still needed: push with ghp_aB3dE5fG7hJ9kL1mN2pQ4rS6tU8v_0 first`,
+  };
+  process.env.PI_ENSEMBLE_HANDOFF_CHANNEL = "forge";
+  const r = await drive("handed-back", 10, steps);
+  process.env.PI_ENSEMBLE_HANDOFF_CHANNEL = "host";
+  const handoff = (r.issue ?? {}).handoff as Record<string, unknown>;
+  const body = handoff.body as string | undefined;
+  assert(
+    typeof body === "string" && body.includes("still needed"),
+    `(3g′) the host is handed the report (got ${JSON.stringify(String(body).slice(0, 60))})`,
+  );
+  assert(
+    typeof body === "string" && !body.includes("ghp_aB3dE5fG7hJ9kL1mN2pQ4rS6tU8v_0"),
+    `(3g′) and NOT the token welded to it (got ${JSON.stringify(String(body).slice(0, 120))})`,
+  );
+  assert(
+    typeof body === "string" && body.includes("[REDACTED"),
+    `(3g′) the secret is replaced by the redaction marker (got ${JSON.stringify(String(body).slice(0, 120))})`,
+  );
+  delete process.env.PI_ENSEMBLE_HANDOFF_CHANNEL;
+}
+
 // ── (3h) the channel is the STEP's answer, not the environment's. The handoff
 // step is the thing that decided whether to post, so its record is the account of
 // what happened; a projection that re-read `PI_ENSEMBLE_HANDOFF_CHANNEL` could
 // contradict it, and a host would post a second copy of a comment the forge took
-// (or lose the body of one it never did). The env is therefore moved AFTER the run
-// and BEFORE the projection, in both directions, through the verb's own document
-// path — which is where a resume boundary re-enters the process and the whole
-// window lives.
+// (or lose the body of one it never did).
+//
+// The env is moved BETWEEN the run and the projection, because that window is
+// where the disagreement can arise: a host that exported `host` for the cycle and
+// cleared it (or set it) before reading the document, and a resume boundary that
+// re-enters the process with different surroundings. Setting the env BEFORE the
+// drive proves nothing — then the step and the projection read the same value and
+// both answers agree whatever the projection does. So the step is written under
+// one setting and the document built under the OTHER, in both directions.
 {
-  // A host-channel handback: `posted: false` WITH the host-channel reason its
-  // handler stamped. Env says forge at projection time.
+  // A host-channel handback — `posted: false` WITH the typed `channel: "host"`
+  // its handler stamped — decided under `host`; the document is built with the env
+  // saying `forge`.
+  process.env.PI_ENSEMBLE_HANDOFF_CHANNEL = "host";
   const steps = log({ prUrl: URL, draft: false });
-  steps[steps.length - 1] = withReason(
-    steps[steps.length - 1] as Step,
-    "handback comment not posted: the host owns the handoff channel — gate red",
-  );
+  steps[steps.length - 1] = withReason(steps[steps.length - 1] as Step, "gate red");
   (steps[steps.length - 1] as Step).outcome = {
-    ...(steps[steps.length - 1] as Step).outcome as Record<string, unknown>,
+    ...((steps[steps.length - 1] as Step).outcome as Record<string, unknown>),
     posted: false,
+    channel: "host",
   };
+  // The step is recorded; now the environment contradicts it.
   process.env.PI_ENSEMBLE_HANDOFF_CHANNEL = "forge";
   const r = await drive("handed-back", 10, steps);
   const handoff = (r.issue ?? {}).handoff as Record<string, unknown>;
@@ -213,7 +262,7 @@ const log = leanLog;
     `env-flip: a host-channel step is still addressed to the host (got ${JSON.stringify([handoff.channel, handoff.labelSkipped])})`,
   );
   assert(
-    typeof handoff.body === "string" && handoff.body.includes("the host owns the handoff channel"),
+    typeof handoff.body === "string" && handoff.body.includes("gate red"),
     `env-flip: and still carries the body the host must post (got ${JSON.stringify(String(handoff.body).slice(0, 60))})`,
   );
   assert(
@@ -221,8 +270,26 @@ const log = leanLog;
     `env-flip: not the forge's not-delivered pair (got ${JSON.stringify(handoff.bodyError)})`,
   );
 
-  // The mirror: a FORGE post the forge refused. Env says host at projection time,
-  // and the honest answer is still "nothing reached the forge", not a body.
+  // A `posted: false` with NO channel is the shape a pre-#1920 record, or a
+  // handler that forgot the field, has: the honest answer is the forge's, because
+  // nothing on the step claims the host was ever addressed.
+  const noChannel = log({ prUrl: URL, draft: false });
+  (noChannel[noChannel.length - 1] as Step).outcome = {
+    ...((noChannel[noChannel.length - 1] as Step).outcome as Record<string, unknown>),
+    posted: false,
+    channel: undefined,
+  };
+  const r3 = await drive("handed-back", 10, noChannel);
+  const handoff3 = (r3.issue ?? {}).handoff as Record<string, unknown>;
+  assert(
+    handoff3.channel === "forge" && handoff3.bodyError === "not-recorded",
+    `env-flip: a step that recorded no channel is not addressed to the host (got ${JSON.stringify([handoff3.channel, handoff3.bodyError])})`,
+  );
+
+  // The mirror: a FORGE post the forge refused, decided under `forge`; the
+  // document is built with the env saying `host`, and the honest answer is still
+  // "nothing reached the forge", not a body the host could post.
+  delete process.env.PI_ENSEMBLE_HANDOFF_CHANNEL;
   const r2 = await drive("handed-back", 10, log({ prUrl: URL, draft: false, posted: false }));
   process.env.PI_ENSEMBLE_HANDOFF_CHANNEL = "host";
   const handoff2 = (r2.issue ?? {}).handoff as Record<string, unknown>;
@@ -236,6 +303,5 @@ const log = leanLog;
   );
   delete process.env.PI_ENSEMBLE_HANDOFF_CHANNEL;
 }
-
 
 process.exit(state.exit);

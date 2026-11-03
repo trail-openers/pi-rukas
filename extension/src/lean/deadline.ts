@@ -7,13 +7,22 @@
  * such boundary: only a step's own budget bounded it, so a host's
  * `--timeout`/deadline killed the container mid-step with no result document.
  *
- * Two rules, both read from the SAME helpers `work` uses, so one exported
+ * The reporting exemption is the rule this module states and the suite must
+ * keep: `test-lean-deadline-host-channel.ts` case (e) drives a real run that
+ * ARRIVES at `handback` with its deadline already gone — the crossing is placed
+ * by the step the run stands in, not by a tick count — so deleting the
+ * `REPORT_STATES` branch below turns that case red. A regression there is loud,
+ * not silent.
+ *
+ * Two rules, both read from the SAME helper `work` uses, so one exported
  * constant (`MINUTE_MS`) and one env contract drive both engines:
  *
- *   - `leanDeadline` wraps `readCycleDeadline`: `--timeout <minutes>` becomes
- *     `PI_ENSEMBLE_CYCLE_BUDGET_MS` and the shared reader resolves it to an
- *     absolute epoch ONCE, which the engine persists on its own record so a
- *     resume keeps the clock the first run resolved;
+ *   - `leanDeadline` is `resolveCycleDeadline` over the environment and the
+ *     arm this record already carries: the host's `--timeout <minutes>`, the
+ *     exported `PI_ENSEMBLE_CYCLE_BUDGET_MS` and the exported
+ *     `PI_ENSEMBLE_CYCLE_DEADLINE` resolve to one absolute epoch ONCE, which the
+ *     engine persists on its own record so a resume keeps the clock the first
+ *     run resolved;
  *   - `deadlineStopsSteps` is `work`'s boundary answer restated for a lean step
  *     (no per-step `MIN_USEFUL_MS` floors — lean has no develop or lens-fix
  *     step to size): step work ends at `deadline − PI_ENSEMBLE_HANDOFF_TIMEOUT_MS`,
@@ -25,56 +34,62 @@
  * and lean has no frame to open — its children are built by `lean/build.ts`
  * through `spawnSpecialist`, and the step's own `WorkConfig.budgets` bound
  * `childBoundMs` is what stops them. The deadline therefore decides only when a
- * step may START.
+ * step may START. A lean child bounded by the caller's deadline is a separate
+ * change, not a claim this module or its suite makes.
  *
  * A run stopped at the deadline is not a crash and not a signal: it is the same
  * answer `work` gives a cycle its deadline cut off, so it ends `handed-back` at
  * exit 10 with a result document.
  */
 
-import { readCycleDeadline } from "../work-driver-deadline.ts";
+import { type CycleBudgetMs, resolveCycleDeadline } from "../work-driver-deadline.ts";
 import { handoffDispatchTimeoutMs } from "../work-driver-handoff.ts";
-import type { WorkState } from "../workflow-state.ts";
 import { REPORT_STATES, type Step } from "./state.ts";
 
 /** One minute, the unit `--timeout` is given in — the same constant `work` uses. */
 export const MINUTE_MS = 60_000;
 
 /**
- * Set `PI_ENSEMBLE_CYCLE_BUDGET_MS` from `--timeout <minutes>` when neither the
- * flag nor a deadline input was already in the environment.
+ * The flag's own arm, in the same shape the environment's two inputs use: a
+ * duration in ms, resolved to an epoch by the reader — never a written env var.
  *
- * Written to the environment rather than threaded through the engine's options
- * so the ONE reader of the contract — `readCycleDeadline` — answers for both
- * inputs, exactly as it does for `work`: a bare `PI_ENSEMBLE_CYCLE_DEADLINE`
- * still stops a lean run, and a bare `PI_ENSEMBLE_CYCLE_BUDGET_MS` still stops
- * it, with no second copy of the parsing rules.
+ * `--timeout` is the HOST's input to the one contract (`work`'s reader is the
+ * only thing that parses the two env names), and the resolution is the shared
+ * reader's. Writing the flag into `process.env` — which an earlier shape of this
+ * did — would leak one run's budget into every later dispatch of the process and
+ * leave a parent with no deadline it can read back.
  *
- * `--timeout` yields to both: an explicit absolute deadline outranks a duration,
- * and a budget the caller exported itself outranks the flag, because that export
- * is the host's own word for how long the cycle may run.
+ * `--timeout` yields to both env inputs: an explicit absolute deadline outranks a
+ * duration, and a budget the host exported itself outranks the flag, because that
+ * export is the host's own word for how long the cycle may run.
  */
-export function armCycleBudget(timeoutMs: number | undefined): void {
-  if (timeoutMs === undefined) return;
-  if (process.env.PI_ENSEMBLE_CYCLE_DEADLINE) return;
-  if (process.env.PI_ENSEMBLE_CYCLE_BUDGET_MS) return;
-  process.env.PI_ENSEMBLE_CYCLE_BUDGET_MS = String(timeoutMs);
+export function flagBudgetMs(timeoutMs: number | undefined): CycleBudgetMs | undefined {
+  return timeoutMs === undefined ? undefined : (timeoutMs as CycleBudgetMs);
 }
 
 /**
- * The run's absolute deadline: the flag/budget/env resolved once, or the one
- * this record already carries. The record wins while a budget is still set —
- * which is `readCycleDeadline`'s own rule, so a resume cannot restart the clock.
+ * The run's absolute deadline: the host's arm and the env resolved once, or the
+ * one this record already carries. The record wins while a budget is still set —
+ * which is the shared reader's own rule, so a resume cannot restart the clock.
  *
- * The `WorkState` it takes is a carrier for the ONE field that reader touches
- * (`pipelineState.cycleDeadlineMs`); a lean run has no cycle state, and building
- * a fake one to reach a shared function is cheaper than a second copy of the
- * env rules that would drift from the first.
+ * `flagMs` is the `--timeout` arm (`flagBudgetMs` mints it in
+ * `work-driver-deadline.ts`); it is passed as a VALUE, so no caller writes the
+ * environment. The env is read here and only here, which is
+ * what keeps one contract for both engines: a bare `PI_ENSEMBLE_CYCLE_DEADLINE`
+ * still stops a lean run, and a bare `PI_ENSEMBLE_CYCLE_BUDGET_MS` still stops
+ * it, with no second copy of the parsing rules.
+ *
+ * The shared `resolveCycleDeadline` is called with the record's own value and
+ * no cycle state at all: a lean run has no cycle state, and minting a fake
+ * `WorkState` to reach the shared rules is how a reader of the record starts
+ * disagreeing with the writer about its shape.
  */
-export function leanDeadline(persisted: number | undefined, now: number): number | undefined {
-  const carrier = { pipelineState: {} } as unknown as WorkState;
-  if (persisted !== undefined) carrier.pipelineState.cycleDeadlineMs = persisted;
-  return readCycleDeadline(carrier, now);
+export function leanDeadline(
+  persisted: number | undefined,
+  now: number,
+  flagMs?: CycleBudgetMs,
+): number | undefined {
+  return resolveCycleDeadline(process.env, persisted, now, flagMs);
 }
 
 /**

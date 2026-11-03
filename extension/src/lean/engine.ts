@@ -21,6 +21,7 @@
 
 import { isFullCommitSha } from "../commit-sha.ts";
 import { trace } from "../trace.ts";
+import { type CycleBudgetMs, flagBudgetMs } from "../work-driver-deadline.ts";
 import { deadlineReason, deadlineStopsSteps, leanDeadline } from "./deadline.ts";
 import { engineFacts } from "./engine-facts.ts";
 import { errorOutcome } from "./error-outcome.ts";
@@ -89,14 +90,16 @@ export interface RunLeanOpts {
   /** Safety net for a table that loops on a bug of its own. Never a feature. */
   maxSteps?: number;
   /**
-   * The run's absolute whole-cycle deadline (#1920 item 2), when the caller set
-   * one — normally read from the record, which is where the first boundary of
-   * the first run wrote it. Resolved by `leanDeadline`, so a resume keeps the
-   * clock the first run resolved instead of restarting it. A run the clock
-   * stops starts no new step and ends `handed-back` with a result document,
-   * which is the answer `work` gives a cycle its deadline cut off.
+   * The caller's whole-cycle arm, as a DURATION the shared reader resolves to an
+   * epoch once (`flagBudgetMs`): the lean verb's `--timeout <minutes>`, threaded
+   * as a value rather than written to `process.env`. One run's budget therefore
+   * never becomes the next dispatch's deadline, and the environment stays the
+   * host's input rather than something this process writes.
+   *
+   * `PI_ENSEMBLE_CYCLE_DEADLINE` and `PI_ENSEMBLE_CYCLE_BUDGET_MS` both outrank
+   * it, and a resumed run keeps the arm its first round persisted on the record.
    */
-  deadlineMs?: number;
+  budgetMs?: CycleBudgetMs;
 }
 
 export interface RunLeanResult {
@@ -339,10 +342,13 @@ export async function runLean(opts: RunLeanOpts): Promise<RunLeanResult> {
     // The drive carries the deadline once, so every boundary reads the same
     // value the first one resolved (a budget resolved twice would restart the
     // clock and never park — `readCycleDeadline`'s own reason for persisting).
+    // The record is the only caller-side source: a second entry point would be
+    // a second clock for one run, and a resume must keep the arm its first round
+    // wrote there, not whatever a fresh caller passes.
     const drive: Drive = {
       repoRoot: opts.repoRoot,
       save: (run) => saveRun(opts.repoRoot, run),
-      deadlineMs: opts.deadlineMs ?? loaded?.deadlineMs,
+      deadlineMs: loaded?.deadlineMs,
     };
     let run: LeanRun;
     if (loaded === undefined) {
@@ -415,7 +421,14 @@ async function driveLoop(
     // item 2). Resolved BEFORE the handler test below so a run that the clock
     // stops says so in its own words rather than in `no handler for state …`,
     // which blames a missing step for what a clock decided.
-    const deadline = drive.deadlineMs ?? leanDeadline(run.deadlineMs, now());
+    //
+    // `flagBudgetMs` re-derives the value rather than taking a cast at the call
+    // site: `RunLeanOpts.budgetMs` is branded, and `runWorkLean` — the only
+    // production caller — mints the brand from the verb's parsed `--timeout`
+    // minutes here, so the one place the flag becomes an arm is the one place
+    // the reader consumes it.
+    const deadline =
+      drive.deadlineMs ?? leanDeadline(run.deadlineMs, now(), flagBudgetMs(opts.budgetMs));
     if (deadline !== undefined && deadline !== run.deadlineMs) {
       run = { ...run, deadlineMs: deadline };
       drive.save(run);

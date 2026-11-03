@@ -244,15 +244,19 @@ export function handbackBody(
  * `post` is the seam the test drives: production hands it `postHandback`, which
  * goes through the forge adapter and the public-hygiene check. On the host
  * channel the caller passes a post that posts nothing (see `lean/command.ts`),
- * and `posted` is then false with a reason that says the host owns the channel:
- * `handoff.channel` reads that claim, and a run that reported a comment it never
- * sent would double the report a host posts itself.
+ * and `posted` is then false with `channel: "host"` on the step: the projection
+ * reads those two claims, and a run that reported a comment it never sent would
+ * double the report a host posts itself.
+ *
+ * `report` carries the comment either way, so the host channel — which has no
+ * forge copy at all — is handed the run's actual report rather than this step's
+ * sentence about its own post.
  */
 export async function handbackOutcome(
   ctx: HandlerCtx,
   post: (repoRoot: string, issue: number, body: string) => Promise<void>,
 ): Promise<Outcome> {
-  let body: string;
+  let body: string | undefined;
   try {
     // Inside the try: this step's contract is that it never throws, and a body
     // that failed to build has to be reported the same way a refused post is.
@@ -266,14 +270,19 @@ export async function handbackOutcome(
     await post(ctx.repoRoot, ctx.issue, body);
     // `posted: true` is the only place the claim lives: the kind is `done` either
     // way, so without the field a refused post and a delivered one are the same
-    // record to a later reader.
-    return { kind: "done", reason: "handback comment posted", posted: true };
+    // record to a later reader. `report` is the comment itself, on both paths —
+    // what the step built is the run's report whether or not the forge took it, and
+    // on the host channel it is the only copy anyone has.
+    return { kind: "done", reason: "handback comment posted", posted: true, report: body };
   } catch (err) {
-    // The run ends here either way; the record says whether anyone was told.
+    // The run ends here either way; the record says whether anyone was told. The
+    // body is recorded when it was built — a run whose post failed still has a
+    // report to hand the host, which is the whole point of the field.
     return {
       kind: "done",
       posted: false,
       reason: `handback comment NOT posted: ${(err as Error)?.message || String(err)}`,
+      ...(body === undefined ? {} : { report: body }),
     };
   }
 }

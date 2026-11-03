@@ -20,6 +20,7 @@
  */
 
 import { isFullCommitSha } from "../commit-sha.ts";
+import type { HandoffChannel } from "../work-driver-handoff-channel.ts";
 import { assertDeadline } from "./deadline-record.ts";
 import { buildOutcome, outcomeProblem } from "./state-outcome.ts";
 // The store is re-exported so every caller of the record keeps one import site;
@@ -126,7 +127,10 @@ export interface LeanRun {
   steps: Step[];
   /** Set once the run is over: the exit code and the reason it ended there. */
   result?: { code: number; reason: string };
-  /** The caller's whole-cycle deadline — see `CycleDeadline` in `deadline-record.ts`. */
+  /** The caller's whole-cycle deadline, in epoch ms. `readCycleDeadline`/`resolveCycleDeadline`
+   *  accept only an epoch at least `EPOCH_MS_FLOOR`, so a smaller persisted value is read
+   *  as NO arm: the run keeps working and the caller's own kill ends it — a loud, bounded
+   *  failure, never a wrong park. */
   deadlineMs?: number;
 }
 
@@ -208,6 +212,39 @@ export interface Outcome {
    * delivered.
    */
   posted?: boolean;
+  /**
+   * `handback` only: the comment the step built, in full, on the record.
+   *
+   * What the step is FOR, not a description of it. Before this field the only
+   * account of a handback was `posted` plus the prose `handbackOutcome` wrote
+   * about its own post ("handback comment posted"), so on the host channel —
+   * where the result document IS the delivery and a host has to print the comment
+   * itself — the host was handed a sentence about the harness instead of the
+   * report: what the run still needs, the frozen acceptance tests, the branch and
+   * the PR. Those live in the body the step assembled and then threw away.
+   *
+   * The same string the forge is handed, recorded BEFORE the post is attempted, so
+   * a run that could not post still reports what it tried to say. Untrusted child
+   * text, which is why every reader of it redacts before publishing.
+   */
+  report?: string;
+  /**
+   * `handback` and `decline` only (#1920 item 3): the CHANNEL this reporting step
+   * acted on. `"host"` means the run addressed its report to the host that drives
+   * it and posted nothing to the forge, by contract; `"forge"` means the step
+   * tried to post and `posted` says whether the forge took it.
+   *
+   * Typed beside `posted` because the two are ONE fact written once — "who owns
+   * the channel" and "did anything reach them" — and the projection that tells a
+   * host which half of the contract it owes reads the record, never
+   * `PI_ENSEMBLE_HANDOFF_CHANNEL`. A projection that re-read the env could
+   * contradict what the step did (a host that clears the var before reading the
+   * document would be told to post a comment the forge already took, or left with
+   * no body at all), which is the double-post this field exists to prevent.
+   * Absent means the step recorded no channel, which every reader treats as
+   * `"forge"` — the channel with a forge to post to.
+   */
+  channel?: HandoffChannel;
   /**
    * `specify`, `build` and `challenge` only: one row per dispatch the step
    * paid for, including the ones that died or were stopped by their budget.

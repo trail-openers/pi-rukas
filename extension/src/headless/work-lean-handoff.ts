@@ -70,17 +70,16 @@ const TEXT_MAX = 500;
 const BODY_GAP = "\n\n";
 
 /**
- * The words both host-channel reporting steps put in front of their reason
- * (`lean/command.ts`): "nobody posted, and that was the contract". Matched on
- * the REASON rather than on `posted` alone, because a forge post the forge
- * refused also carries `posted: false` — and that one must keep the contract's
- * not-delivered pair instead of the host channel's body.
+ * Did this run's reporting step stand on the host channel? Read off the step's
+ * TYPED `channel` claim, written once by the handler that decided whether to post
+ * (`lean/command.ts`) beside its `posted` claim — never from the prose of the
+ * reason and never from `PI_ENSEMBLE_HANDOFF_CHANNEL` at projection time. A forge
+ * post the forge refused also carries `posted: false`, and that one must keep the
+ * contract's not-delivered pair rather than the host channel's body, which is why
+ * the channel is its own field and `posted` alone is not the answer.
  */
-const HOST_CHANNEL_MARK = "the host owns the handoff channel";
-
-/** Did this run's reporting step stand on the host channel? Read off the step. */
 function hostChannelStep(outcome: Outcome | undefined): boolean {
-  return outcome?.posted === false && String(outcome.reason ?? "").includes(HOST_CHANNEL_MARK);
+  return outcome?.posted === false && outcome.channel === "host";
 }
 
 /** The run's own words for why it ended, preferring the outcome's reason. */
@@ -95,6 +94,26 @@ function outcomeText(outcome: Outcome | undefined): string | undefined {
   return undefined;
 }
 
+/**
+ * The text the host is handed as the handoff body.
+ *
+ * A `handback` step's `report` IS the comment — what the run still needs, the
+ * frozen tests, the branch, the PR — so on the host channel that is what the body
+ * must be: the result document is the delivery, and a host printing this document
+ * posts the run's report, not a note about the harness skipping a post. Every
+ * other case (a forge post that went out, a `decline` which has no body of its
+ * own) falls back to the outcome's own reason, which is all the record holds.
+ *
+ * `report` is untrusted child text, so the caller redacts it; the reason is the
+ * run's own prose, already clipped here to the room the composed body has left.
+ */
+function bodyText(outcome: Outcome | undefined, host: boolean): string | undefined {
+  if (host && typeof outcome?.report === "string" && outcome.report.trim() !== "") {
+    return outcome.report.trim();
+  }
+  return outcomeText(outcome);
+}
+
 /** The newest decided step of a reporting state — the run's last own words. */
 function reportedStep(steps: Step[]): Step | undefined {
   return newestDecided(steps, "handback") ?? newestDecided(steps, "decline");
@@ -102,16 +121,20 @@ function reportedStep(steps: Step[]): Step | undefined {
 
 export function leanHandoff(run: LeanRun, cap: HeadlessCap | undefined): HandoffResult | undefined {
   const reported = reportedStep(run.steps);
-  const reason = outcomeText(reported?.outcome);
+  const host = hostChannelStep(reported?.outcome);
+  const reason = bodyText(reported?.outcome, host);
   if (reason === undefined) return undefined;
   const at = reported?.endedAt ?? reported?.startedAt ?? 0;
   const marker = handoffMarker(run.issue, cap);
   const posted = reported?.outcome?.posted === true;
   // The channel the run acted on, read from its own record — see the header.
-  const host = hostChannelStep(reported?.outcome);
   // ONE clip, sized so the COMPOSED body fits `TEXT_MAX`; clipping the reason to
   // the whole budget and bounding the body again cut the reason away once the
-  // marker was added.
+  // marker was added. BOTH channels go through `redactClip`: the body a host is
+  // told to post is the same text the forge would have taken, and the forge post
+  // is the one that carries the public-hygiene check — a projection that published
+  // the host arm unredacted would hand the host the bytes the forge was about to
+  // refuse.
   const clip = Math.max(0, TEXT_MAX - marker.length - BODY_GAP.length);
   if (!posted && !host) {
     // Nothing reached the forge: no delivery provenance and no text —

@@ -13,26 +13,29 @@
 import { LeanStateError } from "./state.ts";
 
 /**
- * The deadline's contract on the record: an absolute epoch ms, resolved ONCE by
- * the first step boundary that resolved one and read back from there on every
- * resume. Persisted for the reason `work-driver-deadline.ts` persists it — a
- * duration resolved afresh at each boundary restarts the clock and never parks.
+ * Below this an epoch is in seconds, not ms (1e12 ms is September 2001). The
+ * SAME floor `work`'s reader applies (`EPOCH_MS_FLOOR` in
+ * `work-driver-deadline.ts`): a lean run and a `work` cycle handed the same
+ * hand-edited value must not disagree about whether it is a clock. `work` treats
+ * a value below the floor as UNSET; lean REFUSES it, as it refuses every corrupt
+ * field of a durable record — a run that silently lost its deadline would keep
+ * working past the caller's kill instead of parking.
  */
-export interface CycleDeadline {
-  deadlineMs?: number;
-}
+const EPOCH_MS_FLOOR = 1e12;
 
 /**
  * The resolved deadline: a positive finite epoch ms, or nothing.
  *
  * The loop re-reads this as its clock, so a hand-edited `0` would stop every
- * step and `"1e18"` would stop none. The ONE site that enforces it is
- * `state.ts`'s record validator, which every load passes through; a corrupt
- * value therefore never reaches a drive, and there is no second copy of the
- * rule to drift from the first.
+ * step, `"1e18"` would stop none — and an epoch in SECONDS would stop none
+ * either, being a date in 1970 that every boundary has already passed, which is
+ * the same silent no-deadline an operator would never spot. The ONE site that
+ * enforces it is `state.ts`'s record validator, which every load passes through;
+ * a corrupt value therefore never reaches a drive, and there is no second copy
+ * of the rule to drift from the first.
  */
-export function assertDeadline(value: unknown, where = "deadlineMs"): number {
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0)
-    throw new LeanStateError(`${where} must be a positive finite number`);
+export function assertDeadline(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < EPOCH_MS_FLOOR)
+    throw new LeanStateError("deadlineMs must be a positive finite epoch ms");
   return value;
 }

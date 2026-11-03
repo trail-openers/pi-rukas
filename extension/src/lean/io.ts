@@ -158,6 +158,36 @@ async function resolveMainlineBranch(repoRoot: string): Promise<string | undefin
 }
 
 /**
+ * The seam both reporting steps post through, and the witness the host-channel
+ * cases read. A test installs a recorder; `undefined` is the forge adapter.
+ *
+ * Why a seam at all, when `handbackOutcome` already takes a `post`: the claim
+ * under test is that the HOST CHANNEL POSTS NOTHING, and that claim is only
+ * falsifiable if the FORGE channel's post is observable. `phase1Handlers` wires
+ * the forge branch to `postHandback`/`postNotReady`, and both resolve a forge
+ * adapter a temp repo does not have — so with no seam here the two answers,
+ * "the host channel posted nothing" and "the forge channel tried to post and had
+ * no forge", leave identical records and the case asserts nothing. The recorder
+ * makes them two different counts: 0 on `host`, 1 on `forge`.
+ */
+let commentPoster: ((issue: number, body: string) => Promise<void>) | undefined;
+
+/**
+ * Install `poster` and hand back the undo. Scoped to a test on purpose: this is
+ * the one place a lean run's comment leaves the process, so a case that swaps it
+ * must put the forge back — a leaked recorder would swallow every later run's
+ * post. The returned function is idempotent.
+ */
+export function setLeanCommentPoster(
+  poster: ((issue: number, body: string) => Promise<void>) | undefined,
+): () => void {
+  commentPoster = poster;
+  return () => {
+    commentPoster = undefined;
+  };
+}
+
+/**
  * Post one comment listing the failed rules. Throws so the caller can report
  * it: a run that could not tell the operator why it refused is a worse
  * failure than one that says so in the summary line.
@@ -177,6 +207,7 @@ export async function postNotReady(
     "Fix the `pi-spec v1` block, or run /plan to regenerate it, then start the run again.",
   ].join("\n");
   const forge = await forgeFor(repoRoot);
+  if (commentPoster !== undefined) return commentPoster(issue, body);
   if (!forge) throw new Error("no forge adapter: cannot post the not-ready comment");
   await forge.issueComment(issue, body);
 }
@@ -192,6 +223,7 @@ export async function postNotReady(
  */
 export async function postHandback(repoRoot: string, issue: number, body: string): Promise<void> {
   const forge = await forgeFor(repoRoot);
+  if (commentPoster !== undefined) return commentPoster(issue, body);
   if (!forge) throw new Error("no forge adapter: cannot post the handback comment");
   await forge.issueComment(issue, body);
 }

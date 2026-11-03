@@ -53,7 +53,6 @@ import type { DispatchUsageRow } from "../lean/step-budget.ts";
 import { leanUsage } from "../lean/usage-sum.ts";
 import { classifyFailureCause } from "../work-driver-failure-taxonomy.ts";
 import { type HeadlessCap, capStep } from "./caps.ts";
-import { EXIT } from "./exit-code.ts";
 import type { ResultFailure } from "./failure.ts";
 import {
   type HandoffResult,
@@ -120,18 +119,10 @@ function newestWorkStep(steps: Step[]): Step | undefined {
   return undefined;
 }
 
-/** The newest dispatch row of a step matching `keep`, or undefined. */
-function lastRow(
-  step: Step | undefined,
-  keep: (row: DispatchUsageRow) => boolean,
-): DispatchUsageRow | undefined {
+/** Any dispatch row of a step — the row a host blames for a killed child. */
+function lastRow(step: Step | undefined): DispatchUsageRow | undefined {
   const rows = step?.outcome?.dispatches;
-  if (rows === undefined) return undefined;
-  for (let i = rows.length - 1; i >= 0; i--) {
-    const row = rows[i];
-    if (row !== undefined && keep(row)) return row;
-  }
-  return undefined;
+  return rows === undefined || rows.length === 0 ? undefined : rows[rows.length - 1];
 }
 
 /** The role of the newest dispatching step's last child — the child a host blames. */
@@ -164,9 +155,11 @@ function lastRole(steps: Step[]): string | undefined {
  *      outcome's own reason or message, or a fallback naming the state and kind;
  *   4. if no such step exists the run said nothing about failing: `undefined`.
  *
- * `step` is always `"handoff"` and `role` is the last child of the newest
- * dispatching step, both added only when they have a value: lean's states are
- * not `WorkStep`s, so the one handoff shape `work` uses is the honest answer.
+ * `step` is always `"handoff"` and `role` names the child a host blames — the
+ * last row of the step whose ceiling fired on a budget failure, otherwise the
+ * last child of the newest dispatching step — both added only when they have a
+ * value: lean's states are not `WorkStep`s, so the one handoff shape `work` uses
+ * is the honest answer.
  *
  * `cause` is added ONLY where lean actually recorded one, and then through the
  * SAME classifier `work` uses — `classifyFailureCause`, whose input is the
@@ -182,24 +175,30 @@ function leanFailure(run: LeanRun): ResultFailure | undefined {
   // breach is a half-record and falls through to the newest real failure.
   const fired = worked === undefined ? undefined : budgetTrio(worked.outcome);
   let failure: ResultFailure;
+  // The child a host blames. On a budget failure that is the LAST row of the
+  // step whose ceiling fired — the child that was running when the bound closed
+  // — because `cause` is read from that same row and the two must never name
+  // different children. Otherwise it is the last child of the newest step that
+  // dispatched at all.
+  let blamed: DispatchUsageRow | undefined;
   if (worked !== undefined && fired !== undefined) {
     failure = {
       kind: "timeout",
       message: redactClip(budgetSentence(worked.state, fired), TEXT_MAX),
     };
-    // A `minutes` breach is lean's own wall-clock kill of its child: the bound
-    // fires as `killCause: "child-bound"` and the step's rows carry the failed
-    // row. That pair is the whole of what the classifier reads, so the cause is
-    // read from it rather than assumed. `turns`/`tokens` stop at a turn boundary
-    // and are not kills, so they get no cause — the trio already names them.
-    if (fired.limit === "minutes") {
-      const killed = lastRow(worked, (r) => r.ok === false);
-      if (killed !== undefined) {
-        failure.cause = classifyFailureCause({
-          kind: "dispatch-failed",
-          killCause: "child-bound",
-        }).cause;
-      }
+    // A `minutes` breach is lean's own wall-clock kill of its child — but only
+    // of the child THAT step dispatched, so the kill is attributed to the step's
+    // OWN last row and to nothing else: `ok: false` on some other row of the
+    // same step (a lens that failed while the builder ran clean) would otherwise
+    // blame a kill on a child that never suffered one, and name it as the guilty
+    // role. `turns`/`tokens` stop at a turn boundary and are not kills, so they
+    // get no cause — the trio already names them.
+    blamed = lastRow(worked);
+    if (fired.limit === "minutes" && blamed?.ok === false) {
+      failure.cause = classifyFailureCause({
+        kind: "dispatch-failed",
+        killCause: "child-bound",
+      }).cause;
     }
   } else {
     const step = newestFailureStep(steps);
@@ -221,7 +220,7 @@ function leanFailure(run: LeanRun): ResultFailure | undefined {
     };
   }
   failure.step = LEAN_FAILURE_STEP;
-  const role = lastRole(steps);
+  const role = blamed?.role ?? lastRole(steps);
   if (role !== undefined) failure.role = role;
   return failure;
 }
@@ -255,16 +254,24 @@ function leanCap(
  *
  * `landed` is the only success and `not-ready` is the one verdict that says the
  * ISSUE was refused (an issue-text fault is `causeClass: "issue"` in `work`'s
- * vocabulary, not a change fault). A run that reached no terminal state and
- * still reported a code is the shape a future `--timeout` produces (#1920 item
- * 2): no new step started, a result handed back — the same answer `work` gives a
- * cycle its deadline cut off, which is `interrupted`.
+ * vocabulary, not a change fault).
+ *
+ * Anything else is a state the verb's own gate has already refused: `wellFormed`
+ * (`headless/work-lean.ts`) is the sole production caller's precondition and it
+ * admits only a state `EXIT_CODES` names — one of the three above. A fourth arm
+ * here would be a status no run can produce, and a status is a field a host
+ * switches on: `running` or `interrupted` invented for a shape the caller says
+ * cannot arrive would be a confident wrong answer about a bug elsewhere. So the
+ * unreachable case fails loudly at the projection instead of quietly reporting a
+ * state the run never reached.
  */
 function leanStatus(run: LeanRun, code: number): IssueResult["status"] {
   if (run.state === "landed") return "merged";
   if (run.state === "not-ready") return "aborted";
   if (run.state === "handed-back") return "handoff";
-  return code === EXIT.merged ? "running" : "interrupted";
+  throw new Error(
+    `leanIssueResult: ${JSON.stringify(run.state)} is not a terminal lean state (code ${String(code)})`,
+  );
 }
 
 /**
