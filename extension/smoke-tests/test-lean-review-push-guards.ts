@@ -41,6 +41,7 @@ import {
   depsWith,
   git,
   gitEnv,
+  lensRoundFor,
   makeRepo,
   rejectsThenClears,
   result,
@@ -435,6 +436,11 @@ for (const { name, bothShip } of UNSAFE) {
       git(target, "commit", "-q", "-m", "fix: the finding");
       return result({ role: FIXER_ROLE });
     },
+    // The re-review stamps the range the step named: an un-stamped round is refused
+    // as a verdict on some other diff, and this case is about an honest run still
+    // reaching its push — a guard it trips for the wrong reason proves nothing about
+    // the guards it is here to prove.
+    lens: async (a) => lensRoundFor(a, "APPROVED", []),
   });
   const exec = deps.exec;
   deps.exec = (cmd, o) => {

@@ -52,12 +52,47 @@ const CLEAN_PASS: AdversarialVerdictStatus = "APPROVED";
 const PASSED_WITH_FINDINGS_MARK = "PASSED WITH FINDINGS";
 
 /**
- * What one report-only adversarial pass left open, and the step's own judgement
- * of whether that counts as a pass.
+ * The adversarial statuses that block, per the role's own doctrine.
  *
- * `loopOutcome: "approved"` alone is NOT one. The loop reaches it from either
- * verdict (see `decideLoopAction` in `adversarial.ts`): a clean `APPROVED`, or a
- * non-blocking one it calls **PASSED WITH FINDINGS** — "these findings are
+ * `agents-base/adversarial-developer.md` states four verdicts and calls exactly
+ * one of them "Must fix before proceeding"; `decideLoopAction` in
+ * `adversarial-verdict.ts` encodes the same split ("only the verdict the doctrine
+ * calls blocking blocks") and passes on `ISSUES_FOUND` and `MINOR_OBSERVATIONS`
+ * at the terminal round. The set is spelled as an allowlist so a fifth status
+ * added to `AdversarialVerdictStatus` is non-blocking until someone classifies
+ * it here — the safe direction for a step that spends a child, a re-review and a
+ * second gate pass on whatever it reads as blocking.
+ */
+const BLOCKING_ADVERSARIAL_STATUSES: readonly AdversarialVerdictStatus[] = [
+  "CRITICAL_ISSUES_FOUND",
+];
+
+/** The record that ended the pass, or `undefined` when the loop carried none. */
+function lastRound(result: DispatchResult) {
+  const records = result.adversarialRounds;
+  return records === undefined ? undefined : records[records.length - 1];
+}
+
+/**
+ * Did the record that ended this pass carry a blocking status?
+ *
+ * No record, or a record whose status was DEFAULTED (no readable `VERDICT:`
+ * marker), is not a blocking finding: an unreadable reply is never evidence for
+ * the most serious verdict there is, and the step refuses it as "no verdict"
+ * before any fixer is bought.
+ */
+function blockingRecord(result: DispatchResult): boolean {
+  const last = lastRound(result);
+  return last?.verdictParsed === true && BLOCKING_ADVERSARIAL_STATUSES.includes(last.status);
+}
+
+/**
+ * What one report-only adversarial pass left open, and whether the step may buy
+ * a fix wave with it.
+ *
+ * `loopOutcome: "approved"` alone is NOT a clean pass. The loop reaches it from
+ * either verdict (see `decideLoopAction` in `adversarial.ts`): a clean `APPROVED`,
+ * or a non-blocking one it calls **PASSED WITH FINDINGS** — "these findings are
  * unresolved and travel to the PR body and the lens review". In the frozen
  * driver that carrying is a real act: `work-driver-adversarial.ts` puts the text
  * on the `adversarial-approved` event and `adversarial-findings.ts` renders it
@@ -66,19 +101,35 @@ const PASSED_WITH_FINDINGS_MARK = "PASSED WITH FINDINGS";
  * the same way and handed to the lens round by `lensContext`'s `carried` block —
  * which is the only reason that parameter exists.
  *
- * The status is read off `adversarialRounds` (#485: the loop's own per-round
- * records, threaded as data rather than recovered from prose), falling back to
- * the `PASSED WITH FINDINGS` marker only when a result carries no records — `""`
+ * `open` and `blocking` are the two answers the step needs and they are not one
+ * question. `open` — findings the lenses must judge and the disclosure must carry
+ * — is true for any reported row; `blocking` — the wave's price of admission — is
+ * true only for the status doctrine calls blocking. A pass that is open and not
+ * blocking is a reviewer that reported findings it declined to stop the run for,
+ * and paying for a fixer, a re-review and a second gate pass against those was
+ * the deviation this split closes.
+ *
+ * Both are read off `adversarialRounds` (#485: the loop's own per-round records,
+ * threaded as data rather than recovered from prose), falling back to the
+ * `PASSED WITH FINDINGS` marker only when a result carries no records — `""`
  * there means "no record to read", which is not a status an adversarial gate ever
  * approved with. A record whose status is anything but `APPROVED` is findings,
  * whatever `loopOutcome` was bucketed as: the records are what the loop judged
  * round by round, and the trailing record is the one that ended it.
  */
-function openFromPass(result: DispatchResult): string {
-  const records = result.adversarialRounds;
-  const last = records === undefined ? undefined : records[records.length - 1];
-  if (last !== undefined) return last.status === CLEAN_PASS ? "" : result.text;
-  return result.text.includes(PASSED_WITH_FINDINGS_MARK) ? result.text : "";
+function openFromPass(result: DispatchResult): { findings: string; open: boolean } {
+  const last = lastRound(result);
+  if (last !== undefined) {
+    // A record the loop could not parse held no VERDICT marker, so nothing in it
+    // was judged: its text still travels to the lenses, but it is not a status
+    // that blocks — and the `rejected` arm refuses an unparsed record outright.
+    return {
+      findings: last.status === CLEAN_PASS ? "" : result.text,
+      open: last.verdictParsed === true && last.status !== CLEAN_PASS,
+    };
+  }
+  const carried = result.text.includes(PASSED_WITH_FINDINGS_MARK);
+  return { findings: carried ? result.text : "", open: carried };
 }
 
 /**
@@ -100,8 +151,17 @@ export const ADVERSARIAL_GATE_ROLE = "adversarial-loop";
 
 /** What the adversarial gate hands the step: findings, or the budget's verdict. */
 export type AdversarialGate =
-  | { findings: string; stop?: undefined }
-  | { findings?: undefined; stop: BudgetFired };
+  /**
+   * A pass that reached a verdict. `findings` is the text it left open (`""` is
+   * the clean pass); `open` says findings were reported and `blocking` whether the
+   * record that ended the pass carried the status doctrine calls blocking — the
+   * only readings of the gate's own prose this step needs, and both come off the
+   * loop's record rather than the reply. A pass can be `open` without being
+   * `blocking`: that is precisely what a non-blocking verdict is, and its findings
+   * are disclosed, never fixed.
+   */
+  | { findings: string; open: boolean; blocking: boolean; stop?: undefined }
+  | { findings?: undefined; open?: undefined; blocking?: undefined; stop: BudgetFired };
 
 /**
  * The adversarial gate: one report-only pass, and the finding text it left open.
@@ -109,6 +169,13 @@ export type AdversarialGate =
  * verdict is not a gate that approved, and this one has no fixer of its own to
  * blame. The row this pass cost is APPENDED to the caller's running total, not
  * returned (see this file's header).
+ *
+ * `wave` names which half of the step's one wave this pass is, and it is what
+ * puts the number in the reviewer's brief: the full review, or the re-review of
+ * the fix diff. The loop's own `reportRound` is the display number the step
+ * owns (`runAdversarialLoop` is entered once per wave, so the loop never runs
+ * its own second round here), and the wave says what the reviewer is looking at
+ * in words rather than as a position in a loop that no longer exists.
  */
 export async function adversarialGate(
   deps: ReviewDeps,
@@ -118,7 +185,14 @@ export async function adversarialGate(
     head: string;
     branch: string;
     issueBody: string;
-    round: number;
+    /** Which pass of the one wave this is. */
+    wave: "full" | "fix";
+    /**
+     * The findings the fix range was allowed to contain, for the re-review pass
+     * only. Printed into the brief so the reviewer is told what counts as new
+     * rather than left to re-litigate the whole branch.
+     */
+    blockingFindings?: string;
     rows: DispatchUsageRow[];
     /** The step's armed budget: the reviewer's bound, abort and progress hook. */
     budget: BudgetArms;
@@ -133,7 +207,8 @@ export async function adversarialGate(
       cwd: ctx.repoRoot,
       issue: ctx.issue,
       issueBody: opts.issueBody,
-      round: opts.round,
+      wave: opts.wave,
+      ...(opts.blockingFindings === undefined ? {} : { blockingFindings: opts.blockingFindings }),
       headless: deps.headless,
       budget: opts.budget,
     });
@@ -159,8 +234,46 @@ export async function adversarialGate(
   // for something that was a decision the operator made.
   const fired = opts.budget.fired(result);
   if (fired !== undefined) return { stop: fired };
-  if (result.loopOutcome === "approved") return { findings: openFromPass(result) };
-  if (result.loopOutcome === "rejected") return { findings: result.text };
+  if (result.loopOutcome === "approved") {
+    const pass = openFromPass(result);
+    return { ...pass, blocking: blockingRecord(result) };
+  }
+  if (result.loopOutcome === "rejected") {
+    // A real `VERDICT:` line is what makes a rejection a VERDICT. `parseVerdict`
+    // defaults the status when the reviewer's reply holds no marker, and the
+    // report-only loop returns that defaulted record verbatim; reading it as
+    // "the findings the loop refuses to clear" would let the step spend its one
+    // fix wave on prose that was never a judgement, and then hand back that same
+    // prose as "a blocking finding the fix did not address". So BOTH shapes of
+    // "nothing was judged" are refused here: a rejection whose loop carried no
+    // record at all, and one whose trailing record is unparsed. This gate has no
+    // fixer of its own to blame, which is why it throws rather than routing — the
+    // same "no verdict is not a pass" the no-verdict arm below already refuses,
+    // read off the records the loop judged rather than guessed from the reply.
+    const lastRecord = result.adversarialRounds?.[result.adversarialRounds.length - 1];
+    if (lastRecord === undefined || lastRecord.verdictParsed !== true)
+      throw new ReviewInfraError(
+        `the adversarial gate returned a rejection with ${
+          lastRecord === undefined
+            ? "no reviewed round to read a verdict from"
+            : `no readable VERDICT marker on its reviewed round (status ${String(lastRecord.status)} defaulted)`
+        } — findings that were never a verdict cannot be fixed against: ${result.text.slice(0, 300)}`,
+        opts.rows,
+      );
+    // An unparsed or record-less rejection is refused above, so at this point the
+    // record really was judged. One shape is still incoherent: a `rejected`
+    // outcome whose parsed record says `APPROVED` is a loop that refused a run it
+    // also certified, and no reading of it is safe — the step would either buy a
+    // fixer for an approval or clear a head the loop rejected. Refused like the
+    // others, in the direction of the blast radius.
+    if (lastRecord.status === CLEAN_PASS)
+      throw new ReviewInfraError(
+        `the adversarial gate's outcome says rejected but its own trailing record reads ${CLEAN_PASS} — the loop rejected a head it also approved, and neither reading can be acted on: ${result.text.slice(0, 300)}`,
+        opts.rows,
+      );
+    // Its findings are open, and blocking only if its status says so.
+    return { findings: result.text, open: true, blocking: blockingRecord(result) };
+  }
   throw new ReviewInfraError(
     `the adversarial gate produced no verdict (${String(result.loopOutcome)}${
       result.killCause === undefined ? "" : `, killed: ${String(result.killCause)}`
@@ -173,9 +286,18 @@ export async function adversarialGate(
  * The six-lens gate: one round at the commit the adversarial gate just cleared.
  *
  * Its own read of origin, deliberately, rather than the value the caller still
- * holds: if the round before left origin somewhere else, that is the fact the
+ * holds: if the pass before left origin somewhere else, that is the fact the
  * next verdict should be stated against. Two gates reviewing two different
  * commits have reviewed neither.
+ *
+ * **The re-review's range is the caller's, not the layer's.** With `since` set,
+ * the round reviews `git diff <since>..<head>` — the fix wave's own commits, and
+ * nothing else. Without it, the layer derives its own delta base from the lens
+ * ledger (the head of the last RECORDED run), which is a different question: the
+ * step would be certifying a range it did not choose, and a head the step's own
+ * fixer moved would be re-reviewed against whatever the ledger last saw. The
+ * step always names `since` on the fix pass and never on the full one, so the
+ * full round stays the layer's ordinary whole-branch review.
  *
  * The diff is read ONCE and handed to the evidence builders, which take it as a
  * parameter. They do not need their own read of it and did not have one; what
@@ -189,10 +311,13 @@ export async function lensGate(
   opts: {
     base: string;
     branch: string;
-    round: number;
+    /** Which pass of the one wave this round is (see `adversarialGate`). */
+    wave: "full" | "fix";
     /** The run's PR number, threaded to the review layer rather than re-derived. */
     pr: number | undefined;
     carried: string | undefined;
+    /** The lower bound of this round's range — set only on the re-review. */
+    since?: string;
     rows: DispatchUsageRow[];
     /** The step's armed budget, threaded to the six lens children. */
     budget: BudgetArms;
@@ -203,9 +328,25 @@ export async function lensGate(
   },
 ): Promise<LensRound & { head: string }> {
   const head = await reviewedHead(deps, ctx.repoRoot, opts.branch, opts.rows);
+  // The range the round RANGES over. On the re-review the lower bound is the
+  // head the fix wave started from, so the evidence, the claim scan and the
+  // lenses all read the fix rather than the whole branch: a lens handed the
+  // full `base...head` diff on the re-review re-reports findings the full review
+  // already raised, and the step would read its own earlier findings back as
+  // "NOT ADDRESSED". `since` is a commit, so the range is two-dot on purpose —
+  // the fix's commits are the delta, not a merge-base story.
+  const rangeBase = opts.since ?? opts.base;
   // Throws on a range it could not read, so everything below runs only on a
   // branch this step has positively opened.
-  const diff = await rangeDiff(deps, ctx.repoRoot, opts.base, head, opts.rows);
+  // The diff is read from the REPO ROOT, not the round's worktree. `rangeDiff`
+  // needs only the object database and the two commits, and the repo root is the
+  // one directory this step knows is present for the whole step: the run's own
+  // worktree may be gone by the re-review (the case `test-lean-review-absence.ts`
+  // (k2) drives — a restore that cannot run because the tree was taken away), and
+  // a diff read whose cwd has been deleted reports "could not read" for a range
+  // git can resolve perfectly well. The evidence builders below still read the
+  // BRANCH, which is what they need a worktree-less ref for.
+  const diff = await rangeDiff(deps, ctx.repoRoot, rangeBase, head, opts.rows);
   // `rangeDiff` throws rather than returning empty, so a missing diff never gets
   // here — but the type says `string | undefined` because the read itself can
   // fail, and nothing below may receive an `undefined` it would read as "an empty
@@ -213,7 +354,7 @@ export async function lensGate(
   // contract has to pass this gate again.
   if (diff === undefined)
     throw new ReviewInfraError(
-      `could not read the diff ${opts.base.slice(0, 12)}...${head.slice(0, 12)} for the six-lens pass`,
+      `could not read the diff ${rangeBase.slice(0, 12)}...${head.slice(0, 12)} for the six-lens pass`,
       opts.rows,
     );
   // What the last fix pass moved, so a lens reads the delta first and weighs it
@@ -243,12 +384,13 @@ export async function lensGate(
       head,
       branch: opts.branch,
       cwd: ctx.repoRoot,
-      round: opts.round,
+      wave: opts.wave,
       pr: opts.pr,
-      context: lensContext(ctx.issue, opts.round, {
+      context: lensContext(ctx.issue, opts.wave, {
         carried: opts.carried,
         fixDelta: delta.section,
       }),
+      ...(opts.since === undefined ? {} : { since: opts.since }),
       evidence,
       extraFindings,
       headless: deps.headless,

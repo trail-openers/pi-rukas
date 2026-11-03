@@ -59,7 +59,7 @@ async function deliver(
       head: "0123456789abcdef0123456789abcdef01234568",
       branch: "lean/issue-7",
       cwd: "/tmp",
-      round: 1,
+      wave: "full",
       pr: undefined,
       context: "ctx",
       evidence: undefined,
@@ -161,7 +161,7 @@ async function deliver(
   const { fixPrompt } = await import("../src/lean/review-deps.ts");
   const base = {
     issue: 7,
-    round: 1,
+    wave: "full" as const,
     gate: "six-lens review (ISSUES_FOUND)",
     findings: "- [HIGH] SECURITY a.ts:1: leak",
     worktree: "/repo/.worktrees/lean-7-fix-l-1-0-1793451347919",

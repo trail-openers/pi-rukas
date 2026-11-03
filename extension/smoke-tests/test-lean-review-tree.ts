@@ -46,12 +46,18 @@ import {
   BRANCH,
   DISPATCHES_MAX_ROWS,
   FIXER_ROLE,
+  REVIEW_CHILD_BUDGET,
+  alwaysBlockingOnGate,
+  blockingFinding,
+  carriedFinding,
   cleanLensRound,
   cleanupRoots,
   ctxFor,
   depsWith,
   fixRunId,
   git,
+  lensRoundFor,
+  lensRoundWith,
   makeRepo,
   rejectsThenClears,
   result,
@@ -60,6 +66,17 @@ import {
 } from "./lib/lean-review-fixtures.ts";
 
 const { assert, failures } = makeAssert();
+
+/** A fixer that commits, so the wave is not refused for fixing nothing. */
+function committingFixerTree(tag: string) {
+  return async (spec: DispatchSpec): Promise<ReturnType<typeof result>> => {
+    const wt = spec.cwd as string;
+    put(wt, `fix-${tag}.ts`, `export const fix_${tag} = 1;\n`);
+    git(wt, "add", "-A");
+    git(wt, "commit", "-q", "-m", `fix(${tag}): the wave's fix`);
+    return result({ role: FIXER_ROLE });
+  };
+}
 
 // ── (r) the fixer's write fence + the run tree's dependencies after reset ───
 {
@@ -77,6 +94,9 @@ const { assert, failures } = makeAssert();
     ctxFor(repoRoot, baseSha, BRANCH),
     depsWith({
       adversarial: rejectsThenClears("1. silent catch"),
+      // The re-review stamps the range the step named — an un-stamped round is
+      // refused, and this case is about the fence the fixer was dispatched with.
+      lens: async (a) => lensRoundFor(a, "APPROVED", []),
       dispatch: async (spec: DispatchSpec, opts) => {
         fence = opts.writeFence;
         put(spec.cwd as string, "fix.ts", "export const x = 1;\n");
@@ -139,12 +159,13 @@ const { assert, failures } = makeAssert();
   const { threw } = await run(
     ctxFor(repoRoot, baseSha, BRANCH),
     depsWith({
-      adversarial: async () => result({ loopOutcome: "approved" }),
-      lens: async () => ({
-        ...cleanLensRound(),
-        verdict: "ISSUES_FOUND",
-        findings: "- [HIGH] SECURITY a.ts:1: leak",
-      }),
+      // The row comes back CARRIED on both passes, so the wave ends in the named
+      // handback and its children stay on the error the case reads its rows from.
+      // A re-review that reported nothing would resolve the row by omission and
+      // return a pass, which has no `dispatches` to assert on. The wave is bought
+      // by the gate's blocking record, not by the round's mere findings.
+      adversarial: alwaysBlockingOnGate("1. the carried row the wave must answer"),
+      lens: async (a) => lensRoundFor(a, "ISSUES_FOUND", [carriedFinding()]),
       dispatch: async (spec: DispatchSpec) => {
         put(spec.cwd as string, "fix.ts", "export const x = 1;\n");
         git(spec.cwd as string, "add", "-A");
@@ -156,10 +177,9 @@ const { assert, failures } = makeAssert();
   );
   const rows = (threw as ReviewInfraError | undefined)?.dispatches ?? [];
   for (const r of rows) if (r.role === FIXER_ROLE) fixerRows.push({ ms: r.ms, runId: r.runId });
-  // This run stops after one fix round, so it is well under the cap and the
-  // assertion is that every child it paid for is on the record — the adversarial
-  // pass, the lens round's six, and the fixer. Cap behaviour itself is case (w)
-  // and wiring (e3)/(f), which drive counts past the limit.
+  // The run ends in the named handback, so it is well under the cap and the
+  // assertion is that every child it paid for is on the record — both gate passes,
+  // the twelve lens children, and the fixer. Cap behaviour itself is case (w).
   assert(
     rows.length > 0 && rows.length <= DISPATCHES_MAX_ROWS,
     `(s) every child the run paid for is on the record, within the cap (got ${String(rows.length)})`,
@@ -299,40 +319,29 @@ const { assert, failures } = makeAssert();
 
 // ── (u) the fix tree's name is derived from the durable run, not the process ─
 //
-// The name carries arm, round, attempt and the attempt's epoch. Each closes a
-// different hole, and the assertions below drive all four — including the
-// regression that made this a bug: a review round dispatches a fixer on TWO arms
-// (the adversarial gate's pass-with-findings, and the six-lens round's findings),
-// so keying the name by the round alone named one path twice, and `worktree add
-// --force` ADOPTED the live tree instead of refusing — the second fixer's head
-// already held the first's commits, and the step reported "fixed nothing".
+// The name carries arm, wave, attempt and the attempt's epoch. Each closes a
+// different hole. The hole `arm` used to close was real: a review ROUND
+// dispatched a fixer on TWO arms, so keying the name by the round alone named
+// one path twice and `worktree add --force` ADOPTED the live tree instead of
+// refusing — the second fixer's head already held the first's commits and the
+// step reported "fixed nothing". Under one wave there is one fixer, so that
+// collision is unreachable BY CONSTRUCTION, and what this case asserts instead
+// is the half a resume depends on: every component is re-derivable from the
+// durable run, and the pair that separates two concurrent attempts still does.
 {
   const { repoRoot, baseSha } = makeRepo();
   await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 2;\n" });
   const trees: string[] = [];
-  let advU = 0;
-  let lensU = 0;
   const { threw } = await run(
     ctxFor(repoRoot, baseSha, BRANCH),
     depsWith({
-      // Round 1 takes BOTH arms: the adversarial gate passes with findings (fix
-      // in the "a" tree), then the lens round finds more (fix in the "l" tree).
-      // Both gates must CLEAR by round 2 or the step keeps buying fixers: the
-      // adversarial text and the lens findings differ (different gates, so
-      // `stagnantAgainstFix` compares each against its own gate's last ask), and
-      // each gate only reports findings on the first pass.
-      adversarial: async () =>
-        advU++ === 0
-          ? result({ loopOutcome: "approved", text: "Adversarial PASSED WITH FINDINGS: 1. leak" })
-          : result({ loopOutcome: "approved", text: "" }),
-      lens: async () =>
-        lensU++ === 0
-          ? {
-              ...cleanLensRound(),
-              verdict: "ISSUES_FOUND" as const,
-              findings: "- [HIGH] SECURITY a.ts:1: leak",
-            }
-          : cleanLensRound(),
+      adversarial: async () => result({ loopOutcome: "approved" }),
+      // One wave, one fixer: the full round blocks, the fix lands, the re-review
+      // RESOLVES the row (its own notice, not its silence) and the step passes.
+      lens: async (a) =>
+        a.wave === "fix"
+          ? lensRoundFor(a, "APPROVED", [])
+          : lensRoundWith("CRITICAL_ISSUES_FOUND", [blockingFinding()]),
       dispatch: async (spec: DispatchSpec) => {
         const wt = spec.cwd as string;
         trees.push(wt);
@@ -350,28 +359,26 @@ const { assert, failures } = makeAssert();
   );
   assert(
     threw === undefined,
-    `(u) two fixers in one review round both ran and both integrated (${threw?.message})`,
+    `(u) the wave's fixer ran and integrated (${threw?.message})`,
   );
   assert(
-    trees.length >= 2 && new Set(trees).size === trees.length,
-    `(u) and no two of them share a path — a collision here is silently ADOPTED by \`add --force\`, which is how this read as "the fixer fixed nothing" (${JSON.stringify(trees.map((t) => t.split("/").pop()))})`,
+    trees.length === REVIEW_CHILD_BUDGET.fixerWaves && new Set(trees).size === trees.length,
+    `(u) and the wave dispatched exactly ${String(REVIEW_CHILD_BUDGET.fixerWaves)} fixer, in a tree no other dispatch shares — two fixers on one path are silently ADOPTED by \`add --force\`, which is how this once read as "the fixer fixed nothing" (${JSON.stringify(trees.map((t) => t.split("/").pop()))})`,
   );
-  // The round counter counts LOOP ITERATIONS, not fixers: round 1 takes the
-  // adversarial arm and continues, so the lens arm's fix is round 2's. What the
-  // adoption bug needed fixed is that the TWO ARMS of one round never collide,
-  // which is `arm` in the name doing that job — asserted by the two distinct
-  // paths and their distinct arm letters, not by both reading round 1.
+  // The name carries the arm and the wave, both read out of the run rather than
+  // counted in memory, so a resumed attempt re-enters the tree its killed self
+  // left. `arm` is the pass whose verdict sent the work (the adversarial gate's
+  // findings alone, or the six-lens round's); `wave` is which pass that was.
   assert(
-    trees.length >= 2 && trees[0]!.includes("-fix-a-") && trees[1]!.includes("-fix-l-"),
-    `(u) the two arms name the adversarial tree and the lens tree (${JSON.stringify(trees.map((t) => t.split("/").pop()))})`,
+    trees.length === 1 && trees[0]!.includes("-fix-l-full-"),
+    `(u) the tree names the arm that asked and the wave it asked in (${JSON.stringify(trees.map((t) => t.split("/").pop()))})`,
   );
-  // Both commits are on origin: the second fix built ON the first, which is what
-  // the adoption bug destroyed.
+  // The fixer's commit is on origin, which is what the adoption bug destroyed.
   const originHead = git(repoRoot, "rev-parse", `origin/${BRANCH}`);
   const commits = git(repoRoot, "rev-list", `origin/${BRANCH}`).split("\n").length;
   assert(
-    commits >= 4 && originHead !== baseSha,
-    `(u) every fix round's commit is on origin — the later fix built on the earlier one, not on a tree that already contained it (${String(commits)} commits on the branch)`,
+    commits >= 3 && originHead !== baseSha,
+    `(u) the fixer's commit is on origin (${String(commits)} commits on the branch)`,
   );
 
   // The resume half: the name must be RE-DERIVABLE, so the same attempt re-runs
@@ -382,7 +389,7 @@ const { assert, failures } = makeAssert();
     repoRoot,
     7,
     "l",
-    2,
+    "full",
     reviewAttemptFromLog(ctxA.steps),
     fixRunId("1793451347919"),
   );
@@ -390,7 +397,7 @@ const { assert, failures } = makeAssert();
     repoRoot,
     7,
     "l",
-    2,
+    "full",
     reviewAttemptFromLog(ctxA.steps),
     fixRunId("1793451347919"),
   );
@@ -402,13 +409,27 @@ const { assert, failures } = makeAssert();
     repoRoot,
     7,
     "l",
-    2,
+    "full",
     reviewAttemptFromLog(ctxA.steps) + 1,
     fixRunId("1793451347919"),
   );
   assert(
     concurrent !== first,
-    `(u) and a second concurrent attempt on the same issue and round gets its OWN path, so neither can adopt the other's leftovers (${concurrent.split("/").pop()})`,
+    `(u) and a second concurrent attempt on the same issue gets its OWN path, so neither can adopt the other's leftovers (${concurrent.split("/").pop()})`,
+  );
+  // The other wave/arm pair is a distinct path too: nothing in the name can
+  // collide with a component the step reads from the run.
+  const otherWave = fixTreeName(
+    repoRoot,
+    7,
+    "a",
+    "fix",
+    reviewAttemptFromLog(ctxA.steps),
+    fixRunId("1793451347919"),
+  );
+  assert(
+    otherWave !== first && otherWave.includes("-fix-a-fix-"),
+    `(u) and arm and wave both participate in the name (${otherWave.split("/").pop()})`,
   );
 }
 
@@ -436,6 +457,9 @@ const { assert, failures } = makeAssert();
     ctxFor(repoRoot, baseSha, BRANCH),
     depsWith({
       adversarial: rejectsThenClears("1. silent catch"),
+      // The re-review stamps the range the step named — an un-stamped round is
+      // refused, and this case is about what the integration did to the tree.
+      lens: async (a) => lensRoundFor(a, "APPROVED", []),
       dispatch: async (spec: DispatchSpec) => {
         const wt = spec.cwd as string;
         trees.push(wt);

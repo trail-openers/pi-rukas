@@ -40,12 +40,20 @@ import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import {
   ADVERSARIAL_GATE_ROLE,
   BRANCH,
+  CAUSE_NEW_CRITICAL,
+  CAUSE_NOT_ADDRESSED,
   DISPATCHES_MAX_ROWS,
   type DispatchUsageRow,
   FIXER_ROLE,
   LENS_ROLE,
-  MAX_REVIEW_ROUNDS,
+  PASS_ROWS,
+  REVIEW_CHILD_BUDGET,
+  REVIEW_PASSES,
   type ReviewDeps,
+  blockingFinding,
+  blockingReject,
+  carriedFinding,
+  carriedLensRound,
   cleanLensRound,
   cleanupRoots,
   ctxFor,
@@ -53,6 +61,8 @@ import {
   fixerThatCommits,
   frozenBlob,
   git,
+  lensRoundFor,
+  lensRoundWith,
   lensRowResult,
   makeRepo,
   result,
@@ -141,6 +151,7 @@ const { assert, failures } = makeAssert();
     t2 instanceof ReviewInfraError && /did not complete/.test(t2.message),
     `(b2) an incomplete lens round throws rather than being fixed against (${t2?.message})`,
   );
+
 }
 
 // ── (c) a fix round lands on the branch, and the next round reviews THAT ─────
@@ -158,12 +169,17 @@ const { assert, failures } = makeAssert();
         // Findings on round 1, clean on round 2: the step must re-review what
         // its own fixer produced and not certify the round-1 head twice.
         if (reviewed.length === 1)
-          return result({ loopOutcome: "rejected", text: "1. silent catch" });
+          return blockingReject("1. silent catch");
         return result({ loopOutcome: "approved" });
       },
       lens: async (a) => {
         reviewed.push(`lens:${a.head}`);
-        return cleanLensRound();
+        // The re-review must not re-report the row the wave was asked to answer,
+        // or the step reads its own finding back as NOT ADDRESSED (which is the
+        // right behaviour, and the wrong thing for this case to measure). It does
+        // stamp the range the step handed it — an un-stamped re-review is refused
+        // as a verdict on some other diff.
+        return lensRoundFor(a, "APPROVED", []);
       },
       dispatch: async (spec: DispatchSpec) => {
         // The fixer's own work, made where the step sent it.
@@ -220,10 +236,10 @@ const { assert, failures } = makeAssert();
     depsWith({
       adversarial: async () => {
         seen2.push("x");
-        if (seen2.length === 1) return result({ loopOutcome: "rejected", text: "1. leak" });
+        if (seen2.length === 1) return blockingReject("1. leak");
         return result({ loopOutcome: "approved" });
       },
-      lens: async () => cleanLensRound(),
+      lens: async (a) => lensRoundFor(a, "APPROVED", []),
       dispatch: async (spec: DispatchSpec) => {
         put(spec.cwd as string, "second-fix.ts", "export const s = 1;\n");
         git(spec.cwd as string, "add", "-A");
@@ -271,120 +287,104 @@ const { assert, failures } = makeAssert();
     `(e2) a run with no base is refused before a gate runs (${t2?.message})`,
   );
 
-  // (e3) H3 — THE SHIPPED DEFAULT BUYS MORE THAN ONE ROUND.
+  // (e3) THE BUDGETS ARE MONEY AND ROUNDS RESPECTIVELY — at the shipped default.
   //
-  // `budgets.review.turns` ships at 400 and the round bound used to be
-  // `max(1, floor(turns / 300))` = 1, so the default configuration gave a step
-  // whose whole purpose is "fix, then RE-review" a single round: it could fix and
-  // then had to hand back a head its own fixer had moved without any gate having
-  // looked at it again. The round bound is now `MAX_REVIEW_ROUNDS`, a constant;
-  // the budget is money, not rounds. So driving the step at exactly the shipped
-  // default must produce MORE than one round of work — and asserting on the
-  // shipped default rather than a fixture-chosen 600 is the point: a fixture that
-  // picked a generous budget could not tell a working loop from a one-round one.
+  // The step used to derive its round cap from `budgets.review.turns`
+  // (`max(1, floor(turns / 300))` = 1), which gave the shipped default a step
+  // whose whole job is "fix, then RE-review" a single round. That derivation, and
+  // the round loop it bounded, are both gone: the shape of the wave is
+  // `REVIEW_CHILD_BUDGET` and the budget is only money. What this case pins now
+  // is the pair of facts that survived the deletion, asserted at the SHIPPED
+  // default rather than a fixture-chosen budget: the default pays for the whole
+  // wave (both gate passes, twelve lens children, one fixer), and a wave that
+  // cannot clear is a refusal that carries its rows clipped to the validator's
+  // own cap.
   await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 3;\n" });
   let e3LensRounds = 0;
+  let e3AdvPasses = 0;
+  let e3Fixers = 0;
   const atDefaultBudget = depsWith({
-    adversarial: async () => result({ loopOutcome: "approved" }),
-    // Findings that CHANGE each round. A fixer that commits and a gate that
-    // re-reports the identical text is a deterministic gate nobody can satisfy,
-    // and the step now breaks that tie rather than buying the same reply again
-    // (see `stagnantAgainstFix`) — which is the right behaviour and would make
-    // this case measure the break instead of the bound. Varying the finding says
-    // the gate is genuinely looking at a new head each round.
-    lens: async () => {
-      e3LensRounds++;
-      return {
-        ...cleanLensRound(),
-        verdict: "ISSUES_FOUND" as const,
-        findings: `- [HIGH] SECURITY a.ts:1: leak (round ${String(e3LensRounds)})`,
-      };
+    adversarial: async () => {
+      e3AdvPasses++;
+      return blockingReject("1. the carried row the wave must answer");
     },
-    dispatch: fixerThatCommits("e3"),
+    // The same blocking row both times. `carried: true` is what the review layer
+    // puts on an open row its round did not resolve, and it is the ONLY thing the
+    // step reads for NOT ADDRESSED — so the fixture states the layer's fate
+    // rather than hoping the step guesses it from a re-appearing row. The re-review
+    // stamps its range, or the step refuses the round before it can hand back.
+    lens: async (a) => {
+      e3LensRounds++;
+      return a.wave === "fix"
+        ? carriedLensRound(a, [blockingFinding()])
+        : lensRoundWith("ISSUES_FOUND", [carriedFinding()]);
+    },
+    dispatch: async (spec: DispatchSpec) => {
+      e3Fixers++;
+      return fixerThatCommits("e3")(spec);
+    },
   });
   const { threw: t3, outcome: o3 } = await run(ctxFor(repoRoot, baseSha, BRANCH), atDefaultBudget);
   assert(
-    t3 instanceof ReviewInfraError &&
-      /reached round 4 at the step's bound of 3 rounds/.test(t3.message),
-    `(e3) at the SHIPPED ${String(DEFAULT_BUDGETS.review?.turns)}-turn default the step runs all ${String(MAX_REVIEW_ROUNDS)} rounds and then refuses — the round bound is the constant, not the budget (${t3?.message ?? `got ${String(o3?.kind)}`})`,
+    t3 instanceof ReviewInfraError && t3.message.includes(CAUSE_NOT_ADDRESSED),
+    `(e3) at the SHIPPED ${String(DEFAULT_BUDGETS.review?.turns)}-turn default the wave runs and the carried row hands back with the named cause — the budget is money, the wave is the shape (${t3?.message ?? `got ${String(o3?.kind)}`})`,
   );
   assert(
-    e3LensRounds === MAX_REVIEW_ROUNDS,
-    `(e3) and it really paid for ${String(MAX_REVIEW_ROUNDS)} lens rounds rather than one (${String(e3LensRounds)})`,
+    e3LensRounds === REVIEW_PASSES && e3AdvPasses === REVIEW_CHILD_BUDGET.adversarialPasses,
+    `(e3) and it really paid for both passes — ${String(REVIEW_PASSES)} lens rounds and ${String(REVIEW_CHILD_BUDGET.adversarialPasses)} adversarial passes, not one (${String(e3LensRounds)} lens, ${String(e3AdvPasses)} adv)`,
   );
   assert(
-    (t3 as ReviewInfraError | undefined)?.dispatches.length === DISPATCHES_MAX_ROWS,
-    `(e3) the rows on the refusal are CLIPPED to the validator's own cap: this run paid for ${String(MAX_REVIEW_ROUNDS * 7 + (MAX_REVIEW_ROUNDS - 1))} children and the record may hold ${String(DISPATCHES_MAX_ROWS)}, so an unbounded handback would have been dropped by the loader whole (got ${String((t3 as ReviewInfraError | undefined)?.dispatches.length)})`,
+    e3Fixers === REVIEW_CHILD_BUDGET.fixerWaves,
+    `(e3) and exactly ${String(REVIEW_CHILD_BUDGET.fixerWaves)} fixer ran — one wave, whatever the gates report (${String(e3Fixers)})`,
   );
-  // The clip is the point of the case, and a tail clip is only distinguishable
-  // from a head slice when the roles differ between the two ends. What the clip
-  // holds HERE is arithmetic: `MAX_REVIEW_ROUNDS` rounds x 7 gate children fill
-  // the cap exactly, so the TAIL IS the WHOLE ARRAY and no role is excluded from
-  // either end. Asserting "the first row is not a reviewer" against that was a
-  // coincidence, not evidence — and it went red the moment the round bound moved
-  // to the top of the loop body (where it belongs, and where it now covers the
-  // adversarial arm too), because the bound stopped spending a round-4 reviewer
-  // before refusing. The head/tail distinction is asserted WHERE ARITHMETIC ALLOWS
-  // IT — in `(f)`, whose extra adversarial passes overfill the cap — rather than
-  // restated where it is foreclosed.
+  assert(
+    (t3 as ReviewInfraError | undefined)?.dispatches.length ===
+      PASS_ROWS * REVIEW_PASSES + 1,
+    `(e3) the rows on the refusal are every child the wave bought, under the validator's cap of ${String(DISPATCHES_MAX_ROWS)}: 2 gate rows + 12 lens rows + 1 fixer (got ${String((t3 as ReviewInfraError | undefined)?.dispatches.length)})`,
+  );
   const e3Rows = (t3 as ReviewInfraError | undefined)?.dispatches ?? [];
   assert(
-    e3Rows.some((r) => r.role === FIXER_ROLE),
-    "(e3) and the clip keeps the TAIL, so the last fixer — the child that decided the step — is among them",
+    e3Rows.filter((r) => r.role === LENS_ROLE).length === REVIEW_CHILD_BUDGET.lensChildren,
+    `(e3) and all ${String(REVIEW_CHILD_BUDGET.lensChildren)} lens children are billed — one row each, so a round collapsed to a single row under-bills every lens review the run paid for (got ${String(e3Rows.filter((r) => r.role === LENS_ROLE).length)})`,
   );
   assert(
-    e3Rows.length === DISPATCHES_MAX_ROWS,
-    `(e3) precondition made explicit: this run's rows EXACTLY fill the cap, so the clip is a no-op here and the case cannot tell head from tail — ${String(MAX_REVIEW_ROUNDS)} rounds x 7 gate children = ${String(MAX_REVIEW_ROUNDS * 7)} rows reach the refusal (the fixers are consumed within a round, before the bound trips) and the cap is ${String(DISPATCHES_MAX_ROWS)}; that is why the head/tail assertion lives in \`(f)\`, where the extra adversarial passes overfill it (got ${String(e3Rows.length)})`,
+    e3Rows.some((r) => r.role === FIXER_ROLE),
+    "(e3) and the fixer — the child that decided the step — is among them",
   );
 
-  // (f) What a handback owes the operator is the cost of EVERY round, not the
-  // one that failed. A total re-derived per round would report a two-round run
-  // as a one-round one, and the next run would be bought on that lie. This run
-  // pays for the FULL bound — more children than the row cap can record — so the
-  // assertion below also drives the clip, which a 15-row run never reaches.
+  // (f) What a handback owes the operator is the cost of EVERY pass, not the one
+  // that failed. A total re-derived per pass would report a two-pass run as a
+  // one-pass one, and the next run would be bought on that lie. The wave's row
+  // total now sits BELOW the loader's cap, so the clip is no longer reachable
+  // here — and saying so is the assertion: a case that claimed to exercise the
+  // clip while paying for 15 children would be declaring a test it never ran.
   const { repoRoot: rr2, baseSha: bs2 } = makeRepo();
   await setup({ repoRoot: rr2, baseSha: bs2, branch: BRANCH, feature: "export const f = 4;\n" });
-  let fRound = 0;
   const neverClears = depsWith({
-    adversarial: async () => result({ loopOutcome: "approved" }),
-    // Varies per round: an identical text from a gate that keeps seeing a moved
-    // head is a deterministic gate, and the step breaks that tie rather than
-    // paying for the bound (see `stagnantAgainstFix`).
-    lens: async () => ({
-      ...cleanLensRound(),
-      verdict: "ISSUES_FOUND" as const,
-      findings: `- [HIGH] SECURITY a.ts:1: leak (round ${String(++fRound)})`,
-    }),
-    // Every fixer commits, so no round is refused for fixing nothing, and each
+    adversarial: async () => blockingReject("1. the carried row the wave must answer"),
+    lens: async (a) => lensRoundFor(a, "ISSUES_FOUND", [carriedFinding()]),
+    // The fixer commits, so the wave is not refused for fixing nothing, and each
     // carries its tree's `runId` — the field the resume path matches on.
     dispatch: fixerThatCommits("f"),
   });
   const { threw: t4 } = await run(ctxFor(rr2, bs2, BRANCH), neverClears);
-  // MAX_REVIEW_ROUNDS rounds, each one reviewer + six lenses + one fixer, so the
-  // step paid for 3*(rounds+1) children — far more than the 16 a single outcome
-  // may record.
-  // MAX_REVIEW_ROUNDS rounds, each one reviewer + six lenses, and a fixer after
-  // every round that did not clear.
-  const paid = MAX_REVIEW_ROUNDS * 7 + (MAX_REVIEW_ROUNDS - 1);
+  const paid = PASS_ROWS * REVIEW_PASSES + 1;
   assert(
-    t4 instanceof ReviewInfraError &&
-      new RegExp(
-        `reached round ${String(MAX_REVIEW_ROUNDS + 1)} at the step's bound of ${String(MAX_REVIEW_ROUNDS)} rounds`,
-      ).test(t4.message),
-    `(f) the loop runs to the bound, then throws (${t4?.message})`,
+    t4 instanceof ReviewInfraError && t4.message.includes(CAUSE_NOT_ADDRESSED),
+    `(f) the wave runs both passes, then hands back with the named cause (${t4?.message})`,
   );
   assert(
-    paid > DISPATCHES_MAX_ROWS,
-    `(f) precondition: this run paid for ${String(paid)} children, more than the ${String(DISPATCHES_MAX_ROWS)} the record may hold — so the clip is exercised rather than merely declared`,
+    paid < DISPATCHES_MAX_ROWS,
+    `(f) precondition made explicit: the wave pays for ${String(paid)} children, fewer than the ${String(DISPATCHES_MAX_ROWS)} the record may hold — so the clip is NOT exercised here and no assertion in this file may claim it is; cap behaviour lives in test-lean-review-consolidation.ts (w)`,
   );
   assert(
-    (t4 as ReviewInfraError | undefined)?.dispatches.length === DISPATCHES_MAX_ROWS,
-    `(f) and the handback records exactly the cap's worth, not the uncapped total the loader would reject (got ${String((t4 as ReviewInfraError | undefined)?.dispatches.length)})`,
+    (t4 as ReviewInfraError | undefined)?.dispatches.length === paid,
+    `(f) and the handback records the whole wave, not just the pass that failed (got ${String((t4 as ReviewInfraError | undefined)?.dispatches.length)} of ${String(paid)})`,
   );
   const fRows = (t4 as ReviewInfraError | undefined)?.dispatches ?? [];
   assert(
-    fRows.filter((r) => r.role === LENS_ROLE).length === 12,
-    `(f) the tail it kept holds TWELVE lens rows — six per round for the last two rounds: a round collapsed to one row under-billed every lens review the run paid for (got ${String(fRows.filter((r) => r.role === LENS_ROLE).length)})`,
+    fRows.filter((r) => r.role === LENS_ROLE).length === REVIEW_CHILD_BUDGET.lensChildren,
+    `(f) the rows hold TWELVE lens rows — six per pass: a round collapsed to one row under-billed every lens review the run paid for (got ${String(fRows.filter((r) => r.role === LENS_ROLE).length)})`,
   );
   assert(
     fRows.filter((r) => r.role === LENS_ROLE).every((r) => r.ms > 0),
@@ -395,15 +395,16 @@ const { assert, failures } = makeAssert();
       .filter((r) => r.role === LENS_ROLE)
       .map((r) => r.ms)
       .filter((m, i, a) => a.indexOf(m) === i).length >= 6,
-    "(f) and those twelve timings are not one value repeated — six distinct child timings per round survive the clip",
+    "(f) and those twelve timings are not one value repeated — six distinct child timings per pass survive",
   );
   assert(
     fRows.some((r) => r.role === FIXER_ROLE),
     "(f) the FIXER is billed too: a step whose cost report omits the round that did the work cannot be used to price the next run",
   );
   assert(
-    fRows.filter((r) => r.role === ADVERSARIAL_GATE_ROLE).length >= 1,
-    `(f) the adversarial passes appear under the LOOP's role, the same role the frozen driver's events use — so the byRole columns are comparable (${JSON.stringify(fRows.map((r) => r.role))})`,
+    fRows.filter((r) => r.role === ADVERSARIAL_GATE_ROLE).length ===
+      REVIEW_CHILD_BUDGET.adversarialPasses,
+    `(f) both adversarial passes appear under the LOOP's role, the same role the frozen driver's events use — so the byRole columns are comparable (${JSON.stringify(fRows.map((r) => r.role))})`,
   );
   // T1 — the fixer row keeps its OWN duration and carries the tree id in its own
   // field. The row that used to smuggle the id through `ms` reported a 13-digit
@@ -418,16 +419,15 @@ const { assert, failures } = makeAssert();
     `(T1) and the tree identity rides in \`runId\`, in the shape the validator accepts (${String(fixerRow?.runId)})`,
   );
 
-  // (g) A budget that pays for no round at all still gets a real look, and a head
-  // that was not reviewed is never reported as reviewed.
+  // (g) A budget that pays for nothing still gets a real look, and a head that
+  // was not reviewed is never reported as reviewed.
   //
   // This case used to assert "one look, then refuses", reading the round cap off
-  // `turns` (`max(1, floor(turns / 300))`). That derivation is HIGH#2 and is gone:
-  // it made the default review budget yield ONE round, so the step could fix but
-  // never re-review. The round cap is `MAX_REVIEW_ROUNDS` now and the budget bounds
-  // the MONEY, so what this case still has to prove is the two things that survived
-  // — a degenerate budget does not skip the review, and it does not certify a head
-  // nobody looked at. Asserting the old sentence would have pinned the bug.
+  // `turns`. That derivation is gone, and so is the loop it bounded: the shape of
+  // the wave is `REVIEW_CHILD_BUDGET`, the budget bounds the MONEY, so what this
+  // case still has to prove is the two things that survived — a degenerate budget
+  // does not skip the review, and it does not certify a head nobody looked at.
+  // Asserting the old sentence would have pinned the bug.
   let gRound = 0;
   const { threw: t5 } = await run(
     ctxFor(rr2, bs2, BRANCH),
@@ -436,26 +436,31 @@ const { assert, failures } = makeAssert();
         ...defaultConfig(),
         budgets: { ...defaultConfig().budgets, review: { turns: 0, tokens: 0, minutes: 0 } },
       }),
-      adversarial: async () => result({ loopOutcome: "approved" }),
-      lens: async () => ({
-        ...cleanLensRound(),
-        verdict: "ISSUES_FOUND" as const,
-        findings: `- [HIGH] SECURITY a.ts:1: leak (round ${String(gRound++)})`,
-      }),
+      adversarial: async () => blockingReject("1. the row the wave must answer"),
+      lens: async (a) => {
+        gRound++;
+        // The same row both passes (`title` cannot vary, or the re-review's row is
+        // a different finding and the step has nothing to call NOT ADDRESSED).
+        // The row is what fails the run, not the budget: a zero budget must not
+        // turn into a head nobody looked at being certified.
+        return a.wave === "fix"
+          ? carriedLensRound(a, [blockingFinding()])
+          : lensRoundWith("ISSUES_FOUND", [carriedFinding()]);
+      },
       dispatch: fixerThatCommits("g"),
     }),
   );
   assert(
-    gRound >= 1,
-    `(g) a zero review budget still pays for at least one lens look — it does not silently skip the review (${String(gRound)} lens round(s) ran)`,
+    gRound === REVIEW_PASSES,
+    `(g) a zero review budget still pays for both lens passes — it does not silently skip the review (${String(gRound)} lens round(s) ran)`,
   );
   assert(
     t5 instanceof ReviewInfraError,
-    `(g) and a head the review could not clear is an error, never a pass (${t5?.message ?? `kind ${String((t5 as undefined) === undefined ? "none" : "other")}`})`,
+    `(g) and a head the review could not clear is an error, never a pass (${t5?.message ?? "no throw"})`,
   );
   assert(
-    gRound <= MAX_REVIEW_ROUNDS,
-    `(g) and the loop is bounded by the rounds constant rather than by a turn division, so it cannot run away on a zero budget (${String(gRound)} <= ${String(MAX_REVIEW_ROUNDS)})`,
+    gRound <= REVIEW_PASSES,
+    `(g) and the step is bounded by the wave's shape rather than a turn division, so it cannot run away on a zero budget (${String(gRound)} <= ${String(REVIEW_PASSES)})`,
   );
 }
 

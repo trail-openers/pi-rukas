@@ -24,11 +24,42 @@ import {
   ctxFor,
   depsWith,
   git,
+  lensRoundFor,
   rejectsThenClears,
   result,
   runStep as run,
 } from "./lean-review-fixtures.ts";
 import type { ReviewInfraError } from "../../src/lean/review.ts";
+import { sha256 } from "../../src/lean/specify-proof.ts";
+import type { HandlerCtx } from "../../src/lean/engine.ts";
+import { frozenBlob } from "./lean-review-fixtures.ts";
+
+/**
+ * A run context whose `specify` step froze THIS repo's acceptance test at `ref`.
+ *
+ * The record must be the hash of the committed bytes of the SAME clone the step
+ * then reads: `integrate` re-hashes `git show <fixHead>:<path>` and refuses a
+ * mismatch. A case that borrowed another repo's record — even another case's, in
+ * another temp repo — froze bytes this clone never held, and the run died on the
+ * frozen proof instead of reaching the refusal the case names. Lives here rather
+ * than in the repo harness, which is at its size cap and whose subject is the
+ * repo, not the frozen record.
+ */
+export function frozenRunFor(repoRoot: string, baseSha: string, ref = "HEAD"): HandlerCtx {
+  const ctx = ctxFor(repoRoot, baseSha, BRANCH);
+  ctx.run.steps.push({
+    key: "7:specify:0",
+    state: "specify",
+    startedAt: 1,
+    endedAt: 2,
+    outcome: {
+      kind: "ok",
+      frozen: { "tests/AC1.test.ts": sha256(frozenBlob(repoRoot, ref)) },
+      tests: { AC1: ["tests/AC1.test.ts"] },
+    },
+  });
+  return ctx;
+}
 
 /** What one fix round costs, and the tree it was worked in. */
 export const FIXER_MS = 4_321;
@@ -50,6 +81,10 @@ export async function fixRoundRows(
     ctxFor(repoRoot, baseSha, BRANCH),
     depsWith({
       adversarial: rejectsThenClears("1. silent catch"),
+      // The re-review stamps the range the step handed it. A round that cannot show
+      // its own range is refused before the pass, and this fixture exists to bill
+      // exactly one fixer on a wave that completed.
+      lens: async (a) => lensRoundFor(a, "APPROVED", []),
       dispatch: async (spec) => {
         const wt = spec.cwd as string;
         put(wt, "fix.ts", "export const x = 1;\n");

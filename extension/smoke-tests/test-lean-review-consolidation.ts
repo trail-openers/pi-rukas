@@ -23,6 +23,14 @@
  *       SYNTHESISES, which is the only role the frozen driver's own events carry
  *       and so the only one lean's `byRole` column can be compared against.
  *
+ *   (r2) a NON-BLOCKING verdict from either gate buys no fixer. The adversarial
+ *       doctrine calls only `CRITICAL_ISSUES_FOUND` blocking
+ *       (`agents-base/adversarial-developer.md`, and `decideLoopAction` passes on
+ *       `ISSUES_FOUND`/`MINOR_OBSERVATIONS`), and the lens layer reserves its
+ *       CRITICAL verdict the same way — so a run whose gate reported findings it
+ *       did not block on must end `done` with one pass and no fixer, not buy a
+ *       child, a re-review and a second gate pass.
+ *
  *   (w) a row count BEYOND the loader cap, driven through `errorOutcome`: what
  *       the recording path keeps, drops, and survives a second pass with.
  *
@@ -48,11 +56,13 @@ import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import {
   ADVERSARIAL_GATE_ROLE,
   BRANCH,
+  blockingReject,
   DISPATCHES_MAX_ROWS,
   FIXER_ROLE,
   LENS_ROLE,
-  MAX_REVIEW_ROUNDS,
+  REVIEW_PASSES,
   cleanLensRound,
+  lensRoundFor,
   cleanupRoots,
   ctxFor,
   depsWith,
@@ -133,12 +143,12 @@ const { assert, failures } = makeAssert();
   const seen: string[] = [];
   let fixerCommits = 0;
   /**
-   * The one way a findings-carrying pass reaches the lens round: the step fixes
-   * first and comes back around, so the fixture's fixer MUST commit. A fixer that
-   * commits nothing is refused by the no-progress break (case (p)), which is the
-   * right product behaviour and the wrong way to reach a second round — an earlier
-   * version of these cases did exactly that and "proved" the carry never happens,
-   * which was a property of the stub rather than of the step.
+   * The one way a findings-carrying pass reaches the RE-REVIEW: the step fixes
+   * first and then re-reviews, so the fixture's fixer MUST commit. A fixer that
+   * commits nothing is refused by the no-change break (case (p)), which is the
+   * right product behaviour and the wrong way to reach the second pass — an
+   * earlier version of these cases did exactly that and "proved" the carry never
+   * happens, which was a property of the stub rather than of the step.
    */
   const committing = async (spec: DispatchSpec) => {
     const wt = spec.cwd as string;
@@ -151,20 +161,16 @@ const { assert, failures } = makeAssert();
   const runWithAdv = async (over: Partial<DispatchResult>) => {
     seen.length = 0;
     advCalls = 0;
-    // The findings text is FIXED for a given case, not varied per call. The step
-    // now refuses to re-buy findings it already asked a fixer to fix
-    // (`stagnantAgainstFix`), so a stub that varied its text each call would
-    // never converge and the run would loop to the round cap. What has to vary
-    // for THIS case is whether the carry reached the lens round, and that is read
-    // from `seen`, not from the gate's prose.
+    // The findings text is FIXED for a given case, not varied per call. Under one
+    // wave there is nothing to converge to and no round cap to reach: what has to
+    // vary for THIS case is whether the carry reached the lens pass, and that is
+    // read from `seen`, not from the gate's prose.
     return run(
       ctxFor(repoRoot, baseSha, BRANCH),
       depsWith({
-        // Varied per call for the same reason the lens findings vary in
-        // `test-lean-review-wiring.ts`: a gate that re-reports identical text
-        // against a head the fixer moved is a deterministic gate the step now
-        // refuses to buy again (`stagnantAgainstFix`), which would end the run
-        // before the carry this case is about ever reached a lens round.
+        // Varied per call so the second pass is a distinct read: the case reads
+        // `seen`, and a gate that said the same thing twice would leave the
+        // re-review's own carry indistinguishable from the first pass's.
         adversarial: async () =>
           advCalls++ === 0 ? result(over) : result({ loopOutcome: "approved" }),
         lens: async (a) => {
@@ -238,10 +244,40 @@ const { assert, failures } = makeAssert();
     "(o4) with no records at all, the prose marker is what carries the findings",
   );
 
-  // (o5) T6 — the carried block reaches the round that CONSUMES it. The findings
-  // arm fixes first and comes back around, so `carried` has to survive the
-  // `continue`: assigned on one branch and read only on the other made the
-  // parameter dead on the path that used it.
+  // (o6) A `rejected` whose loop carried NO record at all. `parseVerdict` defaults
+  // the status when the reply holds no `VERDICT:` marker, and the report-only loop
+  // hands that record back verbatim — so a rejection with nothing behind it is
+  // prose that was never a judgement, and the step must refuse it rather than spend
+  // its one wave fixing an absence. The mutant is `lastRecord !== undefined &&
+  // …verdictParsed !== true` in `adversarialGate`: with it, this case clears.
+  const o6 = await runWithAdv({
+    loopOutcome: "rejected",
+    text: "findings with no VERDICT marker anywhere",
+    adversarialRounds: undefined,
+  });
+  assert(
+    o6.threw instanceof ReviewInfraError &&
+      /no reviewed round to read a verdict from/.test(o6.threw.message),
+    `(o6) a rejection with no reviewed round is refused, not fixed against (${o6.threw?.message ?? "the step accepted it"})`,
+  );
+
+  // (o7) And the incoherent pair: `rejected` whose OWN trailing record reads
+  // APPROVED. The loop refused a head it also certified, and neither reading is
+  // safe — clearing a head the loop rejected, or buying a fixer for an approval.
+  const o7 = await runWithAdv({
+    loopOutcome: "rejected",
+    text: "1. a finding under an APPROVED record",
+    adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }],
+  });
+  assert(
+    o7.threw instanceof ReviewInfraError &&
+      /rejected a head it also approved/.test(o7.threw.message),
+    `(o7) a rejected outcome whose parsed record says APPROVED is refused the same way (${o7.threw?.message ?? "the step accepted it"})`,
+  );
+
+  // (o5) T6 — the carried block reaches the pass that CONSUMES it. The wave fixes
+  // first and then re-reviews, so `carried` has to survive the fix: assigned before
+  // the wave and read only after it, it was once dead on the path that used it.
   const carriedSeen: (string | undefined)[] = [];
   // o5's OWN counter, not the `advCalls` the cases above share: `runWithAdv`
   // resets that one to 0 on every call, so a case reusing it would start its
@@ -253,20 +289,15 @@ const { assert, failures } = makeAssert();
     depsWith({
       adversarial: async () => {
         advO5++;
-        // Round 1 refuses; round 2 clears the gate. The findings the FIRST round
-        // asked for are what the fixer answers, and the second round's refusal
-        // text must DIFFER from the first or `stagnantAgainstFix` fires on the
-        // re-review — which is the step refusing to re-buy identical findings, not
-        // a bug in the carry this case is about.
+        // The full review refuses; the re-review's gate clears. The findings the
+        // FIRST pass asked for are what the fixer answers, and the second pass's
+        // text must DIFFER from the first so the case can tell the two reads apart.
         return advO5 === 1
-          ? result({ loopOutcome: "rejected", text: "1. the finding the fixer will answer" })
-          : // Round 2 PASSES the gate. Its trailing record must be APPROVED: a
+          ? blockingReject("1. the finding the fixer will answer")
+          : // The re-review's gate PASSES. Its trailing record must be APPROVED: a
             // non-blocking record would make `openFromPass` hand its own text back
-            // as findings, the step would fix them, and the fixer would run a
-            // second time — which is correct behaviour, but it moves the round the
-            // lens first runs to round 3 and overwrites `carried` with the gate's
-            // second text. This case is about ONE carry surviving ONE fix into the
-            // next lens round, so the gate asks once and then clears.
+            // as findings on the round that is supposed to clear, and the run would
+            // end on a NOT ADDRESSED refusal instead of the pass this case reads.
             result({
               loopOutcome: "approved",
               text: "",
@@ -275,31 +306,32 @@ const { assert, failures } = makeAssert();
       },
       lens: async (a) => {
         carriedSeen.push(a.context);
-        return cleanLensRound();
+        // The re-review stamps the range the step named — an un-stamped round is
+        // refused as a verdict on some other diff, and this case is about the carry
+        // surviving the wave, not about that refusal.
+        return lensRoundFor(a, "APPROVED", []);
       },
       dispatch: committing,
     }),
   );
   assert(
     o5.threw === undefined && passed(o5.outcome?.kind),
-    `(o5) the fix round and the re-review both ran (${o5.threw?.message})`,
+    `(o5) the fix wave and the re-review both ran (${o5.threw?.message})`,
   );
-  // The findings arm FIXES first and comes back around, so the arm that CONSUMES
-  // `carried` is the NEXT round's, and it is the FIRST round whose lens actually
-  // ran — the round that refuses never reaches a lens at all. Finding the carry on
-  // any lens round after a fix round is the property; the original defect was that
-  // the assignment did not survive the `continue`, which is what this proves it now
-  // does. Asserting a specific round number would pin the fixture's shape rather
-  // than the step's behaviour.
+  // The carry is assigned before the wave and consumed by both lens passes, so
+  // finding it on the lens calls either side of the fix is the property; the
+  // original defect was that the assignment did not survive the wave, which is
+  // what this proves it now does. Asserting a specific pass number would pin the
+  // fixture's shape rather than the step's behaviour.
   const carriedAny = carriedSeen.filter((c): c is string => c !== undefined);
   assert(
     carriedAny.length >= 1 &&
       carriedAny.some((c) => c.includes("the finding the fixer will answer")),
-    `(o5) a lens round after the fix carries the adversarial gate's findings, surviving the fix and the continue (lens rounds ran ${String(carriedSeen.length)}x, ${String(carriedAny.length)} carried: ${JSON.stringify(carriedAny[0]?.slice(0, 90))})`,
+    `(o5) both lens passes carry the adversarial gate's findings, surviving the fix (lens rounds ran ${String(carriedSeen.length)}x, ${String(carriedAny.length)} carried: ${JSON.stringify(carriedAny[0]?.slice(0, 90))})`,
   );
 }
 
-// ── (p) the no-progress break ───────────────────────────────────────────────
+// ── (p) a fix wave that changed nothing ─────────────────────────────────────
 {
   const { repoRoot, baseSha } = makeRepo();
   await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 2;\n" });
@@ -307,19 +339,19 @@ const { assert, failures } = makeAssert();
   const { threw } = await run(
     ctxFor(repoRoot, baseSha, BRANCH),
     depsWith({
-      // CONSTANT findings, deliberately: this case IS the no-progress break. The
-      // fixer is dispatched, paid for, and commits nothing, so `assertFixAdvanced`
-      // refuses the round before stagnation is ever consulted. A converging stub
-      // here would test the fixture instead of the break.
-      adversarial: async () => result({ loopOutcome: "rejected", text: "1. silent catch" }),
+      // The findings are CONSTANT, deliberately: this case IS the no-change break.
+      // The fixer is dispatched, paid for, and commits nothing, so
+      // `assertFixAdvanced` refuses the wave. A converging stub here would test the
+      // fixture instead of the break.
+      adversarial: async () => blockingReject("1. silent catch"),
       // Dispatched, paid for, commits NOTHING. The step would otherwise pay to
-      // re-review the identical commit, once per round of the bound.
+      // re-review the identical commit the gate has already read.
       dispatch: async () => result({ role: FIXER_ROLE }),
     }),
   );
   assert(
     threw instanceof ReviewInfraError && /fixed nothing/.test(threw.message),
-    `(p) a fix round that left the head unchanged is a throw, not a re-review (${threw?.message})`,
+    `(p) a fix wave that left the head unchanged is a throw, not a re-review (${threw?.message})`,
   );
   assert(
     threw instanceof ReviewInfraError && threw.message.includes(head.slice(0, 12)),
@@ -355,6 +387,4 @@ const { assert, failures } = makeAssert();
   );
 }
 
-
-cleanupRoots();
 process.exit(failures());

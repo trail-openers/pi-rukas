@@ -23,7 +23,11 @@ import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import {
   BRANCH,
   FIXER_ROLE,
+  blockingFinding,
+  carriedFinding,
   cleanLensRound,
+  lensRoundFor,
+  lensRoundWith,
   cleanupRoots,
   ctxFor,
   depsWith,
@@ -66,6 +70,10 @@ const { assert, failures } = makeAssert();
     ctxFor(repoRoot, baseSha, BRANCH),
     depsWith({
       adversarial: rejectsThenClears("1. the finding the fixer answers"),
+      // The re-review stamps the range the step named. An un-stamped round is a
+      // round that cannot show what it judged and is refused — so without this the
+      // case would report the kind of a wave that never completed.
+      lens: async (a) => lensRoundFor(a, "APPROVED", []),
       dispatch: fixerThatCommits("moved-head"),
     }),
   );
@@ -88,19 +96,17 @@ const { assert, failures } = makeAssert();
 {
   const { repoRoot, baseSha } = makeRepo();
   await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 3;\n" });
-  let lensAsks = 0;
   const { outcome, threw } = await run(
     ctxFor(repoRoot, baseSha, BRANCH),
     depsWith({
       adversarial: async () => result({ loopOutcome: "approved" }),
-      lens: async () =>
-        lensAsks++ === 0
-          ? {
-              ...cleanLensRound(),
-              verdict: "ISSUES_FOUND" as const,
+      lens: async (a) =>
+        a.wave === "fix"
+          ? lensRoundFor(a, "APPROVED", [])
+          : {
+              ...lensRoundWith("CRITICAL_ISSUES_FOUND", [blockingFinding()]),
               findings: "- [HIGH] SECURITY a.ts:1: leak",
-            }
-          : cleanLensRound(),
+            },
       dispatch: fixerThatCommits("lens-arm"),
     }),
   );

@@ -167,7 +167,7 @@ async function gitType(
  * rows carry 60M. A child's own bound knob can only ever lower `minutes`, never
  * raise it. `ci`'s minutes is the verify tier timeout, not a child bound; the
  * review row bounds the lens and fixer children, and has no wall clock of its
- * own — `MAX_REVIEW_ROUNDS` × the per-child bounds end it.
+ * own — `REVIEW_CHILD_BUDGET` × the per-child bounds end it.
  */
 export const DEFAULT_BUDGETS: Readonly<Record<string, Budget>> = Object.freeze({
   specify: Object.freeze({ turns: 250, tokens: 30_000_000, minutes: 20 }),

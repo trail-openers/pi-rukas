@@ -37,6 +37,7 @@ import { assertSafeRef } from "../worktree-loss.ts";
 import { provisionWorktree } from "../worktree-provision.ts";
 import { frozenMatches } from "./build-git.ts";
 import type { HandlerCtx } from "./engine.ts";
+import type { ReviewWave } from "./review-args.ts";
 import { type ReviewFixArgs, fixPrompt } from "./review-deps.ts";
 import {
   type FixArm,
@@ -110,7 +111,20 @@ export async function rangeDiff(
   head: string,
   rows: DispatchUsageRow[],
 ): Promise<string | undefined> {
-  const diff = await gitQuiet(deps.exec, repoRoot, ["diff", `${base}...${head}`]);
+  // Both bounds are resolved to commits before the range is asked for. `base` and
+  // `head` reach here as strings the step did not mint (a ledger-resolved delta
+  // base, a head the layer recorded), and a range whose bound does not name a
+  // commit is indistinguishable, in this read, from a range with no changes — so
+  // the ambiguity is removed here rather than passed down: an unresolvable bound
+  // is a failed read, and the caller turns a failed read into a throw.
+  const from = await resolveCommitArg(deps, repoRoot, base);
+  const to = await resolveCommitArg(deps, repoRoot, head);
+  if (from === undefined || to === undefined)
+    throw new ReviewInfraError(
+      `could not resolve the range ${base.slice(0, 12)}...${head.slice(0, 12)} for the six-lens pass (${from === undefined ? `\`${base}\`` : `\`${head}\``} is not a commit this clone has) — a range nobody can name is not a diff to review`,
+      rows,
+    );
+  const diff = await gitQuiet(deps.exec, repoRoot, ["diff", `${from}...${to}`]);
   if (diff === undefined) {
     throw new ReviewInfraError(
       `could not read the diff ${base}...${head.slice(0, 12)} for the six-lens pass`,
@@ -118,6 +132,18 @@ export async function rangeDiff(
     );
   }
   return diff.stdout;
+}
+
+/** One range bound as a commit this clone has, or undefined when it is not one. */
+async function resolveCommitArg(
+  deps: ReviewDeps,
+  repoRoot: string,
+  rev: string,
+): Promise<string | undefined> {
+  if (rev.trim() === "") return undefined;
+  const out = await gitQuiet(deps.exec, repoRoot, ["rev-parse", "--verify", `${rev}^{commit}`]);
+  const sha = (out?.stdout ?? "").trim();
+  return isFullCommitSha(sha) ? sha : undefined;
 }
 
 /** One fixer, and the row it cost. */
@@ -213,15 +239,16 @@ async function runFixer(
 export type FixRoundOutcome = { head?: string; stop?: BudgetFired };
 
 /**
- * One fix round: the child in its disposable tree, then its commits moved onto the
+ * One fix wave: the child in its disposable tree, then its commits moved onto the
  * branch.
  *
- * `visit` counts fix-tree CREATIONS for this step, and the caller owns it: the
- * tree's name must be unique per dispatch, and a review round dispatches a fixer
- * on two arms, so no per-round number can serve (see `fixTreeName`). `runId` is
- * the caller's, not this round's: the same value has to name the tree for the
- * whole round, and a run identity a test can predict is the difference between
- * driving the collision path and merely hoping not to hit it.
+ * The step dispatches exactly one fixer, so `wave` and `arm` are constants of a
+ * step rather than loop counters — they are kept because the tree's NAME must be
+ * reproducible from the durable run (see `fixTreeName`), and the name is what a
+ * resumed attempt re-enters. `runId` is the caller's, not this round's: the same
+ * value has to name the tree for the whole wave, and a run identity a test can
+ * predict is the difference between driving the collision path and merely hoping
+ * not to hit it.
  *
  * The head it returns is the head now on origin, read back from git rather than
  * assumed from what the child reported doing. The row the child cost is appended
@@ -236,7 +263,7 @@ export async function fixRound(
     frozen: Record<string, string>;
     findings: string;
     gate: string;
-    round: number;
+    wave: ReviewWave;
     arm: FixArm;
     attempt: number;
     runId: FixRunId;
@@ -244,17 +271,17 @@ export async function fixRound(
     budget: BudgetArms;
   },
 ): Promise<FixRoundOutcome> {
-  // The tree's whole name is derived from the durable run — arm, round, attempt
+  // The tree's whole name is derived from the durable run — arm, wave, attempt
   // and the attempt's epoch — so a resume of this attempt recomputes the same
   // path and re-enters the tree its killed self left (see `fixTreeName`). No
   // counter of ours is involved, because a counter would restart at zero there.
-  const treeSuffix = `${opts.arm}-${String(opts.round)}-${String(opts.attempt)}`;
+  const treeSuffix = `${opts.arm}-${opts.wave}-${String(opts.attempt)}`;
   const wt = await fixTree(
     deps,
     ctx,
     opts.head,
     opts.arm,
-    opts.round,
+    opts.wave,
     opts.attempt,
     opts.runId,
     opts.rows,
@@ -264,7 +291,7 @@ export async function fixRound(
   try {
     await runFixer(deps, {
       issue: ctx.issue,
-      round: opts.round,
+      wave: opts.wave,
       gate: opts.gate,
       findings: opts.findings,
       worktree: wt,

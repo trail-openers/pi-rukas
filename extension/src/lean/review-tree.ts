@@ -22,6 +22,7 @@ import { traceWarn } from "../trace.ts";
 import { provisionWorktree } from "../worktree-provision.ts";
 import { worktreePath } from "../worktree.ts";
 import type { HandlerCtx } from "./engine.ts";
+import type { ReviewWave } from "./review-args.ts";
 import type { FixRunId } from "./review.ts";
 import { type ReviewDeps, ReviewInfraError } from "./review.ts";
 import { gitQuiet } from "./specify-reset.ts";
@@ -29,7 +30,7 @@ import type { DispatchUsageRow } from "./step-budget.ts";
 
 /**
  * The fixer's tree for ONE FIX OF ONE ATTEMPT: `<repoRoot>/.worktrees/lean-
- * <issue>-fix-<arm>-<round>-<attempt>-<epoch>`.
+ * <issue>-fix-<arm>-<wave>-<attempt>-<epoch>`.
  *
  * Every component is read out of the durable run, never out of anything the
  * process remembers, and that is the property the name has to have: the engine
@@ -42,19 +43,15 @@ import type { DispatchUsageRow } from "./step-budget.ts";
  *
  * Four values, three jobs:
  *
- * - `arm` ("a" for the adversarial gate's pass-with-findings, "l" for the six-lens
- *   round's findings) and `round` together make one run's fix trees distinct from
- *   each other. One review round dispatches a fixer on TWO arms, so the round
- *   number alone named the same path twice — and `worktree add --force` does not
- *   refuse a collision with a path this step made itself (it only refuses paths
- *   it does not own), so the second visit silently ADOPTED a live tree, git
- *   reused its registration, left the first visit's commits in place, and the
- *   step read back a head that already contained them: "the fixer fixed nothing",
- *   for a fixer that had done its work one round earlier.
+ * - `arm` ("a" for a pass the six-lens round approved and only the adversarial
+ *   gate left findings on, "l" for findings the six-lens round itself raised) and
+ *   `wave` together make one run's fix trees distinct from each other. The name
+ *   is a per-visit discriminator and nothing else; there is one wave, and it is
+ *   named rather than counted for the same reason every other component is.
  * - `attempt` is the step key's own `:N`, the engine's per-attempt counter. It is
  *   what keeps two CONCURRENT attempts on one issue from naming the same tree:
  *   both read the same epoch (the log's, so a resume re-enters its own tree) and
- *   the same round, and only the attempt number they were each appended with
+ *   the same wave, and only the attempt number they were each appended with
  *   separates them. With no prior attempt recorded both resolve to 0 and
  *   `worktree add` — not `--force`'s adoption, which needs a registration this
  *   step owns — is the one that refuses.
@@ -70,13 +67,13 @@ export function fixTreeName(
   repoRoot: string,
   issue: number,
   arm: FixArm,
-  round: number,
+  wave: ReviewWave,
   attempt: number,
   runId: FixRunId,
 ): string {
   return worktreePath(
     repoRoot,
-    `lean-${String(issue)}-fix-${arm}-${String(round)}-${String(attempt)}-${runId}`,
+    `lean-${String(issue)}-fix-${arm}-${wave}-${String(attempt)}-${runId}`,
   );
 }
 
@@ -121,13 +118,13 @@ export async function fixTree(
   ctx: HandlerCtx,
   head: string,
   arm: FixArm,
-  round: number,
+  wave: ReviewWave,
   attempt: number,
   runId: FixRunId,
   rows: DispatchUsageRow[],
 ): Promise<string> {
   const { repoRoot, issue } = ctx;
-  const wt = fixTreeName(repoRoot, issue, arm, round, attempt, runId);
+  const wt = fixTreeName(repoRoot, issue, arm, wave, attempt, runId);
   // `add --force` is for THIS step's own path only — `worktree remove` refuses a
   // path it does not own, so no tree at any other location is ever touched here.
   // That is also why the name has to be unique per VISIT: `--force` makes
@@ -268,13 +265,13 @@ export async function closeFixTrees(
   // Built from `fixTreeName`'s own components rather than spelled out here: the
   // layout comes from `worktreePath` (the repo's one expression of where worktrees
   // live) and the component ORDER is the writer's —
-  // `lean-<issue>-fix-<arm>-<round>-<attempt>-<epoch>` — so the prefix and the names
-  // it selects cannot drift apart. The head stops before `<arm>` because one attempt
-  // opens trees on both arms and at every round; the tail is `<attempt>-<epoch>`,
-  // and those two components are what exclude a concurrent attempt's LIVE tree,
-  // which is the whole point of the scope. A tree of the same issue and attempt is
-  // named solely by this attempt's `fixTreeName` calls, so the pair selects exactly
-  // this attempt's fix trees and nothing a sibling or another issue owns.
+  // `lean-<issue>-fix-<arm>-<wave>-<attempt>-<epoch>` — so the prefix and the names
+  // it selects cannot drift apart. The head stops before `<arm>` because the tail
+  // is `<attempt>-<epoch>`, and those two components are what exclude a concurrent
+  // attempt's LIVE tree, which is the whole point of the scope. A tree of the same
+  // issue and attempt is named solely by this attempt's `fixTreeName` calls, so the
+  // pair selects exactly this attempt's fix trees and nothing a sibling or another
+  // issue owns.
   const head = `${worktreePath(ctx.repoRoot, `lean-${String(ctx.issue)}-fix-`)}`;
   const tail = `-${String(attempt)}-${runId}`;
   for (const line of (listed?.stdout ?? "").split("\n")) {

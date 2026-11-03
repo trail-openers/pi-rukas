@@ -67,7 +67,10 @@ export type { FixRunId };
  * them, which is exactly when a hand-written copy would have quietly kept
  * reading `undefined`.
  */
-export type LensRound = Pick<LensReviewSummary, "verdict" | "usage" | "note" | "noReview"> & {
+export type LensRound = Pick<
+  LensReviewSummary,
+  "verdict" | "usage" | "note" | "noReview" | "deltaReview"
+> & {
   /** The round's findings as the text a fixer is handed — one line each. */
   findings: string;
   /**
@@ -76,9 +79,47 @@ export type LensRound = Pick<LensReviewSummary, "verdict" | "usage" | "note" | "
    * the other cost rows in `step-budget.ts`, next to `dispatchUsageRow`.
    */
   lenses: LensRunResult[];
+  /**
+   * The blocking rows this round REPORTED, structured rather than as the one
+   * rendered string above.
+   *
+   * The step reads identities, not prose: each row's fate is already the review
+   * layer's own verdict on it — `reported` is the BLOCKING half, post-advisory-split,
+   * and a row carrying `carried: true` is one `rowFate` REFUSED to resolve, which is
+   * the layer's statement that the fix did not answer it. So this is the only row
+   * record the step reads: it states no fate of its own about any row (a second fate
+   * rule beside the layer's is a second source of truth, and each of its rules drifts
+   * separately), and it never invents a per-finding reply protocol.
+   */
+  reported: Finding[];
+  /**
+   * The rows `splitAdvisory` moved OUT of `reported` (#1140/#1125): every finding
+   * whose cited line sits outside the PR's changed lines, fresh or carried.
+   *
+   * Carried for one reading and one only: the NOT ADDRESSED check must not be
+   * satisfiable by the discount. An advisory row is excluded from the verdict, the
+   * severity counts and the ledger's `hasCritical`, so a CARRIED HIGH that the split
+   * moved here would clear a fix wave while the layer still holds the row open and
+   * prints it under its carried heading — the step would call that round clean.
+   * The step therefore reads `isCarried && blockingSeverity` over `reported` AND
+   * these rows. It states no rule of its own about the advisory tier otherwise:
+   * a fresh advisory row is the layer's to disclose, exactly as an advisory row is
+   * not the step's to block on.
+   */
+  advisory: Finding[];
 };
 
-/** What the step hands one round of the adversarial gate. */
+/**
+ * Which half of the step's ONE wave a gate call belongs to.
+ *
+ * `full` is the whole-branch review; `fix` is the re-review whose range the step
+ * bounded to the fix wave's commits. Both gates take it, and it is what the
+ * briefs print: the reviewer and the lenses are told which pass they are on in
+ * words, because there is no round counter left to put a number in front of.
+ */
+export type ReviewWave = "full" | "fix";
+
+/** What the step hands one pass of the adversarial gate. */
 export interface AdversarialArgs {
   base: string;
   head: string;
@@ -86,7 +127,13 @@ export interface AdversarialArgs {
   cwd: string;
   issue: number;
   issueBody: string;
-  round: number;
+  wave: ReviewWave;
+  /**
+   * The findings the fix range was allowed to contain, for the `fix` wave only.
+   * Threaded to the reviewer's brief so a CRITICAL it raises on bytes the fix
+   * did not touch is not mistaken for one the fix introduced.
+   */
+  blockingFindings?: string;
   headless: boolean;
   /** The step's armed budget: the child's bound, its abort, its progress hook. */
   budget: BudgetArms;
@@ -98,7 +145,7 @@ export interface LensArgs {
   head: string;
   branch: string;
   cwd: string;
-  round: number;
+  wave: ReviewWave;
   /**
    * The run's PR number, when this run opened one. `publish` records the PR's
    * URL and the number is the tail of it; without it the review layer has to
@@ -110,6 +157,18 @@ export interface LensArgs {
   pr: number | undefined;
   /** The context lines this step composes (see `lensContext` in `review-deps.ts`). */
   context: string;
+  /**
+   * The base of the range this round reviews, when the round is the re-review.
+   *
+   * The head the fix wave STARTED from — read from what the fix round returned,
+   * never re-read from origin. It goes to the review layer as its explicit
+   * `since`, so the re-review's diff is `git diff <preFixHead>..<fixed head>`:
+   * the lenses read the fix and nothing else. Without it the layer resolves its
+   * own automatic delta base, which is the head of the LAST RECORDED RUN rather
+   * than the head this step's fixer moved, and a re-review whose range the layer
+   * picked is a re-review of something other than the fix.
+   */
+  since?: string;
   /** Post-change prose and the deterministic claim scan, read from the branch ref. */
   evidence: string | undefined;
   /**
