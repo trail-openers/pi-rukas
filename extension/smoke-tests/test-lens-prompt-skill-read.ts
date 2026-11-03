@@ -159,5 +159,52 @@ const SKILL_BODY = [
   );
 }
 
+// ---------------------------------------------------------------------------
+// #1992 — the reviewer lane. A simplicity lens reviewing a 20-line test-only
+// delta spent 19 minutes and 181 tool calls on it: 20 repeat loops, 33 test
+// runs, and 16 heredocs writing instrumentation into the worktree followed by a
+// `git checkout --` to restore it. Zero of those calls were review. The brief is
+// what narrows them; these pins are what keep it narrowed. The lens builder is
+// shared by every lens in the configured roster, so one set of sentences covers
+// all of them — and it goes in BEFORE the terminal STOP sentence, which stays
+// the last line (pinned by test-lens-evidence.ts).
+//
+// Built with no skillBody: the lane rules must reach the child on the plain
+// caller too, and the absent-body branch is the one that has to stay
+// byte-identical apart from these sentences.
+{
+  const lane = lensPromptFor(LENS_ROSTER[0], "diff --git a/a b/a", "ctx", undefined, []);
+  for (const [needle, what] of [
+    [/Run only targeted checks/i, "AC1: only targeted checks are invited"],
+    [/one test file, or a lint or type check of the changed files/i, "AC1: what a targeted check is"],
+    [/never a whole-project suite/i, "AC1: the whole-project suite is ruled out in as many words"],
+    [/Do not debug a failure in code this diff did not change[^\n]*one line/i, "AC2: a failure in unchanged code is reported in one line, not debugged"],
+    [/Do not re-run an unchanged command against an unchanged tree/i, "AC3: no repeat loop on an unchanged tree"],
+    [/Do not create, edit or revert files in the worktree/i, "AC4: no writes to the worktree"],
+    [/findings before your time runs out/i, "AC5: report inside the time box"],
+    [/unfinished investigation is itself a finding[^\n]*what is known/i, "AC5: an unfinished investigation is a finding stating what is known"],
+    [/very next message is that report[^\n]*no further tool calls/i, "PM addendum: the report is the very next message, with no tool calls after deciding"],
+  ] as const) {
+    assert(needle.test(lane), `#1992 reviewer lane: ${what}`);
+  }
+  // The delivery point: a lane rule that only the skill-body caller renders is
+  // a rule the plain caller's child never reads.
+  const withLane = lensPromptFor(
+    LENS_ROSTER[0],
+    "diff",
+    "ctx",
+    undefined,
+    [],
+    undefined,
+    "/tmp/skills/x",
+    wrapSkillBody("Apply the lane.", NONCE) ?? "",
+  );
+  assert(
+    withLane.includes("never a whole-project suite") &&
+      withLane.indexOf("Run only targeted checks") < withLane.indexOf("After writing your summary"),
+    "#1992: the lane rules reach the skill-body prompt as well, and sit BEFORE the terminal STOP sentence",
+  );
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

@@ -115,10 +115,40 @@ rather than writing a second parser.`;
   );
 
   const tool = buildAdversarialPrompt({ diff: "d", context: "c", round: 1, maxRounds: 3 });
+  // #1992 — the old absent-arm read "Run lint/type/test if any", which licensed
+  // the whole-project suite. The assertion used to pin that literal; both arms
+  // now carry targeted checks, so the arms are told apart by the gate, not by
+  // one arm telling the child to run everything.
   assert(
-    tool.includes("Run lint/type/test if any") && !tool.includes("full gate"),
-    "off the driver path nobody ran a gate, so the reviewer is still asked to run the checks",
+    tool.includes("targeted checks") && !tool.includes("full gate"),
+    "off the driver path nobody ran a gate, so the reviewer is asked for targeted checks rather than a gate re-run",
   );
+  assert(
+    !tool.includes("Run lint/type/test if any"),
+    "#1992: the absent-gate arm no longer tells the reviewer to run lint/type/test wholesale",
+  );
+  assert(
+    tool.includes("never the whole-project suite"),
+    "#1992: the absent-gate arm rules the whole-project suite out in as many words",
+  );
+  // One assert per clause, so a regression reports the clause that vanished.
+  const LANE =
+    "Do not debug a failure in code this diff did not change — report it in one line (tag it `OUT_OF_DIFF`, per your role prompt). Do not re-run an unchanged command against an unchanged tree to see whether its result changes. Do not create, edit or revert files in the worktree. Report your findings before your time runs out; an unfinished investigation is itself a finding that states what is known. When you have decided you are done, your very next message is the verdict report, with no further tool calls.";
+  assert(
+    tool.includes(LANE) && driven.includes(LANE),
+    "#1992 canary: the lane rules are one constant reaching BOTH adversarial arms verbatim (two literals is how they would drift)",
+  );
+  for (const [needle, what] of [
+    [/did not change[^\n]*report it in one line/i, "AC2: a failure in unchanged code is reported in one line, not debugged"],
+    [/OUT_OF_DIFF/, "AC2: the unchanged-code report is routed to the role prompt's OUT_OF_DIFF tag, not restated"],
+    [/re-run an unchanged command against an unchanged tree/i, "AC3: no repeat loop on an unchanged tree"],
+    [/Do not create, edit or revert files in the worktree/i, "AC4: no writes to the worktree"],
+    [/findings before your time runs out/i, "AC5: report inside the time box"],
+    [/unfinished investigation is itself a finding/i, "AC5: an unfinished investigation is reported as a finding"],
+    [/very next message is the verdict report[^\n]*no further tool calls/i, "PM addendum: the verdict is the very next message, with no tool calls after deciding"],
+  ] as const) {
+    assert(needle.test(tool) && needle.test(driven), `#1992 reviewer lane, both arms: ${what}`);
+  }
 
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), "gate-cmd-"));
   fs.mkdirSync(path.join(repo, ".pi"));
