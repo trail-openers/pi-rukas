@@ -28,13 +28,8 @@ export type RunPhase = (
   cwd?: string,
 ) => Promise<DispatchResult>;
 
-/**
- * Run one phase, threading dispatch-deck lifecycle and onProgress so the deck
- * shows whichever phase is running now. Also registers the inner spawn as the
- * orchestrator's `activeChild` so PM can `dispatch_peek` / `dispatch_steer`
- * against the loop's jobId and reach the currently-running inner child.
- */
-export function makeRunPhase(opts: {
+/** `makeRunPhase`'s options, declared apart so the function below is the flow. */
+export type RunPhaseOpts = {
   runId: string;
   signal: AbortSignal;
   orchestratorJobId: string;
@@ -47,24 +42,35 @@ export function makeRunPhase(opts: {
   /** The parent pi for the slow-run watch (the PM notice half). */
   pi?: ExtensionAPI;
   /**
-   * #1978 — the step's budget arms, read ONLY inside the reviewer branch.
-   * `childBoundMs` can only tighten `adversarialChildBoundMs()`; `signal` and
-   * `onProgress` join the reviewer child's abort and compose with the deck /
-   * slow-run feed. The fix-pass arm takes none of them.
+   * #1978 — the step's budget arms, the three fields of `AdversarialLoopParams`
+   * with these same names, forwarded verbatim by the loop. Read ONLY inside the
+   * reviewer branch, so the fix-pass arm takes none of them: `childBoundMs` can
+   * only tighten `adversarialChildBoundMs()`, `budgetSignal` joins the reviewer
+   * child's abort, and `onProgress` composes with the deck / slow-run feed.
+   * `budgetSignal` is named apart from {@link RunPhaseOpts.signal} because the
+   * loop's own abort and the step's budget arms are two different clocks.
    */
-  budgetChildBoundMs?: number;
+  childBoundMs?: number;
   budgetSignal?: AbortSignal;
-  onBudgetProgress?: (state: RunningState) => void;
-}): RunPhase {
+  onProgress?: (state: RunningState) => void;
+};
+
+/**
+ * Run one phase, threading dispatch-deck lifecycle and onProgress so the deck
+ * shows whichever phase is running now. Also registers the inner spawn as the
+ * orchestrator's `activeChild` so PM can `dispatch_peek` / `dispatch_steer`
+ * against the loop's jobId and reach the currently-running inner child.
+ */
+export function makeRunPhase(opts: RunPhaseOpts): RunPhase {
   const {
     runId,
     signal,
     orchestratorJobId,
     processGroup,
     workCycleTrust,
-    budgetChildBoundMs,
+    childBoundMs: budgetChildBoundMs,
     budgetSignal,
-    onBudgetProgress,
+    onProgress: onBudgetProgress,
   } = opts;
   return async (role, tag, prompt, cwd) => {
     const deckKey = `${runId}/${tag}`;
@@ -125,20 +131,17 @@ export function makeRunPhase(opts: {
           tag,
           ...(reviewer
             ? {
-                // #1978 — the smaller of the step's budget and the operator's own
-                // reviewer knob: a budget may only TIGHTEN the wall clock, never
-                // lengthen it, so `PI_ENSEMBLE_ADVERSARIAL_BOUND_MS` stays the
-                // single source of the default and an absent budget changes nothing.
+                // #1978 — a budget may only TIGHTEN the wall clock, never lengthen
+                // it: the operator's knob stays the single source of the default.
                 childBoundMs: Math.min(
                   budgetChildBoundMs ?? Number.POSITIVE_INFINITY,
                   adversarialChildBoundMs(),
                 ),
-                // #1827 round 4 — OPT IN to the post-verdict stop. Only this
-                // dispatch speaks the `VERDICT_STATUSES` protocol: the plan gap
-                // gate spawns the same role with `READY / NEEDS_ITERATION`, and
-                // the re-read cap stays role-keyed. Set here (beside the skill
-                // path, which this caller also supplies) so the bound and the
-                // protocol it reads cannot drift apart from the caller.
+                // #1827 round 4 — OPT IN to the post-verdict stop: only this
+                // dispatch speaks the `VERDICT_STATUSES` protocol (the plan gap
+                // gate spawns the same role with `READY / NEEDS_ITERATION`). Set
+                // beside the skill path so the bound and the protocol it reads
+                // cannot drift apart from the caller.
                 verdictStop: true,
                 // The bound's wrap-up steer and the re-read cap's steer both
                 // reach this child through the driver's steer seam (dispatch.ts

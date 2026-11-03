@@ -8,8 +8,8 @@ import {
 } from "./adversarial-fix-guard.ts";
 import {
   type BindingState,
-  captureRound,
-  makeLedgerWrite,
+  makeLoopLedger,
+  makeRoundCapture,
   roundHeadRef,
 } from "./adversarial-ledger-capture.ts";
 import { buildLedgerNote } from "./adversarial-ledger-note.ts";
@@ -20,6 +20,11 @@ import { policyInfraFailureText, reportPolicyError } from "./adversarial-policy.
 import { buildAdversarialPrompt, buildFixPrompt } from "./adversarial-prompts.ts";
 import { onRereadFailure, rereadStalenessNote } from "./adversarial-reread.ts";
 import { type InfraCtx, infraFailureResult, runPhaseWithInfraRetry } from "./adversarial-retry.ts";
+import {
+  classifyReviewer,
+  projectReviewerKillCause,
+  synthKillCause,
+} from "./adversarial-reviewer-arm.ts";
 import { type RoundReview, roundAfterReread } from "./adversarial-round-state.ts";
 import { createUsageTally } from "./adversarial-usage.ts";
 import {
@@ -95,68 +100,36 @@ export async function runAdversarialLoop(
 
   const fenceRecords: FenceRecord[] = [];
   const fence = createFixFence(params.fixFence, fenceRecords);
-  // #1360 — the binding captured by the LAST round that read its diff and
-  // dispatched a reviewer: the range SHAs plus the working-tree identity at
-  // that moment. `ledgerWrite` threads it into the writer, which refuses the
-  // row when the tool-path bindings do not hold.
-  const ledgerBinding: BindingState = { captured: { binding: {}, headRef: params.head } };
-  // #1360 — provenance is the branded marker the tool mints; an untyped caller
-  // cannot produce the string, so this narrow IS the provenance check (see
-  // `ToolPathProvenance`). The driver path carries none and runs no capture.
-  const toolPath = isToolPathProvenance(params.toolPath);
-  const ledgerWrite = makeLedgerWrite({
-    state: ledgerBinding,
+  // #1360 — the ledger wiring, built where the writer it configures lives.
+  const { binding: ledgerBinding, write: ledgerWrite } = makeLoopLedger({
     workCwd: params.workCwd,
     branch: params.branch,
-    // #988 — the branch the note resolved (same shared resolution, same args +
-    // cwd), so the write does not re-resolve.
     resolvedBranch: branchResolved,
     callerSuppliedDiff: params.callerSuppliedDiff,
-    // #1360 — provenance is set only at the tool boundary, never inferred.
-    toolPath,
+    toolPath: params.toolPath,
     baseRef: params.base,
-    // #1360 — one executor for the whole binding: the per-round capture and the
-    // write consult it, so a caller with its own git seam has ONE to give
-    // (same shape as `commentExecFn` for the comment check).
+    headRef: params.head,
     execFn: params.commentExecFn,
-    // #1557 — see `LedgerEntry.rowNonce` for why identity, not a timestamp
-    // floor; the guard never reads it.
     rowNonce: orchestratorJobId,
-    // #1104 — fence findings are prefixed BEFORE the write: the durable ledger
-    // row must carry the same text the caller sees.
     decorate: (raw) => withFixViolations(raw, fenceRecords),
     note: withLedgerNote,
   });
+  const toolPath = isToolPathProvenance(params.toolPath);
 
   const reportTerminal = params.reportVerdict === "terminal";
 
-  /**
-   * #1978 — the kill cause the reviewer child died of, projected onto every
-   * result this loop synthesises.
-   *
-   * `armBudget`'s `fired()` reports the minutes lever ONLY on a result whose
-   * `killCause` is `"child-bound"` (`step-budget.ts`), and the loop's own
-   * results never carried one: `synthesizeResult` was handed no `killCause`, so
-   * a reviewer the step's `budgets.review.minutes` killed came back as an
-   * ordinary verdict and the lean gate's budget read stayed `undefined` — the
-   * step merged a head its own ceiling had stopped. Mirroring
-   * `capKillOrWatchdogKillCause` in `adversarial-retry.ts`, the projection keeps
-   * only the causes that mean "the caller's clock ended this child": a bound
-   * kill, or a budget abort. The loop's cap kills (`loop` / `token-budget`) and
-   * the watchdog's provider-shaped kills are NOT projected — those already reach
-   * the /work fan-out through `infraFailureResult` with their own semantics, and
-   * here they would misreport an infrastructure fault as a budget the operator
-   * set. The one field is written by the reviewer arm and read at CALL time, so
-   * a round whose fix pass died of its own bound cannot be reported as a budget
-   * stop. Only the report-only path (lean's gate, the tool) ever writes it: a
-   * loop that dispatches fix passes is the /work driver's own review, and its
-   * results must stay byte-identical for the fan-out's cap-kill readers.
-   */
+  /// #1978 — the cause the reviewer child died of, projected onto every result
+  /// this loop synthesises; the filter and the why live in the sibling module.
+  /// Written by the reviewer arm, read at CALL time, and ONLY on the report-only
+  /// path: the driver's own loop stays byte-identical for the fan-out's readers.
   let reviewerKillCause: DispatchResult["killCause"] | undefined;
-  const projectedKillCause = (): DispatchResult["killCause"] | undefined =>
-    reviewerKillCause === "child-bound" || reviewerKillCause === "abort"
-      ? reviewerKillCause
-      : undefined;
+  /** Attach the projection to a result this round hands back. The loop's own
+   * results never carry a cause, so this only ever fills one in. */
+  const withProjectedKillCause = (r: DispatchResult): DispatchResult => {
+    if (!params.reportOnly) return r;
+    const cause = projectReviewerKillCause(reviewerKillCause);
+    return cause === undefined || r.killCause !== undefined ? r : { ...r, killCause: cause };
+  };
 
   // #1161 — the reportOnly verdict policy is checked and resolved ONCE, at
   // loop entry. An untyped caller with no recognised policy gets an infra
@@ -178,31 +151,23 @@ export async function runAdversarialLoop(
 
   // #859 — resolve the ref range (used by both the diff and the comment check).
   const range = params.base && params.head ? { base: params.base, head: params.head } : null;
-  // #1360 — the head the CURRENT round reviews: the caller's ref at first, then
-  // `HEAD` once a fix round commits, which is what `getDiff` diffs against (the
-  // range's head half), so loop and writer never disagree about the judged commit.
+  // #1360 — the head the CURRENT round reviews: the caller's ref until a fix round
+  // commits, so loop and writer never disagree about the judged commit.
   let headRef: string | undefined = params.head;
-  /**
-   * The diff the CURRENT round reviews, and the range its truncation notice may
-   * name — ONE value, updated in ONE place (#1816). The builders mint the reread
-   * command from `range` only when the diff exceeds the inline cap
-   * (adversarial-diff-cap.ts), and `range` is set only where THIS loop ran
-   * `rangeDiffFn`, so the /work fan-out's pasted diff keeps the "not available"
-   * wording. A round whose re-read FAILED has none: the diff under review is a
-   * previous round's, so the notice must not name a range it never read.
-   */
+  /// The diff the CURRENT round reviews and the range its notice may name — ONE
+  /// value, updated in ONE place (#1816). Set only where this loop ran
+  /// `rangeDiffFn`, so a pasted diff or a failed re-read names no range.
   let review: RoundReview = { diff: "" };
 
   // #948 / #1040 — the comment check runs ONCE per round, on the diff that round
-  // reviews; that single result feeds both the reviewer's prompt and the
-  // `comments:` report line (the last round's). A lost count > 0 does NOT change
-  // the verdict. A check that never ran reads as not-run, never as clean.
+  // reviews, and feeds both the reviewer's prompt and the `comments:` report line.
+  // A lost count > 0 does NOT change the verdict; a check that never ran reads as
+  // not-run, never as clean.
   let lastComments: LostCommentResult = { ok: false, reason: "no review round ran" };
   const commentsLineNow = () => formatReportLine(lastComments);
-  // #980 fix — the infra-failure result must carry the values ACCUMULATED up
-  // to this point (the transcript/model of the round that just failed), so
-  // they are read at CALL time through this snapshot rather than captured
-  // once at loop entry (a pre-loop snapshot would be stale on rounds 2+).
+  // #980 — the infra-failure result carries the values ACCUMULATED up to this
+  // point, so they are read at CALL time, never captured at loop entry (stale on
+  // rounds 2+).
   const infraCtxNow = (): InfraCtx => ({
     start,
     usage,
@@ -210,8 +175,7 @@ export async function runAdversarialLoop(
     lastModel: tally.lastModel,
     toRoundRecords,
   });
-  /** The result-state shape the fix-phase failures carry: the same tally, read
-   * at call time (adversarial-usage.ts), plus the rounds completed so far. */
+  /** The fix-phase failures' result state: the same tally at call time + rounds. */
   const roundStateNow = (completed: RoundRecord[]) => ({
     start,
     usage,
@@ -221,27 +185,15 @@ export async function runAdversarialLoop(
   });
 
   // The diff source for rounds 2+: the caller's `getDiff`, replaced below by a
-  // range reader when this loop computes the range itself (#859). Precedence at
-  // entry — a pasted `diff` string wins over a ref range (traced); with no
-  // string, base+head compute the range in workCwd (else the process cwd). A
-  // failed entry read is returned AS the result, never fallen back to an empty
-  // string, which the loop would review as "nothing to change" and approve.
+  // range reader when this loop computes the range itself (#859). A failed entry
+  // read is returned AS the result, never fallen back to an empty string, which
+  // the loop would review as "nothing to change" and approve.
   let getDiff = params.getDiff;
 
-  /** #1360 — capture what THIS round is about to review, immediately before its
-   * reviewer dispatch, so the identity is the tree the reviewer's prompt carried
-   * and not one a later fix round left behind. TOOL PATH ONLY: the bindings are
-   * consulted only for a `toolPath` row, so the driver path skips this entirely
-   * (no git subprocesses whose answer nothing reads; its row is byte-identical
-   * to the pre-#1360 one). */
-  const captureForRound = async () =>
-    captureRound(
-      ledgerBinding,
-      params.workCwd ?? process.cwd(),
-      params.base,
-      headRef,
-      params.commentExecFn,
-    );
+  // #1360 — the round's capture, bound to the ledger binding and the loop's one
+  // git seam; the tool path is the only caller that runs it.
+  const captureRound = makeRoundCapture(ledgerBinding, params.commentExecFn);
+
   const noDiffResult = (text: string): DispatchResult =>
     ledgerWrite(
       synthesizeResult({
@@ -308,13 +260,11 @@ export async function runAdversarialLoop(
     ...(params.pi ? { pi: params.pi } : {}),
     processGroup: params.processGroup,
     workCycleTrust: params.workCycleTrust,
-    // #1978 — lean's review step is the only caller that sets these; the other
-    // two pass nothing and the options stay absent, so their phases (and the
-    // reviewer's own knob) are untouched. An absent optional stays absent rather
-    // than becoming `undefined`, as for `onSlow` / `pi` above.
-    ...(params.childBoundMs === undefined ? {} : { budgetChildBoundMs: params.childBoundMs }),
+    // #1978 — the caller's budget arms, forwarded verbatim. `budgetSignal` is
+    // named apart because the loop's own `signal` above is a different abort.
+    childBoundMs: params.childBoundMs,
     ...(params.signal === undefined ? {} : { budgetSignal: params.signal }),
-    ...(params.onProgress === undefined ? {} : { onBudgetProgress: params.onProgress }),
+    onProgress: params.onProgress,
   });
 
   const firstRound = params.reportRound ?? 1;
@@ -362,7 +312,7 @@ export async function runAdversarialLoop(
     // #1360 — capture what THIS round is about to review, immediately before
     // the reviewer dispatch — gated on the provenance marker, because the driver
     // path never consults a binding and so pays for none.
-    if (toolPath) await captureForRound();
+    if (toolPath) await captureRound(params.workCwd ?? process.cwd(), params.base, headRef);
     const adv = await runPhaseWithInfraRetry(
       "adversarial-developer",
       `round${round}-review`,
@@ -385,16 +335,21 @@ export async function runAdversarialLoop(
         diffRange: review.range,
       }),
       params.workCwd,
-      { runPhase, accumulate: tally.accumulate, signal },
+      // #1978 — the ladder decides with the SAME classifier the loop reports with.
+      { runPhase, accumulate: tally.accumulate, signal, classify: classifyReviewer },
     );
-    const advCls = classifyDispatchOutcome(adv);
-    if (advCls.cause !== "success") {
-      return ledgerWrite(infraFailureResult(round, "review", adv, advCls, infraCtxNow()));
-    }
-    // #1978 — the projection is scoped to the report-only gate that reads it:
-    // a loop that dispatches fix passes is the /work driver's own review, whose
-    // results must stay byte-identical for the fan-out's cap-kill readers.
+    // #1978 — recorded BEFORE the classifier's early return: a killed child leaves
+    // the loop there, so a projection after it could never fire.
     if (params.reportOnly) reviewerKillCause = adv.killCause;
+    const advCls = classifyReviewer(adv);
+    if (advCls.cause !== "success") {
+      // A killed reviewer ENDED this round: no re-dispatch, no fixer, and the
+      // cause rides out on the result so the step names the budget instead of
+      // calling an operator's ceiling an infrastructure failure.
+      return ledgerWrite(
+        withProjectedKillCause(infraFailureResult(round, "review", adv, advCls, infraCtxNow())),
+      );
+    }
 
     const verdict = parseVerdict(adv.text);
     rounds.push({ round, verdict, ms: adv.ms });
@@ -425,7 +380,7 @@ export async function runAdversarialLoop(
           transcriptPath: tally.lastTranscript,
           model: tally.lastModel,
           adversarialRounds: toRoundRecords(rounds),
-          ...(projectedKillCause() ? { killCause: projectedKillCause() } : {}),
+          ...synthKillCause(reviewerKillCause),
         }),
       );
     }

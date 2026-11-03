@@ -16,6 +16,7 @@ import {
   type AdversarialLedgerOutcome,
   writeAdversarialLedgerEntry,
 } from "./adversarial-ledger.ts";
+import { isToolPathProvenance } from "./adversarial-loop-params.ts";
 import { execp } from "./exec.ts";
 import { traceWarn } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
@@ -193,8 +194,10 @@ export function makeLedgerWrite(opts: {
   resolvedBranch?: string;
   callerSuppliedDiff?: boolean;
   /** #1360 — the tool path's provenance marker. Never inferred. */
-  toolPath?: boolean;
+  toolPath?: unknown;
   baseRef?: string;
+  /** The caller's head ref, the starting value of the round's reviewed head. */
+  headRef?: string;
   /** #1360 — the git executor threaded to BOTH the per-round capture and this
    * write (one seam, matching `commentExecFn`). */
   execFn?: VerifyExecFn;
@@ -305,4 +308,68 @@ export function makeLedgerWrite(opts: {
     void Promise.resolve(ledgerWrite).then(settled, settled);
     return opts.note(live);
   };
+}
+
+/**
+ * The loop's ledger wiring: the binding state, the provenance narrow, and the
+ * writer configured from them. Lives with {@link makeLedgerWrite} because every
+ * field here is an argument to it, and the loop's own contract is the review, not
+ * the row.
+ *
+ * #1360 — provenance is the branded marker the tool mints; an untyped caller
+ * cannot produce the string, so the narrow IS the provenance check (see
+ * `ToolPathProvenance`). The driver path carries none and runs no capture. The
+ * binding is captured by the LAST round that read its diff and dispatched a
+ * reviewer; the writer refuses the row when the tool-path bindings do not hold.
+ */
+export function makeLoopLedger(params: {
+  workCwd?: string;
+  branch?: string;
+  /** #988 — the branch the note resolved, so the write does not re-resolve. */
+  resolvedBranch?: string;
+  callerSuppliedDiff?: boolean;
+  /** #1360 — the tool path's provenance marker. Never inferred. */
+  toolPath?: unknown;
+  baseRef?: string;
+  /** The caller's head ref, the starting value of the round's reviewed head. */
+  headRef?: string;
+  /** #1360 — one executor for the whole binding: the per-round capture and the
+   * write consult it, so a caller with its own git seam has ONE to give. */
+  execFn?: VerifyExecFn;
+  /** #1557 — see `LedgerEntry.rowNonce`; the guard never reads it. */
+  rowNonce?: string;
+  /** #1104 — fence findings prefixed BEFORE the write, so the durable row carries
+   * the same text the caller sees. */
+  decorate: (raw: DispatchResult) => DispatchResult;
+  note: (result: DispatchResult) => DispatchResult;
+}): { binding: BindingState; write: (raw: DispatchResult) => DispatchResult } {
+  const binding: BindingState = { captured: { binding: {}, headRef: params.headRef } };
+  const write = makeLedgerWrite({
+    state: binding,
+    workCwd: params.workCwd,
+    branch: params.branch,
+    resolvedBranch: params.resolvedBranch,
+    callerSuppliedDiff: params.callerSuppliedDiff,
+    toolPath: isToolPathProvenance(params.toolPath),
+    baseRef: params.baseRef,
+    execFn: params.execFn,
+    rowNonce: params.rowNonce,
+    decorate: params.decorate,
+    note: params.note,
+  });
+  return { binding, write };
+}
+
+/**
+ * The per-round capture, bound to the loop's binding state and its one git seam:
+ * called immediately BEFORE the reviewer dispatch, so the identity is the tree the
+ * reviewer's prompt carried and not one a later fix round left behind.
+ *
+ * TOOL PATH ONLY: the bindings are consulted only for a `toolPath` row, so the
+ * driver path skips this entirely — no git subprocesses whose answer nothing
+ * reads, and its row is byte-identical to the pre-#1360 one.
+ */
+export function makeRoundCapture(binding: BindingState, execFn?: VerifyExecFn) {
+  return (workCwd: string, base: string | undefined, head: string | undefined) =>
+    captureRound(binding, workCwd, base, head, execFn);
 }
