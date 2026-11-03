@@ -111,7 +111,20 @@ export async function rangeDiff(
   head: string,
   rows: DispatchUsageRow[],
 ): Promise<string | undefined> {
-  const diff = await gitQuiet(deps.exec, repoRoot, ["diff", `${base}...${head}`]);
+  // Both bounds are resolved to commits before the range is asked for. `base` and
+  // `head` reach here as strings the step did not mint (a ledger-resolved delta
+  // base, a head the layer recorded), and a range whose bound does not name a
+  // commit is indistinguishable, in this read, from a range with no changes — so
+  // the ambiguity is removed here rather than passed down: an unresolvable bound
+  // is a failed read, and the caller turns a failed read into a throw.
+  const from = await resolveCommitArg(deps, repoRoot, base);
+  const to = await resolveCommitArg(deps, repoRoot, head);
+  if (from === undefined || to === undefined)
+    throw new ReviewInfraError(
+      `could not resolve the range ${base.slice(0, 12)}...${head.slice(0, 12)} for the six-lens pass (${from === undefined ? `\`${base}\`` : `\`${head}\``} is not a commit this clone has) — a range nobody can name is not a diff to review`,
+      rows,
+    );
+  const diff = await gitQuiet(deps.exec, repoRoot, ["diff", `${from}...${to}`]);
   if (diff === undefined) {
     throw new ReviewInfraError(
       `could not read the diff ${base}...${head.slice(0, 12)} for the six-lens pass`,
@@ -119,6 +132,18 @@ export async function rangeDiff(
     );
   }
   return diff.stdout;
+}
+
+/** One range bound as a commit this clone has, or undefined when it is not one. */
+async function resolveCommitArg(
+  deps: ReviewDeps,
+  repoRoot: string,
+  rev: string,
+): Promise<string | undefined> {
+  if (rev.trim() === "") return undefined;
+  const out = await gitQuiet(deps.exec, repoRoot, ["rev-parse", "--verify", `${rev}^{commit}`]);
+  const sha = (out?.stdout ?? "").trim();
+  return isFullCommitSha(sha) ? sha : undefined;
 }
 
 /** One fixer, and the row it cost. */

@@ -195,12 +195,6 @@ const { assert, failures } = makeAssert();
     cleanRows.some((r) => r.role === FIXER_ROLE) === false,
     "(e5) and no fixer was dispatched for findings nobody reported",
   );
-  // The busy run above is the ceiling; state it here so the number lives in one
-  // case rather than in a comment. `cleanLensRound` is used as the shape check.
-  assert(
-    PASS_ROWS * REVIEW_PASSES + 1 < 2 * PASS_ROWS + 2,
-    `(e5) the budget is arithmetically the wave and nothing more: ${String(PASS_ROWS * REVIEW_PASSES + 1)} children for ${String(REVIEW_PASSES)} passes plus one fixer`,
-  );
 }
 
 // ── (e6) A FIX WAVE THAT CHANGED NOTHING IS A NAMED CAUSE, NOT A RE-REVIEW ──

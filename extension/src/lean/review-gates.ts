@@ -338,6 +338,14 @@ export async function lensGate(
   const rangeBase = opts.since ?? opts.base;
   // Throws on a range it could not read, so everything below runs only on a
   // branch this step has positively opened.
+  // The diff is read from the REPO ROOT, not the round's worktree. `rangeDiff`
+  // needs only the object database and the two commits, and the repo root is the
+  // one directory this step knows is present for the whole step: the run's own
+  // worktree may be gone by the re-review (the case `test-lean-review-absence.ts`
+  // (k2) drives — a restore that cannot run because the tree was taken away), and
+  // a diff read whose cwd has been deleted reports "could not read" for a range
+  // git can resolve perfectly well. The evidence builders below still read the
+  // BRANCH, which is what they need a worktree-less ref for.
   const diff = await rangeDiff(deps, ctx.repoRoot, rangeBase, head, opts.rows);
   // `rangeDiff` throws rather than returning empty, so a missing diff never gets
   // here — but the type says `string | undefined` because the read itself can

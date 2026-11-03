@@ -196,7 +196,10 @@ export function renderFinding(f: Finding): string {
  */
 export function renderRows(rows: readonly { line: string }[], max = 5): string {
   if (rows.length <= max) return rows.map((r) => r.line).join("; ");
-  const head = rows.slice(0, max).map((r) => r.line).join("; ");
+  const head = rows
+    .slice(0, max)
+    .map((r) => r.line)
+    .join("; ");
   return `${head}; +${String(rows.length - max)} more`;
 }
 

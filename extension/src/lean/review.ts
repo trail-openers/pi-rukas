@@ -106,7 +106,6 @@ import type { HandlerCtx } from "./engine.ts";
 import { assertReviewEntry } from "./review-entry.ts";
 import { adversarialGate, lensGate } from "./review-gates.ts";
 import { fixRound, reviewedHead } from "./review-git.ts";
-import { gitQuiet } from "./specify-reset.ts";
 import {
   fixRunId,
   fixRunIdFromLog,
@@ -127,6 +126,7 @@ import {
   openFindingRows,
   renderRows,
 } from "./review-waves.ts";
+import { gitQuiet } from "./specify-reset.ts";
 import { specifyBranch } from "./specify-tree.ts";
 import { DISPATCHES_MAX_ROWS } from "./state-outcome.ts";
 // The error lives in a leaf module so the extracted predicates can throw it without
