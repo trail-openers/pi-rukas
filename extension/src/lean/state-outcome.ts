@@ -26,6 +26,8 @@ import {
   validatedDispatches,
 } from "./state-dispatches.ts";
 import {
+  BLOCKED_PATH_CAP,
+  BLOCKED_REASON_CAP,
   blockedByProblem,
   commandCriteriaProblem,
   commandNotRunnableProblem,
@@ -33,6 +35,11 @@ import {
   validatedCommandCriteria,
   validatedCommandNotRunnable,
 } from "./state-outcome-maps.ts";
+// The two print caps for a `blockedBy` entry live with the validator that enforces
+// the record's own bound, and reach their two render sites through here — the same
+// re-export shape `validatedDispatches` above uses, so a caller does not have to
+// learn which file in the pair holds the constant.
+export { BLOCKED_PATH_CAP, BLOCKED_REASON_CAP } from "./state-outcome-maps.ts";
 import type { LeanState, Outcome, Step } from "./state.ts";
 // The row validators moved to `state-dispatches.ts` when this file passed the size
 // cap, but their callers keep importing them from here. A re-export is the

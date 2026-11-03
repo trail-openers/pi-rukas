@@ -102,6 +102,23 @@ export function commandNotRunnableProblem(value: unknown): string | undefined {
 }
 
 /**
+ * How long one stated conflict may PRINT. Distinct from {@link RECORD_REASON_MAX_CHARS},
+ * which is the DURABLE record's bound: a stored reason may be 300 characters, but
+ * neither rendering of it may print more than this. The value is the child's prose
+ * and both outputs are public — the record itself, and the handback comment built
+ * from it — so the two sites share these two caps rather than each carrying its
+ * own copy: `build.ts` clips the map it records and `handback.ts` clips the
+ * comment it posts, and a widening on one side only is exactly what a shared
+ * constant refuses to allow. They sit here, beside the validator that enforces the
+ * record bound, so both renderers import from below them rather than from each
+ * other.
+ */
+export const BLOCKED_REASON_CAP = 160;
+
+/** A path long enough to be a blob is not a line anyone skims. See {@link BLOCKED_REASON_CAP}. */
+export const BLOCKED_PATH_CAP = 200;
+
+/**
  * Why a `blockedBy` map is not the build step's named cause, or undefined.
  *
  * It is printed into the handback comment as the reason the run stopped, so a

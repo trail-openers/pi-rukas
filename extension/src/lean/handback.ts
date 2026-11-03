@@ -29,7 +29,7 @@ import { assertSafeRef } from "../worktree-loss.ts";
 import { frozenFromLog } from "./build.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { postHandback } from "./io.ts";
-import { validPrUrl } from "./state-outcome.ts";
+import { BLOCKED_PATH_CAP, BLOCKED_REASON_CAP, validPrUrl } from "./state-outcome.ts";
 import { type Outcome, REPORT_STATES, type Step } from "./state.ts";
 import { budgetSentence, budgetTrio } from "./step-budget.ts";
 import { fenceText, oneLine } from "./text-fence.ts";
@@ -69,18 +69,6 @@ const FROZEN_LIST_CAP = 20;
  * came for, and the same bound keeps the comment the size the frozen list has.
  */
 const BLOCKED_LIST_CAP = 20;
-
-/**
- * How long one stated conflict may print. The record allows 300 and this is a
- * PUBLIC comment made of the child's own prose, so the comment clips to its own
- * (smaller) bound — the same one-line rule `frozenList` and `fenceText` apply to
- * their payloads, so a newline cannot write a bullet and no single reason can
- * dominate the line the operator came for.
- */
-const BLOCKED_REASON_CAP = 160;
-
-/** A path long enough to be a blob is not a line anyone skims. */
-const FROZEN_PATH_CAP = 200;
 
 /** The newest DECIDED step of one state whose outcome carries a reason. */
 function newestReason(
@@ -190,7 +178,7 @@ function blockedCause(steps: Step[]): string | undefined {
   const named = entries
     .slice(0, BLOCKED_LIST_CAP)
     .map(
-      ([file, why]) => `- ${oneLine(file, FROZEN_PATH_CAP)}: ${oneLine(why, BLOCKED_REASON_CAP)}`,
+      ([file, why]) => `- ${oneLine(file, BLOCKED_PATH_CAP)}: ${oneLine(why, BLOCKED_REASON_CAP)}`,
     )
     .join("\n");
   const more =
@@ -251,7 +239,7 @@ function frozenList(steps: Step[]): string[] {
   return Object.keys(frozenFromLog(steps))
     .filter((f) => !CONTROL_CHARS.test(f))
     .sort()
-    .map((f) => (f.length > FROZEN_PATH_CAP ? `${f.slice(0, FROZEN_PATH_CAP)}…` : f));
+    .map((f) => (f.length > BLOCKED_PATH_CAP ? `${f.slice(0, BLOCKED_PATH_CAP)}…` : f));
 }
 
 /** The PR URL the publish step recorded, or `undefined` when there is none. */

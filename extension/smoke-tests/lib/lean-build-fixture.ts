@@ -372,6 +372,13 @@ export interface RunOpts {
   /** Bounds the driver's re-run of a reported frozen test (a case observes a hang). */
   blockedTimeoutMs?: number;
   /**
+   * Widens the set of frozen tests the driver re-runs beyond the child's report —
+   * see `BuildDeps.rerunPaths`. A case uses it to put a path the child never named
+   * in front of the record, which is the only way to see whether the record filters
+   * on what the child reported or merely on what the driver happened to run.
+   */
+  rerunPaths?: (vetted: string[], perFileMs: number) => string[];
+  /**
    * A stand-in runner for the driver's re-run of a reported test — see
    * {@link reRunStub}. A case uses it to make a runner misbehave in a way a shell
    * script cannot: never rejecting, never resolving inside its own ceiling.
@@ -434,6 +441,7 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
     },
     ...(opts.captureCeiling === undefined ? {} : { captureCeiling: opts.captureCeiling }),
     ...(opts.blockedTimeoutMs === undefined ? {} : { blockedTimeoutMs: opts.blockedTimeoutMs }),
+    ...(opts.rerunPaths === undefined ? {} : { rerunPaths: opts.rerunPaths }),
   };
   const deps: BuildDeps = {
     ...inner,

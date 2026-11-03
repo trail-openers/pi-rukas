@@ -16,6 +16,7 @@
  *   (3a3) the loop shares ONE wall clock, so N named files cannot cost N ceilings
  *   (3a4) a non-zero exit that never named its file is `unclear`, not a red
  *   (3b)  the cause sentence names the file the DRIVER saw fail
+ *   (3b2) a widened re-run set admits no path outside the child's own report
  *   (3c)  no runner configured: the report is ignored, and the gap is NAMED
  *
  * The report is the child's word; these are the cases that make it the driver's.
@@ -233,6 +234,76 @@ const CONFLICT = "case 2 needs the array mutable while case 3 mutates it in plac
   assert(
     r.outcome?.blockedBy?.[GREEN] === "the adversary's file mutates it",
     `(3b) while the full map still carries every vetted file (got ${JSON.stringify(r.outcome?.blockedBy)})`,
+  );
+}
+
+// ── (3b2) a widened re-run set admits no path outside the child's report ────
+{
+  // The defect this case is for is single-layer filtering: the map is rebuilt by
+  // filtering the child's rows through the set the driver re-ran, so if that is the
+  // ONLY filter, any name the driver ran — from ANY source — enters the durable
+  // record as a conflicting frozen test.
+  //
+  // A report that names one file and a re-run list that holds two is the shape a
+  // future caller would create by unioning another source into the list (the
+  // criterion map, the whole frozen set). `rerunPaths` is the seam that makes that
+  // shape observable from the OUTSIDE: the driver is paid to execute a file the
+  // child never reported, and the record must still refuse it. Without the filter
+  // the widened name is already in `extracted.rows`' path space — so the two
+  // layers, named-by-the-child and run-by-the-driver, are each pinned separately.
+  const NAMED = "tests/AC1-retry.test.sh";
+  const UNNAMED = "tests/unreported-but-ran.test.sh";
+  // The driver is paid to execute this file, so it must be a runner the gate
+  // classifies as a real RED: `runTestFile` reads a non-zero exit whose output
+  // never named the file as `unclear` and keeps it out of `ran` — which would
+  // quietly make this case pass for the wrong reason, an entry absent from `ran`
+  // rather than present in it and still refused by the filter.
+  const UNNAMED_SCRIPT = `#!/bin/sh\necho "not ok - ${UNNAMED}" 1>&2\nexit 1\n`;
+  const widened = await runBuild({
+    issue: 343,
+    // Committed and hashed into the frozen record by the fixture, so the step's
+    // integrity check passes and the gate really executes the file.
+    extraFrozen: { [UNNAMED]: UNNAMED_SCRIPT },
+    toolUses: () => blocked([{ path: NAMED, reason: CONFLICT }]),
+    rerunPaths: () => [NAMED, UNNAMED],
+  });
+  assert(
+    widened.outcome?.kind === "blocked",
+    `(3b2) the report is still honoured on the red (got ${widened.outcome?.kind ?? widened.threw?.message})`,
+  );
+  assert(
+    widened.outcome?.blockedBy?.[UNNAMED] === undefined,
+    `(3b2) a path the child never named is NOT in the record, though the driver ran it (got ${JSON.stringify(widened.outcome?.blockedBy)})`,
+  );
+  assert(
+    Object.keys(widened.outcome?.blockedBy ?? {}).length === 1 &&
+      widened.outcome?.blockedBy?.[NAMED] === CONFLICT,
+    `(3b2) and the record holds exactly the one conflict the child reported (got ${JSON.stringify(widened.outcome?.blockedBy)})`,
+  );
+  assert(
+    !(widened.outcome?.reason ?? "").includes(UNNAMED),
+    `(3b2) and the cause line does not name it either (got ${widened.outcome?.reason})`,
+  );
+  // The widened shape itself, asserted rather than assumed: the driver really did
+  // run the unreported file, so the refusals above are the record's filter and not
+  // a runner that never got there.
+  const seen: string[] = [];
+  const witnessed = await runBuild({
+    issue: 344,
+    extraFrozen: { [UNNAMED]: UNNAMED_SCRIPT },
+    toolUses: () => blocked([{ path: NAMED, reason: CONFLICT }]),
+    rerunPaths: (vetted) => {
+      seen.push(...vetted);
+      return [NAMED, UNNAMED];
+    },
+  });
+  assert(
+    seen.length === 1 && seen[0] === NAMED,
+    `(3b2) the vetted list handed to the re-run is exactly the child's report (got ${JSON.stringify(seen)})`,
+  );
+  assert(
+    witnessed.outcome?.kind === "blocked",
+    `(3b2) and the widened run still ends the step (got ${witnessed.outcome?.kind ?? witnessed.threw?.message})`,
   );
 }
 
