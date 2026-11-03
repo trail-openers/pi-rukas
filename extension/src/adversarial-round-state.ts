@@ -14,14 +14,13 @@
  * and hoping it remembered both.
  *
  * And the cause the round's reviewer child died of, which travels on that
- * round's result alone ({@link RoundCause}) — kept as loop-level state it let a
- * cause an earlier round died of be stamped on a later round's verdict.
+ * round's result alone — kept as loop-level state it let a cause an earlier
+ * round died of be stamped on a later round's verdict.
  *
  * Split from `adversarial.ts` (AGENTS.md §12, the 500-line gate).
  */
 
 import { type DiffRange, rereadRangeForRound } from "./adversarial-diff-cap.ts";
-import type { DispatchResult } from "./types.ts";
 
 /** The diff a round reviews, and the range its truncation notice may name. */
 export interface RoundReview {
@@ -30,22 +29,6 @@ export interface RoundReview {
   /** The ref range the caller actually diffed for THIS round, or nothing when
    * no range was run (a pasted diff) or the round's re-read failed. */
   range?: DiffRange;
-}
-
-/**
- * The cause THIS round's reviewer child died of, as ROUND state: {@link
- * RoundCause.reset} runs immediately before each reviewer dispatch and only
- * that dispatch's return reads {@link RoundCause.cause}, so a cause an earlier
- * round died of can never reach a later round's verdict. The loop's own results
- * carry no cause at all, so the projection that reads this never overwrites one.
- *
- * `record` takes the child's RAW cause — narrowing it to the causes that mean
- * "the caller's clock" is `projectReviewerKillCause`'s decision, not this one.
- */
-export interface RoundCause {
-  cause: () => DispatchResult["killCause"] | undefined;
-  record: (cause: DispatchResult["killCause"] | undefined) => void;
-  reset: () => void;
 }
 
 /**

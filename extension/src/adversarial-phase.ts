@@ -102,8 +102,26 @@ export function makeRunPhase(opts: RunPhaseOpts): RunPhase {
     // tokens hook aborts its own controller, and without this listener that
     // abort reached nothing, which is the half of the bug that let a reviewer
     // run past `budgets.review.turns`.
+    //
+    // A budget that had ALREADY fired buys no reviewer child at all. The child
+    // would see a signal aborted before it started, and an aborted child can
+    // still come back `ok:true` carrying the verdict it had already printed —
+    // so the gate read "no kill cause, VERDICT: APPROVED" as a clean pass and
+    // merged a head the operator's ceiling had stopped.
+    //
+    // The refusal lives HERE and not as a pre-dispatch `break` in the loop, and
+    // `ok:false` with a cause is what makes the false approval impossible: the
+    // loop's break falls through to the exhausted-rounds tail, which speaks
+    // `rejected` with the previous round's findings — a verdict nobody spoke,
+    // which the gate routes into a fix wave. A returned kill cause travels
+    // through the SAME shape a real kill travels: `failedByKill` refuses the
+    // child's verdict, the loop's classifier ends the round, and the step names
+    // the lever. `child-bound` is the cause the step's arms read as a minutes
+    // breach; the turns / tokens levers, which leave no cause of their own, are
+    // covered by the fallback in `armBudget`'s reader.
+    const budgetAlreadyFired = budgetSignal?.aborted === true;
     const onBudgetAbort = () => kill.abort();
-    if (budgetSignal?.aborted === true) kill.abort();
+    if (budgetAlreadyFired) kill.abort();
     else budgetSignal?.addEventListener("abort", onBudgetAbort, { once: true });
     // #1827 — set true by the spawn the first time one of the reviewer's
     // killing bounds (the re-read kill, the post-verdict stop) arms.
@@ -121,6 +139,20 @@ export function makeRunPhase(opts: RunPhaseOpts): RunPhase {
       // observable in the lifecycle. The bound clamps to the cycle deadline
       // inside `armChildBound`, as every sibling bound does.
       const reviewer = isReviewerRole(role);
+      if (reviewer && budgetAlreadyFired) {
+        // The shape `spawn.ts` leaves on a child the caller's clock ended: no
+        // output, no exit (nothing ran), and the cause the step's budget reader
+        // consults. `ok` is false by `failedByKill`'s own rule.
+        return {
+          role,
+          ok: false,
+          text: "",
+          toolUses: [],
+          ms: 0,
+          exitCode: null,
+          killCause: "child-bound",
+        };
+      }
       return await spawnSpecialist(
         { role, prompt, cwd },
         {

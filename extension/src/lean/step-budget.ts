@@ -195,24 +195,38 @@ export function armBudget(b: Budget | undefined): BudgetArms {
   // the same child must not rewrite which one it was.
   let hit: BudgetFired | undefined;
   let minutesTraced = false;
-  const fired = (result: DispatchResult): BudgetFired | undefined => {
-    if (hit !== undefined) return hit;
-    if (boundMs === undefined || result.killCause !== CHILD_BOUND_CAUSE) return undefined;
-    // The inferred minutes breach — the one lever with no hook to trace it, so
-    // the reader says it out loud (the three steps all build their verdict from
-    // this reader, so one line here covers specify, build and challenge). The
-    // flag is the dedupe: one stop is one line, however often a step re-reads
-    // the same child.
+  const minutesBreach = (result: DispatchResult): BudgetFired => {
     const breach: BudgetFired = {
       limit: "minutes",
       value: minutes,
       used: minutesUsed(result.ms ?? 0),
     };
+    // The one lever with no hook to trace it, so the reader says it out loud
+    // (the three steps all build their verdict from this reader, so one line
+    // here covers specify, build and challenge). The flag is the dedupe: one
+    // stop is one line, however often a step re-reads the same child.
     if (!minutesTraced) {
       minutesTraced = true;
       traceBreach(breach, "the child stopped at its bound");
     }
     return breach;
+  };
+  const fired = (result: DispatchResult): BudgetFired | undefined => {
+    // A turns / tokens breach the hook already measured outranks anything the
+    // cause could be read from: the hook froze which lever fired at the moment
+    // it fired, and a later `child-bound` cause from the same child says less.
+    if (hit !== undefined) return hit;
+    if (result.killCause !== CHILD_BOUND_CAUSE) return undefined;
+    // The minutes lever, inferred from the cause `applyChildBound` stamps — or,
+    // when no wall clock was armed, named by the turns / tokens signal that is
+    // the only other arm this caller holds.
+    if (boundMs === undefined) {
+      if (turns <= 0 && tokens <= 0) return undefined;
+      return turns > 0
+        ? { limit: "turns", value: turns, used: 0 }
+        : { limit: "tokens", value: tokens, used: 0 };
+    }
+    return minutesBreach(result);
   };
   // The minutes lever is enforced by `armChildBound`, which returns early under
   // `PI_ENSEMBLE_DISPATCH_CAPS=0` — so arming it there buys nothing, and a step

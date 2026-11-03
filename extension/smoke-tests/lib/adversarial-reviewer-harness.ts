@@ -26,17 +26,9 @@ export type SpawnCall = {
    * is invisible any other way, so every #1978 assertion reads these. */
   signal?: AbortSignal;
   onProgress?: (s: RunningState) => void;
-  /** #1978 — the cause this dispatch died of, set per case. */
-  killCause?: DispatchResult["killCause"];
 };
 
 export const spawnCalls: SpawnCall[] = [];
-/** #1978 — the cause the next reviewer dispatch reports, so the loop's projection
- * is driven through the REAL loop rather than asserted on a synthesiser. */
-export let nextReviewerKillCause: DispatchResult["killCause"] | undefined;
-export function setNextReviewerKillCause(c: DispatchResult["killCause"] | undefined): void {
-  nextReviewerKillCause = c;
-}
 /** #1978 — the turns the stub reports on its progress tick, so a case can cross
  * the budget's lever on the child's own numbers. */
 let nextProgressTurns = 0;
@@ -47,6 +39,8 @@ export function setNextProgressTurns(n: number, { emit = true }: { emit?: boolea
   nextProgressTurns = n;
   emitTick = emit;
 }
+/** #1978 — the cause this dispatch died of, set per case. */
+let nextKillCause: DispatchResult["killCause"] | undefined;
 /** #1978 — the reply the next reviewer dispatch prints, for the case that needs
  * the loop to reach its report-only return with a killed child. */
 let nextReviewerText: string | undefined;
@@ -96,7 +90,7 @@ mock.module(new URL("../../src/spawn.ts", import.meta.url).href, () => ({
       onProgress?: (s: RunningState) => void;
     },
   ) => {
-    const killCause = spec.role === "adversarial-developer" ? nextReviewerKillCause : undefined;
+    const killedChild = nextKillCause !== undefined && spec.role === "adversarial-developer";
     spawnCalls.push({
       role: spec.role,
       tag: opts.tag,
@@ -105,13 +99,13 @@ mock.module(new URL("../../src/spawn.ts", import.meta.url).href, () => ({
       reviewSkillPath: opts.reviewSkillPath,
       signal: opts.signal,
       onProgress: opts.onProgress,
-      ...(killCause === undefined ? {} : { killCause }),
+      ...(killedChild ? { killCause: nextKillCause } : {}),
     });
     tick(spec.role, opts.onProgress);
     // A killed child never completed its assignment, so `spawn.ts` marks it
-    // failed whatever its exit code (`failedByKill`). ok:true here would let a
-    // case prove the projection on a child the classifier refuses instead.
-    if (killCause !== undefined) return { ...resultFor(spec.role), ok: false };
+    // failed whatever its exit code (`failedByKill`). ok:true on a kill would let
+    // a case prove the projection on a child the classifier refuses instead.
+    if (killedChild) return { ...resultFor(spec.role), ok: false };
     return resultFor(spec.role);
   },
 }));
@@ -158,14 +152,17 @@ export async function deliver(
     onProgress?: (s: RunningState) => void;
   },
   env: Record<string, string | undefined> = {},
+  killed?: DispatchResult["killCause"],
 ): Promise<{
   reviewer: SpawnCall | undefined;
   fix: SpawnCall | undefined;
   loop: DispatchResult;
   deckTicks: number;
+  spawnCount: number;
 }> {
   spawnCalls.length = 0;
   resetDeckTicks();
+  nextKillCause = killed;
   let loop: DispatchResult | undefined;
   // The knob is read at DISPATCH time, so the pin must outlive the loop: the
   // body is awaited inside `withEnv`, which is what makes the restore happen
@@ -185,11 +182,13 @@ export async function deliver(
       "job-1978-arms",
     );
   });
+  nextKillCause = undefined;
   return {
     reviewer: spawnCalls.find((c) => c.role === "adversarial-developer"),
     fix: spawnCalls.find((c) => c.role === "developer"),
     loop: loop as DispatchResult,
     deckTicks,
+    spawnCount: spawnCalls.length,
   };
 }
 

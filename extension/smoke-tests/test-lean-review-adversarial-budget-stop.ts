@@ -57,8 +57,8 @@ let childDeath: { killCause?: DispatchResult["killCause"]; ms: number } = { ms: 
 let childTurns = 0;
 /** The reply the reviewer child prints. */
 let childText = "VERDICT: APPROVED";
-/** Set by the case whose killed child still prints its reply. */
-let childPrintsVerdict = false;
+/** What the stubbed child reports for its own wall clock. */
+let childMs = 1;
 
 mock.module(new URL("../src/spawn.ts", import.meta.url).href, () => ({
   makeRunId: () => "run-1978-lean-budget",
@@ -85,23 +85,39 @@ mock.module(new URL("../src/spawn.ts", import.meta.url).href, () => ({
         toolUses: 0,
         totalTokens: 0,
         usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
-        elapsedMs: childDeath.ms,
+        elapsedMs: childMs,
         done: false,
       });
     const killed = childDeath.killCause !== undefined;
+    // #1978 — what `spawn.ts` leaves on a child whose caller signal had ALREADY
+    // aborted before it started: `attachAbortKill` kills it on arrival, and with
+    // no run bound armed (`budgets.review.minutes: 0`) the cause
+    // `resolveKillCause` stamps is `"abort"` — no verdict, no output. The
+    // pre-fired case's whole point is that the phase never gets here at all, so
+    // this is what a mutant that still spawns has to be caught doing.
+    if (opts.signal?.aborted === true) {
+      return {
+        role: spec.role,
+        ok: true,
+        text: childText,
+        toolUses: [],
+        ms: childMs,
+        exitCode: 0,
+      };
+    }
     return {
       role: spec.role,
       // A killed child never completed its assignment (`failedByKill` in spawn.ts).
       // The child's own wall clock: what `minutesUsed` divides, and what the
       // budget sentence prints as "used".
-      ms: childDeath.ms,
+      ms: childMs,
       usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, cost: 0.1, turns: 3 },
       ok: !killed,
       // A killed child has no verdict — that is `failedByKill`'s rule in `spawn.ts`
       // — but the round it was killed on must still be the round the loop ends, so
       // the child prints its verdict and the kill, not an empty reply, is what the
       // loop refuses.
-      text: killed && !childPrintsVerdict ? "" : childText,
+      text: childText,
       toolUses: [],
       exitCode: 0,
       ...(killed ? { killCause: childDeath.killCause } : {}),
@@ -184,10 +200,8 @@ async function runReview(opts: {
   // child, has no verdict to speak. `childText` is what a SURVIVING child would
   // print, so the round still ends on the loop's own no-verdict path.
   childDeath = { killCause: "child-bound", ms: 15 * 60_000 + 61_000 };
-  childPrintsVerdict = true;
   const { outcome, threw } = await runReview({ minutes: 15 });
 
-  childPrintsVerdict = false;
   childDeath = { ms: 1 };
 
   const reviewer = childCalls.find((c) => c.role === "adversarial-developer");
@@ -257,6 +271,7 @@ async function runReview(opts: {
 // ceiling the step must take its normal route, and the throw must not name a lever.
 {
   childDeath = { ms: 60_000 };
+  childMs = 60_000;
   childText = "VERDICT: APPROVED";
   const { outcome, threw } = await runReview({
     minutes: 15,
@@ -269,6 +284,69 @@ async function runReview(opts: {
   assert(
     threw === undefined && outcome !== undefined,
     `(3) a clean review under an un-breached budget is a normal pass, not a budget stop (${threw?.message ?? `outcome kind ${String(outcome?.kind)}`})`,
+  );
+}
+
+// ── (4) A BUDGET THAT ALREADY FIRED BUYS NO REVIEWER, AND NO MERGE ─────────
+// The final adversarial review's one ISSUE: `makeRunPhase` wired the budget
+// abort with a listener, so a `budgetSignal` that arrived ALREADY aborted still
+// spawned the child. An already-aborted child can come back `ok:true` with
+// "VERDICT: APPROVED" and no `killCause` — the run bound never armed, because
+// `budgets.review.minutes` is 0 and only the turns/tokens levers are set — so
+// `fired()` had no cause to read, `gate.stop` stayed `undefined`, and the gate
+// cleared the head. The phase now refuses that spawn, and the loop's failed
+// result names the lever `armBudget`'s fallback infers from the arms that exist.
+{
+  const fired = new AbortController();
+  // Fired BEFORE the step arms: the shape a second gate pass sees after an
+  // earlier child spent the ceiling, and the shape the review's own dispatch
+  // sees if the arm had already tripped on arrival.
+  fired.abort();
+  childMs = 60_000;
+  childText = "VERDICT: APPROVED";
+  const cfg = defaultConfig();
+  cfg.budgets.review = { turns: 0, tokens: 100_000, minutes: 0 };
+  // The stub cannot see `armBudget`'s own controller — the loop hands the child
+  // a fresh `AbortController` fed by the loop signal and the caller's budget
+  // signal — so the pre-fired arm is installed at the seam that already receives
+  // the step's `BudgetArms`. Everything downstream, including the phase under
+  // test, the loop, the gate and the throw, is production code.
+  const deps = reviewDeps(false);
+  deps.loadConfig = async () => cfg;
+  deps.fetchIssueBody = async () => "body";
+  deps.lens = async () => cleanLensRound();
+  const realAdversarial = deps.adversarial;
+  deps.adversarial = async (a) => {
+    a.budget.opts.signal = fired.signal;
+    return realAdversarial(a);
+  };
+  const { repoRoot, baseSha } = makeRepo();
+  await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 2;\n" });
+  childCalls.length = 0;
+  let res: { outcome?: Outcome; threw?: Error };
+  try {
+    res = await runStep(ctxFor(repoRoot, baseSha, BRANCH), deps);
+  } finally {
+    cleanupRoots();
+  }
+  childMs = 1;
+
+  const reviewer = childCalls.find((c) => c.role === "adversarial-developer");
+  assert(
+    reviewer === undefined,
+    `(4) A PRE-ABORTED BUDGET SPAWNS NO REVIEWER — the spawn is where the tokens are spent and where the false APPROVED comes from (captured tags: ${childCalls.map((c) => c.tag ?? c.role).join(", ")})`,
+  );
+  assert(
+    res.outcome === undefined && res.threw instanceof ReviewInfraError,
+    `(4) and the step THROWS rather than merging a head its own ceiling stopped (${res.threw?.message ?? `outcome kind ${String(res.outcome?.kind)}`})`,
+  );
+  assert(
+    /tokens/i.test(String(res.threw?.message)) && /100000/i.test(String(res.threw?.message)),
+    `(4) and the cause names the lever that had actually fired and the number the operator set — a generic infra message would read as broken infrastructure, not as the operator's ceiling (${res.threw?.message})`,
+  );
+  assert(
+    ((res.threw as ReviewInfraError | undefined)?.dispatches?.length ?? 0) > 0,
+    "(4) and the refused dispatch is still billed on the throw, so the handback prices the run",
   );
 }
 

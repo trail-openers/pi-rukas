@@ -312,8 +312,8 @@ export async function runAdversarialLoop(
     if (toolPath) await captureRound(params.workCwd ?? process.cwd(), params.base, headRef);
     // Round-scoped, so every result this round produces came from its own child.
     reviewerKillCause = undefined;
-    // A budget that already fired buys no reviewer child: the retry ladder's
-    // abort checks all sit AFTER its first dispatch.
+    // The loop's OWN abort ends the pass; the step's BUDGET abort is refused in
+    // `makeRunPhase`, whose cause the `rejected` tail below cannot carry.
     if (signal.aborted) break;
     const adv = await runPhaseWithInfraRetry(
       "adversarial-developer",

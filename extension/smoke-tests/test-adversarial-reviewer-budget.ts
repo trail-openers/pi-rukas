@@ -34,6 +34,7 @@ import {
   deliver,
   deliverKilled,
   setNextProgressTurns,
+  spawnCalls,
 } from "./lib/adversarial-reviewer-harness.ts";
 
 let exit = 0;
@@ -152,6 +153,45 @@ function assert(cond: boolean, msg: string) {
   assert(
     reviewer?.signal?.aborted === true,
     "(F) and that abort REACHED the reviewer child's own signal — the half that lets a runaway reviewer stop at a turn boundary",
+  );
+}
+
+// ── (F2) A BUDGET THAT ALREADY FIRED BUYS NO REVIEWER CHILD ════════
+// The final-review finding: the abort listener below only fires on a FUTURE
+// abort, so a `budgetSignal` that arrived already aborted still spawned the
+// child. The child saw an already-dead kill signal, could still return `ok:true`
+// with "VERDICT: APPROVED" and no `killCause` (a signal that aborted before the
+// child began never reaches `resolveKillCause`), and the lean gate cleared the
+// head. So the phase refuses the spawn outright and returns what a killed child
+// returns.
+{
+  const fired = new AbortController();
+  fired.abort();
+  const { reviewer, loop, spawnCount } = await deliver(
+    { signal: fired.signal },
+    {},
+    "child-bound",
+  );
+  assert(
+    reviewer === undefined && spawnCount === 0,
+    `(F2) a pre-aborted budget signal spawned NO reviewer child — the spawn is where the cost and the false approval are (captured ${String(spawnCount)} spawn(s): ${spawnCalls.map((c) => c.role).join(", ")})`,
+  );
+  assert(
+    loop.loopOutcome === "infra-failure",
+    `(F2) and the pass ends as no-verdict infrastructure, never an approved head (got ${String(loop.loopOutcome)})`,
+  );
+  assert(
+    loop.killCause === "child-bound",
+    `(F2) and it carries the caller's-clock cause, the only thing lean's budget reader can read (got ${String(loop.killCause)})`,
+  );
+  // The child that WAS NOT SPAWNED is still the most expensive thing in the
+  // record: `classifyReviewer` reads the result the phase returns, and `ok:true`
+  // on it would make the loop approve a review nobody ran. `resultFor` in the
+  // harness returns `ok:true` for this shape, so a phase that spawned anyway
+  // reads green here and red nowhere else.
+  assert(
+    loop.ok === false,
+    `(F2) and the result is FAILED, not an approval — a pre-aborted child that still prints VERDICT: APPROVED is exactly what the gate used to clear (${String(loop.ok)})`,
   );
 }
 
