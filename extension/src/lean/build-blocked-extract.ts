@@ -38,11 +38,17 @@ function usableReason(r: unknown): r is string {
   return typeof r === "string" && r.trim() !== "" && !r.includes("\0");
 }
 
-/** How many entries one call may contribute. Matches the tool's own ceiling. */
-const MAX_ENTRIES = 32;
+import { RECORD_MAX_ENTRIES, RECORD_REASON_MAX_CHARS } from "./state-outcome-maps.ts";
 
-/** How long one reason may be. Matches the durable record's bound. */
-const MAX_REASON_CHARS = 300;
+/**
+ * How many entries one call may contribute and how long one reason may be.
+ * Both are the DURABLE record's bounds, read from the module that enforces them
+ * at load — the tool's own TypeBox ceiling is the same number because the tool
+ * may not accept what the record would refuse, and a fourth literal here is one
+ * that no gate pins.
+ */
+const MAX_ENTRIES = RECORD_MAX_ENTRIES;
+const MAX_REASON_CHARS = RECORD_REASON_MAX_CHARS;
 
 /** Clip a reason to the durable record's bound, marking that it was clipped. */
 function clipReason(r: string): string {

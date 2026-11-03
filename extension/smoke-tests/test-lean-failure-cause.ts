@@ -117,4 +117,45 @@ const ARMED = { deadlineMs: 1_700_000_000_000 };
   );
 }
 
+// ── (5) a `blocked` build is a judgement, so the document carries a failure.
+{
+  // #1984: the builder proved the frozen tests cannot all pass together and the
+  // driver re-ran them, so this is a verdict about the contract in the same
+  // family as a red gate — not a step that ran out of rounds. Before `blocked`
+  // was recognised here, a blocked run's host document carried NO `failure`
+  // object at all, and the one cause a host could branch on was silent.
+  const blocked = await driveLean(
+    "handed-back",
+    10,
+    [
+      stepWith("build", {
+        kind: "blocked",
+        reason: "frozen tests cannot all pass together: tests/a.test.ts — case 2 vs case 3",
+        blockedBy: { "tests/a.test.ts": "case 2 needs the array mutable, case 3 mutates it" },
+        dispatches: CHILDREN,
+      }),
+      stepWith("handback", { kind: "done", posted: true, reason: "handback comment posted" }),
+    ],
+    undefined,
+    ARMED,
+  );
+  const f5 = blocked.issue?.failure as Record<string, unknown> | undefined;
+  assert(
+    f5 !== undefined,
+    `(5) a blocked run's document carries a failure at all (got ${JSON.stringify(blocked.issue?.failure)})`,
+  );
+  assert(
+    f5?.kind === "verify",
+    `(5) a proved contract conflict reads like a gate verdict, not process (got ${JSON.stringify(f5)})`,
+  );
+  assert(
+    typeof f5?.message === "string" && f5.message.includes("tests/a.test.ts"),
+    `(5) and its message is the run's own cause sentence (got ${JSON.stringify(f5?.message)})`,
+  );
+  assert(
+    blocked.violations.length === 0,
+    `(5) output contract on a blocked failure (${blocked.violations.join("; ")})`,
+  );
+}
+
 process.exit(state.exit);

@@ -50,7 +50,7 @@ import { assertSafeRef } from "../worktree-loss.ts";
 import type { ExecFn } from "../worktree.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
 import { extractBlockedReport } from "./build-blocked-extract.ts";
-import { BLOCKED_MAX_ENTRIES, blockedProved, usableConflicts } from "./build-blocked.ts";
+import { blockedProved, usableConflicts } from "./build-blocked.ts";
 import { dispatchBuilder } from "./build-dispatch.ts";
 import { BuildInfraError } from "./build-errors.ts";
 import { headSha } from "./build-git.ts";
@@ -74,12 +74,22 @@ import {
   budgetVerdictWithRows,
   readDispatched,
 } from "./step-budget.ts";
+import { oneLine } from "./text-fence.ts";
 
 /** The re-entry reason the child is given, clipped so a log dump cannot bloat a prompt. */
 const REENTRY_CLIP = 4096;
 
 /** How of the adversary's files a re-entry line names. Beyond it, the count. */
 const CHALLENGE_LIST_CLIP = 20;
+
+/**
+ * The caps a recorded blocked cause prints under — the same two `handback`'s
+ * `blockedCause` applies. Kept here as literals the test pins rather than
+ * imported from `handback.ts`, which would make the step depend on the step that
+ * renders it; `test-lean-build-blocked.ts` asserts the two agree.
+ */
+const BLOCKED_PATH_CAP = 200;
+const BLOCKED_REASON_CAP = 160;
 
 export interface BuildDeps {
   exec: BuildExec;
@@ -93,8 +103,6 @@ export interface BuildDeps {
    * shortens it to observe a hang; absent, `runTestFile`'s own ceiling applies.
    */
   blockedTimeoutMs?: number;
-  /** See `blockedReport`'s `probe`: a test-only hook into the gate's moment. */
-  blockedProbe?: (wt: string) => void;
 }
 
 /** The step log's frozen map: every `specify:ok` / `challenge:new-tests`, in order. */
@@ -215,14 +223,6 @@ async function blockedReport(opts: {
   toolUses: unknown[];
   issue: number;
   timeoutMs?: number;
-  /**
-   * DIAGNOSTIC SEAM, set only by a test through `BuildDeps.blockedProbe`: runs
-   * against the child's tree at the instant the blocked gate judges it, after
-   * normalisation's reset. It exists so the anti-forgery gate's own refusal can
-   * be OBSERVED failing on a deliberate mutant (AGENTS.md §6) rather than
-   * asserted from a green test that could not have failed.
-   */
-  probe?: (wt: string) => void;
 }): Promise<{ reason: string; blockedBy: Record<string, string> } | undefined> {
   const extracted = extractBlockedReport(opts.toolUses);
   if (extracted.rows.length === 0) {
@@ -240,31 +240,36 @@ async function blockedReport(opts: {
     frozen: opts.frozen,
     paths,
     ...(opts.timeoutMs === undefined ? {} : { timeoutMs: opts.timeoutMs }),
-    ...(opts.probe === undefined ? {} : { probe: opts.probe }),
   });
   if (!proved.honoured) {
     traceWarn(`lean build #${String(opts.issue)}: blocked report ignored — ${proved.why}`);
     return undefined;
   }
-  // The map is rebuilt from the entries the gate vetted, and ONLY from those:
-  // `blockedProved` refused every name absent from the frozen map, so a second
-  // membership test here would be a copy of a rule that just ran — and a copy is
-  // how a widening lands on one side only.
-  const vetted = new Set(paths);
+  // The map is rebuilt from the files the driver ACTUALLY RAN, and only those:
+  // `proved.ran` stops at the red, so an entry the driver never executed cannot
+  // enter the record as though the run had proved it. The reason is rendered
+  // through `oneLine` with the caps `handback`'s `blockedCause` uses — the value
+  // is the child's prose and this is the durable record a public comment prints,
+  // so it is sanitised HERE rather than relying on every reader to do it. The
+  // record's own bounds are enforced on read (`blockedByProblem`), so the map is
+  // not re-counted here: the gate already refused a wider report.
+  const ran = new Set(proved.ran);
   const blockedBy: Record<string, string> = {};
+  // `row.path in blockedBy` keeps the FIRST reason the child gave for a path it
+  // named twice: `usableConflicts` de-dupes the path list, so without this the
+  // later row silently overwrites the earlier one's words.
   for (const row of extracted.rows) {
-    if (Object.keys(blockedBy).length >= BLOCKED_MAX_ENTRIES) break;
-    if (!vetted.has(row.path)) continue;
-    blockedBy[row.path] = row.reason;
+    if (!ran.has(row.path) || row.path in blockedBy) continue;
+    blockedBy[oneLine(row.path, BLOCKED_PATH_CAP)] = oneLine(row.reason, BLOCKED_REASON_CAP);
   }
-  if (Object.keys(blockedBy).length === 0) return undefined;
-  const entries = Object.entries(blockedBy);
-  // The cause line leads with the LAST entry the driver re-ran: that is the file
-  // it watched come back red, so the sentence names the evidence it holds rather
-  // than the first name the child typed. The full map rides on `blockedBy`.
-  const last = entries[entries.length - 1];
+  const red = proved.red;
+  if (!(red in blockedBy)) return undefined;
+  // The cause line leads with the file the DRIVER watched come back red, not the
+  // first name the child typed and not the last entry of the map: `blockedProved`
+  // returns on its first red, so anything else in the sentence is a file the
+  // driver ran green, or never ran. The full map rides on `blockedBy`.
   return {
-    reason: `frozen tests cannot all pass together: ${last?.[0] ?? ""} — ${last?.[1] ?? ""}`,
+    reason: `frozen tests cannot all pass together: ${red} — ${blockedBy[red] ?? ""}`,
     blockedBy,
   };
 }
@@ -354,7 +359,6 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
     toolUses: read.result.toolUses ?? [],
     issue,
     ...(deps.blockedTimeoutMs === undefined ? {} : { timeoutMs: deps.blockedTimeoutMs }),
-    ...(deps.blockedProbe === undefined ? {} : { probe: deps.blockedProbe }),
   });
   if (blocked !== undefined) {
     // No reset and no commit, exactly as the budget stop: the child's work goes

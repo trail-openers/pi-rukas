@@ -28,7 +28,7 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, linkSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { execp } from "../../src/exec.ts";
@@ -38,8 +38,8 @@ import type { WorkConfig } from "../../src/lean/config.ts";
 import { defaultConfig } from "../../src/lean/config.ts";
 import type { HandlerCtx } from "../../src/lean/engine.ts";
 import type { Outcome, Step } from "../../src/lean/state.ts";
-import type { DispatchUsageRow } from "../../src/lean/step-budget.ts";
 import { createRun } from "../../src/lean/state.ts";
+import type { DispatchUsageRow } from "../../src/lean/step-budget.ts";
 import type { BudgetOpts } from "../../src/lean/step-budget.ts";
 import type { DispatchResult, DispatchSpec } from "../../src/types.ts";
 import { gitTestEnv } from "./git-test-env.ts";
@@ -280,34 +280,7 @@ function shaAll(entries: Record<string, string>): Record<string, string> {
 }
 
 /** Worktree-relative path of a file the child may create. */
-export function put(wt: string, rel: string, content: string, mode?: number): void {
-  const target = path.join(wt, rel);
-  mkdirSync(path.dirname(target), { recursive: true });
-  writeFileSync(target, content, { mode: mode ?? 0o644 });
-}
-
-/** The child made a symlink at `rel` pointing at `target`. */
-export function symlink(wt: string, rel: string, target: string): void {
-  mkdirSync(path.dirname(path.join(wt, rel)), { recursive: true });
-  symlinkSync(target, path.join(wt, rel));
-}
-
-/**
- * The child hard-linked `rel` in the worktree to a file OUTSIDE the repo.
- * `linkSync` across filesystems throws EXDEV, so the outside file is written
- * into the same filesystem as the repo.
- */
-export function hardlinkFromOutside(wt: string, rel: string, outsideAbs: string): void {
-  mkdirSync(path.dirname(path.join(wt, rel)), { recursive: true });
-  linkSync(outsideAbs, path.join(wt, rel));
-}
-
-/** Write a file outside every repo and return its absolute path. */
-export function putOutside(abs: string, content: string): string {
-  mkdirSync(path.dirname(abs), { recursive: true });
-  writeFileSync(abs, content);
-  return abs;
-}
+export { put, putOutside, symlink, hardlinkFromOutside } from "./lean-build-artifacts.ts";
 
 /** The child committed whatever it had, itself. */
 export function childCommit(wt: string, message: string): void {
@@ -344,12 +317,12 @@ export interface RunOpts {
   /** The child's acts in the worktree, at the moment it is still working. */
   child?: (wt: string) => void;
   /**
-   * Acts performed after the child's dispatch and before the step's next git
-   * read. A case needs this to place a file that is NOT part of the child's
-   * commit: normalisation's `clean -fdx` deletes an untracked one, and the
-   * driver re-runs a reported frozen file only after that reset — so a case
-   * about "what the driver actually sees when it re-runs the named tests" has
-   * to plant its tree change here rather than in `child`.
+   * Acts performed after the child's dispatch and before the step's next read of
+   * the tree. A case needs this to place a file that is NOT part of the child's
+   * commit: the blocked gate re-runs the reported frozen files at exactly this
+   * moment — before normalisation's `clean -fdx`, which would delete an untracked
+   * one — so a case about "what the driver actually sees when it re-runs the named
+   * tests" plants its tree change here rather than in `child`.
    */
   afterDispatch?: (wt: string) => void;
   /** Extra steps to append to the log (a re-entry `verify:red` for case (i)). */
@@ -415,6 +388,8 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
   const extraArgs: (readonly string[])[] = [];
   const gitArgvs: string[][] = [];
   let dispatched = 0;
+  /** Whether the one-shot `afterDispatch` hook has fired (see `deps` below). */
+  let planted = false;
   const exec: BuildDeps["exec"] = async (cmd, o) => {
     if (cmd === "git" && o?.argv) gitArgvs.push(o.argv);
     return execp(cmd, { ...o, env: gitEnv() });
@@ -455,7 +430,24 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
   };
   const deps: BuildDeps = {
     ...inner,
-    ...(opts.afterDispatch === undefined ? {} : { blockedProbe: opts.afterDispatch }),
+    ...(opts.afterDispatch === undefined
+      ? {}
+      : {
+          // The gate runs its re-runs before it looks at any git state, so firing
+          // the hook on the first NON-git exec lands it in that instant without a
+          // production seam invented for the test. It fires ONCE: a case plants a
+          // tree change for the gate to judge, and re-planting it on every later
+          // runner would make the tree depend on how many files the gate happened
+          // to execute. git calls are skipped — the step's own `clean -fdx` runs
+          // later, and planting before it would let normalisation delete the file.
+          exec: async (cmd, o) => {
+            if (cmd !== "git" && !planted) {
+              planted = true;
+              opts.afterDispatch?.(built.worktree);
+            }
+            return inner.exec(cmd, o);
+          },
+        }),
   };
   try {
     const { buildOutcome } = await import("../../src/lean/build.ts");
@@ -495,4 +487,3 @@ function headOf(wt: string): string {
     return "";
   }
 }
-

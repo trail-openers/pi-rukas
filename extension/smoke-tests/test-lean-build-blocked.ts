@@ -14,6 +14,8 @@
  *       the tree is left exactly as the child left it (no reset, no commit)
  *   (2) a report naming a file the run never froze   -> ignored, ordinary `ok`
  *   (3) a report whose named tests all pass           -> ignored, ordinary `ok`
+ *       (and (3a)-(3c), the runner's own judgement, in
+ *        test-lean-build-blocked-rerun.ts)
  *   (4) a report whose call is unreadable             -> ignored
  *   (5) no report at all                              -> unchanged behaviour
  *   (6) the reporter companion is loaded into the child via `extraArgs`
@@ -25,18 +27,12 @@
  * test-lean-handback-cause.ts; the durable record in test-lean-state-outcome.ts.
  */
 
-import { BuildInfraError } from "../src/lean/build-errors.ts";
-import { configWithRunner } from "./lib/lean-build-asserts.ts";
-import { BLOCKED_REPORTER_PATH } from "../src/lean/build-blocked-reporter.ts";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import {
-  ROOTS,
-  RUNNER,
-  put,
-  runBuild,
-  sha,
-} from "./lib/lean-build-fixture.ts";
+import { BLOCKED_REPORTER_PATH } from "../src/lean/build-blocked-reporter.ts";
+import { BuildInfraError } from "../src/lean/build-errors.ts";
+import { configWithRunner } from "./lib/lean-build-asserts.ts";
+import { ROOTS, RUNNER, put, runBuild, sha } from "./lib/lean-build-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -162,36 +158,6 @@ const CONFLICT = "case 2 needs the array mutable while case 3 mutates it in plac
   assert(r.outcome?.blockedBy === undefined, "(2b) and records no blockedBy");
 }
 
-// ── (3a) a runner that could not judge the named test is not a red ─────────
-{
-  // A killed or timed-out runner observed NOTHING, so it cannot prove a
-  // conflict: honouring it would let a broken toolchain end a run. The bound is
-  // a case knob (`blockedTimeoutMs`), and a hanging runner is a fixture file
-  // that sleeps past it.
-  const SLOW = "tests/slow.test.sh";
-  const probe = {
-    extraFrozen: {
-      [SLOW]: '#!/bin/sh\nsleep 3\necho "not ok - tests/slow.test.sh" 1>&2\nexit 1\n',
-    },
-    toolUses: () => blocked([{ path: SLOW, reason: CONFLICT }]),
-    blockedTimeoutMs: 200,
-  };
-  // The same report with a bound the runner comfortably finishes inside IS
-  // honoured, so the refusal below is the runner's state and not the shape of
-  // the report: without the infra rule the two cases would read identically.
-  const judgeable = await runBuild({ issue: 336, ...probe, blockedTimeoutMs: 30_000 });
-  assert(
-    judgeable.outcome?.kind === "blocked",
-    `(3a) the same report with a judgeable runner IS honoured (got ${judgeable.outcome?.kind ?? judgeable.threw?.message})`,
-  );
-  const r = await runBuild({ issue: 335, ...probe });
-  assert(
-    r.outcome?.kind === "exhausted",
-    `(3a) an unjudgeable test is not a conflict (got ${r.outcome?.kind ?? r.threw?.message})`,
-  );
-  assert(r.outcome?.blockedBy === undefined, "(3a) and nothing is recorded");
-}
-
 // ── (3) a report whose named tests all pass is not honoured ────────────────
 {
   // The child gives up on a hard case and blames the contract. The driver ran
@@ -261,17 +227,12 @@ const CONFLICT = "case 2 needs the array mutable while case 3 mutates it in plac
     i >= 0 && args[i + 1] === BLOCKED_REPORTER_PATH,
     `(6) the build child is launched with the blocked reporter (got ${JSON.stringify(args)})`,
   );
-  assert(
-    args.includes("--no-skills"),
-    `(6) and carries no skills (got ${JSON.stringify(args)})`,
-  );
+  assert(args.includes("--no-skills"), `(6) and carries no skills (got ${JSON.stringify(args)})`);
   assert(
     existsSync(BLOCKED_REPORTER_PATH),
     `(6) the companion file exists at the path the dispatch passes (${BLOCKED_REPORTER_PATH})`,
   );
-  const src = existsSync(BLOCKED_REPORTER_PATH)
-    ? readFileSync(BLOCKED_REPORTER_PATH, "utf8")
-    : "";
+  const src = existsSync(BLOCKED_REPORTER_PATH) ? readFileSync(BLOCKED_REPORTER_PATH, "utf8") : "";
   assert(
     src.includes('name: "report_blocked"'),
     "(6) and registers exactly the tool the parent reads",
@@ -281,29 +242,34 @@ const CONFLICT = "case 2 needs the array mutable while case 3 mutates it in plac
 // ── (6b) a reporter that cannot be statted is infrastructure, named ────────
 {
   const { dispatchBuilder } = await import("../src/lean/build-dispatch.ts");
+  // `unknown`, not `{}`: `thrown.message` below is read through a type guard and a
+  // bare `{}` annotation would refuse it.
   let thrown: unknown;
   try {
-    await dispatchBuilder(async () => {
-      throw new Error("must not dispatch");
-    }, {
-      issue: 309,
-      // The minimal spec the seam needs; the preflight runs before the prompt.
-      spec: {
-        problem: "p",
-        size: "S",
-        criteria: [{ id: "AC1", text: "t", verify: "test" as const }],
+    await dispatchBuilder(
+      async () => {
+        throw new Error("must not dispatch");
       },
-      frozen: {},
-      wt: "/wt",
-      repoRoot: "/repo",
-      attempt: 1,
-      budget: { opts: {}, fired: () => undefined },
-      statReporter: async () => {
-        // The shape `statReporterPath` surfaces when the companion is not a file:
-        // a real `stat` rejection, not the error the preflight itself raises.
-        throw new Error("ENOENT");
+      {
+        issue: 309,
+        // The minimal spec the seam needs; the preflight runs before the prompt.
+        spec: {
+          problem: "p",
+          size: "S",
+          criteria: [{ id: "AC1", text: "t", verify: "test" as const }],
+        },
+        frozen: {},
+        wt: "/wt",
+        repoRoot: "/repo",
+        attempt: 1,
+        budget: { opts: {}, fired: () => undefined },
+        statReporter: async () => {
+          // The shape `statReporterPath` surfaces when the companion is not a file:
+          // a real `stat` rejection, not the error the preflight itself raises.
+          throw new Error("ENOENT");
+        },
       },
-    });
+    );
   } catch (err) {
     thrown = err;
   }
@@ -312,7 +278,7 @@ const CONFLICT = "case 2 needs the array mutable while case 3 mutates it in plac
     `(6b) a missing companion is a named pre-spawn failure (got ${String(thrown)})`,
   );
   assert(
-    !"must not dispatch".includes(String(thrown?.message ?? "")),
+    !"must not dispatch".includes(String((thrown as Error | undefined)?.message ?? "")),
     "(6b) and the child was never dispatched",
   );
 }

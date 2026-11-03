@@ -30,11 +30,21 @@ import { frozenKeyProblem } from "./state-outcome.ts";
 /** The one value a recorded `command` criterion may carry: it held. */
 const COMMAND_CRITERION_KIND = "passed";
 
-/** One why-a-command-was-not-run is prose; the record must not grow without bound. */
-const COMMAND_NOT_RUNNABLE_MAX_CHARS = 300;
+/**
+ * One why-a-command-was-not-run — or one stated frozen-test conflict — is prose;
+ * the record must not grow without bound. Exported because the build step's
+ * blocked report holds these values BEFORE they reach the record and must refuse
+ * an entry it could not persist rather than spend a runner on it: two literals
+ * for one number is how a widening lands on one side only.
+ */
+export const RECORD_REASON_MAX_CHARS = 300;
 
-/** How many entries any of these records may hold. */
-const COMMAND_RECORD_MAX_ENTRIES = 32;
+/**
+ * How many entries any of these records may hold. Exported for the same reason
+ * as {@link RECORD_REASON_MAX_CHARS}: the report tool caps at this and the
+ * driver refuses the rest, so a map the step could never have written is a blob.
+ */
+export const RECORD_MAX_ENTRIES = 32;
 
 /** Is this a map-shaped value at all? The three records share the answer. */
 function notAMap(value: unknown): boolean {
@@ -53,8 +63,8 @@ function notAMap(value: unknown): boolean {
 export function commandCriteriaProblem(value: unknown): string | undefined {
   if (notAMap(value)) return "outcome commandCriteria must be an object";
   const entries = Object.entries(value as Record<string, unknown>);
-  if (entries.length > COMMAND_RECORD_MAX_ENTRIES)
-    return `outcome commandCriteria must hold at most ${COMMAND_RECORD_MAX_ENTRIES} criteria`;
+  if (entries.length > RECORD_MAX_ENTRIES)
+    return `outcome commandCriteria must hold at most ${RECORD_MAX_ENTRIES} criteria`;
   for (const [id, kind] of entries) {
     if (!CRITERION_ID.test(id))
       return `outcome commandCriteria key ${JSON.stringify(id)} is not AC<n>`;
@@ -78,15 +88,15 @@ export function commandNotRunnableProblem(value: unknown): string | undefined {
   if (typeof value !== "object" || value === null)
     return "outcome commandNotRunnable must be an object";
   const entries = Object.entries(value as Record<string, unknown>);
-  if (entries.length > COMMAND_RECORD_MAX_ENTRIES)
-    return `outcome commandNotRunnable must hold at most ${COMMAND_RECORD_MAX_ENTRIES} criteria`;
+  if (entries.length > RECORD_MAX_ENTRIES)
+    return `outcome commandNotRunnable must hold at most ${RECORD_MAX_ENTRIES} criteria`;
   for (const [id, why] of entries) {
     if (!CRITERION_ID.test(id))
       return `outcome commandNotRunnable key ${JSON.stringify(id)} is not AC<n>`;
     if (typeof why !== "string")
       return `outcome commandNotRunnable[${JSON.stringify(id)}] must be a string`;
-    if (why.length > COMMAND_NOT_RUNNABLE_MAX_CHARS)
-      return `outcome commandNotRunnable[${JSON.stringify(id)}] must be at most ${COMMAND_NOT_RUNNABLE_MAX_CHARS} characters`;
+    if (why.length > RECORD_REASON_MAX_CHARS)
+      return `outcome commandNotRunnable[${JSON.stringify(id)}] must be at most ${RECORD_REASON_MAX_CHARS} characters`;
   }
   return undefined;
 }
@@ -101,16 +111,16 @@ export function commandNotRunnableProblem(value: unknown): string | undefined {
 export function blockedByProblem(value: unknown): string | undefined {
   if (notAMap(value)) return "outcome blockedBy must be an object";
   const entries = Object.entries(value as Record<string, unknown>);
-  if (entries.length > COMMAND_RECORD_MAX_ENTRIES)
-    return `outcome blockedBy must hold at most ${COMMAND_RECORD_MAX_ENTRIES} files`;
+  if (entries.length > RECORD_MAX_ENTRIES)
+    return `outcome blockedBy must hold at most ${RECORD_MAX_ENTRIES} files`;
   for (const [file, why] of entries) {
     const keyProblem = frozenKeyProblem(file);
     if (keyProblem !== undefined)
       return `outcome blockedBy key ${JSON.stringify(file)} is not a valid test path: ${keyProblem}`;
     if (typeof why !== "string")
       return `outcome blockedBy[${JSON.stringify(file)}] must be a string`;
-    if (why.length > COMMAND_NOT_RUNNABLE_MAX_CHARS)
-      return `outcome blockedBy[${JSON.stringify(file)}] must be at most ${COMMAND_NOT_RUNNABLE_MAX_CHARS} characters`;
+    if (why.length > RECORD_REASON_MAX_CHARS)
+      return `outcome blockedBy[${JSON.stringify(file)}] must be at most ${RECORD_REASON_MAX_CHARS} characters`;
   }
   return undefined;
 }
@@ -139,7 +149,7 @@ export function validatedCommandNotRunnable(value: unknown): Record<string, stri
   const out: Record<string, string> = {};
   if (typeof value !== "object" || value === null) return out;
   for (const [id, why] of Object.entries(value as Record<string, unknown>)) {
-    if (typeof why !== "string" || why.length > COMMAND_NOT_RUNNABLE_MAX_CHARS) continue;
+    if (typeof why !== "string" || why.length > RECORD_REASON_MAX_CHARS) continue;
     if (CRITERION_ID.test(id)) out[id] = why;
   }
   return out;
@@ -154,7 +164,7 @@ export function validatedBlockedBy(value: unknown): Record<string, string> {
   const out: Record<string, string> = {};
   if (typeof value !== "object" || value === null) return out;
   for (const [file, why] of Object.entries(value as Record<string, unknown>)) {
-    if (typeof why !== "string" || why.length > COMMAND_NOT_RUNNABLE_MAX_CHARS) continue;
+    if (typeof why !== "string" || why.length > RECORD_REASON_MAX_CHARS) continue;
     if (frozenKeyProblem(file) !== undefined) continue;
     out[file] = why;
   }

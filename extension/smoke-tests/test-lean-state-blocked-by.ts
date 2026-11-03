@@ -18,6 +18,10 @@
  */
 
 import { REPORTING_STATES } from "../src/lean/state-outcome.ts";
+import {
+  BLOCKED_MAX_ENTRIES,
+  BLOCKED_MAX_REASON_CHARS,
+} from "../src/lean/build-blocked.ts";
 import { INITIAL_COUNTERS, REPORT_STATES, leanStateFile, loadRun } from "../src/lean/state.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { FIXTURE_BASE_SHA, makeAssert, tempDir } from "./lib/lean-engine-fixtures.ts";
@@ -219,6 +223,16 @@ for (const [label, issue, step, expect] of [
 assert(
   JSON.stringify(REPORTING_STATES) === JSON.stringify(REPORT_STATES),
   "the ownership table's REPORTING_STATES still equals state.ts's REPORT_STATES",
+);
+
+// The gate that VETS a report and the loader that PERSISTS it must hold the same
+// two bounds. They now read one pair of constants (`state-outcome-maps.ts`), so
+// this asserts the number the record enforces rather than a copy: widening the
+// record alone would leave the gate refusing entries the loader accepts, and a
+// gate wider than the record spends a runner on an entry that cannot be saved.
+assert(
+  BLOCKED_MAX_ENTRIES === 32 && BLOCKED_MAX_REASON_CHARS === 300,
+  `the gate's bounds still equal the record's 32 / 300 (got ${String(BLOCKED_MAX_ENTRIES)} / ${String(BLOCKED_MAX_REASON_CHARS)})`,
 );
 
 process.exit(failures());

@@ -71,12 +71,13 @@ const FROZEN_LIST_CAP = 20;
 const BLOCKED_LIST_CAP = 20;
 
 /**
- * How long one stated conflict may print. The record bounds it at 300; the
- * comment clips again because the value is the child's own prose and this is a
- * public comment — it goes through the same one-line rule `frozenList` and
- * `fenceText` apply to their payloads, so a newline cannot write a bullet.
+ * How long one stated conflict may print. The record allows 300 and this is a
+ * PUBLIC comment made of the child's own prose, so the comment clips to its own
+ * (smaller) bound — the same one-line rule `frozenList` and `fenceText` apply to
+ * their payloads, so a newline cannot write a bullet and no single reason can
+ * dominate the line the operator came for.
  */
-const BLOCKED_REASON_CAP = 300;
+const BLOCKED_REASON_CAP = 160;
 
 /** A path long enough to be a blob is not a line anyone skims. */
 const FROZEN_PATH_CAP = 200;
@@ -157,33 +158,44 @@ function budgetCause(steps: Step[]): string | undefined {
  * FILES and the contradiction, and it is the reason the run stopped: a stale
  * `verify:red` from an earlier round says what was once broken, not what the
  * builder could not satisfy, and a budget the run survived says only that a
- * ceiling exists. So unlike {@link budgetCause}, this cause is NOT position
- * gated: `next()` routes `build + blocked` straight to `handback`, so the
- * verdict is the newest working step whenever it exists, and a run whose log
- * also carries an earlier breach (the shape that buried the conflict in the
- * post-mortem this exists for) must still name the conflict.
+ * ceiling exists.
+ *
+ * Position decides whether it may speak, the same test {@link budgetCause} uses
+ * and for the same reason: the claim is "this is why the run ended", and the one
+ * true test of that is position, not prose. So the cause counts only when the
+ * `blocked` step IS the newest working step — the report states skipped, since
+ * they are the run telling how it ended, not work it went on to do. On every log
+ * the engine writes that holds: `next()` routes `build + blocked` straight to
+ * `handback`, so nothing works after it. Against a log the loader did not produce
+ * (a resumed run whose tree was edited, a hand-written record) it must not
+ * outrank what actually happened last — a stale `blockedBy` from a round the run
+ * carried past is not the run's cause, exactly as a carried-past budget is not.
  *
  * Rendered from the typed `blockedBy` map, never from prose: a `blocked` step
  * missing the map is a half-record and falls through to the next cause rather
  * than printing a fragment.
  */
 function blockedCause(steps: Step[]): string | undefined {
+  let newest: number | undefined;
   for (let i = steps.length - 1; i >= 0; i--) {
     const step = steps[i];
-    if (step?.state !== "build" || step.outcome?.kind !== "blocked") continue;
-    const entries = Object.entries(step.outcome.blockedBy ?? {});
-    if (entries.length === 0) continue;
-    const named = entries
-      .slice(0, BLOCKED_LIST_CAP)
-      .map(
-        ([file, why]) => `- ${oneLine(file, FROZEN_PATH_CAP)}: ${oneLine(why, BLOCKED_REASON_CAP)}`,
-      )
-      .join("\n");
-    const more =
-      entries.length > BLOCKED_LIST_CAP ? `\n…and ${entries.length - BLOCKED_LIST_CAP} more` : "";
-    return `the frozen tests cannot all pass together:\n${named}${more}`;
+    if (step === undefined || REPORT_STATES.includes(step.state)) continue;
+    newest = i;
+    break;
   }
-  return undefined;
+  const step = newest === undefined ? undefined : steps[newest];
+  if (step?.state !== "build" || step.outcome?.kind !== "blocked") return undefined;
+  const entries = Object.entries(step.outcome.blockedBy ?? {});
+  if (entries.length === 0) return undefined;
+  const named = entries
+    .slice(0, BLOCKED_LIST_CAP)
+    .map(
+      ([file, why]) => `- ${oneLine(file, FROZEN_PATH_CAP)}: ${oneLine(why, BLOCKED_REASON_CAP)}`,
+    )
+    .join("\n");
+  const more =
+    entries.length > BLOCKED_LIST_CAP ? `\n…and ${entries.length - BLOCKED_LIST_CAP} more` : "";
+  return `the frozen tests cannot all pass together:\n${named}${more}`;
 }
 
 /**
