@@ -413,7 +413,13 @@ export function computeVerdict(
  */
 export const DEFAULT_REVIEW_THRESHOLD: Severity = "MEDIUM";
 
-const SEVERITY_RANK: Record<Severity, number> = {
+/**
+ * The severity order `computeVerdict` judges a round by, shared with any caller
+ * that must ask "is this row at or above that bar?". A second ranking elsewhere
+ * is a second rule about severity that can drift from the one that produced the
+ * verdict beside it.
+ */
+export const SEVERITY_RANK: Record<Severity, number> = {
   CRITICAL: 0,
   HIGH: 1,
   MEDIUM: 2,

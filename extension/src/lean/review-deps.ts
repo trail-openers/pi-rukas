@@ -149,17 +149,15 @@ export function reviewDeps(headless: boolean): ReviewDeps {
       return {
         verdict: summary.verdict,
         findings: renderFindings(summary),
-        // The blocking rows, structured, for the step's per-finding verdict (see
+        // The blocking rows, structured, for the step's re-review decision (see
         // `LensRound.reported`). The layer's own `reported` set is what the
         // summary carries, so the step reads the same list the verdict, the
         // severity counts and the ledger's `hasCritical` were computed from — a
-        // second reading here would be a second definition of "blocking".
+        // second reading here would be a second definition of "blocking". The
+        // layer's per-row `resolved` notices are NOT threaded: the step no longer
+        // states a fate for any row, so nothing reads them (a field carried for a
+        // reader that does not exist is a liability, not a saving).
         reported: summary.findings,
-        // The rows the layer RESOLVED this round, carried through untouched: the
-        // step reads a blocking row as ADDRESSED only when it appears here (see
-        // `LensRound.resolved`), so dropping it would make every resolved row a
-        // handback. The layer's field, not a restatement of it.
-        ...(summary.resolved === undefined ? {} : { resolved: summary.resolved }),
         usage: summary.usage,
         // The per-lens records, so the step bills one row per child that ran
         // rather than one row per round (see `lensRows` in `step-budget.ts`).

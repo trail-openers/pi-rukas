@@ -4,10 +4,10 @@
  *
  * `review.ts` is the decision procedure; this module is the policy the decision
  * procedure reads, so the numbers and the words that state them have one home
- * that a test can import rather than a string in a loop body. Three facts live
- * here: the child budget (`reviewPasses`, `REVIEW_CHILD_BUDGET`), the named
- * handback causes, and the one function that turns a delta round's rows into
- * per-finding fates.
+ * that a test can import rather than a string in a loop body. The facts that
+ * live here are the child budget (`reviewPasses`, `REVIEW_CHILD_BUDGET`), the
+ * named handback causes, the bar a carried row must reach to hand the run back,
+ * and the rendering of a row into a handback line.
  *
  * **One full review, one fix wave, one re-review of the fix diff.** There is no
  * round loop, so there is no round constant, no stagnation tie-breaker and no
@@ -29,14 +29,10 @@
  * only the tests consult.
  */
 
-import { VERDICT_STATUSES } from "../adversarial-verdict.ts";
 import { neutraliseEvidence } from "../comment-evidence.ts";
-import type { Verdict } from "../lens-review-format.ts";
-import { findingDescription } from "../lens-review-format.ts";
-import { isCarried } from "../lens-review-types.ts";
+import type { Severity, Verdict } from "../lens-review-format.ts";
+import { SEVERITY_RANK, findingDescription } from "../lens-review-format.ts";
 import type { Finding } from "../lens-review-types.ts";
-import type { ResolvedNotice } from "../review-findings-file.ts";
-import type { FindingFate, FindingOutcome } from "./review-args.ts";
 
 /** How many lenses one review pass dispatches — the roster the step buys. */
 export const LENSES_PER_PASS = 6;
@@ -129,47 +125,30 @@ export const CAUSE_NOT_ADDRESSED = "review: blocking finding not addressed";
 export const CAUSE_NEW_CRITICAL = "review: fix introduced a CRITICAL";
 
 /**
- * The identity a blocking finding is matched by, between the full review and the
- * re-review.
- *
- * Location and title, not the rendered line: the re-review's rendering is a
- * different model's wording of the same problem, while a cited `path:line` and a
- * title are what the step can compare across two rounds. It is NOT the findings
- * store's identity (`identityOf`/`sameIdentity` in `review-findings-match.ts`):
- * that one is built from the HEAD FILE CONTENT — the enclosing declaration, a
- * whitespace-normalised snippet hash, a title-Jaccard test — and needs the file's
- * lines, which this step does not have (the step holds a ref range, not the tree,
- * and reads no file). Reusing it here would mean reading every cited file at head
- * per finding, for a comparison the re-review's own range already settles.
- * File-level rows (no usable line) key on the path alone, which is the coarsest
- * identity that is still a citation rather than an essay.
+ * The severity a carried row must reach to hand the run back. HIGH is the bar
+ * `AGENTS.md §1` states for this repo, and the same `Severity` value
+ * `ReviewDeps.reviewThreshold` resolves per project — a project that states a
+ * looser bar in its doctrine gets a looser handback bar than this, rather than a
+ * step that blocks below the threshold it was told to review at. The comparison
+ * is the review layer's own `SEVERITY_RANK`, imported rather than restated: two
+ * copies of a severity order is two rules that can drift, and the drift only
+ * shows up when a round's verdict and the step's decision disagree.
  */
-export function findingKey(f: Finding): string {
-  const line = typeof f.line === "number" && f.line > 0 ? String(f.line) : "?";
-  return `${f.path}:${line} ${f.title}`;
-}
-
-/** The blocking rows of a round that a fix wave has not yet answered, keyed. */
-export type OpenFindingRows = ReadonlyMap<string, Finding>;
+const BLOCKING_ROW_SEVERITY: Severity = "HIGH";
 
 /**
- * The BLOCKING rows of a round the fix wave is being asked to answer, keyed by
- * {@link findingKey}.
+ * Is a row of the re-review blocking, by the layer's own bar?
  *
- * `reported` is the review layer's own post-advisory-split set — the rows that
- * survived the advisory discount — so everything in it is blocking by the layer's
- * own reading, carried rows included. A carried row is the review layer's own
- * "this is still open": it reached `reported` because `rowFate` refused to
- * resolve it, so it is exactly as much a demand on the fix as a fresh row is, and
- * dropping it here would mean a finding the branch has been carrying across rounds
- * could never be reported NOT ADDRESSED — the step would fix around it and pass.
- * Rows the layer discounted to advisory never reach this list, so this step adds
- * no blocking row of its own.
+ * The unknown-severity arm is why this is a function and not a comparison at the
+ * call site. A re-review row is parsed model output: a row whose `severity` is
+ * missing or outside the four schema values is not a row below the bar, and
+ * reading it as one would let a malformed carried row clear the wave. An
+ * unrecognised severity therefore counts as blocking — the direction every other
+ * absence in this step goes.
  */
-export function openFindingRows(round: { reported: Finding[] }): OpenFindingRows {
-  const open = new Map<string, Finding>();
-  for (const f of round.reported) open.set(findingKey(f), f);
-  return open;
+export function blockingSeverity(f: { severity: Finding["severity"] }): boolean {
+  const rank = SEVERITY_RANK[f.severity];
+  return rank === undefined || rank <= SEVERITY_RANK[BLOCKING_ROW_SEVERITY];
 }
 
 /**
@@ -177,8 +156,8 @@ export function openFindingRows(round: { reported: Finding[] }): OpenFindingRows
  * title, on one line, with every field the round's model chose neutralised
  * exactly as the review layer neutralises it before it reaches a post — the title
  * and description, but `path` and `lens` too, which arrive from a lens payload and
- * are no more trusted than the prose beside them. A refusal that carried only
- * `findingKey` output could not be triaged without the transcript.
+ * are no more trusted than the prose beside them. A refusal that carried only a
+ * citation could not be triaged without the transcript.
  */
 export function renderFinding(f: Finding): string {
   const where = `${neutraliseEvidence(f.path)}:${f.line ?? "?"}`;
@@ -194,143 +173,8 @@ export function renderFinding(f: Finding): string {
  * how many were left out: the refusal stays the same order, and nothing is half a
  * finding.
  */
-export function renderRows(rows: readonly { line: string }[], max = 5): string {
-  if (rows.length <= max) return rows.map((r) => r.line).join("; ");
-  const head = rows
-    .slice(0, max)
-    .map((r) => r.line)
-    .join("; ");
+export function renderRows(rows: readonly string[], max = 5): string {
+  if (rows.length <= max) return rows.join("; ");
+  const head = rows.slice(0, max).join("; ");
   return `${head}; +${String(rows.length - max)} more`;
-}
-
-/**
- * What the re-review of the fix diff decided about every finding in play.
- *
- * Three fates, two of them read straight off the review layer's own per-row
- * record rather than a reply protocol this step invented:
- *
- * - **`carried` (NOT ADDRESSED)** — a row the delta round positively resolved as
- *   still open: the layer's rule (`rowFate`) refuses to resolve an open row whose
- *   cited code is unchanged, so a carried row IS the layer's statement that the
- *   fix did not answer it. A row this wave was asked about that appears NOWHERE in
- *   the re-review — neither `reported` nor `resolved` — is NOT ADDRESSED too: the
- *   round produced no evidence that it was answered, and silence is never the
- *   answer that clears a blocking finding.
- * - **`addressed`** — a first-round row the layer positively resolved: a row the
- *   delta round listed as resolved by the fix's rewritten cited line. Absence from
- *   both sets is NOT this fate (see above); only a resolution is.
- * - **`new-critical`** — a row whose severity is literally `CRITICAL` that the
- *   delta round raised and that was not in the open set before the fix. Scope is
- *   the fix range because that is the range the round reviewed: a CRITICAL outside
- *   it cannot be attributed to the fix, and a CRITICAL the layer moved to the
- *   advisory tier never reached `reported` and does not block here either — the
- *   same bar as every other round.
- *
- * Everything else the re-review reported — a fresh row below CRITICAL, a carry of
- * something this wave was never asked about — is disclosure: the review layer
- * posts it through its own residual post, and it never starts another wave.
- *
- * The re-review's OWN adversarial verdict is folded in here rather than decided
- * out in the loop: `CRITICAL_ISSUES_FOUND` from that pass is a blocking row, and
- * `classifyFates` is the one place that turns the wave's evidence into fates.
- */
-export function classifyFates(
-  blockingBefore: OpenFindingRows,
-  reReview: { reported: Finding[]; verdict: Verdict; gateFindings?: string },
-  resolved?: readonly ResolvedNotice[],
-): FindingOutcome[] {
-  const outcomes: FindingOutcome[] = [];
-  const seen = new Set<string>();
-  // The re-review's OWN verdict blocks the wave when it says CRITICAL: that is the
-  // layer judging the fix range and calling it must-not-proceed, and it is a
-  // handback whether or not any individual row happens to carry CRITICAL severity
-  // (the round reached the verdict on its own `computeVerdict`, which this step
-  // does not recompute). Folded in here rather than out in the loop because
-  // `classifyFates` is the one place the wave's evidence becomes fates.
-  if (reReview.verdict === "CRITICAL_ISSUES_FOUND")
-    outcomes.push({
-      id: "re-review-verdict",
-      severity: "CRITICAL",
-      line: `[CRITICAL] SIX-LENS RE-REVIEW ${neutraliseEvidence(reReview.verdict)} — the delta round itself refused the fixed head`,
-      fate: "new-critical",
-      open: true,
-    });
-  // The gate's own words, and only when that pass BLOCKED. A non-blocking
-  // adversarial pass is disclosure (see `review.ts`'s clean path), not a demand
-  // on the fixer, so its prose is not rendered into a row here.
-  const gateText = (reReview.gateFindings ?? "").trim();
-  // A row is rendered only for a judgement the layer itself recognizes: the
-  // re-review's verdict must be in its own `Verdict` union and the gate's status
-  // in the adversarial enum, because a `REJECTED`/`ERROR` string carries nothing
-  // triageable and `assertRan`/the gate have already refused it.
-  const verdictJudged = (VERDICT_STATUSES as readonly string[]).includes(reReview.verdict);
-  if (gateText !== "" && verdictJudged)
-    outcomes.push({
-      id: "adversarial-gate",
-      severity: "HIGH",
-      line: `[HIGH] ADVERSARIAL ${gateText.slice(0, 300)}`,
-      fate: "carried",
-      open: true,
-    });
-  for (const f of reReview.reported) {
-    const key = findingKey(f);
-    seen.add(key);
-    const wasOpen = blockingBefore.has(key);
-    const carried = isCarried(f);
-    // A row the wave was asked about and the round re-reports is open on the
-    // round's own evidence, whatever its severity: a HIGH the lenses still see
-    // after its cited line was rewritten is not answered, and the bar for that is
-    // the bar that made it blocking in the first place (it is in `reported`, so
-    // the layer's threshold already judged it). A row that was NEVER open is new
-    // to the fix range, and there only a `CRITICAL` severity is attributed to the
-    // fix: any other fresh row is disclosure, never a handback.
-    const fate: FindingFate = wasOpen
-      ? carried
-        ? "carried"
-        : "addressed"
-      : f.severity === "CRITICAL"
-        ? "new-critical"
-        : "disclosed";
-    outcomes.push({
-      id: key,
-      severity: f.severity,
-      // The rendered line is what makes a refusal triageable: the step's own text
-      // carries these, and an id alone names a coordinate the operator cannot read
-      // without the transcript.
-      line: renderFinding(f),
-      fate,
-      open: fate === "carried" || fate === "new-critical",
-    });
-  }
-  // The rows the wave was asked about that the round did not re-report: either
-  // the layer resolved them, or it has nothing to say about them.
-  const resolvedTitles = new Set((resolved ?? []).map((r) => r.title));
-  for (const [key, f] of blockingBefore) {
-    if (seen.has(key)) continue;
-    if (resolvedTitles.has(f.title)) {
-      // The layer named this row in its own per-row record: the fix rewrote the
-      // cited line and the row retired. That is the layer's resolve, and this step
-      // does not second-guess it.
-      outcomes.push({
-        id: key,
-        severity: f.severity,
-        line: renderFinding(f),
-        fate: "addressed",
-        open: false,
-      });
-      continue;
-    }
-    // Absent from `reported` AND from the resolved notices: the round produced no
-    // evidence either way, and a blocking row with no proof it was answered is not
-    // answered. Fail closed — the same direction every other absence in this step
-    // goes.
-    outcomes.push({
-      id: key,
-      severity: f.severity,
-      line: renderFinding(f),
-      fate: "carried",
-      open: true,
-    });
-  }
-  return outcomes;
 }

@@ -97,6 +97,8 @@
  * table where the truth is a stopped child.
  */
 
+import { neutraliseEvidence } from "../comment-evidence.ts";
+import { isCarried } from "../lens-review-types.ts";
 import type { runLensReview } from "../lens-review.ts";
 import { traceWarn } from "../trace.ts";
 import type { DispatchResult, DispatchSpec } from "../types.ts";
@@ -123,9 +125,9 @@ import {
   CAUSE_NOT_ADDRESSED,
   CAUSE_NO_CHANGE,
   LENS_DID_NOT_RUN,
-  classifyFates,
+  blockingSeverity,
   lensBlocks,
-  openFindingRows,
+  renderFinding,
   renderRows,
 } from "./review-waves.ts";
 import { specifyBranch } from "./specify-tree.ts";
@@ -138,8 +140,6 @@ export { ReviewInfraError } from "./review-errors.ts";
 // the smoke fixtures' — keeps working.
 export type {
   AdversarialArgs,
-  FindingFate,
-  FindingOutcome,
   FixRunId,
   LensArgs,
   LensRound,
@@ -352,9 +352,6 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
     // recoverable from anything but this binding.
     const preFixHead = review.head;
     head = await assertFixAdvanced(review.head, fix.head, rows);
-    // The findings the wave was asked to answer, keyed by the step's own row
-    // identities, so the re-review can say per finding whether it holds.
-    const open = openFindingRows(review);
 
     // ── pass 2: the re-review, scoped to the fix range and nothing else ───────
     const reReview = await lensGate(deps, ctx, {
@@ -409,27 +406,37 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
     });
     if (reGate.stop !== undefined) throw budgetStopped(reGate.stop, rows);
 
-    // The re-review's OWN gate text, not the first pass's: this is the report of
-    // what the reviewer still says about the fixed head, and it is the only form
-    // in which a non-row finding reaches the operator. It is rendered into a row
-    // ONLY when that pass blocked (`gate.blocking`) — a non-blocking pass is
-    // disclosure, and `classifyFates` refuses to turn prose the reviewer declined
-    // to stop the run for into a demand on the fix.
-    const fates = classifyFates(
-      open,
-      { ...reReview, gateFindings: reGate.blocking ? reGate.findings : "" },
-      reReview.resolved,
-    );
-    const unresolved = fates.filter((f) => f.fate === "carried");
-    if (unresolved.length > 0)
+    // THE RE-REVIEW'S DECISION, read off the review layer's own record and
+    // nothing else: its verdict, and its rows. The layer has already decided each
+    // row's fate — `rowFate` refuses to resolve an open row whose cited code is
+    // unchanged, so a row that reaches `reported` carrying `carried` IS the
+    // layer's statement that the fix did not answer it, and everything else the
+    // layer concluded lives in its own `resolved`/advisory sets and residual post.
+    // The step used to keep a per-finding fate table beside that (`classifyFates`,
+    // `findingKey`, an open-row set and title matching against the resolve
+    // notices): a second source of truth for a judgement the layer owns, and each
+    // of its rules — a title-only resolve match, a re-reported row read as
+    // addressed — was a HIGH finding away from the layer's own answer. One source
+    // of truth is the cheaper invariant, so the three readings below are all the
+    // step does: the layer's CRITICAL verdict, a carried row at the project's bar
+    // or above, and the gate's own CRITICAL record.
+    const unresolved = reReview.reported.filter((f) => isCarried(f) && blockingSeverity(f));
+    // The gate's own words join the refusal only when that pass BLOCKED — the
+    // re-gate's CRITICAL record is a demand on the fix, and its wording survives
+    // nowhere else (lean has no PR body). A non-blocking pass is disclosure, and
+    // its prose never renders as a demand.
+    const gateRow =
+      reGate.blocking && reGate.findings.trim() !== ""
+        ? [`[HIGH] ADVERSARIAL ${neutraliseEvidence(reGate.findings).slice(0, 300)}`]
+        : [];
+    if (unresolved.length > 0 || gateRow.length > 0)
       throw new ReviewInfraError(
-        `${CAUSE_NOT_ADDRESSED}: ${renderRows(unresolved)} — the fix wave ran, the re-review did not resolve these blocking rows against the fixed head, and a second wave is not what a gate that repeated itself needs`,
+        `${CAUSE_NOT_ADDRESSED}: ${renderRows([...unresolved.map(renderFinding), ...gateRow])} — the fix wave ran, the re-review carried these blocking rows against the fixed head, and a second wave is not what a gate that repeated itself needs. Origin is at the fixer's head: the fix IS pushed. Fix range ${preFixHead.slice(0, 12)}..${head.slice(0, 12)}.`,
         rows,
       );
-    const introduced = fates.filter((f) => f.fate === "new-critical");
-    if (introduced.length > 0)
+    if (reReview.verdict === "CRITICAL_ISSUES_FOUND")
       throw new ReviewInfraError(
-        `${CAUSE_NEW_CRITICAL}: ${renderRows(introduced)} — the fix range itself holds a CRITICAL the full review did not report, and that is the fix's, not the branch's`,
+        `${CAUSE_NEW_CRITICAL}: the re-review of the fix range refused the fixed head (${reReview.verdict}) — ${renderRows(reReview.reported.map(renderFinding))}. Origin is at the fixer's head: the fix IS pushed. Fix range ${preFixHead.slice(0, 12)}..${head.slice(0, 12)}.`,
         rows,
       );
     // A CRITICAL the report-only adversarial pass found in the fix range that the
@@ -440,22 +447,22 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
     // findings it carried onward) is disclosed and never ends the wave.
     if (reGate.findings !== "" && reGate.blocking)
       throw new ReviewInfraError(
-        `${CAUSE_NEW_CRITICAL}: the adversarial pass on the fix range reported a CRITICAL — ${reGate.findings.slice(0, 500)}`,
+        `${CAUSE_NEW_CRITICAL}: the adversarial pass on the fix range reported a CRITICAL — ${reGate.findings.slice(0, 500)}. Origin is at the fixer's head: the fix IS pushed. Fix range ${preFixHead.slice(0, 12)}..${head.slice(0, 12)}.`,
         rows,
       );
-    // Everything blocking is answered and the fix introduced no CRITICAL. What the
-    // re-review found that is neither — new rows below the bar, discounted carries,
-    // and a non-blocking word from the gate — is disclosed here, in the reason the
-    // operator reads, as well as by the review layer's own residual post. A
-    // non-blocking gate pass has no other consumer in this step: lean has no PR
-    // body to hand it to (see `openFromPass`), so its count and its text are put
-    // on the outcome rather than dropped. It is never a reason to buy another wave.
-    const disclosed = fates.filter((f) => f.fate === "disclosed");
+    // Nothing carried and no CRITICAL anywhere: the wave cleared. What the
+    // re-review reported below the bar, and any non-blocking word from the gate,
+    // is disclosed here, in the reason the operator reads, as well as by the
+    // review layer's own residual post. A non-blocking gate pass has no other
+    // consumer in this step: lean has no PR body to hand it to (see `openFromPass`),
+    // so its count and its text are put on the outcome rather than dropped — and
+    // both are neutralised and bounded by `disclosureNote` on the way there. It is
+    // never a reason to buy another wave.
     return cleanPass(
       reReview,
       rows,
       true,
-      disclosureNote(disclosed.length, reGate.open ? reGate.findings : ""),
+      disclosureNote(reReview.reported.length, reGate.open ? reGate.findings : ""),
     );
   } finally {
     // Scoped to THIS attempt's trees (issue, attempt, epoch) — see `closeFixTrees`.

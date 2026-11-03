@@ -69,7 +69,7 @@ export type { FixRunId };
  */
 export type LensRound = Pick<
   LensReviewSummary,
-  "verdict" | "usage" | "note" | "noReview" | "deltaReview" | "resolved"
+  "verdict" | "usage" | "note" | "noReview" | "deltaReview"
 > & {
   /** The round's findings as the text a fixer is handed — one line each. */
   findings: string;
@@ -83,59 +83,16 @@ export type LensRound = Pick<
    * The blocking rows this round REPORTED, structured rather than as the one
    * rendered string above.
    *
-   * The step needs identities, not prose: the re-review decides per finding
-   * whether the fix answered it, and a rendered line cannot be matched back to
-   * the row it came from. The list is the review layer's own `reported` set —
-   * the BLOCKING half, post-advisory-split — so a finding the layer discounted
-   * as out-of-range never becomes blocking here by a second opinion of this
-   * step's. Carried rows are the layer's OWN statement that an open finding was
-   * not resolved; the step reads that, and never invents a per-finding reply
-   * protocol of its own.
+   * The step reads identities, not prose: each row's fate is already the review
+   * layer's own verdict on it — `reported` is the BLOCKING half, post-advisory-split,
+   * and a row carrying `carried: true` is one `rowFate` REFUSED to resolve, which is
+   * the layer's statement that the fix did not answer it. So this is the only row
+   * record the step reads: it states no fate of its own about any row (a second fate
+   * rule beside the layer's is a second source of truth, and each of its rules drifts
+   * separately), and it never invents a per-finding reply protocol.
    */
   reported: Finding[];
-  /**
-   * The rows this round RESOLVED, as the review layer's own per-row record states
-   * them (`resolved` on the summary, the sibling of the `reported` set above).
-   *
-   * The step needs them to answer item-for-item: a blocking row the wave was
-   * asked about is ADDRESSED only when the layer positively resolved it, and a
-   * row absent from BOTH sets has no evidence either way (see `classifyFates`).
-   * Read from the layer rather than re-derived here, because a resolution is the
-   * layer's call — `rowFate` owns it, and this step has no second one.
-   */
-  resolved?: LensReviewSummary["resolved"];
 };
-
-/**
- * The fate of one blocking finding, as the re-review read it.
- *
- * `addressed` and `carried` are the review layer's EXISTING per-row fates, not a
- * lean protocol: `reported` holds only blocking rows, so a first-round row the
- * delta round listed in its own `resolved` notices is a row the layer resolved,
- * and a row carrying `carried: true` is one the layer refused to resolve. A row
- * in neither set is `carried` too — no proof, no answer. `new-critical` is the
- * third fate the step needs and the only one it computes itself, because the
- * re-review's CRITICAL check is scoped to the fix range and only the step knows
- * which rows were known before the fix. `disclosed` is a row the re-review raised
- * that is neither — it travels to the layer's residual post and never blocks.
- */
-export type FindingFate = "addressed" | "carried" | "new-critical" | "disclosed";
-
-/** One blocking finding and what became of it. */
-export interface FindingOutcome {
-  /** The finding's citation, as `findingKey` renders it. */
-  id: string;
-  severity: Finding["severity"];
-  /**
-   * The row rendered for a human — `renderFinding`'s one-line form. The step's
-   * refusal carries these rather than the bare citation: an id names a coordinate
-   * the operator cannot read without opening the transcript.
-   */
-  line: string;
-  fate: FindingFate;
-  /** True for a row still open after the re-review (`carried` or `new-critical`). */
-  open: boolean;
-}
 
 /**
  * Which half of the step's ONE wave a gate call belongs to.
