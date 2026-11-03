@@ -131,24 +131,54 @@ rather than writing a second parser.`;
     tool.includes("never the whole-project suite"),
     "#1992: the absent-gate arm rules the whole-project suite out in as many words",
   );
-  // One assert per clause, so a regression reports the clause that vanished.
+  // One assert per clause, iterated INSIDE each arm, so a regression names both
+  // the clause and the arm that lost it (a conjunctive assert across the arms
+  // reports one failure and cannot say which arm regressed).
   const LANE =
-    "Do not debug a failure in code this diff did not change — report it in one line (tag it `OUT_OF_DIFF`, per your role prompt). Do not re-run an unchanged command against an unchanged tree to see whether its result changes. Do not create, edit or revert files in the worktree. Report your findings before your time runs out; an unfinished investigation is itself a finding that states what is known. When you have decided you are done, your very next message is the verdict report, with no further tool calls.";
+    "Run only targeted checks — one test file, or a lint or type check of the changed files — never the whole-project suite. Do not debug a failure in code this diff did not change: report it in one line as a MINOR_OBSERVATION tagged `OUT_OF_DIFF`. Do not re-run an unchanged command against an unchanged tree to see whether its result changes. Do not create, edit or revert files in the worktree. Report your findings before your time runs out; an unfinished investigation is itself a finding that states what is known. When you have decided you are done, your very next message is the verdict report, with no further tool calls.";
   assert(
     tool.includes(LANE) && driven.includes(LANE),
     "#1992 canary: the lane rules are one constant reaching BOTH adversarial arms verbatim (two literals is how they would drift)",
   );
-  for (const [needle, what] of [
-    [/did not change[^\n]*report it in one line/i, "AC2: a failure in unchanged code is reported in one line, not debugged"],
-    [/OUT_OF_DIFF/, "AC2: the unchanged-code report is routed to the role prompt's OUT_OF_DIFF tag, not restated"],
-    [/re-run an unchanged command against an unchanged tree/i, "AC3: no repeat loop on an unchanged tree"],
-    [/Do not create, edit or revert files in the worktree/i, "AC4: no writes to the worktree"],
-    [/findings before your time runs out/i, "AC5: report inside the time box"],
-    [/unfinished investigation is itself a finding/i, "AC5: an unfinished investigation is reported as a finding"],
-    [/very next message is the verdict report[^\n]*no further tool calls/i, "PM addendum: the verdict is the very next message, with no tool calls after deciding"],
+  for (const [armName, arm] of [
+    ["gateCmd arm", driven],
+    ["tool arm", tool],
   ] as const) {
-    assert(needle.test(tool) && needle.test(driven), `#1992 reviewer lane, both arms: ${what}`);
+    for (const [needle, what] of [
+      [/Run only targeted checks/i, "AC1: only targeted checks are invited"],
+      [/one test file, or a lint or type check of the changed files/i, "AC1: what a targeted check is"],
+      [/never the whole-project suite/i, "AC1: the whole-project suite is ruled out in as many words"],
+      [/did not change[^\n]*report it in one line as a MINOR_OBSERVATION tagged `OUT_OF_DIFF`/i, "AC2: a failure in unchanged code is reported in one line, not debugged"],
+      [/MINOR_OBSERVATION tagged `OUT_OF_DIFF`/, "AC2: the unchanged-code report states its own tag instead of citing a role prompt the child may not have"],
+      [/re-run an unchanged command against an unchanged tree/i, "AC3: no repeat loop on an unchanged tree"],
+      [/Do not create, edit or revert files in the worktree/i, "AC4: no writes to the worktree"],
+      [/findings before your time runs out/i, "AC5: report inside the time box"],
+      [/unfinished investigation is itself a finding/i, "AC5: an unfinished investigation is reported as a finding"],
+      [/very next message is the verdict report[^\n]*no further tool calls/i, "PM addendum: the verdict is the very next message, with no tool calls after deciding"],
+    ] as const) {
+      assert(needle.test(arm), `#1992 reviewer lane, ${armName}: ${what}`);
+    }
   }
+  assert(
+    !tool.includes("per your role prompt") && !driven.includes("per your role prompt"),
+    "#1992: neither arm defers the OUT_OF_DIFF tag definition to a role prompt the child may not see",
+  );
+  // Item 3: the targeted-checks sentence lives in laneRules, so the gateCmd arm
+  // contributes ONLY its own gate clause. The arm's text must stop at that
+  // clause — bounded by the sentence that follows it in the template — or the
+  // duplicate copy would be a second literal that can drift from laneRules.
+  const GATE_ONLY =
+    "Do NOT run the project's full gate — `bash scripts/verify.sh` — or anything that wraps it or the whole test suite: the driver runs that exact command itself. Its verify gate had to clear this tree before you were dispatched, and it runs again on the consolidated tree before the pull request opens, so a re-run here costs the whole gate's wall-clock and proves nothing new.";
+  assert(
+    driven.includes(`${GATE_ONLY} Run only targeted checks — one test file`) &&
+      !driven.includes(`${GATE_ONLY} Run only targeted checks — a single test file`),
+    "#1992 AC1: the gateCmd arm keeps only its own gate clause — the targeted-checks sentence after it is the shared laneRules text, not a second copy owned by this arm",
+  );
+  assert(
+    driven.includes("Do NOT run the project's full gate") &&
+      driven.indexOf("Do NOT run the project's full gate") < driven.indexOf("Run only targeted checks"),
+    "#1992 AC1: the gateCmd arm carries its own gate clause and still carries the shared targeted-checks sentence",
+  );
 
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), "gate-cmd-"));
   fs.mkdirSync(path.join(repo, ".pi"));

@@ -19,7 +19,7 @@ YOU DO:
 - ✅ REVIEW code and CI/CD status
 - ✅ COMMENT on issues with specific, actionable feedback
 - ✅ REQUEST CHANGES when problems exist
-- ✅ APPROVE only when all quality gates pass
+- ✅ APPROVE only when the targeted checks for the changed files pass — the whole-project gate is the driver's
 - ✅ SUGGEST fixes with code examples (but never implement)
 
 YOU DO NOT:
@@ -71,12 +71,12 @@ say so in your report and stop; do not go and find the file yourself.
 
 ## Execution Protocol
 
-**Step 0: Load Context**
+**Step 0: Load Context** — interactive review only; skip when dispatched with a diff
 1. Read the tracker issue: `gh issue view {NUMBER}` (GitHub) or `glab issue view {NUMBER} --output json` (GitLab)
 2. Load project documentation (CONTRIBUTING.md)
 3. Verify requirements alignment
 
-**Step 1: CI/CD Status (MANDATORY FIRST)**
+**Step 1: CI/CD Status (MANDATORY FIRST)** — interactive review only; skip when dispatched with a diff
 ```bash
 gh pr checks {PR_NUMBER}
 ```

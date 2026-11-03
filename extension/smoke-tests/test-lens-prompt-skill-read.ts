@@ -178,7 +178,7 @@ const SKILL_BODY = [
     [/Run only targeted checks/i, "AC1: only targeted checks are invited"],
     [/one test file, or a lint or type check of the changed files/i, "AC1: what a targeted check is"],
     [/never a whole-project suite/i, "AC1: the whole-project suite is ruled out in as many words"],
-    [/Do not debug a failure in code this diff did not change[^\n]*one line/i, "AC2: a failure in unchanged code is reported in one line, not debugged"],
+    [/Do not debug a failure in code this diff did not change[^\n]*file it with `report_finding` in one line \(path \+ title\)/i, "AC2: a failure in unchanged code is filed in one line via report_finding, not debugged"],
     [/Do not re-run an unchanged command against an unchanged tree/i, "AC3: no repeat loop on an unchanged tree"],
     [/Do not create, edit or revert files in the worktree/i, "AC4: no writes to the worktree"],
     [/findings before your time runs out/i, "AC5: report inside the time box"],
@@ -199,10 +199,31 @@ const SKILL_BODY = [
     "/tmp/skills/x",
     wrapSkillBody("Apply the lane.", NONCE) ?? "",
   );
+  // #1992 — the heading itself is a pin: the ordering below and the sibling
+  // section both hang off it, and the phrase also occurs in "If you find
+  // nothing in your lane", so anchoring on the first occurrence would compare
+  // against the wrong section. indexOf returns -1 when it is gone, and every
+  // `> heading` below then fails — silence is not a pass.
+  const HEADING = "## Stay in the review lane";
+  const headingAt = withLane.indexOf(HEADING);
+  assert(headingAt >= 0, `#1992 reviewer lane: the ${HEADING} section is present`);
+  assert(
+    lane.includes(HEADING),
+    "#1992 reviewer lane: the section is present on the plain caller too",
+  );
   assert(
     withLane.includes("never a whole-project suite") &&
+      headingAt >= 0 &&
+      withLane.indexOf("Run only targeted checks") > headingAt &&
       withLane.indexOf("Run only targeted checks") < withLane.indexOf("After writing your summary"),
-    "#1992: the lane rules reach the skill-body prompt as well, and sit BEFORE the terminal STOP sentence",
+    "#1992: the lane rules reach the skill-body prompt as well, sit inside the review-lane section, and stay BEFORE the terminal STOP sentence",
+  );
+  // #1992 — the lens child reports through the report_finding TOOL, so "report
+  // it in one line" (a prose instruction) contradicted its only channel. The
+  // unchanged-code clause now names the tool.
+  assert(
+    /file it with `report_finding` in one line \(path \+ title\)/.test(lane),
+    "#1992 reviewer lane: an unchanged-code failure is filed with report_finding, not written as prose",
   );
 }
 
