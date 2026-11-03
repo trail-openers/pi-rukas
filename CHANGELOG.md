@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.46](https://github.com/trail-openers/pi-rukas/compare/v0.14.45...v0.14.46) (2026-11-03)
+
+
+### Bug Fixes
+
+* **lean:** size the token budgets to the turn ceilings ([#1977](https://github.com/trail-openers/pi-rukas/issues/1977)) ([f9c40a7](https://github.com/trail-openers/pi-rukas/commit/f9c40a758c22799cd5e8d9b868b3eafd60428860))
+
 ## [0.14.45](https://github.com/trail-openers/pi-rukas/compare/v0.14.44...v0.14.45) (2026-11-03)
 
 
