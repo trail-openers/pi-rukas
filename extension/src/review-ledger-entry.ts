@@ -9,8 +9,14 @@
  * existing importer keeps importing them from the ledger's public surface.
  */
 
+import type { ReviewSeverity } from "./review-threshold.ts";
+
 /** The two review kinds the ledger tracks — and what a merge needs of each. */
 export type ReviewKind = "adversarial" | "lens";
+
+/** The per-severity shape of a lens row's blocking-finding counts — the ONE
+ * spelling of it, so a writer and its reader cannot drift apart. */
+export type LedgerBlockingCounts = Partial<Record<"CRITICAL" | "HIGH" | "MEDIUM", number>>;
 
 export interface LedgerEntry {
   /** The branch the review covered. */
@@ -43,7 +49,15 @@ export interface LedgerEntry {
    * no fix wave was owed. Written from `bySeverityCounts` on the BLOCKING half
    * of the round's findings — the same list `hasCritical` comes from. Absent on
    * every pre-#1537 row, where the rule falls back to `hasCritical` alone. */
-  blockingCounts?: Partial<Record<"CRITICAL" | "HIGH" | "MEDIUM", number>>;
+  blockingCounts?: LedgerBlockingCounts;
+  /** #1537 — the bar those counts were scored against: the RESOLVED review
+   * threshold of the round that wrote the row, NOT a bar the merge guard
+   * re-reads later. The bar is a property of the review, so the row records the
+   * one it was decided with — a bar that moved between the review and the merge
+   * must not silently re-score a row the lenses never scored that way. A row
+   * with counts but no bar cannot be read at any bar and fails closed (see
+   * `nothingBlocking` in merge-guard-round-cap.ts). */
+  blockingBar?: ReviewSeverity;
   /** #973 — lens entries only: the commit hash reviewed. Two consumers:
    * the delta-review auto-base (the `since` of a follow-up review defaults
    * to the latest lens entry's `headSha` when it is an ancestor of HEAD) and

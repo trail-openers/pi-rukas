@@ -87,10 +87,10 @@
 import { lensRoundCap } from "./lens-round-cap.ts";
 import { isFullCommitSha } from "./review-head-sha.ts";
 import { type LedgerEntry, latestEntry } from "./review-ledger.ts";
-import { type ReviewSeverity, isBlockingSeverity } from "./review-threshold.ts";
+import { type ReviewSeverity, SEVERITIES, isBlockingSeverity } from "./review-threshold.ts";
 
-/** The severity ranks that can block. LOW is never blocking, so a row counting
- * none of these has nothing at the bar however the bar is set. */
+/** The severity ranks a blocking count can be recorded for. LOW is never
+ * blocking, so a row that counts none of these has nothing at any bar. */
 const BLOCKING_RANKS = ["CRITICAL", "HIGH", "MEDIUM"] as const;
 
 /**
@@ -98,10 +98,16 @@ const BLOCKING_RANKS = ["CRITICAL", "HIGH", "MEDIUM"] as const;
  *
  * `hasCritical` is the only severity signal a lens row has ever carried, so on
  * a row without `blockingCounts` it is all the rule can read. Rows written by
- * `lens-review-finish.ts` carry the counts and are checked at the project's
- * bar — read straight from `PI_ENSEMBLE_REVIEW_THRESHOLD`, the same knob
- * `resolveReviewThreshold` honours first, because this guard is a synchronous
- * hook and the doctrine judge is an LLM call.
+ * `lens-review-finish.ts` carry the counts AND the bar they were scored at
+ * (`blockingBar`, the resolved threshold of the round that wrote the row) and
+ * are checked at THAT bar — the bar the lenses answered to, not whatever
+ * `PI_ENSEMBLE_REVIEW_THRESHOLD` says at merge time.
+ *
+ * Fails closed on every unreadable shape: counts with no bar recorded (the rule
+ * cannot know which bar the counts meant), a missing rank (a partial count is
+ * not a complete answer), and a non-numeric or negative count (JSON off disk is
+ * untrusted text). Absent counts, absent bar or a partial read all mean "not
+ * nothing blocking", so the round condition decides.
  */
 function nothingBlocking(lens: LedgerEntry): boolean {
   if (lens.hasCritical !== false) return false;
@@ -112,19 +118,23 @@ function nothingBlocking(lens: LedgerEntry): boolean {
   // condition decides, exactly as it did before #1537.
   const counts = lens.blockingCounts;
   if (!counts || typeof counts !== "object") return false;
-  const raw = process.env.PI_ENSEMBLE_REVIEW_THRESHOLD?.trim().toUpperCase();
-  const bar = isSeverityName(raw) ? raw : "MEDIUM";
+  // The bar comes off the ROW, never from the environment: a bar the operator
+  // moved after the review ran is not a bar the lenses answered to, and a row
+  // the writer recorded without one cannot be scored at any bar we invent.
+  const bar = lens.blockingBar;
+  if (!isSeverityName(bar)) return false;
   return BLOCKING_RANKS.every((s) => {
-    const count = counts[s];
-    return count === undefined || count === 0 || !isBlockingSeverity(s, bar);
+    if (!isBlockingSeverity(s, bar)) return true;
+    const count: unknown = counts[s];
+    return Number.isInteger(count) && (count as number) >= 0;
   });
 }
 
-/** The env override is untrusted text: an unrecognised value is not a bar, and
- * the shipped default applies (`resolveReviewThreshold` applies the same rule
- * to its own env arm). */
+/** The bar stored on a row is untrusted JSON: only a name from the canonical
+ * severity list is a bar. `LOW` is never a blocking bar, so a row recorded at
+ * LOW is not a row whose counts prove anything, and it fails closed too. */
 function isSeverityName(v: unknown): v is ReviewSeverity {
-  return typeof v === "string" && (BLOCKING_RANKS as readonly string[]).includes(v);
+  return typeof v === "string" && (SEVERITIES as readonly string[]).includes(v) && v !== "LOW";
 }
 
 /**

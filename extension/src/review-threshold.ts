@@ -32,7 +32,7 @@ export const REVIEW_THRESHOLD_QUESTION =
  * from it inherits that verification. A severity mentioned in a sentence that
  * does not exist cannot be honoured.
  */
-const SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW"] as const;
+export const SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW"] as const;
 export type ReviewSeverity = (typeof SEVERITIES)[number];
 
 export interface ReviewThreshold {

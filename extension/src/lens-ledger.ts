@@ -17,11 +17,13 @@
 
 import { resolveReviewBranch } from "./review-branch.ts";
 import {
+  type LedgerBlockingCounts,
   type LedgerEntry,
   appendLedgerEntry,
   lensPassed,
   workingTreePatchId,
 } from "./review-ledger.ts";
+import { type ReviewSeverity, SEVERITIES } from "./review-threshold.ts";
 import { trace, traceWarn } from "./trace.ts";
 
 import { execp } from "./exec.ts";
@@ -118,7 +120,7 @@ export function writeLensLedgerEntry(
   hasCritical?: boolean,
   /** #1537 — per-severity counts of the BLOCKING findings (see
    * `LedgerEntry.blockingCounts`). Undefined on callers that predate it. */
-  blockingCounts?: Partial<Record<"CRITICAL" | "HIGH" | "MEDIUM", number>>,
+  blockingCounts?: LedgerBlockingCounts,
   headSha?: string,
   head?: string,
   /** #988 — the branch ALREADY resolved by `runLensReview` (threaded by the
@@ -126,6 +128,15 @@ export function writeLensLedgerEntry(
   resolvedBranch?: string,
   /** #1127 — the operator passed `overrideCap: true`; recorded on the entry. */
   overrideCap?: boolean,
+  /**
+   * #1537 — the bar `threshold` was scored at, resolved by the caller. Read
+   * from the SAME value `lensPassed` derives `passed` from, so the row's
+   * `blockingBar` and its `passed` boolean can never disagree. Absent (an
+   * unrecognised value, or a caller that predates the field) means the row
+   * records NO bar: the round-cap rule's counts arm then fails closed on it.
+   * `LOW` is never a blocking bar, so it is not a bar either.
+   */
+  blockingBar?: ReviewSeverity,
   /**
    * #1934 — the identity `runLensReview` resolved ONCE for this review (see
    * `lensReviewPatchIdentity`). When present the write uses it instead of
@@ -171,6 +182,7 @@ export function writeLensLedgerEntry(
       detail: verdict,
       ...(hasCritical !== undefined ? { hasCritical } : {}),
       ...(blockingCounts ? { blockingCounts } : {}),
+      ...(blockingBar ? { blockingBar } : {}),
       ...(headSha ? { headSha } : {}),
       ...(overrideCap ? { overrideCap: true } : {}),
       ...(computed.diffSha256 ? { diffSha256: computed.diffSha256 } : {}),

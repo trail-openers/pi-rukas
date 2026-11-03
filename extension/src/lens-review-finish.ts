@@ -36,12 +36,31 @@ import type { LensReviewSummary } from "./lens-review-format.ts";
 import { postLensResidualDisclosure } from "./lens-review-residuals.ts";
 import type { Severity } from "./lens-review.ts";
 import type { LedgerEntry } from "./review-ledger.ts";
+import { type ReviewSeverity, SEVERITIES } from "./review-threshold.ts";
 
 /** #1537 — the per-severity counts of the BLOCKING findings that go on the
- * ledger row. LOW is never blocking, so it is not recorded. */
+ * ledger row. LOW is never blocking, so it is not recorded.
+ *
+ * Clamped AT THE WRITE SITE: a count is a non-negative integer or 0. The values
+ * come off `summary.bySeverity`, which is computed, but a row is persisted JSON
+ * that a later guard reads, and that reader (`nothingBlocking`) refuses any rank
+ * that is not an integer ≥ 0 — so a NaN or a negative here would be recorded as
+ * an unreadable row rather than as the zero it means. */
 function blockingCountsOf(summary: LensReviewSummary): LedgerEntry["blockingCounts"] {
   const { CRITICAL, HIGH, MEDIUM } = summary.bySeverity;
-  return { CRITICAL, HIGH, MEDIUM };
+  const atLeastZero = (n: number) => (Number.isInteger(n) && n > 0 ? n : 0);
+  return { CRITICAL: atLeastZero(CRITICAL), HIGH: atLeastZero(HIGH), MEDIUM: atLeastZero(MEDIUM) };
+}
+
+/** #1537 — the bar the row's counts were scored at: the SAME resolved threshold
+ * `lensPassed` derived `passed` from, so the two can never disagree. A value
+ * outside the canonical severity list is not a bar and records nothing (the
+ * reader then fails closed on the row rather than inventing a bar); `LOW` is
+ * never a blocking bar, so it is not recorded either. */
+function blockingBarOf(threshold: Severity): ReviewSeverity | undefined {
+  return SEVERITIES.includes(threshold as ReviewSeverity) && threshold !== "LOW"
+    ? (threshold as ReviewSeverity)
+    : undefined;
 }
 
 /**
@@ -117,6 +136,9 @@ async function finish(
     ledger.ledgerKey ?? branch,
     // #1127 — the operator's round-cap override, recorded on the entry.
     ledger.overrideCap,
+    // #1537 — the bar the counts above were scored at, from the same resolved
+    // threshold that decided `passed`.
+    blockingBarOf(threshold),
     // #1934 — the shared identity, so this row's `patchId` is the one the round
     // recorded against.
     ledger.identity,
