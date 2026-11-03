@@ -162,13 +162,17 @@ export function buildAdversarialPrompt(opts: {
     : "";
   const bounded = boundDiffForPrompt(opts.diff, opts.diffRange);
   const note = bounded.note ? NOTE_SEP + bounded.note : "";
+  // #1992 — the same lane rules the gateCmd arm spells out, for the tool path
+  // where nobody has run a gate: a check is still run only on the changed paths.
+  const laneRules =
+    "Do not debug a failure in code this diff did not change — report it in one line (tag it `OUT_OF_DIFF`, per your role prompt). Do not re-run an unchanged command against an unchanged tree to see whether its result changes. Do not create, edit or revert files in the worktree. Report your findings before your time runs out; an unfinished investigation is itself a finding that states what is known. When you have decided you are done, your very next message is the verdict report, with no further tool calls.";
   const checks = opts.gateCmd
     ? `Do NOT run the project's full gate — \`${opts.gateCmd}\` — or anything that wraps it or the whole test suite: the driver runs that exact command itself. Its verify gate had to clear this tree before you were dispatched, and it runs again on the consolidated tree before the pull request opens, so a re-run here costs the whole gate's wall-clock and proves nothing new. Run only targeted checks — the single test file, lint or type check that exercises the behaviour you are attacking.`
-    : "Run lint/type/test if any.";
+    : "Run only targeted checks — the single test file, lint or type check that exercises the changed files; never the whole-project suite.";
   return `You are reviewing the diff below. Context: ${opts.context}
 Round: ${opts.round} of ${opts.maxRounds}.
 
-Attack this implementation. Find edge cases, security holes, race conditions, API misuse, flawed assumptions. ${checks} Return a verdict line at the end exactly matching one of:
+Attack this implementation. Find edge cases, security holes, race conditions, API misuse, flawed assumptions. ${checks} ${laneRules} Return a verdict line at the end exactly matching one of:
   VERDICT: APPROVED
   VERDICT: MINOR_OBSERVATIONS
   VERDICT: ISSUES_FOUND

@@ -83,10 +83,9 @@ gh pr checks {PR_NUMBER}
 - 🔴 ANY failing check = REQUEST CHANGES immediately
 - ✅ All green = Proceed with code review
 
-**Step 2: Run Automated Checks**
-- SAST scan (semgrep, eslint-security)
-- Dependency audit (npm audit, pip-audit)
-- Type checking
+**Step 2: Targeted checks on the diff**
+- Run only checks scoped to the changed files — one test file, or a lint or type check of those paths
+- ❌ No whole-project suites, SAST scans or dependency scans for a diff-scoped review — the driver's gate owns those
 
 **Step 3: Manual Review**
 - Security analysis
@@ -96,19 +95,19 @@ gh pr checks {PR_NUMBER}
 
 ## Risk Classification
 
-| Files Touch | Risk | Review Time | Coverage |
-|-------------|------|-------------|----------|
-| Auth, payments, encryption | CRITICAL | 30+ min | 95% |
-| User data, APIs, DB writes | HIGH | 15+ min | 85% |
-| Internal APIs, utilities | MEDIUM | 10+ min | 80% |
-| Docs, config | LOW | 5+ min | 70% |
+| Files Touch | Risk | Coverage |
+|-------------|------|----------|
+| Auth, payments, encryption | CRITICAL | 95% |
+| User data, APIs, DB writes | HIGH | 85% |
+| Internal APIs, utilities | MEDIUM | 80% |
+| Docs, config | LOW | 70% |
 
 ## Default Stance
 
 **REQUEST CHANGES until proven safe.**
 
 Approval requires explicit evidence:
-- All automated checks passed
+- The targeted checks for the changed files passed — never a whole-project suite, which is the driver's gate
 - Manual review completed
 - No uncertainty about security
 
