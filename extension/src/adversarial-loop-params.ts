@@ -121,6 +121,8 @@ export type AdversarialLoopParams = ReportPolicy & {
    * `adversarial_loop` tool and the /work driver — never set it and keep the
    * reviewer's own `PI_ENSEMBLE_ADVERSARIAL_BOUND_MS` knob untouched. It can
    * only ever TIGHTEN that knob: the phase takes the smaller of the two.
+   * Asserted on the value the child received in
+   * `test-adversarial-reviewer-budget.ts` (and `test-adversarial-reviewer-bound.ts`).
    */
   childBoundMs?: number;
   /**
@@ -135,7 +137,8 @@ export type AdversarialLoopParams = ReportPolicy & {
    * A progress hook composed with (never replacing) the deck / slow-run feed
    * the phase already installs. Set ONLY by lean's review step — it is what
    * measures the turns / tokens levers and aborts the child through
-   * {@link AdversarialLoopParams.signal}.
+   * {@link AdversarialLoopParams.signal}. Both arms are asserted on what the
+   * child received in `test-adversarial-reviewer-budget.ts`.
    */
   onProgress?: (s: RunningState) => void;
 };

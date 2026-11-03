@@ -27,6 +27,8 @@ import { mock } from "bun:test";
 import type { ReviewDeps } from "../src/lean/review.ts";
 import type { RunningState } from "../src/progress.ts";
 import type { DispatchResult } from "../src/types.ts";
+import type { Outcome } from "../src/lean/state.ts";
+import { withEnv } from "./lib/env-scope.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import {
   BRANCH,
@@ -143,17 +145,8 @@ async function runReview(opts: {
   tokens?: number;
   env?: Record<string, string | undefined>;
   lens?: ReviewDeps["lens"];
-  /** Print a verdict from the child, so the kill is what ends the round rather
-   * than a child that had nothing to say. */
-  childVerdict?: boolean;
 }) {
   childCalls.length = 0;
-  const saved: Record<string, string | undefined> = {};
-  for (const [k, v] of Object.entries(opts.env ?? {})) {
-    saved[k] = process.env[k];
-    if (v === undefined) delete process.env[k];
-    else process.env[k] = v;
-  }
   const deps = reviewDeps(false);
   const cfg = defaultConfig();
   cfg.budgets.review = {
@@ -171,13 +164,15 @@ async function runReview(opts: {
   if (opts.lens) deps.lens = opts.lens;
   const { repoRoot, baseSha } = makeRepo();
   await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 2;\n" });
+  let res: { outcome?: Outcome; threw?: Error };
   try {
-    return await runStep(ctxFor(repoRoot, baseSha, BRANCH), deps);
+    // `withEnv` pins the case's env for the whole pass and puts back EXACTLY
+    // what was there, an absent variable included.
+    await withEnv(opts.env ?? {}, async () => {
+      res = await runStep(ctxFor(repoRoot, baseSha, BRANCH), deps);
+    });
+    return res;
   } finally {
-    for (const [k, v] of Object.entries(saved)) {
-      if (v === undefined) delete process.env[k];
-      else process.env[k] = v;
-    }
     cleanupRoots();
   }
 }

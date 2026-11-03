@@ -27,12 +27,13 @@
  * Offline: no model, no child, no token.
  */
 
+import { classifyDispatchOutcome } from "../src/adversarial-classify.ts";
+import { classifyReviewer } from "../src/adversarial-reviewer-arm.ts";
 import type { DispatchResult } from "../src/types.ts";
 import {
   deliver,
   deliverKilled,
   setNextProgressTurns,
-  setNextReviewerKillCause,
 } from "./lib/adversarial-reviewer-harness.ts";
 
 let exit = 0;
@@ -161,9 +162,7 @@ function assert(cond: boolean, msg: string) {
 // back as an ordinary verdict and the gate merged the head. And the kill must end
 // the round: a re-dispatch would spend the same ceiling twice.
 {
-  setNextReviewerKillCause("child-bound");
   const { loop, tags } = await deliverKilled("child-bound");
-  setNextReviewerKillCause(undefined);
   assert(
     loop.killCause === "child-bound",
     `(G) the loop's result CARRIES the reviewer's kill cause — the only thing lean's budget reader can read to name the minutes lever (got ${String(loop.killCause)})`,
@@ -230,6 +229,64 @@ function assert(cond: boolean, msg: string) {
   assert(
     boundLoop.killCause === "child-bound",
     `(H) positive control — the bound kill DOES ride out on the same path, so the two refusals above are a filter and not a dropped field (got ${String(boundLoop.killCause)})`,
+  );
+}
+
+// ── (I) THE CLASSIFIER'S OWN TWO GUARDS ═══════════════════════════════
+// The two conditions that keep the no-retry verdict from swallowing a child it
+// must not own, asserted on `classifyReviewer` directly because the loop cannot
+// reach either shape: a child that SAID something is not a child the caller
+// cancelled, and one the harness killed is not a child that died of nothing.
+{
+  const killed = (over: Partial<DispatchResult>): DispatchResult => ({
+    role: "adversarial-developer",
+    ok: false,
+    text: "",
+    toolUses: [],
+    ms: 1,
+    exitCode: 0,
+    ...over,
+  });
+  const spoken = killed({ text: "reviewed, but the reply held no marker" });
+  // The arm under test lives in the reviewer module; the shared classifier is
+  // imported too so "reached the ladder" is told apart from "the arm said so".
+  const noReply = classifyReviewer(killed({}));
+  assert(
+    noReply.cause === "crashed" && noReply.shouldRetry === false && noReply.maxRetries === 0,
+    `(I) a no-reply, no-cause, zero-exit reviewer is terminal — no second child from one ceiling (got ${noReply.cause}, retry=${String(noReply.shouldRetry)}, max=${String(noReply.maxRetries)})`,
+  );
+  assert(
+    noReply.cause !== "self-killed:abort" &&
+      !/cancelled by the caller's budget/.test(noReply.headline),
+    `(I) and it is no longer labelled an abort it never carried — the child reported NO kill cause, so naming one is a claim nothing recorded (cause ${noReply.cause})`,
+  );
+  assert(
+    /caller|cancel/i.test(noReply.headline),
+    `(I) but the headline still says what IS known: the caller ended it, so the operator reads a cancellation and not a crash (${noReply.headline})`,
+  );
+  // Same `!ok` / exit 0 / no-cause child, the only difference the text guard.
+  const shared = classifyDispatchOutcome(spoken);
+  const spoke = classifyReviewer(spoken);
+  assert(
+    shared.shouldRetry === true && shared.maxRetries === 1,
+    `(I) precondition: the SHARED ladder retries this shape, so the assertion below is about the guard and not about both saying the same thing (retry=${String(shared.shouldRetry)}, max=${String(shared.maxRetries)})`,
+  );
+  assert(
+    spoke.shouldRetry === true && spoke.maxRetries === 1,
+    `(I) a child that PRINTED something is NOT given the arm's no-retry verdict — the guard is the empty text, not the ok flag (retry=${String(spoke.shouldRetry)}, max=${String(spoke.maxRetries)})`,
+  );
+  // The harness's own honesty condition, asserted rather than assumed: `spawn.ts`
+  // marks a killed child failed whatever its exit code (`failedByKill`). It is
+  // what makes a kill a FAILURE rather than a completed assignment that merely
+  // carried a cause, so a killed child that also printed its verdict — the shape
+  // `test-lean-review-adversarial-budget-stop.ts` drives — is refused by the loop
+  // instead of approved on a child the ceiling ended.
+  const verdict = "VERDICT: APPROVED";
+  const okKilled = classifyReviewer({ ...killed({ text: verdict }), ok: true });
+  const deadKilled = classifyReviewer(killed({ text: verdict }));
+  assert(
+    okKilled.cause === "success" && deadKilled.cause === "crashed",
+    `(I) and a killed child really does come back FAILED — ok:true on a kill would let the loop approve a child the ceiling ended (ok:${okKilled.cause} vs !ok:${deadKilled.cause})`,
   );
 }
 
