@@ -201,9 +201,10 @@ async function runTests() {
       `checked 6 dirs (100, 200, 300, 500, 600, issue-553-notes), got ${res.checked}`,
     );
     assertTrue(sweptNames.length === 2, `two rm's issued, got ${sweptNames.length}`);
+    // The rm's target is the fact under test; the sweep's removal order is not.
     assertTrue(
-      sweptNames[0]?.includes(JSON.stringify(bDir)) === true,
-      `rm targeted the orphan path: ${sweptNames[0]}`,
+      sweptNames.some((cmd) => cmd === `rm -rf ${JSON.stringify(bDir)}`),
+      `an rm targeted the orphan path: ${sweptNames.join(" | ")}`,
     );
 
     assertTrue(existsSync(aDir), "(a) numeric dir with sibling .json survives");
