@@ -28,7 +28,6 @@
 
 import { lensFixDelta } from "../fix-delta.ts";
 import { buildEvidence, runClaimScan } from "../lens-evidence.ts";
-import type { Severity } from "../lens-review-format.ts";
 import { traceWarn } from "../trace.ts";
 import type { AdversarialVerdictStatus } from "../types.ts";
 import type { DispatchResult } from "../types.ts";
@@ -196,10 +195,6 @@ export async function lensGate(
     rows: DispatchUsageRow[];
     /** The step's armed budget, threaded to the six lens children. */
     budget: BudgetArms;
-    /** The project's blocking severity, resolved once by the step and threaded
-     * to the review layer so the verdict, the ledger row and the step's decision
-     * to buy a fixer all read one bar. */
-    threshold: Severity;
   },
 ): Promise<LensRound & { head: string }> {
   const head = await reviewedHead(deps, ctx.repoRoot, opts.branch, opts.rows);
@@ -253,7 +248,6 @@ export async function lensGate(
       extraFindings,
       headless: deps.headless,
       budget: opts.budget,
-      threshold: opts.threshold,
     });
   } catch (err) {
     throw new ReviewInfraError(

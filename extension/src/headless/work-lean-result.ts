@@ -11,12 +11,12 @@
  * supposed to be comparable against. This module is the projection that lets
  * it keep one: the same field names, the same meanings, exactly one issue.
  *
- * The one field with no counterpart in `work` is `prState`. Exit 10 covers every
- * lean run that reaches `publish` and does not merge, because the handback is one
- * exit code for many causes: a green PR waiting for a merge, a draft behind
- * unverified bytes, a gate that refused to certify the head, and a run that opened
- * nothing. `status`/`cap` alone cannot tell those apart, and the issue asks for a
- * typed answer, so `prState` is the third discriminator beside them.
+ * The one field with no counterpart in `work` is `prState`. Lean exits 10 for
+ * EVERY run that reaches `publish`, because `review`, `ci` and `land` are not
+ * built: exit 10 covers a green PR waiting for a merge, a draft behind
+ * unverified bytes, and a run that opened nothing. `status`/`cap` alone cannot
+ * tell those apart, and the issue asks for a typed answer, so `prState` is the
+ * third discriminator beside them.
  *
  * Why the caps are chosen the way they are. `work`'s cap vocabulary is a closed
  * union checked against the driver's `WorkCapLiteral`, and no entry there

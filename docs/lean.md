@@ -14,8 +14,8 @@ a model's recollection of what happened.
 
     ready → specify → build → challenge → build → verify → publish → review → ci → land
 
-Every state in that walk has a handler. A review that fixed its head re-enters
-`verify` before it goes to `ci` — see [`review`](#the-steps).
+`ci` and `land` are in the table but have no handlers yet — see
+[Limits today](#limits-today). A run that reaches either ends at `handback`.
 
 | Step | Who | What it does |
 |---|---|---|
@@ -25,9 +25,8 @@ Every state in that walk has a handler. A review that fixed its head re-enters
 | `challenge` | adversary | Tries to break the builder's claim with new tests. Runs at most once. New tests earn one more build round; none — or a round stopped by its own budget — go to verify. |
 | `verify` | driver | The run's own gate, no model in it: clean tree, frozen-test integrity (blobs still hash to their records), a compiler canary, every frozen test, then `verify.fast` / `verify.full`, then the spec's `command` criteria. `green` or `red`. |
 | `publish` | driver | Pushes the branch under a lease bound to a sha it just read from origin, and opens (or reuses) the PR. Refuses to publish a green it did not observe at the head it is pushing. |
-| `review` | both gates, driver-routed | The run's gate. One report-only adversarial pass and one six-lens round at a resolved commit from origin; findings between them earn a bounded fix round in a disposable worktree of its own. Both gates clean passes, on one of two kinds: `done` when no fix round ran, which goes to `ci`, or `fixed` when a round integrated and pushed commits, which goes back through `verify` — the green `ci` demands has to be about the head the PR stands on. Anything else — findings at the bound, a gate with no verdict, a fixer that rewrote the frozen contract, a child its budget stopped — throws and the run hands back. |
-| `ci` | driver | Observes the pipeline: the forge's required-check verdict (`mergeStateStatus` + `gh pr checks`) read at the PR head, and the project's full tier run in the run's worktree — both about the newest decided `verify`'s `verifiedHead`, which the disk is re-read against immediately before the tier. `green` or `red`; a worktree that has moved off that head throws. |
-| `land` | driver | The one irreversible act. Refuses unless `.pi/work.json` **at the run's base** grants `autoMerge: true`, the forge's merge evidence is clean, and the PR head equals the verified head; then merges squashed through the adapter, pinned to that head, and reads the result back. `merged` or `refused`; it never throws. |
+| `review` | both gates, driver-routed | The run's gate. One report-only adversarial pass and one six-lens round at a resolved commit from origin; findings between them earn a bounded fix round in a disposable worktree of its own. Both clean is `done`; anything else — findings at the bound, a gate with no verdict, a fixer that rewrote the frozen contract — throws and the run hands back. |
+| `ci`, `land` | — | In the table, not in the build. Their handlers throw `work-lean stage <state> is not built yet`. |
 | `handback` | driver | Posts one issue comment saying what the run still needs, then ends the run. |
 
 Two refusals sit beside the main line: `decline` posts the rules an unreadable
@@ -128,9 +127,8 @@ means defaults.** An invalid file is *not* defaulted: it raises
 - **`verify.testDir` / `verify.testGlob`** — a pair or neither: where the
   adversary's acceptance tests live and what they are called, so the frozen
   tests land where your own CI runs them.
-- **`autoMerge`** — boolean, default `false`. **The merge grant**: `land` reads
-  it at the run's base sha and refuses the merge without it. An unreadable
-  config refuses too, naming the read rather than pretending the project declined.
+- **`autoMerge`** — boolean, default `false`. **Read, not acted on.** Nothing
+  consumes it yet; the land step will. Today it records intent only.
 - **`budgets`** — per state, each `{turns, tokens, minutes}`, non-negative
   integers (`0` is unbounded for turns and tokens, never for minutes), merged
   **over** the shipped defaults, so naming `build` alone keeps the defaults for
@@ -145,26 +143,20 @@ pins the table against literals, so changing a number is a deliberate edit):
 |---|---|---|---|
 | `specify` | 250 | 30M | 20 |
 | `build` | 400 | 60M | 45 |
-| `challenge` | 400 | 25M | 15 |
-| `review` | 400 | 20M | 15 |
-| `ci` | 0 | 0 | 30 |
+| `challenge` | 200 | 25M | 15 |
+| `review` | 150 | 20M | 15 |
+| `ci` (no handler yet) | 0 | 0 | 30 |
 
 **When a budget fires.** `turns` and `tokens` abort at once at a turn boundary.
 `minutes` arms the child bound (`spawn-child-bound.ts`): a **wrap-up steer at the
 bound**, then a kill at **bound + grace (`PI_ENSEMBLE_CHILD_BOUND_GRACE_MS`,
-10 min)**. `turns` bounds ONE CHILD, not a step's whole spend. For
-`specify`, `build` and `challenge` a breach is a **verdict** the table routes:
-the step returns `{kind: "budget"}` with `limit`, `value` and `used`, a
-`specify` or `build` breach ends the run (`handback`, **10**), and a
-**`challenge`** breach **continues to `verify`** like a round that added no tests
-— optional strengthening, and a non-converged round says nothing about what
-`verify` still checks. **`review` is the exception**: it has no `budget` kind, so
-a stopped review child THROWS `ReviewInfraError` whose message is the shared
-`budgetSentence(state, fired)` and whose rows are the children the step bought;
-the run hands back (**10**) with that sentence as its cause, on the step record
-and in the host's `failure.message` alike. A review step therefore never carries
-the `limit`/`value`/`used` trio — the prose is its channel. `PI_ENSEMBLE_DISPATCH_CAPS=0`
-makes the wall clock inert, and the step says so.
+10 min)**. A breach is a **verdict**, not infrastructure: the step returns
+`{kind: "budget"}` with `limit`, `value` and `used`; the table routes it, and
+**the step decides the route**. A `specify` or `build` breach ends the run
+(`handback`, **10**); a **`challenge`** breach **continues to `verify`** like a
+round that added no tests — optional strengthening, and a non-converged round says
+nothing about what `verify` still checks. `PI_ENSEMBLE_DISPATCH_CAPS=0` makes the
+wall clock inert, and the step says so.
 
 **Bounds on a frozen test.** A kept acceptance test must be new at the base
 commit, at most **150 lines** (`MAX_TEST_LINES`), at most **24 KiB**
@@ -196,7 +188,7 @@ reads one document. The one field `work` never writes is **`prState`**:
 
 | `prState` | When |
 |---|---|
-| `ready` | publish recorded `draft: false` AND the newest DECIDED `verify` is `green` with `verifiedHead` **equal** to publish's `publishedHead`, AND no DECIDED `ci` has gone against it. A run with **no `ci` step** is unjudged by the pipeline, not refused — a `ci` that ran blocks `ready` only when its newest step was not green |
+| `ready` | publish recorded `draft: false` AND the newest DECIDED `verify` is `green` with `verifiedHead` **equal** to publish's `publishedHead`, AND no DECIDED `ci` has gone against it. A run with **no `ci` step** is unjudged by the pipeline, not refused — `ci` is not built, so it blocks `ready` only when it ran non-green |
 | `draft` | publish recorded `draft: true`, or any half of the `ready` evidence is missing |
 | `none` | no decided `publish` step left a PR URL |
 
@@ -269,15 +261,19 @@ recorded; it never changes the verdict.
 
 ## Limits today
 
-- **`review` is a gate, not a grant.** It runs both gates against a commit read
-  from origin and can only pass (`done`, or `fixed` after a round that pushed) or
-  throw. A pass still has to clear `ci` and the `land` grant to merge — a cleared
-  review is not by itself a mergeable run, and a run that never earns the merge
-  leaves the PR and a handback.
-- **`land` takes the merge grant from `.pi/work.json`, not from `AGENTS.md`.**
-  `/work` resolves its merge authority from the project's doctrine at the cycle's
-  base sha plus executed forge evidence (#380 / #407); lean's `land` asks the
-  forge for its evidence but reads the grant from the config alone.
+- **No `ci` or `land` steps.** Those states and their edges exist in the table;
+  their handlers throw `work-lean stage <state> is not built yet`, which the
+  engine turns into `handler error at <state>: …`, a handback, exit 10.
+  Nothing merges, so **`autoMerge` is read and never acted on** — and when
+  `land` is built it will need the same merge-authority resolution `/work` has
+  (#380 / #407): a grant read from the project's `AGENTS.md` at the cycle's
+  base sha, plus executed forge evidence, before anything merges.
+- **`review` is built, and it does not clear the run on its own.** It runs both
+  gates against a commit read from origin and can only say `done` or throw — a
+  `done` moves the run to `ci`, which is unbuilt. A cleared review is therefore
+  not a mergeable run: the handback and the PR are still what the run leaves.
+- In practice every run that reaches `publish` ends in a handback, because a
+  state past it is unbuilt. Treat the PR, not the exit code, as the artefact.
 - **The old `/work` driver is a separate program.** `extension/src/work-driver.ts`
   with state at `.pi/work-state/<issue>.json`; lean is
   `extension/src/lean/` with state at `.pi/lean-state/<issue>.json`. Neither

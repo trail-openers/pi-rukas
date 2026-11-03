@@ -31,6 +31,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { LensRunResult } from "../src/lens-review-types.ts";
 import { LENS_ROSTER } from "../src/lens-roster.ts";
+import { resolveHeadSha } from "../src/review-head-sha.ts";
+import { identityBase } from "../src/review-ledger-path.ts";
 import {
   readDoctrineDocsAtBase,
   resolveLensReviewThreshold,
@@ -117,6 +119,14 @@ const judgePrompts: string[] = [];
  * doctrine). */
 const readDoctrine = (baseRef: string | undefined) =>
   readDoctrineDocsAtBase(realExec, repo, baseRef);
+/** The tool path's doctrine ref, computed by the same two resolvers the tool
+ * uses (`identityBase` → the remote mainline tip, then its SHA). Case (4) needs
+ * the ref the tool WILL read at, to set against the ref the caller named. */
+const thresholdBaseRefForTest = async (cwd: string): Promise<string | undefined> => {
+  const base = await identityBase(realExec, cwd);
+  if (!base.ok) return undefined;
+  return await resolveHeadSha(cwd, `${base.remote}/${base.mainline}`, realExec);
+};
 /** One judge, shared by the spawn seam below and by the resolver case: the tool
  * path builds `judgePolicy` itself, so the child is the only seam it has. */
 const judgeAnswer = (prompt: string) => ({
@@ -294,41 +304,107 @@ await withEnv(
         );
       }
 
-      // ── (4) THE RESOLVER is the shared one, and the tool has no way to be told a
-      // bar: the parameters expose none, so a model cannot pick its own.
+      // ── (4) THE BAR IS NOT THE CALLER'S TO CHOOSE. `base` and `head` are model
+      // input, so a tool that read doctrine at either let the reviewed branch pick
+      // the severity it is judged against. This round is a SAME-ROUND comparison:
+      // one MEDIUM finding (which the project's HIGH bar discloses and the shipped
+      // MEDIUM default blocks) plus a judge that answers HIGH only for the MAINLINE
+      // doctrine's sentence and CRITICAL for the branch's. So exactly one variable
+      // — which ref the doctrine was read at — decides the verdict: reading the
+      // mainline tip gives HIGH and the finding is disclosable (APPROVED, and the
+      // ledger row passes); reading the ref the caller named gives CRITICAL and the
+      // same finding blocks. A fixture cannot pick its way to the green answer:
+      // each arm makes the other arm's verdict the failure.
       {
-        // The documents the tool path reads for this clone, through the production
-        // executor: asserted rather than assumed, because a resolver handed no
-        // documents returns the default and the case below would still "pass".
-        const docs = await readDoctrine(baseSha);
-        assert(
-          docs.some((d) => d.file === "AGENTS.md" && d.text.includes(HIGH_QUOTE)),
-          `(4) the doctrine read at the base commit returned the project's AGENTS.md with its bar — the documents the judge is paid to read exist (${JSON.stringify(docs.map((d) => d.file))})`,
+        // The branch's own commit states a laxer bar, and the judge below quotes it
+        // verbatim — so a review that read THAT file really would see CRITICAL.
+        const LAX_QUOTE = "Only CRITICAL findings block the merge.";
+        writeFileSync(
+          path.join(repo, "AGENTS.md"),
+          `# Contributing\n\n## 1. Gates\n\n**${LAX_QUOTE}**\n`,
         );
-        const viaResolver = await resolveLensReviewThreshold({
-          judge: async (prompt: string) => {
-            judgePrompts.push(prompt);
-            return judgeAnswer(prompt);
-          },
+        git("add", "AGENTS.md");
+        git("commit", "-q", "-m", "the branch loosens its own bar");
+        const laxHead = git("rev-parse", "HEAD");
+        git("checkout", "-q", "HEAD~1", "--", "AGENTS.md");
+        // Both documents exist and state different bars, so the judge's answer is
+        // determined by which ref was read and by nothing else.
+        const [laxDocs, mainDocs] = await Promise.all([
+          readDoctrine(laxHead),
+          readDoctrine(baseSha),
+        ]);
+        assert(
+          laxDocs.some((d) => d.text.includes(LAX_QUOTE)) &&
+            mainDocs.some((d) => d.text.includes(HIGH_QUOTE)),
+          `(4) the two doctrines genuinely differ — the caller's ref says only CRITICAL blocks, the mainline's says HIGH (${JSON.stringify([laxDocs, mainDocs].map((d) => d.map((x) => x.file)))})`,
+        );
+        // The judge quotes whichever sentence the documents it was handed contain.
+        const judgeBoth = async (prompt: string) => {
+          judgePrompts.push(prompt);
+          const quote = prompt.includes(LAX_QUOTE)
+            ? LAX_QUOTE
+            : prompt.includes(HIGH_QUOTE)
+              ? HIGH_QUOTE
+              : undefined;
+          return {
+            ok: true,
+            toolUses: [
+              {
+                name: "report_policy",
+                arguments: quote
+                  ? { verdict: "permitted", quote, sourceFile: "AGENTS.md" }
+                  : { verdict: "unstated" },
+              },
+            ],
+          };
+        };
+        const atMainline = await resolveLensReviewThreshold({
+          judge: judgeBoth,
           execFn: realExec,
           repoRoot: repo,
-          baseRef: baseSha,
+          baseRef: await thresholdBaseRefForTest(repo),
+        });
+        const atCallerRef = await resolveLensReviewThreshold({
+          judge: judgeBoth,
+          execFn: realExec,
+          repoRoot: repo,
+          baseRef: laxHead,
         });
         assert(
-          viaResolver === "HIGH",
-          `(4) the shared resolver reads this project's bar at its base commit (got ${viaResolver}) — every lens path asks for this one value`,
+          atMainline === "HIGH" && atCallerRef === "CRITICAL",
+          `(4) ONE VARIABLE FLIPS THE BAR: read at the mainline tip the round is judged HIGH; read at the ref the caller named it is judged CRITICAL — the bar the branch chose (mainline=${atMainline}, caller's ref=${atCallerRef})`,
         );
-        const src = readFileSync(
-          path.join(import.meta.dirname, "..", "src", "lens-review-tool.ts"),
-          "utf8",
-        );
+        // And the tool path takes the mainline one: a MEDIUM-only round approves and
+        // its ledger row passes, which is what the HIGH bar alone produces. The
+        // attack's shape: the caller hands its own lax commit as BOTH ends of the
+        // range and asks for the whole of it.
+        const before = sent.length;
+        const tool = tools.get("dispatch_lens_review");
+        if (!tool) throw new Error("the lens review tool did not register");
+        const handle = (await tool.execute("t-lax", {
+          cwd: repo,
+          diff: "diff --git a/src-a.ts b/src-a.ts\n+export const b = 2;",
+          branch: "feature/x",
+          base: laxHead,
+          head: laxHead,
+          full: true,
+        })) as { content?: { text?: string }[] };
         assert(
-          /resolveLensReviewThreshold\(/.test(src),
-          "(4) the tool module resolves the bar itself rather than leaving runLensReview at its default",
+          (handle.content?.[0]?.text ?? "").includes("Dispatched async lens review"),
+          "(4) the round ran through the registered tool, not a seam below it",
         );
+        await waitFor(() => sent.length > before);
+        const report = sent.slice(before).join("\n");
         assert(
-          !/threshold:\s*Type\./.test(src) && !/threshold:\s*params/.test(src),
-          "(4) and the bar is not a tool parameter: a model cannot choose the severity it is judged against",
+          /^Code review verdict \(\d+ lenses\): APPROVED/m.test(report),
+          `(4) THE TOOL PATH JUDGES AT THE MAINLINE, NOT AT THE REF THE CALLER NAMED: its MEDIUM-only round discloses rather than blocks. At the bar in the caller's own commit the same round is ISSUES_FOUND (${report.slice(0, 240).replace(/\n/g, " ")})`,
+        );
+        const row = ledgerRows()
+          .filter((e) => e.kind === "lens")
+          .pop();
+        assert(
+          row?.passed === true,
+          `(4) and the LEDGER AGREES: passed=true against the mainline's HIGH bar (got ${String(row?.passed)}, detail ${String(row?.detail)})`,
         );
       }
     } finally {

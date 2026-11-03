@@ -14,20 +14,20 @@ import { buildEvidence, runClaimScan } from "./lens-evidence.ts";
 import { runLensReview } from "./lens-review.ts";
 import { appendGuardWriteEvents, runGuardMemoryWrites } from "./lens-vipune-write.ts";
 import { DRIVER_MEMORY_TYPE, writeFindings } from "./memory-write.ts";
-import { readDoctrineDocsAtBase } from "./review-threshold-at-base.ts";
 import { resolveReviewThreshold } from "./review-threshold.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import { cycleChildOpts } from "./work-cycle-trust.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import { readAllMergedDiffs } from "./work-driver-diff.ts";
+import { readDoctrineAtBase } from "./work-driver-doctrine.ts";
 import { recordLensResidualsPosted } from "./work-driver-draft-disclosure.ts";
 import { lastCapIsRearmFailure, rearmDraftForReview } from "./work-driver-draft-rearm.ts";
 import { lensCapKillEvent, lensTimingsOf } from "./work-driver-lens-capkill.ts";
 import { parkLensRoundNoFit } from "./work-driver-lens-fix-budget.ts";
 import { lensRoundChildBoundMs } from "./work-driver-lens-round-budget.ts";
 import { applyLensVerdict } from "./work-driver-lens-verdicts.ts";
-import { type DoctrineDoc, judgePolicy } from "./work-driver-policy.ts";
+import { DOCTRINE_FILES, type DoctrineDoc, judgePolicy } from "./work-driver-policy.ts";
 import { recordResidualsPost } from "./work-driver-pr-gone.ts";
 import { verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
 import { withUsage } from "./workflow-state-events-usage.ts";
@@ -170,11 +170,13 @@ export async function runLens(
     );
   }
 
-  // The blocking bar is the project's, not this code's. The doctrine read is the
-  // shared one (review-threshold-at-base.ts) so this step, the lens tool and
-  // lean read the same documents at the same ref; doctrine is read at baseSha so
-  // a cycle cannot lower its own bar mid-run (#406's shape).
-  const docs = await readDoctrineDocsAtBase(execFn, ctx.repoRoot, ps.baseSha);
+  // The blocking bar is the project's, not this code's. Doctrine is read at
+  // baseSha so a cycle cannot lower its own bar mid-run (#406's shape).
+  const docs: DoctrineDoc[] = [];
+  for (const file of DOCTRINE_FILES) {
+    const read = await readDoctrineAtBase(execFn, ctx.repoRoot, ps.baseSha, file);
+    if (read.text !== undefined) docs.push({ file, text: read.text });
+  }
   const thresholdDecision = await resolveReviewThreshold(
     judgePolicy(ctx.repoRoot, {
       processGroup: ctx.processGroup === true,

@@ -8,9 +8,12 @@
  * judge. What this module adds is the two choices every caller would otherwise
  * make for itself and could each get wrong in a different way:
  *
- *   - **where the doctrine is read from** — a commit, never the working tree.
- *     A review that read doctrine from disk would honour a sentence a subagent
- *     wrote during the very cycle it is grading (#406's shape);
+ *   - **where the doctrine is read from** — a commit, never the working tree,
+ *     and never a name a caller was handed. A review that read doctrine from
+ *     disk would honour a sentence a subagent wrote during the very cycle it is
+ *     grading (#406's shape); one that read it at a branch or tag name, or at a
+ *     ref the reviewed branch named itself, would honour a bar that branch
+ *     wrote;
  *   - **what happens when there is nothing to read** — the shipped MEDIUM
  *     default. Absent doctrine, an unreadable one, or one that never mentions
  *     review severity is the *normal* case, so the read never blocks a review.
@@ -25,8 +28,9 @@
  * driver's lens step does — must ask for one read, not two.
  */
 
+import { isFullCommitSha } from "./commit-sha.ts";
 import { type ReviewSeverity, resolveReviewThreshold } from "./review-threshold.ts";
-import { trace } from "./trace.ts";
+import { trace, traceWarn } from "./trace.ts";
 import { readDoctrineAtBase } from "./work-driver-doctrine.ts";
 import { DOCTRINE_FILES, type DoctrineDoc, type PolicyJudgeFn } from "./work-driver-policy.ts";
 
@@ -58,9 +62,21 @@ export async function readDoctrineDocsAtBase(
   repoRoot: string,
   baseRef: string | undefined,
 ): Promise<DoctrineDoc[]> {
+  // A ref this module resolves is a commit, and nothing else: a branch or tag
+  // name names a moving object, so doctrine read at one is whatever that name
+  // happens to point at while the review runs. The callers that resolve a ref
+  // themselves (`lens-review-tool.ts`, `lean/review-deps.ts`) pass a SHA; a
+  // caller that hands a name gets no documents, which is the shipped default
+  // rather than an error — the same shape as an absent doctrine.
+  const ref = baseRef !== undefined && isFullCommitSha(baseRef) ? baseRef : undefined;
+  if (baseRef !== undefined && ref === undefined) {
+    traceWarn(
+      `lens review — refusing to read doctrine at non-commit ref "${baseRef.slice(0, 40)}"; using the default blocking severity`,
+    );
+  }
   const docs: DoctrineDoc[] = [];
   for (const file of DOCTRINE_FILES) {
-    const read = await readDoctrineAtBase(execFn, repoRoot, baseRef, file);
+    const read = await readDoctrineAtBase(execFn, repoRoot, ref, file);
     if (read.text !== undefined) docs.push({ file, text: read.text });
   }
   return docs;
@@ -70,10 +86,12 @@ export async function readDoctrineDocsAtBase(
  * The blocking bar for one review: doctrine read at `baseRef`, judged by `judge`,
  * defaulting to MEDIUM when the project says nothing.
  *
- * `baseRef` is any ref git can read (`readDoctrineAtBase` hands it to `git show`),
- * and an unreadable or absent one yields no documents — which is the default, not
- * an error. Traces the outcome and where it came from, so an operator reading a
- * trace can tell which bar a round was judged against.
+ * `baseRef` must be a full commit SHA — `readDoctrineDocsAtBase` refuses
+ * anything else, so the bar cannot move under a running review because someone
+ * pushed to the name it was read at. An unreadable or absent ref yields no
+ * documents, which is the default, not an error. Traces the outcome and where it
+ * came from, so an operator reading a trace can tell which bar a round was
+ * judged against.
  */
 export async function resolveLensReviewThreshold(opts: {
   /** The judge that reads the doctrine. Supplied by the caller: this module does
@@ -81,11 +99,12 @@ export async function resolveLensReviewThreshold(opts: {
   judge: PolicyJudgeFn;
   execFn: ExecFn;
   repoRoot: string;
-  /** The ref the doctrine is read at (`git show <ref>:<file>`, which accepts a
-   * commit, a tree-ish or a `<rev>:<path>`). Undefined → no doctrine → the
-   * default. Callers pass a commit SHA wherever one is known, so the bar cannot
-   * move under a running review; the tool path is the one caller that may hand
-   * a `<remote>/<mainline>` ref. Anything git cannot read yields no documents. */
+  /** The ref the doctrine is read at, and only ever a full commit SHA —
+   * `readDoctrineDocsAtBase` refuses a branch or tag name and falls to the
+   * default. Undefined → no doctrine → the default. Every caller resolves a
+   * commit itself (the driver and lean pass the run's base; the tool path
+   * resolves the remote mainline tip), so the bar cannot move mid-review and no
+   * caller can be handed a ref the reviewed branch chose. */
   baseRef: string | undefined;
   /** Where the decision was made, for the decision log. */
   where?: { repoRoot?: string; issues?: readonly number[] };

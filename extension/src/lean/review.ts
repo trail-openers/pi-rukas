@@ -7,9 +7,7 @@
  * step routes its verdict) and `runLensReview` for the six lenses. What is
  * lean's own is which tree they read, who fixes what they find, and when the
  * loop stops. Where the bytes are and how they move is `review-git.ts` and
- * `review-tree.ts`; the shapes the two gates are called with are
- * `review-args.ts`; what the step says about its own cost is `review-step.ts`;
- * this file is the decision procedure.
+ * `review-tree.ts`; this file is the decision procedure.
  *
  * **Both gates read a resolved commit, never a working copy.** A gate approves
  * the bytes at a commit, and the only value that cannot be dirtied underneath
@@ -36,54 +34,32 @@
  * in `.pi/work.json` is the money, armed on every child the step dispatches
  * through the same `armBudget` the other three dispatching steps use.
  *
- * **What ends the step.** Both gates clean ends it, on one of two kinds that
- * differ only in what the step did to the branch: `done` when no fix round ran and
- * the run goes to `ci`, or `fixed` when a fix round pushed commits and the run
- * must re-verify the head it now has. Which of the two is read from the durable
- * log, not from a variable — see `fixedFromLog` in `review-log.ts` for why a
- * closure cannot answer that question for a resumed attempt.
- *
+ * **What ends the step.** Both gates clean is `done`, and the run goes to `ci`.
  * Anything else THROWS: findings still open at the bound, a gate that produced
  * no verdict, a head that moved or vanished mid-round, a fix round that changed
  * nothing, a fixer that rewrote the frozen contract, an integration that could
- * not be proven — and a child the operator's budget stopped. A throw is the
- * engine's infrastructure path — the run hands back at exit 10 with the cause
- * named, rather than carrying an unreviewed head forward on a pass it did not
- * earn. A gate that did not run is never a gate that passed.
- *
- * **A budget stop is a throw here, not a routed kind — which is the opposite of
- * `specify`, `build` and `challenge`.** Those three have a table arrow for
- * `budget` and decide with it: `specify`/`build` hand back, `challenge` continues
- * to `verify` (#1883). `review` has two kinds and neither is a stop: anything that
- * is not both gates clearing must not route onward. So all three reads of a
- * stopped child — the adversarial reviewer, and the fixer on each of the two fix
- * arms — throw {@link ReviewInfraError} whose message is the shared
- * `budgetSentence` and whose rows are the children the step bought. Returned as
- * `{kind: "budget"}` instead it reaches `settle` with no arrow for the pair and
- * the run's cause reads `no transition for review + "budget"`: a broken-looking
- * table where the truth is a stopped child.
+ * not be proven. A throw is the engine's infrastructure path — the run hands
+ * back at exit 10 with the cause named, rather than carrying an unreviewed head
+ * forward on a `done` it did not earn. A gate that did not run is never a gate
+ * that passed.
  */
 
-import type { Verdict } from "../lens-review-format.ts";
-import type { Finding } from "../lens-review-types.ts";
+import type { LensReviewSummary, Verdict } from "../lens-review-format.ts";
+import type { Finding, LensRunResult } from "../lens-review-types.ts";
 import type { runLensReview } from "../lens-review.ts";
 import { traceWarn } from "../trace.ts";
-import type { DispatchResult, DispatchSpec } from "../types.ts";
+import type { DispatchResult, DispatchSpec, DispatchUsage } from "../types.ts";
+import type { ExecFn } from "../worktree.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
+import type { BuildDispatch } from "./build-types.ts";
 import { frozenFromLog } from "./build.ts";
+import type { WorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { assertReviewEntry } from "./review-entry.ts";
 import { adversarialGate, lensGate } from "./review-gates.ts";
 import { fixRound, reviewedHead } from "./review-git.ts";
-import {
-  fixRunId,
-  fixRunIdFromLog,
-  fixedFromLog,
-  prNumberFromLog,
-  reviewAttemptFromLog,
-} from "./review-log.ts";
+import { fixRunId, fixRunIdFromLog, prNumberFromLog, reviewAttemptFromLog } from "./review-log.ts";
 import { assertFixAdvanced, stagnantAgainstFix } from "./review-progress.ts";
-import { budgetStopped, passKind } from "./review-step.ts";
 import { closeFixTrees } from "./review-tree.ts";
 import { specifyBranch } from "./specify-tree.ts";
 import { DISPATCHES_MAX_ROWS } from "./state-outcome.ts";
@@ -91,21 +67,15 @@ import { DISPATCHES_MAX_ROWS } from "./state-outcome.ts";
 // importing this handler back. Re-exported so every existing `import { ... }
 // from "./review.ts"` — including the smoke fixtures' — keeps working.
 export { ReviewInfraError } from "./review-errors.ts";
-// The shapes the step's participants compile against live in `review-args.ts`:
-// re-exported so every existing `import { ... } from "./review.ts"` — including
-// the smoke fixtures' — keeps working.
-export type {
-  AdversarialArgs,
-  FixRunId,
-  LensArgs,
-  LensRound,
-  ReviewDeps,
-} from "./review-args.ts";
-import type { ReviewDeps } from "./review-args.ts";
 import { ReviewInfraError } from "./review-errors.ts";
 import type { Outcome } from "./state.ts";
-import type { BudgetArms, BudgetFired, DispatchUsageRow } from "./step-budget.ts";
-import { armBudget, budgetFor } from "./step-budget.ts";
+import type { BudgetArms, BudgetFired, DispatchUsageRow, FixRunId } from "./step-budget.ts";
+import { armBudget, budgetFor, budgetVerdictWithRows } from "./step-budget.ts";
+
+/** The step's own throw: the run hands back, with this sentence as its cause. */
+
+/** The state this step records under, for its budget verdict and its cause lines. */
+const STEP_NAME = "review";
 
 /**
  * How many fix rounds this step will pay for. A module constant, not an
@@ -115,14 +85,13 @@ import { armBudget, budgetFor } from "./step-budget.ts";
  * stated.** The constant bounds the ROUNDS (reviewer + six lenses + fixer), and
  * the budget bounds the MONEY. They are never divided into each other. Deriving
  * the round cap from the turn budget (`turns / TURNS_PER_ROUND`) shipped a
- * default budget a `max(1, 150/300)` = **one round**, and one round can
+ * default 150-turn budget a `max(1, 150/300)` = **one round**, and one round can
  * fix but can never re-review — so the step certified a head no gate had looked
  * at since its own fixer moved it. That is the defect this constant closes. The
  * budget stays fully live and stays the stop condition the operator owns: it is
- * armed on every child through `armBudget`. A child that spends it is NOT a
- * routed verdict the way `build`/`challenge`/`specify` route theirs — this step
- * has no `budget` arrow to route on, so the stop throws with the rows it paid for
- * (see this file's header for why the two shapes differ).
+ * armed on every child through `armBudget`, and a child that spends it returns a
+ * routed `budget` verdict (`{kind: "budget", limit, value, used}`) rather than a
+ * clean round, exactly as `build`/`challenge`/`specify` route theirs.
  */
 export const MAX_REVIEW_ROUNDS = 3;
 
@@ -149,10 +118,111 @@ const NO_FIX_VERDICTS: readonly Verdict[] = [
 export const FIX_BOUND_MS = 20 * 60_000;
 
 /**
- * The `review` step. Returns one of the step's two pass kinds — `done` or
- * `fixed` (see `passKind` in `review-step.ts` for what the two differ in); a
- * budget stop is NOT returned, it throws; and so does anything else.
+ * What one six-lens round answered, as the step reads it.
+ *
+ * `verdict`/`usage`/`note`/`noReview` are the review layer's own summary fields
+ * rather than a hand-restated copy: `Pick<LensReviewSummary, ...>` means the
+ * compiler refuses this type the moment the layer renames or retypes one of
+ * them, which is exactly when a hand-written copy would have quietly kept
+ * reading `undefined`.
  */
+export type LensRound = Pick<LensReviewSummary, "verdict" | "usage" | "note" | "noReview"> & {
+  /** The round's findings as the text a fixer is handed — one line each. */
+  findings: string;
+  /**
+   * One record per lens child that ran, for the step's cost rows (see
+   * `lensRows`). Carried rather than folded here because the fold lives with
+   * the other cost rows in `step-budget.ts`, next to `dispatchUsageRow`.
+   */
+  lenses: LensRunResult[];
+};
+
+/** What the step hands one round of the adversarial gate. */
+export interface AdversarialArgs {
+  base: string;
+  head: string;
+  branch: string;
+  cwd: string;
+  issue: number;
+  issueBody: string;
+  round: number;
+  headless: boolean;
+  /** The step's armed budget: the child's bound, its abort, its progress hook. */
+  budget: BudgetArms;
+}
+
+/** What the step hands one round of the six-lens pass. */
+export interface LensArgs {
+  base: string;
+  head: string;
+  branch: string;
+  cwd: string;
+  round: number;
+  /**
+   * The run's PR number, when this run opened one. `publish` records the PR's
+   * URL and the number is the tail of it; without it the review layer has to
+   * ask the forge which PR belongs to the branch on every ISSUES_FOUND round
+   * (a `gh pr list` per round for an answer this run already holds), and the
+   * round's residual-findings disclosure is keyed on whatever that lookup
+   * picked.
+   */
+  pr: number | undefined;
+  /** The context lines this step composes (see `lensContext` in `review-deps.ts`). */
+  context: string;
+  /** Post-change prose and the deterministic claim scan, read from the branch ref. */
+  evidence: string | undefined;
+  extraFindings: Finding[];
+  /** The headless trust stamp this run's children carry. */
+  headless: boolean;
+  /** The step's armed budget, threaded to the lens children. */
+  budget: BudgetArms;
+}
+
+/**
+ * The fixer's tree identity: the epoch milliseconds its name is minted from.
+ *
+ * Re-exported from `step-budget.ts`, the module that owns the row it travels in:
+ * a brand declared twice is two unrelated types, and the shape has to be one
+ * type across the mint site, the row writer and the validator. A branded string
+ * rather than an unconstrained one, because the previous shape was fed to
+ * `Number()` on its way into the durable record — where anything that was not a
+ * decimal integer became `NaN`.
+ */
+export type { FixRunId } from "./step-budget.ts";
+
+/** The step's dependencies: the outside world, injected. */
+export interface ReviewDeps {
+  /** The headless mode this run was started in; its children's permission stamp. */
+  headless: boolean;
+  exec: ExecFn;
+  /** One round of the adversarial gate. Injected so a test drives verdicts with no child. */
+  adversarial: (args: AdversarialArgs) => Promise<DispatchResult>;
+  /** One round of the six-lens pass. */
+  lens: (args: LensArgs) => Promise<LensRound>;
+  /**
+   * The fixer, in the tree its `cwd` names.
+   *
+   * `BuildDispatch` rather than a re-declared narrower seam: it is the sibling
+   * the same child crosses in `build`, and it already carries `writeFence` —
+   * which the review step's fixer needs exactly as the builder does. A seam
+   * that cannot carry the fence can only enforce it by not dispatching.
+   */
+  dispatch: BuildDispatch;
+  fetchIssueBody: (repoRoot: string, issue: number) => Promise<string>;
+  loadConfig: (repoRoot: string, baseSha: string) => Promise<WorkConfig>;
+  /**
+   * The six-lens engine, defaulting to `runLensReview` in the wiring.
+   *
+   * One reason only, and it is a test reason: the clamp that keeps
+   * `PI_ENSEMBLE_LENS_BOUND_MS` from being overwritten by the budget arms can only
+   * be asserted on the options the lens call ACTUALLY received. An assertion on the
+   * input passed the bug — the input was correct in that bug, and only what reached
+   * `runLensReview` was wrong. Production never sets this.
+   */
+  lensEngine?: typeof runLensReview;
+}
+
+/** The `review` step. Returns `done` or a routed budget verdict; THROWS on anything else. */
 export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<Outcome> {
   const { repoRoot, issue } = ctx;
   const branch = specifyBranch(ctx.run.branch, issue);
@@ -180,16 +250,6 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
   });
   const issueBody = await deps.fetchIssueBody(repoRoot, issue).catch((err: unknown) => {
     throw new ReviewInfraError(`could not read the issue: ${(err as Error).message}`);
-  });
-  // The blocking bar, resolved ONCE for the whole step at the run's base commit,
-  // beside the config and the issue and for the same reason: it is a fact the
-  // step needs before it pays for a round, and a step that discovered its bar was
-  // unreadable after two rounds would have spent those rounds at the wrong one.
-  // Never per round — see `ReviewDeps.reviewThreshold`.
-  const threshold = await deps.reviewThreshold(repoRoot, base).catch((err: unknown) => {
-    throw new ReviewInfraError(
-      `could not resolve the project's review threshold: ${(err as Error).message}`,
-    );
   });
 
   // The step's disposable trees are named once per attempt, so every round of a
@@ -265,19 +325,6 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
    */
   const openFindings = (): string => carried ?? lastFix?.findings ?? "";
 
-  /**
-   * How many fix rounds THIS visit integrated, counted as they land. A round
-   * reaches the increment only past `assertFixAdvanced`, and `integrate` throws on
-   * every path that did not push — so this counter and "the branch moved" are the
-   * same fact, held by the code that observed it.
-   *
-   * It is the step's own answer, and the one the reason line prints. The pass at
-   * the end of the loop ORs it with {@link fixedFromLog}, which is the same
-   * question asked of the durable record: the only case the counter cannot answer
-   * is the resume, where the attempt that pushed is gone and origin kept its head.
-   */
-  let fixRounds = 0;
-
   try {
     for (let round = 1; ; round++) {
       // **THE ROUND BOUND, ON BOTH ARMS, BEFORE ANY CHILD IS PAID.** This guard
@@ -304,12 +351,10 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
         rows,
         budget,
       });
-      // The operator's ceiling stopping this step is read BEFORE the gate's own
-      // infra throw could mistake a stopped reviewer for "no verdict at all", and
-      // it THROWS: both arrows out of `review` are clean passes, so a stopped
-      // child has no route and must not be mistaken for one (see this file's
-      // header for why this step throws where the other three route).
-      if (gate.stop !== undefined) throw budgetStopped(gate.stop, rows);
+      // The operator's ceiling stopping this step is a VERDICT, not a verdict on
+      // the work — read before the gate's own infra throw could mistake a
+      // stopped reviewer for "no verdict at all".
+      if (gate.stop !== undefined) return budgetVerdictWithRows(STEP_NAME, gate.stop, rows);
 
       if (gate.findings !== "") {
         carried = gate.findings;
@@ -325,7 +370,7 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
           rows,
           budget,
         });
-        if (fix.stop !== undefined) throw budgetStopped(fix.stop, rows);
+        if (fix.stop !== undefined) return budgetVerdictWithRows(STEP_NAME, fix.stop, rows);
         // The stagnation check reads what the fix round was asked for, so it is
         // recorded before the head moves: after the move, the round's own request
         // is no longer recoverable and the comparison would be against nothing.
@@ -335,7 +380,6 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
           from: head,
         };
         head = await assertFixAdvanced(head, fix.head, rows);
-        fixRounds++;
         // Same gate, same findings, a head that moved: the fixer answered the
         // round and the gate did not move. One more round buys the same reply.
         if (stagnantAgainstFix(lastFix, requested, head))
@@ -355,7 +399,6 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
         carried,
         rows,
         budget,
-        threshold,
       });
       // "A gate that did not run is never a gate that passed", enforced on the
       // lens round itself rather than only on the adversarial one: the review
@@ -394,20 +437,13 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
         // The success path is BOUNDED like every other surface that reports rows.
         // `DISPATCHES_MAX_ROWS` is the validator's own cap — `specify` clips its
         // merged rows with it and `error-outcome.ts` clips the throw path, and an
-        // unbounded pass was the one arm that could hand the engine a record the
+        // unbounded `done` was the one arm that could hand the engine a record the
         // loader then rejects, which does not report an over-long run: it drops
         // the step's cost rows entirely, silently under-billing the child that
         // costs the most.
-        //
-        // **`fixed` or `done`.** The one fact the two kinds differ in is whether
-        // a fix round pushed commits; `passKind` reads that pair and says why the
-        // answer cannot come from the loop's count alone.
-        const fixed = fixRounds > 0 || fixedFromLog(ctx.steps);
         return {
-          kind: passKind(fixed),
-          reason: `adversarial and six-lens review clean at ${lens.head.slice(0, 12)} (${String(round)} round(s)${
-            fixed ? `, ${String(fixRounds)} with a fix round` : ""
-          })${owed}`,
+          kind: "done",
+          reason: `adversarial and six-lens review clean at ${lens.head.slice(0, 12)} (${String(round)} round(s))${owed}`,
           dispatches: rows.slice(-DISPATCHES_MAX_ROWS),
         };
       }
@@ -433,14 +469,13 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
         rows,
         budget,
       });
-      if (fix.stop !== undefined) throw budgetStopped(fix.stop, rows);
+      if (fix.stop !== undefined) return budgetVerdictWithRows(STEP_NAME, fix.stop, rows);
       const lensRequested = {
         gate: `six-lens review (${lens.verdict})`,
         findings: lens.findings,
         from: lens.head,
       };
       head = await assertFixAdvanced(lens.head, fix.head, rows);
-      fixRounds++;
       if (stagnantAgainstFix(lastFix, lensRequested, head))
         throw new ReviewInfraError(
           `the six-lens review reported the same findings again after the fix round moved the head to ${head.slice(0, 12)} — the findings are: ${lens.findings.slice(0, 500)}`,

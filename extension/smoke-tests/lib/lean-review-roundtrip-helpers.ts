@@ -72,10 +72,8 @@ export function fixerOf(rows: readonly DispatchUsageRow[]): DispatchUsageRow | u
 
 /**
  * A run record whose `review` step carries `rows` — the shape the engine persists
- * after `settle` folds the handler's outcome. `kind: "done"` is one of the two
- * kinds the review state may record (`review: ["done", "fixed"]` in `machine.ts`)
- * and the one a step with no fix round records; the rows this fixture bills are
- * the same whatever the kind.
+ * after `settle` folds the handler's outcome. `kind: "done"` is the only kind the
+ * review state may record (`review: ["done"]` in `machine.ts`).
  */
 export function runWithRows(rows: DispatchUsageRow[], baseSha: string) {
   const rec = createRun({ issue: 7, version: "test", models: {}, baseSha, branch: BRANCH });

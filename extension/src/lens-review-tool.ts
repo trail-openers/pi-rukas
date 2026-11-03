@@ -1,17 +1,17 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { startJob } from "./async-jobs.ts";
-import { isFullCommitSha } from "./commit-sha.ts";
 import { execp } from "./exec.ts";
 import type { LensLedgerOutcome } from "./lens-ledger.ts";
 import type { LensReviewSummary } from "./lens-review-format.ts";
+import { DEFAULT_REVIEW_THRESHOLD } from "./lens-review-format.ts";
 import { renderSummary } from "./lens-review-render.ts";
 import { LENS_REVIEW_DIFF_DESCRIPTION, MAX_LENS_ATTEMPTS, runLensReview } from "./lens-review.ts";
 import { admitLensRound } from "./lens-round-cap.ts";
 import { resolveHeadSha } from "./review-head-sha.ts";
 import { identityBase } from "./review-ledger-path.ts";
 import { resolveLensReviewThreshold } from "./review-threshold-at-base.ts";
-import { trace } from "./trace.ts";
+import { trace, traceWarn } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import { judgePolicy } from "./work-driver-policy.ts";
 
@@ -112,21 +112,30 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
           // commit, never from the working tree, so a review cannot be judged by
           // a doctrine file the branch itself rewrote — the same rule the driver's
           // lens step follows, and the reason the read is at a commit rather than
-          // on disk. The base is the explicit `base` ref when the caller named
-          // one, else `<remote>/<mainline>`: the same base the ledger resolves the
-          // patch identity against, so the bar and the row describe one diff. No
-          // base resolves means no doctrine, and no doctrine is the shipped
-          // default rather than a refusal.
+          // on disk. The base is the repo's own mainline tip and NOTHING the
+          // caller named: `base` is model input, so a branch that passed its own
+          // commit as the base would have read the bar out of a doctrine file it
+          // wrote (see `thresholdBaseRef`). No mainline resolves means no
+          // doctrine, and no doctrine is the shipped default rather than a
+          // refusal. A judge or read fault is the same case: the review still
+          // runs, at the shipped default, with the fault named on the trace.
           const reviewCwd = params.cwd ?? process.cwd();
           const threshold = await resolveLensReviewThreshold({
             judge: judgePolicy(reviewCwd, {
-              processGroup: false,
+              processGroup: true,
               signal,
             } satisfies NonNullable<Parameters<typeof judgePolicy>[1]>),
             execFn: execp,
             repoRoot: reviewCwd,
-            baseRef: await thresholdBaseRef(params.base, reviewCwd),
+            baseRef: await thresholdBaseRef(reviewCwd),
             where: { repoRoot: reviewCwd },
+          }).catch((err: unknown) => {
+            traceWarn(
+              `lens review — the blocking severity could not be resolved (${String(
+                (err as Error)?.message ?? err,
+              )}), reviewing at the default ${DEFAULT_REVIEW_THRESHOLD}`,
+            );
+            return DEFAULT_REVIEW_THRESHOLD;
           });
           const admission = await admitLensRound({
             cwd: params.cwd,
@@ -206,29 +215,24 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
 }
 
 /**
- * The ref this review's doctrine is read at.
+ * The ref this review's doctrine is read at: the repo's own mainline tip, and
+ * nothing the caller named.
  *
- * An explicit `base` is what the caller says the review ranges over, so it wins.
- * Otherwise the mainline tip: `<remote>/<mainline>`, the same base the ledger
- * resolves this run's patch identity against (`identityBase`), so the bar the
- * findings were judged by and the row they produced describe one diff. A clone
- * with no resolvable mainline or remote has no base to read doctrine at, and the
- * caller falls to the shipped default — never a refusal, because a repo without
- * doctrine is the ordinary case.
+ * `<remote>/<mainline>` is the same base the ledger resolves this run's patch
+ * identity against (`identityBase`), so the bar the findings were judged by and
+ * the row they produced describe one diff. There is deliberately no arm for the
+ * tool's `base` parameter: that value comes from the calling model, and a
+ * doctrine read there is a bar the reviewed branch chooses for itself — a commit
+ * whose `AGENTS.md` says only CRITICAL blocks would judge its own round. Only
+ * the repo's own mainline identity is trusted as the source of the bar.
  *
- * A read failure is a miss, not an error: the promise resolves to `undefined`
- * rather than throwing, so a review is never lost to the doctrine read.
+ * A clone with no resolvable mainline or remote has no base to read doctrine at,
+ * and the caller falls to the shipped default — never a refusal, because a repo
+ * without doctrine is the ordinary case. A read failure is a miss, not an error:
+ * the promise resolves to `undefined` rather than throwing, so a review is never
+ * lost to the doctrine read.
  */
-async function thresholdBaseRef(
-  base: string | undefined,
-  cwd: string,
-): Promise<string | undefined> {
-  const named = base?.trim();
-  // Only a commit-shaped `base` is interpolated into `git show <ref>:<file>`.
-  // A branch name or tag is what the caller typed, not something this module
-  // resolves on their behalf: an unresolvable ref yields no doctrine, which is
-  // the shipped default rather than a refusal.
-  if (named && isFullCommitSha(named)) return named;
+async function thresholdBaseRef(cwd: string): Promise<string | undefined> {
   try {
     const base_ = await identityBase(execp, cwd);
     if (!base_.ok) return undefined;

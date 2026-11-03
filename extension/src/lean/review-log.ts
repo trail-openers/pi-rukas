@@ -1,23 +1,15 @@
 /**
- * lean/review-log — the facts the `review` step reads out of the run's own step
- * log, and nothing else.
+ * lean/review-log — the two facts the `review` step reads out of the run's own
+ * step log, and nothing else.
  *
- * All derivations from records OTHER steps wrote: `review.ts` decides which verdict
- * ends the loop and what a fixer is told, and none of those questions has anything
- * to do with the tail of a PR URL, the shape of an epoch, or whether a fix round
- * moved a branch. All fail the same way: absent, never guessed. A run whose
- * `publish` has not decided has no PR; a run with no fixer row has no tree id yet;
- * a run with no decided review pass fixed nothing. Each answer is "the step does
- * not know", which every caller treats as the fallback it is rather than as a
- * value that reads like evidence.
- *
- * The reason they are read from the log at all is the resume. The engine re-runs
- * exactly the undecided `review` step, so anything the step needs across an attempt
- * must be recomputable from the durable record — a value in a closure is simply
- * gone, and these readers are the only way a resumed attempt gets back the tree it
- * left, the PR it is disclosing to, and the verdict its own finished passes earned.
+ * Both are derivations from records other steps wrote: `review.ts` decides which
+ * verdict ends the loop and what a fixer is told, and neither of those questions
+ * has anything to do with the tail of a PR URL or the shape of an epoch. Both
+ * readers fail the same way: absent, never guessed. A run whose `publish` has not
+ * decided has no PR; a run with no fixer row has no run id yet. Each answer is
+ * "the step does not know", which every caller treats as the fallback it is,
+ * rather than as a value that reads like evidence.
  */
-import { OUTCOME_KINDS } from "./machine.ts";
 import { isRunId } from "./state-dispatches.ts";
 import { validPrUrl } from "./state-outcome.ts";
 import type { Step } from "./state.ts";
@@ -105,72 +97,6 @@ export function fixRunIdFromLog(steps: Step[]): FixRunId | undefined {
 }
 
 /**
- * The kinds a review pass ENDED with, as opposed to threw. An undecided entry
- * (no outcome) is the engine's replay marker and is skipped by every reader in
- * this file.
- *
- * Exported for the same reason `FIX_RUN_ID_SHAPE` is: the loader and the smoke
- * fixtures both need the set of kinds a pass may carry, and a second literal they
- * drift apart is how a fixture starts asserting against a shape no writer emits.
- *
- * Typed against the registry itself rather than `string[]`, and DERIVED from it:
- * the machine's `review` entry is the authority on which kinds `review` may end
- * with, and `test-lean-machine.ts` asserts that entry equals the set of kinds the
- * table gives `review` arrows — which is what makes spreading it here a fact about
- * the table and not an assumption. A hand-written list would be a second answer to
- * "which kinds are a pass", and would go stale in the safe-looking direction: a
- * kind added to the table simply never counted, and the run stopped re-verifying
- * its own fix commits.
- *
- * The one kind a review step record can carry that is NOT here is `error`, which
- * the engine writes when the handler threw ({@link fixedFromLog} skips it) and
- * which the registry refuses to any handler.
- */
-export const PASS_KINDS: readonly (typeof OUTCOME_KINDS.review)[number][] = [
-  ...OUTCOME_KINDS.review,
-];
-
-/**
- * Did any review pass of THIS run integrate a fix, i.e. push commits to the run's
- * branch? The fallback the step's own loop count cannot serve: a resumed attempt
- * has lost its closure, and the push its crashed self made stands on origin.
- *
- * `machine.ts` routes `review + fixed` to `verify` and `review + done` to `ci`,
- * and the difference is a fact about origin — `integrate` in `review-git.ts`
- * pushes the fixer's commits, so the newest `verify` no longer describes the head
- * and `ci` refuses that twice over. Under-report it and the run walks into `ci`
- * over a head its gate never read; over-report it and a clean run pays for one
- * redundant re-verification. That asymmetry is why this reads rows rather than
- * prose, and why the step asks the log when its own memory is gone.
- *
- * **What the record proves, and what it does not.** A fixer row is appended by
- * `runFixer` on BOTH arms of a round — the fixer that worked and the fixer that
- * died — so a row is evidence the step PAID for a round, not that anything landed.
- * The claim that something landed is the round's throw: `integrate` calls `fail()`
- * and `assertFixAdvanced` throws on every path that did not push, and the engine
- * records a throw as an `error` outcome. So `error` entries are skipped and only
- * the two kinds a pass ends with are counted.
- *
- * The state test is not decoration: the fixer's role is the BUILDER's role
- * (`FIXER_ROLE`), so a `build` step's rows — the CI fix round's — would otherwise
- * answer for a review fix the run never bought, and every run that fixed its CI
- * would re-verify a head its review never moved.
- */
-export function fixedFromLog(steps: Step[]): boolean {
-  return steps.some(
-    (step) =>
-      step.state === REVIEW_STATE &&
-      step.outcome !== undefined &&
-      // `Outcome.kind` is `string` by design (the loader accepts any kind a
-      // handler may return), so the membership test widens the needle rather than
-      // the list: `PASS_KINDS` keeps its registry-derived element type and a
-      // renamed kind in the table still fails this file to compile.
-      PASS_KINDS.includes(step.outcome.kind as (typeof PASS_KINDS)[number]) &&
-      step.outcome.dispatches?.some((row) => row.role === FIXER_ROLE) === true,
-  );
-}
-
-/**
  * The tree identity a fixer row may carry: the epoch `fixRunId` mints, optionally
  * followed by the arm/round/attempt the tree is named for.
  *
@@ -241,11 +167,5 @@ export function prNumberFromLog(steps: Step[]): number | undefined {
   return Number.isSafeInteger(n) && n > 0 ? n : undefined;
 }
 
-/**
- * The state whose handler these readers serve; a constant, not a parameter.
- *
- * Exported because the step's own budget sentence keys on the same name: a
- * second literal is a second answer to "which state is this", and the two
- * drift apart exactly when a cause line stops matching the log it describes.
- */
-export const REVIEW_STATE = "review";
+/** The state whose handler these readers serve; a constant, not a parameter. */
+const REVIEW_STATE = "review";

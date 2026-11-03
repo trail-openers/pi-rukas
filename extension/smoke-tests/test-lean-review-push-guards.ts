@@ -45,7 +45,6 @@ import {
   rejectsThenClears,
   result,
   runStep as run,
-  passed,
   setup,
 } from "./lib/lean-review-fixtures.ts";
 
@@ -443,13 +442,7 @@ for (const { name, bothShip } of UNSAFE) {
   };
   const { threw, outcome } = await run(ctxFor(repoRoot, baseSha, BRANCH), deps);
   assert(threw === undefined, `(x4) an honest lean/ run still completes (${threw?.message})`);
-  assert(
-    outcome?.kind === "fixed",
-    // Exactly `fixed`: this case counts the push the round made, so the head moved
-    // and the kind is not in question — `passed()` would accept a `done` on a run
-    // whose branch the step just moved, which is the misroute the table forbids.
-    `(x4) and the step passed on the kind its push earned — fixed (${String(outcome?.kind)})`,
-  );
+  assert(outcome?.kind === "done", `(x4) and it reports done (${outcome?.kind})`);
   assert(
     pushed.length === 1,
     `(x4) exactly one push ran for the legitimate run (${JSON.stringify(pushed)})`,

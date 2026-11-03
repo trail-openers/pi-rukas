@@ -30,7 +30,7 @@
  */
 
 import path from "node:path";
-import { DEFAULT_BUDGETS, defaultConfig } from "../src/lean/config.ts";
+import { defaultConfig } from "../src/lean/config.ts";
 import { FIX_RUN_ID_SHAPE, prNumberFromLog } from "../src/lean/review-log.ts";
 import { ReviewInfraError } from "../src/lean/review.ts";
 import { sha256 } from "../src/lean/specify-proof.ts";
@@ -57,7 +57,6 @@ import {
   makeRepo,
   result,
   runStep as run,
-  passed,
   setup,
 } from "./lib/lean-review-fixtures.ts";
 
@@ -85,7 +84,7 @@ const { assert, failures } = makeAssert();
     }),
   );
   assert(threw === undefined, `(a) a clean run does not throw (${threw?.message})`);
-  assert(outcome?.kind === "done", `(a) both gates clean with no fix round is "done" (got ${outcome?.kind})`);
+  assert(outcome?.kind === "done", `(a) both gates clean is "done" (got ${outcome?.kind})`);
   assert(
     (outcome?.reason ?? "").includes(head.slice(0, 12)),
     `(a) the reason names the commit the gates read`,
@@ -175,13 +174,9 @@ const { assert, failures } = makeAssert();
     }),
   );
   assert(threw === undefined, `(c) a fix round does not throw (${threw?.message})`);
-  // Exactly `fixed`, not `passed()`: this case proves below that origin's branch
-  // moved, and the table routes a moved head to `verify` ONLY on `fixed` — a
-  // `done` here would send the run to `ci` over a head its newest verify does not
-  // describe. `passed()` accepts both kinds and would not tell them apart.
   assert(
-    outcome?.kind === "fixed",
-    `(c) the run PASSES on the kind a fix round earns — fixed, so the table re-verifies (got ${String(outcome?.kind)})`,
+    outcome?.kind === "done",
+    `(c) the run finishes once the re-review is clean (got ${outcome?.kind})`,
   );
   const branchHead = git(repoRoot, "rev-parse", `origin/${BRANCH}`);
   assert(branchHead !== head, "(c) origin's branch moved: the fixer's commit is on it");
@@ -233,8 +228,8 @@ const { assert, failures } = makeAssert();
     }),
   );
   assert(
-    second.threw === undefined && second.outcome?.kind === "fixed",
-    `(c2) a fix round touching ONLY unfrozen files passes the frozen proof — the probe hashes bytes, not an object id (${second.threw?.message ?? `kind ${String(second.outcome?.kind)}`})`,
+    second.threw === undefined && second.outcome?.kind === "done",
+    `(c2) a fix round touching ONLY unfrozen files passes the frozen proof — the probe hashes bytes, not an object id (${second.threw?.message ?? String(second.outcome?.kind)})`,
   );
   assert(
     git(repoRoot, "log", "--format=%s", `origin/${BRANCH}`).includes("fix: the second finding"),
@@ -273,7 +268,7 @@ const { assert, failures } = makeAssert();
 
   // (e3) H3 — THE SHIPPED DEFAULT BUYS MORE THAN ONE ROUND.
   //
-  // `budgets.review.turns` ships at 400 and the round bound used to be
+  // `budgets.review.turns` ships at 150 and the round bound used to be
   // `max(1, floor(turns / 300))` = 1, so the default configuration gave a step
   // whose whole purpose is "fix, then RE-review" a single round: it could fix and
   // then had to hand back a head its own fixer had moved without any gate having
@@ -306,7 +301,7 @@ const { assert, failures } = makeAssert();
   assert(
     t3 instanceof ReviewInfraError &&
       /reached round 4 at the step's bound of 3 rounds/.test(t3.message),
-    `(e3) at the SHIPPED ${String(DEFAULT_BUDGETS.review?.turns)}-turn default the step runs all ${String(MAX_REVIEW_ROUNDS)} rounds and then refuses — the round bound is the constant, not the budget (${t3?.message ?? `got ${String(o3?.kind)}`})`,
+    `(e3) at the SHIPPED 150-turn default the step runs all ${String(MAX_REVIEW_ROUNDS)} rounds and then refuses — the round bound is the constant, not the budget (${t3?.message ?? `got ${String(o3?.kind)}`})`,
   );
   assert(
     e3LensRounds === MAX_REVIEW_ROUNDS,
@@ -423,7 +418,7 @@ const { assert, failures } = makeAssert();
   //
   // This case used to assert "one look, then refuses", reading the round cap off
   // `turns` (`max(1, floor(turns / 300))`). That derivation is HIGH#2 and is gone:
-  // it made the default review budget yield ONE round, so the step could fix but
+  // it made the default 150-turn budget yield ONE round, so the step could fix but
   // never re-review. The round cap is `MAX_REVIEW_ROUNDS` now and the budget bounds
   // the MONEY, so what this case still has to prove is the two things that survived
   // — a degenerate budget does not skip the review, and it does not certify a head

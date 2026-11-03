@@ -1,21 +1,24 @@
 /**
  * lean/command — `/work-lean <issue>`, the phase-1 entry point.
  *
- * Every state the machine routes has a real handler here. That used to be a
- * promise about a later phase: the table shipped with a placeholder per
- * unbuilt state, and the honesty of the shape was that the placeholder threw
- * rather than inventing an outcome kind the table could not route. No state is
- * unbuilt now, so the placeholder and its `work-lean stage <state> is not built
- * yet` sentence went with it — the wiring tests that used to assert a step was
- * not answered by the stub (`test-lean-challenge.ts` (n),
- * `test-lean-specify-bytes.ts`, `test-lean-ci-land-wiring.ts` (p)) assert the
- * positive instead: each step answers with its OWN refusal.
+ * Phase 1 is honest about what it cannot do: `ready`, `specify`, `build`,
+ * `challenge`, `verify`, `handback` and `decline` have real handlers, and every
+ * other state's stub
+ * THROWS "work-lean
+ * stage <state> is not built yet". That is the point of the shape. The machine,
+ * the step log and the config are real now, and a later phase plugs a handler in
+ * without touching any of them — which is the property the old driver never had,
+ * and the reason this one is written beside it rather than inside it.
  *
- * What the placeholder taught stays: a handler may return only the kinds
+ * The stub throws rather than returning an outcome because the engine's own
+ * contract is the outcome vocabulary: a handler may return only the kinds
  * `machine.ts` lists for its state, and `test-lean-machine.ts` fails on any pair
- * the table does not cover. A handler that invented a kind would end the run on
- * the misleading line `no transition for <state> + "…"`, which blames the machine
- * for a bug in the handler.
+ * the table does not cover. A stub that invented a kind to carry "not built"
+ * would be a handler bug by the engine's own definition, and would end the run
+ * on the misleading line `no transition for <state> + "…"`. A throw is what the
+ * engine already has a path for: the step records `{kind: "error", message}` and
+ * the run ends `handed-back` (exit 10) with `handler error at <state>: work-lean
+ * stage <state> is not built yet` — the reason an operator actually needs.
  *
  * `ready` does three deterministic things:
  *   1. fetch the issue body (the forge adapter, falling back to raw `gh`);
@@ -42,12 +45,12 @@ import { type LeanHandlers, type RunLeanResult, runLean } from "./engine.ts";
 import { handbackOutcome } from "./handback.ts";
 import { fetchIssueBody, mainlineSha, postNotReady } from "./io.ts";
 import { postHandback } from "./io.ts";
-import { REPORT_FAILED_KIND } from "./machine.ts";
+import { HANDLER_STATES, REPORT_FAILED_KIND } from "./machine.ts";
 import { reviewDeps } from "./review-deps.ts";
 import { reviewOutcome } from "./review.ts";
 import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
 import { type SpecifyDeps, specifyOutcome } from "./specify.ts";
-import type { Step } from "./state.ts";
+import type { Outcome, Step } from "./state.ts";
 import type { BudgetOpts } from "./step-budget.ts";
 import { oneLine } from "./text-fence.ts";
 import { verifyDeps, verifyOutcome } from "./verify.ts";
@@ -262,15 +265,12 @@ export function specifyDeps(headless: boolean): SpecifyDeps {
 }
 
 /**
- * The handler set one run is driven with.
+ * The phase-1 handler set.
  *
- * Every state `machine.ts`'s `HANDLER_STATES` declares gets an entry here or in
- * `command-post-publish.ts`: `ready`, `specify`, `build`, `challenge`, `verify`,
- * `review`, `handback` and `decline` below, `publish`, `ci` and `land` there. A
- * state the table routes that had no handler would end the run handed-back with
- * "no handler", so the two files together are checked exhaustively by
- * `test-lean-challenge.ts` (n) rather than by a placeholder that kept the shape
- * safe by answering for a step nobody wrote.
+ * `ready`, `specify`, `build`, `challenge`, `verify`, `handback` and `decline`
+ * are real; everything else is a
+ * placeholder that ends the run honestly. A stub that pretended to build would
+ * be worse than a run that says which stage is missing.
  *
  * `headless` is the run's mode, threaded from `runWorkLean` to the three
  * dispatching deps builders. It is NOT remembered anywhere: two lean runs in one
@@ -295,7 +295,11 @@ export function phase1Handlers(
   // no cause to report and `readyOutcome` probes for one on the failure path.
   const seedWhy = opts.seedWhy;
   const seedInfra = opts.seedInfra === true;
+  const notBuilt = (state: string) => async (): Promise<Outcome> => {
+    throw new Error(`work-lean stage ${state} is not built yet`);
+  };
   const handlers: LeanHandlers = {};
+  for (const state of HANDLER_STATES) handlers[state] = notBuilt(state);
   handlers.ready = async (ctx) => {
     const { kind, facts } = await readyOutcome(repoRoot, issue, {
       baseSha: ctx.run.baseSha,

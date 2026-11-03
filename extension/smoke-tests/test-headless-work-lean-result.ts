@@ -3,9 +3,8 @@
  * #1920 slice B — `work-lean` writes a schema-5 result, and its three endings
  * are told apart by TYPED fields alone.
  *
- * The gap this closes is lean's own: every run that reaches `publish` and does
- * not merge leaves on one exit code — exit 10 — whatever the gate made of the
- * head. Exit 10 therefore covers a green PR
+ * The gap this closes is lean's own: `review`, `ci` and `land` are not built, so
+ * every run that reaches `publish` exits 10. Exit 10 therefore covers a green PR
  * waiting for a merge, a draft behind unverified bytes, and a run that opened
  * nothing — and the pre-#1920 document separated none of them (`state` was
  * `handed-back` in all three cases, and the difference lived in `summary` prose).

@@ -29,13 +29,11 @@
 
 import { MAX_ROUNDS, runAdversarialLoop } from "../adversarial.ts";
 import { execp } from "../exec.ts";
-import type { LensReviewSummary, Severity } from "../lens-review-format.ts";
+import type { LensReviewSummary } from "../lens-review-format.ts";
 import { runLensReview } from "../lens-review.ts";
-import { resolveLensReviewThreshold } from "../review-threshold-at-base.ts";
 import { lensChildBoundMs } from "../spawn-child-bound.ts";
 import { makeRunId, spawnSpecialist } from "../spawn.ts";
 import { netGitEnv } from "../work-driver-net-git.ts";
-import { judgePolicy } from "../work-driver-policy.ts";
 import { verifyTimeoutMs } from "../work-driver-verify-develop-helpers.ts";
 import { leanChildOpts } from "./child-opts.ts";
 import { loadWorkConfig } from "./config.ts";
@@ -128,12 +126,6 @@ export function reviewDeps(headless: boolean): ReviewDeps {
         // can only ever tighten it, never lengthen it — the smaller of the two is
         // the bound, which is what a budget must mean.
         childBoundMs: Math.min(budgetBoundMs ?? Number.POSITIVE_INFINITY, lensChildBoundMs()),
-        // The project's blocking bar, threaded from the step (see
-        // `LensArgs.threshold`). Without it the review layer falls to
-        // `DEFAULT_REVIEW_THRESHOLD` — MEDIUM — and a round whose only findings
-        // are MEDIUM reads as ISSUES_FOUND, so this step buys a fixer for
-        // findings the project said are disclosable rather than blocking.
-        ...(a.threshold === undefined ? {} : { threshold: a.threshold }),
         ...arms,
         ...leanChildOpts(a.headless),
       });
@@ -168,20 +160,6 @@ export function reviewDeps(headless: boolean): ReviewDeps {
       }),
     fetchIssueBody,
     loadConfig: (repoRoot, baseSha) => loadWorkConfig(execp, repoRoot, baseSha),
-    // One doctrine read and one judge child for the whole review step: the step
-    // calls this once, before its first round (see `ReviewDeps.reviewThreshold`).
-    // The base is the run's own base commit, never the working tree, so the fixer
-    // cannot rewrite the doctrine its own findings are judged against.
-    reviewThreshold: (repoRoot, baseSha) =>
-      resolveLensReviewThreshold({
-        judge: judgePolicy(repoRoot, {
-          processGroup: true,
-        } satisfies NonNullable<Parameters<typeof judgePolicy>[1]>),
-        execFn: (cmd, o) => execp(cmd, o ?? {}),
-        repoRoot,
-        baseRef: baseSha,
-        where: { repoRoot },
-      }),
   };
   return deps;
 }

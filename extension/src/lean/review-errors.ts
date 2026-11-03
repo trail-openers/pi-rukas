@@ -7,13 +7,11 @@
  * extracted predicate that needed to refuse something had to import the whole
  * handler back — a cycle for the sake of one `throw`.
  *
- * **A `ReviewInfraError` is not a verdict.** The step's verdicts are its two
- * routed kinds — `done` (both gates cleared untouched) and `fixed` (a fix round
- * moved the head) — and this error means the step could not form a verdict at all
- * (a gate that produced none, a fixer that died, a tree it could not make, the
- * operator's budget stopping a child, which this step throws rather than routes).
- * The engine records it through `errorOutcome`, and the distinction is what keeps
- * "the review found nothing wrong" from being reachable by an error path.
+ * **A `ReviewInfraError` is not a verdict.** The step's verdicts are `done` and the
+ * routed budget `Outcome`; this error means the step could not form a verdict at
+ * all (a gate that produced none, a fixer that died, a tree it could not make). The
+ * engine records it through `errorOutcome`, and the distinction is what keeps "the
+ * review found nothing wrong" from being reachable by an error path.
  */
 
 import { DISPATCHES_MAX_ROWS } from "./state-outcome.ts";
