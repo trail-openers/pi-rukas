@@ -25,6 +25,14 @@
  * tree is easier to reason about than one that made three commits, and because
  * a child that commits tends to commit its own edits to the frozen tests, which
  * the step then has to undo.
+ *
+ * The `report_blocked` sentence is the child's ONLY exit valve for a contract it
+ * cannot satisfy. Without it a builder that finds two frozen assertions in
+ * conflict has nothing to do but probe them until the turn ceiling kills the
+ * step — which is what one run did: 401 turns, 200 scratch probe files, no
+ * commit, and a handback that named no cause. The tool's report is a claim the
+ * driver verifies for itself (`build-blocked.ts`), which is why the prompt can
+ * tell the child to stop after making it.
  */
 
 import { TEST_RUNNER_PLACEHOLDER } from "./config.ts";
@@ -55,6 +63,12 @@ export interface BuildPromptOpts {
   worktree: string;
   /** 1-based attempt number, for the "attempt N" framing and the commit subject. */
   attempt: number;
+  /**
+   * The frozen files the adversary's challenge round added, when this round
+   * follows one. Rendered as its own section so the builder sees which files are
+   * NEW to it rather than scanning the frozen list for what it remembers.
+   */
+  added?: string;
   /** The project's `verify.test` runner template (e.g. `bun run {file}`), if configured. */
   testRunner?: string;
   /** Why this round exists: the `verify:red` or `ci:red` reason, clipped by the caller. */
@@ -100,6 +114,15 @@ export function buildPrompt(opts: BuildPromptOpts): string {
           "Fix THAT. Do not re-derive the feature from scratch and do not assume the previous attempt was right — the failure above is the thing you are answering.",
           "",
         ].join("\n");
+  const added =
+    opts.added === undefined || opts.added.trim() === ""
+      ? ""
+      : [
+          "## New since your last round",
+          "",
+          `A challenge round ran between rounds and ${opts.added.trim()}. They are part of the contract now — make them pass too.`,
+          "",
+        ].join("\n");
   const runner =
     opts.testRunner === undefined || opts.testRunner.trim() === ""
       ? "No project test runner is configured, so run each frozen file with whatever command runs this repository's tests."
@@ -127,7 +150,7 @@ export function buildPrompt(opts: BuildPromptOpts): string {
         "",
         "These files are the contract. **Do not edit, rename, delete, or replace any of them, and do not add a file that shadows one.** They were proved to fail before the feature existed; a test you weaken to green has not passed anything, and the parent restores every one of them from the commit and treats an edit as the child not doing its job.",
         "",
-        "If a frozen test looks wrong to you, say so in your reply. Do not change it.",
+        "If the frozen tests cannot all pass together, call `report_blocked` naming each conflicting file and why, then stop. Do not edit a test to make it pass, and do not keep probing after you have reported it.",
         "",
         "## The runner",
         "",
@@ -147,5 +170,6 @@ export function buildPrompt(opts: BuildPromptOpts): string {
       ].join("\n"),
     "",
     reentry,
+    added,
   ].join("\n");
 }

@@ -9,8 +9,11 @@
  * is assembled in `build-prompt.ts` so this module owns only the seam.
  */
 
+import { stat } from "node:fs/promises";
 import path from "node:path";
+import { statReporterPath } from "../reporter-preflight.ts";
 import type { DispatchResult } from "../types.ts";
+import { BLOCKED_REPORTER_PATH } from "./build-blocked-reporter.ts";
 import { BuildInfraError } from "./build-errors.ts";
 import { buildPrompt } from "./build-prompt.ts";
 import type { BuildDispatch } from "./build-types.ts";
@@ -35,8 +38,20 @@ export interface BuildDispatchOpts {
   testRunner?: string;
   /** The verify-red / CI-red reason this round is a fix for, if any. */
   reentry?: string;
+  /**
+   * What the adversary's challenge round added, if it added anything: the frozen
+   * paths it froze, named so this round knows which files are new to it.
+   */
+  added?: string;
   /** The step's budget arms, armed before the child and read back after. */
   budget: BudgetArms;
+  /**
+   * The stat the companion preflight runs; `fs/promises.stat` in production.
+   * Injectable the way `specify`/`challenge` inject it, so a case can fail the
+   * check without touching the filesystem — and the preflight's own named error
+   * is what the case observes, not a stand-in for it.
+   */
+  statReporter?: (p: string) => Promise<unknown>;
 }
 
 /**
@@ -55,6 +70,7 @@ export async function dispatchBuilder(
   dispatch: BuildDispatch,
   opts: BuildDispatchOpts,
 ): Promise<[DispatchResult | BudgetStop, DispatchUsageRow]> {
+  await statReporterPath(BLOCKED_REPORTER_PATH, opts.statReporter ?? stat);
   const prompt = buildPrompt({
     issue: opts.issue,
     spec: opts.spec,
@@ -63,6 +79,7 @@ export async function dispatchBuilder(
     attempt: opts.attempt,
     ...(opts.testRunner === undefined ? {} : { testRunner: opts.testRunner }),
     ...(opts.reentry === undefined ? {} : { reentry: opts.reentry }),
+    ...(opts.added === undefined ? {} : { added: opts.added }),
   });
   const result = await dispatch(
     { role: "developer", prompt, cwd: opts.wt },
@@ -76,6 +93,7 @@ export async function dispatchBuilder(
         scratch: path.join(path.dirname(opts.wt), "..", "tmp", `lean-${opts.issue}`),
       },
       ...opts.budget.opts,
+      extraArgs: ["--no-skills", "--extension", BLOCKED_REPORTER_PATH],
     },
   );
   // The row is built from what the child REPORTED, before either branch below

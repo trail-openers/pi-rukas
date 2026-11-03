@@ -23,7 +23,8 @@ import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { BuildInfraError } from "../src/lean/build-errors.ts";
 import { defaultConfig } from "../src/lean/config.ts";
-import { ROOTS, configWithRunner, runBuild } from "./lib/lean-build-fixture.ts";
+import { ROOTS, runBuild } from "./lib/lean-build-fixture.ts";
+import { configWithRunner } from "./lib/lean-build-asserts.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {

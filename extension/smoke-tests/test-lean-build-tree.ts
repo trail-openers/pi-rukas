@@ -17,18 +17,17 @@
 import { existsSync, lstatSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { BuildInfraError } from "../src/lean/build-errors.ts";
+import { commitPaths, status } from "./lib/lean-build-asserts.ts";
 import {
   ROOTS,
   SRC,
   TEST,
-  commitPaths,
   git,
   outsideDir,
   put,
   putOutside,
   runBuild,
   sha,
-  status,
   symlink,
 } from "./lib/lean-build-fixture.ts";
 

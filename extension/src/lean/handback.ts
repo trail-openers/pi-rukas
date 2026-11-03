@@ -32,7 +32,7 @@ import { postHandback } from "./io.ts";
 import { validPrUrl } from "./state-outcome.ts";
 import { type Outcome, REPORT_STATES, type Step } from "./state.ts";
 import { budgetSentence, budgetTrio } from "./step-budget.ts";
-import { fenceText } from "./text-fence.ts";
+import { fenceText, oneLine } from "./text-fence.ts";
 import { newestRedVerifyReason } from "./verify.ts";
 
 /** A reason line long enough to be a wall is not a comment a human reads. */
@@ -62,6 +62,21 @@ function branchLine(branch: string): string[] {
  * text that buries the one line the operator came for.
  */
 const FROZEN_LIST_CAP = 20;
+
+/**
+ * How many conflicting files a cause line names. The rest live in the step log;
+ * a handback that recites a hundred assertions buries the line the operator
+ * came for, and the same bound keeps the comment the size the frozen list has.
+ */
+const BLOCKED_LIST_CAP = 20;
+
+/**
+ * How long one stated conflict may print. The record bounds it at 300; the
+ * comment clips again because the value is the child's own prose and this is a
+ * public comment — it goes through the same one-line rule `frozenList` and
+ * `fenceText` apply to their payloads, so a newline cannot write a bullet.
+ */
+const BLOCKED_REASON_CAP = 300;
 
 /** A path long enough to be a blob is not a line anyone skims. */
 const FROZEN_PATH_CAP = 200;
@@ -136,6 +151,42 @@ function budgetCause(steps: Step[]): string | undefined {
 }
 
 /**
+ * The build step's named unsatisfiable contract, and FIRST in {@link neededFromLog}.
+ *
+ * The builder's `blocked` verdict is the one cause in the log that names the
+ * FILES and the contradiction, and it is the reason the run stopped: a stale
+ * `verify:red` from an earlier round says what was once broken, not what the
+ * builder could not satisfy, and a budget the run survived says only that a
+ * ceiling exists. So unlike {@link budgetCause}, this cause is NOT position
+ * gated: `next()` routes `build + blocked` straight to `handback`, so the
+ * verdict is the newest working step whenever it exists, and a run whose log
+ * also carries an earlier breach (the shape that buried the conflict in the
+ * post-mortem this exists for) must still name the conflict.
+ *
+ * Rendered from the typed `blockedBy` map, never from prose: a `blocked` step
+ * missing the map is a half-record and falls through to the next cause rather
+ * than printing a fragment.
+ */
+function blockedCause(steps: Step[]): string | undefined {
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const step = steps[i];
+    if (step?.state !== "build" || step.outcome?.kind !== "blocked") continue;
+    const entries = Object.entries(step.outcome.blockedBy ?? {});
+    if (entries.length === 0) continue;
+    const named = entries
+      .slice(0, BLOCKED_LIST_CAP)
+      .map(
+        ([file, why]) => `- ${oneLine(file, FROZEN_PATH_CAP)}: ${oneLine(why, BLOCKED_REASON_CAP)}`,
+      )
+      .join("\n");
+    const more =
+      entries.length > BLOCKED_LIST_CAP ? `\n…and ${entries.length - BLOCKED_LIST_CAP} more` : "";
+    return `the frozen tests cannot all pass together:\n${named}${more}`;
+  }
+  return undefined;
+}
+
+/**
  * Why the run is ending, in the record's own words.
  *
  * The order is the order of USEFULNESS, not of recency: what the run's own gate
@@ -148,6 +199,7 @@ function budgetCause(steps: Step[]): string | undefined {
  */
 export function neededFromLog(steps: Step[]): string {
   const reason =
+    blockedCause(steps) ??
     budgetCause(steps) ??
     newestRedVerifyReason(steps) ??
     newestReason(steps, "ci", "red") ??

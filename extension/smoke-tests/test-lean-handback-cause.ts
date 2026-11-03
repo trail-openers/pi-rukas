@@ -18,6 +18,7 @@
  */
 
 import { neededFromLog } from "../src/lean/handback.ts";
+import { handbackBody } from "../src/lean/handback.ts";
 import { decided } from "./lib/lean-verify-fixture.ts";
 
 let exit = 0;
@@ -137,6 +138,78 @@ function breach(state: "build" | "challenge") {
   assert(
     needed.includes("the real reason"),
     `a breach with no value or used falls through to the red (got ${needed})`,
+  );
+}
+
+// ── a blocked build outranks the budget AND a stale red (the run-5 shape) ──
+{
+  // The post-mortem this rule exists for: the child hit the turn kill, and the
+  // run's log carried a breach and an older red. The operator's line has to name
+  // the CONFLICT, because that is the only thing in the record a developer can
+  // act on — and it is typed, so unlike a breach it is not position gated.
+  const steps = [
+    decided("verify", { kind: "red", reason: "AC1 exited 1 — an earlier round's red" }),
+    decided("build", breach("build")),
+    decided("build", {
+      kind: "blocked",
+      blockedBy: {
+        "tests/AC1-identity.test.ts": "case 2 needs the array mutable, case 3 mutates it in place",
+      },
+    }),
+  ];
+  const needed = neededFromLog(steps);
+  assert(
+    needed.includes("tests/AC1-identity.test.ts") &&
+      needed.includes("case 3 mutates it in place"),
+    `the conflict is the cause line (got ${needed})`,
+  );
+  assert(
+    !needed.includes("minutes budget 15"),
+    `the breach the run survived does not bury the conflict (got ${needed})`,
+  );
+  assert(
+    !needed.includes("an earlier round's red"),
+    `and neither does a stale red (got ${needed})`,
+  );
+}
+
+// ── the blocked cause is the comment's fenced line, not just an outcome ───
+{
+  const body = handbackBody(9, {
+    needed: neededFromLog([
+      decided("build", {
+        kind: "blocked",
+        blockedBy: { "tests/a.test.ts": "### INJECTED HEADING\n- looks like a bullet" },
+      }),
+    ]),
+    frozen: ["tests/a.test.ts"],
+    branch: "lean/issue-9",
+  });
+  assert(
+    body.includes("tests/a.test.ts"),
+    `the comment names the conflicting file (got ${body})`,
+  );
+  assert(
+    !/^### INJECTED HEADING$/m.test(body),
+    `the child's prose cannot write a heading into the comment (got ${body})`,
+  );
+  assert(
+    body.includes("```text"),
+    `the cause is fenced like every other untrusted field (got ${body})`,
+  );
+}
+
+// ── a blocked step with no typed map is not a sentence this prints ────────
+{
+  // Same rule as the budget trio: a half-record falls through rather than
+  // printing "cannot all pass together:" with nothing after it.
+  const needed = neededFromLog([
+    decided("verify", { kind: "red", reason: "AC2 exited 1 — the real reason" }),
+    decided("build", { kind: "blocked" }),
+  ]);
+  assert(
+    needed.includes("the real reason"),
+    `a blocked step with no blockedBy falls through to the red (got ${needed})`,
   );
 }
 

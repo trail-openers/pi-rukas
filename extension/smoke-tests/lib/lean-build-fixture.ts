@@ -43,6 +43,7 @@ import { createRun } from "../../src/lean/state.ts";
 import type { BudgetOpts } from "../../src/lean/step-budget.ts";
 import type { DispatchResult, DispatchSpec } from "../../src/types.ts";
 import { gitTestEnv } from "./git-test-env.ts";
+import { SPEC_BODY, configWithRunner } from "./lean-build-asserts.ts";
 
 /** Temp dirs this module made; the caller removes them at the end of the run. */
 export const ROOTS: string[] = [];
@@ -88,8 +89,14 @@ export function sha(text: string | Buffer): string {
 }
 
 /** The implementation the frozen test is red against. */
-export const SRC = "export const retry = () => { throw new Error('not implemented'); };\n";
-/** The frozen acceptance test: fails against SRC, names its own path when it does. */
+export const SRC = "export const retry = () => { throw new Error('not-implemented'); };\n";
+/**
+ * The frozen acceptance test: fails against SRC, names its own path when it
+ * does. It greps for a token that is NOT valid JS on its own (`not-implemented`
+ * parses as subtraction), so an implementation that leaves the literal anywhere
+ * keeps the test red — and it echoes its own path, which is what makes the
+ * runner classify the failure as a red rather than an unclear exit.
+ */
 export const TEST =
   '#!/bin/sh\nif grep -q not-implemented src/retry.ts; then echo "not ok - tests/AC1-retry.test.sh" 1>&2; exit 1; fi\nexit 0\n';
 /** The tracked `agents.json` every build case has at the base; a protected path. */
@@ -126,6 +133,13 @@ export function buildFixture(
   opts?: {
     frozenSha?: string;
     frozenText?: string | Buffer;
+    /**
+     * Extra frozen files (path -> bytes) to commit on the run's head, hash to, and
+     * record in the step log under a `challenge:new-tests` step. A case that asks
+     * for the adversary's files gets blobs git really holds, so the step's
+     * frozen-integrity check passes for the right reason.
+     */
+    extraFrozen?: Record<string, string>;
     childOwnsBranch?: boolean;
     /**
      * Build the run's worktree under `lean-<this>` rather than `lean-<issue>`.
@@ -140,6 +154,7 @@ export function buildFixture(
 ): Built {
   const frozenText = opts?.frozenText ?? TEST;
   const frozenSha = opts?.frozenSha ?? sha(frozenText);
+  const extraFrozen = opts?.extraFrozen ?? {};
   const worktreeIssue = opts?.worktreeIssue ?? issue;
   const repoRoot = mkdtempSync(path.join(tmpdir(), "lean-build-"));
   ROOTS.push(repoRoot);
@@ -159,6 +174,15 @@ export function buildFixture(
   writeFileSync(dir("agents.json"), AGENTS_JSON);
   writeFileSync(dir("tests/AC1-retry.test.sh"), frozenText, { mode: 0o755 });
   chmodSync(dir("tests/AC1-retry.test.sh"), 0o755);
+  // The adversary's files go in the BASE commit here and the run's head commit is
+  // empty above it, so every frozen blob — the specify one and the challenge ones
+  // — is in the commit the frozen records were hashed at.
+  for (const [rel, text] of Object.entries(extraFrozen)) {
+    const target = dir(rel);
+    mkdirSync(path.dirname(target), { recursive: true });
+    writeFileSync(target, text, { mode: 0o755 });
+    chmodSync(target, 0o755);
+  }
   git(repoRoot, "add", "-A");
   git(repoRoot, "commit", "-q", "-m", "base");
   const baseSha = git(repoRoot, "rev-parse", "HEAD");
@@ -207,6 +231,18 @@ export function buildFixture(
         tests: { AC1: ["tests/AC1-retry.test.sh"] },
       },
     },
+    // The adversary's round, when the case asked for one: the frozen map it
+    // recorded is the one the committed bytes hash to.
+    ...(Object.keys(extraFrozen).length === 0
+      ? []
+      : [
+          {
+            key: `${issue}:challenge:0`,
+            state: "challenge" as const,
+            startedAt: 3,
+            outcome: { kind: "new-tests" as const, frozen: shaAll(extraFrozen) },
+          },
+        ]),
     // The position the log folds to: one build round owed.
     { key: `${issue}:build:0`, state: "build", startedAt: 3 },
   ];
@@ -233,9 +269,14 @@ export function buildFixture(
     headBefore,
     branch,
     worktree: wt,
-    frozen: { "tests/AC1-retry.test.sh": frozenSha },
+    frozen: { "tests/AC1-retry.test.sh": frozenSha, ...shaAll(extraFrozen) },
     ctx,
   };
+}
+
+/** The sha256 of each value, keyed as the value is keyed. */
+function shaAll(entries: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(entries).map(([k, v]) => [k, sha(v)]));
 }
 
 /** Worktree-relative path of a file the child may create. */
@@ -286,6 +327,10 @@ export interface RunResult {
   dispatched: number;
   prompts: string[];
   specs: DispatchSpec[];
+  /** The `extraArgs` of each dispatch, so a case can pin the reporter companion.
+   *  `readonly` because the dispatcher hands over a frozen array — the fixture
+   *  stores what it was given rather than a mutable copy of it. */
+  extraArgs: readonly (readonly string[])[];
   worktree: string;
   headBefore: string;
   /** The worktree's HEAD after the step, so a case can say nothing was committed. */
@@ -298,12 +343,23 @@ export interface RunOpts {
   issue: number;
   /** The child's acts in the worktree, at the moment it is still working. */
   child?: (wt: string) => void;
+  /**
+   * Acts performed after the child's dispatch and before the step's next git
+   * read. A case needs this to place a file that is NOT part of the child's
+   * commit: normalisation's `clean -fdx` deletes an untracked one, and the
+   * driver re-runs a reported frozen file only after that reset — so a case
+   * about "what the driver actually sees when it re-runs the named tests" has
+   * to plant its tree change here rather than in `child`.
+   */
+  afterDispatch?: (wt: string) => void;
   /** Extra steps to append to the log (a re-entry `verify:red` for case (i)). */
   extraSteps?: Step[];
   /** A build fixture whose frozen record is deliberately wrong (case (g)). */
   frozenSha?: string;
   /** The frozen test's committed bytes, when a case needs something other than TEST. */
   frozenText?: string | Buffer;
+  /** Extra frozen files (path -> bytes) committed and frozen as challenge added them. */
+  extraFrozen?: Record<string, string>;
   /** The aggregate capture ceiling in bytes, when a case needs a small one. */
   captureCeiling?: number;
   /** Skip the fixture's own worktree setup to test the "no worktree" throw. */
@@ -328,6 +384,16 @@ export interface RunOpts {
    * runner template would fail for the wrong reason.
    */
   config?: WorkConfig;
+  /**
+   * The child's tool calls, verbatim on the `DispatchResult` the stub returns.
+   * A function is called at the instant of dispatch, so a case can build its
+   * call from the tree the child's own `child` callback just wrote. The shape
+   * `runChallenge` already carries; build's reporter tool (`report_blocked`)
+   * needs it, and a case that wants a report cannot fake it any other way.
+   */
+  toolUses?: unknown[] | (() => unknown[]);
+  /** Bounds the driver's re-run of a reported frozen test (a case observes a hang). */
+  blockedTimeoutMs?: number;
 }
 
 /** Run the step against a fresh fixture; a throw comes back as the error. */
@@ -337,6 +403,7 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
     buildFixture(opts.issue, {
       ...(opts.frozenSha === undefined ? {} : { frozenSha: opts.frozenSha }),
       ...(opts.frozenText === undefined ? {} : { frozenText: opts.frozenText }),
+      ...(opts.extraFrozen === undefined ? {} : { extraFrozen: opts.extraFrozen }),
       ...(opts.childOwnsBranch === undefined ? {} : { childOwnsBranch: opts.childOwnsBranch }),
     });
   if (opts.extraSteps !== undefined) {
@@ -345,6 +412,7 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
   }
   const prompts: string[] = [];
   const specs: DispatchSpec[] = [];
+  const extraArgs: (readonly string[])[] = [];
   const gitArgvs: string[][] = [];
   let dispatched = 0;
   const exec: BuildDeps["exec"] = async (cmd, o) => {
@@ -355,13 +423,16 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
     dispatched++;
     specs.push(spec);
     prompts.push(spec.prompt);
+    extraArgs.push(o.extraArgs ?? []);
     opts.onProgressTick?.(o.onProgress);
     opts.child?.(spec.cwd as string);
+    const declared =
+      typeof opts.toolUses === "function" ? opts.toolUses() : [...(opts.toolUses ?? [])];
     const result: DispatchResult = {
       role: spec.role,
       ok: opts.dispatchOk !== false,
       text: "implemented",
-      toolUses: [],
+      toolUses: declared,
       ms: 1,
       exitCode: opts.dispatchOk === false ? 1 : 0,
       // A child that reports no usage is a child that cost nothing, and the
@@ -371,7 +442,7 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
     };
     return result;
   };
-  const deps: BuildDeps = {
+  const inner: BuildDeps = {
     exec,
     dispatch,
     fetchIssueBody: async () => SPEC_BODY,
@@ -380,6 +451,11 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
       return opts.config ?? configWithRunner();
     },
     ...(opts.captureCeiling === undefined ? {} : { captureCeiling: opts.captureCeiling }),
+    ...(opts.blockedTimeoutMs === undefined ? {} : { blockedTimeoutMs: opts.blockedTimeoutMs }),
+  };
+  const deps: BuildDeps = {
+    ...inner,
+    ...(opts.afterDispatch === undefined ? {} : { blockedProbe: opts.afterDispatch }),
   };
   try {
     const { buildOutcome } = await import("../../src/lean/build.ts");
@@ -389,6 +465,7 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
       dispatched,
       prompts,
       specs,
+      extraArgs,
       worktree: built.worktree,
       headBefore: built.headBefore,
       headAfter: headOf(built.worktree),
@@ -401,6 +478,7 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
       dispatched,
       prompts,
       specs,
+      extraArgs,
       worktree: built.worktree,
       headBefore: built.headBefore,
       headAfter: headOf(built.worktree),
@@ -418,47 +496,3 @@ function headOf(wt: string): string {
   }
 }
 
-/** A config carrying the project's test runner template. */
-export function configWithRunner(): WorkConfig {
-  return { ...defaultConfig(), verify: { fast: "true", test: RUNNER } };
-}
-
-/** A body carrying the spec `build` re-reads from the forge. */
-export const SPEC_BODY = `\`\`\`pi-spec v1
-${JSON.stringify(
-  {
-    problem: "The retry helper gives up on the first transient failure.",
-    size: "S",
-    criteria: [
-      { id: "AC1", text: "retries a transient failure twice before failing", verify: "test" },
-      { id: "AC2", text: "documents the retry budget", verify: "manual" },
-    ],
-    scope: { paths: ["src/retry.ts"], out: ["docs/"] },
-  },
-  null,
-  2,
-)}
-\`\`\``;
-
-/** `git status --porcelain -uall` for a worktree, "" when clean. */
-export function status(wt: string): string {
-  return git(wt, "status", "--porcelain", "-uall");
-}
-
-/** The paths one commit changes, in git's order. */
-export function commitPaths(wt: string, ref = "HEAD"): string[] {
-  const out = git(wt, "show", "--name-only", "--format=", ref);
-  return out === "" ? [] : out.split("\n");
-}
-
-/** The subject line of HEAD. */
-export function subject(wt: string): string {
-  return git(wt, "log", "--format=%s", "-1");
-}
-
-/** Every commit subject above `ref`. */
-export function subjectsAbove(wt: string, ref: string): string[] {
-  return git(wt, "log", "--format=%s", `${ref}..HEAD`)
-    .split("\n")
-    .filter((s) => s !== "");
-}

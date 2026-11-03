@@ -39,7 +39,11 @@ import { type Transition, to, viaBuild } from "./transitions.ts";
 export const OUTCOME_KINDS = {
   ready: ["ok", "fail"],
   specify: ["ok", "no-red-test", "budget"],
-  build: ["ok", "exhausted", "budget"],
+  // `blocked` is the child's own "these frozen tests cannot all pass together",
+  // honoured only after the driver re-ran the named tests itself. It is not
+  // `exhausted`: the builder did not fail to produce a change, it stopped on a
+  // contract the run cannot satisfy, and the route must never reach `publish`.
+  build: ["ok", "exhausted", "budget", "blocked"],
   challenge: ["new-tests", "none", "budget"],
   verify: ["green", "red"],
   publish: ["ok"],
@@ -180,6 +184,14 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
         case BUDGET_KIND:
           // `exhausted`'s shape with no draft to clear: the child's work went
           // back with the tree, so there is nothing to verify.
+          return to(run, "handback");
+        case "blocked":
+          // Straight to `handback`, and never through the `exhausted` route:
+          // publishing a PR over tests the run's own builder proved
+          // unsatisfiable is the one shape where a contract nobody satisfied
+          // reaches `land`. `to()` rather than `viaBuild()` — no round was
+          // earned here, and charging one would bill a build the run did not
+          // do and could shift the cap a later round sees.
           return to(run, "handback");
         case "exhausted":
           // Out of build attempts. Whether this is a degradation or a defeat

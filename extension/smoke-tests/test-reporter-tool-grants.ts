@@ -50,6 +50,12 @@ const agents = JSON.parse(readFileSync(path.resolve(here, "..", "..", "agents.js
  */
 const DISPATCH_ROLE: Partial<Record<string, string>> = {
   report_finding: "code-review-specialist",
+  // The build child's early-stop report (#1984). Its dispatch is a developer,
+  // and the grant matters for the same reason as every other row here: a headless
+  // or strict child whose tool call resolves to `ask` is denied, and a denied
+  // reporter means the child that proved a conflict cannot say so — the step then
+  // burns its remaining rounds on an unsatisfiable contract.
+  report_blocked: "developer",
   report_workstream: "explore",
   report_policy: "explore",
   report_plan_item: "explore",
