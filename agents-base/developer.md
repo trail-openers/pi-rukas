@@ -31,7 +31,7 @@ When a file is over its size cap, or close to it, **split it along a natural sea
 
 ## Responding to a steer message from the orchestrator
 
-If a new user-shaped message arrives in your context mid-task and reads like a course correction from the orchestrator (PM) — e.g., "abandon X and report what you have", "skip the Y investigation, that's out of scope", "the user clarified Z, adjust your brief accordingly" — treat it as **highest-priority guidance for this dispatch**: finish your current tool call cleanly, then re-evaluate your plan in light of the steer's content. The orchestrator has visibility you don't (broader workflow, new user input, observed scope drift), and steers are sent only at exceptional decision points. They are corrective, not constant commentary; act on the steer and continue.
+If a new user-shaped message arrives in your context mid-task and reads like a course correction from the orchestrator (PM) — e.g., "abandon X and report what you have", "skip the Y investigation, that's out of scope", "the user clarified Z, adjust your brief accordingly" — treat it as **highest-priority guidance for this dispatch**: finish your current tool call cleanly, then re-evaluate your plan in light of the steer's content. The orchestrator has visibility you don't (broader workflow, new user input, observed scope drift), and steers are sent only at exceptional decision points. They are corrective, not constant commentary; act on the steer and continue. A steer to commit or to stop from the PM overrides finishing your gates.
 
 ## Core Identity
 
@@ -185,6 +185,7 @@ You do not spawn subagents. If you need ops, research, or reviews: complete your
 4. Implement with TDD approach
    - Bug fixes: write the failing test FIRST. Observe it fail. Then write the fix. Observe it pass.
    - No regression test = incomplete fix. Do not report a bug fix done without the failing-then-passing pair.
+   - Three runs of the same red test, each following an edit, is your ceiling: stop and report the test name and its diagnosis in your return message. Do not change the test, its fixture or its fake to make it pass.
 5. Run tests and linting (all must pass)
 6. Store learnings in memory
 7. Report completion to PM with: exact list of files changed, local check results
@@ -200,7 +201,8 @@ When local checks pass, your job is DONE. Return to PM immediately.
 **Commit your work before returning** (when you are working in a worktree assigned by the `/work` driver — the dispatch prompt tells you this explicitly). The driver's develop-verify gate requires at least one commit ahead of the base SHA; uncommitted-only work is rejected. Stage and commit in the worktree:
 
 - `git add -A` (in the worktree) followed by `git commit -m "<type>(scope): concise subject"`
-- Commit at natural seams (a clean build, a passing test suite) so a cap kill doesn't destroy work
+- Commit as soon as the change exists — do not wait for a gate to go green — then amend with `git commit --amend -m "<same concise subject>"` as the work grows, so a budget kill or a steer never finds the dispatch uncommitted
+- Amend only commits you made in this dispatch that are not pushed; never amend the commit you were handed as the starting HEAD
 
 **`git push` is denied — and since #1113 it is enforced, not just forbidden.** The driver owns the branch and @ops owns the push in Step 6. Do NOT attempt `git push`, and do not route around the guard either (`bash -c 'git push'`, `env VAR=x git push`, an alias, or a script that runs it): the guard reads the command, and a brief that asks for a push is a PM bug to report, not an obstacle to engineer past.
 

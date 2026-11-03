@@ -6,6 +6,9 @@
  */
 import { quotedPaths } from "./plan-path-shape.ts";
 import { fenceLines } from "./work-driver-plan-fence.ts";
+// #1989 — the commit clause is a constant in its own module: this file sits at
+// the AGENTS.md §12 cap, so the sentence that changes lives where it can grow.
+import { DEVELOP_COMMIT_INSTRUCTION } from "./work-driver-prompts-develop-commit.ts";
 import { scratchHygieneSection } from "./work-driver-prompts-late.ts";
 import { developTestScopeLine, developVerifyLine } from "./work-driver-verify-fast.ts";
 import type { FenceView } from "./workflow-state-schema.ts";
@@ -398,18 +401,15 @@ export function inlineDevelopPrompt(
     // commands — otherwise "wrap every suite command in timeout" reads as
     // permission to run the very full run the fast tier just ruled out.
     `  3. ${verifyLine} ${developTestScopeLine(Boolean(verifyCmd && fastVerifyCmd))}`,
-    // #543 F5 — the driver's checkpoint commits the worktree at the natural
-    // seams the child made during its run, so a cap kill never leaves only
-    // a failure message. Committing at natural seams is what makes those
-    // seams exist; the driver only stages what is there.
+    // #543 F5 — the driver's checkpoint commits the worktree at whatever seams
+    // the child made, so a cap kill never leaves only a failure message.
     // #621 — the develop-verify gate (work-driver-verify-develop.ts) REQUIRES
-    // at least one commit ahead of baseSha; uncommitted-only work is rejected.
-    // Make the exact commands explicit so smaller models don't drift off the
-    // commit step under long-context constraint decay (issue #622 covers the
-    // mechanical safety net as defense-in-depth).
-    // #1078 — commit subject follows the project's convention, not a fixed
-    // <type>(scope): shape (a project's AGENTS.md may set a different style).
-    '  4. Commit your work in the worktree at natural seams (a clean build, a passing test suite): run `git add -A` followed by `git commit -m "<concise subject — follow the project\'s commit convention from AGENTS.md, or <type>(scope): description>"`. The verify gate REJECTS uncommitted-only work — no commit ahead of base SHA means the develop step fails. Do NOT push — the driver owns the branch and ops owns the push in Step 6.',
+    // at least one commit ahead of baseSha; uncommitted-only work is rejected,
+    // so the exact commands are explicit and smaller models cannot drift off
+    // the commit step under long-context constraint decay (#622 covers the
+    // mechanical safety net). #1078 softened the subject to the project's own
+    // convention; #1989 moved the seam before the suite (see the constant).
+    `  4. ${DEVELOP_COMMIT_INSTRUCTION}`,
     "  5. End your reply with a `## Touched files` section listing every file you changed and a one-line `## Summary`.",
     "",
     "Discourage drive-by edits; only touch files in scope.",

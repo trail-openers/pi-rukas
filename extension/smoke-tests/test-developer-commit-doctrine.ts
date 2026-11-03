@@ -32,6 +32,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import { inlineDevelopPrompt } from "../src/work-driver-prompts-early.ts";
+import { assertDevelopCommitEarly } from "./lib/developer-test-scope.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -167,6 +168,43 @@ assert(
 assert(
   /REJECT|reject/i.test(developPrompt) && /uncommitted/i.test(developPrompt),
   "inlineDevelopPrompt: states uncommitted-only work WILL BE REJECTED by the verify gate (AC2)",
+);
+
+// ------------------------------------------------ (f) #1989: commit early, amend after
+//
+// Three field cycles ended with the developer killed at its bound and NOTHING
+// committed; two hand-managed developers each said "done" some 200 turns before
+// their first commit and committed only when a PM steer ordered it. The old
+// seam — "a clean build, a passing test suite" — put the first commit behind the
+// most expensive gate in the dispatch. The develop prompt is now pinned by the
+// same helper that pins the lens-fix arms.
+assertDevelopCommitEarly(assert, developPrompt);
+
+// The role prompt carries the same three instructions, because a hand-run
+// `@developer` dispatch or a lens-fix developer reads the role prompt and never
+// sees `inlineDevelopPrompt`. Asserted as three separate clauses so deleting
+// one cannot be masked by the others surviving on the same line.
+assert(
+  /commit as soon as the change exists/i.test(devDoc) &&
+    /do not wait for a gate to go green/i.test(devDoc),
+  "#1989 AC1: built developer.md commits as soon as the change exists, not when the gates are green",
+);
+assert(
+  /git commit --amend -m/.test(devDoc) &&
+    /amend only commits you made in this dispatch that are not pushed/i.test(devDoc) &&
+    /never amend the commit you were handed as the starting HEAD/i.test(devDoc),
+  "#1989 AC1: built developer.md amends its own unpushed commits with the message on the command line, and never the starting HEAD",
+);
+assert(
+  /three runs of the same red test[^\n]*stop and report the test name and its diagnosis/i.test(
+    devDoc,
+  ) &&
+    /do not change the test, its fixture or its fake to make it pass/i.test(devDoc),
+  "#1989 AC2: built developer.md caps a red test at three post-edit runs and reports the test name and its diagnosis rather than rewriting the test, fixture or fake",
+);
+assert(
+  /a steer to commit or to stop[^\n]*overrides finishing your gates/i.test(devDoc),
+  "#1989 AC3: built developer.md says a PM steer to commit or stop outranks finishing the gates",
 );
 
 // ------------------------------------------------ (d) verify error message

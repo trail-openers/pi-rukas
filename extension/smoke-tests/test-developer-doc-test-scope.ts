@@ -75,6 +75,16 @@ await withWatchdog(undefined, async () => {
     /smoke tests? for the files you changed/i.test(src),
     "#1156: the role prompt scopes the developer to the smoke tests for files it changed",
   );
+  // #1989 AC4 — the same scope stated as a default, not an absolute: the
+  // #1156 rule above forbids the full suite outright, so the only thing this
+  // adds is that committing is never gated on a suite run. A brief may not
+  // re-license the full run — the driver's verify is the one that runs it.
+  assert(
+    /do not wait for a gate to go green/i.test(
+      between("## ⛔ Return Protocol", "## Quality Requirements"),
+    ),
+    "#1989 AC4: the commit seam is stated independently of any suite run, so the targeted-tests rule cannot become a reason to delay the commit",
+  );
   assert(
     /typecheck and lint/i.test(src),
     "#1156: typecheck and lint stay in the developer's own scope",

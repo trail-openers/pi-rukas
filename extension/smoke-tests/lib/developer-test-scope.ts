@@ -17,6 +17,7 @@
  * pass/fail tally and exit code.
  */
 
+import { DEVELOP_COMMIT_INSTRUCTION } from "../../src/work-driver-prompts-develop-commit.ts";
 import { developTestScopeLine, suiteTimeoutSeconds } from "../../src/work-driver-verify-fast.ts";
 import { withEnv } from "./env-scope.ts";
 
@@ -401,6 +402,46 @@ export function assertLensFixCommitEarly(assert: Assert, prompt: string): void {
   assert(
     !/natural seams \(a clean build, a passing test suite\)/i.test(prompt),
     "#1798 canary: the old 'natural seams (a clean build, a passing test suite)' wording is GONE — it read as 'wait for the suite', which is how the field fixers died uncommitted",
+  );
+}
+
+/**
+ * #1989 — the DEVELOP-side twin of `assertLensFixCommitEarly`, so the sibling
+ * prompt carries the same early seam the lens-fix arms carry.
+ *
+ * Three field cycles ended with a developer killed at its bound and NOTHING
+ * committed, and two hand-managed developers each said "done" some 200 turns
+ * before their first commit. The develop prompt — not the lens-fix prompt —
+ * carried the old "natural seams (a clean build, a passing test suite)" seam,
+ * which reads as "wait for the suite": the first commit sat behind the most
+ * expensive gate in the dispatch. Takes the RENDERED prompt so the assertion is
+ * about what the child actually reads, and asserts the exported constant is
+ * that same text verbatim (the #1156 lesson: two literals, one rule, drift).
+ */
+export function assertDevelopCommitEarly(assert: Assert, prompt: string): void {
+  assert(
+    /commit your work in the worktree as soon as the change exists/i.test(prompt),
+    "#1989: the develop commit instruction makes the first commit conditional on the CHANGE existing, not on a gate passing",
+  );
+  assert(
+    /git commit -m.{0,200}git commit --amend -m/s.test(prompt),
+    "#1989: the seam is amend-in-place with the MESSAGE on the command line — a `git commit` with no message opens an editor this environment has no TTY for",
+  );
+  assert(
+    /NEVER wait for a full test suite before your first commit/i.test(prompt),
+    "#1989: the prompt forbids waiting for the full suite before the first commit in as many words",
+  );
+  assert(
+    /amend[^.\n]*unpushed[^.\n]*starting HEAD|never the starting HEAD/i.test(prompt),
+    "#1989: amending is bounded to the child's own unpushed commits — the starting HEAD (a lean frozen/reviewed commit) is not the child's to rewrite",
+  );
+  assert(
+    !/natural seams \(a clean build, a passing test suite\)/i.test(prompt),
+    "#1989 canary: the old 'natural seams (a clean build, a passing test suite)' wording is GONE from the develop prompt — it read as 'wait for the suite', which is how the field developers died uncommitted",
+  );
+  assert(
+    prompt.includes(DEVELOP_COMMIT_INSTRUCTION),
+    "#1989: the develop prompt embeds DEVELOP_COMMIT_INSTRUCTION verbatim — the constant is the single source of the seam, not a paraphrase that can drift",
   );
 }
 
