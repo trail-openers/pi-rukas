@@ -14,7 +14,7 @@
  *
  * This module is that alignment, evaluated by the guard (merge-guard.ts)
  * AFTER the adversarial check has already passed. It mirrors
- * * work-driver-lens-cap.ts's constants (MAX_REVIEW_ROUNDS = 3, the
+ * * work-driver-lens-cap.ts's constants (MAX_REVIEW_ROUNDS, the
  * ISSUES_FOUND-only condition, the CRITICAL-always-refuses rule) rather than
  * introducing a second independently-tuned number, and it reuses
  * `latestEntry` from review-ledger.ts for the round count (the new `round`
@@ -85,9 +85,9 @@
  */
 
 import { lensRoundCap } from "./lens-round-cap.ts";
-import { type ReviewSeverity, isBlockingSeverity } from "./review-threshold.ts";
 import { isFullCommitSha } from "./review-head-sha.ts";
 import { type LedgerEntry, latestEntry } from "./review-ledger.ts";
+import { type ReviewSeverity, isBlockingSeverity } from "./review-threshold.ts";
 
 /** The severity ranks that can block. LOW is never blocking, so a row counting
  * none of these has nothing at the bar however the bar is set. */
@@ -124,9 +124,7 @@ function nothingBlocking(lens: LedgerEntry): boolean {
  * the shipped default applies (`resolveReviewThreshold` applies the same rule
  * to its own env arm). */
 function isSeverityName(v: unknown): v is ReviewSeverity {
-  return (
-    typeof v === "string" && (BLOCKING_RANKS as readonly string[]).includes(v)
-  );
+  return typeof v === "string" && (BLOCKING_RANKS as readonly string[]).includes(v);
 }
 
 /**
@@ -251,7 +249,7 @@ export function evaluateRoundCapMerge(
   }
   // Condition 4: the round must be >= the resolved lens round cap (#1127:
   // lensRoundCap() — the SAME value the tool-side budget enforces, so
-  // PI_ENSEMBLE_LENS_ROUND_CAP moves both; default MAX_REVIEW_ROUNDS = 3).
+  // PI_ENSEMBLE_LENS_ROUND_CAP moves both; default MAX_REVIEW_ROUNDS).
   // A legacy entry without `round` counts as round 1 — never enough (design
   // decision 3). A malformed row (a non-integer
   // `round` that slipped past the loader) counts as round 1 the same way a

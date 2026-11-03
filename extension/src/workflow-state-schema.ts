@@ -140,8 +140,9 @@ export interface PipelineState extends IssueClosedState, PipelineStateReviewTail
    */
   lastDiffHash?: string;
   /**
-   * Six-pass-review round counter; starts at 1 on first lens-review entry; hard
-   * cap 3 — see MAX_REVIEW_ROUNDS in work-driver-context.ts.
+   * Six-pass-review round counter; starts at 1 on first lens-review entry;
+   * capped at MAX_REVIEW_ROUNDS (work-driver-context.ts) — the whole review
+   * budget: the full review and the scoped re-review of one fix wave.
    */
   reviewRound: number;
   /**
