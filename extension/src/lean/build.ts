@@ -257,19 +257,17 @@ async function blockedReport(opts: {
   // The
   // record's own bounds are enforced on read (`blockedByProblem`), so the map is
   // not re-counted here: the gate already refused a wider report.
-  // `vetted` is the list the gate above already refused anything outside — the
-  // rows the child named, `usableConflicts` accepted and `blockedProved` checked
-  // against the frozen map. `ran` alone is not enough: an entry the driver never
-  // executed may not enter the record, and neither may a name the child never
-  // reported, whatever else the re-run touched.
-  const vetted = new Set(paths);
+  // `proved.ran` is already the vetted list: `blockedProved` receives only what
+  // `usableConflicts` accepted and refuses a report naming anything outside the
+  // frozen map, so `ran` cannot contain a name the child never reported. One
+  // filter, at the layer that actually observed the run.
   const ran = new Set(proved.ran);
   const blockedBy: Record<string, string> = {};
   // `row.path in blockedBy` keeps the FIRST reason the child gave for a path it
   // named twice: `usableConflicts` de-dupes the path list, so without this the
   // later row silently overwrites the earlier one's words.
   for (const row of extracted.rows) {
-    if (!vetted.has(row.path) || !ran.has(row.path) || row.path in blockedBy) continue;
+    if (!ran.has(row.path) || row.path in blockedBy) continue;
     blockedBy[oneLine(row.path, BLOCKED_PATH_CAP)] = oneLine(row.reason, BLOCKED_REASON_CAP);
   }
   const red = proved.red;
