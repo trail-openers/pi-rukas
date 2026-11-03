@@ -57,11 +57,8 @@ import {
   fixRunId,
   git,
   lensRoundFor,
-  blockingOnGateThenClears,
   issuesFoundThenClears,
   lensRoundWith,
-  passed,
-  resolvedLensRound,
   makeRepo,
   rejectsThenClears,
   result,
@@ -341,7 +338,7 @@ function committingFixerTree(tag: string) {
       // RESOLVES the row (its own notice, not its silence) and the step passes.
       lens: async (a) =>
         a.wave === "fix"
-          ? resolvedLensRound(a, [blockingFinding()])
+          ? lensRoundFor(a, "APPROVED", [])
           : lensRoundWith("CRITICAL_ISSUES_FOUND", [blockingFinding()]),
       dispatch: async (spec: DispatchSpec) => {
         const wt = spec.cwd as string;

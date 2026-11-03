@@ -24,9 +24,10 @@ import {
   BRANCH,
   FIXER_ROLE,
   blockingFinding,
+  carriedFinding,
   cleanLensRound,
+  lensRoundFor,
   lensRoundWith,
-  resolvedLensRound,
   cleanupRoots,
   ctxFor,
   depsWith,
@@ -97,7 +98,7 @@ const { assert, failures } = makeAssert();
       adversarial: async () => result({ loopOutcome: "approved" }),
       lens: async (a) =>
         a.wave === "fix"
-          ? resolvedLensRound(a, [blockingFinding()])
+          ? lensRoundFor(a, "APPROVED", [])
           : {
               ...lensRoundWith("CRITICAL_ISSUES_FOUND", [blockingFinding()]),
               findings: "- [HIGH] SECURITY a.ts:1: leak",

@@ -31,17 +31,16 @@ import {
   FIXER_ROLE,
   ReviewInfraError,
   blockingFinding,
-  blockingOnGateThenClears,
   cleanupRoots,
   ctxFor,
   depsWith,
   git,
   issuesFoundThenClears,
+  lensRoundFor,
   lensRoundWith,
   makeRepo,
   passed,
   rejectsThenClears,
-  resolvedLensRound,
   result,
   runStep as run,
   setup,
@@ -82,7 +81,7 @@ function committingFixerTree(tag: string) {
             // wave is the non-blocking gate's prose — which is exactly what this case
             // is about. `lensRoundFor(a, "APPROVED", [])` would instead fail on the
             // row's own fate and read as though the gate prose had blocked.
-            resolvedLensRound(a, [blockingFinding()])
+            lensRoundFor(a, "APPROVED", [])
           : lensRoundWith("CRITICAL_ISSUES_FOUND", [blockingFinding()]),
       dispatch: async (spec) => {
         if (spec.role === FIXER_ROLE) prompts.push(spec.prompt);
@@ -110,7 +109,7 @@ function committingFixerTree(tag: string) {
       adversarial: rejectsThenClears("1. a finding the gate blocked on"),
       lens: async (a) =>
         a.wave === "fix"
-          ? resolvedLensRound(a, [blockingFinding()])
+          ? lensRoundFor(a, "APPROVED", [])
           : lensRoundWith("CRITICAL_ISSUES_FOUND", [blockingFinding()]),
       dispatch: async (spec) => {
         if (spec.role === FIXER_ROLE) prompts2.push(spec.prompt);
@@ -150,7 +149,7 @@ function committingFixerTree(tag: string) {
         lens: async (a) =>
           a.wave === "fix"
             ? {
-                ...resolvedLensRound(a, [blockingFinding()]),
+                ...lensRoundFor(a, "APPROVED", []),
                 deltaReview: { since: "0".repeat(40), head: a.head },
               }
             : lensRoundWith("CRITICAL_ISSUES_FOUND", [blockingFinding()]),
@@ -176,7 +175,7 @@ function committingFixerTree(tag: string) {
         adversarial: async () => result({ loopOutcome: "approved" }),
         lens: async (a) =>
           a.wave === "fix"
-            ? resolvedLensRound(a, [blockingFinding()])
+            ? lensRoundFor(a, "APPROVED", [])
             : lensRoundWith("CRITICAL_ISSUES_FOUND", [blockingFinding()]),
         dispatch: committingFixerTree("k2"),
       }),

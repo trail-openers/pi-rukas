@@ -6,21 +6,34 @@
  * wiring is about *plumbing* (which commit each gate read, which rows get billed,
  * what a fixer is dispatched with). This file is about the step's **decision
  * procedure** — the rules that turn a round's report into "clears" or "hands back",
- * and the four ways a wrong reading of a report becomes a wrong outcome:
+ * and the ways a wrong reading of a report becomes a wrong outcome.
+ *
+ * The step reads ONE thing: the layer's verdict, and the layer's rows. It states
+ * no fate of its own about any finding. So the cases below are the three readings
+ * that survive, plus the ways each can be gotten wrong:
  *
  *   (b3/b4/b5) every way a round does not run is refused on BOTH passes. The step
  *       has only clean passes as exits, so an incomplete re-review that is not
  *       thrown is certified, and its silence read back as the fixer having answered
  *       everything. Both `assertRan` arms and the did-not-run bar, second round.
  *
- *   (h) a blocking row is ADDRESSED only on the layer's own resolve notice. The old
- *       rule read "the delta round did not re-report it" as addressed, so a row
- *       vanished by every route that was not a resolve, and the wave passed on no
- *       evidence. Silence is not an answer, in either direction.
+ *   (h) a carried row at HIGH or above is NOT ADDRESSED. `carried: true` is the
+ *       layer's own refusal to resolve (`rowFate`), so a row that comes back
+ *       carrying it is the layer saying the fix did not answer it — and the refusal
+ *       names the row. A row the layer DID resolve simply is not in `reported`, and
+ *       the same wave then clears.
  *
- *   (i) a fresh row is attributed to the fix only at CRITICAL severity. Below that
- *       it is disclosed on the reason, because a report-only finding is not a demand
- *       and the step must not hand a run back for a HIGH the layer would disclose.
+ *   (h2) an unknown severity on a carried row is blocking, not below the bar: a
+ *       row whose severity is missing or outside the four schema values is parsed
+ *       model output, and reading it as disclosable is how a malformed row clears a
+ *       wave.
+ *
+ *   (i) the layer's own CRITICAL verdict on the fix range hands back, and the
+ *       handback names the fixer's head and the range — origin is at the fix, so an
+ *       operator chasing "where is my work" is pointed at the pushed commits.
+ *
+ *   (i2) a fresh row BELOW the bar is disclosure, never a handback: the step must
+ *       not hand a run back for a MEDIUM the layer itself would disclose.
  *
  * Real temp repos, stubbed models, no child spawned, no token spent.
  */
@@ -32,7 +45,6 @@ import {
   type ReviewDeps,
   ReviewInfraError,
   blockingFinding,
-  blockingReject,
   cleanupRoots,
   ctxFor,
   depsWith,
@@ -40,8 +52,6 @@ import {
   lensRoundFor,
   lensRoundWith,
   makeRepo,
-  passed,
-  resolvedLensRound,
   result,
   runStep as run,
   setup,
@@ -63,7 +73,7 @@ const { threw: t3b } = await run(
     adversarial: async () => result({ loopOutcome: "approved" }),
     lens: async (a) =>
       a.wave === "fix"
-        ? { ...resolvedLensRound(a, [blockingFinding()]), verdict: "REVIEW_INCOMPLETE" }
+        ? { ...lensRoundFor(a, "APPROVED", []), verdict: "REVIEW_INCOMPLETE" }
         : lensRoundWith("CRITICAL_ISSUES_FOUND", [blockingFinding()]),
     dispatch: fixerThatCommits("b3"),
   }),
@@ -75,9 +85,9 @@ assert(
 
 // (b4) The other way a round does not run: `noReview`. A re-review that ran no
 // lens — because nothing appeared to change in its range — reports an ordinary
-// verdict with nothing behind it, and the step must refuse it exactly as it
-// refuses the first round's. Both passes get the same check because both
-// conclusions are the same shape: "nothing outstanding", arrived at by nobody.
+// verdict with nothing behind it, and the step must refuse it exactly as it refuses
+// the first round's. Both passes get the same check because both conclusions are the
+// same shape: "nothing outstanding", arrived at by nobody.
 const { repoRoot: rr4, baseSha: bs4 } = makeRepo();
 await setup({ repoRoot: rr4, baseSha: bs4, branch: BRANCH, feature: "export const f = 17;\n" });
 const { threw: t4b } = await run(
@@ -86,7 +96,7 @@ const { threw: t4b } = await run(
     adversarial: async () => result({ loopOutcome: "approved" }),
     lens: async (a) =>
       a.wave === "fix"
-        ? { ...resolvedLensRound(a, [blockingFinding()]), noReview: true }
+        ? { ...lensRoundFor(a, "APPROVED", []), noReview: true }
         : lensRoundWith("CRITICAL_ISSUES_FOUND", [blockingFinding()]),
     dispatch: fixerThatCommits("b4"),
   }),
@@ -108,12 +118,12 @@ const { threw: t5b } = await run(
     lens: async (a) => {
       const round =
         a.wave === "fix"
-          ? resolvedLensRound(a, [blockingFinding()])
+          ? lensRoundFor(a, "APPROVED", [])
           : lensRoundWith("CRITICAL_ISSUES_FOUND", [blockingFinding()]);
+      if (a.wave !== "fix") return round;
       // The `usage` field is what `assertRan` reads, so the stub has to produce a
       // round without it — built as an object literal that never sets it rather
       // than by deleting one from a complete round.
-      if (a.wave !== "fix") return round;
       const { usage: _usage, ...withoutUsage } = round;
       return { ...withoutUsage, usage: undefined } as unknown as typeof round;
     },
@@ -125,76 +135,145 @@ assert(
   `(b5) a re-review reporting a verdict with no usage behind it is refused (${t5b?.message ?? "the step passed on free work"})`,
 );
 
-// ── (h) SILENCE IS NOT AN ANSWER: a blocking row the re-review never mentions ─
+// ── (h) a carried row is the layer's NOT ADDRESSED, and the refusal names it ─
 //
-// The old rule read "the delta round did not re-report it" as ADDRESSED, so a row
-// vanished by every route that was not a resolve — a round that dropped it, an
-// advisory discount, a lens that failed to see it — and the wave passed on no
-// evidence at all. The rule now: ADDRESSED requires the layer's OWN resolved notice
-// for that row. A row absent from `reported` AND from `resolved` is NOT ADDRESSED,
-// and the step fails closed. The mutant that proves this is `fate: "addressed"` in
-// `classifyFates`' not-re-reported arm: with it, every assertion below goes red.
+// `carried: true` on a `reported` row is what the findings store puts on an open row
+// `rowFate` refused to resolve — the cited code is unchanged, so the layer is saying
+// the fix did not answer it. That marker is the ONLY thing the step reads per row.
+// The mutant is the carried test inverted (`!isCarried(f)`): with it, every carried
+// row below discloses and the wave passes on the layer's own red.
 {
   const { repoRoot, baseSha } = makeRepo();
   await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 8;\n" });
   const { threw } = await run(
     ctxFor(repoRoot, baseSha, BRANCH),
     depsWith({
-      adversarial: async () => blockingReject("1. the row the wave must answer"),
-      // The full round reports a HIGH row; the re-review reports NOTHING and
-      // resolves NOTHING — the shape the old code cleared on.
+      adversarial: async () => result({ loopOutcome: "approved" }),
+      // The full round reports a HIGH row; the re-review re-reports it CARRIED.
       lens: async (a) =>
         a.wave === "fix"
-          ? lensRoundFor(a, "APPROVED", [])
+          ? lensRoundFor(a, "ISSUES_FOUND", [{ ...blockingFinding(), carried: true } as never])
           : lensRoundWith("CRITICAL_ISSUES_FOUND", [blockingFinding()]),
       dispatch: fixerThatCommits("h"),
     }),
   );
   // The row itself must appear in the cause: `CAUSE_NOT_ADDRESSED` alone is also
-  // produced by the gate's own carried prose, so an assertion on the cause prefix
-  // is satisfied by a step that resolved the row in silence. The row's citation is
-  // the assertion that separates "refused" from "refused BECAUSE THIS ROW".
+  // produced by the re-gate's own CRITICAL record, so an assertion on the cause
+  // prefix is satisfied by a step that never looked at the rows. The row's citation
+  // is the assertion that separates "refused" from "refused BECAUSE THIS ROW".
   assert(
     threw instanceof ReviewInfraError &&
       threw.message.includes(CAUSE_NOT_ADDRESSED) &&
       /leak/.test(threw.message),
-    `(h) a blocking row the re-review neither reported nor resolved is NOT ADDRESSED, not addressed by omission (${threw?.message ?? "the wave passed"})`,
+    `(h) a blocking row the re-review carried is NOT ADDRESSED, and the refusal quotes it (${threw?.message ?? "the wave passed"})`,
   );
   assert(
     threw instanceof ReviewInfraError && /a\.ts:1/.test(threw.message),
-    `(h) and the refusal names the row it refused to clear, so the operator can triage it without the transcript (${threw?.message?.slice(0, 160)})`,
+    `(h) and the refusal names the row's citation, so the operator can triage it without the transcript (${threw?.message?.slice(0, 160)})`,
   );
 
-  // The positive control: the SAME wave, with the layer's resolve notice present,
-  // passes. Without this half, (h) is satisfied by a step that always refuses.
+  // The positive control: the SAME wave, with the layer having resolved the row —
+  // which is the row simply absent from `reported` — passes. Without this half, (h)
+  // is satisfied by a step that always refuses.
   const { repoRoot: rr2, baseSha: bs2 } = makeRepo();
   await setup({ repoRoot: rr2, baseSha: bs2, branch: BRANCH, feature: "export const f = 9;\n" });
   const { threw: t2, outcome: o2 } = await run(
     ctxFor(rr2, bs2, BRANCH),
     depsWith({
       // The lens round carries the blocking verdict, so the wave is bought without
-      // the gate also contributing prose that `classifyFates` would render as its
-      // own carried row — this case is about ONE row's fate and nothing else.
+      // the gate also contributing prose that would have to be separated from the
+      // row's own reading — this case is about ONE row's fate and nothing else.
       adversarial: async () => result({ loopOutcome: "approved" }),
       lens: async (a) =>
         a.wave === "fix"
-          ? resolvedLensRound(a, [blockingFinding()])
+          ? lensRoundFor(a, "APPROVED", [])
           : lensRoundWith("CRITICAL_ISSUES_FOUND", [blockingFinding()]),
       dispatch: fixerThatCommits("h2"),
     }),
   );
   assert(
     t2 === undefined && o2?.kind === "fixed",
-    `(h) and the same wave clears when the layer DOES resolve the row — the rule demands proof, not a refusal to pass (${t2?.message ?? `kind ${String(o2?.kind)}`})`,
+    `(h) and the same wave clears when the layer resolved the row — the step reads the layer's rows, not its own guess (${t2?.message ?? `kind ${String(o2?.kind)}`})`,
   );
 }
 
-// ── (i) a fresh row below CRITICAL is disclosure, never a handback ───────────
+// ── (h2) an unknown severity on a carried row blocks — it is not "below the bar" ─
 //
-// `new-critical` is the fate that ends the wave on something the fix introduced, so
-// it belongs to `severity === "CRITICAL"` alone. The old rule reached it for any
-// fresh row, which handed a run back for a HIGH the lenses raised on the fix range —
-// a second wave's worth of refusal for a finding the layer itself would disclose.
+// A `reported` row is parsed model output. A row whose `severity` is missing or is
+// not one of the four schema values has no rank, and a comparison against a missing
+// rank is how a malformed row slips under a HIGH bar. Fail closed, the direction
+// every other absence in this step goes. The mutant is `rank === undefined ||` in
+// `blockingSeverity`: with it deleted this case goes red.
+{
+  const { repoRoot, baseSha } = makeRepo();
+  await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 19;\n" });
+  const { threw } = await run(
+    ctxFor(repoRoot, baseSha, BRANCH),
+    depsWith({
+      adversarial: async () => result({ loopOutcome: "approved" }),
+      lens: async (a) =>
+        a.wave === "fix"
+          ? lensRoundFor(a, "ISSUES_FOUND", [
+              {
+                ...blockingFinding({ title: "unranked row" }),
+                severity: "BLOCKER",
+                carried: true,
+              } as never,
+            ])
+          : lensRoundWith("CRITICAL_ISSUES_FOUND", [blockingFinding()]),
+      dispatch: fixerThatCommits("h3"),
+    }),
+  );
+  assert(
+    threw instanceof ReviewInfraError &&
+      threw.message.includes(CAUSE_NOT_ADDRESSED) &&
+      /unranked row/.test(threw.message),
+    `(h2) a carried row whose severity is not one of the four values is blocking, not disclosable (${threw?.message ?? "the wave passed on a row it could not rank"})`,
+  );
+}
+
+// ── (i) the layer's CRITICAL verdict on the fix range hands back, and says where ─
+//
+// The verdict is the layer's own `computeVerdict` answer over its `reported` rows —
+// the step does not recompute it and does not need a row of any particular severity
+// to honour it. The mutant is the verdict arm deleted: a CRITICAL re-review then
+// falls through to the clean return.
+{
+  const { repoRoot, baseSha } = makeRepo();
+  await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 11;\n" });
+  const { threw } = await run(
+    ctxFor(repoRoot, baseSha, BRANCH),
+    depsWith({
+      adversarial: async () => result({ loopOutcome: "approved" }),
+      lens: async (a) =>
+        a.wave === "fix"
+          ? lensRoundFor(a, "CRITICAL_ISSUES_FOUND", [
+              blockingFinding({ title: "injected path", line: 2, severity: "CRITICAL" }),
+            ])
+          : lensRoundWith("CRITICAL_ISSUES_FOUND", [blockingFinding()]),
+      dispatch: fixerThatCommits("i"),
+    }),
+  );
+  assert(
+    threw instanceof ReviewInfraError && threw.message.includes(CAUSE_NEW_CRITICAL),
+    `(i) the re-review's own CRITICAL verdict hands the run back (${threw?.message ?? "the wave passed"})`,
+  );
+  // The origin question a handback must answer without a transcript: the fix IS
+  // pushed, so origin is at the fixer's head, and the range it sits in is named.
+  assert(
+    threw instanceof ReviewInfraError &&
+      /fixer's head/.test(threw.message) &&
+      /\.\./.test(threw.message),
+    `(i) and the cause states the fix is pushed and names both SHAs of the fix range, so nobody hunts for unpushed work (${threw?.message?.slice(0, 220)})`,
+  );
+}
+
+// ── (i2) a fresh row below the bar is disclosure, never a handback ───────────
+//
+// Only a row the layer itself carried, or the layer's own CRITICAL verdict, ends the
+// wave. A fresh MEDIUM on the fix range is a finding the layer discloses through its
+// residual post, and a step that handed the run back for it would be holding its own
+// bar above the layer's.
 {
   const { repoRoot, baseSha } = makeRepo();
   await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 10;\n" });
@@ -204,48 +283,20 @@ assert(
       adversarial: async () => result({ loopOutcome: "approved" }),
       lens: async (a) =>
         a.wave === "fix"
-          ? // The row the wave was asked about is resolved; a NEW HIGH row appears
-            // in the fix range. Only a CRITICAL may be attributed to the fix.
-            {
-              ...resolvedLensRound(a, [blockingFinding()]),
-              reported: [blockingFinding({ title: "unguarded write", line: 2 })],
-            }
-          : lensRoundWith("CRITICAL_ISSUES_FOUND", [blockingFinding()]),
-      dispatch: fixerThatCommits("i"),
-    }),
-  );
-  assert(
-    threw === undefined && outcome?.kind === "fixed",
-    `(i) a fresh HIGH in the fix range is disclosed and the wave still clears — only a CRITICAL is a handback (${threw?.message ?? `kind ${String(outcome?.kind)}`})`,
-  );
-  assert(
-    outcome?.reason !== undefined && /DISCLOSED/.test(outcome.reason),
-    `(i) and the disclosed row is stated on the reason rather than dropped (${outcome?.reason?.slice(0, 180)})`,
-  );
-
-  // And the CRITICAL half: the same fixture with the new row at CRITICAL severity
-  // must hand back, or (i) is satisfied by a step that discloses everything.
-  const { repoRoot: rr2, baseSha: bs2 } = makeRepo();
-  await setup({ repoRoot: rr2, baseSha: bs2, branch: BRANCH, feature: "export const f = 11;\n" });
-  const { threw: t2 } = await run(
-    ctxFor(rr2, bs2, BRANCH),
-    depsWith({
-      adversarial: async () => result({ loopOutcome: "approved" }),
-      lens: async (a) =>
-        a.wave === "fix"
-          ? {
-              ...resolvedLensRound(a, [blockingFinding()]),
-              reported: [
-                blockingFinding({ title: "injected path", line: 2, severity: "CRITICAL" }),
-              ],
-            }
+          ? lensRoundFor(a, "APPROVED", [
+              blockingFinding({ title: "unguarded write", line: 2, severity: "MEDIUM" }),
+            ])
           : lensRoundWith("CRITICAL_ISSUES_FOUND", [blockingFinding()]),
       dispatch: fixerThatCommits("i2"),
     }),
   );
   assert(
-    t2 instanceof ReviewInfraError && t2.message.includes(CAUSE_NEW_CRITICAL),
-    `(i) and the SAME shape at CRITICAL severity does hand back — the bar is severity, not novelty (${t2?.message ?? "the wave passed"})`,
+    threw === undefined && outcome?.kind === "fixed",
+    `(i2) a fresh MEDIUM in the fix range is disclosed and the wave still clears (${threw?.message ?? `kind ${String(outcome?.kind)}`})`,
+  );
+  assert(
+    outcome?.reason !== undefined && /DISCLOSED/.test(outcome.reason),
+    `(i2) and the disclosed row is stated on the reason rather than dropped (${outcome?.reason?.slice(0, 180)})`,
   );
 }
 

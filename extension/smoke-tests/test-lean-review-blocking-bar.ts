@@ -44,7 +44,6 @@ import {
   git,
   lensRoundFor,
   lensRoundWith,
-  resolvedLensRound,
   makeRepo,
   result,
   runStep as run,
@@ -217,13 +216,13 @@ const { assert, failures } = makeAssert();
       adversarial: async () => result({ loopOutcome: "approved" }),
       lens: async (a) => {
         r2cLensRounds++;
-        // The full round raises a blocking row; the re-review of the fix resolves
-        // it. Resolving is the layer's own `resolved` notice — a re-review that
-        // reported nothing is a round that said nothing, and the step now refuses
-        // to read that silence as ADDRESSED.
+        // The full round raises a blocking row; the re-review of the fix reports
+        // nothing, which under the layer's own fate rule is the resolve: a carried
+        // row is what the layer reports when it refused to resolve, and the step
+        // reads that and nothing else.
         return r2cLensRounds === 1
           ? lensRoundWith("CRITICAL_ISSUES_FOUND", [blockingFinding()])
-          : resolvedLensRound(a, [blockingFinding()]);
+          : lensRoundFor(a, "APPROVED", []);
       },
       dispatch: async (spec: DispatchSpec) => {
         r2cFixers++;
@@ -266,7 +265,7 @@ const { assert, failures } = makeAssert();
             });
       },
       lens: async (a) =>
-        a.wave === "fix" ? resolvedLensRound(a, [blockingFinding()]) : lensRoundFor(a, "APPROVED", []),
+        a.wave === "fix" ? lensRoundFor(a, "APPROVED", []) : lensRoundFor(a, "APPROVED", []),
       dispatch: async (spec: DispatchSpec) => {
         r2aPrimeFixers++;
         const wt = spec.cwd as string;

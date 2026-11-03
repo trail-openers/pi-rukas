@@ -11,6 +11,7 @@
  * whole subject is that contract.
  */
 
+import { neutraliseEvidence } from "../comment-evidence.ts";
 import type { LensRound } from "./review-args.ts";
 import { passKind } from "./review-step.ts";
 import { DISPATCHES_MAX_ROWS } from "./state-outcome.ts";
@@ -25,17 +26,24 @@ export { disclosureNote, cleanPass };
  * A non-blocking adversarial pass and the re-review's below-the-bar rows have no
  * other consumer in this step: the frozen driver hands them to the PR body and the
  * lens round's residual post, and lean has no PR body. So the count and the gate's
- * own words ride on the outcome reason — bounded, because the reason is a surface
- * the engine stores and the operator reads, not a transcript. `""` means nothing
- * was disclosed, and then this contributes nothing to the reason at all.
+ * own words ride on the outcome reason — bounded and neutralised, because the
+ * reason is a surface the engine stores and the operator reads, not a transcript,
+ * and the gate's words are a model's reply. `""` means nothing was disclosed, and
+ * then this contributes nothing to the reason at all.
  */
 function disclosureNote(disclosedRows: number, gateText: string): string {
-  const gate = gateText.trim();
+  // Neutralised first, then clipped: the text is the adversarial pass's own reply,
+  // so it gets the same treatment every other model-authored field gets before it
+  // reaches a stored surface (no fence delimiters, no parsable marker token), and
+  // `neutraliseEvidence`'s own clip is what bounds it — a second `slice` here would
+  // be a second length rule for the same string.
+  const gate = neutraliseEvidence(gateText.trim());
+  if (gate === "" && disclosedRows === 0) return "";
   const parts: string[] = [];
   if (disclosedRows > 0)
     parts.push(`${String(disclosedRows)} below-bar ${disclosedRows === 1 ? "row" : "rows"}`);
-  if (gate !== "") parts.push(`adversarial (non-blocking): ${gate.slice(0, 300)}`);
-  return parts.length === 0 ? "" : `; DISCLOSED: ${parts.join("; ")}`;
+  if (gate !== "") parts.push(`adversarial (non-blocking): ${gate}`);
+  return `; DISCLOSED: ${parts.join("; ")}`;
 }
 
 /**

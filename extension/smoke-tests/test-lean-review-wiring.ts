@@ -61,7 +61,6 @@ import {
   frozenBlob,
   git,
   lensRoundFor,
-  resolvedLensRound,
   lensRoundWith,
   lensRowResult,
   makeRepo,

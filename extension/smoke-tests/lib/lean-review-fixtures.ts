@@ -136,11 +136,10 @@ const LENS_NAMES: LensName[] = [
  *
  * The step reads structured rows now (`LensRound.reported`), not only the
  * rendered line a fixer is handed, so a fixture that built only the string could
- * not drive the per-finding verdict at all: every blocking row would look
- * resolved by a re-review that reported nothing. `path`/`line`/`title` are the
- * three fields `findingKey` matches on, so a case that wants a row to come back
- * as CARRIED re-reports the same three, and one that wants it ADDRESSED reports
- * none of them.
+ * not drive the re-review's decision at all. The only row property the step reads
+ * is `carried` — the layer's own "still open" — so a case that wants a row to hand
+ * the run back re-reports it carried (see `carriedLensRound`), and one that wants
+ * it answered reports nothing.
  */
 export function blockingFinding(over: Partial<Finding> = {}): Finding {
   return {
@@ -203,27 +202,24 @@ export function lensRoundFor(
 }
 
 /**
- * A re-review that positively RESOLVED the wave's blocking rows.
+ * A re-review that reported the wave's blocking rows as CARRIED.
  *
- * The step reads a blocking row as ADDRESSED only when the layer says so — a row
- * missing from both `reported` and `resolved` is NOT ADDRESSED (see
- * `classifyFates`). So a fixture that means "the fix answered it" has to carry the
- * layer's own resolve notice for that row, and one that carries nothing is a round
- * that said nothing, which the step refuses. `rows` are the first round's rows: the
- * titles the notices name are the identities the step matched on.
+ * The review layer owns every row's fate: `rowFate` refuses to resolve an open row
+ * whose cited code is unchanged, and the row that reaches `reported` carrying
+ * `carried: true` IS the layer's statement that the fix did not answer it. So a
+ * fixture that means "the fix did NOT answer it" re-reports the rows carried, and
+ * one that means "the fix answered it" reports nothing — the layer resolved it,
+ * and the step keeps no second resolve rule of its own.
  */
-export function resolvedLensRound(
+export function carriedLensRound(
   args: { wave: ReviewWave; since?: string; head: string },
-  resolvedRows: readonly Finding[],
+  carriedRows: readonly Finding[],
 ): LensRound {
-  return {
-    ...lensRoundFor(args, "APPROVED", []),
-    resolved: resolvedRows.map((f) => ({
-      rowId: `${f.path}:${String(f.line ?? "?")} ${f.title}`,
-      title: f.title,
-      reason: "code-gone",
-    })),
-  };
+  return lensRoundFor(
+    args,
+    "ISSUES_FOUND",
+    carriedRows.map((f) => ({ ...f, carried: true }) as Finding),
+  );
 }
 
 /** The wiring's `renderFindings`, kept here so a fixture's string and the
@@ -429,7 +425,7 @@ export function cleanupRoots(): void {
 }
 
 export {
-  blockingOnGateThenClears,
+  alwaysBlockingOnGate,
   blockingReject,
   issuesFoundThenClears,
   parsedRound,

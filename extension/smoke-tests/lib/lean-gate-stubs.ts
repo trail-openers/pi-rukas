@@ -92,8 +92,9 @@ export function blockingReject(text: string): DispatchResult {
  * wave bought AND the re-gate blocking needs every call to block; a stub that
  * clears on the second call makes the re-gate non-blocking and quietly removes the
  * gate's prose from the fixer's brief, which is the difference between exercising
- * `fromGate` and not exercising it.
+ * `fromGate` and not exercising it. The name states what it does rather than what
+ * it used to be paired with: nothing clears here.
  */
-export function blockingOnGateThenClears(text: string): () => Promise<DispatchResult> {
+export function alwaysBlockingOnGate(text: string): () => Promise<DispatchResult> {
   return async () => blockingReject(text);
 }
