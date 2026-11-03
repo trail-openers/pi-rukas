@@ -174,12 +174,15 @@ async function gitType(
  * longest single child of that state, not against the round: one adversary used
  * 201 of 200 and one lens about 160 of 150, so `challenge` and `review` sit at
  * 400 — a child stopped short of its work costs the whole round that paid for it.
+ *
+ * The `tokens` lever counts cache re-reads, so it is a cumulative-context budget
+ * and is sized to the turn ceiling at the measured ~150k tokens per turn.
  */
 export const DEFAULT_BUDGETS: Readonly<Record<string, Budget>> = Object.freeze({
   specify: Object.freeze({ turns: 250, tokens: 30_000_000, minutes: 20 }),
   build: Object.freeze({ turns: 400, tokens: 60_000_000, minutes: 45 }),
-  challenge: Object.freeze({ turns: 400, tokens: 25_000_000, minutes: 15 }),
-  review: Object.freeze({ turns: 400, tokens: 20_000_000, minutes: 15 }),
+  challenge: Object.freeze({ turns: 400, tokens: 60_000_000, minutes: 15 }),
+  review: Object.freeze({ turns: 400, tokens: 60_000_000, minutes: 15 }),
   ci: Object.freeze({ turns: 0, tokens: 0, minutes: 30 }),
 });
 
