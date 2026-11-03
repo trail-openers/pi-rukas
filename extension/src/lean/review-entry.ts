@@ -38,12 +38,12 @@ import { ReviewInfraError } from "./review-errors.ts";
 /**
  * Refuse a run this step must not start, before any child is paid.
  *
- * Called ONCE per attempt from the top of `reviewOutcome`, not per round: the
+ * Called ONCE per attempt from the top of `reviewOutcome`, not per gate: the
  * mainline resolution spawns two subprocesses (`resolveMainline` reads
- * `origin/HEAD`, then `gh repo view`) and the review loop runs up to
- * `MAX_REVIEW_ROUNDS` fix rounds per step, so calling it from inside the loop would
- * buy six subprocesses to re-ask a question whose answer cannot change while the
- * step runs.
+ * `origin/HEAD`, then `gh repo view`) and one step asks the question four times
+ * over (two gate passes and the re-review's), so calling it beside each of them
+ * would buy eight subprocesses to re-ask a question whose answer cannot change
+ * while the step runs.
  *
  * The `branch` handed in is already the derived push target
  * (`specifyBranch(run.branch, issue)`), i.e. state-file data rather than a name

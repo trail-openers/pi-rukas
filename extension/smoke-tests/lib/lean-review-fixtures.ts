@@ -24,6 +24,7 @@ import type { HandlerCtx } from "../../src/lean/engine.ts";
 import { ADVERSARIAL_GATE_ROLE } from "../../src/lean/review-gates.ts";
 import { FIX_RUN_ID_SHAPE, PASS_KINDS } from "../../src/lean/review-log.ts";
 import { DEFAULT_REVIEW_THRESHOLD } from "../../src/lens-review-format.ts";
+import type { Finding } from "../../src/lens-review-types.ts";
 import type { LensRound, ReviewDeps } from "../../src/lean/review.ts";
 import { ReviewInfraError, reviewOutcome } from "../../src/lean/review.ts";
 import type { Outcome } from "../../src/lean/state.ts";
@@ -130,6 +131,66 @@ const LENS_NAMES: LensName[] = [
 ];
 
 /**
+ * A blocking finding, in the shape the review layer's `reported` rows arrive in.
+ *
+ * The step reads structured rows now (`LensRound.reported`), not only the
+ * rendered line a fixer is handed, so a fixture that built only the string could
+ * not drive the per-finding verdict at all: every blocking row would look
+ * resolved by a re-review that reported nothing. `path`/`line`/`title` are the
+ * three fields `findingKey` matches on, so a case that wants a row to come back
+ * as CARRIED re-reports the same three, and one that wants it ADDRESSED reports
+ * none of them.
+ */
+export function blockingFinding(over: Partial<Finding> = {}): Finding {
+  return {
+    severity: "HIGH",
+    lens: "SECURITY",
+    path: "a.ts",
+    line: 1,
+    title: "leak",
+    ...over,
+  };
+}
+
+/** A blocking row the re-review reported as CARRIED — the layer's NOT ADDRESSED. */
+export function carriedFinding(over: Partial<Finding> = {}): Finding {
+  return { ...blockingFinding(), carried: true, ...over } as Finding;
+}
+
+/**
+ * A six-lens round with a caller-chosen verdict and rows.
+ *
+ * `rows` defaults to none, which is what a round that found nothing reports —
+ * `findings` is then the empty string, as the wiring renders it. Six children
+ * always ran (each with its own usage), because a round that ran nobody is a
+ * round the step refuses, and a fixture must not be able to fake an approval.
+ */
+export function lensRoundWith(
+  verdict: LensRound["verdict"],
+  rows: Finding[],
+): LensRound {
+  const lenses = LENS_NAMES.map((_, i) => lensRowResult(i));
+  return {
+    verdict,
+    findings: renderFixtureFindings(rows),
+    reported: rows,
+    lenses,
+    usage: aggregateLensUsage(lenses),
+  };
+}
+
+/** The wiring's `renderFindings`, kept here so a fixture's string and the
+ * production one cannot disagree about what one row looks like. */
+function renderFixtureFindings(rows: Finding[]): string {
+  return rows
+    .map(
+      (f) =>
+        `- [${f.severity}] ${f.lens} ${f.path}${f.line === undefined ? "" : `:${String(f.line)}`}: ${f.title}`,
+    )
+    .join("\n");
+}
+
+/**
  * A clean six-lens round: six children, each with its own usage, which is what
  * a round that actually ran looks like. A round with `usage: undefined` is a
  * round that ran nobody, and the step refuses it (`test-lean-review-absence.ts`).
@@ -141,13 +202,7 @@ const LENS_NAMES: LensName[] = [
  * `lensRows`, and the two could drift with nothing red.
  */
 export function cleanLensRound(): LensRound {
-  const lenses = LENS_NAMES.map((_, i) => lensRowResult(i));
-  return {
-    verdict: "APPROVED",
-    findings: "",
-    lenses,
-    usage: aggregateLensUsage(lenses),
-  };
+  return lensRoundWith("APPROVED", []);
 }
 
 /**
@@ -181,8 +236,7 @@ export function depsWith(over: Partial<ReviewDeps>): ReviewDeps {
     // usage. A round with no lens records is a round that ran nobody, and the
     // step refuses it (`test-lean-review-absence.ts`).
     lens: async () => cleanLensRound(),
-    dispatch: async () => result({ role: FIXER_ROLE }),
-    fetchIssueBody: async () => "body",
+    dispatch: async () => result({ role: FIXER_ROLE }),    fetchIssueBody: async () => "body",
     loadConfig: async () => defaultConfig(),
     // The harness's stand-in for the doctrine judge: a step that resolves the
     // project's bar gets the shipped default rather than a child process. A case
@@ -273,25 +327,22 @@ export function frozenBlob(repoRoot: string, ref: string): string {
  * A fixer stub that DOES its job: writes a file and commits it in the tree the
  * step dispatched it to.
  *
- * The default `dispatch` above commits nothing, which is the right stub for the
- * no-progress case and the wrong one for every case that needs the loop to reach
- * a later round: a fixer that commits nothing is refused by `assertFixAdvanced`
- * (correct product behaviour) and the case then measures that break instead of
- * what it names. `tag` makes each round's commit unique, so two rounds cannot
- * produce byte-identical trees and the head genuinely advances each time.
+ * The default `dispatch` commits nothing, which is the right stub for the
+ * no-change case and the wrong one for every case that needs the step to reach
+ * its re-review: a fixer that commits nothing is refused by `assertFixAdvanced`
+ * (correct product behaviour) and the case then measures that refusal instead of
+ * what it names. `tag` makes the commit unique per case, so two cases driving one
+ * repo cannot produce byte-identical trees.
+ *
+ * Counted per tree, not per factory instance, and that is load-bearing rather
+ * than tidy: the fix tree's name is derived from arm-wave-attempt-epoch and the
+ * suite's clock is frozen at 1, so two cases in one repo ask for the SAME path,
+ * and `git worktree add --force` ADOPTS the registration the earlier case left,
+ * its commit still in it. A per-instance counter would then write a file that was
+ * already there, `put` would skip the identical write, the child would commit
+ * nothing, and the step would integrate a head no child produced.
  */
 export function fixerThatCommits(tag: string) {
-  // Counted per (tree, tag), not per factory instance. A factory shared across
-  // cases in one repo — which is what the suite does, and correctly, since `setup`
-  // moves `origin/<branch>` for each — restarted at 0 for the next case and wrote
-  // `fix-<tag>-0.ts` again. The round's fix tree is named for
-  // arm-round-attempt-epoch, and the fixture's clock is frozen at 1, so a second
-  // case's round-1 tree reuses the first case's path; `git worktree add --force`
-  // then ADOPTS that registration with the earlier commit still in it, and the
-  // child's byte-identical commit is a no-op. The step sees the branch move twice
-  // for one fix round and integrates a head no child produced. Each distinct tree
-  // therefore gets its own counter, so every fix round's commit is genuinely new
-  // wherever in the suite it is dispatched.
   const written = new Map<string, number>();
   let n = 0;
   return async (spec: DispatchSpec): Promise<DispatchResult> => {
@@ -299,11 +350,6 @@ export function fixerThatCommits(tag: string) {
     const seen = written.get(wt) ?? 0;
     written.set(wt, seen + 1);
     const name = `fix-${tag}-${String(seen)}.ts`;
-    // `put` skips a write whose content already matches, so a name that collided
-    // with a file in an adopted tree would leave the tree dirty in a way the fixer
-    // never caused. A second fix in the same tree gets a fresh name; the assertion
-    // that this exists for is in `test-lean-review-wiring.ts` (e3), where a branch
-    // that moved twice for one round shifts the cost-row clip by one.
     put(wt, name, `export const x = ${String(n++)};\n`);
     git(wt, "add", "-A");
     git(wt, "commit", "-q", "-m", `fix: ${tag}`);
@@ -335,16 +381,14 @@ export function cleanupRoots(): void {
 }
 
 /**
- * An adversarial stub that asks once, then clears.
+ * An adversarial stub that refuses `asks` times and then clears.
  *
- * The review step refuses to pay for a second look at findings it already asked
- * a fixer to fix (`stagnantAgainstFix` in `review.ts`): same gate, same text, a
- * head that moved. So a stub that answers `rejected` with ONE fixed string
- * converges exactly once — the fixer commits, the step asks again, and the break
- * fires. That is the step working, and a fixture that reads it as a bug is
- * testing its own stub. A case that needs more than one fix round must say so
- * explicitly: this helper clears after `asks` refusals rather than leaving the
- * caller to discover the break by timeout.
+ * Under the one-wave policy the gate is called at most twice — once before the
+ * fix wave, once after it on the fix range — so `asks: 1` is the shape of a run
+ * that fixes and clears, and `asks: 2` is the shape of a run whose findings the
+ * wave did not answer. The text is fixed rather than varied per call: there is
+ * no longer a tie-breaker that refuses a re-report, and a stub that changed its
+ * own prose between the two passes would be writing the step's answer for it.
  */
 export function rejectsThenClears(text: string, asks = 1): () => Promise<DispatchResult> {
   let n = 0;
@@ -354,7 +398,29 @@ export function rejectsThenClears(text: string, asks = 1): () => Promise<Dispatc
       : result({ loopOutcome: "approved", text: "" });
 }
 
-export { MAX_REVIEW_ROUNDS, ReviewInfraError } from "../../src/lean/review.ts";
+/**
+ * The records a report-only adversarial pass carries for a rejected round.
+ *
+ * `verdictParsed: true` matters: the step refuses a `rejected` whose trailing
+ * record was DEFAULTED (no readable `VERDICT:` marker), because findings that
+ * were never a verdict cannot be fixed against. A case that wants the step to
+ * spend its wave on these findings has to say the reviewer actually parsed one.
+ */
+export function parsedRound(
+  status: NonNullable<DispatchResult["adversarialRounds"]>[number]["status"],
+): DispatchResult["adversarialRounds"] {
+  return [{ round: 1, status, verdictParsed: true }];
+}
+
+export { ReviewInfraError } from "../../src/lean/review.ts";
+export {
+  CAUSE_NEW_CRITICAL,
+  CAUSE_NO_CHANGE,
+  CAUSE_NOT_ADDRESSED,
+  PASS_ROWS,
+  REVIEW_CHILD_BUDGET,
+  REVIEW_PASSES,
+} from "../../src/lean/review.ts";
 export type { DispatchUsageRow, FixRunId } from "../../src/lean/step-budget.ts";
 import type { FixRunId as _FixRunId } from "../../src/lean/step-budget.ts";
 /**

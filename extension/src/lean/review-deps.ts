@@ -27,7 +27,7 @@
  *   review).
  */
 
-import { MAX_ROUNDS, runAdversarialLoop } from "../adversarial.ts";
+import { runAdversarialLoop } from "../adversarial.ts";
 import { execp } from "../exec.ts";
 import type { LensReviewSummary, Severity } from "../lens-review-format.ts";
 import { runLensReview } from "../lens-review.ts";
@@ -40,6 +40,7 @@ import { verifyTimeoutMs } from "../work-driver-verify-develop-helpers.ts";
 import { leanChildOpts } from "./child-opts.ts";
 import { loadWorkConfig } from "./config.ts";
 import { fetchIssueBody } from "./io.ts";
+import type { ReviewWave } from "./review-args.ts";
 import type { ReviewDeps } from "./review.ts";
 import type { BudgetArms, BudgetFired } from "./step-budget.ts";
 import { fenceText, promptText } from "./text-fence.ts";
@@ -72,13 +73,15 @@ export function reviewDeps(headless: boolean): ReviewDeps {
           base: a.base,
           head: a.head,
           workCwd: a.cwd,
-          context: adversarialContext(a.issue, a.round, MAX_ROUNDS),
+          context: adversarialContext(a.issue, a.wave, a.blockingFindings),
           issueBody: a.issueBody,
           // The reviewer's lane is one verdict; the fix round is this step's, so
           // the loop must not dispatch a fixer of its own.
           reportOnly: true,
           reportVerdict: "routed",
-          reportRound: a.round,
+          // One reviewed round per gate call, so the loop's own `for` never gets
+          // past its first iteration and never re-dispatches a reviewer here.
+          reportRound: 1,
           // Lean's worktrees are detached, so the ledger writer cannot recover
           // the branch from HEAD and this is the only place it can come from.
           branch: a.branch,
@@ -114,6 +117,11 @@ export function reviewDeps(headless: boolean): ReviewDeps {
         context: a.context,
         evidence: a.evidence,
         extraFindings: a.extraFindings,
+        // The re-review's range is the step's, not the ledger's: the head the fix
+        // wave started from, so the round reads the fix and nothing else (see
+        // `LensArgs.since`). Absent on the full round, which stays the layer's
+        // ordinary whole-branch review.
+        ...(a.since === undefined ? {} : { since: a.since }),
         // The worktree is detached, so the ledger write and the residual
         // disclosure can only be keyed on a branch this step names.
         branch: a.branch,
@@ -141,6 +149,12 @@ export function reviewDeps(headless: boolean): ReviewDeps {
       return {
         verdict: summary.verdict,
         findings: renderFindings(summary),
+        // The blocking rows, structured, for the step's per-finding verdict (see
+        // `LensRound.reported`). The layer's own `reported` set is what the
+        // summary carries, so the step reads the same list the verdict, the
+        // severity counts and the ledger's `hasCritical` were computed from — a
+        // second reading here would be a second definition of "blocking".
+        reported: summary.findings,
         usage: summary.usage,
         // The per-lens records, so the step bills one row per child that ran
         // rather than one row per round (see `lensRows` in `step-budget.ts`).
@@ -222,18 +236,41 @@ function renderFindings(summary: LensReviewSummary): string {
 // in it.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** The framing the adversarial reviewer is dispatched with. */
-function adversarialContext(issue: number, round: number, maxRounds: number): string {
-  return `/work-lean issue #${String(issue)}: gating the run's committed head before it merges (review step, round ${String(round)} of ${String(maxRounds)}).`;
+/** The framing the adversarial reviewer is dispatched with.
+ *
+ * States the one-wave policy rather than a round count: the reviewer is told
+ * which pass it is on and that its findings are the last thing this step will
+ * pay a fixer for, so it does not pace itself across a loop that does not exist.
+ * The fix pass also gets the findings the fix range was allowed to contain, so a
+ * CRITICAL it raises on untouched bytes can be told from one the fix introduced.
+ */
+function adversarialContext(
+  issue: number,
+  wave: ReviewWave,
+  blockingFindings: string | undefined,
+): string {
+  const scope =
+    wave === "full"
+      ? "the full review of the branch, before any fix"
+      : "the re-review of the fix wave's own commits — read the fix, not the whole branch";
+  const known =
+    blockingFindings === undefined || blockingFindings.trim() === ""
+      ? ""
+      : `\n\nKnown findings the fix was asked to answer (a finding here is not new; a CRITICAL you find in code the fix did not touch is):\n${fenceText(blockingFindings, 20_000)}`;
+  return `/work-lean issue #${String(issue)}: gating the run's committed head before it merges (review step, one fix wave — this pass is ${scope}). What you report here is the last the step will pay a fixer for.${known}`;
 }
 
 /** The framing every lens is dispatched with. */
 export function lensContext(
   issue: number,
-  round: number,
+  wave: ReviewWave,
   extra: { carried?: string; fixDelta?: string } = {},
 ): string {
-  const parts = [`/work-lean issue #${String(issue)}, lens-review round ${String(round)}`];
+  const parts = [
+    `/work-lean issue #${String(issue)}, lens-review ${
+      wave === "full" ? "full review of the branch" : "re-review of the fix wave's commits"
+    }`,
+  ];
   const carried = extra.carried?.trim();
   if (carried !== undefined && carried !== "")
     parts.push(
@@ -263,7 +300,8 @@ export function lensContext(
  */
 export interface ReviewFixArgs {
   issue: number;
-  round: number;
+  /** Which pass of the one wave raised the findings this fixer answers. */
+  wave: ReviewWave;
   /** Which gate produced the findings; names the list in the brief. */
   gate: string;
   findings: string;
@@ -309,7 +347,7 @@ export function fixPrompt(opts: ReviewFixArgs): string {
   const base = promptText(opts.base, NAME_MAX_CHARS);
   return `You are fixing the findings one review gate raised against this run's work (issue #${String(
     opts.issue,
-  )}, review step, round ${String(opts.round)}, gate: ${gate}).
+  )}, review step, one fix wave, gate: ${gate}).
 
 ## The findings
 

@@ -38,6 +38,7 @@ import { provisionWorktree } from "../worktree-provision.ts";
 import { frozenMatches } from "./build-git.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { type ReviewFixArgs, fixPrompt } from "./review-deps.ts";
+import type { ReviewWave } from "./review-args.ts";
 import {
   type FixArm,
   closeFixTrees,
@@ -213,15 +214,16 @@ async function runFixer(
 export type FixRoundOutcome = { head?: string; stop?: BudgetFired };
 
 /**
- * One fix round: the child in its disposable tree, then its commits moved onto the
+ * One fix wave: the child in its disposable tree, then its commits moved onto the
  * branch.
  *
- * `visit` counts fix-tree CREATIONS for this step, and the caller owns it: the
- * tree's name must be unique per dispatch, and a review round dispatches a fixer
- * on two arms, so no per-round number can serve (see `fixTreeName`). `runId` is
- * the caller's, not this round's: the same value has to name the tree for the
- * whole round, and a run identity a test can predict is the difference between
- * driving the collision path and merely hoping not to hit it.
+ * The step dispatches exactly one fixer, so `wave` and `arm` are constants of a
+ * step rather than loop counters — they are kept because the tree's NAME must be
+ * reproducible from the durable run (see `fixTreeName`), and the name is what a
+ * resumed attempt re-enters. `runId` is the caller's, not this round's: the same
+ * value has to name the tree for the whole wave, and a run identity a test can
+ * predict is the difference between driving the collision path and merely hoping
+ * not to hit it.
  *
  * The head it returns is the head now on origin, read back from git rather than
  * assumed from what the child reported doing. The row the child cost is appended
@@ -236,7 +238,7 @@ export async function fixRound(
     frozen: Record<string, string>;
     findings: string;
     gate: string;
-    round: number;
+    wave: ReviewWave;
     arm: FixArm;
     attempt: number;
     runId: FixRunId;
@@ -244,17 +246,17 @@ export async function fixRound(
     budget: BudgetArms;
   },
 ): Promise<FixRoundOutcome> {
-  // The tree's whole name is derived from the durable run — arm, round, attempt
+  // The tree's whole name is derived from the durable run — arm, wave, attempt
   // and the attempt's epoch — so a resume of this attempt recomputes the same
   // path and re-enters the tree its killed self left (see `fixTreeName`). No
   // counter of ours is involved, because a counter would restart at zero there.
-  const treeSuffix = `${opts.arm}-${String(opts.round)}-${String(opts.attempt)}`;
+  const treeSuffix = `${opts.arm}-${opts.wave}-${String(opts.attempt)}`;
   const wt = await fixTree(
     deps,
     ctx,
     opts.head,
     opts.arm,
-    opts.round,
+    opts.wave,
     opts.attempt,
     opts.runId,
     opts.rows,
@@ -264,7 +266,7 @@ export async function fixRound(
   try {
     await runFixer(deps, {
       issue: ctx.issue,
-      round: opts.round,
+      wave: opts.wave,
       gate: opts.gate,
       findings: opts.findings,
       worktree: wt,
