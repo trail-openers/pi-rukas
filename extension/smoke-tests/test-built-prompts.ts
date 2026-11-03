@@ -147,7 +147,8 @@ for (const manifestName of readdirSync(MANIFESTS).filter((name) => name.endsWith
     for (const step of ["Step 0: Load Context", "Step 1: CI/CD Status"]) {
       const line = prompt.split("\n").find((l) => l.includes(`**${step}`));
       assert(
-        line !== undefined && /interactive review only; skip when dispatched with a diff/.test(line),
+        line !== undefined &&
+          /interactive review only; skip when dispatched with a diff/.test(line),
         `code-review-specialist: ${step} is marked interactive-review only`,
       );
     }

@@ -146,15 +146,33 @@ rather than writing a second parser.`;
   ] as const) {
     for (const [needle, what] of [
       [/Run only targeted checks/i, "AC1: only targeted checks are invited"],
-      [/one test file, or a lint or type check of the changed files/i, "AC1: what a targeted check is"],
-      [/never the whole-project suite/i, "AC1: the whole-project suite is ruled out in as many words"],
-      [/did not change[^\n]*report it in one line as a MINOR_OBSERVATION tagged `OUT_OF_DIFF`/i, "AC2: a failure in unchanged code is reported in one line, not debugged"],
-      [/MINOR_OBSERVATION tagged `OUT_OF_DIFF`/, "AC2: the unchanged-code report states its own tag instead of citing a role prompt the child may not have"],
-      [/re-run an unchanged command against an unchanged tree/i, "AC3: no repeat loop on an unchanged tree"],
+      [
+        /one test file, or a lint or type check of the changed files/i,
+        "AC1: what a targeted check is",
+      ],
+      [/never the whole-project suite/i, "AC1: the whole-project suite is ruled out in words"],
+      [
+        /did not change[^\n]*report it in one line as a MINOR_OBSERVATION tagged `OUT_OF_DIFF`/i,
+        "AC2: a failure in unchanged code is reported in one line, not debugged",
+      ],
+      [
+        /MINOR_OBSERVATION tagged `OUT_OF_DIFF`/,
+        "AC2: the report states its own tag, not a role prompt the child may not have",
+      ],
+      [
+        /re-run an unchanged command against an unchanged tree/i,
+        "AC3: no repeat loop on an unchanged tree",
+      ],
       [/Do not create, edit or revert files in the worktree/i, "AC4: no writes to the worktree"],
       [/findings before your time runs out/i, "AC5: report inside the time box"],
-      [/unfinished investigation is itself a finding/i, "AC5: an unfinished investigation is reported as a finding"],
-      [/very next message is the verdict report[^\n]*no further tool calls/i, "PM addendum: the verdict is the very next message, with no tool calls after deciding"],
+      [
+        /unfinished investigation is itself a finding/i,
+        "AC5: an unfinished investigation is reported as a finding",
+      ],
+      [
+        /very next message is the verdict report[^\n]*no further tool calls/i,
+        "PM addendum: the verdict is the very next message, with no tool calls after deciding",
+      ],
     ] as const) {
       assert(needle.test(arm), `#1992 reviewer lane, ${armName}: ${what}`);
     }
@@ -176,7 +194,8 @@ rather than writing a second parser.`;
   );
   assert(
     driven.includes("Do NOT run the project's full gate") &&
-      driven.indexOf("Do NOT run the project's full gate") < driven.indexOf("Run only targeted checks"),
+      driven.indexOf("Do NOT run the project's full gate") <
+        driven.indexOf("Run only targeted checks"),
     "#1992 AC1: the gateCmd arm carries its own gate clause and still carries the shared targeted-checks sentence",
   );
 
