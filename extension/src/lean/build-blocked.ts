@@ -28,7 +28,7 @@
 
 import { trace, traceWarn } from "../trace.ts";
 import type { BuildExec } from "./build-types.ts";
-import { TEST_TIMEOUT_MS, runTestFile } from "./specify-proof.ts";
+import { type Proof, TEST_TIMEOUT_MS, renderTestCommand, runTestFile } from "./specify-proof.ts";
 import { RECORD_MAX_ENTRIES, RECORD_REASON_MAX_CHARS } from "./state-outcome-maps.ts";
 import { frozenKeyProblem } from "./state-outcome.ts";
 
@@ -95,7 +95,11 @@ export type BlockedVerdict =
  * One wall clock bounds the WHOLE loop, not each runner: a report naming the
  * 32 files the tool may ask for would otherwise cost 32 separate ceilings, and
  * the step's own budget is not a substitute because the re-run happens after the
- * child is paid. A file whose runner could not be started or was killed is
+ * child is paid. The bound is enforced TWICE — no file may START once the budget
+ * is spent, and a runner already in flight is abandoned at the same instant —
+ * because a runner that ignores its own kill (a group kill it swallows, a child
+ * holding the pipe as a zombie) would otherwise hold the step past the ceiling
+ * it was given. A file whose runner could not be started or was killed is
  * skipped rather than fatal — one broken test must not hide a real conflict
  * among the rest — and if nothing came back red the report is not honoured.
  */
@@ -109,9 +113,11 @@ export async function blockedProved(opts: {
   timeoutMs?: number;
 }): Promise<BlockedVerdict> {
   const { exec, wt, template, frozen, paths } = opts;
+  // One readable list is all the loop can spend time on, so the ceiling that
+  // keeps the loop bounded is applied HERE — `usableConflicts` caps the list it
+  // builds at the same number, so a caller cannot hand this gate a wider one and
+  // a refusal for a wider list would be a branch no caller can reach.
   if (paths.length === 0) return { honoured: false, why: "the report named no usable path" };
-  if (paths.length > BLOCKED_MAX_ENTRIES)
-    return { honoured: false, why: `the report named more than ${BLOCKED_MAX_ENTRIES} files` };
   if (template === undefined || template.trim() === "") {
     // The step cannot prove ANY report without a runner, so the report is ignored
     // and the build runs on — the same way every other refusal here reads. But
@@ -129,10 +135,12 @@ export async function blockedProved(opts: {
       honoured: false,
       why: `named ${unvetted.length} file(s) the run never froze: ${unvetted.slice(0, 4).join(", ")}`,
     };
-  // ONE deadline for the whole loop. Each runner still carries `runTestFile`'s
-  // own ceiling so a single hung test is killed and classified as infra, but no
-  // file may start once the shared budget is spent — that is what bounds 32 of
-  // them, and it is why the bound is here rather than per call.
+  // ONE deadline for the whole loop, enforced at both ends of a runner: no file
+  // may START once the budget is spent, and one already in flight is abandoned at
+  // the same instant (see the race below). Each runner still carries
+  // `runTestFile`'s own ceiling so an ordinary hung test is killed and classified
+  // as infra rather than abandoned; the loop's bound is what keeps 32 of them
+  // inside one budget, and it is why the bound lives here rather than per call.
   const perFile = opts.timeoutMs ?? TEST_TIMEOUT_MS;
   const deadline = Date.now() + perFile;
   const ran: string[] = [];
@@ -145,12 +153,28 @@ export async function blockedProved(opts: {
         why: `the re-run budget of ${String(perFile)}ms ran out after ${String(ran.length)} file(s)`,
       };
     }
-    const proof = await runTestFile(exec, {
-      wt,
-      template,
-      file,
-      limits: { timeoutMs: Math.min(perFile, left) },
-    });
+    // The in-flight runner is bounded too, not just the decision to start one:
+    // `runTestFile` carries its own ceiling and its own group kill, but nothing
+    // here can assume the runner honours either — a process that swallows the
+    // SIGKILL, or a grandchild holding the pipe, keeps the `await` alive past the
+    // deadline this loop just computed. Racing it means the step reports its
+    // refusal AT the budget instead of whenever the runaway finally exits (the
+    // orphaned child is the runner's own kill's business, not this loop's). It is
+    // classified `infra` — an abandoned run observed nothing, exactly like a kill.
+    const proof = await Promise.race([
+      runTestFile(exec, { wt, template, file, limits: { timeoutMs: Math.min(perFile, left) } }),
+      new Promise<Proof>((resolve) => {
+        setTimeout(
+          () =>
+            resolve({
+              kind: "infra",
+              cmd: renderTestCommand(template, file),
+              detail: `gave up at the ${String(perFile)}ms re-run budget`,
+            }),
+          left,
+        );
+      }),
+    ]);
     // Pushed to `ran` only for the kinds that ANSWERED the question. An infra or
     // unclear run observed nothing about this file's assertions, so recording it
     // as a conflicting test would be as unproven as recording one the driver

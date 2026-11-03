@@ -354,7 +354,50 @@ const CONFLICT = "case 2 needs the array mutable while case 3 mutates it in plac
   assert(r.dispatched === 1, "(8) at one dispatch — nothing after the report was paid for");
 }
 
-// ── (9) the infra throw still wins over a report ───────────────────────────
+// ── (9) the cause LINE is one sanitised line, whatever the child named ────
+{
+  // The map has always gone through `oneLine`; the cause sentence did not, and its
+  // readers are the host's result document (`engine-facts.reasonFor`,
+  // `work-lean-result.leanFailure`), which prints it bare — the handback comment's
+  // fence does not cover that second channel. Both segments of the sentence are
+  // the child's: the `reason` is its prose (clipped to the record's 300 by the
+  // extractor, never re-rendered) and the path it leads with is a frozen key,
+  // which `frozenKeyProblem` bounds only against control chars, absolutes and
+  // non-normalised forms — spaces, `#` and backticks are legal there. So the
+  // child can hand the fence a padded, multi-line, heading-bearing blob, and the
+  // only thing that may stand between it and a durable record is this call.
+  const RED = "tests/AC1-retry.test.sh";
+  // The child's prose reaches the fence untrimmed: the extractor clips it to the
+  // durable record's 300 and marks the cut, but a reason padded to just under
+  // that bound still arrives with its leading blanks — and those blanks are what
+  // `oneLine` has to collapse before the length bound can be trusted.
+  const nasty = `${" ".repeat(12)}### INJECTED HEADING\n- looks like a bullet\n${"z".repeat(250)}`;
+  const r = await runBuild({
+    issue: 315,
+    toolUses: () => blocked([{ path: RED, reason: nasty }]),
+  });
+  assert(
+    r.outcome?.kind === "blocked",
+    `(9) the report is still honoured (got ${r.outcome?.kind ?? r.threw?.message})`,
+  );
+  const reason = r.outcome?.reason ?? "";
+  assert(
+    !reason.includes("\n") && !/^#{1,6} /m.test(reason) && !reason.includes("```"),
+    `(9) the cause line is one line with no heading or fence opener (got ${JSON.stringify(reason)})`,
+  );
+  assert(
+    reason.startsWith("frozen tests cannot all pass together: ") &&
+      reason.includes(RED) &&
+      reason.includes("INJECTED HEADING"),
+    `(9) and still states the conflict the driver proved (got ${JSON.stringify(reason)})`,
+  );
+  assert(
+    reason.length <= 405,
+    `(9) and the whole line is bounded (got ${String(reason.length)} chars)`,
+  );
+}
+
+// ── (10) the infra throw still wins over a report ──────────────────────────
 {
   const r = await runBuild({
     issue: 314,
@@ -363,7 +406,7 @@ const CONFLICT = "case 2 needs the array mutable while case 3 mutates it in plac
   });
   assert(
     r.threw instanceof BuildInfraError,
-    `(9) a dead child is infrastructure, not a blocked verdict (got ${r.threw?.name ?? r.outcome?.kind})`,
+    `(10) a dead child is infrastructure, not a blocked verdict (got ${r.threw?.name ?? r.outcome?.kind})`,
   );
 }
 

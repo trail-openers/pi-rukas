@@ -11,6 +11,9 @@
 
 import { linkSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { type ExecResult, execp } from "../../src/exec.ts";
+import type { BuildExec } from "../../src/lean/build-types.ts";
+import { gitEnvFor } from "./lean-build-fixture.ts";
 
 /** Worktree-relative path of a file the child may create. */
 export function put(wt: string, rel: string, content: string, mode?: number): void {
@@ -45,4 +48,25 @@ export function putOutside(abs: string, content: string): string {
   mkdirSync(path.dirname(abs), { recursive: true });
   writeFileSync(abs, content);
   return abs;
+}
+
+/**
+ * A stand-in runner for the driver's re-run of a reported frozen test: called
+ * INSTEAD of the real `execp` for a non-git command issued after the child
+ * returned — which is exactly when the blocked gate re-runs the named files.
+ * git keeps going to the real binary and is recorded in `gitArgvs`, so a case
+ * about the step's normalisation and commit path is untouched by a bad-runner
+ * case.
+ */
+export function reRunStub(
+  stub: ((cmd: string, o?: unknown) => Promise<unknown>) | undefined,
+  dispatched: () => number,
+  gitArgvs: string[][],
+): BuildExec {
+  return async (cmd, o) => {
+    if (cmd === "git" && o?.argv) gitArgvs.push(o.argv);
+    if (stub !== undefined && cmd !== "git" && dispatched() > 0)
+      return (await stub(cmd, o)) as ExecResult;
+    return execp(cmd, { ...o, env: gitEnvFor() });
+  };
 }

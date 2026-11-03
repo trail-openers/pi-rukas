@@ -279,8 +279,12 @@ function shaAll(entries: Record<string, string>): Record<string, string> {
   return Object.fromEntries(Object.entries(entries).map(([k, v]) => [k, sha(v)]));
 }
 
-/** Worktree-relative path of a file the child may create. */
-export { put, putOutside, symlink, hardlinkFromOutside } from "./lean-build-artifacts.ts";
+// `reRunStub` is the fixture's executor, with the blocked gate's re-run seam
+// beside the artifact writers it drives; the four writers are re-exported for
+// every fixture and case that imported them from here before the 500-line split.
+import { reRunStub } from "./lean-build-artifacts.ts";
+
+export { hardlinkFromOutside, put, putOutside, symlink } from "./lean-build-artifacts.ts";
 
 /** The child committed whatever it had, itself. */
 export function childCommit(wt: string, message: string): void {
@@ -367,6 +371,12 @@ export interface RunOpts {
   toolUses?: unknown[] | (() => unknown[]);
   /** Bounds the driver's re-run of a reported frozen test (a case observes a hang). */
   blockedTimeoutMs?: number;
+  /**
+   * A stand-in runner for the driver's re-run of a reported test — see
+   * {@link reRunStub}. A case uses it to make a runner misbehave in a way a shell
+   * script cannot: never rejecting, never resolving inside its own ceiling.
+   */
+  hungExec?: (cmd: string, o?: unknown) => Promise<unknown>;
 }
 
 /** Run the step against a fresh fixture; a throw comes back as the error. */
@@ -390,10 +400,7 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
   let dispatched = 0;
   /** Whether the one-shot `afterDispatch` hook has fired (see `deps` below). */
   let planted = false;
-  const exec: BuildDeps["exec"] = async (cmd, o) => {
-    if (cmd === "git" && o?.argv) gitArgvs.push(o.argv);
-    return execp(cmd, { ...o, env: gitEnv() });
-  };
+  const exec: BuildDeps["exec"] = reRunStub(opts.hungExec, () => dispatched, gitArgvs);
   const dispatch: BuildDeps["dispatch"] = async (spec: DispatchSpec, o) => {
     dispatched++;
     specs.push(spec);

@@ -91,6 +91,13 @@ const CHALLENGE_LIST_CLIP = 20;
 const BLOCKED_PATH_CAP = 200;
 const BLOCKED_REASON_CAP = 160;
 
+/**
+ * The ceiling on the recorded cause LINE: the two caps above plus the fixed
+ * sentence around them, so the bound is the sum of what the caller composes
+ * rather than a fourth literal nothing derives.
+ */
+const BLOCKED_CAUSE_CAP = BLOCKED_PATH_CAP + BLOCKED_REASON_CAP + 44;
+
 export interface BuildDeps {
   exec: BuildExec;
   dispatch: BuildDispatch;
@@ -250,7 +257,11 @@ async function blockedReport(opts: {
   // enter the record as though the run had proved it. The reason is rendered
   // through `oneLine` with the caps `handback`'s `blockedCause` uses — the value
   // is the child's prose and this is the durable record a public comment prints,
-  // so it is sanitised HERE rather than relying on every reader to do it. The
+  // so it is sanitised HERE rather than relying on every reader to do it: the
+  // cause LINE below goes through the same fence as the map, since the path it
+  // leads with is the child's string and `frozenKeyProblem` refuses control
+  // characters and traversals but not the markdown structure in `a test.md`.
+  // The
   // record's own bounds are enforced on read (`blockedByProblem`), so the map is
   // not re-counted here: the gate already refused a wider report.
   const ran = new Set(proved.ran);
@@ -269,7 +280,10 @@ async function blockedReport(opts: {
   // returns on its first red, so anything else in the sentence is a file the
   // driver ran green, or never ran. The full map rides on `blockedBy`.
   return {
-    reason: `frozen tests cannot all pass together: ${red} — ${blockedBy[red] ?? ""}`,
+    reason: oneLine(
+      `frozen tests cannot all pass together: ${red} — ${blockedBy[red] ?? ""}`,
+      BLOCKED_CAUSE_CAP,
+    ),
     blockedBy,
   };
 }

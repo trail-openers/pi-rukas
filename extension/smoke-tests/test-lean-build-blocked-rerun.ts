@@ -135,6 +135,47 @@ const CONFLICT = "case 2 needs the array mutable while case 3 mutates it in plac
   );
 }
 
+// ── (3a5) a runner that IGNORES its own kill cannot outlast the budget ───
+{
+  // (3a3) exercises a runner the group kill actually reaches. The other tail of
+  // the same promise is a runner that never returns — a process that swallows the
+  // SIGKILL, or a grandchild holding the pipe as a zombie — which keeps the
+  // `await` alive long after the loop's deadline. Here the exec stub never
+  // rejects and never resolves inside the budget: only the loop's own race can
+  // end it, so the step must refuse at roughly ONE budget, not one per file.
+  const HANG_A = "tests/hang-a.test.sh";
+  const HANG_B = "tests/hang-b.test.sh";
+  const HANG_C = "tests/hang-c.test.sh";
+  const started = Date.now();
+  const r = await runBuild({
+    issue: 342,
+    extraFrozen: {
+      [HANG_A]: "#!/bin/sh\nexit 1\n",
+      [HANG_B]: "#!/bin/sh\nexit 1\n",
+      [HANG_C]: "#!/bin/sh\nexit 1\n",
+    },
+    toolUses: () =>
+      blocked([
+        { path: HANG_A, reason: "a never returns" },
+        { path: HANG_B, reason: "b never returns" },
+        { path: HANG_C, reason: "c never returns" },
+      ]),
+    blockedTimeoutMs: 400,
+    // A runner that ignores its ceiling entirely: resolves after the whole budget
+    // with a red-shaped output, so if the step waited for it, it would believe it.
+    hungExec: () => new Promise((resolve) => setTimeout(() => resolve({ stdout: "" }), 5000)),
+  });
+  const elapsed = Date.now() - started;
+  assert(
+    r.outcome?.kind !== "blocked",
+    `(3a5) a report whose runners never return is not honoured (got ${r.outcome?.kind ?? r.threw?.message})`,
+  );
+  assert(
+    elapsed < 2000,
+    `(3a5) and the step refused at one budget, not one per hanging file (${String(elapsed)}ms)`,
+  );
+}
+
 // ── (3a4) a run that did not name its file is NOT a red ─────────────────
 {
   // `runTestFile` calls a non-zero exit whose output never named the file
