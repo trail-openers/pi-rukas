@@ -59,6 +59,11 @@ export const BLOCKED_MAX_REASON_CHARS = RECORD_REASON_MAX_CHARS;
 /**
  * The child's reported conflicts, filtered to entries the record could hold.
  *
+ * The ceiling here is the DURABLE record's, so it bounds the whole list this
+ * function returns, not one call's contribution to it: `extractBlockedReport`
+ * caps its rows at the same number, and a caller that handed this gate a wider
+ * list could spend a runner on an entry the loader then refuses.
+ *
  * Order is the child's: `blockedProved` runs them in this order and stops at the
  * first red, so a re-sorted list would have the driver prove a different file
  * than the builder was worried about. A path that is not a legal frozen key is
@@ -191,6 +196,13 @@ export async function blockedProved(opts: {
     // refusal AT the budget instead of whenever the runaway finally exits (the
     // orphaned child is the runner's own kill's business, not this loop's). It is
     // classified `infra` — an abandoned run observed nothing, exactly like a kill.
+    // The timer is CLEARED once the race settles: an abandoned runner that never
+    // returns leaves this timer behind for the life of the process, and unref'd it
+    // could not keep the process alive at all, which is not the same guarantee as
+    // not being owed one more tick of work. The guard is not defensive: when the
+    // timer itself wins the race its `resolve` runs before the assignment below is
+    // observed, so that is the branch a hung runner takes.
+    let abandonTimer: ReturnType<typeof setTimeout> | undefined;
     const proof = await Promise.race([
       runTestFile(exec, {
         wt,
@@ -199,7 +211,7 @@ export async function blockedProved(opts: {
         limits: { timeoutMs: Math.min(perFile, left), env: verifyChildEnv() },
       }),
       new Promise<Proof>((resolve) => {
-        setTimeout(
+        abandonTimer = setTimeout(
           () =>
             resolve({
               kind: "infra",
@@ -210,6 +222,10 @@ export async function blockedProved(opts: {
         );
       }),
     ]);
+    if (abandonTimer !== undefined) {
+      clearTimeout(abandonTimer);
+      abandonTimer.unref();
+    }
     // Pushed to `ran` only for the kinds that ANSWERED the question. An infra or
     // unclear run observed nothing about this file's assertions, so recording it
     // as a conflicting test would be as unproven as recording one the driver

@@ -29,6 +29,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { extractBlockedReport } from "../src/lean/build-blocked-extract.ts";
 import { BLOCKED_REPORTER_PATH } from "../src/lean/build-blocked-reporter.ts";
 import { BuildInfraError } from "../src/lean/build-errors.ts";
 import { configWithRunner } from "./lib/lean-build-asserts.ts";
@@ -196,6 +197,47 @@ const CONFLICT = "case 2 needs the array mutable while case 3 mutates it in plac
     `(4) a malformed report is skipped (got ${r.outcome?.kind ?? r.threw?.message})`,
   );
   assert(r.outcome?.blockedBy === undefined, "(4) and nothing was recorded");
+}
+
+// ── (4b) the 32-entry cap is the whole report's, not one call's ───────────
+{
+  // The tool caps ONE call at 32 conflicts, so the only way a child names more
+  // than the durable record holds is to call the tool several times. A per-call
+  // cap lets all of them through and the extraction returns a list the loader
+  // then refuses as a blob, so the bound has to be counted across calls.
+  const conflicts = (n: number, start: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      path: `tests/noise-${String(start + i)}.test.sh`,
+      reason: `noise ${String(start + i)}`,
+    }));
+  const call = (n: number, start: number): unknown => ({
+    name: "report_blocked",
+    arguments: { conflicts: conflicts(n, start) },
+  });
+  const one = extractBlockedReport([call(42, 0)]);
+  assert(
+    one.rows.length === 32 && one.rows[31]?.path === "tests/noise-31.test.sh",
+    `(4b) one wide call is capped at the record's 32, in the child's order (got ${String(one.rows.length)} rows, last ${one.rows[31]?.path ?? "none"})`,
+  );
+  const spread = extractBlockedReport([call(32, 0), call(10, 32), call(3, 42)]);
+  assert(
+    spread.rows.length === 32 && spread.rows[31]?.path === "tests/noise-31.test.sh",
+    `(4b) and calls are capped TOGETHER, so a later one adds nothing past the bound (got ${String(spread.rows.length)} rows, last ${spread.rows[31]?.path ?? "none"})`,
+  );
+  // The dropped entries are COUNTED, not silently discarded: a caller that read
+  // only `rows` could not tell "the child named 32" from "the child named 45".
+  // 45 named − 32 kept = 13 past the bound, and the third call yielded nothing of
+  // its own once the cap was spent, which the yielded-nothing rule also counts:
+  // 14 past the bound + 1 empty call = 15.
+  const before = extractBlockedReport([call(32, 0)]).skipped;
+  assert(
+    spread.skipped - before === 15,
+    `(4b) and the over-cap entries are counted as skipped (got ${String(spread.skipped - before)})`,
+  );
+  assert(
+    before === 0,
+    "(4b) while a report that fits dropped nothing, so it is not counted as skipped",
+  );
 }
 
 // ── (5) no report at all: the step is exactly what it was ──────────────────
