@@ -34,6 +34,7 @@ import {
   depsWith,
   fixerThatCommits,
   makeRepo,
+  rejectsThenClears,
   result,
   runStep,
   setup,
@@ -130,9 +131,12 @@ async function deliver(over: {
   // `resolved` would reach 2; the step's contract is one resolution.
   const { repoRoot, baseSha } = makeRepo();
   await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 2;\n" });
-  const harness = depsWith({});
-  deps.exec = harness.exec;
-  deps.adversarial = async () => result({ loopOutcome: "approved" });
+  // The wave is bought by a BLOCKING verdict: `rejectsThenClears` carries a
+  // `CRITICAL_ISSUES_FOUND` record on the first pass and clears on the second, so
+  // the step buys one fix round and comes back for a second lens round. A lens
+  // round that merely reported findings would no longer buy the second round at
+  // all, and this case would measure nothing.
+  deps.adversarial = rejectsThenClears("1. the finding the fixer answers");
   deps.dispatch = fixerThatCommits("threshold");
   deps.fetchIssueBody = async () => "body";
   deps.loadConfig = async () => defaultConfig();

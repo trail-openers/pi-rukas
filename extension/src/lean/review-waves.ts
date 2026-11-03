@@ -31,6 +31,7 @@
 
 import { VERDICT_STATUSES } from "../adversarial-verdict.ts";
 import { neutraliseEvidence } from "../comment-evidence.ts";
+import type { Verdict } from "../lens-review-format.ts";
 import { findingDescription } from "../lens-review-format.ts";
 import { isCarried } from "../lens-review-types.ts";
 import type { Finding } from "../lens-review-types.ts";
@@ -56,6 +57,55 @@ export const REVIEW_CHILD_BUDGET = {
 
 /** The row count of a full review pass: one gate row plus one row per lens child. */
 export const PASS_ROWS = 1 + REVIEW_CHILD_BUDGET.lensChildren / REVIEW_PASSES;
+
+/**
+ * The two gates' verdicts, partitioned the way the reviewing layers partition
+ * them — because which verdict buys a wave is policy, not loop mechanics.
+ *
+ * **`lensBlocks`** is the bar. The lens layer's `computeVerdict` reserves
+ * `CRITICAL_ISSUES_FOUND` for "this must not proceed" and reaches `ISSUES_FOUND`
+ * for anything merely at or above the project's bar, and the adversarial role's
+ * doctrine calls only `CRITICAL_ISSUES_FOUND` "Must fix before proceeding"
+ * (`agents-base/adversarial-developer.md`; `decideLoopAction` in
+ * `adversarial-verdict.ts` passes on `ISSUES_FOUND` and `MINOR_OBSERVATIONS`).
+ * The step mirrors that split rather than inventing its own: a step that paid a
+ * fixer for findings the reviewing layer itself declined to block on bought a
+ * child, a re-review and a second gate pass to answer a verdict that did not ask
+ * for one. What a non-blocking verdict reports is not discarded — the adversarial
+ * pass's findings travel to the lenses as `carried` and the lens round's go to the
+ * layer's own residual post, which is where non-blocking findings have always gone.
+ *
+ * **`LENS_DID_NOT_RUN`** is the other side of the same enum, and the reason the bar
+ * is an allowlist: a round that hit `REVIEW_INCOMPLETE` or a round cap reviewed
+ * nothing, so it is neither a pass to walk on nor a verdict to fix against — and it
+ * is refused BEFORE the bar is consulted, in both directions, so an incomplete
+ * round can never fall through the non-blocking branch into a `done` that
+ * certifies a head nobody looked at.
+ *
+ * Both are typed against the review layer's own `Verdict` union: a `string[]`
+ * compared against a widened `verdict: string` lets a renamed verdict silently
+ * stop matching, and the round it was meant to classify would then be judged by
+ * the wrong rule.
+ */
+export const LENS_BLOCKING_VERDICTS: readonly Verdict[] = ["CRITICAL_ISSUES_FOUND"];
+
+/** Did this six-lens round block the run? The layer's own CRITICAL verdict. */
+export function lensBlocks(round: { verdict: Verdict }): boolean {
+  return LENS_BLOCKING_VERDICTS.includes(round.verdict);
+}
+
+/**
+ * The six-lens verdicts that report an unfinished round, which is no verdict at
+ * all: an incomplete round reviewed nothing, so it is not a pass to walk on and
+ * not evidence to fix against, and the round-cap verdicts are another component's
+ * budget refusing this run — which no fixer can answer, since only the operator
+ * named and may lift that budget.
+ */
+export const LENS_DID_NOT_RUN: readonly Verdict[] = [
+  "REVIEW_INCOMPLETE",
+  "ROUND_CAP_REACHED",
+  "REVIEW_INCOMPLETE_STREAK",
+];
 
 /** The cause when the fix wave produced no change, so there is nothing to re-review. */
 export const CAUSE_NO_CHANGE = "review fix produced no change";

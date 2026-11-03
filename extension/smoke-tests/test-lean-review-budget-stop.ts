@@ -40,6 +40,7 @@ import {
   FIXER_ROLE,
   LENS_ROLE,
   cleanupRoots,
+  blockingFinding,
   cleanLensRound,
   ctxFor,
   depsWith,
@@ -136,10 +137,14 @@ function cfgWith(budget: Partial<Budget>) {
     depsWith({
       loadConfig: async () => cfgWith({ turns: CEILING }),
       adversarial: async () => result({ loopOutcome: "approved" }),
+      // The round BLOCKS — `ISSUES_FOUND` alone no longer buys a fixer, and this
+      // case is about the fixer the blocking round dispatches being stopped by the
+      // turns lever. `reported` carries the row the layer's own verdict was built from.
       lens: async () => ({
         ...cleanLensRound(),
-        verdict: "ISSUES_FOUND" as const,
+        verdict: "CRITICAL_ISSUES_FOUND" as const,
         findings: "- [HIGH] SECURITY a.ts:1: leak",
+        reported: [blockingFinding()],
       }),
       dispatch: async (spec, opts) => {
         // The fixer ticks past the ceiling on the step's own armed hook, which is

@@ -52,12 +52,47 @@ const CLEAN_PASS: AdversarialVerdictStatus = "APPROVED";
 const PASSED_WITH_FINDINGS_MARK = "PASSED WITH FINDINGS";
 
 /**
- * What one report-only adversarial pass left open, and the step's own judgement
- * of whether that counts as a pass.
+ * The adversarial statuses that block, per the role's own doctrine.
  *
- * `loopOutcome: "approved"` alone is NOT one. The loop reaches it from either
- * verdict (see `decideLoopAction` in `adversarial.ts`): a clean `APPROVED`, or a
- * non-blocking one it calls **PASSED WITH FINDINGS** — "these findings are
+ * `agents-base/adversarial-developer.md` states four verdicts and calls exactly
+ * one of them "Must fix before proceeding"; `decideLoopAction` in
+ * `adversarial-verdict.ts` encodes the same split ("only the verdict the doctrine
+ * calls blocking blocks") and passes on `ISSUES_FOUND` and `MINOR_OBSERVATIONS`
+ * at the terminal round. The set is spelled as an allowlist so a fifth status
+ * added to `AdversarialVerdictStatus` is non-blocking until someone classifies
+ * it here — the safe direction for a step that spends a child, a re-review and a
+ * second gate pass on whatever it reads as blocking.
+ */
+const BLOCKING_ADVERSARIAL_STATUSES: readonly AdversarialVerdictStatus[] = [
+  "CRITICAL_ISSUES_FOUND",
+];
+
+/** The record that ended the pass, or `undefined` when the loop carried none. */
+function lastRound(result: DispatchResult) {
+  const records = result.adversarialRounds;
+  return records === undefined ? undefined : records[records.length - 1];
+}
+
+/**
+ * Did the record that ended this pass carry a blocking status?
+ *
+ * No record, or a record whose status was DEFAULTED (no readable `VERDICT:`
+ * marker), is not a blocking finding: an unreadable reply is never evidence for
+ * the most serious verdict there is, and the step refuses it as "no verdict"
+ * before any fixer is bought.
+ */
+function blockingRecord(result: DispatchResult): boolean {
+  const last = lastRound(result);
+  return last?.verdictParsed === true && BLOCKING_ADVERSARIAL_STATUSES.includes(last.status);
+}
+
+/**
+ * What one report-only adversarial pass left open, and whether the step may buy
+ * a fix wave with it.
+ *
+ * `loopOutcome: "approved"` alone is NOT a clean pass. The loop reaches it from
+ * either verdict (see `decideLoopAction` in `adversarial.ts`): a clean `APPROVED`,
+ * or a non-blocking one it calls **PASSED WITH FINDINGS** — "these findings are
  * unresolved and travel to the PR body and the lens review". In the frozen
  * driver that carrying is a real act: `work-driver-adversarial.ts` puts the text
  * on the `adversarial-approved` event and `adversarial-findings.ts` renders it
@@ -66,19 +101,35 @@ const PASSED_WITH_FINDINGS_MARK = "PASSED WITH FINDINGS";
  * the same way and handed to the lens round by `lensContext`'s `carried` block —
  * which is the only reason that parameter exists.
  *
- * The status is read off `adversarialRounds` (#485: the loop's own per-round
- * records, threaded as data rather than recovered from prose), falling back to
- * the `PASSED WITH FINDINGS` marker only when a result carries no records — `""`
+ * `open` and `blocking` are the two answers the step needs and they are not one
+ * question. `open` — findings the lenses must judge and the disclosure must carry
+ * — is true for any reported row; `blocking` — the wave's price of admission — is
+ * true only for the status doctrine calls blocking. A pass that is open and not
+ * blocking is a reviewer that reported findings it declined to stop the run for,
+ * and paying for a fixer, a re-review and a second gate pass against those was
+ * the deviation this split closes.
+ *
+ * Both are read off `adversarialRounds` (#485: the loop's own per-round records,
+ * threaded as data rather than recovered from prose), falling back to the
+ * `PASSED WITH FINDINGS` marker only when a result carries no records — `""`
  * there means "no record to read", which is not a status an adversarial gate ever
  * approved with. A record whose status is anything but `APPROVED` is findings,
  * whatever `loopOutcome` was bucketed as: the records are what the loop judged
  * round by round, and the trailing record is the one that ended it.
  */
-function openFromPass(result: DispatchResult): string {
-  const records = result.adversarialRounds;
-  const last = records === undefined ? undefined : records[records.length - 1];
-  if (last !== undefined) return last.status === CLEAN_PASS ? "" : result.text;
-  return result.text.includes(PASSED_WITH_FINDINGS_MARK) ? result.text : "";
+function openFromPass(result: DispatchResult): { findings: string; open: boolean } {
+  const last = lastRound(result);
+  if (last !== undefined) {
+    // A record the loop could not parse held no VERDICT marker, so nothing in it
+    // was judged: its text still travels to the lenses, but it is not a status
+    // that blocks — and the `rejected` arm refuses an unparsed record outright.
+    return {
+      findings: last.status === CLEAN_PASS ? "" : result.text,
+      open: last.verdictParsed === true && last.status !== CLEAN_PASS,
+    };
+  }
+  const carried = result.text.includes(PASSED_WITH_FINDINGS_MARK);
+  return { findings: carried ? result.text : "", open: carried };
 }
 
 /**
@@ -102,13 +153,15 @@ export const ADVERSARIAL_GATE_ROLE = "adversarial-loop";
 export type AdversarialGate =
   /**
    * A pass that reached a verdict. `findings` is the text it left open (`""` is
-   * the clean pass); `critical` says whether the record that ended it was the
-   * status doctrine calls blocking — the only reading of the gate's own prose
-   * this step needs, and it is read off the loop's record rather than guessed
-   * from the reply.
+   * the clean pass); `open` says findings were reported and `blocking` whether the
+   * record that ended the pass carried the status doctrine calls blocking — the
+   * only readings of the gate's own prose this step needs, and both come off the
+   * loop's record rather than the reply. A pass can be `open` without being
+   * `blocking`: that is precisely what a non-blocking verdict is, and its findings
+   * are disclosed, never fixed.
    */
-  | { findings: string; critical: boolean; stop?: undefined }
-  | { findings?: undefined; critical?: undefined; stop: BudgetFired };
+  | { findings: string; open: boolean; blocking: boolean; stop?: undefined }
+  | { findings?: undefined; open?: undefined; blocking?: undefined; stop: BudgetFired };
 
 /**
  * The adversarial gate: one report-only pass, and the finding text it left open.
@@ -181,7 +234,10 @@ export async function adversarialGate(
   // for something that was a decision the operator made.
   const fired = opts.budget.fired(result);
   if (fired !== undefined) return { stop: fired };
-  if (result.loopOutcome === "approved") return { findings: openFromPass(result), critical: false };
+  if (result.loopOutcome === "approved") {
+    const pass = openFromPass(result);
+    return { ...pass, blocking: blockingRecord(result) };
+  }
   if (result.loopOutcome === "rejected") {
     // A real `VERDICT:` line is what makes a rejection a VERDICT. `parseVerdict`
     // defaults the status when the reviewer's reply holds no marker, and the
@@ -199,7 +255,9 @@ export async function adversarialGate(
         `the adversarial gate returned no readable VERDICT marker on its reviewed round (status ${String(lastRecord.status)} defaulted) — findings that were never a verdict cannot be fixed against: ${result.text.slice(0, 300)}`,
         opts.rows,
       );
-    return { findings: result.text, critical: blockingPass(result) };
+    // An unparsed rejection is refused above, so at this point the record really
+    // was judged: its findings are open, and blocking only if its status says so.
+    return { findings: result.text, open: true, blocking: blockingRecord(result) };
   }
   throw new ReviewInfraError(
     `the adversarial gate produced no verdict (${String(result.loopOutcome)}${
@@ -207,25 +265,6 @@ export async function adversarialGate(
     }) — that is not a pass: ${result.text.slice(0, 300)}`,
     opts.rows,
   );
-}
-
-/**
- * Did the record that ended this pass say the word doctrine calls blocking?
- *
- * `runAdversarialLoop` in report-only mode returns after its FIRST reviewed
- * round, so `adversarialRounds` holds exactly the record it judged (the loop's
- * own `#485` comment: these are what it judged round by round, not prose to
- * guess from). `loopOutcome: "rejected"` is bucketed from that one record, so
- * reading `CRITICAL_ISSUES_FOUND` off it is reading the loop's own answer — the
- * one thing the step needs to tell "the fix introduced a CRITICAL" apart from a
- * pass with findings still disclosable. No record, or a record whose status was
- * defaulted, is not a CRITICAL: an unreadable reply is never evidence of the
- * most serious finding there is.
- */
-function blockingPass(result: DispatchResult): boolean {
-  const records = result.adversarialRounds;
-  const last = records === undefined ? undefined : records[records.length - 1];
-  return last?.verdictParsed === true && last.status === "CRITICAL_ISSUES_FOUND";
 }
 
 /**

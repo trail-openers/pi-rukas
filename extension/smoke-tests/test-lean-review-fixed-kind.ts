@@ -23,7 +23,9 @@ import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import {
   BRANCH,
   FIXER_ROLE,
+  blockingFinding,
   cleanLensRound,
+  lensRoundWith,
   cleanupRoots,
   ctxFor,
   depsWith,
@@ -96,8 +98,7 @@ const { assert, failures } = makeAssert();
       lens: async () =>
         lensAsks++ === 0
           ? {
-              ...cleanLensRound(),
-              verdict: "ISSUES_FOUND" as const,
+              ...lensRoundWith("CRITICAL_ISSUES_FOUND", [blockingFinding()]),
               findings: "- [HIGH] SECURITY a.ts:1: leak",
             }
           : cleanLensRound(),

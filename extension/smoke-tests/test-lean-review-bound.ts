@@ -38,6 +38,7 @@ import {
   blockingFinding,
   carriedFinding,
   cleanLensRound,
+  blockingReject,
   cleanupRoots,
   ctxFor,
   depsWith,
@@ -79,10 +80,13 @@ const { assert, failures } = makeAssert();
         result({
           loopOutcome: "rejected",
           text: `1. unbounded read (ask ${String(++advAsks)})`,
-          // Parsed, deliberately: an UNparsed rejection is refused as "no verdict"
-          // before any child is bought, which is correct and would make this case
-          // measure that guard instead of the budget.
-          adversarialRounds: parsedRound("ISSUES_FOUND"),
+          // The status the role's doctrine calls blocking, and parsed: an UNparsed
+          // rejection is refused as "no verdict" before any child is bought, which
+          // is correct and would make this case measure that guard instead of the
+          // budget. `CRITICAL_ISSUES_FOUND` is what makes this the worst honest
+          // case — a gate that keeps demanding a fixer — rather than a non-blocking
+          // one that the step rightly never buys a wave for.
+          adversarialRounds: parsedRound("CRITICAL_ISSUES_FOUND"),
         }),
       // The lens round's own rows come back carried on both passes, so neither
       // gate is ever satisfied and both try to send work to a fixer.
@@ -212,12 +216,15 @@ const { assert, failures } = makeAssert();
   const { outcome, threw } = await run(
     ctxFor(repoRoot, baseSha, BRANCH),
     depsWith({
-      adversarial: async () => result({ loopOutcome: "approved" }),
+      adversarial: async () => blockingReject("1. the finding the fixer must answer"),
+      // The lens round is clean: this case is about the wave a BLOCKING ADVERSARIAL
+      // gate buys and then fails to advance, so the blocking verdict has to come
+      // from the one gate the case is about. The default fixer is dispatched, paid
+      // for, and commits nothing.
       lens: async () => {
         lensRounds++;
-        return lensRoundWith("ISSUES_FOUND", [blockingFinding({ title: "silent catch" })]);
+        return cleanLensRound();
       },
-      // The default fixer: dispatched, paid for, commits nothing.
     }),
   );
   assert(

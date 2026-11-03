@@ -31,6 +31,7 @@ import { put } from "./lib/lean-build-fixture.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import {
   BRANCH,
+  blockingReject,
   FIXER_ROLE,
   cleanupRoots,
   ctxFor,
@@ -86,7 +87,7 @@ const { assert, failures } = makeAssert();
   const { threw } = await run(
     ctx,
     depsWith({
-      adversarial: async () => result({ loopOutcome: "rejected", text: "1. silent catch" }),
+      adversarial: async () => blockingReject("1. silent catch"),
       dispatch: async (spec: DispatchSpec) => {
         const wt = spec.cwd as string;
         put(wt, NESTED, "// cheated nested\n");
@@ -132,7 +133,7 @@ const { assert, failures } = makeAssert();
   const { threw } = await run(
     ctx,
     depsWith({
-      adversarial: async () => result({ loopOutcome: "rejected", text: "1. silent catch" }),
+      adversarial: async () => blockingReject("1. silent catch"),
       dispatch: async (spec: DispatchSpec) => {
         // The tree the step sent it to, never a path this file guesses: the
         // fixer's tree is named per round and per run, and a stub that hardcodes

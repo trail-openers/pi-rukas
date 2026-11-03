@@ -48,6 +48,7 @@ import {
   FIXER_ROLE,
   REVIEW_CHILD_BUDGET,
   blockingFinding,
+  blockingReject,
   carriedFinding,
   cleanLensRound,
   cleanupRoots,
@@ -143,11 +144,12 @@ const { assert, failures } = makeAssert();
   const { threw } = await run(
     ctxFor(repoRoot, baseSha, BRANCH),
     depsWith({
-      adversarial: async () => result({ loopOutcome: "approved" }),
       // The row comes back CARRIED on both passes, so the wave ends in the named
       // handback and its children stay on the error the case reads its rows from.
       // A re-review that reported nothing would resolve the row by omission and
-      // return a pass, which has no `dispatches` to assert on.
+      // return a pass, which has no `dispatches` to assert on. The wave is bought
+      // by the gate's blocking record, not by the round's mere findings.
+      adversarial: async () => blockingReject("1. the carried row the wave must answer"),
       lens: async () => lensRoundWith("ISSUES_FOUND", [carriedFinding()]),
       dispatch: async (spec: DispatchSpec) => {
         put(spec.cwd as string, "fix.ts", "export const x = 1;\n");
@@ -323,7 +325,7 @@ const { assert, failures } = makeAssert();
       // resolves it by omission and the step passes.
       lens: async () =>
         trees.length === 0
-          ? lensRoundWith("ISSUES_FOUND", [blockingFinding()])
+          ? lensRoundWith("CRITICAL_ISSUES_FOUND", [blockingFinding()])
           : cleanLensRound(),
       dispatch: async (spec: DispatchSpec) => {
         const wt = spec.cwd as string;

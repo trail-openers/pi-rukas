@@ -50,6 +50,7 @@ import {
   REVIEW_PASSES,
   type ReviewDeps,
   blockingFinding,
+  blockingReject,
   carriedFinding,
   cleanLensRound,
   cleanupRoots,
@@ -164,7 +165,7 @@ const { assert, failures } = makeAssert();
         // Findings on round 1, clean on round 2: the step must re-review what
         // its own fixer produced and not certify the round-1 head twice.
         if (reviewed.length === 1)
-          return result({ loopOutcome: "rejected", text: "1. silent catch" });
+          return blockingReject("1. silent catch");
         return result({ loopOutcome: "approved" });
       },
       lens: async (a) => {
@@ -229,7 +230,7 @@ const { assert, failures } = makeAssert();
     depsWith({
       adversarial: async () => {
         seen2.push("x");
-        if (seen2.length === 1) return result({ loopOutcome: "rejected", text: "1. leak" });
+        if (seen2.length === 1) return blockingReject("1. leak");
         return result({ loopOutcome: "approved" });
       },
       lens: async () => cleanLensRound(),
@@ -299,7 +300,7 @@ const { assert, failures } = makeAssert();
   const atDefaultBudget = depsWith({
     adversarial: async () => {
       e3AdvPasses++;
-      return result({ loopOutcome: "approved" });
+      return blockingReject("1. the carried row the wave must answer");
     },
     // The same blocking row both times. `carried: true` is what the review layer
     // puts on an open row its round did not resolve, and it is the ONLY thing the
@@ -351,7 +352,7 @@ const { assert, failures } = makeAssert();
   const { repoRoot: rr2, baseSha: bs2 } = makeRepo();
   await setup({ repoRoot: rr2, baseSha: bs2, branch: BRANCH, feature: "export const f = 4;\n" });
   const neverClears = depsWith({
-    adversarial: async () => result({ loopOutcome: "approved" }),
+    adversarial: async () => blockingReject("1. the carried row the wave must answer"),
     lens: async () => lensRoundWith("ISSUES_FOUND", [carriedFinding()]),
     // The fixer commits, so the wave is not refused for fixing nothing, and each
     // carries its tree's `runId` — the field the resume path matches on.
@@ -426,7 +427,7 @@ const { assert, failures } = makeAssert();
         ...defaultConfig(),
         budgets: { ...defaultConfig().budgets, review: { turns: 0, tokens: 0, minutes: 0 } },
       }),
-      adversarial: async () => result({ loopOutcome: "approved" }),
+      adversarial: async () => blockingReject("1. the row the wave must answer"),
       lens: async () => {
         gRound++;
         // The same row both passes (`title` cannot vary, or the re-review's row is

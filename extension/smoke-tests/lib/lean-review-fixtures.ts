@@ -393,23 +393,45 @@ export function cleanupRoots(): void {
 export function rejectsThenClears(text: string, asks = 1): () => Promise<DispatchResult> {
   let n = 0;
   return async () =>
-    n++ < asks
-      ? result({ loopOutcome: "rejected", text })
-      : result({ loopOutcome: "approved", text: "" });
+    n++ < asks ? blockingReject(text) : result({ loopOutcome: "approved", text: "" });
 }
 
 /**
- * The records a report-only adversarial pass carries for a rejected round.
+ * The per-round records an adversarial stub needs in order to be believed.
  *
  * `verdictParsed: true` matters: the step refuses a `rejected` whose trailing
  * record was DEFAULTED (no readable `VERDICT:` marker), because findings that
  * were never a verdict cannot be fixed against. A case that wants the step to
  * spend its wave on these findings has to say the reviewer actually parsed one.
+ *
+ * The status is what decides whether the step buys a fixer at all
+ * (`blockingRecord` in `review-gates.ts`): only `CRITICAL_ISSUES_FOUND` blocks,
+ * so a stub that means "the gate blocked" must carry that status and not merely
+ * `loopOutcome: "rejected"`.
  */
 export function parsedRound(
   status: NonNullable<DispatchResult["adversarialRounds"]>[number]["status"],
 ): DispatchResult["adversarialRounds"] {
   return [{ round: 1, status, verdictParsed: true }];
+}
+
+/**
+ * A rejected adversarial pass that BLOCKS: the loop's `rejected` arm off a
+ * `CRITICAL_ISSUES_FOUND` record, which is the only status
+ * `agents-base/adversarial-developer.md` calls "Must fix before proceeding".
+ *
+ * Every fixture that wants the step to reach its fix wave goes through here.
+ * A bare `loopOutcome: "rejected"` with no record used to be enough, because the
+ * step bought a fixer off the bucket alone; now the status decides, and a stub
+ * that omits it would silently stop exercising the wave while still looking
+ * green in every case that only checks "a fixer ran".
+ */
+export function blockingReject(text: string): DispatchResult {
+  return result({
+    loopOutcome: "rejected",
+    text,
+    adversarialRounds: parsedRound("CRITICAL_ISSUES_FOUND"),
+  });
 }
 
 export { ReviewInfraError } from "../../src/lean/review.ts";

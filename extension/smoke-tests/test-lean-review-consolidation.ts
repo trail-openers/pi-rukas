@@ -23,6 +23,14 @@
  *       SYNTHESISES, which is the only role the frozen driver's own events carry
  *       and so the only one lean's `byRole` column can be compared against.
  *
+ *   (r2) a NON-BLOCKING verdict from either gate buys no fixer. The adversarial
+ *       doctrine calls only `CRITICAL_ISSUES_FOUND` blocking
+ *       (`agents-base/adversarial-developer.md`, and `decideLoopAction` passes on
+ *       `ISSUES_FOUND`/`MINOR_OBSERVATIONS`), and the lens layer reserves its
+ *       CRITICAL verdict the same way — so a run whose gate reported findings it
+ *       did not block on must end `done` with one pass and no fixer, not buy a
+ *       child, a re-review and a second gate pass.
+ *
  *   (w) a row count BEYOND the loader cap, driven through `errorOutcome`: what
  *       the recording path keeps, drops, and survives a second pass with.
  *
@@ -48,6 +56,7 @@ import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import {
   ADVERSARIAL_GATE_ROLE,
   BRANCH,
+  blockingReject,
   DISPATCHES_MAX_ROWS,
   FIXER_ROLE,
   LENS_ROLE,
@@ -252,7 +261,7 @@ const { assert, failures } = makeAssert();
         // FIRST pass asked for are what the fixer answers, and the second pass's
         // text must DIFFER from the first so the case can tell the two reads apart.
         return advO5 === 1
-          ? result({ loopOutcome: "rejected", text: "1. the finding the fixer will answer" })
+          ? blockingReject("1. the finding the fixer will answer")
           : // The re-review's gate PASSES. Its trailing record must be APPROVED: a
             // non-blocking record would make `openFromPass` hand its own text back
             // as findings on the round that is supposed to clear, and the run would
@@ -299,7 +308,7 @@ const { assert, failures } = makeAssert();
       // The fixer is dispatched, paid for, and commits nothing, so
       // `assertFixAdvanced` refuses the wave. A converging stub here would test the
       // fixture instead of the break.
-      adversarial: async () => result({ loopOutcome: "rejected", text: "1. silent catch" }),
+      adversarial: async () => blockingReject("1. silent catch"),
       // Dispatched, paid for, commits NOTHING. The step would otherwise pay to
       // re-review the identical commit the gate has already read.
       dispatch: async () => result({ role: FIXER_ROLE }),
@@ -343,6 +352,4 @@ const { assert, failures } = makeAssert();
   );
 }
 
-
-cleanupRoots();
 process.exit(failures());
