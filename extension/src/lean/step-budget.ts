@@ -18,7 +18,7 @@ import { capsEnabled } from "../spawn-child-bound.ts";
 import { traceWarn } from "../trace.ts";
 import type { DispatchResult, DispatchUsage } from "../types.ts";
 import type { Budget, WorkConfig } from "./config.ts";
-import { DISPATCHES_MAX_ROWS } from "./state-dispatches.ts";
+import { DISPATCHES_MAX_ROWS, validatedDispatches } from "./state-dispatches.ts";
 import type { LeanState, Outcome } from "./state.ts";
 
 /** Which ceiling was crossed, with what it was and what the child used. */
@@ -403,6 +403,14 @@ export function budgetVerdict(state: LeanState, fired: BudgetFired): Outcome {
  * refuses, so an unclipped verdict would have the whole array DROPPED by
  * `validatedDispatches` at load — the most expensive child in the run billing
  * zero. The clip happens last, after any caller has appended its own rows.
+ *
+ * The rows are then REBUILT through `validatedDispatches` and frozen. A count
+ * check cannot see a row the validator refuses (`1e999` is a number), and a
+ * record holding one has the array dropped WHOLE at load, so the poisoned row has
+ * to be gone from what the verdict carries rather than merely inside the tail.
+ * Rebuilding also makes the record the run's own: `slice` copies the array but
+ * not its rows, so freezing is what stops a caller that reuses or clears its row
+ * buffer afterwards from rewriting what the run said it paid.
  */
 export function budgetVerdictWithRows(
   state: LeanState,
@@ -410,5 +418,8 @@ export function budgetVerdictWithRows(
   rows: DispatchUsageRow[],
 ): Outcome {
   const verdict = budgetVerdict(state, fired);
-  return rows.length === 0 ? verdict : { ...verdict, dispatches: rows.slice(-DISPATCHES_MAX_ROWS) };
+  if (rows.length === 0) return verdict;
+  const dispatches = validatedDispatches(rows.slice(-DISPATCHES_MAX_ROWS));
+  dispatches.forEach(Object.freeze);
+  return { ...verdict, dispatches: Object.freeze(dispatches) as DispatchUsageRow[] };
 }
