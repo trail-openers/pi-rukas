@@ -145,6 +145,7 @@
     "smoke-tests/lib/lean-engine-fixtures.ts",
     "smoke-tests/lib/lean-seed-fixtures.ts",
     "smoke-tests/test-lean-machine.ts",
+    "smoke-tests/test-lean-machine-review.ts",
     "smoke-tests/test-lean-machine-reachability.ts",
     "smoke-tests/test-lean-machine-refusal.ts",
     "smoke-tests/lib/lean-machine-edges.ts",
@@ -205,6 +206,7 @@
     "smoke-tests/test-lean-review-teardown.ts",
     "smoke-tests/test-lean-review-run-id-rules.ts",
     "smoke-tests/test-lean-review-deps-bound.ts",
+    "smoke-tests/test-lean-review-threshold.ts",
     "smoke-tests/test-lean-review-absence.ts",
     "smoke-tests/test-lean-review-consolidation.ts",
     "smoke-tests/test-lean-review-tree.ts",
@@ -213,11 +215,15 @@
     "smoke-tests/test-lean-review-push-guards.ts",
     "smoke-tests/test-lean-review-fixer-bound.ts",
     "smoke-tests/test-lean-review-lens-fence.ts",
+    "smoke-tests/test-lean-review-fixed-kind.ts",
+    "smoke-tests/test-lean-review-budget-stop.ts",
+    "smoke-tests/test-lean-engine-review-reverify.ts",
     "smoke-tests/test-lean-text-fence-truncation.ts",
     "smoke-tests/test-AC1-hostile-error-fail.ts",
     "smoke-tests/test-AC2-nonerror-tostring-fail.ts",
     "smoke-tests/test-AC3-empty-message-fallback.ts",
     "smoke-tests/lib/mast-canary-fixtures.ts",
-    "smoke-tests/test-mast-authoritative-block.ts"
+    "smoke-tests/test-mast-authoritative-block.ts",
+    "smoke-tests/test-lens-tool-threshold.ts"
   ]
 }

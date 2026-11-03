@@ -12,10 +12,9 @@
  *     "no budget", which is the expensive direction to be wrong)
  *
  * The shipped table has a row for every state the machine can visit, including
- * `review` and `ci`, which phase 1 has no handler for beyond handback — `ci`
- * carries a wall clock where a stalled watch is the whole risk. A key that is
- * not in the table is refused at load, so there is no such thing as a budget
- * for an unbuilt state.
+ * `review` and `ci` — `ci` carries a wall clock where a stalled watch is the
+ * whole risk. A key that is not in the table is refused at load, so there is no
+ * such thing as a budget for an unbuilt state.
  */
 
 import type { execp } from "../exec.ts";
@@ -170,12 +169,17 @@ async function gitType(
  * in 3-4 minutes. Two live runs stopped on the old turn ceilings at 3 minutes
  * (specify at 81 of 80, challenge at 61 of 60), so each entry now leaves room
  * for a full working session rather than a third of one.
+ *
+ * `turns` bounds EACH CHILD, never a step's total, so it is sized against the
+ * longest single child of that state, not against the round: one adversary used
+ * 201 of 200 and one lens about 160 of 150, so `challenge` and `review` sit at
+ * 400 — a child stopped short of its work costs the whole round that paid for it.
  */
 export const DEFAULT_BUDGETS: Readonly<Record<string, Budget>> = Object.freeze({
   specify: Object.freeze({ turns: 250, tokens: 30_000_000, minutes: 20 }),
   build: Object.freeze({ turns: 400, tokens: 60_000_000, minutes: 45 }),
-  challenge: Object.freeze({ turns: 200, tokens: 25_000_000, minutes: 15 }),
-  review: Object.freeze({ turns: 150, tokens: 20_000_000, minutes: 15 }),
+  challenge: Object.freeze({ turns: 400, tokens: 25_000_000, minutes: 15 }),
+  review: Object.freeze({ turns: 400, tokens: 20_000_000, minutes: 15 }),
   ci: Object.freeze({ turns: 0, tokens: 0, minutes: 30 }),
 });
 

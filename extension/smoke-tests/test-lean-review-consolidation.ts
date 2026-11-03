@@ -63,6 +63,7 @@ import {
   result,
   runStep as run,
   setup,
+  passed,
 } from "./lib/lean-review-fixtures.ts";
 
 const { assert, failures } = makeAssert();
@@ -187,7 +188,7 @@ const { assert, failures } = makeAssert();
     ],
   });
   assert(
-    o1.threw === undefined && o1.outcome?.kind === "done",
+    o1.threw === undefined && passed(o1.outcome?.kind),
     `(o1) the round still clears once the gate is happy (${o1.threw?.message})`,
   );
   assert(
@@ -202,7 +203,7 @@ const { assert, failures } = makeAssert();
     adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }],
   });
   assert(
-    o2.threw === undefined && o2.outcome?.kind === "done",
+    o2.threw === undefined && passed(o2.outcome?.kind),
     `(o2) an APPROVED trailing record clears (${o2.threw?.message})`,
   );
   assert(
@@ -219,7 +220,7 @@ const { assert, failures } = makeAssert();
     adversarialRounds: [{ round: 1, status: "ISSUES_FOUND", verdictParsed: false }],
   });
   assert(
-    o3.threw === undefined && o3.outcome?.kind === "done",
+    o3.threw === undefined && passed(o3.outcome?.kind),
     `(o3) the step does not throw on an unparsed trailing record (${o3.threw?.message})`,
   );
   assert(
@@ -280,7 +281,7 @@ const { assert, failures } = makeAssert();
     }),
   );
   assert(
-    o5.threw === undefined && o5.outcome?.kind === "done",
+    o5.threw === undefined && passed(o5.outcome?.kind),
     `(o5) the fix round and the re-review both ran (${o5.threw?.message})`,
   );
   // The findings arm FIXES first and comes back around, so the arm that CONSUMES

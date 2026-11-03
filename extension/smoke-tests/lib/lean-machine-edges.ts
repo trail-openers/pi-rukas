@@ -13,8 +13,48 @@
  * missing one.
  */
 
+import type { LeanState } from "../../src/lean/state.ts";
+
 /** The only (state + outcome) pairs that may reach the reporting state. */
 export const DECLINE_SOURCES = new Set(["ready+fail", "specify+no-red-test"]);
+
+/**
+ * (state, kind) pairs the table must NOT have a rule for.
+ *
+ * Lives in the shared fixture for the same reason `DECLINE_SOURCES` does: the
+ * main table test enumerates the pairs the registry DECLARES and this list is its
+ * exact complement, so the two belong where an author adding a kind looks and
+ * finds both. Each entry is a kind a reader might plausibly expect the state to
+ * answer with — `review + "budget"` (the other three dispatching steps route on
+ * it), `land + "ok"`, a terminal state carrying any verdict at all — and a table
+ * that gained one of these would be defaulting somewhere quiet rather than
+ * refusing.
+ *
+ * Typed `[LeanState, string]` at the declaration rather than at the caller: a
+ * state name that is not one of the registry's is then a compile error in this
+ * list, not a case that quietly asserts about a state the table never had.
+ */
+export const REFUSED_PAIRS: ReadonlyArray<readonly [LeanState, string]> = [
+  ["ready", "done"],
+  ["ready", "green"],
+  ["specify", "fail"],
+  ["specify", "red"],
+  ["build", "green"],
+  ["build", "done"],
+  ["challenge", "ok"],
+  ["verify", "exhausted"],
+  ["publish", "red"],
+  ["review", "ok"],
+  ["review", "budget"],
+  ["review", "green"],
+  ["ci", "done"],
+  ["land", "ok"],
+  ["handback", "ok"],
+  ["decline", "green"],
+  ["landed", "merged"],
+  ["not-ready", "ok"],
+  ["handed-back", "done"],
+];
 
 import { MAX_BUILD_ATTEMPTS } from "../../src/lean/machine.ts";
 

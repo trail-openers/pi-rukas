@@ -34,7 +34,7 @@ import {
   TERMINAL_STATES,
   isTerminal,
 } from "../src/lean/state.ts";
-import { DECLINE_SOURCES, NON_TERMINAL_STATES, counterVariants } from "./lib/lean-machine-edges.ts";
+import { REFUSED_PAIRS } from "./lib/lean-machine-edges.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -112,7 +112,7 @@ for (const state of HANDLER_STATES) {
   }
 }
 assert(
-  pairs === 22,
+  pairs === 23,
   `all ${pairs} forward-routed pairs enumerated — the registry grew or shrank, check the spec`,
 );
 
@@ -205,27 +205,11 @@ assert(
 );
 
 // ── unlisted pairs are refused, not defaulted ──────────────────────────────
-
-const refused: Array<[LeanState, string]> = [
-  ["ready", "done"],
-  ["ready", "green"],
-  ["specify", "fail"],
-  ["specify", "red"],
-  ["build", "green"],
-  ["build", "done"],
-  ["challenge", "ok"],
-  ["verify", "exhausted"],
-  ["publish", "red"],
-  ["review", "ok"],
-  ["ci", "done"],
-  ["land", "ok"],
-  ["handback", "ok"],
-  ["decline", "green"],
-  ["landed", "merged"],
-  ["not-ready", "ok"],
-  ["handed-back", "done"],
-];
-for (const [state, kind] of refused) {
+//
+// The list is the declared registry's exact complement and lives beside
+// `DECLINE_SOURCES` in `lib/lean-machine-edges.ts`, so an author adding a kind
+// meets both halves in one place.
+for (const [state, kind] of REFUSED_PAIRS) {
   assert(!hasTransition(state, kind), `${state} + ${kind} is refused by hasTransition`);
   let err: unknown;
   try {
@@ -306,15 +290,10 @@ assert(
   next(run("review"), { kind: "done" }).counters.reviewDone === true,
   "review done sets reviewDone",
 );
-// The step's single kind is the ONLY way out of it. Both gates clearing is what
-// a handler returns; everything else — a gate that could not run, findings still
-// open at the bound, a fix round that broke the frozen contract — is a throw the
-// engine turns into a handback. A second kind would be a route for an unreviewed
-// head to reach `ci`, so the table having exactly one is the thing asserted.
-assert(
-  outcomeKindsFor("review").length === 1 && outcomeKindsFor("review")[0] === "done",
-  `review has exactly one outcome kind, "done" (got ${JSON.stringify(outcomeKindsFor("review"))})`,
-);
+// A review that ran a fix round has PUSHED and the two kinds that say so —
+// `fixed` re-verifies, `done` ships — are asserted as a PAIR, together with the
+// claim that they are the step's only two, in their own file:
+// `test-lean-machine-review.ts`. Split for the 500-line gate (AGENTS.md §12).
 assert(next(run("ci"), { kind: "green" }).state === "land", "ci green → land");
 assert(next(run("land"), { kind: "merged" }).state === "landed", "land merged → landed");
 assert(next(run("land"), { kind: "refused" }).state === "handback", "land refused → handback");
@@ -400,7 +379,7 @@ assert(
 // return: `build + ok` at the cap must stop building. Without this edge a
 // handler that never returned `exhausted` walked verify:red → build:ok →
 // verify → publish → ci:green → land forever, and MAX_BUILD_ATTEMPTS was
-// advisory. Asserted on both branches of `ok` (challenge owed / already done).
+// advisory.
 for (const challengeDone of [false, true]) {
   const atCap = next(
     run("build", {
@@ -455,27 +434,36 @@ for (const [state, kind] of [
 // itself — otherwise `build + ok`, which also spends an attempt, would double
 // the charge on the way back. Assert the pair, because asserting the flag on
 // the red edge alone is what let this read as done while it was wrong.
-const ciRed = next(run("ci"), { kind: "red" });
-assert(
-  ciRed.state === "build" && ciRed.counters.ciFixUsed === true,
-  "ci red → build and charges the one fix round",
-);
-const ciFixBuild = next(run("build", { counters: { ...INITIAL_COUNTERS, ciFixUsed: false } }), {
-  kind: "ok",
-});
-assert(ciFixBuild.counters.ciFixUsed === false, "an ordinary build does not charge the fix round");
+{
+  const ciRed = next(run("ci"), { kind: "red" });
+  assert(
+    ciRed.state === "build" && ciRed.counters.ciFixUsed === true,
+    "ci red → build and charges the one fix round",
+  );
+  const ciFixBuild = next(
+    run("build", { counters: { ...INITIAL_COUNTERS, ciFixUsed: false } }),
+    { kind: "ok" },
+  );
+  assert(
+    ciFixBuild.counters.ciFixUsed === false,
+    "an ordinary build does not charge the fix round",
+  );
+  // The draft a run already carries survives a CI fix round; the flag is sticky.
+  const ciFixDraft = next(run("ci", { counters: { ...INITIAL_COUNTERS, draft: true } }), {
+    kind: "red",
+  });
+  assert(ciFixDraft.counters.draft === true, "a draft stays a draft through the CI fix round");
+  const ciFixPlain = next(run("ci"), { kind: "red" });
+  assert(
+    ciFixPlain.counters.draft === false,
+    "a non-draft is not turned into one by a CI fix round",
+  );
+}
 assert(
   next(run("ci", { counters: { ...INITIAL_COUNTERS, ciFixUsed: true } }), { kind: "red" }).state ===
     "handback",
   "ci red with the round already charged → handback",
 );
-// The draft a run already carries survives a CI fix round; the flag is sticky.
-const ciFixDraft = next(run("ci", { counters: { ...INITIAL_COUNTERS, draft: true } }), {
-  kind: "red",
-});
-assert(ciFixDraft.counters.draft === true, "a draft stays a draft through the CI fix round");
-const ciFixPlain = next(run("ci"), { kind: "red" });
-assert(ciFixPlain.counters.draft === false, "a non-draft is not turned into one by a CI fix round");
 
 // ── who may reach the refusal, and who may not ────────────────────
 //
