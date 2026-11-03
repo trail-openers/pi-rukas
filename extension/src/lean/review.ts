@@ -294,7 +294,7 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
         `the six-lens review did not complete (${review.verdict}${review.note === undefined ? "" : `; disclosure: ${review.note}`}) — an incomplete round is not a pass to fix against`,
         rows,
       );
-    if (!lensBlocks(review) && !gate.blocking) {
+    if (!lensBlocks(review, threshold) && !gate.blocking) {
       // Neither gate blocked, so there is no wave and no re-review: the run goes
       // on as it always did. Both halves of the bar are the reviewing layers' own:
       // `gate.blocking` is the loop's trailing record read by `blockingRecord`, and
@@ -414,7 +414,7 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
     // advisory tier is excluded from the verdict, the counts and `hasCritical`. A
     // carried row is the layer saying "not addressed", whatever tier it sits in.
     const unresolved = [...reReview.reported, ...reReview.advisory].filter(
-      (f) => isCarried(f) && blockingSeverity(f),
+      (f) => isCarried(f) && blockingSeverity(f, threshold),
     );
     // The gate's own words join the refusal only when that pass BLOCKED — the
     // re-gate's CRITICAL record is a demand on the fix, and its wording survives
@@ -468,7 +468,7 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
       rows,
       true,
       disclosureNote(
-        reReview.reported.filter((f) => !isCarried(f) && !blockingSeverity(f)).length,
+        reReview.reported.filter((f) => !isCarried(f) && !blockingSeverity(f, threshold)).length,
         reGate.open ? reGate.findings : "",
       ),
     );
