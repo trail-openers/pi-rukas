@@ -116,6 +116,9 @@ export function writeLensLedgerEntry(
   cwd: string | undefined,
   branch?: string,
   hasCritical?: boolean,
+  /** #1537 — per-severity counts of the BLOCKING findings (see
+   * `LedgerEntry.blockingCounts`). Undefined on callers that predate it. */
+  blockingCounts?: Partial<Record<"CRITICAL" | "HIGH" | "MEDIUM", number>>,
   headSha?: string,
   head?: string,
   /** #988 — the branch ALREADY resolved by `runLensReview` (threaded by the
@@ -167,6 +170,7 @@ export function writeLensLedgerEntry(
       at: Date.now(),
       detail: verdict,
       ...(hasCritical !== undefined ? { hasCritical } : {}),
+      ...(blockingCounts ? { blockingCounts } : {}),
       ...(headSha ? { headSha } : {}),
       ...(overrideCap ? { overrideCap: true } : {}),
       ...(computed.diffSha256 ? { diffSha256: computed.diffSha256 } : {}),

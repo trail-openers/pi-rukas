@@ -122,13 +122,15 @@ await setupLedgerPath();
     assert(r.block === true, "round-cap: hasCritical=true → refused");
     assert(/hasCritical/.test(r.reason ?? ""), "…naming the hasCritical condition");
   }
-  // Condition 4: round below 3 → refused, naming the round.
+  // Condition 4: round below the cap AND a blocking finding open → refused,
+  // naming the round. (#1537: the cap is 2 by default; the row carries a HIGH so
+  // the second arm — nothing blocking — cannot excuse a round-1 row.)
   {
-    const r = await hook("gh pr merge 12", [ADV, lens({ at: 2, round: 2 })], {
+    const r = await hook("gh pr merge 12", [ADV, lens({ at: 2, round: 1 })], {
       ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
     });
-    assert(r.block === true, "round-cap: round 2 < 3 → refused");
-    assert(/round 2/.test(r.reason ?? ""), "…naming the round condition");
+    assert(r.block === true, "round-cap: round 1 < 2 with a blocking row → refused");
+    assert(/round 1/.test(r.reason ?? ""), "…naming the round condition");
   }
   // Condition 4: a legacy entry without `round` counts as round 1 → refused.
   {
@@ -150,8 +152,9 @@ await setupLedgerPath();
   }
   // Condition 4 (aborted runs do not advance the round): the exact
   // ISSUES_FOUND (r1) → REVIEW_INCOMPLETE (r2) → ISSUES_FOUND (r3) sequence
-  // ends at round 2 (the aborted run carried round 1 unchanged), so the
-  // guard refuses — the cap requires three COMPLETED runs.
+  // ends at round 1 (the aborted run carried round 1 unchanged), so the guard
+  // refuses on a row that still carries a blocking finding — the cap requires
+  // two COMPLETED runs.
   {
     const abortedSeq: LedgerEntry = {
       branch: "feature/x",
@@ -161,13 +164,59 @@ await setupLedgerPath();
       at: 2,
       detail: "ISSUES_FOUND",
       hasCritical: false,
-      round: 2,
+      blockingCounts: { CRITICAL: 0, HIGH: 1, MEDIUM: 0 },
+      round: 1,
     };
     const r = await hook("gh pr merge 12", [ADV, abortedSeq], {
       ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
     });
-    assert(r.block === true, "round-cap: an aborted run wedged in the sequence ends at round 2 → refused");
-    assert(/round 2/.test(r.reason ?? ""), "…naming the round condition");
+    assert(r.block === true, "round-cap: an aborted run wedged in the sequence ends at round 1 → refused");
+    assert(/round 1/.test(r.reason ?? ""), "…naming the round condition");
+  }
+  // Condition 4 (second arm, #1537): a ROUND 1 row whose counts show nothing at
+  // or above the bar needs no fix wave and no re-review, so the disclosure on the
+  // PR is the whole answer and the merge is allowed below the cap.
+  {
+    const nothingOpen: LedgerEntry = {
+      branch: "feature/x",
+      kind: "lens",
+      patchId: "p1",
+      passed: false,
+      at: 2,
+      detail: "ISSUES_FOUND",
+      hasCritical: false,
+      blockingCounts: { CRITICAL: 0, HIGH: 0, MEDIUM: 0 },
+      round: 1,
+      headSha: PR_HEAD,
+    };
+    const r = await hook("gh pr merge 12", [ADV, nothingOpen], {
+      ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
+    });
+    assert(
+      r.block === false,
+      "round-cap #1537: round 1 with nothing blocking on the row → allowed without a second round",
+    );
+  }
+  // …and the same row is refused when a MEDIUM is counted open at the shipped
+  // bar: the arm reads the counts, it does not wave through whatever they say.
+  {
+    const mediumOpen: LedgerEntry = {
+      branch: "feature/x",
+      kind: "lens",
+      patchId: "p1",
+      passed: false,
+      at: 2,
+      detail: "ISSUES_FOUND",
+      hasCritical: false,
+      blockingCounts: { CRITICAL: 0, HIGH: 0, MEDIUM: 1 },
+      round: 1,
+      headSha: PR_HEAD,
+    };
+    const r = await hook("gh pr merge 12", [ADV, mediumOpen], {
+      ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
+    });
+    assert(r.block === true, "round-cap #1537: round 1 with a MEDIUM counted open → refused");
+    assert(/round 1/.test(r.reason ?? ""), "…naming the round condition");
   }
   // Condition 5: no marker comment → refused, naming the disclosure.
   {
@@ -381,6 +430,9 @@ await setupLedgerPath();
     at: 2,
     detail: "ISSUES_FOUND",
     hasCritical: false,
+    // #1537 — a HIGH is open, so the row does not qualify for the nothing-blocking
+    // arm and the round condition is the one under test.
+    blockingCounts: { CRITICAL: 0, HIGH: 1, MEDIUM: 0 },
     headSha: "a".repeat(40),
   };
   const MARKER_COMMENT =

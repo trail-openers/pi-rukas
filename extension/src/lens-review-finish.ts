@@ -35,6 +35,14 @@ import {
 import type { LensReviewSummary } from "./lens-review-format.ts";
 import { postLensResidualDisclosure } from "./lens-review-residuals.ts";
 import type { Severity } from "./lens-review.ts";
+import type { LedgerEntry } from "./review-ledger.ts";
+
+/** #1537 — the per-severity counts of the BLOCKING findings that go on the
+ * ledger row. LOW is never blocking, so it is not recorded. */
+function blockingCountsOf(summary: LensReviewSummary): LedgerEntry["blockingCounts"] {
+  const { CRITICAL, HIGH, MEDIUM } = summary.bySeverity;
+  return { CRITICAL, HIGH, MEDIUM };
+}
 
 /**
  * The findings-memory fields spread onto the finished summary (#1934), kept with
@@ -98,6 +106,9 @@ async function finish(
     cwd,
     branch,
     ledger.hasCritical,
+    // #1537 — the round-cap rule's second arm: how many blocking findings the
+    // verdict carried, per severity.
+    blockingCountsOf(summary),
     ledger.headSha,
     ledger.head,
     // #988 — the finish path IS `runLensReview`'s single resolution site;

@@ -33,9 +33,14 @@
  *   3. The latest lens entry has `hasCritical === false`. A legacy entry
  *      without the field (pre-#973) cannot satisfy this — conservative
  *      refusal (design decision 3).
- *   4. The latest lens entry's `round >= lensRoundCap()` (3 by default). A legacy
- *      entry without `round` counts as round 1 — never enough (design
- *      decision 3; the acceptance criterion's "existing entries count as
+ *   4. Either the latest lens entry's `round >= lensRoundCap()` (#1537: 2 by
+ *      default — one full review, one fix wave, one scoped re-review), OR the
+ *      row shows nothing at or above the blocking threshold (`hasCritical ===
+ *      false` and, when the row carries the severity counts that
+ *      `lens-review-finish.ts` writes, no count above the bar). The second case
+ *      is a round 1 whose findings never blocked, so no fix wave is owed. A
+ *      legacy entry without `round` counts as round 1 — never enough on its own
+ *      (design decision 3; the acceptance criterion's "existing entries count as
  *      rounds but cannot satisfy 'no CRITICAL'" is covered by condition 3,
  *      which is the stricter of the two on a legacy row).
  *   5. The PR/MR carries the disclosure marker (see `lensResidualsMarker`
@@ -80,8 +85,49 @@
  */
 
 import { lensRoundCap } from "./lens-round-cap.ts";
+import { type ReviewSeverity, isBlockingSeverity } from "./review-threshold.ts";
 import { isFullCommitSha } from "./review-head-sha.ts";
 import { type LedgerEntry, latestEntry } from "./review-ledger.ts";
+
+/** The severity ranks that can block. LOW is never blocking, so a row counting
+ * none of these has nothing at the bar however the bar is set. */
+const BLOCKING_RANKS = ["CRITICAL", "HIGH", "MEDIUM"] as const;
+
+/**
+ * Does this lens row show no finding at or above the blocking bar?
+ *
+ * `hasCritical` is the only severity signal a lens row has ever carried, so on
+ * a row without `blockingCounts` it is all the rule can read. Rows written by
+ * `lens-review-finish.ts` carry the counts and are checked at the project's
+ * bar — read straight from `PI_ENSEMBLE_REVIEW_THRESHOLD`, the same knob
+ * `resolveReviewThreshold` honours first, because this guard is a synchronous
+ * hook and the doctrine judge is an LLM call.
+ */
+function nothingBlocking(lens: LedgerEntry): boolean {
+  if (lens.hasCritical !== false) return false;
+  // The counts are absent whenever they could not describe the verdict — on a
+  // legacy row, on a hand-built one, and on every row whose writer recorded a
+  // review whose lens children never answered. Absent means the rule cannot
+  // verify that nothing blocks, so it says "not nothing blocking" and the round
+  // condition decides, exactly as it did before #1537.
+  const counts = lens.blockingCounts;
+  if (!counts || typeof counts !== "object") return false;
+  const raw = process.env.PI_ENSEMBLE_REVIEW_THRESHOLD?.trim().toUpperCase();
+  const bar = isSeverityName(raw) ? raw : "MEDIUM";
+  return BLOCKING_RANKS.every((s) => {
+    const count = counts[s];
+    return count === undefined || count === 0 || !isBlockingSeverity(s, bar);
+  });
+}
+
+/** The env override is untrusted text: an unrecognised value is not a bar, and
+ * the shipped default applies (`resolveReviewThreshold` applies the same rule
+ * to its own env arm). */
+function isSeverityName(v: unknown): v is ReviewSeverity {
+  return (
+    typeof v === "string" && (BLOCKING_RANKS as readonly string[]).includes(v)
+  );
+}
 
 /**
  * The escape hatch (design decision 7): `PI_ENSEMBLE_LENS_ROUND_CAP_MERGE=0`
@@ -215,11 +261,11 @@ export function evaluateRoundCapMerge(
   // and must refuse, never throw (no cast).
   const round = typeof lens.round === "number" && Number.isInteger(lens.round) ? lens.round : 1;
   const cap = lensRoundCap();
-  if (round < cap) {
+  if (round < cap && !nothingBlocking(lens)) {
     return {
       applies: true,
       allowed: false,
-      failedCondition: `the latest lens entry is round ${round}, below the ${cap}-round cap (PI_ENSEMBLE_LENS_ROUND_CAP; default MAX_REVIEW_ROUNDS) — re-run the review`,
+      failedCondition: `the latest lens entry is round ${round}, below the ${cap}-round cap (PI_ENSEMBLE_LENS_ROUND_CAP; default MAX_REVIEW_ROUNDS), and the row does not establish that nothing at or above the blocking bar is open — re-run the review`,
     };
   }
   // Condition 5: the disclosure marker. The guard fetches the PR's comments

@@ -36,6 +36,14 @@ export interface LedgerEntry {
    * requires `hasCritical === false` on the latest lens entry; a legacy
    * entry without this field cannot satisfy it (conservative refusal). */
   hasCritical?: boolean;
+  /** #1537 — lens entries only: how many BLOCKING findings the reviewed verdict
+   * carried, per severity (`LOW` is never blocking, so it is not recorded).
+   * The round-cap merge rule's second arm reads it: a row below the round cap
+   * still merges when the counts show nothing at or above the blocking bar, so
+   * no fix wave was owed. Written from `bySeverityCounts` on the BLOCKING half
+   * of the round's findings — the same list `hasCritical` comes from. Absent on
+   * every pre-#1537 row, where the rule falls back to `hasCritical` alone. */
+  blockingCounts?: Partial<Record<"CRITICAL" | "HIGH" | "MEDIUM", number>>;
   /** #973 — lens entries only: the commit hash reviewed. Two consumers:
    * the delta-review auto-base (the `since` of a follow-up review defaults
    * to the latest lens entry's `headSha` when it is an ancestor of HEAD) and

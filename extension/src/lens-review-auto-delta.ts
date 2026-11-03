@@ -308,6 +308,9 @@ export async function writeCarriedEntry(
       detail: prev.detail,
       round: prev.round,
       hasCritical: prev.hasCritical,
+      // #1537 — the counts belong to the carried verdict exactly as `hasCritical`
+      // does: a carry restates a recorded review, it does not re-count one.
+      ...(prev.blockingCounts !== undefined ? { blockingCounts: prev.blockingCounts } : {}),
       headSha: head,
       diffSha256: prev.diffSha256,
       carriedFrom: from,
