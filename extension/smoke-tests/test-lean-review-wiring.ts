@@ -40,6 +40,7 @@ import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import {
   ADVERSARIAL_GATE_ROLE,
   BRANCH,
+  CAUSE_NEW_CRITICAL,
   CAUSE_NOT_ADDRESSED,
   DISPATCHES_MAX_ROWS,
   type DispatchUsageRow,
@@ -60,6 +61,7 @@ import {
   frozenBlob,
   git,
   lensRoundFor,
+  resolvedLensRound,
   lensRoundWith,
   lensRowResult,
   makeRepo,
@@ -149,6 +151,7 @@ const { assert, failures } = makeAssert();
     t2 instanceof ReviewInfraError && /did not complete/.test(t2.message),
     `(b2) an incomplete lens round throws rather than being fixed against (${t2?.message})`,
   );
+
 }
 
 // ── (c) a fix round lands on the branch, and the next round reviews THAT ─────

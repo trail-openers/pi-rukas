@@ -113,8 +113,10 @@ import {
   prNumberFromLog,
   reviewAttemptFromLog,
 } from "./review-log.ts";
+import { cleanPass, disclosureNote } from "./review-pass.ts";
 import { assertFixAdvanced } from "./review-progress.ts";
-import { budgetStopped, passKind } from "./review-step.ts";
+import { assertRan, sameCommit } from "./review-round-guards.ts";
+import { budgetStopped } from "./review-step.ts";
 import { closeFixTrees } from "./review-tree.ts";
 import {
   CAUSE_NEW_CRITICAL,
@@ -126,9 +128,7 @@ import {
   openFindingRows,
   renderRows,
 } from "./review-waves.ts";
-import { gitQuiet } from "./specify-reset.ts";
 import { specifyBranch } from "./specify-tree.ts";
-import { DISPATCHES_MAX_ROWS } from "./state-outcome.ts";
 // The error lives in a leaf module so the extracted predicates can throw it without
 // importing this handler back. Re-exported so every existing `import { ... }
 // from "./review.ts"` — including the smoke fixtures' — keeps working.
@@ -263,10 +263,21 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
     // child has no route and must not be mistaken for one (see this file's
     // header for why this step throws where the other three route).
     if (gate.stop !== undefined) throw budgetStopped(gate.stop, rows);
-    // Findings the adversarial pass passed on without blocking travel to the
+    // Findings the adversarial pass passed on WITHOUT blocking travel to the
     // lenses, which are told to judge them; the lens round's `carried` parameter
-    // exists for this one value and nothing else.
+    // exists for this one value and nothing else. That is the non-blocking reading
+    // and it is deliberately the only one taken here.
     const carried = gate.findings;
+    // Whether the ADVERSARIAL gate is what bought this wave, decided by the one
+    // thing that says so — `gate.blocking`, the trailing record read by
+    // `blockingRecord` — and never by `carried !== ""`. A non-blocking gate still
+    // has findings (that is what `carried` above is for), and deriving the gate's
+    // contribution from their presence would credit a disclosure with buying a
+    // fixer: the brief would name "adversarial pass" for findings the loop itself
+    // declined to stop the run for, the tree's arm would say `a` for a pass the
+    // six-lens round alone blocked on, and `fixTreeName`'s documented meaning of
+    // the arm would stop matching the step.
+    const fromGate = gate.blocking;
 
     const review = await lensGate(deps, ctx, {
       base,
@@ -314,7 +325,6 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
     // the arm and the brief then describe different gates, and `fixTreeName`'s doc
     // ('a' is a pass the six-lens round approved and only the adversarial gate left
     // findings on) stops matching what the step actually does.
-    const fromGate = carried !== "" && carried !== undefined;
     const blocking = review.findings;
     const findings = fromGate ? [carried, blocking].join("\n\n") : blocking;
     const gateName = fromGate
@@ -453,131 +463,4 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
     // is the case `test-lean-review-tree.ts` (w) now drives.
     await closeFixTrees(deps, ctx, attempt, runId);
   }
-}
-
-/**
- * The two shape claims a six-lens round must satisfy before its verdict means
- * anything, applied to BOTH passes.
- *
- * "A gate that did not run is never a gate that passed", enforced on the round
- * itself rather than only on the adversarial one: the review layer reports an
- * empty-delta round as `verdict: "APPROVED"` with no lens behind it (its own docs
- * say every consumer must branch on `noReview`), and a round whose lenses all died
- * reports no usage at all. Either one reaching a pass kind would tell the operator
- * the head was reviewed when the step paid for nobody to look at it. The `noReview`
- * arm is live on BOTH passes: `lensGate` asks the layer for its own automatic delta
- * base whenever the caller passed no `since`, so the FULL round can meet an empty
- * delta just as the re-review can — the fix having moved the head makes a second
- * empty-delta round less likely on the fix pass, not impossible, and the named
- * no-change cause in the wave is a different claim (it is about what the FIXER
- * changed, which this predicate cannot see).
- */
-function assertRan(round: LensRound & { head: string }, rows: DispatchUsageRow[]): void {
-  if (round.noReview === true)
-    throw new ReviewInfraError(
-      `the six-lens review ran no lens (nothing changed since the last recorded run${
-        round.note === undefined ? "" : `: ${round.note}`
-      }) — a head nobody re-reviewed is not a pass`,
-      rows,
-    );
-  if (round.usage === undefined)
-    throw new ReviewInfraError(
-      `the six-lens review reported ${round.verdict} with no usage from any lens child — that is not a pass: ${round.findings.slice(0, 300)}`,
-      rows,
-    );
-}
-
-/**
- * Do these two revisions name the SAME commit?
- *
- * Both sides are resolved with `git rev-parse` before they are compared, because
- * the layer records the `since` it was handed — which may be an abbreviation or a
- * ref — while the step holds a 40-hex sha. Either side that will not resolve is
- * NOT the same commit: an unresolvable bound is a range nobody can account for,
- * and the caller refuses it. A `rev-parse` failure is also never read as "equal".
- */
-async function sameCommit(
-  deps: ReviewDeps,
-  repoRoot: string,
-  a: string,
-  b: string,
-  rows: DispatchUsageRow[],
-): Promise<boolean> {
-  const left = await resolveCommit(deps, repoRoot, a, rows);
-  const right = await resolveCommit(deps, repoRoot, b, rows);
-  return left !== undefined && right !== undefined && left === right;
-}
-
-/** `git rev-parse <ref>` as a full sha, or undefined when it will not resolve. */
-async function resolveCommit(
-  deps: ReviewDeps,
-  repoRoot: string,
-  rev: string,
-  rows: DispatchUsageRow[],
-): Promise<string | undefined> {
-  if (rev.trim() === "") return undefined;
-  const out = await gitQuiet(deps.exec, repoRoot, ["rev-parse", "--verify", `${rev}^{commit}`]);
-  const sha = (out?.stdout ?? "").trim();
-  // A prefix match is enough for equality, but a garbage read is not: hold both
-  // sides to the shape of an oid before comparing.
-  return /^[0-9a-f]{7,40}$/.test(sha) ? sha : undefined;
-}
-
-/**
- * The bounded summary a fixed pass owes the operator for what it DISCLOSED.
- *
- * A non-blocking adversarial pass and the re-review's below-the-bar rows have no
- * other consumer in this step: the frozen driver hands them to the PR body and the
- * lens round's residual post, and lean has no PR body. So the count and the gate's
- * own words ride on the outcome reason — bounded, because the reason is a surface
- * the engine stores and the operator reads, not a transcript. `""` means nothing
- * was disclosed, and then this contributes nothing to the reason at all.
- */
-function disclosureNote(disclosedRows: number, gateText: string): string {
-  const gate = gateText.trim();
-  const parts: string[] = [];
-  if (disclosedRows > 0)
-    parts.push(`${String(disclosedRows)} below-bar ${disclosedRows === 1 ? "row" : "rows"}`);
-  if (gate !== "") parts.push(`adversarial (non-blocking): ${gate.slice(0, 300)}`);
-  return parts.length === 0 ? "" : `; DISCLOSED: ${parts.join("; ")}`;
-}
-
-/**
- * The step's pass outcome: the kind, the reason, and the rows — bounded like
- * every other surface that reports rows.
- *
- * `DISPATCHES_MAX_ROWS` is the validator's own cap — `specify` clips its merged
- * rows with it, `errorOutcome.ts` clips the throw path, and an unbounded pass was
- * the one arm that could hand the engine a record the loader then rejects, which
- * does not report an over-long run: it drops the step's cost rows entirely,
- * silently under-billing the child that costs the most.
- *
- * **`fixed` or `done`.** The one fact the two kinds differ in is whether the fix
- * wave pushed commits; `passKind` reads that pair and says why the answer cannot
- * come from a variable alone (see `fixedFromLog`).
- *
- * The note a cleared round still owes: `finishLensReview` sets it ONLY on an
- * ISSUES_FOUND round whose disclosure post failed or could not be attempted, so
- * it cannot arrive on a clean verdict — but "cannot happen" is not a reason to
- * drop it, and a note carried into the step and read by nothing is the silent
- * version of the failure it reports. The merge guard's round-cap path refuses a
- * merge until the marker carrying these findings is on the PR
- * (`merge-guard-round-cap.ts`), so a note this step swallowed would cost the run
- * its ability to merge with nobody able to say why.
- */
-function cleanPass(
-  round: LensRound & { head: string },
-  rows: DispatchUsageRow[],
-  fixed: boolean,
-  disclosed = "",
-): Outcome {
-  const owed =
-    round.note === undefined || round.note.trim() === ""
-      ? ""
-      : `; DISCLOSURE NOT POSTED: ${round.note}`;
-  return {
-    kind: passKind(fixed),
-    reason: `adversarial and six-lens review clean at ${round.head.slice(0, 12)} (${round.verdict}${fixed ? ", one fix wave, re-reviewed" : ", no fixer"})${owed}${disclosed}`,
-    dispatches: rows.slice(-DISPATCHES_MAX_ROWS),
-  };
 }

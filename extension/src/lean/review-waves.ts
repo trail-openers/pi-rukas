@@ -241,6 +241,20 @@ export function classifyFates(
 ): FindingOutcome[] {
   const outcomes: FindingOutcome[] = [];
   const seen = new Set<string>();
+  // The re-review's OWN verdict blocks the wave when it says CRITICAL: that is the
+  // layer judging the fix range and calling it must-not-proceed, and it is a
+  // handback whether or not any individual row happens to carry CRITICAL severity
+  // (the round reached the verdict on its own `computeVerdict`, which this step
+  // does not recompute). Folded in here rather than out in the loop because
+  // `classifyFates` is the one place the wave's evidence becomes fates.
+  if (reReview.verdict === "CRITICAL_ISSUES_FOUND")
+    outcomes.push({
+      id: "re-review-verdict",
+      severity: "CRITICAL",
+      line: `[CRITICAL] SIX-LENS RE-REVIEW ${neutraliseEvidence(reReview.verdict)} — the delta round itself refused the fixed head`,
+      fate: "new-critical",
+      open: true,
+    });
   // The gate's own words, and only when that pass BLOCKED. A non-blocking
   // adversarial pass is disclosure (see `review.ts`'s clean path), not a demand
   // on the fixer, so its prose is not rendered into a row here.

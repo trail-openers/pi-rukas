@@ -57,7 +57,10 @@ import {
   fixRunId,
   git,
   lensRoundFor,
+  blockingOnGateThenClears,
+  issuesFoundThenClears,
   lensRoundWith,
+  passed,
   resolvedLensRound,
   makeRepo,
   rejectsThenClears,
@@ -67,6 +70,17 @@ import {
 } from "./lib/lean-review-fixtures.ts";
 
 const { assert, failures } = makeAssert();
+
+/** A fixer that commits, so the wave is not refused for fixing nothing. */
+function committingFixerTree(tag: string) {
+  return async (spec: DispatchSpec): Promise<ReturnType<typeof result>> => {
+    const wt = spec.cwd as string;
+    put(wt, `fix-${tag}.ts`, `export const fix_${tag} = 1;\n`);
+    git(wt, "add", "-A");
+    git(wt, "commit", "-q", "-m", `fix(${tag}): the wave's fix`);
+    return result({ role: FIXER_ROLE });
+  };
+}
 
 // ── (r) the fixer's write fence + the run tree's dependencies after reset ───
 {

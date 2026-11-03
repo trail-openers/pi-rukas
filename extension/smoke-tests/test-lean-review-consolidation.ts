@@ -243,6 +243,37 @@ const { assert, failures } = makeAssert();
     "(o4) with no records at all, the prose marker is what carries the findings",
   );
 
+  // (o6) A `rejected` whose loop carried NO record at all. `parseVerdict` defaults
+  // the status when the reply holds no `VERDICT:` marker, and the report-only loop
+  // hands that record back verbatim — so a rejection with nothing behind it is
+  // prose that was never a judgement, and the step must refuse it rather than spend
+  // its one wave fixing an absence. The mutant is `lastRecord !== undefined &&
+  // …verdictParsed !== true` in `adversarialGate`: with it, this case clears.
+  const o6 = await runWithAdv({
+    loopOutcome: "rejected",
+    text: "findings with no VERDICT marker anywhere",
+    adversarialRounds: undefined,
+  });
+  assert(
+    o6.threw instanceof ReviewInfraError &&
+      /no reviewed round to read a verdict from/.test(o6.threw.message),
+    `(o6) a rejection with no reviewed round is refused, not fixed against (${o6.threw?.message ?? "the step accepted it"})`,
+  );
+
+  // (o7) And the incoherent pair: `rejected` whose OWN trailing record reads
+  // APPROVED. The loop refused a head it also certified, and neither reading is
+  // safe — clearing a head the loop rejected, or buying a fixer for an approval.
+  const o7 = await runWithAdv({
+    loopOutcome: "rejected",
+    text: "1. a finding under an APPROVED record",
+    adversarialRounds: [{ round: 1, status: "APPROVED", verdictParsed: true }],
+  });
+  assert(
+    o7.threw instanceof ReviewInfraError &&
+      /rejected a head it also approved/.test(o7.threw.message),
+    `(o7) a rejected outcome whose parsed record says APPROVED is refused the same way (${o7.threw?.message ?? "the step accepted it"})`,
+  );
+
   // (o5) T6 — the carried block reaches the pass that CONSUMES it. The wave fixes
   // first and then re-reviews, so `carried` has to survive the fix: assigned before
   // the wave and read only after it, it was once dead on the path that used it.
