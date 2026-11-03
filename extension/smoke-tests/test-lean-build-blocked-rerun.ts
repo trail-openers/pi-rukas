@@ -17,6 +17,8 @@
  *   (3a4) a non-zero exit that never named its file is `unclear`, not a red
  *   (3a6) the named file's bytes must still be the bytes the run froze: an
  *         edited frozen test is the child's own edit, not a contradiction
+ *   (3a7) the re-run hands its runner an explicit, driver-knob-scrubbed env —
+ *         never the ambient one a headless driver's knobs sit in
  *   (3b)  the cause sentence names the file the DRIVER saw fail
  *   (3c)  no runner configured: the report is ignored, and the gap is NAMED
  *
@@ -228,6 +230,52 @@ const CONFLICT = "case 2 needs the array mutable while case 3 mutates it in plac
     `(3a6) a report proved only on an edited frozen test is not honoured (got ${r.outcome?.kind ?? r.threw?.message})`,
   );
   assert(r.outcome?.blockedBy === undefined, "(3a6) and nothing is recorded");
+}
+
+// ── (3a7) the re-run's runner gets the scrubbed env ───────────────────
+{
+  // Every other call site that runs the PROJECT's tests hands the runner
+  // `verifyChildEnv()` — a headless driver's own knobs must not decide what a
+  // project's test sees, and a test that reads one can manufacture the very red
+  // this gate is meant to prove. The gate runs through the same `runTestFile`, so
+  // it must pass the same env. The fixture's exec stub is the only witness: it
+  // records what the gate actually handed the runner.
+  const seen: { cmd: string; env?: NodeJS.ProcessEnv }[] = [];
+  // A driver knob that `verifyChildEnv` DROPS (its scope is not `internal`), set
+  // in this process so the ambient env an unscrubbed runner inherits really
+  // carries it. The witness is the env the gate handed its exec seam, not the
+  // runner's exit: a script cannot tell an explicit scrubbed env from an omitted
+  // one, because Node falls back to `process.env` when `env` is absent.
+  process.env.PI_ENSEMBLE_CLAIM_STALE_MS = "777";
+  const r = await runBuild({
+    issue: 344,
+    extraFrozen: {
+      "tests/env.test.sh":
+        '#!/bin/sh\necho "not ok - tests/env.test.sh" 1>&2\nexit 1\n',
+    },
+    toolUses: () => blocked([{ path: "tests/env.test.sh", reason: CONFLICT }]),
+    execSpy: (cmd, o) => {
+      if (cmd !== "git") seen.push({ cmd, env: (o as { env?: NodeJS.ProcessEnv })?.env });
+    },
+  });
+  assert(
+    seen.length > 0,
+    "(3a7) the gate did run the named file through the exec seam",
+  );
+  assert(
+    seen.every(
+      (s) =>
+        s.env !== undefined &&
+        s.env["PI_ENSEMBLE_CLAIM_STALE_MS"] === undefined &&
+        "HOME" in s.env,
+    ),
+    `(3a7) the runner was handed an explicit env with the driver's knobs scrubbed (${String(seen.length)} runner call(s))`,
+  );
+  assert(
+    r.outcome?.kind === "blocked",
+    `(3a7) and the scrub still proves a genuine red (got ${r.outcome?.kind ?? r.threw?.message})`,
+  );
+  delete process.env.PI_ENSEMBLE_CLAIM_STALE_MS;
 }
 
 // ── (3b) the cause sentence names the file the DRIVER saw red, not the last ─

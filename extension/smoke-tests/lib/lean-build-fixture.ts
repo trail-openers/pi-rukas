@@ -377,6 +377,14 @@ export interface RunOpts {
    * script cannot: never rejecting, never resolving inside its own ceiling.
    */
   hungExec?: (cmd: string, o?: unknown) => Promise<unknown>;
+  /**
+   * Watches every non-git exec the step makes WITHOUT replacing it: the real
+   * `execp` still runs the project's runner, so a case can read what the driver
+   * handed the runner (an env, a timeout) while the runner's verdict stays the
+   * real one. The `hungExec` seam replaces the runner, which is the wrong shape
+   * for an assertion about the arguments.
+   */
+  execSpy?: (cmd: string, o?: unknown) => void;
 }
 
 /** Run the step against a fresh fixture; a throw comes back as the error. */
@@ -401,6 +409,10 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
   /** Whether the one-shot `afterDispatch` hook has fired (see `deps` below). */
   let planted = false;
   const exec: BuildDeps["exec"] = reRunStub(opts.hungExec, () => dispatched, gitArgvs);
+  const observed: BuildDeps["exec"] = async (cmd, o) => {
+    if (cmd !== "git") opts.execSpy?.(cmd, o);
+    return exec(cmd, o);
+  };
   const dispatch: BuildDeps["dispatch"] = async (spec: DispatchSpec, o) => {
     dispatched++;
     specs.push(spec);
@@ -425,7 +437,7 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
     return result;
   };
   const inner: BuildDeps = {
-    exec,
+    exec: observed,
     dispatch,
     fetchIssueBody: async () => SPEC_BODY,
     loadConfig: async () => {
