@@ -17,7 +17,7 @@
  * gone, and these readers are the only way a resumed attempt gets back the tree it
  * left, the PR it is disclosing to, and the verdict its own finished passes earned.
  */
-import type { OUTCOME_KINDS } from "./machine.ts";
+import { OUTCOME_KINDS } from "./machine.ts";
 import { isRunId } from "./state-dispatches.ts";
 import { validPrUrl } from "./state-outcome.ts";
 import type { Step } from "./state.ts";
@@ -105,21 +105,30 @@ export function fixRunIdFromLog(steps: Step[]): FixRunId | undefined {
 }
 
 /**
- * The kinds a review pass ENDED with, as opposed to threw. `error` is excluded by
- * {@link fixedFromLog} and named here rather than left to a reader who has to
- * guess which kinds count; an undecided entry (no outcome) is the engine's replay
- * marker and is skipped by every reader in this file.
+ * The kinds a review pass ENDED with, as opposed to threw. An undecided entry
+ * (no outcome) is the engine's replay marker and is skipped by every reader in
+ * this file.
  *
  * Exported for the same reason `FIX_RUN_ID_SHAPE` is: the loader and the smoke
  * fixtures both need the set of kinds a pass may carry, and a second literal they
  * drift apart is how a fixture starts asserting against a shape no writer emits.
  *
- * Typed against the registry itself rather than `string[]`: the machine's
- * `review` entry is the authority on which kinds a pass may carry, so a kind
- * renamed in the table makes this line refuse to compile instead of letting the
- * reader quietly stop matching the passes it exists to count.
+ * Typed against the registry itself rather than `string[]`, and DERIVED from it:
+ * the machine's `review` entry is the authority on which kinds `review` may end
+ * with, and `test-lean-machine.ts` asserts that entry equals the set of kinds the
+ * table gives `review` arrows — which is what makes spreading it here a fact about
+ * the table and not an assumption. A hand-written list would be a second answer to
+ * "which kinds are a pass", and would go stale in the safe-looking direction: a
+ * kind added to the table simply never counted, and the run stopped re-verifying
+ * its own fix commits.
+ *
+ * The one kind a review step record can carry that is NOT here is `error`, which
+ * the engine writes when the handler threw ({@link fixedFromLog} skips it) and
+ * which the registry refuses to any handler.
  */
-export const PASS_KINDS: readonly (typeof OUTCOME_KINDS.review)[number][] = ["done", "fixed"];
+export const PASS_KINDS: readonly (typeof OUTCOME_KINDS.review)[number][] = [
+  ...OUTCOME_KINDS.review,
+];
 
 /**
  * Did any review pass of THIS run integrate a fix, i.e. push commits to the run's

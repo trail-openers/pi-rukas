@@ -275,9 +275,10 @@ const { assert, failures } = makeAssert();
   // handback and the headless result share, and a review test pinning that
   // wording is a fourth copy of one fact. What this step owes is that the stop it
   // read reaches the engine as the review step's own throw, naming the lever and
-  // the number the operator set — NOT a routed `{kind: "budget"}`: `review` has
-  // one outcome kind, `done`, and a returned `budget` reaches the table with no
-  // arrow for the pair (`test-lean-review-budget-stop.ts` drives the engine half).
+  // the number the operator set — NOT a routed `{kind: "budget"}`: both kinds
+  // `review` may record (`done`, `fixed`) are clean passes, and a returned
+  // `budget` reaches the table with no arrow for the pair
+  // (`test-lean-review-budget-stop.ts` drives the engine half).
   assert(
     stopped.outcome === undefined && stopped.threw instanceof ReviewInfraError,
     `(t) a reviewer the bound stopped is the step's throw, never a verdict the table must route (${stopped.threw?.message ?? `kind ${String(stopped.outcome?.kind)}`})`,

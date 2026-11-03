@@ -148,7 +148,11 @@ const NO_FIX_VERDICTS: readonly Verdict[] = [
 /** The fixer's wall clock, the shape the other steps pass as `childBoundMs`. */
 export const FIX_BOUND_MS = 20 * 60_000;
 
-/** The `review` step. Returns `done` or a routed budget verdict; THROWS on anything else. */
+/**
+ * The `review` step. Returns one of the step's two pass kinds — `done` or
+ * `fixed` (see `passKind` in `review-step.ts` for what the two differ in); a
+ * budget stop is NOT returned, it throws; and so does anything else.
+ */
 export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<Outcome> {
   const { repoRoot, issue } = ctx;
   const branch = specifyBranch(ctx.run.branch, issue);
@@ -302,7 +306,9 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
       });
       // The operator's ceiling stopping this step is read BEFORE the gate's own
       // infra throw could mistake a stopped reviewer for "no verdict at all", and
-      // it THROWS: the table has one arrow out of `review` and it is a clean pass.
+      // it THROWS: both arrows out of `review` are clean passes, so a stopped
+      // child has no route and must not be mistaken for one (see this file's
+      // header for why this step throws where the other three route).
       if (gate.stop !== undefined) throw budgetStopped(gate.stop, rows);
 
       if (gate.findings !== "") {

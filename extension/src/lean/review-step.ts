@@ -21,6 +21,7 @@
  * state is this" is two answers to that question.
  */
 
+import type { OutcomeKind } from "./machine.ts";
 import { ReviewInfraError } from "./review-errors.ts";
 import { REVIEW_STATE } from "./review-log.ts";
 import type { BudgetFired, DispatchUsageRow } from "./step-budget.ts";
@@ -59,11 +60,14 @@ export function budgetStopped(fired: BudgetFired, rows: DispatchUsageRow[]): Rev
  * attempt that resumes after a crash, which remembers nothing and still stands on
  * a moved head.
  *
- * The return type is the pair the table routes on, written out rather than
- * derived: `machine.ts` has exactly these two kinds for `review` and a third
- * would be a route for an unreviewed head to reach `ci`, which
- * `test-lean-machine.ts` asserts as a property of the registry.
+ * The return type is the registry's own `review` entry, not a written-out pair:
+ * `machine.ts` is the authority on which kinds `review` may end with, and a third
+ * kind reaching this step would be a route for an unreviewed head to reach `ci` —
+ * derived here, that refusal is a compile error rather than a test that has to be
+ * run. The registry's entry for `review` is exactly `done | fixed`, so the two
+ * arms below stay the whole answer. The exhaustive pair enumeration in
+ * `test-lean-machine.ts` remains what proves the ROUTES those two kinds take.
  */
-export function passKind(fixed: boolean): "fixed" | "done" {
+export function passKind(fixed: boolean): OutcomeKind<"review"> {
   return fixed ? "fixed" : "done";
 }

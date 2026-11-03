@@ -2,12 +2,12 @@
 /**
  * lean/review — a budget stop is the step's own throw, not a routed kind.
  *
- * `machine.ts` declares `review: ["done"]` and its comment is explicit: a review
- * that ran out of its budget is NOT a kind a handler returns — it is a throw, and
- * the engine records it as the infrastructure handback it is. But the three sites
- * that read a stopped child (`review.ts`'s gate arm and its two fix arms) returned
- * `budgetVerdictWithRows(...)`, i.e. `{kind: "budget"}`. The table has no arrow for
- * that pair, so `settle` ended the run with
+ * `machine.ts` declares `review: ["done", "fixed"]` and both of those are clean
+ * passes: a review that ran out of its budget is NOT a kind a handler returns — it
+ * is a throw, and the engine records it as the infrastructure handback it is. But
+ * the three sites that read a stopped child (`review.ts`'s gate arm and its two fix
+ * arms) returned `budgetVerdictWithRows(...)`, i.e. `{kind: "budget"}`. The table
+ * has no arrow for that pair, so `settle` ended the run with
  * `no transition for review + "budget"` and exit 10 — a cause that names neither
  * the lever that fired nor what the run spent on it.
  *

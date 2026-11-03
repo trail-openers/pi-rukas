@@ -209,7 +209,7 @@ assert(
 // The list is the declared registry's exact complement and lives beside
 // `DECLINE_SOURCES` in `lib/lean-machine-edges.ts`, so an author adding a kind
 // meets both halves in one place.
-for (const [state, kind] of REFUSED_PAIRS as ReadonlyArray<[LeanState, string]>) {
+for (const [state, kind] of REFUSED_PAIRS) {
   assert(!hasTransition(state, kind), `${state} + ${kind} is refused by hasTransition`);
   let err: unknown;
   try {

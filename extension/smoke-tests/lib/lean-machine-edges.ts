@@ -13,6 +13,8 @@
  * missing one.
  */
 
+import type { LeanState } from "../../src/lean/state.ts";
+
 /** The only (state + outcome) pairs that may reach the reporting state. */
 export const DECLINE_SOURCES = new Set(["ready+fail", "specify+no-red-test"]);
 
@@ -28,10 +30,11 @@ export const DECLINE_SOURCES = new Set(["ready+fail", "specify+no-red-test"]);
  * that gained one of these would be defaulting somewhere quiet rather than
  * refusing.
  *
- * Typed as `[LeanState, string]` by the caller rather than here, so this list
- * cannot drift out of step with the state names by being written too loosely.
+ * Typed `[LeanState, string]` at the declaration rather than at the caller: a
+ * state name that is not one of the registry's is then a compile error in this
+ * list, not a case that quietly asserts about a state the table never had.
  */
-export const REFUSED_PAIRS: ReadonlyArray<readonly [string, string]> = [
+export const REFUSED_PAIRS: ReadonlyArray<readonly [LeanState, string]> = [
   ["ready", "done"],
   ["ready", "green"],
   ["specify", "fail"],

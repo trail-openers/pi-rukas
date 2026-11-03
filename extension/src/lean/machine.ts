@@ -25,6 +25,16 @@
 import type { LeanRun, LeanState, Outcome } from "./state.ts";
 import { type Transition, to, viaBuild } from "./transitions.ts";
 
+/**
+ * The outcome kinds the HANDLER for a state may return.
+ *
+ * The exhaustive pair enumeration in `test-lean-machine.ts` asserts that this
+ * entry equals the set of `kind`s the registry gives that state arrows, which is
+ * what makes each entry below — and every reader that derives from it — a fact
+ * about the table rather than an assumption about it. A handler returning a kind
+ * not listed here is a handler bug the engine hands the run back for.
+ */
+
 /** Outcome kinds per state. The handler for a state may return only these. */
 export const OUTCOME_KINDS = {
   ready: ["ok", "fail"],
