@@ -22,13 +22,13 @@ import { execp } from "../../src/exec.ts";
 import { defaultConfig } from "../../src/lean/config.ts";
 import type { HandlerCtx } from "../../src/lean/engine.ts";
 import { ADVERSARIAL_GATE_ROLE } from "../../src/lean/review-gates.ts";
+import { FIX_RUN_ID_SHAPE, PASS_KINDS } from "../../src/lean/review-log.ts";
+import { DEFAULT_REVIEW_THRESHOLD } from "../../src/lens-review-format.ts";
 import type { LensRound, ReviewDeps } from "../../src/lean/review.ts";
 import { ReviewInfraError, reviewOutcome } from "../../src/lean/review.ts";
 import type { Outcome } from "../../src/lean/state.ts";
 import { createRun } from "../../src/lean/state.ts";
 import { FIXER_ROLE } from "../../src/lean/step-budget.ts";
-import { PASS_KINDS } from "../../src/lean/review-log.ts";
-import { FIX_RUN_ID_SHAPE } from "../../src/lean/review-log.ts";
 import type { LensName, LensRunResult } from "../../src/lens-review-types.ts";
 import { aggregateLensUsage } from "../../src/lens-review-usage.ts";
 import type { DispatchResult, DispatchSpec } from "../../src/types.ts";
@@ -184,6 +184,11 @@ export function depsWith(over: Partial<ReviewDeps>): ReviewDeps {
     dispatch: async () => result({ role: FIXER_ROLE }),
     fetchIssueBody: async () => "body",
     loadConfig: async () => defaultConfig(),
+    // The harness's stand-in for the doctrine judge: a step that resolves the
+    // project's bar gets the shipped default rather than a child process. A case
+    // that cares about the bar overrides this and asserts what the lens call
+    // received — the default here must never be the thing a case proves.
+    reviewThreshold: async () => DEFAULT_REVIEW_THRESHOLD,
     ...over,
   };
 }

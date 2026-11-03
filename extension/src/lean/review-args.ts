@@ -1,24 +1,62 @@
 /**
- * lean/review-args — what the `review` step hands one round of each gate, and
- * what one six-lens round answered back.
+ * lean/review-args — what the `review` step hands one round of each gate, what
+ * one six-lens round answered back, and what the step needs from the outside
+ * world to decide anything.
  *
  * Split from `review.ts` for the 500-line cap (AGENTS.md §12). The seam is
- * direction: `review.ts` is the decision procedure, and these three shapes are
- * the boundary between it and the two frozen review layers its `ReviewDeps`
- * seams call. The loop's judgement and the argument shapes of the calls it makes
+ * direction: `review.ts` is the decision procedure, and these shapes are the
+ * boundary between it and the two frozen review layers its `ReviewDeps` seams
+ * call. The loop's judgement and the argument shapes of the calls it makes
  * change for different reasons — a new lens-side knob touches this file and the
- * adapter, not the loop — so they are not stored in the same module.
+ * adapter, not the loop — so they are not stored in the same module. They are
+ * also the shapes every sibling that participates in a round compiles against
+ * (`review-gates.ts` calls the gates, `review-deps.ts` builds the deps,
+ * `review-git.ts` and `review-tree.ts` take the deps to move bytes, and the
+ * smoke fixtures drive the step through them), so the contract and the
+ * algorithm are different things and this is the file the rest of the step
+ * reads.
  *
- * One rule the shapes carry that is easy to lose when they move: `LensRound`'s
- * review-layer fields are a `Pick<>` of the layer's own summary type rather than a
- * hand-restated copy, so the compiler refuses this file the moment the layer
- * renames or retypes one of them — which is exactly when a hand-written copy
- * would have quietly kept reading `undefined`.
+ * Three rules live here rather than in a comment on a call site, because they
+ * are the rules a caller can break silently and the compiler cannot catch:
+ *
+ * **`LensRound`'s review-layer fields are a `Pick<>` of the layer's own summary
+ * type rather than a hand-restated copy,** so the compiler refuses this file the
+ * moment the layer renames or retypes one of them — which is exactly when a
+ * hand-written copy would have quietly kept reading `undefined`.
+ *
+ * **The bar the round is judged against is an argument, not a default.**
+ * `LensArgs.threshold` carries the severity at which a finding blocks the run.
+ * A round that arrives without one is judged at the review layer's MEDIUM
+ * default, which is looser than what a project that states a bar in its
+ * doctrine asked for — and the difference is invisible in the verdict, because
+ * both answer "APPROVED"/"ISSUES_FOUND". That is how the project's own sentence
+ * went unapplied on two of the three review paths.
+ *
+ * **The bar is resolved once per step, never per round.** See
+ * `ReviewDeps.reviewThreshold` for why a per-round read is both wasteful and
+ * wrong.
  */
 
-import type { LensReviewSummary } from "../lens-review-format.ts";
+import type { LensReviewSummary, Severity } from "../lens-review-format.ts";
 import type { Finding, LensRunResult } from "../lens-review-types.ts";
-import type { BudgetArms } from "./step-budget.ts";
+import type { runLensReview } from "../lens-review.ts";
+import type { DispatchResult } from "../types.ts";
+import type { ExecFn } from "../worktree.ts";
+import type { BuildDispatch } from "./build-types.ts";
+import type { WorkConfig } from "./config.ts";
+import type { BudgetArms, FixRunId } from "./step-budget.ts";
+
+/**
+ * The fixer's tree identity: the epoch milliseconds its name is minted from.
+ *
+ * Re-exported from `step-budget.ts`, the module that owns the row it travels in:
+ * a brand declared twice is two unrelated types, and the shape has to be one
+ * type across the mint site, the row writer and the validator. A branded string
+ * rather than an unconstrained one, because the previous shape was fed to
+ * `Number()` on its way into the durable record — where anything that was not a
+ * decimal integer became `NaN`.
+ */
+export type { FixRunId };
 
 /**
  * What one six-lens round answered, as the step reads it.
@@ -74,9 +112,77 @@ export interface LensArgs {
   context: string;
   /** Post-change prose and the deterministic claim scan, read from the branch ref. */
   evidence: string | undefined;
+  /**
+   * The severity at which a finding blocks this run, resolved ONCE per review
+   * step at the run's base commit (see `ReviewDeps.reviewThreshold`). Optional
+   * only so a test that drives the step with a stub lens need not supply one:
+   * the wiring passes it straight to `runLensReview`, and a round with no
+   * threshold is judged at the review layer's MEDIUM default — looser than what
+   * a project that states a bar in its doctrine asked for.
+   */
+  threshold?: Severity;
   extraFindings: Finding[];
   /** The headless trust stamp this run's children carry. */
   headless: boolean;
   /** The step's armed budget, threaded to the lens children. */
   budget: BudgetArms;
+}
+
+/**
+ * The fixer's tree identity: the epoch milliseconds its name is minted from.
+ *
+ * Re-exported from `step-budget.ts`, the module that owns the row it travels in:
+ * a brand declared twice is two unrelated types, and the shape has to be one
+ * type across the mint site, the row writer and the validator. A branded string
+ * rather than an unconstrained one, because the previous shape was fed to
+ * `Number()` on its way into the durable record — where anything that was not a
+ * decimal integer became `NaN`.
+ */
+
+/** The step's dependencies: the outside world, injected. */
+export interface ReviewDeps {
+  /** The headless mode this run was started in; its children's permission stamp. */
+  headless: boolean;
+  exec: ExecFn;
+  /** One round of the adversarial gate. Injected so a test drives verdicts with no child. */
+  adversarial: (args: AdversarialArgs) => Promise<DispatchResult>;
+  /** One round of the six-lens pass. */
+  lens: (args: LensArgs) => Promise<LensRound>;
+  /**
+   * The fixer, in the tree its `cwd` names.
+   *
+   * `BuildDispatch` rather than a re-declared narrower seam: it is the sibling
+   * the same child crosses in `build`, and it already carries `writeFence` —
+   * which the review step's fixer needs exactly as the builder does. A seam
+   * that cannot carry the fence can only enforce it by not dispatching.
+   */
+  dispatch: BuildDispatch;
+  fetchIssueBody: (repoRoot: string, issue: number) => Promise<string>;
+  loadConfig: (repoRoot: string, baseSha: string) => Promise<WorkConfig>;
+  /**
+   * The project's blocking severity, read at the run's base commit — one call
+   * per review step, never per round.
+   *
+   * The bar is a property of the project, so asking it once per round would pay a
+   * judge child per round to return the same answer, and — worse — let two rounds
+   * of one step be judged against two different bars if doctrine changed between
+   * them. The step resolves it once and threads it to every lens round, which is
+   * also what makes the ledger's `passed` agree with the verdict: both are
+   * computed under the value this returned.
+   *
+   * Injected rather than called inside the wiring for the same reason every other
+   * outside world here is: a test of THE THRESHOLD has to observe the value the
+   * lens call received, and the step has to be drivable without a judge child.
+   */
+  reviewThreshold: (repoRoot: string, baseSha: string) => Promise<Severity>;
+  /**
+   * The six-lens engine, defaulting to `runLensReview` in the wiring.
+   *
+   * One reason only, and it is a test reason: the clamp that keeps
+   * `PI_ENSEMBLE_LENS_BOUND_MS` from being overwritten by the budget arms can only
+   * be asserted on the options the lens call ACTUALLY received. An assertion on the
+   * input passed the bug — the input was correct in that bug, and only what reached
+   * `runLensReview` was wrong. Production never sets this.
+   */
+  lensEngine?: typeof runLensReview;
 }

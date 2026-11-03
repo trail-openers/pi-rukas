@@ -68,12 +68,9 @@ import type { Verdict } from "../lens-review-format.ts";
 import type { Finding } from "../lens-review-types.ts";
 import type { runLensReview } from "../lens-review.ts";
 import { traceWarn } from "../trace.ts";
-import type { DispatchResult, DispatchSpec, DispatchUsage } from "../types.ts";
-import type { ExecFn } from "../worktree.ts";
+import type { DispatchResult, DispatchSpec } from "../types.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
-import type { BuildDispatch } from "./build-types.ts";
 import { frozenFromLog } from "./build.ts";
-import type { WorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { assertReviewEntry } from "./review-entry.ts";
 import { adversarialGate, lensGate } from "./review-gates.ts";
@@ -94,9 +91,20 @@ import { DISPATCHES_MAX_ROWS } from "./state-outcome.ts";
 // importing this handler back. Re-exported so every existing `import { ... }
 // from "./review.ts"` — including the smoke fixtures' — keeps working.
 export { ReviewInfraError } from "./review-errors.ts";
+// The shapes the step's participants compile against live in `review-args.ts`:
+// re-exported so every existing `import { ... } from "./review.ts"` — including
+// the smoke fixtures' — keeps working.
+export type {
+  AdversarialArgs,
+  FixRunId,
+  LensArgs,
+  LensRound,
+  ReviewDeps,
+} from "./review-args.ts";
+import type { ReviewDeps } from "./review-args.ts";
 import { ReviewInfraError } from "./review-errors.ts";
 import type { Outcome } from "./state.ts";
-import type { BudgetArms, BudgetFired, DispatchUsageRow, FixRunId } from "./step-budget.ts";
+import type { BudgetArms, BudgetFired, DispatchUsageRow } from "./step-budget.ts";
 import { armBudget, budgetFor } from "./step-budget.ts";
 
 /**
@@ -140,56 +148,6 @@ const NO_FIX_VERDICTS: readonly Verdict[] = [
 /** The fixer's wall clock, the shape the other steps pass as `childBoundMs`. */
 export const FIX_BOUND_MS = 20 * 60_000;
 
-// The two gates' argument shapes and the lens round's summary live in
-// `review-args.ts`; re-exported so every existing `import { ... } from
-// "./review.ts"` — including the smoke fixtures' — keeps working.
-export type { AdversarialArgs, LensArgs, LensRound } from "./review-args.ts";
-import type { AdversarialArgs, LensArgs, LensRound } from "./review-args.ts";
-
-/**
- * The fixer's tree identity: the epoch milliseconds its name is minted from.
- *
- * Re-exported from `step-budget.ts`, the module that owns the row it travels in:
- * a brand declared twice is two unrelated types, and the shape has to be one
- * type across the mint site, the row writer and the validator. A branded string
- * rather than an unconstrained one, because the previous shape was fed to
- * `Number()` on its way into the durable record — where anything that was not a
- * decimal integer became `NaN`.
- */
-export type { FixRunId } from "./step-budget.ts";
-
-/** The step's dependencies: the outside world, injected. */
-export interface ReviewDeps {
-  /** The headless mode this run was started in; its children's permission stamp. */
-  headless: boolean;
-  exec: ExecFn;
-  /** One round of the adversarial gate. Injected so a test drives verdicts with no child. */
-  adversarial: (args: AdversarialArgs) => Promise<DispatchResult>;
-  /** One round of the six-lens pass. */
-  lens: (args: LensArgs) => Promise<LensRound>;
-  /**
-   * The fixer, in the tree its `cwd` names.
-   *
-   * `BuildDispatch` rather than a re-declared narrower seam: it is the sibling
-   * the same child crosses in `build`, and it already carries `writeFence` —
-   * which the review step's fixer needs exactly as the builder does. A seam
-   * that cannot carry the fence can only enforce it by not dispatching.
-   */
-  dispatch: BuildDispatch;
-  fetchIssueBody: (repoRoot: string, issue: number) => Promise<string>;
-  loadConfig: (repoRoot: string, baseSha: string) => Promise<WorkConfig>;
-  /**
-   * The six-lens engine, defaulting to `runLensReview` in the wiring.
-   *
-   * One reason only, and it is a test reason: the clamp that keeps
-   * `PI_ENSEMBLE_LENS_BOUND_MS` from being overwritten by the budget arms can only
-   * be asserted on the options the lens call ACTUALLY received. An assertion on the
-   * input passed the bug — the input was correct in that bug, and only what reached
-   * `runLensReview` was wrong. Production never sets this.
-   */
-  lensEngine?: typeof runLensReview;
-}
-
 /** The `review` step. Returns `done` or a routed budget verdict; THROWS on anything else. */
 export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<Outcome> {
   const { repoRoot, issue } = ctx;
@@ -218,6 +176,16 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
   });
   const issueBody = await deps.fetchIssueBody(repoRoot, issue).catch((err: unknown) => {
     throw new ReviewInfraError(`could not read the issue: ${(err as Error).message}`);
+  });
+  // The blocking bar, resolved ONCE for the whole step at the run's base commit,
+  // beside the config and the issue and for the same reason: it is a fact the
+  // step needs before it pays for a round, and a step that discovered its bar was
+  // unreadable after two rounds would have spent those rounds at the wrong one.
+  // Never per round — see `ReviewDeps.reviewThreshold`.
+  const threshold = await deps.reviewThreshold(repoRoot, base).catch((err: unknown) => {
+    throw new ReviewInfraError(
+      `could not resolve the project's review threshold: ${(err as Error).message}`,
+    );
   });
 
   // The step's disposable trees are named once per attempt, so every round of a
@@ -381,6 +349,7 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
         carried,
         rows,
         budget,
+        threshold,
       });
       // "A gate that did not run is never a gate that passed", enforced on the
       // lens round itself rather than only on the adversarial one: the review
