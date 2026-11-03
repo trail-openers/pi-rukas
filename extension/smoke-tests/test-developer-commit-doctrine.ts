@@ -232,6 +232,16 @@ assert(
   /run tests and linting before you report back to pm/i.test(sourceDoc),
   "#1989 review: the pre-commit checklist is re-scoped to 'before you report back to PM' so it cannot contradict the commit-first rule",
 );
+// The lens-fix bullet is a THIRD place the commit seam is stated (the develop
+// prompt and the Return Protocol list are the other two). Its old "Commit, and
+// commit at seams" restated the pre-#1989 seam, which reads as "wait for a
+// clean build", so the bullet now uses the same commit-first wording and the
+// seam phrase is gone from the role prompt outright.
+assert(
+  /commit as soon as the change exists, then add further commits as you go/i.test(sourceDoc) &&
+    !/commit at seams/i.test(sourceDoc),
+  "#1989 follow-up: the lens-fix bullet prescribes committing as soon as the change exists — the old 'commit at seams' restated the pre-commit-first seam",
+);
 assert(
   !/run tests and linting \(all must pass\)/i.test(sourceDoc),
   "#1989 review canary: the old 'Run tests and linting (all must pass)' gate line is GONE from source developer.md — stated before the commit step it read as a reason to stay uncommitted",

@@ -126,11 +126,11 @@ export function withFastTier<O extends { timeout?: number }>(
  */
 export function developVerifyLine(verifyCmd?: string, fastCmd?: string): string {
   if (verifyCmd && fastCmd) {
-    return `Before committing, run the project's FAST verify tier — \`${fastCmd}\` — and make it pass in your worktree. Do NOT run the full verify command (\`${verifyCmd}\`) yourself: the driver runs the fast tier and then the full command on your worktree the moment you finish, and parallel workstreams each running the full suite only slow every gate down. Fix formatting or lint output by RUNNING the formatter/linter, never by hand-guessing.`;
+    return `Before you report back, run the project's FAST verify tier — \`${fastCmd}\` — and make it pass in your worktree. Do NOT run the full verify command (\`${verifyCmd}\`) yourself: the driver runs the fast tier and then the full command on your worktree the moment you finish, and parallel workstreams each running the full suite only slow every gate down. Fix formatting or lint output by RUNNING the formatter/linter, never by hand-guessing.`;
   }
   return verifyCmd
-    ? `Before committing, run the project's verify command — \`${verifyCmd}\` — and make it pass in your worktree; this is the exact command the verify gate will run, so the two cannot diverge. Run it when the change is complete, not after every edit: the driver runs it again on your worktree the moment you finish, so a re-run that only re-confirms a green result buys nothing. Fix formatting or lint output by RUNNING the formatter/linter, never by hand-guessing.`
-    : "This project has no discoverable verify command, so there is no project-level check to run before committing — rely on the change being correct and complete.";
+    ? `Before you report back, run the project's verify command — \`${verifyCmd}\` — and make it pass in your worktree; this is the exact command the verify gate will run, so the two cannot diverge. Run it when the change is complete, not after every edit: the driver runs it again on your worktree the moment you finish, so a re-run that only re-confirms a green result buys nothing. Fix formatting or lint output by RUNNING the formatter/linter, never by hand-guessing.`
+    : "This project has no discoverable verify command, so there is no project-level check to run before you report back — rely on the change being correct and complete.";
 }
 
 /**
