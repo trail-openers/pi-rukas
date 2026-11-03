@@ -397,32 +397,34 @@ export function budgetVerdict(state: LeanState, fired: BudgetFired): Outcome {
  * is taught to read — with the cost rows attached, so a stopped round's tokens
  * reach the host instead of vanishing with the child.
  *
- * The rows are clipped to the validator's own bound, keeping the NEWEST, the way
- * the done path in `review.ts`, `specify`'s merge and the throw path all do: a
- * `dispatches` array over `DISPATCHES_MAX_ROWS` is one `dispatchesProblem`
- * refuses, so an unclipped verdict would have the whole array DROPPED by
- * `validatedDispatches` at load — the most expensive child in the run billing
- * zero. The clip happens last, after any caller has appended its own rows.
+ * Defence-in-depth at the boundary, not a fix for a live defect: today every
+ * caller passes the single row it just built, and the steps whose rows DO
+ * accumulate (`review`, and `specify`'s two-attempt merge) clip on their own
+ * paths. What this function owes any caller is the same contract the throw path
+ * in `error-outcome.ts` gives its rows — the rows are rebuilt through
+ * `validatedDispatches` and THEN clipped to `DISPATCHES_MAX_ROWS`, keeping the
+ * tail. That order is load-bearing: the validator `continue`s past a row it
+ * refuses rather than rejecting the array, so clipping first would let a refused
+ * row inside the tail shrink the record and let an OLDER row take its place —
+ * dropping precisely the child that ran last, which is the one that decided the
+ * step (see the same argument in `error-outcome.ts`).
  *
- * The rows are then REBUILT through `validatedDispatches` and frozen. A count
- * check cannot see a row the validator refuses (`1e999` is a number), and a
- * record holding one has the array dropped WHOLE at load, so the poisoned row has
- * to be gone from what the verdict carries rather than merely inside the tail.
- * Rebuilding also makes the record the run's own: `slice` copies the array but
- * not its rows, so freezing array, rows and each row's `usage` is what stops a
- * caller that reuses or clears its row buffer afterwards from rewriting what the
- * run said it paid. The verdict itself is frozen for the same reason: the engine
- * stores this object into the run it then persists, so a writer that came after
- * the step would otherwise be editing the record on its way to disk.
+ * Rebuilding also makes the record the run's own: a row the validator accepts is
+ * a fresh object, and freezing array, rows and each row's `usage` is what stops
+ * a caller that reuses or clears its row buffer afterwards from rewriting what
+ * the run said it paid. The verdict itself is frozen for the same reason — a
+ * caller that appended rows and kept the reference now edits a record on its way
+ * to disk — so both paths freeze, including the empty one, which differs only in
+ * omitting the `dispatches` field.
  */
 export function budgetVerdictWithRows(
   state: LeanState,
   fired: BudgetFired,
   rows: DispatchUsageRow[],
 ): Outcome {
-  const verdict = budgetVerdict(state, fired);
+  const verdict = Object.freeze(budgetVerdict(state, fired));
   if (rows.length === 0) return verdict;
-  const dispatches = validatedDispatches(rows.slice(-DISPATCHES_MAX_ROWS));
+  const dispatches = validatedDispatches(rows).slice(-DISPATCHES_MAX_ROWS);
   for (const row of dispatches) {
     Object.freeze(row.usage);
     Object.freeze(row);
