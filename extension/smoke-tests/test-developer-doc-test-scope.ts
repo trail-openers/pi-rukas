@@ -95,12 +95,28 @@ await withWatchdog(undefined, async () => {
   // #1989 — the sibling of the formatter ban: the other way a child destroys
   // work it did not author is an in-place rewrite addressed by line number,
   // which cannot fail loudly the way `edit`'s unique-string match does.
+  // One assert per clause: a single conjunctive assert reports one failure no
+  // matter which clause regressed, so the message cannot name the ban that
+  // actually disappeared.
   assert(
-    /edit` tool's unique-string replacement only/i.test(src) &&
-      /sed -i/i.test(src) &&
-      /git checkout <file>/i.test(src) &&
-      /re-apply with `edit`/i.test(src),
-    "#1989: the role prompt restricts edits to the `edit` tool's unique-string replacement and forbids line-addressed `sed -i`, scripted in-place rewrites and `git checkout <file>` over uncommitted work",
+    /edit` tool's unique-string replacement/i.test(src),
+    "#1989: the role prompt restricts edits to the `edit` tool's unique-string replacement",
+  );
+  assert(
+    /write` for a file you create or replace whole/i.test(src),
+    "#1989 follow-up: the role prompt admits `write` for a file the developer creates or replaces whole — `write` is granted, so an edit-only rule contradicted the tool surface",
+  );
+  assert(
+    /sed -i/i.test(src),
+    "#1989: the role prompt still forbids line-addressed `sed -i`",
+  );
+  assert(
+    /scripted in-place rewrites/i.test(src),
+    "#1989: the role prompt still forbids scripted in-place rewrites (python/perl/heredoc)",
+  );
+  assert(
+    /git checkout <file>/i.test(src) && /re-apply with `edit`/i.test(src),
+    "#1989: the role prompt still forbids `git checkout <file>` over uncommitted work and says to undo an edit by re-applying with `edit`",
   );
   assert(
     /run tests and linting before you report back to pm/i.test(src) &&

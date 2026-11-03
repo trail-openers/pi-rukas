@@ -9,12 +9,14 @@
 | Medium | 80%+ | Internal APIs, services, utilities |
 | Low | 70%+ | Documentation, config, formatting |
 
-## Pre-Commit Verification
+## Verification Before You Report Back
 
-Before EVERY commit:
+Before you report back on completed work:
 - [ ] Linting commands run and ALL passing
 - [ ] Pre-commit hooks will pass
 - [ ] NOT using --no-verify or bypass flags
+
+These are the gates on REPORTING, not on committing: committing is an early, progressive step and never waits for a check to go green.
 
 **IF ANY CHECK FAILS**: Delegate to fix violations, NEVER bypass
 

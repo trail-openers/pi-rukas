@@ -264,8 +264,10 @@ const BRIEF = "Prior memory: #394 calibrated the retrieval floor; do not re-deri
     "#751: the resolved verify command string is embedded in the prompt",
   );
   assert(
-    /before committing/i.test(prompt),
-    "#751: the instruction is obligation-at-commit-time (not continuous)",
+    /before you report back/i.test(prompt) &&
+      !/before committing/i.test(prompt) &&
+      !/before you commit/i.test(prompt),
+    "#751/#1989: the verify obligation sits at REPORT time, not at commit time — the commit-first rule makes an obligation-before-committing read as 'wait to commit'",
   );
   assert(
     /cannot diverge/i.test(prompt),

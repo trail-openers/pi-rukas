@@ -61,6 +61,19 @@ for (const manifestName of readdirSync(MANIFESTS).filter((name) => name.endsWith
   const promptPath = path.join(PROMPTS, `${role}.md`);
   const prompt = readFileSync(promptPath, "utf8");
   const promptLines = new Set(prompt.split("\n"));
+  // #1989 follow-up — the quality-gates module's verification checklist used to
+  // read "Before EVERY commit", which contradicted the commit-first doctrine by
+  // making a gate a precondition of committing. The checklist is now gated on
+  // reporting, asserted through the assembled prompt so a module edit that
+  // restores the old heading or the old lead-in fails here.
+  if (manifestLines.includes("modules/workflows/quality-gates.md")) {
+    assert(
+      prompt.includes("## Verification Before You Report Back") &&
+        !/## Pre-Commit Verification/.test(prompt) &&
+        !/Before EVERY commit/i.test(prompt),
+      `${role}: the quality-gates checklist is scoped to reporting, not to every commit`,
+    );
+  }
   if (codemodeHeading !== undefined) {
     assert(
       promptLines.has(codemodeHeading),
