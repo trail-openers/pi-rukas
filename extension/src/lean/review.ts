@@ -117,7 +117,7 @@ import {
 } from "./review-log.ts";
 import { cleanPass, disclosureNote } from "./review-pass.ts";
 import { assertFixAdvanced } from "./review-progress.ts";
-import { assertRan, sameCommit } from "./review-round-guards.ts";
+import { assertRan, assertRangedOverTheFix } from "./review-round-guards.ts";
 import { budgetStopped } from "./review-step.ts";
 import { closeFixTrees } from "./review-tree.ts";
 import {
@@ -228,12 +228,6 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
   // review costs.
   const budget = armBudget(budgetFor(config, "review"));
   if (budget.warning !== undefined) traceWarn(`lean review #${String(issue)}: ${budget.warning}`);
-  // What the turns lever is, for the cause line only. It bounds a CHILD's turn
-  // count (armed on every child through `armBudget`, which aborts the child whose
-  // progress passes it) — it never bounded the SHAPE of the wave, which is
-  // `REVIEW_CHILD_BUDGET` alone. Naming the number here says only what it bounds,
-  // so an operator raising `turns` is not led to expect another pass.
-  const turnCap = budgetFor(config, "review")?.turns ?? 0;
 
   // `rows` accumulates across the WHOLE step, not one pass: the handback must say
   // what every child cost, including the one that failed. Nothing re-derives it
@@ -371,21 +365,10 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
         `the re-review of the fix did not complete (${reReview.verdict}${reReview.note === undefined ? "" : `; disclosure: ${reReview.note}`}) — an incomplete round is not evidence that the fix answered anything`,
         rows,
       );
-    // The round's range is the step's own claim, and the layer reports what it
-    // actually ranged over in `deltaReview`. A re-review that reports a delta
-    // starting somewhere OTHER than the commit the step named has judged a
-    // different range, and its verdict cannot answer for the fix. An absent stamp
-    // is not a contradiction: `runLensReview` omits it when its delta did not
-    // resolve, and the round's completion (`assertRan`, the did-not-run bar) is
-    // what refuses a round that reviewed nothing.
-    if (
-      reReview.deltaReview !== undefined &&
-      !(await sameCommit(deps, repoRoot, preFixHead, reReview.deltaReview.since, rows))
-    )
-      throw new ReviewInfraError(
-        `the re-review did not range over the fix: it reviewed \`${reReview.deltaReview.since.slice(0, 12)}..${reReview.deltaReview.head.slice(0, 12)}\` when the step named ${preFixHead.slice(0, 12)} as its base — a verdict on some other range cannot answer for the fix`,
-        rows,
-      );
+    // THE RE-REVIEW MUST PROVE WHICH RANGE IT JUDGED — the stamp's presence and
+    // both of its bounds are preconditions on the round's evidence, so they are the
+    // guards' question, not the step's (see `assertRangedOverTheFix`).
+    await assertRangedOverTheFix(deps, repoRoot, reReview, { since: preFixHead, head }, rows);
     // The adversarial gate's second pass runs AFTER the delta round it judges:
     // its range is the fix's own `since..head`, the same range the lenses were
     // handed. Running it before the round would have it judge a head whose
@@ -420,7 +403,19 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
     // of truth is the cheaper invariant, so the three readings below are all the
     // step does: the layer's CRITICAL verdict, a carried row at the project's bar
     // or above, and the gate's own CRITICAL record.
-    const unresolved = reReview.reported.filter((f) => isCarried(f) && blockingSeverity(f));
+    //
+    // The carried scan reads BOTH row sets the layer hands over. `reported` is the
+    // BLOCKING half, and `advisory` holds what `splitAdvisory` moved out of it — so
+    // a carried HIGH whose cited line fell outside the PR's changed lines is not in
+    // `reported` at all, and a check that read only that list would call the wave
+    // cleared on a row the layer still holds open. That is not the step discounting
+    // a finding (the layer's own range rule did) — it is the step letting the
+    // layer's discount decide a question the layer never put to it, since the
+    // advisory tier is excluded from the verdict, the counts and `hasCritical`. A
+    // carried row is the layer saying "not addressed", whatever tier it sits in.
+    const unresolved = [...reReview.reported, ...reReview.advisory].filter(
+      (f) => isCarried(f) && blockingSeverity(f),
+    );
     // The gate's own words join the refusal only when that pass BLOCKED — the
     // re-gate's CRITICAL record is a demand on the fix, and its wording survives
     // nowhere else (lean has no PR body). A non-blocking pass is disclosure, and
@@ -451,18 +446,31 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
         rows,
       );
     // Nothing carried and no CRITICAL anywhere: the wave cleared. What the
-    // re-review reported below the bar, and any non-blocking word from the gate,
-    // is disclosed here, in the reason the operator reads, as well as by the
-    // review layer's own residual post. A non-blocking gate pass has no other
-    // consumer in this step: lean has no PR body to hand it to (see `openFromPass`),
-    // so its count and its text are put on the outcome rather than dropped — and
-    // both are neutralised and bounded by `disclosureNote` on the way there. It is
-    // never a reason to buy another wave.
+    // re-review disclosed, and any non-blocking word from the gate, is stated here,
+    // in the reason the operator reads, as well as by the review layer's own
+    // residual post. A non-blocking gate pass has no other consumer in this step:
+    // lean has no PR body to hand it to (see `openFromPass`), so its count and its
+    // text are put on the outcome rather than dropped — and both are neutralised
+    // and bounded by `disclosureNote` on the way there. It is never a reason to buy
+    // another wave.
+    //
+    // The count is the rows this step can say were DISCLOSED, which is not
+    // `reported.length`: a row that was carried is one the layer said is still
+    // open, and the arm above only refuses it at the blocking bar, so a carried
+    // row below the bar does reach here — reported by a round the step is calling
+    // clean, and disclosed by the layer's residual post under its carried heading.
+    // `reported` also excludes the rows `splitAdvisory` moved out of it, and those
+    // are the layer's to account for, in its own post. `blockingSeverity` is the
+    // same predicate the refusal reads, so the two arms cannot disagree about which
+    // rows blocked: what is neither carried nor blocking is disclosed.
     return cleanPass(
       reReview,
       rows,
       true,
-      disclosureNote(reReview.reported.length, reGate.open ? reGate.findings : ""),
+      disclosureNote(
+        reReview.reported.filter((f) => !isCarried(f) && !blockingSeverity(f)).length,
+        reGate.open ? reGate.findings : "",
+      ),
     );
   } finally {
     // Scoped to THIS attempt's trees (issue, attempt, epoch) — see `closeFixTrees`.

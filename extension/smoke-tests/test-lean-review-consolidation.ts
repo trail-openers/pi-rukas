@@ -62,6 +62,7 @@ import {
   LENS_ROLE,
   REVIEW_PASSES,
   cleanLensRound,
+  lensRoundFor,
   cleanupRoots,
   ctxFor,
   depsWith,
@@ -305,7 +306,10 @@ const { assert, failures } = makeAssert();
       },
       lens: async (a) => {
         carriedSeen.push(a.context);
-        return cleanLensRound();
+        // The re-review stamps the range the step named — an un-stamped round is
+        // refused as a verdict on some other diff, and this case is about the carry
+        // surviving the wave, not about that refusal.
+        return lensRoundFor(a, "APPROVED", []);
       },
       dispatch: committing,
     }),

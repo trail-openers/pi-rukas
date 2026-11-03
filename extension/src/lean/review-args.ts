@@ -92,6 +92,21 @@ export type LensRound = Pick<
    * separately), and it never invents a per-finding reply protocol.
    */
   reported: Finding[];
+  /**
+   * The rows `splitAdvisory` moved OUT of `reported` (#1140/#1125): every finding
+   * whose cited line sits outside the PR's changed lines, fresh or carried.
+   *
+   * Carried for one reading and one only: the NOT ADDRESSED check must not be
+   * satisfiable by the discount. An advisory row is excluded from the verdict, the
+   * severity counts and the ledger's `hasCritical`, so a CARRIED HIGH that the split
+   * moved here would clear a fix wave while the layer still holds the row open and
+   * prints it under its carried heading — the step would call that round clean.
+   * The step therefore reads `isCarried && blockingSeverity` over `reported` AND
+   * these rows. It states no rule of its own about the advisory tier otherwise:
+   * a fresh advisory row is the layer's to disclose, exactly as an advisory row is
+   * not the step's to block on.
+   */
+  advisory: Finding[];
 };
 
 /**

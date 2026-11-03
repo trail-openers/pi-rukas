@@ -53,6 +53,7 @@ import {
   blockingFinding,
   blockingReject,
   carriedFinding,
+  carriedLensRound,
   cleanLensRound,
   cleanupRoots,
   ctxFor,
@@ -175,8 +176,10 @@ const { assert, failures } = makeAssert();
         reviewed.push(`lens:${a.head}`);
         // The re-review must not re-report the row the wave was asked to answer,
         // or the step reads its own finding back as NOT ADDRESSED (which is the
-        // right behaviour, and the wrong thing for this case to measure).
-        return cleanLensRound();
+        // right behaviour, and the wrong thing for this case to measure). It does
+        // stamp the range the step handed it — an un-stamped re-review is refused
+        // as a verdict on some other diff.
+        return lensRoundFor(a, "APPROVED", []);
       },
       dispatch: async (spec: DispatchSpec) => {
         // The fixer's own work, made where the step sent it.
@@ -308,10 +311,13 @@ const { assert, failures } = makeAssert();
     // The same blocking row both times. `carried: true` is what the review layer
     // puts on an open row its round did not resolve, and it is the ONLY thing the
     // step reads for NOT ADDRESSED — so the fixture states the layer's fate
-    // rather than hoping the step guesses it from a re-appearing row.
-    lens: async () => {
+    // rather than hoping the step guesses it from a re-appearing row. The re-review
+    // stamps its range, or the step refuses the round before it can hand back.
+    lens: async (a) => {
       e3LensRounds++;
-      return lensRoundWith("ISSUES_FOUND", [carriedFinding()]);
+      return a.wave === "fix"
+        ? carriedLensRound(a, [blockingFinding()])
+        : lensRoundWith("ISSUES_FOUND", [carriedFinding()]);
     },
     dispatch: async (spec: DispatchSpec) => {
       e3Fixers++;
@@ -431,13 +437,15 @@ const { assert, failures } = makeAssert();
         budgets: { ...defaultConfig().budgets, review: { turns: 0, tokens: 0, minutes: 0 } },
       }),
       adversarial: async () => blockingReject("1. the row the wave must answer"),
-      lens: async () => {
+      lens: async (a) => {
         gRound++;
         // The same row both passes (`title` cannot vary, or the re-review's row is
         // a different finding and the step has nothing to call NOT ADDRESSED).
         // The row is what fails the run, not the budget: a zero budget must not
         // turn into a head nobody looked at being certified.
-        return lensRoundWith("ISSUES_FOUND", [carriedFinding()]);
+        return a.wave === "fix"
+          ? carriedLensRound(a, [blockingFinding()])
+          : lensRoundWith("ISSUES_FOUND", [carriedFinding()]);
       },
       dispatch: fixerThatCommits("g"),
     }),

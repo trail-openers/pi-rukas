@@ -47,8 +47,8 @@ import {
   DISPATCHES_MAX_ROWS,
   FIXER_ROLE,
   REVIEW_CHILD_BUDGET,
+  alwaysBlockingOnGate,
   blockingFinding,
-  blockingReject,
   carriedFinding,
   cleanLensRound,
   cleanupRoots,
@@ -57,7 +57,6 @@ import {
   fixRunId,
   git,
   lensRoundFor,
-  issuesFoundThenClears,
   lensRoundWith,
   makeRepo,
   rejectsThenClears,
@@ -95,6 +94,9 @@ function committingFixerTree(tag: string) {
     ctxFor(repoRoot, baseSha, BRANCH),
     depsWith({
       adversarial: rejectsThenClears("1. silent catch"),
+      // The re-review stamps the range the step named — an un-stamped round is
+      // refused, and this case is about the fence the fixer was dispatched with.
+      lens: async (a) => lensRoundFor(a, "APPROVED", []),
       dispatch: async (spec: DispatchSpec, opts) => {
         fence = opts.writeFence;
         put(spec.cwd as string, "fix.ts", "export const x = 1;\n");
@@ -162,7 +164,7 @@ function committingFixerTree(tag: string) {
       // A re-review that reported nothing would resolve the row by omission and
       // return a pass, which has no `dispatches` to assert on. The wave is bought
       // by the gate's blocking record, not by the round's mere findings.
-      adversarial: async () => blockingReject("1. the carried row the wave must answer"),
+      adversarial: alwaysBlockingOnGate("1. the carried row the wave must answer"),
       lens: async (a) => lensRoundFor(a, "ISSUES_FOUND", [carriedFinding()]),
       dispatch: async (spec: DispatchSpec) => {
         put(spec.cwd as string, "fix.ts", "export const x = 1;\n");
@@ -455,6 +457,9 @@ function committingFixerTree(tag: string) {
     ctxFor(repoRoot, baseSha, BRANCH),
     depsWith({
       adversarial: rejectsThenClears("1. silent catch"),
+      // The re-review stamps the range the step named — an un-stamped round is
+      // refused, and this case is about what the integration did to the tree.
+      lens: async (a) => lensRoundFor(a, "APPROVED", []),
       dispatch: async (spec: DispatchSpec) => {
         const wt = spec.cwd as string;
         trees.push(wt);

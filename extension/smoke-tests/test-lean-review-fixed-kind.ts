@@ -70,6 +70,10 @@ const { assert, failures } = makeAssert();
     ctxFor(repoRoot, baseSha, BRANCH),
     depsWith({
       adversarial: rejectsThenClears("1. the finding the fixer answers"),
+      // The re-review stamps the range the step named. An un-stamped round is a
+      // round that cannot show what it judged and is refused — so without this the
+      // case would report the kind of a wave that never completed.
+      lens: async (a) => lensRoundFor(a, "APPROVED", []),
       dispatch: fixerThatCommits("moved-head"),
     }),
   );

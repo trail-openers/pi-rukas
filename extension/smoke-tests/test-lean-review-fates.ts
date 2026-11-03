@@ -28,6 +28,12 @@
  *       model output, and reading it as disclosable is how a malformed row clears a
  *       wave.
  *
+ *   (h3) a carried row the advisory split moved OUT of `reported` still hands the
+ *       wave back. `splitAdvisory` discounts any finding whose cited line is outside
+ *       the PR's changed lines into a tier excluded from the verdict, the counts and
+ *       `hasCritical` — so a check that read only `reported` would call the wave
+ *       cleared on a row the layer still holds open. The step reads both tiers.
+ *
  *   (i) the layer's own CRITICAL verdict on the fix range hands back, and the
  *       handback names the fixer's head and the range — origin is at the fix, so an
  *       operator chasing "where is my work" is pointed at the pushed commits.
@@ -45,6 +51,8 @@ import {
   type ReviewDeps,
   ReviewInfraError,
   blockingFinding,
+  carriedFinding,
+  carriedLensRound,
   cleanupRoots,
   ctxFor,
   depsWith,
@@ -232,6 +240,71 @@ assert(
   );
 }
 
+// ── (h3) a carried row the ADVISORY split moved out of `reported` still hands back ─
+//
+// `splitAdvisory` (#1140/#1125) discounts every finding whose cited line sits
+// outside the PR's changed lines into a tier the verdict, the severity counts and
+// the ledger's `hasCritical` all ignore. It discounts CARRIED rows too — so a
+// carried HIGH can be absent from `reported` while the findings store still holds it
+// open, and a NOT ADDRESSED check that read only `reported` would certify that wave
+// clean. That is the discount deciding a question the layer never put to the step:
+// the layer said "not addressed", and said it in the tier, not in the tier's
+// exclusion. The step reads `isCarried && blockingSeverity` over both row sets.
+//
+// Two mutants, both red here and green nowhere else: drop `advisory` from the
+// concatenation (the discounted row then clears the wave), or drop the
+// `isCarried` test (a fresh advisory row would hand back — see (i2)'s control).
+{
+  const { repoRoot, baseSha } = makeRepo();
+  await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 20;\n" });
+  const { threw } = await run(
+    ctxFor(repoRoot, baseSha, BRANCH),
+    depsWith({
+      adversarial: async () => result({ loopOutcome: "approved" }),
+      // The re-review reports NOTHING in `reported` and carries the HIGH in the
+      // advisory tier — the shape a real `splitAdvisory` produces for a carried row
+      // whose cited line fell outside the PR's changed lines.
+      lens: async (a) =>
+        a.wave === "fix"
+          ? carriedLensRound(a, [blockingFinding({ title: "discounted leak" })], {
+              intoAdvisory: true,
+            })
+          : lensRoundWith("CRITICAL_ISSUES_FOUND", [blockingFinding()]),
+      dispatch: fixerThatCommits("h4"),
+    }),
+  );
+  assert(
+    threw instanceof ReviewInfraError &&
+      threw.message.includes(CAUSE_NOT_ADDRESSED) &&
+      /discounted leak/.test(threw.message),
+    `(h3) a carried HIGH that sits ONLY in the advisory tier hands the run back, and the refusal quotes it (${threw?.message ?? "the wave cleared on a row the layer still holds open"})`,
+  );
+
+  // The control that keeps (h3) from being satisfied by a step that refuses every
+  // advisory row: the SAME fixture shape with the row FRESH (not carried) below the
+  // bar discloses and clears. Without it, "read both tiers" could be implemented as
+  // "block on anything advisory".
+  const { repoRoot: rr2, baseSha: bs2 } = makeRepo();
+  await setup({ repoRoot: rr2, baseSha: bs2, branch: BRANCH, feature: "export const f = 21;\n" });
+  const { threw: t2, outcome: o2 } = await run(
+    ctxFor(rr2, bs2, BRANCH),
+    depsWith({
+      adversarial: async () => result({ loopOutcome: "approved" }),
+      lens: async (a) =>
+        a.wave === "fix"
+          ? lensRoundFor(a, "APPROVED", [], [
+              blockingFinding({ title: "out-of-range note", severity: "MEDIUM" }),
+            ])
+          : lensRoundWith("CRITICAL_ISSUES_FOUND", [blockingFinding()]),
+      dispatch: fixerThatCommits("h5"),
+    }),
+  );
+  assert(
+    t2 === undefined && o2?.kind === "fixed",
+    `(h3) and a FRESH advisory row is the layer's to disclose — the step does not block on the tier itself (${t2?.message ?? `kind ${String(o2?.kind)}`})`,
+  );
+}
+
 // ── (i) the layer's CRITICAL verdict on the fix range hands back, and says where ─
 //
 // The verdict is the layer's own `computeVerdict` answer over its `reported` rows —
@@ -297,6 +370,44 @@ assert(
   assert(
     outcome?.reason !== undefined && /DISCLOSED/.test(outcome.reason),
     `(i2) and the disclosed row is stated on the reason rather than dropped (${outcome?.reason?.slice(0, 180)})`,
+  );
+}
+
+// ── (i3) the DISCLOSED count is the rows disclosed, not the rows reported ───
+//
+// `reported` is every row the round reported at the bar, and a row can reach the
+// clean return while carried, as long as its severity sits below the blocking one —
+// the NOT ADDRESSED arm refuses only `carried && blockingSeverity`. So a count that
+// took `reported.length` told the operator that a row the layer still holds OPEN was
+// disclosed, and inflated the number by every such row. The mutant is that count
+// restored (`reported.length`): this case goes red on it and nothing else does.
+{
+  const { repoRoot, baseSha } = makeRepo();
+  await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 24;\n" });
+  const { threw, outcome } = await run(
+    ctxFor(repoRoot, baseSha, BRANCH),
+    depsWith({
+      adversarial: async () => result({ loopOutcome: "approved" }),
+      lens: async (a) =>
+        a.wave === "fix"
+          ? lensRoundFor(a, "APPROVED", [
+              // One fresh MEDIUM: disclosed, and the only row the count may state.
+              blockingFinding({ title: "unguarded write", severity: "MEDIUM" }),
+              // One CARRIED MEDIUM: below the blocking bar, so it does not hand the
+              // run back, but it is a row the layer holds open — not a disclosure.
+              carriedFinding({ title: "still open below the bar", severity: "MEDIUM" }),
+            ])
+          : lensRoundWith("CRITICAL_ISSUES_FOUND", [blockingFinding()]),
+      dispatch: fixerThatCommits("i3"),
+    }),
+  );
+  assert(
+    threw === undefined && outcome?.kind === "fixed",
+    `(i3) a carried row BELOW the bar does not hand the wave back (${threw?.message ?? `kind ${String(outcome?.kind)}`})`,
+  );
+  assert(
+    /DISCLOSED: 1 below-bar row$/.test(outcome?.reason ?? ""),
+    `(i3) and the disclosed count states the ONE disclosed row, not the two the round reported — a carried row is not a disclosure (${outcome?.reason?.slice(-90)})`,
   );
 }
 

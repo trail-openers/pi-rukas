@@ -67,6 +67,7 @@ import {
   ctxFor,
   depsWith,
   git,
+  lensRoundFor,
   makeRepo,
   rejectsThenClears,
   result,
@@ -308,6 +309,9 @@ import {
     ctxFor(repoRoot, baseSha, BRANCH),
     depsWith({
       adversarial: rejectsThenClears("1. silent catch"),
+      // The re-review stamps the range the step named; an un-stamped round is refused
+      // and the tree the fixer ran in would never have been reported.
+      lens: async (a) => lensRoundFor(a, "APPROVED", []),
       dispatch: async (spec) => {
         const wt = spec.cwd as string;
         seenTree = path.basename(wt);

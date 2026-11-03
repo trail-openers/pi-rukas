@@ -29,6 +29,7 @@
  * Real temp repos, stubbed models, no child spawned, no token spent.
  */
 
+import type { DispatchSpec } from "../src/types.ts";
 import { put } from "./lib/lean-build-fixture.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import {

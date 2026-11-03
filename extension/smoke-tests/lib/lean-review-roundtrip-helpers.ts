@@ -24,6 +24,7 @@ import {
   ctxFor,
   depsWith,
   git,
+  lensRoundFor,
   rejectsThenClears,
   result,
   runStep as run,
@@ -50,6 +51,10 @@ export async function fixRoundRows(
     ctxFor(repoRoot, baseSha, BRANCH),
     depsWith({
       adversarial: rejectsThenClears("1. silent catch"),
+      // The re-review stamps the range the step handed it. A round that cannot show
+      // its own range is refused before the pass, and this fixture exists to bill
+      // exactly one fixer on a wave that completed.
+      lens: async (a) => lensRoundFor(a, "APPROVED", []),
       dispatch: async (spec) => {
         const wt = spec.cwd as string;
         put(wt, "fix.ts", "export const x = 1;\n");

@@ -77,6 +77,49 @@ export async function sameCommit(
   return left !== undefined && right !== undefined && left === right;
 }
 
+/**
+ * The re-review must prove WHICH RANGE IT JUDGED, or its verdict is not evidence
+ * that the fix answered anything.
+ *
+ * The round's range is the step's own claim — it names `since` on the fix wave —
+ * and the layer reports what it actually ranged over in `deltaReview`, so three
+ * readings are required: the stamp present, its `since` the commit the step named,
+ * and its `head` the head the step holds. An absent stamp is refused, not forgiven:
+ * `runLensReview` omits the field when it did not run a `since..head` delta at all,
+ * and a re-review that cannot show its range is a round that may have read the whole
+ * branch — and a verdict on the `base..head` branch says nothing about whether the
+ * fix addressed the findings. Neither `assertRan` nor the did-not-run bar can tell
+ * that round from one that ranged over the fix, so the check is its own.
+ *
+ * Fail closed, which is why the two refusals are separate causes: "could not show
+ * its range" and "showed a range the step did not name" are different facts for the
+ * operator, and the second one quotes both ranges so the mismatch is readable
+ * without the transcript. Both bounds are compared with `sameCommit`, so a stamp
+ * that will not resolve refuses rather than matching nothing quietly.
+ */
+export async function assertRangedOverTheFix(
+  deps: ReviewDeps,
+  repoRoot: string,
+  round: LensRound & { head: string },
+  opts: { since: string; head: string },
+  rows: DispatchUsageRow[],
+): Promise<void> {
+  const stamp = round.deltaReview;
+  if (stamp === undefined)
+    throw new ReviewInfraError(
+      `the re-review of the fix reported ${round.verdict} without stamping the range it ranged over — the step named ${opts.since.slice(0, 12)}..${opts.head.slice(0, 12)} and a round that cannot show its own range cannot answer for the fix`,
+      rows,
+    );
+  if (
+    !(await sameCommit(deps, repoRoot, opts.since, stamp.since, rows)) ||
+    !(await sameCommit(deps, repoRoot, opts.head, stamp.head, rows))
+  )
+    throw new ReviewInfraError(
+      `the re-review did not range over the fix: it reviewed \`${stamp.since.slice(0, 12)}..${stamp.head.slice(0, 12)}\` when the step named ${opts.since.slice(0, 12)}..${opts.head.slice(0, 12)} — a verdict on some other range cannot answer for the fix`,
+      rows,
+    );
+}
+
 /** `git rev-parse <ref>` as a full sha, or undefined when it will not resolve. */
 async function resolveCommit(
   deps: ReviewDeps,

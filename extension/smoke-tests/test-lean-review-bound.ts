@@ -37,6 +37,7 @@ import {
   REVIEW_PASSES,
   blockingFinding,
   carriedFinding,
+  carriedLensRound,
   cleanLensRound,
   blockingReject,
   cleanupRoots,
@@ -89,10 +90,15 @@ const { assert, failures } = makeAssert();
           adversarialRounds: parsedRound("CRITICAL_ISSUES_FOUND"),
         }),
       // The lens round's own rows come back carried on both passes, so neither
-      // gate is ever satisfied and both try to send work to a fixer.
-      lens: async () => {
+      // gate is ever satisfied and both try to send work to a fixer. The re-review
+      // stamps the range the step handed it: an un-stamped round is refused before
+      // it can loop, so this case would otherwise measure that refusal and not the
+      // bound it names.
+      lens: async (a) => {
         lensRounds++;
-        return lensRoundWith("ISSUES_FOUND", [carriedFinding()]);
+        return a.wave === "fix"
+          ? carriedLensRound(a, [blockingFinding()])
+          : lensRoundWith("ISSUES_FOUND", [carriedFinding()]);
       },
       dispatch: async (spec: DispatchSpec) => {
         fixers++;

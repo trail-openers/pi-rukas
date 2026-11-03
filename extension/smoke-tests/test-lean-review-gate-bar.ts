@@ -185,6 +185,70 @@ function committingFixerTree(tag: string) {
       `(k2) and the correctly-stamped re-review clears — (k) is a range check, not a refusal to pass (${threw?.message ?? `kind ${String(outcome?.kind)}`})`,
     );
   }
+
+  // (k3) An UN-STAMPED re-review is refused too. `runLensReview` omits `deltaReview`
+  // when it ran no `since..head` delta, so a round with no stamp is a round that may
+  // have read the whole branch — and a verdict on `base..head` cannot answer whether
+  // the fix addressed the findings. Neither `assertRan` nor the did-not-run bar can
+  // tell that round from one that ranged over the fix, so absence must fail closed
+  // rather than be read as "no contradiction". The mutant is the old `!== undefined
+  // &&` guard, which forgave the missing stamp and cleared the wave on it.
+  {
+    const { repoRoot, baseSha } = makeRepo();
+    await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 22;\n" });
+    const { threw, outcome } = await run(
+      ctxFor(repoRoot, baseSha, BRANCH),
+      depsWith({
+        adversarial: async () => result({ loopOutcome: "approved" }),
+        lens: async (a) =>
+          a.wave === "fix"
+            ? // The full round's shape on the fix wave: no delta, no stamp, a clean
+              // verdict. Everything else about the wave is honest, so this is the one
+              // difference the refusal has to be about.
+              lensRoundWith("APPROVED", [])
+            : lensRoundWith("CRITICAL_ISSUES_FOUND", [blockingFinding()]),
+        dispatch: committingFixerTree("k3"),
+      }),
+    );
+    assert(
+      threw instanceof ReviewInfraError &&
+        /without stamping the range it ranged over/.test(threw.message),
+      `(k3) a re-review that cannot show its range is refused, not forgiven (${threw?.message ?? `kind ${String(outcome?.kind)}`})`,
+    );
+    assert(
+      threw instanceof ReviewInfraError && /6\{12\}|0\{12\}|\.\./.test(threw.message),
+      `(k3) and the refusal names the range the step asked for, so the operator can see what went unproven (${threw?.message?.slice(0, 200)})`,
+    );
+  }
+
+  // (k4) The UPPER bound is checked too. A stamp whose `since` is right and whose
+  // `head` is somebody else's commit is a verdict on a range that ends somewhere
+  // other than the fixer's head — the same class of lie as (k), and one the step can
+  // only catch by reading both bounds. The mutant is the second `sameCommit` arm.
+  {
+    const { repoRoot, baseSha } = makeRepo();
+    await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 23;\n" });
+    const { threw } = await run(
+      ctxFor(repoRoot, baseSha, BRANCH),
+      depsWith({
+        adversarial: async () => result({ loopOutcome: "approved" }),
+        lens: async (a) =>
+          a.wave === "fix"
+            ? {
+                ...lensRoundFor(a, "APPROVED", []),
+                deltaReview: { since: a.since ?? "", head: "f".repeat(40) },
+              }
+            : lensRoundWith("CRITICAL_ISSUES_FOUND", [blockingFinding()]),
+        dispatch: committingFixerTree("k4"),
+      }),
+    );
+    assert(
+      threw instanceof ReviewInfraError &&
+        /did not range over the fix/.test(threw.message) &&
+        /f{12}/.test(threw.message),
+      `(k4) a stamp whose HEAD is not the step's head is refused, and the refusal quotes it (${threw?.message ?? "the step accepted a verdict on some other head"})`,
+    );
+  }
 }
 
 cleanupRoots();

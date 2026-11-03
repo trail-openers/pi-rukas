@@ -75,10 +75,17 @@ function cleanPass(
   fixed: boolean,
   disclosed = "",
 ): Outcome {
+  // The note is the review layer's account of a post that failed, and its text
+  // embeds what the post contained — model-authored finding prose from the round.
+  // It rides the reason the engine stores and the operator reads, so it gets the
+  // same treatment every other model-authored field gets before a stored surface
+  // (`neutraliseEvidence`: one line, no fence delimiters, no parsable marker token,
+  // clipped). `disclosureNote` already neutralises the gate's words beside it; a
+  // reason that disarmed half its model prose was the half nobody looked at.
   const owed =
     round.note === undefined || round.note.trim() === ""
       ? ""
-      : `; DISCLOSURE NOT POSTED: ${round.note}`;
+      : `; DISCLOSURE NOT POSTED: ${neutraliseEvidence(round.note)}`;
   return {
     kind: passKind(fixed),
     reason: `adversarial and six-lens review clean at ${round.head.slice(0, 12)} (${round.verdict}${fixed ? ", one fix wave, re-reviewed" : ", no fixer"})${owed}${disclosed}`,

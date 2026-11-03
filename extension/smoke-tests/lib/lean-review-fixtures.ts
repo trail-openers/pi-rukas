@@ -138,7 +138,8 @@ const LENS_NAMES: LensName[] = [
  * rendered line a fixer is handed, so a fixture that built only the string could
  * not drive the re-review's decision at all. The only row property the step reads
  * is `carried` — the layer's own "still open" — so a case that wants a row to hand
- * the run back re-reports it carried (see `carriedLensRound`), and one that wants
+ * the run back re-reports it carried (the re-review stubs in the `test-lean-review-*`
+ * suites do this through `lensRoundFor`/`lensRoundWith`), and one that wants
  * it answered reports nothing.
  */
 export function blockingFinding(over: Partial<Finding> = {}): Finding {
@@ -165,12 +166,20 @@ export function carriedFinding(over: Partial<Finding> = {}): Finding {
  * always ran (each with its own usage), because a round that ran nobody is a
  * round the step refuses, and a fixture must not be able to fake an approval.
  */
-export function lensRoundWith(verdict: LensRound["verdict"], rows: Finding[]): LensRound {
+export function lensRoundWith(
+  verdict: LensRound["verdict"],
+  rows: Finding[],
+  advisory: Finding[] = [],
+): LensRound {
   const lenses = LENS_NAMES.map((_, i) => lensRowResult(i));
   return {
     verdict,
     findings: renderFixtureFindings(rows),
     reported: rows,
+    // `splitAdvisory`'s output as the wiring hands it up: rows the layer moved OUT
+    // of `reported`. Empty by default — a round that discounted nothing — and a
+    // case that means "a carried HIGH sat only here" passes them explicitly.
+    advisory,
     lenses,
     usage: aggregateLensUsage(lenses),
   };
@@ -194,15 +203,17 @@ export function lensRoundFor(
   args: { wave: ReviewWave; since?: string; head: string },
   verdict: LensRound["verdict"],
   rows: Finding[],
+  advisory: Finding[] = [],
 ): LensRound {
-  const round = lensRoundWith(verdict, rows);
+  const round = lensRoundWith(verdict, rows, advisory);
   // A full round is the layer's ordinary whole-branch review: no delta, no stamp.
   if (args.wave !== "fix" || args.since === undefined) return round;
   return { ...round, deltaReview: { since: args.since, head: args.head } };
 }
 
 /**
- * A re-review that reported the wave's blocking rows as CARRIED.
+ * A re-review that reported the wave's blocking rows as CARRIED — NOT ADDRESSED,
+ * arrived at the way production does.
  *
  * The review layer owns every row's fate: `rowFate` refuses to resolve an open row
  * whose cited code is unchanged, and the row that reaches `reported` carrying
@@ -210,16 +221,29 @@ export function lensRoundFor(
  * fixture that means "the fix did NOT answer it" re-reports the rows carried, and
  * one that means "the fix answered it" reports nothing — the layer resolved it,
  * and the step keeps no second resolve rule of its own.
+ *
+ * It is the fix-wave arm of `lensRoundWith` and refuses a whole-branch round: only
+ * the step names a re-review's `since` (`lensGate` passes it on the fix wave alone),
+ * so a fixture that stamped a full round would be asserting the very claim the step
+ * checks. `intoAdvisory` moves the rows out of `reported` into the tier
+ * `splitAdvisory` discounts (their cited lines outside the PR's changed lines). A
+ * carried row there is still the layer saying NOT ADDRESSED and the step reads both
+ * tiers for that, so `true` is the fixture for a wave that must hand back on a row
+ * the discount hid from `reported`.
  */
 export function carriedLensRound(
   args: { wave: ReviewWave; since?: string; head: string },
   carriedRows: readonly Finding[],
+  opts: { intoAdvisory?: boolean } = {},
 ): LensRound {
-  return lensRoundFor(
-    args,
-    "ISSUES_FOUND",
-    carriedRows.map((f) => ({ ...f, carried: true }) as Finding),
-  );
+  if (args.wave !== "fix" || args.since === undefined)
+    throw new Error(
+      "carriedLensRound is the re-review fixture: it stamps the range the step named, and a whole-branch round has no range to stamp",
+    );
+  const carried = carriedRows.map((f) => ({ ...f, carried: true }) as Finding);
+  return opts.intoAdvisory === true
+    ? lensRoundFor(args, "ISSUES_FOUND", [], carried)
+    : lensRoundFor(args, "ISSUES_FOUND", carried);
 }
 
 /** The wiring's `renderFindings`, kept here so a fixture's string and the

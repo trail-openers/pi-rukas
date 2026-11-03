@@ -158,6 +158,13 @@ export function reviewDeps(headless: boolean): ReviewDeps {
         // states a fate for any row, so nothing reads them (a field carried for a
         // reader that does not exist is a liability, not a saving).
         reported: summary.findings,
+        // The rows the advisory split moved out of `reported`, carried so the
+        // NOT ADDRESSED check cannot be discounted into a pass (see
+        // `LensRound.advisory`). The layer's own list, restated as an empty array
+        // when it set none — `[]` means "the split discounted nothing", which is
+        // the same answer the field's absence means in the layer, and a step that
+        // read `undefined` as "skip the check" would be the hole this closes.
+        advisory: summary.advisory ?? [],
         usage: summary.usage,
         // The per-lens records, so the step bills one row per child that ran
         // rather than one row per round (see `lensRows` in `step-budget.ts`).
