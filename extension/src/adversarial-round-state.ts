@@ -1,21 +1,27 @@
 /**
- * adversarial-round-state — the loop's per-round review state, as ONE value.
+ * adversarial-round-state — the loop's per-round state, as ONE value each.
  *
- * Each round of the adversarial loop re-reads the diff it is about to review and
- * re-points the head ref at whatever that re-read produced. Both must move
- * together: the truncation notice in the reviewer's prompt may only name the ref
- * range that actually produced the text under review (#1816), so a round whose
- * re-read FAILED keeps the previous diff and therefore has no range to name.
+ * Two things must not outlive the round that produced them:
  *
- * Keeping the pair in one value updated in one place is what makes that rule
- * hard to break — a stale range cannot survive a failed re-read, because the
- * loop hands the whole round state to {@link roundAfterReread} rather than
- * poking at two variables and hoping it remembered both.
+ * The diff a round reviews and the ref range its truncation notice may name.
+ * Each round re-reads the diff and re-points the head ref at whatever that
+ * re-read produced, and the notice may only name the range that actually
+ * produced the text under review (#1816) — so a round whose re-read FAILED
+ * keeps the previous diff and therefore has no range to name. Keeping the pair
+ * in one value updated in one place is what makes that rule hard to break: a
+ * stale range cannot survive a failed re-read, because the loop hands the whole
+ * round state to {@link roundAfterReread} rather than poking at two variables
+ * and hoping it remembered both.
+ *
+ * And the cause the round's reviewer child died of, which travels on that
+ * round's result alone ({@link RoundCause}) — kept as loop-level state it let a
+ * cause an earlier round died of be stamped on a later round's verdict.
  *
  * Split from `adversarial.ts` (AGENTS.md §12, the 500-line gate).
  */
 
 import { type DiffRange, rereadRangeForRound } from "./adversarial-diff-cap.ts";
+import type { DispatchResult } from "./types.ts";
 
 /** The diff a round reviews, and the range its truncation notice may name. */
 export interface RoundReview {
@@ -24,6 +30,22 @@ export interface RoundReview {
   /** The ref range the caller actually diffed for THIS round, or nothing when
    * no range was run (a pasted diff) or the round's re-read failed. */
   range?: DiffRange;
+}
+
+/**
+ * The cause THIS round's reviewer child died of, as ROUND state: {@link
+ * RoundCause.reset} runs immediately before each reviewer dispatch and only
+ * that dispatch's return reads {@link RoundCause.cause}, so a cause an earlier
+ * round died of can never reach a later round's verdict. The loop's own results
+ * carry no cause at all, so the projection that reads this never overwrites one.
+ *
+ * `record` takes the child's RAW cause — narrowing it to the causes that mean
+ * "the caller's clock" is `projectReviewerKillCause`'s decision, not this one.
+ */
+export interface RoundCause {
+  cause: () => DispatchResult["killCause"] | undefined;
+  record: (cause: DispatchResult["killCause"] | undefined) => void;
+  reset: () => void;
 }
 
 /**

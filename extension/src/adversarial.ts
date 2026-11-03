@@ -109,7 +109,7 @@ export async function runAdversarialLoop(
     branch: params.branch,
     resolvedBranch: branchResolved,
     callerSuppliedDiff: params.callerSuppliedDiff,
-    toolPath,
+    toolPath: params.toolPath,
     baseRef: params.base,
     headRef: params.head,
     execFn: params.commentExecFn,
@@ -120,12 +120,10 @@ export async function runAdversarialLoop(
 
   const reportTerminal = params.reportVerdict === "terminal";
 
-  /// #1978 — the cause THIS round's reviewer child died of, projected onto the
-  /// result this round returns; the filter and the why live in the sibling module.
-  /// It is ROUND state, not loop state: it is cleared immediately before each
-  /// dispatch, read at CALL time, and ONLY on the report-only path — so a cause
-  /// an earlier round died of can never be stamped on a later round's verdict, and
-  /// the driver's own loop stays byte-identical for the fan-out's readers.
+  // #1978 — the cause THIS round's reviewer child died of, projected onto the
+  // result this round returns (filter: `projectReviewerKillCause`). ROUND state:
+  // cleared before each dispatch and read only by that round's return, so a cause
+  // an earlier round died of cannot be stamped on a later round's verdict.
   let reviewerKillCause: DispatchResult["killCause"] | undefined;
   /** Attach the projection to a result this round hands back. The loop's own
    * results never carry a cause, so this only ever fills one in. */
@@ -152,15 +150,14 @@ export async function runAdversarialLoop(
       }),
     );
   }
-
   // #859 — resolve the ref range (used by both the diff and the comment check).
   const range = params.base && params.head ? { base: params.base, head: params.head } : null;
   // #1360 — the head the CURRENT round reviews: the caller's ref until a fix round
   // commits, so loop and writer never disagree about the judged commit.
   let headRef: string | undefined = params.head;
-  /// The diff the CURRENT round reviews and the range its notice may name — ONE
-  /// value, updated in ONE place (#1816). Set only where this loop ran
-  /// `rangeDiffFn`, so a pasted diff or a failed re-read names no range.
+  // The diff the CURRENT round reviews and the range its notice may name — ONE
+  // value, updated in ONE place (#1816). Set only where this loop ran
+  // `rangeDiffFn`, so a pasted diff or a failed re-read names no range.
   let review: RoundReview = { diff: "" };
 
   // #948 / #1040 — the comment check runs ONCE per round, on the diff that round
@@ -169,9 +166,7 @@ export async function runAdversarialLoop(
   // not-run, never as clean.
   let lastComments: LostCommentResult = { ok: false, reason: "no review round ran" };
   const commentsLineNow = () => formatReportLine(lastComments);
-  // #980 — the infra-failure result carries the values ACCUMULATED up to this
-  // point, so they are read at CALL time, never captured at loop entry (stale on
-  // rounds 2+).
+  // #980 — the result builders read the tally at CALL time, never at loop entry.
   const infraCtxNow = (): InfraCtx => ({
     start,
     usage,
@@ -187,7 +182,6 @@ export async function runAdversarialLoop(
     lastModel: tally.lastModel,
     rounds: completed,
   });
-
   // The diff source for rounds 2+: the caller's `getDiff`, replaced below by a
   // range reader when this loop computes the range itself (#859). A failed entry
   // read is returned AS the result, never fallen back to an empty string, which
@@ -197,7 +191,6 @@ export async function runAdversarialLoop(
   // #1360 — the round's capture, bound to the ledger binding and the loop's one
   // git seam; the tool path is the only caller that runs it.
   const captureRound = makeRoundCapture(ledgerBinding, params.commentExecFn);
-
   const noDiffResult = (text: string): DispatchResult =>
     ledgerWrite(
       synthesizeResult({
@@ -317,13 +310,10 @@ export async function runAdversarialLoop(
     // the reviewer dispatch — gated on the provenance marker, because the driver
     // path never consults a binding and so pays for none.
     if (toolPath) await captureRound(params.workCwd ?? process.cwd(), params.base, headRef);
-    // Round-scoped: cleared at the LAST point before the dispatch at which the
-    // loop still returns (the abort check below), so every result this round can
-    // produce was produced by THIS round's child.
+    // Round-scoped, so every result this round produces came from its own child.
     reviewerKillCause = undefined;
     // A budget that already fired buys no reviewer child: the retry ladder's
-    // abort checks all sit AFTER its first dispatch, so without this a step whose
-    // ceiling fired between rounds still paid for a child it could not read.
+    // abort checks all sit AFTER its first dispatch.
     if (signal.aborted) break;
     const adv = await runPhaseWithInfraRetry(
       "adversarial-developer",
