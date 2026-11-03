@@ -101,12 +101,15 @@ export async function runAdversarialLoop(
   const fenceRecords: FenceRecord[] = [];
   const fence = createFixFence(params.fixFence, fenceRecords);
   // #1360 — the ledger wiring, built where the writer it configures lives.
+  // Narrowed ONCE, before the writer it also configures: the capture below is
+  // gated on the same boolean, so provenance is decided in one place.
+  const toolPath = isToolPathProvenance(params.toolPath);
   const { binding: ledgerBinding, write: ledgerWrite } = makeLoopLedger({
     workCwd: params.workCwd,
     branch: params.branch,
     resolvedBranch: branchResolved,
     callerSuppliedDiff: params.callerSuppliedDiff,
-    toolPath: params.toolPath,
+    toolPath,
     baseRef: params.base,
     headRef: params.head,
     execFn: params.commentExecFn,
@@ -114,14 +117,15 @@ export async function runAdversarialLoop(
     decorate: (raw) => withFixViolations(raw, fenceRecords),
     note: withLedgerNote,
   });
-  const toolPath = isToolPathProvenance(params.toolPath);
 
   const reportTerminal = params.reportVerdict === "terminal";
 
-  /// #1978 — the cause the reviewer child died of, projected onto every result
-  /// this loop synthesises; the filter and the why live in the sibling module.
-  /// Written by the reviewer arm, read at CALL time, and ONLY on the report-only
-  /// path: the driver's own loop stays byte-identical for the fan-out's readers.
+  /// #1978 — the cause THIS round's reviewer child died of, projected onto the
+  /// result this round returns; the filter and the why live in the sibling module.
+  /// It is ROUND state, not loop state: it is cleared immediately before each
+  /// dispatch, read at CALL time, and ONLY on the report-only path — so a cause
+  /// an earlier round died of can never be stamped on a later round's verdict, and
+  /// the driver's own loop stays byte-identical for the fan-out's readers.
   let reviewerKillCause: DispatchResult["killCause"] | undefined;
   /** Attach the projection to a result this round hands back. The loop's own
    * results never carry a cause, so this only ever fills one in. */
@@ -313,6 +317,14 @@ export async function runAdversarialLoop(
     // the reviewer dispatch — gated on the provenance marker, because the driver
     // path never consults a binding and so pays for none.
     if (toolPath) await captureRound(params.workCwd ?? process.cwd(), params.base, headRef);
+    // Round-scoped: cleared at the LAST point before the dispatch at which the
+    // loop still returns (the abort check below), so every result this round can
+    // produce was produced by THIS round's child.
+    reviewerKillCause = undefined;
+    // A budget that already fired buys no reviewer child: the retry ladder's
+    // abort checks all sit AFTER its first dispatch, so without this a step whose
+    // ceiling fired between rounds still paid for a child it could not read.
+    if (signal.aborted) break;
     const adv = await runPhaseWithInfraRetry(
       "adversarial-developer",
       `round${round}-review`,
@@ -404,10 +416,10 @@ export async function runAdversarialLoop(
       );
     }
     if (action === "pass") {
-      // #1978 — the projection is scoped to the report-only gate that reads it:
-      // a loop that ran a fix pass is the /work driver's own review, whose
-      // results must stay byte-identical for the fan-out's cap-kill readers.
-      if (params.reportOnly) reviewerKillCause = undefined;
+      // The round-scoped cause was already cleared before this round's dispatch;
+      // the projection is scoped to the report-only gate that reads it — a loop
+      // that ran a fix pass is the /work driver's own review, whose results must
+      // stay byte-identical for the fan-out's cap-kill readers.
       // `PASSED WITH FINDINGS` rather than `APPROVED` when something is still
       // outstanding — the operator (and the lens gate) must tell the two apart;
       // `commit-pr` carries the findings into the PR body.

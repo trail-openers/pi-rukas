@@ -23,17 +23,27 @@ import type { DispatchResult } from "./types.ts";
 export type ReviewerClassification = ReturnType<typeof classifyDispatchOutcome>;
 
 /**
- * The causes that mean "the caller's clock ended this child": the per-child run
- * bound, or an abort from the step's budget arms. The loop's cap kills (`loop` /
- * `token-budget`) and the watchdog's provider-shaped kills are NOT projected —
- * those already reach the /work fan-out through `infraFailureResult` with their
- * own semantics, and here they would misreport an infrastructure fault as a
- * budget the operator set.
+ * The ONE cause that means "the caller's clock ended this child": the per-child
+ * run bound the step armed. The caps-off shapes are deliberately NOT here:
+ *
+ *  - the turns / tokens levers need no projection of their own — a breach freezes
+ *    `armBudget`'s `hit` (`lean/step-budget.ts`) and that frozen value is what the
+ *    step reads, whether or not the child survived to report a cause;
+ *  - `"abort"` is also how a PM / operator cancel is attributed (`spawn-kill-cause.ts`),
+ *    so projecting it would let the step name the operator's ceiling for a child
+ *    nothing in its budget stopped.
+ *
+ * The loop's cap kills (`loop` / `token-budget`) and the watchdog's provider-shaped
+ * kills are NOT projected — those already reach the /work fan-out through
+ * `infraFailureResult` with their own semantics, and here they would misreport an
+ * infrastructure fault as a budget the operator set.
  */
+const CALLER_CLOCK_CAUSES: readonly DispatchResult["killCause"][] = ["child-bound"];
+
 export function projectReviewerKillCause(
   cause: DispatchResult["killCause"] | undefined,
 ): DispatchResult["killCause"] | undefined {
-  return cause === "child-bound" || cause === "abort" ? cause : undefined;
+  return cause !== undefined && CALLER_CLOCK_CAUSES.includes(cause) ? cause : undefined;
 }
 
 /**
@@ -48,7 +58,14 @@ export function projectReviewerKillCause(
  * same test in the shared classifier would stop retrying every other caller's
  * crashed children. Every kill that carries a cause, and every provider fault,
  * still goes to `classifyDispatchOutcome` untouched.
+ *
+ * The cause it reports is {@link CRASHED_CAUSE} — `crashed` — and NOT
+ * `self-killed:abort`: the child carried no kill cause, so naming it an abort
+ * would attribute the death to a signal nothing recorded. What IS known is the
+ * caller-side cancellation, and that is what the headline says.
  */
+const CRASHED_CAUSE: ReviewerClassification["cause"] = "crashed";
+
 export function classifyReviewer(r: DispatchResult): ReviewerClassification {
   const cls = classifyDispatchOutcome(r);
   if (cls.cause !== "crashed") return cls;
@@ -56,11 +73,11 @@ export function classifyReviewer(r: DispatchResult): ReviewerClassification {
   if (r.exitCode !== null && r.exitCode !== 0) return cls;
   if (r.text.trim() !== "") return cls;
   return {
-    cause: "self-killed:abort",
+    cause: CRASHED_CAUSE,
     shouldRetry: false,
     maxRetries: 0,
     headline:
-      "cancelled by the caller's budget (the child was ended with no verdict and no fault) — re-spawning would spend the ceiling again",
+      "ended with no verdict, no output and no fault by the caller's own cancellation (its budget arms or the loop's abort) — re-spawning would spend the ceiling again",
   };
 }
 
