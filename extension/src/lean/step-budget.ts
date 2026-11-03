@@ -18,6 +18,7 @@ import { capsEnabled } from "../spawn-child-bound.ts";
 import { traceWarn } from "../trace.ts";
 import type { DispatchResult, DispatchUsage } from "../types.ts";
 import type { Budget, WorkConfig } from "./config.ts";
+import { DISPATCHES_MAX_ROWS } from "./state-dispatches.ts";
 import type { LeanState, Outcome } from "./state.ts";
 
 /** Which ceiling was crossed, with what it was and what the child used. */
@@ -395,6 +396,13 @@ export function budgetVerdict(state: LeanState, fired: BudgetFired): Outcome {
  * Same sentence as {@link budgetVerdict} — the reason text is what the operator
  * is taught to read — with the cost rows attached, so a stopped round's tokens
  * reach the host instead of vanishing with the child.
+ *
+ * The rows are clipped to the validator's own bound, keeping the NEWEST, the way
+ * the done path in `review.ts`, `specify`'s merge and the throw path all do: a
+ * `dispatches` array over `DISPATCHES_MAX_ROWS` is one `dispatchesProblem`
+ * refuses, so an unclipped verdict would have the whole array DROPPED by
+ * `validatedDispatches` at load — the most expensive child in the run billing
+ * zero. The clip happens last, after any caller has appended its own rows.
  */
 export function budgetVerdictWithRows(
   state: LeanState,
@@ -402,5 +410,5 @@ export function budgetVerdictWithRows(
   rows: DispatchUsageRow[],
 ): Outcome {
   const verdict = budgetVerdict(state, fired);
-  return rows.length === 0 ? verdict : { ...verdict, dispatches: rows };
+  return rows.length === 0 ? verdict : { ...verdict, dispatches: rows.slice(-DISPATCHES_MAX_ROWS) };
 }
