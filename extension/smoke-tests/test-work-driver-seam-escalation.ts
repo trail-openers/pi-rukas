@@ -334,10 +334,17 @@ setupSpawnGuard();
     );
     assert(capHit === undefined, "round 2 does not emit repeat-finding-seam cap-hit");
 
-    const dispatchStarted = after?.eventLog.find(
-      (e) => e.kind === "dispatch-started" && e.step === "lens-fix",
+    // #1537: round 2 is the terminal re-review — one full review, one fix wave,
+    // one scoped re-review. At the cap the cycle stops rather than buying a
+    // second fix wave, so the lens-fix dispatch is a handoff, not a fixer.
+    const terminalCap = after?.eventLog.find((e) => e.kind === "cap-hit" && e.cap === "round-cap");
+    assert(terminalCap !== undefined, "round 2 hits the round cap (the budget is two rounds)");
+    const fixerDispatches =
+      after?.eventLog.filter((e) => e.kind === "dispatch-started" && e.step === "lens-fix") ?? [];
+    assert(
+      fixerDispatches.length <= 1,
+      `round 2 does not buy a second fix wave (${String(fixerDispatches.length)} lens-fix dispatches)`,
     );
-    assert(dispatchStarted !== undefined, "round 2 routes to lens-fix (normal fix loop)");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
