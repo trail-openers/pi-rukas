@@ -16,10 +16,11 @@
  * discriminator — exactly the shape the acceptance criterion is written against.
  */
 
-import { mock } from "bun:test";
-import { isolateLedger } from "./lib/review-ledger-test-helpers.ts";
-
-isolateLedger();
+import { adversarialSkillPath, skillFileOf } from "../src/adversarial-skill-path.ts";
+import { noteCycleDeadline, runWithCycleClock } from "../src/cycle-deadline-clock.ts";
+import { adversarialChildBoundMs } from "../src/review-bounds.ts";
+import { childBoundGraceMs, childBoundSchedule } from "../src/spawn-child-bound.ts";
+import { runAdversarialLoop, spawnCalls } from "./lib/adversarial-reviewer-harness.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -29,73 +30,6 @@ function assert(cond: boolean, msg: string) {
     exit = 1;
   }
 }
-
-type SpawnCall = {
-  role: string;
-  tag?: string;
-  childBoundMs?: number;
-  onSteer?: unknown;
-  reviewSkillPath?: string;
-};
-
-const spawnCalls: SpawnCall[] = [];
-
-mock.module(new URL("../src/spawn.ts", import.meta.url).href, () => ({
-  makeRunId: () => "run-1827-bound",
-  spawnSpecialist: async (
-    spec: { role: string },
-    opts: { tag?: string; childBoundMs?: number; onSteer?: unknown; reviewSkillPath?: string },
-  ) => {
-    spawnCalls.push({
-      role: spec.role,
-      tag: opts.tag,
-      childBoundMs: opts.childBoundMs,
-      onSteer: opts.onSteer,
-      reviewSkillPath: opts.reviewSkillPath,
-    });
-    return {
-      role: spec.role,
-      ok: true,
-      text:
-        spec.role === "adversarial-developer"
-          ? "VERDICT: ISSUES_FOUND\n1. silent failure on the bound path"
-          : "fixed",
-      toolUses: [],
-      ms: 1,
-      exitCode: 0,
-    };
-  },
-}));
-
-const realDeck = await import("../src/dispatch-deck.ts");
-mock.module(new URL("../src/dispatch-deck.ts", import.meta.url).href, () => ({
-  ...realDeck,
-  startEntry: () => {},
-  updateEntry: () => {},
-  clearEntry: () => {},
-  startBatchEntry: () => {},
-  updateBatchProgress: () => {},
-  clearBatchEntry: () => {},
-}));
-const realRegistry = await import("../src/async-jobs-registry.ts");
-mock.module(new URL("../src/async-jobs-registry.ts", import.meta.url).href, () => ({
-  ...realRegistry,
-  childHandles: new Map(),
-  registerChildHandle: () => {},
-  setOrchestratorActiveChild: () => {},
-  markOrchestrator: () => {},
-}));
-const realLedger = await import("../src/adversarial-ledger.ts");
-mock.module(new URL("../src/adversarial-ledger.ts", import.meta.url).href, () => ({
-  ...realLedger,
-  writeAdversarialLedgerEntry: () => undefined,
-}));
-
-const { runAdversarialLoop } = await import("../src/adversarial.ts");
-const { adversarialChildBoundMs } = await import("../src/review-bounds.ts");
-const { adversarialSkillPath, skillFileOf } = await import("../src/adversarial-skill-path.ts");
-const { childBoundGraceMs, childBoundSchedule } = await import("../src/spawn-child-bound.ts");
-const { noteCycleDeadline, runWithCycleClock } = await import("../src/cycle-deadline-clock.ts");
 
 const signal = new AbortController().signal;
 
@@ -183,7 +117,7 @@ assert(
     adversarialChildBoundMs() === 30 * 60_000,
     "an empty override means the default, not a warning-worthy value",
   );
-  if (saved === undefined) delete process.env.PI_ENSEMBLE_ADVERSARIAL_BOUND_MS;
+  if (saved === undefined) Reflect.deleteProperty(process.env, "PI_ENSEMBLE_ADVERSARIAL_BOUND_MS");
   else process.env.PI_ENSEMBLE_ADVERSARIAL_BOUND_MS = saved;
 }
 
