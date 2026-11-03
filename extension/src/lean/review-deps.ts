@@ -31,6 +31,7 @@ import { runAdversarialLoop } from "../adversarial.ts";
 import { execp } from "../exec.ts";
 import type { LensReviewSummary, Severity } from "../lens-review-format.ts";
 import { runLensReview } from "../lens-review.ts";
+import { adversarialChildBoundMs as loopChildBoundMs } from "../review-bounds.ts";
 import { resolveLensReviewThreshold } from "../review-threshold-at-base.ts";
 import { lensChildBoundMs } from "../spawn-child-bound.ts";
 import { makeRunId, spawnSpecialist } from "../spawn.ts";
@@ -67,8 +68,19 @@ export function reviewDeps(headless: boolean): ReviewDeps {
         ...(o ?? {}),
         ...(cmd === "git" && o?.env === undefined ? { env: netGitEnv(process.env, o?.cwd) } : {}),
       }),
-    adversarial: (a) =>
-      runAdversarialLoop(
+    adversarial: (a) => {
+      // The budget arms are DESTRUCTURED rather than spread, exactly as the lens
+      // seam below does: `arms` is what the reviewer may inherit (the abort signal
+      // the turns / tokens levers fire and the progress hook that measures them),
+      // with `childBoundMs` taken out of the object AND out of the type so the
+      // clamp below cannot be re-supplied by a spread and win — the lens leg lost
+      // its operator knob that way. `loopChildBoundMs()` is the reviewer's own
+      // knob (`PI_ENSEMBLE_ADVERSARIAL_BOUND_MS`, read there) and the step's armed
+      // bound can only TIGHTEN it: the smaller of the two is the bound, which is
+      // what a budget must mean. Asserted on the value the reviewer dispatch
+      // actually received in `test-adversarial-reviewer-bound.ts`, never here.
+      const { childBoundMs: budgetBoundMs, ...arms } = a.budget.opts;
+      return runAdversarialLoop(
         {
           base: a.base,
           head: a.head,
@@ -87,16 +99,14 @@ export function reviewDeps(headless: boolean): ReviewDeps {
           branch: a.branch,
           commentTimeoutMs: verifyTimeoutMs(),
           processGroup: true,
-          // What the loop's params shape accepts of this step's budget (it
-          // declares no child bound, abort or progress hook). The loop's own
-          // inner children are bounded by their own knobs, not this budget,
-          // until the budget is threaded through — separate ticket.
-          ...a.budget.opts,
+          ...arms,
+          childBoundMs: Math.min(budgetBoundMs ?? Number.POSITIVE_INFINITY, loopChildBoundMs()),
           ...leanChildOpts(a.headless),
         },
         new AbortController().signal,
         makeRunId(),
-      ),
+      );
+    },
     lens: async (a) => {
       // The budget arms are DESTRUCTURED rather than spread, so the clamp below
       // cannot be re-supplied: spreading `a.budget.opts` after
