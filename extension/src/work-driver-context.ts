@@ -50,10 +50,13 @@ export const STEP_ORDINAL: Record<string, { num: number; total: number }> = {
 
 /**
  * Maximum review-fix rounds before the driver halts and routes to the
- * cap-hit handoff path. Three rounds is the limit: past that the fix loop
- * has demonstrably stopped converging and a human should look.
+ * cap-hit handoff path. Two rounds is the whole budget: the first is the full
+ * review, the second is the scoped re-review that answers one fix wave. A
+ * second fix wave would be a third round, so it does not exist — past the
+ * re-review the fix loop has demonstrably stopped converging and a human
+ * should look.
  */
-export const MAX_REVIEW_ROUNDS = 3;
+export const MAX_REVIEW_ROUNDS = 2;
 
 /**
  * Maximum CI retry attempts before routing to handoff. Counts ci-status:

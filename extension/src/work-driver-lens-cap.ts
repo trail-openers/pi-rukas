@@ -22,9 +22,17 @@
  *    different signal from one that ran out of rounds: it says nothing about
  *    how small the remaining findings are, only that the loop was slow.
  *  - The residual findings are posted to the PR **first**, and a disclosure
- *    that fails parks. A PR that silently swallows three rounds of unresolved
- *    findings is worse than a park, so the disclosure is the condition for
+ *    that fails parks. A PR that silently swallows unresolved findings is
+ *    worse than a park, so the disclosure is the condition for
  *    routing on, not a courtesy alongside it.
+ *  - **No row carried from the round before is still open at HIGH or above.**
+ *    A carried row is one this round saw, did not resolve, and whose cited
+ *    code is unchanged (the findings store stamps it — review-findings-round.ts),
+ *    so the fix wave failed to land the thing it was sent to fix. A carried
+ *    MEDIUM or LOW is disclosed like any other sub-blocking row: the bar never
+ *    asked the fix wave to answer it. An unreadable blob counts as open — the
+ *    `ci` route is an allowance and an allowance is never granted on evidence
+ *    the driver cannot read.
  *
  * Routing to `ci` does not merge anything. The cycle still passes the CI gate
  * and then `runMerged`'s merge-authority gate, which is default-deny and needs
@@ -40,6 +48,7 @@ import { execp } from "./exec.ts";
 import { FORGE_EXEC_TIMEOUT_MS } from "./forge-detect.ts";
 import { renderLensFindings } from "./lens-findings-render.ts";
 import { lensResidualsMarker } from "./merge-guard-round-cap.ts";
+import { isBlockingSeverity } from "./review-threshold.ts";
 import { reviewWallClockMs } from "./review-budget.ts";
 import { trace } from "./trace.ts";
 import { type CycleContext, type DriverContext, MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
@@ -413,6 +422,34 @@ async function discloseResidualFindings(
  * Returns the state unchanged when no cap applies; the caller's tail is then
  * still `lens-issues-found` and the loop goes round again into lens-fix.
  */
+/**
+ * Does this verdict's findings blob still carry a row the findings store handed
+ * back as OPEN (`carried: true`) at or above the blocking bar?
+ *
+ * Reads the serialised blob rather than `Finding[]` because the cap's input is
+ * the event's own `findings` field — the same string the disclosure renders, so
+ * the route and the comment cannot disagree. A row whose severity the driver
+ * cannot rank is treated as blocking: a row nobody can rank is never evidence
+ * that nothing holds the merge.
+ */
+export function hasOpenCarriedFinding(findingsBlob: string | undefined): boolean {
+  if (!findingsBlob?.trim()) return true;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(findingsBlob);
+  } catch {
+    return true;
+  }
+  if (!Array.isArray(parsed)) return true;
+  return parsed.some(
+    (f) =>
+      typeof f === "object" &&
+      f !== null &&
+      (f as { carried?: unknown }).carried === true &&
+      !isBlockingSeverity((f as { severity?: unknown }).severity, "HIGH"),
+  );
+}
+
 export async function appendReviewCapHit(
   ctx: CycleContext,
   state: WorkState,
@@ -436,6 +473,7 @@ export async function appendReviewCapHit(
     if (
       !wallClockExceeded &&
       verdict === "ISSUES_FOUND" &&
+      !hasOpenCarriedFinding(findingsBlob) &&
       adversarialGateApproved(state.eventLog)
     ) {
       const routed = await discloseResidualsAndRoute(ctx, next, verdict, findingsBlob, {

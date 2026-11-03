@@ -162,3 +162,16 @@ export function severityFromQuote(quote: string): ReviewSeverity | undefined {
   }
   return undefined;
 }
+
+/**
+ * Is `severity` at or above the blocking `bar`? (Most severe first, so HIGH
+ * blocks at a HIGH bar and MEDIUM does not.)
+ *
+ * Takes `unknown` because callers read severities off serialised JSON, where a
+ * missing or malformed value is NOT a severity and must never be treated as a
+ * pass: a row the caller cannot rank is never evidence that nothing blocks.
+ */
+export function isBlockingSeverity(severity: unknown, bar: ReviewSeverity = "MEDIUM"): boolean {
+  const rank = SEVERITIES.indexOf(severity as ReviewSeverity);
+  return rank === -1 || rank <= SEVERITIES.indexOf(bar);
+}
