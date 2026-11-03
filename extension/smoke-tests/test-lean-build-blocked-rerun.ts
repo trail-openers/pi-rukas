@@ -112,12 +112,14 @@ const CONFLICT = "case 2 needs the array mutable while case 3 mutates it in plac
   // files cost N × the budget after the child was already paid.
   const SLOW_A = "tests/slow-a.test.sh";
   const SLOW_B = "tests/slow-b.test.sh";
-  const started = Date.now();
+  const started: string[] = [];
   const r = await runBuild({
     issue: 340,
     extraFrozen: {
-      [SLOW_A]: "#!/bin/sh\nsleep 1\nexit 1\n",
-      [SLOW_B]: "#!/bin/sh\nsleep 1\nexit 1\n",
+      // Each sleeps past the shared budget: the first is killed by the loop, and
+      // the second must never be started at all.
+      [SLOW_A]: "#!/bin/sh\nsleep 3\nexit 1\n",
+      [SLOW_B]: "#!/bin/sh\nsleep 3\nexit 1\n",
     },
     toolUses: () =>
       blocked([
@@ -125,17 +127,21 @@ const CONFLICT = "case 2 needs the array mutable while case 3 mutates it in plac
         { path: SLOW_B, reason: "b hangs" },
       ]),
     blockedTimeoutMs: 300,
+    execSpy: (cmd, o) => {
+      if (cmd !== "git") started.push(String((o as { argv?: string[] })?.argv?.[0] ?? cmd));
+    },
   });
   assert(
     r.outcome?.kind !== "blocked",
     `(3a3) a report whose files all outlast the shared budget is not honoured (got ${r.outcome?.kind ?? r.threw?.message})`,
   );
-  // And the loop cost ONE bound, not one per file: two fresh 300 ms ceilings on
-  // two files that each sleep a second would put this well past 600 ms; a shared
-  // budget cannot get far past 300 because the second file is never started.
+  // The loop spent ONE bound, not one per file, and the witness is the exec seam
+  // rather than a wall clock: with per-file ceilings both files get a runner, so
+  // exactly ONE runner call — the first file's — is what "the budget is shared"
+  // means, and it does not wobble with machine load.
   assert(
-    Date.now() - started < 900,
-    `(3a3) and the loop cost one bound, not one per file (${String(Date.now() - started)}ms)`,
+    started.length === 1 && started[0] === SLOW_A,
+    `(3a3) and the loop stopped at one budget: the second runner was never started (${JSON.stringify(started)})`,
   );
 }
 
@@ -150,7 +156,7 @@ const CONFLICT = "case 2 needs the array mutable while case 3 mutates it in plac
   const HANG_A = "tests/hang-a.test.sh";
   const HANG_B = "tests/hang-b.test.sh";
   const HANG_C = "tests/hang-c.test.sh";
-  const started = Date.now();
+  const started: string[] = [];
   const r = await runBuild({
     issue: 342,
     extraFrozen: {
@@ -168,15 +174,20 @@ const CONFLICT = "case 2 needs the array mutable while case 3 mutates it in plac
     // A runner that ignores its ceiling entirely: resolves after the whole budget
     // with a red-shaped output, so if the step waited for it, it would believe it.
     hungExec: () => new Promise((resolve) => setTimeout(() => resolve({ stdout: "" }), 5000)),
+    execSpy: (cmd, o) => {
+      if (cmd !== "git") started.push(String((o as { argv?: string[] })?.argv?.[0] ?? cmd));
+    },
   });
-  const elapsed = Date.now() - started;
   assert(
     r.outcome?.kind !== "blocked",
     `(3a5) a report whose runners never return is not honoured (got ${r.outcome?.kind ?? r.threw?.message})`,
   );
+  // The loop's own race is what ends this, so the witness is again the exec seam:
+  // THREE named files and ONE runner started is "it refused at one budget" — a
+  // per-file ceiling would have handed all three to the hanging runner.
   assert(
-    elapsed < 2000,
-    `(3a5) and the step refused at one budget, not one per hanging file (${String(elapsed)}ms)`,
+    started.length === 1 && started[0] === HANG_A,
+    `(3a5) and the loop stopped at one budget: the later hanging runners were never started (${JSON.stringify(started)})`,
   );
 }
 
