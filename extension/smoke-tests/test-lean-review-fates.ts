@@ -275,6 +275,84 @@ assert(
   );
 }
 
+// ── (h2c) the re-review's carried-row bar is the RESOLVED threshold ───────
+//
+// The wave bar and the handback bar are the same predicate read at two times, and
+// the step must not keep a private HIGH for the second one. Here the bar is CRITICAL
+// and the re-review carries a HIGH: the row sits below the bar the run was told to
+// review at, so the wave cleared and the layer discloses the row — it does not hand
+// the run back. The mutant is `atOrAboveBar(f, threshold)` in `blockingSeverity`
+// restored to a constant above the row: these two assertions go red on it and the
+// (h) cases above stay green, so nothing else pins the resolved reading.
+{
+  const { repoRoot, baseSha } = makeRepo();
+  await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 27;\n" });
+  let h2cRounds = 0;
+  const fixerH2c = fixerThatCommits("h2c");
+  let h2cFixers = 0;
+  const { threw, outcome } = await run(
+    ctxFor(repoRoot, baseSha, BRANCH),
+    depsWith({
+      adversarial: async () => result({ loopOutcome: "approved" }),
+      reviewThreshold: async () => "CRITICAL" as const,
+      lens: async (a) => {
+        h2cRounds++;
+        if (a.wave !== "fix") return lensRoundWith("CRITICAL_ISSUES_FOUND", [blockingFinding()]);
+        // The row the wave was bought for is answered on the first re-review (the
+        // layer resolves a row whose cited code the fixer changed) and carried on the
+        // second, which is the shape that gets the row to the clean return: below the
+        // CRITICAL bar it is a disclosure, not a refusal. Reporting it carried on the
+        // FIRST re-review would hand the step a wave bought for a row it then refuses
+        // for the same row, which is the arm under test, not this case's subject.
+        return h2cFixers === 0
+          ? carriedLensRound(a, [blockingFinding()])
+          : carriedLensRound(a, [blockingFinding({ title: "carried under a looser bar" })]);
+      },
+      dispatch: async (spec) => {
+        h2cFixers++;
+        return fixerH2c(spec);
+      },
+    }),
+  );
+  assert(
+    threw === undefined && h2cFixers === 1 && h2cRounds === 2,
+    `(h2c) a carried HIGH under a CRITICAL bar does not hand the run back — the handback bar is the project's too (${threw?.message ?? `${String(h2cFixers)} fixers, ${String(h2cRounds)} rounds`})`,
+  );
+  // The pair that keeps "the step refuses no HIGH under a CRITICAL bar" from being
+  // satisfied by a step that carries nothing at all: with the bar pulled back to the
+  // project's own HIGH, the SAME carried row must hand the run back. Without it both
+  // assertions above are also true of a step that never reads the layer's rows.
+  const { repoRoot: rr2, baseSha: bs2 } = makeRepo();
+  await setup({ repoRoot: rr2, baseSha: bs2, branch: BRANCH, feature: "export const f = 28;\n" });
+  let h2cPrimeFixers = 0;
+  const fixerH2cPrime = fixerThatCommits("h2cp");
+  const { threw: h2cPrimeThrew } = await run(
+    ctxFor(rr2, bs2, BRANCH),
+    depsWith({
+      adversarial: async () => result({ loopOutcome: "approved" }),
+      lens: async (a) =>
+        a.wave === "fix"
+          ? carriedLensRound(a, [blockingFinding({ title: "carried at the project's bar" })])
+          : lensRoundWith("CRITICAL_ISSUES_FOUND", [blockingFinding()]),
+      dispatch: async (spec) => {
+        h2cPrimeFixers++;
+        return fixerH2cPrime(spec);
+      },
+    }),
+  );
+  assert(
+    h2cPrimeThrew instanceof ReviewInfraError &&
+      h2cPrimeThrew.message.includes(CAUSE_NOT_ADDRESSED) &&
+      /carried at the project's bar/.test(h2cPrimeThrew.message) &&
+      h2cPrimeFixers === 1,
+    `(h2c) and at the project's own HIGH bar the SAME carried row does hand the run back (${h2cPrimeThrew?.message ?? `no refusal, ${String(h2cPrimeFixers)} fixers`})`,
+  );
+  assert(
+    outcome?.kind === "fixed" && /DISCLOSED/.test(outcome.reason ?? ""),
+    `(h2c) and the row it declined to block on is DISCLOSED on the reason, not dropped (${outcome?.kind} / ${outcome?.reason?.slice(-90)})`,
+  );
+}
+
 // ── (h3) a carried row the ADVISORY split moved out of `reported` still hands back ─
 //
 // `splitAdvisory` (#1140/#1125) discounts every finding whose cited line sits
@@ -428,12 +506,15 @@ assert(
       reviewThreshold: async () => "MEDIUM" as const,
       lens: async (a) => {
         i2bRounds++;
-        // The full round raises a row at the bar, which is what buys this wave.
-        return a.wave === "fix"
-          ? lensRoundFor(a, "ISSUES_FOUND", [
+        if (a.wave !== "fix") return lensRoundWith("ISSUES_FOUND", [blockingFinding()]);
+        // The fixer ran, so the row the full round demanded is answered: the layer
+        // resolves it, and the re-review reports only a fresh MEDIUM the fix range
+        // itself introduced — at the bar, but fresh, so it discloses.
+        return i2bFixers === 0
+          ? lensRoundFor(a, "ISSUES_FOUND", [carriedFinding()])
+          : lensRoundFor(a, "ISSUES_FOUND", [
               blockingFinding({ title: "unguarded write", line: 2, severity: "MEDIUM" }),
-            ])
-          : lensRoundWith("ISSUES_FOUND", [blockingFinding()]);
+            ]);
       },
       dispatch: async (spec) => {
         i2bFixers++;
