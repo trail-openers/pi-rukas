@@ -101,12 +101,6 @@ export async function runArtifactSweep(opts: ArtifactSweepOpts): Promise<Artifac
     trace("artifact-sweep: no .pi/work-state directory — nothing to sweep");
     return { ran: true, checked: 0, swept: [], skipped: [] };
   }
-  // readdir order is directory-hash order, so the unsorted list would vary by
-  // host and filesystem. Sorting makes the sweep order a contract: numeric
-  // work-state dirs by issue number, anything else by name.
-  names.sort((a, b) =>
-    /^\d+$/.test(a) && /^\d+$/.test(b) ? Number(a) - Number(b) : a < b ? -1 : a > b ? 1 : 0,
-  );
 
   const checked: string[] = [];
   const swept: string[] = [];
