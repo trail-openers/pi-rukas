@@ -4,7 +4,7 @@
  *
  * The step reads one predicate, `atOrAboveBar`, twice: once to decide whether a
  * six-lens round buys the one fix wave (`lensBlocks`), and once to decide whether a
- * row the re-review carried back is a refusal or a disclosure (`blockingSeverity`).
+ * row the re-review carried back is a refusal or a disclosure (`atOrAboveBar`).
  * Both readings take the `Severity` the step resolved ONCE at the run's base commit
  * from `ReviewDeps.reviewThreshold`, never a constant in the step. A hard-coded bar
  * is the defect this suite refuses, and it is the follow-up to the one-wave policy:
@@ -145,11 +145,11 @@ const { assert, failures } = makeAssert();
       lens: async (a) => {
         b2aRounds++;
         if (a.wave !== "fix") return lensRoundWith("CRITICAL_ISSUES_FOUND", [blockingFinding()]);
+        // The wave's own row resolves (the fixer changed its cited code) and the
+        // round reports a fresh LOW: under a CRITICAL bar that is the row the layer
+        // discloses and the step must not block on, and `disclosureNote` is the only
+        // surface that can say so.
         return b2aFixers === 1 && b2aRounds === 2
-          // The wave's own row resolves (the fixer changed its cited code) and the
-          // round reports a fresh LOW: under a CRITICAL bar that is the row the layer
-          // discloses and the step must not block on, and `disclosureNote` is the only
-          // surface that can say so.
           ? lensRoundFor(a, "APPROVED", [
               // Fresh and below the bar: the disclosed row.
               blockingFinding({ title: "below the bar", severity: "LOW", lens: "SIMPLICITY" }),
@@ -207,28 +207,50 @@ const { assert, failures } = makeAssert();
   );
 }
 
-// ── (b3) an unranked severity blocks at BOTH bars ──────────────────────────
+// ── (b3) an unranked severity buys the wave at either bar ────────────────────
 //
 // A row is parsed model output, so a severity outside the four schema values has no
 // rank. Fail closed: an unranked row is never "below the bar", and that must hold at
 // the wave bar as well as the handback bar — a malformed row that slipped the wave bar
 // would ship, and one that slipped the handback bar would clear a wave the layer says
-// is unanswered. The mutant is `rank === undefined ||` in `atOrAboveBar`.
+// is unanswered. The mutants are `rank === undefined ||` and the `Object.hasOwn`
+// guard in `atOrAboveBar`: with either deleted these cases go red.
 for (const bar of ["CRITICAL", "HIGH"] as const) {
   const { repoRoot, baseSha } = makeRepo();
-  await setup({ repoRoot, baseSha, branch: BRANCH, feature: `export const f = ${bar === "CRITICAL" ? 34 : 35};\n` });
+  await setup({
+    repoRoot,
+    baseSha,
+    branch: BRANCH,
+    feature: `export const f = ${bar === "CRITICAL" ? 34 : 35};\n`,
+  });
   let unrankedFixers = 0;
+  // Full round, then the first re-review, which is where a carried row is refused —
+  // the clean return never sees one. The row sits in `advisory` and not `reported`,
+  // which is the tier the wave bar does NOT read: the only placement in which an
+  // inherited rank can be observed failing open rather than buying the wave.
+  let b3Rounds = 0;
   const unranked = await run(
     ctxFor(repoRoot, baseSha, BRANCH),
     depsWith({
       adversarial: async () => result({ loopOutcome: "approved" }),
       reviewThreshold: async () => bar,
-      lens: async (a) =>
-        a.wave === "fix"
-          ? lensRoundFor(a, "APPROVED", [])
-          : lensRoundWith("ISSUES_FOUND", [
-              { ...blockingFinding({ title: `unranked at ${bar}` }), severity: "BLOCKER" } as never,
-            ]),
+      lens: async (a) => {
+        b3Rounds++;
+        if (b3Rounds === 1)
+          return lensRoundWith("ISSUES_FOUND", [
+            { ...blockingFinding({ title: `unranked at ${bar}` }), severity: "BLOCKER" } as never,
+          ]);
+        const inherited = {
+          ...carriedFinding({ title: `inherited at ${bar}`, lens: "SIMPLICITY" }),
+          severity: "constructor",
+          description: "an inherited rank must fail closed",
+        } as never;
+        // The handback bar at its own arm: carried, at or above the bar, in the tier
+        // the wave bar never reads. Below the bar the same row is disclosed and the
+        // wave clears (b2a), so this is the arm that distinguishes "unranked" from
+        // "ranked by a prototype member".
+        return lensRoundFor(a, "ISSUES_FOUND", [], [inherited]);
+      },
       dispatch: async (spec) => {
         unrankedFixers++;
         return fixerThatCommits(`b3-${bar}`)(spec);
@@ -236,8 +258,15 @@ for (const bar of ["CRITICAL", "HIGH"] as const) {
     }),
   );
   assert(
-    unranked.threw === undefined && unranked.outcome?.kind === "fixed" && unrankedFixers === 1,
-    `(b3/${bar}) an unranked severity on the FULL round still buys the wave at a ${bar} bar — fail closed, it is not "below the bar" (${unranked.threw?.message ?? `kind ${String(unranked.outcome?.kind)}, ${String(unrankedFixers)} fixers`})`,
+    unrankedFixers === 1,
+    `(b3/${bar}) an unranked severity on the FULL round still buys the wave at a ${bar} bar — fail closed, it is not "below the bar" (${String(unrankedFixers)} fixers)`,
+  );
+  assert(
+    unranked.threw instanceof ReviewInfraError &&
+      unranked.threw.message.includes(CAUSE_NOT_ADDRESSED) &&
+      /inherited at/.test(unranked.threw.message) &&
+      unrankedFixers === 1,
+    `(b3/${bar}) a CARRIED advisory row whose severity names an Object.prototype member hands the wave back — the rank lookup is own-property-only, so an inherited rank fails closed (${unranked.threw?.message?.slice(0, 120) ?? `kind ${String(unranked.outcome?.kind)}, ${String(unrankedFixers)} fixers`})`,
   );
 }
 

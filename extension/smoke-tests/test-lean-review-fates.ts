@@ -39,7 +39,7 @@
  *       operator chasing "where is my work" is pointed at the pushed commits.
  *
  *   (i2) a fresh row BELOW the bar is disclosure, never a handback: the step must
- *       not hand a run back for a MEDIUM the layer itself would disclose.
+ *       not hand a run back for a LOW the layer itself would disclose.
  *
  * Real temp repos, stubbed models, no child spawned, no token spent.
  */
@@ -211,7 +211,7 @@ assert(
 // not one of the four schema values has no rank, and a comparison against a missing
 // rank is how a malformed row slips under a HIGH bar. Fail closed, the direction
 // every other absence in this step goes. The mutant is `rank === undefined ||` in
-// `blockingSeverity`: with it deleted this case goes red.
+// `atOrAboveBar`: with it deleted this case goes red.
 {
   const { repoRoot, baseSha } = makeRepo();
   await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 19;\n" });
@@ -254,7 +254,7 @@ assert(
 // open, and a NOT ADDRESSED check that read only `reported` would certify that wave
 // clean. That is the discount deciding a question the layer never put to the step:
 // the layer said "not addressed", and said it in the tier, not in the tier's
-// exclusion. The step reads `isCarried && blockingSeverity` over both row sets.
+// exclusion. The step reads `isCarried && atOrAboveBar` over both row sets.
 //
 // Two mutants, both red here and green nowhere else: drop `advisory` from the
 // concatenation (the discounted row then clears the wave), or drop the
@@ -384,7 +384,7 @@ assert(
 //
 // `reported` is every row the round reported at the bar, and a row can reach the
 // clean return while carried, as long as its severity sits below the blocking one —
-// the NOT ADDRESSED arm refuses only `carried && blockingSeverity`. So a count that
+// the NOT ADDRESSED arm refuses only `carried && atOrAboveBar`. So a count that
 // took `reported.length` told the operator that a row the layer still holds OPEN was
 // disclosed, and inflated the number by every such row. The mutant is that count
 // restored (`reported.length`): this case goes red on it and nothing else does.

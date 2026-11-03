@@ -56,8 +56,10 @@ import {
 const { assert, failures } = makeAssert();
 // ── (r2) a NON-BLOCKING verdict buys no fixer, from EITHER gate ─────────────
 //
-// Both roles' doctrine says the same thing in different words: only the CRITICAL
-// verdict blocks. `agents-base/adversarial-developer.md` calls `ISSUES_FOUND`
+// Both roles' doctrine says the same thing in different words: only CRITICAL blocks
+// on its own.
+// verdict blocks; a lens round is judged on its rows as well, at the project's bar.
+// `agents-base/adversarial-developer.md` calls `ISSUES_FOUND`
 // "Should address, not blocking" and `MINOR_OBSERVATIONS` "Non-blocking, author's
 // discretion", and `decideLoopAction` passes on both at the terminal round; the
 // lens layer's `computeVerdict` reserves `CRITICAL_ISSUES_FOUND` and reaches
@@ -199,7 +201,7 @@ const { assert, failures } = makeAssert();
   );
   assert(
     r2b.threw === undefined && r2b.outcome?.kind === "done",
-    `(r2b) a lens ISSUES_FOUND at the project's bar ENDS done, and a CRITICAL round still does not (${r2b.threw?.message ?? `kind ${String(r2b.outcome?.kind)}`})`,
+    `(r2b) a lens ISSUES_FOUND with every row below the project's bar ENDS done, and a CRITICAL round still does not (${r2b.threw?.message ?? `kind ${String(r2b.outcome?.kind)}`})`,
   );
   assert(
     r2bFixers === 0,
