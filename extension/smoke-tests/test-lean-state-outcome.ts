@@ -361,6 +361,51 @@ for (const [label, issue, step, expect] of [
     },
     /outcome publishedHead must be a 40-hex commit sha/,
   ],
+  [
+    // #1920 — `channel` is the report steps' channel claim, so it is one of the
+    // two the contract publishes. A hand-edited `"hostt"` would read as a forge
+    // post to the projection and drop the body the host was owed, and no reader
+    // could tell the typo from a channel this run genuinely stood on.
+    "channel spelled something the contract does not publish",
+    66,
+    {
+      key: "66:handback:0",
+      state: "handback",
+      startedAt: CLOCK,
+      endedAt: CLOCK,
+      outcome: { kind: "done", posted: false, channel: "hostt", report: "the run's report" },
+    },
+    /outcome channel/,
+  ],
+  [
+    // `report` is the comment the handback step built and the host prints verbatim,
+    // so a number reaches the host's document as text no report ever was.
+    "report as a number on a handback step",
+    67,
+    {
+      key: "67:handback:0",
+      state: "handback",
+      startedAt: CLOCK,
+      endedAt: CLOCK,
+      outcome: { kind: "done", posted: false, report: 5 },
+    },
+    /report must be a string/,
+  ],
+  [
+    // Only the two REPORTING steps may name a channel. A `verify` step claiming
+    // `channel: "host"` would make the projection publish a gate verdict as a
+    // report the host still has to deliver.
+    "channel on a verify step",
+    68,
+    {
+      key: "68:verify:0",
+      state: "verify",
+      startedAt: CLOCK,
+      endedAt: CLOCK,
+      outcome: { kind: "green", verifiedHead: "b".repeat(40), channel: "host" },
+    },
+    /only recorded by/,
+  ],
 ] as const) {
   const { dir, cleanup } = tempDir();
   try {
@@ -407,178 +452,42 @@ assert(
 );
 
 /**
- * The base invariant, checked at load rather than at first use.
+ * A host-channel handback survives a RESUME with its report intact.
  *
- * `baseSha` is the ref every later read of the run is anchored to — the config
- * load, the diff, the verify verdict all resolve AT it. A record carrying
- * `main` in that field is not a slightly odd base: it is a run that silently
- * means "the mainline, whichever commit that happens to be", and only the load
- * path sees it before a model is billed — `ready` proves a base it was handed,
- * and `runLean` drives from the record without asking. So the loader holds a
- * NON-empty base to the same rule `ready` does, a full lowercase oid, and the
- * cases below pin both halves: a moving ref or a mangled oid is refused, and
- * the two legitimately empty-shaped values are not.
+ * `buildOutcome` rebuilds the outcome field by field — that is its claim — so a
+ * field it forgets to copy is silently gone from every resumed run, and the two
+ * fields here are the ones with no fallback: a resumed run that kept
+ * `posted: false` and lost `channel: "host"` reads as a forge post the forge
+ * refused, and one that lost `report` leaves the host a result document with no
+ * body to post. Both are written by the SAME handler beside `posted`, and
+ * `posted` alone was rebuilt, so a reader of the record would see a delivered
+ * claim and an empty report and have no way to tell the two apart.
  */
-function forgedBase(dir: string, issue: number, baseSha: string): void {
-  mkdirSync(path.dirname(leanStateFile(dir, issue)), { recursive: true });
-  const seed = {
-    schema: 1,
-    issue,
-    version: "test",
-    models: {},
-    baseSha,
-    branch: `feature/issue-${issue}`,
-    state: "ready",
-    counters: INITIAL_COUNTERS,
-    steps: [],
-  };
-  writeFileSync(leanStateFile(dir, issue), JSON.stringify(seed, null, 2), "utf8");
-}
-
-for (const [label, issue, baseSha] of [
-  ["a branch name", 55, "main"],
-  ["an abbreviated oid", 56, "0123456"],
-  ["a mixed-case oid", 57, FIXTURE_BASE_SHA.toUpperCase()],
-] as const) {
-  const { dir, cleanup } = tempDir();
-  try {
-    forgedBase(dir, issue, baseSha);
-    let thrown: unknown;
-    try {
-      loadRun(dir, issue);
-    } catch (err) {
-      thrown = err;
-    }
-    assert(
-      thrown instanceof Error && thrown.name === "LeanStateError",
-      `a hand-edited baseSha of ${label} is refused at load (got: ${String(thrown)})`,
-    );
-    assert(
-      /baseSha/.test((thrown as Error)?.message ?? ""),
-      `the refusal for ${label} names the field (got: ${(thrown as Error)?.message})`,
-    );
-    assert(
-      (thrown as Error)?.message.includes(baseSha) === true,
-      `the refusal for ${label} quotes the offending value (got: ${(thrown as Error)?.message})`,
-    );
-  } finally {
-    cleanup();
-  }
-}
-
-// The two shapes that are NOT corruptions: a full oid, and the empty string a
-// seed whose probe failed legitimately writes (which `ready` then refuses with
-// the reason the probe gave). Refusing either would refuse the only shape a
-// first run can have.
-for (const [label, issue, baseSha] of [
-  ["a full oid", 58, FIXTURE_BASE_SHA],
-  ["the empty base a failed seed writes", 59, ""],
-] as const) {
-  const { dir, cleanup } = tempDir();
-  try {
-    forgedBase(dir, issue, baseSha);
-    let thrown: unknown;
-    let loaded: unknown;
-    try {
-      loaded = loadRun(dir, issue);
-    } catch (err) {
-      thrown = err;
-    }
-    assert(thrown === undefined, `a baseSha of ${label} loads (got: ${String(thrown)})`);
-    assert(
-      (loaded as { baseSha?: string })?.baseSha === baseSha,
-      `the loaded record keeps its ${label} (got ${JSON.stringify((loaded as { baseSha?: string })?.baseSha)})`,
-    );
-  } finally {
-    cleanup();
-  }
-}
-
-/**
- * The caller's deadline, checked at load like every other field the loop acts on.
- *
- * `deadlineMs` is the clock `driveLoop` re-reads at every boundary (#1920 item 2),
- * so a corrupt value is not cosmetic: a `0` stops every step and a `"1e18"` stops
- * none, and both would be obeyed before anything looked at them. So the loader
- * holds it to a positive finite epoch ms, and this is the ONE site that does —
- * every `loadRun` passes through `assertRunFile`, which is where `runLean` reads a
- * resumed record. A file written before the field existed simply omits it and
- * loads unchanged, which is the shape a pre-#1920 run has.
- */
-function forgedDeadline(dir: string, issue: number, deadlineMs: unknown): void {
-  mkdirSync(path.dirname(leanStateFile(dir, issue)), { recursive: true });
-  const seed = {
-    schema: 1,
-    issue,
-    version: "test",
-    models: {},
-    baseSha: FIXTURE_BASE_SHA,
-    branch: `feature/issue-${issue}`,
-    state: "ready",
-    counters: INITIAL_COUNTERS,
-    steps: [],
-    ...(deadlineMs === undefined ? {} : { deadlineMs }),
-  };
-  writeFileSync(leanStateFile(dir, issue), JSON.stringify(seed, null, 2), "utf8");
-}
-
-for (const [label, issue, deadlineMs] of [
-  ["zero", 70, 0],
-  ["a negative", 71, -5],
-  ["NaN — which JSON writes as null", 72, null],
-  ["a string that looks like a number", 73, "1e18"],
-  ["an Infinity", 74, "Infinity"],
-] as const) {
-  const { dir, cleanup } = tempDir();
-  try {
-    forgedDeadline(dir, issue, deadlineMs);
-    let thrown: unknown;
-    try {
-      loadRun(dir, issue);
-    } catch (err) {
-      thrown = err;
-    }
-    assert(
-      thrown instanceof Error && thrown.name === "LeanStateError",
-      `a hand-edited deadlineMs of ${label} is refused at load (got: ${String(thrown)})`,
-    );
-    assert(
-      /deadlineMs/.test((thrown as Error)?.message ?? ""),
-      `the refusal for a deadlineMs of ${label} names the field (got: ${(thrown as Error)?.message})`,
-    );
-  } finally {
-    cleanup();
-  }
-}
-
 {
-  // The two shapes that are NOT corruptions: the arm a real run persisted, and
-  // its ABSENCE, which is every record written before #1920 — a resume of one must
-  // load unchanged and drive with no clock at all.
-  const armed = 1_700_000_000_000;
-  for (const [label, issue, deadlineMs] of [
-    ["a real arm", 75, armed],
-    ["no deadline field at all (a pre-#1920 file)", 76, undefined],
-  ] as const) {
-    const { dir, cleanup } = tempDir();
-    try {
-      forgedDeadline(dir, issue, deadlineMs);
-      let thrown: unknown;
-      let loaded: unknown;
-      try {
-        loaded = loadRun(dir, issue);
-      } catch (err) {
-        thrown = err;
-      }
-      assert(thrown === undefined, `a deadlineMs of ${label} loads (got: ${String(thrown)})`);
-      assert(
-        (loaded as { deadlineMs?: unknown })?.deadlineMs === (deadlineMs ?? undefined),
-        `the loaded record keeps its ${label} (got ${JSON.stringify((loaded as { deadlineMs?: unknown })?.deadlineMs)})`,
-      );
-    } finally {
-      cleanup();
-    }
+  const { dir, cleanup } = tempDir();
+  try {
+    const report = "## still needed\nacceptance test x is red\nBranch: `feature/issue-69`";
+    forgedOutcomeField(dir, 69, {
+      key: "69:handback:0",
+      state: "handback",
+      startedAt: CLOCK,
+      endedAt: CLOCK,
+      outcome: { kind: "done", posted: false, channel: "host", report },
+    });
+    const resumed = loadRun(dir, 69);
+    const handback = resumed?.steps[resumed.steps.length - 1]?.outcome;
+    assert(
+      handback?.posted === false && handback.channel === "host",
+      `a resumed host-channel handback keeps BOTH halves of its pair (got ${JSON.stringify([handback?.posted, handback?.channel])})`,
+    );
+    assert(
+      handback?.report === report,
+      `and keeps the report the host is owed, byte for byte (got ${JSON.stringify(String(handback?.report).slice(0, 40))})`,
+    );
+  } finally {
+    cleanup();
   }
 }
+
 
 process.exit(failures());

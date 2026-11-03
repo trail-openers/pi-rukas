@@ -50,24 +50,6 @@ import { REPORT_STATES, type Step } from "./state.ts";
 export const MINUTE_MS = 60_000;
 
 /**
- * The flag's own arm, in the same shape the environment's two inputs use: a
- * duration in ms, resolved to an epoch by the reader — never a written env var.
- *
- * `--timeout` is the HOST's input to the one contract (`work`'s reader is the
- * only thing that parses the two env names), and the resolution is the shared
- * reader's. Writing the flag into `process.env` — which an earlier shape of this
- * did — would leak one run's budget into every later dispatch of the process and
- * leave a parent with no deadline it can read back.
- *
- * `--timeout` yields to both env inputs: an explicit absolute deadline outranks a
- * duration, and a budget the host exported itself outranks the flag, because that
- * export is the host's own word for how long the cycle may run.
- */
-export function flagBudgetMs(timeoutMs: number | undefined): CycleBudgetMs | undefined {
-  return timeoutMs === undefined ? undefined : (timeoutMs as CycleBudgetMs);
-}
-
-/**
  * The run's absolute deadline: the host's arm and the env resolved once, or the
  * one this record already carries. The record wins while a budget is still set —
  * which is the shared reader's own rule, so a resume cannot restart the clock.

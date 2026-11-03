@@ -43,6 +43,10 @@ export const ENV_KEYS = [
   "PI_ENSEMBLE_CYCLE_DEADLINE",
   "PI_ENSEMBLE_CYCLE_BUDGET_MS",
   "PI_ENSEMBLE_HANDOFF_CHANNEL",
+  // A case may pin the forge off for its own duration: the post seam is asserted
+  // to be the WHOLE post path, which is only falsifiable when no adapter can be
+  // resolved underneath it.
+  "PI_ENSEMBLE_FORGE",
 ] as const;
 
 const saved: Record<string, string | undefined> = {};
@@ -113,12 +117,7 @@ export function cleanScratch(): void {
 export function crossing(opts: {
   /** The state whose boundaries drive the crossing: the step this case must
    *  reach on its own. The state whose run must survive the clock is normally
-   *  the REPORT's predecessor — the boundary the stop test governs. Pass the
-   *  state whose OWN handler must see the past clock (a case about what a child
-   *  is bound by, not about what the stop test stops) with `onHandler`: the
-   *  boundary that writes its step counts one read before its stop test does, so
-   *  the default parity would cross a read too late and the handler would still
-   *  stand in allowance. */
+   *  the REPORT's predecessor — the boundary the stop test governs. */
   at: LeanState;
 
   /** Where the run's own record lives: the case's `repoRoot` and `issue`. */
@@ -162,17 +161,10 @@ export function crossing(opts: {
       // The stop test's read: two reads into a boundary (index 1 of 0,4,8… and
       // index 5 of the pre-handler offset — see the header), while the loop
       // stands at a step of `at`.
-      // 1 = the read the stop test of `at` takes; 0 = the read that writes its
-      // step, which happens BEFORE that test and so is the one a handler of `at`
-      // sees (see `onHandler`).
       const isStopTest = standing === opts.at && reads % 4 === 1;
       if (isStopTest) boundariesAtState++;
       const gone = boundariesAtState > (opts.times ?? 0);
       const t = gone ? past : start;
-      if (process.env.PROBE_CROSS)
-        process.stderr.write(
-          `CP${String(opts.issue)} standing=${String(standing)} reads=${String(reads)} at=${String(opts.at)} isStop=${String(isStopTest)} gone=${String(gone)}\n`,
-        );
       if (t === past) crossed = true;
       reads++;
       return t;
@@ -191,18 +183,12 @@ export function crossing(opts: {
 export function recording(
   calls: string[],
   answers: Partial<Record<LeanState, Outcome[]>>,
-  /** Called with the handler's context BEFORE the scripted outcome, for a case
-   *  that must observe the run's own clock from inside one step (the instant a
-   *  dispatch would judge its child's bound against). Its return is discarded:
-   *  the scripted outcome still decides where the run goes. */
-  observe?: (state: LeanState, ctx: Parameters<NonNullable<LeanHandlers["ready"]>>[0]) => void,
 ): LeanHandlers {
   const handlers: LeanHandlers = {};
   for (const [state, queue] of Object.entries(answers) as [LeanState, Outcome[]][]) {
     const remaining = [...queue];
-    handlers[state] = async (ctx) => {
+    handlers[state] = async () => {
       calls.push(state);
-      observe?.(state, ctx);
       const next = remaining.shift();
       if (next === undefined) throw new Error(`no scripted outcome for ${state}`);
       return next;
@@ -293,7 +279,7 @@ export async function verbRun(
       engine =
         driven === undefined
           ? undefined
-          : { budgetMs: budgetFromArm(driven.result.run, opts.timeoutMs) };
+          : { budgetMs: budgetFromArm(driven.result.run, opts?.timeoutMs) };
       return reply;
     }),
   );

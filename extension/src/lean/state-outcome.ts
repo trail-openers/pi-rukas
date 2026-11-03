@@ -456,6 +456,12 @@ export function buildOutcome(oc: Record<string, unknown>): Outcome {
     ...(typeof oc.publishedHead === "string" ? { publishedHead: oc.publishedHead } : {}),
     ...(typeof oc.draft === "boolean" ? { draft: oc.draft } : {}),
     ...(typeof oc.posted === "boolean" ? { posted: oc.posted } : {}),
+    // Rebuilt beside `posted`, because the two are ONE fact — who owns the channel,
+    // and did anything reach them. A resume that kept `posted: false` and dropped
+    // `channel: "host"` would read as a forge post the forge refused, and the host
+    // would never be handed the body it was owed.
+    ...(oc.channel === "host" || oc.channel === "forge" ? { channel: oc.channel } : {}),
+    ...(typeof oc.report === "string" ? { report: oc.report } : {}),
     ...rowsField(validatedDispatches(oc.dispatches)),
     ...(isBudgetLimit(oc.limit) ? { limit: oc.limit } : {}),
     ...(isCount(oc.value) ? { value: oc.value as number } : {}),

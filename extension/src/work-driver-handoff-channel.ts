@@ -21,15 +21,6 @@ export type HandoffChannel = "forge" | "host";
 
 export const HANDOFF_CHANNELS: readonly HandoffChannel[] = ["forge", "host"];
 
-/**
- * The words a lean reporting step puts in FRONT of its own reason when the host
- * owns the channel: "nobody posted, and that was the contract", followed by the
- * run's report. Prose for whoever reads the step log — the projection reads the
- * step's TYPED `channel` field, not this string, so rewording it changes what an
- * operator sees and nothing a machine decides.
- */
-export const HOST_CHANNEL_MARK = "the host owns the handoff channel";
-
 /** `PI_ENSEMBLE_HANDOFF_CHANNEL`; anything but `host` (any case) is `forge`. */
 export function handoffChannel(): HandoffChannel {
   return process.env.PI_ENSEMBLE_HANDOFF_CHANNEL?.trim().toLowerCase() === "host"

@@ -206,8 +206,12 @@ export async function postNotReady(
     "",
     "Fix the `pi-spec v1` block, or run /plan to regenerate it, then start the run again.",
   ].join("\n");
-  const forge = await forgeFor(repoRoot);
+  // The seam is consulted BEFORE the forge is resolved: the seam exists so a case
+  // can count posts without a forge, and resolving one first puts two network
+  // probes (`detectForge`, `gh repo view`) in front of every recording call and
+  // makes the recorded count depend on a forge a temp repo does not have.
   if (commentPoster !== undefined) return commentPoster(issue, body);
+  const forge = await forgeFor(repoRoot);
   if (!forge) throw new Error("no forge adapter: cannot post the not-ready comment");
   await forge.issueComment(issue, body);
 }
@@ -222,8 +226,8 @@ export async function postNotReady(
  * caller, and it never lets that throw end the run.
  */
 export async function postHandback(repoRoot: string, issue: number, body: string): Promise<void> {
-  const forge = await forgeFor(repoRoot);
   if (commentPoster !== undefined) return commentPoster(issue, body);
+  const forge = await forgeFor(repoRoot);
   if (!forge) throw new Error("no forge adapter: cannot post the handback comment");
   await forge.issueComment(issue, body);
 }

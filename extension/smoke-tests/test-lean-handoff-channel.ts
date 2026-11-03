@@ -28,8 +28,8 @@ import { phase1Handlers } from "../src/lean/command.ts";
 import { MINUTE_MS } from "../src/lean/deadline.ts";
 import { runLean } from "../src/lean/engine.ts";
 import { setLeanCommentPoster } from "../src/lean/io.ts";
-import { INITIAL_COUNTERS, type Step, loadRun } from "../src/lean/state.ts";
-import { HOST_CHANNEL_MARK, handoffChannel } from "../src/work-driver-handoff-channel.ts";
+import { INITIAL_COUNTERS, type LeanRun, type Step, loadRun } from "../src/lean/state.ts";
+import { handoffChannel } from "../src/work-driver-handoff-channel.ts";
 import { handoffDispatchTimeoutMs } from "../src/work-driver-handoff.ts";
 import { makeAssert } from "./headless-verb-harness.ts";
 import {
@@ -191,16 +191,26 @@ for (const channel of ["host", "forge"] as const) {
 // from a forge post that failed look IDENTICAL on the record. With the seam, the
 // two are two different counts — and the forge arm of the loop above would go
 // green on a host channel that posted, if the count were not pinned at 0.
+//
+// The seam is the whole post path, not an extra hop beside it: with
+// `PI_ENSEMBLE_FORGE=none` the forge adapter is REFUSED outright and the forge arm
+// below still takes exactly one post, through the seam. So a recording seam that
+// returned early still counts a post, and one that let the run fall through to a
+// real `forge.issueComment` would post zero and fail the count. That is what makes
+// the host channel's zero mean "nobody posted" rather than "the recorder was
+// bypassed".
 for (const [channel, want] of [
   ["host", 0],
   ["forge", 1],
 ] as const) {
-  await withEnv({ PI_ENSEMBLE_HANDOFF_CHANNEL: channel }, async () => {
-    const repo = scratch(`post-count-${channel}`);
-    const posted: string[] = [];
-    const undo = setLeanCommentPoster(async (_issue, body) => {
-      posted.push(body);
-    });
+  await withEnv(
+    { PI_ENSEMBLE_HANDOFF_CHANNEL: channel, PI_ENSEMBLE_FORGE: "none" },
+    async () => {
+      const repo = scratch(`post-count-${channel}`);
+      const posted: string[] = [];
+      const undo = setLeanCommentPoster(async (_issue, body) => {
+        posted.push(body);
+      });
     try {
       // The HANDOFF leg: the real wired `handback` handler, one red gate away
       // from its report.
@@ -232,7 +242,12 @@ for (const [channel, want] of [
         `(g′) the ${channel} channel's handback posted ${String(want)} comments (got ${String(posted.length)}: ${JSON.stringify(posted.map((p) => p.slice(0, 40)))})`,
       );
       // The DECLINE leg, same seam, same counting — the refusal comment is the
-      // other half of the contract and the other step that decides to post.
+      // other half of the contract and the other step that decides to post. The
+      // handlers are built UNDER THE CASE'S CHANNEL on purpose: the claim here is
+      // the POST COUNT, and a handler that read the channel at build time would
+      // give the same count as one that reads it at report time. (h) is the case
+      // that pins the read's TIMING, since it moves the env between building the
+      // handlers and reporting.
       const repo2 = scratch(`post-count-decline-${channel}`);
       posted.length = 0;
       const refused = await runLean({
@@ -270,14 +285,25 @@ for (const [channel, want] of [
   });
 }
 
-// ── (h) the host channel does not soften a refusal: decline still ends at 11
-await withEnv({ PI_ENSEMBLE_HANDOFF_CHANNEL: "host" }, async () => {
+// ── (h) the host channel does not soften a refusal: decline still ends at 11,
+// and it reports through the SAME seam as handback — one channel read, one stamp,
+// and a body the host is handed that is bounded, because the rules are child text.
+{
+  // The channel is read AT REPORT TIME, so the env is moved between building the
+  // handlers and running the step — the window a live run actually lives in, since
+  // the reporting step is the LAST thing a run does, long after the wiring was
+  // assembled. Building the handlers under `forge` and reporting under `host` is
+  // what a run that started on the forge channel and ended on the host's looks
+  // like; a handler that read the channel at build time would post to the forge.
+  process.env.PI_ENSEMBLE_HANDOFF_CHANNEL = "forge";
   const repo = scratch("host-decline");
+  const wired = phase1Handlers(repo, 411);
+  process.env.PI_ENSEMBLE_HANDOFF_CHANNEL = "host";
   const r = await runLean({
     repoRoot: repo,
     issue: 411,
     handlers: {
-      ...phase1Handlers(repo, 411),
+      ...wired,
       ready: async () => ({
         kind: "fail",
         failedRules: ["issue body has no pi-spec v1 block"],
@@ -285,25 +311,24 @@ await withEnv({ PI_ENSEMBLE_HANDOFF_CHANNEL: "host" }, async () => {
     },
     seed: { version: "0.0.0-test", baseSha: "" },
   });
+  delete process.env.PI_ENSEMBLE_HANDOFF_CHANNEL;
   assert(
     r.state === "not-ready" && r.code === 11,
     `(h) the host channel leaves the verdict and the exit alone (got ${r.state}/${String(r.code)})`,
   );
   const decline = r.run.steps.filter((s) => s.state === "decline").pop();
+  // ONE step carrying BOTH halves of the pair, asserted together: a
+  // `channel: "host"` beside `posted: true` would tell the host to post a copy of a
+  // comment the forge already took, and a `posted: false` with no channel reads as
+  // a forge post the forge refused.
   assert(
-    decline?.outcome?.kind === "done" && decline.outcome.posted === false,
-    `(h) the decline step ran and claimed nothing posted (got ${JSON.stringify(decline?.outcome)})`,
+    decline?.outcome?.kind === "done" &&
+      decline.outcome.posted === false &&
+      decline.outcome.channel === "host",
+    `(h) the decline step ran and claimed, on one record, nothing posted AND the host channel (got ${JSON.stringify(decline?.outcome)})`,
   );
-  // The CHANNEL is the step's typed claim, not prose the projection has to
-  // recognise: the reason is the REPORT (L5), and a reader of the comment must
-  // learn what the spec refused, not that the harness skipped a post.
   assert(
-    decline?.outcome?.channel === "host",
-    `(h) the step records the channel it reported on (got ${JSON.stringify(decline?.outcome?.channel)})`,
-  );
-  assert(
-    String(decline?.outcome?.reason).includes("pi-spec v1") &&
-      !String(decline?.outcome?.reason).includes(HOST_CHANNEL_MARK),
+    String(decline?.outcome?.reason).includes("pi-spec v1"),
     `(h) and its reason is the refusal itself, not a note about the delivery (got ${String(decline?.outcome?.reason)})`,
   );
   const handoff = (leanIssueResult(r.run, r.code) as unknown as Record<string, unknown>).handoff as
@@ -317,19 +342,40 @@ await withEnv({ PI_ENSEMBLE_HANDOFF_CHANNEL: "host" }, async () => {
     String(handoff?.body).includes("pi-spec v1"),
     `(h) and it is the run's own reason (got ${JSON.stringify(String(handoff?.body).slice(0, 80))})`,
   );
-});
 
-// ── (k) #1593 for lean, assessed and NOT built. `work` puts its cycle under
-// `withCycleClock` so a child already running when the caller's deadline arrived is
-// bounded by what the deadline leaves (`clampToCycleDeadline` in the spawn layer).
-// `lean/engine.ts` needs no equivalent and adding one is refused here rather than
-// left for someone to guess at: `driveLoop` re-reads `run.deadlineMs` through
-// `leanDeadline` at EVERY boundary, so a lean run cannot stand in a step with a
-// stale or missing arm the way a `work` cycle can — which is why no
-// `noteCycleDeadline` call appears in this file, and why one would be a second
-// clock for one run rather than a fix. What the arm does govern here is asserted
-// above: the stop test at the boundary ((c)–(e)) and the record's own field ((c),
-// (f), (f′)).
+  // The bound, on a refusal whose rules are many AND long. The per-rule clip does
+  // not bound the JOINED total, so the two are asserted separately: each rule
+  // arrives clipped, and the whole line arrives bounded.
+  const wideRepo = scratch("host-decline-wide");
+  process.env.PI_ENSEMBLE_HANDOFF_CHANNEL = "host";
+  const wide = await runLean({
+    repoRoot: wideRepo,
+    issue: 411,
+    handlers: {
+      ...phase1Handlers(wideRepo, 411),
+      ready: async () => ({
+        kind: "fail",
+        failedRules: Array.from({ length: 40 }, (_, i) => `rule ${String(i)}: ${"x".repeat(500)}`),
+      }),
+    },
+    seed: { version: "0.0.0-test", baseSha: "" },
+  });
+  delete process.env.PI_ENSEMBLE_HANDOFF_CHANNEL;
+  const wideDecline = wide.run.steps.filter((s) => s.state === "decline").pop();
+  const reason = String(wideDecline?.outcome?.reason ?? "");
+  assert(
+    wideDecline?.outcome?.channel === "host" && wideDecline.outcome.posted === false,
+    `(h) the wide refusal is still a host-channel report (got ${JSON.stringify([wideDecline?.outcome?.channel, wideDecline?.outcome?.posted])})`,
+  );
+  assert(
+    reason.length <= 1001,
+    `(h) the joined host decline body is bounded (got ${String(reason.length)} chars)`,
+  );
+  assert(
+    reason.includes("…"),
+    `(h) and the bound says so rather than stopping dead (got ${JSON.stringify(reason.slice(-12))})`,
+  );
+}
 
 // ── (j) a non-terminal state is REFUSED, not projected. `leanStatus` has three
 // arms because the verb's `wellFormed` gate admits only the three states

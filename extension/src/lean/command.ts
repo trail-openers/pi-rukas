@@ -32,7 +32,6 @@ import { execp } from "../exec.ts";
 import { spawnSpecialist } from "../spawn.ts";
 import type { DispatchSpec } from "../types.ts";
 import { type CycleBudgetMs, flagBudgetMs } from "../work-driver-deadline.ts";
-import { handoffChannel } from "../work-driver-handoff-channel.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
 import { proveBaseSha, unresolvedMainlineRule } from "./base-proof.ts";
 import { buildDeps, buildOutcome } from "./build.ts";
@@ -41,10 +40,8 @@ import { leanChildOpts } from "./child-opts.ts";
 import { ciLandHandlers, publishHandler } from "./command-post-publish.ts";
 import { type WorkConfig, loadWorkConfig } from "./config.ts";
 import { type LeanHandlers, type RunLeanResult, runLean } from "./engine.ts";
-import { handbackOutcome } from "./handback.ts";
-import { fetchIssueBody, mainlineSha, postNotReady } from "./io.ts";
-import { postHandback } from "./io.ts";
-import { REPORT_FAILED_KIND } from "./machine.ts";
+import { fetchIssueBody, mainlineSha } from "./io.ts";
+import { reportHandlers } from "./report-handlers.ts";
 import { reviewDeps } from "./review-deps.ts";
 import { reviewOutcome } from "./review.ts";
 import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
@@ -71,6 +68,7 @@ export interface ReadyFacts {
 
 /** What the run is seeded with, and what the seed learned about the base. */
 export type { LeanSeed } from "./seed.ts";
+
 // Re-exported rather than imported-and-returned: `leanSeed` is the run-start
 // seam and the suites that pin it (`test-lean-seed-base.ts`,
 // `test-lean-base-infra.ts`, `test-lean-seed-infra.ts`) reach it through the
@@ -205,34 +203,6 @@ export async function readyOutcome(
 }
 
 /**
- * The rules the run's own record says it failed.
- *
- * The newest DECIDED `ready` or `specify` step whose outcome carries
- * `failedRules` — read from the step log, which is the durable record, rather
- * than from a closure that only a live `ready` fills. A run that crashed
- * between `ready` and `decline` resumes with nothing in the closure, and a
- * comment that said "ready never ran" on an issue whose spec had been refused
- * for three named rules would be both wrong and unrecoverable: the step log
- * already records the outcome that decided the verdict, so the comment posts
- * exactly those rules whether this process ran `ready` or not.
- *
- * `specify` is consulted as well as `ready` because it is the other state that
- * can refuse a run (`no-red-test`), and `ready` is asked LAST so its rules
- * shadow an earlier round's — a run whose `ready` passed after an earlier
- * refusal is not a run that posts the old rules.
- */
-export function failedRulesFromLog(steps: Step[]): string[] {
-  for (let i = steps.length - 1; i >= 0; i--) {
-    const step = steps[i];
-    if (step === undefined || step.outcome === undefined) continue;
-    if (step.state !== "ready" && step.state !== "specify") continue;
-    const rules = step.outcome.failedRules;
-    if (Array.isArray(rules) && rules.length > 0) return rules;
-  }
-  return ["no failed rule was recorded on the step log"];
-}
-
-/**
  * The specify step's dependencies: the outside world, injected.
  *
  * `dispatch` is the only model call the step makes and `exec` the only thing
@@ -334,69 +304,10 @@ export function phase1Handlers(
   // so a test drives them by injecting its own recorder and never touches a PR.
   Object.assign(handlers, ciLandHandlers(repoRoot, issue), publishHandler());
   handlers.review = (ctx) => reviewOutcome(ctx, reviewDeps(headless));
-  // The host channel owns the report (#1920 item 3), so the step posts nothing —
-  // and `posted: false` plus `channel: "host"` are stamped HERE rather than left
-  // to the step's own claim, because `handbackOutcome` returns `posted: true` for
-  // a `post` that returns normally and it has no way to know the post was
-  // deliberately nothing. The channel is stamped as a TYPED FIELD for the same
-  // reason: `headless/work-lean-handoff.ts` reads the CHANNEL off the step's
-  // record, so the pair — "the host owns it" and "nothing was sent" — is one fact
-  // written once, and a projection that re-read the environment could not
-  // disagree with what this run actually did.
-  //
-  // The reason is left EXACTLY as `handbackOutcome` wrote it. On this channel the
-  // reason becomes the comment the HOST posts, so the report an operator came to
-  // read must be what is published — not a sentence about the harness skipping a
-  // post. Whether anything reached the forge is `posted`; who owns the channel is
-  // `channel`; neither is prose the projection has to recognise.
-  const hostChannel = handoffChannel() === "host";
-  const noPost = async (): Promise<void> => {
-    /* the host delivers the body from the result */
-  };
-  handlers.handback = (ctx) =>
-    hostChannel
-      ? handbackOutcome(ctx, noPost).then((outcome) => ({
-          ...outcome,
-          posted: false,
-          channel: "host" as const,
-        }))
-      : handbackOutcome(ctx, postHandback);
-  handlers.decline = async (ctx) => {
-    // From the log, not from a closure: see `failedRulesFromLog`.
-    const rules = failedRulesFromLog(ctx.steps);
-    if (hostChannel) {
-      // `done`, so the run still ends `not-ready` at exit 11: the spec refused
-      // it whatever channel the reason travels on. The rules ARE the report the
-      // host posts (see the handback note above on why a delivery note is not the
-      // body), and `posted: false` with `channel: "host"` is what the result's
-      // `handoff.body` is built from.
-      return {
-        kind: "done",
-        posted: false,
-        channel: "host" as const,
-        reason: rules.join("; "),
-      };
-    }
-    try {
-      await postNotReady(repoRoot, issue, rules);
-      // The comment reached the forge — the typed claim `leanHandoff` reads.
-      return { kind: "done", posted: true, channel: "forge" as const };
-    } catch (err) {
-      // NOT `done`: the step log memoizes a completed step forever, so a
-      // swallowed throw here would read as "the comment was posted" when it
-      // meant "the network dropped". `report-failed` is the kind that records
-      // the attempt honestly: the run still ends `not-ready` at exit 11 — the
-      // spec refused it whether or not the forge took the comment — and the
-      // reason on the record says the comment never went out. It is NOT
-      // retried on resume: the step log and the reason are the record.
-      return {
-        kind: REPORT_FAILED_KIND,
-        posted: false,
-        channel: "forge" as const,
-        reason: `comment not posted: ${(err as Error).message}`,
-      };
-    }
-  };
+  // The two steps that REPORT how the run ended live in `lean/report-handlers.ts`:
+  // they are the only handlers that read the host channel, claim `posted`, or send
+  // text outside the process.
+  Object.assign(handlers, reportHandlers(repoRoot, issue));
   return handlers;
 }
 

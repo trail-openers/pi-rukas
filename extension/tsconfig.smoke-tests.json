@@ -224,6 +224,12 @@
     "smoke-tests/test-AC3-empty-message-fallback.ts",
     "smoke-tests/lib/mast-canary-fixtures.ts",
     "smoke-tests/test-mast-authoritative-block.ts",
-    "smoke-tests/test-lens-tool-threshold.ts"
+    "smoke-tests/test-lens-tool-threshold.ts",
+    "smoke-tests/test-lean-cycle-arm.ts",
+    "smoke-tests/test-lean-handoff-channel.ts",
+    "smoke-tests/test-lean-deadline-record.ts",
+    "smoke-tests/test-lean-failure-cause.ts",
+    "smoke-tests/test-lean-state-outcome.ts",
+    "smoke-tests/test-lean-state-base.ts"
   ]
 }

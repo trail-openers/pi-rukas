@@ -249,7 +249,8 @@ const log = leanLog;
   const steps = log({ prUrl: URL, draft: false });
   steps[steps.length - 1] = withReason(steps[steps.length - 1] as Step, "gate red");
   (steps[steps.length - 1] as Step).outcome = {
-    ...((steps[steps.length - 1] as Step).outcome as Record<string, unknown>),
+    ...((steps[steps.length - 1] as Step).outcome as unknown as Record<string, unknown>),
+    kind: "done",
     posted: false,
     channel: "host",
   };
@@ -275,7 +276,8 @@ const log = leanLog;
   // nothing on the step claims the host was ever addressed.
   const noChannel = log({ prUrl: URL, draft: false });
   (noChannel[noChannel.length - 1] as Step).outcome = {
-    ...((noChannel[noChannel.length - 1] as Step).outcome as Record<string, unknown>),
+    ...((noChannel[noChannel.length - 1] as Step).outcome as unknown as Record<string, unknown>),
+    kind: "done",
     posted: false,
     channel: undefined,
   };

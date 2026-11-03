@@ -360,25 +360,40 @@ await withEnv({ PI_ENSEMBLE_CYCLE_BUDGET_MS: String(240 * MINUTE_MS) }, async ()
   const first = await runLean({
     repoRoot: repo,
     issue: 406,
-    // `build` throws on its SECOND visit: the engine records the error outcome
-    // and ends the run without a `result`, which is exactly the mid-run death a
-    // resume picks up. The arm was already resolved and saved at the first
-    // boundary, before any handler ran.
+    // `build` throws on its SECOND visit: the engine records the error outcome and
+    // ends the run handed-back, which is the mid-run death a resume picks up. The
+    // arm was already resolved and saved at the first boundary, before any handler
+    // ran.
     handlers: {
-      ...recording(firstCalls, WALK),
+      ...recording(firstCalls, { ...WALK, build: [] }),
+      // `build` is NOT taken from `WALK`: with the walk's own handler the run
+      // reaches `landed`, and this case would assert a mid-run death on a run that
+      // finished. Overriding it here is what kills the run on the step the arm was
+      // already persisted for — `driveLoop` resolves and saves the arm at the
+      // boundary BEFORE the handler runs, so the record carries the clock this
+      // resume must keep even though the walk never finished. The push makes "the
+      // run died IN `build`" an observation rather than an inference: `build` is
+      // the last state recorded, and nothing after it ever ran.
       build: async () => {
-        if (firstCalls.filter((c) => c === "build").length >= 1)
-          throw new Error("simulated crash mid-build");
-        return { kind: "ok" };
+        firstCalls.push("build");
+        throw new Error("simulated crash mid-build");
       },
     },
     seed: { version: "0.0.0-test", baseSha: "" },
   });
   const armed = first.run.deadlineMs;
   assert(armed !== undefined, "(f′) the first round resolved an arm from the budget");
+  // The run died mid-walk. An errored step ENDS the run, so a `result` is written
+  // either way — the facts that say the first drive never finished are WHERE it
+  // stopped and HOW FAR the walk got: a run that died in `build` sits at
+  // `handed-back` with the gate never run, where the walk's own answer is
+  // `landed`. The second call is therefore a genuine resume of a record whose
+  // clock the first round set.
   assert(
-    first.result === undefined,
-    `(f′) and the run died mid-walk, so the second call is a real resume (result ${JSON.stringify(first.result)})`,
+    first.state === "handed-back" &&
+      firstCalls.join(",") === "ready,specify,build" &&
+      !firstCalls.includes("verify"),
+    `(f′) the first round died IN \`build\` and never reached the gate, so the second call is a real resume (state ${first.state}, steps ${JSON.stringify(firstCalls)})`,
   );
   // The budget is now HALF of what the first call saw. A re-resolution would
   // produce an arm roughly `240 - 120` minutes LATER than the persisted one.
