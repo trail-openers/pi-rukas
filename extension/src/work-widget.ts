@@ -26,6 +26,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { setLiveCycleCount } from "./lifecycle-events.ts";
 import { reviewWallClockMs } from "./review-budget.ts";
 import { trace } from "./trace.ts";
+import { MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
 import type { WorkState } from "./workflow-state.ts";
 
 const STATUS_KEY = "ensemble:work";
@@ -123,7 +124,7 @@ export function renderStatus(
   ];
   // Append cap state when relevant (review-fix loop active or CI retries used).
   if (ps.reviewRound > 0) {
-    parts.push(`round ${ps.reviewRound}/3`);
+    parts.push(`round ${ps.reviewRound}/${MAX_REVIEW_ROUNDS}`);
     if (ps.reviewCapStartedAt) {
       const capElapsed = fmtElapsed(now - ps.reviewCapStartedAt);
       // #1429 — this used to be the literal `90m`, so the footer kept

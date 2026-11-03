@@ -311,6 +311,9 @@ export async function writeCarriedEntry(
       // #1537 — the counts belong to the carried verdict exactly as `hasCritical`
       // does: a carry restates a recorded review, it does not re-count one.
       ...(prev.blockingCounts !== undefined ? { blockingCounts: prev.blockingCounts } : {}),
+      // The bar belongs to the counts: a carried row without its bar cannot be
+      // scored at any bar the merge guard might invent, so it would fail closed.
+      ...(prev.blockingBar !== undefined ? { blockingBar: prev.blockingBar } : {}),
       headSha: head,
       diffSha256: prev.diffSha256,
       carriedFrom: from,

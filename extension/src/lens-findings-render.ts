@@ -95,11 +95,12 @@ export function parseFindings(blob: string | undefined): StoredFinding[] {
  * `isBlockingSeverity`). Reads the serialised blob rather than `Finding[]`
  * because its input is the event's own `findings` field — the same string the
  * disclosure renders, so a route and its comment cannot disagree.
+ *
+ * A round that filled the 50-row cap therefore always parks, by design: an
+ * unverifiable disclosure is not a disclosure, and parking is cheap next to
+ * merging past findings nobody read.
  */
-export function noCarriedFindingAtOrAbove(
-  blob: string | undefined,
-  bar: ReviewSeverity,
-): boolean | undefined {
+export function noCarriedFindingAtOrAbove(blob: string | undefined, bar: ReviewSeverity): boolean {
   if (blob === undefined || blob.trim() === "") return true;
   let parsed: unknown;
   try {

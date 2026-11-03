@@ -18,6 +18,7 @@
  *   "no review rejection exists" body when the gate died on infrastructure.
  */
 
+import { MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
 /**
@@ -71,7 +72,7 @@ export function adversarialRoundsLine(
   }
   const adv =
     advRounds > 0 ? `; the adversarial gate ran ${advRounds} round(s), last: ${advStatus}` : "";
-  return `**Rounds**: ${reviewRound} of 3 review rounds (six-lens review${adv})`;
+  return `**Rounds**: ${reviewRound} of ${MAX_REVIEW_ROUNDS} review rounds (six-lens review${adv})`;
 }
 
 /**

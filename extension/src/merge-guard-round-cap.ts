@@ -126,7 +126,7 @@ function nothingBlocking(lens: LedgerEntry): boolean {
   return BLOCKING_RANKS.every((s) => {
     if (!isBlockingSeverity(s, bar)) return true;
     const count: unknown = counts[s];
-    return Number.isInteger(count) && (count as number) >= 0;
+    return Number.isInteger(count) && (count as number) === 0;
   });
 }
 

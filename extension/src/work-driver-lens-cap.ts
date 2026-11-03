@@ -49,7 +49,6 @@ import { FORGE_EXEC_TIMEOUT_MS } from "./forge-detect.ts";
 import { noCarriedFindingAtOrAbove } from "./lens-findings-render.ts";
 import { lensResidualsMarker } from "./merge-guard-round-cap.ts";
 import { reviewWallClockMs } from "./review-budget.ts";
-import { type ReviewSeverity, isBlockingSeverity } from "./review-threshold.ts";
 import { trace } from "./trace.ts";
 import { type CycleContext, type DriverContext, MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
 import { recordLensResidualsPosted } from "./work-driver-draft-disclosure.ts";
@@ -312,7 +311,7 @@ async function discloseResidualFindings(
  * driver cannot read.
  */
 export function noBlockingCarriedFinding(findingsBlob: string | undefined): boolean {
-  return noCarriedFindingAtOrAbove(findingsBlob, "HIGH") ?? false;
+  return noCarriedFindingAtOrAbove(findingsBlob, "HIGH");
 }
 
 export async function appendReviewCapHit(

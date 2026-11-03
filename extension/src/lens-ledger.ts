@@ -23,7 +23,7 @@ import {
   lensPassed,
   workingTreePatchId,
 } from "./review-ledger.ts";
-import { type ReviewSeverity, SEVERITIES } from "./review-threshold.ts";
+import type { ReviewSeverity } from "./review-threshold.ts";
 import { trace, traceWarn } from "./trace.ts";
 
 import { execp } from "./exec.ts";

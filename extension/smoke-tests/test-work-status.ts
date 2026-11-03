@@ -12,6 +12,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { MAX_REVIEW_ROUNDS } from "../src/work-driver-context.ts";
 import { renderStatus } from "../src/work-status.ts";
 import {
   type WorkState,
@@ -97,7 +98,10 @@ const fakeRoot = "/tmp/fake-repo";
     "render surfaces lastCompletedStep alongside currentStep",
   );
   assert(out.includes("branch: feature/issue-553-fix"), "render shows branch name");
-  assert(out.includes("review round 1/3"), "render shows review-round cap state");
+  assert(
+    out.includes(`review round 1/${MAX_REVIEW_ROUNDS}`),
+    "render shows review-round cap state",
+  );
   assert(out.includes("wall-clock"), "render shows wall-clock cap when timer set");
   assert(out.includes("ci retries: 2/2"), "render shows ciRetryCount/MAX_CI_RETRIES");
   assert(out.includes("step durations:"), "render includes per-step duration breakdown");
