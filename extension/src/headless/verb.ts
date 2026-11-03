@@ -50,12 +50,16 @@ export function parseFlags(
   for (let i = 0; i < argv.length; i++) {
     const tok = argv[i] as string;
     if (!tok.startsWith("--")) out.positional.push(tok);
-    else if (spec.bool.includes(tok)) out.bool.add(tok);
+    // A VALUE flag is tested before a bool one: a name may legitimately appear in
+    // both lists (`work-lean` publishes `--timeout` in its flag list AND takes a
+    // value), and a parser that checked bools first would consume the flag, leave
+    // its minutes as a positional, and then fail the positional count.
     else if (spec.value.includes(tok)) {
       const v = argv[++i];
       if (v === undefined || v.startsWith("--")) return { error: `${tok} needs a value` };
       out.value.set(tok, v);
-    } else return { error: `unknown argument "${tok}"` };
+    } else if (spec.bool.includes(tok)) out.bool.add(tok);
+    else return { error: `unknown argument "${tok}"` };
   }
   return out;
 }

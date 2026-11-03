@@ -1,0 +1,111 @@
+/**
+ * lean/deadline — the caller's whole-cycle deadline, read the way `work` reads
+ * it (#1920 item 2).
+ *
+ * `work` stops STARTING steps once its deadline is inside the handoff allowance
+ * (`work-driver-deadline.ts`'s step boundary) and hands off. A lean run had no
+ * such boundary: only a step's own budget bounded it, so a host's
+ * `--timeout`/deadline killed the container mid-step with no result document.
+ *
+ * Two rules, both read from the SAME helpers `work` uses, so one exported
+ * constant (`MINUTE_MS`) and one env contract drive both engines:
+ *
+ *   - `leanDeadline` wraps `readCycleDeadline`: `--timeout <minutes>` becomes
+ *     `PI_ENSEMBLE_CYCLE_BUDGET_MS` and the shared reader resolves it to an
+ *     absolute epoch ONCE, which the engine persists on its own record so a
+ *     resume keeps the clock the first run resolved;
+ *   - `deadlineStopsSteps` is `work`'s boundary answer restated for a lean step
+ *     (no per-step `MIN_USEFUL_MS` floors — lean has no develop or lens-fix
+ *     step to size): step work ends at `deadline − PI_ENSEMBLE_HANDOFF_TIMEOUT_MS`,
+ *     and the step that reports the run (`handback`/`decline`) is never stopped,
+ *     exactly as `work` never parks its own handoff.
+ *
+ * A run stopped at the deadline is not a crash and not a signal: it is the same
+ * answer `work` gives a cycle its deadline cut off, so it ends `handed-back` at
+ * exit 10 with a result document.
+ */
+
+import { noteCycleDeadline } from "../cycle-deadline-clock.ts";
+import { readCycleDeadline } from "../work-driver-deadline.ts";
+import { handoffDispatchTimeoutMs } from "../work-driver-handoff.ts";
+import type { WorkState } from "../workflow-state.ts";
+import { REPORT_STATES, type Step } from "./state.ts";
+
+/** One minute, the unit `--timeout` is given in — the same constant `work` uses. */
+export const MINUTE_MS = 60_000;
+
+/**
+ * Set `PI_ENSEMBLE_CYCLE_BUDGET_MS` from `--timeout <minutes>` when neither the
+ * flag nor a deadline input was already in the environment.
+ *
+ * Written to the environment rather than threaded through the engine's options
+ * so the ONE reader of the contract — `readCycleDeadline` — answers for both
+ * inputs, exactly as it does for `work`: a bare `PI_ENSEMBLE_CYCLE_DEADLINE`
+ * still stops a lean run, and a bare `PI_ENSEMBLE_CYCLE_BUDGET_MS` still stops
+ * it, with no second copy of the parsing rules.
+ *
+ * `--timeout` yields to both: an explicit absolute deadline outranks a duration,
+ * and a budget the caller exported itself outranks the flag, because that export
+ * is the host's own word for how long the cycle may run.
+ */
+export function armCycleBudget(timeoutMs: number | undefined): void {
+  if (timeoutMs === undefined) return;
+  if (process.env.PI_ENSEMBLE_CYCLE_DEADLINE) return;
+  if (process.env.PI_ENSEMBLE_CYCLE_BUDGET_MS) return;
+  process.env.PI_ENSEMBLE_CYCLE_BUDGET_MS = String(timeoutMs);
+}
+
+/**
+ * The run's absolute deadline: the flag/budget/env resolved once, or the one
+ * this record already carries. The record wins while a budget is still set —
+ * which is `readCycleDeadline`'s own rule, so a resume cannot restart the clock.
+ *
+ * The `WorkState` it takes is a carrier for the ONE field that reader touches
+ * (`pipelineState.cycleDeadlineMs`); a lean run has no cycle state, and building
+ * a fake one to reach a shared function is cheaper than a second copy of the
+ * env rules that would drift from the first.
+ */
+export function leanDeadline(persisted: number | undefined, now: number): number | undefined {
+  const carrier = { pipelineState: {} } as unknown as WorkState;
+  if (persisted !== undefined) carrier.pipelineState.cycleDeadlineMs = persisted;
+  return readCycleDeadline(carrier, now);
+}
+
+/**
+ * Has step work's end arrived? True means start no NEW step: the loop stops as
+ * though there were no handler left, and the run ends handed-back with its
+ * document. `handback`/`decline` are exempt — they are the report, and a run
+ * that could not write it would leave the host with no result at all.
+ */
+export function deadlineStopsSteps(
+  deadline: number | undefined,
+  now: number,
+  next: string,
+): boolean {
+  if (deadline === undefined) return false;
+  const allowance = handoffDispatchTimeoutMs();
+  // The same note `work`'s boundary writes before it parks: the children this
+  // cycle spawns are then bounded by what the deadline leaves instead of by
+  // their own (much longer) backstops, so a step already running stops before
+  // the host's kill rather than under it.
+  noteCycleDeadline(
+    deadline,
+    allowance,
+    (REPORT_STATES as readonly string[]).includes(next) ? "handoff" : "steps",
+  );
+  if ((REPORT_STATES as readonly string[]).includes(next)) return false;
+  return deadline - now <= allowance;
+}
+
+/**
+ * The reason line the engine stamps when the clock, not a verdict, ended the
+ * run: what the last step decided, and what was not started. Named rather than
+ * left to `ended at <state>` so the document and the host's message say which
+ * clock stopped it.
+ */
+export function deadlineReason(steps: Step[], state: string, deadline: number): string {
+  const last = steps[steps.length - 1];
+  const lastText =
+    last === undefined ? "no step ran" : `${last.key} ended ${last.outcome?.kind ?? "undecided"}`;
+  return `cycle deadline ${deadline} reached at ${state}: ${lastText}, no new step started`;
+}

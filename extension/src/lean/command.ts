@@ -31,6 +31,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { execp } from "../exec.ts";
 import { spawnSpecialist } from "../spawn.ts";
 import type { DispatchSpec } from "../types.ts";
+import { handoffChannel } from "../work-driver-handoff-channel.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
 import { proveBaseSha, unresolvedMainlineRule } from "./base-proof.ts";
 import { buildDeps, buildOutcome } from "./build.ts";
@@ -38,6 +39,7 @@ import { challengeDeps, challengeOutcome } from "./challenge.ts";
 import { leanChildOpts } from "./child-opts.ts";
 import { ciLandHandlers, publishHandler } from "./command-post-publish.ts";
 import { type WorkConfig, loadWorkConfig } from "./config.ts";
+import { armCycleBudget } from "./deadline.ts";
 import { type LeanHandlers, type RunLeanResult, runLean } from "./engine.ts";
 import { handbackOutcome } from "./handback.ts";
 import { fetchIssueBody, mainlineSha, postNotReady } from "./io.ts";
@@ -272,6 +274,9 @@ export function specifyDeps(headless: boolean): SpecifyDeps {
  * `test-lean-challenge.ts` (n) rather than by a placeholder that kept the shape
  * safe by answering for a step nobody wrote.
  *
+ * The step's own `posted`/`reason` on the host channel are stamped by the caller,
+ * not left to the step: see `handlers.handback` below.
+ *
  * `headless` is the run's mode, threaded from `runWorkLean` to the three
  * dispatching deps builders. It is NOT remembered anywhere: two lean runs in one
  * process each carry their own, so a headless run cannot lend its trust stamp to
@@ -283,6 +288,14 @@ export function specifyDeps(headless: boolean): SpecifyDeps {
  * hands the run back instead of posting the not-ready comment — see
  * `LeanSeed.infra`. Both are read from the seed the run was given, so a resumed
  * run (which never ran this process's seed) keeps the refusal path.
+ *
+ * On `PI_ENSEMBLE_HANDOFF_CHANNEL=host` neither reporting step posts (#1920 item
+ * 3): the host owns that channel, exactly as `work`'s handoff step declines to
+ * post there. The body each step would have sent stays on the step's record, and
+ * `headless/work-lean-result.ts` publishes it in the result's `handoff` with
+ * `channel: "host"`. The claim `posted` is false because nothing reached the
+ * forge — a host must be able to tell a report it still has to deliver from one
+ * the forge took.
  */
 export function phase1Handlers(
   repoRoot: string,
@@ -321,10 +334,38 @@ export function phase1Handlers(
   // so a test drives them by injecting its own recorder and never touches a PR.
   Object.assign(handlers, ciLandHandlers(repoRoot, issue), publishHandler());
   handlers.review = (ctx) => reviewOutcome(ctx, reviewDeps(headless));
-  handlers.handback = (ctx) => handbackOutcome(ctx, postHandback);
+  // The host channel owns the report (#1920 item 3), so the step posts nothing —
+  // and `posted: false` is stamped HERE rather than left to the step's own claim,
+  // because `handbackOutcome` returns `posted: true` for a `post` that returns
+  // normally and it has no way to know the post was deliberately nothing. The
+  // result's `handoff.channel: "host"` is read by the projection from
+  // `handoffChannel()`, so the pair — "the host owns it" and "nothing was sent" —
+  // always says the same thing.
+  const hostChannel = handoffChannel() === "host";
+  const noPost = async (): Promise<void> => {
+    /* the host delivers the body from the result */
+  };
+  handlers.handback = (ctx) =>
+    hostChannel
+      ? handbackOutcome(ctx, noPost).then((outcome) => ({
+          ...outcome,
+          posted: false,
+          reason: `handback comment not posted: the host owns the handoff channel — ${String(outcome.reason ?? "")}`,
+        }))
+      : handbackOutcome(ctx, postHandback);
   handlers.decline = async (ctx) => {
     // From the log, not from a closure: see `failedRulesFromLog`.
     const rules = failedRulesFromLog(ctx.steps);
+    if (hostChannel) {
+      // `done`, so the run still ends `not-ready` at exit 11: the spec refused
+      // it whatever channel the reason travels on. `posted: false` with the
+      // reason on the record is what the result's `handoff.body` is built from.
+      return {
+        kind: "done",
+        posted: false,
+        reason: `not-ready comment not posted: the host owns the handoff channel — ${rules.join("; ")}`,
+      };
+    }
     try {
       await postNotReady(repoRoot, issue, rules);
       // The comment reached the forge — the typed claim `leanHandoff` reads.
@@ -366,12 +407,20 @@ export function summarize(result: RunLeanResult, issue: number): string {
  * `ctx.run.baseSha` have a base. The seed lands only on a NEW run: `runLean`
  * ignores it when a state file exists, which is what keeps a resume on the
  * commit its first round pinned.
+ *
+ * `timeoutMs` (the headless verb's `--timeout <minutes>`) is turned into the
+ * SAME input `work` reads (#1920 item 2): with no deadline already in the
+ * environment it becomes `PI_ENSEMBLE_CYCLE_BUDGET_MS`, which the shared reader
+ * resolves to an absolute epoch once and the engine persists on the record. A
+ * `PI_ENSEMBLE_CYCLE_DEADLINE` or `PI_ENSEMBLE_CYCLE_BUDGET_MS` the host exported
+ * itself wins, so one contract covers both engines.
  */
 export async function runWorkLean(
   repoRoot: string,
   issue: number,
-  opts: { headless?: boolean } = {},
+  opts: { headless?: boolean; timeoutMs?: number } = {},
 ): Promise<{ summary: string; result: RunLeanResult }> {
+  armCycleBudget(opts.timeoutMs);
   const seed = await leanSeed(repoRoot);
   const result = await runLean({
     repoRoot,

@@ -19,11 +19,18 @@
  * safe to reason about: the engine re-runs exactly that step and no other.
  */
 
-import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import path from "node:path";
 import { isFullCommitSha } from "../commit-sha.ts";
+import { assertDeadline } from "./deadline-record.ts";
 import { buildOutcome, outcomeProblem } from "./state-outcome.ts";
+// The store is re-exported so every caller of the record keeps one import site;
+// the layout of `.pi/lean-state/` is stated once, in `state-store.ts`.
+export {
+  leanLockFile,
+  leanStateDir,
+  leanStateFile,
+  loadRun,
+  saveRun,
+} from "./state-store.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 
 export const SCHEMA_VERSION = 1;
@@ -119,6 +126,8 @@ export interface LeanRun {
   steps: Step[];
   /** Set once the run is over: the exit code and the reason it ended there. */
   result?: { code: number; reason: string };
+  /** The caller's whole-cycle deadline — see `CycleDeadline` in `deadline-record.ts`. */
+  deadlineMs?: number;
 }
 
 /**
@@ -228,14 +237,6 @@ export class LeanStateError extends Error {
   override readonly name = "LeanStateError";
 }
 
-export function leanStateDir(repoRoot: string): string {
-  return path.join(repoRoot, ".pi", "lean-state");
-}
-
-export function leanStateFile(repoRoot: string, issue: number): string {
-  return path.join(leanStateDir(repoRoot), `${issue}.json`);
-}
-
 export function stepKey(issue: number, state: LeanState, n: number): string {
   return `${issue}:${state}:${n}`;
 }
@@ -289,28 +290,11 @@ export function createRun(
   };
 }
 
-/** A run as found on disk, or `undefined` when no file exists yet. Throws on garbage. */
-export function loadRun(repoRoot: string, issue: number): LeanRun | undefined {
-  const file = leanStateFile(repoRoot, issue);
-  let raw: string;
-  try {
-    raw = readFileSync(file, "utf8");
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === "ENOENT" || code === "ENOTDIR") return undefined;
-    throw new LeanStateError(`cannot read ${file}: ${(err as Error).message}`);
-  }
-  let obj: unknown;
-  try {
-    obj = JSON.parse(raw);
-  } catch (err) {
-    throw new LeanStateError(`${file} is not valid JSON: ${(err as Error).message}`);
-  }
-  return assertRun(obj, file);
-}
-
 /** Field-by-field so a partial file names the missing field instead of `undefined`. */
-function assertRun(obj: unknown, file: string): LeanRun {
+// Exported for `state-store.ts`, the only reader of the file on disk: the record's
+// shape is this module's, the file's is the store's. Called through the store so
+// a resume never drives a record the validator refused.
+export function assertRunFile(obj: unknown, file: string): LeanRun {
   const bad = (msg: string): never => {
     throw new LeanStateError(`${file}: ${msg}`);
   };
@@ -429,6 +413,7 @@ function assertRun(obj: unknown, file: string): LeanRun {
     },
     steps,
     ...(r.result !== undefined ? { result: assertResult(r.result, bad) } : {}),
+    ...(r.deadlineMs === undefined ? {} : { deadlineMs: assertDeadline(r.deadlineMs) }),
   };
 }
 
@@ -447,9 +432,6 @@ function assertResult(
 }
 
 /** Lock file path for a run. One per issue, alongside the state file. */
-export function leanLockFile(repoRoot: string, issue: number): string {
-  return `${leanStateFile(repoRoot, issue)}.lock`;
-}
 
 /** Every state a run can be sitting in mid-flight. */
 const NON_TERMINAL: readonly LeanState[] = [
@@ -473,28 +455,3 @@ const NON_TERMINAL: readonly LeanState[] = [
  * would be a cycle), and `test-lean-state-outcome.ts` pins the two equal.
  */
 export const REPORT_STATES: readonly LeanState[] = ["handback", "decline"];
-
-/**
- * Persist atomically. A failed write cleans up its tmp file and rethrows: the
- * caller keeps the previous good file and learns the save did not happen,
- * rather than believing a step was durable when it was not.
- */
-export function saveRun(repoRoot: string, run: LeanRun): void {
-  const file = leanStateFile(repoRoot, run.issue);
-  mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
-  try {
-    writeFileSync(tmp, `${JSON.stringify(run, null, 2)}\n`, "utf8");
-    renameSync(tmp, file);
-  } catch (err) {
-    // Only ever our own file, at a path we generated, and `renameSync` either
-    // fully replaced the target or did not run — so removing it cannot destroy
-    // durable state.
-    try {
-      rmSync(tmp, { force: true });
-    } catch {
-      /* the tmp file is left behind; the caller already has the real error */
-    }
-    throw err;
-  }
-}

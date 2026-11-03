@@ -29,7 +29,7 @@ import { NDJSON_VERSION } from "../src/headless/ndjson.ts";
 import { PLAN_FLAGS } from "../src/headless/plan.ts";
 import { RESEARCH_FLAGS } from "../src/headless/research.ts";
 import { RESULT_SCHEMA_VERSION } from "../src/headless/result.ts";
-import { WORK_LEAN_FLAGS } from "../src/headless/work-lean.ts";
+import { WORK_LEAN_FLAGS, WORK_LEAN_VALUE_FLAGS } from "../src/headless/work-lean.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -188,6 +188,18 @@ assert(
   caps.features.workLeanResultSchema === 5,
   "features.workLeanResultSchema is 5: the lean verb writes the same schema as work",
 );
+// #1920 items 2, 3 and 6 — `work-lean` now speaks the rest of the host contract
+// its verb flags and features name: the cycle deadline, the host handoff channel,
+// and `failure.cause`. Each name is what lets a host refuse an image that lacks
+// the behaviour rather than discovering the gap mid-cycle.
+assert(
+  WORK_LEAN_VALUE_FLAGS.includes("--timeout") &&
+    caps.verbs["work-lean"].flags.includes("--timeout"),
+  "--timeout is published as a work-lean flag",
+);
+assert(caps.features.leanDeadline === true, "features.leanDeadline is true (#1920 item 2)");
+assert(caps.features.leanHandoffHost === true, "features.leanHandoffHost is true (#1920 item 3)");
+assert(caps.features.leanFailureCause === true, "features.leanFailureCause is true (#1920 item 6)");
 assert(
   caps.contracts.resultSchema.version === caps.features.workLeanResultSchema,
   "the lean result feature and the result schema contract name the same version",

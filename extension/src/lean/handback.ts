@@ -242,7 +242,11 @@ export function handbackBody(
  * The `handback` step. Always `done`; never throws.
  *
  * `post` is the seam the test drives: production hands it `postHandback`, which
- * goes through the forge adapter and the public-hygiene check.
+ * goes through the forge adapter and the public-hygiene check. On the host
+ * channel the caller passes a post that posts nothing (see `lean/command.ts`),
+ * and `posted` is then false with a reason that says the host owns the channel:
+ * `handoff.channel` reads that claim, and a run that reported a comment it never
+ * sent would double the report a host posts itself.
  */
 export async function handbackOutcome(
   ctx: HandlerCtx,

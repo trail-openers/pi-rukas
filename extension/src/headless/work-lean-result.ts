@@ -49,10 +49,9 @@ import {
   newestDecided,
 } from "../lean/state.ts";
 import { budgetSentence, budgetTrio } from "../lean/step-budget.ts";
+import type { DispatchUsageRow } from "../lean/step-budget.ts";
 import { leanUsage } from "../lean/usage-sum.ts";
-import { handoffMarker } from "../work-driver-handoff-channel.ts";
-import { makeHandoffEmittedEvent } from "../work-driver-handoff-post.ts";
-import { initialState } from "../workflow-state.ts";
+import { classifyFailureCause } from "../work-driver-failure-taxonomy.ts";
 import { type HeadlessCap, capStep } from "./caps.ts";
 import { EXIT } from "./exit-code.ts";
 import type { ResultFailure } from "./failure.ts";
@@ -64,6 +63,7 @@ import {
   type StepTiming,
   handoffOf,
 } from "./result.ts";
+import { leanHandoff } from "./work-lean-handoff.ts";
 
 /** What `work` reports for a finished PR waiting on a person (#1675's vocabulary). */
 const AWAITING = "awaiting-human-merge";
@@ -75,9 +75,6 @@ const LEAN_FAILURE_STEP = "handoff" as const;
  * bound and seam as `headless/failure.ts`: redaction happens BEFORE the clip, so
  * a cut cannot leave a fragment no pattern recognises. */
 const TEXT_MAX = 500;
-
-/** The gap `leanHandoff` puts between the marker line and the reason. */
-const BODY_GAP = "\n\n";
 
 /** The run's durable record, named the way the engine names it. */
 function stateFileOf(issue: number): string {
@@ -123,6 +120,20 @@ function newestWorkStep(steps: Step[]): Step | undefined {
   return undefined;
 }
 
+/** The newest dispatch row of a step matching `keep`, or undefined. */
+function lastRow(
+  step: Step | undefined,
+  keep: (row: DispatchUsageRow) => boolean,
+): DispatchUsageRow | undefined {
+  const rows = step?.outcome?.dispatches;
+  if (rows === undefined) return undefined;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const row = rows[i];
+    if (row !== undefined && keep(row)) return row;
+  }
+  return undefined;
+}
+
 /** The role of the newest dispatching step's last child — the child a host blames. */
 function lastRole(steps: Step[]): string | undefined {
   for (let i = steps.length - 1; i >= 0; i--) {
@@ -156,6 +167,13 @@ function lastRole(steps: Step[]): string | undefined {
  * `step` is always `"handoff"` and `role` is the last child of the newest
  * dispatching step, both added only when they have a value: lean's states are
  * not `WorkStep`s, so the one handoff shape `work` uses is the honest answer.
+ *
+ * `cause` is added ONLY where lean actually recorded one, and then through the
+ * SAME classifier `work` uses — `classifyFailureCause`, whose input is the
+ * dispatch's kill. A lean step records the kill's consequence (its budget trio,
+ * its `ok: false` row, the engine's error text) and no kill cause of its own, so
+ * most lean failures have no cause to report and get none: an invented one would
+ * send a host's retry ladder off a fact the run never observed.
  */
 function leanFailure(run: LeanRun): ResultFailure | undefined {
   const steps = run.steps;
@@ -169,6 +187,20 @@ function leanFailure(run: LeanRun): ResultFailure | undefined {
       kind: "timeout",
       message: redactClip(budgetSentence(worked.state, fired), TEXT_MAX),
     };
+    // A `minutes` breach is lean's own wall-clock kill of its child: the bound
+    // fires as `killCause: "child-bound"` and the step's rows carry the failed
+    // row. That pair is the whole of what the classifier reads, so the cause is
+    // read from it rather than assumed. `turns`/`tokens` stop at a turn boundary
+    // and are not kills, so they get no cause — the trio already names them.
+    if (fired.limit === "minutes") {
+      const killed = lastRow(worked, (r) => r.ok === false);
+      if (killed !== undefined) {
+        failure.cause = classifyFailureCause({
+          kind: "dispatch-failed",
+          killCause: "child-bound",
+        }).cause;
+      }
+    }
   } else {
     const step = newestFailureStep(steps);
     if (step === undefined) return undefined;
@@ -352,75 +384,6 @@ function durationOf(steps: Step[]): number {
   const last = steps[steps.length - 1];
   const end = last?.endedAt ?? last?.startedAt;
   return typeof first === "number" && typeof end === "number" ? Math.max(0, end - first) : 0;
-}
-
-/**
- * The run's report, projected through the SAME reader `work`'s result uses.
- *
- * The projection reports only what the run OBSERVED. `handback` and `decline`
- * post their comment themselves and never throw, so the only account of whether
- * it reached the forge is the typed `posted` on their outcome — and a step that
- * recorded no claim at all is NOT delivered either. So:
- *
- *   - `delivery`/`channel` are `dispatch`/`forge` only when `posted === true`:
- *     `delivery` records where a post that HAPPENED came from, so its absence is
- *     "nobody posted", and `channel` stays `forge` because the report was
- *     addressed to the forge and never got there;
- *   - `bodyError: "not-recorded"` with no `body` is `HandoffResult`'s own pair
- *     for "published nothing", so an unposted comment cannot read as posted;
- *   - `labelApplied` is false on every path — lean has no label step, so `true`
- *     would be a claim the run has no step to make (and not `labelSkipped:
- *     "host-channel"` either, for the same reason);
- *   - no `handoffBodyPath`: nothing in `lean/` writes a report file, and
- *     `handoffOf` turns one into `bodyFile` — a path a person would open to find
- *     no file there.
- *
- * `body` is the run's OWN record (the marker line, then the reason the step left
- * on the log), never a re-read of a file — #1327's rule — clipped ONCE, after
- * redaction, to the room the composed body has left, because the reason is a
- * child's text and a host prints this document.
- *
- * A posted report reaches `handoffOf` through `makeHandoffEmittedEvent`, the
- * driver's own producer of that event, so it is a real `WorkEvent`; the state
- * around it is `initialState`'s own value with its `eventLog` replaced by that one
- * event. An UNPOSTED report is built directly instead: the event type REQUIRES a
- * `body` (#1820) and this projection has nothing to put in one when the forge took
- * nothing.
- */
-function leanHandoff(run: LeanRun, cap: HeadlessCap | undefined): HandoffResult | undefined {
-  const reported = newestDecided(run.steps, "handback") ?? newestDecided(run.steps, "decline");
-  const reason = outcomeText(reported?.outcome);
-  if (reason === undefined) return undefined;
-  const at = reported?.endedAt ?? reported?.startedAt ?? 0;
-  const marker = handoffMarker(run.issue, cap);
-  const posted = reported?.outcome?.posted === true;
-  // ONE clip, sized so the COMPOSED body fits `TEXT_MAX`; clipping the reason to
-  // the whole budget and bounding the body again cut the reason away once the
-  // marker was added.
-  const clip = Math.max(0, TEXT_MAX - marker.length - BODY_GAP.length);
-  if (!posted) {
-    // Nothing reached the forge: no delivery provenance and no text —
-    // `HandoffResult`'s own not-delivered pair.
-    return { channel: "forge", marker, labelApplied: false, bodyError: "not-recorded" };
-  }
-  const event = makeHandoffEmittedEvent({
-    at,
-    // Lean posts through no driver seam that returns a URL, so there is no
-    // comment address to record — only whether the post happened.
-    commentUrl: undefined,
-    // Lean has no label step, so it never claims one — posted or not.
-    labelApplied: false,
-    handoffBodyPath: "",
-    // The text the forge took, redacted then clipped to the room the body has
-    // left (`redactClip` scrubs BEFORE it clips, so a cut cannot leave a
-    // fragment no pattern recognises).
-    body: `${marker}${BODY_GAP}${redactClip(reason, clip)}`,
-    delivery: "dispatch",
-    targetType: "issue",
-    targetNumber: run.issue,
-    consolidated: false,
-  });
-  return handoffOf({ ...initialState(run.issue), eventLog: [event] }, cap);
 }
 
 /** The fold's totals flattened into the host contract's `usage` shape. */

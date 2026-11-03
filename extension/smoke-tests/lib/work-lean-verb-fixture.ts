@@ -69,7 +69,7 @@ export function step(state: Step["state"], outcome: Step["outcome"] = { kind: "o
 /** What an injected `run` was asked to do, and what it was asked with. */
 export interface InjectedRun {
   /** What the verb handed the engine as this run's mode. */
-  mode?: { headless?: boolean };
+  mode?: { headless?: boolean; timeoutMs?: number };
   /** Whether the injected run was called at all (argv refusals must not call it). */
   ran: boolean;
 }
@@ -85,9 +85,9 @@ export type VerbRun = Awaited<ReturnType<typeof runVerb>> & InjectedRun;
  */
 export async function verbRun(
   argv: string[],
-  reply: (opts: { headless?: boolean }) => Promise<LeanRunOutcome | undefined>,
+  reply: (opts: { headless?: boolean; timeoutMs?: number }) => Promise<LeanRunOutcome | undefined>,
 ): Promise<VerbRun> {
-  const asked: { headless?: boolean }[] = [];
+  const asked: { headless?: boolean; timeoutMs?: number }[] = [];
   let ran = false;
   const r = await runVerb("work-lean", argv, REPO, (_argv, ctx) =>
     runWorkLeanVerb(argv, ctx, async (_root, _issue, opts) => {

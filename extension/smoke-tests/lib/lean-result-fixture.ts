@@ -105,6 +105,15 @@ export interface LeanLogOpts {
   crashed?: "verify" | "ci";
   /** The run's `counters.draft` (default false) — the engine's own red marker. */
   draftCounter?: boolean;
+  /** The run's `deadlineMs` (default: none) — the arm `--timeout` or
+   *  `PI_ENSEMBLE_CYCLE_DEADLINE` left on the record (#1920 item 2). */
+  deadlineMs?: number;
+  /** A `build` step whose minutes ceiling killed its child, inserted as the
+   *  newest WORKING step ahead of the gate: the trio plus the child's own
+   *  `ok: false` row, which is what turns a `timeout` failure into a classified
+   *  kill (#1920 item 6). A step that merely survived a ceiling goes AFTER the
+   *  gate instead, where position makes the verdict the cause. */
+  minutesBreach?: boolean;
 }
 
 /** The whole log one ending is made of — see the module header for its rules. */
@@ -112,15 +121,36 @@ export function leanLog(opts: LeanLogOpts): Step[] {
   // The 12-char prefix `publish` prints in its reason line, and the full sha
   // `verify` records.
   const head = opts.head ?? HEAD;
-  const steps: Step[] = [
-    stepWith("ready", { kind: "ok" }),
+  const steps: Step[] = [stepWith("ready", { kind: "ok" })];
+  steps.push(
     stepWith("specify", { kind: "ok", dispatches: opts.dispatches }),
     stepWith("build", { kind: "ok" }),
-    stepWith("verify", {
-      kind: opts.verify ?? "green",
-      ...(opts.verify === "red" ? { reason: "acceptance test x is red" } : { verifiedHead: head }),
-    }),
-  ];
+    // A case asking for a minutes breach gets the ceiling as its LAST working step
+    // — the newest one is the only budget trio the projection may read — and no
+    // gate verdict at all: a red gate later in the log would honestly be the
+    // failure's cause instead of the ceiling.
+    ...(opts.minutesBreach === true
+      ? [
+          stepWith("build", {
+            kind: "budget",
+            limit: "minutes",
+            value: 1,
+            used: 1,
+            reason: "build stopped: minutes budget 1 exceeded (used 1)",
+            // The child's own `ok: false` is the single fact the kill classifier
+            // reads: a row that says ok is a run that never observed a kill.
+            dispatches: [{ ...row("developer", { input: 10 }), ok: false, ms: 60_000 }],
+          }),
+        ]
+      : [
+          stepWith("verify", {
+            kind: opts.verify ?? "green",
+            ...(opts.verify === "red"
+              ? { reason: "acceptance test x is red" }
+              : { verifiedHead: head }),
+          }),
+        ]),
+  );
   for (let n = 1; n < (opts.verifySteps ?? 1); n++) {
     // A re-run's verdict, older than the newest one below: reading THIS green
     // over a newer step is what the projection must not do.
@@ -195,12 +225,16 @@ export async function driveLean(
   code: number,
   steps: Step[],
   counters?: Partial<LeanRun["counters"]>,
+  opts?: Pick<LeanLogOpts, "deadlineMs">,
 ): Promise<LeanDrive> {
   // The counters override drives its own verb run rather than patching this one:
   // the record the projection reads is the one the verb was handed.
   const base = fakeRun({ code, state: leanState, steps });
-  const run: LeanRun =
-    counters === undefined ? base.run : { ...base.run, counters: { ...base.run.counters, ...counters } };
+  const run: LeanRun = {
+    ...base.run,
+    ...(counters === undefined ? {} : { counters: { ...base.run.counters, ...counters } }),
+    ...(opts?.deadlineMs === undefined ? {} : { deadlineMs: opts.deadlineMs }),
+  };
   const r = await verbRun(["7"], async () => ({
     summary: `work-lean #7: ${leanState} (exit ${code})`,
     result: { ...base, run },

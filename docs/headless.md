@@ -10,7 +10,7 @@ pi-rukas-headless plan --resume <session> (--answer <file> | --retry | --confirm
 pi-rukas-headless research <topic> [--tier quick|standard|deep|adoption] [--context <text>] [--json]
 pi-rukas-headless agents-md <create|update|check> [root] [file] [--deep] [--json]
 pi-rukas-headless lens-review [--base <ref> --head <ref>] [--since <ref>] [--full] [--context <text>] [--pr <n>] [--json]
-pi-rukas-headless work-lean <issue> [--json]
+pi-rukas-headless work-lean <issue> [--timeout <minutes>] [--json]
 pi-rukas-headless --capabilities
 ```
 
@@ -37,7 +37,7 @@ A headless caller calls `--capabilities` once per image build and once before ea
 - **`research`**: a deep run whose entailment pass could not run carries `"entailment": "unavailable"`.
 - **`agents-md`** documents carry `verb` (`create` / `update` / `check`), `status` (`clean`, `findings`, `gated`, `refused`), `findings[]` and, for `create` / `update`, `wouldWrite`. `root` defaults to the repository root.
 - **`lens-review`** is admitted through the same round budget as `dispatch_lens_review` and writes the review ledger like it. Without `--base` / `--head` it reviews the working tree.
-- **`work-lean`** takes exactly one positional issue number; `--json` is accepted and changes nothing, as with every other S6 subcommand. With `features.workLeanResultSchema` present its document is the schema-5 result (`schemaVersion`, `issues[]` with one entry) in the same field names `work` uses, so a host reads one reader for both engines; the lean-only field is `issues[].prState`. A build without that feature writes lean's own document (`subcommand`, `exitCode`, `issue`, `state`, `summary` (clipped), `steps` (the run's step-log length) and, when the run reached `publish`, `prUrl`). The run's own code is the exit code; the verb adds no policy of its own. `--capabilities` lists its flags under `verbs["work-lean"].flags` and the feature as `features.workLeanResultSchema` (and the verb itself as `features.workLeanVerb`). Operator guide to the engine itself: [lean.md](lean.md).
+- **`work-lean`** takes exactly one positional issue number; `--json` is accepted and changes nothing, as with every other S6 subcommand. `--timeout <minutes>` means what it means to `work` (see `features.cycleDeadlineHandoffAllowance` below): `features.leanDeadline` names a build that honours it, and the same env contract (`PI_ENSEMBLE_CYCLE_DEADLINE`, `PI_ENSEMBLE_CYCLE_BUDGET_MS`) arms the run without the flag. A run the clock stops starts no new step once its deadline is inside the handoff allowance and ends `state: "handed-back"` at exit **10** with a result document — the same answer `work` gives — with the resolved arm persisted on the run's own state record (`deadlineMs`), which is how a host tells a deadline stop from any other handback, and with the words `cycle deadline` in the reason the document reports. The steps that REPORT a run (`handback`, `decline`) are never stopped by the clock, so a run whose deadline passed mid-flight still delivers its document. On `PI_ENSEMBLE_HANDOFF_CHANNEL=host` (`features.leanHandoffHost`) neither reporting step posts to the forge: the body it would have sent is published in `issues[].handoff.body` with `handoff.channel: "host"` and `handoff.labelSkipped: "host-channel"`, and the host posts it. `issues[].failure.cause` (`features.leanFailureCause`) is present only where the run recorded a kill it can classify — a step's `minutes` ceiling whose child row reported `ok: false` — and is classified by the same taxonomy `work` uses; a ceiling that is not a kill (`turns`, `tokens`) gets no cause rather than an invented one. With `features.workLeanResultSchema` present its document is the schema-5 result (`schemaVersion`, `issues[]` with one entry) in the same field names `work` uses, so a host reads one reader for both engines; the lean-only field is `issues[].prState`. A build without that feature writes lean's own document (`subcommand`, `exitCode`, `issue`, `state`, `summary` (clipped), `steps` (the run's step-log length) and, when the run reached `publish`, `prUrl`). The run's own code is the exit code; the verb adds no policy of its own. `--capabilities` lists its flags under `verbs["work-lean"].flags` and the feature as `features.workLeanResultSchema` (and the verb itself as `features.workLeanVerb`). Operator guide to the engine itself: [lean.md](lean.md).
 
 ### Planning sessions
 
@@ -573,7 +573,7 @@ Any other failure in this mode stops on `step-failed:branch` or `step-failed:com
     "research": { "flags": ["--tier", "--context", "--json"] },
     "agents-md": { "flags": ["--deep", "--json"] },
     "lens-review": { "flags": ["--base", "--head", "--since", "--full", "--context", "--pr", "--json"] },
-    "work-lean": { "flags": ["--json"] }
+    "work-lean": { "flags": ["--json", "--timeout"] }
   },
   "inputs": [                  // every PI_ENSEMBLE_* input this build or its wrapper reads
     { "name": "PI_ENSEMBLE_MAX_WORKSTREAMS", "type": "integer", "default": 6, "scope": "cycle" },
@@ -603,7 +603,10 @@ Any other failure in this mode stops on `step-failed:branch` or `step-failed:com
     "usageByRole": true,        // #1368 — issues[].usage.byRole in the result
     "continuePr": true,         // #1468 — work --continue-pr and issues[].continuedPr
     "repeatParkGuard": true,    // #1743 — parks are remembered; a third identical start is refused
-    "workLeanResultSchema": 5   // #1920 — work-lean writes the schema-5 result with issues[].prState
+    "workLeanResultSchema": 5,  // #1920 — work-lean writes the schema-5 result with issues[].prState
+    "leanDeadline": true,       // #1920 — work-lean honours --timeout / PI_ENSEMBLE_CYCLE_DEADLINE
+    "leanHandoffHost": true,    // #1920 — PI_ENSEMBLE_HANDOFF_CHANNEL=host suppresses lean's posts
+    "leanFailureCause": true,   // #1920 — issues[].failure.cause where the run recorded a kill
   },
   "resources": { … }            // #1325 — the host budget and limits; see Resource report
 }
