@@ -108,8 +108,8 @@ import { budgetStopped, passKind } from "./review-step.ts";
 import { closeFixTrees } from "./review-tree.ts";
 import {
   CAUSE_NEW_CRITICAL,
-  CAUSE_NO_CHANGE,
   CAUSE_NOT_ADDRESSED,
+  CAUSE_NO_CHANGE,
   classifyFates,
   openFindings,
 } from "./review-waves.ts";
@@ -369,17 +369,32 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
     });
     if (reGate.stop !== undefined) throw budgetStopped(reGate.stop, rows);
 
-    const fates = classifyFates(open, reReview);
+    // The re-review's OWN gate text, not the first pass's: this is the report of
+    // what the reviewer still says about the fixed head, and it is the only form
+    // in which a non-row finding reaches the operator.
+    const fates = classifyFates(open, { ...reReview, gateFindings: reGate.findings });
     const unresolved = fates.filter((f) => f.fate === "carried");
     if (unresolved.length > 0)
       throw new ReviewInfraError(
-        `${CAUSE_NOT_ADDRESSED}: ${unresolved.map((f) => `${f.severity} ${f.id}`).join("; ").slice(0, 500)} — the fix wave ran, the re-review re-reported these blocking rows against the fixed head, and a second wave is not what a gate that repeated itself needs`,
+        `${CAUSE_NOT_ADDRESSED}: ${unresolved
+          .map((f) => f.line)
+          .join("; ")
+          .slice(
+            0,
+            500,
+          )} — the fix wave ran, the re-review re-reported these blocking rows against the fixed head, and a second wave is not what a gate that repeated itself needs`,
         rows,
       );
     const introduced = fates.filter((f) => f.fate === "new-critical");
     if (introduced.length > 0)
       throw new ReviewInfraError(
-        `${CAUSE_NEW_CRITICAL}: ${introduced.map((f) => `${f.severity} ${f.id}`).join("; ").slice(0, 500)} — the fix range itself holds a CRITICAL the full review did not report, and that is the fix's, not the branch's`,
+        `${CAUSE_NEW_CRITICAL}: ${introduced
+          .map((f) => f.line)
+          .join("; ")
+          .slice(
+            0,
+            500,
+          )} — the fix range itself holds a CRITICAL the full review did not report, and that is the fix's, not the branch's`,
         rows,
       );
     // A CRITICAL the report-only adversarial pass found in the fix range that the
@@ -464,7 +479,9 @@ function cleanPass(
   fixed: boolean,
 ): Outcome {
   const owed =
-    round.note === undefined || round.note.trim() === "" ? "" : `; DISCLOSURE NOT POSTED: ${round.note}`;
+    round.note === undefined || round.note.trim() === ""
+      ? ""
+      : `; DISCLOSURE NOT POSTED: ${round.note}`;
   return {
     kind: passKind(fixed),
     reason: `adversarial and six-lens review clean at ${round.head.slice(0, 12)} (${fixed ? "one fix wave, re-reviewed" : "no blocking findings"})${owed}`,

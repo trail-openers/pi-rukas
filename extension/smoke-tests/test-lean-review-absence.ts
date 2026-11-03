@@ -28,13 +28,13 @@
  *       "review clean". Both shapes are driven: the flagged one, and an
  *       unflagged round that reported no usage at all.
  *
- *   (j) the fixer's tree is named per round AND per run, so a directory nobody
- *       created can never be at its path. The old fixed name meant `worktree
+ *   (j) the fixer's tree is named per arm, wave, attempt AND run, so a directory
+ *       nobody created can never be at its path. The old fixed name meant `worktree
  *       add` was the only thing refusing a non-empty directory, with two awaits
  *       (`provisionWorktree`, then `status`) between it and the clean read — and
  *       nothing tested that read at all. Now: a pre-populated path is a refusal
- *       that never dispatches and never reaches origin, and two rounds of one run
- *       get two different trees.
+ *       that never dispatches and never reaches origin, and every component of the
+ *       name separates a tree that would otherwise be adopted.
  *
  *   (k) a refused integration says what happened to the tree. The restore is
  *       awaited before the throw and its outcome is in the cause, because "the
@@ -62,12 +62,14 @@ import {
   BRANCH,
   FIXER_ROLE,
   cleanLensRound,
+  blockingFinding,
   cleanupRoots,
   ctxFor,
   depsWith,
   frozenBlob,
   fixRunId,
   git,
+  lensRoundWith,
   makeRepo,
   result,
   runStep,
@@ -191,14 +193,17 @@ const { assert, failures } = makeAssert();
   const runId = fixRunId("1700000000000");
   const ctxJ = ctxFor(repoRoot, baseSha, BRANCH);
   ctxJ.now = () => Number(runId);
-  const planted = fixTreeName(repoRoot, 7, "a", 1, 0, runId);
+  const planted = fixTreeName(repoRoot, 7, "l", "full", 0, runId);
   mkdirSync(planted, { recursive: true });
   put(planted, "planted-by-somebody-else.ts", "export const stolen = 1;\n");
   let fixerDispatched = 0;
   const { threw: tj, outcome: oj } = await runStep(
     ctxJ,
     depsWith({
-      adversarial: async () => result({ loopOutcome: "rejected", text: "1. silent catch" }),
+      adversarial: async () => result({ loopOutcome: "approved" }),
+      // The wave needs a blocking round to be dispatched for at all; the row is
+      // never carried, so the ONLY thing that can stop this run is the tree.
+      lens: async () => lensRoundWith("ISSUES_FOUND", [blockingFinding()]),
       dispatch: async (spec: DispatchSpec) => {
         fixerDispatched++;
         put(spec.cwd as string, "fix.ts", "export const x = 1;\n");
@@ -210,11 +215,11 @@ const { assert, failures } = makeAssert();
   );
   assert(
     tj instanceof ReviewInfraError && /could not create the fix worktree/.test(tj.message),
-    `(j1) a directory already at the round's tree path is refused, not adopted (${tj?.message ?? `got ${String(oj?.kind)}`})`,
+    `(j1) a directory already at the wave's tree path is refused, not adopted (${tj?.message ?? `got ${String(oj?.kind)}`})`,
   );
   assert(
     fixerDispatched === 0,
-    "(j1) and the fixer was never paid for a round that cannot be made clean",
+    "(j1) and the fixer was never paid for a wave that cannot be made clean",
   );
   assert(
     git(repoRoot, "rev-parse", `origin/${BRANCH}`) === reviewed,
@@ -222,40 +227,43 @@ const { assert, failures } = makeAssert();
   );
   rmSync(planted, { recursive: true, force: true });
 
-  // (j2) Every (arm, round, attempt, run) quadruple gets its own tree, and the
+  // (j2) Every (arm, wave, attempt, run) quadruple gets its own tree, and the
   // name carries all four: that is what makes "anything here is ours" true without
   // a check, and what makes a RESUME re-derive the path its killed self used.
-  const a = fixTreeName(repoRoot, 7, "a", 1, 0, runId);
-  const b = fixTreeName(repoRoot, 7, "a", 1, 0, runId);
-  const c = fixTreeName(repoRoot, 7, "a", 2, 0, runId);
-  const d = fixTreeName(repoRoot, 7, "a", 1, 0, fixRunId("1700000009999"));
-  const lensArm = fixTreeName(repoRoot, 7, "l", 1, 0, runId);
-  const otherAttempt = fixTreeName(repoRoot, 7, "a", 1, 1, runId);
+  // There is one fixer per wave, so `arm` no longer separates two fixers of one
+  // round — it says WHICH GATE asked, and it still separates the two trees a run
+  // can name, which is the property the adoption bug needed.
+  const a = fixTreeName(repoRoot, 7, "a", "full", 0, runId);
+  const b = fixTreeName(repoRoot, 7, "a", "full", 0, runId);
+  const c = fixTreeName(repoRoot, 7, "a", "fix", 0, runId);
+  const d = fixTreeName(repoRoot, 7, "a", "full", 0, fixRunId("1700000009999"));
+  const lensArm = fixTreeName(repoRoot, 7, "l", "full", 0, runId);
+  const otherAttempt = fixTreeName(repoRoot, 7, "a", "full", 1, runId);
   assert(
     a === b,
-    "(j2) the same (arm, round, attempt, run) derives the SAME path — this is the resume property, and an in-memory counter would break it",
+    "(j2) the same (arm, wave, attempt, run) derives the SAME path — this is the resume property, and an in-memory counter would break it",
   );
-  assert(a !== c, "(j2) a different ROUND is a different tree");
+  assert(a !== c, "(j2) a different WAVE is a different tree");
   assert(a !== d, "(j2) a different RUN is a different tree");
   assert(
     a !== lensArm,
-    "(j2) the lens arm's fix of the same round is a DIFFERENT tree from the adversarial arm's — one round dispatches two fixers, and sharing the path is what made `add --force` adopt a live tree",
+    "(j2) the lens arm's fix is a DIFFERENT tree from the adversarial arm's — sharing a path is what made `add --force` adopt a live tree",
   );
   assert(
     a !== otherAttempt,
-    "(j2) a second concurrent attempt on the same issue, round and run gets its own path, so neither adopts the other's leftovers",
+    "(j2) a second concurrent attempt on the same issue and run gets its own path, so neither adopts the other's leftovers",
   );
   assert(
-    a.includes("lean-7-fix-a-1-0-") && c.includes("lean-7-fix-a-2-0-"),
-    `(j2) and the name itself carries the arm and round it belongs to (${path.basename(a)}, ${path.basename(c)})`,
+    a.includes("lean-7-fix-a-full-0-") && c.includes("lean-7-fix-a-fix-0-"),
+    `(j2) and the name itself carries the arm and wave it belongs to (${path.basename(a)}, ${path.basename(c)})`,
   );
 
   // (j3) The name the step reaches for IS this path: the refusal above quoted it.
   // That is the whole of what this seam can be driven to prove offline — the
   // collision is refused at `add`, before the provisioner runs and before the
-  // clean read, which is the ordering the race lived in. A round that got a clean
+  // clean read, which is the ordering the race lived in. A wave that got a clean
   // tree is already covered by (c) of `test-lean-review-wiring.ts`, which drives
-  // a full fix round through this same `fixTree`.
+  // the fix wave through this same `fixTree`.
   assert(
     tj instanceof ReviewInfraError && tj.message.includes(planted),
     `(j3) the refusal names the exact tree it refused to adopt, so the operator can see whose directory it was (${tj?.message})`,
@@ -293,6 +301,9 @@ const { assert, failures } = makeAssert();
     frozenRun(repoRoot, 7),
     depsWith({
       adversarial: async () => result({ loopOutcome: "rejected", text: "1. silent catch" }),
+      // Same reason as (k2): a clean round dispatches no fixer, and this case is
+      // about what a fixer's integration does when it cheated.
+      lens: async () => lensRoundWith("ISSUES_FOUND", [blockingFinding()]),
       dispatch: cheating,
     }),
   );
@@ -326,6 +337,11 @@ const { assert, failures } = makeAssert();
     ctx2,
     depsWith({
       adversarial: async () => result({ loopOutcome: "rejected", text: "1. silent catch" }),
+      // The cheating fixer rewrites the FROZEN contract, which is what refuses the
+      // integration — so the round must report a blocking finding to buy a fixer at
+      // all. The clean default would dispatch nobody and the restore would never be
+      // attempted, making this case about a tree nobody tried to put back.
+      lens: async () => lensRoundWith("ISSUES_FOUND", [blockingFinding()]),
       dispatch: removeTree,
     }),
   );

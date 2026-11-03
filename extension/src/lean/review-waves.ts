@@ -29,6 +29,9 @@
  * only the tests consult.
  */
 
+import { VERDICT_STATUSES } from "../adversarial-verdict.ts";
+import { neutraliseEvidence } from "../comment-evidence.ts";
+import { findingDescription } from "../lens-review-format.ts";
 import { isCarried } from "../lens-review-types.ts";
 import type { Finding } from "../lens-review-types.ts";
 import type { FindingOutcome } from "./review-args.ts";
@@ -106,6 +109,16 @@ export function openFindings(round: { reported: Finding[] }): OpenFindings {
 }
 
 /**
+ * One row as the operator reads it in the handback: severity, lens, citation and
+ * title, on one line, with the row's own evidence neutralised exactly as the
+ * review layer neutralises it before it reaches a post. A refusal that carried
+ * only `findingKey` output could not be triaged without the transcript.
+ */
+export function renderFinding(f: Finding): string {
+  return `[${f.severity}] ${f.lens} ${f.path}:${f.line ?? "?"} — ${neutraliseEvidence(f.title)}: ${neutraliseEvidence(findingDescription(f))}`;
+}
+
+/**
  * What the re-review of the fix diff decided about every finding in play.
  *
  * Three fates, two of them read straight off the review layer's own per-row
@@ -132,10 +145,28 @@ export function openFindings(round: { reported: Finding[] }): OpenFindings {
  */
 export function classifyFates(
   blockingBefore: OpenFindings,
-  reReview: { reported: Finding[] },
+  reReview: { reported: Finding[]; gateFindings?: string; verdict: string },
 ): FindingOutcome[] {
   const outcomes: FindingOutcome[] = [];
   const seen = new Set<string>();
+  // The gate's own words, when the step has them. A finding the adversarial gate
+  // raised arrives as the reviewer's prose, not as a row: it is handed to the
+  // fixer and it has to appear in the handback, or the operator is told the wave
+  // stopped on a finding whose wording only ever existed in the transcript.
+  const gateText = (reReview.gateFindings ?? "").trim();
+  // A verdict the review layer calls incomplete is refused upstream
+  // (`NO_FIX_VERDICTS` in `review.ts`) and must never be rendered as a finding, so
+  // only a judgement in the layer's own verdict enum gets a row here. A `REJECTED`
+  // or `ERROR` string never enters that enum, so it is not shown either: there is
+  // nothing triageable in it, and `assertRan`/the gate have already refused it.
+  if (gateText !== "" && (VERDICT_STATUSES as readonly string[]).includes(reReview.verdict))
+    outcomes.push({
+      id: "adversarial-gate",
+      severity: "HIGH",
+      line: `[HIGH] ADVERSARIAL ${gateText.slice(0, 300)}`,
+      fate: "carried",
+      open: true,
+    });
   for (const f of reReview.reported) {
     const key = findingKey(f);
     seen.add(key);
@@ -153,6 +184,11 @@ export function classifyFates(
     outcomes.push({
       id: key,
       severity: f.severity,
+      // The rendered line is what makes a refusal triageable: the step's own text
+      // carries these, and an id alone names a coordinate the operator cannot read
+      // without the transcript. The row's own fields, rendered by this module, are
+      // that line.
+      line: renderFinding(f),
       fate: blocking ? (isCarried(f) ? "carried" : "new-critical") : "addressed",
       open: blocking,
     });
@@ -162,7 +198,13 @@ export function classifyFates(
     // Not re-reported, not carried: the delta round reviewed the fix and no
     // longer stands by the row. `rowFate` resolves on a changed cited line, and
     // the fix range is all this round covered.
-    outcomes.push({ id: key, severity: f.severity, fate: "addressed", open: false });
+    outcomes.push({
+      id: key,
+      severity: f.severity,
+      line: renderFinding(f),
+      fate: "addressed",
+      open: false,
+    });
   }
   return outcomes;
 }

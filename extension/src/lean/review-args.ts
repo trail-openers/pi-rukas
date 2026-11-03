@@ -114,12 +114,16 @@ export interface FindingOutcome {
   /** The finding's citation, as `findingKey` renders it. */
   id: string;
   severity: Finding["severity"];
+  /**
+   * The row rendered for a human — `renderFinding`'s one-line form. The step's
+   * refusal carries these rather than the bare citation: an id names a coordinate
+   * the operator cannot read without opening the transcript.
+   */
+  line: string;
   fate: FindingFate;
   /** True for a row still open after the re-review (`carried` or `new-critical`). */
   open: boolean;
 }
-
-
 
 /**
  * Which half of the step's ONE wave a gate call belongs to.

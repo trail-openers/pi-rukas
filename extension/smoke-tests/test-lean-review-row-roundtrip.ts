@@ -318,11 +318,11 @@ import {
       },
     }),
   );
-  assert(threw === undefined, `(6) the fix round completed (${threw?.message})`);
-  const name = /^lean-7-fix-([al])-(\d+)-(\d+)-(\d{13,17})$/.exec(seenTree);
+  assert(threw === undefined, `(6) the fix wave completed (${threw?.message})`);
+  const name = /^lean-7-fix-([al])-(full|fix)-(\d+)-(\d{13,17})$/.exec(seenTree);
   assert(
     name !== null,
-    `(6) precondition: the fixer ran in a tree named for arm/round/attempt/epoch (${seenTree})`,
+    `(6) precondition: the fixer ran in a tree named for arm/wave/attempt/epoch (${seenTree})`,
   );
   const id = fixerOf(outcome?.dispatches ?? [])?.runId;
   assert(
@@ -331,7 +331,7 @@ import {
   );
   assert(
     id?.endsWith(`-${name?.[1]}-${name?.[2]}-${name?.[3]}`) === true,
-    `(6) and the arm/round/attempt suffix, which is what keeps the two arms of one round off one tree — the collision \`worktree add --force\` ADOPTS rather than refuses (${String(id)})`,
+    `(6) and the arm/wave/attempt suffix, which is what keeps two fixers off one tree — the collision \`worktree add --force\` ADOPTS rather than refuses (${String(id)})`,
   );
 }
 

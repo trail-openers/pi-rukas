@@ -155,9 +155,7 @@ export async function adversarialGate(
       issue: ctx.issue,
       issueBody: opts.issueBody,
       wave: opts.wave,
-      ...(opts.blockingFindings === undefined
-        ? {}
-        : { blockingFindings: opts.blockingFindings }),
+      ...(opts.blockingFindings === undefined ? {} : { blockingFindings: opts.blockingFindings }),
       headless: deps.headless,
       budget: opts.budget,
     });
@@ -183,8 +181,7 @@ export async function adversarialGate(
   // for something that was a decision the operator made.
   const fired = opts.budget.fired(result);
   if (fired !== undefined) return { stop: fired };
-  if (result.loopOutcome === "approved")
-    return { findings: openFromPass(result), critical: false };
+  if (result.loopOutcome === "approved") return { findings: openFromPass(result), critical: false };
   if (result.loopOutcome === "rejected") {
     // A real `VERDICT:` line is what makes a rejection a VERDICT. `parseVerdict`
     // defaults the status when the reviewer's reply holds no marker, and the

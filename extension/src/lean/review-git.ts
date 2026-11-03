@@ -37,8 +37,8 @@ import { assertSafeRef } from "../worktree-loss.ts";
 import { provisionWorktree } from "../worktree-provision.ts";
 import { frozenMatches } from "./build-git.ts";
 import type { HandlerCtx } from "./engine.ts";
-import { type ReviewFixArgs, fixPrompt } from "./review-deps.ts";
 import type { ReviewWave } from "./review-args.ts";
+import { type ReviewFixArgs, fixPrompt } from "./review-deps.ts";
 import {
   type FixArm,
   closeFixTrees,
