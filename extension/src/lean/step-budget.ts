@@ -409,8 +409,11 @@ export function budgetVerdict(state: LeanState, fired: BudgetFired): Outcome {
  * record holding one has the array dropped WHOLE at load, so the poisoned row has
  * to be gone from what the verdict carries rather than merely inside the tail.
  * Rebuilding also makes the record the run's own: `slice` copies the array but
- * not its rows, so freezing is what stops a caller that reuses or clears its row
- * buffer afterwards from rewriting what the run said it paid.
+ * not its rows, so freezing array, rows and each row's `usage` is what stops a
+ * caller that reuses or clears its row buffer afterwards from rewriting what the
+ * run said it paid. The verdict itself is frozen for the same reason: the engine
+ * stores this object into the run it then persists, so a writer that came after
+ * the step would otherwise be editing the record on its way to disk.
  */
 export function budgetVerdictWithRows(
   state: LeanState,
@@ -420,6 +423,12 @@ export function budgetVerdictWithRows(
   const verdict = budgetVerdict(state, fired);
   if (rows.length === 0) return verdict;
   const dispatches = validatedDispatches(rows.slice(-DISPATCHES_MAX_ROWS));
-  dispatches.forEach(Object.freeze);
-  return { ...verdict, dispatches: Object.freeze(dispatches) as DispatchUsageRow[] };
+  for (const row of dispatches) {
+    Object.freeze(row.usage);
+    Object.freeze(row);
+  }
+  return Object.freeze({
+    ...verdict,
+    dispatches: Object.freeze(dispatches) as DispatchUsageRow[],
+  });
 }
