@@ -146,7 +146,7 @@ pins the table against literals, so changing a number is a deliberate edit):
 | `specify` | 250 | 30M | 20 |
 | `build` | 400 | 60M | 45 |
 | `challenge` | 400 | 60M | 15 |
-| `review` | 400 | 60M | 15 |
+| `review` | 400 | 60M | 30 |
 | `ci` | 0 | 0 | 30 |
 
 **When a budget fires.** `turns` and `tokens` abort at once at a turn boundary.

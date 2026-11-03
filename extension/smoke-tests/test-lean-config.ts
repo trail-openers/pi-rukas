@@ -348,7 +348,7 @@ const EXPECTED_BUDGETS: Record<string, Budget> = {
   specify: { turns: 250, tokens: 30_000_000, minutes: 20 },
   build: { turns: 400, tokens: 60_000_000, minutes: 45 },
   challenge: { turns: 400, tokens: 60_000_000, minutes: 15 },
-  review: { turns: 400, tokens: 60_000_000, minutes: 15 },
+  review: { turns: 400, tokens: 60_000_000, minutes: 30 },
   ci: { turns: 0, tokens: 0, minutes: 30 },
 };
 
