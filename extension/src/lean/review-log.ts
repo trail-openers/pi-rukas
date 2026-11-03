@@ -17,6 +17,7 @@
  * gone, and these readers are the only way a resumed attempt gets back the tree it
  * left, the PR it is disclosing to, and the verdict its own finished passes earned.
  */
+import type { OUTCOME_KINDS } from "./machine.ts";
 import { isRunId } from "./state-dispatches.ts";
 import { validPrUrl } from "./state-outcome.ts";
 import type { Step } from "./state.ts";
@@ -112,8 +113,13 @@ export function fixRunIdFromLog(steps: Step[]): FixRunId | undefined {
  * Exported for the same reason `FIX_RUN_ID_SHAPE` is: the loader and the smoke
  * fixtures both need the set of kinds a pass may carry, and a second literal they
  * drift apart is how a fixture starts asserting against a shape no writer emits.
+ *
+ * Typed against the registry itself rather than `string[]`: the machine's
+ * `review` entry is the authority on which kinds a pass may carry, so a kind
+ * renamed in the table makes this line refuse to compile instead of letting the
+ * reader quietly stop matching the passes it exists to count.
  */
-export const PASS_KINDS: readonly string[] = ["done", "fixed"];
+export const PASS_KINDS: readonly (typeof OUTCOME_KINDS.review)[number][] = ["done", "fixed"];
 
 /**
  * Did any review pass of THIS run integrate a fix, i.e. push commits to the run's
@@ -146,7 +152,11 @@ export function fixedFromLog(steps: Step[]): boolean {
     (step) =>
       step.state === REVIEW_STATE &&
       step.outcome !== undefined &&
-      PASS_KINDS.includes(step.outcome.kind) &&
+      // `Outcome.kind` is `string` by design (the loader accepts any kind a
+      // handler may return), so the membership test widens the needle rather than
+      // the list: `PASS_KINDS` keeps its registry-derived element type and a
+      // renamed kind in the table still fails this file to compile.
+      PASS_KINDS.includes(step.outcome.kind as (typeof PASS_KINDS)[number]) &&
       step.outcome.dispatches?.some((row) => row.role === FIXER_ROLE) === true,
   );
 }
@@ -222,5 +232,11 @@ export function prNumberFromLog(steps: Step[]): number | undefined {
   return Number.isSafeInteger(n) && n > 0 ? n : undefined;
 }
 
-/** The state whose handler these readers serve; a constant, not a parameter. */
-const REVIEW_STATE = "review";
+/**
+ * The state whose handler these readers serve; a constant, not a parameter.
+ *
+ * Exported because the step's own budget sentence keys on the same name: a
+ * second literal is a second answer to "which state is this", and the two
+ * drift apart exactly when a cause line stops matching the log it describes.
+ */
+export const REVIEW_STATE = "review";

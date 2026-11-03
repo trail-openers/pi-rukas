@@ -175,9 +175,13 @@ const { assert, failures } = makeAssert();
     }),
   );
   assert(threw === undefined, `(c) a fix round does not throw (${threw?.message})`);
+  // Exactly `fixed`, not `passed()`: this case proves below that origin's branch
+  // moved, and the table routes a moved head to `verify` ONLY on `fixed` — a
+  // `done` here would send the run to `ci` over a head its newest verify does not
+  // describe. `passed()` accepts both kinds and would not tell them apart.
   assert(
-    passed(outcome?.kind),
-    `(c) the run PASSES once the re-review is clean, on the kind a fix round earns (got ${String(outcome?.kind)})`,
+    outcome?.kind === "fixed",
+    `(c) the run PASSES on the kind a fix round earns — fixed, so the table re-verifies (got ${String(outcome?.kind)})`,
   );
   const branchHead = git(repoRoot, "rev-parse", `origin/${BRANCH}`);
   assert(branchHead !== head, "(c) origin's branch moved: the fixer's commit is on it");
@@ -229,8 +233,8 @@ const { assert, failures } = makeAssert();
     }),
   );
   assert(
-    second.threw === undefined && passed(second.outcome?.kind),
-    `(c2) a fix round touching ONLY unfrozen files passes the frozen proof — the probe hashes bytes, not an object id (${second.threw?.message ?? String(second.outcome?.kind)})`,
+    second.threw === undefined && second.outcome?.kind === "fixed",
+    `(c2) a fix round touching ONLY unfrozen files passes the frozen proof — the probe hashes bytes, not an object id (${second.threw?.message ?? `kind ${String(second.outcome?.kind)}`})`,
   );
   assert(
     git(repoRoot, "log", "--format=%s", `origin/${BRANCH}`).includes("fix: the second finding"),

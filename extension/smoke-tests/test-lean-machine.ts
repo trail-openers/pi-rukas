@@ -34,7 +34,7 @@ import {
   TERMINAL_STATES,
   isTerminal,
 } from "../src/lean/state.ts";
-import { DECLINE_SOURCES, NON_TERMINAL_STATES, counterVariants } from "./lib/lean-machine-edges.ts";
+import { REFUSED_PAIRS } from "./lib/lean-machine-edges.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -205,29 +205,11 @@ assert(
 );
 
 // ── unlisted pairs are refused, not defaulted ──────────────────────────────
-
-const refused: Array<[LeanState, string]> = [
-  ["ready", "done"],
-  ["ready", "green"],
-  ["specify", "fail"],
-  ["specify", "red"],
-  ["build", "green"],
-  ["build", "done"],
-  ["challenge", "ok"],
-  ["verify", "exhausted"],
-  ["publish", "red"],
-  ["review", "ok"],
-  ["review", "budget"],
-  ["review", "green"],
-  ["ci", "done"],
-  ["land", "ok"],
-  ["handback", "ok"],
-  ["decline", "green"],
-  ["landed", "merged"],
-  ["not-ready", "ok"],
-  ["handed-back", "done"],
-];
-for (const [state, kind] of refused) {
+//
+// The list is the declared registry's exact complement and lives beside
+// `DECLINE_SOURCES` in `lib/lean-machine-edges.ts`, so an author adding a kind
+// meets both halves in one place.
+for (const [state, kind] of REFUSED_PAIRS as ReadonlyArray<[LeanState, string]>) {
   assert(!hasTransition(state, kind), `${state} + ${kind} is refused by hasTransition`);
   let err: unknown;
   try {
@@ -308,64 +290,10 @@ assert(
   next(run("review"), { kind: "done" }).counters.reviewDone === true,
   "review done sets reviewDone",
 );
-// A review that ran a fix round has PUSHED: `review-git.ts`'s `integrate` moves
-// origin onto the fixer's commits. The newest `verify` then describes a commit
-// that is no longer the head, and `ci` refuses exactly that (its `verifiedHead`
-// read and `assertDiskAtVerifiedHead`), so routing that run to `ci` ends it in a
-// throw and its fix commits are never verified. The step says which of the two
-// happened with its KIND — `fixed` re-verifies, `done` ships — and the fact comes
-// from the durable log (`fixedFromLog` in `review-log.ts`), not a counter: the
-// log is what a resumed attempt can read, and a counter in the snapshot would be
-// a second copy of a fact the step log already records.
-{
-  // Both arms asserted as a PAIR, because a table that always went to `verify`
-  // would pass a single positive assertion — and the `done` arm is the one every
-  // clean run takes, so it is the arm a regression here would silently park.
-  const moved = next(run("review"), { kind: "fixed" });
-  const still = next(run("review"), { kind: "done" });
-  assert(
-    moved.state === "verify",
-    `review fixed → verify, so the pushed fix commits are certified before CI (got ${moved.state})`,
-  );
-  assert(
-    still.state === "ci",
-    `review done still → ci, the edge that ships every clean run (got ${still.state})`,
-  );
-  // A green verify on that re-verification publishes, and the SECOND publish
-  // must go to `ci` and not back for another six-lens pass: the run would
-  // otherwise loop review forever. `reviewDone` is set on BOTH arms out of
-  // review, so the pair is what proves it — an edit that set it only on the
-  // unmoved arm would route this publish back to `review`.
-  const publishedAgain = next(
-    run("publish", { counters: { ...INITIAL_COUNTERS, reviewDone: true } }),
-    { kind: "ok" },
-  );
-  assert(
-    publishedAgain.state === "ci",
-    `and the run that re-verified goes publish → ci, not back through review again (got ${publishedAgain.state})`,
-  );
-  assert(
-    moved.counters.reviewDone === true && still.counters.reviewDone === true,
-    "both review arms spend the review round, so neither can re-rehearse the six lenses",
-  );
-  // `fixed` must be a PLAIN move: a re-verification is not a build round, and a
-  // run that spent its build attempts before the review would otherwise find this
-  // green verify routed to a draft (or a handback) instead of to publish.
-  assert(
-    moved.counters.buildAttempts === 0,
-    `review fixed spends NO build attempt (got ${String(moved.counters.buildAttempts)})`,
-  );
-}
-// The step's two kinds are the ONLY way out of it. What a handler returns is
-// both gates clearing, with or without a fix round; everything else — a gate that
-// could not run, findings still open at the bound, a fix round that broke the
-// frozen contract, a child the budget stopped — is a throw the engine turns into a
-// handback. A third kind would be a route for an unreviewed head to reach `ci`, so
-// the table having exactly these two is the thing asserted.
-assert(
-  JSON.stringify(outcomeKindsFor("review")) === JSON.stringify(["done", "fixed"]),
-  `review has exactly the two kinds a pass can carry, "done" and "fixed" (got ${JSON.stringify(outcomeKindsFor("review"))})`,
-);
+// A review that ran a fix round has PUSHED and the two kinds that say so —
+// `fixed` re-verifies, `done` ships — are asserted as a PAIR, together with the
+// claim that they are the step's only two, in their own file:
+// `test-lean-machine-review.ts`. Split for the 500-line gate (AGENTS.md §12).
 assert(next(run("ci"), { kind: "green" }).state === "land", "ci green → land");
 assert(next(run("land"), { kind: "merged" }).state === "landed", "land merged → landed");
 assert(next(run("land"), { kind: "refused" }).state === "handback", "land refused → handback");
@@ -451,7 +379,7 @@ assert(
 // return: `build + ok` at the cap must stop building. Without this edge a
 // handler that never returned `exhausted` walked verify:red → build:ok →
 // verify → publish → ci:green → land forever, and MAX_BUILD_ATTEMPTS was
-// advisory. Asserted on both branches of `ok` (challenge owed / already done).
+// advisory.
 for (const challengeDone of [false, true]) {
   const atCap = next(
     run("build", {
@@ -506,27 +434,36 @@ for (const [state, kind] of [
 // itself — otherwise `build + ok`, which also spends an attempt, would double
 // the charge on the way back. Assert the pair, because asserting the flag on
 // the red edge alone is what let this read as done while it was wrong.
-const ciRed = next(run("ci"), { kind: "red" });
-assert(
-  ciRed.state === "build" && ciRed.counters.ciFixUsed === true,
-  "ci red → build and charges the one fix round",
-);
-const ciFixBuild = next(run("build", { counters: { ...INITIAL_COUNTERS, ciFixUsed: false } }), {
-  kind: "ok",
-});
-assert(ciFixBuild.counters.ciFixUsed === false, "an ordinary build does not charge the fix round");
+{
+  const ciRed = next(run("ci"), { kind: "red" });
+  assert(
+    ciRed.state === "build" && ciRed.counters.ciFixUsed === true,
+    "ci red → build and charges the one fix round",
+  );
+  const ciFixBuild = next(
+    run("build", { counters: { ...INITIAL_COUNTERS, ciFixUsed: false } }),
+    { kind: "ok" },
+  );
+  assert(
+    ciFixBuild.counters.ciFixUsed === false,
+    "an ordinary build does not charge the fix round",
+  );
+  // The draft a run already carries survives a CI fix round; the flag is sticky.
+  const ciFixDraft = next(run("ci", { counters: { ...INITIAL_COUNTERS, draft: true } }), {
+    kind: "red",
+  });
+  assert(ciFixDraft.counters.draft === true, "a draft stays a draft through the CI fix round");
+  const ciFixPlain = next(run("ci"), { kind: "red" });
+  assert(
+    ciFixPlain.counters.draft === false,
+    "a non-draft is not turned into one by a CI fix round",
+  );
+}
 assert(
   next(run("ci", { counters: { ...INITIAL_COUNTERS, ciFixUsed: true } }), { kind: "red" }).state ===
     "handback",
   "ci red with the round already charged → handback",
 );
-// The draft a run already carries survives a CI fix round; the flag is sticky.
-const ciFixDraft = next(run("ci", { counters: { ...INITIAL_COUNTERS, draft: true } }), {
-  kind: "red",
-});
-assert(ciFixDraft.counters.draft === true, "a draft stays a draft through the CI fix round");
-const ciFixPlain = next(run("ci"), { kind: "red" });
-assert(ciFixPlain.counters.draft === false, "a non-draft is not turned into one by a CI fix round");
 
 // ── who may reach the refusal, and who may not ────────────────────
 //

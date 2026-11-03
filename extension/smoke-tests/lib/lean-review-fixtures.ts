@@ -230,7 +230,10 @@ export async function setup(opts: {
  * quietly pass on nothing.
  */
 export function passed(kind: string | undefined): boolean {
-  return kind !== undefined && PASS_KINDS.includes(kind);
+  // The needle widens, not the list — see `PASS_KINDS` in `review-log.ts`: the
+  // element type stays the registry's, so this helper cannot drift from the kinds
+  // the table actually routes on.
+  return kind !== undefined && PASS_KINDS.includes(kind as (typeof PASS_KINDS)[number]);
 }
 
 export const BRANCH = "lean/issue-7";

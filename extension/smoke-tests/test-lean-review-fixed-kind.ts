@@ -36,7 +36,7 @@ import {
 } from "./lib/lean-review-fixtures.ts";
 import type { DispatchUsageRow, FixRunId } from "../src/lean/step-budget.ts";
 import type { Outcome, Step } from "../src/lean/state.ts";
-import { fixedFromLog } from "../src/lean/review-log.ts";
+import { PASS_KINDS, fixedFromLog } from "../src/lean/review-log.ts";
 
 const { assert, failures } = makeAssert();
 
@@ -129,7 +129,6 @@ const { assert, failures } = makeAssert();
         cacheWrite: 0,
         cost: 0,
         turns: 1,
-        toolUses: 1,
       },
       runId: "1700000000000-a-1-0" as FixRunId,
     },
@@ -139,7 +138,7 @@ const { assert, failures } = makeAssert();
     state: "review",
     startedAt: 1,
     endedAt: 2,
-    outcome: { kind: "done", reason: "a pass that fixed", dispatches: rows } as Outcome,
+    outcome: { kind: "done", reason: "a pass that fixed", dispatches: rows },
   };
   // An `error` entry is a throw, and every throw in this step happens on a round
   // that moved nothing (`integrate`'s `fail()`, `assertFixAdvanced`). Counting one
@@ -147,7 +146,7 @@ const { assert, failures } = makeAssert();
   const errored: Step = {
     ...passed,
     key: "7:review:1",
-    outcome: { kind: "error", message: "the fixer died", dispatches: rows } as Outcome,
+    outcome: { kind: "error", message: "the fixer died", dispatches: rows },
   };
   // The engine's replay marker: the undecided entry of the state being re-run. It
   // carries no outcome, so it can never be the pass a resume reads its verdict
@@ -172,13 +171,16 @@ const { assert, failures } = makeAssert();
   // A row is only a COST record — it rides on the outcome whatever the kind — so
   // the reader must key on the state. The fixer's role IS the builder's, which
   // makes this the case that keeps a run whose CI went red from calling a build's
-  // fixer a review fix and re-verifying a head its review never moved.
+  // fixer a review fix and re-verifying a head its review never moved. The kind is
+  // drawn from `PASS_KINDS`, not invented: with a kind the reader already rejects
+  // (`ok`, `error`, …) the kind test alone makes this false and the `state` guard
+  // is never reached — the case would pass with the guard deleted.
   const builder: Step = {
     key: "7:build:0",
     state: "build",
     startedAt: 1,
     endedAt: 2,
-    outcome: { kind: "ok", dispatches: rows } as Outcome,
+    outcome: { kind: PASS_KINDS[0] ?? "done", dispatches: rows },
   };
   assert(
     fixedFromLog([replay, builder]) === false,

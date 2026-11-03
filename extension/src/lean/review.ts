@@ -7,7 +7,9 @@
  * step routes its verdict) and `runLensReview` for the six lenses. What is
  * lean's own is which tree they read, who fixes what they find, and when the
  * loop stops. Where the bytes are and how they move is `review-git.ts` and
- * `review-tree.ts`; this file is the decision procedure.
+ * `review-tree.ts`; the shapes the two gates are called with are
+ * `review-args.ts`; what the step says about its own cost is `review-step.ts`;
+ * this file is the decision procedure.
  *
  * **Both gates read a resolved commit, never a working copy.** A gate approves
  * the bytes at a commit, and the only value that cannot be dirtied underneath
@@ -62,8 +64,8 @@
  * table where the truth is a stopped child.
  */
 
-import type { LensReviewSummary, Verdict } from "../lens-review-format.ts";
-import type { Finding, LensRunResult } from "../lens-review-types.ts";
+import type { Verdict } from "../lens-review-format.ts";
+import type { Finding } from "../lens-review-types.ts";
 import type { runLensReview } from "../lens-review.ts";
 import { traceWarn } from "../trace.ts";
 import type { DispatchResult, DispatchSpec, DispatchUsage } from "../types.ts";
@@ -84,6 +86,7 @@ import {
   reviewAttemptFromLog,
 } from "./review-log.ts";
 import { assertFixAdvanced, stagnantAgainstFix } from "./review-progress.ts";
+import { budgetStopped, passKind } from "./review-step.ts";
 import { closeFixTrees } from "./review-tree.ts";
 import { specifyBranch } from "./specify-tree.ts";
 import { DISPATCHES_MAX_ROWS } from "./state-outcome.ts";
@@ -94,36 +97,7 @@ export { ReviewInfraError } from "./review-errors.ts";
 import { ReviewInfraError } from "./review-errors.ts";
 import type { Outcome } from "./state.ts";
 import type { BudgetArms, BudgetFired, DispatchUsageRow, FixRunId } from "./step-budget.ts";
-import { armBudget, budgetFor, budgetSentence } from "./step-budget.ts";
-
-/** The step's own throw: the run hands back, with this sentence as its cause. */
-
-/**
- * The state this step records under — its budget's row in `budgets`, and the
- * state name every cause line and cost row is keyed by.
- */
-const STEP_NAME = "review";
-
-/**
- * The cause for a child the operator's ceiling stopped, with the rows the step
- * paid for attached.
- *
- * The message IS `budgetSentence` — the one renderer of a breach, shared with
- * `handback`'s cause and the headless result's `failure.message` — and nothing
- * else. Every other step reports a breach as a `budget` outcome carrying the
- * typed `limit`/`value`/`used` trio, which is what those two readers build the
- * sentence FROM; `review` has no `budget` kind in the table, so the trio would be
- * fields no reader consults and the sentence is what this step can actually hand
- * back. A message of its own wording is how the three surfaces start disagreeing
- * about which lever fired.
- *
- * What rides on the error rather than in the message is the cost: the rows go to
- * `errorOutcome`, which puts them on the step record, and a handback that cannot
- * say what the stopped children cost understates the run.
- */
-function budgetStopped(fired: BudgetFired, rows: DispatchUsageRow[]): ReviewInfraError {
-  return new ReviewInfraError(budgetSentence(STEP_NAME, fired), rows);
-}
+import { armBudget, budgetFor } from "./step-budget.ts";
 
 /**
  * How many fix rounds this step will pay for. A module constant, not an
@@ -166,66 +140,11 @@ const NO_FIX_VERDICTS: readonly Verdict[] = [
 /** The fixer's wall clock, the shape the other steps pass as `childBoundMs`. */
 export const FIX_BOUND_MS = 20 * 60_000;
 
-/**
- * What one six-lens round answered, as the step reads it.
- *
- * `verdict`/`usage`/`note`/`noReview` are the review layer's own summary fields
- * rather than a hand-restated copy: `Pick<LensReviewSummary, ...>` means the
- * compiler refuses this type the moment the layer renames or retypes one of
- * them, which is exactly when a hand-written copy would have quietly kept
- * reading `undefined`.
- */
-export type LensRound = Pick<LensReviewSummary, "verdict" | "usage" | "note" | "noReview"> & {
-  /** The round's findings as the text a fixer is handed — one line each. */
-  findings: string;
-  /**
-   * One record per lens child that ran, for the step's cost rows (see
-   * `lensRows`). Carried rather than folded here because the fold lives with
-   * the other cost rows in `step-budget.ts`, next to `dispatchUsageRow`.
-   */
-  lenses: LensRunResult[];
-};
-
-/** What the step hands one round of the adversarial gate. */
-export interface AdversarialArgs {
-  base: string;
-  head: string;
-  branch: string;
-  cwd: string;
-  issue: number;
-  issueBody: string;
-  round: number;
-  headless: boolean;
-  /** The step's armed budget: the child's bound, its abort, its progress hook. */
-  budget: BudgetArms;
-}
-
-/** What the step hands one round of the six-lens pass. */
-export interface LensArgs {
-  base: string;
-  head: string;
-  branch: string;
-  cwd: string;
-  round: number;
-  /**
-   * The run's PR number, when this run opened one. `publish` records the PR's
-   * URL and the number is the tail of it; without it the review layer has to
-   * ask the forge which PR belongs to the branch on every ISSUES_FOUND round
-   * (a `gh pr list` per round for an answer this run already holds), and the
-   * round's residual-findings disclosure is keyed on whatever that lookup
-   * picked.
-   */
-  pr: number | undefined;
-  /** The context lines this step composes (see `lensContext` in `review-deps.ts`). */
-  context: string;
-  /** Post-change prose and the deterministic claim scan, read from the branch ref. */
-  evidence: string | undefined;
-  extraFindings: Finding[];
-  /** The headless trust stamp this run's children carry. */
-  headless: boolean;
-  /** The step's armed budget, threaded to the lens children. */
-  budget: BudgetArms;
-}
+// The two gates' argument shapes and the lens round's summary live in
+// `review-args.ts`; re-exported so every existing `import { ... } from
+// "./review.ts"` — including the smoke fixtures' — keeps working.
+export type { AdversarialArgs, LensArgs, LensRound } from "./review-args.ts";
+import type { AdversarialArgs, LensArgs, LensRound } from "./review-args.ts";
 
 /**
  * The fixer's tree identity: the epoch milliseconds its name is minted from.
@@ -505,15 +424,12 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
         // the step's cost rows entirely, silently under-billing the child that
         // costs the most.
         //
-        // **`fixed` or `done`.** The two kinds differ in one fact: did a fix round
-        // push commits, in which case the newest `verify` certifies a head that is
-        // no longer the branch tip and `ci` refuses to look at it. The loop's own
-        // count answers that; `fixedFromLog` answers it of the durable log for the
-        // one case the count cannot see — the attempt that resumes after a crash,
-        // which remembers nothing and still stands on a moved head.
+        // **`fixed` or `done`.** The one fact the two kinds differ in is whether
+        // a fix round pushed commits; `passKind` reads that pair and says why the
+        // answer cannot come from the loop's count alone.
         const fixed = fixRounds > 0 || fixedFromLog(ctx.steps);
         return {
-          kind: fixed ? "fixed" : "done",
+          kind: passKind(fixed),
           reason: `adversarial and six-lens review clean at ${lens.head.slice(0, 12)} (${String(round)} round(s)${
             fixed ? `, ${String(fixRounds)} with a fix round` : ""
           })${owed}`,

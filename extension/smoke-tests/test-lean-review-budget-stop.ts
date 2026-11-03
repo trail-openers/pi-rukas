@@ -68,8 +68,6 @@ function cfgWith(budget: Partial<Budget>) {
   return cfg;
 }
 
-/** The turns lever's breach, as `spawn.ts`'s progress hook leaves it. */
-
 // ── (1) the adversarial arm: a stopped reviewer is a throw, and its rows ride ──
 {
   const { repoRoot, baseSha } = makeRepo();
@@ -326,14 +324,22 @@ async function reviewOutcomeOrThrow(
     `(6) the handback's NEEDING line — the text the run posts as its cause — carries the shared budget sentence verbatim, which is how the operator learning about this stop learns WHICH lever to raise (${JSON.stringify(needed)})`,
   );
   const { doc } = leanResultDocument(result6.run, result6.code);
-  const failure = doc.issues[0] as { failure?: { message?: string; kind?: string } } | undefined;
+  // The checked shape `test-headless-work-lean-result.ts` uses for the same
+  // document: `doc.issues` is `unknown` at the seam, so it is narrowed through an
+  // array test rather than cast straight to the shape this case expects — a cast
+  // here reads the field off whatever the projection happened to emit.
+  const issues = doc.issues as Record<string, unknown>[] | undefined;
+  const i0 = Array.isArray(issues) ? (issues[0] ?? {}) : {};
+  // `issues[0].failure` IS the `ResultFailure` — one level, not two: it carries
+  // `kind` and `message` directly (see `ResultFailure` in `headless/failure.ts`).
+  const failure = i0.failure as { message?: string; kind?: string } | undefined;
   assert(
-    /review stopped: minutes budget 15 exceeded \(used 16\)/.test(failure?.failure?.message ?? ""),
-    `(6) and so does the host contract's failure.message, which is the half a machine reads (${JSON.stringify(failure?.failure)})`,
+    /review stopped: minutes budget 15 exceeded \(used 16\)/.test(failure?.message ?? ""),
+    `(6) and so does the host contract's failure.message, which is the half a machine reads (${JSON.stringify(failure)})`,
   );
   assert(
-    failure?.failure?.kind === "crashed",
-    `(6) and it is still honestly a crashed handler: the sentence rides the message, it does not relabel a throw as a timeout the run did not have (got ${String(failure?.failure?.kind)})`,
+    failure?.kind === "crashed",
+    `(6) and it is still honestly a crashed handler: the sentence rides the message, it does not relabel a throw as a timeout the run did not have (got ${String(failure?.kind)})`,
   );
 }
 
