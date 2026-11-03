@@ -139,6 +139,8 @@ export const CAP_HIT_FIXED_LITERALS = [
   // landing arm pushed (out-of-fence change, unreadable fence read, or a second
   // stray set in one round). A deliberate park terminalized as a handoff.
   "lens-fix-scope",
+  // #1537 — the review budget is a shape: a third lens round is refused.
+  "lens-policy-exhausted",
   // #1238 — the caller-set whole-cycle deadline parked the cycle at a step
   // boundary (the deadline was within the handoff grace). A deliberate
   // park terminalized as a handoff; the evidence names the deadline, the

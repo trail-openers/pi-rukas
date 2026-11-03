@@ -74,6 +74,11 @@ export const KNOWN_EVENT_KINDS = [
   "lens-approved",
   "lens-issues-found",
   "lens-skipped-empty-diff",
+  // #1537 — the re-review for a fix wave's round has been run: that round is the
+  // loop's last word, and the policy's stop condition is read from this record
+  // rather than a round counter. No step field (it names the review round), so
+  // the validator's step check skips it.
+  "lens-fix-rereviewed",
   // #1094 — explore re-dispatched once after a completed reply had no `## Spec`.
   "explore-retried",
   // #654 — the empty-diff re-dispatch marker; no step field (it names the

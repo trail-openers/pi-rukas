@@ -31,7 +31,10 @@ import { splitAdvisory } from "./lens-review-advisory.ts";
 import type { AutoDeltaInfo } from "./lens-review-delta-disclose.ts";
 import { isReviewIncomplete } from "./lens-review-incomplete.ts";
 import { type MemoryDisclosure, memoryDisclosure, recordRound } from "./lens-review-memory.ts";
-import type { Finding, LensRunResult } from "./lens-review-types.ts";
+import type { Severity } from "./lens-review-format.ts";
+import { atOrAboveThreshold } from "./lens-review-format.ts";
+import { BLOCKING_SEVERITY } from "./lens-review-policy.ts";
+import { type Finding, isCarried, type LensRunResult } from "./lens-review-types.ts";
 import type { ReviewKind } from "./review-findings-fate.ts";
 import type { ResolvedNotice, SetAsideNotice } from "./review-findings-file.ts";
 import type { ConfirmationLapse } from "./review-findings-store-types.ts";
@@ -72,6 +75,52 @@ export interface ReportedFindings {
    * advisory note means the changed lines could not be read. They are composed,
    * never one dropped for the other. */
   fields: { advisory?: Finding[]; memoryNote?: string };
+}
+
+/**
+ * The rows the scoped re-review's verdict is computed from (#1537).
+ *
+ * A `first` round is passed through untouched — the project's own bar governs it
+ * and this function does not second-guess a single finding. On a SCOPED round the
+ * rule is the policy's: a row carried from the blocking round is still open and
+ * keeps blocking at its own severity, and a row the round REPORTED blocks only
+ * when it is CRITICAL. Every other new row still reaches the summary, the
+ * counts and the residual disclosure (this narrows the VERDICT's input, never
+ * the record), because the policy prices exactly one fix wave and a fresh MEDIUM
+ * on code the first review already read is the noise that made three rounds cost
+ * ~96 finding rows on a +4/-12 diff.
+ *
+ * `REVIEW_INCOMPLETE` is never rewritten: that verdict is about the review (a
+ * lane never answered), not about the findings, and demoting it would turn a
+ * five-pass into a six-pass. Same for a delta or a round whose memory refused —
+ * no carried rows exist, so the caller's `scoped` phase cannot be trusted and
+ * everything blocks, which is this repo's standing fail-closed shape.
+ */
+export function reportedForVerdict(
+  reported: Finding[],
+  lensResults: readonly LensRunResult[],
+  threshold: Severity,
+  scoped: boolean,
+): Finding[] {
+  if (!scoped || isReviewIncomplete(lensResults)) return reported;
+  const carried = reported.filter(isCarried);
+  const critical = reported.filter((f) => f.severity === "CRITICAL");
+  // An operator's accept decisions and the advisory split already ran on
+  // `reported`, so a row that survived them is a row the round is entitled to
+  // raise; the scoping only removes the sub-CRITICAL ones from the blocking set.
+  // A round that carried nothing and found nothing CRITICAL approves whatever
+  // its own bar would have flagged — which is precisely the case the policy is
+  // for (three MEDIUMs that no fix wave was ever asked to answer).
+  const blocking = [...carried, ...critical.filter((f) => !isCarried(f))];
+  // A bar ABOVE HIGH (CRITICAL-only) already blocks nothing below it, so the
+  // narrowed set must not add rows it would not have blocked: keep the round's
+  // own verdict by the project's bar, and only narrow when the bar is HIGH or
+  // lower (this repo's doctrine says HIGH and above; the shipped default is
+  // MEDIUM, where narrowing is the whole point of the policy).
+  if (atOrAboveThreshold(threshold, BLOCKING_SEVERITY) === false) {
+    return reported.some((f) => atOrAboveThreshold(f.severity, threshold)) ? reported : blocking;
+  }
+  return blocking;
 }
 
 /**

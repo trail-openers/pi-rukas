@@ -400,6 +400,16 @@ export const FIXED_CAP_CAUSE: Record<FixedCap, CapCause> = {
     reason: "the review hit its round cap with findings still open",
     action: "fix the findings on the PR, then re-run `/work {issue} --restart`",
   },
+  // #1537 — the review budget is a shape, so this is not a defect to repair: the
+  // loop ran its full review, its one fix wave and its one re-review, and asked
+  // for a third. `change` (the findings are the reason), not `environment`.
+  "lens-policy-exhausted": {
+    cls: "change",
+    reason:
+      "the review budget is spent — one full review, one fix wave and one re-review — and the open findings were not resolved by that one fix",
+    action:
+      "fix the findings named in the handoff on the PR, then re-run `/work {issue} --restart`",
+  },
   "spawn-backstop": {
     cls: "environment",
     reason: "a developer child hit the two-hour backstop before it finished",

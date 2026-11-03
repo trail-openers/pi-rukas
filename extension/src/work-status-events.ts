@@ -192,6 +192,11 @@ export function fmtEvent(e: WorkEvent, derivedRound?: number): string {
       return `  lens-skipped-empty-diff · round ${e.round}`;
     case "lens-fix-empty-resend":
       return `  lens-fix-empty-resend · round ${e.round} · ${e.worktree}`;
+    case "lens-fix-rereviewed":
+      // #1537 — the loop's stop condition, on the status line where the operator
+      // can see the review budget being spent: which round's findings the fix
+      // wave answered, and the head it landed.
+      return `  lens-fix-rereviewed · answered round ${e.round}${e.headSha ? ` · fix ${e.headSha.slice(0, 8)}` : ""}`;
     case "converge-redispatch":
       return "  converge-redispatch · develop · corrective dispatch for missing deliverable(s)";
     case "fence-recovery-started":

@@ -28,6 +28,7 @@
 
 import path from "node:path";
 import { execp } from "./exec.ts";
+import { isFullCommitSha } from "./review-head-sha.ts";
 import { trace } from "./trace.ts";
 import { integrateLensFix } from "./work-driver-adversarial-lensfix.ts";
 import { handleNoCommittedFix as handleNoCommittedFixBranch } from "./work-driver-adversarial-lensfix.ts";
@@ -270,6 +271,33 @@ export async function landLensFix(
     }
     const handled = await handleNoCommittedFixBranch(execFn, ctx, psFix, fixTree, result, out);
     if (handled !== null) return park(handled);
+  }
+  // #1537 — the fix wave has been ANSWERED: a committed fix is on the branch, so
+  // the re-review that follows is the loop's last word. Recorded here rather than
+  // inferred from the dispatch log, because a fixer that dispatched and committed
+  // nothing leaves the head unchanged, and re-reviewing an unchanged head is not
+  // an answer to anything — the round stays owed and the budget is not spent.
+  // Read by `lensPolicyOf` (lens-review-policy.ts) as the `closed` phase.
+  if (result.committed) {
+    const landed = await execFn("git rev-parse HEAD", { cwd: ctx.repoRoot, maxBuffer: 64 * 1024 })
+      .then((r) => r.stdout.trim())
+      .catch(() => undefined);
+    const answered = state.pipelineState.reviewRound;
+    const alreadyRecorded = out.eventLog.some(
+      (e) => e.kind === "lens-fix-rereviewed" && e.round === answered,
+    );
+    if (!alreadyRecorded) {
+      out = appendEvent(out, {
+        kind: "lens-fix-rereviewed",
+        at: Date.now(),
+        round: answered,
+        ...(landed && isFullCommitSha(landed) ? { headSha: landed } : {}),
+        ...(psFix.lensReviewedHead !== undefined
+          ? { reviewedHead: psFix.lensReviewedHead }
+          : {}),
+      });
+      await persistCycle(ctx, out);
+    }
   }
   if (result.committed && !result.pushed) {
     try {

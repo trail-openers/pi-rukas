@@ -290,6 +290,15 @@ export type WorkCapLiteral =
   // the same round, an outOfScope/protected stray, or a repo-root lens tree
   // parks here.
   | "lens-fix-scope"
+  // #1537 — the cycle asked for a THIRD lens round. The review budget is a
+  // shape, not a clock: one full review, one fix wave, one scoped re-review. A
+  // third review has nothing left to conclude, so the step that would start it
+  // parks rather than spending six more lens children on findings the policy has
+  // already priced. Named apart from `round-cap` (the counter running out) and
+  // `lens-review-timeout` (the clock running out): the fix loop ended the way it
+  // is designed to, and the operator's lever is neither a round count nor a
+  // budget to raise.
+  | "lens-policy-exhausted"
   // #1263 — a step handler THREW (an fs failure, a bug, an uncaught exec
   // rejection). Routed through runHandoff so the operator gets a comment +
   // label, not just a silent `aborted` state file. Distinct from the

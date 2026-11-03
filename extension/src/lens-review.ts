@@ -27,7 +27,10 @@ import {
   resolveReviewDiff,
   startPersistentBatch,
 } from "./lens-review-diff.ts";
-import { resolveReportedFindings } from "./lens-review-findings.ts";
+import {
+  reportedForVerdict,
+  resolveReportedFindings,
+} from "./lens-review-findings.ts";
 import { finishLensReview, memorySummaryFields } from "./lens-review-finish.ts";
 import {
   DEFAULT_REVIEW_THRESHOLD,
@@ -166,6 +169,14 @@ export async function runLensReview(opts: {
   /** #1127 — the round-budget key the tool admitted this run under (lens-budget-key.ts);
    * keys the ledger entry when no branch resolves. */
   ledgerKey?: string;
+  /**
+   * #1537 — this round is the ONE scoped re-review a fix wave owes. Its verdict
+   * is computed from carried rows plus new CRITICALs only (see
+   * `reportedForVerdict`); every other row is still reported and disclosed, it
+   * just cannot hold the merge. Absent or false: an ordinary full round, judged
+   * entirely by the project's own bar.
+   */
+  scopedReReview?: boolean;
 }): Promise<LensReviewSummary> {
   const runId = makeRunId();
   const skillsDir = piSkillsDir();
@@ -466,14 +477,23 @@ export async function runLensReview(opts: {
       ...(resolved.head !== undefined ? { head: resolved.head } : {}),
     },
   });
-  const reported = found.reported;
-  const verdict = computeVerdict(reported, lensResults, threshold);
+  // #1537 — on the scoped re-review the verdict's input narrows to carried rows
+  // plus new CRITICALs (`reportedForVerdict`); the summary, the counts and the
+  // disclosure still read `found.reported`, so a demoted row is disclosed, not
+  // deleted. On a full round both are the same list.
+  const blocking = reportedForVerdict(
+    found.reported,
+    lensResults,
+    threshold,
+    opts.scopedReReview === true,
+  );
+  const verdict = computeVerdict(blocking, lensResults, threshold);
   // #973 — the round-cap rule's inputs for the ledger write: `hasCritical`
   // from the BLOCKING findings (post-#1125: never an out-of-range one),
   // `headSha` from the ref the review actually covered. Both are undefined on
   // the full-review path with no head named — the write omits them and a later
   // round-cap check fails closed on the missing field.
-  const hasCritical = reported.some((f) => f.severity === "CRITICAL");
+  const hasCritical = blocking.some((f) => f.severity === "CRITICAL");
   // #1039 — headSha was resolved once, before any early return, and the ledger
   // write carries it through to all paths.
   // #984 — the ledger write's promise is discarded (fire-and-forget in
@@ -481,10 +501,13 @@ export async function runLensReview(opts: {
   return finishWith(
     {
       verdict,
-      totalFindings: reported.length,
-      bySeverity: bySeverityCounts(reported),
+      totalFindings: found.reported.length,
+      bySeverity: bySeverityCounts(found.reported),
       lenses: lensResults,
-      findings: reported,
+      // The WHOLE reported list, not the narrowed blocking set: the fixer's blob,
+      // the summary and the residual disclosure must all still see a demoted
+      // finding. Only the verdict above reads the narrowed list.
+      findings: found.reported,
       ...memorySummaryFields(found),
       ...found.fields,
       usage: aggregateLensUsage(lensResults),

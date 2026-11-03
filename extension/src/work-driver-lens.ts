@@ -11,6 +11,7 @@ import { execp } from "./exec.ts";
 import { lensFixDelta } from "./fix-delta.ts";
 import { type WideningFinding, scanTypeWidening, wideningContext } from "./invariant-scan.ts";
 import { buildEvidence, runClaimScan } from "./lens-evidence.ts";
+import { owesReReview } from "./lens-review-policy.ts";
 import { runLensReview } from "./lens-review.ts";
 import { appendGuardWriteEvents, runGuardMemoryWrites } from "./lens-vipune-write.ts";
 import { DRIVER_MEMORY_TYPE, writeFindings } from "./memory-write.ts";
@@ -26,6 +27,7 @@ import { lastCapIsRearmFailure, rearmDraftForReview } from "./work-driver-draft-
 import { lensCapKillEvent, lensTimingsOf } from "./work-driver-lens-capkill.ts";
 import { parkLensRoundNoFit } from "./work-driver-lens-fix-budget.ts";
 import { lensRoundChildBoundMs } from "./work-driver-lens-round-budget.ts";
+import { lensRoundOverBudget, parkLensPolicyExhausted } from "./work-driver-lens-policy.ts";
 import { applyLensVerdict } from "./work-driver-lens-verdicts.ts";
 import { type DoctrineDoc, judgePolicy } from "./work-driver-policy.ts";
 import { recordResidualsPost } from "./work-driver-pr-gone.ts";
@@ -47,6 +49,11 @@ export async function runLens(
   if (noFit !== state) return noFit;
   const ps = state.pipelineState;
   const round = ps.reviewRound + 1;
+  // #1537 — one full review, one fix wave, one re-review. A third round is not
+  // in the policy, whatever the wall clock says, so it is refused here: the
+  // review budget is a SHAPE, not a clock.
+  const exhausted = await parkLensPolicyExhausted(ctx, state, round, now);
+  if (exhausted !== state) return exhausted;
   let next: WorkState = {
     ...state,
     pipelineState: {
@@ -200,6 +207,10 @@ export async function runLens(
       evidence,
       extraFindings,
       threshold,
+      // #1537 — the round the fix wave owes is scoped: it may block on the rows
+      // it carried and on a new CRITICAL, and on nothing else. True only when a
+      // blocking verdict is outstanding and its fixer has run.
+      scopedReReview: owesReReview(next.eventLog),
       pi: ctx.host,
       // #912 — caller-supplied branch for the review-ledger write
       // (driver worktrees are detached; the ledger writer cannot

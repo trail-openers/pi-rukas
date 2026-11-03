@@ -24,6 +24,7 @@ import {
   noDiffEvidence,
 } from "./work-driver-lens-fix-commit.ts";
 import { lensFixWorkstreamId } from "./work-driver-lens-fix-fence-gate.ts";
+import { lensFixFindingsFor } from "./work-driver-lens-policy.ts";
 import { buildLensFixFence } from "./work-driver-lens-fix-fence.ts";
 import { lensWorktree, persistFenceRecord } from "./work-driver-lens-fix-records.ts";
 
@@ -134,7 +135,7 @@ export async function runLensFix(
       (e): e is Extract<(typeof state.eventLog)[number], { kind: "lens-issues-found" }> =>
         e.kind === "lens-issues-found",
     );
-  const findings = lastFinding?.findings ?? "(no prior findings recorded)";
+  const findings = lensFixFindingsFor(lastFinding?.findings ?? "(no prior findings recorded)");
   // #1416 — the 90-minute review-loop budget used to be PRINTED (the widget's
   // `cap 100m11s/90m`) and never enforced: the only check ran after a review
   // had returned, so a fixer already past its budget was awaited to completion.

@@ -3,10 +3,10 @@
  * AGENTS.md §1's round-cap rule.
  *
  * AGENTS.md §1 says (and the /work driver implements in
- * work-driver-lens-cap.ts): a six-lens review that runs out of ROUNDS (not
- * time) with only MEDIUM/HIGH findings outstanding, an APPROVING adversarial
- * gate, and the residual findings POSTED TO THE PR carries on to CI instead
- * of parking. A CRITICAL always parks. The driver's own merge is exempt
+ * work-driver-lens-cap.ts): a six-lens review that ends its fix budget (not
+ * its clock) with only MEDIUM/HIGH findings outstanding, an APPROVING
+ * adversarial gate, and the residual findings POSTED TO THE PR carries on to
+ * CI instead of parking. A CRITICAL always parks. The driver's own merge is exempt
  * from the #912 merge guard (it is an in-process exec, not a tool_call), but
  * hand-managed PRs go through the guard — and the guard's strict
  * "latest lens entry must be passed" rule is stricter than the doctrine, so
@@ -14,13 +14,20 @@
  *
  * This module is that alignment, evaluated by the guard (merge-guard.ts)
  * AFTER the adversarial check has already passed. It mirrors
- * * work-driver-lens-cap.ts's constants (MAX_REVIEW_ROUNDS = 3, the
- * ISSUES_FOUND-only condition, the CRITICAL-always-refuses rule) rather than
- * introducing a second independently-tuned number, and it reuses
- * `latestEntry` from review-ledger.ts for the round count (the new `round`
- * field on the latest lens entry, per design decision 3 — the guard only
- * ever consults the latest lens row per branch, so the round lives on the
- * entry, and only that row's round is what the cap counts against).
+ * work-driver-lens-cap.ts's rules (the ISSUES_FOUND-only condition, the
+ * CRITICAL-always-refuses rule) rather than introducing a second
+ * independently-tuned number, and it reuses `latestEntry` from
+ * review-ledger.ts for the entry the decision is made on.
+ *
+ * #1537 removed the old condition 4 (`round >= lensRoundCap()`, i.e. 3). The
+ * policy is now one full review, one fix wave, one scoped re-review: there is
+ * no third round to reach, so a round-3 test refused every merge the policy
+ * licenses while the driver routed the same cycle to CI. What the condition
+ * needed to say is not "the counter got high" but "this verdict is the loop's
+ * final word", and conditions 5 and 6 (disclosure marker carrying the current
+ * patch identity, and the verdict recorded against the head about to merge)
+ * are what say that. The round number stays on the entry as a record; nothing
+ * compares it to a cap any more.
  *
  * ## The conditions (all must hold for the round-cap path to allow the merge)
  *
@@ -33,11 +40,9 @@
  *   3. The latest lens entry has `hasCritical === false`. A legacy entry
  *      without the field (pre-#973) cannot satisfy this — conservative
  *      refusal (design decision 3).
- *   4. The latest lens entry's `round >= lensRoundCap()` (3 by default). A legacy
- *      entry without `round` counts as round 1 — never enough (design
- *      decision 3; the acceptance criterion's "existing entries count as
- *      rounds but cannot satisfy 'no CRITICAL'" is covered by condition 3,
- *      which is the stricter of the two on a legacy row).
+ *   4. — (removed by #1537; see the module header. The round is still recorded
+ *      on the entry and still rendered, but it is no longer a merge condition,
+ *      and `lensRoundCap()` no longer gates a merge.)
  *   5. The PR/MR carries the disclosure marker (see `lensResidualsMarker`
  *      below), posted by `dispatch_lens_review` when its verdict is
  *      ISSUES_FOUND and an open PR/MR exists (design decision 2). The
@@ -79,7 +84,6 @@
  * here checks the author), so modelling it here would be theatre.
  */
 
-import { lensRoundCap } from "./lens-round-cap.ts";
 import { isFullCommitSha } from "./review-head-sha.ts";
 import { type LedgerEntry, latestEntry } from "./review-ledger.ts";
 
@@ -203,25 +207,15 @@ export function evaluateRoundCapMerge(
         "the latest lens entry does not establish that no CRITICAL finding is present (hasCritical is missing or true) — a legacy entry counts as a round but cannot satisfy the no-CRITICAL condition; re-run the review to record it",
     };
   }
-  // Condition 4: the round must be >= the resolved lens round cap (#1127:
-  // lensRoundCap() — the SAME value the tool-side budget enforces, so
-  // PI_ENSEMBLE_LENS_ROUND_CAP moves both; default MAX_REVIEW_ROUNDS = 3).
-  // A legacy entry without `round` counts as round 1 — never enough (design
-  // decision 3). A malformed row (a non-integer
-  // `round` that slipped past the loader) counts as round 1 the same way a
-  // missing one does — the `typeof`/`Number.isInteger` guards mean a
-  // string like "3" or a float like 3.5 can never be coerced into a pass
-  // (a `??`-style fallback would let them through `< MAX_REVIEW_ROUNDS`)
-  // and must refuse, never throw (no cast).
-  const round = typeof lens.round === "number" && Number.isInteger(lens.round) ? lens.round : 1;
-  const cap = lensRoundCap();
-  if (round < cap) {
-    return {
-      applies: true,
-      allowed: false,
-      failedCondition: `the latest lens entry is round ${round}, below the ${cap}-round cap (PI_ENSEMBLE_LENS_ROUND_CAP; default MAX_REVIEW_ROUNDS) — re-run the review`,
-    };
-  }
+  // Condition 4 was REMOVED by #1537 (see the module header). It required
+  // `round >= lensRoundCap()`, a proxy for "the fix loop ran out of rounds, so
+  // these findings are the small residual kind". The loop no longer runs three
+  // rounds — one full review, one fix wave, one scoped re-review is the whole
+  // budget, so the highest round a policy-conforming cycle records is 2 and the
+  // old test refused every merge the policy licenses. Conditions 2, 3, 5 and 6
+  // carry what actually matters: the verdict is ISSUES_FOUND, no CRITICAL is
+  // open, the findings were disclosed to the PR against the current patch
+  // identity, and the verdict was produced against the head about to merge.
   // Condition 5: the disclosure marker. The guard fetches the PR's comments
   // and passes the bodies here; the marker must be present with the
   // CURRENT branch AND the CURRENT patch (a stale marker for an older

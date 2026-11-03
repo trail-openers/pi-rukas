@@ -29,6 +29,7 @@ import type { InterruptedEvent } from "./workflow-state-events-interrupted.ts";
 import type { WorktreeLeftoverHandledEvent } from "./workflow-state-events-leftover.ts";
 import type { LensFixFenceUnavailableEvent } from "./workflow-state-events-lens-fix-fence.ts";
 import type { LensFixEmptyResendEvent } from "./workflow-state-events-lens-fix-resend.ts";
+import type { LensFixRereviewedEvent } from "./workflow-state-events-lens-rereview.ts";
 import type { MemoryEventFragment } from "./workflow-state-events-memory.ts";
 import type {
   CycleDeadlineKill,
@@ -458,7 +459,8 @@ export type WorkEvent =
   | CorrectiveRoundEvent
   | FixPassStraysRevertedEvent
   | LensFixEmptyResendEvent
-  | LensFixFenceUnavailableEvent;
+  | LensFixFenceUnavailableEvent
+  | LensFixRereviewedEvent;
 
 /** Discriminator union of event kinds — useful for callers that switch on it. */
 export type WorkEventKind = WorkEvent["kind"];

@@ -96,6 +96,11 @@ export const FIXED_CAPS = [
   "lens-fix-reposition",
   // #1852 — the lens-fix scope fence refused the round before it could push.
   "lens-fix-scope",
+  // #1537 — a third lens round was refused: one full review, one fix wave, one
+  // scoped re-review is the whole review budget. Published so a host can tell
+  // "the loop finished its policy" from "the loop ran out of time" (#1384's
+  // lesson: an id a host reads as its own clock sends it after the wrong knob).
+  "lens-policy-exhausted",
   // #1384 — the lens-review fix loop outlived its own budget
   // (PI_ENSEMBLE_REVIEW_WALL_CLOCK_MS). Was `wall-clock` before result schema
   // v4, a name a host read as its own cycle clock.

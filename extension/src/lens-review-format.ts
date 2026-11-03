@@ -419,3 +419,11 @@ const SEVERITY_RANK: Record<Severity, number> = {
   MEDIUM: 2,
   LOW: 3,
 };
+
+/** True when `severity` is at or above the project's blocking bar `threshold`
+ * (LOW blocks everything, HIGH blocks HIGH and CRITICAL). Exported for the one
+ * caller that must ask the same question the verdict does — the scoped re-review
+ * in lens-review-findings.ts — so the two cannot rank severities differently. */
+export function atOrAboveThreshold(severity: Severity, threshold: Severity): boolean {
+  return SEVERITY_RANK[severity] <= SEVERITY_RANK[threshold];
+}

@@ -84,6 +84,10 @@ export function explainCap(
       return "adversarial gate ran its 3-round internal loop and could not reach APPROVED — the diff still has issues the adversarial-developer flagged";
     case "round-cap":
       return `lens-review hit its ${MAX_REVIEW_ROUNDS}-round cap with findings still open — the lens reviewers and the developer's fixes did not converge`;
+    // #1537 — distinct from the two review caps a host can raise: neither the
+    // round count nor the clock is what stopped this cycle.
+    case "lens-policy-exhausted":
+      return "the review budget is spent — one full review, one fix wave and one scoped re-review — and the re-review left findings open, so the cycle stopped instead of running a third review";
     case "lens-review-timeout":
       return `lens-review fix loop exceeded its ${reviewWallClockMs() / 60_000}-minute budget — total time spent in review/fix iterations is past it (PI_ENSEMBLE_REVIEW_WALL_CLOCK_MS). This is the review loop's own budget, not the cycle's time limit`;
     case "review-incomplete": {
