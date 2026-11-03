@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.47](https://github.com/trail-openers/pi-rukas/compare/v0.14.46...v0.14.47) (2026-11-03)
+
+
+### Features
+
+* **lean:** make work-lean speak work's host contract ([#1983](https://github.com/trail-openers/pi-rukas/issues/1983)) ([b279daf](https://github.com/trail-openers/pi-rukas/commit/b279daf327706dd9d5c2643f0559109ac9a5db1a))
+
 ## [0.14.46](https://github.com/trail-openers/pi-rukas/compare/v0.14.45...v0.14.46) (2026-11-03)
 
 
