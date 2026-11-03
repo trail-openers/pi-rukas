@@ -22,12 +22,13 @@ import { execp } from "../../src/exec.ts";
 import { defaultConfig } from "../../src/lean/config.ts";
 import type { HandlerCtx } from "../../src/lean/engine.ts";
 import { ADVERSARIAL_GATE_ROLE } from "../../src/lean/review-gates.ts";
+import { FIX_RUN_ID_SHAPE, PASS_KINDS } from "../../src/lean/review-log.ts";
+import { DEFAULT_REVIEW_THRESHOLD } from "../../src/lens-review-format.ts";
 import type { LensRound, ReviewDeps } from "../../src/lean/review.ts";
 import { ReviewInfraError, reviewOutcome } from "../../src/lean/review.ts";
 import type { Outcome } from "../../src/lean/state.ts";
 import { createRun } from "../../src/lean/state.ts";
 import { FIXER_ROLE } from "../../src/lean/step-budget.ts";
-import { FIX_RUN_ID_SHAPE } from "../../src/lean/review-log.ts";
 import type { LensName, LensRunResult } from "../../src/lens-review-types.ts";
 import { aggregateLensUsage } from "../../src/lens-review-usage.ts";
 import type { DispatchResult, DispatchSpec } from "../../src/types.ts";
@@ -183,6 +184,11 @@ export function depsWith(over: Partial<ReviewDeps>): ReviewDeps {
     dispatch: async () => result({ role: FIXER_ROLE }),
     fetchIssueBody: async () => "body",
     loadConfig: async () => defaultConfig(),
+    // The harness's stand-in for the doctrine judge: a step that resolves the
+    // project's bar gets the shipped default rather than a child process. A case
+    // that cares about the bar overrides this and asserts what the lens call
+    // received — the default here must never be the thing a case proves.
+    reviewThreshold: async () => DEFAULT_REVIEW_THRESHOLD,
     ...over,
   };
 }
@@ -216,6 +222,23 @@ export async function setup(opts: {
   }
   git(wt, "push", "-q", "origin", `refs/heads/${opts.branch}`);
   return git(wt, "rev-parse", "HEAD");
+}
+
+/**
+ * Did the review step PASS, on either of its two kinds?
+ *
+ * `done` is a clean pass and `fixed` is a pass whose loop integrated a fix round,
+ * so every case that asks "did the step clear its gates" must accept both — a
+ * fixture that compares against `"done"` alone silently stops covering the arm
+ * that fixed anything, which is the arm the table re-verifies. The set is read
+ * from the module that writes it, so a third kind cannot make these assertions
+ * quietly pass on nothing.
+ */
+export function passed(kind: string | undefined): boolean {
+  // The needle widens, not the list — see `PASS_KINDS` in `review-log.ts`: the
+  // element type stays the registry's, so this helper cannot drift from the kinds
+  // the table actually routes on.
+  return kind !== undefined && PASS_KINDS.includes(kind as (typeof PASS_KINDS)[number]);
 }
 
 export const BRANCH = "lean/issue-7";

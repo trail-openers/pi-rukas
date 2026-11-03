@@ -127,12 +127,13 @@ export const BUDGET_STATES: readonly LeanState[] = ["specify", "build", "challen
  * cost record just got smaller with nothing said.
  *
  * `review` is in this set but NOT in `BUDGET_STATES`: it pays for a reviewer,
- * six lenses and a fixer per round, so it MUST record cost — and since this
- * round it arms its ceiling through `armBudget` like the other three, so a
- * breach routes as a budget verdict. `BUDGET_STATES` stays the narrower set that
- * owns the `limit`/`value`/`used` trio for the pre-existing steps; widening it
- * to include `review` would name `review` as the owner of a trio only a
- * `budget`-kind outcome may carry.
+ * six lenses and a fixer per round, so it MUST record cost. A review breach is
+ * not a routed verdict: `review` has no `budget` kind in the table, so the step
+ * THROWS with the sentence the other three render (see `review.ts`) and the
+ * engine bills the rows off the throw. `BUDGET_STATES` stays the narrower set
+ * that owns the `limit`/`value`/`used` trio for the pre-existing steps; widening
+ * it to include `review` would name `review` as the owner of a trio only a
+ * `budget`-kind outcome may carry, and a review throw carries no trio.
  */
 export const DISPATCH_STATES: readonly LeanState[] = [...BUDGET_STATES, "review"];
 

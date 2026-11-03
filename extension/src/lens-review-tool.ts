@@ -1,13 +1,19 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { startJob } from "./async-jobs.ts";
+import { execp } from "./exec.ts";
 import type { LensLedgerOutcome } from "./lens-ledger.ts";
 import type { LensReviewSummary } from "./lens-review-format.ts";
+import { DEFAULT_REVIEW_THRESHOLD } from "./lens-review-format.ts";
 import { renderSummary } from "./lens-review-render.ts";
 import { LENS_REVIEW_DIFF_DESCRIPTION, MAX_LENS_ATTEMPTS, runLensReview } from "./lens-review.ts";
 import { admitLensRound } from "./lens-round-cap.ts";
-import { trace } from "./trace.ts";
+import { resolveHeadSha } from "./review-head-sha.ts";
+import { identityBase } from "./review-ledger-path.ts";
+import { resolveLensReviewThreshold } from "./review-threshold-at-base.ts";
+import { trace, traceWarn } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
+import { judgePolicy } from "./work-driver-policy.ts";
 
 /**
  * Register the `dispatch_lens_review` tool: the public entry point for the
@@ -102,6 +108,35 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
           // concurrent call in this process cannot pass the same round.
           // The bypass is the operator's env var (read inside admitLensRound) —
           // never a tool parameter, so the model cannot set it (#1127).
+          // The blocking bar is the project's, not this tool's. Read at the base
+          // commit, never from the working tree, so a review cannot be judged by
+          // a doctrine file the branch itself rewrote — the same rule the driver's
+          // lens step follows, and the reason the read is at a commit rather than
+          // on disk. The base is the repo's own mainline tip and NOTHING the
+          // caller named: `base` is model input, so a branch that passed its own
+          // commit as the base would have read the bar out of a doctrine file it
+          // wrote (see `thresholdBaseRef`). No mainline resolves means no
+          // doctrine, and no doctrine is the shipped default rather than a
+          // refusal. A judge or read fault is the same case: the review still
+          // runs, at the shipped default, with the fault named on the trace.
+          const reviewCwd = params.cwd ?? process.cwd();
+          const threshold = await resolveLensReviewThreshold({
+            judge: judgePolicy(reviewCwd, {
+              processGroup: true,
+              signal,
+            } satisfies NonNullable<Parameters<typeof judgePolicy>[1]>),
+            execFn: execp,
+            repoRoot: reviewCwd,
+            baseRef: await thresholdBaseRef(reviewCwd),
+            where: { repoRoot: reviewCwd },
+          }).catch((err: unknown) => {
+            traceWarn(
+              `lens review — the blocking severity could not be resolved (${String(
+                (err as Error)?.message ?? err,
+              )}), reviewing at the default ${DEFAULT_REVIEW_THRESHOLD}`,
+            );
+            return DEFAULT_REVIEW_THRESHOLD;
+          });
           const admission = await admitLensRound({
             cwd: params.cwd,
             head: params.head,
@@ -119,6 +154,7 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
             try {
               summary = await runLensReview({
                 ...params,
+                threshold,
                 overrideCap: admission.overrideCap,
                 ledgerKey: admission.key,
                 signal,
@@ -176,4 +212,37 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
       };
     },
   });
+}
+
+/**
+ * The ref this review's doctrine is read at: the repo's own mainline tip, and
+ * nothing the caller named.
+ *
+ * `<remote>/<mainline>` is the same base the ledger resolves this run's patch
+ * identity against (`identityBase`), so the bar the findings were judged by and
+ * the row they produced describe one diff. There is deliberately no arm for the
+ * tool's `base` parameter: that value comes from the calling model, and a
+ * doctrine read there is a bar the reviewed branch chooses for itself — a commit
+ * whose `AGENTS.md` says only CRITICAL blocks would judge its own round. Only
+ * the repo's own mainline identity is trusted as the source of the bar.
+ *
+ * A clone with no resolvable mainline or remote has no base to read doctrine at,
+ * and the caller falls to the shipped default — never a refusal, because a repo
+ * without doctrine is the ordinary case. A read failure is a miss, not an error:
+ * the promise resolves to `undefined` rather than throwing, so a review is never
+ * lost to the doctrine read.
+ */
+async function thresholdBaseRef(cwd: string): Promise<string | undefined> {
+  try {
+    const base_ = await identityBase(execp, cwd);
+    if (!base_.ok) return undefined;
+    // A commit, not a moving ref: the bar must not change between two rounds of
+    // one review because someone pushed to the mainline in between. A mainline
+    // tip that cannot be resolved is a miss, and the caller takes the default.
+    return await resolveHeadSha(cwd, `${base_.remote}/${base_.mainline}`, execp);
+  } catch {
+    // A git read that could not run is a miss, not a failure: the review still
+    // runs, at the default bar, exactly as a repo with no doctrine does.
+    return undefined;
+  }
 }
