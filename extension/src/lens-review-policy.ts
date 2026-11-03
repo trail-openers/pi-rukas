@@ -153,9 +153,7 @@ export function lensPolicyOf(log: readonly WorkEvent[]): LensPolicy {
   // re-review of an unchanged head. The dispatch log is the fallback for state
   // files written before this event existed (and for a landing arm that died
   // before recording it), where a dispatched fix is the best evidence available.
-  const answered = log.some(
-    (e) => e.kind === "lens-fix-rereviewed" && e.round === verdict.round,
-  );
+  const answered = log.some((e) => e.kind === "lens-fix-rereviewed" && e.round === verdict.round);
   if (answered) return { phase: "closed", blockingRound };
   const fixDispatched = log
     .slice(verdictAt + 1)
@@ -199,4 +197,41 @@ export function scopedBlocking(findings: readonly Finding[]): Finding[] {
 /** The carried half of a finding list, for a renderer or a test to name. */
 export function carriedFindings(findings: readonly Finding[]): CarriedFinding[] {
   return findings.filter(isCarried);
+}
+
+/**
+ * Does this verdict's findings blob still carry a row the findings store handed
+ * back as OPEN (`carried: true`, stamped by `review-findings-round.ts`)?
+ *
+ * On the terminal re-review this is the question the `ci` route turns on (its one
+ * caller is `appendReviewCapHit`): a carried row is one the round saw, did not
+ * resolve, and whose cited code is unchanged — a fix pass that ignored a finding
+ * cannot be rewarded with a merge that discloses it as settled. An unreadable
+ * blob is treated as OPEN (a park): the route is an allowance, and an allowance
+ * cannot be granted on evidence the driver cannot read.
+ *
+ * A carried row blocks at ITS OWN severity: a carried MEDIUM/LOW is an open row
+ * the policy never asked the fix wave to answer (the project's bar, or the scoped
+ * round's demotion, left it sub-blocking) and disclosing it is the policy's word
+ * for that. Only a carried HIGH/CRITICAL means the fix wave failed to land the
+ * thing it was sent to fix. Reads the serialised blob rather than `Finding[]`
+ * because the cap's input is the event's own `findings` field — the same string
+ * the disclosure renders, so the route and the comment cannot disagree.
+ */
+export function hasOpenCarriedFinding(findingsBlob: string | undefined): boolean {
+  if (!findingsBlob?.trim()) return true;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(findingsBlob);
+  } catch {
+    return true;
+  }
+  if (!Array.isArray(parsed)) return true;
+  return parsed.some(
+    (f) =>
+      typeof f === "object" &&
+      f !== null &&
+      (f as { carried?: unknown }).carried === true &&
+      isBlockingSeverity((f as { severity?: unknown }).severity as Severity),
+  );
 }

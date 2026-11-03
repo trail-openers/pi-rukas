@@ -176,6 +176,17 @@ const everyKindEvent: WorkEvent[] = [
     verdict: "ISSUES_FOUND",
   },
   { kind: "lens-skipped-empty-diff", at: 1, round: 1 },
+  // #1537 — the fact that a committed fix wave has been answered, so its round is
+  // the loop's last word. In the fixture because the review budget's stop
+  // condition is read from it: a kind the validator has never seen is a kind a
+  // resumed cycle refuses to load.
+  {
+    kind: "lens-fix-rereviewed",
+    at: 1,
+    round: 1,
+    headSha: "b".repeat(40),
+    reviewedHead: "a".repeat(40),
+  },
   {
     kind: "lens-fix-empty-resend",
     at: 1,

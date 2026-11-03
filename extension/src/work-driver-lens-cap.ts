@@ -39,8 +39,7 @@ import { adversarialGateApproved } from "./adversarial-findings.ts";
 import { execp } from "./exec.ts";
 import { FORGE_EXEC_TIMEOUT_MS } from "./forge-detect.ts";
 import { renderLensFindings } from "./lens-findings-render.ts";
-import type { Severity } from "./lens-review-format.ts";
-import { isBlockingSeverity, lensPolicyOf } from "./lens-review-policy.ts";
+import { hasOpenCarriedFinding, lensPolicyOf } from "./lens-review-policy.ts";
 import { lensResidualsMarker } from "./merge-guard-round-cap.ts";
 import { reviewWallClockMs } from "./review-budget.ts";
 import { trace } from "./trace.ts";
@@ -212,41 +211,6 @@ function routeShape(route: ResidualDisclosureRoute): {
  * the fact (or the decline). It does NOT append the cap-hit: the caller owns
  * the cap kind, evidence, and its own routing rules (wall-clock still parks).
  */
-/**
- * Does this verdict still carry a row the findings store handed back as OPEN
- * (`carried: true`, stamped by `review-findings-round.ts`)?
- *
- * On the terminal re-review that is the question the `ci` route turns on: a
- * carried row is a row the round saw, did not resolve, and whose cited code is
- * unchanged — a fix pass that ignored a finding cannot be rewarded with a merge
- * that discloses it as settled. An unreadable blob is treated as OPEN (a park):
- * the route is an allowance, and an allowance cannot be granted on evidence the
- * driver cannot read.
- *
- * A carried row blocks at ITS OWN severity: a carried MEDIUM/LOW is an open row
- * the policy never asked the fix wave to answer (the project's bar, or the
- * scoped round's demotion, left it sub-blocking) and disclosing it is the
- * policy's word for that. Only a carried HIGH/CRITICAL means the fix wave failed
- * to land the thing it was sent to fix.
- */
-export function hasOpenCarriedFinding(findingsBlob: string | undefined): boolean {
-  if (!findingsBlob?.trim()) return true;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(findingsBlob);
-  } catch {
-    return true;
-  }
-  if (!Array.isArray(parsed)) return true;
-  return parsed.some(
-    (f) =>
-      typeof f === "object" &&
-      f !== null &&
-      (f as { carried?: unknown }).carried === true &&
-      isBlockingSeverity((f as { severity?: unknown }).severity as Severity),
-  );
-}
-
 export async function discloseResidualsAndRoute(
   ctx: CycleContext,
   state: WorkState,

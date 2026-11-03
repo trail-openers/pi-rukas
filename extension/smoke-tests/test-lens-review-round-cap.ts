@@ -395,16 +395,25 @@ const guardEntry = (round: number) =>
 const capFailure = (round: number) =>
   evaluateRoundCapMerge([guardEntry(round)], "feature/x", "p1", [], "a".repeat(40))
     .failedCondition ?? "";
-assert(/below the 3-round cap/.test(capFailure(2)), "the merge guard's default cap is 3");
+// #1537 — the merge guard no longer compares the round to a cap, so the ONE cap
+// value this file's remaining sections care about (`lensRoundCap()`, the
+// tool-side budget) is asserted where it is still enforced, and the guard's
+// refusal is asserted to be about the conditions it still checks. A `round-cap`
+// refusal that named a round would mean the deleted condition came back.
+assert(
+  !/round/.test(capFailure(2)),
+  "the merge guard's refusal names no round at any round (#1537 deleted the round condition)",
+);
+assert(
+  /marker/.test(capFailure(2)),
+  "…and what it does name is the disclosure, which is still enforced",
+);
 process.env.PI_ENSEMBLE_LENS_ROUND_CAP = "5";
 try {
+  assert(lensRoundCap() === 5, "the tool-side budget still follows PI_ENSEMBLE_LENS_ROUND_CAP");
   assert(
-    /below the 5-round cap/.test(capFailure(3)),
-    "merge guard: round 3 is below a raised cap of 5",
-  );
-  assert(
-    !/below the 5-round cap/.test(capFailure(5)),
-    "merge guard: round 5 reaches a raised cap of 5",
+    !/round/.test(capFailure(3)),
+    "a raised cap changes no merge-guard answer either — the guard never read it",
   );
 } finally {
   Reflect.deleteProperty(process.env, "PI_ENSEMBLE_LENS_ROUND_CAP");

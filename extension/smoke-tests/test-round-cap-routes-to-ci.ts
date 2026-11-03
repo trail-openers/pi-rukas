@@ -133,11 +133,35 @@ function mkCtx(repo: string, verdict: string, ghCalls: string[]) {
   } as any;
 }
 
-/** A cycle about to run a lens round, with a PR already open. */
-const stateAt = (roundsDone: number, capStartedAt?: number): WorkState =>
+/** A cycle about to run a lens round, with a PR already open.
+ *
+ * #1537 — the budget is a SHAPE, so the fixture has to say which shape this is.
+ * `fixAnsweredFor` is the round whose blocking verdict a committed fix wave
+ * answered: with it, the log reads `closed` and the round about to run is the
+ * loop's last word (the terminal round, where the cap route lives). Without it
+ * the log reads `first` and the round is an ordinary review that owes no cap.
+ * The record is the real one the landing arm writes, not a paraphrase: the
+ * canaries below are only worth what the emission is worth.
+ */
+const stateAt = (roundsDone: number, capStartedAt?: number, fixAnsweredFor?: number): WorkState =>
   ({
     issue: 901,
-    eventLog: [{ kind: "adversarial-approved", at: 1, jobId: "adv", round: 1 }] as WorkEvent[],
+    eventLog: [
+      { kind: "adversarial-approved", at: 1, jobId: "adv", round: 1 },
+      ...(fixAnsweredFor === undefined
+        ? []
+        : [
+            {
+              kind: "lens-issues-found",
+              at: 2,
+              jobId: "lens-prev",
+              round: fixAnsweredFor,
+              findings: "[]",
+              verdict: "ISSUES_FOUND",
+            },
+            { kind: "lens-fix-rereviewed", at: 3, round: fixAnsweredFor },
+          ]),
+    ] as WorkEvent[],
     pipelineState: {
       currentStep: "lens-review",
       lastCompletedStep: "adversarial",
@@ -159,13 +183,18 @@ const capOf = (s: WorkState) => {
 
 // ---------------------------------------------------------------- the canary
 //
-// Three rounds of ISSUES_FOUND with the adversarial gate approved. Pre-fix this
+// The terminal round of the budget — the re-review a committed fix wave answered
+// — coming back ISSUES_FOUND with the adversarial gate approved. Pre-change this
 // emits cap-hit{round-cap, nextStep:"handoff"} and parks; the whole point of the
 // change is that it routes to `ci`.
 
 await withRepo(async (repo) => {
   const ghCalls: string[] = [];
-  const after = await runLens(mkCtx(repo, "ISSUES_FOUND", ghCalls), stateAt(2), Date.now());
+  const after = await runLens(
+    mkCtx(repo, "ISSUES_FOUND", ghCalls),
+    stateAt(0, undefined, 1),
+    Date.now(),
+  );
   const cap = capOf(after);
   assert(
     cap?.cap === "round-cap",
@@ -191,7 +220,7 @@ await withRepo(async (repo) => {
   const ghCalls: string[] = [];
   const after = await runLens(
     mkCtx(repo, "CRITICAL_ISSUES_FOUND", ghCalls),
-    stateAt(2),
+    stateAt(0, undefined, 1),
     Date.now(),
   );
   assert(
@@ -234,7 +263,7 @@ await withRepo(async (repo) => {
   const ghCalls: string[] = [];
   const after = await runLens(
     mkCtx(repo, "ISSUES_FOUND", ghCalls),
-    stateAt(2, WALL_CLOCK_EXCEEDED_AT),
+    stateAt(1, WALL_CLOCK_EXCEEDED_AT, 1),
     Date.now(),
   );
   assert(
@@ -257,7 +286,7 @@ await withRepo(async (repo) => {
     if (/^gh\b/.test(commandOf(cmd, opts))) throw new Error("gh: not authenticated");
     return realExec(cmd, opts);
   };
-  const after = await runLens(ctx, stateAt(2), Date.now());
+  const after = await runLens(ctx, stateAt(0, undefined, 1), Date.now());
   assert(
     stepOf(after) === "handoff",
     `invariant: an undisclosed residual parks instead of routing to ci (got ${stepOf(after)})`,

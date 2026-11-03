@@ -27,11 +27,9 @@ import {
   resolveReviewDiff,
   startPersistentBatch,
 } from "./lens-review-diff.ts";
-import {
-  reportedForVerdict,
-  resolveReportedFindings,
-} from "./lens-review-findings.ts";
-import { finishLensReview, memorySummaryFields } from "./lens-review-finish.ts";
+import { resolveReportedFindings } from "./lens-review-findings.ts";
+import { reportedForVerdict } from "./lens-review-verdict-scope.ts";
+import { makeFinishWith, memorySummaryFields } from "./lens-review-finish.ts";
 import {
   DEFAULT_REVIEW_THRESHOLD,
   type LensReviewSummary,
@@ -291,37 +289,13 @@ export async function runLensReview(opts: {
   }
   // #1934 — the one identity, shared by the ledger write and the findings record.
   const identityOf = lensPatchIdentityOf(opts.cwd);
-  // #1000 — the single finish path for every exit of this run: the identical
-  // `finishLensReview(...)` call (threshold, cwd, the ONE resolved branch,
-  // the resolved headSha, the caller's head ref, and the #973 residual-
-  // disclosure `pr`) at every return site, so the ledger write and the
-  // disclosure post can never drift from a copy that was missed in a
-  // refactor. `hasCritical` is per-site (the blocked exits carry no
-  // findings; the normal exit carries the deduped findings' bar).
-  const finishWith = async (
-    s: LensReviewSummary,
-    hasCritical = false,
-  ): Promise<LensReviewSummary> => {
-    const finished = await finishLensReview(
-      s,
-      threshold,
-      opts.cwd,
-      branchResolved,
-      {
-        hasCritical,
-        headSha,
-        head: opts.head,
-        overrideCap: opts.overrideCap,
-        ledgerKey: opts.ledgerKey,
-        identity: await identityOf(),
-      },
-      opts.pr,
-    );
-    // #1127 review — the caller's round reservation is held until this write
-    // settles (see lens-round-cap.ts `release`); the write is NOT awaited here.
-    opts.onLedgerWrite?.(finished.ledgerWrite);
-    return finished.summary;
-  };
+  const finishWith = makeFinishWith({
+    threshold,
+    opts,
+    branchResolved,
+    headSha,
+    identityOf,
+  });
   if (resolved.kind === "blocked") {
     const blockRows = blockedRowsForRoster(roster, resolved.problem);
     const blocked = blockedReviewSummary(runId, opts.extraFindings, roster, blockRows, threshold);
@@ -493,7 +467,7 @@ export async function runLensReview(opts: {
   // `headSha` from the ref the review actually covered. Both are undefined on
   // the full-review path with no head named — the write omits them and a later
   // round-cap check fails closed on the missing field.
-  const hasCritical = blocking.some((f) => f.severity === "CRITICAL");
+  const hasCritical = blocking.some((f: Finding) => f.severity === "CRITICAL");
   // #1039 — headSha was resolved once, before any early return, and the ledger
   // write carries it through to all paths.
   // #984 — the ledger write's promise is discarded (fire-and-forget in

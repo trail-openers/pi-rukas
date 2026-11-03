@@ -28,8 +28,8 @@
  */
 
 import { notifyAgent } from "./agent-message.ts";
-import type { Finding } from "./lens-review-types.ts";
 import { blockingFindings, lensPolicyOf } from "./lens-review-policy.ts";
+import type { Finding } from "./lens-review-types.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import { type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
@@ -89,17 +89,33 @@ export function lensFixFindingsFor(blob: string): string {
  *
  * `round` is the number `runLens` would stamp on this round (`reviewRound + 1`).
  * Rounds 1 and 2 are the full review and its re-review; anything higher is the
- * third review a fix wave does not buy. Read from the event log's SHAPE as well
- * as the counter: a log that has already recorded the re-review has spent the
- * budget whatever the counter says, which is what keeps a resumed or retried
- * cycle from reopening a review the policy closed.
+ * third review a fix wave does not buy.
+ *
+ * The phase is deliberately NOT consulted here, even though the same module
+ * reads it for the cap route: `closed` is the state in which the owed re-review
+ * is *about to run*, so treating it as "over budget" would refuse the very round
+ * the policy requires and no cycle would ever finish its review. The counter is
+ * the budget, and the shape decides what the counter's last value MEANS — that
+ * is the division of labour, and the two readers live apart on purpose
+ * (`appendReviewCapHit` reads the shape, this refuses on the count).
  */
-export function lensRoundOverBudget(state: WorkState, round: number): boolean {
-  if (round > POLICY_ROUNDS) return true;
-  // `closed` — a blocking verdict whose fix wave has already been dispatched, so
-  // the re-review it owes has been spent. Starting a round then is the third
-  // review, and the counter can lag the log after a re-dispatch.
-  return lensPolicyOf(state.eventLog).phase === "closed";
+/**
+ * Is the round about to start past the policy's budget?
+ *
+ * `round` is the number `runLens` would stamp on this round (`reviewRound + 1`).
+ * Rounds 1 and 2 are the full review and its re-review; anything higher is the
+ * third review a fix wave does not buy.
+ *
+ * The phase is deliberately NOT consulted here, even though the same module
+ * reads it for the cap route: `closed` is the state in which the owed re-review
+ * is *about to run*, so treating it as "over budget" would refuse the very round
+ * the policy requires and no cycle would ever finish its review. The counter is
+ * the budget, and the shape decides what the counter's last value MEANS — that
+ * is the division of labour, and the two readers live apart on purpose
+ * (`appendReviewCapHit` reads the shape, this refuses on the count).
+ */
+export function lensRoundOverBudget(_state: WorkState, round: number): boolean {
+  return round > POLICY_ROUNDS;
 }
 
 /**

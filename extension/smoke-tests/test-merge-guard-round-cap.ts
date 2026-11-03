@@ -122,15 +122,23 @@ await setupLedgerPath();
     assert(r.block === true, "round-cap: hasCritical=true → refused");
     assert(/hasCritical/.test(r.reason ?? ""), "…naming the hasCritical condition");
   }
-  // Condition 4: round below 3 → refused, naming the round.
+  // #1537 — the old condition 4 (`round >= 3`) is GONE, and these blocks are its
+  // replacement: the round number is neither required nor compared. The policy's
+  // whole budget is one full review, one fix wave and one scoped re-review, so
+  // the highest round a conforming cycle records is 2 and a round-3 test would
+  // refuse every merge the policy licenses while the driver routed the same
+  // cycle to CI. What still has to hold is everything else: ISSUES_FOUND, no
+  // CRITICAL, the disclosure marker for this patch, and the verdict recorded
+  // against the head that is about to merge.
   {
     const r = await hook("gh pr merge 12", [ADV, lens({ at: 2, round: 2 })], {
       ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
     });
-    assert(r.block === true, "round-cap: round 2 < 3 → refused");
-    assert(/round 2/.test(r.reason ?? ""), "…naming the round condition");
+    assert(
+      r.block !== true,
+      "round-cap: round 2 no longer refuses — one review + one re-review is the budget, so 2 is the terminal round (#1537)",
+    );
   }
-  // Condition 4: a legacy entry without `round` counts as round 1 → refused.
   {
     const legacyNoRound: LedgerEntry = {
       branch: "feature/x",
@@ -145,15 +153,13 @@ await setupLedgerPath();
     const r = await hook("gh pr merge 12", [ADV, legacyNoRound], {
       ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
     });
-    assert(r.block === true, "round-cap: a legacy entry without `round` counts as round 1 → refused");
-    assert(/round 1/.test(r.reason ?? ""), "…naming the round condition");
+    assert(
+      r.block !== true,
+      "round-cap: an entry with no `round` at all is allowed — the field is a record, not a condition (#1537)",
+    );
   }
-  // Condition 4 (aborted runs do not advance the round): the exact
-  // ISSUES_FOUND (r1) → REVIEW_INCOMPLETE (r2) → ISSUES_FOUND (r3) sequence
-  // ends at round 2 (the aborted run carried round 1 unchanged), so the
-  // guard refuses — the cap requires three COMPLETED runs.
   {
-    const abortedSeq: LedgerEntry = {
+    const roundOne: LedgerEntry = {
       branch: "feature/x",
       kind: "lens",
       patchId: "p1",
@@ -161,13 +167,29 @@ await setupLedgerPath();
       at: 2,
       detail: "ISSUES_FOUND",
       hasCritical: false,
-      round: 2,
+      round: 1,
+      headSha: PR_HEAD,
     };
-    const r = await hook("gh pr merge 12", [ADV, abortedSeq], {
+    const r = await hook("gh pr merge 12", [ADV, roundOne], {
       ghComments: commentsWith(MARKER_BRANCH, MARKER_PATCH),
     });
-    assert(r.block === true, "round-cap: an aborted run wedged in the sequence ends at round 2 → refused");
-    assert(/round 2/.test(r.reason ?? ""), "…naming the round condition");
+    assert(
+      r.block !== true,
+      "round-cap: round 1 is allowed too — a round number cannot hold a merge every other condition cleared",
+    );
+  }
+  // The strict direction of the same rule: dropping the round condition must not
+  // have dropped anything else. An ISSUES_FOUND row with no disclosure marker is
+  // still refused at round 2, which is where a lax removal would show up.
+  {
+    const r = await hook("gh pr merge 12", [ADV, lens({ at: 2, round: 2 })], {
+      ghComments: NO_COMMENTS,
+    });
+    assert(
+      r.block === true,
+      "round-cap: round 2 WITHOUT the disclosure marker still refuses — the round is gone, the disclosure is not",
+    );
+    assert(/marker/.test(r.reason ?? ""), "…naming the disclosure condition, not a round");
   }
   // Condition 5: no marker comment → refused, naming the disclosure.
   {
@@ -367,15 +389,16 @@ await setupLedgerPath();
   );
 }
 
-// Condition 4 (malformed round): a non-integer `round` (a string or a
-// float that slipped past the loader) must count as round 1 — a `??`-style
-// coercion would let `"3"` through `< 3` and ALLOW the merge. No cast; the
-// guards must refuse, never throw. The marker comment (condition 5) is
-// supplied so the round condition is the one under test.
+// #1537 — a malformed `round` must not THROW, and must not change the answer:
+// the field is recorded and rendered, never compared. Before this change a
+// non-integer round counted as round 1 and refused; now it is ignored, and the
+// shapes that used to be refusals are allowed for the same reason the
+// well-formed ones are — every real condition (verdict, hasCritical, marker,
+// headSha) holds.
 {
   const good = {
     branch: "feature/x",
-    kind: "lens",
+    kind: "lens" as const,
     patchId: "p1",
     passed: false,
     at: 2,
@@ -388,12 +411,13 @@ await setupLedgerPath();
   const validSha = "a".repeat(40);
   const roundOk = (round: unknown) =>
     evaluateRoundCapMerge([{ ...good, round }], "feature/x", "p1", [MARKER_COMMENT], validSha);
-  const badRounds: Array<[string, unknown]> = [
-    ["\"3\" (a string)", "3"],
+  for (const [label, value] of [
+    ['"3" (a string)', "3"],
     ["true (a boolean)", true],
     ["3.5 (a non-integer float)", 3.5],
-  ];
-  for (const [label, value] of badRounds) {
+    ["an absent round", undefined],
+    ["2 (the policy's terminal round)", 2],
+  ] as Array<[string, unknown]>) {
     let threw = false;
     let decision: ReturnType<typeof evaluateRoundCapMerge> | undefined;
     try {
@@ -403,18 +427,22 @@ await setupLedgerPath();
     }
     assert(!threw, `a malformed round (${label}) does not throw`);
     assert(
-      decision !== undefined && decision.applies === true && decision.allowed === false,
-      `…a malformed round (${label}) is a refusal (never coerced into a pass)`,
-    );
-    assert(
-      decision !== undefined && /round 1/.test(decision.failedCondition ?? ""),
-      `…a malformed round (${label}) counts as round 1 (names the round condition)`,
+      decision !== undefined && decision.applies === true && decision.allowed === true,
+      `…a malformed round (${label}) is neither a refusal nor a throw — the round is not a condition (#1537)`,
     );
   }
-  const ok = roundOk(3);
+  // And the strict direction: a bad round does not rescue a row that fails a
+  // condition that IS still enforced.
+  const noMarker = evaluateRoundCapMerge(
+    [{ ...good, round: "3" }],
+    "feature/x",
+    "p1",
+    ["no marker here"],
+    validSha,
+  );
   assert(
-    ok.applies === true && ok.allowed === true,
-    "an integer round 3 satisfies condition 4 (allowed with marker + matching headSha)",
+    noMarker.applies === true && noMarker.allowed === false,
+    "…and a malformed round does not rescue a row with no disclosure marker",
   );
 }
 

@@ -24,9 +24,9 @@ import {
   noDiffEvidence,
 } from "./work-driver-lens-fix-commit.ts";
 import { lensFixWorkstreamId } from "./work-driver-lens-fix-fence-gate.ts";
-import { lensFixFindingsFor } from "./work-driver-lens-policy.ts";
 import { buildLensFixFence } from "./work-driver-lens-fix-fence.ts";
 import { lensWorktree, persistFenceRecord } from "./work-driver-lens-fix-records.ts";
+import { lensFixFindingsFor } from "./work-driver-lens-policy.ts";
 
 // Re-exported for the importers that have always taken the tree resolver from
 // this module (`work-driver-lens.ts`, `work-driver-adversarial.ts`,

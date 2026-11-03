@@ -134,5 +134,62 @@ async function finish(
   return { summary, ledgerWrite };
 }
 
+/**
+ * The per-run half of the single finish path (#1000), as a factory.
+ *
+ * `runLensReview` resolves the threshold, the branch, the head and the review
+ * identity ONCE, and every one of its five exits must then make the identical
+ * `finishLensReview` call — that is the #1000 invariant: one write site, so a
+ * refactor cannot leave one exit keying the ledger on a different branch or a
+ * stale head than the other four. The factory is where those already-resolved
+ * values are captured; the call sites stay one line, and nothing outside this
+ * module can hand `finish` a branch the run did not resolve.
+ *
+ * Lives here rather than in `runLensReview` for the AGENTS.md §12 size gate:
+ * the seam is the module that already owns the ledger write and the disclosure
+ * post, and a caller that cannot reach `finish` directly cannot skip the seam.
+ */
+export function makeFinishWith(deps: {
+  threshold: Severity;
+  branchResolved: string | undefined;
+  /** The head this run resolved to a SHA — `undefined` on a blocked or
+   * noReview exit, where no commit was reviewed and the ledger row must not
+   * claim one (#1039). */
+  headSha: string | undefined;
+  identityOf: () => Promise<LensPatchIdentity | undefined>;
+  /** The run's own options, read here so the exits do not each restate them. */
+  opts: {
+    cwd?: string;
+    head?: string;
+    pr?: number;
+    overrideCap?: boolean;
+    ledgerKey?: string;
+    /** #1127 — the caller's round reservation is held until the write settles;
+     * the write itself is NOT awaited here (fire-and-forget). */
+    onLedgerWrite?: (ledgerWrite: Promise<LensLedgerOutcome>) => void;
+  };
+}): (s: LensReviewSummary, hasCritical?: boolean) => Promise<LensReviewSummary> {
+  const { threshold, branchResolved, headSha, identityOf, opts } = deps;
+  return async (s, hasCritical = false) => {
+    const finished = await finish(
+      s,
+      threshold,
+      opts.cwd,
+      branchResolved,
+      {
+        hasCritical,
+        headSha,
+        head: opts.head,
+        overrideCap: opts.overrideCap,
+        ledgerKey: opts.ledgerKey,
+        identity: await identityOf(),
+      },
+      opts.pr,
+    );
+    opts.onLedgerWrite?.(finished.ledgerWrite);
+    return finished.summary;
+  };
+}
+
 /** The ONE exit path — see the module header. */
 export { finish as finishLensReview };

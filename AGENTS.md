@@ -30,11 +30,13 @@ If any check fails: fix it, re-run, only then push. Do NOT:
 
 **Live smoke tests are NOT in the pre-push set.** `extension/smoke-tests/test-*-live.ts` spawn real Pi children and cost real tokens. Run them when you change child-process behaviour (`spawn.ts`), bump the Pi pin, or investigate a production-only failure. CI runs the offline tests only.
 
-### Review findings and the round cap
+### Review findings and the review budget
 
-**Six-pass review findings are blocking at HIGH severity and above.** The fix loop continues until every finding at HIGH severity and above is resolved. MEDIUM and LOW findings are disclosed on the PR and may be deferred.
+**Six-pass review findings are blocking at HIGH severity and above.** MEDIUM and LOW findings are disclosed on the PR and may be deferred.
 
-A `CRITICAL` finding always parks. At the round cap, a `ISSUES_FOUND` review carries on to CI instead of parking when the adversarial gate approved **and** the residual findings were posted to the PR — failed disclosure parks. Running out of rounds is not running out of time: the review wall-clock cap parks regardless. Mechanism and escape hatch: [docs/troubleshooting.md](docs/troubleshooting.md) → "A merge was refused: review ledger".
+**The review budget is one full review, one fix wave, one scoped re-review — not a number of rounds.** Findings at HIGH or CRITICAL get exactly one fix wave; the round after it is a single re-review scoped to what the fix changed, which blocks on the findings it carried forward (still open, still blocking at their own severity) and on a new CRITICAL only — any other new row is disclosed, not fixed. No blocking finding means no fix wave and no re-review. A second fix wave, or a third review, does not exist: the cycle stops.
+
+A `CRITICAL` finding always parks. At the end of the budget, an `ISSUES_FOUND` review carries on to CI instead of parking when the adversarial gate approved, **no carried HIGH/CRITICAL row is still open,** and the residual findings were posted to the PR — an open carried row or a failed disclosure parks. Running out of budget is not running out of time: the review wall-clock cap parks regardless. Mechanism and escape hatch: [docs/troubleshooting.md](docs/troubleshooting.md) → "A merge was refused: review ledger".
 
 Child guards: every child loads the mode-independent guard companion in every mode, and a missing companion file fails the spawn rather than producing an unguarded child. The write fence keeps a develop or lens-fix child's writes inside its worktree. See the jsdoc of `child-guards.ts`, `write-fence.ts`.
 

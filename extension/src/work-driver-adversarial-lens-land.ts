@@ -292,9 +292,7 @@ export async function landLensFix(
         at: Date.now(),
         round: answered,
         ...(landed && isFullCommitSha(landed) ? { headSha: landed } : {}),
-        ...(psFix.lensReviewedHead !== undefined
-          ? { reviewedHead: psFix.lensReviewedHead }
-          : {}),
+        ...(psFix.lensReviewedHead !== undefined ? { reviewedHead: psFix.lensReviewedHead } : {}),
       });
       await persistCycle(ctx, out);
     }
