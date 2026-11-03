@@ -100,9 +100,9 @@ export async function runAdversarialLoop(
 
   const fenceRecords: FenceRecord[] = [];
   const fence = createFixFence(params.fixFence, fenceRecords);
-  // #1360 — the ledger wiring, built where the writer it configures lives.
-  // Narrowed ONCE, before the writer it also configures: the capture below is
-  // gated on the same boolean, so provenance is decided in one place.
+  // #1360 — the ledger wiring, built where the writer it configures lives. The
+  // provenance marker travels UN-narrowed: the writer narrows it itself, so a
+  // boolean here would read `false` and take the row off its bindings.
   const toolPath = isToolPathProvenance(params.toolPath);
   const { binding: ledgerBinding, write: ledgerWrite } = makeLoopLedger({
     workCwd: params.workCwd,
