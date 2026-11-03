@@ -424,16 +424,18 @@ export function assertDevelopCommitEarly(assert: Assert, prompt: string): void {
     "#1989: the develop commit instruction makes the first commit conditional on the CHANGE existing, not on a gate passing",
   );
   assert(
-    /git commit -m.{0,200}git commit --amend -m/s.test(prompt),
-    "#1989: the seam is amend-in-place with the MESSAGE on the command line — a `git commit` with no message opens an editor this environment has no TTY for",
+    /git commit -m[\s\S]{0,200}git commit -m/.test(prompt),
+    "#1989: every commit is a NEW commit with the MESSAGE on the command line — a `git commit` with no message opens an editor this environment has no TTY for",
+  );
+  assert(
+    !/--amend/.test(prompt) &&
+      /never amend or rebase a commit/i.test(prompt) &&
+      /squash-merged/i.test(prompt),
+    "#1989: amend is dropped outright — 'amend only your own unpushed commits, never the starting HEAD' cannot be checked on a resumed or merged tree, and an amend can rewrite a commit a reviewer already approved. The prompt says never amend or rebase, and names why (PRs are squash-merged)",
   );
   assert(
     /NEVER wait for a full test suite before your first commit/i.test(prompt),
     "#1989: the prompt forbids waiting for the full suite before the first commit in as many words",
-  );
-  assert(
-    /amend[^.\n]*unpushed[^.\n]*starting HEAD|never the starting HEAD/i.test(prompt),
-    "#1989: amending is bounded to the child's own unpushed commits — the starting HEAD (a lean frozen/reviewed commit) is not the child's to rewrite",
   );
   assert(
     !/natural seams \(a clean build, a passing test suite\)/i.test(prompt),

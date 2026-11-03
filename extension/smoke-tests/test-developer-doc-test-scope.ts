@@ -75,15 +75,40 @@ await withWatchdog(undefined, async () => {
     /smoke tests? for the files you changed/i.test(src),
     "#1156: the role prompt scopes the developer to the smoke tests for files it changed",
   );
-  // #1989 AC4 — the same scope stated as a default, not an absolute: the
-  // #1156 rule above forbids the full suite outright, so the only thing this
-  // adds is that committing is never gated on a suite run. A brief may not
-  // re-license the full run — the driver's verify is the one that runs it.
+  // #1989 AC4 — committing is never gated on a suite run. ANCHORED: the line
+  // must sit between the two headings that really bracket the commit seam
+  // (Development Workflow above it, Quality Requirements below). `between`
+  // throws on a missing heading rather than slicing to an empty window, which
+  // is how this assertion used to pass against a heading that does not exist.
+  // The clause lives in the step-4 list ("Three runs of the same red test…")
+  // precisely because that list is what tells the child what to run.
   assert(
-    /do not wait for a gate to go green/i.test(
-      between("## ⛔ Return Protocol", "## Quality Requirements"),
+    /do not change the test, its fixture or its fake to make it pass/i.test(
+      between("## Development Workflow", "## Quality Requirements"),
     ),
-    "#1989 AC4: the commit seam is stated independently of any suite run, so the targeted-tests rule cannot become a reason to delay the commit",
+    "#1989 AC4: the red-test stop rule sits inside the workflow section, so the targeted-tests rule cannot become a reason to delay the commit",
+  );
+  assert(
+    /never run a formatter or linter in write mode over files you did not change/i.test(src),
+    "#1989 review: the role prompt forbids a formatter/linter write-mode run over files the developer did not change (~600 untouched files reformatted in one cycle)",
+  );
+  assert(
+    /run tests and linting before you report back to pm/i.test(src) &&
+      !/run tests and linting \(all must pass\)/i.test(src),
+    "#1989 review: the step-5 checklist is re-scoped to 'before you report back to PM' — the old '(all must pass)' gate contradicted the commit-first rule",
+  );
+  assert(
+    !/--amend/.test(src) &&
+      !/git commit[^\n]*--amend/.test(src) &&
+      /never amend or rebase a commit/i.test(src) &&
+      /squash-merged/i.test(src),
+    "#1989 review: no `--amend` prescription survives in the role prompt — the boundary 'your own unpushed commits, never the starting HEAD' cannot be checked on a resumed or merged tree and an amend can rewrite a reviewed commit",
+  );
+  assert(
+    /commit as soon as the change exists/i.test(src) &&
+      /add further commits as you go/i.test(src) &&
+      /git commit -m/i.test(src),
+    "#1989 review: the role prompt prescribes NEW commits as the work grows, each with its message on the command line",
   );
   assert(
     /typecheck and lint/i.test(src),
