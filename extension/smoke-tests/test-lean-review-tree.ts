@@ -206,9 +206,9 @@ const { assert, failures } = makeAssert();
     }),
   );
   assert(clean.threw === undefined, `(t) the clean run completed (${clean.threw?.message})`);
-  // `budgets.review` ships at 15 minutes, so the armed wall clock is 15 * 60_000
-  // — the operator's own number reaching the child. The lens leg clamps to the
-  // per-lens knob as well, so assert the bound came FROM the budget by checking
+  // Whatever `budgets.review` ships at, the armed wall clock is that many
+  // minutes — the operator's own number reaching the child. The lens leg clamps to
+  // the per-lens knob as well, so assert the bound came FROM the budget by checking
   // it is the budget's value and not the generic default.
   const reviewMinutes = defaultConfig().budgets.review?.minutes ?? 0;
   assert(

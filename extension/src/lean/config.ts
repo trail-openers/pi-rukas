@@ -161,25 +161,19 @@ async function gitType(
 }
 
 /**
- * Per-state ceilings. States not listed have none yet — a phase that adds a
- * handler adds its budget with it, rather than inheriting a number nobody
- * chose.
- *
- * Sized from the measured rate of the default model: ~150 turns per 20M tokens
- * in 3-4 minutes. Two live runs stopped on the old turn ceilings at 3 minutes
- * (specify at 81 of 80, challenge at 61 of 60), so each entry now leaves room
- * for a full working session rather than a third of one.
- *
- * `turns` bounds EACH CHILD, never a step's total, so it is sized against the
- * longest single child of that state, not against the round: one adversary used
- * 201 of 200 and one lens about 160 of 150, so `challenge` and `review` sit at
- * 400 — a child stopped short of its work costs the whole round that paid for it.
+ * Per-state ceilings, each bounding ONE CHILD and never a step's total: a step
+ * with several children pays for each separately. `tokens` counts all usage
+ * including cache re-reads (~150k per turn measured), which is why the 400-turn
+ * rows carry 60M. A child's own bound knob can only ever lower `minutes`, never
+ * raise it. `ci`'s minutes is the verify tier timeout, not a child bound; the
+ * review row bounds the lens and fixer children, and has no wall clock of its
+ * own — `MAX_REVIEW_ROUNDS` × the per-child bounds end it.
  */
 export const DEFAULT_BUDGETS: Readonly<Record<string, Budget>> = Object.freeze({
   specify: Object.freeze({ turns: 250, tokens: 30_000_000, minutes: 20 }),
   build: Object.freeze({ turns: 400, tokens: 60_000_000, minutes: 45 }),
-  challenge: Object.freeze({ turns: 400, tokens: 25_000_000, minutes: 15 }),
-  review: Object.freeze({ turns: 400, tokens: 20_000_000, minutes: 15 }),
+  challenge: Object.freeze({ turns: 400, tokens: 60_000_000, minutes: 15 }),
+  review: Object.freeze({ turns: 400, tokens: 60_000_000, minutes: 30 }),
   ci: Object.freeze({ turns: 0, tokens: 0, minutes: 30 }),
 });
 
