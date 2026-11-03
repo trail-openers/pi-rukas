@@ -15,6 +15,8 @@
  *         hide a genuine conflict in another
  *   (3a3) the loop shares ONE wall clock, so N named files cannot cost N ceilings
  *   (3a4) a non-zero exit that never named its file is `unclear`, not a red
+ *   (3a6) the named file's bytes must still be the bytes the run froze: an
+ *         edited frozen test is the child's own edit, not a contradiction
  *   (3b)  the cause sentence names the file the DRIVER saw fail
  *   (3c)  no runner configured: the report is ignored, and the gap is NAMED
  *
@@ -22,7 +24,7 @@
  */
 
 import { configWithRunner } from "./lib/lean-build-asserts.ts";
-import { ROOTS, runBuild } from "./lib/lean-build-fixture.ts";
+import { ROOTS, childCommit, put, runBuild } from "./lib/lean-build-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -194,6 +196,38 @@ const CONFLICT = "case 2 needs the array mutable while case 3 mutates it in plac
     `(3a4) a non-zero exit that never named the file is not a red (got ${r.outcome?.kind ?? r.threw?.message})`,
   );
   assert(r.outcome?.blockedBy === undefined, "(3a4) and nothing is recorded");
+}
+
+// ── (3a6) a frozen test the CHILD edited is not a conflict ───────────────
+{
+  // The re-run happens in the child's tree, and the child can write there — it
+  // commits its own work — so "the driver ran it and saw red" is only evidence
+  // while the bytes git holds under the name are the bytes the freeze hashed:
+  // `frozenFromLog` records the sha256 of the committed blob and `blobAt` reads
+  // that blob back exactly. Here the child rewrites the frozen test into one that
+  // fails unconditionally and names its own path, which is exactly what the real
+  // frozen file does when the implementation is missing: to the runner the two are
+  // indistinguishable, and only the record tells them apart. Without the hash
+  // check the driver certifies the child's own edit as an unsatisfiable contract
+  // and prints the contract's words as the cause.
+  const TAMPERED = '#!/bin/sh\necho "not ok - tests/AC1-retry.test.sh" 1>&2\nexit 1\n';
+  const r = await runBuild({
+    issue: 343,
+    child: (wt) => {
+      // No implementation, so the honest red is available too — the tamper is
+      // what the case is about, and it must be the thing that refuses the report.
+      put(wt, "tests/AC1-retry.test.sh", TAMPERED, 0o755);
+      // The child commits, as a real child does: the record is about the bytes
+      // the run holds, so an unstaged edit is not the shape being attacked.
+      childCommit(wt, "test: the contract is wrong");
+    },
+    toolUses: () => blocked([{ path: "tests/AC1-retry.test.sh", reason: CONFLICT }]),
+  });
+  assert(
+    r.outcome?.kind !== "blocked",
+    `(3a6) a report proved only on an edited frozen test is not honoured (got ${r.outcome?.kind ?? r.threw?.message})`,
+  );
+  assert(r.outcome?.blockedBy === undefined, "(3a6) and nothing is recorded");
 }
 
 // ── (3b) the cause sentence names the file the DRIVER saw red, not the last ─

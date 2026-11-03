@@ -27,8 +27,16 @@
  */
 
 import { trace, traceWarn } from "../trace.ts";
+import { verifyChildEnv } from "../work-driver-verify-cmd.ts";
+import { blobAt } from "./build-git.ts";
 import type { BuildExec } from "./build-types.ts";
-import { type Proof, TEST_TIMEOUT_MS, renderTestCommand, runTestFile } from "./specify-proof.ts";
+import {
+  type Proof,
+  TEST_TIMEOUT_MS,
+  renderTestCommand,
+  runTestFile,
+  sha256,
+} from "./specify-proof.ts";
 import { RECORD_MAX_ENTRIES, RECORD_REASON_MAX_CHARS } from "./state-outcome-maps.ts";
 import { frozenKeyProblem } from "./state-outcome.ts";
 
@@ -83,7 +91,12 @@ export type BlockedVerdict =
  * Did the driver itself prove the named tests disagree?
  *
  * `wt` is the child's tree — the one it was left in, before any reset — so the
- * red is a fact about the work the child did, not about the base commit.
+ * red is a fact about the work the child did, not about the base commit. Which
+ * is exactly why each named file is hashed before its runner starts: the frozen
+ * map proves what the contract SAID (`frozenFromLog` records the sha256 of the
+ * committed bytes), and the tree is the child's. A builder that rewrote a frozen
+ * file into one that fails would otherwise be handed a red the driver itself
+ * watched, and the record would print the contract's own words as the cause.
  *
  * The verdict carries `red` (the file the driver itself watched fail) and `ran`
  * (every file it actually executed, in order, up to and including the red). A
@@ -153,6 +166,23 @@ export async function blockedProved(opts: {
         why: `the re-run budget of ${String(perFile)}ms ran out after ${String(ran.length)} file(s)`,
       };
     }
+    // The re-run happens in the CHILD's tree, and the child can write there, so
+    // "the driver ran it and saw red" is only evidence while the bytes behind the
+    // name are the bytes the freeze hashed: `frozenFromLog` records the sha256 of
+    // the committed blob and `blobAt` reads that blob back exactly. A frozen file
+    // the child edited into one that fails is the child's own edit, not a
+    // contradiction in the contract — and to the runner the two look identical,
+    // so only the record tells them apart. Refused by name rather than skipped:
+    // a tampered contract is the step's own infrastructure failure, and a red the
+    // driver paid for out of bytes the run never agreed to proves nothing about
+    // any of the remaining files either.
+    const bytes = await blobAt(exec, wt, "HEAD", file);
+    if (bytes === undefined || bytes.length === 0 || sha256(bytes) !== frozen[file]) {
+      return {
+        honoured: false,
+        why: `${file} is no longer the bytes the run froze — the frozen test was edited`,
+      };
+    }
     // The in-flight runner is bounded too, not just the decision to start one:
     // `runTestFile` carries its own ceiling and its own group kill, but nothing
     // here can assume the runner honours either — a process that swallows the
@@ -162,7 +192,12 @@ export async function blockedProved(opts: {
     // orphaned child is the runner's own kill's business, not this loop's). It is
     // classified `infra` — an abandoned run observed nothing, exactly like a kill.
     const proof = await Promise.race([
-      runTestFile(exec, { wt, template, file, limits: { timeoutMs: Math.min(perFile, left) } }),
+      runTestFile(exec, {
+        wt,
+        template,
+        file,
+        limits: { timeoutMs: Math.min(perFile, left), env: verifyChildEnv() },
+      }),
       new Promise<Proof>((resolve) => {
         setTimeout(
           () =>
