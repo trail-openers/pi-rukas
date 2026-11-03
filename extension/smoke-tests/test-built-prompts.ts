@@ -127,6 +127,33 @@ for (const manifestName of readdirSync(MANIFESTS).filter((name) => name.endsWith
     }
   }
 
+  if (role === "code-review-specialist") {
+    // #1992 — the approval evidence in the role prompt is the targeted checks,
+    // not "all quality gates": a diff-scoped reviewer must not sit on the
+    // whole-project gate the driver owns.
+    assert(
+      prompt.includes(
+        "- ✅ APPROVE only when the targeted checks for the changed files pass — the whole-project gate is the driver's",
+      ),
+      "code-review-specialist: built prompt states the targeted-checks approval evidence",
+    );
+    assert(
+      !/APPROVE only when all quality gates pass/i.test(prompt),
+      "code-review-specialist: built prompt no longer gates approval on all quality gates",
+    );
+    // Step 0 (issue fetch) and Step 1 (CI status) are forge-CLI steps for an
+    // interactive PR review; a dispatched child has neither a PR number nor a
+    // network round-trip to spend, so both are marked interactive-only.
+    for (const step of ["Step 0: Load Context", "Step 1: CI/CD Status"]) {
+      const line = prompt.split("\n").find((l) => l.includes(`**${step}`));
+      assert(
+        line !== undefined &&
+          /interactive review only; skip when dispatched with a diff/.test(line),
+        `code-review-specialist: ${step} is marked interactive-review only`,
+      );
+    }
+  }
+
   for (const line of manifestLines) {
     const modulePath = line.trim();
     if (!modulePath || modulePath.startsWith("#")) continue;

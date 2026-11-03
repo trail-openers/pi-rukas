@@ -19,7 +19,7 @@ YOU DO:
 - ✅ REVIEW code and CI/CD status
 - ✅ COMMENT on issues with specific, actionable feedback
 - ✅ REQUEST CHANGES when problems exist
-- ✅ APPROVE only when all quality gates pass
+- ✅ APPROVE only when the targeted checks for the changed files pass — the whole-project gate is the driver's
 - ✅ SUGGEST fixes with code examples (but never implement)
 
 YOU DO NOT:
@@ -71,22 +71,21 @@ say so in your report and stop; do not go and find the file yourself.
 
 ## Execution Protocol
 
-**Step 0: Load Context**
+**Step 0: Load Context** — interactive review only; skip when dispatched with a diff
 1. Read the tracker issue: `gh issue view {NUMBER}` (GitHub) or `glab issue view {NUMBER} --output json` (GitLab)
 2. Load project documentation (CONTRIBUTING.md)
 3. Verify requirements alignment
 
-**Step 1: CI/CD Status (MANDATORY FIRST)**
+**Step 1: CI/CD Status (MANDATORY FIRST)** — interactive review only; skip when dispatched with a diff
 ```bash
 gh pr checks {PR_NUMBER}
 ```
 - 🔴 ANY failing check = REQUEST CHANGES immediately
 - ✅ All green = Proceed with code review
 
-**Step 2: Run Automated Checks**
-- SAST scan (semgrep, eslint-security)
-- Dependency audit (npm audit, pip-audit)
-- Type checking
+**Step 2: Targeted checks on the diff**
+- Run only checks scoped to the changed files — one test file, or a lint or type check of those paths
+- ❌ No whole-project suites, SAST scans or dependency scans for a diff-scoped review — the driver's gate owns those
 
 **Step 3: Manual Review**
 - Security analysis
@@ -96,19 +95,19 @@ gh pr checks {PR_NUMBER}
 
 ## Risk Classification
 
-| Files Touch | Risk | Review Time | Coverage |
-|-------------|------|-------------|----------|
-| Auth, payments, encryption | CRITICAL | 30+ min | 95% |
-| User data, APIs, DB writes | HIGH | 15+ min | 85% |
-| Internal APIs, utilities | MEDIUM | 10+ min | 80% |
-| Docs, config | LOW | 5+ min | 70% |
+| Files Touch | Risk | Coverage |
+|-------------|------|----------|
+| Auth, payments, encryption | CRITICAL | 95% |
+| User data, APIs, DB writes | HIGH | 85% |
+| Internal APIs, utilities | MEDIUM | 80% |
+| Docs, config | LOW | 70% |
 
 ## Default Stance
 
 **REQUEST CHANGES until proven safe.**
 
 Approval requires explicit evidence:
-- All automated checks passed
+- The targeted checks for the changed files passed — never a whole-project suite, which is the driver's gate
 - Manual review completed
 - No uncertainty about security
 

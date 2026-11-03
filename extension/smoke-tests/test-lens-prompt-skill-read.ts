@@ -159,5 +159,73 @@ const SKILL_BODY = [
   );
 }
 
+// ---------------------------------------------------------------------------
+// #1992 — the reviewer lane. A simplicity lens reviewing a 20-line test-only
+// delta spent 19 minutes and 181 tool calls on it: 20 repeat loops, 33 test
+// runs, and 16 heredocs writing instrumentation into the worktree followed by a
+// `git checkout --` to restore it. Zero of those calls were review. The brief is
+// what narrows them; these pins are what keep it narrowed. The lens builder is
+// shared by every lens in the configured roster, so one set of sentences covers
+// all of them — and it goes in BEFORE the terminal STOP sentence, which stays
+// the last line (pinned by test-lens-evidence.ts).
+//
+// Built with no skillBody: the lane rules must reach the child on the plain
+// caller too, and the absent-body branch is the one that has to stay
+// byte-identical apart from these sentences.
+{
+  const lane = lensPromptFor(LENS_ROSTER[0], "diff --git a/a b/a", "ctx", undefined, []);
+  for (const [needle, what] of [
+    [/Run only targeted checks/i, "AC1: only targeted checks are invited"],
+    [/one test file, or a lint or type check of the changed files/i, "AC1: what a targeted check is"],
+    [/never a whole-project suite/i, "AC1: the whole-project suite is ruled out in as many words"],
+    [/Do not debug a failure in code this diff did not change[^\n]*file it with `report_finding` in one line \(path \+ title\)/i, "AC2: a failure in unchanged code is filed in one line via report_finding, not debugged"],
+    [/Do not re-run an unchanged command against an unchanged tree/i, "AC3: no repeat loop on an unchanged tree"],
+    [/Do not create, edit or revert files in the worktree/i, "AC4: no writes to the worktree"],
+    [/findings before your time runs out/i, "AC5: report inside the time box"],
+    [/unfinished investigation is itself a finding[^\n]*what is known/i, "AC5: an unfinished investigation is a finding stating what is known"],
+    [/very next message is that report[^\n]*no further tool calls/i, "PM addendum: the report is the very next message, with no tool calls after deciding"],
+  ] as const) {
+    assert(needle.test(lane), `#1992 reviewer lane: ${what}`);
+  }
+  // The delivery point: a lane rule that only the skill-body caller renders is
+  // a rule the plain caller's child never reads.
+  const withLane = lensPromptFor(
+    LENS_ROSTER[0],
+    "diff",
+    "ctx",
+    undefined,
+    [],
+    undefined,
+    "/tmp/skills/x",
+    wrapSkillBody("Apply the lane.", NONCE) ?? "",
+  );
+  // #1992 — the heading itself is a pin: the ordering below and the sibling
+  // section both hang off it, and the phrase also occurs in "If you find
+  // nothing in your lane", so anchoring on the first occurrence would compare
+  // against the wrong section. indexOf returns -1 when it is gone, and every
+  // `> heading` below then fails — silence is not a pass.
+  const HEADING = "## Stay in the review lane";
+  const headingAt = withLane.indexOf(HEADING);
+  assert(headingAt >= 0, `#1992 reviewer lane: the ${HEADING} section is present`);
+  assert(
+    lane.includes(HEADING),
+    "#1992 reviewer lane: the section is present on the plain caller too",
+  );
+  assert(
+    withLane.includes("never a whole-project suite") &&
+      headingAt >= 0 &&
+      withLane.indexOf("Run only targeted checks") > headingAt &&
+      withLane.indexOf("Run only targeted checks") < withLane.indexOf("After writing your summary"),
+    "#1992: the lane rules reach the skill-body prompt as well, sit inside the review-lane section, and stay BEFORE the terminal STOP sentence",
+  );
+  // #1992 — the lens child reports through the report_finding TOOL, so "report
+  // it in one line" (a prose instruction) contradicted its only channel. The
+  // unchanged-code clause now names the tool.
+  assert(
+    /file it with `report_finding` in one line \(path \+ title\)/.test(lane),
+    "#1992 reviewer lane: an unchanged-code failure is filed with report_finding, not written as prose",
+  );
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);
