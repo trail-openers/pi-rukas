@@ -355,7 +355,8 @@ const SEVERITY_ORDER: Record<Severity, number> = {
   LOW: 3,
 };
 
-function sortFindings(a: Finding, b: Finding): number {
+/** Severity order, then path, then line — the order every findings list is reported in. */
+export function sortFindings(a: Finding, b: Finding): number {
   const s = SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity];
   if (s !== 0) return s;
   if (a.path !== b.path) return a.path.localeCompare(b.path);

@@ -20,7 +20,7 @@
  */
 
 import { neutraliseEvidence } from "./comment-evidence.ts";
-import { memoryDisclosureSections, suppressedSection } from "./lens-residuals.ts";
+import { memoryDisclosureSections, severityLabel, suppressedSection } from "./lens-residuals.ts";
 import { advisorySection } from "./lens-review-advisory.ts";
 import { deltaFallbackText, forcedFullText } from "./lens-review-delta-disclose.ts";
 import { type LensReviewSummary, type Severity, findingDescription } from "./lens-review-format.ts";
@@ -86,6 +86,16 @@ function lensLine(r: LensRunResult, maxLensAttempts: number): string {
   return `  ${r.lens.padEnd(16)} ${(`${r.ms}ms`).padStart(7)}   ${tag}${model}`;
 }
 
+/**
+ * The provenance a capped row shows beside its severity: `[MEDIUM (capped:
+ * test-path)]`. Without it the operator reads a capped row exactly like one the
+ * lens itself called MEDIUM, and the marker the cap exists to leave behind is
+ * invisible on the surface that carries it.
+ */
+export function cappedSuffix(f: Finding): string {
+  return f.severityCapped === undefined ? "" : ` (capped: ${f.severityCapped})`;
+}
+
 export function renderSummary(s: LensReviewSummary, maxLensAttempts: number): string {
   // #1127 — a round-budget refusal ran no lens; its note is the whole report.
   if (s.verdict === "ROUND_CAP_REACHED" || s.verdict === "REVIEW_INCOMPLETE_STREAK") {
@@ -123,7 +133,7 @@ export function renderSummary(s: LensReviewSummary, maxLensAttempts: number): st
   // rendering that read like a broken citation rather than a file-level one
   // (#1469).
   const findingLine = (f: Finding) =>
-    `  [${f.severity}] ${f.lens.padEnd(14)} ${f.path}:${f.line ?? "?"} — ${neutraliseEvidence(f.title)}\n    ${neutraliseEvidence(findingDescription(f))}\n    suggest: ${neutraliseEvidence(f.suggestion ?? "(none)")}`;
+    `  [${severityLabel(f.severity)}${cappedSuffix(f)}] ${f.lens.padEnd(14)} ${f.path}:${f.line ?? "?"} — ${neutraliseEvidence(f.title)}\n    ${neutraliseEvidence(findingDescription(f))}\n    suggest: ${neutraliseEvidence(f.suggestion ?? "(none)")}`;
   const roundFindings = s.findings.filter((f) => !isCarried(f));
   // A row an earlier round recorded and this one did not resolve: still open,
   // listed apart so an operator never reads it as this round's own finding.

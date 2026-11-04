@@ -434,9 +434,6 @@ export async function runLensReview(opts: {
   // indistinguishable downstream from a lens's own — same precedence rules,
   // same threshold, same rendering. They are findings, not a side channel.
   const all = [...lensResults.flatMap((r) => r.findings), ...(opts.extraFindings ?? [])];
-  // The ONE severity-cap pass: after dedup, before the round is recorded, so the
-  // verdict, the counts, the stored rows and anything a later round carries from
-  // them all read the capped severity (lens-severity-rubric.ts).
   // The merge (dedup by path/line/title + precedence, then the ONE severity-cap
   // pass): a HIGH on a test path comes down to MEDIUM before anything downstream
   // reads a severity — the verdict, the counts, the ledger's `hasCritical`, and

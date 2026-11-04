@@ -31,6 +31,7 @@ import path from "node:path";
 import { lensPromptFor } from "../src/lens-review-format.ts";
 import { mergeLensFindings } from "../src/lens-review-merge.ts";
 import { runLensReview } from "../src/lens-review.ts";
+import { renderSummary } from "../src/lens-review-render.ts";
 import {
   SEVERITY_RUBRIC,
   capTestPathFinding,
@@ -53,8 +54,8 @@ function assert(cond: boolean, msg: string) {
 
 const REPO_ROSTER = buildLensRoster(path.resolve(import.meta.dirname, "..", "..", "skill"));
 
-const f = (severity: Finding["severity"], p: string, title = "t"): Finding => ({
-  lens: "SIMPLICITY",
+const f = (severity: Finding["severity"], p: string, title = "t", lens: Finding["lens"] = "SIMPLICITY"): Finding => ({
+  lens,
   severity,
   path: p,
   title,
@@ -64,8 +65,26 @@ const f = (severity: Finding["severity"], p: string, title = "t"): Finding => ({
 // (a) The rubric reaches the child through the prompt.
 // ---------------------------------------------------------------------------
 {
+  // The rubric is promised to EVERY lens, not to whichever entry the test
+  // happens to name: a change that scoped it to one branch of `lensPromptFor`
+  // would leave five lenses reviewing against the skill's own ladder.
+  for (const lens of LENS_ROSTER) {
+    const prompt = lensPromptFor(lens, "diff --git a/a b/a", "ctx", undefined, []);
+    assert(
+      prompt.includes(SEVERITY_RUBRIC),
+      `(a) the ${lens.name} prompt carries the rubric verbatim`,
+    );
+    // Placement: beside the report_finding field list, not buried in the
+    // reviewer-lane brief — the child decides severity as it makes the call.
+    const fieldList = prompt.indexOf("- severity (required):");
+    const rubricAt = prompt.indexOf(SEVERITY_RUBRIC);
+    assert(fieldList >= 0, `(a) ${lens.name}: the report_finding field list is present`);
+    assert(
+      fieldList >= 0 && rubricAt > fieldList && rubricAt - fieldList < 2000,
+      `(a) ${lens.name}: the rubric sits beside the severity field it governs`,
+    );
+  }
   const prompt = lensPromptFor(LENS_ROSTER[0], "diff --git a/a b/a", "ctx", undefined, []);
-  assert(prompt.includes(SEVERITY_RUBRIC), "(a) the prompt carries the rubric verbatim");
   for (const [phrase, why] of [
     ["CRITICAL or HIGH requires at least ONE of these four conditions", "HIGH has an evidence floor"],
     ["a concrete, reachable failure on a realistic input", "(a) names the input"],
@@ -96,7 +115,7 @@ const f = (severity: Finding["severity"], p: string, title = "t"): Finding => ({
     "(a) the rubric sits beside the severity field it governs",
   );
   // And on the skill-body caller too — a regression scoping the rubric to the
-  // no-skill branch would pass the assert above.
+  // no-skill branch would pass the asserts above.
   const withBody = lensPromptFor(
     LENS_ROSTER[0],
     "diff",
@@ -149,6 +168,20 @@ const f = (severity: Finding["severity"], p: string, title = "t"): Finding => ({
     "(c) a contest/ directory is not a test path (negative case)",
   );
 
+  // Gap-check 5 — the cap does not speak for the deterministic claim scan: its
+  // rows are grep lookups, not lens judgements, so there is no inflated label to
+  // correct and the row must report what the scan matched.
+  assert(
+    capTestPathFinding({ lens: "CLAIM_SCAN", severity: "HIGH", path: "tests/x.py", title: "t" })
+      .severity === "HIGH",
+    "(c) a CLAIM_SCAN HIGH on a test path is NOT capped",
+  );
+  assert(
+    capTestPathFinding({ lens: "CLAIM_SCAN", severity: "HIGH", path: "tests/x.py", title: "t" })
+      .severityCapped === undefined,
+    "(c) a CLAIM_SCAN row carries no cap marker",
+  );
+
   // Gap-check 2 — the provenance marker: set by the cap, absent otherwise.
   assert(
     cap("HIGH", "tests/x.py").severityCapped === "test-path",
@@ -198,9 +231,24 @@ const f = (severity: Finding["severity"], p: string, title = "t"): Finding => ({
   ]) {
     assert(isLensTestPath(p), `(c) predicate: ${p} is a test path`);
   }
-  for (const p of ["latest.ts", "contest/x.ts", "src/x.ts", "", "attest/foo.ts", "README_test"]) {
+  for (const p of [
+    "latest.ts",
+    "contest/x.ts",
+    "src/x.ts",
+    "",
+    "attest/foo.ts",
+    "README_test",
+    // Gap-check 6 — the basename's extension must be one tests are written in:
+    // a fixture is not test code, whatever it is named.
+    "src/test-data.json",
+    "src/test_notes.md",
+    "src/config.test.yaml",
+    "src/fixtures/foo_test.json",
+  ]) {
     assert(!isLensTestPath(p), `(c) predicate: ${p} is NOT a test path`);
   }
+  // …but a test DIRECTORY segment still wins over the basename.
+  assert(isLensTestPath("tests/test-data.json"), "(c) predicate: tests/test-data.json is a test path");
 }
 
 // ---------------------------------------------------------------------------
@@ -237,6 +285,23 @@ const f = (severity: Finding["severity"], p: string, title = "t"): Finding => ({
   // A list nothing caps still comes back as a list of the same rows, in order.
   const untouched = mergeLensFindings([f("HIGH", "src/a.ts", "a"), f("LOW", "src/b.ts", "b")], REPO_ROSTER);
   assert(untouched.map((x) => x.path).join(",") === "src/a.ts,src/b.ts", "(c) merge order preserved");
+  // Gap-check 7 — the cap re-sorts. `dedupeFindings` sorted BEFORE the cap moved
+  // rows between severity levels. The capped row cites a test DIRECTORY and the
+  // lowest path, so it sorts FIRST pre-cap; if the cap does not re-sort, it stays
+  // first and the native HIGH is listed after a row the round no longer calls HIGH
+  // — the order every report the operator reads is built from.
+  const sorted = mergeLensFindings(
+    [f("HIGH", "tests/aaa-capped.ts", "capped"), f("HIGH", "zzz-native.ts", "native")],
+    REPO_ROSTER,
+  );
+  assert(
+    sorted.map((x) => `${x.title}/${x.severity}`).join(",") === "native/HIGH,capped/MEDIUM",
+    `(c) the native HIGH is listed first and the capped row below it at MEDIUM (got ${sorted.map((x) => `${x.title}/${x.severity}`).join(", ")})`,
+  );
+  assert(
+    sorted[1]?.severityCapped === "test-path",
+    "(c) the row that sorts second is the capped one",
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -285,7 +350,12 @@ const f = (severity: Finding["severity"], p: string, title = "t"): Finding => ({
       prodRow !== undefined && !("severityCapped" in prodRow),
       "(c) the production row carries no marker",
     );
-    // And the summary the verdict and the operator read is the capped one.
+    // And the summary the operator reads marks the row as capped, so a
+    // harness-side override never reads as the lens's own MEDIUM.
+    assert(
+      renderSummary(summary, 3).includes("[MEDIUM (capped: test-path)]"),
+      "(c) the operator's finding line renders the cap provenance",
+    );
     const inSummary = new Map(summary.findings.map((x) => [x.path, x]));
     assert(
       inSummary.get("smoke-tests/test-a.ts")?.severity === "MEDIUM",

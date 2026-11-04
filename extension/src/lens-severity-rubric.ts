@@ -25,6 +25,7 @@
  * the pass that motivated this).
  */
 
+import { sortFindings } from "./lens-review-format.ts";
 import type { Finding } from "./lens-review-types.ts";
 import { isLensTestPath } from "./lens-test-path.ts";
 
@@ -73,8 +74,15 @@ report the severity the reachable impact of your finding actually warrants.`;
  *
  * Returns the SAME object when nothing moves: the marker is only ever set by
  * this pass, so `severityCapped` means "this row's severity was lowered here".
+ *
+ * `CLAIM_SCAN` rows are exempt: they are deterministic grep lookups, not lens
+ * judgements, so there is no inflated label to correct — the row reports exactly
+ * what the scan matched, wherever the file lives. `CLAIM_SCAN` from
+ * `lens-roster.ts` is the same literal; it is not imported because the roster
+ * sits behind the `lens-review-format.ts` edge this module already crosses.
  */
-export function capTestPathFinding<T extends Finding>(finding: T): T {
+export function capTestPathFinding(finding: Finding): Finding {
+  if (finding.lens === "CLAIM_SCAN") return finding;
   if (finding.severity !== "HIGH") return finding;
   if (!isLensTestPath(finding.path)) return finding;
   return { ...finding, severity: "MEDIUM", severityCapped: "test-path" };
@@ -85,11 +93,10 @@ export function capTestPathFinding<T extends Finding>(finding: T): T {
  * recorded against the findings memory, so the verdict, the severity counts, the
  * stored rows and any row a later round carries all read the capped severity.
  *
- * A no-op on an untouched list: a list whose every row passes through returns
- * the input array, so the pass costs nothing on the ordinary round and cannot
- * perturb the order `dedupeFindings` established.
+ * Re-sorts afterwards: `dedupeFindings` ordered the list by severity and the cap
+ * moves rows between levels, so without the second sort a capped HIGH would sit
+ * above a native HIGH in every report that reads this array.
  */
 export function capTestPathFindings(findings: readonly Finding[]): Finding[] {
-  if (findings.every((f) => capTestPathFinding(f) === f)) return [...findings];
-  return findings.map((f) => capTestPathFinding(f));
+  return findings.map(capTestPathFinding).sort(sortFindings);
 }
