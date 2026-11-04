@@ -23,6 +23,7 @@ import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
+import { registerChildHandle } from "../src/async-jobs-registry.ts";
 import { BUDGET_PROGRESS_STEER_SOURCE } from "../src/budget-progress.ts";
 import {
   MAX_MINUTES_LIMIT,
@@ -30,10 +31,9 @@ import {
   parseMaxMinutes,
   parseMaxTurns,
 } from "../src/dispatch-budget-params.ts";
-import { registerChildHandle } from "../src/async-jobs-registry.ts";
-import { childBoundGraceMs, childBoundSchedule } from "../src/spawn-child-bound.ts";
-import { formatLine, type LifecycleDetails } from "../src/lifecycle-events.ts";
+import { type LifecycleDetails, formatLine } from "../src/lifecycle-events.ts";
 import { type SpawnBudgetOpts, armChildBounds } from "../src/spawn-budget-arms.ts";
+import { childBoundGraceMs, childBoundSchedule } from "../src/spawn-child-bound.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -199,7 +199,7 @@ function arm(o: {
     "spawn.ts arms the child's bounds (without this call the feature is dead code)",
   );
   assert(
-    /budgetProgress\?\.\(\)\?\.onAssistantTurn\(runningState\.turns/.test(
+    /budgetProgress\.onAssistantTurn\(runningState\.turns/.test(
       readFileSync(join(SRC, "spawn-inflight.ts"), "utf8"),
     ),
     "the steer is driven on the per-assistant-turn seam, beside the turn nudge",
@@ -223,7 +223,9 @@ function arm(o: {
     "the arm asks the project's one liveness question, the way every other supervisor of this child does",
   );
   assert(
-    /childBoundSchedule\(boundMs[^)]*\n?\s*childBoundGraceMs\(\), o\.start\)/.test(armSource),
+    /childBoundSchedule\(\s*boundMs \?\? 0,\s*childBoundGraceMs\(\),\s*o\.start,?\s*\)/.test(
+      armSource,
+    ),
     "the minutes lever is built from the run bound's OWN schedule, anchored to the spawn's start",
   );
 }
@@ -333,7 +335,11 @@ function arm(o: {
   });
   progress.onAssistantTurn(1, 0);
   progress.onAssistantTurn(2, 0);
-  eq(out.lines().length, 2, "AC6: a deck-registered child receives both steers through the registry");
+  eq(
+    out.lines().length,
+    2,
+    "AC6: a deck-registered child receives both steers through the registry",
+  );
   eq(
     out.lines().map((l) => JSON.parse(l).type),
     ["steer", "steer"],

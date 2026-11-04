@@ -33,9 +33,18 @@
 
 import type { ChildProcess } from "node:child_process";
 import type { Writable } from "node:stream";
-import { type BudgetProgressSteer, budgetProgressClock, createBudgetProgressSteer } from "./budget-progress.ts";
+import {
+  type BudgetProgressSteer,
+  budgetProgressClock,
+  createBudgetProgressSteer,
+} from "./budget-progress.ts";
 import type { SteerSource } from "./dispatch-steer.ts";
-import { type ChildBound, armChildBound, childBoundGraceMs, childBoundSchedule } from "./spawn-child-bound.ts";
+import {
+  type ChildBound,
+  armChildBound,
+  childBoundGraceMs,
+  childBoundSchedule,
+} from "./spawn-child-bound.ts";
 import { childHasExited } from "./spawn-support.ts";
 
 /** The bound options the two arms read, as `SpawnOptions` declares them. */

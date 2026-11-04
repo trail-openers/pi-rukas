@@ -38,6 +38,7 @@ import {
   BUDGET_PROGRESS_CLOSE_OUT,
   BUDGET_PROGRESS_HALF,
   BUDGET_PROGRESS_STEER_SOURCE,
+  type BudgetProgressOpts,
   budgetProgressClock,
   budgetProgressReached,
   budgetProgressText,
@@ -46,7 +47,6 @@ import {
   createBudgetProgressSteer,
   minutesLeft,
   minutesLeftText,
-  type BudgetProgressOpts,
 } from "../src/budget-progress.ts";
 import type { SteerSource } from "../src/dispatch-steer.ts";
 
@@ -213,11 +213,7 @@ function harness(opts: Partial<BudgetProgressOpts> & { role?: string } = {}) {
   eq(clock.wrapAtMs, anchor + 30 * MINUTE, "wrapAtMs is anchored to absolute time");
   eq(clock.killAtMs, anchor + 40 * MINUTE, "killAtMs is anchored to absolute time");
   eq(minutesLeft(clock, anchor + 12 * MINUTE), 28 * MINUTE, "minutes left run to the KILL");
-  eq(
-    minutesLeftText(28 * MINUTE),
-    "28 min",
-    "a whole-minute remainder renders as a minute count",
-  );
+  eq(minutesLeftText(28 * MINUTE), "28 min", "a whole-minute remainder renders as a minute count");
   eq(minutesLeftText(40_000), "under 1 min", "under a minute is its own phrase");
   eq(minutesLeftText(0), "under 1 min", "a spent clock is never negative or '0 min'");
   eq(minutesLeft(clock, anchor + 99 * MINUTE), 0, "elapsed past the bound clamps at zero");
@@ -268,7 +264,12 @@ function harness(opts: Partial<BudgetProgressOpts> & { role?: string } = {}) {
 // ── 7. both levers armed: the closest to its limit speaks ────────────────
 {
   eq(
-    closestBudgetLever({ turnsUsed: 39, turnsLimit: 40, minutesUsedMs: 0, minutesLimitMs: 30 * MINUTE }),
+    closestBudgetLever({
+      turnsUsed: 39,
+      turnsLimit: 40,
+      minutesUsedMs: 0,
+      minutesLimitMs: 30 * MINUTE,
+    }),
     "turns",
     "turns at 97% / minutes at 0% → the turns lever speaks",
   );
@@ -293,7 +294,12 @@ function harness(opts: Partial<BudgetProgressOpts> & { role?: string } = {}) {
     "a TIE goes to minutes (the kill nearest in real time)",
   );
   eq(
-    closestBudgetLever({ turnsUsed: 5, turnsLimit: undefined, minutesUsedMs: 0, minutesLimitMs: 0 }),
+    closestBudgetLever({
+      turnsUsed: 5,
+      turnsLimit: undefined,
+      minutesUsedMs: 0,
+      minutesLimitMs: 0,
+    }),
     "minutes",
     "neither lever armed is a defined comparison, not a crash",
   );
@@ -347,9 +353,19 @@ function harness(opts: Partial<BudgetProgressOpts> & { role?: string } = {}) {
     closeOut: false,
     commits: true,
   });
-  eq(text, "Budget: turn 20 of 40, about 12 min left of 30.", "the AC's example line renders exactly");
-  assert(!/token/i.test(text), "the progress steer never mentions tokens (tokens are out of scope)");
-  assert(!/budgetSteerText/.test(text), "it is a new renderer, not progress.ts's token budget line");
+  eq(
+    text,
+    "Budget: turn 20 of 40, about 12 min left of 30.",
+    "the AC's example line renders exactly",
+  );
+  assert(
+    !/token/i.test(text),
+    "the progress steer never mentions tokens (tokens are out of scope)",
+  );
+  assert(
+    !/budgetSteerText/.test(text),
+    "it is a new renderer, not progress.ts's token budget line",
+  );
   const closeOut = budgetProgressText({
     turnsUsed: 32,
     turnsLimit: 40,

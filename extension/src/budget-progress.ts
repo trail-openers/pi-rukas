@@ -39,7 +39,7 @@
  */
 
 import type { Writable } from "node:stream";
-import { steerChild, type SteerSource } from "./dispatch-steer.ts";
+import { type SteerSource, steerChild } from "./dispatch-steer.ts";
 
 /** Fraction of a bound at which the child is told where it stands. */
 export const BUDGET_PROGRESS_HALF = 0.5;
@@ -225,7 +225,7 @@ function gone(o: BudgetProgressOpts): boolean {
 function deliver(o: BudgetProgressOpts, text: string): boolean {
   const envelope = `${JSON.stringify({ type: "steer", message: text })}\n`;
   try {
-  if (o.onSteer) {
+    if (o.onSteer) {
       o.onSteer(text, BUDGET_PROGRESS_STEER_SOURCE);
       return true;
     }
@@ -337,14 +337,19 @@ export function createBudgetProgressSteer(o: BudgetProgressOpts): BudgetProgress
     // it speaks, which is what keeps a turns-only child from printing a bogus
     // "0 min left" and a clock-only child from printing a bogus "turn 0 of 0".
     const reportMinutes = minutesArmed && (!turnsArmed || speaksMinutes === "minutes");
-    if (!deliver(o, budgetProgressText({
-      turnsUsed: turns,
-      turnsLimit: reportMinutes ? undefined : turnsLimit,
-      minutesLeftMs: reportMinutes && o.clock ? minutesLeft(o.clock, now) : undefined,
-      minutesTotalMs: reportMinutes ? minutesTotal : undefined,
-      closeOut,
-      commits: o.commits,
-    }))) {
+    if (
+      !deliver(
+        o,
+        budgetProgressText({
+          turnsUsed: turns,
+          turnsLimit: reportMinutes ? undefined : turnsLimit,
+          minutesLeftMs: reportMinutes && o.clock ? minutesLeft(o.clock, now) : undefined,
+          minutesTotalMs: reportMinutes ? minutesTotal : undefined,
+          closeOut,
+          commits: o.commits,
+        }),
+      )
+    ) {
       return false;
     }
     delivered += 1;
@@ -362,7 +367,10 @@ export function createBudgetProgressSteer(o: BudgetProgressOpts): BudgetProgress
     // Close-out first, on either lever: a child that skipped the half reading
     // entirely (a dispatch resumed at turn 30 of 40) still gets the
     // instruction, not a stale position line followed by nothing.
-    if (!latches.closeOut.turns && budgetProgressReached(turns, turnsLimit, BUDGET_PROGRESS_CLOSE_OUT)) {
+    if (
+      !latches.closeOut.turns &&
+      budgetProgressReached(turns, turnsLimit, BUDGET_PROGRESS_CLOSE_OUT)
+    ) {
       latches.closeOut.turns = true;
       latches.half.turns = true;
       if (fire(true, now, turns)) return;

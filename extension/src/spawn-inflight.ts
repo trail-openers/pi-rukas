@@ -225,11 +225,10 @@ export function createStdoutLineHandler(opts: {
   /**
    * #1991 — the budget-progress steer (budget-progress.ts), driven on the same
    * per-assistant-turn seam as `turnNudge`: the only place the spawn's turn
-   * count and the child's own clock are both current. A getter because the
-   * steer is armed further down in `spawn.ts`, past the ordering that puts
-   * `armCapSession` before this handler. Inert and cheap with no bound armed.
+   * count and the child's own clock are both current. Inert and cheap for a
+   * child with no bound armed, so the call site stays unconditional.
    */
-  budgetProgress: () => BudgetProgressSteer | undefined;
+  budgetProgress: BudgetProgressSteer;
   onProgress?: (snapshot: RunningState) => void;
   onRawEvent?: (event: PiJsonEvent) => void;
   onAgentEnd: (parsed: PiJsonEvent) => void;
@@ -297,7 +296,7 @@ export function createStdoutLineHandler(opts: {
       // construction: the nudge stands down when a bound is armed (inside
       // `turnNudge`), and the progress steer is inert when none is.
       caps.turnNudge?.(runningState.turns);
-      budgetProgress?.()?.onAssistantTurn(runningState.turns, Date.now());
+      budgetProgress.onAssistantTurn(runningState.turns, Date.now());
       onProgress?.({ ...runningState, usage: { ...runningState.usage } });
     }
     // #839 — raw-event observer for the dispatch deck's live view. Fires
