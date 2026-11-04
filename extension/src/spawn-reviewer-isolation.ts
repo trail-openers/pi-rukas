@@ -1,11 +1,15 @@
 /**
  * spawn-reviewer-isolation — the #1975 choke point, as `spawnSpecialist` calls
- * it (AGENTS.md §12: `spawn.ts` is at the 500-line cap, so the wrapper lives
- * beside the other `spawn-*` seams and the call site is three lines).
+ * it (AGENTS.md §12: `spawn.ts` sits at the 500-line cap, so the wrapper lives
+ * beside the other `spawn-*` seams and the call site is one expression).
  *
- * The rules themselves — when a tree is made, what it is detached at, and what
- * a failure means — are `reviewer-tree.ts`'s contract. This module is only the
- * shape the spawn path needs: a relocated spec plus a release that never throws.
+ * Every reviewer child — the six lens passes and the adversarial reviewer —
+ * reaches git through `spawnSpecialist`, so wrapping that one call isolates all
+ * of them and nothing in `lens-review*.ts` or `adversarial.ts` learns the tree
+ * exists. The rules themselves (when a tree is made, what it is detached at,
+ * what a failure means) are `reviewer-tree.ts`'s contract; this module adds only
+ * the shape the spawn path needs — run the dispatch with a relocated spec, and
+ * remove the tree however the dispatch ends.
  */
 
 import { execp } from "./exec.ts";
@@ -13,29 +17,34 @@ import { isReviewerRole } from "./review-bounds.ts";
 import { resolveHeadSha } from "./review-head-sha.ts";
 import { openReviewerTree } from "./reviewer-tree.ts";
 import { trace } from "./trace.ts";
-import type { DispatchSpec } from "./types.ts";
+import type { DispatchResult, DispatchSpec } from "./types.ts";
 
 /**
- * A reviewer child whose `cwd` is a git worktree gets a throwaway detached tree
- * at that cwd's HEAD instead; everything else about the child is untouched.
+ * Run `dispatch` with this spec's child pointed at a throwaway detached tree at
+ * the reviewed cwd's HEAD, and remove the tree on every exit — a spawn throw, an
+ * abort, a cap kill.
  *
- * Returns `spec` unchanged whenever relocation is not possible: not a reviewer
- * role, no caller-named cwd (the process cwd is not ours to relocate), the
- * operator's opt-out, an unresolvable HEAD, or a tree git refused to make. Each
- * of those traces rather than throws — a reviewer is a gate, and gate plumbing
- * that cannot start must not cost the gate its answer.
+ * The spec reaches `dispatch` unchanged whenever relocation is not possible: not
+ * a reviewer role, no caller-named cwd (the process cwd is not ours to
+ * relocate), the operator's opt-out, an unresolvable HEAD, or a tree git refused
+ * to make. Each of those traces rather than throws — a reviewer is a gate, and
+ * gate plumbing that cannot start must not cost the gate its answer.
  */
-export async function isolateReviewerSpec(
+export async function runWithReviewerTree(
   spec: DispatchSpec,
-): Promise<{ spec: DispatchSpec; release: () => Promise<void> }> {
-  const none = { spec, release: async () => undefined };
-  if (spec.cwd === undefined || !isReviewerRole(spec.role)) return none;
+  dispatch: (spec: DispatchSpec) => Promise<DispatchResult>,
+): Promise<DispatchResult> {
+  if (spec.cwd === undefined || !isReviewerRole(spec.role)) return dispatch(spec);
   const reviewedCwd = spec.cwd;
   const headSha = await resolveHeadSha(reviewedCwd, "HEAD", execp);
-  if (headSha === undefined) return none;
+  if (headSha === undefined) return dispatch(spec);
   const tree = await openReviewerTree(execp, reviewedCwd, headSha);
-  if (!tree.cwd) return none;
+  if (!tree.cwd) return dispatch(spec);
   const treeCwd = tree.cwd;
   trace(`reviewer-tree: ${spec.role} runs in ${treeCwd} at ${headSha.slice(0, 12)}`);
-  return { spec: { ...spec, cwd: treeCwd }, release: () => tree.release?.() ?? Promise.resolve() };
+  try {
+    return await dispatch({ ...spec, cwd: treeCwd });
+  } finally {
+    await tree.release?.();
+  }
 }
