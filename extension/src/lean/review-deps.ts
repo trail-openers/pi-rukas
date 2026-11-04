@@ -424,7 +424,9 @@ export function fixPrompt(opts: ReviewFixArgs): string {
   // rather than folded into the prose below, because a brief with no issue block
   // has no requirement to cite and the rule must then not appear at all.
   const declineRule =
-    issueBlock === "" ? "" : `\n## Declining a finding that contradicts the issue\n\n${FIXER_DECLINE_RULE}\n`;
+    issueBlock === ""
+      ? ""
+      : `\n## Declining a finding that contradicts the issue\n\n${FIXER_DECLINE_RULE}\n`;
   return `You are fixing the findings one review gate raised against this run's work (issue #${String(
     opts.issue,
   )}, review step, one fix wave, gate: ${gate}).

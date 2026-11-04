@@ -26,6 +26,7 @@ import {
 import { lensFixWorkstreamId } from "./work-driver-lens-fix-fence-gate.ts";
 import { buildLensFixFence } from "./work-driver-lens-fix-fence.ts";
 import { lensWorktree, persistFenceRecord } from "./work-driver-lens-fix-records.ts";
+import { lensFixResendPrompt } from "./work-driver-lens-fix-resend.ts";
 import { FIXER_DECLINE_RULE, issuePromptBlockForReview } from "./work-driver-lens-issue.ts";
 import { readCachedBody } from "./work-driver-lens.ts";
 
@@ -298,39 +299,13 @@ export async function runLensFix(
   // #1391 — a retried fixer is told where its lost predecessor's work went.
   const lostNote = interruptedLensFixNote(state) ?? "";
   const body = isResend
-    ? [
-        `RE-DISPATCH — the previous lens-fix dispatch produced no committed fix: no commits ahead of the feature branch in the lens-fix worktree ${JSON.stringify(fixTree)}.`,
-        // The second literal is the same developer in the same tree, so it gets
-        // the same issue block and the same rule — the #1156 lesson, applied to
-        // the site where the rule was next dropped.
-        issuePromptBlockForReview(fixIssueBody).trim(),
-        issuePromptBlockForReview(fixIssueBody) === "" ? "" : FIXER_DECLINE_RULE,
-        // #1798 — the re-dispatch IS the shape this clause exists for: the
-        // predecessor was killed with its work uncommitted. Say what to commit
-        // and when in the SAME constant the ordinary prompt prints, so the two
-        // arms cannot drift apart (the #1156 lesson: this array is a second
-        // literal and the rule got dropped from it once).
-        LENS_FIX_COMMIT_INSTRUCTION,
-        `Either the findings are already resolved in the committed diff (in which case say so with \`nothing-to-fix: <one-line reason>\` and make no changes), or the previous attempt left uncommitted work in that tree that it never committed. Inspect the tree — \`git -C ${fixTree} status\` — and commit any uncommitted fix work there: \`git add -A\` followed by \`git commit -m "<type>(scope): concise subject"\`. Do NOT push.`,
-        "",
-        // #1156 — the re-dispatch is the same developer in the same worktree
-        // with the same gates to re-run, so it carries the same test-scope +
-        // suite-bound rule as `inlineLensFixPrompt`. This branch is a separate
-        // inline array built alongside that function, which is exactly where
-        // the rule got dropped once.
-        `  - ${developTestScopeLine()}`,
-        "",
-        "Findings (JSON-encoded array of {path, line, severity, title, suggestion}):",
-        "```json",
+    ? lensFixResendPrompt(
         findings,
-        "```",
-        // #1852 — the resend is a SECOND prompt literal built alongside the
-        // function above, and it is the same developer in the same tree under
-        // the same fence: printing the fence in one and not the other is how
-        // the test-scope rule got dropped once (#1156).
-        ...(fenceLines ?? []),
-        scratchHygieneSection(scratchDir(ctx.repoRoot, ctx.issue)),
-      ].join("\n")
+        scratchDir(ctx.repoRoot, ctx.issue),
+        fixTree,
+        fixIssueBody,
+        fenceLines,
+      )
     : inlineLensFixPrompt(findings, scratchDir(ctx.repoRoot, ctx.issue), fixIssueBody, fenceLines);
   const prompt = `${lostNote}${body}`;
 

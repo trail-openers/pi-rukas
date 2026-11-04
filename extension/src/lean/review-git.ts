@@ -299,6 +299,10 @@ export async function fixRound(
       wave: opts.wave,
       gate: opts.gate,
       findings: opts.findings,
+      // The step's one issue body, threaded to the renderer: `fixRound` is handed
+      // it and `runFixer` prints it, so a call site that dropped it would leave
+      // the fixer judging the findings against nothing but the findings.
+      issueBody: opts.issueBody,
       worktree: wt,
       repoRoot: ctx.repoRoot,
       branch: specifyBranch(ctx.run.branch, ctx.issue),
