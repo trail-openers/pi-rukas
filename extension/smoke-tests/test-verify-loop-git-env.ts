@@ -15,6 +15,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { GIT_LOCATION_VARS } from "../src/git-env.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -74,6 +75,58 @@ try {
   );
 } finally {
   rmSync(dir, { recursive: true, force: true });
+}
+
+// ── The runner scrubs the WHOLE set, not the eight names it first listed.
+//
+// Same shape as the victim case above: inject the hostile variable into the
+// RUNNER's environment and ask what the test child actually sees. A child of
+// this process is no evidence at all — by the time it was spawned the parent
+// had already scrubbed (`clean` above), so a runner that scrubbed nothing would
+// still report a clean child. The child the runner starts is the one under test.
+//
+// Five names — `GIT_IMPLICIT_WORK_TREE`, `GIT_SHALLOW_FILE`, `GIT_GRAFT_FILE`,
+// `GIT_NO_REPLACE_OBJECTS`, `GIT_REPLACE_REF_BASE` — sat outside the original
+// list, each of which redirects a real read (object store, grafts, replace refs).
+//
+// Asserted against `GIT_LOCATION_VARS` rather than a list typed here, so the
+// gate cannot drift from the set production scrubs: a name added on one side
+// and not the other fails naming the leak, instead of surviving as stray
+// commits in whoever's repository the variable names.
+{
+  // Its own temp dir: the block above removes `dir` in its `finally`.
+  const probeRoot = mkdtempSync(path.join(tmpdir(), "verify-loop-leak-"));
+  const leakProbe = path.join(probeRoot, "leak-probe.ts");
+  writeFileSync(
+    leakProbe,
+    [
+      `const names = ${JSON.stringify([...GIT_LOCATION_VARS])};`,
+      "console.log('LEAK=' + names.filter((n) => process.env[n] !== undefined).join(','));",
+      "",
+    ].join("\n"),
+  );
+  const leaked: string[] = [];
+  // One name per run: `unset` takes the whole list at once, but a single-name
+  // run names WHICH one leaked, and a batched run would only ever report the
+  // first — the same off-by-one that kept five names invisible for their whole
+  // life inside a list that looked complete.
+  for (const name of GIT_LOCATION_VARS) {
+    const probe = spawnSync("bash", [RUNNER, leakProbe], {
+      encoding: "utf8",
+      env: { ...clean, [name]: path.join(probeRoot, "must-not-be-read") },
+    });
+    const leakLine = (probe.stdout ?? "").split("\n").find((l) => l.startsWith("LEAK="));
+    if (leakLine === undefined) {
+      leaked.push(`${name}(no output — probe did not run)`);
+    } else if (leakLine !== "LEAK=") {
+      leaked.push(leakLine.slice(5));
+    }
+  }
+  rmSync(probeRoot, { recursive: true, force: true });
+  assert(
+    leaked.length === 0,
+    `the runner leaves no git location variable in a test child (${GIT_LOCATION_VARS.length} names checked, leaked: ${JSON.stringify(leaked)})`,
+  );
 }
 
 console.log(`\nexit ${exit}`);

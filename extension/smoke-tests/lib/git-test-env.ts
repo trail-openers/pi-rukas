@@ -114,8 +114,10 @@
  * The ambient half cannot do this: `ensure()` deliberately does not delete from
  * `process.env`, because bun drops `process.env` mutations on synchronous
  * spawns and production code under test reads the ambient env. So the scrub is
- * only in the RETURNED env, which is why the static gate
- * (`test-fixture-git-env.ts`) requires every fixture git call to thread it.
+ * only in the RETURNED env — which is why a fixture threads this into the child
+ * options rather than relying on the runner-level `unset` in lib/verify-loop.sh
+ * (a belt, for the whole run) or on an ambient `gitTestEnv()` call at the top
+ * of the file.
  *
  * DO NOT USE THIS FROM `src/`. It exists so a test can pin what git reports;
  * production git calls must keep reading the operator's configuration. The
