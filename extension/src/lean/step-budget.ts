@@ -18,6 +18,7 @@ import { capsEnabled } from "../spawn-child-bound.ts";
 import { traceWarn } from "../trace.ts";
 import type { DispatchResult, DispatchUsage } from "../types.ts";
 import type { Budget, WorkConfig } from "./config.ts";
+import { DISPATCHES_MAX_ROWS } from "./state-outcome.ts";
 import type { LeanState, Outcome } from "./state.ts";
 
 /** Which ceiling was crossed, with what it was and what the child used. */
@@ -409,6 +410,12 @@ export function budgetVerdict(state: LeanState, fired: BudgetFired): Outcome {
  * Same sentence as {@link budgetVerdict} — the reason text is what the operator
  * is taught to read — with the cost rows attached, so a stopped round's tokens
  * reach the host instead of vanishing with the child.
+ *
+ * The rows are clipped to the validator's own cap, keeping the tail, exactly as
+ * the done path does (`review-pass.ts`). `dispatchesProblem` refuses an array
+ * over the cap and a step's outcome is re-validated when the state file is read
+ * back, so an unclipped verdict does not report a long run — it makes the run's
+ * own state file unloadable, and a resume of it dies in `loadRun`.
  */
 export function budgetVerdictWithRows(
   state: LeanState,
@@ -416,5 +423,5 @@ export function budgetVerdictWithRows(
   rows: DispatchUsageRow[],
 ): Outcome {
   const verdict = budgetVerdict(state, fired);
-  return rows.length === 0 ? verdict : { ...verdict, dispatches: rows };
+  return rows.length === 0 ? verdict : { ...verdict, dispatches: rows.slice(-DISPATCHES_MAX_ROWS) };
 }
