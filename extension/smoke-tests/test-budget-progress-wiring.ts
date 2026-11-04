@@ -27,7 +27,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { clearJobsForTesting } from "../src/async-jobs.ts";
 import {
   MAX_MINUTES_DESCRIPTION,
   MAX_TURNS_DESCRIPTION,
@@ -39,6 +38,11 @@ import {
 import { registerDispatchTools } from "../src/dispatch.ts";
 import { childBoundGraceMs, childBoundSchedule } from "../src/spawn-child-bound.ts";
 import { spawnBackstopMs } from "../src/spawn-support.ts";
+import { setupSpawnGuard } from "./test-helpers.ts";
+
+// Nothing in this suite may reach a real child: acceptance is pinned at the
+// parse level, so an accidental live spawn is a bug in this file, not a case.
+setupSpawnGuard();
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -107,9 +111,10 @@ const SRC = join(import.meta.dirname, "..", "src");
 // has to reach the parse for EVERY member of a batch, or a bad member only
 // surfaces once its siblings have spawned. The tools' `cwd` is outside every
 // live cycle and no /work runs in this process, so nothing is refused for any
-// other reason and the messages below can only be the budget's. The accepted
-// dispatch at the end is settled with `clearJobsForTesting` (which aborts the
-// job) so the suite never exits with a real Pi child running behind it.
+// other reason and the messages below can only be the budget's — which is why
+// each assertion quotes the parser's own sentence, the parameter name plus
+// "between 1 and". Acceptance itself is pinned at the parse level above: this
+// block never starts a job, so it never spawns a child.
 {
   const tools: Array<{
     name: string;
@@ -152,12 +157,6 @@ const SRC = join(import.meta.dirname, "..", "src");
       `dispatch_parallel refuses a batch carrying ${key} ${JSON.stringify(value)} through execute (${batch || "RETURNED"})`,
     );
   }
-  eq(
-    await refusal("dispatch_specialist", { ...ok, maxTurns: 40, maxMinutes: 30 }),
-    "",
-    "an in-range bound is accepted by execute — the refusal above is the bounds', not the tool's",
-  );
-  clearJobsForTesting();
 }
 
 // Both tools must state the same rule, parse every spec of a parallel batch
