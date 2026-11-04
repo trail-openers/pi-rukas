@@ -45,10 +45,10 @@ All findings must follow this structure:
 
 ## Severity Scale
 
-- **CRITICAL**: Security vulnerabilities that can be exploited, data breaches
-- **HIGH**: Security weaknesses that could lead to vulnerabilities, missing critical controls
-- **MEDIUM**: Security best practice violations, defense in depth improvements
-- **LOW**: Minor security hardening opportunities
+- **CRITICAL**: An exposure an attacker can actually reach — the finding names the entry point and what they gain (data they should not read, actions they can perform without authorisation, code executed).
+- **HIGH**: A demonstrated weakness on a path the attacker can reach, with the reach stated — an unvalidated parameter that reaches a shell in a route the caller controls. "Could lead to vulnerabilities" without a stated path is a MEDIUM hardening suggestion.
+- **MEDIUM**: Security best-practice and defence-in-depth improvements with no demonstrated reach — missing rate limits, weak-but-unreached defaults, hardening opportunities.
+- **LOW**: Minor security hardening opportunities.
 
 ## Metadata Guidance Tags
 
@@ -103,8 +103,8 @@ When reporting findings, always include:
 
 ```markdown
 ## Must Fix
-- [CRITICAL] [src/auth/login.ts:56] SQL injection vulnerability
-  - Description: User input directly interpolated into SQL query without parameterization
+- [CRITICAL] [src/auth/login.ts:56] SQL injection in the unauthenticated login route
+  - Description: `email` from the request body is interpolated into the query at line 56; `email = 'x' OR 1=1--` authenticates as the first user without a password — the route needs no session, so any network client can send it.
   - Suggestion: Use parameterized queries: `db.query('SELECT * FROM users WHERE email = ?', [email])`
   - Metadata: cross_lens_candidate=true, tradeoff_required=false
 ```

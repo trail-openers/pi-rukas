@@ -45,10 +45,10 @@ All findings must follow this structure:
 
 ## Severity Scale
 
-- **CRITICAL**: Architectural violations that will cause cascading failures or unfixable technical debt
-- **HIGH**: Significant architectural issues that will impede maintenance or evolution
-- **MEDIUM**: Architectural improvements that would enhance maintainability
-- **LOW**: Minor architectural suggestions, cosmetic structural issues
+- **CRITICAL**: A structural violation that reaches a real failure the finding can name — a dependency cycle that takes down both sides at once, a layer boundary crossed so writes bypass their validation, unfixable data corruption.
+- **HIGH**: Demonstrated harm from the structure, not an opinion about it — the finding names the concrete consequence and how it is reached (e.g. a shared mutable singleton that a second request mutates while the first is in flight, so two users see each other's state). "Impedes maintenance or evolution" is a maintainability opinion and caps at MEDIUM.
+- **MEDIUM**: Structural and maintainability improvements — coupling, layering, cohesion, naming of modules — argued but not shown to break anything.
+- **LOW**: Minor structural suggestions, cosmetic issues.
 
 ## Metadata Guidance Tags
 
@@ -120,9 +120,9 @@ When reporting findings, always include:
 
 ```markdown
 ## Must Fix
-- [HIGH] [src/controllers/order.ts:23] Business logic in controller
-  - Description: Order validation and pricing logic embedded in controller, should be in domain service
-  - Suggestion: Extract to OrderService.validateAndPrice() and call from controller
+- [HIGH] [src/controllers/order.ts:23] Pricing state shared across requests via a module singleton
+  - Description: The controller mutates a module-level `pricingContext`; two concurrent orders interleave and the second is priced with the first's tier — reproducible by submitting two orders with different tiers in parallel.
+  - Suggestion: Pass pricing context per request, or extract to `OrderService.validateAndPrice(ctx)` with no module state.
   - Metadata: cross_lens_candidate=true, tradeoff_required=false
 ```
 
