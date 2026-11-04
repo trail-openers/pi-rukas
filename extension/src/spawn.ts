@@ -12,7 +12,8 @@
  * Split (#171): types in `pi-event-shapes.ts`, helpers in `spawn-support.ts`,
  * extension forwarding in `spawn-extension-forward.ts`, event collapsing
  * in `spawn-collapse-events.ts`, the kill-flag / cap-session / wall-clock and
- * abort arms in `spawn-watchdog.ts` (#1470), this file keeps `spawnSpecialist`.
+ * abort arms in `spawn-watchdog.ts` (#1470) and a child's own bounds (run bound
+ * and budget-progress steer) in `spawn-budget-arms.ts`; keeps `spawnSpecialist`.
  */
 
 import { spawn } from "node:child_process";
@@ -21,6 +22,7 @@ import os from "node:os";
 import path from "node:path";
 import { preflightChildGuards } from "./child-guards.ts";
 import { ChildProgress } from "./child-progress.ts";
+import { armChildBounds } from "./spawn-budget-arms.ts";
 import { clampToCycleDeadline } from "./cycle-deadline-clock.ts";
 import { scrubGitLocation } from "./git-env.ts";
 import { withHostSpawnSlot } from "./host-spawn-slots.ts";
@@ -265,8 +267,14 @@ async function spawnSpecialistInner(
     role: spec.role,
     onSteer: opts.onSteer,
     runningState,
-    // #1827 — by closure, so the caps see the value set later in the spawn.
+    // #1827 — by closure, so the caps see the value set later in the spawn, and
+    // #1991 for the same reason: a bound armed below stands the #546 turn nudge
+    // off inside `turnNudge`, so one steer seam carries one advisory per moment.
+    // A child with NO bound keeps the nudge, which is why `armed()` reports the
+    // two apart rather than the flags being merged — "no bound" and "bound not
+    // yet crossed" must not read the same.
     boundArmed: boundArmedState.armed,
+    budgetProgressActive: () => budgetProgress.armed(),
   });
   // Inactivity watchdog state (#296): ANY stdout line counts as life —
   // parseable or not. Checked on a coarse interval below.
@@ -309,6 +317,7 @@ async function spawnSpecialistInner(
   // #1827 — the pump and its bounds live in spawn-inflight.ts: spawn.ts sits at
   // the §12 size cap, and a bound that throws must not cost a live child its
   // whole event stream, so the try/catch is inside the pump rather than here.
+  // #1991 drives the progress steer on the same seam, hence the getter below.
   const stdoutPump = attachStdoutLinePump({
     child,
     handler: createStdoutLineHandler({
@@ -318,6 +327,7 @@ async function spawnSpecialistInner(
       appendStderr,
       runningState,
       caps,
+      budgetProgress: () => budgetProgress,
       onProgress: opts.onProgress,
       onRawEvent: opts.onRawEvent,
       onAgentEnd: (parsed) => {
@@ -352,23 +362,22 @@ async function spawnSpecialistInner(
     // child that committed or reported is ended as done instead.
     onTimeout: () => childBound.atBackstop(() => flags.setTimedOut(true)),
   });
-  // #1560 — the per-child run bound: wrap-up steer, then end it (spawn-child-bound.ts).
-  const childBound = armChildBound({
+  // #1560 / #1991 — a child's own bounds, armed as ONE thing: the run bound
+  // that ends it, and the progress steer that tells it where it stands. Both
+  // live in spawn-budget-arms.ts (spawn.ts sits at the §12 size cap), armed from
+  // one place so the schedule the child reads and the clock that kills it cannot
+  // drift apart, nor the two answers to "can this child commit?".
+  const { childBound, budgetProgress } = armChildBounds({
+    spec,
+    opts,
     child,
-    boundMs: opts.childBoundMs,
+    flags,
     cwd,
-    onSteer: opts.onSteer,
     stdin: child.stdin,
-    reported: () => promptCompleted,
-    childExited: flags.childExited, // #1847 — same seam as `exited` above.
-    preempted: () =>
-      flags.aborted() ||
-      flags.timedOut() ||
-      flags.inactivityKilled() ||
-      flags.toolInactivityKilled(),
-    commits: spec.role === "developer" && spec.cwd !== undefined,
-    // #1827 — the wrap-up steer stands down once a killing bound has armed.
+    start,
     boundArmed: boundArmedState.armed,
+    reported: () => promptCompleted,
+    onSteer: opts.onSteer,
   });
 
   // Inactivity watchdog (#296): kill only on total stdout silence. Coarse
@@ -415,6 +424,7 @@ async function spawnSpecialistInner(
   } finally {
     stopWallClockBackstop();
     childBound.stop();
+    budgetProgress.stop();
     stopInactivityPoll();
     caps.cleanup();
     detachAbortKill();

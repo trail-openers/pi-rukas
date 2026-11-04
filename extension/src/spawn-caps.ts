@@ -139,8 +139,14 @@ export interface CapSession {
    * no `onSteer` seam, or when no `turns` counter was provided). No-op safe.
    * Called from `spawn.ts` on every assistant turn end. Fires at most once
    * per dispatch, at the first turn ≥ `turnNudgeAt()`. Steer-only: it never
-   * contributes to `killCause`. */
+   * contributes to `killCause`. Stands down when `budgetProgressActive` says
+   * this child has a bound of its own (#1991): a paced child needs its
+   * position, not a status reminder. */
   turnNudge?: (turn: number) => void;
+  /** #1991 — true when the caller armed a budget-progress steer for this
+   * child. Read per call, like the nudge's threshold, so the two never fire
+   * for the same child. */
+  budgetProgressActive?: () => boolean;
   /** The single structured kill cause, by priority (loop first). */
   killCause(): DispatchResult["killCause"];
   /** Tear down the grace-window timers (call in the finally block). */
@@ -190,6 +196,13 @@ export interface CapSessionOpts {
    * one re-arms the inactivity watchdog's idea of life.
    */
   boundArmed?: () => boolean;
+  /**
+   * #1991 — true once the caller armed a budget-progress steer for this child.
+   * The turn nudge stands down on it: both are advisories on one seam, and a
+   * child whose bound is being reported to it needs its position, not a
+   * reminder to write a status line.
+   */
+  budgetProgressActive?: () => boolean;
 }
 
 /** Build the per-spawn cap session. Cheap: all state is per-spawn local. */
@@ -314,6 +327,11 @@ export function createCapSession(opts: CapSessionOpts): CapSession {
           // #1827 — a child a killing bound has already armed is on its way
           // out; nudging it to write a status summary buys nothing.
           if (opts.boundArmed?.()) return;
+          // #1991 — a child this spawn armed a budget-progress steer for is
+          // paced by that steer instead: a bound's own child needs its
+          // position, not a reminder to write a status line. Read per call,
+          // like the threshold below, so the two can never both fire.
+          if (opts.budgetProgressActive?.()) return;
           // Read the env var directly (not via turnNudgeAt) so the closure
           // sees the CURRENT value at call time. turnNudgeAt() reads
           // process.env.PI_ENSEMBLE_TURN_NUDGE at module scope, which Bun's

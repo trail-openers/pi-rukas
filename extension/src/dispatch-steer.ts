@@ -64,6 +64,12 @@ interface SteerDetails {
  * The tag is informational — it tells the operator WHY the child was nudged.
  */
 export type SteerSource =
+  /** #1991 — the budget-progress steer (`budget-progress.ts`): the child's own
+   * position against its armed turn/minute bound, at half and at close-out.
+   * Pinned by the same constant form `DECK_UI_STEER_SOURCE` uses, because
+   * nothing here checks this union for exhaustiveness — a typo'd literal would
+   * type-check and only ever show as a wrong scrollback tag. */
+  | "driver-budget-progress"
   | "pm-tool"
   | "driver-loop-detector"
   | "driver-budget"
