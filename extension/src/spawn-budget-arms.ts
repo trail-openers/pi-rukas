@@ -38,10 +38,12 @@ import {
   budgetProgressClock,
   createBudgetProgressSteer,
 } from "./budget-progress.ts";
-import type { SteerSource } from "./dispatch-steer.ts";
+import type { SteerDelivery, SteerSource } from "./dispatch-steer.ts";
 import {
   type ChildBound,
+  type ChildBoundSchedule,
   armChildBound,
+  capsEnabled,
   childBoundGraceMs,
   childBoundSchedule,
 } from "./spawn-child-bound.ts";
@@ -60,8 +62,10 @@ export interface SpawnBudgetOpts {
   /** False stands the progress steer off for a child the caller paces some
    *  other way. Absent means ON, which is the point of #1991. */
   budgetProgress?: boolean;
-  /** The driver's steer seam; without one both advisories go to `stdin`. */
-  onSteer?: (message: string, source: SteerSource) => void;
+  /** The driver's steer seam; without one both advisories go to `stdin`. An
+   *  explicit `false` says the line did not reach the child, which leaves the
+   *  progress steer's stage open so the next turn retries it. */
+  onSteer?: SteerDelivery;
 }
 
 export interface ChildBounds {
@@ -69,7 +73,10 @@ export interface ChildBounds {
   childBound: ChildBound;
   /** The progress steer. `stop()` in the spawn's `finally`. */
   budgetProgress: BudgetProgressSteer & {
-    /** True when this spawn armed at least one lever, i.e. the #546 nudge is off. */
+    /** True when this spawn armed at least one lever that can actually fire,
+     *  i.e. the #546 nudge is off. Under `PI_ENSEMBLE_DISPATCH_CAPS=0` the run
+     *  bound is inert, so a minutes-only lever is NOT armed and the nudge is not
+     *  silenced by a bound that will never kill. */
     armed: () => boolean;
   };
 }
@@ -102,15 +109,23 @@ export function armChildBounds(o: {
    *  committed-work check (it is NOT `spec.cwd`, which may be unset). */
   cwd: string;
   stdin: Writable;
-  /** The spawn's start, so both bounds count the child's whole life. */
+  /** The spawn's start, so both bounds count the child's whole life. Both arms
+   *  read this ONE instant — the schedule the child is paced against and the
+   *  timers that end it must come from the same `now`. */
   start: number;
   /** #1827 — true once a DIFFERENT killing bound has armed. Both advisories
    *  stand down on it: a child that is already being ended needs no advice. */
   boundArmed: () => boolean;
   /** The prompt's `agent_end` arrived (the spawn's `promptCompleted`). */
   reported: () => boolean;
-  onSteer?: (message: string, source: SteerSource) => void;
+  onSteer?: SteerDelivery;
 }): ChildBounds {
+  const graceMs = childBoundGraceMs();
+  // ONE schedule, from one `graceMs` and the spawn's own `start`, handed to BOTH
+  // arms: `armChildBound` starts its timers from it and the progress steer paces
+  // against it. Asking the schedule twice — once per arm, at two instants — is
+  // how the child ends up told time the bound will not grant.
+  const schedule = childBoundSchedule(o.opts.childBoundMs ?? 0, graceMs, o.start);
   const childBound = armChildBound({
     child: o.child,
     boundMs: o.opts.childBoundMs,
@@ -126,21 +141,23 @@ export function armChildBounds(o: {
       o.flags.toolInactivityKilled(),
     commits: commitsWork(o.spec),
     boundArmed: o.boundArmed,
+    graceMs,
+    schedule,
   });
 
   const turns = o.opts.budgetTurns;
   const boundMs = o.opts.budgetProgress === false ? undefined : o.opts.childBoundMs;
   const turnsArmed = o.opts.budgetProgress === false ? false : turns !== undefined && turns > 0;
-  const minutesArmed = boundMs !== undefined && boundMs > 0;
-  // The minutes lever comes from the run bound's OWN schedule function, asked
-  // at the spawn's `start` — the same call `armChildBound` makes. Asking it at
-  // any later instant would shorten the child's bound by the time between spawn
-  // and here, and a bound clamped to a deadline the run no longer has makes the
-  // advice lie about the time left: the exact failure #1991 exists to close, in
-  // its worst form, because the child would then trust the number.
-  const clock = minutesArmed
-    ? budgetProgressClock(childBoundSchedule(boundMs ?? 0, childBoundGraceMs(), o.start), o.start)
-    : undefined;
+  // The run bound is inert under `PI_ENSEMBLE_DISPATCH_CAPS=0` (`armChildBound`
+  // returns before it arms a timer), so a minutes lever armed there is armed in
+  // no sense the child can feel — and `armed()` gates the #546 turn nudge, which
+  // must not be silenced by a bound that will never kill.
+  const minutesArmed = boundMs !== undefined && boundMs > 0 && capsEnabled();
+  // The minutes lever reads the SAME schedule object `armChildBound` was handed
+  // above, anchored at the spawn's `start`, so the minutes the child sees are
+  // the minutes the bound will grant — including under a cycle-deadline clamp,
+  // which shortens both or neither.
+  const clock = minutesArmed ? budgetProgressClock(schedule, o.start) : undefined;
 
   const steer = createBudgetProgressSteer({
     role: o.spec.role,
