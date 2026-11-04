@@ -23,6 +23,10 @@
  *   (v) the PRODUCTION sleep is a real timer, not a no-op, and the production
  *        clock advances with it
  *
+ * The tier's TIME — its clamp against the cycle deadline and what a zero
+ * `budgets.ci.minutes` means — is `test-lean-ci-tier-budget.ts`, which drives
+ * the same recorder and asks what the full tier is allowed to be given.
+
  * (v) is the one case in either suite allowed to touch the production timer, and
  * it never sleeps the poll's minute: it asks that function to wait 40 ms and
  * races it against a `sleep 5` child, which a no-op sleep loses. Every other case

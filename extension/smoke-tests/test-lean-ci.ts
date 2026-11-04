@@ -22,6 +22,8 @@
  *   (k) no verified head on the log -> THROWS (nothing to observe)
  *   (l) no PR on the log -> THROWS
  *   (m) the full tier falls back to `.pi/verify-cmd` when work.json has none
+ *   (w7) a row with an empty or absent bucket AND state is never green: it is
+ *        waited, and the expired wait hands the run back
  *
  * The WAITING half of the step lives in `test-lean-ci-poll.ts` (cases (n)-(v)):
  * a step that reads the forge once, 0.7s after publish, grades a still-running CI
@@ -176,6 +178,53 @@ function assert(cond: boolean, msg: string): void {
   assert(r.cmds.includes("true"), "(m) and that command is the one that ran");
 }
 
+
+// ── (w7) a row that says nothing is not a passing row ───────────────────
+{
+  // A `gh pr checks` row whose `bucket` and `state` are both absent (or blank)
+  // is the quietest way a check can fail to be evidence: graded passing, it
+  // would be waited on by nobody and the step would merge on it; the forge's
+  // `mergeStateStatus` is read after the rows, so a row of no word outranks
+  // even a BLOCKED verdict. Graded `unknown` it waits — and the expired wait
+  // hands the run back, which is what (q) in `test-lean-ci-poll.ts` already
+  // proves is the right answer for a row nobody recognises.
+  const silent = await run({
+    full: "true",
+    clockMs: 0,
+    waitTimeoutMs: 90_000,
+    // BLOCKED, not CLEAN: the rows are graded BEFORE `mergeStateStatus` is
+    // consulted, so a silent row outranks even the forge's own refusal. With a
+    // CLEAN verdict here the step would go red on the merge state whatever the
+    // row grading says, and the case would not be about the row at all.
+    viewAt: (h) => viewAt(h, { mergeStateStatus: "BLOCKED" }),
+    checks: [{ name: "says-nothing" }, { name: "blank-rows", bucket: "   ", state: "" }],
+  });
+  assert(
+    silent.threw instanceof VerifyInfraError,
+    `(w7) a row with no bucket and no state is not a pass — it is waited and the wait throws (${String(silent.threw?.message)})`,
+  );
+  assert(
+    (silent.threw?.message ?? "").includes("says-nothing") &&
+      (silent.threw?.message ?? "").includes("blank-rows"),
+    `(w7) and the handback names both silent rows (${String(silent.threw?.message)})`,
+  );
+  assert(
+    silent.outcome === undefined,
+    "(w7) a row that said nothing never becomes a verdict the machine routes",
+  );
+  assert(!silent.cmds.includes("true"), "(w7) and no tier ran on the strength of it");
+
+  // The three words GitHub really does use for a passing row stay passing —
+  // otherwise this fix would be a new way for a good PR to hang.
+  for (const word of ["pass", "success", "none"]) {
+    const ok = await run({ full: "true", checks: [{ name: "quality-gate", bucket: word }] });
+    assert(
+      ok.outcome?.kind === "green",
+      `(w7) bucket "${word}" is still a pass (${JSON.stringify(ok.outcome ?? ok.threw?.message)})`,
+    );
+    assert(ok.cmds.includes("true"), `(w7) and "${word}" still runs the tier`);
+  }
+}
 
 cleanUp();
 process.exit(exit);

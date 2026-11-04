@@ -168,6 +168,15 @@ async function gitType(
  * raise it. `ci`'s minutes is the verify tier timeout, not a child bound; the
  * review row bounds the lens and fixer children, and has no wall clock of its
  * own — `REVIEW_CHILD_BUDGET` × the per-child bounds end it.
+ *
+ * `0` means "no bound" for turns and tokens. For `ci` the same `0` means the
+ * same thing to a reader — "no bound" — and gets the same treatment from the
+ * only caller that reads it as time: `lean/ci` turns this row into TWO wall
+ * clocks (the forge wait, then the full tier), where a literal zero is an
+ * immediately-expired wait and a tier of no time, which is the opposite of the
+ * generous setting every other `0` in this file says. `ci` takes a non-positive
+ * minutes as the shipped default below instead. Mechanism: `ciMinutes` in
+ * `lean/ci.ts`.
  */
 export const DEFAULT_BUDGETS: Readonly<Record<string, Budget>> = Object.freeze({
   specify: Object.freeze({ turns: 250, tokens: 30_000_000, minutes: 20 }),

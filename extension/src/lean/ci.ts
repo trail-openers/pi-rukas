@@ -47,8 +47,9 @@
 import { isFullCommitSha } from "../commit-sha.ts";
 import { verifyHostEnv } from "../work-driver-verify-cmd.ts";
 import { type CiDeps, ghReads } from "./ci-deps.ts";
+import { ciTierBudgetMs } from "./ci-tier-budget.ts";
 import { DEFAULT_BUDGETS, type WorkConfig } from "./config.ts";
-import { deadlineStopsSteps } from "./deadline.ts";
+import { MINUTE_MS, deadlineStopsSteps } from "./deadline.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { neverStarted, wasKilled } from "./specify-proof.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
@@ -88,9 +89,17 @@ const NOT_PASSING_ROWS = ["skipped", "skipping", "neutral"];
  * of the step — the forge wait and the full tier — so neither can drift from the
  * other or from what `.pi/work.json` says; `DEFAULT_BUDGETS` is the fallback
  * only where the config carries no `ci` row at all.
+ *
+ * A `0` here is the shipped default, not a bound of zero: elsewhere in a budget
+ * `0` means "no bound", and for the other states `armBudget` turns it into
+ * exactly that (no wall clock at all). Here the same number is a timeout handed
+ * to the forge wait and to the tier, so `0` would read as "expire immediately"
+ * and every run would hand back at once — the opposite of what a generous
+ * setting means everywhere else. So `<= 0` takes the shipped number.
  */
 function ciMinutes(cfg: WorkConfig): number {
-  return budgetFor(cfg, "ci")?.minutes ?? DEFAULT_BUDGETS.ci?.minutes ?? 30;
+  const configured = budgetFor(cfg, "ci")?.minutes ?? 0;
+  return configured > 0 ? configured : (DEFAULT_BUDGETS.ci?.minutes ?? 30);
 }
 
 /** One row's grade. Anything in no list is neither pending nor red — it waits,
@@ -114,7 +123,11 @@ function gradeRow(row: { state?: unknown; bucket?: unknown }): RowGrade | undefi
   const v = String(row.bucket ?? row.state ?? "")
     .toLowerCase()
     .trim();
-  if (v === "" || v === "pass" || v === "success" || v === "none") return undefined;
+  // An empty or absent bucket AND state says nothing, and "nothing said" is not
+  // a pass: graded passing it would be waited on by nobody and the step would
+  // merge on it. Graded `unknown` it waits, and an expired wait hands the run
+  // back — the same answer as a row in a state this file has never seen.
+  if (v === "pass" || v === "success" || v === "none") return undefined;
   if (PENDING_ROWS.includes(v)) return "pending";
   if (RED_ROWS.includes(v)) return "red";
   if (NOT_PASSING_ROWS.includes(v)) return "not-passing";
@@ -247,9 +260,10 @@ async function readForge(deps: CiDeps, repoRoot: string, prNumber: number): Prom
  *
  * The two bounds are SEQUENTIAL and separate: this wait gets the `ci` budget's
  * minutes (the caller's one `ciMinutes` read), and the full tier keeps its own
- * bound of the same size afterwards. Still pending when the wait expires is a
- * handback (`VerifyInfraError`), never a red, because nobody observed the code
- * being wrong.
+ * bound of the same size afterwards — clamped to the time the cycle's deadline
+ * still leaves, which is what {@link ciTierBudgetMs} does. Still pending when the
+ * wait expires is a handback (`VerifyInfraError`), never a red, because nobody
+ * observed the code being wrong.
  */
 async function checksRedReason(
   deps: CiDeps,
@@ -288,7 +302,7 @@ async function checksRedReason(
       const cycle = ctx.run.deadlineMs;
       if (deadlineStopsSteps(cycle, ctx.now(), "ci"))
         throw new VerifyInfraError(
-          `the ci wait stopped with ${Math.max(0, Math.round((cycle ?? 0) - ctx.now()) / 60_000)} min left of the cycle deadline: the run is inside its handoff allowance`,
+          `the ci wait stopped with ${Math.max(0, Math.round((cycle ?? 0) - ctx.now()) / MINUTE_MS)} min left of the cycle deadline: the run is inside its handoff allowance`,
         );
       if (deps.now() - start >= waitMs)
         throw new VerifyInfraError(
@@ -466,7 +480,10 @@ export async function ciOutcome(ctx: HandlerCtx, deps: CiDeps): Promise<Outcome>
 
   // The tier's bound is its OWN, sequential after the wait, and of the same
   // size: waiting out 18 minutes of CI must not leave the full tier a minute.
-  const timeoutMs = deps.tierTimeoutMs ?? ciMinutes(cfg) * 60_000;
+  // When the run carries a cycle deadline it is clamped to what that deadline
+  // still leaves, and the tier never starts when it leaves nothing — see
+  // {@link ciTierBudgetMs}.
+  const timeoutMs = ciTierBudgetMs(ctx, deps.tierTimeoutMs, ciMinutes(cfg));
   const tier = await tierFailure(deps, full, wt, timeoutMs);
   if (tier !== undefined) return { kind: "red", reason: tier };
 

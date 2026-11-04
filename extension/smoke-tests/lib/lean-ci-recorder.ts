@@ -95,7 +95,8 @@ export interface CiCase {
   tierTimeoutMs?: number | null;
   /** The `budgets.ci` row the injected config carries. The wait bound and the
    *  tier's bound both come from here, so a case can prove which number the
-   *  step actually read. `minutes: 0` is what an un-clamped bound is caught by. */
+   *  step actually read. A `minutes: 0` row is what the shipped-default rule is
+   *  caught by: read literally it is a wait that expired before it started. */
   ciBudget?: Budget;
 }
 
