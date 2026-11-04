@@ -45,8 +45,9 @@
  */
 
 import { isFullCommitSha } from "../commit-sha.ts";
+import { verifyHostEnv } from "../work-driver-verify-cmd.ts";
 import { type CiDeps, ghReads } from "./ci-deps.ts";
-import type { WorkConfig } from "./config.ts";
+import { DEFAULT_BUDGETS, type WorkConfig } from "./config.ts";
 import { deadlineStopsSteps } from "./deadline.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { neverStarted, wasKilled } from "./specify-proof.ts";
@@ -82,6 +83,16 @@ const RED_ROWS = ["fail", "failure", "cancelled", "cancel", "timed_out", "error"
  *  gate then always reads green, which is a gate that cannot fail. */
 const NOT_PASSING_ROWS = ["skipped", "skipping", "neutral"];
 
+/**
+ * The `ci` budget's minutes for one loaded config. One number feeds BOTH bounds
+ * of the step — the forge wait and the full tier — so neither can drift from the
+ * other or from what `.pi/work.json` says; `DEFAULT_BUDGETS` is the fallback
+ * only where the config carries no `ci` row at all.
+ */
+function ciMinutes(cfg: WorkConfig): number {
+  return budgetFor(cfg, "ci")?.minutes ?? DEFAULT_BUDGETS.ci?.minutes ?? 30;
+}
+
 /** One row's grade. Anything in no list is neither pending nor red — it waits,
  *  and an expired wait hands the run back rather than blaming the code. */
 type RowGrade = "pending" | "red" | "not-passing" | "unknown";
@@ -110,12 +121,22 @@ function gradeRow(row: { state?: unknown; bucket?: unknown }): RowGrade | undefi
   return "unknown";
 }
 
-/** The names to show a human for rows graded in `want`. */
+/**
+ * The names shown to a human for rows graded in `want`. Both bounds exist
+ * because these strings come from the forge: a handback line that quotes them
+ * must not grow with however many rows (or however long a name) a repo runs.
+ */
+const HANDBACK_NAME_CHARS = 80;
+const HANDBACK_NAMES = 10;
+
 function namesOf(
   rows: { name?: unknown; state?: unknown; bucket?: unknown }[],
   want: RowGrade,
 ): string[] {
-  return rows.filter((r) => gradeRow(r) === want).map((r) => String(r.name ?? "(unnamed)"));
+  return rows
+    .filter((r) => gradeRow(r) === want)
+    .slice(0, HANDBACK_NAMES)
+    .map((r) => oneLine(String(r.name ?? "(unnamed)"), HANDBACK_NAME_CHARS));
 }
 
 /** The newest decided `verify`'s full head, which is what CI must run against. */
@@ -151,7 +172,15 @@ async function cli(
   okExitCodes: readonly number[] = [],
 ): Promise<string> {
   const ran = await deps
-    .exec(cmd, { cwd: repoRoot, timeout: 60_000, maxBuffer: 512 * 1024 })
+    .exec(cmd, {
+      cwd: repoRoot,
+      timeout: 60_000,
+      maxBuffer: 512 * 1024,
+      // The driver's own forge read, so the host env: a project tier is scrubbed
+      // of driver knobs, but this `gh` is the driver's own host-channel call and
+      // keeps the one knob such a cycle reads (see `verifyHostEnv`).
+      env: verifyHostEnv(),
+    })
     .then((r) => ({ err: undefined as unknown, out: r as { stdout?: string } | undefined }))
     .catch((err: unknown) => ({ err, out: undefined as { stdout?: string } | undefined }));
   if (ran.err !== undefined) {
@@ -217,9 +246,10 @@ async function readForge(deps: CiDeps, repoRoot: string, prNumber: number): Prom
  * nothing for the whole budget.
  *
  * The two bounds are SEQUENTIAL and separate: this wait gets the `ci` budget's
- * minutes, and the full tier keeps its own bound of the same size afterwards.
- * Still pending when the wait expires is a handback (`VerifyInfraError`), never
- * a red, because nobody observed the code being wrong.
+ * minutes (the caller's one `ciMinutes` read), and the full tier keeps its own
+ * bound of the same size afterwards. Still pending when the wait expires is a
+ * handback (`VerifyInfraError`), never a red, because nobody observed the code
+ * being wrong.
  */
 async function checksRedReason(
   deps: CiDeps,
@@ -227,10 +257,10 @@ async function checksRedReason(
   repoRoot: string,
   prNumber: number,
   verified: string,
+  ciMinutes: number,
 ): Promise<string | undefined> {
   const start = deps.now();
-  const waitMs =
-    deps.waitTimeoutMs ?? (budgetFor(await ciConfig(deps, ctx), "ci")?.minutes ?? 30) * 60_000;
+  const waitMs = deps.waitTimeoutMs ?? ciMinutes * 60_000;
   for (;;) {
     const read = await readForge(deps, repoRoot, prNumber);
     if (read.state !== "OPEN") return `the PR is ${String(read.state)}, not OPEN`;
@@ -242,10 +272,8 @@ async function checksRedReason(
       return `the PR head ${read.prHead.slice(0, 12)} is not the verified head ${verified.slice(0, 12)}`;
     if (read.rows === undefined || read.rows.length === 0)
       return "no checks reported — refusing to read the absence of evidence as green";
-    const red = namesOf(read.rows, "red");
+    const red = [...namesOf(read.rows, "red"), ...namesOf(read.rows, "not-passing")];
     if (red.length > 0) return `checks not passing: ${red.join(", ")}`;
-    const notPassing = namesOf(read.rows, "not-passing");
-    if (notPassing.length > 0) return `checks not passing: ${notPassing.join(", ")}`;
     // A row in no list at all is not evidence of a pass either: it waits, and
     // an expired wait hands back — an unreadable forge state never becomes red.
     const waiting = [...namesOf(read.rows, "pending"), ...namesOf(read.rows, "unknown")];
@@ -260,7 +288,7 @@ async function checksRedReason(
       const cycle = ctx.run.deadlineMs;
       if (deadlineStopsSteps(cycle, ctx.now(), "ci"))
         throw new VerifyInfraError(
-          `the ci wait stopped at the cycle deadline ${String(cycle)}: the run is inside its handoff allowance`,
+          `the ci wait stopped with ${Math.max(0, Math.round((cycle ?? 0) - ctx.now()) / 60_000)} min left of the cycle deadline: the run is inside its handoff allowance`,
         );
       if (deps.now() - start >= waitMs)
         throw new VerifyInfraError(
@@ -347,26 +375,16 @@ async function assertDiskAtVerifiedHead(
 }
 
 /**
- * The project config, read ONCE per step and cached on the seam.
+ * The project config, read ONCE per step by `ciOutcome` and passed down.
  *
- * Two halves of this step read the same `ci` budget — the wait bound and the
- * tier's bound — and both take it through `budgetFor`, never from
- * `DEFAULT_BUDGETS` directly, so a project's `.pi/work.json` override is the
- * number both bounds use. Caching keeps that one read of the base commit one
- * read however many seams want it.
+ * Three halves of this step want it — the configured full tier, the wait bound
+ * and the tier's bound — and all three read it through this one call, so they
+ * cannot disagree about which commit's `.pi/work.json` they obeyed.
  */
 async function ciConfig(deps: CiDeps, ctx: HandlerCtx): Promise<WorkConfig> {
-  // Keyed by the log's position, not `ctx.stepKey`: a red `ci` re-enters the
-  // state after the fix round and the second attempt carries the SAME key, so
-  // caching on it would hand a resumed step the config of the step before it.
-  const cacheKey = `${ctx.run.baseSha}:${String(ctx.steps.length)}`;
-  const cached = deps.configCache?.get(cacheKey);
-  if (cached !== undefined) return cached;
-  const config = await deps.loadConfig(ctx.repoRoot, ctx.run.baseSha).catch((err: unknown) => {
+  return await deps.loadConfig(ctx.repoRoot, ctx.run.baseSha).catch((err: unknown) => {
     throw new VerifyInfraError(`could not load the project config: ${(err as Error).message}`);
   });
-  deps.configCache?.set(cacheKey, config);
-  return config;
 }
 
 /** Run the full tier in the worktree; a kill or an un-startable command throws. */
@@ -418,6 +436,10 @@ export async function ciOutcome(ctx: HandlerCtx, deps: CiDeps): Promise<Outcome>
     throw new VerifyInfraError("the step log records no PR to read CI for");
 
   const wt = specifyWorktreePath(ctx.repoRoot, ctx.issue);
+  // The project config is read ONCE here and passed to everything that wants
+  // it: the configured full tier, the wait bound and the tier's bound all come
+  // from this one read of the run's base commit.
+  const cfg = await ciConfig(deps, ctx);
   const configured = deps.readVerifyCmd
     ? await deps.readVerifyCmd(wt, verified).catch((err: unknown) => {
         throw new VerifyInfraError(
@@ -425,14 +447,14 @@ export async function ciOutcome(ctx: HandlerCtx, deps: CiDeps): Promise<Outcome>
         );
       })
     : undefined;
-  const full = ((await ciConfig(deps, ctx)).verify.full ?? configured ?? "").trim();
+  const full = (cfg.verify.full ?? configured ?? "").trim();
   if (full === "")
     return {
       kind: "red",
       reason: `no full verify tier is configured (.pi/work.json verify.full, or .pi/verify-cmd at ${verified.slice(0, 12)}): a run must not land on the fast tier plus the frozen tests alone`,
     };
 
-  const checks = await checksRedReason(deps, ctx, ctx.repoRoot, prNumber, verified);
+  const checks = await checksRedReason(deps, ctx, ctx.repoRoot, prNumber, verified, ciMinutes(cfg));
   if (checks !== undefined) return { kind: "red", reason: checks };
 
   // The disk is read AGAIN, immediately before the tier, because the tier runs
@@ -444,8 +466,7 @@ export async function ciOutcome(ctx: HandlerCtx, deps: CiDeps): Promise<Outcome>
 
   // The tier's bound is its OWN, sequential after the wait, and of the same
   // size: waiting out 18 minutes of CI must not leave the full tier a minute.
-  const minutes = (budgetFor(await ciConfig(deps, ctx), "ci")?.minutes ?? 30) * 60_000;
-  const timeoutMs = deps.tierTimeoutMs ?? minutes;
+  const timeoutMs = deps.tierTimeoutMs ?? ciMinutes(cfg) * 60_000;
   const tier = await tierFailure(deps, full, wt, timeoutMs);
   if (tier !== undefined) return { kind: "red", reason: tier };
 

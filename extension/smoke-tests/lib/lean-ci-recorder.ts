@@ -16,11 +16,11 @@
  * REAL repo and returns what git really says about the tree on disk.
  *
  * **The poll is expressible because the reads are sequenced.** A single constant
- * cannot say "pending now, passing later", so `viewAt`/`viewSeq`/`checksSeq`
- * answer the Nth read and the last entry repeats — a poll never runs out of
- * replies. `sleep` MOVES the fixture clock the wait is bounded by (the shape
- * `test-forge-ci-watch.ts` drives `ciWatch` with): a sleep that only slept would
- * let the bound never expire and the case would hang, and a case that waits
+ * cannot say "pending now, passing later", so `viewAt` answers the Nth view read
+ * (and `checksSeq` the Nth checks read), the last entry repeating — a poll never
+ * runs out of replies. `sleep` MOVES the fixture clock the wait is bounded by (the
+ * shape `test-forge-ci-watch.ts` drives `ciWatch` with): a sleep that only slept
+ * would let the bound never expire and the case would hang, and a case that waits
  * without asking the fixture for a moving clock hangs instead of burning a real
  * 60 s per poll. That is the loud failure — no case here can reach production's
  * real timer.
@@ -44,7 +44,7 @@ export interface CiCase {
   full?: string;
   /** The `.pi/verify-cmd` line the seam answers (the fallback path). */
   verifyCmd?: string;
-  /** The `gh pr view` reply. */
+  /** The `gh pr view` reply (a single-read case; a poll uses `viewAt`). */
   view?: unknown;
   /** The `gh pr checks` reply. */
   checks?: unknown;
@@ -71,49 +71,34 @@ export interface CiCase {
   /** The worktree exists but holds no checkout at all. */
   noWorktree?: boolean;
   /**
-   * One `gh pr view` reply PER POLL: entry N answers the Nth read, the last one
-   * repeating. A poll case is the whole point — a single `view` cannot say
-   * "pending now, passing later".
+   * One `gh pr view` reply PER POLL: the function is called with the head the
+   * case's own repo holds and returns either one reply or an array whose entry N
+   * answers the Nth read, the last one repeating. A poll case is the whole point
+   * — a single `view` cannot say "pending now, passing later", and a constant oid
+   * is a head this repo never held (the step would be red before it polled).
    */
-  viewSeq?: unknown[];
-  /** One `gh pr checks` reply PER POLL, same rule as `viewSeq`. */
+  viewAt?: (head: string) => unknown;
+  /** One `gh pr checks` reply PER POLL, same rule as `viewAt`. */
   checksSeq?: unknown[];
   /** Reject the Nth `gh pr checks` read with this error (exit 8 lives here). */
   checksThrows?: unknown[];
   /** The wait's bound in ms, so a budget case does not wait 30 real minutes. */
   waitTimeoutMs?: number;
+  /** Start the context's clock here (and give the poll a clock that MOVES). */
+  clockMs?: number;
   /** The run's whole-cycle deadline, carried on the record the way the engine
    *  persists it. Drives the poll's cycle-clock check. */
   deadlineMs?: number;
   /** The full tier's wall clock, injected. `null` leaves the seam unset so the
-   *  step takes `budgets.ci.minutes` through `budgetFor`, and the case reads
+   *  step takes `budgets.ci.minutes` through `ciMinutes`, and the case reads
    *  `Ran.tierTimeoutMs` to prove which number it used. A number overrides. */
   tierTimeoutMs?: number | null;
-  /**
-   * Build the `gh pr view` replies from the head the case's own repo holds — a
-   * poll case cannot name that oid before `run` creates the repo, and a constant
-   * is a head this repo never held (the step would be red before it polled).
-   */
-  viewAt?: (head: string) => unknown;
-  /** Start the context's clock here (and give the poll a clock that MOVES). */
-  clockMs?: number;
   /** The `budgets.ci` row the injected config carries. The wait bound and the
    *  tier's bound both come from here, so a case can prove which number the
    *  step actually read. `minutes: 0` is what an un-clamped bound is caught by. */
   ciBudget?: Budget;
 }
 
-/**
- * The fixture's OWN git, run for real.
- *
- * `ci` re-reads HEAD, the branch and the porcelain of the worktree before it will
- * run its tier (`assertDiskAtVerifiedHead`), and the recorder receives those as
- * `exec("git", { argv })`. Answering them from a scripted constant would make the
- * step's whole disk guarantee unobservable: a recorder that returns whatever the
- * test expects has proven only that the test agrees with itself. So the `git`
- * branch below shells out to the fixture's real repo and returns what git really
- * says about the tree on disk.
- */
 /**
  * A `gh pr view` reply for a poll case: OPEN, CLEAN, and at the head the case's
  * own repo holds — which is the head the gate certified, so the step gets to its
@@ -216,8 +201,6 @@ export async function run(c: CiCase): Promise<Ran> {
           const built = c.viewAt(f.head);
           return { stdout: JSON.stringify(Array.isArray(built) ? at(built, n) : built) };
         }
-        if (c.viewSeq !== undefined)
-          return { stdout: JSON.stringify(at(c.viewSeq, n)) };
         return {
           stdout: JSON.stringify(
             c.view ?? {

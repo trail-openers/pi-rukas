@@ -286,8 +286,8 @@ function assert(cond: boolean, msg: string): void {
     `(t) the poll stops inside the handoff allowance (${String(r.threw?.message)})`,
   );
   assert(
-    (r.threw?.message ?? "").includes("61000"),
-    `(t) the handback NAMES the cycle deadline it stopped at (${String(r.threw?.message)})`,
+    (r.threw?.message ?? "").includes("1 min left of the cycle deadline"),
+    `(t) the handback prints the TIME LEFT, not the raw epoch it read (${String(r.threw?.message)})`,
   );
   assert(r.outcome === undefined, "(t) a deadline is not a verdict about the code");
   assert(!r.cmds.includes("true"), "(t) no tier starts when the run has no time to report");

@@ -38,11 +38,11 @@ export interface CiDeps {
   head?: string;
   /**
    * The full tier's wall clock, in ms. Production leaves it unset and the step
-   * takes the `ci` budget's minutes through `budgetFor`, so a hung suite is an
-   * observed timeout rather than a wedged run. It bounds the TIER alone — the
-   * forge wait has its own bound of the same size ({@link CiDeps.waitTimeoutMs})
-   * and the two run in sequence, so waiting out 18 minutes of CI cannot leave
-   * the tier no time to run.
+   * takes the `ci` budget's minutes (the one `ciMinutes` it loads from the
+   * config), so a hung suite is an observed timeout rather than a wedged run.
+   * It bounds the TIER alone — the forge wait has its own bound of the same
+   * size ({@link CiDeps.waitTimeoutMs}) and the two run in sequence, so waiting
+   * out 18 minutes of CI cannot leave the tier no time to run.
    */
   tierTimeoutMs?: number;
   /**
@@ -64,14 +64,6 @@ export interface CiDeps {
    * 30-minute budget does not take 30 minutes of injected sleeps.
    */
   waitTimeoutMs?: number;
-  /**
-   * Where the ONE read of the project config is kept. The step reads its `ci`
-   * budget twice (the wait bound and the tier's bound) and both reads must be
-   * about the same commit, so the loader runs once per step — but a red `ci`
-   * re-enters this state after the fix round, so the key is the log's own
-   * position (`baseSha` + the entries so far), not `stepKey`, which repeats.
-   */
-  configCache?: Map<string, WorkConfig>;
 }
 
 /** The real timer: the poll's default sleep, never a zero-delay loop. */
