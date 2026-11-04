@@ -45,6 +45,7 @@
 import { type CycleBudgetMs, resolveCycleDeadline } from "../work-driver-deadline.ts";
 import { handoffDispatchTimeoutMs } from "../work-driver-handoff.ts";
 import { REPORT_STATES, type Step } from "./state.ts";
+import { VerifyInfraError } from "./verify-types.ts";
 
 /** One minute, the unit `--timeout` is given in — the same constant `work` uses. */
 export const MINUTE_MS = 60_000;
@@ -88,6 +89,60 @@ export function deadlineStopsSteps(
   if (deadline === undefined) return false;
   if ((REPORT_STATES as readonly string[]).includes(next)) return false;
   return deadline - now <= handoffDispatchTimeoutMs();
+}
+
+/**
+ * The handoff allowance itself — `deadlineStopsSteps`'s threshold as a NUMBER.
+ *
+ * A caller that must fit work INSIDE the deadline needs the allowance to
+ * subtract, not just the boundary answer, and re-reading
+ * `PI_ENSEMBLE_HANDOFF_TIMEOUT_MS` at the caller is how the two start disagreeing
+ * about where step work ends. `lean/ci` subtracts this before starting its full
+ * tier, so the tier can never be given the time the handback still needs.
+ */
+export function handoffAllowanceMs(): number {
+  return handoffDispatchTimeoutMs();
+}
+
+/**
+ * Bound a long piece of work that runs AFTER something else in the same step,
+ * given the run's whole-cycle deadline: the time the deadline still leaves,
+ * minus the allowance the handback needs.
+ *
+ * The engine consults the cycle arm only BETWEEN steps, so one step that
+ * contains two long runs — `lean/ci`'s forge wait and then its full verify tier
+ * — can outlive the host's deadline by the whole second run and die with no
+ * result document. This is the number the second run may be given, and the
+ * handback naming the deadline is thrown INSTEAD of a number whenever the run
+ * may not start at all: inside the allowance, or with nothing left outside it.
+ *
+ * `work` is what is being bounded, named by `what` so the message says which
+ * run refused to start. `full` is the bound that run would have been given with
+ * no deadline in play, which is the answer returned when there is none: there is
+ * nothing to clamp against, and an absent deadline is never a reason to shrink a
+ * timeout. The allowance subtracted is {@link handoffAllowanceMs} — the same
+ * number {@link deadlineStopsSteps} compares against, so a caller can never be
+ * handed time the engine's own boundary says the run does not have.
+ */
+export function clampToCycleDeadline(
+  deadline: number | undefined,
+  now: number,
+  full: number,
+  what: string,
+): number {
+  if (deadline === undefined) return full;
+  const left = deadline - now;
+  const minutesLeft = Math.max(0, Math.round(left / MINUTE_MS));
+  if (deadlineStopsSteps(deadline, now, what))
+    throw new VerifyInfraError(
+      `the ${what} was not started: it left ${String(minutesLeft)} min of the cycle deadline, inside the handoff allowance`,
+    );
+  const clamped = Math.min(full, left - handoffAllowanceMs());
+  if (clamped <= 0)
+    throw new VerifyInfraError(
+      `the ${what} was not started: it left ${String(minutesLeft)} min of the cycle deadline, no room for it outside the handoff allowance`,
+    );
+  return clamped;
 }
 
 /**

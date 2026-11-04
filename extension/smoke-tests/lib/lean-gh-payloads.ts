@@ -67,6 +67,17 @@ export const REAL_CHECKS_FAIL = [
 ];
 
 /**
+ * Rows whose checks are still running — `bucket: "pending"`, the category
+ * `gh pr checks --help` lists and the signal the wait keys on. Captured in the
+ * CLI's own key order; `mergeStateStatus` for such a PR is UNSTABLE, which is
+ * precisely the value the step used to read as red.
+ */
+export const REAL_CHECKS_PENDING = [
+  { bucket: "pending", name: "quality-gate", state: "PENDING" },
+  { bucket: "pending", name: "offline-smoke", state: "PENDING" },
+];
+
+/**
  * What `gh pr checks <n>` prints WITHOUT `--json`, captured from the same CLI:
  * a TAB-separated human table. Not JSON, so `JSON.parse` throws on it, which is
  * the whole reason the `--json` flag is load-bearing rather than cosmetic.

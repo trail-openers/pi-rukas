@@ -22,19 +22,19 @@
  *   (k) no verified head on the log -> THROWS (nothing to observe)
  *   (l) no PR on the log -> THROWS
  *   (m) the full tier falls back to `.pi/verify-cmd` when work.json has none
+ *   (w7) a row with an empty or absent bucket AND state is never green: it is
+ *        waited, and the expired wait hands the run back
+ *
+ * The WAITING half of the step lives in `test-lean-ci-poll.ts` (cases (n)-(v)):
+ * a step that reads the forge once, 0.7s after publish, grades a still-running CI
+ * as a failed check and the machine spends a build round on code that is not
+ * broken. Both suites drive the same recorder in `lib/lean-ci-recorder.ts`.
  *
  * Everything is offline: the forge is a recorder answering the pinned argv, the
  * tier is an `sh` command the recorder runs, and no PR or merge exists.
  */
 
-import { rmSync } from "node:fs";
-import { spawnSync } from "node:child_process";
-import { defaultConfig } from "../src/lean/config.ts";
-import { ciOutcome } from "../src/lean/ci.ts";
-import type { CiDeps } from "../src/lean/ci-deps.ts";
-import { ROOTS, ciLandLog } from "./lib/lean-ci-land-fixture.ts";
-import { gitTestEnv } from "./lib/git-test-env.ts";
-import type { Outcome } from "../src/lean/state.ts";
+import { cleanUp, run, viewAt } from "./lib/lean-ci-recorder.ts";
 import { VerifyInfraError } from "../src/lean/verify-types.ts";
 
 let exit = 0;
@@ -46,142 +46,13 @@ function assert(cond: boolean, msg: string): void {
   }
 }
 
-const HEAD = "b".repeat(40);
-
-interface CiCase {
-  /** What `loadConfig` answers; `full` absent means the project configured none. */
-  full?: string;
-  /** The `.pi/verify-cmd` line the seam answers (the fallback path). */
-  verifyCmd?: string;
-  /** The `gh pr view` reply. */
-  view?: unknown;
-  /** The `gh pr checks` reply. */
-  checks?: unknown;
-  /** Reject the `gh` reads instead of answering them. */
-  ghFails?: boolean;
-  /** Make the tier run reject (a kill or an un-startable command). */
-  tierFails?: unknown;
-  /** A tier that runs and exits non-zero (a real red), as a rejected exec. */
-  tierExit?: number;
-  /** The oid the verify step records, in place of the repo's own head. */
-  verifiedHead?: string;
-  /** The log carries no verified head at all. */
-  noHead?: boolean;
-  /** The `gh pr view` head; defaults to the log's real verified head. */
-  prHead?: string;
-  /** The log carries no publish step at all. */
-  noPr?: boolean;
-  /** Check the worktree out at this oid (the disk gate must catch it). */
-  worktreeHead?: string;
-  /** Leave the worktree's HEAD detached from the run's branch. */
-  detached?: boolean;
-  /** Write this untracked file into the worktree, so the tree is not clean. */
-  dirtyFile?: string;
-  /** The worktree exists but holds no checkout at all. */
-  noWorktree?: boolean;
-}
-
-/**
- * The fixture's OWN git, run for real.
- *
- * `ci` re-reads HEAD, the branch and the porcelain of the worktree before it will
- * run its tier (`assertDiskAtVerifiedHead`), and the recorder receives those as
- * `exec("git", { argv })`. Answering them from a scripted constant would make the
- * step's whole disk guarantee unobservable: a recorder that returns whatever the
- * test expects has proven only that the test agrees with itself. So the `git`
- * branch below shells out to the fixture's real repo and returns what git really
- * says about the tree on disk.
- */
-function realGit(cwd: string, argv: string[]): { stdout: string } {
-  const r = spawnSync("git", argv, {
-    cwd,
-    encoding: "utf8",
-    env: {
-      ...gitTestEnv(),
-      GIT_AUTHOR_NAME: "t",
-      GIT_AUTHOR_EMAIL: "t@t",
-      GIT_COMMITTER_NAME: "t",
-      GIT_COMMITTER_EMAIL: "t@t",
-    },
-  });
-  if (r.status !== 0) throw new Error(`git ${argv.join(" ")}: ${(r.stderr ?? "").trim()}`);
-  return { stdout: r.stdout ?? "" };
-}
-
-/** The log a run carries when it arrives at `ci`, minus what the case removes. */
-function logOpts(c: CiCase): Parameters<typeof ciLandLog>[1] {
-  return {
-    ...(c.noHead === true ? { noVerifiedHead: true } : {}),
-    ...(c.noPr === true ? { noPr: true } : {}),
-    ...(c.verifiedHead === undefined ? {} : { verifiedHead: c.verifiedHead }),
-    ...(c.worktreeHead === undefined ? {} : { worktreeHead: c.worktreeHead }),
-    ...(c.detached === true ? { detached: true } : {}),
-    ...(c.dirtyFile === undefined ? {} : { dirtyFile: c.dirtyFile }),
-    ...(c.noWorktree === true ? { noWorktree: true } : {}),
-  };
-}
-
-/** Run `ci` on a real verified+published log, with everything else a recorder. */
-async function run(
-  c: CiCase,
-): Promise<{ outcome?: Outcome; threw?: Error; ran: string[]; wt: string }> {
-  const f = ciLandLog(77, logOpts(c));
-  const ran: string[] = [];
-  const marker = c.full ?? c.verifyCmd ?? "";
-  const deps: CiDeps = {
-    exec: async (cmd, o) => {
-      ran.push(cmd);
-      if (cmd === marker) {
-        if (c.tierFails !== undefined) throw c.tierFails;
-        if (c.tierExit !== undefined)
-          throw Object.assign(new Error(`Command failed: ${cmd}`), {
-            code: c.tierExit,
-            stdout: "",
-            stderr: "boom from the full tier\n",
-          });
-        return { stdout: "" };
-      }
-      if (cmd.startsWith("gh pr ") && c.ghFails === true)
-        throw new Error("gh: could not reach the API");
-      if (cmd.startsWith("gh pr view "))
-        return {
-          stdout: JSON.stringify(
-            c.view ?? {
-              state: "OPEN",
-              mergeStateStatus: "CLEAN",
-              headRefOid: c.prHead ?? f.head,
-            },
-          ),
-        };
-      if (cmd.startsWith("gh pr checks "))
-        return { stdout: JSON.stringify(c.checks ?? [{ name: "ci", bucket: "pass" }]) };
-      // The disk re-reads go to the fixture's real repo. The alternative — a
-      // scripted answer — is what let a whole class of "green" mean nothing: the
-      // step would have been graded against a HEAD nobody read off a disk.
-      if (cmd === "git") return realGit(String(o?.cwd ?? f.repoRoot), (o?.argv ?? []) as string[]);
-      return { stdout: "" };
-    },
-    loadConfig: async () => ({
-      ...defaultConfig(),
-      verify: { ...(c.full === undefined ? {} : { full: c.full }) },
-    }),
-    ...(c.verifyCmd === undefined ? {} : { readVerifyCmd: async () => c.verifyCmd }),
-    tierTimeoutMs: 5_000,
-  };
-  try {
-    return { outcome: await ciOutcome(f.ctx, deps), ran, wt: f.repoRoot };
-  } catch (err) {
-    return { threw: err as Error, ran, wt: f.repoRoot };
-  }
-}
-
 // ── (a) both halves observed -> green, and BOTH commands really ran ────────
 {
   const r = await run({ full: "true" });
   assert(r.outcome?.kind === "green", `(a) both halves observed -> green (${JSON.stringify(r.outcome ?? r.threw?.message)})`);
-  assert(r.ran.some((c) => c.startsWith("gh pr view ")), "(a) the forge's merge verdict was read");
-  assert(r.ran.some((c) => c.startsWith("gh pr checks ")), "(a) the check rows were read");
-  assert(r.ran.includes("true"), "(a) the full tier actually ran");
+  assert(r.cmds.some((c) => c.startsWith("gh pr view ")), "(a) the forge's merge verdict was read");
+  assert(r.cmds.some((c) => c.startsWith("gh pr checks ")), "(a) the check rows were read");
+  assert(r.cmds.includes("true"), "(a) the full tier actually ran");
 }
 
 // ── (b) no full tier -> red naming the gap, and the tier never ran ─────────
@@ -193,7 +64,7 @@ async function run(
     `(b) the red names the missing full tier (${r.outcome?.reason})`,
   );
   assert(
-    !r.ran.some((c) => c.startsWith("gh ")),
+    !r.cmds.some((c) => c.startsWith("gh ")),
     "(b) a run with no full tier never reads the forge — there is no green on offer",
   );
 }
@@ -214,7 +85,7 @@ async function run(
   const r = await run({ full: "true", checks: [{ name: "test", bucket: "fail" }] });
   assert(r.outcome?.kind === "red", `(d) a failing check -> red (${JSON.stringify(r.outcome)})`);
   assert((r.outcome?.reason ?? "").includes("test"), "(d) the red names the failing check");
-  assert(!r.ran.includes("true"), "(d) the tier was not run over a red CI");
+  assert(!r.cmds.includes("true"), "(d) the tier was not run over a red CI");
 }
 
 // ── (e) `skipped` is not green, and neither is an empty list ──────────────
@@ -234,13 +105,28 @@ async function run(
     (r.outcome?.reason ?? "").includes("is not the verified head"),
     `(f) the red names both heads (${r.outcome?.reason})`,
   );
-  assert(!r.ran.includes("true"), "(f) a green about another head runs no tier over it");
+  assert(!r.cmds.includes("true"), "(f) a green about another head runs no tier over it");
 }
 
 // ── (g) the PR is not OPEN -> red ─────────────────────────────────────────
 {
-  const r = await run({ full: "true", view: { state: "MERGED", mergeStateStatus: "CLEAN", headRefOid: HEAD } });
-  assert(r.outcome?.kind === "red", `(g) a closed PR -> red (${JSON.stringify(r.outcome)})`);
+  // The head is the verified one and every row passes: the PR's own state is the
+  // ONLY thing that can refuse this, so the case is not carried by the head or
+  // row checks (it read as red before, but for the wrong reason).
+  const r = await run({
+    full: "true",
+    viewAt: (h) => viewAt(h, { state: "MERGED" }),
+    checks: [{ name: "quality-gate", bucket: "pass", state: "SUCCESS" }],
+  });
+  assert(
+    r.outcome?.kind === "red",
+    `(g) a closed PR -> red (${JSON.stringify(r.outcome ?? r.threw?.message)})`,
+  );
+  assert(
+    (r.outcome?.reason ?? "").includes("not OPEN"),
+    `(g) and the red is the PR's own state, not another check's (${r.outcome?.reason})`,
+  );
+  assert(!r.cmds.includes("true"), "(g) no tier runs on a PR that is no longer open");
 }
 
 // ── (h) `gh` did not run -> infrastructure, never a routed red ────────────
@@ -289,8 +175,56 @@ async function run(
     r.outcome?.kind === "green",
     `(m) the full tier falls back to .pi/verify-cmd (${JSON.stringify(r.outcome ?? r.threw?.message)})`,
   );
-  assert(r.ran.includes("true"), "(m) and that command is the one that ran");
+  assert(r.cmds.includes("true"), "(m) and that command is the one that ran");
 }
 
-for (const dir of ROOTS) rmSync(dir, { recursive: true, force: true });
+
+// ── (w7) a row that says nothing is not a passing row ───────────────────
+{
+  // A `gh pr checks` row whose `bucket` and `state` are both absent (or blank)
+  // is the quietest way a check can fail to be evidence: graded passing, it
+  // would be waited on by nobody and the step would merge on it; the forge's
+  // `mergeStateStatus` is read after the rows, so a row of no word outranks
+  // even a BLOCKED verdict. Graded `unknown` it waits — and the expired wait
+  // hands the run back, which is what (q) in `test-lean-ci-poll.ts` already
+  // proves is the right answer for a row nobody recognises.
+  const silent = await run({
+    full: "true",
+    clockMs: 0,
+    waitTimeoutMs: 90_000,
+    // BLOCKED, not CLEAN: the rows are graded BEFORE `mergeStateStatus` is
+    // consulted, so a silent row outranks even the forge's own refusal. With a
+    // CLEAN verdict here the step would go red on the merge state whatever the
+    // row grading says, and the case would not be about the row at all.
+    viewAt: (h) => viewAt(h, { mergeStateStatus: "BLOCKED" }),
+    checks: [{ name: "says-nothing" }, { name: "blank-rows", bucket: "   ", state: "" }],
+  });
+  assert(
+    silent.threw instanceof VerifyInfraError,
+    `(w7) a row with no bucket and no state is not a pass — it is waited and the wait throws (${String(silent.threw?.message)})`,
+  );
+  assert(
+    (silent.threw?.message ?? "").includes("says-nothing") &&
+      (silent.threw?.message ?? "").includes("blank-rows"),
+    `(w7) and the handback names both silent rows (${String(silent.threw?.message)})`,
+  );
+  assert(
+    silent.outcome === undefined,
+    "(w7) a row that said nothing never becomes a verdict the machine routes",
+  );
+  assert(!silent.cmds.includes("true"), "(w7) and no tier ran on the strength of it");
+
+  // The three words GitHub really does use for a passing row stay passing —
+  // otherwise this fix would be a new way for a good PR to hang.
+  for (const word of ["pass", "success", "none"]) {
+    const ok = await run({ full: "true", checks: [{ name: "quality-gate", bucket: word }] });
+    assert(
+      ok.outcome?.kind === "green",
+      `(w7) bucket "${word}" is still a pass (${JSON.stringify(ok.outcome ?? ok.threw?.message)})`,
+    );
+    assert(ok.cmds.includes("true"), `(w7) and "${word}" still runs the tier`);
+  }
+}
+
+cleanUp();
 process.exit(exit);

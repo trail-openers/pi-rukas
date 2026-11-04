@@ -36,6 +36,7 @@
 import { spawnSync } from "node:child_process";
 import { rmSync } from "node:fs";
 import { defaultConfig } from "../src/lean/config.ts";
+import type { Budget } from "../src/lean/config.ts";
 import { phase1Handlers } from "../src/lean/command.ts";
 import { ciOutcome } from "../src/lean/ci.ts";
 import type { CiDeps } from "../src/lean/ci-deps.ts";
@@ -46,6 +47,7 @@ import { gitTestEnv } from "./lib/git-test-env.ts";
 import {
   REAL_CHECKS_FAIL,
   REAL_CHECKS_PASS,
+  REAL_CHECKS_PENDING,
   REAL_CHECKS_SKIPPED,
   REAL_CHECKS_TABLE,
   realPrViewReply,
@@ -84,6 +86,15 @@ interface Case {
   headOnDisk?: string;
   /** HEAD answers with no branch at all (a detached tree). */
   detached?: boolean;
+  /** The wait's bound in ms, so a budget case does not wait 30 real minutes. */
+  waitTimeoutMs?: number;
+  /** The full tier's bound in ms; `null` leaves the seam unset so the step takes
+   *  its own `budgets.ci.minutes` through `ciMinutes`. */
+  tierTimeoutMs?: number | null;
+  /** The `budgets.ci` row the injected config carries. The wait bound and the
+   *  tier's bound both come from here, so a case can prove which number the step
+   *  actually read. */
+  ciBudget?: Budget;
 }
 
 /** Run one git command in the fixture's real repo and report what git really says. */
@@ -119,7 +130,18 @@ interface Ran {
  */
 async function run(
   c: Case,
-): Promise<{ outcome?: Outcome; threw?: Error; ran: Ran; wt: string; head: string }> {
+): Promise<{
+  outcome?: Outcome;
+  threw?: Error;
+  ran: Ran;
+  /** How many `gh pr checks` reads ran, and how many waits the poll took. Both
+   *  are per-POLL witnesses: a step that read the forge once per step instead of
+   *  once per wait would show one of each. */
+  checks: number;
+  slept: number[];
+  wt: string;
+  head: string;
+}> {
   const f = ciLandLog(900 + Math.floor(Math.random() * 90000), {
     ...(c.headOnDisk === undefined
       ? {}
@@ -129,7 +151,9 @@ async function run(
   });
   const tier = c.full ?? "";
   const ran: Ran = { cmds: [], tierRuns: 0 };
+  const slept: number[] = [];
   const reads = ghReads(77);
+  let checksReads = 0;
   const deps: CiDeps = {
     exec: async (cmd, o) => {
       ran.cmds.push(cmd);
@@ -146,11 +170,22 @@ async function run(
       }
       if (cmd === reads.view || cmd.startsWith("gh pr view ")) {
         if (c.ghDown === true) throw new Error("gh: could not reach the API");
-        return { stdout: typeof c.view === "string" ? c.view : realPrViewReply(f.head, (c.view ?? {}) as Record<string, unknown>) };
+        return {
+          stdout:
+            typeof c.view === "string"
+              ? c.view
+              : realPrViewReply(f.head, (c.view ?? {}) as Record<string, unknown>),
+        };
       }
       if (cmd === reads.checks || cmd.startsWith("gh pr checks ")) {
         if (c.ghDown === true) throw new Error("gh: could not reach the API");
-        return { stdout: typeof c.checks === "string" ? c.checks : JSON.stringify(c.checks ?? REAL_CHECKS_PASS) };
+        checksReads++;
+        return {
+          stdout:
+            typeof c.checks === "string"
+              ? c.checks
+              : JSON.stringify(c.checks ?? REAL_CHECKS_PASS),
+        };
       }
       // The disk re-reads go to the fixture's OWN repo, through real git — every
       // one of them, including HEAD. A scripted `rev-parse` would make the whole
@@ -162,13 +197,27 @@ async function run(
     loadConfig: async () => ({
       ...defaultConfig(),
       verify: c.noTierAtAll === true || c.full === undefined ? {} : { full: c.full },
+      ...(c.ciBudget === undefined
+        ? {}
+        : { budgets: { ...defaultConfig().budgets, ci: { ...c.ciBudget } } }),
     }),
-    tierTimeoutMs: 5_000,
+    ...(c.tierTimeoutMs === null ? {} : { tierTimeoutMs: c.tierTimeoutMs ?? 5_000 }),
+    ...(c.waitTimeoutMs === undefined ? {} : { waitTimeoutMs: c.waitTimeoutMs }),
+    // The injected sleep MOVES the clock the wait is bounded by — the shape
+    // `test-forge-ci-watch.ts` drives `ciWatch` with. A sleep that only slept
+    // would let the bound never expire and the case would hang. The gh reads
+    // arrive with `verifyHostEnv()`; the recorder ignores it — what the step
+    // asks the executor for is asserted in `test-verify-child-env-paths.ts`.
+    sleep: async (ms) => {
+      slept.push(ms);
+      f.tick(ms);
+    },
+    now: () => f.ctx.now(),
   };
   try {
-    return { outcome: await ciOutcome(f.ctx, deps), ran, wt: f.repoRoot, head: f.head };
+    return { outcome: await ciOutcome(f.ctx, deps), ran, slept, checks: checksReads, wt: f.repoRoot, head: f.head };
   } catch (err) {
-    return { threw: err as Error, ran, wt: f.repoRoot, head: f.head };
+    return { threw: err as Error, ran, slept, checks: checksReads, wt: f.repoRoot, head: f.head };
   }
 }
 
@@ -232,6 +281,30 @@ async function run(
   const r = await run({ full: "true", checks: REAL_CHECKS_FAIL });
   assert(r.outcome?.kind === "red", "(w2) a real failing row is red");
   assert((r.outcome?.reason ?? "").includes("quality-gate"), "(w2) naming the failing check");
+}
+{
+  // The real PENDING rows are the state this step exists to wait out, so the
+  // wait is exercised against captured gh output too: the poll re-reads rather
+  // than grading UNSTABLE as red, and a check that never arrives hands back.
+  const r = await run({
+    full: "true",
+    waitTimeoutMs: 150_000,
+    view: { mergeStateStatus: "UNSTABLE" },
+    checks: REAL_CHECKS_PENDING,
+  });
+  assert(
+    r.threw instanceof VerifyInfraError && (r.threw?.message ?? "").includes("still pending"),
+    `(w2) real pending rows are waited, never graded red (${String(r.threw?.message)})`,
+  );
+  assert(
+    (r.threw?.message ?? "").includes("offline-smoke"),
+    `(w2) and the handback names the rows that never finished (${String(r.threw?.message)})`,
+  );
+  assert(
+    r.checks === 4 && r.slept.length === 3,
+    `(w2) both reads run at the top of every iteration, so the last one sees the bound (${String(r.checks)} reads, ${String(r.slept.length)} waits)`,
+  );
+  assert(r.ran.tierRuns === 0, "(w2) no tier ran over a CI that had not finished");
 }
 
 // ── (w3) the table form --json prevents is not read as "no checks" ───────
