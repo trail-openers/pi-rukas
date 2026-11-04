@@ -20,6 +20,7 @@ import { rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execp } from "../src/exec.ts";
+import { NO_HOOKS } from "../src/lean/specify-reset.ts";
 import { openReviewerTree } from "../src/reviewer-tree.ts";
 import { provisionWorktree } from "../src/worktree-provision.ts";
 import { gitTestEnv } from "./lib/git-test-env.ts";
@@ -54,7 +55,7 @@ function lastWarnLines(): string[] {
   return seen;
 }
 
-const NO_HOOKS_PREFIX = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"];
+const NO_HOOKS_PREFIX = [...NO_HOOKS];
 const hasNoHooksPrefix = (argv: string[]) => argv.join(" ").indexOf(NO_HOOKS_PREFIX.join(" ")) === 0;
 
 function makeRepo(tag: string): { dir: string; head: string; git: ReturnType<typeof makeGit> } {
@@ -117,11 +118,6 @@ const strayTrees = (git: ReturnType<typeof makeGit>) =>
     }
     return execp(cmd, { ...opts, argv });
   };
-  // #1975 item 7 — the module's OWN git calls (common dir, prune, add, remove,
-  // prune) carry the repo's NO_HOOKS pair. The provisioning probes this module
-  // reaches through `linkShareableDeps` are `git check-ignore` reads and are
-  // not this assertion's subject.
-  const NO_HOOKS_PREFIX = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"];
   const tree = await openReviewerTree(leakExec, repo, provHead);
   assert(tree.kind === "tree", `a tree was opened (${tree.kind === "tree" ? "" : tree.reason})`);
   if (tree.kind === "tree") {
@@ -206,5 +202,82 @@ const strayTrees = (git: ReturnType<typeof makeGit>) =>
     /* the leak arm above already proved the trace */
   }
   }
+
+{
+  // A `headSha` that is not a 40-char SHA is a fail-open the caller can read:
+  // the reason names the tree it refused to make, the WARN makes it visible
+  // without `PI_ENSEMBLE_DEBUG`, and no tree is created at all.
+  const { dir, git } = makeRepo("bad-sha");
+  const seen: string[][] = [];
+  const recordingExec = async (
+    cmd: string,
+    opts: { cwd?: string; maxBuffer?: number; timeout?: number; argv?: string[] },
+  ) => {
+    seen.push([...(opts.argv ?? [])]);
+    return execp(cmd, { ...opts, argv: opts.argv });
+  };
+  lastWarnLines();
+  const refused = await openReviewerTree(recordingExec, dir, "not-a-sha");
+  assert(refused.kind === "unisolated", `a non-SHA headSha is refused (${refused.kind})`);
+  assert(
+    refused.kind === "unisolated" && refused.reason.includes("not a 40-char commit SHA"),
+    `the unisolated reason names the SHA requirement (${refused.kind === "unisolated" ? refused.reason : ""})`,
+  );
+  assert(
+    errWrites.some(
+      (l) => l.includes("WARN") && l.includes("reviewer-tree") && l.includes("unisolated"),
+    ),
+    "the non-SHA fail-open is disclosed on a WARN, not the DEBUG-gated trace",
+  );
+  assert(
+    seen.length === 0,
+    `a refused headSha asked git for nothing (${seen.length} calls: ${seen.map((a) => a.join(" ")).join(" | ")})`,
+  );
+  assert(strayTrees(git).length === 0, "the refused arm left no worktree registration behind");
+}
+
+{
+  // An INCOMPLETE provision is a fail-open of the same kind as every other arm
+  // here — a reviewer whose `node_modules` link does not resolve cannot run the
+  // project's targeted checks, and a review that ran no checks is not a gate —
+  // so the module's `problem` is WARN-visible, not DEBUG-gated. The executor
+  // confirms the candidate to `git check-ignore` and then takes the source away
+  // before the symlink is made: that is the #761 shape `linkFoundDeps` already
+  // reports as a `problem`, reached here through the real provisioning path.
+  const { dir, git } = makeRepo("prov-problem");
+  writeFileSync(path.join(dir, ".gitignore"), "node_modules/\n");
+  mkdirSync(path.join(dir, "node_modules", "dep"), { recursive: true });
+  writeFileSync(path.join(dir, "node_modules", "dep", "index.js"), "x\n");
+  writeFileSync(path.join(dir, "package.json"), '{"name":"root"}\n');
+  const provGit2 = makeGit(dir, gitEnv);
+  provGit2.run("add", "-A", "--", ".gitignore", "package.json");
+  provGit2.run("commit", "-q", "-m", "fixture: an ignorable dependency tree");
+  const provHead2 = provGit2.out("rev-parse", "HEAD");
+  // The `problem` is produced deterministically, not by a race: an executor
+  // that plants a non-empty FILE at the tree's `node_modules` AFTER `git
+  // worktree add` and before the symlink runs makes the link itself fail
+  // (`EEXIST`) — the shape `linkFoundDeps` already reports as a provisioning
+  // `problem`, reached here through the real provisioning path.
+  const problemExec = async (
+    cmd: string,
+    opts: { cwd?: string; maxBuffer?: number; timeout?: number; argv?: string[] },
+  ) => {
+    const r = await execp(cmd, { ...opts, argv: opts.argv });
+    const a = opts.argv ?? [];
+    if (a.includes("add") && a.includes("--detach")) {
+      writeFileSync(path.join(a[a.indexOf("--detach") + 1], "node_modules"), "occupied\n");
+    }
+    return r;
+  };
+  lastWarnLines();
+  const tree2 = await openReviewerTree(problemExec, dir, provHead2);
+  assert(tree2.kind === "tree", `the tree was opened (${tree2.kind})`);
+  assert(
+    errWrites.some((l) => l.includes("WARN") && l.includes("provisioning incomplete")),
+    `an incomplete provision is disclosed on a WARN, not the DEBUG-gated trace (${errWrites.filter((l) => l.includes("provision")).join(" / ") || "no provisioning line at all"})`,
+  );
+  if (tree2.kind === "tree") await tree2.release();
+  assert(strayTrees(git).length === 0, "the arm left no worktree registration behind");
+}
 
 process.exit(exit);

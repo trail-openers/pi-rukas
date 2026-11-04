@@ -71,26 +71,18 @@ const LENS = { name: "SECURITY", skill: "code-review-security" };
 const SKILLS = path.resolve(import.meta.dirname, "..", "..", "skill");
 
 /**
- * The lines this process has written to stderr since the last call, and the
- * reason the WARN arms below can be asserted without patching `process.stderr`:
- * `traceWarn`'s own write is a `process.stderr.write`, so Bun's `console.error`
- * (which writes to fd 2 directly) captures it and nothing else does.
+ * The lines this process has written to stderr. `traceWarn`'s own write is a
+ * `process.stderr.write`, so a wrapper on that method sees every warning the
+ * module emits; `assert` above writes its `✗` lines through the ORIGINAL
+ * method, so the smoke pool's digest still sees a failure even while every
+ * WARN is being captured rather than printed.
  */
 const realErrWrite = process.stderr.write.bind(process.stderr);
-// `traceWarn` writes with `process.stderr.write`, so a wrapper on that method
-// sees every warning the module emits; `assert` above writes its `✗` lines
-// through the original method, so the smoke pool's digest still sees failures.
 let errWrites: string[] = [];
 process.stderr.write = ((chunk: string | Uint8Array) => {
   errWrites.push(String(chunk));
   return true;
 }) as typeof process.stderr.write;
-/** The lines written to stderr since the previous call. */
-function lastWarnLines(): string[] {
-  const seen = errWrites;
-  errWrites = [];
-  return seen;
-}
 
 function makeRepo(tag: string): { dir: string; head: string; git: ReturnType<typeof makeGit> } {
   const dir = mkdtempSync(path.join(os.tmpdir(), `rev-1975-${tag}-`));
