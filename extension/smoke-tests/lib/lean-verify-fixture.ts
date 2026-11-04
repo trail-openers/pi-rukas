@@ -24,16 +24,26 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { execp } from "../../src/exec.ts";
 import type { WorkConfig } from "../../src/lean/config.ts";
 import type { HandlerCtx } from "../../src/lean/engine.ts";
 import { type Outcome, type Step, createRun } from "../../src/lean/state.ts";
-import type { VerifyExec } from "../../src/lean/verify-types.ts";
+
 import type { VerifyDeps } from "../../src/lean/verify.ts";
 import { gitTestEnv } from "./git-test-env.ts";
+import {
+  type VerifyOpts,
+  type VerifyRun,
+  canonicalProbeDir,
+  makeVerifyExec,
+} from "./lean-verify-exec.ts";
+
+/** The shapes a verify case is configured with and answers with, re-exported here so a
+ * case imports the whole harness from one module. */
+export type { VerifyOpts, VerifyRun };
 
 /** Temp dirs this module made; the caller removes them at the end of the run. */
 export const ROOTS: string[] = [];
@@ -66,6 +76,22 @@ export function failTier(marker: string): string {
 }
 /** A tier that outlives any bound a test can wait for. */
 export const HANG_TIER = "sleep 60";
+/** A tier that fails ONLY while `rel` is absent: green at HEAD once the work exists. */
+export function failUntilFileTier(rel: string, marker: string): string {
+  return `sh -c 'if [ ! -f ${rel} ]; then echo tier-said-${marker} 1>&2; exit 1; fi; exit 0'`;
+}
+/**
+ * A tier that fails its first process and succeeds from its second — a real flake.
+ *
+ * The count lives in a file the script itself bumps, so a re-run is a SECOND SPAWN and
+ * not a stubbed answer: a case that excuses a tier as flaky must have made the step
+ * actually run it twice, which is the only evidence that distinguishes a flake from a
+ * red the step chose not to look at a second time. `counter` is the absolute path of a
+ * file no one else writes.
+ */
+export function flakeTier(marker: string, counter: string): string {
+  return `sh -c 'n=$(cat ${counter} 2>/dev/null || echo 0); n=$((n+1)); echo $n > ${counter}; if [ "$n" -le 1 ]; then echo tier-said-${marker} 1>&2; exit 1; fi; exit 0'`;
+}
 
 /** The committed name of the helper script the silent-runner case writes. */
 const SILENT_RUNNER_FILE = "silent-runner.sh";
@@ -124,73 +150,6 @@ export function git(dir: string, ...args: string[]): string {
   if (r.status !== 0)
     throw new Error(`git ${args.join(" ")} failed in ${dir}: ${(r.stderr ?? "").trim()}`);
   return (r.stdout ?? "").trim();
-}
-
-export interface VerifyRun {
-  outcome?: Outcome;
-  threw?: Error;
-  worktree: string;
-  head: string;
-}
-
-export interface VerifyOpts {
-  issue: number;
-  /** What the project configured; `fast` defaults to a passing tier. */
-  config?: Partial<WorkConfig["verify"]>;
-  /** Nothing configured at all: the frozen tests alone decide. */
-  noCommand?: boolean;
-  /** Bounds every tier and frozen-test run, so a hang is observable in seconds. */
-  timeoutMs?: number;
-  /** Make the worktree dirty before the step looks at it. */
-  dirty?: boolean;
-  /** Rewrite the frozen file ON DISK, uncommitted, before the step looks. */
-  editDisk?: string;
-  /** Commit a rewrite of the frozen file at HEAD before the step looks. */
-  editAtHead?: string;
-  /** Commit the implementation, so the frozen test's own red goes away. */
-  implement?: boolean;
-  /**
-   * A second tier, run after `fast`: the re-check cases use it to rewrite a
-   * frozen file, drop an untracked file, or commit, once the tree has already
-   * been read clean. The command runs through a shell in the worktree.
-   */
-  full?: string;
-  /**
-   * Run the frozen tests through the silent helper runner instead of `sh {file}`:
-   * it exits non-zero without naming the file, so the proof arrives `unclear`.
-   * What the step is allowed to make of an unclear proof is what the case asks.
-   */
-  silentRunner?: boolean;
-  /**
-   * Reject the post-tier BRANCH read with exit 1 AND a message on stderr. git's
-   * own detached answer is exit 1 with NOTHING printed, so a noisy exit 1 is a
-   * git that could not reply and must not be read as "detached".
-   */
-  recheckBranchNoisyExit1?: boolean;
-  /**
-   * Make the HEAD read that happens AFTER the tiers reject, while every earlier
-   * git call still goes to the real git. That read is the post-tier re-check: a
-   * step that cannot re-read HEAD once the tiers have run has not observed a
-   * tier moving it — it has failed to read the tree, which is infrastructure.
-   */
-  recheckHeadFails?: boolean;
-  /**
-   * Reject the post-tier BRANCH read (`symbolic-ref --short -q HEAD`) while
-   * every earlier git call still goes to the real git — the shape a detached
-   * HEAD gives, since `-q` exits 1 without printing anything. A read that
-   * REJECTS rather than exiting 1 is covered by `recheckHeadFails` for the HEAD
-   * read; this one proves the branch read treats git's "detached" exit as an
-   * answer and not as a machine that could not reply.
-   */
-  recheckBranchDetached?: boolean;
-  /**
-   * The issue body the verify gate reads for its `command` criteria. Absent means
-   * an issue with no `pi-spec` block, which is the "the spec asked for no command
-   * criteria" shape — the ordinary case these cases are not about.
-   */
-  specBody?: string;
-  /** Log lines to add after the fixture's own. */
-  extraSteps?: Step[];
 }
 
 /**
@@ -282,6 +241,8 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
   const f = fixture(opts.issue);
 
   const wt = f.wt;
+  const repoRoot = f.repoRoot;
+  const probeDir = canonicalProbeDir(repoRoot, opts.issue);
 
   if (opts.implement === true && opts.editDisk === undefined) {
     // The green cases COMMIT their work, so the tree the step judges is clean.
@@ -312,25 +273,13 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
   if (opts.dirty === true) writeFileSync(path.join(wt, "notes.txt"), "a stray file\n");
 
   const head = git(wt, "rev-parse", "HEAD");
-  const RECHECK_ARGV = [
-    "-c",
-    "core.hooksPath=/dev/null",
-    "-c",
-    "core.fsmonitor=false",
-    "rev-parse",
-    "HEAD",
-  ];
-  let tierRan = false;
-  const BRANCH_ARGV = [
-    "-c",
-    "core.hooksPath=/dev/null",
-    "-c",
-    "core.fsmonitor=false",
-    "symbolic-ref",
-    "--short",
-    "-q",
-    "HEAD",
-  ];
+  // The tier commands this case configured, as strings: a tier runs as a shell
+  // command, so the only thing that identifies one to the executor is its own text.
+  const configured = opts.noCommand === true ? {} : (opts.config ?? { fast: PASS_TIER });
+  if (opts.full !== undefined) configured.full = opts.full;
+  const tiers: string[] = [configured.fast, configured.full].filter(
+    (c): c is string => typeof c === "string" && c.trim() !== "",
+  );
   if (opts.silentRunner === true) {
     // Committed before `head` is read: the step refuses a dirty tree before it
     // ever runs a test, so a helper left untracked would trip that first, and the
@@ -345,41 +294,13 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
   const ctx: HandlerCtx = { ...f.ctx, steps: all };
   ctx.run = { ...ctx.run, steps: all };
 
-  const exec: VerifyExec = (cmd, o) => {
-    // The tier command is the marker between the step's pre-tier reads and its
-    // post-tier re-checks; only the HEAD read on the far side of it goes quiet.
-    if (cmd !== "git" && cmd !== "sh") tierRan = true;
-    if (
-      opts.recheckHeadFails === true &&
-      cmd === "git" &&
-      String(o?.argv ?? []) === String(RECHECK_ARGV) &&
-      tierRan
-    )
-      return Promise.reject(new Error("git: fatal: unable to read HEAD"));
-    if (
-      opts.recheckBranchDetached === true &&
-      cmd === "git" &&
-      String(o?.argv ?? []) === String(BRANCH_ARGV) &&
-      tierRan
-    )
-      return Promise.resolve({ stdout: "", stderr: "" });
-    if (
-      opts.recheckBranchNoisyExit1 === true &&
-      cmd === "git" &&
-      String(o?.argv ?? []) === String(BRANCH_ARGV) &&
-      tierRan
-    )
-      return Promise.reject(
-        Object.assign(new Error("git symbolic-ref: fatal: could not read HEAD"), {
-          code: 1,
-          stderr: "fatal: unable to resolve HEAD\n",
-        }),
-      );
-    return execp(cmd, { ...o, env: o?.env ?? gitTestEnv(), cwd: o?.cwd ?? wt });
-  };
+  const { exec, redRunsSeen } = makeVerifyExec({
+    wt,
+    probeDir,
+    tiers,
+    opts,
+  });
 
-  const configured = opts.noCommand === true ? {} : (opts.config ?? { fast: PASS_TIER });
-  if (opts.full !== undefined) configured.full = opts.full;
   const deps: VerifyDeps = {
     exec,
     loadConfig: async () => ({
@@ -398,9 +319,23 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
   };
   try {
     const { verifyOutcome } = await import("../../src/lean/verify.ts");
-    return { outcome: await verifyOutcome(ctx, deps), worktree: wt, head };
+    return {
+      outcome: await verifyOutcome(ctx, deps),
+      worktree: wt,
+      head,
+      probeDir,
+      repoRoot,
+      tierRuns: redRunsSeen(),
+    };
   } catch (err) {
-    return { threw: err as Error, worktree: wt, head };
+    return {
+      threw: err as Error,
+      worktree: wt,
+      head,
+      probeDir,
+      repoRoot,
+      tierRuns: redRunsSeen(),
+    };
   }
 }
 
