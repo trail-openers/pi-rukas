@@ -40,6 +40,7 @@ import { promisify } from "node:util";
 import { stagePorcelainPaths } from "../src/work-driver-stage.ts";
 import { provisionWorktree } from "../src/worktree-provision.ts";
 import { realExec } from "./lib/exec-fake.ts";
+import { gitTestEnv } from "./lib/git-test-env.ts";
 
 const execFileP = promisify(execFile);
 
@@ -52,14 +53,14 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
+const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd, env: gitTestEnv() });
 const root = mkdtempSync(path.join(tmpdir(), "pi-ens-symlink-"));
 
 /** A repo using the trailing-slash ignore form, plus one detached worktree. */
 async function fixture(name: string) {
   const repo = path.join(root, name);
   mkdirSync(path.join(repo, "node_modules"), { recursive: true });
-  await execFileP("git", ["init", "-q", "--initial-branch=main", repo]);
+  await execFileP("git", ["init", "-q", "--initial-branch=main", repo], { env: gitTestEnv() });
   await git(repo, ["config", "user.email", "t@example.com"]);
   await git(repo, ["config", "user.name", "T"]);
   // The form that causes the bug, and the form real projects use.

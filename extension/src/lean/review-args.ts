@@ -155,7 +155,9 @@ export interface LensArgs {
    * picked.
    */
   pr: number | undefined;
-  /** The context lines this step composes (see `lensContext` in `review-deps.ts`). */
+  /** The context lines this step composes (see `lensContext` in `review-deps.ts`).
+   * The run's issue reaches the lenses inside it: `lensContext` prints the
+   * fenced block there, so the arg shape carries no separate body. */
   context: string;
   /**
    * The base of the range this round reviews, when the round is the re-review.

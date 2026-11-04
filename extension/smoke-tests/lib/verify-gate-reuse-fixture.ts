@@ -12,6 +12,7 @@ import { promisify } from "node:util";
 import type { runConsolidatedVerify } from "../../src/work-driver-consolidated-verify.ts";
 import type { AlreadyVerifiedTree } from "../../src/work-driver-verify-tree.ts";
 import { verifyTreeId } from "../../src/work-driver-verify-tree.ts";
+import { gitTestEnv } from "./git-test-env.ts";
 
 /**
  * The reuse seam task A owns (#1415). Loaded by a DYNAMIC import at run time:
@@ -50,7 +51,7 @@ function missingSeamExports(): string[] {
 }
 
 export const execFileP = promisify(execFile);
-export const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
+export const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd, env: gitTestEnv() });
 
 export const root = mkdtempSync(path.join(tmpdir(), "pi-ens-1415-reuse-"));
 
@@ -79,11 +80,26 @@ export function makeExec(
       }
       return { stdout: "" };
     }
-    const execOpts = { cwd: o?.cwd, maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024 };
+    // `shell` is the caller's interpreter choice for the STRING form and is
+    // never an execFile option: with `shell` set, execFile joins its argv into
+    // one string for that shell, so the `-c`/`cmd` pair below would run
+    // `sh -c git` (#1981).
+    const { shell, ...rest } = o ?? {};
+    const execOpts = {
+      cwd: rest.cwd,
+      maxBuffer: rest.maxBuffer ?? 8 * 1024 * 1024,
+      // Both branches run git for real; without `env` the child inherits the
+      // real environ and an inherited `GIT_DIR` retargets it ahead of `cwd`
+      // (#1981). A caller that pinned its own env keeps it.
+      env: o?.env ? { ...gitTestEnv(), ...o.env } : gitTestEnv(),
+    };
     try {
       const { stdout } = o?.argv
         ? await execFileP(cmd, o.argv, execOpts)
-        : await execFileP("/bin/sh", ["-c", cmd], execOpts);
+        // The shell branch names its own env: the gate credits only a git/shell
+        // call whose own options carry the scrub, and this branch runs the
+        // driver’s git reads.
+        : await execFileP(shell ?? "/bin/sh", ["-c", cmd], { ...execOpts, env: execOpts.env });
       return { stdout };
     } catch (err) {
       const e = err as Error & { stdout?: string; stderr?: string };
@@ -100,8 +116,8 @@ export async function fixture(name: string, ids: string[]) {
   const originDir = path.join(dir, "origin.git");
   const repo = path.join(dir, "repo");
   mkdirSync(dir, { recursive: true });
-  await execFileP("git", ["init", "--bare", "--initial-branch=main", originDir]);
-  await execFileP("git", ["init", "-q", "--initial-branch=main", repo]);
+  await execFileP("git", ["init", "--bare", "--initial-branch=main", originDir], { env: gitTestEnv() });
+  await execFileP("git", ["init", "-q", "--initial-branch=main", repo], { env: gitTestEnv() });
   await git(repo, ["config", "user.email", "t@example.com"]);
   await git(repo, ["config", "user.name", "T"]);
   writeFileSync(path.join(repo, "tracked.txt"), "base\n");
@@ -139,10 +155,20 @@ export async function commitAndIdentify(
   await git(wt, ["add", "."]);
   await git(wt, ["commit", "-q", "-m", msg]);
   const treeHash = await verifyTreeId(async (cmd, o) => {
-    const opts = { cwd: o?.cwd, maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024 };
+    // `shell` stays out of execFile's options (see `makeExec`): it names the
+    // interpreter for the string form and would join the argv into one string.
+    const { shell, ...rest } = o ?? {};
+    const opts = {
+      cwd: rest.cwd,
+      maxBuffer: rest.maxBuffer ?? 8 * 1024 * 1024,
+      // The tree identity read is a real git pipeline — scrubbed like every
+      // other git child here, or it hashes somebody else's repository (#1981).
+      env: o?.env ? { ...gitTestEnv(), ...o.env } : gitTestEnv(),
+    };
     const { stdout } = o?.argv
       ? await execFileP(cmd, o.argv, opts)
-      : await execFileP("/bin/sh", ["-c", cmd], opts);
+      // Named inline for the same reason as `makeExec` above.
+      : await execFileP(shell ?? "/bin/sh", ["-c", cmd], { ...opts, env: opts.env });
     return { stdout };
   }, wt);
   if (treeHash === undefined) throw new Error(`no tree identity for ${wt}`);

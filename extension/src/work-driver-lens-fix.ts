@@ -5,6 +5,7 @@
  */
 
 import { execp } from "./exec.ts";
+import { fenceText } from "./lean/text-fence.ts";
 import { lensFixBoundMs } from "./review-budget.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
@@ -26,6 +27,9 @@ import {
 import { lensFixWorkstreamId } from "./work-driver-lens-fix-fence-gate.ts";
 import { buildLensFixFence } from "./work-driver-lens-fix-fence.ts";
 import { lensWorktree, persistFenceRecord } from "./work-driver-lens-fix-records.ts";
+import { lensFixResendPrompt } from "./work-driver-lens-fix-resend.ts";
+import { FIXER_DECLINE_RULE, issuePromptBlockForReview } from "./work-driver-lens-issue.ts";
+import { readCachedBody } from "./work-driver-lens.ts";
 
 // Re-exported for the importers that have always taken the tree resolver from
 // this module (`work-driver-lens.ts`, `work-driver-adversarial.ts`,
@@ -72,14 +76,31 @@ export const LENS_FIX_COMMIT_INSTRUCTION =
 export function inlineLensFixPrompt(
   findings: string,
   scratchDirAbs: string,
+  /** The cached composite issue text (title + body), or undefined when the
+   * cycle has none. Printed with the rule that keeps the fixer from applying a
+   * finding that contradicts the ticket — the benchmark failure this exists for
+   * was a lens fix that replaced a fixed exception message the issue required.
+   * An absent or blank body prints no block and never the string "undefined". */
+  issueBody?: string,
   /** #1852 — the rendered fence the fixer will be judged against, from the ONE
    *  plan-time `FixPassFence` the gate reads (see `lensFixFenceLines`). Absent
    *  only when the fence could not be built, in which case there was no fence
    *  to print — the gate still refuses anything it cannot verify. */
   fenceLines?: readonly string[],
 ): string {
+  // ONE render of the issue block, two uses: the block itself, and the gate on
+  // whether the decline rule may print at all. Calling the renderer twice is two
+  // renderings of the same text that could disagree.
+  const issueBlock = issuePromptBlockForReview(issueBody);
   return [
     "Address the six-pass review findings below against the diff currently on this worktree.",
+    // The issue first: the fixer judges each finding against what the ticket
+    // asked for, and is told in the same block what to do with one that
+    // contradicts it. Both arms of this step print it through the one renderer
+    // so the second literal cannot lose the rule the way #1156 lost the
+    // test-scope line. An absent or blank body prints neither line.
+    issueBlock,
+    issueBlock === "" ? "" : FIXER_DECLINE_RULE,
     "",
     "  - Make the minimal change per finding. Group by file.",
     "  - Run local quality gates before declaring complete.",
@@ -104,10 +125,12 @@ export function inlineLensFixPrompt(
     // passes, never after a full suite.
     LENS_FIX_COMMIT_INSTRUCTION,
     "",
+    // Reviewer-authored prose from a `lens-issues-found` event, so it goes
+    // through the same renderer lean's `fixPrompt` uses: a line of three
+    // backticks in one finding's suggestion would otherwise close the fence the
+    // prompt opens here and the rest of the payload becomes the fixer's brief.
     "Findings (JSON-encoded array of {path, line, severity, title, suggestion}):",
-    "```json",
-    findings,
-    "```",
+    fenceText(findings, 20_000),
     // #1852 — the fence printed in the same dispatch as the findings it bounds,
     // rendered from the object the gate reads rather than re-derived here.
     ...(fenceLines ?? []),
@@ -242,6 +265,14 @@ export async function runLensFix(
   // the state file for the gate to read back. A fence the prompt rendered from
   // one tip and the gate checked against another is two fences.
   const roundTipBefore = await readTreeHead(execFn, fixTree);
+  // The issue this fix answers, read from the explore step's cached composite
+  // (title + body). A grouped cycle carries only the primary issue, because
+  // `issueBodyArtifact` is the primary's artifact alone — the same rule the
+  // lens round reads.
+  const fixIssueBody =
+    (state.issues ?? [state.issue]).length !== 1
+      ? undefined
+      : readCachedBody(ctx.repoRoot, state.pipelineState.issueBodyArtifact);
   // A tree HEAD that could not be read is NOT "no fence this round": it is the
   // tree failing to answer, which is exactly what the gate must park on. It gets
   // the same recorded refusal the planner's own read failures get (#1852 1a).
@@ -275,35 +306,14 @@ export async function runLensFix(
   // #1391 — a retried fixer is told where its lost predecessor's work went.
   const lostNote = interruptedLensFixNote(state) ?? "";
   const body = isResend
-    ? [
-        `RE-DISPATCH — the previous lens-fix dispatch produced no committed fix: no commits ahead of the feature branch in the lens-fix worktree ${JSON.stringify(fixTree)}.`,
-        // #1798 — the re-dispatch IS the shape this clause exists for: the
-        // predecessor was killed with its work uncommitted. Say what to commit
-        // and when in the SAME constant the ordinary prompt prints, so the two
-        // arms cannot drift apart (the #1156 lesson: this array is a second
-        // literal and the rule got dropped from it once).
-        LENS_FIX_COMMIT_INSTRUCTION,
-        `Either the findings are already resolved in the committed diff (in which case say so with \`nothing-to-fix: <one-line reason>\` and make no changes), or the previous attempt left uncommitted work in that tree that it never committed. Inspect the tree — \`git -C ${fixTree} status\` — and commit any uncommitted fix work there: \`git add -A\` followed by \`git commit -m "<type>(scope): concise subject"\`. Do NOT push.`,
-        "",
-        // #1156 — the re-dispatch is the same developer in the same worktree
-        // with the same gates to re-run, so it carries the same test-scope +
-        // suite-bound rule as `inlineLensFixPrompt`. This branch is a separate
-        // inline array built alongside that function, which is exactly where
-        // the rule got dropped once.
-        `  - ${developTestScopeLine()}`,
-        "",
-        "Findings (JSON-encoded array of {path, line, severity, title, suggestion}):",
-        "```json",
+    ? lensFixResendPrompt(
         findings,
-        "```",
-        // #1852 — the resend is a SECOND prompt literal built alongside the
-        // function above, and it is the same developer in the same tree under
-        // the same fence: printing the fence in one and not the other is how
-        // the test-scope rule got dropped once (#1156).
-        ...(fenceLines ?? []),
-        scratchHygieneSection(scratchDir(ctx.repoRoot, ctx.issue)),
-      ].join("\n")
-    : inlineLensFixPrompt(findings, scratchDir(ctx.repoRoot, ctx.issue), fenceLines);
+        scratchDir(ctx.repoRoot, ctx.issue),
+        fixTree,
+        fixIssueBody,
+        fenceLines,
+      )
+    : inlineLensFixPrompt(findings, scratchDir(ctx.repoRoot, ctx.issue), fixIssueBody, fenceLines);
   const prompt = `${lostNote}${body}`;
 
   // #981 (task-b) — reposition the lens-fix worktree to the branch's

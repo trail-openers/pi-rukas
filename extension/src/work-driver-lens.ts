@@ -35,7 +35,15 @@ import { type WorkState, appendEvent } from "./workflow-state.ts";
 // Re-export: moved into work-driver-lens-fix-commit.ts for the 500-line gate
 // (AGENTS.md §12) — importers (work-driver-adversarial.ts) keep their path.
 export { commitLensFixChanges, countLensFixEmptyResends } from "./work-driver-lens-fix-commit.ts";
+// Re-exported so the lens-fix step takes the cached-body reader from the module
+// it already dispatches through; the reader itself lives with the fence seam that
+// first needed containment for the artifact (one reader, one rule about where it
+// may lie). `issuePromptBlockForReview` is the one renderer of the review-side
+// issue block, shared by the lens pass and both lens-fix prompts.
+export { readCachedBody } from "./work-develop-scope-fence-seam.ts";
+import { readCachedBody } from "./work-develop-scope-fence-seam.ts";
 import { lensWorktree } from "./work-driver-lens-fix.ts";
+import { issuePromptBlockForReview } from "./work-driver-lens-issue.ts";
 
 export async function runLens(
   ctx: CycleContext,
@@ -128,8 +136,19 @@ export async function runLens(
   const jobId = makeRunId();
   const reviewFn = ctx.lensReviewFn ?? runLensReview;
 
-  // Build lens context: base context + widening findings (if any).
+  // Build lens context: base context, the issue, then widening findings (if any).
   let context = `/work issue #${ctx.issue}, lens-review round ${round}`;
+  // The issue the diff is meant to satisfy, read from the explore step's cached
+  // composite (title + body). Every lens judges the diff against THIS rather
+  // than against generic code quality — the gap that let a lens fix replace a
+  // message the ticket required. A grouped cycle carries only the primary
+  // issue: `issueBodyArtifact` is the primary's artifact, so a second body
+  // could not be attributed to a workstream. An absent or empty artifact prints
+  // no block at all (and never the string "undefined").
+  const grouped = (state.issues ?? [state.issue]).length !== 1;
+  context += issuePromptBlockForReview(
+    grouped ? undefined : readCachedBody(ctx.repoRoot, ps.issueBodyArtifact),
+  );
   // Non-blocking findings the adversarial gate passed on. It saw only the diff;
   // this gate applies the project's configurable severity threshold and has the
   // issue, the lenses and the full branch — so it is the right place to decide

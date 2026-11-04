@@ -109,8 +109,15 @@ export LC_ALL=C
 # CALLER's repository instead of the temp directory: its config gained
 # `core.bare = true` and a fake identity, and every worktree stopped working.
 # Drop git's repository-locating variables before any test runs.
-unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_PREFIX \
-  GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE
+#
+# The set is `GIT_LOCATION_VARS` in src/git-env.ts — the list production uses
+# for the same scrub — and the two must move together. `test-verify-loop-git-env.ts`
+# fails naming any name the runner lets through, so an addition on one side
+# without the other turns the offline gate red rather than leaving a gap that
+# only shows as stray commits in somebody's repository.
+unset GIT_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR \
+  GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE \
+  GIT_SHALLOW_FILE GIT_GRAFT_FILE GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE
 
 # #1604 — every dispatch arms a slow-notice watch, and the tests assert its
 # default thresholds. An operator's exported override (a normal setting) made

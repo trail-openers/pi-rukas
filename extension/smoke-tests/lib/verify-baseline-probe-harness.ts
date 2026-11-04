@@ -20,10 +20,11 @@ import { execFile } from "node:child_process";
 import { chmodSync, copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
+import { gitTestEnv } from "./git-test-env.ts";
 
 export const execFileP = promisify(execFile);
 
-export const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
+export const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd, env: gitTestEnv() });
 
 /**
  * Repo-relative test path -> the suite fixture it is a copy of. The repo's own
@@ -77,8 +78,8 @@ export async function redGateFixture(
   const scratch = path.join(dir, "scratch");
   mkdirSync(scratch, { recursive: true });
   mkdirSync(path.join(repo, "tests"), { recursive: true });
-  await execFileP("git", ["init", "--bare", "--initial-branch=main", originDir]);
-  await execFileP("git", ["init", "--initial-branch=main", repo]);
+  await execFileP("git", ["init", "--bare", "--initial-branch=main", originDir], { env: gitTestEnv() });
+  await execFileP("git", ["init", "--initial-branch=main", repo], { env: gitTestEnv() });
   await git(repo, ["config", "user.email", "t@example.com"]);
   await git(repo, ["config", "user.name", "T"]);
   writeFileSync(path.join(repo, "tracked.txt"), "base\n");
