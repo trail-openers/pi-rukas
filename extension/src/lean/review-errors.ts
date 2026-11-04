@@ -16,22 +16,21 @@
  * "the review found nothing wrong" from being reachable by an error path.
  */
 
-import { DISPATCHES_MAX_ROWS } from "./state-outcome.ts";
+import { clippedDispatches } from "./dispatches-clip.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 
 export class ReviewInfraError extends Error {
   override readonly name = "ReviewInfraError";
   constructor(message: string, rows: DispatchUsageRow[] = []) {
     super(message);
-    // CLIPPED HERE, once, rather than at each of the fifteen throw sites. Every
-    // `rows` in this step accumulates across the whole step, so a late throw
-    // carries every earlier round's children; past the validator's cap the loader
-    // does not reject the record, it DROPS the `dispatches` field, which silently
-    // un-bills the step's most expensive child. The tail is kept, so the child
-    // that decided the outcome is always among the rows the operator is handed —
-    // the same rule `error-outcome.ts` applies on the way out and the `done`
-    // return in `review.ts` applies on the way in.
-    this.dispatches = rows.slice(-DISPATCHES_MAX_ROWS);
+    // CLIPPED HERE, once, rather than at each of the fifteen throw sites, by the
+    // one clipper `clippedDispatches` — every `rows` in this step accumulates
+    // across the whole step, so a late throw carries every earlier round's
+    // children. Past the validator's cap `assertRunFile` throws `LeanStateError`
+    // on the record, which leaves the run's whole state file unreadable rather
+    // than merely un-billed. The tail is kept, so the child that decided the
+    // outcome is always among the rows the operator is handed.
+    this.dispatches = clippedDispatches(rows) ?? [];
   }
   readonly dispatches: DispatchUsageRow[];
 }

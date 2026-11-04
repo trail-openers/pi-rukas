@@ -21,8 +21,9 @@
  *     `validatedDispatches` in `state-outcome.ts` rebuilds each row from its
  *     own checks; this module reads `dispatches` off an untrusted throw (a
  *     handler may throw anything) and hands it there, then clips the result to
- *     `DISPATCHES_MAX_ROWS`. A second local copy of the row rules would be a
- *     second definition of "a row the loader accepts", and the two drift.
+ *     `DISPATCHES_MAX_ROWS` through the shared clipper `clippedDispatches`. A
+ *     second local copy of the row rules would be a second definition of "a row
+ *     the loader accepts", and the two drift.
  *
  * The clip keeps the TAIL: rows arrive in dispatch order, and the child that
  * ran last is the one that decided the step — dropping it to keep the first
@@ -32,7 +33,8 @@
  * inside the size cap and the rules can be read — and tested — on their own.
  */
 
-import { DISPATCHES_MAX_ROWS, DISPATCH_STATES, validatedDispatches } from "./state-outcome.ts";
+import { clippedDispatches } from "./dispatches-clip.ts";
+import { DISPATCH_STATES, validatedDispatches } from "./state-outcome.ts";
 import type { LeanState, Outcome } from "./state.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 
@@ -62,9 +64,10 @@ function recordsDispatches(state: LeanState): boolean {
 export function errorOutcome(state: LeanState, err: unknown): ErrorOutcome {
   const message = (err as Error)?.message ?? String(err);
   const rows = recordsDispatches(state)
-    ? validatedDispatches((err as { dispatches?: unknown })?.dispatches).slice(-DISPATCHES_MAX_ROWS)
+    ? validatedDispatches((err as { dispatches?: unknown })?.dispatches)
     : [];
-  return rows.length === 0
+  const dispatches = clippedDispatches(rows);
+  return dispatches === undefined
     ? { kind: "error", message }
-    : { kind: "error", message, dispatches: rows };
+    : { kind: "error", message, dispatches };
 }

@@ -15,16 +15,18 @@
  * comparison the whole per-role study between the two engines rests on.
  */
 
+import { DISPATCHES_MAX_ROWS } from "./dispatches-clip.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 
 const USAGE_COUNTERS = ["input", "output", "cacheRead", "cacheWrite", "turns"] as const;
 
 /**
- * How many dispatch rows one step may record. Exported because `specify` folds
- * two attempts into ONE outcome and clips its merge here rather than keeping a
- * second copy of the bound the validator enforces.
+ * How many dispatch rows one step may record. Re-exported from `dispatches-clip.ts`,
+ * which owns the constant so the clip rule can live in a leaf module without
+ * reaching up into this file — and so the bound stays readable beside the validator
+ * that enforces it below.
  */
-export const DISPATCHES_MAX_ROWS = 16;
+export { DISPATCHES_MAX_ROWS };
 
 /** Is this a duration a child can honestly report? Finite and never negative. */
 export function isMeasure(value: unknown): boolean {

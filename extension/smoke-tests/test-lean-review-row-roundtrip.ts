@@ -29,7 +29,10 @@
  *       THROWS rather than dropping, so the pre-validation row is written raw and
  *       the file is asserted readable. This is the harsher half of the same
  *       disagreement: a writer that produces what the validator refuses turns the
- *       run's whole state file into an unreadable record.
+ *       run's whole state file into an unreadable record. (The two halves are
+ *       distinct and both are real: `outcomeProblem`/`dispatchesProblem` at load
+ *       THROW, while `validatedDispatches` in `buildOutcome` DROPS a row it refuses.
+ *       Case (1) exercises the dropping half, this case the throwing half.)
  *   (4) per-role cost, folded by `leanUsage`, which is what the headless result
  *       reports as `usage.byRole`: the number under-billed by the defect.
  *   (5) the anti-self-reference check that earns its lines. The three other suites

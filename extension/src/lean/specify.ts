@@ -60,6 +60,7 @@ import { testsFromLog } from "./build.ts";
 import { testLocationOf } from "./config-test-location.ts";
 import type { WorkConfig } from "./config.ts";
 import { loadWorkConfig } from "./config.ts";
+import { clippedDispatches } from "./dispatches-clip.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { fetchIssueBody } from "./io.ts";
 import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
@@ -77,7 +78,6 @@ import {
   specifyWorktreePath,
   worktreeExists,
 } from "./specify-tree.ts";
-import { DISPATCHES_MAX_ROWS } from "./state-outcome.ts";
 import type { Outcome } from "./state.ts";
 import type { BudgetOpts, DispatchUsageRow } from "./step-budget.ts";
 
@@ -367,15 +367,15 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
 }
 
 /**
- * The rows of every dispatch the step paid for, across both attempts, clipped
- * to the validator's bound for ONE outcome ({@link DISPATCHES_MAX_ROWS}) by
- * keeping the TAIL: rows are appended in dispatch order, so the clip keeps the
- * child that actually decided the verdict and drops the earliest ones.
+ * The rows of every dispatch the step paid for, across both attempts, clipped to
+ * the validator's bound by {@link clippedDispatches} — the one clipper, which keeps
+ * the TAIL (rows are appended in dispatch order, so the clip keeps the child that
+ * actually decided the verdict and drops the earliest ones) and returns `undefined`
+ * for an empty list so no key is recorded.
  *
  * `specify` folds up to two children into one record, so it is the one step
  * that can exceed what `outcomeProblem` will load.
  */
 function mergedRows(all: DispatchUsageRow[][]): DispatchUsageRow[] | undefined {
-  const rows = all.flat().slice(-DISPATCHES_MAX_ROWS);
-  return rows.length === 0 ? undefined : rows;
+  return clippedDispatches(all.flat());
 }

@@ -12,9 +12,9 @@
  */
 
 import { neutraliseEvidence } from "../comment-evidence.ts";
+import { clippedDispatches } from "./dispatches-clip.ts";
 import type { LensRound } from "./review-args.ts";
 import { passKind } from "./review-step.ts";
-import { DISPATCHES_MAX_ROWS } from "./state-outcome.ts";
 import type { Outcome } from "./state.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 
@@ -50,11 +50,11 @@ function disclosureNote(disclosedRows: number, gateText: string): string {
  * The step's pass outcome: the kind, the reason, and the rows — bounded like
  * every other surface that reports rows.
  *
- * `DISPATCHES_MAX_ROWS` is the validator's own cap — `specify` clips its merged
- * rows with it, `errorOutcome.ts` clips the throw path, and an unbounded pass was
- * the one arm that could hand the engine a record the loader then rejects, which
- * does not report an over-long run: it drops the step's cost rows entirely,
- * silently under-billing the child that costs the most.
+ * `clippedDispatches` applies the validator's own cap — `specify` clips its merged
+ * rows there, `error-outcome.ts` clips the throw path, and an unbounded pass was
+ * the one arm that could hand the engine a record the loader then REFUSES:
+ * `assertRunFile` throws `LeanStateError` on an over-long `dispatches`, so the
+ * run's whole state file becomes unreadable and it cannot resume.
  *
  * **`fixed` or `done`.** The one fact the two kinds differ in is whether the fix
  * wave pushed commits; `passKind` reads that pair and says why the answer cannot
@@ -86,9 +86,10 @@ function cleanPass(
     round.note === undefined || round.note.trim() === ""
       ? ""
       : `; DISCLOSURE NOT POSTED: ${neutraliseEvidence(round.note)}`;
+  const kept = clippedDispatches(rows);
   return {
     kind: passKind(fixed),
     reason: `adversarial and six-lens review clean at ${round.head.slice(0, 12)} (${round.verdict}${fixed ? ", one fix wave, re-reviewed" : ", no fixer"})${owed}${disclosed}`,
-    dispatches: rows.slice(-DISPATCHES_MAX_ROWS),
+    ...(kept === undefined ? {} : { dispatches: kept }),
   };
 }

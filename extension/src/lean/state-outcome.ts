@@ -47,7 +47,7 @@ import type { LeanState, Outcome, Step } from "./state.ts";
 // leaves every consumer's import site untouched — a caller should not have to
 // learn where a validator lives in order to ask it a question.
 export { DISPATCHES_MAX_ROWS, validatedDispatches } from "./state-dispatches.ts";
-import type { DispatchUsageRow } from "./step-budget.ts";
+import { clippedDispatches } from "./dispatches-clip.ts";
 
 /**
  * The states that REPORT how a run ended rather than do work on it. The single
@@ -233,17 +233,6 @@ function isBudgetLimit(value: unknown): value is LeanLimit {
 type LeanLimit = (typeof LIMITS)[number];
 
 /**
- * The rows of a step's dispatches, attached only when the step paid for one.
- *
- * A step that never dispatched records nothing: `[]` would put a key on the
- * durable record that says "zero children" where the truth is "this step is not
- * one that dispatches", and the fold cannot tell the two apart.
- */
-function rowsField(rows: DispatchUsageRow[]): { dispatches?: DispatchUsageRow[] } {
-  return rows.length === 0 ? {} : { dispatches: rows };
-}
-
-/**
  * Why a step's own report of itself is not a valid outcome, or `undefined`.
  *
  * `state` is the step's own state; when it is supplied, a field that belongs to
@@ -381,6 +370,9 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
  */
 export function buildOutcome(oc: Record<string, unknown>): Outcome {
   const tests = oc.tests as Record<string, string[]> | undefined;
+  // The clip rule lives in `clippedDispatches`; a step with no rows records no
+  // field at all, which is what `undefined` means here.
+  const dispatches = clippedDispatches(validatedDispatches(oc.dispatches));
   return {
     kind: oc.kind as string,
     ...(typeof oc.reason === "string" ? { reason: oc.reason } : {}),
@@ -410,7 +402,7 @@ export function buildOutcome(oc: Record<string, unknown>): Outcome {
     // would never be handed the body it was owed.
     ...(oc.channel === "host" || oc.channel === "forge" ? { channel: oc.channel } : {}),
     ...(typeof oc.report === "string" ? { report: oc.report } : {}),
-    ...rowsField(validatedDispatches(oc.dispatches)),
+    ...(dispatches === undefined ? {} : { dispatches }),
     ...(isBudgetLimit(oc.limit) ? { limit: oc.limit } : {}),
     ...(isCount(oc.value) ? { value: oc.value as number } : {}),
     ...(isCount(oc.used) ? { used: oc.used as number } : {}),

@@ -237,6 +237,7 @@
     "smoke-tests/lib/lean-build-asserts.ts",
     "smoke-tests/lib/lean-build-artifacts.ts",
     "smoke-tests/test-lean-state-outcome.ts",
+    "smoke-tests/test-AC1-budget-rows-cap.ts",
     "smoke-tests/test-lean-state-base.ts"
   ]
 }
