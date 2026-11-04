@@ -28,11 +28,17 @@
  *       child fails and the batch retries it.
  *   E — fail-open with a disclosed reason: a non-repo cwd or the operator's
  *       opt-out leaves the child in the reviewed tree rather than nowhere.
+ *   F — the tree itself: 0700, released by path, provisioned by symlink only
+ *       (never the project's `.pi/worktree-setup` hook), and every git call
+ *       prefixed with the repo's NO_HOOKS pair.
  */
 
-import { existsSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execp } from "../src/exec.ts";
+import { openReviewerTree } from "../src/reviewer-tree.ts";
 import { gitTestEnv } from "./lib/git-test-env.ts";
 import { isolateLedger } from "./lib/review-ledger-test-helpers.ts";
 import { installStubChild, makeGit } from "./lib/reviewer-child-stub.ts";
@@ -51,7 +57,9 @@ let exit = 0;
 function assert(cond: boolean, msg: string) {
   if (cond) console.log(`✓ ${msg}`);
   else {
-    console.error(`✗ ${msg}`);
+    // Written through the original method so the smoke pool's digest still
+    // sees the failure line even though this file captures `process.stderr`.
+    realErrWrite(`✗ ${msg}\n`);
     exit = 1;
   }
 }
@@ -62,6 +70,28 @@ const { spawnSpecialist } = await import("../src/spawn.ts");
 
 const LENS = { name: "SECURITY", skill: "code-review-security" };
 const SKILLS = path.resolve(import.meta.dirname, "..", "..", "skill");
+
+/**
+ * The lines this process has written to stderr since the last call, and the
+ * reason the WARN arms below can be asserted without patching `process.stderr`:
+ * `traceWarn`'s own write is a `process.stderr.write`, so Bun's `console.error`
+ * (which writes to fd 2 directly) captures it and nothing else does.
+ */
+const realErrWrite = process.stderr.write.bind(process.stderr);
+// `traceWarn` writes with `process.stderr.write`, so a wrapper on that method
+// sees every warning the module emits; `assert` above writes its `✗` lines
+// through the original method, so the smoke pool's digest still sees failures.
+let errWrites: string[] = [];
+process.stderr.write = ((chunk: string | Uint8Array) => {
+  errWrites.push(String(chunk));
+  return true;
+}) as typeof process.stderr.write;
+/** The lines written to stderr since the previous call. */
+function lastWarnLines(): string[] {
+  const seen = errWrites;
+  errWrites = [];
+  return seen;
+}
 
 function makeRepo(tag: string): { dir: string; head: string; git: ReturnType<typeof makeGit> } {
   const dir = mkdtempSync(path.join(os.tmpdir(), `rev-1975-${tag}-`));
@@ -391,7 +421,7 @@ const driveLensChild = (reviewedCwd: string, reply = "clean") => {
   };
   process.env.PI_ENSEMBLE_REVIEWER_ISOLATION = "0";
   const opted = await driveLensChild(dir);
-  process.env.PI_ENSEMBLE_REVIEWER_ISOLATION = undefined;
+  delete process.env.PI_ENSEMBLE_REVIEWER_ISOLATION;
   assert(opted.ok, "E: with the opt-out the review still ran");
   assert(ranIn === dir, "E: PI_ENSEMBLE_REVIEWER_ISOLATION=0 runs the child in the reviewed tree");
   assert(
@@ -399,6 +429,129 @@ const driveLensChild = (reviewedCwd: string, reply = "clean") => {
     "E: the opt-out really is an opt-out (the write landed)",
   );
   assert(strayTrees(git).length === 0, "E: the opt-out created no tree");
+}
+
+// ================================================================ F — the tree itself
+
+{
+  // A project with a `.pi/worktree-setup` hook that WOULD run arbitrary code,
+  // and dependency dirs to link: the hook must never fire for a reviewer tree.
+  const { dir: repo, head } = makeRepo("prov");
+  const hookMark = path.join(repo, "HOOK-RAN");
+  writeFileSync(path.join(repo, ".gitignore"), "node_modules/\nextension/node_modules/\nHOOK-RAN\n");
+  // The dependency tree is gitignored and UNTRACKED (makeRepo has committed
+  // everything else), which is the only shape the symlink path links.
+  mkdirAll(path.join(repo, "extension", "node_modules", "dep"));
+  writeFileSync(path.join(repo, "extension", "node_modules", "dep", "index.js"), "x\n");
+  // The hook is NOT ignored — it is a tracked file, which is what a real project
+  // has — so it is part of the commit and materialises in every tree.
+  mkdirAll(path.join(repo, ".pi"));
+  writeFileSync(path.join(repo, ".pi", "worktree-setup"), `#!/bin/sh\ntouch "${hookMark}"\n`);
+  chmodSync(path.join(repo, ".pi", "worktree-setup"), 0o755);
+  // The symlink path only considers a dependency dir inside a discovered
+  // PACKAGE DIRECTORY — one carrying a manifest/lockfile — so the fixture has
+  // to have one, as pi-rukas does.
+  writeFileSync(path.join(repo, "extension/package.json"), '{"name":"ext"}\n');
+  const provGit = makeGit(repo, gitEnv);
+  provGit.run("add", "-A", "--", ".gitignore", ".pi/worktree-setup", "extension/package.json");
+  provGit.run("commit", "-q", "-m", "fixture: hook, ignore rules, a package dir");
+  const provHead = provGit.out("rev-parse", "HEAD");
+  void head;
+
+  // #1975 item 7 — the module's OWN git calls (common dir, prune, add, remove,
+  // prune) carry the repo's NO_HOOKS pair. The provisioning probes this module
+  // reaches through `linkShareableDeps` are `git check-ignore` reads and are
+  // not this assertion's subject. Every argv the executor is handed is recorded
+  // here, and the same recorder drives the leak arm below with `failRemove`.
+  const calls: string[][] = [];
+  let failRemove = false;
+  const leakExec = async (
+    cmd: string,
+    opts: { cwd?: string; maxBuffer?: number; timeout?: number; argv?: string[] },
+  ) => {
+    const argv = [...(opts.argv ?? [])];
+    calls.push(argv);
+    if (failRemove && argv.includes("remove")) {
+      throw Object.assign(new Error("git worktree remove refused"), { stderr: "cannot delete" });
+    }
+    return execp(cmd, { ...opts, argv });
+  };
+  // #1975 item 7 — the module's OWN git calls (common dir, prune, add, remove,
+  // prune) carry the repo's NO_HOOKS pair. The provisioning probes this module
+  // reaches through `linkShareableDeps` are `git check-ignore` reads and are
+  // not this assertion's subject.
+  const NO_HOOKS_PREFIX = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"];
+  const tree = await openReviewerTree(leakExec, repo, provHead);
+  assert(tree.kind === "tree", `F: a tree was opened (${tree.kind === "tree" ? "" : tree.reason})`);
+  if (tree.kind === "tree") {
+    const mode = statSync(tree.cwd).mode & 0o777;
+    assert(mode === 0o700, `F: the throwaway tree is private (mode ${mode.toString(8)})`);
+    assert(
+      !existsSync(hookMark),
+      "F: the project's .pi/worktree-setup hook did NOT run for a reviewer tree",
+    );
+    assert(
+      existsSync(path.join(tree.cwd, "extension", "node_modules", "dep", "index.js")),
+      "F: the dependency dirs ARE linked, so targeted checks stay runnable",
+    );
+    // #1975 item 7 continued — the create-side calls carry the pair; the
+    // release-side calls are asserted by the leak arm below, which releases this
+    // tree with `worktree remove` armed to fail.
+    const gitCalls = calls.filter(
+      (a) => a.includes("worktree") || a.includes("--git-common-dir"),
+    );
+    const unprefixed = gitCalls.filter((a) => a.join(" ").indexOf(NO_HOOKS_PREFIX.join(" ")) !== 0);
+    assert(
+      unprefixed.length === 0,
+      `F: every reviewer-tree git call carries the NO_HOOKS prefix (${gitCalls.length} create-side calls, ${unprefixed.length} without it: ${unprefixed.map((a) => a.join(" ")).join(" | ")})`,
+    );
+    assert(strayTrees(provGit).length === 1, "F: the tree is registered while it is in use");
+  }
+
+  // A `worktree remove` that fails and leaves the directory behind must not be
+  // swallowed: release this tree with the refusal armed, and read the
+  // consequences — the tree survives, `release` still never throws, and the WARN
+  // names the surviving path.
+  lastWarnLines();
+  failRemove = true;
+  const leaked = tree.kind === "tree" ? tree.cwd : "";
+  let released = true;
+  if (tree.kind === "tree") {
+    try {
+      await tree.release();
+    } catch {
+      released = false;
+    }
+  }
+  failRemove = false;
+  assert(released, "F: a release whose `worktree remove` was refused still never throws");
+  assert(existsSync(leaked), "F: the refused tree survived — this is the leak the WARN names");
+  assert(
+    calls.some(
+      (a) =>
+        a.includes("remove") &&
+        a[a.length - 1] === leaked &&
+        a.join(" ").indexOf(NO_HOOKS_PREFIX.join(" ")) === 0,
+    ),
+    `F: the refused call was this tree's own \`git worktree remove\` (${leaked})`,
+  );
+  const leakWarned = errWrites.some(
+    (l) => l.includes("WARN") && l.includes("could not remove the throwaway tree") && l.includes(leaked),
+  );
+  assert(
+    leakWarned,
+    `F: a worktree remove that fails with the dir still present names the path on a WARN (${lastWarnLines().filter((l) => l.includes("reviewer-tree")).join(" / ") || "no reviewer-tree line at all"})`,
+  );
+  // The survivor is the fixture's to clean up, not the repository's.
+  try {
+    provGit.run("worktree", "remove", "--force", leaked);
+  } catch {
+    /* the leak arm above already proved the trace */
+  }
+}
+
+function mkdirAll(abs: string): void {
+  mkdirSync(abs, { recursive: true });
 }
 
 process.exit(exit);

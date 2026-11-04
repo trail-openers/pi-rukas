@@ -116,21 +116,24 @@ export async function openReviewerTree(
   repoRoot: string,
   headSha: string,
 ): Promise<ReviewerTree> {
+  // A tree this module cannot hand back is a fail-open, and a fail-open nobody
+  // can see is a gate that quietly stopped being one: every arm below is
+  // `traceWarn`-ed at the point the reviewer is put back in the reviewed tree.
+  const unisolated = (reason: string): ReviewerTree => {
+    traceWarn(`reviewer-tree: unisolated — ${reason}`);
+    return { kind: "unisolated", reason };
+  };
   // The operator's opt-out, the same shape as the destructive-git guard's
   // `PI_ENSEMBLE_ALLOW_DESTRUCTIVE_GIT`: a review that must see the live tree
   // (an investigation of the worktree's own state) runs unisolated, and the
   // reason is disclosed rather than silent.
   if (process.env.PI_ENSEMBLE_REVIEWER_ISOLATION === "0") {
-    return {
-      kind: "unisolated",
-      reason: "isolation disabled by PI_ENSEMBLE_REVIEWER_ISOLATION=0",
-    };
+    return unisolated("isolation disabled by PI_ENSEMBLE_REVIEWER_ISOLATION=0");
   }
   if (!isFullCommitSha(headSha)) {
-    return {
-      kind: "unisolated",
-      reason: `reviewer tree refused: ${JSON.stringify(headSha.slice(0, 40))} is not a 40-char commit SHA`,
-    };
+    return unisolated(
+      `reviewer tree refused: ${JSON.stringify(headSha.slice(0, 40))} is not a 40-char commit SHA`,
+    );
   }
   let dir = "";
   try {
@@ -147,7 +150,10 @@ export async function openReviewerTree(
     // only path this module creates is the one `release` removes, and it is
     // created 0700: a throwaway tree that holds a checkout of the reviewed
     // project is not world-readable.
-    dir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-rukas-review-"), { mode: 0o700 });
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-rukas-review-"));
+    // Set explicitly rather than through a `mode` option: `fsPromises.mkdtemp`'
+    // option bag is typed encoding-only, while the sync form takes a mode.
+    await fs.chmod(dir, 0o700);
     await execFn("git", {
       cwd: repoRoot,
       maxBuffer: 1024 * 1024,
@@ -165,10 +171,9 @@ export async function openReviewerTree(
     });
   } catch (err) {
     if (dir) await removeReviewerTree(execFn, repoRoot, dir);
-    return {
-      kind: "unisolated",
-      reason: `reviewer tree at ${headSha.slice(0, 12)} could not be created (${stderrOf(err).slice(0, 200)})`,
-    };
+    return unisolated(
+      `reviewer tree at ${headSha.slice(0, 12)} could not be created (${stderrOf(err).slice(0, 200)})`,
+    );
   }
   const provisioned = await linkShareableDeps(execFn, repoRoot, dir).catch(() => undefined);
   if (provisioned?.problem) {
@@ -203,14 +208,29 @@ export async function removeReviewerTree(
   // directory of its own to hand back.
   const commonDir = await gitCommonDir(execFn, repoRoot).catch(() => undefined);
   const admin = commonDir === undefined ? ["-C", repoRoot] : ["--git-dir", commonDir];
-  const removed = await execFn("git", {
-    cwd: repoRoot,
-    maxBuffer: 64 * 1024,
-    timeout: 60_000,
-    argv: [...NO_HOOKS, ...admin, "worktree", "remove", "--force", dir],
-  }).catch(() => undefined);
-  if (removed === undefined && (await exists(dir))) {
+  // The probe's identity is what the arms below branch on: a resolution that
+  // could not be asked (`undefined`) is not the same answer as a removal git
+  // performed and reported (`{ stdout }`), and only the first may leave a tree
+  // standing. The prune is issued only by the path that removed the tree — a
+  // prune of a registration git still holds would be dishonest about what is
+  // there, and the refused tree must survive this function for the WARN to name
+  // it rather than be taken away by the `fs.rm` that follows.
+  let removed: boolean;
+  if (commonDir === undefined) {
+    await rm([...NO_HOOKS, ...admin, "worktree", "remove", "--force", dir], 60_000);
+    removed = false;
+  } else {
+    const ok = await execFn("git", {
+      cwd: repoRoot,
+      maxBuffer: 64 * 1024,
+      timeout: 60_000,
+      argv: [...NO_HOOKS, ...admin, "worktree", "remove", "--force", dir],
+    }).catch(() => undefined);
+    removed = ok !== undefined;
+  }
+  if (!removed && (await exists(dir))) {
     traceWarn(`reviewer-tree: git could not remove the throwaway tree at ${dir}`);
+    return;
   }
   await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
   await rm([...NO_HOOKS, ...admin, "worktree", "prune"], 10_000);
