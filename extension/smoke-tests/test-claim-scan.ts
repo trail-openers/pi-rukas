@@ -333,8 +333,12 @@ function assert(cond: boolean, msg: string) {
     description: "",
   });
   assert(
-    computeVerdict([mk("MEDIUM")], []) === "ISSUES_FOUND",
-    "a claim-scan MEDIUM blocks at the default threshold — it is a finding like any other",
+    computeVerdict([mk("MEDIUM")], []) === "APPROVED",
+    "a claim-scan MEDIUM is disclosed at the default threshold — the scan stamps the severity, the project decides whether it blocks",
+  );
+  assert(
+    computeVerdict([mk("MEDIUM")], [], "MEDIUM") === "ISSUES_FOUND",
+    "...and a project that sets a MEDIUM bar does block on it — the finding is a finding like any other",
   );
   assert(computeVerdict([], []) === "APPROVED", "...and no findings still approves");
 }

@@ -12,6 +12,7 @@
 
 import os from "node:os";
 import path from "node:path";
+import { DEFAULT_REVIEW_THRESHOLD } from "./review-threshold.ts";
 import type { SuppressedFinding } from "./lens-residuals.ts";
 import type { ForcedFullReason } from "./lens-review-delta-disclose.ts";
 import { isReviewIncomplete } from "./lens-review-incomplete.ts";
@@ -373,7 +374,8 @@ export function bySeverityCounts(findings: Finding[]): Record<Severity, number> 
  *      six-pass review degenerated to a five-or-fewer-pass review. Never
  *      silently downgrade — surface explicitly.
  *   2. CRITICAL_ISSUES_FOUND — any CRITICAL finding from any completed lens.
- *   3. ISSUES_FOUND — any finding at or above `threshold` (default MEDIUM).
+ *   3. ISSUES_FOUND — any finding at or above `threshold` (default
+ *      `DEFAULT_REVIEW_THRESHOLD`, i.e. HIGH).
  *   4. APPROVED — only sub-threshold (or no) findings AND all lenses completed.
  *
  * CRITICAL blocks regardless of `threshold`. A project may decide that MEDIUM
@@ -411,11 +413,11 @@ export function computeVerdict(
  * Until the threshold was made configurable nothing read that sentence, so it
  * was decorative and a project wanting a different bar had no way to say so.
  *
- * MEDIUM stays the default, so a project that says nothing — or has no
- * AGENTS.md at all — gets exactly today's behaviour. See
- * `work-driver-policy.ts` for how a project loosens it.
+ * The constant lives in `review-threshold.ts` — the module that owns the bar
+ * and its resolver — and is re-exported here so every consumer of this pure
+ * leaf sees one value rather than two that can drift.
  */
-export const DEFAULT_REVIEW_THRESHOLD: Severity = "MEDIUM";
+export { DEFAULT_REVIEW_THRESHOLD };
 
 /**
  * The severity order `computeVerdict` judges a round by, shared with any caller

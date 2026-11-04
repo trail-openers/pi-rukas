@@ -26,11 +26,11 @@
  *
  * **The bar the round is judged against is an argument, not a default.**
  * `LensArgs.threshold` carries the severity at which a finding blocks the run.
- * A round that arrives without one is judged at the review layer's MEDIUM
- * default, which is looser than what a project that states a bar in its
- * doctrine asked for — and the difference is invisible in the verdict, because
- * both answer "APPROVED"/"ISSUES_FOUND". That is how the project's own sentence
- * went unapplied on two of the three review paths.
+ * A round that arrives without one is judged at the review layer's HIGH default
+ * (`DEFAULT_REVIEW_THRESHOLD`), which is looser than what a project that states
+ * a stricter bar in its doctrine asked for — and the difference is invisible in
+ * the verdict, because both answer "APPROVED"/"ISSUES_FOUND". That is how the
+ * project's own sentence went unapplied on two of the three review paths.
  *
  * **The bar is resolved once per step, never per round.** See
  * `ReviewDeps.reviewThreshold` for why a per-round read is both wasteful and
@@ -176,7 +176,7 @@ export interface LensArgs {
    * step at the run's base commit (see `ReviewDeps.reviewThreshold`). Optional
    * only so a test that drives the step with a stub lens need not supply one:
    * the wiring passes it straight to `runLensReview`, and a round with no
-   * threshold is judged at the review layer's MEDIUM default — looser than what
+   * threshold is judged at the review layer's HIGH default — looser than what
    * a project that states a bar in its doctrine asked for.
    */
   threshold?: Severity;

@@ -84,7 +84,7 @@ export async function readDoctrineDocsAtBase(
 
 /**
  * The blocking bar for one review: doctrine read at `baseRef`, judged by `judge`,
- * defaulting to MEDIUM when the project says nothing.
+ * defaulting to `DEFAULT_REVIEW_THRESHOLD` (HIGH) when the project says nothing.
  *
  * `baseRef` must be a full commit SHA — `readDoctrineDocsAtBase` refuses
  * anything else, so the bar cannot move under a running review because someone

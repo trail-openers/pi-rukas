@@ -33,9 +33,14 @@ import { promisify } from "node:util";
 import { buildEvidence } from "../src/lens-evidence.ts";
 import { lensPromptFor } from "../src/lens-review-format.ts";
 import { DEFAULT_REVIEW_THRESHOLD, computeVerdict } from "../src/lens-review-format.ts";
+import { DEFAULT_REVIEW_THRESHOLD as RESOLVER_DEFAULT } from "../src/review-threshold.ts";
 import type { Finding } from "../src/lens-review.ts";
 import { buildLensRoster } from "../src/lens-roster.ts";
-import { resolveReviewThreshold, severityFromQuote } from "../src/review-threshold.ts";
+import {
+  isBlockingSeverity,
+  resolveReviewThreshold,
+  severityFromQuote,
+} from "../src/review-threshold.ts";
 import { pathsInDiff, readFileAtBranch } from "../src/work-driver-diff.ts";
 import { type DoctrineDoc, policyJudgeEnabled } from "../src/work-driver-policy.ts";
 
@@ -217,10 +222,17 @@ const mk = (severity: Finding["severity"]): Finding => ({
 });
 
 {
-  assert(DEFAULT_REVIEW_THRESHOLD === "MEDIUM", "the shipped default is MEDIUM");
   assert(
-    computeVerdict([mk("MEDIUM")], []) === "ISSUES_FOUND",
-    "by default a MEDIUM finding blocks — today's behaviour, unchanged",
+    DEFAULT_REVIEW_THRESHOLD === "HIGH",
+    "the shipped default is HIGH — a repo whose doctrine says nothing must not turn best-practice findings into fix orders",
+  );
+  assert(
+    computeVerdict([mk("MEDIUM")], []) === "APPROVED",
+    "by default a MEDIUM finding is disclosed, not a fix order — the defect this default exists to stop",
+  );
+  assert(
+    computeVerdict([mk("HIGH")], []) === "ISSUES_FOUND",
+    "by default a HIGH finding blocks — the default is the bar, not an absence of one",
   );
   assert(
     computeVerdict([mk("MEDIUM")], [], "HIGH") === "APPROVED",
@@ -235,7 +247,38 @@ const mk = (severity: Finding["severity"]): Finding => ({
     computeVerdict([mk("CRITICAL")], [], "LOW") === "CRITICAL_ISSUES_FOUND",
     "CRITICAL blocks whatever the threshold says — no project gets to wave one through",
   );
-  assert(computeVerdict([mk("LOW")], []) === "APPROVED", "a LOW alone still approves by default");
+  assert(
+    computeVerdict([mk("LOW")], []) === "APPROVED",
+    "a LOW alone still approves by default",
+  );
+  assert(
+    computeVerdict([mk("CRITICAL")], []) === "CRITICAL_ISSUES_FOUND",
+    "CRITICAL blocks at the default whatever its rank — no project gets to wave one through",
+  );
+  // The bar is a REQUIRED argument (`isBlockingSeverity(severity, bar)`), so
+  // there is no default bar to drift. The arm that matters is the unrankable
+  // one: a caller reads severities off serialised JSON, and a row it cannot
+  // rank must never be evidence that nothing blocks.
+  assert(
+    RESOLVER_DEFAULT === DEFAULT_REVIEW_THRESHOLD,
+    "the bar has ONE definition: the constant re-exported by the format leaf is the one the resolver defaults to",
+  );
+  assert(
+    isBlockingSeverity(undefined, "HIGH") === true,
+    "an unrankable severity at a HIGH bar fails closed — an unreadable row is never 'nothing blocks'",
+  );
+  assert(
+    isBlockingSeverity("BLOCKER", "HIGH") === true,
+    "an unknown severity string fails closed whatever the bar",
+  );
+  assert(
+    isBlockingSeverity(undefined, "CRITICAL") === true,
+    "…and the same at the strictest bar",
+  );
+  assert(
+    isBlockingSeverity("MEDIUM", "HIGH") === false,
+    "a rankable sub-bar row does not block at HIGH",
+  );
 }
 
 // ------------------------- resolution: absent doctrine is normal, not an error
@@ -277,8 +320,8 @@ const HIGH_BAR = /^\**Six-pass review findings are blocking at [A-Z]+ severity a
 {
   const none = await resolveReviewThreshold(judgeSaying(undefined), []);
   assert(
-    none.severity === "MEDIUM" && none.source === "default",
-    "NO AGENTS.md at all → MEDIUM. A repo without doctrine is the normal case, not a failure",
+    none.severity === "HIGH" && none.source === "default",
+    "NO AGENTS.md at all → HIGH. A repo without doctrine is the normal case, not a failure",
   );
 
   const silent = await resolveReviewThreshold(
@@ -286,8 +329,30 @@ const HIGH_BAR = /^\**Six-pass review findings are blocking at [A-Z]+ severity a
     docs("# Contributing\n\nRun the tests.\n"),
   );
   assert(
-    silent.severity === "MEDIUM" && silent.source === "default",
-    "doctrine that never mentions review severity → MEDIUM",
+    silent.severity === "HIGH" && silent.source === "default",
+    "doctrine that never mentions review severity → HIGH",
+  );
+
+  // A verified MEDIUM bar still WINS over the HIGH default: the project said
+  // MEDIUM blocks and the default does not over-rule a stated bar by tightening
+  // it (rule 6 of the brief).
+  const MEDIUM_SENT = "Six-pass review findings are blocking at MEDIUM severity and above.";
+  const loosened = await resolveReviewThreshold(
+    judgeSaying({ verdict: "permitted", quote: MEDIUM_SENT, sourceFile: "AGENTS.md" }),
+    docs(`## 1. Gates\n\n${MEDIUM_SENT}\n`),
+  );
+  assert(
+    loosened.severity === "MEDIUM" && loosened.source === "doctrine",
+    `a project whose verified sentence says MEDIUM gets MEDIUM, not the HIGH default (got ${loosened.severity}/${loosened.source})`,
+  );
+  const LOW_SENT = "Findings of LOW severity and above are blocking.";
+  const tightened = await resolveReviewThreshold(
+    judgeSaying({ verdict: "permitted", quote: LOW_SENT, sourceFile: "AGENTS.md" }),
+    docs(`## 1. Gates\n\n${LOW_SENT}\n`),
+  );
+  assert(
+    tightened.severity === "LOW" && tightened.source === "doctrine",
+    `a project that tightens to LOW gets LOW, whatever the default says (got ${tightened.severity}/${tightened.source})`,
   );
 
   const SENT = "Six-pass review findings are blocking at HIGH severity and above.";
@@ -312,8 +377,8 @@ const HIGH_BAR = /^\**Six-pass review findings are blocking at [A-Z]+ severity a
     docs("# Contributing\n\nRun the tests.\n"),
   );
   assert(
-    fabricated.severity === "MEDIUM" && fabricated.source === "default",
-    "a FABRICATED sentence cannot loosen the bar — the citation must exist",
+    fabricated.severity === "HIGH" && fabricated.source === "default",
+    "a FABRICATED sentence cannot loosen the bar — the citation must exist, and the default is HIGH",
   );
 
   const prev = process.env.PI_ENSEMBLE_REVIEW_THRESHOLD;
@@ -326,7 +391,7 @@ const HIGH_BAR = /^\**Six-pass review findings are blocking at [A-Z]+ severity a
   process.env.PI_ENSEMBLE_REVIEW_THRESHOLD = "nonsense";
   assert(
     (await resolveReviewThreshold(judgeSaying({ verdict: "unstated" }), docs("x"))).severity ===
-      "MEDIUM",
+      "HIGH",
     "a nonsense override is ignored rather than obeyed",
   );
   if (prev === undefined) delete process.env.PI_ENSEMBLE_REVIEW_THRESHOLD;
@@ -342,8 +407,8 @@ const HIGH_BAR = /^\**Six-pass review findings are blocking at [A-Z]+ severity a
     /blocking at HIGH severity and above/i.test(text),
     "pi-ensemble's own AGENTS.md states HIGH — the sentence the code now reads (raised from MEDIUM on 2026-10-25)",
   );
-  // The code default is unchanged by that operator decision: silent doctrine
-  // still gets MEDIUM, asserted above in the resolution block.
+  // The code default is the same value this repo's operator decision chose:
+  // silent doctrine still gets HIGH, asserted above in the resolution block.
   const sentences = ownBlockingSentences(text);
   assert(sentences.length > 0, "§1's threshold paragraph is present");
   const OWN_QUOTE = sentences.find((s) => HIGH_BAR.test(s));
@@ -366,7 +431,7 @@ const HIGH_BAR = /^\**Six-pass review findings are blocking at [A-Z]+ severity a
   }
   assert(
     barSentences >= 2,
-    `at least two sentences of §1's threshold paragraph resolve to HIGH (got ${barSentences}) — a judge quoting either one must land on HIGH, not the MEDIUM default`,
+    `at least two sentences of §1's threshold paragraph resolve to HIGH (got ${barSentences}) — a judge quoting either one must land on HIGH, not merely on the HIGH default`,
   );
   const own = await resolveReviewThreshold(
     judgeSaying({
@@ -386,8 +451,8 @@ const HIGH_BAR = /^\**Six-pass review findings are blocking at [A-Z]+ severity a
   // the judge did not give.
   const ownSilent = await resolveReviewThreshold(judgeSaying({ verdict: "unstated" }), docs(text));
   assert(
-    ownSilent.severity === "MEDIUM" && ownSilent.source === "default",
-    `the same AGENTS.md with an 'unstated' judge yields MEDIUM/default (got ${ownSilent.severity}/${ownSilent.source}) — doctrine is only honoured through a verified citation`,
+    ownSilent.severity === "HIGH" && ownSilent.source === "default",
+    `the same AGENTS.md with an 'unstated' judge yields HIGH/default (got ${ownSilent.severity}/${ownSilent.source}) — doctrine is only honoured through a verified citation`,
   );
 
   // Mirror 2: a judge that quotes the OLD MEDIUM bar, a sentence this repo's
@@ -402,7 +467,7 @@ const HIGH_BAR = /^\**Six-pass review findings are blocking at [A-Z]+ severity a
     docs(text),
   );
   assert(
-    ownFabricated.severity === "MEDIUM" && ownFabricated.source !== "doctrine",
+    ownFabricated.severity === "HIGH" && ownFabricated.source !== "doctrine",
     `a quote of the retired MEDIUM sentence, absent from AGENTS.md, is not honoured (got ${ownFabricated.severity}/${ownFabricated.source})`,
   );
 }
@@ -458,7 +523,7 @@ const HIGH_BAR = /^\**Six-pass review findings are blocking at [A-Z]+ severity a
     docs(ownDoctrine),
   );
   assert(
-    forbiddenUnverified.severity === "MEDIUM" && forbiddenUnverified.source === "default",
+    forbiddenUnverified.severity === "HIGH" && forbiddenUnverified.source === "default",
     `an UNVERIFIED quote under a 'forbidden' label still yields the default (got ${forbiddenUnverified.severity}/${forbiddenUnverified.source}) — a sentence the documents lack decides nothing`,
   );
 
@@ -470,7 +535,7 @@ const HIGH_BAR = /^\**Six-pass review findings are blocking at [A-Z]+ severity a
     docs(ownDoctrine),
   );
   assert(
-    forbiddenNoQuote.severity === "MEDIUM" && forbiddenNoQuote.source === "default",
+    forbiddenNoQuote.severity === "HIGH" && forbiddenNoQuote.source === "default",
     `a 'forbidden' with NO quote yields the default (got ${forbiddenNoQuote.severity}/${forbiddenNoQuote.source})`,
   );
 }
