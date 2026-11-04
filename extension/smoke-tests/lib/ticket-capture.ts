@@ -149,7 +149,9 @@ export async function captureLensFixPrompts(
     } as unknown as DriverContext;
     await runLensFix(ctx, { ...s, eventLog: log } as never, 1_200_000);
   } finally {
-    if (prevResume === undefined) process.env.PI_ENSEMBLE_RESUME = undefined;
+    // `delete`, never `= undefined`: the env-clear gate reads an assigned
+    // string "undefined" on Bun, which is a set variable, not a cleared one.
+    if (prevResume === undefined) delete process.env.PI_ENSEMBLE_RESUME;
     else process.env.PI_ENSEMBLE_RESUME = prevResume;
   }
   return prompts;
