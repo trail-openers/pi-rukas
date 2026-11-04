@@ -18,6 +18,7 @@ import { capsEnabled } from "../spawn-child-bound.ts";
 import { traceWarn } from "../trace.ts";
 import type { DispatchResult, DispatchUsage } from "../types.ts";
 import type { Budget, WorkConfig } from "./config.ts";
+import { DISPATCHES_MAX_ROWS } from "./state-outcome.ts";
 import type { LeanState, Outcome } from "./state.ts";
 
 /** Which ceiling was crossed, with what it was and what the child used. */
@@ -409,6 +410,13 @@ export function budgetVerdict(state: LeanState, fired: BudgetFired): Outcome {
  * Same sentence as {@link budgetVerdict} — the reason text is what the operator
  * is taught to read — with the cost rows attached, so a stopped round's tokens
  * reach the host instead of vanishing with the child.
+ *
+ * The rows are CLIPPED to the record's own bound, keeping the newest, exactly as
+ * the `done` return in `review-pass.ts`, `ReviewInfraError` and `error-outcome.ts`
+ * clip theirs. A budget stop fires precisely on a step that dispatched a lot (a
+ * review step's lens rounds), so this was the one arm handing the engine an
+ * over-long array: `dispatchesProblem` refuses any array longer than the cap, and
+ * the loader does not report that — it drops the step's cost rows entirely.
  */
 export function budgetVerdictWithRows(
   state: LeanState,
@@ -416,5 +424,6 @@ export function budgetVerdictWithRows(
   rows: DispatchUsageRow[],
 ): Outcome {
   const verdict = budgetVerdict(state, fired);
-  return rows.length === 0 ? verdict : { ...verdict, dispatches: rows };
+  const kept = rows.slice(-DISPATCHES_MAX_ROWS);
+  return rows.length === 0 ? verdict : { ...verdict, dispatches: kept };
 }
