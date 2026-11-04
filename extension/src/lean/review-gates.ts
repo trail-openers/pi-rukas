@@ -313,6 +313,8 @@ export async function lensGate(
     branch: string;
     /** Which pass of the one wave this round is (see `adversarialGate`). */
     wave: "full" | "fix";
+    /** The run's issue, printed into every lens brief by `lensContext`. */
+    issueBody: string;
     /** The run's PR number, threaded to the review layer rather than re-derived. */
     pr: number | undefined;
     carried: string | undefined;
@@ -386,9 +388,14 @@ export async function lensGate(
       cwd: ctx.repoRoot,
       wave: opts.wave,
       pr: opts.pr,
+      // The step's one issue body, on the args as well as inside the context:
+      // the context string is what the lens children read, and the field is what
+      // makes the dependency on it visible in the arg shape.
+      issueBody: opts.issueBody,
       context: lensContext(ctx.issue, opts.wave, {
         carried: opts.carried,
         fixDelta: delta.section,
+        issueBody: opts.issueBody,
       }),
       ...(opts.since === undefined ? {} : { since: opts.since }),
       evidence,

@@ -159,6 +159,7 @@ try {
     pr: undefined,
     since: dir0.since,
     context: "re-review of the fix wave's commits",
+    issueBody: "body",
     evidence: undefined,
     extraFindings: [],
     headless: false,

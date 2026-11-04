@@ -32,8 +32,10 @@
 import { type DiffRange, boundDiffForPrompt } from "./adversarial-diff-cap.ts";
 import { COMMENT_JUDGEMENT_PROSE } from "./comment-evidence.ts";
 
-/** Keeps a pathological issue body from crowding out the diff. */
-const MAX_ISSUE_CHARS = 6000;
+/** Keeps a pathological issue body from crowding out the diff. Exported so
+ * every site that prints an issue block bounds it the same way — a second
+ * bound is a second rule about how much of the spec a child gets to read. */
+export const MAX_ISSUE_CHARS = 6000;
 
 /** The fence that opens/closes the prompt's diff block.
  *
@@ -106,14 +108,60 @@ Out of scope for this review — the following criteria are owned by sibling wor
 ${sibLines}`;
 }
 
-function issueSection(issueBody: string | undefined): string {
+/** The lead-in every reviewer reads before the issue body, shared with the
+ * /work review-side block (`work-driver-lens-issue.ts`) so the two cannot
+ * disagree about what they are handing the child. One constant for the whole
+ * prompt layer, so the rule cannot drift between a reviewer and a fixer. */
+export const ISSUE_PROMPT_LEAD =
+  "What this change was asked to do — judge it against THIS, not against generic code quality.";
+
+/** The rule this loop's reviewer is held to: the diff is judged against the
+ * spec, and a finding that can only be satisfied by contradicting the spec is
+ * not a finding. Exported because the lean lens pass and fixer print the same
+ * rule through their own fence renderer — one sentence, one site that owns it. */
+export const ADVERSARIAL_FINDING_RULE =
+  "A finding whose fix would require contradicting an explicit requirement of this issue is NOT a finding.";
+
+/** The issue body, trimmed to `MAX_ISSUE_CHARS` with its truncation marker, or
+ * `""` for an absent or blank body (which must print no block at all). Exported
+ * so every site that prints an issue block bounds it the same way — a second
+ * bound is a second rule about how much of the spec a child gets to read. */
+export function boundedIssueBody(issueBody: string | undefined): string {
   const trimmed = issueBody?.trim();
   if (!trimmed) return "";
-  const body =
-    trimmed.length > MAX_ISSUE_CHARS
-      ? `${trimmed.slice(0, MAX_ISSUE_CHARS)}\n…(issue truncated)`
-      : trimmed;
-  return `\n\nWhat this change was asked to do — judge the diff against THIS, not against generic code quality. A diff that works but violates a stated constraint is a finding:\n\n${body}`;
+  return trimmed.length > MAX_ISSUE_CHARS
+    ? `${trimmed.slice(0, MAX_ISSUE_CHARS)}\n…(issue truncated)`
+    : trimmed;
+}
+
+/**
+ * The one renderer that prints an issue body into a brief whose untrusted text
+ * is FENCED (the lean review layer, whose `fenceText` keeps a `### heading`
+ * inside a body from opening a section of the prompt the step never wrote, and
+ * keeps a ``` fence inside it from closing one the prompt opened). `render` is
+ * applied to the body only, after the bound, so the lead-in and the rule stay
+ * prompt prose and the truncation marker stays the layer's own.
+ *
+ * `rule` is what the child is told to do with the issue — a fixer shown the
+ * spec without a rule is the fixer that "fixes" a finding by violating it.
+ *
+ * An absent or blank body yields `""`: no block, and never the string
+ * "undefined".
+ */
+export function fencedIssuePromptBlock(
+  issueBody: string | undefined,
+  rule: string,
+  render: (body: string) => string,
+): string {
+  const body = boundedIssueBody(issueBody);
+  if (body === "") return "";
+  return `\n\n${ISSUE_PROMPT_LEAD} ${rule}\n\n${render(body)}`;
+}
+
+export function issueSection(issueBody: string | undefined): string {
+  const body = boundedIssueBody(issueBody);
+  if (body === "") return "";
+  return `\n\n${ISSUE_PROMPT_LEAD} ${ADVERSARIAL_FINDING_RULE}\n\n${body}`;
 }
 
 export function buildAdversarialPrompt(opts: {
@@ -193,6 +241,13 @@ export function buildFixPrompt(opts: {
   diff: string;
   round: number;
   issueBody?: string;
+  /**
+   * The one sentence this fixer is held to about the issue. A fixer shown the
+   * spec and not told what to do with it is the fixer that "fixes" a finding by
+   * violating the ticket. Defaults to this loop's own wording; the caller may
+   * supply it, and every caller that prints an issue block prints a rule with it.
+   */
+  issueRule?: string;
   priorFindings?: string[];
   /** See `buildAdversarialPrompt.diffRange` — the ref range this diff came from,
    * which the truncation notice names when the diff is over the inline cap. */
@@ -204,11 +259,18 @@ export function buildFixPrompt(opts: {
     : "";
   const bounded = boundDiffForPrompt(opts.diff, opts.diffRange);
   const note = bounded.note ? NOTE_SEP + bounded.note : "";
+  // The fixer's rule, printed with the issue block rather than on its own: the
+  // sentence is only actionable against the requirement it names.
+  const issue = issueSection(opts.issueBody);
+  const fixerRule =
+    issue === ""
+      ? ""
+      : `\n\n${opts.issueRule ?? "Do not apply a finding that contradicts a requirement stated in the issue above — name it in your reply and leave the code the issue asked for."}`;
   return `Fix the following adversarial review findings. Original context: ${opts.context}
 Round ${opts.round} fix.
 
 Findings:
-${opts.findings}${priorSection}${issueSection(opts.issueBody)}
+${opts.findings}${priorSection}${issue}${fixerRule}
 
 Make the minimal changes needed to address every finding. Run local quality gates before returning.
 

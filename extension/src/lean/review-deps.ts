@@ -27,6 +27,7 @@
  *   review).
  */
 
+import { ADVERSARIAL_FINDING_RULE, fencedIssuePromptBlock } from "../adversarial-prompts.ts";
 import { runAdversarialLoop } from "../adversarial.ts";
 import { execp } from "../exec.ts";
 import type { LensReviewSummary, Severity } from "../lens-review-format.ts";
@@ -35,6 +36,11 @@ import { adversarialChildBoundMs as loopChildBoundMs } from "../review-bounds.ts
 import { resolveLensReviewThreshold } from "../review-threshold-at-base.ts";
 import { lensChildBoundMs } from "../spawn-child-bound.ts";
 import { makeRunId, spawnSpecialist } from "../spawn.ts";
+import {
+  FIXER_DECLINE_RULE,
+  ISSUE_DECLINE_MARKER,
+  fencedIssueBody,
+} from "../work-driver-lens-issue.ts";
 import { netGitEnv } from "../work-driver-net-git.ts";
 import { judgePolicy } from "../work-driver-policy.ts";
 import { verifyTimeoutMs } from "../work-driver-verify-develop-helpers.ts";
@@ -297,17 +303,32 @@ function adversarialContext(
   return `/work-lean issue #${String(issue)}: gating the run's committed head before it merges (review step, one fix wave — this pass is ${scope}). What you report here is the last the step will pay a fixer for.${known}`;
 }
 
-/** The framing every lens is dispatched with. */
+/** The framing every lens is dispatched with.
+ *
+ * `issueBody` is the run's issue, printed as the block every lens judges the
+ * diff against. It arrives through the step rather than being fetched here
+ * because the step reads it once (`lean/review.ts`) and both of its passes —
+ * and the fixer — must see the same text. */
 export function lensContext(
   issue: number,
   wave: ReviewWave,
-  extra: { carried?: string; fixDelta?: string } = {},
+  extra: { carried?: string; fixDelta?: string; issueBody?: string } = {},
 ): string {
   const parts = [
     `/work-lean issue #${String(issue)}, lens-review ${
       wave === "full" ? "full review of the branch" : "re-review of the fix wave's commits"
     }`,
   ];
+  // The issue block rides the same channel as the carried findings, so it obeys
+  // the same rule: disarmed at the print site. An issue body is author text —
+  // one `### heading` or a ``` fence inside it would otherwise open a section
+  // of six lens prompts the step never wrote.
+  const issueBlock = fencedIssuePromptBlock(
+    extra.issueBody,
+    ADVERSARIAL_FINDING_RULE,
+    fencedIssueBody,
+  );
+  if (issueBlock !== "") parts.push(issueBlock.trim());
   const carried = extra.carried?.trim();
   if (carried !== undefined && carried !== "")
     parts.push(
@@ -342,6 +363,12 @@ export interface ReviewFixArgs {
   /** Which gate produced the findings; names the list in the brief. */
   gate: string;
   findings: string;
+  /**
+   * The run's issue body, printed into the brief so the fixer cannot "fix" a
+   * finding by violating a stated requirement of the ticket. Threaded from the
+   * one `issueBody` the step read (`lean/review.ts`), never re-fetched.
+   */
+  issueBody?: string;
   /** Absolute path of the disposable tree the child works in. */
   worktree: string;
   /** The repo the tree belongs to, for the write fence's `repo` field. */
@@ -382,10 +409,26 @@ export function fixPrompt(opts: ReviewFixArgs): string {
   // instructions sit on. Same call, same rule, for the two that were left out.
   const head = promptText(opts.head, NAME_MAX_CHARS);
   const base = promptText(opts.base, NAME_MAX_CHARS);
+  // The issue, fenced and bounded like every other block in this brief. The
+  // fixer is the one model in this step that EDITS the tree: a finding that
+  // contradicts what the ticket asked for must be named in its reply, not
+  // implemented. Lean prints the BODY only — it has no cached title to print,
+  // and inventing one from the first line of a body would be a claim the step
+  // did not read off the forge.
+  const issueBlock = fencedIssuePromptBlock(
+    opts.issueBody,
+    `${FIXER_DECLINE_RULE}`,
+    fencedIssueBody,
+  );
+  // The rule that tells the fixer HOW to refuse. Printed as its own section
+  // rather than folded into the prose below, because a brief with no issue block
+  // has no requirement to cite and the rule must then not appear at all.
+  const declineRule =
+    issueBlock === "" ? "" : `\n## Declining a finding that contradicts the issue\n\n${FIXER_DECLINE_RULE}\n`;
   return `You are fixing the findings one review gate raised against this run's work (issue #${String(
     opts.issue,
   )}, review step, one fix wave, gate: ${gate}).
-
+${issueBlock}${declineRule}
 ## The findings
 
 ${fenceText(opts.findings, 20_000)}

@@ -265,6 +265,8 @@ export async function fixRound(
     head: string;
     frozen: Record<string, string>;
     findings: string;
+    /** The run's issue, printed into the fixer's brief (see `ReviewFixArgs`). */
+    issueBody: string;
     gate: string;
     wave: ReviewWave;
     arm: FixArm;

@@ -158,6 +158,13 @@ export interface LensArgs {
   /** The context lines this step composes (see `lensContext` in `review-deps.ts`). */
   context: string;
   /**
+   * The run's issue body, threaded to the lens pass so every lens judges the
+   * diff against the ticket rather than against generic best practice. Printed
+   * by `lensContext`, which disarms it at the print site; the step reads it once
+   * and hands the same text to both passes and to the fixer.
+   */
+  issueBody: string;
+  /**
    * The base of the range this round reviews, when the round is the re-review.
    *
    * The head the fix wave STARTED from — read from what the fix round returned,
