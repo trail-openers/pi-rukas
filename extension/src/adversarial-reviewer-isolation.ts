@@ -38,6 +38,8 @@ export interface ReviewerIsolation {
    * loop keep its own exhausted-rounds tail below the wrapper.
    */
   withRelease: <T>(fn: () => Promise<T | undefined>) => Promise<T | undefined>;
+  /** Remove the tree. Best-effort, never throws, safe when there is none. */
+  release: () => Promise<void>;
 }
 
 /**
@@ -49,6 +51,27 @@ export interface ReviewerIsolation {
  * three loop fields it reads rather than the whole params bag, so the loop's call
  * site stays one line at the 500-line gate.
  */
+/**
+ * Run the adversarial round loop with its reviewer children in one throwaway
+ * tree. The tree is created before the first spawn and removed on every exit of
+ * `run`, throw or abort included — which is the whole reason the loop is handed
+ * to a function rather than wrapped inline: the 500-line gate has no room for a
+ * closure around the loop body. `run` returns `undefined` when the loop fell out
+ * of its own tail, so the caller keeps that case and runs its exhausted-rounds
+ * result below.
+ */
+export async function runReviewerRounds<T>(
+  params: Pick<AdversarialLoopParams, "workCwd" | "head" | "commentExecFn">,
+  run: (reviewerCwd: string | undefined) => Promise<T | undefined>,
+): Promise<T | undefined> {
+  const isolation = await openAdversarialReviewerTree(params);
+  try {
+    return await run(isolation.cwd());
+  } finally {
+    await isolation.release();
+  }
+}
+
 export async function openAdversarialReviewerTree(
   params: Pick<AdversarialLoopParams, "workCwd" | "head" | "commentExecFn">,
 ): Promise<ReviewerIsolation> {
@@ -59,6 +82,7 @@ export async function openAdversarialReviewerTree(
     cwd: () => fallbackCwd,
     fallback,
     withRelease: async (fn) => fn(),
+    release: async () => undefined,
   });
   if (fallbackCwd === undefined) return none("no workCwd: the reviewer runs where the loop runs");
   const headSha = await resolveHeadSha(fallbackCwd, headRef ?? "HEAD", execFn ?? execp);
@@ -81,5 +105,6 @@ export async function openAdversarialReviewerTree(
         await tree.release?.();
       }
     },
+    release: () => tree.release?.() ?? Promise.resolve(),
   };
 }

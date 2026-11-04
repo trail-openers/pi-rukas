@@ -25,7 +25,7 @@ import {
   projectReviewerKillCause,
   synthKillCause,
 } from "./adversarial-reviewer-arm.ts";
-import { openAdversarialReviewerTree } from "./adversarial-reviewer-isolation.ts";
+import { runReviewerRounds } from "./adversarial-reviewer-isolation.ts";
 import { type RoundReview, roundAfterReread } from "./adversarial-round-state.ts";
 import { createUsageTally } from "./adversarial-usage.ts";
 import {
@@ -266,8 +266,7 @@ export async function runAdversarialLoop(
   });
 
   const firstRound = params.reportRound ?? 1;
-  const isolation = await openAdversarialReviewerTree(params);
-  const done = await isolation.withRelease(async () => {
+  const done = await runReviewerRounds(params, async (reviewerCwd) => {
     for (let round = firstRound; round <= MAX_ROUNDS; round++) {
       if (signal.aborted) break;
       if (round > firstRound && getDiff) {
@@ -339,7 +338,7 @@ export async function runAdversarialLoop(
           // Only non-undefined on the ref-range path; a pasted diff keeps today's prompt.
           diffRange: review.range,
         }),
-        isolation.cwd(),
+        reviewerCwd,
         // #1978 — the ladder decides with the SAME classifier the loop reports with.
         { runPhase, accumulate: tally.accumulate, signal, classify: classifyReviewer },
       );
