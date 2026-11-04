@@ -206,6 +206,7 @@
     "smoke-tests/test-lean-review-teardown.ts",
     "smoke-tests/test-lean-review-run-id-rules.ts",
     "smoke-tests/test-lean-review-deps-bound.ts",
+    "smoke-tests/test-lean-review-delta-stamp.ts",
     "smoke-tests/test-lean-review-threshold.ts",
     "smoke-tests/test-lean-review-absence.ts",
     "smoke-tests/test-lean-review-consolidation.ts",
