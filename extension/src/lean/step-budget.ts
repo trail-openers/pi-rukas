@@ -416,6 +416,15 @@ export function budgetVerdict(state: LeanState, fired: BudgetFired): Outcome {
  * over the cap and a step's outcome is re-validated when the state file is read
  * back, so an unclipped verdict does not report a long run — it makes the run's
  * own state file unloadable, and a resume of it dies in `loadRun`.
+ *
+ * The kept rows are COPIES, `usage` included. A step keeps the rows it built in
+ * its own array (`dispatchUsageRow`, `lensRows`) and hands that same array to
+ * more than one caller — `specify-attempt.ts` returns it as `dispatched` for the
+ * retry merge while its outcome carries a verdict built from it, and
+ * `review-git.ts` stamps `runId` onto a row after it was built. A verdict that
+ * shared those objects would let a normalisation done before persisting edit the
+ * child's live report, and `leanUsage` would then sum the edit into the per-role
+ * totals as though the child reported it.
  */
 export function budgetVerdictWithRows(
   state: LeanState,
@@ -423,5 +432,9 @@ export function budgetVerdictWithRows(
   rows: DispatchUsageRow[],
 ): Outcome {
   const verdict = budgetVerdict(state, fired);
-  return rows.length === 0 ? verdict : { ...verdict, dispatches: rows.slice(-DISPATCHES_MAX_ROWS) };
+  if (rows.length === 0) return verdict;
+  const dispatches = rows
+    .slice(-DISPATCHES_MAX_ROWS)
+    .map((row) => ({ ...row, usage: { ...row.usage } }));
+  return { ...verdict, dispatches };
 }
