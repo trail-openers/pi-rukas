@@ -13,6 +13,11 @@
  * any change is restored from the snapshot and reported. A child cannot leave
  * the operator's identity or credential helper altered.
  *
+ * A restore writes a REGULAR FILE it creates itself, never through the entry it
+ * found — see `restoreOne`. Without that, a child that swaps the protected path
+ * for a symlink of its own keeps the credential file under its control after a
+ * line that reads `— restored`.
+ *
  * Git excludes/ignore files are deliberately not protected — they carry neither
  * identity nor credentials.
  *
@@ -30,9 +35,10 @@
  * an unreadable file is never evidence of a change.
  */
 
-import { readFile, rm, writeFile } from "node:fs/promises";
+import { open, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { isPlainObject } from "./plain-object.ts";
 import { traceWarn } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 
@@ -99,11 +105,30 @@ async function readSnapshot(target: string): Promise<Buffer | null | undefined> 
   }
 }
 
-/** Put one path back; returns the errno code when even that failed. */
+/**
+ * Put one path back by replacing the ENTRY, never by writing through whatever
+ * the entry has become. `rm` unlinks a symlink rather than its target, and
+ * `open(..., "wx")` creates a fresh regular file instead of following a link a
+ * child planted — so after a restore the operator's file is one the child does
+ * not already own, and the `— restored` line cannot be a false all-clear.
+ * Explicit 0600 because the file is new (a plain write would keep a mode the
+ * child loosened, and `hosts.yml` holds the gh token); `wx` bypasses umask, so
+ * it is set here rather than assumed.
+ *
+ * A snapshot was read with `readFile`, so it followed any pre-existing link at
+ * snapshot time and its bytes are the target's own: writing them back as a
+ * regular file is the faithful restore, not a new behaviour.
+ */
 async function restoreOne(target: string, bytes: Buffer | null): Promise<string | undefined> {
   try {
-    if (bytes === null) await rm(target, { force: true });
-    else await writeFile(target, bytes);
+    await rm(target, { force: true });
+    if (bytes === null) return undefined;
+    const handle = await open(target, "wx", 0o600);
+    try {
+      await handle.writeFile(bytes);
+    } finally {
+      await handle.close();
+    }
     return undefined;
   } catch (err) {
     return (err as NodeJS.ErrnoException).code ?? "unknown";
@@ -164,7 +189,12 @@ export async function withOperatorConfigGuard<R>(
   }
 }
 
-/** Only a plain result object can carry the disclosure; the reattach's shape cannot. */
+/**
+ * Only a plain object the caller built can be annotated. `isPlainObject` is the
+ * repo's single "can this value BE a record" test (plain-object.ts): the fields
+ * are checked as own values, so a value carrying `ok`/`text` on its prototype
+ * chain — or one this wrapper must not gain a field on — is not annotated.
+ */
 function isDispatchResult(value: unknown): value is DispatchResult {
-  return typeof value === "object" && value !== null && "ok" in value && "text" in value;
+  return isPlainObject(value) && "ok" in value && "text" in value;
 }

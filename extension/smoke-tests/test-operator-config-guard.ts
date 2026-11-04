@@ -22,6 +22,8 @@
  *       sets neither field nor warn.
  *   D — AC3: a path that cannot be snapshotted is reported once and never
  *       treated as a child write; a failed restore says NOT restored.
+ *   D2 — the restore replaces the ENTRY, so a child cannot keep the credential
+ *       path under its control (cases in `lib/opcfg-entry-cases.ts`).
  *   E — AC4: the two production call sites are pinned by source canary.
  *   F — AC5: `formatSingleReport` renders each line as `VIOLATION: …`, and the
  *       field never changes `ok`.
@@ -44,6 +46,7 @@ import { formatSingleReport } from "../src/async-jobs-report.ts";
 import { protectedPaths, withOperatorConfigGuard } from "../src/spawn-operator-config.ts";
 import type { DispatchResult } from "../src/types.ts";
 import { withEnv } from "./lib/env-scope.ts";
+import { runEntryHardeningCases } from "./lib/opcfg-entry-cases.ts";
 
 let exit = 0;
 const realErrWrite = process.stderr.write.bind(process.stderr);
@@ -264,20 +267,28 @@ for (const rel of PROTECTED) {
   // (its own directory stays writable, so the child's write succeeds while the
   // guard's restore does not). Root ignores mode bits, so the case is skipped
   // (loudly) there rather than printed green for a fault it cannot provoke.
+  //
+  // The read-only file has to sit in a directory of its own: the restore begins
+  // by unlinking the entry (so a planted symlink cannot be written through), and
+  // an unlink needs the DIRECTORY writable. Toggling the file's own mode is still
+  // what makes the create fail, which is the fault this case is about.
   const { home, env } = sentinelHome("restore-fail");
-  const target = path.join(home, ".config", "gh", "hosts.yml");
+  const ghDir = path.join(home, ".config", "gh");
+  const target = path.join(ghDir, "hosts.yml");
   if (process.getuid?.() === 0) {
     console.log(
       "SKIP NOT-restored case: running as root, an unwritable file cannot be provoked (mode bits are ignored)",
     );
   } else {
     chmodSync(target, 0o444);
+    chmodSync(ghDir, 0o555);
     try {
       let res: DispatchResult | undefined;
       await withEnv(env, async () => {
         res = await withOperatorConfigGuard("adversarial-developer", async () => {
-          // The child can write it (it owns the directory), and leaves it
-          // read-only again, which is what makes the restore fail.
+          // The child can write it (a child with the operator's uid can), and
+          // leaves it read-only again, which is what makes the restore's create
+          // fail on the read-only directory.
           chmodSync(target, 0o644);
           writeFileSync(target, "github.com:\n    oauth_token: attacker\n");
           chmodSync(target, 0o444);
@@ -302,9 +313,14 @@ for (const rel of PROTECTED) {
       );
     } finally {
       chmodSync(target, 0o644);
+      chmodSync(ghDir, 0o755);
     }
   }
 }
+
+// ------------- D2 — the restore replaces the ENTRY (see lib/opcfg-entry-cases.ts)
+
+await runEntryHardeningCases(assert, sentinelHome, drainWarns, result);
 
 // ------------------------- E — AC4: the two production call sites are wired
 
