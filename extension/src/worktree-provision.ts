@@ -46,6 +46,7 @@
  */
 import fs from "node:fs/promises";
 import path from "node:path";
+import { NO_HOOKS } from "./lean/specify-reset.ts";
 import { NESTED_DEP, SHAREABLE_DEPS } from "./worktree-dep-contract.ts";
 import { depsExpectedAt, packageDirsAt, runHookProvisioning } from "./worktree-provision-hook.ts";
 import { linkFoundDeps } from "./worktree-provision-verify.ts";
@@ -126,6 +127,10 @@ export async function ignoredStatus(
   execFn: ExecFn,
   repoRoot: string,
   rel: string,
+  // Callers that must not trip a repo's hooks pass `NO_HOOKS`
+  // (`lean/specify-reset.ts`); an empty prefix keeps every other caller's argv
+  // byte-identical, so the shared probe stays one probe.
+  prefix: readonly string[] = [],
 ): Promise<IgnoreVerdict> {
   try {
     // argv form (#1394): `rel` is a filesystem path this module did not name,
@@ -133,7 +138,7 @@ export async function ignoredStatus(
     await execFn("git", {
       cwd: repoRoot,
       maxBuffer: 64 * 1024,
-      argv: ["check-ignore", "-q", "--", rel],
+      argv: [...prefix, "check-ignore", "-q", "--", rel],
     });
     return "ignored";
   } catch (err) {
@@ -144,8 +149,13 @@ export async function ignoredStatus(
   }
 }
 
-async function isIgnored(execFn: ExecFn, repoRoot: string, rel: string): Promise<boolean> {
-  return (await ignoredStatus(execFn, repoRoot, rel)) === "ignored";
+async function isIgnored(
+  execFn: ExecFn,
+  repoRoot: string,
+  rel: string,
+  prefix: readonly string[] = [],
+): Promise<boolean> {
+  return (await ignoredStatus(execFn, repoRoot, rel, prefix)) === "ignored";
 }
 
 /**
@@ -241,6 +251,7 @@ async function findDepDirs(
   execFn: ExecFn,
   repoRoot: string,
   packageDirs: string[],
+  prefix: readonly string[] = [],
 ): Promise<{ found: Array<{ dep: string; dirRel: string; source: string }>; faults: string[] }> {
   const locations: Array<{ dirRel: string; source: string }> = [
     { dirRel: "", source: repoRoot },
@@ -257,7 +268,7 @@ async function findDepDirs(
       // with another; `slice` bounds the whole string, not the code.
       if (probe.fault !== undefined) faults.push(`${path.join(dirRel, dep)}: ${probe.fault}`);
       if (!probe.nonEmpty) continue;
-      if (!(await isIgnored(execFn, repoRoot, path.join(dirRel, dep)))) continue;
+      if (!(await isIgnored(execFn, repoRoot, path.join(dirRel, dep), prefix))) continue;
       found.push({ dep, dirRel, source: abs });
     }
   }
@@ -410,7 +421,7 @@ export async function linkShareableDeps(
   worktreeAbs: string,
 ): Promise<ProvisionResult> {
   const packageDirs = await packageDirsAt(repoRoot);
-  const { found, faults } = await findDepDirs(execFn, repoRoot, packageDirs);
+  const { found, faults } = await findDepDirs(execFn, repoRoot, packageDirs, NO_HOOKS);
   return linkFoundDeps(execFn, worktreeAbs, found, faults);
 }
 

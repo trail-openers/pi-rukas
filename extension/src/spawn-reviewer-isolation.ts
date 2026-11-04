@@ -14,7 +14,7 @@
 
 import { execp } from "./exec.ts";
 import { isReviewerRole } from "./review-bounds.ts";
-import { resolveHeadSha } from "./review-head-sha.ts";
+import { resolveHeadShaOutcome } from "./review-head-sha.ts";
 import { openReviewerTree } from "./reviewer-tree.ts";
 import { trace, traceWarn } from "./trace.ts";
 import type { DispatchResult, DispatchSpec } from "./types.ts";
@@ -36,16 +36,25 @@ export async function runWithReviewerTree(
 ): Promise<DispatchResult> {
   if (spec.cwd === undefined || !isReviewerRole(spec.role)) return dispatch(spec);
   const reviewedCwd = spec.cwd;
-  const headSha = await resolveHeadSha(reviewedCwd, "HEAD", execp);
+  // The outcome form, not `resolveHeadSha`: "git could not be asked" (a lock,
+  // a hung filter driver) and "HEAD does not resolve" (an empty repo, a bad
+  // ref) read the same through the collapsing resolver, but only the first is
+  // an infrastructure fault an operator can act on.
+  const head = await resolveHeadShaOutcome(reviewedCwd, "HEAD", execp);
   // Every fail-open is `traceWarn`-ed, never the DEBUG-gated `trace`: a review
   // that silently read the live tree instead of an isolated one is exactly the
   // fact an operator needs without turning debugging on.
-  if (headSha === undefined) {
+  if (head.sha === undefined) {
     traceWarn(
-      `reviewer-tree: ${spec.role} runs in the reviewed tree — HEAD did not resolve at ${reviewedCwd}`,
+      `reviewer-tree: ${spec.role} runs in the reviewed tree — ${
+        head.failed
+          ? `git could not be asked for HEAD at ${reviewedCwd}`
+          : `HEAD does not resolve at ${reviewedCwd}`
+      }`,
     );
     return dispatch(spec);
   }
+  const headSha = head.sha;
   const tree = await openReviewerTree(execp, reviewedCwd, headSha);
   if (tree.kind === "unisolated") {
     traceWarn(`reviewer-tree: ${spec.role} runs in the reviewed tree — ${tree.reason}`);

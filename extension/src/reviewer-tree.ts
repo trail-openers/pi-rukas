@@ -87,7 +87,10 @@ async function gitCommonDir(execFn: ReviewerTreeExecFn, repoRoot: string): Promi
   const { stdout } = await execFn("git", {
     cwd: repoRoot,
     maxBuffer: 8 * 1024,
-    timeout: 10_000,
+    // The same bound as `worktree remove`: this read sits on both the creation
+    // path and the release path, and a git that hangs on a lock must not be the
+    // one thing in the spawn's `finally` with no wall clock on it.
+    timeout: 60_000,
     argv: [...NO_HOOKS, "-C", repoRoot, "rev-parse", "--path-format=absolute", "--git-common-dir"],
   });
   const commonDir = stdout.trim();
@@ -136,8 +139,9 @@ export async function openReviewerTree(
     );
   }
   let dir = "";
+  let commonDir = "";
   try {
-    const commonDir = await gitCommonDir(execFn, repoRoot);
+    commonDir = await gitCommonDir(execFn, repoRoot);
     // Registrations whose directory is already gone (a run killed before its
     // `finally`), so a later `worktree add` never trips over them.
     await execFn("git", {
@@ -161,16 +165,32 @@ export async function openReviewerTree(
       argv: [...NO_HOOKS, "--git-dir", commonDir, "worktree", "add", "--detach", dir, headSha],
     });
   } catch (err) {
-    if (dir) await removeReviewerTree(execFn, repoRoot, dir);
+    if (dir) await removeReviewerTree(execFn, repoRoot, dir, commonDir);
     return unisolated(
       `reviewer tree at ${headSha.slice(0, 12)} could not be created (${stderrOf(err).slice(0, 200)})`,
     );
   }
+  // `release` runs inside the spawn's `finally`, where a throw would replace
+  // the child's own result (or its own error) with this module's. The whole
+  // body — including the call that builds the removal's argv — sits in one
+  // try/catch, so the guarantee does not outsource anything to
+  // `removeReviewerTree`'s own discipline: an executor that THROWS rather than
+  // rejects is a caught failure here, and a survivor is still named.
+  const release = async (): Promise<void> => {
+    try {
+      await removeReviewerTree(execFn, repoRoot, dir, commonDir);
+    } catch (err) {
+      traceWarn(`reviewer-tree: release failed — ${stderrOf(err).slice(0, 200)}`);
+    }
+  };
   const provisioned = await linkShareableDeps(execFn, repoRoot, dir).catch(() => undefined);
   if (provisioned?.problem) {
-    trace(`reviewer-tree: provisioning incomplete — ${provisioned.problem}`);
+    // An incomplete provision is a fail-open of the same kind as every other
+    // arm here — the child that cannot run `bun test` is not a review that
+    // verified anything — so it is WARN-visible, not DEBUG-gated.
+    traceWarn(`reviewer-tree: provisioning incomplete — ${provisioned.problem}`);
   }
-  return { kind: "tree", cwd: dir, release: () => removeReviewerTree(execFn, repoRoot, dir) };
+  return { kind: "tree", cwd: dir, release };
 }
 
 /**
@@ -186,39 +206,42 @@ export async function openReviewerTree(
  * inside), and the trailing prune keeps the object store's admin list honest.
  * When `worktree remove` fails AND the directory is still there, the survivor is
  * traced by path: a leak nobody can see is a leak nobody fixes.
+ *
+ * `commonDir` is the admin dir {@link openReviewerTree} created the tree in, and
+ * it is REQUIRED: an empty value means the caller could not resolve it, and
+ * guessing the location of a registration is how a removal deletes the wrong
+ * tree. The refusal still has to be visible, so it is traced and the directory
+ * is left standing rather than half-removed.
  */
 export async function removeReviewerTree(
   execFn: ReviewerTreeExecFn,
   repoRoot: string,
   dir: string,
+  commonDir: string,
 ): Promise<void> {
   const rm = (argv: string[], timeout: number) =>
     execFn("git", { cwd: repoRoot, maxBuffer: 64 * 1024, timeout, argv }).catch(() => undefined);
-  // Resolved here rather than passed in: removal must reach the same admin dir
-  // creation did, and a caller that cannot answer that question still has a
-  // directory of its own to hand back.
-  const commonDir = await gitCommonDir(execFn, repoRoot).catch(() => undefined);
-  const admin = commonDir === undefined ? ["-C", repoRoot] : ["--git-dir", commonDir];
-  // The probe's identity is what the arms below branch on: a resolution that
-  // could not be asked (`undefined`) is not the same answer as a removal git
-  // performed and reported (`{ stdout }`), and only the first may leave a tree
-  // standing. The prune is issued only by the path that removed the tree — a
-  // prune of a registration git still holds would be dishonest about what is
-  // there, and the refused tree must survive this function for the WARN to name
-  // it rather than be taken away by the `fs.rm` that follows.
-  let removed: boolean;
-  if (commonDir === undefined) {
-    await rm([...NO_HOOKS, ...admin, "worktree", "remove", "--force", dir], 60_000);
-    removed = false;
-  } else {
-    const ok = await execFn("git", {
-      cwd: repoRoot,
-      maxBuffer: 64 * 1024,
-      timeout: 60_000,
-      argv: [...NO_HOOKS, ...admin, "worktree", "remove", "--force", dir],
-    }).catch(() => undefined);
-    removed = ok !== undefined;
+  if (commonDir === "") {
+    traceWarn(`reviewer-tree: git could not remove the throwaway tree at ${dir}`);
+    return;
   }
+  const admin = ["--git-dir", commonDir];
+  // The removal's identity is what the branch below reads: a removal git
+  // performed and reported (`{ stdout }`) is not the same answer as one that
+  // threw, and only the second may leave a tree standing. The prune is issued
+  // only by the path that removed the tree — a prune of a registration git
+  // still holds would be dishonest about what is there, and the refused tree
+  // must survive this function for the WARN to name it rather than be taken
+  // away by the `fs.rm` that follows.
+  const removed = await execFn("git", {
+    cwd: repoRoot,
+    maxBuffer: 64 * 1024,
+    timeout: 60_000,
+    argv: [...NO_HOOKS, ...admin, "worktree", "remove", "--force", dir],
+  }).then(
+    () => true,
+    () => false,
+  );
   if (!removed && (await exists(dir))) {
     traceWarn(`reviewer-tree: git could not remove the throwaway tree at ${dir}`);
     return;
