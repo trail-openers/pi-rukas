@@ -2,9 +2,14 @@
  * worktree-provision-verify — #765 post-hook / post-symlink filesystem
  * verification helpers for `provisionWorktree`.
  *
- * Extracted from `worktree-provision.ts` (file-size cap). The functions here
- * answer ONE question: after provisioning, does the expected dependency
- * location actually exist, resolve, and contain content?
+ * Extracted from `worktree-provision.ts` (file-size cap). Two things live here:
+ * the probes that answer "after provisioning, does the expected dependency
+ * location actually exist, resolve, and contain content?", and the symlink
+ * body (`linkFoundDeps`) those probes verify — the link loop, its #765
+ * re-check and its `info/exclude` write are one seam, and splitting them across
+ * two modules would leave each unreadable on its own. The symlink body is also
+ * what `linkShareableDeps` exposes to the reviewer tree (#1975), which needs
+ * the links and never the project's hook.
  *
  * #1394 adds a second invariant these functions must never break: **a probe
  * fault is a reported value, never a rejection.** Every `fs` call in this file
