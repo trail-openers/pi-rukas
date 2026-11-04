@@ -16,7 +16,7 @@ import { execp } from "./exec.ts";
 import { isReviewerRole } from "./review-bounds.ts";
 import { resolveHeadSha } from "./review-head-sha.ts";
 import { openReviewerTree } from "./reviewer-tree.ts";
-import { trace } from "./trace.ts";
+import { trace, traceWarn } from "./trace.ts";
 import type { DispatchResult, DispatchSpec } from "./types.ts";
 
 /**
@@ -37,14 +37,25 @@ export async function runWithReviewerTree(
   if (spec.cwd === undefined || !isReviewerRole(spec.role)) return dispatch(spec);
   const reviewedCwd = spec.cwd;
   const headSha = await resolveHeadSha(reviewedCwd, "HEAD", execp);
-  if (headSha === undefined) return dispatch(spec);
+  // Every fail-open is `traceWarn`-ed, never the DEBUG-gated `trace`: a review
+  // that silently read the live tree instead of an isolated one is exactly the
+  // fact an operator needs without turning debugging on.
+  if (headSha === undefined) {
+    traceWarn(
+      `reviewer-tree: ${spec.role} runs in the reviewed tree — HEAD did not resolve at ${reviewedCwd}`,
+    );
+    return dispatch(spec);
+  }
   const tree = await openReviewerTree(execp, reviewedCwd, headSha);
-  if (!tree.cwd) return dispatch(spec);
+  if (tree.kind === "unisolated") {
+    traceWarn(`reviewer-tree: ${spec.role} runs in the reviewed tree — ${tree.reason}`);
+    return dispatch(spec);
+  }
   const treeCwd = tree.cwd;
   trace(`reviewer-tree: ${spec.role} runs in ${treeCwd} at ${headSha.slice(0, 12)}`);
   try {
     return await dispatch({ ...spec, cwd: treeCwd });
   } finally {
-    await tree.release?.();
+    await tree.release();
   }
 }

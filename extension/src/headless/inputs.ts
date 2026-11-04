@@ -342,6 +342,10 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   // The driver's review-loop wall clock: what the fixer dispatch is bound by
   // and what the widget and `/work-status` print (#1429).
   ms("REVIEW_WALL_CLOCK_MS", 5_400_000),
+  // #1975 — the reviewer tree: every reviewer child runs in a throwaway
+  // detached worktree at the reviewed head. `0` is the operator's opt-out and
+  // puts the child back in the reviewed tree itself.
+  flag("REVIEWER_ISOLATION", true),
   str("ROLE", null, "internal"),
   dir("RUNS_DIR", "~/.pi/agent/ensemble-runs"),
   flag("SAFETY_NET_COMMIT", true),

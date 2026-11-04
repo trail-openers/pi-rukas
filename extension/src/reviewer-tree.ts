@@ -28,13 +28,13 @@
  *     answer. `PI_ENSEMBLE_REVIEWER_ISOLATION=0` is the operator's opt-out.
  */
 
-import { randomBytes } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { isFullCommitSha } from "./commit-sha.ts";
+import { NO_HOOKS } from "./lean/specify-reset.ts";
 import { trace, traceWarn } from "./trace.ts";
-import { provisionWorktree } from "./worktree-provision.ts";
+import { linkShareableDeps } from "./worktree-provision.ts";
 
 /**
  * The executor seam: the same shape `worktree-provision.ts` takes, so a test
@@ -49,17 +49,19 @@ export type ReviewerTreeExecFn = (
 
 /** What {@link openReviewerTree} hands back, or why it did not.
  *
- * The two arms are told apart by `cwd`: a tree is the only arm that carries one.
- * A caller that cannot create the tree still has to run its review, so both arms
- * are usable and `release` is present whenever a tree exists. */
-export type ReviewerTree = {
-  /** The directory to spawn reviewer children in; absent when none was made. */
-  cwd?: string;
-  /** Remove this tree. Best-effort; never throws. */
-  release?: () => Promise<void>;
-  /** Why this review runs unisolated (traced, and for the caller to record). */
-  fallback?: string;
-};
+ * The `kind` discriminant is the whole answer: a `tree` carries the directory
+ * to spawn in and the one `release` that removes it; an `unisolated` carries
+ * why, and a caller that reads `reason` makes the fail-open visible rather than
+ * silent. */
+export type ReviewerTree =
+  | {
+      kind: "tree";
+      /** The directory to spawn reviewer children in. */
+      cwd: string;
+      /** Remove this tree. Best-effort; never throws. */
+      release: () => Promise<void>;
+    }
+  | { kind: "unisolated"; reason: string };
 
 /** git's stderr when the process left some, else the error's message. */
 function stderrOf(err: unknown): string {
@@ -86,7 +88,7 @@ async function gitCommonDir(execFn: ReviewerTreeExecFn, repoRoot: string): Promi
     cwd: repoRoot,
     maxBuffer: 8 * 1024,
     timeout: 10_000,
-    argv: ["-C", repoRoot, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+    argv: [...NO_HOOKS, "-C", repoRoot, "rev-parse", "--path-format=absolute", "--git-common-dir"],
   });
   const commonDir = stdout.trim();
   if (commonDir === "") throw new Error("git printed no common dir");
@@ -102,10 +104,12 @@ async function gitCommonDir(execFn: ReviewerTreeExecFn, repoRoot: string): Promi
  * the harness's own sibling scan as an unregistered/dirty tree, which parks a
  * cycle.
  *
- * Provisioning is best-effort (`provisionWorktree` never throws): a bare tree
- * has tracked files only, so a reviewer that runs the project's typecheck in an
- * unprovisioned tree would read a tree with no dependencies. A provisioning
- * problem is traced, not fatal — the reviewed diff arrives in the prompt.
+ * Provisioning is **symlinks only** (`linkShareableDeps`, not
+ * `provisionWorktree`): a reviewer child runs the project's targeted checks, so
+ * it needs `node_modules`, but the project's `.pi/worktree-setup` hook is
+ * arbitrary code that must never run against a throwaway directory this module
+ * created and the reviewer's bash can reach. A provisioning problem is traced,
+ * not fatal — the reviewed diff arrives in the prompt.
  */
 export async function openReviewerTree(
   execFn: ReviewerTreeExecFn,
@@ -117,12 +121,16 @@ export async function openReviewerTree(
   // (an investigation of the worktree's own state) runs unisolated, and the
   // reason is disclosed rather than silent.
   if (process.env.PI_ENSEMBLE_REVIEWER_ISOLATION === "0") {
-    return { fallback: "isolation disabled by PI_ENSEMBLE_REVIEWER_ISOLATION=0" };
+    return {
+      kind: "unisolated",
+      reason: "isolation disabled by PI_ENSEMBLE_REVIEWER_ISOLATION=0",
+    };
   }
   if (!isFullCommitSha(headSha)) {
-    const reason = `reviewer tree refused: ${JSON.stringify(headSha.slice(0, 40))} is not a 40-char commit SHA`;
-    trace(`reviewer-tree: ${reason} — the reviewer runs in the reviewed tree`);
-    return { fallback: reason };
+    return {
+      kind: "unisolated",
+      reason: `reviewer tree refused: ${JSON.stringify(headSha.slice(0, 40))} is not a 40-char commit SHA`,
+    };
   }
   let dir = "";
   try {
@@ -133,29 +141,40 @@ export async function openReviewerTree(
       cwd: repoRoot,
       maxBuffer: 64 * 1024,
       timeout: 10_000,
-      argv: ["--git-dir", commonDir, "worktree", "prune"],
+      argv: [...NO_HOOKS, "--git-dir", commonDir, "worktree", "prune"],
     }).catch(() => undefined);
-    dir = path.join(
-      await fs.mkdtemp(path.join(os.tmpdir(), "pi-rukas-review-")),
-      `review-${randomBytes(8).toString("hex")}`,
-    );
+    // mkdtemp's directory IS the tree — git accepts an empty directory — so the
+    // only path this module creates is the one `release` removes, and it is
+    // created 0700: a throwaway tree that holds a checkout of the reviewed
+    // project is not world-readable.
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-rukas-review-"), { mode: 0o700 });
     await execFn("git", {
       cwd: repoRoot,
       maxBuffer: 1024 * 1024,
       timeout: 120_000,
-      argv: ["--git-dir", commonDir, "worktree", "add", "--detach", dir, headSha],
+      argv: [
+        ...NO_HOOKS,
+        "--git-dir",
+        commonDir,
+        "worktree",
+        "add",
+        "--detach",
+        dir,
+        headSha,
+      ],
     });
   } catch (err) {
     if (dir) await removeReviewerTree(execFn, repoRoot, dir);
-    const reason = `reviewer tree at ${headSha.slice(0, 12)} could not be created (${stderrOf(err).slice(0, 200)})`;
-    traceWarn(`reviewer-tree: ${reason} — the reviewer runs in the reviewed tree`);
-    return { fallback: reason };
+    return {
+      kind: "unisolated",
+      reason: `reviewer tree at ${headSha.slice(0, 12)} could not be created (${stderrOf(err).slice(0, 200)})`,
+    };
   }
-  const provisioned = await provisionWorktree(execFn, repoRoot, dir).catch(() => undefined);
+  const provisioned = await linkShareableDeps(execFn, repoRoot, dir).catch(() => undefined);
   if (provisioned?.problem) {
     trace(`reviewer-tree: provisioning incomplete — ${provisioned.problem}`);
   }
-  return { cwd: dir, release: () => removeReviewerTree(execFn, repoRoot, dir) };
+  return { kind: "tree", cwd: dir, release: () => removeReviewerTree(execFn, repoRoot, dir) };
 }
 
 /**
@@ -169,6 +188,8 @@ export async function openReviewerTree(
  * here — it is the only way the tree comes back. The `fs.rm` covers a tree whose
  * registration git already lost (a reviewer deleted its own tree from the
  * inside), and the trailing prune keeps the object store's admin list honest.
+ * When `worktree remove` fails AND the directory is still there, the survivor is
+ * traced by path: a leak nobody can see is a leak nobody fixes.
  */
 export async function removeReviewerTree(
   execFn: ReviewerTreeExecFn,
@@ -182,7 +203,25 @@ export async function removeReviewerTree(
   // directory of its own to hand back.
   const commonDir = await gitCommonDir(execFn, repoRoot).catch(() => undefined);
   const admin = commonDir === undefined ? ["-C", repoRoot] : ["--git-dir", commonDir];
-  await rm([...admin, "worktree", "remove", "--force", dir], 60_000);
-  await fs.rm(path.dirname(dir), { recursive: true, force: true }).catch(() => undefined);
-  await rm([...admin, "worktree", "prune"], 10_000);
+  const removed = await execFn("git", {
+    cwd: repoRoot,
+    maxBuffer: 64 * 1024,
+    timeout: 60_000,
+    argv: [...NO_HOOKS, ...admin, "worktree", "remove", "--force", dir],
+  }).catch(() => undefined);
+  if (removed === undefined && (await exists(dir))) {
+    traceWarn(`reviewer-tree: git could not remove the throwaway tree at ${dir}`);
+  }
+  await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  await rm([...NO_HOOKS, ...admin, "worktree", "prune"], 10_000);
+}
+
+/** Does this path still exist? A probe that failing too answers "gone". */
+async function exists(abs: string): Promise<boolean> {
+  try {
+    await fs.stat(abs);
+    return true;
+  } catch {
+    return false;
+  }
 }

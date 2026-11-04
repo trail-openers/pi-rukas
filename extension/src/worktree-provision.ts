@@ -325,6 +325,36 @@ export async function provisionWorktree(
 
   const packageDirs = await packageDirsAt(repoRoot);
   const { found, faults } = await findDepDirs(execFn, repoRoot, packageDirs);
+  return linkFoundDeps(execFn, worktreeAbs, found, faults, {
+    // #481 — a project that plainly needs dependencies (a manifest/lockfile at
+    // the root or in a discovered package directory) but had no gitignored
+    // non-empty tree anywhere findable gets a `problem`, not a silent bare
+    // worktree. Still never throws: the branch step continues, and the
+    // develop gate's missing-deps hint (#445) is the backstop that names the
+    // failure to the operator.
+    reportNeeds: (await depsExpectedAt(repoRoot, packageDirs))
+      ? "no dependency tree found for a project with a manifest/lockfile — " +
+        "worktree will be bare; if the verify command needs dependencies it " +
+        "will fail with a module-not-found error"
+      : undefined,
+  });
+}
+
+/**
+ * Link every candidate `findDepDirs` resolved, verify the links, and report.
+ *
+ * The shared body of {@link provisionWorktree}'s symlink branch and of
+ * {@link linkShareableDeps}. `reportNeeds` is the branch-step question —
+ * "this project plainly needs dependencies and none was found" — which only the
+ * branch step asks; a reviewer tree has no develop gate to hint to.
+ */
+async function linkFoundDeps(
+  execFn: ExecFn,
+  worktreeAbs: string,
+  found: Array<{ dep: string; dirRel: string; source: string }>,
+  faults: string[],
+  opts: { reportNeeds?: string } = {},
+): Promise<ProvisionResult> {
   const linked: string[] = [];
   const linkedRel: string[] = [];
   // Probe faults first: an unreadable tree explains every "no dependency
@@ -370,18 +400,8 @@ export async function provisionWorktree(
     trace(`worktree: linked ${linkedRel.join(", ")} (source: ${sources})`);
     await hideFromGit(execFn, worktreeAbs, linkedRel);
   }
-  // #481 — a project that plainly needs dependencies (a manifest/lockfile at
-  // the root or in a discovered package directory) but had no gitignored
-  // non-empty tree anywhere findable gets a `problem`, not a silent bare
-  // worktree. Still never throws: the branch step continues, and the
-  // develop gate's missing-deps hint (#445) is the backstop that names the
-  // failure to the operator.
-  if (found.length === 0 && (await depsExpectedAt(repoRoot, packageDirs))) {
-    problems.push(
-      "no dependency tree found for a project with a manifest/lockfile — " +
-        "worktree will be bare; if the verify command needs dependencies it " +
-        "will fail with a module-not-found error",
-    );
+  if (found.length === 0 && opts.reportNeeds !== undefined) {
+    problems.push(opts.reportNeeds);
   }
   return {
     via: linked.length > 0 ? "symlink" : "none",
@@ -440,6 +460,30 @@ async function fileExists(abs: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Symlink the shareable dependency dirs into `worktreeAbs` — the symlink half
+ * of {@link provisionWorktree}, on its own.
+ *
+ * The caller that needs the half and not the whole is the reviewer tree
+ * (#1975): a reviewer child runs the project's targeted checks, so it needs
+ * `node_modules`, but a throwaway directory another process's bash can reach
+ * must not have the project's `.pi/worktree-setup` executed in it. The hook
+ * branch of `provisionWorktree` is deliberately absent here — symlinks only,
+ * never a hook.
+ *
+ * Same contract as the whole: never throws; reports what it linked and why it
+ * could not.
+ */
+export async function linkShareableDeps(
+  execFn: ExecFn,
+  repoRoot: string,
+  worktreeAbs: string,
+): Promise<ProvisionResult> {
+  const packageDirs = await packageDirsAt(repoRoot);
+  const { found, faults } = await findDepDirs(execFn, repoRoot, packageDirs);
+  return linkFoundDeps(execFn, worktreeAbs, found, faults);
 }
 
 /**
