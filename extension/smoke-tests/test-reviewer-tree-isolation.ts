@@ -57,8 +57,10 @@ function assert(cond: boolean, msg: string) {
  * cwd the child ACTUALLY got (from the real spawn's options). */
 type SpawnCall = { role: string; requested?: string; actual?: string };
 const spawnCalls: SpawnCall[] = [];
-/** The body the reviewer stub runs in the cwd the child actually got. */
-let reviewerBody: ((cwd: string) => void) | null = null;
+/** The bodies the reviewer stub runs, one per dispatch: a retry re-spawns the
+ * same lens, so each attempt gets its own observation. */
+type Body = (cwd: string) => void;
+let bodies: Body[] = [];
 /** Set to make the child's `spawn()` itself throw (D). */
 let throwOnSpawn = false;
 /** The pending dispatch whose cwd the stubbed spawn reports back. */
@@ -76,7 +78,11 @@ mock.module(new URL("node:child_process", import.meta.url).href, () => ({
     if (throwOnSpawn) throw new Error("spawn exploded");
     // The relocation is visible exactly here: `opts.cwd` is what the child gets.
     if (pendingCall) pendingCall.actual = opts?.cwd;
-    reviewerBody?.(opts?.cwd ?? process.cwd());
+    const body = bodies[bodies.length - 1];
+    if (body) {
+      bodies.pop();
+      body(opts?.cwd ?? process.cwd());
+    }
     const { spawn: realSpawn } = require("node:child_process");
     return realSpawn(process.execPath, ["-e", STUB_CHILD], {
       ...opts,
@@ -237,12 +243,14 @@ const driveLensChild = async (reviewedCwd: string) => {
   let childCwd = "";
   let headAtSpawn = "";
   const attempted: string[] = [];
-  reviewerBody = (cwd) => {
-    childCwd = cwd;
-    // Read while the tree still exists — the spawn removes it in its `finally`.
-    headAtSpawn = gitOut(cwd, "rev-parse", "HEAD");
-    attempted.push(...attemptMutations(cwd));
-  };
+  bodies = [
+    (cwd) => {
+      childCwd = cwd;
+      // Read while the tree still exists — the spawn removes it in its `finally`.
+      headAtSpawn = gitOut(cwd, "rev-parse", "HEAD");
+      attempted.push(...attemptMutations(cwd));
+    },
+  ];
   spawnCalls.length = 0;
 
   const result = await driveLensChild(dir);
@@ -301,11 +309,13 @@ const driveLensChild = async (reviewedCwd: string) => {
   const attempted: string[] = [];
   const reviewerCwds: string[] = [];
   const headsAtSpawn: string[] = [];
-  reviewerBody = (cwd) => {
-    reviewerCwds.push(cwd);
-    headsAtSpawn.push(gitOut(cwd, "rev-parse", "HEAD"));
-    attempted.push(...attemptMutations(cwd));
-  };
+  bodies = [
+    (cwd) => {
+      reviewerCwds.push(cwd);
+      headsAtSpawn.push(gitOut(cwd, "rev-parse", "HEAD"));
+      attempted.push(...attemptMutations(cwd));
+    },
+  ];
   spawnCalls.length = 0;
   const advCall = recordDispatch("adversarial-developer", dir);
   pendingCall = advCall;
@@ -365,7 +375,7 @@ const driveLensChild = async (reviewedCwd: string) => {
 
 {
   const { dir } = makeRepo("control");
-  reviewerBody = () => {};
+  bodies = []; // a non-reviewer child is observed through the spawn's own options
   spawnCalls.length = 0;
   const control = recordDispatch("developer", dir);
   pendingCall = control;
@@ -383,7 +393,7 @@ const driveLensChild = async (reviewedCwd: string) => {
 {
   // A child whose spawn() itself throws must still leave no tree behind.
   const { dir } = makeRepo("spawn-throw");
-  reviewerBody = () => {};
+  bodies = [];
   throwOnSpawn = true;
   let threw = false;
   try {
@@ -397,9 +407,11 @@ const driveLensChild = async (reviewedCwd: string) => {
 
   // A reviewer child that throws inside the batch still leaves no tree behind.
   const throwing = { dir: makeRepo("child-throw").dir };
-  reviewerBody = () => {
-    throw new Error("child exploded");
-  };
+  bodies = [
+    () => {
+      throw new Error("child exploded");
+    },
+  ];
   const res = await driveLensChild(throwing.dir);
   assert(!res.ok, "D: a lens child that throws produces no approved result");
   assert(strayTrees(throwing.dir).length === 0, "D: the tree is removed even when the child throws");
@@ -411,9 +423,11 @@ const driveLensChild = async (reviewedCwd: string) => {
   // A cwd that is not a git worktree: the child stays where the caller put it
   // rather than going nowhere.
   const plain = mkdtempSync(path.join(os.tmpdir(), "rev-1975-plain-"));
-  reviewerBody = (cwd) => {
-    writeFileSync(path.join(cwd, "kept.txt"), "still here\n");
-  };
+  bodies = [
+    (cwd) => {
+      writeFileSync(path.join(cwd, "kept.txt"), "still here\n");
+    },
+  ];
   spawnCalls.length = 0;
   const plainCall = recordDispatch("code-review-specialist", plain);
   pendingCall = plainCall;
@@ -428,10 +442,12 @@ const driveLensChild = async (reviewedCwd: string) => {
   const { dir, head } = makeRepo("optout");
   const before = snapshot(dir);
   let ranIn = "";
-  reviewerBody = (cwd) => {
-    ranIn = cwd;
-    writeFileSync(path.join(cwd, "PWNED"), "");
-  };
+  bodies = [
+    (cwd) => {
+      ranIn = cwd;
+      writeFileSync(path.join(cwd, "PWNED"), "");
+    },
+  ];
   process.env.PI_ENSEMBLE_REVIEWER_ISOLATION = "0";
   spawnCalls.length = 0;
   const opted = await driveLensChild(dir);
