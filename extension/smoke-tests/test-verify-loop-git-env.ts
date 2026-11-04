@@ -12,7 +12,7 @@
  * and a fixture test that does what the real tests do.
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { GIT_LOCATION_VARS } from "../src/git-env.ts";
@@ -126,6 +126,180 @@ try {
   assert(
     leaked.length === 0,
     `the runner leaves no git location variable in a test child (${GIT_LOCATION_VARS.length} names checked, leaked: ${JSON.stringify(leaked)})`,
+  );
+}
+
+// ── A `lib/` fixture executor that spawns git carries the scrub itself.
+//
+// The runner above is a belt for the whole run; it cannot be the only defence,
+// because a direct `bun <file>` run — and the `PI_ENSEMBLE_SMOKE_HOST_GIT=1`
+// debugging path — start with the operator's environ, where `GIT_DIR` may live.
+// `gitTestEnv()` is what closes that, and it only closes it where the env is
+// actually threaded into the child options. So the shared fixture seams, which
+// run REAL git for many suites at once, are scanned for a git-shaped spawn that
+// passes no `env` at all. `src/` is out of scope deliberately: production git
+// must keep reading the operator's config, and those calls are scrubbed by
+// `git-env.ts` at activation instead.
+{
+  const libDir = path.join(import.meta.dirname, "lib");
+  // Quoted literals blanked to `""` for ANALYSIS only (newlines and length
+  // preserved, so offsets still line up with the raw source and with line
+  // numbers). Block comments blanked too, so prose ABOUT a call is never
+  // scanned as one — a `//` line comment is skipped by the line filter below
+  // rather than blanked, because an apostrophe in prose would otherwise swallow
+  // the rest of the file.
+  // The spawn call whose child IS git, or a shell the fixture uses to run git.
+  // A VARIABLE as the program (`exec(cmd, …)`, `spawnSync(cmd, opts.argv, …)`)
+  // is deliberately not matched: at these seams `cmd` is verbatim git inside a
+  // recording executor that owns its own env, and no source pattern can see
+  // through a variable — those are guarded by the behaviour probes, and a
+  // variable-shaped pattern would also fire on `execFileSync("bash", …)`.
+  // Detect on the RAW source (so the `"git"` / `"/bin/sh"` literal is still
+  // there to match) and analyse the STRIPPED copy at the same offset (so a `,`,
+  // `(` or `:` inside a command string cannot be read as call syntax). Blanking
+  // first and matching after would match nothing, since the program name is
+  // itself the literal being blanked.
+  const SPAWN =
+    /(?:^|[^\w.$])(?:execFileSync|execSync|spawnSync|spawn|execFileP|execp)\s*\(\s*(?:"git"|'git'|`git|"\/bin\/sh"|'\/bin\/sh')\s*[,)]/g;
+  // Quoted literals blanked for ANALYSIS only (newlines preserved, so offsets
+  // still line up with the raw source and with line numbers). Blanks are
+  // LENGTH-PRESERVING — a blank shorter than the literal it replaces shifts
+  // every later offset, so the analysis would read the middle of some other
+  // call and the gate would report a confident wrong answer. Block comments
+  // blanked too, so prose ABOUT a call is never scanned as one — a `//` line
+  // comment is skipped by the line filter below rather than blanked, because an
+  // apostrophe in prose would otherwise swallow the rest of the file.
+  const stripForAnalysis = (src: string): string =>
+    src
+      .replace(/"(?:[^"\\\n]|\\.)*"/g, (m) => '"' + " ".repeat(m.length - 2) + '"')
+      .replace(/'(?:[^'\\\n]|\\.)*'/g, (m) => "'" + " ".repeat(m.length - 2) + "'")
+      .replace(/`(?:[^`\\]|\\.)*`/g, (m) => '`' + " ".repeat(m.length - 2) + "`")
+      .replace(/\/\*[\s\S]*?\*\//g, (m) => " ".repeat(m.length));
+  const hasEnv = (s: string): boolean =>
+    /(^|[{,;\s])env\s*:/.test(s) ||
+    // `… , env }` — a shorthand property is the scrub too, when the call names
+    // it itself. A call whose options are ONLY a spread (`{ ...opts }`) has no
+    // such word and stays an offender.
+    /(?:^|[{,;\s])env\s*(?=[}\s])/.test(s);
+  const offenderLines = (src: string, code: string): string[] => {
+    const bad: string[] = [];
+    const lineOf = (pos: number): number => {
+      let n = 1;
+      for (let k = 0; k < pos; k++) if (src[k] === "\n") n++;
+      return n;
+    };
+    const textOf = (pos: number): string => {
+      const s = src.lastIndexOf("\n", pos - 1) + 1;
+      const e = src.indexOf("\n", pos);
+      return src.slice(s, e < 0 ? src.length : e).trim();
+    };
+    // Args of the call whose `(` sits at `open`, and top-level commas within it:
+    // a comma inside a nested `[…]`/`{…}` is not an argument separator, so a
+    // multi-line argv array does not split into pseudo-arguments and an `env:`
+    // from the NEXT statement can never excuse this call.
+    // Length-preserving so `code[i]` still means `src[i]` and line numbers
+    // computed from either agree. An empty blank (`""`) shifts every later
+    // offset and the analysis then reads the middle of a different call.
+    const argsOf = (open: number): { inner: string; parts: string[] } | undefined => {
+      let depth = 0;
+      let k = open;
+      for (; k < code.length; k++) {
+        if (code[k] === "(") depth++;
+        else if (code[k] === ")") {
+          depth--;
+          if (depth === 0) break;
+        }
+      }
+      if (k >= code.length) return undefined; // unbalanced parens
+      const inner = code.slice(open + 1, k);
+      const parts: string[] = [];
+      let d = 0;
+      let start = 0;
+      for (let j = 0; j < inner.length; j++) {
+        const c = inner[j];
+        if (c === "(" || c === "[" || c === "{") d++;
+        else if (c === ")" || c === "]" || c === "}") d--;
+        else if (c === "," && d === 0) {
+          parts.push(inner.slice(start, j));
+          start = j + 1;
+        }
+      }
+      parts.push(inner.slice(start));
+      return { inner, parts: parts.filter((p) => p.trim().length > 0) };
+    };
+    const definesEnv = (name: string): boolean => {
+      const at = new RegExp(`\\b(?:const|let)\\s+${name}\\s*=`).exec(code);
+      if (at === null) return false;
+      // Scan the initialiser up to the brace that closes it (not a fixed
+      // window, which would run into a later `env:` from a neighbouring call).
+      const open = code.indexOf("{", at.index);
+      if (open < 0) return false;
+      let depth = 0;
+      let k = open;
+      for (; k < code.length; k++) {
+        if (code[k] === "{") depth++;
+        else if (code[k] === "}") {
+          depth--;
+          if (depth === 0) break;
+        }
+      }
+      return hasEnv(code.slice(open, Math.min(k + 1, code.length)));
+    };
+    let m: RegExpExecArray | null;
+    while ((m = SPAWN.exec(src)) !== null) {
+      const at = m.index + m[0].indexOf("exec");
+      const line = textOf(at);
+      // Commented-out code is not code: a `//` line or a `*` of a block comment
+      // is prose ABOUT a call, not a call.
+      if (/^\s*(?:\*|\/\/)/.test(line)) continue;
+      const open = code.indexOf("(", at);
+      const call = open < 0 ? undefined : argsOf(open);
+      // Unparsable is never a pass: an unreadable answer is reported, not
+      // folded into "clean".
+      if (call === undefined) {
+        bad.push(`${lineOf(at)} ${line.slice(0, 72)} (UNPARSABLE)`);
+        continue;
+      }
+      const { inner, parts } = call;
+      const last = (parts.at(-1) ?? "").trim();
+      if (/^\{/.test(last)) {
+        if (hasEnv(last)) continue;
+      } else if (/^\w+$/.test(last)) {
+        // A shell call (`["-c", cmd]`) is the one that carries whatever git
+        // command the driver was handed, so IT must name the scrub in its own
+        // text. A variable options bag is credited only for the argv branch:
+        // crediting it here too is how a decoy `env:` in a neighbouring `const`
+        // would excuse a shell call that inherits the environ. `inner` is
+        // blanked but keeps its length, so a quoted `-c` is a 4-character
+        // token between the quotes.
+        if (/\[\s*"[^"\n]{0,4}"\s*,/.test(inner)) {
+          bad.push(`${lineOf(at)} ${line.slice(0, 72)} (SHELL-BRANCH-UNSCRUBBED)`);
+          continue;
+        }
+        // Options held in a variable: excused only if that declaration really
+        // carries the scrub.
+        if (definesEnv(last)) continue;
+        bad.push(`${lineOf(at)} ${line.slice(0, 72)} (OPTIONS-VAR-UNSCRUBBED)`);
+        continue;
+      } else if (/\.\.\./.test(last)) {
+        // Options spread from something the scan cannot resolve (`{ ...opts }`):
+        // the scrub has to be spelled out in this call, not hidden in a spread.
+        bad.push(`${lineOf(at)} ${line.slice(0, 72)} (UNRESOLVED-OPTIONS)`);
+        continue;
+      }
+      bad.push(`${lineOf(at)} ${line.slice(0, 72)}`);
+    }
+    return bad;
+  };
+  const offenders: string[] = [];
+  for (const name of readdirSync(libDir).sort()) {
+    if (!name.endsWith(".ts")) continue;
+    const src = readFileSync(path.join(libDir, name), "utf8");
+    for (const o of offenderLines(src, stripForAnalysis(src))) offenders.push(`${name}:${o}`);
+  }
+  assert(
+    offenders.length === 0,
+    `every git/shell spawn in smoke-tests/lib threads the scrubbed env (${offenders.length} unscrubbed: ${offenders.join(" | ")})`,
   );
 }
 

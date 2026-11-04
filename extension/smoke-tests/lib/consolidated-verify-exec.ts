@@ -15,6 +15,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { DriverContext } from "../../src/work-driver-context.ts";
 import { initialState } from "../../src/workflow-state.ts";
+import { gitTestEnv } from "./git-test-env.ts";
 
 const execFileP = promisify(execFile);
 
@@ -73,10 +74,20 @@ export function makeExec(
       throw new Error("simulated git read failure");
     }
     try {
-      const opts2 = { cwd: o?.cwd, maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024 };
+      const opts2 = {
+        cwd: o?.cwd,
+        maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
+        // Real git on both branches: with no `env` the child inherits the real
+        // environ and an inherited `GIT_DIR` retargets the read ahead of `cwd`
+        // (#1981). A caller that pinned its own env keeps it.
+        env: o?.env ? { ...gitTestEnv(), ...o.env } : gitTestEnv(),
+      };
       const { stdout } = o?.argv
         ? await execFileP(cmd, o.argv, opts2)
-        : await execFileP("/bin/sh", ["-c", cmd], opts2);
+        // The shell branch names its own env: the gate credits only a git/shell
+        // call whose own options carry the scrub, and this is the branch that
+        // actually runs the driver’s git pipelines.
+        : await execFileP("/bin/sh", ["-c", cmd], { ...opts2, env: opts2.env });
       return { stdout };
     } catch (err) {
       const e = err as Error & { stderr?: string; stdout?: string };

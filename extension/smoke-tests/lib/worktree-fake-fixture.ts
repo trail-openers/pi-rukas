@@ -32,10 +32,18 @@ export const realExec: ExecFn = async (cmd, o) => {
     // asserts a timeout was threaded through is asserting something real about
     // this executor rather than about an ignored option.
     ...(o?.timeout !== undefined ? { timeout: o.timeout } : {}),
+    // Both branches run git for real, and `execFile`/`exec` with no `env`
+    // inherit the REAL environ on bun: an inherited `GIT_DIR` retargets these
+    // calls ahead of `cwd` (#1981). The caller's own env still wins, because a
+    // test that pins one (a non-interactive ssh env, say) means it.
+    env: o?.env ? { ...gitTestEnv(), ...o.env } : gitTestEnv(),
   };
   const { stdout } = o?.argv
     ? await execFileP(cmd, o.argv, opts)
-    : await execFileP("/bin/sh", ["-c", cmd], opts);
+    // The shell branch names its own env: the gate credits only a git/shell
+    // call whose own options carry the scrub, and this branch is the one that
+    // runs the driver’s git commands.
+    : await execFileP("/bin/sh", ["-c", cmd], { ...opts, env: opts.env });
   return { stdout };
 };
 

@@ -39,8 +39,16 @@ export const HUNG_STREAM = [
   `test ${STUCK_TEST} has been running for over 60 seconds`,
 ].join("\n");
 
-/** Run a shell command for real (the git plumbing of the fixtures). */
-export const sh = (cwd: string, cmd: string) => execFileP("/bin/sh", ["-c", cmd], { cwd });
+/**
+ * Run a shell command for real (the git plumbing of the fixtures).
+ *
+ * The scrubbed env is not decoration: `killerExec` below routes EVERY git call
+ * through this function, so with no `env` here a hostile `GIT_DIR` in the test
+ * process would retarget those commits — git honours it ahead of `cwd` — and
+ * exit 0 while writing into whoever's repository it names (#1981).
+ */
+export const sh = (cwd: string, cmd: string) =>
+  execFileP("/bin/sh", ["-c", cmd], { cwd, env: gitTestEnv() });
 
 /** Run git for real. */
 export const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd, env: gitTestEnv() });

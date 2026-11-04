@@ -307,11 +307,22 @@ export interface RecordingExec {
 
 export function recordingExec(): RecordingExec {
   const calls: RecordingExec["calls"] = [];
+  // The recorder runs REAL git through both branches, so it gets the scrubbed
+  // fixture env: an inherited `GIT_DIR` would retarget the driver's git calls
+  // ahead of `cwd` and the sweep tests would be sweeping somebody else's
+  // worktrees while still asserting green (#1981). A caller that pinned its own
+  // env keeps it.
+  const recorderEnv = (opts?: { env?: NodeJS.ProcessEnv }) =>
+    opts?.env ? { ...gitTestEnv(), ...opts.env } : gitTestEnv();
   const exec: RecordingExec["exec"] = async (cmd, opts) => {
     calls.push({ cmd, cwd: opts?.cwd, argv: opts?.argv });
     const r = opts?.argv
-      ? spawnSync(cmd, opts.argv, { cwd: opts?.cwd, encoding: "utf8" })
-      : spawnSync("/bin/sh", ["-c", cmd], { cwd: opts?.cwd, encoding: "utf8" });
+      ? spawnSync(cmd, opts.argv, { cwd: opts?.cwd, encoding: "utf8", env: recorderEnv(opts) })
+      : spawnSync("/bin/sh", ["-c", cmd], {
+          cwd: opts?.cwd,
+          encoding: "utf8",
+          env: recorderEnv(opts),
+        });
     if (r.status !== 0) {
       const detail = (r.stderr ?? r.stdout ?? "").trim();
       throw Object.assign(new Error(`Command failed: ${cmd}\n${detail}`), {

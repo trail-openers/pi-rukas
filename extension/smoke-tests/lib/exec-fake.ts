@@ -26,9 +26,16 @@
  * files that may `cd`, so a smoke test would silently run git somewhere else.
  */
 
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
 import { execp } from "../../src/exec.ts";
+import type { ExecOpts } from "../../src/exec.ts";
 import type { DriverContext } from "../../src/work-driver-context.ts";
 import type { ExecFn } from "../../src/worktree.ts";
+import { gitTestEnv } from "./git-test-env.ts";
+
+const execFileP = promisify(execFile);
 
 type VerifyExec = NonNullable<DriverContext["verifyExecFn"]>;
 
@@ -36,7 +43,25 @@ export const realExec: VerifyExec = async (cmd, opts) => {
   try {
     // 8 MiB default: the helpers this replaces ran with that buffer, so a caller
     // that omits maxBuffer keeps the same ceiling instead of execp's 1 MiB.
-    return await execp(cmd, { maxBuffer: 8 * 1024 * 1024, ...opts });
+    //
+    // The env is the fixture's scrubbed git view (#1981), under the caller's
+    // own keys: this executor re-export IS the production `execp`, and a test
+    // that hands it to driver code has no env option of its own to thread, so
+    // this is the only place the scrub can go. Without it an inherited `GIT_DIR`
+    // retargets every git child here ahead of `cwd` and git exits 0 doing it.
+    const env = opts?.env ? { ...gitTestEnv(), ...opts.env } : gitTestEnv();
+    if (opts?.killGroup) {
+      const groupOpts: ExecOpts = { maxBuffer: 8 * 1024 * 1024, ...opts, env };
+      return await execp(cmd, groupOpts);
+    }
+    // Both branches run git for real, so both name the scrub in their own text:
+    // `test-verify-loop-git-env.ts` credits only a call whose options it can
+    // read, and a program name passed as a variable (`execp(cmd, opts)`) hides
+    // the whole call from it — which is how an unscrubbed executor survived the
+    // first version of this gate.
+    return opts?.argv
+      ? await execFileP(cmd, opts.argv, { maxBuffer: 8 * 1024 * 1024, ...opts, env })
+      : await execFileP("/bin/sh", ["-c", cmd], { maxBuffer: 8 * 1024 * 1024, ...opts, env });
   } catch (e) {
     // A non-Error rejection (a string, a plain object) cannot carry stdout/stderr
     // properties — wrap it so the assignments below cannot throw a TypeError.

@@ -22,10 +22,19 @@ export const execFileP = promisify(execFile);
 
 /** Real exec, matching the driver's ExecFn contract. The argv form (#1134) runs the executable directly. */
 export const realExec: ExecFn = async (cmd, o) => {
-	const opts = { cwd: o?.cwd, maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024 };
+	const opts = {
+		cwd: o?.cwd,
+		maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
+		// Both branches run git for real, and with no `env` the child inherits
+		// the real environ — an inherited `GIT_DIR` retargets the diff read
+		// ahead of `cwd` (#1981). A caller that pinned its own env keeps it.
+		env: o?.env ? { ...gitTestEnv(), ...o.env } : gitTestEnv(),
+	};
 	const { stdout } = o?.argv
 		? await execFileP(cmd, o.argv, opts)
-		: await execFileP("/bin/sh", ["-c", cmd], opts);
+		// Named inline, not `opts`: the gate credits only a git/shell call whose
+		// own options name the scrub.
+		: await execFileP("/bin/sh", ["-c", cmd], { ...opts, env: opts.env });
 	return { stdout };
 };
 

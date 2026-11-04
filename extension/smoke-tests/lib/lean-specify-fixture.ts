@@ -234,6 +234,9 @@ export async function runSpecify(opts: RunOpts): Promise<RunResult> {
     if (cmd === opts.config.verify.fast) sawBaseHealthy = true;
     // The identity is in the env for EVERY exec, including the production
     // commit the step makes — that commit is the thing under test.
+    // The caller's `o.env` goes LAST on purpose: a caller that set an identity
+    // or a `PATH` here means it, and no caller of this seam sets a git location
+    // variable (that is what `gitTestEnv()` strips, #1981).
     return execp(cmd, { ...o, env: { ...gitEnv(), ...(o?.env ?? {}) } });
   };
   const dispatch: SpecifyDeps["dispatch"] = async (spec: DispatchSpec, dopts) => {

@@ -256,6 +256,11 @@ const capHit = (cap: string, at: number): WorkEvent =>
     [path.resolve(import.meta.dirname, "../src/headless/cli.ts"), "--capabilities"],
     {
       encoding: "utf8",
+      // The capabilities child reports THIS checkout, so it keeps the ambient
+      // `process.env` that the checkout probe reads — hence `scrubGitLocation`
+      // on the ambient copy rather than `gitTestEnv()`, which would also hide
+      // the host's gitconfig. The location scrub is the point: the child's
+      // probe must answer for this checkout alone (#1981).
       env: scrubGitLocation({ ...process.env }),
     },
   );
