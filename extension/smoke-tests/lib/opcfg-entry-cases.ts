@@ -8,11 +8,17 @@
  * swaps `~/.config/gh/hosts.yml` for a link of its own ended up with the
  * operator's token written into the child's own file, `hosts.yml` left as the
  * link, and a report line claiming `— restored`. `restoreOne` now unlinks the
- * entry and creates a regular file, which is the difference these three cases
- * observe (each goes red on the pre-fix restore).
+ * entry and creates a regular file, which is the difference the first three
+ * cases observe (each goes red on the pre-fix restore).
  *
  * Every case runs against a sentinel home from the caller's `sentinelHome`, so
  * the real operator home is never opened — writing it IS the bug #2019 is about.
+ *
+ * The last case drives the in-place open directly (`__openInPlaceForTest`): the
+ * entry check runs BEFORE the open and `open()` re-resolves the path, so a link
+ * created in that window is the one thing the check cannot see. The open carries
+ * `O_NOFOLLOW` for exactly that, and the case puts a link at the target at the
+ * moment of the open to prove it refuses — a timing race would prove nothing.
  */
 
 import {
@@ -20,13 +26,17 @@ import {
   existsSync,
   lstatSync,
   readFileSync,
+  rmSync,
   statSync,
   symlinkSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
-import { withOperatorConfigGuard } from "../../src/spawn-operator-config.ts";
+import {
+  __openInPlaceForTest,
+  withOperatorConfigGuard,
+} from "../../src/spawn-operator-config.ts";
 import type { DispatchResult } from "../../src/types.ts";
 import { withEnv } from "./env-scope.ts";
 
@@ -117,5 +127,66 @@ export async function runEntryHardeningCases(
       (statSync(target).mode & 0o777) === 0o600,
       `mode: a restored credential file is 0600, not the 0${(statSync(target).mode & 0o777).toString(8)} the child set`,
     );
+  }
+
+  {
+    // The in-place arm's own open, driven with a symlink ALREADY at the target.
+    // `inPlaceWritable` checked `isFile()` before the open and `open()` resolves
+    // the path again, so a link put at the target after that check is the one
+    // shape the check cannot see — which is why the open carries `O_NOFOLLOW`,
+    // and why the case arranges the link directly rather than racing the guard.
+    // Asserted for both link shapes: a live target (a write-through would put
+    // the operator's bytes in the child's file) and a dangling one (it would
+    // CREATE a file outside the protected set).
+    const { home } = sentinelHome("inplace-open-nofollow");
+    const target = path.join(home, ".config", "git", "config");
+    const OPERATOR = "[core]\n\teditor = vim\n";
+    const CHILD = "[core]\n\teditor = pwned\n";
+    for (const kind of ["live", "dangling"] as const) {
+      const linked = path.join(path.dirname(home), `victim-${kind}`);
+      rmSync(target, { force: true });
+      rmSync(linked, { force: true });
+      if (kind === "live") writeFileSync(linked, CHILD);
+      symlinkSync(linked, target);
+      // `approved: "absent"` is what makes this O_NOFOLLOW's own case rather
+      // than the identity check's: with no inode to compare against, the only
+      // thing that can refuse the link is the flag on the open itself.
+      assert(
+        (await __openInPlaceForTest(target, Buffer.from(OPERATOR), "absent")) === "replace",
+        `O_NOFOLLOW (${kind} link): the in-place open refuses the link and defers to the replace arm`,
+      );
+      assert(
+        !existsSync(linked) || readFileSync(linked).equals(Buffer.from(CHILD)),
+        `O_NOFOLLOW (${kind} link): nothing was written through the link — its target holds ${kind === "live" ? "the child's own bytes" : "still nothing"}`,
+      );
+      // And the arm the open defers to, for the same entry: it turns the link
+      // into a regular file of the guard's own.
+      await restoreByEntry(target, Buffer.from(OPERATOR));
+      assert(
+        lstatSync(target).isFile() && readFileSync(target).equals(Buffer.from(OPERATOR)),
+        `O_NOFOLLOW (${kind} link): the replace arm left a regular file with the operator's bytes at the target`,
+      );
+      assert(
+        (statSync(target).mode & 0o777) === 0o600,
+        `O_NOFOLLOW (${kind} link): the file the replace arm created is 0600`,
+      );
+      rmSync(linked, { force: true });
+    }
+  }
+}
+
+/**
+ * The replace arm, run outside the guard so the O_NOFOLLOW case can observe it
+ * for the entry its open refused: `rm` drops the link (never its target) and
+ * `open("wx")` creates a fresh regular file the child does not own.
+ */
+async function restoreByEntry(target: string, bytes: Buffer): Promise<void> {
+  const { open, rm } = await import("node:fs/promises");
+  await rm(target, { force: true, recursive: true });
+  const handle = await open(target, "wx", 0o600);
+  try {
+    await handle.writeFile(bytes);
+  } finally {
+    await handle.close();
   }
 }

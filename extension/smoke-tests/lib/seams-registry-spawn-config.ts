@@ -23,6 +23,8 @@ export const SEAMS_SPAWN_CONFIG: Seam[] = [
     testOnly: {
       protectedPaths:
         "the path resolver, read from the env it is handed; test-operator-config-guard.ts drives every case against a mkdtemp sentinel home through it",
+      __openInPlaceForTest:
+        "the in-place open, so the entry-hardening case can put a symlink at the target at the moment of the open (a swap raced against the guard would prove nothing); lib/opcfg-entry-cases.ts drives it, and restoreOne is its only production caller",
     },
     canary: { symbol: "withOperatorConfigGuard", importer: "spawn.ts" },
   },

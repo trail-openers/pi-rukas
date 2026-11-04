@@ -27,6 +27,13 @@
  * the mutant for exactly that: it goes red on a `restoreOne` that unlinks before
  * it writes.
  *
+ * In place is safe only while the guard holds the only name for that inode, so
+ * the in-place arm refuses an entry whose `nlink` is above 1 and opens with
+ * `O_NOFOLLOW`. The `hardlink-alias` case below is the mutant for the first:
+ * `ln` the protected file to a sibling, leave it writable, and an in-place
+ * restore writes the operator's token through BOTH names — the child keeps a
+ * readable copy of the credential and the line still says `— restored`.
+ *
  * Every case runs against a sentinel home from the caller's `sentinelHome`; the
  * real operator home is never opened.
  */
@@ -37,11 +44,16 @@ import {
   existsSync,
   lstatSync,
   readFileSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
+import { lstat } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { withOperatorConfigGuard } from "../../src/spawn-operator-config.ts";
+import {
+  __openInPlaceForTest,
+  withOperatorConfigGuard,
+} from "../../src/spawn-operator-config.ts";
 import type { DispatchResult } from "../../src/types.ts";
 import { withEnv } from "./env-scope.ts";
 
@@ -200,6 +212,136 @@ export async function runPostChildReadCases(
         chmodSync(ghDir, 0o755);
       }
     }
+  }
+
+  {
+    // The child cannot delete the entry, only share it: one `ln` gives the same
+    // inode a second name the child knows, and the file is left writable so the
+    // in-place arm is the arm the guard would choose. `O_TRUNC` + write on that
+    // inode changes the bytes behind BOTH names, so the guard's own restore
+    // would hand the operator's token back to the child — every other assert
+    // still passes, and the line still reads `— restored`. That is why
+    // `inPlaceWritable` refuses `nlink > 1` and the entry goes through unlink
+    // and create instead: `rm` drops this one name and `open("wx")` makes an
+    // inode nothing else shares.
+    const { home, env } = sentinelHome("hardlink-alias");
+    const target = join(home, ".config", "gh", "hosts.yml");
+    const alias = join(dirname(home), "child-alias.yml");
+    const operator = readFileSync(target);
+    const payload = "github.com:\n    oauth_token: attacker\n";
+    let res: DispatchResult | undefined;
+    await withEnv(env, async () => {
+      res = await withOperatorConfigGuard("developer", async () => {
+        execFileSync(
+          "sh",
+          [
+            "-c",
+            // rm then rewrite so the entry is the child's own, then chmod 0666
+            // (writable: the in-place arm is the one the guard would choose)
+            // and `ln` it into the child's tree. The payload stays at the
+            // protected path — that is the change the guard must repair — and
+            // the alias is written last, so a restore that wrote the operator's
+            // bytes through the shared inode is caught by the alias assert.
+            'rm -f "$1"; printf \'%s\' "$3" > "$1"; chmod 0666 "$1"; ln "$1" "$2"; printf \'%s\' "$4" > "$2"',
+            "sh",
+            target,
+            alias,
+            payload,
+            "ALIAS-OWNED-BY-CHILD\n",
+          ],
+          { stdio: "ignore", env: hostileChildEnv(env) },
+        );
+        return result();
+      });
+    });
+    const warns = drainWarns();
+    assert(
+      existsSync(target) && readFileSync(target).equals(operator),
+      "hardlink-alias: the protected path holds the operator's bytes",
+    );
+    assert(
+      !readFileSync(alias).equals(operator),
+      `hardlink-alias: the child's alias never receives the restored bytes (it holds ${JSON.stringify(readFileSync(alias).toString().slice(0, 40))})`,
+    );
+    assert(
+      lstatSync(alias).nlink === 1 && lstatSync(target).nlink === 1,
+      `hardlink-alias: the restore broke the share — alias nlink ${lstatSync(alias).nlink}, target nlink ${lstatSync(target).nlink}`,
+    );
+    assert(
+      (res?.operatorConfig ?? []).length === 1 &&
+        (res?.operatorConfig ?? [""])[0]?.includes("— restored") === true,
+      `hardlink-alias: the child's write is reported as a restored violation (${JSON.stringify(res?.operatorConfig)})`,
+    );
+    assert(
+      !warns.includes("NOT restored") && warns.includes("modified"),
+      `hardlink-alias: the traceWarn channel agrees the restore landed (${warns.trim().slice(0, 150)})`,
+    );
+    assert(
+      (statSync(target).mode & 0o777) === 0o600,
+      "hardlink-alias: the restored credential file is 0600, not the 0666 the child set",
+    );
+    rmSync(alias, { force: true });
+  }
+
+  {
+    // The TOCTOU the in-place arm exists to close: the predicate stats the entry
+    // and `open()` resolves the path AGAIN, so the file the open truncates need
+    // not be the one the check approved. Arranged with no ordering assumption:
+    // the child hard-links the operator's entry to a path of its own, then
+    // recreates the protected path as a fresh file of its own. The alias keeps
+    // the approved inode ALIVE under a second name, and an inode with a live
+    // link is never handed back out by `open(O_CREAT)` — so the entry the check
+    // approved and the entry the open reaches are two different files by
+    // construction, and the alias is the witness to the first.
+    //
+    // The predicate itself cannot refuse this: at the moment it stats, the entry
+    // is a singly-linked regular file. The only thing that can catch it is the
+    // comparison the open makes against the identity the check settled on, so
+    // that is what this asserts — with the identity captured BEFORE the swap.
+    // Remove the comparison and the answer below becomes `open`: the guard
+    // truncates the child's file and pours the operator's token into it.
+    const { home, env } = sentinelHome("entry-swap-inflight");
+    const target = join(home, ".config", "gh", "hosts.yml");
+    const operator = readFileSync(target);
+    const payload = "github.com:\n    oauth_token: attacker\n";
+    const tap = join(dirname(home), "tap-alias");
+    rmSync(tap, { force: true });
+    // The identity the predicate would have approved, taken before the swap.
+    // Passing it in is what makes the post-open comparison meaningful: an open
+    // checked against a stat it took itself only ever agrees with itself.
+    const approved = await lstat(target);
+    execFileSync(
+      "sh",
+      [
+        "-c",
+        'ln "$1" "$3"; rm -f "$1"; printf \'%s\' "$2" > "$1"; chmod 0666 "$1"',
+        "sh",
+        target,
+        payload,
+        tap,
+      ],
+      { stdio: "ignore", env: hostileChildEnv(env) },
+    );
+    assert(
+      approved.ino !== lstatSync(target).ino &&
+        readFileSync(target).equals(Buffer.from(payload)) &&
+        readFileSync(tap).equals(operator),
+      `entry-swap-inflight: the precondition holds — the path is now a different inode holding the child's payload, while the approved inode lives on as the child's alias (${JSON.stringify(readFileSync(target).toString().slice(0, 26))} / ${JSON.stringify(readFileSync(tap).toString().slice(0, 26))})`,
+    );
+    assert(
+      (await __openInPlaceForTest(target, operator, approved)) === "replace",
+      "entry-swap-inflight: the in-place open refuses the entry the path now holds, because it is not the inode the check approved",
+    );
+    assert(
+      readFileSync(target).equals(Buffer.from(payload)),
+      `entry-swap-inflight: the refused open truncated nothing — the child's file still holds its own payload, not the operator's token (${JSON.stringify(readFileSync(target).toString().slice(0, 34))})`,
+    );
+    assert(
+      lstatSync(target).isFile() && lstatSync(tap).isFile(),
+      "entry-swap-inflight: the refusal destroyed neither name, so the replace arm still has the entry to repair",
+    );
+    rmSync(tap, { force: true });
+    void env;
   }
 
   {

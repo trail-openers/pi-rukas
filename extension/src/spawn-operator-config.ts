@@ -13,10 +13,14 @@
  * any change is restored from the snapshot and reported. A child cannot leave
  * the operator's identity or credential helper altered.
  *
- * A restore writes a REGULAR FILE it creates itself, never through the entry it
- * found — see `restoreOne`. Without that, a child that swaps the protected path
- * for a symlink of its own keeps the credential file under its control after a
- * line that reads `— restored`.
+ * A restore never leaves the operator's bytes reachable through an entry the
+ * child made — see `restoreOne`, whose two arms each refuse the way the child
+ * could share them: the replace arm writes no entry it found (it unlinks the
+ * symlink or unwritable file and creates a fresh regular file), and the in-place
+ * arm refuses to open a link and refuses an entry another name already holds.
+ * Without that, a child that swaps the protected path for a symlink of its own
+ * — or hard-links it to a path of its own — keeps the credential file under its
+ * control after a line that reads `— restored`.
  *
  * Git excludes/ignore files are deliberately not protected — they carry neither
  * identity nor credentials.
@@ -49,7 +53,8 @@
  * mechanism from this restore.
  */
 
-import { constants, access, lstat, open, readFile, rm } from "node:fs/promises";
+import type { Stats } from "node:fs";
+import { constants, type FileHandle, access, lstat, open, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { isPlainObject } from "./plain-object.ts";
@@ -129,56 +134,79 @@ async function readSnapshot(target: string): Promise<Buffer | null | undefined> 
 }
 
 /**
- * Can this entry be restored in place, i.e. without touching the PARENT
- * directory? Three shapes can:
+ * The entry the in-place arm may write, or why it may not. `approved` is the
+ * `lstat` the guard based its decision on, and it is the identity the open is
+ * checked against afterwards — a fresh `lstat` inside the open would compare the
+ * open against itself and prove nothing.
  *
- * - A regular file the guard OWNS and can open for write. `isFile()` on `lstat`
- *   keeps a symlink, a directory or any other non-regular entry out: those must
- *   be replaced by ENTRY (unlink the link, create a fresh regular file), never
- *   written through, or the child keeps the path under its control.
- * - Owned by the guard's own uid — a file the child re-`chown`ed is one the
+ * Four shapes are refused, each because writing the inode would hand the
+ * operator's bytes to a name the child holds:
+ *
+ * - NOT a regular file — `isFile()` on `lstat` keeps a symlink, a directory or
+ *   any other non-regular entry out: those are replaced by ENTRY (unlink the
+ *   link, create a fresh regular file), never written through.
+ * - `nlink > 1` — a second name for the same inode. An in-place write changes
+ *   the bytes seen through BOTH names, so a child that `ln`'d the credential
+ *   file to its own path still reads the restored token from its own file after
+ *   a `— restored` line. The replace arm breaks the share: `rm` drops this one
+ *   link and `open("wx")` creates an inode nothing else names.
+ * - Not owned by the guard's own uid — a file the child re-`chown`ed is one the
  *   guard cannot `chmod` back either, so it goes through unlink-and-create
  *   (EACCES there is reported as `NOT restored`, not papered over).
- * - An ABSENT path, which `open(..., "w")` creates; it needs no unlink either,
- *   so it belongs to this arm rather than the one that has to `rm` first.
+ * - Not writable — `access(W_OK)` fails (a `chmod 000` file), and the replace
+ *   arm is also the arm that fixes the mode.
  *
- * A `chmod 000` file fails the write check and takes the replace arm, which is
- * also the arm that fixes the mode. The in-place arm exists because unlinking
- * needs write permission on the PARENT, which a child that left its directory
- * `0555` does not grant. Never throws: an unreadable directory is simply not
- * in-place writable and falls to the replace arm, which reports its EACCES.
+ * An ABSENT path is approved with no identity to match: it needs no unlink
+ * either, so it belongs to this arm rather than the one that has to `rm` first,
+ * and `open(..., O_CREAT)` is what creates it. A symlink created in the window
+ * between this check and the open is not this predicate's to close — the open
+ * itself refuses to follow it (`__openInPlaceForTest`).
+ *
+ * The in-place arm exists because unlinking needs write permission on the
+ * PARENT, which a child that left its directory `0555` does not grant. Never
+ * throws: an unreadable directory is simply not in-place writable and falls to
+ * the replace arm, which reports its EACCES.
  */
-async function inPlaceWritable(target: string): Promise<boolean> {
+async function inPlaceApproval(target: string): Promise<Stats | "replace" | "absent"> {
+  let st: Stats;
   try {
-    const st = await lstat(target);
-    if (!st.isFile()) return false;
-    if (process.getuid !== undefined && st.uid !== process.getuid()) return false;
+    st = await lstat(target);
   } catch (err) {
-    return (err as NodeJS.ErrnoException).code === "ENOENT";
+    // An absent path is the third shape this arm handles; anything the guard
+    // cannot even stat goes to the arm that reports its own errno.
+    return (err as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "replace";
   }
+  if (!st.isFile()) return "replace";
+  if (st.nlink > 1) return "replace";
+  if (process.getuid !== undefined && st.uid !== process.getuid()) return "replace";
   try {
     await access(target, constants.W_OK);
-    return true;
   } catch {
-    return false;
+    return "replace";
   }
+  return st;
 }
 
 /**
  * Put one path back. Two shapes, chosen by what the guard can actually DO to
  * the entry it finds:
  *
- * - A regular file the guard can OPEN FOR WRITE is restored IN PLACE: the
- *   existing inode is truncated and written. Unlinking first needs write
- *   permission on the PARENT, which a child that ran `chmod 555` on the
+ * - A regular, singly-linked file the guard can OPEN FOR WRITE is restored IN
+ *   PLACE: the existing inode is truncated and written. Unlinking first needs
+ *   write permission on the PARENT, which a child that ran `chmod 555` on the
  *   directory does not leave — an unlink-first restore fails EACCES there and
  *   the child's payload survives under a line that says `— restored`. The
  *   in-place write needs only the file's own write bit, so the child cannot
  *   defend against it without also dropping that bit, and a file it made
- *   unwritable falls to the other arm instead.
- * - Anything else — a non-regular entry (symlink, directory) or a file the child
- *   made unwritable or re-`chown`ed — is replaced by ENTRY: `rm` unlinks a
- *   symlink rather than its target and `open(..., "wx")` creates a fresh regular
+ *   unwritable falls to the other arm instead. The open carries `O_NOFOLLOW`,
+ *   so a symlink put at the path after the check is refused (`ELOOP`) rather
+ *   than written through, and the bytes already sit in a single-inode file that
+ *   no other name shares — `O_TRUNC` is safe only because `nlink > 1` was
+ *   refused above.
+ * - Anything else — a non-regular entry (symlink, directory), a file with a
+ *   second name (`nlink > 1`), or a file the child made unwritable or
+ *   re-`chown`ed — is replaced by ENTRY: `rm` unlinks a symlink rather than its
+ *   target and `open(..., "wx")` creates a fresh regular
  *   file instead of following a link the child planted, so the operator's file
  *   ends up one the child does not already own. Writing through a symlink would
  *   put the token in the child's own file. An entry the guard can neither write
@@ -193,18 +221,13 @@ async function inPlaceWritable(target: string): Promise<boolean> {
  * regular file is the faithful restore, not a new behaviour.
  */
 async function restoreOne(target: string, bytes: Buffer | null): Promise<string | undefined> {
-  if (bytes !== null && (await inPlaceWritable(target))) {
-    try {
-      const handle = await open(target, "w", 0o600);
-      try {
-        await handle.writeFile(bytes);
-        await handle.chmod(0o600);
-      } finally {
-        await handle.close();
-      }
+  if (bytes !== null) {
+    const approved = await inPlaceApproval(target);
+    if (
+      approved !== "replace" &&
+      (await __openInPlaceForTest(target, bytes, approved)) === "open"
+    ) {
       return undefined;
-    } catch {
-      // Lost the race or the open lied: fall through to the replace-by-entry arm.
     }
   }
   try {
@@ -219,6 +242,67 @@ async function restoreOne(target: string, bytes: Buffer | null): Promise<string 
     return undefined;
   } catch (err) {
     return (err as NodeJS.ErrnoException).code ?? "unknown";
+  }
+}
+
+/**
+ * The in-place open, on its own, so the suite can drive a link into it.
+ *
+ * Three things have to agree for this arm to be safe, and one of them is only
+ * knowable AFTER the open: `open()` re-resolves the path, so a symlink the child
+ * put at the target in the window since the check would receive the operator's
+ * bytes, and an entry the child replaced with a fresh inode would be truncated
+ * and written under a name the check never saw. So: open with `O_NOFOLLOW` (a
+ * link is `ELOOP`, never a write-through), then compare `handle.stat()`'s
+ * `dev`/`ino` with the `lstat` the caller's predicate settled on — what the
+ * handle points at must be the very inode that predicate approved. Comparing
+ * against a stat taken here instead would only ever agree with itself. Any
+ * disagreement, and any error from the open, returns "replace": the caller falls
+ * to the arm that unlinks the entry it found and creates a fresh file, which is
+ * always safe and reports honestly.
+ *
+ * Exported for the symlink and swap cases of the entry-hardening and read-back
+ * suites, which need a link or a fresh inode at the target at the moment of the
+ * open; `testOnly` in the seams registry, and `restoreOne` is its only
+ * production caller. `approved` is the identity the predicate settled on.
+ */
+export async function __openInPlaceForTest(
+  target: string,
+  bytes: Buffer,
+  approved: Stats | "absent",
+): Promise<"open" | "replace"> {
+  let handle: FileHandle;
+  try {
+    // No `O_TRUNC`: the handle is opened, identified, and only then emptied. An
+    // open that truncates on the way in destroys the child's bytes whatever the
+    // identity check concludes, and a restore that ends up in the replace arm
+    // has no reason to have deleted anything on its first attempt.
+    handle = await open(
+      target,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW,
+      0o600,
+    );
+  } catch {
+    // A symlink at the path is ELOOP here, never a write-through.
+    return "replace";
+  }
+  try {
+    const post = await handle.stat();
+    if (
+      approved === "absent"
+        ? post.nlink !== 1
+        : post.ino !== approved.ino || post.dev !== approved.dev
+    ) {
+      return "replace";
+    }
+    await handle.truncate(0);
+    await handle.writeFile(bytes);
+    await handle.chmod(0o600);
+    return "open";
+  } catch {
+    return "replace";
+  } finally {
+    await handle.close();
   }
 }
 
