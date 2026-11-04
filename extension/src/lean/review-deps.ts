@@ -149,8 +149,8 @@ export function reviewDeps(headless: boolean): ReviewDeps {
         childBoundMs: Math.min(budgetBoundMs ?? Number.POSITIVE_INFINITY, lensChildBoundMs()),
         // The project's blocking bar, threaded from the step (see
         // `LensArgs.threshold`). Without it the review layer falls to
-        // `DEFAULT_REVIEW_THRESHOLD` — MEDIUM — and a round whose only findings
-        // are MEDIUM reads as ISSUES_FOUND, so this step buys a fixer for
+        // `DEFAULT_REVIEW_THRESHOLD` — HIGH — and a round whose only findings
+        // sit at that bar reads as ISSUES_FOUND, so this step buys a fixer for
         // findings the project said are disclosable rather than blocking.
         ...(a.threshold === undefined ? {} : { threshold: a.threshold }),
         // The test-only lens-child seam (see `ReviewDeps.lensChildFn`): set it and

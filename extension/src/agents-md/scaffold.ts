@@ -27,7 +27,7 @@ const insertSectionAfter = insertManagedSectionAfter;
 export interface OperatorAnswers {
   /** Coverage threshold for tests (e.g. "80%+"). */
   coverageThreshold?: string;
-  /** Review-blocking severity (e.g. "MEDIUM"). */
+  /** Review-blocking severity (e.g. "HIGH"). */
   reviewBlockingSeverity?: string;
   /** Merge authority rule (e.g. "squash-merge when gates pass"). */
   mergeAuthority?: string;

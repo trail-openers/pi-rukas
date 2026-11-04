@@ -3,10 +3,9 @@
  *
  * The lens decides a finding's severity; that is its judgment. Which severity
  * is serious *enough to stop a merge* is a different question and it belongs to
- * the project. `AGENTS.md §1` in this repo states the bar in prose: MEDIUM
- * until the operator decision of 2026-10-25 raised it to HIGH. For longer than
- * that nothing read the sentence, so it was decorative, and a project wanting a
- * different bar had no way to express one.
+ * the project. `AGENTS.md §1` in this repo states the bar in prose: HIGH
+ * severity and above. For longer than that nothing read the sentence, so it was
+ * decorative, and a project wanting a different bar had no way to express one.
  *
  * **Configuration fails differently from authority, and the distinction is the
  * whole design.** `resolveMergeAuthority` fails closed: no answer means deny,
@@ -15,25 +14,25 @@
  * simply never mentions code review is the *normal* case — the overwhelming
  * majority of repositories — and it must get the shipped default rather than an
  * error, a refusal, or a review that blocks on nothing.
+ *
+ * **The shipped default is HIGH**, which is also this repo's own bar, so the
+ * common case — a repository whose doctrine says nothing — judges ordinary
+ * best-practice findings as disclosable rather than as fix orders. A project
+ * states a different bar with a citation-verified sentence, or the operator
+ * moves it for one run with `PI_ENSEMBLE_REVIEW_THRESHOLD`.
  */
 
 import type { DecisionWhere } from "./decision-seam.ts";
+import { DEFAULT_REVIEW_THRESHOLD } from "./review-severity-default.ts";
+import { type ReviewSeverity, SEVERITIES } from "./review-threshold-types.ts";
 import { type DoctrineDoc, type PolicyJudgeFn, askPolicy } from "./work-driver-policy.ts";
+
+export { DEFAULT_REVIEW_THRESHOLD };
+export { type ReviewSeverity, SEVERITIES };
 
 /** The question asked before a code review's verdict is computed. */
 export const REVIEW_THRESHOLD_QUESTION =
   "At what code-review finding severity do these documents say a change should be blocked from merging until it is fixed? Answer 'permitted' with the sentence that states the severity, or 'unstated' if the documents do not say.";
-
-/**
- * Which severities a project may name, most severe first.
- *
- * Read out of the judge's quote rather than asked for as a separate field: the
- * quote is the thing that gets verified against the file, so anything derived
- * from it inherits that verification. A severity mentioned in a sentence that
- * does not exist cannot be honoured.
- */
-export const SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW"] as const;
-export type ReviewSeverity = (typeof SEVERITIES)[number];
 
 export interface ReviewThreshold {
   severity: ReviewSeverity;
@@ -54,7 +53,10 @@ export interface ReviewThreshold {
  * default rather than an error or a refusal to review.
  *
  * So the rules are:
- *   - absent, unreadable, or silent doctrine → `MEDIUM`, the shipped default
+ *   - absent, unreadable, or silent doctrine → `DEFAULT_REVIEW_THRESHOLD`, the
+ *     shipped HIGH default. "Silent" includes a quote that verifies but states
+ *     no readable bar: an unparseable sentence falls to the default too, which
+ *     over-tightens rather than over-loosens
  *   - a project may **loosen** the bar only with a verified citation
  *   - a project may **tighten** it freely — a stricter answer needs no proof,
  *     since being cautious on someone else's behalf is never the failure mode
@@ -70,7 +72,7 @@ export interface ReviewThreshold {
 export async function resolveReviewThreshold(
   judge: PolicyJudgeFn,
   docs: readonly DoctrineDoc[],
-  defaultSeverity: ReviewSeverity = "MEDIUM",
+  defaultSeverity: ReviewSeverity = DEFAULT_REVIEW_THRESHOLD,
   where?: DecisionWhere,
 ): Promise<ReviewThreshold> {
   const env = process.env.PI_ENSEMBLE_REVIEW_THRESHOLD?.trim().toUpperCase();
@@ -168,8 +170,13 @@ export function severityFromQuote(quote: string): ReviewSeverity | undefined {
  * Takes `unknown` because callers read severities off serialised JSON, where a
  * missing or malformed value is NOT a severity and must never be treated as a
  * pass: a row the caller cannot rank is never evidence that nothing blocks.
+ *
+ * `bar` is required. An optional bar would have to carry a default, and a
+ * default here is a bar the caller never chose — every caller knows which bar
+ * it is scoring at (the resolved threshold, or the bar recorded on the row),
+ * and inventing one silently moves the gate for whoever forgot to pass it.
  */
-export function isBlockingSeverity(severity: unknown, bar: ReviewSeverity = "MEDIUM"): boolean {
+export function isBlockingSeverity(severity: unknown, bar: ReviewSeverity): boolean {
   const rank = SEVERITIES.indexOf(severity as ReviewSeverity);
   return rank === -1 || rank <= SEVERITIES.indexOf(bar);
 }

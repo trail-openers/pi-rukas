@@ -214,17 +214,18 @@ export const execp = async (cmd: string, opts?: { cwd?: string; maxBuffer?: numb
   }
 }
 
-// ---------------------------- no AGENTS.md in the worktree → MEDIUM default
+// ------------------------------ no AGENTS.md in the worktree → HIGH default
 //
 // The threshold source for the lens `passed` predicate is the committed
 // doctrine (AGENTS.md at the base), never the worktree's working copy. A
-// missing file gives the MEDIUM default. This is the predicate's contract,
-// pinned here so a threshold drift cannot silently re-score a stored boolean.
+// missing file gives the HIGH default (`DEFAULT_REVIEW_THRESHOLD`). This is the
+// predicate's contract, pinned here so a threshold drift cannot silently
+// re-score a stored boolean.
 
-// No AGENTS.md → MEDIUM default → ISSUES_FOUND does not pass.
+// No AGENTS.md → HIGH default → an ISSUES_FOUND round does not pass.
 assert(
-  !lensPassed("ISSUES_FOUND", "MEDIUM"),
-  "no AGENTS.md → MEDIUM default → ISSUES_FOUND does not pass",
+  !lensPassed("ISSUES_FOUND", "HIGH"),
+  "no AGENTS.md → HIGH default → ISSUES_FOUND does not pass",
 );
 // A project that loosens to LOW → ISSUES_FOUND passes.
 assert(lensPassed("ISSUES_FOUND", "LOW"), "a LOW threshold → ISSUES_FOUND passes");

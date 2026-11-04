@@ -81,15 +81,15 @@ const FULL = SENTENCES.join(" ");
   // §1's SECOND sentence on its own. It used to read "until all HIGH and
   // CRITICAL findings are resolved" — a bare list with no blocking relation, so
   // `severityFromQuote` abstained and a judge that quoted only that sentence
-  // silently fell back to the MEDIUM default. Abstention is the correct
+  // silently fell back to the shipped default. Abstention is the correct
   // semantics for a sentence with no bar (review-threshold.ts stays as is), but
-  // the fallback is the wrong answer, so §1 now states the relation itself and
-  // this sentence resolves to HIGH on its own. STRICT on purpose: an abstaining
-  // quote here is a §1 regression, not a pass.
+  // the fallback is an answer the project never gave, so §1 now states the
+  // relation itself and this sentence resolves to HIGH on its own. STRICT on
+  // purpose: an abstaining quote here is a §1 regression, not a pass.
   const s2 = severityFromQuote(S2);
   assert(
     s2 === "HIGH",
-    `canary: §1's second sentence alone resolves to HIGH (got ${s2}) — abstention here means the sentence states no bar, and a judge quoting only it would fall back to the MEDIUM default`,
+    `canary: §1's second sentence alone resolves to HIGH (got ${s2}) — abstention here means the sentence states no bar, and a judge quoting only it would fall back to the default rather than to what §1 says`,
   );
   // And the deferral sentence alone must not read as a bar at all.
   const s3 = severityFromQuote(SENTENCES[2] ?? "");
@@ -120,12 +120,12 @@ const FULL = SENTENCES.join(" ");
   // returns `undefined` for this exact string today: its relational branch
   // needs `AND ABOVE`-style wording, and its BLOCK branch requires the bare
   // token `BLOCK`, which "are blocking" does not supply. Abstention is the
-  // safe direction (the caller keeps the MEDIUM default, never a looser bar),
-  // so this is recorded as a documented known limitation rather than a red gate
-  // on a helper this dispatch must not change. The positive case that matters —
-  // the deferral clause never LOWERS the bar — is asserted directly above on
-  // §1's own deferral sentence, and the relational forms are pinned in the
-  // table. src is deliberately untouched here.
+  // safe direction (the caller keeps the shipped HIGH default, never a looser
+  // bar), so this is recorded as a documented known limitation rather than a red
+  // gate on a helper this dispatch must not change. The positive case that
+  // matters — the deferral clause never LOWERS the bar — is asserted directly
+  // above on §1's own deferral sentence, and the relational forms are pinned in
+  // the table. src is deliberately untouched here.
   const MIXED = "HIGH findings are blocking; LOW findings may be deferred.";
   const mixed = severityFromQuote(MIXED);
   assert(
@@ -144,7 +144,7 @@ const FULL = SENTENCES.join(" ");
   ]) {
     assert(
       severityFromQuote(quote) === undefined,
-      `no severity claim in "${quote.slice(0, 40)}" -> undefined, so the caller applies the MEDIUM default`,
+      `no severity claim in "${quote.slice(0, 40)}" -> undefined, so the caller applies the shipped HIGH default`,
     );
   }
 }

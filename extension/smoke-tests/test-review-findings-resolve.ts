@@ -77,17 +77,24 @@ const repo = fixture.repo;
 const ledgerDir = fixture.ledgerDir;
 const sh = fixture.sh;
 
+const BAR = {
+  // MEDIUM rows are here to be CARRIED or RESOLVED, not to decide the bar: at
+  // the HIGH default a MEDIUM only discloses, so the blocking assertions would
+  // judge the default rather than the store (pinned in `test-review-bar.ts`).
+  threshold: "MEDIUM",
+  lensChildFn: fixture.stubLens,
+};
+
 const runRound = (branch: string, head: string, findings: StubFinding[]) => {
   reportNow = findings;
-  return runLensReview({
-    cwd: repo,
-    branch,
-    diff: FULL_DIFF,
-    head,
-    full: true,
-    lensChildFn: fixture.stubLens,
-  });
+  return runLensReview({ cwd: repo, branch, diff: FULL_DIFF, head, full: true, ...BAR });
 };
+
+/** A round that names its own refs rather than a pasted diff — the shape the
+ * delta scenarios (J, N) need, which cannot share `runRound`'s `diff`/`full`. */
+const runRangeRound = (branch: string, head: string, over: Record<string, unknown>) =>
+  runLensReview({ cwd: repo, branch, head, ...BAR, ...over });
+
 const head = () => sh("git rev-parse HEAD");
 
 try {
@@ -301,13 +308,7 @@ try {
   sh("git commit -qam edit-cited-line");
   // No `diff`: a pasted diff wins over `since`, so the delta is git's since..head.
   reportNow = [];
-  const j2 = await runLensReview({
-    cwd: repo,
-    branch: "feat/delta",
-    head: head(),
-    since: deltaBase,
-    lensChildFn: fixture.stubLens,
-  });
+  const j2 = await runRangeRound("feat/delta", head(), { since: deltaBase });
   assert(
     j2.deltaReview !== undefined,
     "J round 2: the round is a delta review (since..head), not a full one",
@@ -395,13 +396,9 @@ try {
   const eofBase = head();
   writeFileSync(path.join(repo, "src", "a.ts"), "// header\n");
   sh("git commit -qam truncate-delta");
-  const n2 = await runLensReview({
-    cwd: repo,
-    branch: "feat/eof-delta",
-    diff: "diff --git a/src/a.ts b/src/a.ts\n+++ b/src/a.ts\n-export const b = 2;",
-    head: head(),
+  const n2 = await runRangeRound("feat/eof-delta", head(), {
     since: eofBase,
-    lensChildFn: fixture.stubLens,
+    diff: "diff --git a/src/a.ts b/src/a.ts\n+++ b/src/a.ts\n-export const b = 2;",
   });
   assert(
     (await readBranchRows(repo, "feat/eof-delta"))[0]?.status === "open" &&

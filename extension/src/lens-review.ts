@@ -142,7 +142,7 @@ export async function runLensReview(opts: {
   /** #799 — the parent pi for the inner children's slow-run watch (the PM
    * notice half; the watch site has no pi of its own). */
   pi?: import("./async-jobs-lifecycle.ts").DispatchHost;
-  /** Blocking bar; defaults to MEDIUM. See `DEFAULT_REVIEW_THRESHOLD`. */
+  /** Blocking bar; defaults to `DEFAULT_REVIEW_THRESHOLD` (HIGH). */
   threshold?: Severity;
   /**
    * #912 — caller-supplied branch for the review-ledger write (the driver

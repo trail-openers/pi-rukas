@@ -144,7 +144,7 @@ When a deterministic loop cap fires (adversarial-loop 3-round rejection, `/work`
 
 For `ROUND_CAP_REACHED`:
 
-1. Dispatch the developer to fix every finding at or above the project's blocking threshold (this repo's AGENTS.md §1: HIGH and above; the shipped default for a project whose doctrine is silent is MEDIUM, unless its doctrine sets a different one). Do not fix LOW findings.
+1. Dispatch the developer to fix every finding at or above the project's blocking threshold (this repo's AGENTS.md §1 and the shipped default for a project whose doctrine is silent are both HIGH, unless its doctrine sets a different one). Do not fix LOW findings.
 2. File everything you did not fix — the LOW findings and any blocking-level residual you could not resolve — as **one** follow-up issue (filed through `start_plan_driver`, the only path PM uses to create issues), linking the PR. One issue, not one per finding.
 3. Merge under the #973 rule: the latest lens entry is `ISSUES_FOUND` with `hasCritical: false`, the adversarial gate approved, and the residual-disclosure marker is posted on the PR for the current patch — and that entry either reached the round cap (2 by default, `PI_ENSEMBLE_LENS_ROUND_CAP`) or shows no finding at or above the blocking bar, in which case no fix wave was owed. The review budget is a SHAPE — one full review, one fix wave, one scoped re-review — so the highest round a conforming cycle records is 2. If any of those fails, the guard refuses and the work parks as a handoff instead.
 
@@ -649,7 +649,7 @@ Wait for all 6 to complete, then perform deterministic synthesis:
    - If ANY lens reports CRITICAL severity → merged verdict CANNOT be APPROVED
    - Final verdict must be ISSUES_FOUND or CRITICAL_ISSUES_FOUND (a CRITICAL always blocks, whatever the project's blocking severity says)
 5. **Preserve findings at or above the blocking bar**:
-   - Keep all non-duplicate findings at or above the project's blocking severity (this repo's AGENTS.md §1: HIGH; the shipped default for a project whose doctrine is silent is MEDIUM, unless its doctrine sets a different one)
+   - Keep all non-duplicate findings at or above the project's blocking severity (this repo's AGENTS.md §1 and the shipped default for a project whose doctrine is silent are both HIGH, unless its doctrine sets a different one)
    - Include findings below that bar for completeness (not blockers)
 6. **Cross-lens candidates**:
    - When `cross_lens_candidate=true`, flag finding as relevant to multiple lenses
@@ -660,7 +660,7 @@ Wait for all 6 to complete, then perform deterministic synthesis:
 After synthesis, generate merged verdict:
 
 ```
-APPROVED: no finding at or above the project's blocking severity (this repo's AGENTS.md §1: HIGH; the shipped default where doctrine is silent is MEDIUM)
+APPROVED: no finding at or above the project's blocking severity (this repo's AGENTS.md §1 and the shipped default where doctrine is silent are both HIGH)
 ISSUES_FOUND: contains findings at or above that severity (requires fixes)
 CRITICAL_ISSUES_FOUND: contains CRITICAL severity findings (always blocks merge)
 ```

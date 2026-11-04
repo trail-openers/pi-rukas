@@ -288,6 +288,11 @@ try {
     head: deltaSha,
     since: deltaHead,
     base: "main",
+    // The question here is WHICH range judges a carried row (the PR's, not the
+    // delta's), not how high the bar sits: the row is stamped MEDIUM, which the
+    // shipped HIGH default would disclose rather than block, so the run states
+    // the bar the scenario needs. `test-review-bar.ts` pins the default.
+    threshold: "MEDIUM",
   });
   assert(
     rDelta.verdict === "ISSUES_FOUND" &&

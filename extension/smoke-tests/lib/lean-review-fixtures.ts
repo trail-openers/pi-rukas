@@ -29,7 +29,7 @@ import { ReviewInfraError, reviewOutcome } from "../../src/lean/review.ts";
 import type { Outcome } from "../../src/lean/state.ts";
 import { createRun } from "../../src/lean/state.ts";
 import { FIXER_ROLE } from "../../src/lean/step-budget.ts";
-import { DEFAULT_REVIEW_THRESHOLD } from "../../src/lens-review-format.ts";
+import { DEFAULT_REVIEW_THRESHOLD } from "../../src/review-severity-default.ts";
 import type { Finding } from "../../src/lens-review-types.ts";
 import type { LensName, LensRunResult } from "../../src/lens-review-types.ts";
 import { aggregateLensUsage } from "../../src/lens-review-usage.ts";
@@ -309,9 +309,11 @@ export function depsWith(over: Partial<ReviewDeps>): ReviewDeps {
     fetchIssueBody: async () => "body",
     loadConfig: async () => defaultConfig(),
     // The harness's stand-in for the doctrine judge: a step that resolves the
-    // project's bar gets the shipped default rather than a child process. A case
-    // that cares about the bar overrides this and asserts what the lens call
-    // received — the default here must never be the thing a case proves.
+    // project's bar gets the shipped HIGH default rather than a child process.
+    // A case that cares about the bar overrides this and asserts what the lens
+    // call received — the default here must never be the thing a case proves,
+    // and at HIGH it is also the reason a MEDIUM-only round must be given an
+    // explicit bar by any case that means it to block.
     reviewThreshold: async () => DEFAULT_REVIEW_THRESHOLD,
     ...over,
   };

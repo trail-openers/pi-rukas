@@ -400,6 +400,12 @@ const allFail = () => ({
         // posted — and it stays true only while the finding actually blocks.
         base: "dev",
         head: "HEAD",
+        // The case is the detached-HEAD recording path, not the bar: its one
+        // finding is stamped MEDIUM, which the shipped HIGH default would only
+        // disclose, so without this bar the "not posted" assertions below would
+        // be testing the default instead of the ledger. `test-review-bar.ts`
+        // is where the default itself is pinned.
+        threshold: "MEDIUM",
         lensChildFn: async () => ({
           lens: "SIMPLICITY",
           ok: true,

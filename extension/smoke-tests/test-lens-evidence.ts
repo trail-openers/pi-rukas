@@ -1,8 +1,7 @@
 #!/usr/bin/env bun
 /**
- * Evidence supply and the blocking threshold.
- *
- * ## Why evidence supply exists
+ * Evidence supply: the lens child must read the BRANCH version of a changed
+ * file, not the pre-change copy its detached cwd holds.
  *
  * The reviewed diff is built from `origin/<base>..origin/<branch>`
  * (`work-driver-diff.ts` → `readIntegratedDiff`), but the lens children run
@@ -17,12 +16,8 @@
  * REAL git repo in that exact configuration and asserts the supplied content is
  * the branch version.
  *
- * ## Why the threshold is here too
- *
- * A lens assigns severity; the project decides which severity blocks. That was
- * hardcoded, and `AGENTS.md §1`'s blocking sentence was read by nobody. The rule differs from merge authority ON PURPOSE: authority fails
- * closed, configuration falls back to the default — because a repo with no
- * AGENTS.md at all is the normal case, not an error.
+ * The blocking BAR is a separate concern with its own suite — `test-review-bar.ts`
+ * (split out for AGENTS.md §12's file-size limit).
  */
 
 import { execFile } from "node:child_process";
@@ -32,27 +27,15 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { buildEvidence } from "../src/lens-evidence.ts";
 import { lensPromptFor } from "../src/lens-review-format.ts";
-import { DEFAULT_REVIEW_THRESHOLD, computeVerdict } from "../src/lens-review-format.ts";
-import type { Finding } from "../src/lens-review.ts";
 import { buildLensRoster } from "../src/lens-roster.ts";
-import { resolveReviewThreshold, severityFromQuote } from "../src/review-threshold.ts";
 import { pathsInDiff, readFileAtBranch } from "../src/work-driver-diff.ts";
-import { type DoctrineDoc, policyJudgeEnabled } from "../src/work-driver-policy.ts";
+import { assert, failureCount } from "./lib/review-bar-helpers.ts";
 
 const execFileAsync = promisify(execFile);
 const sh = async (cmd: string, cwd: string) => {
   const { stdout } = await execFileAsync("sh", ["-c", cmd], { cwd, maxBuffer: 4 * 1024 * 1024 });
   return stdout;
 };
-
-let exit = 0;
-function assert(cond: boolean, msg: string) {
-  if (cond) console.log(`✓ ${msg}`);
-  else {
-    console.error(`✗ ${msg}`);
-    exit = 1;
-  }
-}
 
 const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "pi-lens-evidence-"));
 
@@ -205,276 +188,6 @@ const LENS_SECURITY = EVIDENCE_ROSTER.find((e) => e.name === "SECURITY")!;
   );
 }
 
-// ------------------------------------------------------------- the threshold
-
-const mk = (severity: Finding["severity"]): Finding => ({
-  lens: "SIMPLICITY",
-  severity,
-  path: "src/a.ts",
-  line: 1,
-  title: `a ${severity} finding`,
-  description: "",
-});
-
-{
-  assert(DEFAULT_REVIEW_THRESHOLD === "MEDIUM", "the shipped default is MEDIUM");
-  assert(
-    computeVerdict([mk("MEDIUM")], []) === "ISSUES_FOUND",
-    "by default a MEDIUM finding blocks — today's behaviour, unchanged",
-  );
-  assert(
-    computeVerdict([mk("MEDIUM")], [], "HIGH") === "APPROVED",
-    "a project that sets HIGH lets a MEDIUM through",
-  );
-  assert(computeVerdict([mk("HIGH")], [], "HIGH") === "ISSUES_FOUND", "...but not a HIGH");
-  assert(
-    computeVerdict([mk("LOW")], [], "LOW") === "ISSUES_FOUND",
-    "a project may tighten to LOW and block on everything",
-  );
-  assert(
-    computeVerdict([mk("CRITICAL")], [], "LOW") === "CRITICAL_ISSUES_FOUND",
-    "CRITICAL blocks whatever the threshold says — no project gets to wave one through",
-  );
-  assert(computeVerdict([mk("LOW")], []) === "APPROVED", "a LOW alone still approves by default");
-}
-
-// ------------------------- resolution: absent doctrine is normal, not an error
-
-// The stub is the ONLY backend on this path: `askPolicy` builds one backend
-// named "policy-judge" whose `run` calls the injected `judge`, and
-// `decide()` uses `ctx.backends` verbatim — the grandfathered branch that
-// would otherwise refuse the generic classifier/session-LLM backends is only
-// reached when a caller supplies none (decision-seam.ts). So nothing here
-// spawns a child process: the whole block is offline.
-const judgeSaying = (a: Record<string, unknown> | undefined) => async () => ({
-  toolUses: a ? [{ name: "report_policy", arguments: a }] : [],
-});
-const docs = (text: string): DoctrineDoc[] => [{ file: "AGENTS.md", text }];
-
-/**
- * The §1 sentences that could set this repo's own blocking bar, read out of
- * AGENTS.md rather than hard-coded so a rewording cannot leave a test asserting
- * a quote that no longer exists in the doctrine.
- *
- * Split on sentence FINAL punctuation, not on every period: the paragraph's
- * first sentence ends inside markdown bold (`…and above.**`), so a bare
- * `(?<=\.)` split glues sentences 1 and 2 together and both counts lie. Bold
- * markers and whitespace are stripped by `normaliseForCitation`, so the leading
- * `**` / trailing `.` fragment still verifies as a citation.
- */
-const ownBlockingSentences = (doctrine: string): string[] => {
-  const para = doctrine
-    .split("\n")
-    .find((line) => line.startsWith("**Six-pass review findings are blocking"));
-  return (para ?? "")
-    .split(/(?<=[.!?])\*\*|(?<=[.!?])\s+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-};
-
-const HIGH_BAR = /^\**Six-pass review findings are blocking at [A-Z]+ severity and above\.*$/;
-
-{
-  const none = await resolveReviewThreshold(judgeSaying(undefined), []);
-  assert(
-    none.severity === "MEDIUM" && none.source === "default",
-    "NO AGENTS.md at all → MEDIUM. A repo without doctrine is the normal case, not a failure",
-  );
-
-  const silent = await resolveReviewThreshold(
-    judgeSaying({ verdict: "unstated" }),
-    docs("# Contributing\n\nRun the tests.\n"),
-  );
-  assert(
-    silent.severity === "MEDIUM" && silent.source === "default",
-    "doctrine that never mentions review severity → MEDIUM",
-  );
-
-  const SENT = "Six-pass review findings are blocking at HIGH severity and above.";
-  const set = await resolveReviewThreshold(
-    judgeSaying({ verdict: "permitted", quote: SENT, sourceFile: "AGENTS.md" }),
-    docs(`## 1. Gates\n\n${SENT}\n`),
-  );
-  assert(
-    set.severity === "HIGH" && set.source === "doctrine",
-    "a project that states HIGH gets HIGH, with the sentence recorded",
-  );
-  assert(set.quote === SENT, "...verbatim");
-
-  // The #407 citation check carries straight over: an invented sentence cannot
-  // loosen the bar.
-  const fabricated = await resolveReviewThreshold(
-    judgeSaying({
-      verdict: "permitted",
-      quote: "Only CRITICAL findings block a merge in this project.",
-      sourceFile: "AGENTS.md",
-    }),
-    docs("# Contributing\n\nRun the tests.\n"),
-  );
-  assert(
-    fabricated.severity === "MEDIUM" && fabricated.source === "default",
-    "a FABRICATED sentence cannot loosen the bar — the citation must exist",
-  );
-
-  const prev = process.env.PI_ENSEMBLE_REVIEW_THRESHOLD;
-  process.env.PI_ENSEMBLE_REVIEW_THRESHOLD = "critical";
-  const op = await resolveReviewThreshold(judgeSaying({ verdict: "unstated" }), docs("x"));
-  assert(
-    op.severity === "CRITICAL" && op.source === "operator",
-    "the operator's env override wins, case-insensitively",
-  );
-  process.env.PI_ENSEMBLE_REVIEW_THRESHOLD = "nonsense";
-  assert(
-    (await resolveReviewThreshold(judgeSaying({ verdict: "unstated" }), docs("x"))).severity ===
-      "MEDIUM",
-    "a nonsense override is ignored rather than obeyed",
-  );
-  if (prev === undefined) delete process.env.PI_ENSEMBLE_REVIEW_THRESHOLD;
-  else process.env.PI_ENSEMBLE_REVIEW_THRESHOLD = prev;
-}
-
-// --------------------------------- this repo's own AGENTS.md §1, end to end
-
-{
-  const root = path.resolve(import.meta.dirname, "..", "..");
-  const text = await fs.readFile(path.join(root, "AGENTS.md"), "utf8");
-  assert(
-    /blocking at HIGH severity and above/i.test(text),
-    "pi-ensemble's own AGENTS.md states HIGH — the sentence the code now reads (raised from MEDIUM on 2026-10-25)",
-  );
-  // The code default is unchanged by that operator decision: silent doctrine
-  // still gets MEDIUM, asserted above in the resolution block.
-  const sentences = ownBlockingSentences(text);
-  assert(sentences.length > 0, "§1's threshold paragraph is present");
-  const OWN_QUOTE = sentences.find((s) => HIGH_BAR.test(s));
-  assert(OWN_QUOTE !== undefined, "§1's blocking sentence is found verbatim in AGENTS.md");
-  // Negative direction: no single sentence of §1's threshold paragraph may read
-  // as a LOOSER bar than HIGH. A sentence that says MEDIUM or LOW blocks would
-  // silently lower the gate the judge is chartered to read. And at least two
-  // sentences must carry the bar themselves — if §1 ever degenerates to a
-  // single relational sentence plus prose, the judge quoting the other one
-  // falls to the MEDIUM default, so a loop that only rejects looser bars
-  // cannot notice.
-  let barSentences = 0;
-  for (const sentence of sentences) {
-    const got = severityFromQuote(sentence);
-    assert(
-      got === "HIGH" || got === undefined,
-      `sentence "${sentence.slice(0, 60)}…" reads as HIGH or nothing (got ${got}) — never a looser bar`,
-    );
-    if (got === "HIGH") barSentences++;
-  }
-  assert(
-    barSentences >= 2,
-    `at least two sentences of §1's threshold paragraph resolve to HIGH (got ${barSentences}) — a judge quoting either one must land on HIGH, not the MEDIUM default`,
-  );
-  const own = await resolveReviewThreshold(
-    judgeSaying({
-      verdict: "permitted",
-      quote: OWN_QUOTE,
-      sourceFile: "AGENTS.md",
-    }),
-    docs(text),
-  );
-  assert(
-    own.severity === "HIGH" && own.source === "doctrine",
-    `resolving this repository's own AGENTS.md yields HIGH (got ${own.severity}/${own.source})`,
-  );
-
-  // Mirror 1 over the REAL doctrine: a judge that reads the same file and says
-  // nothing stays on the default — HIGH doctrine does not leak into an answer
-  // the judge did not give.
-  const ownSilent = await resolveReviewThreshold(judgeSaying({ verdict: "unstated" }), docs(text));
-  assert(
-    ownSilent.severity === "MEDIUM" && ownSilent.source === "default",
-    `the same AGENTS.md with an 'unstated' judge yields MEDIUM/default (got ${ownSilent.severity}/${ownSilent.source}) — doctrine is only honoured through a verified citation`,
-  );
-
-  // Mirror 2: a judge that quotes the OLD MEDIUM bar, a sentence this repo's
-  // AGENTS.md does not contain. It must not be honoured — the #407 citation
-  // check over the real file is what stops it, not a literal in this test.
-  const ownFabricated = await resolveReviewThreshold(
-    judgeSaying({
-      verdict: "permitted",
-      quote: "Six-pass review findings are blocking at MEDIUM severity and above.",
-      sourceFile: "AGENTS.md",
-    }),
-    docs(text),
-  );
-  assert(
-    ownFabricated.severity === "MEDIUM" && ownFabricated.source !== "doctrine",
-    `a quote of the retired MEDIUM sentence, absent from AGENTS.md, is not honoured (got ${ownFabricated.severity}/${ownFabricated.source})`,
-  );
-}
-
-// ------------------- the verified quote decides the bar, not the judge's label
-
-{
-  // The follow-up defect in #1988, observed on a real headless proof run: the
-  // judge answered `forbidden` while quoting §1's HIGH sentence VERBATIM, with
-  // the citation verified. `resolveReviewThreshold` gated the bar on
-  // `decision.permitted`, which is false for every `forbidden` answer whatever
-  // its citation, so this repo's own bar silently became MEDIUM and a round
-  // with only MEDIUM/LOW findings bought a fix wave.
-  //
-  // With the judge disabled, `askPolicy` denies before the stub is called and
-  // every resolution below falls to the default — exactly the shape these
-  // assertions must NOT silently pass on. Fail loudly instead.
-  assert(
-    policyJudgeEnabled(),
-    "the policy judge is enabled (PI_ENSEMBLE_POLICY_JUDGE unset) — with it off every resolution here would fall to the default and pass for the wrong reason",
-  );
-
-  const ownDoctrine = await fs.readFile(
-    path.resolve(import.meta.dirname, "..", "..", "AGENTS.md"),
-    "utf8",
-  );
-  const HIGH_SENTENCE = ownBlockingSentences(ownDoctrine).find((s) => HIGH_BAR.test(s)) ?? "";
-
-  // Case 1 — the judge's `forbidden` label carries a quote the seam verified:
-  // it still decides HIGH. Proves the bar comes from the citation, not `permitted`.
-  const forbiddenVerified = await resolveReviewThreshold(
-    judgeSaying({ verdict: "forbidden", quote: HIGH_SENTENCE, sourceFile: "AGENTS.md" }),
-    docs(ownDoctrine),
-  );
-  assert(
-    forbiddenVerified.severity === "HIGH" && forbiddenVerified.source === "doctrine",
-    `a citation-VERIFIED 'forbidden' that quotes §1's HIGH sentence decides HIGH, label notwithstanding (got ${forbiddenVerified.severity}/${forbiddenVerified.source}) — the label is not the bar`,
-  );
-  assert(
-    forbiddenVerified.quote === HIGH_SENTENCE,
-    `...and the sentence relied on is recorded verbatim (got ${String(forbiddenVerified.quote).slice(0, 60)})`,
-  );
-
-  // Case 2 — the same label quoting a sentence the documents do not contain.
-  // Verification is what decided case 1, so an unverified quote falls to the
-  // default whatever the label says.
-  const forbiddenUnverified = await resolveReviewThreshold(
-    judgeSaying({
-      verdict: "forbidden",
-      quote: "Six-pass review findings are blocking at LOW severity and above.",
-      sourceFile: "AGENTS.md",
-    }),
-    docs(ownDoctrine),
-  );
-  assert(
-    forbiddenUnverified.severity === "MEDIUM" && forbiddenUnverified.source === "default",
-    `an UNVERIFIED quote under a 'forbidden' label still yields the default (got ${forbiddenUnverified.severity}/${forbiddenUnverified.source}) — a sentence the documents lack decides nothing`,
-  );
-
-  // Case 3 — a `forbidden` with NO quote: there is no sentence to read a bar
-  // off, so the default stands. Proves the bar comes from a quote and never
-  // from the verdict alone.
-  const forbiddenNoQuote = await resolveReviewThreshold(
-    judgeSaying({ verdict: "forbidden", sourceFile: "AGENTS.md" }),
-    docs(ownDoctrine),
-  );
-  assert(
-    forbiddenNoQuote.severity === "MEDIUM" && forbiddenNoQuote.source === "default",
-    `a 'forbidden' with NO quote yields the default (got ${forbiddenNoQuote.severity}/${forbiddenNoQuote.source})`,
-  );
-}
-
 await fs.rm(tmp, { recursive: true, force: true });
-console.log(`\nexit ${exit}`);
-process.exit(exit);
+console.log(`\nexit ${failureCount() === 0 ? 0 : 1}`);
+process.exit(failureCount() === 0 ? 0 : 1);

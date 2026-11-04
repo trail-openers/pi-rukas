@@ -20,6 +20,7 @@ import { CLAIM_SCAN, CLAIM_SCAN_PRECEDENCE, type RosterEntry } from "./lens-rost
 import { SEVERITY_RUBRIC } from "./lens-severity-rubric.ts";
 import type { ResolvedNotice, SetAsideNotice } from "./review-findings-file.ts";
 import type { ConfirmationLapse } from "./review-findings-store-types.ts";
+import { DEFAULT_REVIEW_THRESHOLD } from "./review-severity-default.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult, DispatchUsage } from "./types.ts";
 
@@ -377,7 +378,8 @@ export function bySeverityCounts(findings: Finding[]): Record<Severity, number> 
  *      six-pass review degenerated to a five-or-fewer-pass review. Never
  *      silently downgrade — surface explicitly.
  *   2. CRITICAL_ISSUES_FOUND — any CRITICAL finding from any completed lens.
- *   3. ISSUES_FOUND — any finding at or above `threshold` (default MEDIUM).
+ *   3. ISSUES_FOUND — any finding at or above `threshold` (default
+ *      `DEFAULT_REVIEW_THRESHOLD`, i.e. HIGH).
  *   4. APPROVED — only sub-threshold (or no) findings AND all lenses completed.
  *
  * CRITICAL blocks regardless of `threshold`. A project may decide that MEDIUM
@@ -415,11 +417,12 @@ export function computeVerdict(
  * Until the threshold was made configurable nothing read that sentence, so it
  * was decorative and a project wanting a different bar had no way to say so.
  *
- * MEDIUM stays the default, so a project that says nothing — or has no
- * AGENTS.md at all — gets exactly today's behaviour. See
- * `work-driver-policy.ts` for how a project loosens it.
+ * The constant lives in `review-severity-default.ts` — a leaf, so this pure
+ * module never imports the doctrine resolver (and the policy judge and child
+ * spawn behind it) for one value — and is re-exported here so every consumer
+ * of this leaf sees one value rather than two that can drift.
  */
-export const DEFAULT_REVIEW_THRESHOLD: Severity = "MEDIUM";
+export { DEFAULT_REVIEW_THRESHOLD };
 
 /**
  * The severity order `computeVerdict` judges a round by, shared with any caller

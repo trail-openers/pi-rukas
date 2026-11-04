@@ -113,7 +113,10 @@ ${blocks.join("\n\n")}`;
  *
  * Severity is MEDIUM: this is a defect a human would ask to be fixed before
  * merge, not a stylistic note. Whether MEDIUM blocks is the project's call, not
- * this function's — see `DEFAULT_REVIEW_THRESHOLD`.
+ * this function's — see `DEFAULT_REVIEW_THRESHOLD`, whose HIGH default means a
+ * project that says nothing DISCLOSES these rather than blocking on them. The
+ * scan stays MEDIUM deliberately: it is a deterministic lookup, not a judgment,
+ * and a whole class of false positives on it is cheaper to read than to fix.
  */
 export async function runClaimScan(
   execFn: ExecFn,

@@ -4,11 +4,11 @@
  *
  * `resolveReviewThreshold` was wired into one caller only — the `/work` driver's
  * lens step — so every hand-run review judged findings at
- * `DEFAULT_REVIEW_THRESHOLD` (MEDIUM) whatever the project's doctrine said. In
- * this repo, whose §1 blocks at HIGH and above, that meant a round whose only
- * findings were MEDIUM came back ISSUES_FOUND: the ledger row recorded
- * `passed: false` and the merge guard refused, while the project's own sentence
- * stayed decorative on the path a person actually runs.
+ * `DEFAULT_REVIEW_THRESHOLD` whatever the project's doctrine said. In this repo,
+ * whose §1 blocks at HIGH and above, that meant the bar a hand-run review applied
+ * was whichever the constant happened to hold, and the ledger row recorded
+ * `passed` against that rather than the project's sentence — which stayed
+ * decorative on the path a person actually runs.
  *
  * The cases drive the REGISTERED tool — `execute`, then the async job body it
  * opened — so the assertion is on the verdict and the ledger row the tool
@@ -158,8 +158,8 @@ mock.module(new URL("../src/spawn.ts", import.meta.url).href, () => ({
   },
 }));
 
-/** The MEDIUM-only finding set the defect turns on: disclosable under a HIGH bar,
- * blocking at the MEDIUM default. */
+/** The MEDIUM-only finding set the defect turns on: disclosable under the
+ * project's HIGH bar, blocking when the bar is MEDIUM. */
 const MEDIUM_ONLY = [
   { severity: "MEDIUM", path: "src-a.ts", line: 2, title: "Unclear module contract" },
 ];
@@ -210,8 +210,11 @@ await withEnv(
   { PI_ENSEMBLE_REVIEW_LEDGER_FILE: ledgerFile, PI_ENSEMBLE_SKILLS_DIR: skills },
   async () => {
     try {
-      // ── (1) CONTROL at the review layer: the same findings, no threshold, block.
-      // Without it, the approval below could be the fixture reporting nothing.
+      // ── (1) CONTROL at the review layer: the same findings, judged at the bar
+      // this repo's §1 states (HIGH), they block. Without it, the approval below
+      // could be the fixture reporting nothing. Judged at an explicit MEDIUM bar
+      // because the control must fail closed on a fixture that reported nothing,
+      // and the shipped default no longer blocks a MEDIUM-only round.
       {
         const control = await runLensReview({
           diff: "diff --git a/src-a.ts b/src-a.ts\n+export const b = 2;",
@@ -219,10 +222,11 @@ await withEnv(
           branch: "feature/x",
           head: headSha,
           full: true,
+          threshold: "MEDIUM",
         });
         assert(
           control.verdict === "ISSUES_FOUND",
-          `(1) control: the MEDIUM-only set blocks at the review layer's default (${control.verdict})`,
+          `(1) control: the MEDIUM-only set blocks when the bar is MEDIUM, so the fixture does report (${control.verdict})`,
         );
       }
 
@@ -256,7 +260,7 @@ await withEnv(
         );
         assert(
           /^Code review verdict \(\d+ lenses\): APPROVED/m.test(report),
-          `(2) A MEDIUM-ONLY ROUND UNDER THE PROJECT'S HIGH BAR APPROVES ON THE TOOL PATH — at the MEDIUM default the same round is ISSUES_FOUND, the ledger says the review failed, and the merge guard refuses (report: ${report.slice(0, 220).replace(/\n/g, " ")})`,
+          `(2) A MEDIUM-ONLY ROUND UNDER THE PROJECT'S HIGH BAR APPROVES ON THE TOOL PATH — at a MEDIUM bar the same round is ISSUES_FOUND, the ledger says the review failed, and the merge guard refuses (report: ${report.slice(0, 220).replace(/\n/g, " ")})`,
         );
         const row = ledgerRows()
           .filter((e) => e.kind === "lens")
@@ -287,8 +291,8 @@ await withEnv(
           baseRef: undefined,
         });
         assert(
-          noDoctrine === "MEDIUM",
-          `(3) with no doctrine to read the bar is the shipped default, and no judge was paid (got ${noDoctrine}; judge calls ${String(judgePrompts.length - before)})`,
+          noDoctrine === "HIGH",
+          `(3) with no doctrine to read the bar is the shipped HIGH default, and no judge was paid (got ${noDoctrine}; judge calls ${String(judgePrompts.length - before)})`,
         );
         const atDefault = await runLensReview({
           diff: "diff --git a/src-a.ts b/src-a.ts\n+export const b = 2;",
@@ -300,15 +304,15 @@ await withEnv(
         });
         assert(
           atDefault.verdict === "ISSUES_FOUND",
-          `(3) the same stub findings at the DEFAULT bar are ISSUES_FOUND — the difference between this and (2) is only the bar the doctrine supplied (${atDefault.verdict})`,
+          `(3) the same stub findings at a MEDIUM bar are ISSUES_FOUND — the difference between this and (2) is only the bar the doctrine supplied (${atDefault.verdict})`,
         );
       }
 
       // ── (4) THE BAR IS NOT THE CALLER'S TO CHOOSE. `base` and `head` are model
       // input, so a tool that read doctrine at either let the reviewed branch pick
       // the severity it is judged against. This round is a SAME-ROUND comparison:
-      // one MEDIUM finding (which the project's HIGH bar discloses and the shipped
-      // MEDIUM default blocks) plus a judge that answers HIGH only for the MAINLINE
+      // one MEDIUM finding (which the project's HIGH bar discloses and a MEDIUM
+      // bar blocks) plus a judge that answers HIGH only for the MAINLINE
       // doctrine's sentence and CRITICAL for the branch's. So exactly one variable
       // — which ref the doctrine was read at — decides the verdict: reading the
       // mainline tip gives HIGH and the finding is disclosable (APPROVED, and the

@@ -3,11 +3,11 @@
  * lean/review-deps — the lens gate must receive the project's blocking bar.
  *
  * Lean's `review` step called `runLensReview` with no `threshold`, so the review
- * layer judged every round at `DEFAULT_REVIEW_THRESHOLD` (MEDIUM) whatever the
- * project's doctrine said. The consequence is not cosmetic: an ISSUES_FOUND
- * round buys a FIX ROUND, so lean spent children repairing findings the project
- * called disclosable — while the `/work` driver, reading the same doctrine, ran
- * the same code at HIGH.
+ * layer judged every round at `DEFAULT_REVIEW_THRESHOLD` whatever the project's
+ * doctrine said. The consequence is not cosmetic: an ISSUES_FOUND round buys a
+ * FIX ROUND, so lean spent children repairing findings the project called
+ * disclosable — while the `/work` driver, reading the same doctrine, ran the
+ * same code at the project's own bar.
  *
  * Every assertion is on what the seam ACTUALLY DELIVERED to the lens engine,
  * captured off the call — never on what was handed to `reviewDeps`. An assertion

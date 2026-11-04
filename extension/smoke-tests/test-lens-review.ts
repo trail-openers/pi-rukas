@@ -49,10 +49,15 @@ assert(
   "LOW only → APPROVED (matches opencode contract)",
 );
 
-// 3. MEDIUM → ISSUES_FOUND
+// 3. MEDIUM → APPROVED at the shipped default, ISSUES_FOUND at a MEDIUM bar
 assert(
-  computeVerdict([mk("ARCHITECTURE", "MEDIUM", "a.ts", 1, "x")]) === "ISSUES_FOUND",
-  "MEDIUM → ISSUES_FOUND (MEDIUM blocks merge in opencode contract)",
+  computeVerdict([mk("ARCHITECTURE", "MEDIUM", "a.ts", 1, "x")]) === "APPROVED",
+  "MEDIUM alone → APPROVED: the shipped default is HIGH, so a project that says nothing discloses it",
+);
+assert(
+  computeVerdict([mk("ARCHITECTURE", "MEDIUM", "a.ts", 1, "x")], undefined, "MEDIUM") ===
+    "ISSUES_FOUND",
+  "...and a project that sets a MEDIUM bar blocks on it",
 );
 
 // 4. HIGH → ISSUES_FOUND

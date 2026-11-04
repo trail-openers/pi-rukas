@@ -2665,10 +2665,11 @@ A lens assigns a finding's severity — that is its judgment. Which severity is 
 
 That is pi-rukas's own sentence, and since this change it is read rather than merely written down. Say something equivalent in your own `AGENTS.md` to move the bar. Rules:
 
-- **No `AGENTS.md`, or one that never mentions review severity, is the normal case** — you get the default, `MEDIUM`. This deliberately differs from merge authority, which fails closed and denies when doctrine is silent. Configuration falls back to a default; authority does not.
+- **No `AGENTS.md`, or one that never mentions review severity, is the normal case** — you get the default, `HIGH`. Most repositories state no bar anywhere, and at a `MEDIUM` bar that majority got ordinary best-practice findings turned into fix orders. This deliberately differs from merge authority, which fails closed and denies when doctrine is silent. Configuration falls back to a default; authority does not.
 - **Loosening requires a verified citation.** The judge must quote the sentence, and the driver checks that sentence exists in the file — the #407 mechanism, reused unchanged. A fabricated sentence cannot raise your bar.
 - **Doctrine is read at the cycle's base commit**, so a cycle cannot lower its own bar mid-run.
 - **`CRITICAL` always blocks.** A project may decide MEDIUM findings are advisory; none gets to wave through a CRITICAL.
+- **A disabled policy judge resolves to the same `HIGH` default.** With `PI_ENSEMBLE_POLICY_JUDGE=0` nothing can be read out of doctrine, so every project — including one that states a bar — lands on `HIGH`.
 - `PI_ENSEMBLE_REVIEW_THRESHOLD=<severity>` overrides everything for one run.
 
 ### Structured markers in subagent replies (#408)

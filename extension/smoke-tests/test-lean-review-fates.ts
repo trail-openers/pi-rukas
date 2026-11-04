@@ -351,9 +351,9 @@ assert(
 // Only a row the layer itself carried, or the layer's own CRITICAL verdict, ends the
 // wave. A fresh LOW on the fix range is a finding the layer discloses through its
 // residual post, and a step that handed the run back for it would be holding its own
-// bar above the layer's. (LOW is the row's severity and MEDIUM the harness default
-// bar: a row at the bar is a demand for the wave, which is (b1) of
-// `test-lean-review-bar-threshold.ts`.)
+// bar above the layer's. (LOW is the row's severity and HIGH the harness default
+// bar from `DEFAULT_REVIEW_THRESHOLD`, so the row sits below it: a row AT the bar is
+// a demand for the wave, which is (b1) of `test-lean-review-bar-threshold.ts`.)
 {
   const { repoRoot, baseSha } = makeRepo();
   await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 10;\n" });
