@@ -152,29 +152,37 @@ export const STDERR_TAIL_BYTES = 64 * 1024;
  * Exported for unit testing — the live spawn smoke is slow.
  */
 /**
- * The recent-stderr ring. Spawn keeps a bounded tail rather than the whole
- * stream: failure reports carry the last ~`STDERR_TAIL_BYTES` and nothing else.
- * Buffers, concatenated once at end-of-spawn, so no ConsString tree builds up
- * (and no SlowFlatten when the tail is finally read).
+ * The recent-stderr ring for one spawn: the byte budget, the buffers, their
+ * eviction and the one-shot stringify, kept as one unit. `spawn.ts` sheds the
+ * ring to stay under AGENTS.md §12, and the unit IS the seam — a split ring
+ * (the byte number in one file, the buffers in another) is the drift this move
+ * exists to prevent, and the reason `STDERR_TAIL_BYTES` is read here rather
+ * than passed in.
+ *
+ * The reader is the function itself: `appendStderr.toString()` is the whole
+ * read, so the spawn hands one handle to every stderr sink and stringifies once.
+ * The return type is the callable because `traceKillCauses`, `capKillAttribution`
+ * and the reviewer bounds all take `(s: string) => void`, and Node's Readable
+ * `data` listener passes three arguments — hence the permissive parameter.
+ *
+ * Spawn keeps a bounded tail rather than the whole stream: failure reports
+ * carry the last ~`STDERR_TAIL_BYTES` and nothing else. Chunks concatenate once,
+ * so no ConsString tree builds up (and no SlowFlatten when the tail is read).
  */
-export function createStderrTail(maxBytes: number): {
-  append: (chunk: Buffer | string) => void;
-  toString: () => string;
-} {
+export function createStderrAppend(): (chunk: Buffer | string) => void {
   const chunks: Buffer[] = [];
   let size = 0;
-  return {
-    append: (chunk) => {
-      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, "utf8");
-      chunks.push(buf);
-      size += buf.length;
-      while (size > maxBytes && chunks.length > 1) {
-        const evicted = chunks.shift();
-        if (evicted) size -= evicted.length;
-      }
-    },
-    toString: () => Buffer.concat(chunks).toString("utf8"),
+  const append = (chunk: Buffer | string): void => {
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, "utf8");
+    chunks.push(buf);
+    size += buf.length;
+    while (size > STDERR_TAIL_BYTES && chunks.length > 1) {
+      const evicted = chunks.shift();
+      if (evicted) size -= evicted.length;
+    }
   };
+  const readTail = (): string => Buffer.concat(chunks).toString("utf8");
+  return Object.assign(append, { toString: readTail });
 }
 
 export function buildCwdHint(cwd: string | undefined): string {
