@@ -366,7 +366,12 @@ export function formatSingleReport(
       : result.ok
         ? "---\nYou started this async dispatch earlier. Continue the workflow."
         : `---\n(See /runs for full transcript at ${result.transcriptPath ?? "ensemble-runs/"}.)`;
-  return `${head}\n\n${body}\n\n${gitLine ? `${gitLine}\n\n` : ""}${footer}`;
+  // The operator's git/gh config was changed and restored (`spawn-operator-
+  // config.ts`). Disclosure between body and footer — the status line stays the
+  // run's own outcome, so a restored file never reads as a failed dispatch.
+  const violations = (result.operatorConfig ?? []).map((line) => `VIOLATION: ${line}`);
+  const violationBlock = violations.length > 0 ? `${violations.join("\n")}\n\n` : "";
+  return `${head}\n\n${body}\n\n${violationBlock}${gitLine ? `${gitLine}\n\n` : ""}${footer}`;
 }
 
 /**

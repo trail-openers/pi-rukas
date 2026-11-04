@@ -29,13 +29,13 @@ import { type ResolvedModelChoice, resolveModel } from "./models.ts";
 import { getPiInvocation } from "./pi-binary-resolve.ts";
 import type { PiJsonEvent, SpawnOptions } from "./pi-event-shapes.ts";
 import { kickPiResolutionProbe } from "./pi-version-probe.ts";
-import { emptyRunningState, ingestEvent } from "./progress.ts";
+import { emptyRunningState } from "./progress.ts";
 import { excludeToolsFor } from "./role-tools.ts";
-import { ROLES, type RoleName, isRoleName } from "./roles.ts";
+import { ROLES, isRoleName } from "./roles.ts";
 import { createBoundArmed } from "./spawn-bound-armed.ts";
 import { armChildBounds } from "./spawn-budget-arms.ts";
 import { capKillAttribution } from "./spawn-caps.ts";
-import { applyChildBound, armChildBound } from "./spawn-child-bound.ts";
+import { applyChildBound } from "./spawn-child-bound.ts";
 import { collapseEvents } from "./spawn-collapse-events.ts";
 import { installExitKillSeam, startExitWait } from "./spawn-exit-await-session.ts";
 
@@ -51,6 +51,7 @@ import {
   createStdoutLineHandler,
 } from "./spawn-inflight.ts";
 import { groupSpawnOpts, leadsProcessGroup, registerChild } from "./spawn-kill.ts";
+import { withOperatorConfigGuard } from "./spawn-operator-config.ts";
 import { applyChildPermissionEnv, planChildPermissions } from "./spawn-permission.ts";
 import { failedByKill, recordKillBudgets, wireReviewBounds } from "./spawn-review-bounds.ts";
 import { runWithReviewerTree } from "./spawn-reviewer-isolation.ts";
@@ -94,9 +95,14 @@ export async function spawnSpecialist(
 ): Promise<DispatchResult> {
   // #1528 — the per-process cap first, then the host-wide one (host-spawn-slots.ts).
   // #1975 — the reviewer isolation choke point: `runWithReviewerTree` relocates
-  // a reviewer child's cwd and releases the tree in its own finally.
+  // a reviewer child's cwd and releases the tree in its own finally. #2019 — the
+  // operator-config guard is innermost, inside BOTH holds: a snapshot taken
+  // before a queue wait would blame this child for the other's write. One
+  // expression so the hold order reads as a unit; the split form would cost a
+  // line this file cannot spend (§12 caps it at 500).
   return runWithReviewerTree(spec, (s) =>
-    withSpawnSlot(() => withHostSpawnSlot(() => spawnSpecialistInner(s, opts), opts.signal)),
+    // biome-ignore format: the wrapper call below is deliberately one long line
+    withSpawnSlot(() => withHostSpawnSlot(() => withOperatorConfigGuard(s.role, () => spawnSpecialistInner(s, opts)), opts.signal)),
   );
 }
 
@@ -109,7 +115,7 @@ async function spawnSpecialistInner(
   assertLiveSpawnAllowed(spec.role);
 
   const role = ROLES[spec.role];
-  // First spawn in this process: kick the version probe (fire-and-forget).
+  // First spawn in the process: kick the version probe (fire-and-forget).
   kickPiResolutionProbe();
   const systemPrompt = await fs.readFile(role.promptFile, "utf8");
   const cwd = spec.cwd ?? process.cwd();
@@ -120,9 +126,9 @@ async function spawnSpecialistInner(
   const tmpPromptFile = path.join(tmpDir, `${spec.role}.md`);
   await fs.writeFile(tmpPromptFile, systemPrompt);
 
-  // Per-child transcript path. Pi will write its native session JSON here.
-  // #573 — accept a caller-supplied runId (derived by the driver BEFORE spawn
-  // so crash-resume can locate the surviving session file).
+  // Per-child transcript path. Pi writes its native session JSON here. #573 —
+  // a caller-supplied runId is derived by the driver BEFORE spawn, so
+  // crash-resume can locate the surviving session file.
   const runId = opts.runId ?? makeRunId();
   const transcriptPath = transcriptPathFor(spec.role, runId, opts.seq, opts.tag);
   await fs.mkdir(path.dirname(transcriptPath), { recursive: true });
@@ -219,9 +225,9 @@ async function spawnSpecialistInner(
   opts.onStdin?.(child.stdin);
 
   // Send the kickoff prompt via the RPC channel (Pi's first user turn). With
-  // `spec.cwd`, a runtime note names the concrete working directory from line
-  // 1: weak local models skim past generic "do not cd" doctrine, and a runtime
-  // absolute path is a much harder cue to ignore (PR #192).
+  // `spec.cwd` a runtime note names the concrete working directory from line 1
+  // — a runtime absolute path is a much harder cue to ignore than doctrine
+  // alone (PR #192).
   const cwdHint = buildCwdHint(spec.cwd);
   try {
     child.stdin.write(
@@ -405,9 +411,8 @@ async function spawnSpecialistInner(
   });
   // #1863 hotfix (v0.14.30) — the grace clock starts AT THE KILL; the observer /
   // seam / wait wiring lives in `spawn-exit-await-session.ts` rather than inline:
-  // `spawn.ts` sits at the AGENTS.md §12 size cap, and the point of the fix is
-  // that no kill owner is listed by hand, which is what the call site can no
-  // longer show. The seam itself went in at `registerChild`, above every arm.
+  // `spawn.ts` sits at the §12 cap, and the point is that no kill owner is listed
+  // by hand, which is what the call site could no longer show.
   const exitWait = startExitWait(child, exitKillSeam);
   let exitCode: number | null = null;
   try {
@@ -423,8 +428,8 @@ async function spawnSpecialistInner(
     // Best-effort cleanup of the temp prompt file; ignore errors.
     fs.rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
     // Stop the per-spawn permission broker; unlinks the socket file. Neither
-    // teardown step can fail the dispatch: the temp dir is best-effort and a
-    // leftover socket file says nothing about the child's result.
+    // teardown step can fail the dispatch: both are best-effort, and a
+    // leftover socket or temp dir says nothing about the child's result.
     try {
       broker?.stop();
     } catch (err) {
@@ -453,13 +458,12 @@ async function spawnSpecialistInner(
   applyChildBound(childBound, result);
   // #1827 — the reviewer bounds land HERE, after both attribution passes
   // (spawn-review-bounds.ts says why the ordering is load-bearing). The warn
-  // sink is passed explicitly so a discarded re-read kill is visible in the
-  // operator's trace rather than silently dropped.
+  // sink is passed explicitly so a discarded re-read kill stays visible.
   reviewBounds.apply(result, appendStderr, traceWarn);
   result.transcriptPath = transcriptPath;
   result.modelSource = modelChoice.source;
-  // #1847 — the wall-clock budget behind each kill, folded onto the result by the
-  // shared helper (spawn-review-bounds.ts), which owns writing kills into results.
+  // #1847 — the wall-clock budget behind each kill, folded onto the result by
+  // the shared helper (spawn-review-bounds.ts), which owns kill writes.
   recordKillBudgets(result, {
     timeoutMs,
     clamped: bound.clamped,
@@ -471,8 +475,7 @@ async function spawnSpecialistInner(
   // spawn-review-bounds.ts holds the reasoning for the separation.
   if (failedByKill(result)) {
     result.ok = false;
-    // Only meaningful for a kill; attaching it always would imply we killed
-    // every child.
+    // Meaningful only for a kill — attaching it always would imply one.
     result.lastActivity = {
       kind: lastActivityKind,
       agoMs: Date.now() - lastActivityAt,
@@ -480,16 +483,14 @@ async function spawnSpecialistInner(
     };
   }
   if (modelChoice.model && !result.model) {
-    // collapseEvents only sets `model` from assistant message metadata, which
-    // is present when the child actually got a reply. If the child failed
-    // before any assistant turn (rare), surface the requested model anyway.
+    // collapseEvents only sets `model` from assistant metadata, present only
+    // when the child got a reply; surface the requested model after a failure.
     result.model = modelChoice.model;
   }
 
   reconcileObservedCounts(result, runningState);
   // Final onProgress emit — flips the child from running to done so the
-  // aggregator's last render shows the resolved icon (✓ / ✗) instead of the
-  // running spinner.
+  // aggregator's last render shows the resolved icon (✓ / ✗), not the spinner.
   runningState.done = true;
   runningState.ok = result.ok;
   runningState.elapsedMs = ms;
