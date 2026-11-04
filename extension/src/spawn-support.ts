@@ -1,14 +1,15 @@
 /**
  * Spawn support helpers for `spawnSpecialist` — the wall-clock backstop and
- * inactivity watchdog, the child stderr-tail budget, the runtime cwd hint
- * prepended to kickoff prompts, per-child transcript paths, run-id generation,
- * and pi-binary invocation resolution. Each function here is self-contained
- * and called once (or a handful of times) from spawn.ts; factored out to keep
- * the `spawnSpecialist` + `collapseEvents` file under the module-size
+ * inactivity watchdog, the child stderr-tail budget and its listener, the
+ * runtime cwd hint prepended to kickoff prompts, per-child transcript paths,
+ * run-id generation, and pi-binary invocation resolution. Each function here is
+ * self-contained and called once (or a handful of times) from spawn.ts; factored
+ * out to keep the `spawnSpecialist` + `collapseEvents` file under the module-size
  * guideline (AGENTS.md §12, #171).
  */
 
 import type { ChildProcess } from "node:child_process";
+import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { Writable } from "node:stream";
@@ -140,6 +141,32 @@ export function spawnBackstopMs(): number {
 export const STDERR_TAIL_BYTES = 64 * 1024;
 
 /**
+ * Write the role's system prompt where the child can read it, and hand back the
+ * temp directory that holds it.
+ *
+ * Pi's `--append-system-prompt` takes a FILE and appends its contents to Pi's
+ * own default safety prompt, so the prompt built for this role has to be on disk
+ * before the child is spawned. It is written under a fresh `mkdtemp` directory
+ * rather than a predictable path because several children run at once — one
+ * directory per spawn is what lets the spawn's `finally` remove its own prompt
+ * without racing a sibling's. That `finally` owns the cleanup and does so
+ * best-effort: a leftover temp prompt says nothing about the child's result.
+ *
+ * Lives here rather than inline in `spawn.ts` for the AGENTS.md §12 size cap;
+ * the seam is the write AND the directory it lives in, so the caller cannot end
+ * up removing a directory it did not create.
+ */
+export async function writeRolePromptFile(
+  role: string,
+  systemPrompt: string,
+): Promise<{ tmpDir: string; tmpPromptFile: string }> {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-rukas-"));
+  const tmpPromptFile = path.join(tmpDir, `${role}.md`);
+  await fs.writeFile(tmpPromptFile, systemPrompt);
+  return { tmpDir, tmpPromptFile };
+}
+
+/**
  * Build the runtime cwd hint prepended to the subagent's kickoff prompt.
  *
  * When PM dispatches with `cwd: <abs path>`, the subagent's shell already
@@ -152,29 +179,61 @@ export const STDERR_TAIL_BYTES = 64 * 1024;
  * Exported for unit testing — the live spawn smoke is slow.
  */
 /**
- * The recent-stderr ring. Spawn keeps a bounded tail rather than the whole
- * stream: failure reports carry the last ~`STDERR_TAIL_BYTES` and nothing else.
- * Buffers, concatenated once at end-of-spawn, so no ConsString tree builds up
- * (and no SlowFlatten when the tail is finally read).
+ * The recent-stderr ring for one spawn: the byte budget, the buffers, their
+ * eviction and the one-shot stringify, kept as one unit. `spawn.ts` sheds the
+ * ring to stay under AGENTS.md §12, and the unit IS the seam — a split ring
+ * (the byte number in one file, the buffers in another) is the drift this move
+ * exists to prevent, and the reason `STDERR_TAIL_BYTES` is read here rather
+ * than passed in.
+ *
+ * The reader is the function itself: `appendStderr.toString()` is the whole
+ * read, so the spawn hands one handle to every stderr sink and stringifies once.
+ * The return type is the callable because `traceKillCauses`, `capKillAttribution`
+ * and the reviewer bounds all take `(s: string) => void`, and Node's Readable
+ * `data` listener passes three arguments — hence the permissive parameter.
+ *
+ * Spawn keeps a bounded tail rather than the whole stream: failure reports
+ * carry the last ~`STDERR_TAIL_BYTES` and nothing else. Chunks concatenate once,
+ * so no ConsString tree builds up (and no SlowFlatten when the tail is read).
+ *
+ * The seam is the ring AND its listener: `attachStderrTail` sits beside
+ * `createStderrAppend` because the unit is "how one child's stderr reaches the
+ * tail", and `spawn.ts` should not have to know that Node's Readable `data`
+ * listener hands the sink three arguments. The two moved together for the same
+ * reason `STDERR_TAIL_BYTES` is read here rather than passed in: split across
+ * files, the ring and the thing that fills it drift.
  */
-export function createStderrTail(maxBytes: number): {
-  append: (chunk: Buffer | string) => void;
-  toString: () => string;
-} {
+export function createStderrAppend(): (chunk: Buffer | string) => void {
   const chunks: Buffer[] = [];
   let size = 0;
-  return {
-    append: (chunk) => {
-      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, "utf8");
-      chunks.push(buf);
-      size += buf.length;
-      while (size > maxBytes && chunks.length > 1) {
-        const evicted = chunks.shift();
-        if (evicted) size -= evicted.length;
-      }
-    },
-    toString: () => Buffer.concat(chunks).toString("utf8"),
+  const append = (chunk: Buffer | string): void => {
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, "utf8");
+    chunks.push(buf);
+    size += buf.length;
+    while (size > STDERR_TAIL_BYTES && chunks.length > 1) {
+      const evicted = chunks.shift();
+      if (evicted) size -= evicted.length;
+    }
   };
+  const readTail = (): string => Buffer.concat(chunks).toString("utf8");
+  return Object.assign(append, { toString: readTail });
+}
+
+/**
+ * Attach one child's stderr to a spawn's `createStderrAppend()` sink.
+ *
+ * The spawn's stderr report is whatever the ring holds at the end, so this is
+ * the only place the child's stderr stream is read. Kept beside the ring rather
+ * than inline in `spawn.ts` (AGENTS.md §12 size cap) so the reader of the tail
+ * and the writer of the tail are one seam, and so the sink can be handed to
+ * Node's `data` listener directly: the listener calls it with
+ * `(chunk, encoding)`, which is why the sink's parameter is permissive.
+ */
+export function attachStderrTail(
+  stderr: NodeJS.ReadableStream | null | undefined,
+  appendStderr: (chunk: Buffer | string) => void,
+): void {
+  stderr?.on("data", appendStderr);
 }
 
 export function buildCwdHint(cwd: string | undefined): string {

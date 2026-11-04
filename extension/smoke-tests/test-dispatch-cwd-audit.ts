@@ -342,6 +342,11 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
     // and release the throwaway tree, so it adds no site. `spawn.ts` remains
     // the only file that calls `spawnSpecialist` here.
     "spawn-reviewer-isolation.ts",
+    // #2019 — the operator-config guard: like the reviewer-isolation wrapper it
+    // holds no dispatch site of its own. It takes an opaque `runChild` callback,
+    // calls it exactly once, and never re-dispatches, so it adds no site and the
+    // census for this file stays 0. `spawn.ts` remains the only caller.
+    "spawn-operator-config.ts",
     // #1024 — enterCycle binds the default dispatch to the cycle's AbortSignal;
     // it forwards each caller's spec (and cwd) unchanged, so it adds no site.
     "work-driver-cycle-entry.ts",

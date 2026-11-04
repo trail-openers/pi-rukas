@@ -362,8 +362,28 @@ export function attachStdoutLinePump(opts: {
     agentEnd: PiJsonEvent | null;
     assistantMessageEnd: PiJsonEvent | null;
   }) => void;
-}): { lines: () => number; close: () => void } {
+}): {
+  lines: () => number;
+  /** The instant the last non-echo line arrived — the inactivity poll's clock. */
+  lastActivityAt: () => number;
+  /**
+   * The SHAPE of the silence, so a kill can be attributed rather than merely
+   * tuned: `linesSeen: 0` is a provider stall or auth failure, not a hang.
+   * Full reasoning in test-kill-attribution.ts.
+   */
+  lastActivityKind: () => string;
+  /**
+   * #951 — the one seam that lets a tool-inactivity kill name the tools it found
+   * in flight. The pump owns the shape (it is the only writer from the stream),
+   * so the poll's kill and the stream's last line can never disagree about which
+   * silence the report names.
+   */
+  setActivityKind: (kind: string) => void;
+  close: () => void;
+} {
   let lines = 0;
+  let lastActivityAt = Date.now();
+  let lastActivityKind = "nothing yet";
   // `child.stdout` is null before the stdio pipes are up; the readline options
   // require a stream, so a child without one simply never pumps (the same
   // shape spawn relied on when it passed the handle directly).
@@ -379,6 +399,10 @@ export function attachStdoutLinePump(opts: {
     const res = opts.handler(line);
     // Our own steer acked back — not life, and not a bound's business.
     if (isStdinEcho(res.kind)) return;
+    // The clock resets on any line the child itself produced, parseable or not —
+    // which is what makes the watchdog a SILENCE detector rather than a parser.
+    lastActivityAt = Date.now();
+    if (res.kind) lastActivityKind = res.kind;
     try {
       opts.onLine(res);
     } catch (err) {
@@ -388,5 +412,13 @@ export function attachStdoutLinePump(opts: {
       traceWarn(`stdout pump: observer failed: ${String(err)}`);
     }
   });
-  return { lines: () => lines, close: () => rl.close() };
+  return {
+    lines: () => lines,
+    lastActivityAt: () => lastActivityAt,
+    lastActivityKind: () => lastActivityKind,
+    setActivityKind: (kind: string) => {
+      lastActivityKind = kind;
+    },
+    close: () => rl.close(),
+  };
 }

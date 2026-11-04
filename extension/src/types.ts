@@ -311,6 +311,19 @@ export interface DispatchResult {
    * message to distinguish this from actual "no output".
    */
   thinkingOnly?: boolean;
+  /**
+   * Set when the child changed one of the operator's global git/gh config
+   * files. Each line names the path and the role and says whether the snapshot
+   * was put back (`spawn-operator-config.ts`).
+   *
+   * DISCLOSURE ONLY — the restore already happened, so this field never
+   * changes `ok` and never feeds the adversarial or lens verdicts. It is not a
+   * kill-classification field like `loopEvidence`/`tokenBudget`/`killCause`
+   * and must not be treated as one. Both report shapes render it as
+   * `VIOLATION:` lines — a batch member's violation has to surface as plainly
+   * as a single dispatch's, or `dispatch_parallel` becomes the undisclosed path.
+   */
+  operatorConfig?: string[];
 }
 
 /**

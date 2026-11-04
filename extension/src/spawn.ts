@@ -18,7 +18,6 @@
 
 import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { preflightChildGuards } from "./child-guards.ts";
 import { ChildProgress } from "./child-progress.ts";
@@ -29,13 +28,13 @@ import { type ResolvedModelChoice, resolveModel } from "./models.ts";
 import { getPiInvocation } from "./pi-binary-resolve.ts";
 import type { PiJsonEvent, SpawnOptions } from "./pi-event-shapes.ts";
 import { kickPiResolutionProbe } from "./pi-version-probe.ts";
-import { emptyRunningState, ingestEvent } from "./progress.ts";
+import { emptyRunningState } from "./progress.ts";
 import { excludeToolsFor } from "./role-tools.ts";
-import { ROLES, type RoleName, isRoleName } from "./roles.ts";
+import { ROLES, isRoleName } from "./roles.ts";
 import { createBoundArmed } from "./spawn-bound-armed.ts";
 import { armChildBounds } from "./spawn-budget-arms.ts";
 import { capKillAttribution } from "./spawn-caps.ts";
-import { applyChildBound, armChildBound } from "./spawn-child-bound.ts";
+import { applyChildBound } from "./spawn-child-bound.ts";
 import { collapseEvents } from "./spawn-collapse-events.ts";
 import { installExitKillSeam, startExitWait } from "./spawn-exit-await-session.ts";
 
@@ -51,6 +50,7 @@ import {
   createStdoutLineHandler,
 } from "./spawn-inflight.ts";
 import { groupSpawnOpts, leadsProcessGroup, registerChild } from "./spawn-kill.ts";
+import { withOperatorConfigGuard } from "./spawn-operator-config.ts";
 import { applyChildPermissionEnv, planChildPermissions } from "./spawn-permission.ts";
 import { failedByKill, recordKillBudgets, wireReviewBounds } from "./spawn-review-bounds.ts";
 import { runWithReviewerTree } from "./spawn-reviewer-isolation.ts";
@@ -60,17 +60,18 @@ import { withSpawnSlot } from "./spawn-semaphore.ts";
 // the inactivity poll (spawn-inflight.ts), the caps (spawn-caps.ts), the bound.
 import { attachAbortKill, createWallClockBackstop } from "./spawn-supervision.ts";
 import {
-  STDERR_TAIL_BYTES,
   assertLiveSpawnAllowed,
+  attachStderrTail,
   buildChildArgs,
   buildCwdHint,
   childHasExited,
-  createStderrTail,
+  createStderrAppend,
   makeRunId,
   reconcileObservedCounts,
   spawnBackstopMs,
   transcriptPathFor,
   willRetryAfter,
+  writeRolePromptFile,
 } from "./spawn-support.ts";
 import { armCapSession, declareKillFlags, traceKillCauses } from "./spawn-watchdog.ts";
 import { attachStdinErrorGuard } from "./stdin-guard.ts";
@@ -94,9 +95,16 @@ export async function spawnSpecialist(
 ): Promise<DispatchResult> {
   // #1528 — the per-process cap first, then the host-wide one (host-spawn-slots.ts).
   // #1975 — the reviewer isolation choke point: `runWithReviewerTree` relocates
-  // a reviewer child's cwd and releases the tree in its own finally.
+  // a reviewer child's cwd and releases the tree in its own finally. #2019 — the
+  // operator-config guard is innermost, inside BOTH holds: a snapshot taken
+  // before a queue wait would blame this child for the other's write.
   return runWithReviewerTree(spec, (s) =>
-    withSpawnSlot(() => withHostSpawnSlot(() => spawnSpecialistInner(s, opts), opts.signal)),
+    withSpawnSlot(() =>
+      withHostSpawnSlot(
+        () => withOperatorConfigGuard(s.role, () => spawnSpecialistInner(s, opts)),
+        opts.signal,
+      ),
+    ),
   );
 }
 
@@ -114,11 +122,7 @@ async function spawnSpecialistInner(
   const systemPrompt = await fs.readFile(role.promptFile, "utf8");
   const cwd = spec.cwd ?? process.cwd();
 
-  // Write role prompt to a temp file; Pi's --append-system-prompt accepts a
-  // file path and appends file contents to its default safety prompt.
-  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-rukas-"));
-  const tmpPromptFile = path.join(tmpDir, `${spec.role}.md`);
-  await fs.writeFile(tmpPromptFile, systemPrompt);
+  const { tmpDir, tmpPromptFile } = await writeRolePromptFile(spec.role, systemPrompt);
 
   // Per-child transcript path. Pi will write its native session JSON here.
   // #573 — accept a caller-supplied runId (derived by the driver BEFORE spawn
@@ -201,11 +205,11 @@ async function spawnSpecialistInner(
   // ConsString tree, blown up by the next regex match). The cost is that this
   // holds the last agent_end SEGMENT, not the session — Pi emits one per retry
   // boundary. reconcileObservedCounts restores the true counts from
-  // runningState; see its docstring for what the gap hid.
+  // runningState; see its docstring for what the gap hid. The ring behind
+  // `appendStderr` is spawn-support.ts's `createStderrAppend` (§12 cap).
   let lastAgentEnd: PiJsonEvent | null = null;
   let lastAssistantMessageEnd: PiJsonEvent | null = null;
-  const stderrTail = createStderrTail(STDERR_TAIL_BYTES);
-  const appendStderr = (chunk: Buffer | string): void => stderrTail.append(chunk);
+  const appendStderr = createStderrAppend();
   // Running state shared with the parent's onProgress callback. Each child
   // gets its own state; lens-review aggregates over 6 of them in parallel.
   const runningState = emptyRunningState(spec.role, opts.tag);
@@ -289,16 +293,10 @@ async function spawnSpecialistInner(
     // steer, so the #546 nudge stands down; a child with no bound keeps it.
     budgetProgressActive: () => budgetProgress.armed(),
   });
-  // Inactivity watchdog state (#296): ANY stdout line counts as life —
-  // parseable or not. Checked on a coarse interval below.
-  let lastActivityAt = Date.now();
-  // The SHAPE of the silence, so a kill can be attributed rather than merely
-  // tuned: `linesSeen: 0` is a provider stall or auth failure, not a hang.
-  // Full reasoning in test-kill-attribution.ts.
-  let lastActivityKind = "nothing yet";
-  // #1827 — the count now lives in the pump (`attachStdoutLinePump`), which is
-  // the only place a line is counted. Read here for the kill attribution's
-  // `linesSeen`.
+  // #1827 — the count, the last-activity clock and the shape of the silence all
+  // live in the pump (`attachStdoutLinePump`), which is the only place a line is
+  // counted. Read here for the kill attribution's `linesSeen`, `agoMs` and
+  // `kind`.
   // #951 — the in-flight tool-call state (spawn-inflight.ts): the watchdog's
   // silence is a SILENCE, and an in-flight tool is work, not silence. A
   // toolCall block inside an assistant message_end opens a span; the matching
@@ -350,8 +348,6 @@ async function spawnSpecialistInner(
       ...(reviewBounds.skillRead ? { skillRead: reviewBounds.skillRead } : {}),
     }),
     onLine: (res) => {
-      lastActivityAt = Date.now();
-      if (res.kind) lastActivityKind = res.kind;
       if (res.agentEnd) lastAgentEnd = res.agentEnd;
       if (res.assistantMessageEnd) lastAssistantMessageEnd = res.assistantMessageEnd;
       // #1827 — the reviewer bounds see every non-echo line. The guard is
@@ -360,9 +356,7 @@ async function spawnSpecialistInner(
       reviewBounds.observe(res.assistantMessageEnd);
     },
   });
-  child.stderr.on("data", (d) => {
-    appendStderr(d);
-  });
+  attachStderrTail(child.stderr, appendStderr);
   // #1593 — never past what the cycle's deadline leaves (cycle-deadline-clock.ts).
   const bound = clampToCycleDeadline(opts.timeoutMs ?? spawnBackstopMs(), Date.now());
   const timeoutMs = bound.timeoutMs;
@@ -382,14 +376,14 @@ async function spawnSpecialistInner(
   const stopInactivityPoll = createInactivityPoll({
     child,
     inFlightTools,
-    lastActivityAt: () => lastActivityAt,
+    lastActivityAt: stdoutPump.lastActivityAt,
     onKill: (cause, budgetMs, toolNames) => {
       if (cause === "tool-inactivity") flags.setToolInactivityKilled(true);
       else flags.setInactivityKilled(true);
       // #951 — name the tool(s) that went silent, so the report shows
       // WHAT is in flight instead of a bare cause. Inactivity kills
-      // keep today's parsed.type behaviour (lastActivityKind above).
-      lastActivityKind = `toolCall in flight: ${toolNames.join(", ")}`;
+      // keep today's parsed.type behaviour (the pump's `lastActivityKind()`).
+      stdoutPump.setActivityKind(`toolCall in flight: ${toolNames.join(", ")}`);
       flags.setKilledBudgetMs(budgetMs);
     },
   });
@@ -436,7 +430,7 @@ async function spawnSpecialistInner(
   // they report (`traceKillCauses`, spawn-watchdog.ts).
   traceKillCauses(flags, timeoutMs, appendStderr);
 
-  const stderr = stderrTail.toString();
+  const stderr = appendStderr.toString();
   const ms = Date.now() - start;
   const result = collapseEvents(
     lastAgentEnd,
@@ -474,8 +468,8 @@ async function spawnSpecialistInner(
     // Only meaningful for a kill; attaching it always would imply we killed
     // every child.
     result.lastActivity = {
-      kind: lastActivityKind,
-      agoMs: Date.now() - lastActivityAt,
+      kind: stdoutPump.lastActivityKind(),
+      agoMs: Date.now() - stdoutPump.lastActivityAt(),
       linesSeen: stdoutPump.lines(),
     };
   }

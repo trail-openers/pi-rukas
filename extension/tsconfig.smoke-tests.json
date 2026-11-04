@@ -250,6 +250,11 @@
     "smoke-tests/lib/lean-review-ticket-fixture.ts",
     "smoke-tests/lib/ticket-adversarial-fixture.ts",
     "smoke-tests/test-ticket-aware-review.ts",
-    "smoke-tests/test-ticket-aware-review-lean.ts"
+    "smoke-tests/test-ticket-aware-review-lean.ts",
+    "smoke-tests/test-operator-config-guard.ts",
+    "smoke-tests/test-batch-report-failure.ts",
+    "smoke-tests/lib/opcfg-entry-cases.ts",
+    "smoke-tests/lib/opcfg-readback-cases.ts",
+    "smoke-tests/lib/seams-registry-spawn-config.ts"
   ]
 }

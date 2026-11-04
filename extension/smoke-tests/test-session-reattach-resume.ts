@@ -13,10 +13,11 @@
  * the test with canned outputs.
  */
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { attemptReattach } from "../src/work-driver-resume-reattach.ts";
+import { _resetPiBinaryCache } from "../src/pi-binary-resolve.ts";
 import {
   beginDispatch,
   clearDispatch,
@@ -265,6 +266,52 @@ function assert(cond: boolean, msg: string) {
     "clearDispatch removes the correct jobId",
   );
   assert(cleared.pipelineState.inFlightJobIds[0] === "j2", "only the specified jobId is removed");
+}
+
+// ---------------------------------------------------------------------------
+// Test 11: the REAL spawn path settles when the child errors (ENOENT).
+// ---------------------------------------------------------------------------
+// `reattachChild` (the path that does NOT take an injected `spawnReattach`)
+// awaits the child's `exit`. A spawn that cannot start — the resolved pi binary
+// is gone, so node emits `error` and never `exit` — left that promise unsettled
+// for the life of the driver. The fix settles on `error` too and returns
+// `{ reattach: false }` with the reason traced. The bound below is what makes
+// the case a hang detector rather than a hanging test: with the `error` listener
+// removed, the promise never resolves and this fails instead of blocking.
+{
+  process.env.PI_ENSEMBLE_SESSION_REATTACH = "1";
+  // An executable DIRECTORY: `accessSync(X_OK)` accepts it, so the resolver
+  // hands it through (a plain missing path or a non-executable file would throw
+  // at resolution instead of reaching `spawn`), but `spawn` of a directory emits
+  // `error` (EACCES) and NEVER `exit` — exactly the shape that left this promise
+  // unsettled before the fix.
+  const root = mkdtempSync(path.join(tmpdir(), "reattach-dirbin-"));
+  const dirBin = path.join(root, "pi-dir.bin");
+  mkdirSync(dirBin, 0o755);
+  process.env.PI_ENSEMBLE_PI_BIN = dirBin;
+  _resetPiBinaryCache();
+  // The `spawnReattach` argument is OMITTED, which is what routes into the real
+  // `realSpawnReattach` → `reattachChild` path this case is about.
+  const real = attemptReattach("/tmp/test-transcript.json", "explore", "explore", 5_000);
+  const outcome = await Promise.race([
+    real.then((r) => ({ settled: true as const, r })),
+    new Promise<{ settled: false }>((resolve) =>
+      setTimeout(() => resolve({ settled: false as const }), 15_000),
+    ),
+  ]);
+  Reflect.deleteProperty(process.env, "PI_ENSEMBLE_PI_BIN");
+  _resetPiBinaryCache();
+  rmSync(root, { recursive: true, force: true });
+  assert(
+    outcome.settled,
+    "real spawn that errors SETTLES (no hang waiting for an `exit` that never comes)",
+  );
+  if (outcome.settled) {
+    assert(
+      "reattach" in outcome.r && !outcome.r.reattach,
+      "real spawn error → { reattach: false }, so the step falls through to re-dispatch",
+    );
+  }
 }
 
 // Restore the env for the rest of the suite.

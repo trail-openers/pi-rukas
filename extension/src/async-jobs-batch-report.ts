@@ -7,7 +7,12 @@
  * and observed-work tags, and the developer gate line — by importing them
  * from async-jobs-report.ts rather than restating them, which is the property
  * that matters: a batch row and a single row must never describe the same
- * result differently.
+ * result differently. The operator-config `VIOLATION:` block is one of those
+ * shared judgements (#2019) — a batch member whose run hijacked the operator's
+ * git/gh config has to say so here as plainly as the single report does. A
+ * member whose run THREW has no `DispatchResult` at all (`{ failed: true,
+ * error }` — async-jobs-batch.ts), so it renders no block: the operator-config
+ * restore for that member still ran and is recorded on the trace, not here.
  */
 
 import {
@@ -69,7 +74,18 @@ export function formatBatchReport(input: BatchReportInput): string {
       isTruncatedNarration(text, turns);
     const badge = truncated ? truncationBadge(m.result) : "";
     const gitTail = m.gitLine ? `\n${m.gitLine}` : "";
-    return `=== ${m.label} (job ${m.jobId}) — ${status} · ${turns} turns · ${elapsed}${fmtObservedWork(m.result)}${fmtUsage(m.result)}${badge} ===\n${body}${gitTail}`;
+    // The operator-config violations render in BOTH report shapes — the single
+    // report does it via the same block (`async-jobs-report.ts`). A member of a
+    // batch whose run hijacked the operator's git/gh config and got restored has
+    // to be visible in the batch report too, and not only as a traceWarn line
+    // nobody reads: silence here would make `dispatch_parallel` the way to
+    // dispatch a hijack with no disclosure. Same `VIOLATION:` prefix, same
+    // placement (after the body, before the footer), same reason — the status
+    // line stays the member's own outcome, so a restored file never reads as a
+    // failed dispatch.
+    const violations = (m.result.operatorConfig ?? []).map((line) => `VIOLATION: ${line}`);
+    const violationBlock = violations.length > 0 ? `\n${violations.join("\n")}` : "";
+    return `=== ${m.label} (job ${m.jobId}) — ${status} · ${turns} turns · ${elapsed}${fmtObservedWork(m.result)}${fmtUsage(m.result)}${badge} ===\n${body}${violationBlock}${gitTail}`;
   });
   // #911 — the gate line appears at most once in the shared footer: any
   // developer member that actually finished ("finished" via the shared

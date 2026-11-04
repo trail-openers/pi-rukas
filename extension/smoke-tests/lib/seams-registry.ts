@@ -13,6 +13,7 @@
  */
 
 import { SEAMS_MERGE_LEDGER } from "./seams-registry-merge-ledger.ts";
+import { SEAMS_SPAWN_CONFIG } from "./seams-registry-spawn-config.ts";
 
 export interface Seam {
   file: string;
@@ -241,6 +242,7 @@ export const SEAMS: Seam[] = [
     },
   },
   ...SEAMS_MERGE_LEDGER,
+  ...SEAMS_SPAWN_CONFIG,
   {
     // #1019 — the pi binary version probe. The probe half (getPiResolutionInfo)
     // used to ship with no production caller, so its PATH-source / older-than-

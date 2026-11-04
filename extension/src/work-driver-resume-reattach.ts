@@ -9,10 +9,12 @@
  */
 
 import { spawn } from "node:child_process";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { notifyAgent } from "./agent-message.ts";
 import { scrubGitLocation } from "./git-env.ts";
 import { emitStepCompleted } from "./lifecycle-events.ts";
 import { getPiInvocation } from "./pi-binary-resolve.ts";
+import { withOperatorConfigGuard } from "./spawn-operator-config.ts";
 import { attachStdinErrorGuard } from "./stdin-guard.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
@@ -112,54 +114,97 @@ async function realSpawnReattach(
   const invocation = getPiInvocation(childArgs);
   const command = invocation.command;
   const args = invocation.args;
+  return reattachChild(command, args, childEnv, resumePromptText, grantMs);
+}
 
-  const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"], env: childEnv });
-  // #932 — universal EPIPE backstop (stdin-guard.ts): the resume prompt is
-  // written to child.stdin below; if the child dies before reading it the
-  // error event is async and unguarded it would crash the whole process.
-  attachStdinErrorGuard(child.stdin, "resume-reattach");
-  const stdoutChunks: Buffer[] = [];
-  let stdoutSize = 0;
-  const MAX_STDOUT = 1024 * 1024;
+/**
+ * The real reattach child, wrapped in the operator-config guard (#2019): this
+ * path spawns outside `spawnSpecialist`, so it guards its own spawn. Its
+ * violations are traceWarn-only — `ReattachResult` is built by a parser that
+ * cannot carry the field, so there is no report to attach them to and the
+ * guard's annotation on the value is never read.
+ */
+async function reattachChild(
+  command: string,
+  args: string[],
+  childEnv: Record<string, string>,
+  resumePromptText: string,
+  grantMs: number,
+): Promise<ReattachResult | { reattach: false }> {
+  return withOperatorConfigGuard("resume-reattach", async () => {
+    const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"], env: childEnv });
+    // #932 — universal EPIPE backstop (stdin-guard.ts): the resume prompt is
+    // written to child.stdin below; if the child dies before reading it the
+    // error event is async and unguarded it would crash the whole process.
+    attachStdinErrorGuard(child.stdin, "resume-reattach");
+    const stdoutChunks: Buffer[] = [];
+    let stdoutSize = 0;
+    const MAX_STDOUT = 1024 * 1024;
 
-  child.stdout?.on("data", (d: Buffer) => {
-    stdoutChunks.push(d);
-    stdoutSize += d.length;
-    while (stdoutSize > MAX_STDOUT && stdoutChunks.length > 1) {
-      const evicted = stdoutChunks.shift();
-      if (evicted) stdoutSize -= evicted.length;
+    child.stdout?.on("data", (d: Buffer) => {
+      stdoutChunks.push(d);
+      stdoutSize += d.length;
+      while (stdoutSize > MAX_STDOUT && stdoutChunks.length > 1) {
+        const evicted = stdoutChunks.shift();
+        if (evicted) stdoutSize -= evicted.length;
+      }
+    });
+    child.stderr?.on("data", () => {
+      /* discarded */
+    });
+
+    try {
+      child.stdin?.write(`${JSON.stringify({ type: "prompt", message: resumePromptText })}\n`);
+    } catch {
+      /* child already gone */
     }
+
+    const maxWait = grantMs + 30_000;
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+    }, maxWait);
+
+    // Settle on `error` as well as `exit`. A spawn that never starts (a binary
+    // that cannot be executed) emits `error` and NEVER `exit`, so awaiting only
+    // `exit` would hang this promise for the life of the driver; the error
+    // carries the reason and is traced rather than swallowed.
+    const settled = await settleReattachChild(child, timeout);
+    clearTimeout(timeout);
+    if (settled.reason !== undefined) {
+      trace(`work-driver: resume-reattach spawn error: ${settled.reason}`);
+      return { reattach: false };
+    }
+    if (timedOut || settled.exitCode !== 0) return { reattach: false };
+    const rawStdout = Buffer.concat(stdoutChunks).toString("utf8");
+    return buildReattachResult("", "", maxWait, rawStdout);
   });
-  child.stderr?.on("data", () => {
-    /* discarded */
+}
+
+/**
+ * Await the reattach child's `exit` OR its `error`, and always SIGKILL it on the
+ * way out. The `error` arm is what keeps the resume path from hanging: node's
+ * `ChildProcess` emits `error` (and no `exit`) when the executable cannot be
+ * spawned, so a promise that listens only for `exit` never settles.
+ */
+async function settleReattachChild(
+  child: ChildProcessWithoutNullStreams,
+  timeout: ReturnType<typeof setTimeout>,
+): Promise<{ exitCode: number | null; reason?: string }> {
+  const outcome = await new Promise<{ exitCode: number | null; reason?: string }>((resolve) => {
+    child.on("exit", (code) => resolve({ exitCode: code }));
+    child.on("error", (err) =>
+      resolve({ exitCode: null, reason: (err as NodeJS.ErrnoException).code ?? String(err) }),
+    );
   });
-
-  try {
-    child.stdin?.write(`${JSON.stringify({ type: "prompt", message: resumePromptText })}\n`);
-  } catch {
-    /* child already gone */
-  }
-
-  const maxWait = grantMs + 30_000;
-  let timedOut = false;
-  const timeout = setTimeout(() => {
-    timedOut = true;
-    child.kill("SIGTERM");
-  }, maxWait);
-
-  const [exitCode] = (await new Promise<[number | null]>((resolve) => {
-    child.on("exit", (code) => resolve([code]));
-  })) as [number | null];
   clearTimeout(timeout);
   try {
     child.kill("SIGKILL");
   } catch {
     /* best-effort */
   }
-
-  if (timedOut || exitCode !== 0) return { reattach: false };
-  const rawStdout = Buffer.concat(stdoutChunks).toString("utf8");
-  return buildReattachResult("", "", maxWait, rawStdout);
+  return outcome;
 }
 
 function buildReattachResult(

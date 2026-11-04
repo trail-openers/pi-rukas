@@ -295,5 +295,69 @@ const succeeded: DispatchResult = {
   );
 }
 
+// ---- the operator-config violation renders in both shapes too (#2019)
+
+{
+  // A `dispatch_parallel` member whose run rewrote the operator's git/gh config
+  // must be disclosed here as plainly as in the single report — otherwise the
+  // batch path is the way to dispatch a hijack with no line in the report, only
+  // a traceWarn nobody reads. Both shapes share the requirement, so both are
+  // asserted, and the ok line stays the member's own outcome.
+  const hijacked: DispatchResult = {
+    ...succeeded,
+    operatorConfig: [
+      "operator-config: /operator/.gitconfig modified during the developer run — restored",
+    ],
+  };
+  const batch = formatBatchReport({
+    batchId: "b2019",
+    members: [
+      { jobId: "j1", label: "developer[hijack]", result: hijacked },
+      { jobId: "j2", label: "explore[clean]", result: succeeded },
+    ],
+    // biome-ignore lint/suspicious/noExplicitAny: partial fixture
+  } as any);
+  const hijackSection = batch.split("=== ").find((s) => s.startsWith("developer[hijack]"));
+  assert(
+    hijackSection !== undefined &&
+      hijackSection.includes("VIOLATION: operator-config: /operator/.gitconfig"),
+    "the batch report renders the member's operatorConfig line as a VIOLATION",
+  );
+  const cleanSection = batch.split("=== ").find((s) => s.startsWith("explore[clean]"));
+  assert(
+    cleanSection !== undefined && !cleanSection.includes("VIOLATION"),
+    "the disclosure is scoped to the member that did it — a clean batch row says nothing",
+  );
+  assert(
+    !/developer\[hijack\].*— fail/.test(batch),
+    "a restored hijack never changes the member's outcome — it is disclosure, not a verdict",
+  );
+  assert(
+    formatSingleReport("j1", "developer[hijack]", hijacked).includes(
+      "VIOLATION: operator-config: /operator/.gitconfig",
+    ),
+    "...and the single report renders the same line, so the two shapes agree",
+  );
+  {
+    // A member whose run THREW arrives as `{ failed: true, error }`, which is a
+    // shape with no `DispatchResult` to carry the field — so it renders no
+    // block, and the guard's restore for that member is recorded on the trace
+    // alone (`spawn-operator-config.ts` states the same boundary). Asserted here
+    // so the drop is a decision someone reads, not an accident: if a future
+    // change gives the failed arm a disclosure path, this line goes red and says
+    // so. `spawn-operator-config.ts` is named rather than imported: the batch
+    // seam is the contract, and the module's own suite owns its behaviour.
+    const thrown = formatBatchReport({
+      batchId: "b2019f",
+      members: [{ jobId: "j3", label: "ops[throw]", result: { failed: true, error: "boom" } }],
+      // biome-ignore lint/suspicious/noExplicitAny: partial fixture
+    } as any);
+    assert(
+      thrown.includes("ops[throw]") && !thrown.includes("VIOLATION"),
+      "a thrown member renders no operator-config block — no result object to annotate, disclosure is traceWarn-only",
+    );
+  }
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);
