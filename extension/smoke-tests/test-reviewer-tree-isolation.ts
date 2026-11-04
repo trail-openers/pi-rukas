@@ -132,8 +132,17 @@ function attemptMutations(cwd: string, gitEnvDir: ReturnType<typeof makeGit>): s
  * Run the mutations IN THE CHILD'S OWN cwd: the fixture hands each attempt a
  * git handle bound to the directory the child actually received, which is what
  * makes "the reviewer's tree, not the reviewed one" an executed fact.
+ *
+ * Refuses anything outside TMPDIR. These are the field-observed mutations, so
+ * running them is the point — but a reviewer child that was NOT isolated must
+ * not have its experiments written into the repository under review, which is
+ * the very damage this mechanism exists to prevent. A refused cwd fails the
+ * section that asked for it rather than escaping into the working tree.
  */
 function mutateIn(cwd: string): { attempted: string[]; wrote: boolean } {
+  if (!realpathSync(cwd).startsWith(realpathSync(os.tmpdir()))) {
+    return { attempted: [], wrote: false };
+  }
   const git = makeGit(cwd, gitEnv);
   const attempted = attemptMutations(cwd, git);
   return {
