@@ -4,11 +4,11 @@
  *
  * `resolveReviewThreshold` was wired into one caller only — the `/work` driver's
  * lens step — so every hand-run review judged findings at
- * `DEFAULT_REVIEW_THRESHOLD` (MEDIUM) whatever the project's doctrine said. In
- * this repo, whose §1 blocks at HIGH and above, that meant a round whose only
- * findings were MEDIUM came back ISSUES_FOUND: the ledger row recorded
- * `passed: false` and the merge guard refused, while the project's own sentence
- * stayed decorative on the path a person actually runs.
+ * `DEFAULT_REVIEW_THRESHOLD` whatever the project's doctrine said. In this repo,
+ * whose §1 blocks at HIGH and above, that meant the bar a hand-run review applied
+ * was whichever the constant happened to hold, and the ledger row recorded
+ * `passed` against that rather than the project's sentence — which stayed
+ * decorative on the path a person actually runs.
  *
  * The cases drive the REGISTERED tool — `execute`, then the async job body it
  * opened — so the assertion is on the verdict and the ledger row the tool
@@ -158,8 +158,8 @@ mock.module(new URL("../src/spawn.ts", import.meta.url).href, () => ({
   },
 }));
 
-/** The MEDIUM-only finding set the defect turns on: disclosable under a HIGH bar,
- * blocking at the MEDIUM default. */
+/** The MEDIUM-only finding set the defect turns on: disclosable under the
+ * project's HIGH bar, blocking when the bar is MEDIUM. */
 const MEDIUM_ONLY = [
   { severity: "MEDIUM", path: "src-a.ts", line: 2, title: "Unclear module contract" },
 ];
@@ -260,7 +260,7 @@ await withEnv(
         );
         assert(
           /^Code review verdict \(\d+ lenses\): APPROVED/m.test(report),
-          `(2) A MEDIUM-ONLY ROUND UNDER THE PROJECT'S HIGH BAR APPROVES ON THE TOOL PATH — at the MEDIUM default the same round is ISSUES_FOUND, the ledger says the review failed, and the merge guard refuses (report: ${report.slice(0, 220).replace(/\n/g, " ")})`,
+          `(2) A MEDIUM-ONLY ROUND UNDER THE PROJECT'S HIGH BAR APPROVES ON THE TOOL PATH — at a MEDIUM bar the same round is ISSUES_FOUND, the ledger says the review failed, and the merge guard refuses (report: ${report.slice(0, 220).replace(/\n/g, " ")})`,
         );
         const row = ledgerRows()
           .filter((e) => e.kind === "lens")
@@ -311,8 +311,8 @@ await withEnv(
       // ── (4) THE BAR IS NOT THE CALLER'S TO CHOOSE. `base` and `head` are model
       // input, so a tool that read doctrine at either let the reviewed branch pick
       // the severity it is judged against. This round is a SAME-ROUND comparison:
-      // one MEDIUM finding (which the project's HIGH bar discloses and the shipped
-      // MEDIUM default blocks) plus a judge that answers HIGH only for the MAINLINE
+      // one MEDIUM finding (which the project's HIGH bar discloses and a MEDIUM
+      // bar blocks) plus a judge that answers HIGH only for the MAINLINE
       // doctrine's sentence and CRITICAL for the branch's. So exactly one variable
       // — which ref the doctrine was read at — decides the verdict: reading the
       // mainline tip gives HIGH and the finding is disclosable (APPROVED, and the

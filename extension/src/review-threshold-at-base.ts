@@ -14,9 +14,10 @@
  *     grading (#406's shape); one that read it at a branch or tag name, or at a
  *     ref the reviewed branch named itself, would honour a bar that branch
  *     wrote;
- *   - **what happens when there is nothing to read** — the shipped MEDIUM
- *     default. Absent doctrine, an unreadable one, or one that never mentions
- *     review severity is the *normal* case, so the read never blocks a review.
+ *   - **what happens when there is nothing to read** — the shipped HIGH
+ *     default (`DEFAULT_REVIEW_THRESHOLD`). Absent doctrine, an unreadable one,
+ *     or one that never mentions review severity is the *normal* case, so the
+ *     read never blocks a review.
  *
  * Every lens path resolves through here so one project states one bar and each
  * of them applies it: the `/work` driver's lens step, the `dispatch_lens_review`
