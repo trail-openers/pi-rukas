@@ -15,6 +15,7 @@ import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import { cycleChildOpts } from "./work-cycle-trust.ts";
+import { readCachedBody } from "./work-develop-scope-fence-seam.ts";
 import {
   capKillOutcomeFields,
   retryLadderKillCause,
@@ -235,7 +236,10 @@ export async function runAdversarialWorkstream(
         // #278 — the reviewer judges the diff against what was ASKED FOR,
         // not just against generic code quality. Absent on cycles resumed
         // from older state files, which degrade to the previous behaviour.
-        issueBody: state.pipelineState.issueBodyArtifact,
+        // The cached composite is read as TEXT: this used to pass the artifact
+        // PATH, so the reviewer was told the file to open and never shown the
+        // spec (the loop prints `issueBody` verbatim into the prompt).
+        issueBody: readCachedBody(ctx.repoRoot, state.pipelineState.issueBodyArtifact),
         // #1137 — judge this workstream against its OWN scope; sibling
         // criteria are listed as out of scope in the prompt.
         ...(scope !== undefined ? { scope } : {}),

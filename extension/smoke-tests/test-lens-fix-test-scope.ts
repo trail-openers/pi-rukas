@@ -46,12 +46,12 @@ const FINDINGS =
 // the prompt is BUILT with, not only the env it is compared against — an
 // ambient PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS would otherwise move the
 // derived bound out from under the `timeout <n>` the prompt carries.
-assertLensFixPromptTestScope(assert, () => inlineLensFixPrompt(FINDINGS, "/tmp/scratch"));
+assertLensFixPromptTestScope(assert, () => inlineLensFixPrompt(FINDINGS, "/tmp/scratch", undefined));
 
 // Non-vacuity: the prompt is the real one, not an empty string that would make
 // every `includes` above pass on a degenerate value.
 {
-  const prompt = inlineLensFixPrompt(FINDINGS, "/tmp/scratch");
+  const prompt = inlineLensFixPrompt(FINDINGS, "/tmp/scratch", undefined);
   assert(
     prompt.includes("six-pass review findings") && prompt.includes("/tmp/scratch"),
     "non-vacuity: the lens-fix prompt is the real dispatch prompt (findings + scratch dir present)",

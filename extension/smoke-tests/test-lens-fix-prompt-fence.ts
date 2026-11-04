@@ -90,7 +90,7 @@ console.log("# the lens-fix prompt prints the fence the gate reads");
   });
   if (!planned.ok) throw new Error(`lensFixPassPlan failed: ${planned.reason}`);
   const fence = lensFixFenceLines(planned.value);
-  const prompt = inlineLensFixPrompt(FINDINGS, "/tmp/scratch", fence);
+  const prompt = inlineLensFixPrompt(FINDINGS, "/tmp/scratch", undefined, fence);
 
   assert(
     prompt.includes(fence.join("\n")),

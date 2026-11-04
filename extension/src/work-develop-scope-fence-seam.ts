@@ -115,11 +115,21 @@ export function scopeFenceRequest(sections: IssueSections, file: string): Decide
 }
 
 /**
- * The cached body, or undefined when there is none, or it is empty. The artifact
- * must lie inside `<repoRoot>/.pi/work-state/` (where `writeDispatchArtifact`
- * writes it); anything else is refused, because the body is the lift's authority.
+ * The cached composite issue text (`"<title>\n\n<body>"`, written by the explore
+ * step from `gh issue view` — never by a cycle agent), or undefined when there
+ * is none or it is empty. The artifact must lie inside `<repoRoot>/.pi/work-state/`
+ * (where `writeDispatchArtifact` writes it); anything else is refused, because the
+ * body is the authority a reviewer or a fence lift is asked to trust.
+ *
+ * Exported: this is the ONE reader of `pipelineState.issueBodyArtifact` for
+ * anything that prints the issue into a child's brief. A second reader would be
+ * a second containment rule, and the one that was missing it printed the file
+ * PATH in place of the text.
  */
-function readCachedBody(repoRoot: string, artifactPath: string | undefined): string | undefined {
+export function readCachedBody(
+  repoRoot: string,
+  artifactPath: string | undefined,
+): string | undefined {
   if (!artifactPath) return undefined;
   const stateDir = workStateDir(repoRoot);
   const file = path.resolve(repoRoot, artifactPath);

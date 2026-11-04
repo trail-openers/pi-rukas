@@ -278,6 +278,7 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
       base,
       branch,
       wave: "full",
+      issueBody,
       pr,
       carried,
       rows,
@@ -330,6 +331,7 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
       head: review.head,
       frozen,
       findings,
+      issueBody,
       gate: gateName,
       wave: "full",
       // The arm the tree's name carries: "a" when the findings came from the
@@ -354,6 +356,7 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
       base,
       branch,
       wave: "fix",
+      issueBody,
       pr,
       carried,
       since: preFixHead,
