@@ -8,6 +8,14 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.53](https://github.com/trail-openers/pi-rukas/compare/v0.14.52...v0.14.53) (2026-11-04)
+
+
+### Bug Fixes
+
+* **spawn:** restore the operator's git and gh config if a child changes it ([#2023](https://github.com/trail-openers/pi-rukas/issues/2023)) ([0aef6ca](https://github.com/trail-openers/pi-rukas/commit/0aef6cafafdf798baef3037f5e92344c3a4ee458)), closes [#2019](https://github.com/trail-openers/pi-rukas/issues/2019)
+* **work:** budgetVerdictWithRows in… ([4ac1069](https://github.com/trail-openers/pi-rukas/commit/4ac1069240c042af2fb4ef328e30762a5b57d78a))
+
 ## [0.14.52](https://github.com/trail-openers/pi-rukas/compare/v0.14.51...v0.14.52) (2026-11-04)
 
 
