@@ -28,7 +28,6 @@ import { reviewDeps } from "../src/lean/review-deps.ts";
 import type { runLensChild } from "../src/lens-review-child.ts";
 import type { LensRunResult } from "../src/lens-review-types.ts";
 import { LENS_ROSTER } from "../src/lens-roster.ts";
-import type { BudgetArms } from "../src/lean/step-budget.ts";
 import { gitTestEnv } from "./lib/git-test-env.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 
@@ -60,13 +59,15 @@ async function mkRunRepo(): Promise<{
   const root = mkdtempSync(path.join(os.tmpdir(), "lean-delta-stamp-"));
   const origin = path.join(root, "origin.git");
   const dir = path.join(root, "repo");
-  const env = gitTestEnv();
+  // `gitTestEnv()` points the ambient env at an isolated git view (and returns
+  // it for a threaded child), so the fixture's commits and the layer's own git
+  // reads see the same host — never the operator's config (lib/git-test-env.ts).
+  gitTestEnv();
   // Args are quoted because the command goes through a shell: an unquoted commit
   // subject with spaces reaches git as three arguments and fails as a pathspec.
   const G = (cwd: string, ...args: string[]) =>
     execp(`git ${args.map((a) => `'${a}'`).join(" ")}`, {
       cwd,
-      env,
       maxBuffer: 64 * 1024 * 1024,
     });
   await G(root, "init", "-q", "--bare", origin);
@@ -161,7 +162,7 @@ try {
     evidence: undefined,
     extraFindings: [],
     headless: false,
-    budget: { opts: {}, fired: () => undefined } as unknown as BudgetArms,
+    budget: { opts: {}, fired: () => undefined },
     threshold: "HIGH",
   });
 
