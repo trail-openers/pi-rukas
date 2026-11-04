@@ -8,6 +8,21 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.49](https://github.com/trail-openers/pi-rukas/compare/v0.14.48...v0.14.49) (2026-11-04)
+
+
+### Features
+
+* **spawn:** show each child its budget at 50% and 80% ([#2006](https://github.com/trail-openers/pi-rukas/issues/2006)) ([31562f0](https://github.com/trail-openers/pi-rukas/commit/31562f00e9678aff84cfb916745cea70fac26407))
+
+
+### Bug Fixes
+
+* **lean:** carry the lens round's range stamp to the review step ([#2002](https://github.com/trail-openers/pi-rukas/issues/2002)) ([ee7255d](https://github.com/trail-openers/pi-rukas/commit/ee7255dc3527ccf39dd0fbab81023df7d749f2e7))
+* **lean:** give the fix wave its turns budget and an order of work ([#2008](https://github.com/trail-openers/pi-rukas/issues/2008)) ([1bc2d37](https://github.com/trail-openers/pi-rukas/commit/1bc2d372ed4c9120b13e56f9f150fe2f77507f56))
+* **review:** let a citation-verified quote decide the review bar ([#2007](https://github.com/trail-openers/pi-rukas/issues/2007)) ([1e02c6b](https://github.com/trail-openers/pi-rukas/commit/1e02c6b8312bcdc4a503a8a745cf6a3a4a82e2ed))
+* **review:** run reviewer children in a throwaway detached worktree ([#2003](https://github.com/trail-openers/pi-rukas/issues/2003)) ([3011206](https://github.com/trail-openers/pi-rukas/commit/30112062f22434918aa571995c57319bd54447d5))
+
 ## [0.14.48](https://github.com/trail-openers/pi-rukas/compare/v0.14.47...v0.14.48) (2026-11-04)
 
 
