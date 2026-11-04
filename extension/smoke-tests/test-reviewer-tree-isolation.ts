@@ -72,7 +72,7 @@ const gitEnv = gitTestEnv();
 // line and exits, so no Pi binary, no model, no tokens — and `spawnSpecialist`
 // still runs its real cwd plumbing, including the #1975 relocation.
 const STUB_CHILD = "console.log(JSON.stringify({type:'agent_end'}))";
-mock.module(new URL("node:child_process", import.meta.url).href, () => ({
+mock.module("node:child_process", () => ({
   ...require("node:child_process"),
   spawn: (_cmd: string, args: string[], opts: { cwd?: string }) => {
     if (throwOnSpawn) throw new Error("spawn exploded");
@@ -240,15 +240,23 @@ const driveLensChild = async (reviewedCwd: string) => {
 {
   const { dir, head } = makeRepo("lens");
   const before = snapshot(dir);
-  let childCwd = "";
-  let headAtSpawn = "";
+  // Captured during the dispatch: the tree is gone once the spawn returns, so
+  // every fact about it is recorded while the child is still running in it.
+  const observed: { cwd: string; head: string; underTmp: boolean; wrote: boolean } = {
+    cwd: "",
+    head: "",
+    underTmp: false,
+    wrote: false,
+  };
   const attempted: string[] = [];
   bodies = [
     (cwd) => {
-      childCwd = cwd;
+      observed.cwd = cwd;
       // Read while the tree still exists — the spawn removes it in its `finally`.
-      headAtSpawn = gitOut(cwd, "rev-parse", "HEAD");
+      observed.head = gitOut(cwd, "rev-parse", "HEAD");
+      observed.underTmp = realpathSync(cwd).startsWith(realpathSync(os.tmpdir()));
       attempted.push(...attemptMutations(cwd));
+      observed.wrote = existsSync(path.join(cwd, "PWNED")) && existsSync(path.join(cwd, "rogue.ts"));
     },
   ];
   spawnCalls.length = 0;
@@ -261,7 +269,7 @@ const driveLensChild = async (reviewedCwd: string) => {
   );
   const requested = spawnCalls[0].requested;
   assert(requested === dir, "A: the CALLER asked for the reviewed worktree (isolation is the spawn's)");
-  assert(childCwd !== dir, "A: the reviewer never ran in the reviewed worktree");
+  assert(observed.cwd !== dir, "A: the reviewer never ran in the reviewed worktree");
   assert(
     attempted.length === 5,
     `A: all five mutation classes attempted (${attempted.join(", ")})`,
@@ -284,20 +292,20 @@ const driveLensChild = async (reviewedCwd: string) => {
     "A: the reviewed branch still points at the reviewed head",
   );
 
-  // AC2, read while the tree existed: the reviewer's own tree was detached at
-  // the reviewed head, and everything the mutations produced stayed inside it.
-  assert(headAtSpawn === head, "AC2: the reviewer's cwd HEAD is exactly the reviewed head");
+  // AC2: the reviewer's own tree was detached at the reviewed head, and
+  // everything the mutations produced stayed inside it.
+  assert(observed.head === head, "AC2: the reviewer's cwd HEAD is exactly the reviewed head");
   assert(
-    existsSync(path.join(childCwd, "PWNED")) && existsSync(path.join(childCwd, "rogue.ts")),
+    gitOut(dir, "rev-parse", `${head}^{commit}`) === head,
+    "AC2: the commit the reviewer's tree was created at IS the reviewed head",
+  );
+  assert(
+    observed.wrote,
     "AC2: the mutations really landed in the reviewer's own tree (not the reviewed one)",
   );
-  assert(existsSync(path.join(childCwd, ".git")), "AC2: the reviewer's tree is its own linked worktree");
-  assert(
-    realpathSync(childCwd).startsWith(realpathSync(os.tmpdir())),
-    "AC2: the throwaway tree lives under TMPDIR",
-  );
+  assert(observed.underTmp, "AC2: the throwaway tree lives under TMPDIR");
 
-  assert(!existsSync(childCwd), "A: the spawn removed the throwaway tree when the child returned");
+  assert(!existsSync(observed.cwd), "A: the spawn removed the throwaway tree when the child returned");
   assert(strayTrees(dir).length === 0, "A: no worktree registration survived the dispatch");
 }
 
