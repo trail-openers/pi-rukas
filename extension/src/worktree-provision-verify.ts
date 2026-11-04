@@ -471,27 +471,6 @@ export async function linkFoundDeps(
   };
 }
 
-/**
- * Make git blind to the links we just created.
- *
- * A `.gitignore` entry of `node_modules/` — the overwhelmingly common form,
- * used by both this repo and every project measured — matches a DIRECTORY.
- * A symlink is not a directory, so the pattern does not match it and the link
- * surfaces as `?? node_modules` in `git status --porcelain`. That is our own
- * scaffolding appearing as if it were the developer's work:
- * `stagePorcelainPaths` stages every path porcelain lists, so the link was
- * staged, captured into the patch as an absolute-path `mode 120000` entry, and
- * applying it at repoRoot failed `Directory not empty` — aborting the whole
- * mechanized integration on every Node or Python project.
- *
- * The exclude goes to `$GIT_COMMON_DIR/info/exclude`, verified as the only one
- * a linked worktree reads: `$GIT_DIR/info/exclude` resolves to
- * `.git/worktrees/<name>/info/exclude`, which git ignores entirely.
- *
- * Best-effort, like the rest of provisioning. `stagePorcelainPaths` refuses
- * escaping symlinks independently, so this is the tidy fix rather than the
- * load-bearing one — worktrees provisioned before this landed are still safe.
- */
 async function hideFromGit(execFn: ExecFn, worktreeAbs: string, deps: string[]): Promise<void> {
   try {
     const { stdout } = await execFn("git rev-parse --git-common-dir", {
