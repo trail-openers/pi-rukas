@@ -24,7 +24,10 @@ import {
 
 // The devcontainer sets PI_ENSEMBLE_SANDBOX_MODE=1, and with it the guard
 // bypasses all gating, so the round-trip below never runs. This test is
-// about the gate itself, so it runs with the gate on.
+// about the gate itself, so it runs with the gate on, and puts the caller's
+// environment back afterwards (the save/delete/restore shape of the L9 case
+// in test-permission-guard-runtime.ts).
+const prevSandboxMode = process.env.PI_ENSEMBLE_SANDBOX_MODE;
 delete process.env.PI_ENSEMBLE_SANDBOX_MODE;
 
 let exitCode = 0;
@@ -293,6 +296,8 @@ try {
   assert(false, `registerPermissionGuard failed to load cached JSON fixture: ${err}`);
 } finally {
   process.chdir(originalCwd);
+  if (prevSandboxMode === undefined) delete process.env.PI_ENSEMBLE_SANDBOX_MODE;
+  else process.env.PI_ENSEMBLE_SANDBOX_MODE = prevSandboxMode;
 }
 
 const blankFixture = { bash: { command: "   " } };
