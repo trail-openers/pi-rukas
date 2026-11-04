@@ -16,22 +16,48 @@
  *
  * The NOT-restored case is the one `docs/troubleshooting.md` says needs the
  * operator, so it is asserted for any uid: root ignores mode bits, but the fault
- * here is `open(target, "wx")` under a non-writable PARENT directory, which fails
- * EACCES for root too (the case arranges that itself, and root only has to be
- * able to `chmod`, which it always can).
+ * here is creating a NEW entry under a non-writable PARENT directory, which the
+ * EACCES binds for root too (the case arranges that itself, and root only has to
+ * be able to `chmod`, which it always can).
+ *
+ * A REGULAR file is restored IN PLACE (open/write/truncate), never unlinked
+ * first: unlinking needs write permission on the parent, so a child that made
+ * the parent non-writable would defeat a `rm`-then-`create` restore and keep its
+ * payload behind a `— restored` line. The `parent-dir-immutable` case below is
+ * the mutant for exactly that: it goes red on a `restoreOne` that unlinks before
+ * it writes.
  *
  * Every case runs against a sentinel home from the caller's `sentinelHome`; the
  * real operator home is never opened.
  */
 
 import { execFileSync } from "node:child_process";
-import { chmodSync, lstatSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { withOperatorConfigGuard } from "../../src/spawn-operator-config.ts";
 import type { DispatchResult } from "../../src/types.ts";
 import { withEnv } from "./env-scope.ts";
 
 type Sentinel = { home: string; env: Record<string, string> };
+
+/**
+ * The env a hostile `sh` child runs with. `execFile*` does NOT see the caller's
+ * `withEnv` overrides — it inherits the real `process.env` — so a child that
+ * expands `$HOME` would reach the OPERATOR's home, which is the exact file
+ * #2019 exists to protect. Every subprocess case passes this instead, and the
+ * target paths are handed to the child as absolute argv, never derived from its
+ * own environment.
+ */
+function hostileChildEnv(env: Record<string, string>): NodeJS.ProcessEnv {
+  return { ...process.env, ...env };
+}
 
 export async function runPostChildReadCases(
   assert: (cond: boolean, msg: string) => void,
@@ -57,6 +83,7 @@ export async function runPostChildReadCases(
       await withOperatorConfigGuard("ops", async () => {
         execFileSync("sh", ["-c", 'rm -f "$1"; mkdir "$1"; printf PWNED > "$2"', "sh", target, payload], {
           stdio: "ignore",
+          env: hostileChildEnv(env),
         });
         return result();
       });
@@ -98,49 +125,142 @@ export async function runPostChildReadCases(
     );
     assert(
       (res?.operatorConfig ?? []).length === 1 &&
-        (res?.operatorConfig ?? [""])[0].includes("— restored"),
+        (res?.operatorConfig ?? [""])[0]?.includes("— restored") === true,
       `chmod-000: the unreadable path is reported as a violation, not silently passed (${JSON.stringify(res?.operatorConfig)})`,
     );
   }
 
   {
-    // The NOT-restored arm without mode bits, so root cannot skip it: the child
-    // removes the entry and leaves its payload; the guard's `rm` then succeeds
-    // (the directory is still writable) but its `open(..., "wx")` fails, because
-    // the PARENT has become a non-writable directory. Under the old mode-bit
-    // fixture this arm only ran for a non-root uid, so CI running the image as
-    // root never saw it; here the root branch merely pre-arms the read-only
-    // parent (a `chmod` root always can) and the EACCES itself binds root.
-    const { home, env } = sentinelHome("not-restored-as-root");
-    const ghDir = join(home, ".config", "gh");
-    const target = join(ghDir, "hosts.yml");
-    let res: DispatchResult | undefined;
-    try {
-      if (process.getuid?.() === 0) chmodSync(ghDir, 0o555);
-      await withEnv(env, async () => {
-        res = await withOperatorConfigGuard("developer", async () => {
-          rmSync(target, { force: true });
-          writeFileSync(target, "github.com:\n    oauth_token: attacker\n");
-          chmodSync(ghDir, 0o555);
-          return result();
+    // The child cannot delete or replace the entry, only overwrite it: the
+    // parent directory is left non-writable while the FILE stays writable. An
+    // unlink-first restore needs write permission on the PARENT, so it fails
+    // EACCES here and the child's payload survives under a `— restored` line;
+    // the in-place restore only needs the file to be writable, which is exactly
+    // what the child cannot take away without making the file itself unreadable
+    // (the `chmod 000` arm above). Skipped as root, where mode bits bind
+    // nobody: a root run of this file is not evidence either way, so the case
+    // says so instead of passing vacuously.
+    if (process.getuid?.() === 0) {
+      assert(true, "parent-dir-immutable: skipped running as root — mode bits do not bind uid 0");
+    } else {
+      const { home, env } = sentinelHome("parent-dir-immutable");
+      const ghDir = join(home, ".config", "gh");
+      const target = join(ghDir, "hosts.yml");
+      const operator = readFileSync(target);
+      let res: DispatchResult | undefined;
+      try {
+        // The env is pinned OUTSIDE the guard call: `withOperatorConfigGuard`
+        // snapshots before the callback runs, so a `withEnv` nested inside it
+        // would have the guard read the ambient home rather than this sentinel.
+        await withEnv(env, async () => {
+          // `res` is captured, not discarded: a rejected `withOperatorConfigGuard`
+          // whose value nobody awaits surfaces as an unhandled rejection (a
+          // `void`-style call here killed the process outright), while awaiting
+          // it lets the case assert the guard's own answer.
+          res = await withOperatorConfigGuard("developer", async () => {
+            execFileSync(
+              "sh",
+              [
+                "-c",
+                // rm then write, as the incident did: a cooperative `printf >`
+                // would leave the file the OPERATOR owns, which is writable
+                // through any directory and would not pin this arm at all.
+                'rm -f "$1"; printf \'github.com:\\n    oauth_token: attacker\\n\' > "$1"; chmod 0644 "$1"; chmod 0555 "$(dirname "$1")"',
+                "sh",
+                target,
+              ],
+              { stdio: "ignore", env: hostileChildEnv(env) },
+            );
+            return result();
+          });
         });
-      });
-      const warns = drainWarns();
-      const line = (res?.operatorConfig ?? []).join("\n");
-      assert(
-        line.includes(target) && line.includes("NOT restored"),
-        `NOT-restored: an unrestorable entry reports NOT restored (${line.slice(0, 160)})`,
-      );
-      assert(
-        warns.includes("NOT restored") && warns.includes("developer"),
-        "NOT-restored: the traceWarn channel carries the same line, naming the role",
-      );
-      assert(
-        res?.ok === true,
-        "NOT-restored: an unrestorable violation never changes ok",
-      );
-    } finally {
-      chmodSync(ghDir, 0o755);
+        const warns = drainWarns();
+        const lines = res?.operatorConfig ?? [];
+        const line = lines.join("\n");
+        assert(
+          lines.length === 1 &&
+            line.includes(target) &&
+            line.includes("modified") &&
+            !line.includes("NOT restored"),
+          `parent-dir-immutable: the restore reports success rather than NOT restored (${line.slice(0, 160) || "no line"})`,
+        );
+        assert(
+          existsSync(target) && readFileSync(target).equals(operator),
+          "parent-dir-immutable: the child's payload is gone and the operator's bytes are back under a non-writable parent",
+        );
+        assert(
+          !warns.includes("NOT restored") && warns.includes("modified"),
+          "parent-dir-immutable: the traceWarn channel agrees that the restore landed",
+        );
+        assert(
+          lstatSync(target).isFile() && (statSync(target).mode & 0o777) === 0o600,
+          "parent-dir-immutable: the restored file is a regular file at mode 0600, not the child's 0644",
+        );
+      } finally {
+        chmodSync(ghDir, 0o755);
+      }
+    }
+  }
+
+  {
+    // The arm the guard cannot fix: the child owns the entry (it recreated it)
+    // and the parent is `0555`, so the guard can neither write it in place (it
+    // does not own the file, so it could not `chmod` it back either) nor unlink
+    // it. `NOT restored` is the honest answer, and `ok` stays true. Skipped as
+    // root, where mode bits bind nobody: as uid 0 both the unlink and the create
+    // would succeed and the case would pass for the wrong reason — it would be
+    // asserting the shape of a violation that did not happen.
+    if (process.getuid?.() === 0) {
+      assert(true, "NOT-restored: skipped running as root — the unrestorable EACCES needs mode bits to bind");
+    } else {
+      const { home, env } = sentinelHome("not-restored");
+      const ghDir = join(home, ".config", "gh");
+      const target = join(ghDir, "hosts.yml");
+      let res: DispatchResult | undefined;
+      try {
+        // Env pinned outside the guard, as in the case above: the snapshot is
+        // taken before the callback runs.
+        await withEnv(env, async () => {
+          // Captured, not discarded — same reason as the case above.
+          res = await withOperatorConfigGuard("developer", async () => {
+            execFileSync(
+              "sh",
+              [
+                "-c",
+                // rm, then the payload at 0400: the compare read fails EACCES
+                // (so the path is a violation), the guard cannot own it (so it
+                // cannot write in place) and the 0555 parent blocks the unlink.
+                // That triple is the shape `NOT restored` names.
+                'rm -f "$1"; printf \'github.com:\\n    oauth_token: attacker\\n\' > "$1"; chmod 0400 "$1"; chmod 0555 "$(dirname "$1")"',
+                "sh",
+                target,
+              ],
+              { stdio: "ignore", env: hostileChildEnv(env) },
+            );
+            return result();
+          });
+        });
+        const warns = drainWarns();
+        const line = (res?.operatorConfig ?? []).join("\n");
+        assert(
+          line.includes(target) && line.includes("NOT restored"),
+          `NOT-restored: an unrestorable entry reports NOT restored (${line.slice(0, 160)})`,
+        );
+        assert(
+          warns.includes("NOT restored") && warns.includes("developer"),
+          "NOT-restored: the traceWarn channel carries the same line, naming the role",
+        );
+        assert(
+          res?.ok === true,
+          "NOT-restored: an unrestorable violation never changes ok",
+        );
+        assert(
+          existsSync(target) && readFileSync(target).includes("attacker"),
+          "NOT-restored: the unrestorable payload really is still there (the line is honest, not decorative)",
+        );
+      } finally {
+        chmodSync(ghDir, 0o755);
+      }
     }
   }
 }

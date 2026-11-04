@@ -9,6 +9,7 @@
  */
 
 import { spawn } from "node:child_process";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { notifyAgent } from "./agent-message.ts";
 import { scrubGitLocation } from "./git-env.ts";
 import { emitStepCompleted } from "./lifecycle-events.ts";
@@ -165,20 +166,45 @@ async function reattachChild(
       child.kill("SIGTERM");
     }, maxWait);
 
-    const [exitCode] = (await new Promise<[number | null]>((resolve) => {
-      child.on("exit", (code) => resolve([code]));
-    })) as [number | null];
+    // Settle on `error` as well as `exit`. A spawn that never starts (a binary
+    // that cannot be executed) emits `error` and NEVER `exit`, so awaiting only
+    // `exit` would hang this promise for the life of the driver; the error
+    // carries the reason and is traced rather than swallowed.
+    const settled = await settleReattachChild(child, timeout);
     clearTimeout(timeout);
-    try {
-      child.kill("SIGKILL");
-    } catch {
-      /* best-effort */
+    if (settled.reason !== undefined) {
+      trace(`work-driver: resume-reattach spawn error: ${settled.reason}`);
+      return { reattach: false };
     }
-
-    if (timedOut || exitCode !== 0) return { reattach: false };
+    if (timedOut || settled.exitCode !== 0) return { reattach: false };
     const rawStdout = Buffer.concat(stdoutChunks).toString("utf8");
     return buildReattachResult("", "", maxWait, rawStdout);
   });
+}
+
+/**
+ * Await the reattach child's `exit` OR its `error`, and always SIGKILL it on the
+ * way out. The `error` arm is what keeps the resume path from hanging: node's
+ * `ChildProcess` emits `error` (and no `exit`) when the executable cannot be
+ * spawned, so a promise that listens only for `exit` never settles.
+ */
+async function settleReattachChild(
+  child: ChildProcessWithoutNullStreams,
+  timeout: ReturnType<typeof setTimeout>,
+): Promise<{ exitCode: number | null; reason?: string }> {
+  const outcome = await new Promise<{ exitCode: number | null; reason?: string }>((resolve) => {
+    child.on("exit", (code) => resolve({ exitCode: code }));
+    child.on("error", (err) =>
+      resolve({ exitCode: null, reason: (err as NodeJS.ErrnoException).code ?? String(err) }),
+    );
+  });
+  clearTimeout(timeout);
+  try {
+    child.kill("SIGKILL");
+  } catch {
+    /* best-effort */
+  }
+  return outcome;
 }
 
 function buildReattachResult(

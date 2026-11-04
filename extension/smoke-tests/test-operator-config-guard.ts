@@ -74,7 +74,7 @@ process.stderr.write = ((chunk: string | Uint8Array) => {
   errWrites.push(String(chunk));
   return true;
 }) as typeof process.stderr.write;
-function drainWarns(): string[] {
+function drainWarns(): string {
   const seen = errWrites;
   errWrites = [];
   return seen.join("");
@@ -82,7 +82,7 @@ function drainWarns(): string[] {
 
 /** A result shaped like the one spawn hands back; the wrapper annotates it. */
 function result(): DispatchResult {
-  return { role: "developer", ok: true, text: "done", toolUses: [], ms: 1 };
+  return { role: "developer", ok: true, text: "done", toolUses: [], ms: 1, exitCode: 0 };
 }
 
 /**
@@ -125,6 +125,10 @@ function filesOf(home: string): string[] {
   return PROTECTED.map((rel) => path.join(home, rel));
 }
 
+function xdgOf(home: string): string {
+  return path.join(home, ".config");
+}
+
 // ------------------------------------------------ A — the protected path set
 
 {
@@ -156,6 +160,14 @@ function filesOf(home: string): string[] {
       path.join(home, ".config", "git", "config"),
     ),
     "a relative XDG_CONFIG_HOME is ignored in favour of $HOME/.config",
+  );
+  // Same rule for GH_CONFIG_DIR: a relative value would protect paths under the
+  // CWD instead of the operator's gh config, so the XDG default must win.
+  assert(
+    protectedPaths({ ...env, GH_CONFIG_DIR: "relative/gh" }).includes(
+      path.join(xdgOf(home), "gh", "hosts.yml"),
+    ) && !protectedPaths({ ...env, GH_CONFIG_DIR: "relative/gh" }).includes("relative/gh/hosts.yml"),
+    "a relative GH_CONFIG_DIR is ignored in favour of the XDG gh default",
   );
 }
 
@@ -198,12 +210,13 @@ for (const rel of PROTECTED) {
       `AC1 ${rel}: a child's "${kind}" is restored byte-for-byte (an absent file stays absent)`,
     );
     const lines = res.operatorConfig ?? [];
+    const only = lines.length === 1 ? (lines[0] ?? "") : "";
     assert(
-      lines.length === 1 && lines[0].includes(target) && lines[0].includes("code-review-specialist"),
+      only !== "" && only.includes(target) && only.includes("code-review-specialist"),
       `AC1 ${rel}: operatorConfig carries one line naming the path and the role (${lines[0] ?? "none"})`,
     );
     assert(
-      lines.length === 1 && lines[0].includes(kind === "delete" ? "modified" : "modified"),
+      only !== "" && only.includes("modified") && !only.includes("NOT restored"),
       `AC1 ${rel}: the warn line is the restored form (no code in it)`,
     );
     if (kind !== "create") {

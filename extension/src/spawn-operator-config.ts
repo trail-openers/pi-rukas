@@ -49,7 +49,7 @@
  * mechanism from this restore.
  */
 
-import { open, readFile, rm } from "node:fs/promises";
+import { constants, access, lstat, open, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { isPlainObject } from "./plain-object.ts";
@@ -90,7 +90,10 @@ function homeDir(env: OperatorConfigEnv): string {
 /** The config root gh resolves — gh's own documented order, not ours. */
 function ghConfigDir(env: OperatorConfigEnv): string {
   const gh = env.GH_CONFIG_DIR;
-  if (gh !== undefined && gh !== "") return gh;
+  // Absolute-only, like every other resolver here: a relative `GH_CONFIG_DIR`
+  // would protect paths under the CWD instead of the operator's gh config, so
+  // the XDG default is used and the real files stay watched.
+  if (gh !== undefined && gh !== "" && path.isAbsolute(gh)) return gh;
   return path.join(configHome(env), "gh");
 }
 
@@ -126,24 +129,84 @@ async function readSnapshot(target: string): Promise<Buffer | null | undefined> 
 }
 
 /**
- * Put one path back by replacing the ENTRY, never by writing through whatever
- * the entry has become. `rm` unlinks a symlink rather than its target, and
- * `open(..., "wx")` creates a fresh regular file instead of following a link a
- * child planted — so after a restore the operator's file is one the child does
- * not already own, and the `— restored` line cannot be a false all-clear.
- * `recursive` because the child may have left a DIRECTORY holding files, which
- * a plain `rm` refuses (ERR_FS_EISDIR) and would leave the child's tree in
- * place; only `bytes === null` means "restore = delete", and a real directory
- * is only ever removed when the snapshot said a file used to be there.
- * Explicit 0600 because the file is new (a plain write would keep a mode the
- * child loosened, and `hosts.yml` holds the gh token); `wx` bypasses umask, so
- * it is set here rather than assumed.
+ * Can this entry be restored in place, i.e. without touching the PARENT
+ * directory? Three shapes can:
+ *
+ * - A regular file the guard OWNS and can open for write. `isFile()` on `lstat`
+ *   keeps a symlink, a directory or any other non-regular entry out: those must
+ *   be replaced by ENTRY (unlink the link, create a fresh regular file), never
+ *   written through, or the child keeps the path under its control.
+ * - Owned by the guard's own uid — a file the child re-`chown`ed is one the
+ *   guard cannot `chmod` back either, so it goes through unlink-and-create
+ *   (EACCES there is reported as `NOT restored`, not papered over).
+ * - An ABSENT path, which `open(..., "w")` creates; it needs no unlink either,
+ *   so it belongs to this arm rather than the one that has to `rm` first.
+ *
+ * A `chmod 000` file fails the write check and takes the replace arm, which is
+ * also the arm that fixes the mode. The in-place arm exists because unlinking
+ * needs write permission on the PARENT, which a child that left its directory
+ * `0555` does not grant. Never throws: an unreadable directory is simply not
+ * in-place writable and falls to the replace arm, which reports its EACCES.
+ */
+async function inPlaceWritable(target: string): Promise<boolean> {
+  try {
+    const st = await lstat(target);
+    if (!st.isFile()) return false;
+    if (process.getuid !== undefined && st.uid !== process.getuid()) return false;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "ENOENT";
+  }
+  try {
+    await access(target, constants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Put one path back. Two shapes, chosen by what the guard can actually DO to
+ * the entry it finds:
+ *
+ * - A regular file the guard can OPEN FOR WRITE is restored IN PLACE: the
+ *   existing inode is truncated and written. Unlinking first needs write
+ *   permission on the PARENT, which a child that ran `chmod 555` on the
+ *   directory does not leave — an unlink-first restore fails EACCES there and
+ *   the child's payload survives under a line that says `— restored`. The
+ *   in-place write needs only the file's own write bit, so the child cannot
+ *   defend against it without also dropping that bit, and a file it made
+ *   unwritable falls to the other arm instead.
+ * - Anything else — a non-regular entry (symlink, directory) or a file the child
+ *   made unwritable or re-`chown`ed — is replaced by ENTRY: `rm` unlinks a
+ *   symlink rather than its target and `open(..., "wx")` creates a fresh regular
+ *   file instead of following a link the child planted, so the operator's file
+ *   ends up one the child does not already own. Writing through a symlink would
+ *   put the token in the child's own file. An entry the guard can neither write
+ *   in place nor unlink (a child-owned file in a `0555` directory) is what
+ *   `NOT restored` names.
+ *
+ * Mode is set explicitly to 0600 either way: `hosts.yml` holds the gh token,
+ * a plain write keeps whatever mode the child loosened, and `wx` bypasses umask.
  *
  * A snapshot was read with `readFile`, so it followed any pre-existing link at
  * snapshot time and its bytes are the target's own: writing them back as a
  * regular file is the faithful restore, not a new behaviour.
  */
 async function restoreOne(target: string, bytes: Buffer | null): Promise<string | undefined> {
+  if (bytes !== null && (await inPlaceWritable(target))) {
+    try {
+      const handle = await open(target, "w", 0o600);
+      try {
+        await handle.writeFile(bytes);
+        await handle.chmod(0o600);
+      } finally {
+        await handle.close();
+      }
+      return undefined;
+    } catch {
+      // Lost the race or the open lied: fall through to the replace-by-entry arm.
+    }
+  }
   try {
     await rm(target, { force: true, recursive: true });
     if (bytes === null) return undefined;

@@ -70,7 +70,7 @@ export async function runEntryHardeningCases(
     );
     assert(
       (res?.operatorConfig ?? []).length === 1 &&
-        (res?.operatorConfig ?? [""])[0].includes("— restored"),
+        (res?.operatorConfig ?? [""])[0]?.includes("— restored") === true,
       "symlink swap: the swap is reported once, as a restored violation",
     );
   }
