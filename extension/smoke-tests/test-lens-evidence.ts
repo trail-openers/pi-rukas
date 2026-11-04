@@ -408,6 +408,73 @@ const docs = (text: string): DoctrineDoc[] => [{ file: "AGENTS.md", text }];
   );
 }
 
+// ------------------- the verified quote decides the bar, not the judge's label
+
+{
+  // The follow-up defect in #1988, observed on a real headless proof run: the
+  // judge answered `forbidden` while quoting §1's HIGH sentence VERBATIM, with
+  // the citation verified (`source "llm"`, reason `replace: evidence verified`).
+  // `resolveReviewThreshold` gated the bar on `decision.permitted`, which is
+  // false for every `forbidden` answer whatever its citation, so this repo's own
+  // bar silently became MEDIUM and a round with only MEDIUM/LOW findings bought
+  // a fix wave.
+  const ownDoctrine = await fs.readFile(
+    path.resolve(import.meta.dirname, "..", "..", "AGENTS.md"),
+    "utf8",
+  );
+  const thresholdPara = ownDoctrine
+    .split("\n")
+    .find((line) => line.startsWith("**Six-pass review findings are blocking"));
+  const sentences = (thresholdPara ?? "")
+    .split(/(?<=[.!?])\*\*|(?<=[.!?])\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const HIGH_SENTENCE =
+    sentences.find((s) =>
+      /^\**Six-pass review findings are blocking at [A-Z]+ severity and above\.\**$/.test(s),
+    ) ?? "";
+
+  const forbiddenVerified = await resolveReviewThreshold(
+    judgeSaying({ verdict: "forbidden", quote: HIGH_SENTENCE, sourceFile: "AGENTS.md" }),
+    docs(ownDoctrine),
+  );
+  assert(
+    forbiddenVerified.severity === "HIGH" && forbiddenVerified.source === "doctrine",
+    `a citation-VERIFIED 'forbidden' that quotes §1's HIGH sentence decides HIGH, label notwithstanding (got ${forbiddenVerified.severity}/${forbiddenVerified.source}) — the label is not the bar`,
+  );
+  assert(
+    forbiddenVerified.quote === HIGH_SENTENCE,
+    `...and the sentence relied on is recorded verbatim (got ${String(forbiddenVerified.quote).slice(0, 60)})`,
+  );
+
+  // The negative: the same `forbidden` label quoting a sentence the documents do
+  // not contain. Verification is what decided the case above, so an unverified
+  // quote must still fall to the default whatever the label.
+  const forbiddenUnverified = await resolveReviewThreshold(
+    judgeSaying({
+      verdict: "forbidden",
+      quote: "Six-pass review findings are blocking at LOW severity and above.",
+      sourceFile: "AGENTS.md",
+    }),
+    docs(ownDoctrine),
+  );
+  assert(
+    forbiddenUnverified.severity === "MEDIUM" && forbiddenUnverified.source === "default",
+    `an UNVERIFIED quote under a 'forbidden' label still yields the default (got ${forbiddenUnverified.severity}/${forbiddenUnverified.source}) — a sentence the documents lack decides nothing`,
+  );
+
+  // Mirror of the permitted path, over the same real doctrine: an answer the
+  // judge did not give never sets the bar, verified-looking quote or not.
+  const forbiddenNoQuote = await resolveReviewThreshold(
+    judgeSaying({ verdict: "forbidden", sourceFile: "AGENTS.md" }),
+    docs(ownDoctrine),
+  );
+  assert(
+    forbiddenNoQuote.severity === "MEDIUM" && forbiddenNoQuote.source === "default",
+    `a 'forbidden' with NO quote yields the default (got ${forbiddenNoQuote.severity}/${forbiddenNoQuote.source})`,
+  );
+}
+
 await fs.rm(tmp, { recursive: true, force: true });
 console.log(`\nexit ${exit}`);
 process.exit(exit);

@@ -94,6 +94,13 @@ export interface PolicyDecision {
    * worth surfacing — this is a hallucination signal, not a parse miss.
    */
   citationFailed?: boolean;
+  /**
+   * The seam's own evidence check passed: `quote` was found verbatim (modulo
+   * formatting) in a document the caller vouched for. On a `forbidden` answer
+   * the seam needs no citation to deny, so `quote` alone is not proof of it —
+   * a caller that wants the sentence rather than the label reads this field.
+   */
+  quoteVerified?: boolean;
   /** Operator-facing explanation of the outcome. */
   reason: string;
 }
@@ -109,12 +116,20 @@ export interface PolicyDecision {
 export function policyOutcome(seam: Decision): PolicyDecision {
   const quote = seam.model?.quote?.trim();
   const sourceFile = seam.evidence?.matchedName ?? seam.model?.cited?.trim();
-  if (seam.answer === "permitted" && seam.evidence?.passed === true) {
+  // Whether the quote is one the project actually wrote: the seam's own
+  // evidence check (`decision-evidence.ts`), which `decide()` runs on every
+  // model answer. A denial needs no citation to stand, so composition can pick
+  // a bare `forbidden` without consulting it — which is why `quote` alone is
+  // not proof of a citation, and why a caller that reads the sentence rather
+  // than the label must read this field.
+  const quoteVerified = seam.evidence?.passed === true && !!quote;
+  if (seam.answer === "permitted" && quoteVerified) {
     return {
       permitted: true,
       verdict: "permitted",
       quote: quote?.slice(0, 400),
       sourceFile,
+      quoteVerified: true,
       reason: `${sourceFile ?? "a document"} permits it ("${(quote ?? "").slice(0, 200)}")`,
     };
   }
@@ -126,6 +141,7 @@ export function policyOutcome(seam: Decision): PolicyDecision {
       verdict: "forbidden",
       quote,
       sourceFile,
+      quoteVerified,
       reason: quote
         ? `the project's documents prohibit it ("${quote.slice(0, 200)}")`
         : "the project's documents prohibit it",

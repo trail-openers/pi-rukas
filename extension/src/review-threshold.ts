@@ -59,6 +59,16 @@ export interface ReviewThreshold {
  *   - a project may **tighten** it freely — a stricter answer needs no proof,
  *     since being cautious on someone else's behalf is never the failure mode
  *     worth guarding against
+ *   - **the verified quote decides the severity, not the judge's label.** A
+ *     judge that quotes this repo's own "blocking at HIGH severity and above"
+ *     verbatim and names the right file has told us the bar, whether it
+ *     labelled that sentence `permitted` or `forbidden`. On the `policy-judge`
+ *     seam a non-passing answer (`forbidden`) is honoured by composition with
+ *     no evidence check at all, so `permitted` is false for a perfectly good
+ *     citation; gating the bar on the label flipped this project's own bar
+ *     between HIGH and MEDIUM run to run. Only a quote the seam verified
+ *     (`quoteVerified`) counts; an unverified or absent one still yields the
+ *     default
  *   - the operator's env override beats both, as everywhere else
  */
 export async function resolveReviewThreshold(
@@ -84,21 +94,23 @@ export async function resolveReviewThreshold(
   }
 
   const decision = await askPolicy(judge, REVIEW_THRESHOLD_QUESTION, docs, where);
-  const named = decision.quote ? severityFromQuote(decision.quote) : undefined;
-  if (!decision.permitted || !named) {
+  // The citation, not the label: `quoteVerified` is the seam's evidence check,
+  // and it is the only thing that makes a sentence this project wrote count.
+  const named = decision.quoteVerified ? severityFromQuote(decision.quote ?? "") : undefined;
+  if (!named) {
     return {
       severity: defaultSeverity,
       source: "default",
-      reason: `the documents do not state a blocking severity (${decision.reason}) — using the default ${defaultSeverity}`,
+      reason: `the documents do not verifiably state a blocking severity (${decision.reason}) — using the default ${defaultSeverity}`,
     };
   }
 
-  // A citation that loosens must have survived verification; one that tightens
-  // is honoured either way. `decision.permitted` already implies a verified
-  // quote, so the distinction only matters if that ever changes — state it
-  // explicitly rather than relying on the coupling.
+  // A citation that loosens must have survived verification, which `named`
+  // above already required; one that tightens is honoured either way. Kept
+  // explicit rather than relying on the coupling, so a future change to
+  // `quoteVerified` cannot silently let an unverified looser bar through.
   const loosens = SEVERITIES.indexOf(named) < SEVERITIES.indexOf(defaultSeverity);
-  if (loosens && !decision.permitted) {
+  if (loosens && !decision.quoteVerified) {
     return {
       severity: defaultSeverity,
       source: "default",
