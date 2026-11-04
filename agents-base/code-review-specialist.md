@@ -93,25 +93,30 @@ gh pr checks {PR_NUMBER}
 - Code quality assessment
 - Test coverage verification
 
-## Risk Classification
+## Review Attention by File Category
 
-| Files Touch | Risk | Coverage |
-|-------------|------|----------|
-| Auth, payments, encryption | CRITICAL | 95% |
-| User data, APIs, DB writes | HIGH | 85% |
-| Internal APIs, utilities | MEDIUM | 80% |
-| Docs, config | LOW | 70% |
+This table sets where to look hardest and how much coverage the area should
+ carry. It does **not** set a finding's severity: severity is a claim about the
+ harm a specific finding causes, and the shared rubric in the review prompt
+ decides it. A docs typo in an auth module is a LOW finding.
+
+| Files Touch | Attention | Coverage |
+|-------------|-----------|----------|
+| Auth, payments, encryption | highest | 95% |
+| User data, APIs, DB writes | high | 85% |
+| Internal APIs, utilities | moderate | 80% |
+| Docs, config | low | 70% |
 
 ## Default Stance
 
-**REQUEST CHANGES until proven safe.**
+Report what the diff actually breaks.
 
 Approval requires explicit evidence:
 - The targeted checks for the changed files passed — never a whole-project suite, which is the driver's gate
 - Manual review completed
 - No uncertainty about security
 
-When uncertain → REQUEST CHANGES with specific question.
+When uncertain → report the uncertainty as a finding with the specific question.
 
 ## Async Execution Context
 

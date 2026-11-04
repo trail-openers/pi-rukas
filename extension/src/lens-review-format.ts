@@ -17,6 +17,7 @@ import type { ForcedFullReason } from "./lens-review-delta-disclose.ts";
 import { isReviewIncomplete } from "./lens-review-incomplete.ts";
 import type { Finding, FindingSource, LensRunResult } from "./lens-review-types.ts";
 import { CLAIM_SCAN, CLAIM_SCAN_PRECEDENCE, type RosterEntry } from "./lens-roster.ts";
+import { SEVERITY_RUBRIC } from "./lens-severity-rubric.ts";
 import type { ResolvedNotice, SetAsideNotice } from "./review-findings-file.ts";
 import type { ConfirmationLapse } from "./review-findings-store-types.ts";
 import { trace } from "./trace.ts";
@@ -280,6 +281,8 @@ For every issue you identify in your lane, call the \`report_finding\` tool ONCE
   - description: 1–3 sentence description of the issue
   - suggestion: short suggested fix
 
+${SEVERITY_RUBRIC}
+
 A call missing any required field is rejected and records nothing — repeat it with every field, not only the one the error names.
 
 Do NOT batch multiple findings into a single call — one tool call per finding. Do NOT emit findings as JSON in your prose; only the \`report_finding\` tool calls count.
@@ -352,7 +355,8 @@ const SEVERITY_ORDER: Record<Severity, number> = {
   LOW: 3,
 };
 
-function sortFindings(a: Finding, b: Finding): number {
+/** Severity order, then path, then line — the order every findings list is reported in. */
+export function sortFindings(a: Finding, b: Finding): number {
   const s = SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity];
   if (s !== 0) return s;
   if (a.path !== b.path) return a.path.localeCompare(b.path);

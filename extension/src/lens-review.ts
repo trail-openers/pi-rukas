@@ -11,15 +11,12 @@ import {
 import { withLensModelSlot } from "./lens-model-slots.ts";
 import { carriedSummary, noReviewSummary } from "./lens-review-auto-delta.ts";
 import { resolveLensReviewBranch } from "./lens-review-branch-resolve.ts";
-import { capKillSummary } from "./lens-review-capkill.ts";
 import { diffBaseOf } from "./lens-review-changed-ranges.ts";
 import { runLensChild } from "./lens-review-child.ts";
 import {
   type AutoDeltaInfo,
   type ForcedFullReason,
   deltaFallbackNote,
-  deltaReviewOf,
-  forcedFullFieldOf,
 } from "./lens-review-delta-disclose.ts";
 import { blockedReviewSummary, blockedRowsForRoster } from "./lens-review-diff-blocked.ts";
 import {
@@ -28,19 +25,18 @@ import {
   startPersistentBatch,
 } from "./lens-review-diff.ts";
 import { resolveReportedFindings } from "./lens-review-findings.ts";
-import { finishLensReview, memorySummaryFields } from "./lens-review-finish.ts";
+import { finishLensReview } from "./lens-review-finish.ts";
 import {
   DEFAULT_REVIEW_THRESHOLD,
   type LensReviewSummary,
   type Severity,
-  type Verdict,
-  bySeverityCounts,
   computeVerdict,
-  dedupeFindings,
   piSkillsDir,
 } from "./lens-review-format.ts";
 import { priorFindingsFor } from "./lens-review-memory.ts";
+import { mergeLensFindings } from "./lens-review-merge.ts";
 import { installBlockRowsForRoster, skillsDirUsable } from "./lens-review-skills.ts";
+import { normalExitSummary } from "./lens-review-summary.ts";
 import type { Finding, LensRunResult } from "./lens-review-types.ts";
 import { CLAIM_SCAN, type RosterEntry, buildExpectedRoster } from "./lens-roster.ts";
 import { isFullCommitSha, resolveHeadSha } from "./review-head-sha.ts";
@@ -59,7 +55,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * operator-facing report in lens-review-render.ts; this module owns spawning,
  * retries, and the async-job/tool wiring.
  */
-import { aggregateLensUsage } from "./lens-review-usage.ts";
 /** One roster entry — the shape a lens child receives per dispatch (#873). */
 export type LensDef = RosterEntry;
 /** Re-exported so consumers of this module name the verdict here; the
@@ -439,7 +434,11 @@ export async function runLensReview(opts: {
   // indistinguishable downstream from a lens's own — same precedence rules,
   // same threshold, same rendering. They are findings, not a side channel.
   const all = [...lensResults.flatMap((r) => r.findings), ...(opts.extraFindings ?? [])];
-  const deduped = dedupeFindings(all, roster);
+  // The merge (dedup by path/line/title + precedence, then the ONE severity-cap
+  // pass): a HIGH on a test path comes down to MEDIUM before anything downstream
+  // reads a severity — the verdict, the counts, the ledger's `hasCritical`, and
+  // the findings-store row a later round carries from (lens-review-merge.ts).
+  const deduped = mergeLensFindings(all, roster);
   // #1105/#1140/#1125 — the round is recorded against the findings memory (the
   // memory seam's `recordRound`, so the round's evidence and its rows come from
   // one store read), accepted rows suppress, unchanged open rows carry, a refused
@@ -479,22 +478,14 @@ export async function runLensReview(opts: {
   // #984 — the ledger write's promise is discarded (fire-and-forget in
   // production; the await seam is for tests, not for the driver).
   return finishWith(
-    {
+    normalExitSummary({
       verdict,
-      totalFindings: reported.length,
-      bySeverity: bySeverityCounts(reported),
-      lenses: lensResults,
-      findings: reported,
-      ...memorySummaryFields(found),
-      ...found.fields,
-      usage: aggregateLensUsage(lensResults),
-      // #543 — a dispatch-cap kill on any lens child (loop detector / token
-      // budget) is surfaced on the summary so the driver emits the fixed-literal
-      // cap-hit (F4g) instead of a silent 1-of-6 loss.
-      ...capKillSummary(lensResults),
-      ...(delta ? { deltaReview: deltaReviewOf(delta) } : {}),
-      ...forcedFullFieldOf(forcedFull),
-    },
+      reported,
+      lensResults,
+      found,
+      delta,
+      forcedFull,
+    }),
     hasCritical,
   );
 }

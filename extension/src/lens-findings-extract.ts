@@ -12,6 +12,12 @@ import type { Finding } from "./lens-review.ts";
  * invocation becomes one Finding. No text parsing involved — the schema is
  * validated by Pi inside the child process, so malformed calls never reach
  * this code.
+ *
+ * VALIDATION ONLY. This function decides what is a well-formed finding and
+ * counts the ones that are not (`skipped`); it applies no policy to a finding
+ * it accepted. The severity cap lives on the merge path in lens-review.ts, so
+ * the extraction counter stays a count of malformed calls and nothing else can
+ * hide behind it.
  */
 export function extractFindings(
   toolUses: unknown[],

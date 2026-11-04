@@ -1,6 +1,12 @@
 # Code Review Security Checklist
 
-## INPUT HANDLING (All Risk Levels)
+What to look at, and where to look hardest. This checklist sets review
+**attention** — it never assigns a finding's severity. Severity is a claim about
+the harm a specific finding causes and the shared rubric in the review prompt
+decides it, so a missing rate limit in a payment path is not automatically a
+HIGH and a typo in a docs page is not automatically a LOW.
+
+## INPUT HANDLING (every category of file)
 
 - [ ] All HTTP params validated with explicit schema/type
 - [ ] Request body size limits enforced
@@ -10,7 +16,7 @@
 - [ ] Path traversal prevented
 - [ ] Array/list inputs have length limits
 
-## DATA SAFETY (All Risk Levels)
+## DATA SAFETY (every category of file)
 
 - [ ] No PII in logs (emails, names, IPs)
 - [ ] No secrets in logs (API keys, tokens)
@@ -18,7 +24,7 @@
 - [ ] Sensitive data encrypted at rest
 - [ ] Connections use TLS/HTTPS only
 
-## CONCURRENCY (HIGH/CRITICAL Risk)
+## CONCURRENCY (worth the most attention)
 
 - [ ] Race conditions checked: check-then-act patterns wrapped in transactions
 - [ ] Optimistic locking or SELECT FOR UPDATE for shared resources
@@ -26,7 +32,7 @@
 - [ ] Connection timeout on all external calls
 - [ ] Deadlock prevention: consistent lock ordering
 
-## RESOURCE LIMITS (HIGH/CRITICAL Risk)
+## RESOURCE LIMITS (worth the most attention)
 
 - [ ] Max request body size configured
 - [ ] Pagination limits enforced server-side
@@ -34,7 +40,7 @@
 - [ ] Memory bounds on collections
 - [ ] File upload size limits enforced
 
-## AUTH/AUTHZ (CRITICAL Risk Only)
+## AUTH/AUTHZ (worth the most attention)
 
 - [ ] Every protected endpoint has auth middleware
 - [ ] User can only access own resources

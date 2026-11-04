@@ -34,6 +34,15 @@ export type FindingSource = LensName | "CLAIM_SCAN";
 export interface Finding extends RawFinding {
   severity: Severity;
   lens: FindingSource;
+  /**
+   * Set ONLY by the deterministic test-path cap (`capTestPathFinding`,
+   * lens-severity-rubric.ts) on a row whose HIGH it lowered to MEDIUM. It is
+   * the harness's own provenance, not the lens's claim: a row that arrived at
+   * MEDIUM from the lens carries nothing, so an operator reading a capped row
+   * can tell "the lens called this medium" from "the harness overrode the
+   * lens", and neither can be confused for the other in the disclosure.
+   */
+  severityCapped?: "test-path";
 }
 
 /**

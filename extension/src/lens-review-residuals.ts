@@ -44,10 +44,10 @@ import { execp } from "./exec.ts";
 import * as cmds from "./forge-commands.ts";
 import { postPrComment } from "./forge-comments.ts";
 import { detectForge } from "./forge-detect.ts";
-import { memoryDisclosureSections, suppressedSection } from "./lens-residuals.ts";
-import { severityLabel } from "./lens-residuals.ts";
+import { memoryDisclosureSections, severityLabel, suppressedSection } from "./lens-residuals.ts";
 import { advisorySection } from "./lens-review-advisory.ts";
 import { deltaFallbackText } from "./lens-review-delta-disclose.ts";
+import { cappedSuffix } from "./lens-review-render.ts";
 import { type Finding, carriedHeading, isCarried } from "./lens-review-types.ts";
 import type { LensReviewSummary } from "./lens-review.ts";
 import { mergeIdentity } from "./merge-guard-reads.ts";
@@ -294,7 +294,7 @@ async function doPost(
   // and is never passed through it.
   const residualLine = (f: Finding) => {
     const where = neutraliseMarkdownField(`${f.path}:${f.line ?? "?"}`);
-    return `- [${severityLabel(f.severity)}] ${where} — ${neutraliseMarkdownField(f.title)} (${neutraliseMarkdownField(f.lens)})`;
+    return `- [${severityLabel(f.severity)}${cappedSuffix(f)}] ${where} — ${neutraliseMarkdownField(f.title)} (${neutraliseMarkdownField(f.lens)})`;
   };
   // A carried row is still open from an earlier round: it sits under its own
   // heading, apart from this round's findings, so the comment never presents it

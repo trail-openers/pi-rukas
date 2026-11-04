@@ -45,10 +45,10 @@ All findings must follow this structure:
 
 ## Severity Scale
 
-- **CRITICAL**: Type errors that will break compilation/runtime, missing type safety
-- **HIGH**: Significant type gaps, implicit any, dangerous type assertions
-- **MEDIUM**: Minor type improvements, missing type annotations where helpful
-- **LOW**: Cosmetics, overly verbose type definitions
+- **CRITICAL**: A type gap that reaches a real failure and the finding says how — a cast that lets unvalidated input through a boundary that then corrupts or leaks data, or a schema mismatch that breaks a contract another component depends on.
+- **HIGH**: A concrete, reachable failure on a realistic input that the type error permits — the finding names the input and the wrong result, e.g. a cast that lets `{}` through a boundary whose reader then throws on `.items.length`. Naming a typing defect is not evidence on its own.
+- **MEDIUM**: Type nits — missing annotations where one would help, `implicit any`, verbose or redundant type definitions, a cast that could be a guard without changing behaviour.
+- **LOW**: Cosmetic type style.
 
 ## Metadata Guidance Tags
 
@@ -67,7 +67,7 @@ When reporting findings, always include:
 1. **Type Coverage**
    - Are all public APIs properly typed?
    - Are critical internal functions typed?
-   - Are implicit any usage justified?
+   - Are implicit any usage justified? (an unjustified one is a MEDIUM nit, not a finding about harm)
 
 2. **Type Correctness**
    - Do type annotations match actual usage?
@@ -88,15 +88,15 @@ When reporting findings, always include:
 
 ```markdown
 ## Must Fix
-- [HIGH] [src/api.ts:42] Function returns implicit any
-  - Description: The `parseResponse` function lacks return type annotation, could return undefined in error case
-  - Suggestion: Add explicit return type: `function parseResponse(data: string): ApiResponse | undefined`
+- [HIGH] [src/api.ts:42] Unvalidated response is cast to ApiResponse and read downstream
+  - Description: `parseResponse` casts `JSON.parse(body)` to `ApiResponse` with no runtime check. A 200 whose body is `{}` — what the upstream returns when its cache is cold — reaches `render(user.data.items.length)` in `src/views/user.ts:18` and throws a TypeError that blanks the page.
+  - Suggestion: Validate at the boundary: `function parseResponse(data: string): ApiResponse | undefined` behind a type guard on the fields the callers read.
   - Metadata: cross_lens_candidate=true, tradeoff_required=false
 ```
 
 ## Adversarial Input Discipline
 
-Before returning any verdict, construct one concrete input of an unexpected type, shape, or nullability that exercises the primary code path modified in the diff, and state what the type system or runtime does with it. If you cannot construct such an input, your review is incomplete — return BLOCKED with the reason "could not construct adversarial input" rather than APPROVED.
+Before returning any verdict, construct one concrete input of an unexpected type, shape, or nullability that exercises the primary code path modified in the diff, and state what the type system or runtime does with it. If you cannot construct such an input, your review is incomplete — say so in your summary with the code path you could not exercise, rather than reporting nothing.
 
 ## Integration Notes
 
