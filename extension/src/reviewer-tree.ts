@@ -158,16 +158,7 @@ export async function openReviewerTree(
       cwd: repoRoot,
       maxBuffer: 1024 * 1024,
       timeout: 120_000,
-      argv: [
-        ...NO_HOOKS,
-        "--git-dir",
-        commonDir,
-        "worktree",
-        "add",
-        "--detach",
-        dir,
-        headSha,
-      ],
+      argv: [...NO_HOOKS, "--git-dir", commonDir, "worktree", "add", "--detach", dir, headSha],
     });
   } catch (err) {
     if (dir) await removeReviewerTree(execFn, repoRoot, dir);
