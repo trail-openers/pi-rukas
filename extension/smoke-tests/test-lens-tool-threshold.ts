@@ -210,8 +210,11 @@ await withEnv(
   { PI_ENSEMBLE_REVIEW_LEDGER_FILE: ledgerFile, PI_ENSEMBLE_SKILLS_DIR: skills },
   async () => {
     try {
-      // ── (1) CONTROL at the review layer: the same findings, no threshold, block.
-      // Without it, the approval below could be the fixture reporting nothing.
+      // ── (1) CONTROL at the review layer: the same findings, judged at the bar
+      // this repo's §1 states (HIGH), they block. Without it, the approval below
+      // could be the fixture reporting nothing. Judged at an explicit MEDIUM bar
+      // because the control must fail closed on a fixture that reported nothing,
+      // and the shipped default no longer blocks a MEDIUM-only round.
       {
         const control = await runLensReview({
           diff: "diff --git a/src-a.ts b/src-a.ts\n+export const b = 2;",
@@ -219,10 +222,11 @@ await withEnv(
           branch: "feature/x",
           head: headSha,
           full: true,
+          threshold: "MEDIUM",
         });
         assert(
           control.verdict === "ISSUES_FOUND",
-          `(1) control: the MEDIUM-only set blocks at the review layer's default (${control.verdict})`,
+          `(1) control: the MEDIUM-only set blocks when the bar is MEDIUM, so the fixture does report (${control.verdict})`,
         );
       }
 
@@ -287,8 +291,8 @@ await withEnv(
           baseRef: undefined,
         });
         assert(
-          noDoctrine === "MEDIUM",
-          `(3) with no doctrine to read the bar is the shipped default, and no judge was paid (got ${noDoctrine}; judge calls ${String(judgePrompts.length - before)})`,
+          noDoctrine === "HIGH",
+          `(3) with no doctrine to read the bar is the shipped HIGH default, and no judge was paid (got ${noDoctrine}; judge calls ${String(judgePrompts.length - before)})`,
         );
         const atDefault = await runLensReview({
           diff: "diff --git a/src-a.ts b/src-a.ts\n+export const b = 2;",
@@ -300,7 +304,7 @@ await withEnv(
         });
         assert(
           atDefault.verdict === "ISSUES_FOUND",
-          `(3) the same stub findings at the DEFAULT bar are ISSUES_FOUND — the difference between this and (2) is only the bar the doctrine supplied (${atDefault.verdict})`,
+          `(3) the same stub findings at a MEDIUM bar are ISSUES_FOUND — the difference between this and (2) is only the bar the doctrine supplied (${atDefault.verdict})`,
         );
       }
 

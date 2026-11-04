@@ -209,7 +209,7 @@ function assert(cond: boolean, msg: string) {
   );
   assert(
     findings.every((f) => f.severity === "MEDIUM" && f.path === "docs/deployment.md"),
-    "MEDIUM, at the file that asserts the claim",
+    "the scan stamps MEDIUM, at the file that asserts the claim (under the HIGH default that is a disclosure, not a block — asserted on the verdict below)",
   );
   assert(
     findings.some((f) => /Intel i7/.test(f.title)),

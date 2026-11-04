@@ -67,13 +67,23 @@ const sh = fixture.sh;
 const seenPrior = fixture.seenPrior;
 const c1 = sh("git rev-parse HEAD");
 
-const common = { cwd: repo, branch: "feat/x", lensChildFn: fixture.stubLens };
+const common = {
+  cwd: repo,
+  branch: "feat/x",
+  lensChildFn: fixture.stubLens,
+  // The rounds below are about the findings MEMORY, not the bar, and the one
+  // finding they revolve around is stamped MEDIUM. Without an explicit bar the
+  // shipped HIGH default would disclose it and every blocking assertion here
+  // would be testing the default instead of the store. `test-review-bar.ts` is
+  // where the default itself is pinned.
+  threshold: "MEDIUM" as const,
+};
 try {
   // Round 1 — a first review.
   const r1 = await runLensReview({ ...common, diff: FULL_DIFF });
   assert(
     r1.verdict === "ISSUES_FOUND",
-    `round 1: the MEDIUM finding blocks (verdict ${r1.verdict})`,
+    `round 1: the MEDIUM finding blocks at this run's MEDIUM bar (verdict ${r1.verdict})`,
   );
   const rows1 = await readBranchRows(repo, "feat/x");
   assert(

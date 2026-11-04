@@ -23,35 +23,16 @@
  */
 
 import type { DecisionWhere } from "./decision-seam.ts";
+import { DEFAULT_REVIEW_THRESHOLD } from "./review-severity-default.ts";
+import { type ReviewSeverity, SEVERITIES } from "./review-threshold-types.ts";
 import { type DoctrineDoc, type PolicyJudgeFn, askPolicy } from "./work-driver-policy.ts";
+
+export { DEFAULT_REVIEW_THRESHOLD };
+export { type ReviewSeverity, SEVERITIES };
 
 /** The question asked before a code review's verdict is computed. */
 export const REVIEW_THRESHOLD_QUESTION =
   "At what code-review finding severity do these documents say a change should be blocked from merging until it is fixed? Answer 'permitted' with the sentence that states the severity, or 'unstated' if the documents do not say.";
-
-/**
- * Which severities a project may name, most severe first.
- *
- * Read out of the judge's quote rather than asked for as a separate field: the
- * quote is the thing that gets verified against the file, so anything derived
- * from it inherits that verification. A severity mentioned in a sentence that
- * does not exist cannot be honoured.
- */
-export const SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW"] as const;
-export type ReviewSeverity = (typeof SEVERITIES)[number];
-
-/**
- * How serious a finding must be before it blocks, for a project that says
- * nothing. ONE definition, imported by every path that needs a bar: a second
- * literal is a second rule that can drift from the one that produced the
- * verdict beside it.
- *
- * HIGH, because most repositories state no bar anywhere, and at a MEDIUM bar
- * that majority got ordinary best-practice findings turned into fix orders.
- * Lowering is the project's decision — through a citation-verified sentence or
- * the operator's env override, never through silence here.
- */
-export const DEFAULT_REVIEW_THRESHOLD: ReviewSeverity = "HIGH";
 
 export interface ReviewThreshold {
   severity: ReviewSeverity;

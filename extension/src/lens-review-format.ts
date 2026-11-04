@@ -12,7 +12,6 @@
 
 import os from "node:os";
 import path from "node:path";
-import { DEFAULT_REVIEW_THRESHOLD } from "./review-threshold.ts";
 import type { SuppressedFinding } from "./lens-residuals.ts";
 import type { ForcedFullReason } from "./lens-review-delta-disclose.ts";
 import { isReviewIncomplete } from "./lens-review-incomplete.ts";
@@ -20,6 +19,7 @@ import type { Finding, FindingSource, LensRunResult } from "./lens-review-types.
 import { CLAIM_SCAN, CLAIM_SCAN_PRECEDENCE, type RosterEntry } from "./lens-roster.ts";
 import type { ResolvedNotice, SetAsideNotice } from "./review-findings-file.ts";
 import type { ConfirmationLapse } from "./review-findings-store-types.ts";
+import { DEFAULT_REVIEW_THRESHOLD } from "./review-severity-default.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult, DispatchUsage } from "./types.ts";
 
@@ -413,9 +413,10 @@ export function computeVerdict(
  * Until the threshold was made configurable nothing read that sentence, so it
  * was decorative and a project wanting a different bar had no way to say so.
  *
- * The constant lives in `review-threshold.ts` — the module that owns the bar
- * and its resolver — and is re-exported here so every consumer of this pure
- * leaf sees one value rather than two that can drift.
+ * The constant lives in `review-severity-default.ts` — a leaf, so this pure
+ * module never imports the doctrine resolver (and the policy judge and child
+ * spawn behind it) for one value — and is re-exported here so every consumer
+ * of this leaf sees one value rather than two that can drift.
  */
 export { DEFAULT_REVIEW_THRESHOLD };
 
