@@ -225,11 +225,9 @@ export function dispatchCore(
         onStdin: hooks.onStdin,
         // #543 F6 — the driver's token-budget cap steers the child through
         // steerChild (the F2 seam) so the lifecycle 'steered' entry is tagged
-        // "driver-budget". The job id is known here (hooks.jobId), so the
-        // steer resolves to this child's stdin handle.
-        onSteer: (message, source) => {
-          steerChild(hooks.jobId, message, source);
-        },
+        // "driver-budget". An undelivered steer is reported back, so the
+        // progress steer leaves that stage open and retries it next turn.
+        onSteer: (message, source) => steerChild(hooks.jobId, message, source).delivered,
         // Per-call override of the runaway backstop, for a dispatch whose work
         // is enumerable enough to bound. Two live callers, each with its
         // rationale at the definition: `ciWatchTimeoutMs`
@@ -329,7 +327,7 @@ export function registerDispatchTools(pi: ExtensionAPI) {
                   ? {}
                   : {
                       onSteer: (message: string, source: SteerSource) =>
-                        steerChild(hooks.jobId, message, source),
+                        steerChild(hooks.jobId, message, source).delivered,
                     }),
                 ...budget,
               }),
@@ -429,7 +427,7 @@ export function registerDispatchTools(pi: ExtensionAPI) {
                       ? {}
                       : {
                           onSteer: (message: string, source: SteerSource) =>
-                            steerChild(hooks.jobId, message, source),
+                            steerChild(hooks.jobId, message, source).delivered,
                         }),
                     ...budget,
                   }),

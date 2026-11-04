@@ -12,7 +12,7 @@
 import type { RunningState } from "./progress.ts";
 import type { WriteFenceOpt } from "./types.ts";
 
-import type { SteerSource } from "./dispatch-steer.ts";
+import type { SteerDelivery } from "./dispatch-steer.ts";
 
 export interface SpawnOptions extends WriteFenceOpt {
   /**
@@ -176,8 +176,13 @@ export interface SpawnOptions extends WriteFenceOpt {
    * `spawn-caps.ts`), so even an operator-armed
    * `PI_ENSEMBLE_TOKEN_BUDGET_<ROLE>` does nothing for a caller that omits
    * this — no steer *and* no kill.
+   *
+   * `SteerDelivery` is deliberately wider than the old `=> void`: a caller that
+   * can answer whether the line reached the child (`dispatchCore` returns
+   * `steerChild(…).delivered`) lets the #1991 progress steer leave its stage
+   * open and retry; a caller that returns nothing is read as "delivered".
    */
-  onSteer?: (message: string, source: SteerSource) => void;
+  onSteer?: SteerDelivery;
   /**
    * #839 — raw-event observer for the dispatch deck's live view (epic #833
    * G5). Invoked from spawn.ts's stdout line handler for EVERY parsed child

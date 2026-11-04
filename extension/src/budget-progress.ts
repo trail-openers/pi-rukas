@@ -18,10 +18,13 @@
  * throwing seam — this runs on the child's hot stdout path, where an escaping
  * throw costs the whole dispatch.
  *
- * Two levers, each with two latches, each evaluated independently: turns
- * against `maxTurns` and wall clock against the minutes bound. At 50% the
- * child is told where it stands; at 80% it is told to close out — commit, if
- * it is a child that commits, otherwise report. Never more than the two. A
+ * Two levers — turns against `maxTurns`, wall clock against the minutes bound —
+ * and TWO latches, one per fraction, SHARED across the levers: a stage fires
+ * when ANY armed lever crosses its fraction and the line reports the lever
+ * closest to its limit. At 50% the child is told where it stands; at 80% it is
+ * told to close out — commit, if it is a child that commits, otherwise report.
+ * Never more than the two, because there are only two latches: the count is a
+ * property of the stage pair, not of any counter that has to remember it. A
  * child with neither lever armed gets nothing, which is what makes the absent
  * bound distinguishable from a bound it has not yet crossed.
  *
@@ -39,7 +42,7 @@
  */
 
 import type { Writable } from "node:stream";
-import { type SteerSource, steerChild } from "./dispatch-steer.ts";
+import { type SteerDelivery, type SteerSource, steerChild } from "./dispatch-steer.ts";
 
 /** Fraction of a bound at which the child is told where it stands. */
 export const BUDGET_PROGRESS_HALF = 0.5;
@@ -194,8 +197,10 @@ export interface BudgetProgressOpts extends BudgetProgressLevers {
   commits: boolean;
   /** The spawn's minutes schedule, absolute (budgetProgressClock). */
   clock?: BudgetProgressClock;
-  /** The driver's steer seam; without one the steer goes to `stdin`. */
-  onSteer?: (message: string, source: SteerSource) => void;
+  /** The driver's steer seam; without one the steer goes to `stdin`. An
+   * explicit `false` means the line did not reach the child, which leaves the
+   * stage open so the next turn retries it. */
+  onSteer?: SteerDelivery;
   /** The child's stdin, for the no-seam path (a lens / adversarial child). */
   stdin?: Writable;
   /** A child steered through the registry rather than a job id (a lens child's
@@ -226,8 +231,7 @@ function deliver(o: BudgetProgressOpts, text: string): boolean {
   const envelope = `${JSON.stringify({ type: "steer", message: text })}\n`;
   try {
     if (o.onSteer) {
-      o.onSteer(text, BUDGET_PROGRESS_STEER_SOURCE);
-      return true;
+      return o.onSteer(text, BUDGET_PROGRESS_STEER_SOURCE) !== false;
     }
     // The registry path resolves the id and emits the tagged lifecycle line, and
     // writes the envelope itself — but only for a child that is really there. An
@@ -265,7 +269,9 @@ export function minutesFraction(
   now: number,
 ): number {
   if (!clock || totalMs === undefined || totalMs <= 0) return 0;
-  return Math.max(0, now - clock.anchorAtMs) / totalMs;
+  // Clamped to [0,1] on BOTH ends: a child past its bound is not 1.4 of the way
+  // through it, and every reader of this fraction is a threshold comparison.
+  return Math.min(1, Math.max(0, now - clock.anchorAtMs) / totalMs);
 }
 
 /**
@@ -298,31 +304,30 @@ export function createBudgetProgressSteer(o: BudgetProgressOpts): BudgetProgress
   const minutesTotal = minutesTotalMs(o.clock);
 
   /**
-   * The two latches, one per fraction, PER LEVER. They are read on BOTH levers
-   * on every turn (the spec's D4: thresholds evaluate per lever independently,
-   * and one steer reports the lever closest to its limit), and the pair is the
-   * whole steer: once both have fired there is nothing left to say, however far
-   * the child runs past the bound. That is what makes "never more than two" a
-   * property of the latch pair rather than of any turn count.
+   * The two latches, one per fraction, SHARED by both levers — not one per
+   * lever, which is what let a child that crossed half on turns and half on
+   * minutes (or close-out on both on one turn) be told the same thing twice.
+   * Each turn asks BOTH levers (the spec's D4: thresholds evaluate per lever
+   * independently) and one delivery reports the lever closest to its limit, so
+   * the pair is the whole steer: once both stages have settled there is nothing
+   * left to say, however far the child runs past the bound. That is what makes
+   * "never more than two" a property of the latch pair rather than of any
+   * counter that has to keep the tally.
    *
    * A latch is only settled when its line actually went out. `fire` reports
    * whether it delivered, and a line that could not land — the child was gone,
-   * or some other bound had already armed — leaves the latch OPEN. Marking an
-   * undelivered 50% line as said is how a child ends up never hearing the 80%
-   * instruction, which is the one part of this steer it cannot recover from:
-   * the position line is nice to have, the close-out is the point.
+   * some other bound had already armed, or the caller's seam said `false` —
+   * leaves the latch OPEN. Marking an undelivered 50% line as said is how a
+   * child ends up never hearing the 80% instruction, which is the one part of
+   * this steer it cannot recover from: the position line is nice to have, the
+   * close-out is the point.
    */
-  const latches = {
-    half: { turns: false, minutes: false },
-    closeOut: { turns: false, minutes: false },
-  };
-  let delivered = 0;
+  const settled = { half: false, closeOut: false };
 
   /** The one delivery point, shared by both levers and both fractions. Returns
    * whether the line reached the child, which is what settles a latch. */
   const fire = (closeOut: boolean, now: number, turns: number): boolean => {
     if (stoodDown(o) || gone(o)) return false;
-    if (delivered >= 2) return true; // already said everything there is to say
     const minutesArmed = minutesTotal !== undefined;
     const turnsArmed = turnsLimit !== undefined;
     const minutesUsedMs = o.clock ? now - o.clock.anchorAtMs : 0;
@@ -352,41 +357,34 @@ export function createBudgetProgressSteer(o: BudgetProgressOpts): BudgetProgress
     ) {
       return false;
     }
-    delivered += 1;
     return true;
   };
 
   /**
-   * Per-lever, per-fraction evaluation on the turn that makes it true. Each
-   * lever is asked separately so a fast child that burns its turns while its
-   * clock idles is paced on the lever that is actually running out, and a child
-   * that idles on its clock while its turns run is paced on that one instead.
+   * Per-fraction evaluation on the turn that makes it true, with BOTH levers
+   * asked: a fast child that burns its turns while its clock idles is paced on
+   * the lever that is actually running out, and a child that idles on its clock
+   * while its turns run is paced on that one instead. Crossing close-out on any
+   * lever settles half with it — a child that skipped the half reading entirely
+   * (a dispatch resumed at turn 30 of 40) gets the instruction, not a stale
+   * position line followed by nothing — and a stage that delivered is settled,
+   * while a stage whose line never landed stays open for the next turn.
    */
   const onTurn = (turns: number, now: number): void => {
     const minutesNow = minutesFraction(o.clock, minutesTotal, now);
-    // Close-out first, on either lever: a child that skipped the half reading
-    // entirely (a dispatch resumed at turn 30 of 40) still gets the
-    // instruction, not a stale position line followed by nothing.
-    if (
-      !latches.closeOut.turns &&
-      budgetProgressReached(turns, turnsLimit, BUDGET_PROGRESS_CLOSE_OUT)
-    ) {
-      latches.closeOut.turns = true;
-      latches.half.turns = true;
-      if (fire(true, now, turns)) return;
+    const crossingCloseOut =
+      budgetProgressReached(turns, turnsLimit, BUDGET_PROGRESS_CLOSE_OUT) ||
+      minutesNow >= BUDGET_PROGRESS_CLOSE_OUT;
+    if (!settled.closeOut && crossingCloseOut && fire(true, now, turns)) {
+      settled.closeOut = true;
+      settled.half = true;
+      return;
     }
-    if (!latches.closeOut.minutes && minutesNow >= BUDGET_PROGRESS_CLOSE_OUT) {
-      latches.closeOut.minutes = true;
-      latches.half.minutes = true;
-      if (fire(true, now, turns)) return;
-    }
-    if (!latches.half.turns && budgetProgressReached(turns, turnsLimit, BUDGET_PROGRESS_HALF)) {
-      latches.half.turns = true;
-      if (fire(false, now, turns)) return;
-    }
-    if (!latches.half.minutes && minutesNow >= BUDGET_PROGRESS_HALF) {
-      latches.half.minutes = true;
-      fire(false, now, turns);
+    const crossingHalf =
+      budgetProgressReached(turns, turnsLimit, BUDGET_PROGRESS_HALF) ||
+      minutesNow >= BUDGET_PROGRESS_HALF;
+    if (!settled.half && crossingHalf && fire(false, now, turns)) {
+      settled.half = true;
     }
   };
 

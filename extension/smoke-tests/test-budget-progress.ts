@@ -27,10 +27,18 @@
  *      must never promise time the cycle will not grant), including the
  *      "under 1 min" case;
  *   7. the per-lever choice when both are armed: the larger used/limit
- *      fraction speaks, minutes wins a tie.
+ *      fraction speaks, minutes wins a tie; and the latches are per STAGE, not
+ *      per lever × stage, so a turn on which BOTH levers cross yields ONE line;
+ *   8. a steer whose delivery was refused (a seam returning false, a throwing
+ *      seam, a gone child) leaves its stage OPEN and is retried — never settled
+ *      as "said".
  *
  * Steer-only throughout: no kill, no `killCause`, and a throwing steer seam is
  * swallowed on the child's hot path — an escaping throw costs the dispatch.
+ *
+ * The delivery accounting (a refused steer retried, one line per stage, the
+ * no-seam stdin path) is pinned by the sibling suite
+ * `test-budget-progress-delivery.ts`, which shares the module under test.
  */
 
 import { PassThrough } from "node:stream";
@@ -310,6 +318,21 @@ function harness(opts: Partial<BudgetProgressOpts> & { role?: string } = {}) {
   both.steer.onAssistantTurn(32, Date.now());
   eq(both.steers.length, 2, "both latches on the turns lever: still exactly two steers");
   both.steer.stop();
+
+  // F1 through the harness: a minutes lever that crosses on the SAME turn as the
+  // turns lever must not double-speak. Under a per-lever latch pair this block
+  // yields four lines (half on turns, half on minutes, then the same twice at
+  // close-out) for what is two moments in the child's life.
+  const anchor = Date.now();
+  const fusedClock = budgetProgressClock({ wrapAtMs: 10 * MINUTE, killAtMs: 20 * MINUTE }, anchor);
+  const fused = harness({ turns: 40, commits: true, clock: fusedClock });
+  fused.steer.onAssistantTurn(20, anchor + 10 * MINUTE); // 50% turns AND 50% minutes
+  eq(fused.steers.length, 1, "both levers crossing half on one turn → exactly one line");
+  fused.steer.onAssistantTurn(32, anchor + 16 * MINUTE); // 80% turns AND 80% minutes
+  eq(fused.steers.length, 2, "both levers crossing close-out on one turn → one more line");
+  fused.steer.onAssistantTurn(40, anchor + 25 * MINUTE);
+  eq(fused.steers.length, 2, "never a third line, whichever lever ran out first");
+  fused.steer.stop();
 }
 
 // ── 8. thresholds are per-lever and per-fraction ─────────────────────────
@@ -377,80 +400,6 @@ function harness(opts: Partial<BudgetProgressOpts> & { role?: string } = {}) {
     `with no minutes lever it states turns alone (${closeOut})`,
   );
   assert(/Commit your work now/i.test(closeOut), "the close-out sentence follows the position");
-}
-
-// ── 10. a throwing steer seam is swallowed, and not retried ─────────────
-{
-  let calls = 0;
-  const stdin = new PassThrough();
-  const steer = createBudgetProgressSteer({
-    role: "developer",
-    commits: true,
-    turns: 10,
-    stdin,
-    onSteer: () => {
-      calls++;
-      throw new Error("write EPIPE");
-    },
-  });
-  let threw = false;
-  try {
-    steer.onAssistantTurn(5, Date.now());
-    steer.onAssistantTurn(8, Date.now());
-    steer.onAssistantTurn(9, Date.now());
-  } catch {
-    threw = true;
-  }
-  assert(!threw, "a throwing steer seam (EPIPE) never escapes onto the child's hot path");
-  eq(calls, 2, "a failed steer is attempted once per latch, never retried every turn");
-  steer.stop();
-}
-
-// ── 11. the no-seam path writes the RPC envelope to stdin ───────────────
-{
-  const stdin = new PassThrough();
-  let written = "";
-  stdin.on("data", (d) => {
-    written += String(d);
-  });
-  const steer = createBudgetProgressSteer({
-    role: "code-review-specialist",
-    commits: false,
-    turns: 4,
-    stdin,
-  });
-  steer.onAssistantTurn(2, Date.now());
-  steer.onAssistantTurn(4, Date.now());
-  const lines = written.split("\n").filter(Boolean);
-  eq(lines.length, 2, "a child with no steer seam still receives both steers on stdin");
-  eq(
-    JSON.parse(lines[0] ?? "{}"),
-    { type: "steer", message: "Budget: turn 2 of 4." },
-    "the stdin line is exactly the {type:'steer', message} RPC envelope",
-  );
-  assert(
-    (lines[1] ?? "").endsWith("\n") === false,
-    "each envelope is newline-terminated (the split above is on the terminator)",
-  );
-  steer.stop();
-
-  // An exited child is not written to at all.
-  const dead = new PassThrough();
-  let deadWrites = 0;
-  dead.write = () => {
-    deadWrites++;
-    return true;
-  };
-  const deadSteer = createBudgetProgressSteer({
-    role: "developer",
-    commits: true,
-    turns: 2,
-    stdin: dead,
-    exited: () => true,
-  });
-  deadSteer.onAssistantTurn(2, Date.now());
-  eq(deadWrites, 0, "advice is never written to a child whose exit was observed");
-  deadSteer.stop();
 }
 
 console.log(`\nexit ${exit}`);

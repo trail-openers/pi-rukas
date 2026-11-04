@@ -90,6 +90,16 @@ export type SteerSource =
   | "driver-review-skill-reread";
 
 /**
+ * A caller's steer seam. `undefined` (a seam that returns nothing) means "I
+ * handled it"; an explicit `false` is the only answer that says the line did
+ * NOT reach the child, which is what lets an advisory steer leave its stage
+ * open and retry rather than settle a latch on a write nobody received.
+ * (`void` is not written in the union: biome's `noConfusingVoidType` refuses it,
+ * and a function returning nothing is assignable to `() => boolean | undefined`.)
+ */
+export type SteerDelivery = (message: string, source: SteerSource) => boolean | undefined;
+
+/**
  * The driver-callable steer core (#543 F2).
  *
  * Extracted from the PM `dispatch_steer` tool's inline logic so the work-driver's
