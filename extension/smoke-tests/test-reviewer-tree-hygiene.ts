@@ -16,10 +16,12 @@
  */
 import { existsSync, mkdirSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
 import { chmodSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execp } from "../src/exec.ts";
 import { openReviewerTree } from "../src/reviewer-tree.ts";
+import { provisionWorktree } from "../src/worktree-provision.ts";
 import { gitTestEnv } from "./lib/git-test-env.ts";
 import { isolateLedger } from "./lib/review-ledger-test-helpers.ts";
 import { makeGit } from "./lib/reviewer-child-stub.ts";
@@ -133,6 +135,22 @@ const strayTrees = (git: ReturnType<typeof makeGit>) =>
       existsSync(path.join(tree.cwd, "extension", "node_modules", "dep", "index.js")),
       "the dependency dirs ARE linked, so targeted checks stay runnable",
     );
+    // The same fixture handed to `provisionWorktree` DOES run the hook — that is
+    // what the branch step does — so the mark's absence above is the symlink-only
+    // path's doing, not a hook that could not have run. Without this arm the
+    // assertion above passes on a fixture whose hook is inert.
+    const hooked = mkdtempSync(path.join(os.tmpdir(), "pi-rukas-review-hooked-"));
+    await execp("git", {
+      cwd: repo,
+      argv: ["--git-dir", path.join(repo, ".git"), "worktree", "add", "--detach", hooked, provHead],
+    });
+    await provisionWorktree(execp, repo, hooked).catch(() => undefined);
+    assert(existsSync(hookMark), "the fixture's hook is one that really runs, when it is asked to");
+    await execp("git", {
+      cwd: repo,
+      argv: ["--git-dir", path.join(repo, ".git"), "worktree", "remove", "--force", hooked],
+    }).catch(() => undefined);
+    await rm(hooked, { recursive: true, force: true }).catch(() => undefined);
     // #1975 item 7 continued — the create-side calls carry the pair; the
     // release-side calls are asserted by the leak arm below, which releases this
     // tree with `worktree remove` armed to fail.
