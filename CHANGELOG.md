@@ -8,6 +8,15 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.52](https://github.com/trail-openers/pi-rukas/compare/v0.14.51...v0.14.52) (2026-11-04)
+
+
+### Bug Fixes
+
+* **lean:** ci waits for pending checks and grades red only on a failed one ([#2026](https://github.com/trail-openers/pi-rukas/issues/2026)) ([312d046](https://github.com/trail-openers/pi-rukas/commit/312d04635e9df23cf0eff303bfc30c2c979c0b8b)), closes [#2025](https://github.com/trail-openers/pi-rukas/issues/2025)
+* **lean:** re-run a red verify tier once and hand back on a baseline-red tier ([#2022](https://github.com/trail-openers/pi-rukas/issues/2022)) ([0569f7f](https://github.com/trail-openers/pi-rukas/commit/0569f7fcea7b6d9115438c434cf7b9b2d05e8762))
+* **test:** scrub git location variables in smoke-test fixtures ([#2018](https://github.com/trail-openers/pi-rukas/issues/2018)) ([51e3aac](https://github.com/trail-openers/pi-rukas/commit/51e3aac40e3ade9fe4388572711ec49a792cbcfe)), closes [#1981](https://github.com/trail-openers/pi-rukas/issues/1981)
+
 ## [0.14.51](https://github.com/trail-openers/pi-rukas/compare/v0.14.50...v0.14.51) (2026-11-04)
 
 
