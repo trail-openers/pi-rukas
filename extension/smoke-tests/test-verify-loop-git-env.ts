@@ -159,8 +159,21 @@ try {
   // `(` or `:` inside a command string cannot be read as call syntax). Blanking
   // first and matching after would match nothing, since the program name is
   // itself the literal being blanked.
+  // Two shapes carry git: the argv form, where `git` is the whole program
+  // literal (`execFileP("git", args, …)`), and the shell-string form, where the
+  // ENTIRE command is one literal (`execp("git commit -q -m m1", …)`). The second
+  // needs its own branch — requiring `git` to be followed by `,` or `)` makes it
+  // structurally invisible, and the fixtures use that form throughout
+  // `auto-delta-fixture.ts`. But only a CHAINED shell string is a hazard: a lone
+  // `execp("git <subcommand> …", opts)` has nothing to retarget — its own
+  // `{ cwd }` names the repository — whereas `"git checkout … && git commit …"`
+  // runs a second git that re-reads the environment and acts on an inherited
+  // location variable while the first has already exited 0. Matching the chain
+  // rather than every `git ` string is also what keeps the branch honest: the
+  // tree is full of single-command shell strings and a blanket match would drown
+  // the gate in false positives.
   const SPAWN =
-    /(?:^|[^\w.$])(?:execFileSync|execSync|spawnSync|spawn|execFileP|execp)\s*\(\s*(?:"git"|'git'|`git|"\/bin\/sh"|'\/bin\/sh')\s*[,)]/g;
+    /(?:^|[^\w.$])(?:execFileSync|execSync|spawnSync|spawn|execFileP|execp)\s*\(\s*(?:"git\s[^"]*(?:&&|\|\||;|>)\s*git\s[^"]*"|'git\s[^']*(?:&&|\|\||;|>)\s*git\s[^']*'|`git\s[^`]*(?:&&|\|\||;|>)\s*git\s[^`]*`|"git"|'git'|`git|"\/bin\/sh"|'\/bin\/sh')\s*[,)]/g;
   // Quoted literals blanked for ANALYSIS only (newlines preserved, so offsets
   // still line up with the raw source and with line numbers). Blanks are
   // LENGTH-PRESERVING — a blank shorter than the literal it replaces shifts
@@ -249,6 +262,11 @@ try {
     while ((m = SPAWN.exec(src)) !== null) {
       const at = m.index + m[0].indexOf("exec");
       const line = textOf(at);
+      // The matched program literal, quoted verbatim into the report. A
+      // shell-string call's matched text IS the command, and the first 72 chars
+      // of the source line would cut it off mid-word — `execp(` on its own names
+      // nothing.
+      const what = m[0].slice(m[0].indexOf('"') >= 0 ? m[0].indexOf('"') : 0).slice(0, 48);
       // Commented-out code is not code: a `//` line or a `*` of a block comment
       // is prose ABOUT a call, not a call.
       if (/^\s*(?:\*|\/\/)/.test(line)) continue;
@@ -257,7 +275,7 @@ try {
       // Unparsable is never a pass: an unreadable answer is reported, not
       // folded into "clean".
       if (call === undefined) {
-        bad.push(`${lineOf(at)} ${line.slice(0, 72)} (UNPARSABLE)`);
+        bad.push(`${lineOf(at)} ${what || line.slice(0, 72)} (UNPARSABLE)`);
         continue;
       }
       const { inner, parts } = call;
@@ -273,21 +291,21 @@ try {
         // blanked but keeps its length, so a quoted `-c` is a 4-character
         // token between the quotes.
         if (/\[\s*"[^"\n]{0,4}"\s*,/.test(inner)) {
-          bad.push(`${lineOf(at)} ${line.slice(0, 72)} (SHELL-BRANCH-UNSCRUBBED)`);
+          bad.push(`${lineOf(at)} ${what || line.slice(0, 72)} (SHELL-BRANCH-UNSCRUBBED)`);
           continue;
         }
         // Options held in a variable: excused only if that declaration really
         // carries the scrub.
         if (definesEnv(last)) continue;
-        bad.push(`${lineOf(at)} ${line.slice(0, 72)} (OPTIONS-VAR-UNSCRUBBED)`);
+        bad.push(`${lineOf(at)} ${what || line.slice(0, 72)} (OPTIONS-VAR-UNSCRUBBED)`);
         continue;
       } else if (/\.\.\./.test(last)) {
         // Options spread from something the scan cannot resolve (`{ ...opts }`):
         // the scrub has to be spelled out in this call, not hidden in a spread.
-        bad.push(`${lineOf(at)} ${line.slice(0, 72)} (UNRESOLVED-OPTIONS)`);
+        bad.push(`${lineOf(at)} ${what || line.slice(0, 72)} (UNRESOLVED-OPTIONS)`);
         continue;
       }
-      bad.push(`${lineOf(at)} ${line.slice(0, 72)}`);
+      bad.push(`${lineOf(at)} ${what || line.slice(0, 72)}`);
     }
     return bad;
   };

@@ -73,6 +73,7 @@ export async function mergeMainFixture(): Promise<
     {
       cwd: r.dir,
       shell: "/bin/bash",
+      env: gitTestEnv(),
     },
   );
   await execp("git checkout -q feature/work && git merge -q -m merge-main main", {
