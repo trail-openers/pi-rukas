@@ -35,6 +35,7 @@ import { newRowId } from "./review-findings-file.ts";
 import type { HeadState } from "./review-findings-head.ts";
 import { type FindingIdentity, identityOf, pickMatch, sameTitle } from "./review-findings-match.ts";
 import { reopen } from "./review-findings-reopen.ts";
+import type { ConfirmationSource, HeadOf } from "./review-findings-round-confirmation.ts";
 import { applyUntouchedRowFate } from "./review-findings-round-untouched.ts";
 import type { ConfirmationLapse } from "./review-findings-store-types.ts";
 import type { LedgerEntry } from "./review-ledger-entry.ts";
@@ -61,19 +62,11 @@ export interface RoundOutcome {
   lapsed?: ConfirmationLapse[];
 }
 
-/** The head state of one path, as read by the store before the round ran. */
-export type HeadOf = (path: string) => HeadState | undefined;
-
-/** The commit identity a confirmation must bind to, and the ledger rows the
- * confirmation is read from (#1934). */
-export interface ConfirmationSource {
-  /** The branch's ledger rows, as read by the store before the round ran. */
-  ledger: readonly LedgerEntry[];
-  /** The patch id of the range this round reviewed. */
-  patchId: string;
-  /** The full 40-char head this round reviewed. */
-  headSha: string;
-}
+/** The head state of one path, and the commit identity a confirmation must bind
+ * to — the two contract types the round reads, kept in their own module for the
+ * 500-line gate (review-findings-round-confirmation.ts). Re-exported so every
+ * existing importer of this module names them here unchanged. */
+export type { ConfirmationSource, HeadOf } from "./review-findings-round-confirmation.ts";
 
 /**
  * Match a round's findings to the branch's rows and decide every row's fate.

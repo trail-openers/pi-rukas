@@ -17,9 +17,9 @@ import type { ForcedFullReason } from "./lens-review-delta-disclose.ts";
 import { isReviewIncomplete } from "./lens-review-incomplete.ts";
 import type { Finding, FindingSource, LensRunResult } from "./lens-review-types.ts";
 import { CLAIM_SCAN, CLAIM_SCAN_PRECEDENCE, type RosterEntry } from "./lens-roster.ts";
+import { SEVERITY_RUBRIC } from "./lens-severity-rubric.ts";
 import type { ResolvedNotice, SetAsideNotice } from "./review-findings-file.ts";
 import type { ConfirmationLapse } from "./review-findings-store-types.ts";
-import { SEVERITY_RUBRIC } from "./lens-severity-rubric.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult, DispatchUsage } from "./types.ts";
 
