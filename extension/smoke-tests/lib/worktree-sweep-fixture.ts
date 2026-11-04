@@ -33,6 +33,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } fro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseWorktreeIssue } from "../../src/work-driver-sweep-rules.ts";
+import { gitTestEnv } from "./git-test-env.ts";
 import type { WorkCapLiteral } from "../../src/workflow-state-events-caps.ts";
 import {
   type WorkEvent,
@@ -44,7 +45,7 @@ import {
 
 /** Run one git command, throwing with its stderr so a fixture failure names the cause. */
 function git(cwd: string, args: string[]): string {
-  const r = spawnSync("git", args, { cwd, encoding: "utf8" });
+  const r = spawnSync("git", args, { cwd, encoding: "utf8", env: gitTestEnv() });
   if (r.status !== 0) {
     throw new Error(
       `worktree-sweep-fixture: git ${args.join(" ")} failed in ${cwd}: ${(r.stderr ?? r.stdout ?? "").trim()}`,
@@ -306,11 +307,25 @@ export interface RecordingExec {
 
 export function recordingExec(): RecordingExec {
   const calls: RecordingExec["calls"] = [];
+  // The recorder runs REAL git through both branches, so it gets the scrubbed
+  // fixture env: an inherited `GIT_DIR` would retarget the driver's git calls
+  // ahead of `cwd` and the sweep tests would be sweeping somebody else's
+  // worktrees while still asserting green (#1981). A caller that pinned its own
+  // env keeps it.
+  const recorderEnv = (opts?: { env?: NodeJS.ProcessEnv }) =>
+    opts?.env ? { ...gitTestEnv(), ...opts.env } : gitTestEnv();
   const exec: RecordingExec["exec"] = async (cmd, opts) => {
     calls.push({ cmd, cwd: opts?.cwd, argv: opts?.argv });
+    // The string form runs under the CALLER's interpreter when it named one:
+    // `shell` is a spawnSync option, never an argument, so it cannot be folded
+    // into the argv the way an `execFile` call would have done (#1981).
     const r = opts?.argv
-      ? spawnSync(cmd, opts.argv, { cwd: opts?.cwd, encoding: "utf8" })
-      : spawnSync("/bin/sh", ["-c", cmd], { cwd: opts?.cwd, encoding: "utf8" });
+      ? spawnSync(cmd, opts.argv, { cwd: opts?.cwd, encoding: "utf8", env: recorderEnv(opts) })
+      : spawnSync(opts?.shell ?? "/bin/sh", ["-c", cmd], {
+          cwd: opts?.cwd,
+          encoding: "utf8",
+          env: recorderEnv(opts),
+        });
     if (r.status !== 0) {
       const detail = (r.stderr ?? r.stdout ?? "").trim();
       throw Object.assign(new Error(`Command failed: ${cmd}\n${detail}`), {

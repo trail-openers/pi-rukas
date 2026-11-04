@@ -11,10 +11,11 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { buildResidueFailure } from "../../src/work-driver-dirty-root-classify.ts";
 import { parkReason } from "../../src/work-queue-park-reason.ts";
+import { gitTestEnv } from "./git-test-env.ts";
 import type { WorkState } from "../../src/workflow-state.ts";
 
 const execFileP = promisify(execFile);
-export const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
+export const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd, env: gitTestEnv() });
 export const gitOut = async (cwd: string, args: string[]): Promise<string> =>
   (await git(cwd, args)).stdout.trim();
 

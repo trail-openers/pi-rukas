@@ -11,9 +11,10 @@ import { execFile } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
+import { gitTestEnv } from "./git-test-env.ts";
 
 const execFileP = promisify(execFile);
-const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
+const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd, env: gitTestEnv() });
 
 export async function fixture(
   root: string,
@@ -25,8 +26,8 @@ export async function fixture(
   const originDir = path.join(dir, "origin.git");
   const repo = path.join(dir, "repo");
   mkdirSync(dir, { recursive: true });
-  await execFileP("git", ["init", "--bare", "--initial-branch=main", originDir]);
-  await execFileP("git", ["init", "-q", "--initial-branch=main", repo]);
+  await execFileP("git", ["init", "--bare", "--initial-branch=main", originDir], { env: gitTestEnv() });
+  await execFileP("git", ["init", "-q", "--initial-branch=main", repo], { env: gitTestEnv() });
   await git(repo, ["config", "user.email", "t@example.com"]);
   await git(repo, ["config", "user.name", "T"]);
   writeFileSync(path.join(repo, "tracked.txt"), "base\n");

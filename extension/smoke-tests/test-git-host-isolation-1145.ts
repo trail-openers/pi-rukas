@@ -60,6 +60,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { GIT_LOCATION_VARS } from "../src/git-env.ts";
 import { GIT_ISOLATION_VARS, gitTestEnv } from "./lib/git-test-env.ts";
 
 let exit = 0;
@@ -407,6 +408,26 @@ const IG = ["ig", "nore"].join("");
   // it actually has.)
   const passthrough = gitTestEnv({ FOO: "bar" });
   assert(passthrough.FOO === "bar", "gitTestEnv() passes the caller's base env through");
+  // …but NOT a repository-location variable. The isolation is a superset for
+  // CONFIG and an explicit exclusion for LOCATION: git honours `GIT_DIR` and
+  // friends ahead of `-C <path>` and ahead of `cwd`, so a fixture that threads
+  // this env and still inherits `GIT_DIR` writes its commits into whoever's
+  // repository that variable names, and git exits 0 doing it. Asserted against
+  // `GIT_LOCATION_VARS` — the same set production scrubs — rather than names
+  // typed here, so a name added on one side without the other fails this line
+  // instead of surviving as stray commits.
+  const hostile: Record<string, string> = { FOO: "bar" };
+  for (const name of GIT_LOCATION_VARS) hostile[name] = "/tmp/a-repository-not-yours";
+  const scrubbed = gitTestEnv(hostile);
+  const survived = GIT_LOCATION_VARS.filter((name) => scrubbed[name] !== undefined);
+  assert(
+    survived.length === 0,
+    `gitTestEnv() deletes every git location variable from the env it returns even when the base sets them all (leaked: ${JSON.stringify(survived)})`,
+  );
+  assert(
+    scrubbed.FOO === "bar",
+    "the location scrub is surgical — an unrelated entry in the caller's base still passes through",
+  );
   restore();
 }
 
