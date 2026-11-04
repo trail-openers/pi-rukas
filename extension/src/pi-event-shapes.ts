@@ -12,7 +12,7 @@
 import type { RunningState } from "./progress.ts";
 import type { WriteFenceOpt } from "./types.ts";
 
-import type { SteerSource } from "./dispatch-steer.ts";
+import type { SteerDelivery } from "./dispatch-steer.ts";
 
 export interface SpawnOptions extends WriteFenceOpt {
   /**
@@ -40,6 +40,28 @@ export interface SpawnOptions extends WriteFenceOpt {
    * the /work driver per step; absent means no bound beyond `timeoutMs`.
    */
   childBoundMs?: number;
+  /**
+   * #1991 — the child's own turn bound, in assistant turns. It does NOT stop
+   * the child (the caller's `signal`/`AbortController` does that, as `lean`'s
+   * `armBudget` already does); it is the denominator the budget-progress steer
+   * reports against, so the child can see "turn 20 of 40" and close out before
+   * something else ends it. Absent or `<= 0` = no turns lever.
+   */
+  budgetTurns?: number;
+  /**
+   * #1991 — false stands the budget-progress steer off for one child that the
+   * caller already paces some other way (a deck-steered driver child). Absent
+   * means ON: a child with a bound armed is paced by default, which is the
+   * point of #1991, and the flag is therefore never what arms the steer.
+   */
+  budgetProgress?: boolean;
+  /**
+   * #1991 — the registry id to deliver the progress steer through when the
+   * caller has no `onSteer` of its own but DID register a child handle under
+   * this id (a lens child's deck key). Goes through `steerChild`, so the
+   * lifecycle line still carries the source tag.
+   */
+  budgetSteerDeckKey?: string;
   /**
    * #1827 — the driver-supplied path to THIS child's own skill (`SKILL.md`
    * inside it), so the reviewer skill re-read cap counts only reads of that
@@ -154,8 +176,13 @@ export interface SpawnOptions extends WriteFenceOpt {
    * `spawn-caps.ts`), so even an operator-armed
    * `PI_ENSEMBLE_TOKEN_BUDGET_<ROLE>` does nothing for a caller that omits
    * this — no steer *and* no kill.
+   *
+   * `SteerDelivery` is deliberately wider than the old `=> void`: a caller that
+   * can answer whether the line reached the child (`dispatchCore` returns
+   * `steerChild(…).delivered`) lets the #1991 progress steer leave its stage
+   * open and retry; a caller that returns nothing is read as "delivered".
    */
-  onSteer?: (message: string, source: SteerSource) => void;
+  onSteer?: SteerDelivery;
   /**
    * #839 — raw-event observer for the dispatch deck's live view (epic #833
    * G5). Invoked from spawn.ts's stdout line handler for EVERY parsed child

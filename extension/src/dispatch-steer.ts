@@ -64,6 +64,12 @@ interface SteerDetails {
  * The tag is informational — it tells the operator WHY the child was nudged.
  */
 export type SteerSource =
+  /** #1991 — the budget-progress steer (`budget-progress.ts`): the child's own
+   * position against its armed turn/minute bound, at half and at close-out.
+   * Pinned by the same constant form `DECK_UI_STEER_SOURCE` uses, because
+   * nothing here checks this union for exhaustiveness — a typo'd literal would
+   * type-check and only ever show as a wrong scrollback tag. */
+  | "driver-budget-progress"
   | "pm-tool"
   | "driver-loop-detector"
   | "driver-budget"
@@ -82,6 +88,16 @@ export type SteerSource =
    * reading and review. Distinct from every bound's steer so the operator can
    * tell which cap is nudging (the next one is the kill). */
   | "driver-review-skill-reread";
+
+/**
+ * A caller's steer seam. `undefined` (a seam that returns nothing) means "I
+ * handled it"; an explicit `false` is the only answer that says the line did
+ * NOT reach the child, which is what lets an advisory steer leave its stage
+ * open and retry rather than settle a latch on a write nobody received.
+ * (`void` is not written in the union: biome's `noConfusingVoidType` refuses it,
+ * and a function returning nothing is assignable to `() => boolean | undefined`.)
+ */
+export type SteerDelivery = (message: string, source: SteerSource) => boolean | undefined;
 
 /**
  * The driver-callable steer core (#543 F2).

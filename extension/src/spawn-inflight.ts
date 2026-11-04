@@ -23,6 +23,7 @@
 
 import type { ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
+import type { BudgetProgressSteer } from "./budget-progress.ts";
 import type { ChildProgress } from "./child-progress.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import { type RunningState, ingestEvent } from "./progress.ts";
@@ -219,7 +220,15 @@ export function createStdoutLineHandler(opts: {
   childProgress: ChildProgress;
   appendStderr: (s: string) => void;
   runningState: RunningState;
+  /** The #543 F1/F6 cap session; owns the per-spawn observers and caps. */
   caps: CapSession;
+  /**
+   * #1991 — the budget-progress steer (budget-progress.ts), driven on the same
+   * per-assistant-turn seam as `turnNudge`: the only place the spawn's turn
+   * count and the child's own clock are both current. Inert and cheap for a
+   * child with no bound armed, so the call site stays unconditional.
+   */
+  budgetProgress: BudgetProgressSteer;
   onProgress?: (snapshot: RunningState) => void;
   onRawEvent?: (event: PiJsonEvent) => void;
   onAgentEnd: (parsed: PiJsonEvent) => void;
@@ -241,6 +250,7 @@ export function createStdoutLineHandler(opts: {
     appendStderr,
     runningState,
     caps,
+    budgetProgress,
     onProgress,
     onRawEvent,
     onAgentEnd,
@@ -282,7 +292,11 @@ export function createStdoutLineHandler(opts: {
       // one costs tokens). Resetting it per turn made the kill unreachable for
       // exactly the chatty child the cap exists to stop.
       caps.tokenBudgetTracker?.check(Date.now());
+      // #1991 — the two advisories on this seam are mutually exclusive by
+      // construction: the nudge stands down when a bound is armed (inside
+      // `turnNudge`), and the progress steer is inert when none is.
       caps.turnNudge?.(runningState.turns);
+      budgetProgress.onAssistantTurn(runningState.turns, Date.now());
       onProgress?.({ ...runningState, usage: { ...runningState.usage } });
     }
     // #839 — raw-event observer for the dispatch deck's live view. Fires

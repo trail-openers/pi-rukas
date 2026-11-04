@@ -179,7 +179,9 @@ export function makeRunPhase(opts: RunPhaseOpts): RunPhase {
                 // reach this child through the driver's steer seam (dispatch.ts
                 // pairs the two for exactly this reason).
                 onSteer: (message: string, source: SteerSource) => {
-                  steerChild(orchestratorJobId, message, source);
+                  // The delivery answer is what lets a steer that could not land
+                  // be retried rather than counted as said (#1991).
+                  return steerChild(orchestratorJobId, message, source).delivered;
                 },
                 onBoundArmed: () => {
                   boundArmed = true;

@@ -141,6 +141,12 @@ export function armCapSession(
     runningState: RunningState;
     /** #1827 — see `CapSessionOpts.boundArmed`. */
     boundArmed?: () => boolean;
+    /** #1991 — set when the spawn armed a budget-progress steer, which is the
+     * signal that stands the #546 turn nudge down (the cap session reads it
+     * inside `turnNudge`). A getter, not a boolean: the pacing stack is armed
+     * AFTER `armCapSession`, whose ordering before the stdout pump is
+     * load-bearing, so the caps read it by closure like every other flag here. */
+    budgetProgressActive?: () => boolean;
   },
 ): CapSession {
   child.on("exit", () => {
@@ -162,6 +168,7 @@ export function armCapSession(
     childExited: flags.childExited,
     turns: () => session.runningState.turns,
     boundArmed: session.boundArmed,
+    budgetProgressActive: () => session.budgetProgressActive?.() === true,
   });
 }
 

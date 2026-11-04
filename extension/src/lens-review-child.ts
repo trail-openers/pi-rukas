@@ -282,7 +282,7 @@ export async function runLensChild(opts: {
               // traced no-op — no throw, no EPIPE.
               if (!lensStdin) {
                 trace(`lens steer skipped (${deckKey}): stdin not yet captured`);
-                return;
+                return false;
               }
               if (
                 lensStdin.destroyed === true ||
@@ -290,7 +290,7 @@ export async function runLensChild(opts: {
                 lensStdin.writableEnded === true
               ) {
                 trace(`lens steer skipped (${deckKey}): stdin closed`);
-                return;
+                return false;
               }
               try {
                 lensStdin.write(`${JSON.stringify({ type: "steer", message })}\n`, () => {
@@ -299,7 +299,9 @@ export async function runLensChild(opts: {
                 });
               } catch (err) {
                 trace(`lens steer write failed (${deckKey}): ${(err as Error).message}`);
+                return false;
               }
+              return true;
             },
           },
         );

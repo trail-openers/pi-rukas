@@ -12,7 +12,8 @@
  * Split (#171): types in `pi-event-shapes.ts`, helpers in `spawn-support.ts`,
  * extension forwarding in `spawn-extension-forward.ts`, event collapsing
  * in `spawn-collapse-events.ts`, the kill-flag / cap-session / wall-clock and
- * abort arms in `spawn-watchdog.ts` (#1470), this file keeps `spawnSpecialist`.
+ * abort arms in `spawn-watchdog.ts` (#1470) and a child's own bounds (run bound
+ * and budget-progress steer) in `spawn-budget-arms.ts`; keeps `spawnSpecialist`.
  */
 
 import { spawn } from "node:child_process";
@@ -32,6 +33,7 @@ import { emptyRunningState, ingestEvent } from "./progress.ts";
 import { excludeToolsFor } from "./role-tools.ts";
 import { ROLES, type RoleName, isRoleName } from "./roles.ts";
 import { createBoundArmed } from "./spawn-bound-armed.ts";
+import { armChildBounds } from "./spawn-budget-arms.ts";
 import { capKillAttribution } from "./spawn-caps.ts";
 import { applyChildBound, armChildBound } from "./spawn-child-bound.ts";
 import { collapseEvents } from "./spawn-collapse-events.ts";
@@ -261,12 +263,31 @@ async function spawnSpecialistInner(
   const flags = declareKillFlags();
   // #1847 — THE liveness predicate, shared by all three supervisors.
   const childExited = () => childHasExited(flags, child);
+  // #1560 / #1991 — the child's bounds, armed as one thing so the schedule the
+  // child reads and the clock that ends it cannot drift (spawn-budget-arms.ts).
+  // Armed here, before `armCapSession`: the caps' turn nudge and this pacing
+  // steer share one seam and must not both speak, so the caps learn about the
+  // bound at construction rather than through a getter into a later `const`.
+  const { childBound, budgetProgress } = armChildBounds({
+    spec,
+    opts,
+    child,
+    flags,
+    cwd,
+    stdin: child.stdin,
+    start,
+    boundArmed: boundArmedState.armed,
+    reported: () => promptCompleted,
+    onSteer: opts.onSteer,
+  });
   const caps = armCapSession(child, flags, {
     role: spec.role,
     onSteer: opts.onSteer,
     runningState,
-    // #1827 — by closure, so the caps see the value set later in the spawn.
     boundArmed: boundArmedState.armed,
+    // #1991 — a child whose bound this spawn armed is paced by the progress
+    // steer, so the #546 nudge stands down; a child with no bound keeps it.
+    budgetProgressActive: () => budgetProgress.armed(),
   });
   // Inactivity watchdog state (#296): ANY stdout line counts as life —
   // parseable or not. Checked on a coarse interval below.
@@ -318,6 +339,7 @@ async function spawnSpecialistInner(
       appendStderr,
       runningState,
       caps,
+      budgetProgress,
       onProgress: opts.onProgress,
       onRawEvent: opts.onRawEvent,
       onAgentEnd: (parsed) => {
@@ -352,33 +374,11 @@ async function spawnSpecialistInner(
     // child that committed or reported is ended as done instead.
     onTimeout: () => childBound.atBackstop(() => flags.setTimedOut(true)),
   });
-  // #1560 — the per-child run bound: wrap-up steer, then end it (spawn-child-bound.ts).
-  const childBound = armChildBound({
-    child,
-    boundMs: opts.childBoundMs,
-    cwd,
-    onSteer: opts.onSteer,
-    stdin: child.stdin,
-    reported: () => promptCompleted,
-    childExited: flags.childExited, // #1847 — same seam as `exited` above.
-    preempted: () =>
-      flags.aborted() ||
-      flags.timedOut() ||
-      flags.inactivityKilled() ||
-      flags.toolInactivityKilled(),
-    commits: spec.role === "developer" && spec.cwd !== undefined,
-    // #1827 — the wrap-up steer stands down once a killing bound has armed.
-    boundArmed: boundArmedState.armed,
-  });
 
-  // Inactivity watchdog (#296): kill only on total stdout silence. Coarse
-  // poll — half the budget, clamped to [250ms, 30s] so production budgets
-  // poll cheaply and short test budgets still fire promptly.
-  //
-  // #951 — ONE poll, two budgets (spawn-inflight.ts createInactivityPoll):
-  // while the in-flight set is non-empty the tool-inactivity bound applies;
-  // when it is empty the model-silence bound applies. Exactly one budget
-  // is armed at any poll, so there is no both-expired race.
+  // Inactivity watchdog (#296): kill only on total stdout silence, on a coarse
+  // poll. #951 — ONE poll, two budgets (createInactivityPoll): the tool-inactivity
+  // bound while a tool is in flight, the model-silence bound when none is, so
+  // exactly one is armed at any poll and there is no both-expired race.
   const stopInactivityPoll = createInactivityPoll({
     child,
     inFlightTools,
@@ -415,6 +415,7 @@ async function spawnSpecialistInner(
   } finally {
     stopWallClockBackstop();
     childBound.stop();
+    budgetProgress.stop();
     stopInactivityPoll();
     caps.cleanup();
     detachAbortKill();

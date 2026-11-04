@@ -2,8 +2,14 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type } from "@sinclair/typebox";
 import type { DispatchHost } from "./async-jobs-lifecycle.ts";
 import { startBatch, startJob } from "./async-jobs.ts";
+import {
+  MAX_MINUTES_DESCRIPTION,
+  MAX_TURNS_DESCRIPTION,
+  parseMaxMinutes,
+  parseMaxTurns,
+} from "./dispatch-budget-params.ts";
 import { type RetryNotice, withProviderBackoff } from "./dispatch-retry.ts";
-import { steerChild } from "./dispatch-steer.ts";
+import { type SteerSource, steerChild } from "./dispatch-steer.ts";
 import { excludeToolsFor } from "./role-tools.ts";
 import { ROLE_NAMES } from "./roles.ts";
 import type { OnSlowCallback } from "./slow-notice.ts";
@@ -219,11 +225,9 @@ export function dispatchCore(
         onStdin: hooks.onStdin,
         // #543 F6 — the driver's token-budget cap steers the child through
         // steerChild (the F2 seam) so the lifecycle 'steered' entry is tagged
-        // "driver-budget". The job id is known here (hooks.jobId), so the
-        // steer resolves to this child's stdin handle.
-        onSteer: (message, source) => {
-          steerChild(hooks.jobId, message, source);
-        },
+        // "driver-budget". An undelivered steer is reported back, so the
+        // progress steer leaves that stage open and retries it next turn.
+        onSteer: (message, source) => steerChild(hooks.jobId, message, source).delivered,
         // Per-call override of the runaway backstop, for a dispatch whose work
         // is enumerable enough to bound. Two live callers, each with its
         // rationale at the definition: `ciWatchTimeoutMs`
@@ -244,6 +248,33 @@ export function dispatchCore(
   return handle.completion;
 }
 
+/**
+ * The two #1991 bounds of one spec's parameter object, validated once and
+ * spread into `spawnSpecialist`'s options. Read from the RAW params rather
+ * than the stripped spec: `maxTurns`/`maxMinutes` are tool parameters, not
+ * fields of `DispatchSpec`, and a spec-side field would let any internal
+ * caller arm a child's bound without going through this boundary.
+ */
+function budgetArms(raw: { maxTurns?: unknown; maxMinutes?: unknown }): {
+  budgetTurns?: number;
+  childBoundMs?: number;
+  budgetProgress?: true;
+} {
+  const turns = parseMaxTurns(raw.maxTurns);
+  const boundMs = parseMaxMinutes(raw.maxMinutes);
+  if (turns === undefined && boundMs === undefined) return {};
+  // Both arms from the parsed values, never from the raw params: the parse is
+  // what refuses a bound the child could never have honoured.
+  return {
+    ...(turns === undefined ? {} : { budgetTurns: turns }),
+    ...(boundMs === undefined ? {} : { childBoundMs: boundMs }),
+    // ON whenever any lever armed — the whole point of #1991 is that a bounded
+    // child is paced by default. The flag the cap session reads to stand the
+    // #546 turn nudge down is set by `armed()` on the spawn side, not here.
+    budgetProgress: true as const,
+  };
+}
+
 export function registerDispatchTools(pi: ExtensionAPI) {
   const roleDesc = `One of: ${ROLE_NAMES.join(", ")}`;
 
@@ -260,12 +291,19 @@ export function registerDispatchTools(pi: ExtensionAPI) {
           description: "Working directory; defaults to current cwd.",
         }),
       ),
+      /** #1991 — the PM's per-child bounds; see dispatch-budget-params.ts for
+       *  what each lever does and why a bad value is refused. */
+      maxTurns: Type.Optional(Type.Integer({ description: MAX_TURNS_DESCRIPTION })),
+      maxMinutes: Type.Optional(Type.Integer({ description: MAX_MINUTES_DESCRIPTION })),
     }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
       // Defence in depth: TypeBox may not strict-strip undeclared fields, so
       // we discard any agent-supplied `model` before constructing the spec.
       // Model choice is user-authority-only (see issue #92).
       const spec = stripModelOverride(params as DispatchSpec);
+      // #1991 — refused BEFORE the job exists: a job whose child silently got
+      // no bound is the failure mode this parameter exists to remove.
+      const budget = budgetArms(params as { maxTurns?: unknown; maxMinutes?: unknown });
       assertNotDriverWorktree(spec);
       assertWithinCycleIssues(spec, ctx?.mode);
       // #1015 — the report's git-state line runs here; the child still gets spec unchanged.
@@ -282,6 +320,16 @@ export function registerDispatchTools(pi: ExtensionAPI) {
                 onProgress: hooks.onProgress,
                 onRawEvent: hooks.onRawEvent,
                 onStdin: hooks.onStdin,
+                // #1991 — the steer reaches the child through the registry
+                // (the same pairing dispatchCore uses for the caps), so the
+                // lifecycle line carries `driver-budget-progress`.
+                ...(budget.budgetTurns === undefined && budget.childBoundMs === undefined
+                  ? {}
+                  : {
+                      onSteer: (message: string, source: SteerSource) =>
+                        steerChild(hooks.jobId, message, source).delivered,
+                    }),
+                ...budget,
               }),
             { signal, onRetry: (n) => traceRetry(spec.role, n) },
           ),
@@ -314,12 +362,21 @@ export function registerDispatchTools(pi: ExtensionAPI) {
                 "Short tag (≤16 chars) disambiguating this member in the live deck. Especially useful when multiple specs share the same role — mirror the worktree name where possible (e.g., 'task-A', 'worktree-1', 'refactor-auth'). Falls back to '<role>#<index>' when omitted.",
             }),
           ),
+          /** #1991 — per-member, because one batch is where a PM bounds three
+           *  workstreams at three different sizes. */
+          maxTurns: Type.Optional(Type.Integer({ description: MAX_TURNS_DESCRIPTION })),
+          maxMinutes: Type.Optional(Type.Integer({ description: MAX_MINUTES_DESCRIPTION })),
         }),
         { maxItems: MAX_PARALLEL },
       ),
     }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
       const rawSpecs = (params as { specs: DispatchSpec[] }).specs;
+      // #1991 — validated for EVERY member before the batch exists, so a
+      // member with a bad bound cannot be half-spawned.
+      const budgets = (params as { specs: Array<Record<string, unknown>> }).specs.map((raw) =>
+        budgetArms(raw as { maxTurns?: unknown; maxMinutes?: unknown }),
+      );
       if (rawSpecs.length < 2) {
         throw new Error(
           `dispatch_parallel requires 2+ specs; got ${rawSpecs.length}. Use dispatch_specialist for a single subagent.`,
@@ -340,6 +397,9 @@ export function registerDispatchTools(pi: ExtensionAPI) {
       const { batchId } = startBatch(pi, {
         batchLabel: "dispatch_parallel",
         members: specs.map((spec, i) => {
+          // #1991 — this member's arms, from the same index as the raw specs
+          // (both arrays are the tool's `specs`, in order).
+          const budget = budgets[i] ?? {};
           // Resolve display tag: PM-supplied label takes priority, else index.
           // The deck row shows `<role>[<tag>]` so the user can tell members apart.
           const tag = spec.label?.trim() || `#${i + 1}`;
@@ -361,6 +421,15 @@ export function registerDispatchTools(pi: ExtensionAPI) {
                     onProgress: hooks.onProgress,
                     onRawEvent: hooks.onRawEvent,
                     onStdin: hooks.onStdin,
+                    // #1991 — the member's own bounds, steered through the
+                    // registry exactly as a single dispatch's are.
+                    ...(budget.budgetTurns === undefined && budget.childBoundMs === undefined
+                      ? {}
+                      : {
+                          onSteer: (message: string, source: SteerSource) =>
+                            steerChild(hooks.jobId, message, source).delivered,
+                        }),
+                    ...budget,
                   }),
                 { signal, onRetry: (n) => traceRetry(displayLabel, n) },
               ),

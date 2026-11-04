@@ -88,6 +88,19 @@ export function capsEnabled(): boolean {
   return process.env.PI_ENSEMBLE_DISPATCH_CAPS !== "0";
 }
 
+/** When the wrap-up steer and the kill land, in ms from `now` (the instant
+ *  `childBoundSchedule` was asked). Exported as a type so a caller that arms
+ *  several supervisors of one child can compute it ONCE and hand the same
+ *  object to each of them. */
+export interface ChildBoundSchedule {
+  /** ms from `now` until the child is steered to wrap up. */
+  wrapAtMs: number;
+  /** ms from `now` until the child is ended; absent when the cycle deadline owns the kill. */
+  killAtMs?: number;
+  /** ms between the wrap-up steer and the end. */
+  stopInMs: number;
+}
+
 /**
  * When the wrap-up steer and the kill land, in ms from now. `killAtMs` is
  * absent when the cycle deadline comes first: the deadline backstop kills.
@@ -97,7 +110,7 @@ export function childBoundSchedule(
   boundMs: number,
   graceMs: number,
   now: number,
-): { wrapAtMs: number; killAtMs?: number; stopInMs: number } {
+): ChildBoundSchedule {
   const clamp = clampToCycleDeadline(boundMs + graceMs, now);
   if (!clamp.clamped) return { wrapAtMs: boundMs, killAtMs: boundMs + graceMs, stopInMs: graceMs };
   const wrapAtMs = Math.max(0, clamp.timeoutMs - graceMs);
@@ -168,6 +181,11 @@ export function armChildBound(o: {
    */
   boundArmed?: () => boolean;
   graceMs?: number;
+  /** Pre-computed schedule (`childBoundSchedule`) for a caller that arms more
+   *  than one supervisor of this child and wants the kill timers and the
+   *  progress steer to read one object. With it, `graceMs` is ignored — the
+   *  schedule already carries `stopInMs`. */
+  schedule?: ChildBoundSchedule;
   head?: (cwd: string) => Promise<string | undefined>;
 }): ChildBound {
   const boundMs = o.boundMs ?? 0;
@@ -234,8 +252,8 @@ export function armChildBound(o: {
     return true;
   };
   if (boundMs <= 0) return result;
-  const graceMs = o.graceMs ?? childBoundGraceMs();
-  const { wrapAtMs, killAtMs, stopInMs } = childBoundSchedule(boundMs, graceMs, Date.now());
+  const { wrapAtMs, killAtMs, stopInMs } =
+    o.schedule ?? childBoundSchedule(boundMs, o.graceMs ?? childBoundGraceMs(), Date.now());
 
   const wrapUp = () => {
     if (gone() || o.reported()) return;
