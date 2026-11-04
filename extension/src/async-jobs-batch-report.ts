@@ -9,7 +9,10 @@
  * that matters: a batch row and a single row must never describe the same
  * result differently. The operator-config `VIOLATION:` block is one of those
  * shared judgements (#2019) — a batch member whose run hijacked the operator's
- * git/gh config has to say so here as plainly as the single report does.
+ * git/gh config has to say so here as plainly as the single report does. A
+ * member whose run THREW has no `DispatchResult` at all (`{ failed: true,
+ * error }` — async-jobs-batch.ts), so it renders no block: the operator-config
+ * restore for that member still ran and is recorded on the trace, not here.
  */
 
 import {

@@ -338,6 +338,25 @@ const succeeded: DispatchResult = {
     ),
     "...and the single report renders the same line, so the two shapes agree",
   );
+  {
+    // A member whose run THREW arrives as `{ failed: true, error }`, which is a
+    // shape with no `DispatchResult` to carry the field — so it renders no
+    // block, and the guard's restore for that member is recorded on the trace
+    // alone (`spawn-operator-config.ts` states the same boundary). Asserted here
+    // so the drop is a decision someone reads, not an accident: if a future
+    // change gives the failed arm a disclosure path, this line goes red and says
+    // so. `spawn-operator-config.ts` is named rather than imported: the batch
+    // seam is the contract, and the module's own suite owns its behaviour.
+    const thrown = formatBatchReport({
+      batchId: "b2019f",
+      members: [{ jobId: "j3", label: "ops[throw]", result: { failed: true, error: "boom" } }],
+      // biome-ignore lint/suspicious/noExplicitAny: partial fixture
+    } as any);
+    assert(
+      thrown.includes("ops[throw]") && !thrown.includes("VIOLATION"),
+      "a thrown member renders no operator-config block — no result object to annotate, disclosure is traceWarn-only",
+    );
+  }
 }
 
 console.log(`\nexit ${exit}`);

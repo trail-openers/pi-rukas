@@ -31,8 +31,22 @@
  *
  * Reads are whole local config files (kilobytes), so no timeout machinery sits
  * on them. A read that fails for any reason other than ENOENT is reported once
- * as `cannot snapshot` and that path is then never treated as a child write —
- * an unreadable file is never evidence of a change.
+ * as `cannot snapshot`, and a path with no baseline is never treated as a child
+ * write — an unreadable file is never evidence of a change.
+ *
+ * The same unreadability has the opposite meaning AFTER the child: there the
+ * baseline exists, so "I cannot read it" is "I cannot prove it is unchanged"
+ * and the path gets the restore like any other change. A child's last act could
+ * otherwise be `chmod 000` or `rm && mkdir` on the gh credential file and keep
+ * its payload with no violation line anywhere. `undefined` therefore means two
+ * different things on the two sides of the run, and the two sets keep them
+ * apart: paths that could be read go into `snapshots` and are compared and
+ * repaired, a path with no baseline never enters that set and is left alone.
+ *
+ * What the guard cannot catch: a write that lands after the child exits (a
+ * detached grandchild), since one snapshot set belongs to one child. Group-kill
+ * (`spawn-kill.ts`) is what reaps a lingering grandchild; that is a separate
+ * mechanism from this restore.
  */
 
 import { open, readFile, rm } from "node:fs/promises";
@@ -45,7 +59,13 @@ import type { DispatchResult } from "./types.ts";
 /** A process environment shaped enough to resolve the protected paths from. */
 export type OperatorConfigEnv = Record<string, string | undefined>;
 
-/** One protected file and the bytes it held before the child ran; null means it did not exist. */
+/**
+ * One protected file that WAS readable before the child ran, and the bytes it
+ * held (null = it did not exist). A path that could not be read is absent from
+ * the set entirely: with no baseline there is nothing to restore and no
+ * evidence of a change, which is the opposite of what an unreadable path means
+ * once the child has run — see the module header.
+ */
 type Snapshot = { path: string; bytes: Buffer | null };
 
 /** `${XDG_CONFIG_HOME:-$HOME/.config}` — the XDG base directory git and gh both honour. */
@@ -91,7 +111,7 @@ export function protectedPaths(env: OperatorConfigEnv = process.env): string[] {
   ];
 }
 
-/** Read one path. `undefined` = not snapshotted (unreadable); null = absent; a Buffer = its bytes. */
+/** Read one path: its bytes, null for absent, or undefined when it could not be read. */
 async function readSnapshot(target: string): Promise<Buffer | null | undefined> {
   try {
     return await readFile(target);
@@ -111,6 +131,10 @@ async function readSnapshot(target: string): Promise<Buffer | null | undefined> 
  * `open(..., "wx")` creates a fresh regular file instead of following a link a
  * child planted — so after a restore the operator's file is one the child does
  * not already own, and the `— restored` line cannot be a false all-clear.
+ * `recursive` because the child may have left a DIRECTORY holding files, which
+ * a plain `rm` refuses (ERR_FS_EISDIR) and would leave the child's tree in
+ * place; only `bytes === null` means "restore = delete", and a real directory
+ * is only ever removed when the snapshot said a file used to be there.
  * Explicit 0600 because the file is new (a plain write would keep a mode the
  * child loosened, and `hosts.yml` holds the gh token); `wx` bypasses umask, so
  * it is set here rather than assumed.
@@ -121,7 +145,7 @@ async function readSnapshot(target: string): Promise<Buffer | null | undefined> 
  */
 async function restoreOne(target: string, bytes: Buffer | null): Promise<string | undefined> {
   try {
-    await rm(target, { force: true });
+    await rm(target, { force: true, recursive: true });
     if (bytes === null) return undefined;
     const handle = await open(target, "wx", 0o600);
     try {
@@ -135,9 +159,14 @@ async function restoreOne(target: string, bytes: Buffer | null): Promise<string 
   }
 }
 
-/** Bytes changed (including appearing or disappearing) relative to the snapshot. */
+/**
+ * Did the entry change relative to the snapshot? `now === undefined` — the
+ * post-child read failed — is a change: the baseline exists, so unreadable is
+ * "cannot prove unchanged", not "unchanged". Paths that never had a baseline
+ * never reach here (see the module header).
+ */
 function differsFrom(snap: Buffer | null, now: Buffer | null | undefined): boolean {
-  if (now === undefined) return false;
+  if (now === undefined) return true;
   if (now === null) return snap !== null;
   return snap === null || !now.equals(snap);
 }
@@ -154,6 +183,13 @@ function differsFrom(snap: Buffer | null, now: Buffer | null | undefined): boole
  * `DispatchResult` — the resume reattach returns its own shape — simply reports
  * its violations through the `traceWarn` channel, which is what that path
  * relies on since it builds no report to attach them to.
+ *
+ * A callback that THROWS has no value to annotate, so on that path the restore
+ * still lands and only `traceWarn` carries the disclosure — `dispatch_parallel`
+ * turns the throw into `{ failed: true, error }`, which is a shape with no
+ * result to decorate (see async-jobs-batch-report.ts). The restore is the
+ * protection; the report line is the record, and a thrown child's record lives
+ * on the trace.
  */
 export async function withOperatorConfigGuard<R>(
   role: string,
@@ -171,8 +207,9 @@ export async function withOperatorConfigGuard<R>(
   } finally {
     const violations: string[] = [];
     for (const snap of snapshots) {
-      const now = await readSnapshot(snap.path);
-      if (!differsFrom(snap.bytes, now)) continue;
+      // A baseline exists for every entry in `snapshots`, so a failed read here
+      // is a violation to repair rather than a path to leave alone.
+      if (!differsFrom(snap.bytes, await readSnapshot(snap.path))) continue;
       const code = await restoreOne(snap.path, snap.bytes);
       violations.push(
         code === undefined
@@ -182,7 +219,8 @@ export async function withOperatorConfigGuard<R>(
     }
     for (const line of violations) traceWarn(line);
     // Disclosure, never a verdict: `ok` and `loopOutcome` are left exactly as
-    // the child's own run set them.
+    // the child's own run set them. When `result` is null the callback threw and
+    // there is nothing to annotate — the traceWarn above is the only record.
     if (violations.length > 0 && result !== null && isDispatchResult(result)) {
       result.operatorConfig = violations;
     }
