@@ -37,6 +37,20 @@
  * A red reason is clipped to {@link RED_REASON_CLIP}: `build`'s re-entry reads
  * it back out of the step log and pastes it into the developer's prompt, and an
  * unbounded tail from a chatty build would eat the prompt whole.
+ *
+ * A red PROJECT TIER is not taken at its first word: `verify-baseline.ts` re-runs
+ * it once at HEAD, and a tier that goes green there counts green with the flake
+ * named in the reason. A tier red twice is probed at the run's `baseSha` in a
+ * throwaway checkout, and a tier red THERE hands the run back before any build
+ * round is billed — a gate that was red before the change existed is not something
+ * the change's developer is sent to fix. The probe compares the frozen tests' BYTES
+ * against the base commit's — it never runs them there, because the base predates them.
+ * Only a base the probe actually SAW red earns the hand-back: a probe that could not
+ * tell (`unknown`) is not a colour, so the tier's own red stands and the build-retry
+ * path runs exactly as it would with no probe at all.
+ * The frozen tests and the `command`
+ * criteria keep their first-word verdicts: a frozen test is proven red-and-named at
+ * freeze time on purpose, so exempting it would delete the run's only contract check.
  */
 
 import { existsSync } from "node:fs";
@@ -49,17 +63,28 @@ import { frozenFromLog } from "./build.ts";
 import { loadWorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { fetchIssueBody } from "./io.ts";
-import { parsePiSpec, readiness } from "./spec.ts";
-import type { Criterion } from "./spec.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import { assertSpecifyWorktreeOwned, specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
 import type { Outcome, Step } from "./state.ts";
-import { oneLine } from "./text-fence.ts";
+import {
+  baselineRedReason,
+  baselineUnusableError,
+  confirmTierRed,
+  flakeReason,
+  probeTierAtBase,
+} from "./verify-baseline.ts";
 import { type CommandCriteriaOutcome, commandCriteriaOutcome } from "./verify-commands.ts";
 import { frozenTamperReason } from "./verify-frozen.ts";
+import {
+  commandsFailedAsExecuted,
+  specCriteriaFor,
+  toVerifyCmdInfra,
+  verifyCmdAtHead,
+} from "./verify-reads.ts";
 import { recheckAfterRuns } from "./verify-recheck.ts";
 import {
   type Executed,
+  TIER_TIMEOUT_MS,
   canaryFailure,
   frozenTestFailure,
   runTier,
@@ -96,75 +121,6 @@ export interface VerifyDeps {
 
 /** The step log's newest red reason is pasted into a prompt; that bounds it. */
 export const RED_REASON_CLIP = 4096;
-
-/**
- * Is a failed `git show <ref>:<path>` git's own "this commit has no such file"?
- *
- * Two wordings are git's absence answers, and one of them is the reason a
- * path is not readable rather than absent (a file that exists in the tree but
- * never in the commit). Anything else — a timeout, an overflow, a corrupt
- * object — is a git that could not answer, which is never "the project
- * configured nothing".
- */
-const ABSENT_IN_COMMIT = /does not exist|exists on disk, but not in/i;
-
-/**
- * Why a failed read of `.pi/verify-cmd` means "there is none", or `undefined`
- * when the read failed for a reason that is not an answer.
- */
-function absentVerifyCmd(err: unknown): boolean {
-  const e = err as { code?: unknown; stderr?: string; message?: string };
-  const text = `${e?.stderr ?? ""}\n${e?.message ?? ""}`;
-  // Exit 128 is git's "hard" refusal — for this command it only ever means the
-  // path is not in the commit; a bad rev or a broken repo would have refused
-  // every other git call in the step too. The wording is what decides.
-  return e?.code === 128 && ABSENT_IN_COMMIT.test(text);
-}
-
-/** The committed `.pi/verify-cmd` at HEAD, or `undefined` when there is none. */
-async function verifyCmdAtHead(
-  exec: VerifyExec,
-  wt: string,
-  head: string,
-): Promise<string | undefined> {
-  // An ABSENT file is "the project configured nothing"; a read that failed for
-  // any other reason is infrastructure and throws, because defaulting a git
-  // that would not answer to "no tiers" turns a broken machine into a green.
-  // The wrapped rejection also covers an injected `readVerifyCmd` that rejects:
-  // the seam is a test's stand-in for this very read, so it earns the same
-  // classification — a `VerifyInfraError` it raised itself passes through
-  // untouched, anything else is re-thrown with the reader's own wording.
-  const ran = await exec("git", {
-    argv: [...NO_HOOKS, "show", `${head}:.pi/verify-cmd`],
-    cwd: wt,
-    timeout: 30_000,
-    maxBuffer: 1024 * 1024,
-  }).catch((err: unknown) => {
-    if (absentVerifyCmd(err)) return undefined;
-    throw toVerifyCmdInfra(err);
-  });
-  if (ran === undefined) return undefined;
-  return (ran.stdout ?? "")
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .find((l) => l !== "" && !l.startsWith("#"));
-}
-
-/**
- * Wrap a failed `.pi/verify-cmd` read as infrastructure.
- *
- * One wording for both readers — the production `git show` above and an injected
- * `deps.readVerifyCmd` — so a test that makes its seam reject cannot observe a
- * different failure class from the one the real read produces. A rejection that
- * is already a `VerifyInfraError` is the reader's own verdict on its machine and
- * keeps its message; anything else is reported as a read that could not answer.
- */
-function toVerifyCmdInfra(err: unknown): VerifyInfraError {
-  if (err instanceof VerifyInfraError) return err;
-  return new VerifyInfraError(
-    `could not read .pi/verify-cmd: ${(err as Error)?.message ?? String(err)}`,
-  );
-}
 
 /** The first failure among the executed checks; an unobservable one THROWS. */
 function firstFailure(...ran: Executed[]): string | undefined {
@@ -282,18 +238,59 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
   );
   if (unsound !== undefined) throw new VerifyInfraError(unsound);
 
-  // 4. The frozen tests, every one of them.
+  // 4. The frozen tests, every one of them. The base probe below does NOT run them: it
+  // compares their frozen BYTES against the base commit, because the base predates tests
+  // this run authored. A tier is only ever excused over a contract the base itself
+  // carries, and never over one this run invented.
   const tests = await frozenTestFailure(frozen, config.verify.test, wt, deps.exec, deps.timeoutMs);
 
-  // 5. The project's own tiers, fast before full, first failure wins. These run
-  // BEFORE the command criteria on purpose: a preservation criterion states that
-  // behaviour held before this run and holds after it, and the "after" the gate
-  // certifies is the tree the project tiers produced, not the one they started on.
+  // 5. The project's own tiers, fast before full, first failure wins — with one
+  // re-run and one base probe behind a red, so a tier that was never green in this
+  // run's history cannot bill a build round. These run BEFORE the command criteria
+  // on purpose: a preservation criterion states that behaviour held before this run
+  // and holds after it, and the "after" the gate certifies is the tree the project
+  // tiers produced, not the one they started on.
+  // `flake` remembers an excused tier so the green it produced says so in its reason.
+  const timeoutMs = deps.timeoutMs ?? TIER_TIMEOUT_MS;
+  let flake: string | undefined;
   const tierResults: Executed[] = [];
   for (const [name, cmd] of tiers) {
     const one = await runTier(name, cmd, wt, deps.exec, deps.timeoutMs);
+    if (one.kind === "pass") {
+      tierResults.push(one);
+      continue;
+    }
+    if (one.kind === "infra") {
+      tierResults.push(one);
+      break;
+    }
+    // One re-run at HEAD. A tier that goes green there saw nothing stable the first
+    // time, so it is a flake and the gate does not bill a build round for it.
+    if (!(await confirmTierRed({ name, cmd, wt, exec: deps.exec, timeoutMs }))) {
+      flake = flakeReason(name, cmd);
+      trace(`lean/verify: ${flake}`);
+      continue;
+    }
+    // Red at HEAD twice: was it red BEFORE this run? A tier the base commit already
+    // fails cannot be fixed by this run's builder, so the run stops here rather than
+    // billing a round that would edit code the spec never named. Only a base the probe
+    // OBSERVED red earns that hand-back: `unknown` (a base run that was killed, timed
+    // out, overflowed or never started, or a base the contract cannot judge) is not a
+    // colour, so the tier's own red below is what stands and the build round is billed.
+    const probe = await probeTierAtBase({
+      repoRoot,
+      baseSha: ctx.run.baseSha,
+      issue,
+      cmd,
+      timeoutMs,
+      exec: deps.exec,
+      frozen,
+    });
+    if (probe.status === "unusable") throw baselineUnusableError(probe.reason);
+    if (probe.status === "red")
+      return { kind: "red", reason: clipReason(baselineRedReason(name, cmd, ctx.run.baseSha)) };
     tierResults.push(one);
-    if (one.kind === "fail") break;
+    break;
   }
 
   // 6. The spec's `command` criteria — preservation checks the frozen tests do
@@ -368,6 +365,9 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
   // red's reason line is already dominated by the failing check.
   const note =
     tiers.length === 0 ? " (no project verify command — the frozen tests alone decided)" : "";
+  // An excused flake rides in the reason: `publish` prints the verify reason in the
+  // PR body's Verification section, so a tier the gate let go on a re-run is
+  // disclosed rather than reported as a clean gate nobody observed twice.
   // Rebuilt from the tier's own record rather than spread-cast: `commandCriteria`
   // is what licenses `passed (command)` in the PR body and what `publish` reads to
   // decide a draft, so each entry is written from the value this module computed,
@@ -376,7 +376,7 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
   const notRunnable = Object.entries(commands.notRunnable);
   return {
     kind: "green",
-    reason: `frozen tests and project tiers passed at ${head}${note}`,
+    reason: `frozen tests and project tiers passed at ${head}${note}${flake === undefined ? "" : ` — ${flake}`}`,
     verifiedHead: head,
     ...(executed.length === 0
       ? {}
@@ -399,61 +399,6 @@ export function verifyDeps(): VerifyDeps {
     loadConfig: (repoRoot, baseSha) => loadWorkConfig(execp, repoRoot, baseSha),
     fetchIssueBody,
   };
-}
-
-/**
- * The spec's criteria, for the `command` tier.
- *
- * A body the gate could not fetch, or one that carries a `pi-spec` block it
- * cannot parse, THROWS: the run does not know which `command` criteria were asked
- * for, and a gate that cannot say that must not report a verdict. What stays
- * non-fatal is the one case that is genuinely "the spec asked for nothing" — a
- * block that parsed and holds no `command` criterion — because a run whose spec
- * has no command criteria is an ordinary run, not a broken machine. A body with
- * NO `pi-spec` block at all is the same ordinary case: `publish` is the step that
- * refuses a contractless issue, and the verify gate has no business inventing a
- * failure the next step already reports in its own words.
- */
-async function specCriteriaFor(
-  deps: VerifyDeps,
-  repoRoot: string,
-  issue: number,
-): Promise<Criterion[]> {
-  const body = await deps.fetchIssueBody(repoRoot, issue).catch((err: unknown) => {
-    throw new VerifyInfraError(
-      `could not read the issue's spec for the command criteria: ${(err as Error)?.message ?? String(err)}`,
-    );
-  });
-  const parsed = parsePiSpec(body);
-  if (!parsed.ok) {
-    if (parsed.reason !== "no pi-spec v1 block")
-      throw new VerifyInfraError(
-        `the issue's spec could not be read for the command criteria: ${parsed.reason}`,
-      );
-    trace("lean/verify: no command criteria — the issue carries no pi-spec block");
-    return [];
-  }
-  // A spec that parses but is not runnable is a spec the gate cannot act on, and the
-  // run must not proceed to a verdict on criteria a well-formed spec would not carry:
-  // two criteria sharing one id, for example, mean the record keys two verdicts on one
-  // slot and one reason silently stands for both. `specify` gates the run on this same
-  // judgement, so re-reading it here is not a new rule — it is the rule applied where
-  // its violation would otherwise be invisible.
-  const unready = readiness(parsed.spec);
-  if (unready.length > 0)
-    throw new VerifyInfraError(
-      `the issue's spec is not ready for the command criteria: ${oneLine(unready.join("; "), 300)}`,
-    );
-  return parsed.spec.criteria;
-}
-
-/**
- * A failed `command` criterion as an `Executed` so it routes through the same
- * `firstFailure` as the frozen tests and the tiers: `fail` is a verdict, and an
- * infra result never reaches here because `commandCriteriaOutcome` throws it.
- */
-function commandsFailedAsExecuted(outcome: CommandCriteriaOutcome): Executed {
-  return outcome.failed === undefined ? { kind: "pass" } : { kind: "fail", reason: outcome.failed };
 }
 
 /** The newest decided `verify:red` reason on the log, clipped, for a report. */

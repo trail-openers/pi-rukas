@@ -24,16 +24,45 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { execp } from "../../src/exec.ts";
 import type { WorkConfig } from "../../src/lean/config.ts";
 import type { HandlerCtx } from "../../src/lean/engine.ts";
 import { type Outcome, type Step, createRun } from "../../src/lean/state.ts";
-import type { VerifyExec } from "../../src/lean/verify-types.ts";
+
 import type { VerifyDeps } from "../../src/lean/verify.ts";
 import { gitTestEnv } from "./git-test-env.ts";
+import {
+  DETACH_TIER,
+  HANG_TIER,
+  PASS_TIER,
+  failTier,
+  flakeTier,
+  killOnSecondTier,
+  writeTier,
+} from "./lean-verify-tiers.ts";
+export {
+  DETACH_TIER,
+  HANG_TIER,
+  PASS_TIER,
+  failTier,
+  flakeTier,
+  killOnSecondTier,
+  writeTier,
+} from "./lean-verify-tiers.ts";
+import { type Fixture, provisionHookedTree } from "./lean-verify-hook-tree.ts";
+import {
+  type VerifyOpts,
+  type VerifyRun,
+  canonicalProbeDir,
+  makeVerifyExec,
+} from "./lean-verify-exec.ts";
+
+/** The shapes a verify case is configured with and answers with, re-exported here so a
+ * case imports the whole harness from one module. */
+export type { VerifyOpts, VerifyRun };
 
 /** Temp dirs this module made; the caller removes them at the end of the run. */
 export const ROOTS: string[] = [];
@@ -57,15 +86,18 @@ export const TEST =
   '#!/bin/sh\nif [ ! -f src/DONE ]; then echo "not ok - tests/AC1-retry.test.sh" 1>&2; exit 1; fi\nexit 0\n';
 /** A frozen test that passes whatever the source does: a contract nobody wrote. */
 export const GREEN_TEST = "#!/bin/sh\nexit 0\n";
-
-/** A tier command that succeeds. */
-export const PASS_TIER = "true";
-/** A tier command that fails loudly, so a red reason has a tail worth naming. */
-export function failTier(marker: string): string {
-  return `sh -c 'echo tier-said-${marker} 1>&2; exit 1'`;
-}
-/** A tier that outlives any bound a test can wait for. */
-export const HANG_TIER = "sleep 60";
+/**
+ * An acceptance test the BASE commit carries and cannot pass: the mainline that is
+ * already red on this host. Committed at `baseSha` for the baseline-red cases, so the
+ * probe's frozen run goes red there for a reason the fixture can point at in git.
+ *
+ * It fails UNCONDITIONALLY rather than on a missing file: the run's own work is committed
+ * on top of the base and cannot make the base's red go away, so a base that is red stays
+ * red however much of the change the checkout happens to hold.
+ */
+const RED_BASE_TEST = '#!/bin/sh\necho "not ok" 1>&2\nexit 1\n';
+/** The one acceptance-test path the fixture freezes, and the baseline probe judges. */
+const FROZEN_FILE = "tests/AC1-retry.test.sh";
 
 /** The committed name of the helper script the silent-runner case writes. */
 const SILENT_RUNNER_FILE = "silent-runner.sh";
@@ -82,31 +114,6 @@ const SILENT_RUNNER_FILE = "silent-runner.sh";
 const SILENT_RUNNER_SCRIPT = "exit 1\n";
 /** The template that case configures; `validateTestRunner` wants `{file}` whole. */
 const SILENT_RUNNER_TEMPLATE = "sh silent-runner.sh {file}";
-
-/**
- * A tier that writes `rel` in the worktree, COMMITTING it when `commit` is set.
- *
- * The re-check cases need a tier that disturbs the tree *after* the step has
- * already read it clean: the pre-tier checks pass, the tier runs, and only the
- * post-tier re-check can see what it did.
- */
-export function writeTier(rel: string, text: string, commit = false): string {
-  const quoted = `'${text.replace(/'/g, "'\\''")}'`;
-  const add = commit
-    ? " git add -A >/dev/null; git -c user.name=t -c user.email=t@t commit -q -m tier;"
-    : "";
-  return `sh -c "printf %s ${quoted} > '${rel}';${add} exit 0"`;
-}
-
-/**
- * A tier that leaves HEAD on the same commit but on NO branch.
- *
- * `git rev-parse HEAD` still answers the sha the step recorded, so the moved-HEAD
- * re-check cannot see it; only a branch read can. The tier itself runs `git
- * checkout`, which a test fixture's tier script may do — the step's own shell
- * never does.
- */
-export const DETACH_TIER = 'sh -c "git checkout -q --detach; exit 0"';
 
 function gitEnv(): Record<string, string> {
   return {
@@ -126,80 +133,13 @@ export function git(dir: string, ...args: string[]): string {
   return (r.stdout ?? "").trim();
 }
 
-export interface VerifyRun {
-  outcome?: Outcome;
-  threw?: Error;
-  worktree: string;
-  head: string;
-}
-
-export interface VerifyOpts {
-  issue: number;
-  /** What the project configured; `fast` defaults to a passing tier. */
-  config?: Partial<WorkConfig["verify"]>;
-  /** Nothing configured at all: the frozen tests alone decide. */
-  noCommand?: boolean;
-  /** Bounds every tier and frozen-test run, so a hang is observable in seconds. */
-  timeoutMs?: number;
-  /** Make the worktree dirty before the step looks at it. */
-  dirty?: boolean;
-  /** Rewrite the frozen file ON DISK, uncommitted, before the step looks. */
-  editDisk?: string;
-  /** Commit a rewrite of the frozen file at HEAD before the step looks. */
-  editAtHead?: string;
-  /** Commit the implementation, so the frozen test's own red goes away. */
-  implement?: boolean;
-  /**
-   * A second tier, run after `fast`: the re-check cases use it to rewrite a
-   * frozen file, drop an untracked file, or commit, once the tree has already
-   * been read clean. The command runs through a shell in the worktree.
-   */
-  full?: string;
-  /**
-   * Run the frozen tests through the silent helper runner instead of `sh {file}`:
-   * it exits non-zero without naming the file, so the proof arrives `unclear`.
-   * What the step is allowed to make of an unclear proof is what the case asks.
-   */
-  silentRunner?: boolean;
-  /**
-   * Reject the post-tier BRANCH read with exit 1 AND a message on stderr. git's
-   * own detached answer is exit 1 with NOTHING printed, so a noisy exit 1 is a
-   * git that could not reply and must not be read as "detached".
-   */
-  recheckBranchNoisyExit1?: boolean;
-  /**
-   * Make the HEAD read that happens AFTER the tiers reject, while every earlier
-   * git call still goes to the real git. That read is the post-tier re-check: a
-   * step that cannot re-read HEAD once the tiers have run has not observed a
-   * tier moving it — it has failed to read the tree, which is infrastructure.
-   */
-  recheckHeadFails?: boolean;
-  /**
-   * Reject the post-tier BRANCH read (`symbolic-ref --short -q HEAD`) while
-   * every earlier git call still goes to the real git — the shape a detached
-   * HEAD gives, since `-q` exits 1 without printing anything. A read that
-   * REJECTS rather than exiting 1 is covered by `recheckHeadFails` for the HEAD
-   * read; this one proves the branch read treats git's "detached" exit as an
-   * answer and not as a machine that could not reply.
-   */
-  recheckBranchDetached?: boolean;
-  /**
-   * The issue body the verify gate reads for its `command` criteria. Absent means
-   * an issue with no `pi-spec` block, which is the "the spec asked for no command
-   * criteria" shape — the ordinary case these cases are not about.
-   */
-  specBody?: string;
-  /** Log lines to add after the fixture's own. */
-  extraSteps?: Step[];
-}
-
 /**
  * Commit the acceptance test in `dir` and return the resulting head. This is the
  * freeze: the sha the step log records is the sha of the bytes this commit holds,
  * so every tamper case has to change a real byte to be red.
  */
 function commitFreeze(dir: string, issue: number, text: string): string {
-  const target = path.join(dir, "tests", "AC1-retry.test.sh");
+  const target = path.join(dir, FROZEN_FILE);
   mkdirSync(path.dirname(target), { recursive: true });
   writeFileSync(target, text, { mode: 0o755 });
   chmodSync(target, 0o755);
@@ -215,13 +155,31 @@ function commitFreeze(dir: string, issue: number, text: string): string {
  * The worktree is built first and the branch is handed to it outright, so a case
  * can commit inside the tree — moving the very head the step is about to judge —
  * without git refusing to move a branch `repoRoot` holds.
+ *
+ * `fixtureSync` builds the repo and its worktree; `fixture` layers the optional
+ * hook-provisioned tree on top, which is the only reason the repo build is not all
+ * synchronous.
  */
-function fixture(issue: number): {
-  repoRoot: string;
-  wt: string;
-  head: string;
-  ctx: HandlerCtx;
-} {
+/** What building a fixture yields: the repo, its worktree, the frozen record and the ctx. */
+async function fixture(
+  issue: number,
+  baseRedContract: boolean,
+  hook?: { script: string; marksDir: string },
+): Promise<Fixture> {
+  const built = fixtureSync(issue, baseRedContract, hook);
+  if (hook !== undefined) await provisionHookedTree(built, hook, gitEnv());
+  return built;
+}
+
+/**
+ * Build the repo, its single acceptance-test commit, and the run's worktree. Synchronous
+ * because most cases need nothing else; `fixture` adds the hook-provisioned tree on top.
+ */
+function fixtureSync(
+  issue: number,
+  baseRedContract: boolean,
+  hook?: { script: string; marksDir: string },
+): Fixture {
   const repoRoot = mkdtempSync(path.join(tmpdir(), "lean-verify-"));
   ROOTS.push(repoRoot);
   git(repoRoot, "init", "-q", "-b", "main");
@@ -231,6 +189,34 @@ function fixture(issue: number): {
   writeFileSync(dir("src/retry.ts"), SRC);
   git(repoRoot, "add", "-A");
   git(repoRoot, "commit", "-q", "-m", "base");
+  if (hook !== undefined) {
+    // A project hook COMMITTED AT THE BASE, so both trees this case involves are
+    // hook-provisioned trees: the run's own worktree (which the driver must provision
+    // through the hook) and the probe's throwaway checkout (which it must not). The hook
+    // is an `sh` script that marks its `$PI_RUKAS_TEST_HOOK_MARKS` directory, so the case
+    // reads evidence of WHERE it ran rather than trusting a stub's word for it.
+    mkdirSync(path.join(repoRoot, ".pi"), { recursive: true });
+    const hookFile = path.join(repoRoot, ".pi", "worktree-setup");
+    writeFileSync(hookFile, hook.script, { mode: 0o755 });
+    chmodSync(hookFile, 0o755);
+    git(repoRoot, "add", "-A");
+    git(repoRoot, "commit", "-q", "-m", "chore: project worktree-setup hook");
+  }
+  if (baseRedContract === true) {
+    // The incident's shape, made of real bytes rather than of a stub's say-so, and put
+    // where a baseline probe can actually reach it: at the SAME path the run goes on to
+    // freeze, the base commit holds a test that fails UNCONDITIONALLY. That is exactly a
+    // mainline whose acceptance suite is red on this host, seen through the run's own
+    // contract — the one comparison the probe can make without running the run's tests
+    // at a commit that predates them. The freeze then records the run's PASSING bytes at
+    // the same path, so the tamper guard's rule ("HEAD's blob is the frozen blob") still
+    // holds at HEAD while the base holds other, failing, bytes.
+    mkdirSync(dir("tests"), { recursive: true });
+    writeFileSync(dir(FROZEN_FILE), RED_BASE_TEST, { mode: 0o755 });
+    chmodSync(dir(FROZEN_FILE), 0o755);
+    git(repoRoot, "add", "-A");
+    git(repoRoot, "commit", "-q", "-m", "test: the mainline's own suite is red on this host");
+  }
   const baseSha = git(repoRoot, "rev-parse", "HEAD");
   const branch = `lean/issue-${issue}`;
   git(repoRoot, "checkout", "-q", "main");
@@ -243,6 +229,12 @@ function fixture(issue: number): {
   const head = commitFreeze(wt, issue, TEST);
 
   const run = createRun({ issue, version: "test", models: {}, baseSha, branch });
+  // The record is what the step reads back, so it must be the bytes the FREEZE holds at
+  // HEAD — which is the run's own contract. The base's red acceptance test is NOT part
+  // of it: it belongs to the mainline, and a run cannot freeze a test it did not author.
+  // What makes the base red is that the base carries a test at all whose bytes the run's
+  // contract does not satisfy, which the probe reads off the base commit itself.
+  const frozen: Record<string, string> = { [FROZEN_FILE]: sha(TEST) };
   const steps: Step[] = [
     { key: `${issue}:ready:0`, state: "ready", startedAt: 1, outcome: { kind: "ok" } },
     {
@@ -251,8 +243,8 @@ function fixture(issue: number): {
       startedAt: 2,
       outcome: {
         kind: "ok",
-        frozen: { "tests/AC1-retry.test.sh": sha(TEST) },
-        tests: { AC1: ["tests/AC1-retry.test.sh"] },
+        frozen,
+        tests: { AC1: [FROZEN_FILE] },
       },
     },
   ];
@@ -261,6 +253,7 @@ function fixture(issue: number): {
     repoRoot,
     wt,
     head,
+    frozen,
     ctx: {
       repoRoot,
       issue,
@@ -279,9 +272,11 @@ export function sha(text: string | Buffer): string {
 
 /** Run `verify` against a fixture repo; a throw comes back as `threw`. */
 export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
-  const f = fixture(opts.issue);
+  const f = await fixture(opts.issue, opts.baseRedContract === true, opts.hookAtBase);
 
   const wt = f.wt;
+  const repoRoot = f.repoRoot;
+  const probeDir = canonicalProbeDir(repoRoot, opts.issue);
 
   if (opts.implement === true && opts.editDisk === undefined) {
     // The green cases COMMIT their work, so the tree the step judges is clean.
@@ -293,8 +288,8 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
     // The freeze is the fixture's own commit, hashed into the log's record; this
     // rewrite lands AFTER it, so HEAD's blob no longer matches the record while
     // the working tree stays clean. Only a read of the commit can see it.
-    writeFileSync(path.join(wt, "tests/AC1-retry.test.sh"), opts.editAtHead, { mode: 0o755 });
-    chmodSync(path.join(wt, "tests/AC1-retry.test.sh"), 0o755);
+    writeFileSync(path.join(wt, FROZEN_FILE), opts.editAtHead, { mode: 0o755 });
+    chmodSync(path.join(wt, FROZEN_FILE), 0o755);
     commitHere(wt, "chore: rewrote the frozen test after the freeze");
   }
   if (opts.editDisk !== undefined) {
@@ -307,30 +302,19 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
       writeFileSync(path.join(wt, "src/DONE"), "done\n");
       commitHere(wt, "feat: implemented the retry helper");
     }
-    writeFileSync(path.join(wt, "tests/AC1-retry.test.sh"), opts.editDisk, { mode: 0o755 });
+    writeFileSync(path.join(wt, FROZEN_FILE), opts.editDisk, { mode: 0o755 });
   }
   if (opts.dirty === true) writeFileSync(path.join(wt, "notes.txt"), "a stray file\n");
 
   const head = git(wt, "rev-parse", "HEAD");
-  const RECHECK_ARGV = [
-    "-c",
-    "core.hooksPath=/dev/null",
-    "-c",
-    "core.fsmonitor=false",
-    "rev-parse",
-    "HEAD",
-  ];
-  let tierRan = false;
-  const BRANCH_ARGV = [
-    "-c",
-    "core.hooksPath=/dev/null",
-    "-c",
-    "core.fsmonitor=false",
-    "symbolic-ref",
-    "--short",
-    "-q",
-    "HEAD",
-  ];
+  // The tier commands this case configured, as strings: a tier runs as a shell
+  // command, so the only thing that identifies one to the executor is its own text.
+  const configured: Partial<WorkConfig["verify"]> =
+    opts.noCommand === true ? {} : (opts.config ?? { fast: PASS_TIER });
+  if (opts.full !== undefined) configured.full = opts.full;
+  const tiers: string[] = [configured.fast, configured.full].filter(
+    (c): c is string => typeof c === "string" && c.trim() !== "",
+  );
   if (opts.silentRunner === true) {
     // Committed before `head` is read: the step refuses a dirty tree before it
     // ever runs a test, so a helper left untracked would trip that first, and the
@@ -345,41 +329,16 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
   const ctx: HandlerCtx = { ...f.ctx, steps: all };
   ctx.run = { ...ctx.run, steps: all };
 
-  const exec: VerifyExec = (cmd, o) => {
-    // The tier command is the marker between the step's pre-tier reads and its
-    // post-tier re-checks; only the HEAD read on the far side of it goes quiet.
-    if (cmd !== "git" && cmd !== "sh") tierRan = true;
-    if (
-      opts.recheckHeadFails === true &&
-      cmd === "git" &&
-      String(o?.argv ?? []) === String(RECHECK_ARGV) &&
-      tierRan
-    )
-      return Promise.reject(new Error("git: fatal: unable to read HEAD"));
-    if (
-      opts.recheckBranchDetached === true &&
-      cmd === "git" &&
-      String(o?.argv ?? []) === String(BRANCH_ARGV) &&
-      tierRan
-    )
-      return Promise.resolve({ stdout: "", stderr: "" });
-    if (
-      opts.recheckBranchNoisyExit1 === true &&
-      cmd === "git" &&
-      String(o?.argv ?? []) === String(BRANCH_ARGV) &&
-      tierRan
-    )
-      return Promise.reject(
-        Object.assign(new Error("git symbolic-ref: fatal: could not read HEAD"), {
-          code: 1,
-          stderr: "fatal: unable to resolve HEAD\n",
-        }),
-      );
-    return execp(cmd, { ...o, env: o?.env ?? gitTestEnv(), cwd: o?.cwd ?? wt });
-  };
+  const { exec, redRunsSeen, baseTierRunsSeen } = makeVerifyExec({
+    wt,
+    probeDir,
+    repoRoot,
+    tiers,
+    opts,
+    baseSha: f.ctx.run.baseSha,
+    ...(opts.hookAtBase === undefined ? {} : { hookMarks: opts.hookAtBase.marksDir }),
+  });
 
-  const configured = opts.noCommand === true ? {} : (opts.config ?? { fast: PASS_TIER });
-  if (opts.full !== undefined) configured.full = opts.full;
   const deps: VerifyDeps = {
     exec,
     loadConfig: async () => ({
@@ -398,9 +357,25 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
   };
   try {
     const { verifyOutcome } = await import("../../src/lean/verify.ts");
-    return { outcome: await verifyOutcome(ctx, deps), worktree: wt, head };
+    return {
+      outcome: await verifyOutcome(ctx, deps),
+      worktree: wt,
+      head,
+      probeDir,
+      repoRoot,
+      tierRuns: redRunsSeen(),
+      baseTierRuns: baseTierRunsSeen(),
+    };
   } catch (err) {
-    return { threw: err as Error, worktree: wt, head };
+    return {
+      threw: err as Error,
+      worktree: wt,
+      head,
+      probeDir,
+      repoRoot,
+      tierRuns: redRunsSeen(),
+      baseTierRuns: baseTierRunsSeen(),
+    };
   }
 }
 
@@ -450,7 +425,8 @@ export function buildFixtureForWiring(issue: number): {
   wt: string;
   ctx: HandlerCtx;
 } {
-  const f = fixture(issue);
+  // The wiring cases never provision a tree, so they take the synchronous path.
+  const f = fixtureSync(issue, false);
   return { repoRoot: f.repoRoot, wt: f.wt, ctx: f.ctx };
 }
 
@@ -482,8 +458,8 @@ export function redLog(prUrl?: string): Step[] {
     decided("ready", { kind: "ok" }),
     decided("specify", {
       kind: "ok",
-      frozen: { "tests/AC1-retry.test.sh": "a".repeat(64) },
-      tests: { AC1: ["tests/AC1-retry.test.sh"] },
+      frozen: { [FROZEN_FILE]: "a".repeat(64) },
+      tests: { AC1: [FROZEN_FILE] },
     }),
     decided("build", { kind: "ok", reason: "1 file(s) changed" }),
     decided("verify", {
