@@ -19,6 +19,7 @@ import type { Finding, FindingSource, LensRunResult } from "./lens-review-types.
 import { CLAIM_SCAN, CLAIM_SCAN_PRECEDENCE, type RosterEntry } from "./lens-roster.ts";
 import type { ResolvedNotice, SetAsideNotice } from "./review-findings-file.ts";
 import type { ConfirmationLapse } from "./review-findings-store-types.ts";
+import { SEVERITY_RUBRIC } from "./lens-severity-rubric.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult, DispatchUsage } from "./types.ts";
 
@@ -279,6 +280,8 @@ For every issue you identify in your lane, call the \`report_finding\` tool ONCE
   - title (required): short title (< 80 chars)
   - description: 1–3 sentence description of the issue
   - suggestion: short suggested fix
+
+${SEVERITY_RUBRIC}
 
 A call missing any required field is rejected and records nothing — repeat it with every field, not only the one the error names.
 
