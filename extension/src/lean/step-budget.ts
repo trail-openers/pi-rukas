@@ -18,6 +18,7 @@ import { capsEnabled } from "../spawn-child-bound.ts";
 import { traceWarn } from "../trace.ts";
 import type { DispatchResult, DispatchUsage } from "../types.ts";
 import type { Budget, WorkConfig } from "./config.ts";
+import { DISPATCHES_MAX_ROWS } from "./state-dispatches.ts";
 import type { LeanState, Outcome } from "./state.ts";
 
 /** Which ceiling was crossed, with what it was and what the child used. */
@@ -423,6 +424,13 @@ export function budgetVerdict(state: LeanState, fired: BudgetFired): Outcome {
  * Same sentence as {@link budgetVerdict} — the reason text is what the operator
  * is taught to read — with the cost rows attached, so a stopped round's tokens
  * reach the host instead of vanishing with the child.
+ *
+ * The rows are clipped to the validator's own cap keeping the NEWEST, exactly as
+ * the done path in `review-pass.ts` does, because a stopped round routinely
+ * outnumbers it on its own (a six-lens round plus its fixers plus the re-review).
+ * The bound belongs HERE and not at the caller: `dispatchesProblem` refuses the
+ * whole array over the cap, so an unbounded verdict is not a clipped record but
+ * no record — the run would report a stopped round that cost nothing.
  */
 export function budgetVerdictWithRows(
   state: LeanState,
@@ -430,5 +438,5 @@ export function budgetVerdictWithRows(
   rows: DispatchUsageRow[],
 ): Outcome {
   const verdict = budgetVerdict(state, fired);
-  return rows.length === 0 ? verdict : { ...verdict, dispatches: rows };
+  return rows.length === 0 ? verdict : { ...verdict, dispatches: rows.slice(-DISPATCHES_MAX_ROWS) };
 }
