@@ -58,6 +58,16 @@ interface StoredBase {
    */
   confirmedBy?: string;
   severity: Severity;
+  /**
+   * The harness's cap provenance, copied from the finding that created the row
+   * (`capTestPathFinding`, lens-severity-rubric.ts): set when the merge-path cap
+   * lowered this row from HIGH to MEDIUM because it cites test code. It is
+   * persisted so a row carried in a LATER round still says the harness moved it,
+   * rather than arriving looking like a finding the lens called medium. Optional
+   * — every row written before the cap existed, and every row the cap did not
+   * touch, carries nothing.
+   */
+  severityCapped?: "test-path";
   lens: string;
   line?: number;
   /**
@@ -267,6 +277,12 @@ function rowProblem(v: unknown): string | undefined {
   }
   for (const key of ["description", "suggestion", "confirmedBy"] as const) {
     if (r[key] !== undefined && typeof r[key] !== "string") return `${key} is not a string`;
+  }
+  // The cap provenance is a one-valued enum or nothing: a row that claims the
+  // harness lowered its severity with some other spelling is a row somebody
+  // edited, and the only honest reading of an unreadable marker is no marker.
+  if (r.severityCapped !== undefined && r.severityCapped !== "test-path") {
+    return `severityCapped "${String(r.severityCapped)}" is invalid`;
   }
   // #1934 — a provenance string beside any OTHER resolve reason would be read
   // as "this line is gone" plus "a confirmation retired it": two claims, one

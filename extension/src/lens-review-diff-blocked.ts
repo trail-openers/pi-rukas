@@ -13,7 +13,8 @@
  */
 
 import * as dispatchDeck from "./dispatch-deck.ts";
-import { bySeverityCounts, computeVerdict, dedupeFindings } from "./lens-review-format.ts";
+import { bySeverityCounts, computeVerdict } from "./lens-review-format.ts";
+import { mergeLensFindings } from "./lens-review-merge.ts";
 import type { LensRunResult, Severity } from "./lens-review.ts";
 import type { Finding } from "./lens-review.ts";
 import type { RosterEntry } from "./lens-roster.ts";
@@ -86,7 +87,11 @@ export function blockedReviewSummary(
   }
   dispatchDeck.clearBatchEntry(batchKey);
   const all = [...(extraFindings ?? [])];
-  const deduped = dedupeFindings(all, roster);
+  // The same merge the normal path uses — dedup plus the ONE severity-cap pass —
+  // so a HIGH claim about a test file is capped on this exit too. The blocked
+  // path carries only the deterministic claim-scan rows today, but it is a merge
+  // exit like any other and must not be the one shape that skips the cap.
+  const deduped = mergeLensFindings(all, roster);
   return {
     verdict: computeVerdict(deduped, blockRows, threshold),
     totalFindings: deduped.length,

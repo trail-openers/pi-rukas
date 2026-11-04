@@ -36,10 +36,10 @@ import {
   type Verdict,
   bySeverityCounts,
   computeVerdict,
-  dedupeFindings,
   piSkillsDir,
 } from "./lens-review-format.ts";
 import { priorFindingsFor } from "./lens-review-memory.ts";
+import { mergeLensFindings } from "./lens-review-merge.ts";
 import { installBlockRowsForRoster, skillsDirUsable } from "./lens-review-skills.ts";
 import type { Finding, LensRunResult } from "./lens-review-types.ts";
 import { CLAIM_SCAN, type RosterEntry, buildExpectedRoster } from "./lens-roster.ts";
@@ -439,7 +439,14 @@ export async function runLensReview(opts: {
   // indistinguishable downstream from a lens's own — same precedence rules,
   // same threshold, same rendering. They are findings, not a side channel.
   const all = [...lensResults.flatMap((r) => r.findings), ...(opts.extraFindings ?? [])];
-  const deduped = dedupeFindings(all, roster);
+  // The ONE severity-cap pass: after dedup, before the round is recorded, so the
+  // verdict, the counts, the stored rows and anything a later round carries from
+  // them all read the capped severity (lens-severity-rubric.ts).
+  // The merge (dedup by path/line/title + precedence, then the ONE severity-cap
+  // pass): a HIGH on a test path comes down to MEDIUM before anything downstream
+  // reads a severity — the verdict, the counts, the ledger's `hasCritical`, and
+  // the findings-store row a later round carries from (lens-review-merge.ts).
+  const deduped = mergeLensFindings(all, roster);
   // #1105/#1140/#1125 — the round is recorded against the findings memory (the
   // memory seam's `recordRound`, so the round's evidence and its rows come from
   // one store read), accepted rows suppress, unchanged open rows carry, a refused

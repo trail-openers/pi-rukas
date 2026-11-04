@@ -296,6 +296,10 @@ export function applyFindingRound(opts: {
         ...(f.description ? { description: f.description } : {}),
         ...(f.suggestion ? { suggestion: f.suggestion } : {}),
         severity: f.severity,
+        // The cap provenance rides with the row (#1469's both-sites rule): a row
+        // created from a capped finding says so, and a row the cap never touched
+        // carries nothing rather than an own property holding undefined.
+        ...(f.severityCapped ? { severityCapped: f.severityCapped } : {}),
         lens: f.lens,
         ...(f.line ? { line: f.line } : {}),
         ...(id.hasLine ? {} : { noLine: true as const }),
@@ -336,6 +340,10 @@ export function applyFindingRound(opts: {
       // The newest report of the finding is the freshest prose for it.
       ...(f.description ? { description: f.description } : {}),
       ...(f.suggestion ? { suggestion: f.suggestion } : {}),
+      // And the freshest provenance: a row re-reported by a capped finding is a
+      // capped row. Written conditionally for the same reason `line` is — an own
+      // `undefined` still shows up in `Object.keys`.
+      ...(f.severityCapped ? { severityCapped: f.severityCapped } : {}),
     };
     // #1934 AC4 — a row the round RE-REPORTED while it was still retired was
     // reopened by `reopen` below, and a re-report is the strongest form of "the

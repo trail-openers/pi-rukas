@@ -133,6 +133,11 @@ export function applyUntouchedRowFate(opts: UntouchedRowSinks): void {
         carried: true,
         lens: r.lens,
         severity: r.severity,
+        // The cap provenance is kept by the row rather than recomputed from the
+        // path: a row the cap lowered in an earlier round must still read as a
+        // capped row when it comes back, or it arrives looking like a finding the
+        // lens itself called medium.
+        ...(r.severityCapped === undefined ? {} : { severityCapped: r.severityCapped }),
         path: r.path,
         line: r.line,
         // A carried row keeps the marker it stored: it is still a file-level

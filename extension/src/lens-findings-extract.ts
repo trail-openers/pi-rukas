@@ -4,7 +4,6 @@
  * the re-export shim that module used to keep for old importers is gone, so
  * `extractFindings` is now imported from here — its only definition.
  */
-import { capTestFindingSeverity } from "./lens-severity-rubric.ts";
 import type { Severity } from "./lens-review-format.ts";
 import type { Finding } from "./lens-review.ts";
 
@@ -13,6 +12,12 @@ import type { Finding } from "./lens-review.ts";
  * invocation becomes one Finding. No text parsing involved — the schema is
  * validated by Pi inside the child process, so malformed calls never reach
  * this code.
+ *
+ * VALIDATION ONLY. This function decides what is a well-formed finding and
+ * counts the ones that are not (`skipped`); it applies no policy to a finding
+ * it accepted. The severity cap lives on the merge path in lens-review.ts, so
+ * the extraction counter stays a count of malformed calls and nothing else can
+ * hide behind it.
  */
 export function extractFindings(
   toolUses: unknown[],
@@ -36,23 +41,21 @@ export function extractFindings(
       skipped++;
       continue;
     }
-    out.push(
-      capTestFindingSeverity({
-        lens,
-        severity: severity as Severity,
-        path: normalisePath(filePath),
-        // #1469 — a call that omits `line` is a FILE-LEVEL finding, and it used to
-        // arrive as `line: 0`. The round then dropped the falsy 0, so "no line"
-        // was expressible only as a hash coincidence and the fate rule could not
-        // tell a file-level finding from anything else that had lost its line.
-        // Say it explicitly, and keep 0 out of the public Finding shape so the
-        // renderers and dedupe keys never conflate line-less with line-zero.
-        ...(typeof i.line === "number" ? { line: i.line } : {}),
-        title,
-        description: typeof i.description === "string" ? i.description : undefined,
-        suggestion: typeof i.suggestion === "string" ? i.suggestion : undefined,
-      }),
-    );
+    out.push({
+      lens,
+      severity: severity as Severity,
+      path: normalisePath(filePath),
+      // #1469 — a call that omits `line` is a FILE-LEVEL finding, and it used to
+      // arrive as `line: 0`. The round then dropped the falsy 0, so "no line"
+      // was expressible only as a hash coincidence and the fate rule could not
+      // tell a file-level finding from anything else that had lost its line.
+      // Say it explicitly, and keep 0 out of the public Finding shape so the
+      // renderers and dedupe keys never conflate line-less with line-zero.
+      ...(typeof i.line === "number" ? { line: i.line } : {}),
+      title,
+      description: typeof i.description === "string" ? i.description : undefined,
+      suggestion: typeof i.suggestion === "string" ? i.suggestion : undefined,
+    });
   }
   return { findings: out, skipped };
 }
