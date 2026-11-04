@@ -44,6 +44,14 @@ export async function runLensChild(opts: {
   opts: {
     diff: string;
     cwd?: string;
+    /**
+     * #1975 — where THIS child's shell runs, when it differs from `cwd`. A
+     * reviewer child is dispatched into a throwaway detached tree at the
+     * reviewed head (`reviewer-tree.ts`) so its bash experiments cannot touch
+     * the reviewed worktree's files, index, HEAD or branch. Every review READ
+     * still comes from `cwd`; this is only the child's working directory.
+     */
+    childCwd?: string;
     signal?: AbortSignal;
     /** #1024 — headless only: the child leads its own process group. */
     processGroup?: boolean;
@@ -240,7 +248,7 @@ export async function runLensChild(opts: {
       }
       try {
         result = await spawnSpecialist(
-          { role: "code-review-specialist", prompt, cwd: runOpts.cwd, lens: lens.name },
+          { role: "code-review-specialist", prompt, cwd: runOpts.childCwd ?? runOpts.cwd, lens: lens.name },
           {
             runId,
             tag,

@@ -16,6 +16,7 @@ import { buildLedgerNote } from "./adversarial-ledger-note.ts";
 import type { AdversarialLoopParams } from "./adversarial-loop-params.ts";
 import { isToolPathProvenance } from "./adversarial-loop-params.ts";
 import { makeRunPhase } from "./adversarial-phase.ts";
+import { openAdversarialReviewerTree } from "./adversarial-reviewer-isolation.ts";
 import { policyInfraFailureText, reportPolicyError } from "./adversarial-policy.ts";
 import { buildAdversarialPrompt, buildFixPrompt } from "./adversarial-prompts.ts";
 import { onRereadFailure, rereadStalenessNote } from "./adversarial-reread.ts";
@@ -27,6 +28,9 @@ import {
 } from "./adversarial-reviewer-arm.ts";
 import { type RoundReview, roundAfterReread } from "./adversarial-round-state.ts";
 import { createUsageTally } from "./adversarial-usage.ts";
+import { markOrchestrator } from "./async-jobs.ts";
+import { formatReportLine, renderCommentEvidence, roundComments } from "./comment-evidence.ts";
+import type { LostCommentResult } from "./comment-retention.ts";
 import {
   decideLoopAction,
   fixRefusedResult,
@@ -39,9 +43,6 @@ import {
   toRoundRecords,
   workCwdRequiredResult,
 } from "./adversarial-verdict.ts";
-import { markOrchestrator } from "./async-jobs.ts";
-import { formatReportLine, renderCommentEvidence, roundComments } from "./comment-evidence.ts";
-import type { LostCommentResult } from "./comment-retention.ts";
 import { type RangeDiff, computeRangeDiff } from "./review-diff.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
@@ -119,8 +120,8 @@ export async function runAdversarialLoop(
   });
 
   const reportTerminal = params.reportVerdict === "terminal";
-
-  // #1978 — the cause THIS round's reviewer child died of, projected onto the
+  // #1975 — throwaway tree for reviewer children (adversarial-reviewer-isolation).
+  const isolation = await openAdversarialReviewerTree(params);  // #1978 — the cause THIS round's reviewer child died of, projected onto the
   // result this round returns (filter: `projectReviewerKillCause`). ROUND state:
   // cleared before each dispatch and read only by that round's return, so a cause
   // an earlier round died of cannot be stamped on a later round's verdict.
@@ -152,8 +153,8 @@ export async function runAdversarialLoop(
   }
   // #859 — resolve the ref range (used by both the diff and the comment check).
   const range = params.base && params.head ? { base: params.base, head: params.head } : null;
-  // #1360 — the head the CURRENT round reviews: the caller's ref until a fix round
-  // commits, so loop and writer never disagree about the judged commit.
+  // #1360 — the head the CURRENT round reviews: the caller's ref until a fix
+  // round commits, so loop and writer never disagree about the judged commit.
   let headRef: string | undefined = params.head;
   // The diff the CURRENT round reviews and the range its notice may name — ONE
   // value, updated in ONE place (#1816). Set only where this loop ran
@@ -265,7 +266,8 @@ export async function runAdversarialLoop(
   });
 
   const firstRound = params.reportRound ?? 1;
-  for (let round = firstRound; round <= MAX_ROUNDS; round++) {
+  // #1975 — every exit of the body releases the reviewer's tree.
+  const done = await isolation.withRelease(async () => {  for (let round = firstRound; round <= MAX_ROUNDS; round++) {
     if (signal.aborted) break;
     if (round > firstRound && getDiff) {
       // One attempt per round, deliberately: a diff read is deterministic, so a
@@ -336,7 +338,7 @@ export async function runAdversarialLoop(
         // Only non-undefined on the ref-range path; a pasted diff keeps today's prompt.
         diffRange: review.range,
       }),
-      params.workCwd,
+      isolation.cwd(),
       // #1978 — the ladder decides with the SAME classifier the loop reports with.
       { runPhase, accumulate: tally.accumulate, signal, classify: classifyReviewer },
     );
@@ -477,6 +479,8 @@ export async function runAdversarialLoop(
       return ledgerWrite(infraFailureResult(round, "fix", fix, fixCls, infraCtxNow()));
     }
   }
+  });
+  if (done !== undefined) return done;
 
   const last = rounds[rounds.length - 1];
   const commentsLine = await commentsLineNow();
