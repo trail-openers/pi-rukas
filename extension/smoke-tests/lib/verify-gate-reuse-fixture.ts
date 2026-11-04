@@ -80,9 +80,14 @@ export function makeExec(
       }
       return { stdout: "" };
     }
+    // `shell` is the caller's interpreter choice for the STRING form and is
+    // never an execFile option: with `shell` set, execFile joins its argv into
+    // one string for that shell, so the `-c`/`cmd` pair below would run
+    // `sh -c git` (#1981).
+    const { shell, ...rest } = o ?? {};
     const execOpts = {
-      cwd: o?.cwd,
-      maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
+      cwd: rest.cwd,
+      maxBuffer: rest.maxBuffer ?? 8 * 1024 * 1024,
       // Both branches run git for real; without `env` the child inherits the
       // real environ and an inherited `GIT_DIR` retargets it ahead of `cwd`
       // (#1981). A caller that pinned its own env keeps it.
@@ -94,7 +99,7 @@ export function makeExec(
         // The shell branch names its own env: the gate credits only a git/shell
         // call whose own options carry the scrub, and this branch runs the
         // driver’s git reads.
-        : await execFileP("/bin/sh", ["-c", cmd], { ...execOpts, env: execOpts.env });
+        : await execFileP(shell ?? "/bin/sh", ["-c", cmd], { ...execOpts, env: execOpts.env });
       return { stdout };
     } catch (err) {
       const e = err as Error & { stdout?: string; stderr?: string };
@@ -150,9 +155,12 @@ export async function commitAndIdentify(
   await git(wt, ["add", "."]);
   await git(wt, ["commit", "-q", "-m", msg]);
   const treeHash = await verifyTreeId(async (cmd, o) => {
+    // `shell` stays out of execFile's options (see `makeExec`): it names the
+    // interpreter for the string form and would join the argv into one string.
+    const { shell, ...rest } = o ?? {};
     const opts = {
-      cwd: o?.cwd,
-      maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
+      cwd: rest.cwd,
+      maxBuffer: rest.maxBuffer ?? 8 * 1024 * 1024,
       // The tree identity read is a real git pipeline — scrubbed like every
       // other git child here, or it hashes somebody else's repository (#1981).
       env: o?.env ? { ...gitTestEnv(), ...o.env } : gitTestEnv(),
@@ -160,7 +168,7 @@ export async function commitAndIdentify(
     const { stdout } = o?.argv
       ? await execFileP(cmd, o.argv, opts)
       // Named inline for the same reason as `makeExec` above.
-      : await execFileP("/bin/sh", ["-c", cmd], { ...opts, env: opts.env });
+      : await execFileP(shell ?? "/bin/sh", ["-c", cmd], { ...opts, env: opts.env });
     return { stdout };
   }, wt);
   if (treeHash === undefined) throw new Error(`no tree identity for ${wt}`);

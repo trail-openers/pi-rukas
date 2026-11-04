@@ -74,9 +74,14 @@ export function makeExec(
       throw new Error("simulated git read failure");
     }
     try {
+      // `shell` is the caller's interpreter choice for the STRING form and is
+      // never an execFile option: with `shell` set, execFile joins its argv into
+      // one string for that shell, so the `-c`/`cmd` pair below would run
+      // `sh -c git` (#1981).
+      const { shell, ...rest } = o ?? {};
       const opts2 = {
-        cwd: o?.cwd,
-        maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
+        cwd: rest.cwd,
+        maxBuffer: rest.maxBuffer ?? 8 * 1024 * 1024,
         // Real git on both branches: with no `env` the child inherits the real
         // environ and an inherited `GIT_DIR` retargets the read ahead of `cwd`
         // (#1981). A caller that pinned its own env keeps it.
@@ -87,7 +92,7 @@ export function makeExec(
         // The shell branch names its own env: the gate credits only a git/shell
         // call whose own options carry the scrub, and this is the branch that
         // actually runs the driver’s git pipelines.
-        : await execFileP("/bin/sh", ["-c", cmd], { ...opts2, env: opts2.env });
+        : await execFileP(shell ?? "/bin/sh", ["-c", cmd], { ...opts2, env: opts2.env });
       return { stdout };
     } catch (err) {
       const e = err as Error & { stderr?: string; stdout?: string };

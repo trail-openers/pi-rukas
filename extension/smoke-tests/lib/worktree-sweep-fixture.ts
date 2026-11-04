@@ -316,9 +316,12 @@ export function recordingExec(): RecordingExec {
     opts?.env ? { ...gitTestEnv(), ...opts.env } : gitTestEnv();
   const exec: RecordingExec["exec"] = async (cmd, opts) => {
     calls.push({ cmd, cwd: opts?.cwd, argv: opts?.argv });
+    // The string form runs under the CALLER's interpreter when it named one:
+    // `shell` is a spawnSync option, never an argument, so it cannot be folded
+    // into the argv the way an `execFile` call would have done (#1981).
     const r = opts?.argv
       ? spawnSync(cmd, opts.argv, { cwd: opts?.cwd, encoding: "utf8", env: recorderEnv(opts) })
-      : spawnSync("/bin/sh", ["-c", cmd], {
+      : spawnSync(opts?.shell ?? "/bin/sh", ["-c", cmd], {
           cwd: opts?.cwd,
           encoding: "utf8",
           env: recorderEnv(opts),

@@ -24,6 +24,14 @@
  * Shell strings run via `sh -c` (promisify(exec), non-login). Do NOT switch
  * the test executor to a login shell (`-l`): a login shell sources profile
  * files that may `cd`, so a smoke test would silently run git somewhere else.
+ *
+ * `opts.shell` names the interpreter for the string form and is NOT forwarded
+ * to `execFile`: with `shell` set in its options `execFile` joins its argv
+ * into ONE string for that shell, so `execFileP("/bin/sh", ["-c", cmd], { shell })`
+ * runs `sh -c git` and git gets no subcommand — usage on stdout, exit 1
+ * (#1981). The `argv` form has no shell, so `shell` is dropped there too:
+ * forwarding it to an argv `execFile` would hand the same defect to a caller
+ * that passes both.
  */
 
 import { execFile } from "node:child_process";
@@ -54,14 +62,18 @@ export const realExec: VerifyExec = async (cmd, opts) => {
       const groupOpts: ExecOpts = { maxBuffer: 8 * 1024 * 1024, ...opts, env };
       return await execp(cmd, groupOpts);
     }
+    // `shell` is this executor's own routing choice, never an execFile option:
+    // stripped here so neither branch below can hand it to execFile.
+    const { shell, ...fileOpts } = opts ?? {};
     // Both branches run git for real, so both name the scrub in their own text:
     // `test-verify-loop-git-env.ts` credits only a call whose options it can
     // read, and a program name passed as a variable (`execp(cmd, opts)`) hides
     // the whole call from it — which is how an unscrubbed executor survived the
     // first version of this gate.
+    const maxBuffer = 8 * 1024 * 1024;
     return opts?.argv
-      ? await execFileP(cmd, opts.argv, { maxBuffer: 8 * 1024 * 1024, ...opts, env })
-      : await execFileP("/bin/sh", ["-c", cmd], { maxBuffer: 8 * 1024 * 1024, ...opts, env });
+      ? await execFileP(cmd, opts.argv, { maxBuffer, ...fileOpts, env })
+      : await execFileP(shell ?? "/bin/sh", ["-c", cmd], { maxBuffer, ...fileOpts, env });
   } catch (e) {
     // A non-Error rejection (a string, a plain object) cannot carry stdout/stderr
     // properties — wrap it so the assignments below cannot throw a TypeError.

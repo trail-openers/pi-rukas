@@ -25,13 +25,18 @@ const execFileP = promisify(execFile);
  * program directly (no shell), as the production exec does for JSON-free calls.
  */
 export const realExec: ExecFn = async (cmd, o) => {
+  // `shell` is the caller's interpreter choice for the STRING form and is never
+  // an execFile option: with `shell` set, execFile joins its argv into one
+  // string for that shell, so the `-c`/`cmd` pair below would run `sh -c git`
+  // (#1981).
+  const { shell, ...rest } = o ?? {};
   const opts = {
-    cwd: o?.cwd,
-    maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024,
+    cwd: rest.cwd,
+    maxBuffer: rest.maxBuffer ?? 8 * 1024 * 1024,
     // #1396 round 3 — the fixture honours the caller's bound, so a test that
     // asserts a timeout was threaded through is asserting something real about
     // this executor rather than about an ignored option.
-    ...(o?.timeout !== undefined ? { timeout: o.timeout } : {}),
+    ...(rest.timeout !== undefined ? { timeout: rest.timeout } : {}),
     // Both branches run git for real, and `execFile`/`exec` with no `env`
     // inherit the REAL environ on bun: an inherited `GIT_DIR` retargets these
     // calls ahead of `cwd` (#1981). The caller's own env still wins, because a
@@ -43,7 +48,7 @@ export const realExec: ExecFn = async (cmd, o) => {
     // The shell branch names its own env: the gate credits only a git/shell
     // call whose own options carry the scrub, and this branch is the one that
     // runs the driver’s git commands.
-    : await execFileP("/bin/sh", ["-c", cmd], { ...opts, env: opts.env });
+    : await execFileP(shell ?? "/bin/sh", ["-c", cmd], { ...opts, env: opts.env });
   return { stdout };
 };
 
@@ -53,7 +58,7 @@ export const realExec: ExecFn = async (cmd, o) => {
  */
 export const realExecWithStderr = async (
   cmd: string,
-  o?: { cwd?: string; maxBuffer?: number; timeout?: number },
+  o?: { cwd?: string; maxBuffer?: number; timeout?: number; shell?: string },
 ): Promise<{ stdout: string }> => {
   try {
     return await realExec(cmd, o);
