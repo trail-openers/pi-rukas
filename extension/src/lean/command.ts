@@ -219,10 +219,14 @@ export function specifyDeps(headless: boolean): SpecifyDeps {
       spawnSpecialist(spec, {
         writeFence: o.writeFence,
         extraArgs: o.extraArgs,
-        // Forwarded so the ceiling binds the child.
+        // Forwarded so the ceiling binds the child, `budgetTurns` included: it is
+        // the turns ceiling read as the denominator of the #1991 budget-progress
+        // steer, and a seam that forwards the arms key by key must forward that
+        // one too or the child is killed at its ceiling never told where it stood.
         childBoundMs: o.childBoundMs,
         signal: o.signal,
         onProgress: o.onProgress,
+        budgetTurns: o.budgetTurns,
         // The budget's kill goes through `killProcessTree`, which only reaches
         // the child's tool tree when the child leads its own group.
         processGroup: true,

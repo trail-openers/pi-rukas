@@ -9,11 +9,15 @@
  * chance to commit what it had done. The abort is the kill and stays as it is;
  * what was missing is `budgetTurns`, the value the steer counts down.
  *
- * Asserted on the arms `armBudget` hands its dispatch seam, so this file is red
- * on the one spawn option that was missing and green on nothing else.
+ * Asserted on the arms `armBudget` hands its dispatch seam, and on what
+ * `reviewDeps().dispatch` — the seam the fixer is actually spawned through —
+ * hands `spawnSpecialist`. The first half is red when the arms carry no turns
+ * denominator; the second is red when the arms carry one and the spawn does not
+ * receive it, which is the half that killed a real fixer at 401/400 turns.
  */
 
-import { fixPrompt } from "../src/lean/review-deps.ts";
+import { mock } from "bun:test";
+import { fixPrompt, reviewDeps } from "../src/lean/review-deps.ts";
 import { armBudget } from "../src/lean/step-budget.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 
@@ -22,6 +26,11 @@ const { assert, failures } = makeAssert();
 // The ceiling the headless proof run died at, so the number under test is the
 // one a real child was killed by rather than an invented one.
 const REVIEW_TURNS = 400;
+// The build, challenge and specify children ship the same 400-turn ceiling
+// (`config.ts`), and it is the number the build child blew through in the field.
+// The case passes the value in on its own arms, so a default drifting cannot make
+// the assertion below vacuously true.
+const BUILD_TURNS = REVIEW_TURNS;
 {
   const b = armBudget({ turns: REVIEW_TURNS, tokens: 0, minutes: 0 });
   assert(
@@ -88,6 +97,66 @@ const REVIEW_TURNS = 400;
     /name it in your reply and move on/i.test(brief) && /Untouchable/.test(brief),
     "(3) an Untouchable-file or out-of-diff closure is named and skipped, not chased",
   );
+}
+
+// ── (4) THE ARMS REACH THE SPAWN, AT EVERY SEAM THAT NAMES THEM KEY BY KEY.
+//
+// `review-deps.ts`'s `dispatch` is the function that builds the fixer's spawn
+// options, and `build` / `challenge` / `specify` each have their own that does
+// the same for their child. All four name the arms ONE BY ONE rather than
+// spreading them — which is precisely how a key goes missing: the arms carry
+// `budgetTurns`, the seam never names it, the child is killed at its turns
+// ceiling never told where it stood, and every assertion above stays green.
+// `build`'s child is the other observed 401/400 overrun.
+//
+// `spawnSpecialist` is the only thing these seams call, so intercepting it reads
+// what the CHILD was handed rather than what `armBudget` produced. One mock for
+// the whole section: a second `mock.module` for the same specifier does not
+// reliably replace the first, and the site tag on the spec is what keeps the
+// four captures apart.
+{
+  const { buildDeps } = await import("../src/lean/build.ts");
+  const { challengeDeps } = await import("../src/lean/challenge.ts");
+  const { specifyDeps } = await import("../src/lean/command.ts");
+  const seen: { site: string; o: Record<string, unknown> }[] = [];
+  const spawnUrl = new URL("../src/spawn.ts", import.meta.url).href;
+  mock.module(spawnUrl, () => ({
+    spawnSpecialist: (spec: unknown, o: Record<string, unknown> = {}) => {
+      seen.push({ site: String((spec as { prompt?: string }).prompt), o });
+      return Promise.resolve({
+        role: "developer",
+        ok: true,
+        text: "",
+        toolUses: [],
+        ms: 1,
+        exitCode: 0,
+      });
+    },
+    // `review-deps.ts` imports it from the same module the mock replaces.
+    makeRunId: () => "test-run",
+  }));
+  const arms = armBudget({ turns: BUILD_TURNS, tokens: 0, minutes: 0 });
+  const spec = { role: "developer", prompt: "p", cwd: "/wt" };
+  // Arms in, spawn options out — the seam is the only thing between them.
+  await buildDeps(false).dispatch({ ...spec, prompt: "build" }, { ...arms.opts });
+  await challengeDeps(false).dispatch({ ...spec, prompt: "challenge" }, { ...arms.opts });
+  await specifyDeps(false).dispatch({ ...spec, prompt: "specify" }, { ...arms.opts });
+  await reviewDeps(false).dispatch({ ...spec, prompt: "fixer" }, { ...arms.opts });
+  assert(
+    seen.length === 4,
+    `(4) precondition: the four seams each dispatched once (got ${String(seen.length)}, expected 4)`,
+  );
+  for (const site of ["build", "challenge", "specify", "fixer"]) {
+    const captured = seen.find((s) => s.site === site)?.o;
+    assert(
+      captured?.budgetTurns === BUILD_TURNS,
+      `(4) THE ARMS REACH THE SPAWN: the ${site} child's options carried budgetTurns ${String(BUILD_TURNS)} (captured ${String(captured?.budgetTurns)}) — the seam forwards the arms key by key, so a key it does not name is a key the child never has`,
+    );
+    assert(
+      captured?.onProgress === arms.opts.onProgress,
+      `(4) and the ${site} seam still forwards the hook that fires the abort, so this is the same arms object the child is bounded by and not one the case wrote`,
+    );
+  }
 }
 
 process.exit(failures());
