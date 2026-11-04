@@ -59,6 +59,12 @@ export interface ReviewThreshold {
  *   - a project may **tighten** it freely — a stricter answer needs no proof,
  *     since being cautious on someone else's behalf is never the failure mode
  *     worth guarding against
+ *   - **the verified quote decides the severity, not the judge's label.** On
+ *     the `policy-judge` seam a non-passing answer (`forbidden`) is honoured by
+ *     composition with no evidence check at all, so `permitted` is false for a
+ *     perfectly good citation and gating the bar on the label flips it run to
+ *     run. A judge that quotes this repo's own "blocking at HIGH severity and
+ *     above" verbatim has told us the bar, whatever it labelled that sentence.
  *   - the operator's env override beats both, as everywhere else
  */
 export async function resolveReviewThreshold(
@@ -84,27 +90,19 @@ export async function resolveReviewThreshold(
   }
 
   const decision = await askPolicy(judge, REVIEW_THRESHOLD_QUESTION, docs, where);
-  const named = decision.quote ? severityFromQuote(decision.quote) : undefined;
-  if (!decision.permitted || !named) {
+  // The citation, not the label: `quoteVerified` is the seam's own evidence
+  // check, so nothing is read off `quote` unless it survived it — which is also
+  // why a project can only loosen the bar with a citation that verifies.
+  const named =
+    decision.quoteVerified && decision.quote ? severityFromQuote(decision.quote) : undefined;
+  if (!named) {
     return {
       severity: defaultSeverity,
       source: "default",
-      reason: `the documents do not state a blocking severity (${decision.reason}) — using the default ${defaultSeverity}`,
+      reason: `the documents do not verifiably state a blocking severity (${decision.reason}) — using the default ${defaultSeverity}`,
     };
   }
 
-  // A citation that loosens must have survived verification; one that tightens
-  // is honoured either way. `decision.permitted` already implies a verified
-  // quote, so the distinction only matters if that ever changes — state it
-  // explicitly rather than relying on the coupling.
-  const loosens = SEVERITIES.indexOf(named) < SEVERITIES.indexOf(defaultSeverity);
-  if (loosens && !decision.permitted) {
-    return {
-      severity: defaultSeverity,
-      source: "default",
-      reason: `a looser blocking severity (${named}) was claimed but not verifiably cited — keeping ${defaultSeverity}`,
-    };
-  }
   return {
     severity: named,
     quote: decision.quote,
