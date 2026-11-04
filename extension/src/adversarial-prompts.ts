@@ -135,6 +135,22 @@ export function boundedIssueBody(issueBody: string | undefined): string {
     : trimmed;
 }
 
+/** The fixed text of `boundedIssueBody`'s truncation marker — the one marker any
+ * issue block may carry. Declared next to the function that prints it so the
+ * fence cap below and the assertions that count markers name it, not re-type it. */
+export const ISSUE_TRUNCATION_MARKER = "\n…(issue truncated)";
+
+/** `boundedIssueBody`'s text printed behind `fenceText` at a cap that can never
+ * clip its truncation marker: the body's own bound plus the marker's own text
+ * (and the newline it sits on). Every print site of an issue block uses this
+ * renderer, so a block carries ONE marker and a reader never has to guess which
+ * cut it is looking at. */
+export function fencedIssueBody(issueBody: string | undefined): string {
+  const body = boundedIssueBody(issueBody);
+  if (body === "") return "";
+  return fenceText(body, MAX_ISSUE_CHARS + ISSUE_TRUNCATION_MARKER.length + 1);
+}
+
 /**
  * The one renderer that prints an issue body into a brief whose untrusted text
  * is FENCED (the lean review layer, whose `fenceText` keeps a `### heading`
@@ -167,9 +183,7 @@ const FIXER_ISSUE_RULE =
   "Do not apply a finding that contradicts a requirement stated in the issue above — name it in your reply and leave the code the issue asked for.";
 
 export function issueSection(issueBody: string | undefined): string {
-  const body = boundedIssueBody(issueBody);
-  if (body === "") return "";
-  return `\n\n${ISSUE_PROMPT_LEAD} ${ADVERSARIAL_FINDING_RULE}\n\n${body}`;
+  return fencedIssuePromptBlock(issueBody, ADVERSARIAL_FINDING_RULE, fencedIssueBody);
 }
 
 export function buildAdversarialPrompt(opts: {
@@ -264,9 +278,7 @@ export function buildFixPrompt(opts: {
   // developer, so it is disarmed at the print site like every other block that
   // crosses into a child — one `### heading` or a ``` fence inside it would
   // otherwise open a section of this prompt the driver never wrote.
-  const issue = fencedIssuePromptBlock(opts.issueBody, FIXER_ISSUE_RULE, (body) =>
-    fenceText(body, MAX_ISSUE_CHARS + 1),
-  );
+  const issue = fencedIssuePromptBlock(opts.issueBody, FIXER_ISSUE_RULE, fencedIssueBody);
   return `Fix the following adversarial review findings. Original context: ${opts.context}
 Round ${opts.round} fix.
 

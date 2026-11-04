@@ -16,9 +16,9 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DispatchResult } from "../../src/types.ts";
-import type { DriverContext } from "../../src/work-driver-context.ts";
+import type { CycleContext } from "../../src/work-driver-context.ts";
 import { runLensFix } from "../../src/work-driver-lens-fix.ts";
-import { initialState } from "../../src/workflow-state.ts";
+import { initialState, type WorkState } from "../../src/workflow-state.ts";
 import { mkLensSummary } from "../test-helpers.ts";
 import { makeFakePi } from "./lens-fix-bound-land-fixture.ts";
 import { ISSUE_BODY } from "./ticket-issue-fixture.ts";
@@ -100,7 +100,7 @@ export async function captureLensFixPrompts(
   s.pipelineState.branchName = "";
   s.pipelineState.reviewRound = 1;
   s.pipelineState.issueBodyArtifact = cachedArtifact(repoRoot, 2009, opts.body ?? ISSUE_BODY);
-  const log: Record<string, unknown>[] = [
+  const log: WorkState["eventLog"] = [
     {
       kind: "lens-issues-found",
       at: 1_100_000,
@@ -118,7 +118,7 @@ export async function captureLensFixPrompts(
       round: 1,
       worktree: tree,
       evidence: "no committed fix",
-    });
+    } as WorkState["eventLog"][number]);
   }
   const prompts: string[] = [];
   const prevResume = process.env.PI_ENSEMBLE_RESUME;
@@ -146,8 +146,8 @@ export async function captureLensFixPrompts(
           transcriptPath: "/tmp/stub.json",
         } as DispatchResult;
       },
-    } as unknown as DriverContext;
-    await runLensFix(ctx, { ...s, eventLog: log } as never, 1_200_000);
+    } as unknown as CycleContext;
+    await runLensFix(ctx, { ...s, eventLog: log } as WorkState, 1_200_000);
   } finally {
     // `delete`, never `= undefined`: the env-clear gate reads an assigned
     // string "undefined" on Bun, which is a set variable, not a cleared one.
@@ -182,12 +182,12 @@ export async function captureLensContext(opts: {
       seen = a.context ?? "";
       return mkLensSummary({ verdict: "APPROVED" });
     },
-  } as unknown as DriverContext;
+  } as unknown as CycleContext;
   await runLensFromRepo(ctx, s);
   return seen;
 }
 
-async function runLensFromRepo(ctx: DriverContext, s: ReturnType<typeof initialState>) {
+async function runLensFromRepo(ctx: CycleContext, s: ReturnType<typeof initialState>) {
   const { runLens } = await import("../../src/work-driver-lens.ts");
   await runLens(ctx, s, Date.now());
 }

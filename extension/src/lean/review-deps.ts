@@ -27,7 +27,11 @@
  *   review).
  */
 
-import { ADVERSARIAL_FINDING_RULE, fencedIssuePromptBlock } from "../adversarial-prompts.ts";
+import {
+  ADVERSARIAL_FINDING_RULE,
+  fencedIssueBody,
+  fencedIssuePromptBlock,
+} from "../adversarial-prompts.ts";
 import { runAdversarialLoop } from "../adversarial.ts";
 import { execp } from "../exec.ts";
 import type { LensReviewSummary, Severity } from "../lens-review-format.ts";
@@ -36,11 +40,7 @@ import { adversarialChildBoundMs as loopChildBoundMs } from "../review-bounds.ts
 import { resolveLensReviewThreshold } from "../review-threshold-at-base.ts";
 import { lensChildBoundMs } from "../spawn-child-bound.ts";
 import { makeRunId, spawnSpecialist } from "../spawn.ts";
-import {
-  FIXER_DECLINE_RULE,
-  ISSUE_DECLINE_MARKER,
-  fencedIssueBody,
-} from "../work-driver-lens-issue.ts";
+import { FIXER_DECLINE_RULE, ISSUE_DECLINE_MARKER } from "../work-driver-lens-issue.ts";
 import { netGitEnv } from "../work-driver-net-git.ts";
 import { judgePolicy } from "../work-driver-policy.ts";
 import { verifyTimeoutMs } from "../work-driver-verify-develop-helpers.ts";

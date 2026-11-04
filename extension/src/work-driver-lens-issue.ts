@@ -12,10 +12,11 @@
  * a developer brief. The branch's rule for a value crossing into a child's brief
  * is that it is DISARMED AT THE PRINT SITE: one `### heading` inside the body
  * would otherwise open a section of the prompt the driver never wrote, and a
- * ``` fence inside it would close a fence the prompt itself opened. The layer's
- * own fence renderer (`lean/text-fence.ts`, the `fenceText` the carried-findings
- * block already uses) is the one implementation of that rule, so it is the one
- * used here.
+ * ``` fence inside it would close a fence the prompt itself opened. The renderer
+ * that does the disarming (`fencedIssueBody`, which wraps the layer's own
+ * `fenceText`) is owned by `adversarial-prompts.ts`, next to the bound it
+ * protects, so the review side and the adversarial loop cannot bound the same
+ * text differently.
  *
  * ONE truncation marker: the fence is given a cap that cannot cut the body
  * before `boundedIssueBody`'s own `…(issue truncated)` marker has been printed,
@@ -30,27 +31,8 @@
 import {
   ADVERSARIAL_FINDING_RULE,
   ISSUE_PROMPT_LEAD,
-  MAX_ISSUE_CHARS,
-  boundedIssueBody,
+  fencedIssueBody,
 } from "./adversarial-prompts.ts";
-import { fenceText } from "./lean/text-fence.ts";
-
-/** The issue body, trimmed to `MAX_ISSUE_CHARS` with its own truncation marker,
- * then printed behind `fenceText` at a cap that keeps that marker whole. Shared
- * by the review-side block and the fixer's decline rule so the two cannot bound
- * the same text differently. */
-export function fencedIssueBody(issueBody: string | undefined): string {
-  const body = boundedIssueBody(issueBody);
-  if (body === "") return "";
-  // `MAX_ISSUE_CHARS` is the body's own bound, so a cap that also holds the
-  // marker's own text (plus the newline it sits on) can never clip it.
-  return fenceText(body, MAX_ISSUE_CHARS + ISSUE_TRUNCATION_MARKER.length + 1);
-}
-
-/** The fixed text of `boundedIssueBody`'s truncation marker — the one marker any
- * issue block may carry. Exported so the cap above and the test that asserts
- * exactly one marker both name it rather than re-typing it. */
-export const ISSUE_TRUNCATION_MARKER = "\n…(issue truncated)";
 
 /**
  * The issue block for a /work review-side prompt, or `""` when there is no

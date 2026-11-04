@@ -123,8 +123,8 @@ console.log("# lean: both lens passes and the fixer brief carry the issue");
   );
   assert(
     fixBriefs.length === 1 &&
-      fixBriefs[0]?.includes(CONSTRAINT) &&
-      fixBriefs[0]?.includes(ISSUE_DECLINE_MARKER),
+      (fixBriefs[0]?.includes(CONSTRAINT) ?? false) &&
+      (fixBriefs[0]?.includes(ISSUE_DECLINE_MARKER) ?? false),
     "and the fixer the step dispatched received the block and the marker",
   );
 }

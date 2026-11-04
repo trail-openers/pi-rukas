@@ -83,7 +83,7 @@ export async function runReviewStep(issueBody: string): Promise<CapturedBriefs> 
     },
     dispatch: async (spec: DispatchSpec) => {
       fixBriefs.push(spec.prompt);
-      const wt = spec.cwd as string;
+      const wt = spec.cwd ?? "";
       if (existsSync(wt)) {
         fixCounter++;
         const name = `ticket-fix-${String(fixCounter)}.ts`;

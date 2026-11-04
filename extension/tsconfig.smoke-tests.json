@@ -243,6 +243,12 @@
     "smoke-tests/test-budget-progress.ts",
     "smoke-tests/test-budget-progress-arm.ts",
     "smoke-tests/test-budget-progress-delivery.ts",
-    "smoke-tests/test-budget-progress-wiring.ts"
+    "smoke-tests/test-budget-progress-wiring.ts",
+    "smoke-tests/lib/ticket-capture.ts",
+    "smoke-tests/lib/ticket-issue-fixture.ts",
+    "smoke-tests/lib/ticket-prompt-fence.ts",
+    "smoke-tests/lib/lean-review-ticket-fixture.ts",
+    "smoke-tests/test-ticket-aware-review.ts",
+    "smoke-tests/test-ticket-aware-review-lean.ts"
   ]
 }

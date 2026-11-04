@@ -36,7 +36,7 @@ import {
   fencedIssuePromptBlock,
 } from "../src/adversarial-prompts.ts";
 import type { DispatchResult } from "../src/types.ts";
-import type { DriverContext } from "../src/work-driver-context.ts";
+import type { CycleContext } from "../src/work-driver-context.ts";
 import { FIXER_DECLINE_RULE, ISSUE_DECLINE_MARKER } from "../src/work-driver-lens-issue.ts";
 import { initialState } from "../src/workflow-state.ts";
 import { makeFakePi } from "./lib/lens-fix-bound-land-fixture.ts";
@@ -272,7 +272,7 @@ console.log("# the adversarial reviewer is shown the body, not the file path");
         exitCode: 0,
         transcriptPath: "/tmp/stub.json",
       }) as DispatchResult,
-  } as unknown as DriverContext;
+  } as unknown as CycleContext;
   const { runAdversarial } = await import("../src/work-driver-adversarial.ts");
   const after = await runAdversarial(ctx, s, Date.now());
   assert(
@@ -300,6 +300,41 @@ console.log("# the adversarial reviewer is shown the body, not the file path");
     prompt.includes(CONSTRAINT) && /NOT a finding/.test(prompt),
     "the adversarial reviewer's prompt carries the block and the not-a-finding rule",
   );
+  // The reviewer is READ-only, but the brief is still a prompt a body the
+  // author typed becomes structure in: the same disarm the fixer's copy gets,
+  // asserted on the reviewer's own string, with the same non-vacuity pair.
+  const reviewerInj = buildAdversarialPrompt({
+    diff: "d",
+    context: "c",
+    round: 1,
+    maxRounds: 3,
+    issueBody: INJECT_BODY,
+  });
+  assert(
+    reviewerInj.includes("### INJECT"),
+    "non-vacuity: the injected heading reached the reviewer's brief at all",
+  );
+  assert(
+    insidePromptFence(reviewerInj, "### INJECT"),
+    "the reviewer's copy of the body begins a line of the brief in no place but inside a fence the prompt opened",
+  );
+  const reviewerFences = reviewerInj.match(/^```/gm) ?? [];
+  assert(
+    reviewerFences.length % 2 === 0 && reviewerFences.length >= 2,
+    `and the reviewer's prompt opens and closes its own fences (saw ${String(reviewerFences.length)})`,
+  );
+  const reviewerBig = buildAdversarialPrompt({
+    diff: "d",
+    context: "c",
+    round: 1,
+    maxRounds: 3,
+    issueBody: OVER_BODY,
+  });
+  assert(
+    (reviewerBig.match(/…\(issue truncated\)/g) ?? []).length === 1 &&
+      !/\[truncated at /.test(reviewerBig),
+    "an over-cap body in the reviewer's prompt shows exactly one marker, the prompt layer's own",
+  );
   const fixPromptBuilt = buildFixPrompt({
     findings: "1. reword the exception message",
     context: "/work issue #2009",
@@ -313,9 +348,7 @@ console.log("# the adversarial reviewer is shown the body, not the file path");
   );
   // The fixer is WRITE-capable, so its copy of the body is disarmed at the print
   // site exactly as the lens and lens-fix briefs disarm theirs. The adversarial
-  // REVIEWER's prompt prints the body unfenced (`issueSection`) — a read-only
-  // brief — so these three assertions are the fixer's own, and the reviewer's
-  // prompt is asserted separately above.
+  // REVIEWER's prompt carries the same assertions below, on its own string.
   const inj = buildFixPrompt({
     findings: "1. f",
     context: "c",
@@ -330,6 +363,42 @@ console.log("# the adversarial reviewer is shown the body, not the file path");
   assert(
     insidePromptFence(inj, "### INJECT"),
     "and it begins a line of the brief in no place but inside a fence the prompt opened",
+  );
+  // ONE marker, one meaning. The body is past `MAX_ISSUE_CHARS`, so the block
+  // must show exactly the prompt layer's `…(issue truncated)` and never the
+  // fence's own `[truncated at N characters]` on top of it — the double cut the
+  // old `MAX_ISSUE_CHARS + 1` cap produced, which clipped the first marker away
+  // and left the reader a differently worded one.
+  const overCap = `${"filler word ".repeat(520)}\n${CONSTRAINT}`;
+  const bigFix = buildFixPrompt({
+    findings: "1. f",
+    context: "c",
+    diff: "d",
+    round: 1,
+    issueBody: overCap,
+  });
+  assert(
+    overCap.length > 6000 &&
+      (bigFix.match(/…\(issue truncated\)/g) ?? []).length === 1 &&
+      !/\[truncated at /.test(bigFix),
+    `an over-cap body (here ${String(overCap.length)} chars) reaches the fixer's brief with exactly one truncation marker, the prompt layer's own`,
+  );
+  // Non-vacuity for that assertion, in the other direction: a body just INSIDE
+  // the bound must arrive whole. A cap short enough to clip the payload would
+  // satisfy the assertion above off a body nobody could have read.
+  const justUnder = `${"filler word ".repeat(497)}\nTAIL-SENTINEL keep me`;
+  const wholeFix = buildFixPrompt({
+    findings: "1. f",
+    context: "c",
+    diff: "d",
+    round: 1,
+    issueBody: justUnder,
+  });
+  assert(
+    justUnder.length < 6000 &&
+      wholeFix.includes("TAIL-SENTINEL keep me") &&
+      !/…\(issue truncated\)/.test(wholeFix),
+    "and a body just under the bound reaches the fixer's brief whole, with no marker at all (so the marker above is a bound that fired, not a renderer that always prints one)",
   );
   // Non-vacuity: the fence IS the change. The same body printed through the
   // layer's unbounded renderer (what the unfenced arm used) opens a section.
