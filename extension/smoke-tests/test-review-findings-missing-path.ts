@@ -75,6 +75,11 @@ const common = {
   // row this test is about is exactly the row #1125 discounts, which is why
   // round 1 asserts it is recorded AND advisory.
   base: c0,
+  // What this suite is about is the finding's PATH, not the bar: its rows are
+  // stamped MEDIUM, which the shipped HIGH default would only disclose, so
+  // without this bar the blocking assertions would test the default instead of
+  // the store. `test-review-bar.ts` is where the default is pinned.
+  threshold: "MEDIUM",
 };
 
 try {

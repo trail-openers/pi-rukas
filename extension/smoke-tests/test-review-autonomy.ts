@@ -209,6 +209,11 @@ async function autonomyScenarios() {
         // Whole-branch each time: the automatic delta base (#973) would narrow
         // rounds 2+ to a fix commit these scenarios never make.
         full: true,
+        // The split under test is about WHERE a finding sits, not how high the
+        // bar is: the control is a MEDIUM, which the shipped HIGH default would
+        // merely disclose, so the run states the bar the control needs. The
+        // default itself is pinned in `test-review-bar.ts`.
+        threshold: "MEDIUM",
       });
     const seed = (rows: Parameters<typeof seedFindings>[2]) =>
       seedFindings(storeFileOf(ledgerFile()), TARGET.headBranch, rows);

@@ -9,8 +9,8 @@
  * loudly in both instead of leaving one asserting a quote that no longer
  * exists in the doctrine.
  */
-import type { Finding } from "../src/lens-review.ts";
-import type { DoctrineDoc } from "../src/work-driver-policy.ts";
+import type { Finding } from "../../src/lens-review-types.ts";
+import type { DoctrineDoc } from "../../src/work-driver-policy.ts";
 
 let failed = 0;
 
