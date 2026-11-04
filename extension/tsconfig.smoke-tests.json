@@ -238,6 +238,11 @@
     "smoke-tests/lib/lean-build-asserts.ts",
     "smoke-tests/lib/lean-build-artifacts.ts",
     "smoke-tests/test-lean-state-outcome.ts",
-    "smoke-tests/test-lean-state-base.ts"
+    "smoke-tests/test-lean-state-base.ts",
+    "smoke-tests/lib/budget-progress-harness.ts",
+    "smoke-tests/test-budget-progress.ts",
+    "smoke-tests/test-budget-progress-arm.ts",
+    "smoke-tests/test-budget-progress-delivery.ts",
+    "smoke-tests/test-budget-progress-wiring.ts"
   ]
 }

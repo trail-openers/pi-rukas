@@ -26,6 +26,8 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { clearJobsForTesting } from "../src/async-jobs.ts";
 import {
   MAX_MINUTES_DESCRIPTION,
   MAX_TURNS_DESCRIPTION,
@@ -34,6 +36,7 @@ import {
   parseMaxMinutes,
   parseMaxTurns,
 } from "../src/dispatch-budget-params.ts";
+import { registerDispatchTools } from "../src/dispatch.ts";
 import { childBoundGraceMs, childBoundSchedule } from "../src/spawn-child-bound.ts";
 import { spawnBackstopMs } from "../src/spawn-support.ts";
 
@@ -57,6 +60,105 @@ function eq(actual: unknown, expected: unknown, msg: string): void {
 
 const SRC = join(import.meta.dirname, "..", "src");
 
+// ── AC5: a bound the child could never honour is refused at the boundary ──
+//
+// `undefined` alone means "no bound". Everything else must be a whole number
+// inside the range, and the refusal has to NAME the range: a model that gets
+// back "invalid maxMinutes" guesses, and a guess costs another dispatch. The
+// table pins both halves of that on the parsers, then the `execute` block
+// below pins that the refusal happens before either tool has a job to leak.
+{
+  const refused: Array<[string, unknown, (v: unknown) => unknown]> = [
+    ["maxTurns", 0, parseMaxTurns],
+    ["maxTurns", MAX_TURNS_LIMIT + 1, parseMaxTurns],
+    ["maxTurns", 1.5, parseMaxTurns],
+    ["maxTurns", "20", parseMaxTurns],
+    ["maxMinutes", 0, parseMaxMinutes],
+    ["maxMinutes", maxMinutesLimit() + 1, parseMaxMinutes],
+    ["maxMinutes", -1, parseMaxMinutes],
+    ["maxMinutes", "60", parseMaxMinutes],
+  ];
+  for (const [name, value, parse] of refused) {
+    let message = "";
+    try {
+      parse(value);
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    assert(
+      message.startsWith(name) && message.includes("between 1 and"),
+      `${name} ${JSON.stringify(value)} refused with the range in the message (${message || "DID NOT THROW"})`,
+    );
+  }
+  eq(parseMaxTurns(1), 1, "maxTurns 1 (the floor) is accepted");
+  eq(parseMaxTurns(MAX_TURNS_LIMIT), MAX_TURNS_LIMIT, "maxTurns at its ceiling is accepted");
+  eq(parseMaxMinutes(1), 60_000, "maxMinutes 1 (the floor) becomes one minute of childBoundMs");
+  eq(
+    parseMaxMinutes(maxMinutesLimit()),
+    maxMinutesLimit() * 60_000,
+    "maxMinutes at its ceiling is accepted — the ceiling is derived from the backstop, so a bound that could never end the child is the ONLY thing past it",
+  );
+}
+
+// The parsers refusing is not enough: the refusal must come out of `execute`,
+// before the job exists. A tool that parses the bound AFTER startJob leaves a
+// job in the registry whose child got no bound — the PM believes it armed one,
+// which is the exact failure this parameter exists to remove. `execute` also
+// has to reach the parse for EVERY member of a batch, or a bad member only
+// surfaces once its siblings have spawned. The tools' `cwd` is outside every
+// live cycle and no /work runs in this process, so nothing is refused for any
+// other reason and the messages below can only be the budget's. The accepted
+// dispatch at the end is settled with `clearJobsForTesting` (which aborts the
+// job) so the suite never exits with a real Pi child running behind it.
+{
+  const tools: Array<{
+    name: string;
+    execute: (id: string, raw: unknown) => Promise<unknown>;
+  }> = [];
+  // biome-ignore lint/suspicious/noExplicitAny: testing seam — the minimum shape the tools need.
+  const pi: any = {
+    registerTool: (t: unknown) => tools.push(t as never),
+    sendUserMessage: () => {},
+  };
+  registerDispatchTools(pi as ExtensionAPI);
+  const tool = (name: string) => {
+    const t = tools.find((x) => x.name === name);
+    if (!t) throw new Error(`${name} not registered`);
+    return t;
+  };
+  const refusal = (name: string, raw: unknown): Promise<string> =>
+    tool(name)
+      .execute("t", raw)
+      .then(
+        () => "",
+        (err: Error) => err.message,
+      );
+  const ok = { role: "explore", prompt: "read one file", cwd: "/repo" };
+  for (const [key, value] of [
+    ["maxTurns", MAX_TURNS_LIMIT + 1],
+    ["maxMinutes", 1.5],
+    ["maxMinutes", maxMinutesLimit() + 1],
+  ] as const) {
+    const single = await refusal("dispatch_specialist", { ...ok, [key]: value });
+    assert(
+      single.includes(key) && single.includes("between 1 and"),
+      `dispatch_specialist refuses ${key} ${JSON.stringify(value)} through execute (${single || "RETURNED"})`,
+    );
+    const batch = await refusal("dispatch_parallel", {
+      specs: [ok, { ...ok, [key]: value }],
+    });
+    assert(
+      batch.includes(key) && batch.includes("between 1 and"),
+      `dispatch_parallel refuses a batch carrying ${key} ${JSON.stringify(value)} through execute (${batch || "RETURNED"})`,
+    );
+  }
+  eq(
+    await refusal("dispatch_specialist", { ...ok, maxTurns: 40, maxMinutes: 30 }),
+    "",
+    "an in-range bound is accepted by execute — the refusal above is the bounds', not the tool's",
+  );
+  clearJobsForTesting();
+}
 
 // Both tools must state the same rule, parse every spec of a parallel batch
 // rather than only the first, and hand the parsed values (never the raw ones)
@@ -146,7 +248,8 @@ const SRC = join(import.meta.dirname, "..", "src");
     "that one schedule is asked from the single graceMs and the spawn's own start",
   );
   assert(
-    /graceMs,\s*\n\s*schedule,/.test(armSource) && /budgetProgressClock\(\s*schedule,\s*o\.start\s*\)/.test(armSource),
+    /graceMs,\s*\n\s*schedule,/.test(armSource) &&
+      /budgetProgressClock\(\s*schedule,\s*o\.start\s*\)/.test(armSource),
     "the SAME schedule object goes to `armChildBound`'s timers and to the progress clock",
   );
 }

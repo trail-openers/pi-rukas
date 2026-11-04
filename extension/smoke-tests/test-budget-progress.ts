@@ -88,7 +88,13 @@ function harness(opts: Partial<BudgetProgressOpts> & { role?: string } = {}) {
     role: opts.role ?? "developer",
     commits: opts.commits ?? false,
     stdin,
-    onSteer: opts.onSteer === null ? undefined : (text, source) => steers.push({ text, source }),
+    onSteer:
+      opts.onSteer === null
+        ? undefined
+        : (text, source) => {
+            steers.push({ text, source });
+            return true;
+          },
     ...(opts.turns === undefined ? {} : { turns: opts.turns }),
     ...(opts.clock === undefined ? {} : { clock: opts.clock }),
     ...(opts.boundArmed === undefined ? {} : { boundArmed: opts.boundArmed }),
@@ -105,12 +111,13 @@ function harness(opts: Partial<BudgetProgressOpts> & { role?: string } = {}) {
   eq(steers.length, 0, "N=40: no steer before turn 20 (turn 19 is under ceil(0.5·40))");
   steer.onAssistantTurn(20, Date.now());
   eq(steers.length, 1, "N=40: the half steer fires at turn 20");
+  const half = steers[0];
   assert(
-    steers[0].text.includes("turn 20 of 40"),
+    !!half?.text.includes("turn 20 of 40"),
     `the half steer names turns used and the limit (${steers[0]?.text})`,
   );
   assert(
-    !steers[0].text.toLowerCase().includes("commit"),
+    !!half && !half.text.toLowerCase().includes("commit"),
     "the half steer reports position only — no instruction to stop",
   );
   for (let t = 21; t < 32; t++) steer.onAssistantTurn(t, Date.now());
