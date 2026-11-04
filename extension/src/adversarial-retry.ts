@@ -36,6 +36,14 @@ export interface RetryCtx {
   signal: AbortSignal;
   /** Injected in tests so a provider-stated wait does not really elapse. */
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  /**
+   * The classifier the ladder decides with. It must be the SAME function the
+   * caller reports with: this call is what picks `maxRetries`, so a kill the
+   * caller recognises as terminal and the ladder still reads as `crashed`
+   * re-spawns the same phase into the same bound. Defaults to
+   * {@link classifyDispatchOutcome}.
+   */
+  classify?: (r: DispatchResult) => ReturnType<typeof classifyDispatchOutcome>;
 }
 
 export interface InfraCtx {
@@ -60,9 +68,10 @@ export const runPhaseWithInfraRetry = async (
   c: RetryCtx,
 ): Promise<DispatchResult> => {
   const phaseStart = Date.now();
+  const classify = c.classify ?? classifyDispatchOutcome;
   let current = await c.runPhase(role, tag, prompt, cwd);
   c.accumulate(current);
-  let cls = classifyDispatchOutcome(current);
+  let cls = classify(current);
   if (cls.cause === "success" || c.signal.aborted) return current;
   if (!cls.shouldRetry || cls.maxRetries === 0) return current;
 
@@ -81,7 +90,7 @@ export const runPhaseWithInfraRetry = async (
       cwd,
     );
     c.accumulate(retry);
-    cls = classifyDispatchOutcome(retry);
+    cls = classify(retry);
     if (cls.cause === "success") return retry;
     if (!cls.shouldRetry) return retry; // cause changed (e.g. severance → self-kill)
     // #79 — two children in a row severed on the identical provider error

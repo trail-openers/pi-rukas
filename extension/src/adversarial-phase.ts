@@ -15,6 +15,7 @@ import { setOrchestratorActiveChild } from "./async-jobs.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import { type SteerSource, steerChild } from "./dispatch-steer.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
+import type { RunningState } from "./progress.ts";
 import { adversarialChildBoundMs, isReviewerRole } from "./review-bounds.ts";
 import { type OnSlowCallback, feedSlowProgress, watchSlowDispatch } from "./slow-notice.ts";
 import { spawnSpecialist } from "./spawn.ts";
@@ -27,13 +28,8 @@ export type RunPhase = (
   cwd?: string,
 ) => Promise<DispatchResult>;
 
-/**
- * Run one phase, threading dispatch-deck lifecycle and onProgress so the deck
- * shows whichever phase is running now. Also registers the inner spawn as the
- * orchestrator's `activeChild` so PM can `dispatch_peek` / `dispatch_steer`
- * against the loop's jobId and reach the currently-running inner child.
- */
-export function makeRunPhase(opts: {
+/** `makeRunPhase`'s options, declared apart so the function below is the flow. */
+export type RunPhaseOpts = {
   runId: string;
   signal: AbortSignal;
   orchestratorJobId: string;
@@ -45,8 +41,37 @@ export function makeRunPhase(opts: {
   onSlow?: OnSlowCallback;
   /** The parent pi for the slow-run watch (the PM notice half). */
   pi?: ExtensionAPI;
-}): RunPhase {
-  const { runId, signal, orchestratorJobId, processGroup, workCycleTrust } = opts;
+  /**
+   * #1978 — the step's budget arms, the three fields of `AdversarialLoopParams`
+   * with these same names, forwarded verbatim by the loop. Read ONLY inside the
+   * reviewer branch, so the fix-pass arm takes none of them: `childBoundMs` can
+   * only tighten `adversarialChildBoundMs()`, `budgetSignal` joins the reviewer
+   * child's abort, and `onProgress` composes with the deck / slow-run feed.
+   * `budgetSignal` is named apart from {@link RunPhaseOpts.signal} because the
+   * loop's own abort and the step's budget arms are two different clocks.
+   */
+  childBoundMs?: number;
+  budgetSignal?: AbortSignal;
+  onProgress?: (state: RunningState) => void;
+};
+
+/**
+ * Run one phase, threading dispatch-deck lifecycle and onProgress so the deck
+ * shows whichever phase is running now. Also registers the inner spawn as the
+ * orchestrator's `activeChild` so PM can `dispatch_peek` / `dispatch_steer`
+ * against the loop's jobId and reach the currently-running inner child.
+ */
+export function makeRunPhase(opts: RunPhaseOpts): RunPhase {
+  const {
+    runId,
+    signal,
+    orchestratorJobId,
+    processGroup,
+    workCycleTrust,
+    childBoundMs: budgetChildBoundMs,
+    budgetSignal,
+    onProgress: onBudgetProgress,
+  } = opts;
   return async (role, tag, prompt, cwd) => {
     const deckKey = `${runId}/${tag}`;
     const label = `${role}[${tag}]`;
@@ -73,6 +98,31 @@ export function makeRunPhase(opts: {
     // This child's own abort, so dispatch_kill <deckKey> can stop a hung
     // round — the driver passes a loop signal that nothing ever aborts.
     const kill = new AbortController();
+    // #1978 — the step's budget abort ends THIS child too: `armBudget`'s turns /
+    // tokens hook aborts its own controller, and without this listener that
+    // abort reached nothing, which is the half of the bug that let a reviewer
+    // run past `budgets.review.turns`.
+    //
+    // A budget that had ALREADY fired buys no reviewer child at all. The child
+    // would see a signal aborted before it started, and an aborted child can
+    // still come back `ok:true` carrying the verdict it had already printed —
+    // so the gate read "no kill cause, VERDICT: APPROVED" as a clean pass and
+    // merged a head the operator's ceiling had stopped.
+    //
+    // The refusal lives HERE and not as a pre-dispatch `break` in the loop, and
+    // `ok:false` with a cause is what makes the false approval impossible: the
+    // loop's break falls through to the exhausted-rounds tail, which speaks
+    // `rejected` with the previous round's findings — a verdict nobody spoke,
+    // which the gate routes into a fix wave. A returned kill cause travels
+    // through the SAME shape a real kill travels: `failedByKill` refuses the
+    // child's verdict, the loop's classifier ends the round, and the step names
+    // the lever. `child-bound` is the cause the step's arms read as a minutes
+    // breach; the turns / tokens levers, which leave no cause of their own, are
+    // covered by the fallback in `armBudget`'s reader.
+    const budgetAlreadyFired = budgetSignal?.aborted === true;
+    const onBudgetAbort = () => kill.abort();
+    if (budgetAlreadyFired) kill.abort();
+    else budgetSignal?.addEventListener("abort", onBudgetAbort, { once: true });
     // #1827 — set true by the spawn the first time one of the reviewer's
     // killing bounds (the re-read kill, the post-verdict stop) arms.
     let boundArmed = false;
@@ -89,6 +139,20 @@ export function makeRunPhase(opts: {
       // observable in the lifecycle. The bound clamps to the cycle deadline
       // inside `armChildBound`, as every sibling bound does.
       const reviewer = isReviewerRole(role);
+      if (reviewer && budgetAlreadyFired) {
+        // The shape `spawn.ts` leaves on a child the caller's clock ended: no
+        // output, no exit (nothing ran), and the cause the step's budget reader
+        // consults. `ok` is false by `failedByKill`'s own rule.
+        return {
+          role,
+          ok: false,
+          text: "",
+          toolUses: [],
+          ms: 0,
+          exitCode: null,
+          killCause: "child-bound",
+        };
+      }
       return await spawnSpecialist(
         { role, prompt, cwd },
         {
@@ -99,13 +163,17 @@ export function makeRunPhase(opts: {
           tag,
           ...(reviewer
             ? {
-                childBoundMs: adversarialChildBoundMs(),
-                // #1827 round 4 — OPT IN to the post-verdict stop. Only this
-                // dispatch speaks the `VERDICT_STATUSES` protocol: the plan gap
-                // gate spawns the same role with `READY / NEEDS_ITERATION`, and
-                // the re-read cap stays role-keyed. Set here (beside the skill
-                // path, which this caller also supplies) so the bound and the
-                // protocol it reads cannot drift apart from the caller.
+                // #1978 — a budget may only TIGHTEN the wall clock, never lengthen
+                // it: the operator's knob stays the single source of the default.
+                childBoundMs: Math.min(
+                  budgetChildBoundMs ?? Number.POSITIVE_INFINITY,
+                  adversarialChildBoundMs(),
+                ),
+                // #1827 round 4 — OPT IN to the post-verdict stop: only this
+                // dispatch speaks the `VERDICT_STATUSES` protocol (the plan gap
+                // gate spawns the same role with `READY / NEEDS_ITERATION`). Set
+                // beside the skill path so the bound and the protocol it reads
+                // cannot drift apart from the caller.
                 verdictStop: true,
                 // The bound's wrap-up steer and the re-read cap's steer both
                 // reach this child through the driver's steer seam (dispatch.ts
@@ -126,6 +194,10 @@ export function makeRunPhase(opts: {
           onProgress: (state) => {
             dispatchDeck.updateEntry(deckKey, state);
             feedSlowProgress(deckKey, state);
+            // #1978 — COMPOSED, not substituted: the deck row and the slow-run
+            // watch read this same feed, so replacing it with the budget's hook
+            // would silently lose both while arming the turns/tokens lever.
+            onBudgetProgress?.(state);
           },
           onRawEvent: stopSlow.onRawEvent ?? slowRaw,
           onStdin: (stdin) => {
@@ -145,6 +217,7 @@ export function makeRunPhase(opts: {
       );
     } finally {
       signal.removeEventListener("abort", onLoopAbort);
+      budgetSignal?.removeEventListener("abort", onBudgetAbort);
       stopSlow.stop();
       dispatchDeck.clearEntry(deckKey);
       childHandles.delete(deckKey);
