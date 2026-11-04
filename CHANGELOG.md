@@ -8,6 +8,14 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.50](https://github.com/trail-openers/pi-rukas/compare/v0.14.49...v0.14.50) (2026-11-04)
+
+
+### Bug Fixes
+
+* **review:** default the blocking bar to HIGH when the project states none ([#2013](https://github.com/trail-openers/pi-rukas/issues/2013)) ([7c13ccb](https://github.com/trail-openers/pi-rukas/commit/7c13ccb7ff8e8e7800307b26025270d69d7bdf59))
+* **review:** require evidence of real harm for HIGH lens findings ([#2014](https://github.com/trail-openers/pi-rukas/issues/2014)) ([1521054](https://github.com/trail-openers/pi-rukas/commit/152105473b4ffb3b75385734d3ff3b1f4c7fefa7))
+
 ## [0.14.49](https://github.com/trail-openers/pi-rukas/compare/v0.14.48...v0.14.49) (2026-11-04)
 
 
