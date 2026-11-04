@@ -153,6 +153,11 @@ export function reviewDeps(headless: boolean): ReviewDeps {
         // are MEDIUM reads as ISSUES_FOUND, so this step buys a fixer for
         // findings the project said are disclosable rather than blocking.
         ...(a.threshold === undefined ? {} : { threshold: a.threshold }),
+        // The test-only lens-child seam (see `ReviewDeps.lensChildFn`): set it and
+        // the real engine fans out over the test's children instead of Pi ones.
+        ...(deps.lensChildFn === undefined
+          ? {}
+          : { lensChildFn: deps.lensChildFn }),
         ...arms,
         ...leanChildOpts(a.headless),
       });
@@ -184,6 +189,15 @@ export function reviewDeps(headless: boolean): ReviewDeps {
         // APPROVED for both. Dropping it here is what would let the empty-delta
         // outcome read as a clean review.
         ...(summary.noReview === true ? { noReview: true } : {}),
+        // The range the round RANGED OVER. The step's own claim is not evidence of
+        // it: `assertRangedOverTheFix` compares the step's `since`/`head` against
+        // THIS field, so dropping it here is what makes a scoped re-review
+        // indistinguishable from a whole-branch one — the guard refuses the round
+        // and the run hands back. Carried only when the layer set it: a full review
+        // has no delta to name, and an invented stamp would be a lie about a range.
+        ...(summary.deltaReview === undefined
+          ? {}
+          : { deltaReview: summary.deltaReview }),
         // The disclosure the round owed and may not have made. `runLensReview`
         // posts it itself for an ISSUES_FOUND round and reports a failed post
         // here, so this step adds nothing and only carries the reason to the

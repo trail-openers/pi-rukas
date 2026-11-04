@@ -244,4 +244,12 @@ export interface ReviewDeps {
    * `runLensReview` was wrong. Production never sets this.
    */
   lensEngine?: typeof runLensReview;
+  /**
+   * The per-lens child runner, threaded to `runLensReview` as its `lensChildFn`
+   * (lens-review.ts). Test-only, for the same reason as `lensEngine` and with the
+   * opposite grain: this one lets a test drive the REAL engine — the real diff
+   * resolution, delta decision and summary — with only the six model children
+   * stubbed. Production never sets it and gets the layer's own `runLensChild`.
+   */
+  lensChildFn?: typeof import("../lens-review-child.ts").runLensChild;
 }
