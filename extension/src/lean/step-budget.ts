@@ -27,11 +27,21 @@ export interface BudgetFired {
   used: number;
 }
 
-/** The three arms a dispatch accepts, a subset of `SpawnOptions`. */
+/**
+ * The arms a dispatch accepts, a subset of `SpawnOptions`.
+ *
+ * `budgetTurns` is the turns ceiling in its OWN field, not just an effect of
+ * the abort: `armChildBounds` reads it as the denominator of the #1991
+ * budget-progress steer, so the child is told "turn 20 of 40" and can close out
+ * — commit what it has — before the `signal` below ends it. A step that armed
+ * turns only through the abort killed a fixer at its ceiling with nothing
+ * committed and nothing said to it.
+ */
 export interface BudgetOpts {
   childBoundMs?: number;
   signal?: AbortSignal;
   onProgress?: (s: RunningState) => void;
+  budgetTurns?: number;
 }
 
 /**
@@ -299,6 +309,10 @@ export function armBudget(b: Budget | undefined): BudgetArms {
       ...(boundMs === undefined ? {} : { childBoundMs: boundMs }),
       signal: controller.signal,
       onProgress,
+      // The steer's denominator, present only when a turns ceiling exists: a
+      // tokens-only budget has no turns to count down to, and `armChildBounds`
+      // reads `<= 0` as no turns lever.
+      ...(turns > 0 ? { budgetTurns: turns } : {}),
     },
     fired,
     ...(inert === undefined ? {} : { warning: inert }),

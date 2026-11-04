@@ -494,4 +494,6 @@ function progress(over: Partial<RunningState>): RunningState {
   );
 }
 
+// The turns ceiling reaching the spawn is `test-lean-budget-turns-steer.ts`.
+
 process.exit(exit);

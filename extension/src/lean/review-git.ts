@@ -186,9 +186,12 @@ async function runFixer(
             `lean-${String(opts.issue)}`,
           ),
         },
-        // The step's budget's other arms: the abort the turns/tokens levers fire
-        // and the progress hook that fires it. `childBoundMs` is the one arm taken
-        // out above, so the spread cannot re-supply it.
+        // The step's budget's other arms: the abort the turns/tokens levers fire,
+        // the progress hook that fires it, AND `budgetTurns` — the same turns
+        // ceiling read as the denominator of the #1991 budget-progress steer, so
+        // the fixer is told where it stands and commits before the abort lands.
+        // `childBoundMs` is the one arm taken out above, so the spread cannot
+        // re-supply it.
         ...arms,
       },
     );
