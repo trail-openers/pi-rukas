@@ -35,6 +35,25 @@ import { type Outcome, type Step, createRun } from "../../src/lean/state.ts";
 import type { VerifyDeps } from "../../src/lean/verify.ts";
 import { gitTestEnv } from "./git-test-env.ts";
 import {
+  DETACH_TIER,
+  HANG_TIER,
+  PASS_TIER,
+  failTier,
+  flakeTier,
+  killOnSecondTier,
+  writeTier,
+} from "./lean-verify-tiers.ts";
+export {
+  DETACH_TIER,
+  HANG_TIER,
+  PASS_TIER,
+  failTier,
+  flakeTier,
+  killOnSecondTier,
+  writeTier,
+} from "./lean-verify-tiers.ts";
+import { type Fixture, provisionHookedTree } from "./lean-verify-hook-tree.ts";
+import {
   type VerifyOpts,
   type VerifyRun,
   canonicalProbeDir,
@@ -80,38 +99,6 @@ const RED_BASE_TEST = '#!/bin/sh\necho "not ok" 1>&2\nexit 1\n';
 /** The one acceptance-test path the fixture freezes, and the baseline probe judges. */
 const FROZEN_FILE = "tests/AC1-retry.test.sh";
 
-/** A tier command that succeeds. */
-export const PASS_TIER = "true";
-/** A tier command that fails loudly, so a red reason has a tail worth naming. */
-export function failTier(marker: string): string {
-  return `sh -c 'echo tier-said-${marker} 1>&2; exit 1'`;
-}
-/** A tier that outlives any bound a test can wait for. */
-export const HANG_TIER = "sleep 60";
-/**
- * A tier whose SECOND process is killed rather than exited — the timeout/kill shape.
- *
- * The one shape a numeric `code` cannot fake: a run that was signalled has no exit code
- * at all (`code: null`, `killed: true`), and an excuse may not be built on it. Its own
- * counter decides which process dies, so the first is a real red and the second is
- * really signalled, exactly as a hung re-run is under the executor's `killGroup`.
- */
-export function killOnSecondTier(marker: string, counter: string): string {
-  return `sh -c 'n=$(cat ${counter} 2>/dev/null || echo 0); n=$((n+1)); echo $n > ${counter}; if [ "$n" -le 1 ]; then echo tier-said-${marker} 1>&2; exit 1; fi; exec sleep 60'`;
-}
-/**
- * A tier that fails its first process and succeeds from its second — a real flake.
- *
- * The count lives in a file the script itself bumps, so a re-run is a SECOND SPAWN and
- * not a stubbed answer: a case that excuses a tier as flaky must have made the step
- * actually run it twice, which is the only evidence that distinguishes a flake from a
- * red the step chose not to look at a second time. `counter` is the absolute path of a
- * file no one else writes.
- */
-export function flakeTier(marker: string, counter: string): string {
-  return `sh -c 'n=$(cat ${counter} 2>/dev/null || echo 0); n=$((n+1)); echo $n > ${counter}; if [ "$n" -le 1 ]; then echo tier-said-${marker} 1>&2; exit 1; fi; exit 0'`;
-}
-
 /** The committed name of the helper script the silent-runner case writes. */
 const SILENT_RUNNER_FILE = "silent-runner.sh";
 /**
@@ -127,31 +114,6 @@ const SILENT_RUNNER_FILE = "silent-runner.sh";
 const SILENT_RUNNER_SCRIPT = "exit 1\n";
 /** The template that case configures; `validateTestRunner` wants `{file}` whole. */
 const SILENT_RUNNER_TEMPLATE = "sh silent-runner.sh {file}";
-
-/**
- * A tier that writes `rel` in the worktree, COMMITTING it when `commit` is set.
- *
- * The re-check cases need a tier that disturbs the tree *after* the step has
- * already read it clean: the pre-tier checks pass, the tier runs, and only the
- * post-tier re-check can see what it did.
- */
-export function writeTier(rel: string, text: string, commit = false): string {
-  const quoted = `'${text.replace(/'/g, "'\\''")}'`;
-  const add = commit
-    ? " git add -A >/dev/null; git -c user.name=t -c user.email=t@t commit -q -m tier;"
-    : "";
-  return `sh -c "printf %s ${quoted} > '${rel}';${add} exit 0"`;
-}
-
-/**
- * A tier that leaves HEAD on the same commit but on NO branch.
- *
- * `git rev-parse HEAD` still answers the sha the step recorded, so the moved-HEAD
- * re-check cannot see it; only a branch read can. The tier itself runs `git
- * checkout`, which a test fixture's tier script may do — the step's own shell
- * never does.
- */
-export const DETACH_TIER = 'sh -c "git checkout -q --detach; exit 0"';
 
 function gitEnv(): Record<string, string> {
   return {
@@ -193,14 +155,31 @@ function commitFreeze(dir: string, issue: number, text: string): string {
  * The worktree is built first and the branch is handed to it outright, so a case
  * can commit inside the tree — moving the very head the step is about to judge —
  * without git refusing to move a branch `repoRoot` holds.
+ *
+ * `fixtureSync` builds the repo and its worktree; `fixture` layers the optional
+ * hook-provisioned tree on top, which is the only reason the repo build is not all
+ * synchronous.
  */
-function fixture(issue: number, baseRedContract: boolean): {
-  repoRoot: string;
-  wt: string;
-  head: string;
-  ctx: HandlerCtx;
-  frozen: Record<string, string>;
-} {
+/** What building a fixture yields: the repo, its worktree, the frozen record and the ctx. */
+async function fixture(
+  issue: number,
+  baseRedContract: boolean,
+  hook?: { script: string; marksDir: string },
+): Promise<Fixture> {
+  const built = fixtureSync(issue, baseRedContract, hook);
+  if (hook !== undefined) await provisionHookedTree(built, hook, gitEnv());
+  return built;
+}
+
+/**
+ * Build the repo, its single acceptance-test commit, and the run's worktree. Synchronous
+ * because most cases need nothing else; `fixture` adds the hook-provisioned tree on top.
+ */
+function fixtureSync(
+  issue: number,
+  baseRedContract: boolean,
+  hook?: { script: string; marksDir: string },
+): Fixture {
   const repoRoot = mkdtempSync(path.join(tmpdir(), "lean-verify-"));
   ROOTS.push(repoRoot);
   git(repoRoot, "init", "-q", "-b", "main");
@@ -210,6 +189,19 @@ function fixture(issue: number, baseRedContract: boolean): {
   writeFileSync(dir("src/retry.ts"), SRC);
   git(repoRoot, "add", "-A");
   git(repoRoot, "commit", "-q", "-m", "base");
+  if (hook !== undefined) {
+    // A project hook COMMITTED AT THE BASE, so both trees this case involves are
+    // hook-provisioned trees: the run's own worktree (which the driver must provision
+    // through the hook) and the probe's throwaway checkout (which it must not). The hook
+    // is an `sh` script that marks its `$PI_RUKAS_TEST_HOOK_MARKS` directory, so the case
+    // reads evidence of WHERE it ran rather than trusting a stub's word for it.
+    mkdirSync(path.join(repoRoot, ".pi"), { recursive: true });
+    const hookFile = path.join(repoRoot, ".pi", "worktree-setup");
+    writeFileSync(hookFile, hook.script, { mode: 0o755 });
+    chmodSync(hookFile, 0o755);
+    git(repoRoot, "add", "-A");
+    git(repoRoot, "commit", "-q", "-m", "chore: project worktree-setup hook");
+  }
   if (baseRedContract === true) {
     // The incident's shape, made of real bytes rather than of a stub's say-so, and put
     // where a baseline probe can actually reach it: at the SAME path the run goes on to
@@ -280,7 +272,7 @@ export function sha(text: string | Buffer): string {
 
 /** Run `verify` against a fixture repo; a throw comes back as `threw`. */
 export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
-  const f = fixture(opts.issue, opts.baseRedContract === true);
+  const f = await fixture(opts.issue, opts.baseRedContract === true, opts.hookAtBase);
 
   const wt = f.wt;
   const repoRoot = f.repoRoot;
@@ -317,7 +309,8 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
   const head = git(wt, "rev-parse", "HEAD");
   // The tier commands this case configured, as strings: a tier runs as a shell
   // command, so the only thing that identifies one to the executor is its own text.
-  const configured = opts.noCommand === true ? {} : (opts.config ?? { fast: PASS_TIER });
+  const configured: Partial<WorkConfig["verify"]> =
+    opts.noCommand === true ? {} : (opts.config ?? { fast: PASS_TIER });
   if (opts.full !== undefined) configured.full = opts.full;
   const tiers: string[] = [configured.fast, configured.full].filter(
     (c): c is string => typeof c === "string" && c.trim() !== "",
@@ -336,12 +329,14 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
   const ctx: HandlerCtx = { ...f.ctx, steps: all };
   ctx.run = { ...ctx.run, steps: all };
 
-  const { exec, redRunsSeen } = makeVerifyExec({
+  const { exec, redRunsSeen, baseTierRunsSeen } = makeVerifyExec({
     wt,
     probeDir,
     repoRoot,
     tiers,
     opts,
+    baseSha: f.ctx.run.baseSha,
+    ...(opts.hookAtBase === undefined ? {} : { hookMarks: opts.hookAtBase.marksDir }),
   });
 
   const deps: VerifyDeps = {
@@ -369,6 +364,7 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
       probeDir,
       repoRoot,
       tierRuns: redRunsSeen(),
+      baseTierRuns: baseTierRunsSeen(),
     };
   } catch (err) {
     return {
@@ -378,6 +374,7 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
       probeDir,
       repoRoot,
       tierRuns: redRunsSeen(),
+      baseTierRuns: baseTierRunsSeen(),
     };
   }
 }
@@ -428,7 +425,8 @@ export function buildFixtureForWiring(issue: number): {
   wt: string;
   ctx: HandlerCtx;
 } {
-  const f = fixture(issue, false);
+  // The wiring cases never provision a tree, so they take the synchronous path.
+  const f = fixtureSync(issue, false);
   return { repoRoot: f.repoRoot, wt: f.wt, ctx: f.ctx };
 }
 

@@ -25,17 +25,23 @@
  *       is not a pass, so it cannot excuse the tier)
  *   (h2) a tier whose re-run rejected with no code, no kill and no ENOENT -> also RED
  *       ("nobody told us anything" is not "it passed")
+ *   (h3, h3b, h4, h5) a base run that was killed, timed out, truncated, or whose blob read
+ *       could not be made -> see `test-lean-verify-baseline-unobserved.ts`: no base run
+ *       that observed nothing may colour a tier in either direction
  *   (i) the probe's throwaway tree is a SIBLING of the repo, never under it
+ *   (j) the probe tree is provisioned by SYMLINKS ONLY — the project's
+ *       `.pi/worktree-setup` hook never runs for a throwaway base checkout
  *
  * The tier's own command is counted (`tierRuns`) because "re-run once" and "probe the
  * base once" are claims about how many processes ran, and a gate that silently ran the
  * suite four times would still pass a verdict-only test.
  */
 
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { baselineProbeWorktreePath } from "../src/lean/verify-baseline.ts";
+import { execp } from "../src/exec.ts";
+import { baselineProbeWorktreePath, classifyBaseRun } from "../src/lean/verify-baseline.ts";
 import {
   PASS_TIER,
   ROOTS,
@@ -438,6 +444,46 @@ function probeTreeLeftBehind(repoRoot: string, issue: number): string {
   );
   const left310 = probeTreeLeftBehind(repoRoot, 310);
   assert(left310 === "", `(i) and it is removed afterwards (${left310})`);
+}
+
+// ---- (j) the probe never runs the project's `.pi/worktree-setup` hook
+{
+  // The probe's tree is a throwaway directory another process's shell can reach, and the
+  // project's setup hook is the project's arbitrary code: executing it there is how a repo
+  // gets to run whatever it likes against a checkout nobody asked for. `reviewer-tree.ts`
+  // made the same call for the same reason — symlinks only, never the hook. The hook is
+  // committed at the base and marks a file in `marks` naming the tree it ran against, and
+  // the fixture provisions the RUN's own worktree through it by hand, so a marker is proof
+  // a hook really ran and its absence in the probe's tree means something.
+  const marks = mkdtempSync(path.join(tmpdir(), "lean-hook-marks-"));
+  ROOTS.push(marks);
+  const r = await runVerify({
+    issue: 316,
+    implement: true,
+    config: { fast: failTier("hook-runner") },
+    headTierRedRuns: 2,
+    hookAtBase: {
+      script:
+        '#!/bin/sh\n[ -n "$PI_RUKAS_TEST_HOOK_MARKS" ] || exit 0\nprintf x > "$PI_RUKAS_TEST_HOOK_MARKS/$(basename "$PWD")"\nexit 0\n',
+      marksDir: marks,
+    },
+  });
+  assert(
+    r.outcome?.kind === "red",
+    `(j) the case still judged its tier (got ${r.outcome?.kind ?? `threw: ${r.threw?.message}`})`,
+  );
+  const seen = existsSync(marks) ? readdirSync(marks) : [];
+  const probeMark = seen.find((f) => f.includes("baseline-lean-verify"));
+  assert(
+    probeMark === undefined,
+    `(j) the probe tree never ran .pi/worktree-setup (${seen.join(", ") || "no markers"})`,
+  );
+  assert(
+    seen.includes(`lean-${String(316)}`),
+    `(j) the hook DID run for the run's own worktree, so the marker read is live (${seen.join(", ") || "no markers"})`,
+  );
+  const left316 = probeTreeLeftBehind(r.repoRoot ?? r.worktree, 316);
+  assert(left316 === "", `(j) the probe's throwaway checkout was removed (${left316})`);
 }
 
 for (const dir of ROOTS) {

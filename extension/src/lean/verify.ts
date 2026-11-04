@@ -43,7 +43,12 @@
  * named in the reason. A tier red twice is probed at the run's `baseSha` in a
  * throwaway checkout, and a tier red THERE hands the run back before any build
  * round is billed — a gate that was red before the change existed is not something
- * the change's developer is sent to fix. The frozen tests and the `command`
+ * the change's developer is sent to fix. The probe compares the frozen tests' BYTES
+ * against the base commit's — it never runs them there, because the base predates them.
+ * Only a base the probe actually SAW red earns the hand-back: a probe that could not
+ * tell (`unknown`) is not a colour, so the tier's own red stands and the build-retry
+ * path runs exactly as it would with no probe at all.
+ * The frozen tests and the `command`
  * criteria keep their first-word verdicts: a frozen test is proven red-and-named at
  * freeze time on purpose, so exempting it would delete the run's only contract check.
  */
@@ -233,10 +238,10 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
   );
   if (unsound !== undefined) throw new VerifyInfraError(unsound);
 
-  // 4. The frozen tests, every one of them. The project's per-file runner is also
-  // handed to the base probe below, so the probe can run the same contract at the
-  // base commit: a tier is only ever excused over a frozen test the base already
-  // fails, and never over one this run invented.
+  // 4. The frozen tests, every one of them. The base probe below does NOT run them: it
+  // compares their frozen BYTES against the base commit, because the base predates tests
+  // this run authored. A tier is only ever excused over a contract the base itself
+  // carries, and never over one this run invented.
   const tests = await frozenTestFailure(frozen, config.verify.test, wt, deps.exec, deps.timeoutMs);
 
   // 5. The project's own tiers, fast before full, first failure wins — with one
@@ -262,13 +267,16 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
     // One re-run at HEAD. A tier that goes green there saw nothing stable the first
     // time, so it is a flake and the gate does not bill a build round for it.
     if (!(await confirmTierRed({ name, cmd, wt, exec: deps.exec, timeoutMs }))) {
-      flake = flakeReason(name, cmd, 2);
+      flake = flakeReason(name, cmd);
       trace(`lean/verify: ${flake}`);
       continue;
     }
     // Red at HEAD twice: was it red BEFORE this run? A tier the base commit already
     // fails cannot be fixed by this run's builder, so the run stops here rather than
-    // billing a round that would edit code the spec never named.
+    // billing a round that would edit code the spec never named. Only a base the probe
+    // OBSERVED red earns that hand-back: `unknown` (a base run that was killed, timed
+    // out, overflowed or never started, or a base the contract cannot judge) is not a
+    // colour, so the tier's own red below is what stands and the build round is billed.
     const probe = await probeTierAtBase({
       repoRoot,
       baseSha: ctx.run.baseSha,
@@ -277,7 +285,6 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
       timeoutMs,
       exec: deps.exec,
       frozen,
-      testRunner: config.verify.test,
     });
     if (probe.status === "unusable") throw baselineUnusableError(probe.reason);
     if (probe.status === "red")

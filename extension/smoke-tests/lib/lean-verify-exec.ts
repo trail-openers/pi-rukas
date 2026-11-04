@@ -107,6 +107,12 @@ function namesProbeTree(
   return named.some((p) => registered.has(p));
 }
 
+import {
+  type ProbeShapeOpts,
+  baseTierHangCommand,
+  isProbeBlobRead,
+  probeBlobReadTimeoutError,
+} from "./lean-verify-probe-shapes.ts";
 export interface VerifyRun {
   outcome?: Outcome;
   threw?: Error;
@@ -119,11 +125,13 @@ export interface VerifyRun {
   probeDir?: string;
   /** How many times the tier command ran, across HEAD and the probe. */
   tierRuns?: number;
+  /** How many times the BASE PROBE ran the tier in its throwaway checkout (0 = it never got there). */
+  baseTierRuns?: number;
   /** The run's repo root, for a case that wants to ask git about its worktrees. */
   repoRoot?: string;
 }
 
-export interface VerifyOpts {
+export interface VerifyOpts extends ProbeShapeOpts {
   issue: number;
   /** What the project configured; `fast` defaults to a passing tier. */
   config?: Partial<WorkConfig["verify"]>;
@@ -240,8 +248,19 @@ export function makeVerifyExec(opts: {
   repoRoot: string;
   tiers: string[];
   opts: VerifyOpts;
-}): { exec: VerifyExec; redRunsSeen: () => number } {
+  /** Set for the hook case: the dir the project's hook marks, so the marker says WHERE. */
+  hookMarks?: string;
+  /** The run's base sha — what identifies the probe's `<base>:<path>` blob reads. */
+  baseSha?: string;
+}): { exec: VerifyExec; redRunsSeen: () => number; baseTierRunsSeen: () => number } {
   const { wt, probeDir, repoRoot, tiers, opts: o } = opts;
+  const hookMarks = opts.hookMarks;
+  const baseSha = opts.baseSha;
+  /** The env every child of this case gets: the fixture's git identity, plus the hook's marker dir. */
+  const childEnv = (): NodeJS.ProcessEnv => ({
+    ...gitTestEnv(),
+    ...(hookMarks === undefined ? {} : { PI_RUKAS_TEST_HOOK_MARKS: hookMarks }),
+  });
   const RECHECK_ARGV = [
     "-c",
     "core.hooksPath=/dev/null",
@@ -272,6 +291,8 @@ export function makeVerifyExec(opts: {
   const redBudget = o.headTierRedRuns ?? 0;
   /** Runs of the tier the step has made in the RUN's own worktree. */
   let headTierRuns = 0;
+  /** Runs of the tier the BASE PROBE has made in its throwaway checkout. */
+  let baseTierRuns = 0;
   /**
    * Is this exec call the step running a project tier's shell command?
    *
@@ -301,15 +322,21 @@ export function makeVerifyExec(opts: {
    * time it happens HEAD has spent its budget, and "red at the base" is a property of
    * the base commit rather than of how many runs came before it.
    */
-  const runCountedTier = (cmd: string, o2: Parameters<VerifyExec>[1], headRun: boolean) => {
-    if (!headRun)
+  const runCountedTier = (command: string, o2: Parameters<VerifyExec>[1], headRun: boolean) => {
+    let cmd = command;
+    if (!headRun) {
+      // The base probe's own run of the tier, counted separately: `tierRuns` counts the
+      // STEP's runs at HEAD, and a case that wants to know whether the probe reached its
+      // tier — rather than settling on an earlier arm — asks for this one.
+      baseTierRuns++;
       return execp(cmd, { ...o2, env: o2?.env ?? gitTestEnv(), cwd: o2?.cwd ?? probeDir });
+    }
     const run = headTierRuns;
     headTierRuns++;
     tierRuns++;
     // The hung re-run: only the second run of the tier gets the shortened bound, so the
     // executor's own group kill fires on it and on nothing else.
-    const bound = o.headRerunKilled === true && run === 1 ? (o.timeoutMs ?? 2_000) : o.timeoutMs;
+    let bound = o.headRerunKilled === true && run === 1 ? (o.timeoutMs ?? 2_000) : o.timeoutMs;
     if (o.headRerunSilentReject === true && run === 1) return Promise.reject(new Error("nope"));
     if (run < redBudget - 1) {
       return Promise.reject(
@@ -320,7 +347,12 @@ export function makeVerifyExec(opts: {
         }),
       );
     }
-    return execp(cmd, { ...o2, timeout: bound, env: o2?.env ?? gitTestEnv(), cwd: o2?.cwd ?? wt });
+    return execp(cmd, {
+      ...o2,
+      timeout: bound,
+      env: o2?.env ?? childEnv(),
+      cwd: headRun ? wt : probeDir,
+    });
   };
 
   const exec: VerifyExec = (cmd, o2) => {
@@ -347,9 +379,77 @@ export function makeVerifyExec(opts: {
       Array.isArray(o2?.argv) &&
       o2.argv.some((a, i) => a === "worktree" && o2.argv?.[i + 1] === "remove")
     ) {
-      return execp(cmd, { ...o2, env: o2?.env ?? gitTestEnv(), cwd: o2?.cwd ?? repoRoot });
+      return execp(cmd, { ...o2, env: o2?.env ?? childEnv(), cwd: o2?.cwd ?? repoRoot });
     }
-    if (namesProbeTree(repoRoot, probeDir, o2)) {
+    if (
+      cmd === "git" &&
+      Array.isArray(o2?.argv) &&
+      o2.argv.some((a, i) => a === "worktree" && o2.argv?.[i + 1] === "add")
+    ) {
+      // The fixture's own `worktree add` for the run's tree, plus the probe's: both go to
+      // the real git, since a registration the stub invented could not be read back.
+      return execp(cmd, { ...o2, env: o2?.env ?? childEnv(), cwd: o2?.cwd ?? repoRoot });
+    }
+    if (namesProbeTree(repoRoot, probeDir, o2) || isProbeBlobRead(o2, baseSha)) {
+      // The base's blob reads are the ONE place a case answers for the base commit rather
+      // than asking the real git of it: what the base held at the run's frozen paths is a
+      // property of a commit the fixture built, and a case that needs the contract arm to
+      // answer a particular way must not have to rewrite a commit to ask. Those reads carry
+      // `cwd: repoRoot` and a `<base>:<path>` argv, so path-registration cannot identify
+      // them — `isProbeBlobRead` recognises them by the sha the run is probing instead.
+      if (o.baseBlobReadFails === true || o.baseBlobBytes !== undefined) {
+        if (cmd === "git" && Array.isArray(o2?.argv) && o2.argv.includes("show")) {
+          if (o.baseBlobReadFails === true) {
+            // A NON-128 rejection: the executor's own timeout shape (`timedOutKill`, no
+            // numeric `code`), which `gitPathAbsent` cannot mistake for git's "no such
+            // path" (exit 128 plus its wording), and which must not be read as a colour.
+            // With no `stdout` own-property the contract's reader cannot inspect any bytes,
+            // so the probe is answered by its could-not-look arm rather than by the base
+            // commit — which is what that case is about.
+            return Promise.reject(probeBlobReadTimeoutError());
+          }
+          return Promise.resolve({ stdout: o.baseBlobBytes ?? "", stderr: "" });
+        }
+      }
+      if ((o.baseRunTimesOut === true || o.baseRunOverflows === true) && !isTierCommand(cmd, o2?.argv)) {
+        // The probe's frozen-test run at the base is NOT the run under test — it goes to
+        // the real git of the base checkout, exactly as every other case's does. Without
+        // this the hung/overflow command below would be substituted for it too, the probe
+        // would return on its contract arm, and the tier classifier the case is about
+        // would never be reached.
+        return execp(cmd, { ...o2, env: o2?.env ?? childEnv(), cwd: o2?.cwd ?? probeDir });
+      }
+      if (
+        (o.baseRunTimesOut === true || o.baseRunOverflows === true) &&
+        (o2 as { killGroup?: boolean } | undefined)?.killGroup === true
+      ) {
+        // The probe's TIER run at the base, hung (a `sleep` past the bound) or chatty
+        // (a `yes` past its `maxBuffer`). Both shapes come from the REAL executor — the
+        // KILL, the `code: null`, the `timedOutKill` and the `overflow` stamp — rather than
+        // from a stub, which is the only way to show what the base classifier does with a
+        // run that produced no exit code at all. The tier's own marker is echoed first, so
+        // the red the case reads back is the tier's, not the harness's.
+        const { cmd: hungCmd, maxBuffer } = baseTierHangCommand(
+          tiers,
+          o.baseRunOverflows === true,
+        );
+        // Routed through `runCountedTier` with `headRun: false`, so the base-tier counter
+        // sees it: the case asserts the probe REACHED its classifier, and a substitution
+        // that reported nothing would let the case pass without ever getting there.
+        return runCountedTier(
+          hungCmd,
+          {
+            ...o2,
+            killGroup: true,
+            maxBuffer,
+            timeout:
+              o.baseRunOverflows === true
+                ? (o.timeoutMs ?? 2_000) * 4
+                : (o.timeoutMs ?? 2_000),
+          },
+          false,
+        );
+      }
       // The probe's tier and the probe's frozen contract are told apart by command
       // identity, not by the counter. The frozen run goes to the REAL git of the base
       // checkout — nothing here answers it — because "does the base fail this run's own
@@ -359,7 +459,7 @@ export function makeVerifyExec(opts: {
         if (o.baseTierThrows === true) return Promise.reject(new Error("probe tier exploded"));
         return runCountedTier(cmd, o2, false);
       }
-      return execp(cmd, { ...o2, env: o2?.env ?? gitTestEnv(), cwd: o2?.cwd ?? probeDir });
+      return execp(cmd, { ...o2, env: o2?.env ?? childEnv(), cwd: o2?.cwd ?? probeDir });
     }
     if (isTierCommand(cmd, o2?.argv)) return runCountedTier(cmd, o2, true);
     if (
@@ -388,8 +488,8 @@ export function makeVerifyExec(opts: {
           stderr: "fatal: unable to resolve HEAD\n",
         }),
       );
-    return execp(cmd, { ...o2, env: o2?.env ?? gitTestEnv(), cwd: o2?.cwd ?? wt });
+    return execp(cmd, { ...o2, env: o2?.env ?? childEnv(), cwd: o2?.cwd ?? wt });
   };
 
-  return { exec, redRunsSeen: () => tierRuns };
+  return { exec, redRunsSeen: () => tierRuns, baseTierRunsSeen: () => baseTierRuns };
 }
