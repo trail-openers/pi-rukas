@@ -25,11 +25,13 @@
  * testing the stub.
  */
 
+import { spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import path from "node:path";
 import { execp } from "../../src/exec.ts";
 import type { WorkConfig } from "../../src/lean/config.ts";
 import type { Outcome, Step } from "../../src/lean/state.ts";
+import { NO_HOOKS } from "../../src/lean/specify-reset.ts";
 import { baselineProbeWorktreePath } from "../../src/lean/verify-baseline.ts";
 import type { VerifyExec } from "../../src/lean/verify-types.ts";
 import { gitTestEnv } from "./git-test-env.ts";
@@ -49,19 +51,60 @@ export function canonicalProbeDir(repoRoot: string, issue: number): string {
   return path.join(realpathSync(probeParent), probePath.slice(probeParent.length + 1));
 }
 
-/** Is this exec call the baseline probe running inside its throwaway checkout? */
-function atProbeTree(cwd: string | undefined, probeDir: string): boolean {
-  if (cwd === undefined) return false;
-  if (cwd === probeDir || cwd.startsWith(`${probeDir}/`)) return true;
-  // The tree exists by the time the probe runs, so it can be resolved — but only
-  // then. Resolving it unconditionally would throw on the (normal) calls made before
-  // it was created and answer every probe as a HEAD run.
-  try {
-    const real = realpathSync(cwd);
-    return real === probeDir || real.startsWith(`${probeDir}/`);
-  } catch {
-    return false;
-  }
+/**
+ * The ONE fact that makes an exec call "the probe": it names the probe's own tree, and
+ * that tree is REGISTERED with git.
+ *
+ * Both halves are needed, and each kills one way the fixture could lie to itself.
+ *
+ * Naming the probe's path is what separates the probe from every other call the step
+ * makes: the run's OWN worktree is a registered worktree too, so "is a registered
+ * worktree" alone would answer the step's `rev-parse HEAD` in its own tree as a probe
+ * call and every case would die at the very first read.
+ *
+ * Registration is what keeps a stubbed failure honest. When a case makes `worktree add`
+ * refuse, the tree was never created; without this check the add itself (whose argv
+ * names the path) would be answered from the base options, so the probe would be reading
+ * its own `git worktree add` as a red frozen test and the run would surface `unusable`
+ * for the wrong reason. `probeTierAtBase` removes the tree in a `finally`, so the window
+ * in which git lists it is exactly the window in which the probe runs.
+ *
+ * The path is matched EXACTLY against what production names, and the tree must also be
+ * REGISTERED with git right now. Each half kills a distinct way the fixture could lie:
+ *
+ *   - exact path, because the run's OWN worktree is a registered worktree too — a test
+ *     that asked only "is this a registered tree?" would answer the step's `rev-parse
+ *     HEAD` in its own worktree as a probe call and every case would die at its first
+ *     read, and a probe moved INSIDE the repo is a path production never runs its
+ *     commands at, so nothing matches it and the probe's colour comes out wrong;
+ *   - registration, because when a case makes `worktree add` refuse the tree was never
+ *     created: without this the add itself (whose argv names the path) would be answered
+ *     from the base options and the probe would report its own `git worktree add` as a
+ *     red contract. `probeTierAtBase` removes the tree in a `finally`, so the window in
+ *     which git lists it is exactly the window in which the probe runs.
+ */
+function namesProbeTree(
+  repoRoot: string,
+  probeDir: string,
+  o2: Parameters<VerifyExec>[1] | undefined,
+): boolean {
+  const named: string[] = [];
+  if (typeof o2?.cwd === "string") named.push(o2.cwd);
+  if (Array.isArray(o2?.argv)) named.push(...o2.argv.filter((a) => typeof a === "string"));
+  if (!named.some((p) => p === probeDir)) return false;
+  const listed = spawnSync("git", [...NO_HOOKS, "worktree", "list", "--porcelain"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: gitTestEnv(),
+  });
+  if (listed.status !== 0) return false;
+  const registered = new Set(
+    (listed.stdout ?? "")
+      .split("\n")
+      .filter((l) => l.startsWith("worktree "))
+      .map((l) => l.slice("worktree ".length)),
+  );
+  return named.some((p) => registered.has(p));
 }
 
 export interface VerifyRun {
@@ -145,12 +188,16 @@ export interface VerifyOpts {
    */
   headTierRedRuns?: number;
   /**
-   * Run the run's FROZEN tests red at the base probe as well. The probe only ever
-   * excuses a tier over a base that fails the contract itself, so a baseline-red
-   * case must say the base is red all the way through — which is the shape of the
-   * incident (a mainline whose suite is red on this host).
+   * Make the BASE commit itself fail the run's frozen contract, with a real committed
+   * test that exits non-zero whatever the tree holds.
+   *
+   * This is the only honest way to make a baseline-red case: the probe re-runs the run's
+   * own acceptance tests inside the base checkout and reads their colour from the real
+   * runner, so a base that is red is red because git says so, not because the case said
+   * so. `false` is the boundary — a base with no red of its own, over which a tier may
+   * not be excused.
    */
-  baseFrozenRed?: boolean;
+  baseRedContract?: boolean;
   /**
    * Make the probe's `git worktree add` reject. The base then cannot be judged at
    * all, which is infrastructure rather than a colour, and the probe tree must still
@@ -163,6 +210,26 @@ export interface VerifyOpts {
    * gone from `git worktree list` afterwards even though the probe itself failed.
    */
   baseTierThrows?: boolean;
+  /**
+   * Make the step's RE-RUN at HEAD reject with the executor's own kill shape
+   * (`killed`, `timedOutKill`, `code: null`, no numeric exit code) — the shape a tier
+   * that hung on its second attempt really produces, and the one a numeric `code`
+   * cannot fake. The tier's OWN script is what hangs (see `killOnSecondTier`), so this
+   * only makes the hang observable in seconds by shortening the bound the step gives a
+   * tier: the SIGKILL, the `code: null`, and the `killed` stamp all come from the real
+   * executor, not from a stub. A re-run that observed nothing may not excuse the tier:
+   * the run must stay red, and a gate that read "no numeric code" as "exited 0" would
+   * call it a flake and report a green nobody observed.
+   */
+  headRerunKilled?: boolean;
+  /**
+   * Make the step's RE-RUN at HEAD reject with NOTHING on it: no exit `code`, no
+   * `killed`, no `overflow`, no `ENOENT`. This is the shape a harness speaks with rather
+   * than a gate, and it is the one an "absence of an exit code means green" test gets
+   * wrong — the rejection arrives as an object with no `stdout`, so the only honest
+   * reading is "nobody told us anything" and the first red must stand.
+   */
+  headRerunSilentReject?: boolean;
   /** Log lines to add after the fixture's own. */
   extraSteps?: Step[];
 }
@@ -170,10 +237,11 @@ export interface VerifyOpts {
 export function makeVerifyExec(opts: {
   wt: string;
   probeDir: string;
+  repoRoot: string;
   tiers: string[];
   opts: VerifyOpts;
 }): { exec: VerifyExec; redRunsSeen: () => number } {
-  const { wt, probeDir, tiers, opts: o } = opts;
+  const { wt, probeDir, repoRoot, tiers, opts: o } = opts;
   const RECHECK_ARGV = [
     "-c",
     "core.hooksPath=/dev/null",
@@ -239,6 +307,10 @@ export function makeVerifyExec(opts: {
     const run = headTierRuns;
     headTierRuns++;
     tierRuns++;
+    // The hung re-run: only the second run of the tier gets the shortened bound, so the
+    // executor's own group kill fires on it and on nothing else.
+    const bound = o.headRerunKilled === true && run === 1 ? (o.timeoutMs ?? 2_000) : o.timeoutMs;
+    if (o.headRerunSilentReject === true && run === 1) return Promise.reject(new Error("nope"));
     if (run < redBudget - 1) {
       return Promise.reject(
         Object.assign(new Error(`Command failed: ${cmd}`), {
@@ -248,7 +320,7 @@ export function makeVerifyExec(opts: {
         }),
       );
     }
-    return execp(cmd, { ...o2, env: o2?.env ?? gitTestEnv(), cwd: o2?.cwd ?? wt });
+    return execp(cmd, { ...o2, timeout: bound, env: o2?.env ?? gitTestEnv(), cwd: o2?.cwd ?? wt });
   };
 
   const exec: VerifyExec = (cmd, o2) => {
@@ -264,34 +336,30 @@ export function makeVerifyExec(opts: {
     const addCmd =
       o.baseAddFails === true && cmd === "git" && String(o2?.argv ?? "").includes(probeDir);
     if (addCmd) return Promise.reject(new Error("git worktree add: fatal: bad object"));
-    if (atProbeTree(o2?.cwd, probeDir)) {
-      const isFrozenRun = !isTierCommand(cmd, o2?.argv);
-      if (isFrozenRun) {
-        // The probe's frozen contract, answered from `baseFrozenRed`: a tier is only
-        // excusable over a base whose own acceptance tests are red as well.
-        return o.baseFrozenRed === true
-          ? Promise.reject(
-              Object.assign(new Error("base frozen test failed"), {
-                code: 1,
-                stderr: `not ok - ${String(o2?.argv?.[o2?.argv?.length - 1] ?? "")}\n`,
-              }),
-            )
-          : Promise.resolve({ stdout: "", stderr: "" });
+    // The probe's OWN bookkeeping is git's business, not the stub's: `worktree add` and
+    // `worktree remove` go to the real git, so the registration the cleanup cases read
+    // back is the one production created and the one production destroyed. Answering a
+    // `remove` here would let a step that never cleaned up look clean, because the stub
+    // would have "removed" a tree git still holds. The command is found wherever the
+    // two words sit in argv, because the call carries the config guard before them.
+    if (
+      cmd === "git" &&
+      Array.isArray(o2?.argv) &&
+      o2.argv.some((a, i) => a === "worktree" && o2.argv?.[i + 1] === "remove")
+    ) {
+      return execp(cmd, { ...o2, env: o2?.env ?? gitTestEnv(), cwd: o2?.cwd ?? repoRoot });
+    }
+    if (namesProbeTree(repoRoot, probeDir, o2)) {
+      // The probe's tier and the probe's frozen contract are told apart by command
+      // identity, not by the counter. The frozen run goes to the REAL git of the base
+      // checkout — nothing here answers it — because "does the base fail this run's own
+      // acceptance tests?" is a fact about the bytes the base commit holds, and a stub
+      // that answered it would keep saying "red" for a tree that is not the base at all.
+      if (isTierCommand(cmd, o2?.argv)) {
+        if (o.baseTierThrows === true) return Promise.reject(new Error("probe tier exploded"));
+        return runCountedTier(cmd, o2, false);
       }
-      if (o.baseTierThrows === true) return Promise.reject(new Error("probe tier exploded"));
-      // A tier "red at the base" is what makes the hand-back case, and it is the
-      // case's to declare: the base checkout holds the pre-change tree, so a tier
-      // that is red wherever it runs prints its own red here too.
-      if (o.baseFrozenRed === true) {
-        return Promise.reject(
-          Object.assign(new Error(`Command failed: ${cmd}`), {
-            code: 1,
-            stdout: "",
-            stderr: "base-tier-said-red\n",
-          }),
-        );
-      }
-      return runCountedTier(cmd, o2, false);
+      return execp(cmd, { ...o2, env: o2?.env ?? gitTestEnv(), cwd: o2?.cwd ?? probeDir });
     }
     if (isTierCommand(cmd, o2?.argv)) return runCountedTier(cmd, o2, true);
     if (

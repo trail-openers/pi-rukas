@@ -61,13 +61,11 @@
  * delete the run's only contract check.
  */
 
-import { withVerifySlot } from "../host-resources.ts";
 import { trace } from "../trace.ts";
 import { verifyChildEnv, verifyHostEnv } from "../work-driver-verify-cmd.ts";
 import { looksLikeMissingDeps, provisionWorktree } from "../worktree-provision.ts";
-import { neverStarted, wasKilled } from "./specify-proof.ts";
+import { neverStarted, sha256, wasKilled } from "./specify-proof.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
-import { frozenTestFailure } from "./verify-steps.ts";
 import { type VerifyExec, VerifyInfraError } from "./verify-types.ts";
 
 /** The lead every baseline-red reason carries, so a reader can tell it from a red. */
@@ -159,6 +157,15 @@ async function tierCode(
  * an overflow, a command that never started): an excuse needs two runs that saw the
  * work, so those leave the first red standing exactly as if there had been no re-run.
  *
+ * So "exited 0" is the ONLY answer that excuses, and it is asked for positively, in two
+ * parts: the re-run must have OBSERVED the work, and it must have ended with exit code 0.
+ * Inferring the excuse from the ABSENCE of a numeric exit code is the opposite bug — the
+ * executor's kill, timeout, overflow and `ENOENT` shapes all reject with a non-numeric
+ * `code` (`null`, or a string), and so does a rejection that stamped nothing at all, so
+ * an absence test would read every one of them as the clean exit and report a green on a
+ * tier nobody saw pass. The base probe's sibling {@link classifyBaseRun} asks the same
+ * question through {@link tierObserved} first; a re-run is held to the same standard.
+ *
  * The return is the fact, not a colour — the tier's own `Executed` from the first run
  * stays the evidence, and only this tells the caller whether to believe it.
  */
@@ -170,6 +177,19 @@ export async function confirmTierRed(opts: {
   timeoutMs: number;
 }): Promise<boolean> {
   const ran = await tierCode(opts.exec, opts.cmd, opts.wt, opts.timeoutMs);
+  // An excuse needs a re-run that SAW the work and came back clean: two positive facts,
+  // not the absence of an exit code. The executor's kill, timeout, overflow and `ENOENT`
+  // shapes reject with a non-numeric `code` (`null`, or a string) and so does a rejection
+  // that stamped nothing at all, so reading "no numeric code" as "exited 0" would report
+  // a green on a tier nobody saw pass. The base probe's sibling `classifyBaseRun` asks
+  // the same question through `tierObserved` first; a re-run is held to the same standard.
+  if (!tierObserved(ran)) return true;
+  // A run that observed the work still has to have ANSWERED. `tierCode` folds a
+  // rejection into the value it returns, so a rejection that stamped no `code`, no kill
+  // and no `ENOENT` would otherwise be read as a clean exit by `tierExitCode` alone — a
+  // green handed out for a re-run that reported nothing. An executor that resolves with
+  // no result object at all is the fixture's "exited 0 with no output", and stays green.
+  if (ran !== undefined && typeof ran === "object" && !("stdout" in (ran as object))) return true;
   return tierExitCode(ran) !== undefined;
 }
 
@@ -232,21 +252,33 @@ export async function probeTierAtBase(opts: {
     // A bare worktree holds tracked files only; a tier that needs a dependency tree
     // would fail every command in it, which says nothing about the base commit.
     await provisionWorktree(exec, repoRoot, abs).catch(() => undefined);
-    // The contract first: a tier is only excused over a run whose frozen tests the
-    // base ALSO fails. Their verdicts are read, never re-decided here — a killed or
-    // un-startable runner throws, because "could not tell" is not a colour.
+    // The contract first: a tier is only excused over a run whose frozen tests the base
+    // ALSO fails. Their verdicts are READ, never re-decided or re-run here, and the three
+    // answers say different things to whoever reads the handback.
+    //
+    // They cannot be RUN at the base. A run's acceptance tests are written during the run
+    // by the step that froze them, so `baseSha` predates them: in this file's own cases
+    // the base holds none of the frozen paths. Executing them there would either report
+    // the runner's "no such file" as the frozen test still failing — `frozenTestFailure`
+    // reads ANY non-zero exit that way — and excuse the tier over a contract the base
+    // never carried, or find nothing to run and call the base green. So the probe asks
+    // the base the only question it can answer: did the mainline already carry these very
+    // bytes, and did it leave them failing?
     if (Object.keys(opts.frozen).length > 0) {
-      const contract = await frozenTestFailure(
-        opts.frozen,
-        opts.testRunner,
-        abs,
-        exec,
-        opts.timeoutMs,
-      );
-      if (contract.kind !== "fail")
+      const contract = await baseCarriedFrozen(exec, repoRoot, baseSha, opts.frozen, hostEnv);
+      if (contract.kind === "carries-nothing")
         return {
           status: "unknown",
-          reason: "the run's frozen tests pass at the base commit, so this red is not pre-existing",
+          reason: `the base commit ${baseSha.slice(0, 12)} carries none of this run's frozen acceptance tests (${contract.paths.join(", ")}), so the base cannot be judged against this run's contract`,
+        };
+      if (contract.kind === "unreadable") return { status: "unknown", reason: contract.reason };
+      if (contract.kind !== "red")
+        return {
+          status: "unknown",
+          reason:
+            contract.kind === "green"
+              ? "the run's frozen tests pass at the base commit, so this red is not pre-existing"
+              : `the run's frozen tests are not the run's own at the base commit, so the base cannot be judged against this run's contract`,
         };
     }
     trace(`lean/verify: baseline probe — running \`${cmd}\` at base ${baseSha.slice(0, 12)}`);
@@ -254,6 +286,86 @@ export async function probeTierAtBase(opts: {
   } finally {
     await remove();
   }
+}
+
+/**
+ * What the base commit holds at the run's frozen paths — the base's own recorded state.
+ *
+ * Read as the base's BYTES (`git show <base>:<path>`) and compared against what the run
+ * froze. Three answers, because they mean three different things:
+ *
+ *   - `carries-nothing` — the base has none of these files. This is the ordinary answer:
+ *     a run's contract is authored during the run, so the base predates it. It is
+ *     deliberately NOT a colour; a mainline that never carried the test did not author a
+ *     red gate and cannot excuse a tier over it.
+ *   - `red` — the base holds a path the run froze and its bytes are NOT the frozen ones.
+ *     The frozen file is the run's contract in its passing shape, so a base holding other
+ *     bytes at that path is a mainline whose own copy of this test does not satisfy what
+ *     the run is held to: a gate the change did not author.
+ *   - `green` — the base already holds the frozen bytes, so the mainline passed them and
+ *     this run's red is its own.
+ *
+ * A read that fails outright is `unreadable`, never `carries-nothing`: "I could not
+ * look" and "it was not there" are different facts and the operator fixes different
+ * things.
+ */
+async function baseCarriedFrozen(
+  exec: VerifyExec,
+  repoRoot: string,
+  baseSha: string,
+  frozen: Record<string, string>,
+  hostEnv: NodeJS.ProcessEnv,
+): Promise<
+  | { kind: "red"; paths: string[] }
+  | { kind: "green" }
+  | { kind: "carries-nothing"; paths: string[] }
+  | { kind: "unreadable"; reason: string }
+> {
+  const paths = Object.keys(frozen);
+  const differed: string[] = [];
+  const absent: string[] = [];
+  for (const rel of paths) {
+    const ran = await exec("git", {
+      argv: [...NO_HOOKS, "show", `${baseSha}:${rel}`],
+      cwd: repoRoot,
+      timeout: 30_000,
+      maxBuffer: 4 * 1024 * 1024,
+      env: hostEnv,
+    }).catch((err: unknown): Record<string, unknown> => {
+      // A rejection is the executor speaking, not git's "no such path": keep the object
+      // so the absent-path test below can read its `code` and `stderr`, and never a null
+      // that would look like a result with no bytes.
+      return typeof err === "object" && err !== null
+        ? (err as Record<string, unknown>)
+        : { message: String(err) };
+    });
+    if (ran === undefined)
+      return { kind: "unreadable", reason: `the base's ${rel} could not be read` };
+    if (gitPathAbsent(ran)) {
+      absent.push(rel);
+      continue;
+    }
+    if (!Object.hasOwn(ran, "stdout"))
+      return { kind: "unreadable", reason: `the base's ${rel} could not be read` };
+    const bytes = typeof ran.stdout === "string" ? ran.stdout : "";
+    if (bytes.length === 0 || sha256(bytes) !== frozen[rel]) differed.push(rel);
+  }
+  if (differed.length > 0) return { kind: "red", paths: differed };
+  if (absent.length === paths.length) return { kind: "carries-nothing", paths: absent };
+  return { kind: "green" };
+}
+
+/**
+ * Is a failed `git show <ref>:<path>` git's own "this commit holds no such path"?
+ *
+ * The same two wordings `verify-reads.ts` recognises for `.pi/verify-cmd`; re-derived
+ * here rather than imported because that module's reader also decides a config default,
+ * and a baseline probe must not inherit "treat it as absent" from a config question.
+ */
+function gitPathAbsent(err: unknown): boolean {
+  const e = err as { code?: unknown; stderr?: string; message?: string };
+  const text = `${e?.stderr ?? ""}\n${e?.message ?? ""}`;
+  return e?.code === 128 && /does not exist|exists on disk, but not in/i.test(text);
 }
 
 /**

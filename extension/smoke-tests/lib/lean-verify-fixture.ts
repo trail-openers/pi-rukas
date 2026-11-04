@@ -67,6 +67,18 @@ export const TEST =
   '#!/bin/sh\nif [ ! -f src/DONE ]; then echo "not ok - tests/AC1-retry.test.sh" 1>&2; exit 1; fi\nexit 0\n';
 /** A frozen test that passes whatever the source does: a contract nobody wrote. */
 export const GREEN_TEST = "#!/bin/sh\nexit 0\n";
+/**
+ * An acceptance test the BASE commit carries and cannot pass: the mainline that is
+ * already red on this host. Committed at `baseSha` for the baseline-red cases, so the
+ * probe's frozen run goes red there for a reason the fixture can point at in git.
+ *
+ * It fails UNCONDITIONALLY rather than on a missing file: the run's own work is committed
+ * on top of the base and cannot make the base's red go away, so a base that is red stays
+ * red however much of the change the checkout happens to hold.
+ */
+const RED_BASE_TEST = '#!/bin/sh\necho "not ok" 1>&2\nexit 1\n';
+/** The one acceptance-test path the fixture freezes, and the baseline probe judges. */
+const FROZEN_FILE = "tests/AC1-retry.test.sh";
 
 /** A tier command that succeeds. */
 export const PASS_TIER = "true";
@@ -76,9 +88,16 @@ export function failTier(marker: string): string {
 }
 /** A tier that outlives any bound a test can wait for. */
 export const HANG_TIER = "sleep 60";
-/** A tier that fails ONLY while `rel` is absent: green at HEAD once the work exists. */
-export function failUntilFileTier(rel: string, marker: string): string {
-  return `sh -c 'if [ ! -f ${rel} ]; then echo tier-said-${marker} 1>&2; exit 1; fi; exit 0'`;
+/**
+ * A tier whose SECOND process is killed rather than exited — the timeout/kill shape.
+ *
+ * The one shape a numeric `code` cannot fake: a run that was signalled has no exit code
+ * at all (`code: null`, `killed: true`), and an excuse may not be built on it. Its own
+ * counter decides which process dies, so the first is a real red and the second is
+ * really signalled, exactly as a hung re-run is under the executor's `killGroup`.
+ */
+export function killOnSecondTier(marker: string, counter: string): string {
+  return `sh -c 'n=$(cat ${counter} 2>/dev/null || echo 0); n=$((n+1)); echo $n > ${counter}; if [ "$n" -le 1 ]; then echo tier-said-${marker} 1>&2; exit 1; fi; exec sleep 60'`;
 }
 /**
  * A tier that fails its first process and succeeds from its second — a real flake.
@@ -158,7 +177,7 @@ export function git(dir: string, ...args: string[]): string {
  * so every tamper case has to change a real byte to be red.
  */
 function commitFreeze(dir: string, issue: number, text: string): string {
-  const target = path.join(dir, "tests", "AC1-retry.test.sh");
+  const target = path.join(dir, FROZEN_FILE);
   mkdirSync(path.dirname(target), { recursive: true });
   writeFileSync(target, text, { mode: 0o755 });
   chmodSync(target, 0o755);
@@ -175,11 +194,12 @@ function commitFreeze(dir: string, issue: number, text: string): string {
  * can commit inside the tree — moving the very head the step is about to judge —
  * without git refusing to move a branch `repoRoot` holds.
  */
-function fixture(issue: number): {
+function fixture(issue: number, baseRedContract: boolean): {
   repoRoot: string;
   wt: string;
   head: string;
   ctx: HandlerCtx;
+  frozen: Record<string, string>;
 } {
   const repoRoot = mkdtempSync(path.join(tmpdir(), "lean-verify-"));
   ROOTS.push(repoRoot);
@@ -190,6 +210,21 @@ function fixture(issue: number): {
   writeFileSync(dir("src/retry.ts"), SRC);
   git(repoRoot, "add", "-A");
   git(repoRoot, "commit", "-q", "-m", "base");
+  if (baseRedContract === true) {
+    // The incident's shape, made of real bytes rather than of a stub's say-so, and put
+    // where a baseline probe can actually reach it: at the SAME path the run goes on to
+    // freeze, the base commit holds a test that fails UNCONDITIONALLY. That is exactly a
+    // mainline whose acceptance suite is red on this host, seen through the run's own
+    // contract — the one comparison the probe can make without running the run's tests
+    // at a commit that predates them. The freeze then records the run's PASSING bytes at
+    // the same path, so the tamper guard's rule ("HEAD's blob is the frozen blob") still
+    // holds at HEAD while the base holds other, failing, bytes.
+    mkdirSync(dir("tests"), { recursive: true });
+    writeFileSync(dir(FROZEN_FILE), RED_BASE_TEST, { mode: 0o755 });
+    chmodSync(dir(FROZEN_FILE), 0o755);
+    git(repoRoot, "add", "-A");
+    git(repoRoot, "commit", "-q", "-m", "test: the mainline's own suite is red on this host");
+  }
   const baseSha = git(repoRoot, "rev-parse", "HEAD");
   const branch = `lean/issue-${issue}`;
   git(repoRoot, "checkout", "-q", "main");
@@ -202,6 +237,12 @@ function fixture(issue: number): {
   const head = commitFreeze(wt, issue, TEST);
 
   const run = createRun({ issue, version: "test", models: {}, baseSha, branch });
+  // The record is what the step reads back, so it must be the bytes the FREEZE holds at
+  // HEAD — which is the run's own contract. The base's red acceptance test is NOT part
+  // of it: it belongs to the mainline, and a run cannot freeze a test it did not author.
+  // What makes the base red is that the base carries a test at all whose bytes the run's
+  // contract does not satisfy, which the probe reads off the base commit itself.
+  const frozen: Record<string, string> = { [FROZEN_FILE]: sha(TEST) };
   const steps: Step[] = [
     { key: `${issue}:ready:0`, state: "ready", startedAt: 1, outcome: { kind: "ok" } },
     {
@@ -210,8 +251,8 @@ function fixture(issue: number): {
       startedAt: 2,
       outcome: {
         kind: "ok",
-        frozen: { "tests/AC1-retry.test.sh": sha(TEST) },
-        tests: { AC1: ["tests/AC1-retry.test.sh"] },
+        frozen,
+        tests: { AC1: [FROZEN_FILE] },
       },
     },
   ];
@@ -220,6 +261,7 @@ function fixture(issue: number): {
     repoRoot,
     wt,
     head,
+    frozen,
     ctx: {
       repoRoot,
       issue,
@@ -238,7 +280,7 @@ export function sha(text: string | Buffer): string {
 
 /** Run `verify` against a fixture repo; a throw comes back as `threw`. */
 export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
-  const f = fixture(opts.issue);
+  const f = fixture(opts.issue, opts.baseRedContract === true);
 
   const wt = f.wt;
   const repoRoot = f.repoRoot;
@@ -254,8 +296,8 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
     // The freeze is the fixture's own commit, hashed into the log's record; this
     // rewrite lands AFTER it, so HEAD's blob no longer matches the record while
     // the working tree stays clean. Only a read of the commit can see it.
-    writeFileSync(path.join(wt, "tests/AC1-retry.test.sh"), opts.editAtHead, { mode: 0o755 });
-    chmodSync(path.join(wt, "tests/AC1-retry.test.sh"), 0o755);
+    writeFileSync(path.join(wt, FROZEN_FILE), opts.editAtHead, { mode: 0o755 });
+    chmodSync(path.join(wt, FROZEN_FILE), 0o755);
     commitHere(wt, "chore: rewrote the frozen test after the freeze");
   }
   if (opts.editDisk !== undefined) {
@@ -268,7 +310,7 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
       writeFileSync(path.join(wt, "src/DONE"), "done\n");
       commitHere(wt, "feat: implemented the retry helper");
     }
-    writeFileSync(path.join(wt, "tests/AC1-retry.test.sh"), opts.editDisk, { mode: 0o755 });
+    writeFileSync(path.join(wt, FROZEN_FILE), opts.editDisk, { mode: 0o755 });
   }
   if (opts.dirty === true) writeFileSync(path.join(wt, "notes.txt"), "a stray file\n");
 
@@ -297,6 +339,7 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
   const { exec, redRunsSeen } = makeVerifyExec({
     wt,
     probeDir,
+    repoRoot,
     tiers,
     opts,
   });
@@ -385,7 +428,7 @@ export function buildFixtureForWiring(issue: number): {
   wt: string;
   ctx: HandlerCtx;
 } {
-  const f = fixture(issue);
+  const f = fixture(issue, false);
   return { repoRoot: f.repoRoot, wt: f.wt, ctx: f.ctx };
 }
 
@@ -417,8 +460,8 @@ export function redLog(prUrl?: string): Step[] {
     decided("ready", { kind: "ok" }),
     decided("specify", {
       kind: "ok",
-      frozen: { "tests/AC1-retry.test.sh": "a".repeat(64) },
-      tests: { AC1: ["tests/AC1-retry.test.sh"] },
+      frozen: { [FROZEN_FILE]: "a".repeat(64) },
+      tests: { AC1: [FROZEN_FILE] },
     }),
     decided("build", { kind: "ok", reason: "1 file(s) changed" }),
     decided("verify", {
