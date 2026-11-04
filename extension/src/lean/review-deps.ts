@@ -415,9 +415,14 @@ export function fixPrompt(opts: ReviewFixArgs): string {
   // implemented. Lean prints the BODY only — it has no cached title to print,
   // and inventing one from the first line of a body would be a claim the step
   // did not read off the forge.
+  //
+  // The lead-in names the block's purpose; the FULL decline rule is printed
+  // once, in the section below, because the rule is a procedure (marker, what
+  // may be cited, what a declined row costs) and not one sentence. The same
+  // text twice in one brief is one rule the reader has to reconcile twice.
   const issueBlock = fencedIssuePromptBlock(
     opts.issueBody,
-    `${FIXER_DECLINE_RULE}`,
+    "A finding you cannot apply without contradicting it is declined, not implemented — how is stated below.",
     fencedIssueBody,
   );
   // The rule that tells the fixer HOW to refuse. Printed as its own section

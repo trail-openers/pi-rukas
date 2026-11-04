@@ -26,13 +26,16 @@ export function lensFixResendPrompt(
   issueBody: string | undefined,
   fenceLines?: readonly string[],
 ): string {
+  // One render of the issue block, as in `inlineLensFixPrompt`: the block, and
+  // the gate on printing the decline rule (no issue, nothing to cite).
+  const issueBlock = issuePromptBlockForReview(issueBody);
   return [
     `RE-DISPATCH — the previous lens-fix dispatch produced no committed fix: no commits ahead of the feature branch in the lens-fix worktree ${JSON.stringify(fixTree)}.`,
     // The issue first, exactly as the ordinary arm prints it: the re-dispatched
     // fixer judges each finding against what the ticket asked for, and needs the
     // decline rule for the same reason the first one did.
-    issuePromptBlockForReview(issueBody).trim(),
-    issuePromptBlockForReview(issueBody) === "" ? "" : FIXER_DECLINE_RULE,
+    issueBlock.trim(),
+    issueBlock === "" ? "" : FIXER_DECLINE_RULE,
     // #1798 — the re-dispatch IS the shape this clause exists for: the
     // predecessor was killed with its work uncommitted. Say what to commit
     // and when in the SAME constant the ordinary prompt prints, so the two

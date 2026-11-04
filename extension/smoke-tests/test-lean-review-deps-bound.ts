@@ -62,7 +62,6 @@ async function deliver(
       wave: "full",
       pr: undefined,
       context: "ctx",
-      issueBody: "body",
       evidence: undefined,
       extraFindings: [],
       headless: false,

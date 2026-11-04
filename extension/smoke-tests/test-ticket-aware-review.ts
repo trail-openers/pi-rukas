@@ -12,7 +12,7 @@
  * lens-review round R") plus the carried blocks.
  *
  * Every site is asserted on the string the CHILD receives, not on the argument
- * the driver was handed:
+ * the driver was handed — the captures live in `lib/ticket-capture.ts`:
  *   - the /work lens context, captured through `ctx.lensReviewFn`;
  *   - the /work lens-fix prompts, captured through `ctx.dispatchFn` — both the
  *     ordinary literal and the RE-DISPATCH literal, which is a second array and
@@ -29,20 +29,26 @@
  * body that says nothing cannot show that a body was read.
  */
 
-import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import path from "node:path";
-import { buildAdversarialPrompt, buildFixPrompt } from "../src/adversarial-prompts.ts";
+import { rmSync } from "node:fs";
+import {
+  buildAdversarialPrompt,
+  buildFixPrompt,
+  fencedIssuePromptBlock,
+} from "../src/adversarial-prompts.ts";
 import type { DispatchResult } from "../src/types.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
-import { runLensFix } from "../src/work-driver-lens-fix.ts";
 import { FIXER_DECLINE_RULE, ISSUE_DECLINE_MARKER } from "../src/work-driver-lens-issue.ts";
-import { runLens } from "../src/work-driver-lens.ts";
 import { initialState } from "../src/workflow-state.ts";
 import { makeFakePi } from "./lib/lens-fix-bound-land-fixture.ts";
-import { CONSTRAINT, ISSUE_BODY, OVER_BODY } from "./lib/ticket-issue-fixture.ts";
-import { mkLensSummary } from "./test-helpers.ts";
+import {
+  adversarialFixture,
+  captureLensContext,
+  captureLensFixPrompts,
+  scratchRoots,
+  tmp,
+} from "./lib/ticket-capture.ts";
+import { CONSTRAINT, INJECT_BODY, ISSUE_BODY, OVER_BODY } from "./lib/ticket-issue-fixture.ts";
+import { insidePromptFence } from "./lib/ticket-prompt-fence.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -53,112 +59,15 @@ function assert(cond: boolean, msg: string): void {
   }
 }
 
-const ROOTS: string[] = [];
-function tmp(prefix: string): string {
-  const dir = mkdtempSync(path.join(tmpdir(), `${prefix}-`));
-  ROOTS.push(dir);
-  return dir;
-}
-
-/** Write a cached issue-body artifact inside `.pi/work-state/` (the only place
- * a reader will accept) and return its repo-relative path, as explore writes it. */
-function cachedArtifact(repoRoot: string, issue: number, text: string): string {
-  const dir = path.join(repoRoot, ".pi", "work-state");
-  mkdirSync(dir, { recursive: true });
-  const file = path.join(dir, `issue-body-${String(issue)}.txt`);
-  writeFileSync(file, text, "utf8");
-  return path.relative(repoRoot, file);
-}
-
 const FINDINGS =
   '[{"path":"src/meter.ts","line":12,"severity":"HIGH","title":"message should be clearer","suggestion":"reword the exception"}]';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 1. /work lens prompts carry the issue block (captured at lensReviewFn).
-//
-// Driven over a REAL repo with a real branch: `runLens` reads its own diff
-// (through the driver's integrated read, which uses the real executor whatever
-// the injected one says), so a stubbed diff cannot make it reach the context.
 // ═══════════════════════════════════════════════════════════════════════════
-function gitIn(cwd: string, args: string[]): string {
-  const r = spawnSync("git", args, {
-    cwd,
-    encoding: "utf8",
-    env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
-  });
-  if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
-  return (r.stdout ?? "").trim();
-}
-
-function initRepo(label: string): string {
-  const root = tmp(`ticket-repo-${label}`);
-  const originDir = path.join(root, "origin.git");
-  const repo = path.join(root, "repo");
-  mkdirSync(repo, { recursive: true });
-  const run = (cwd: string, args: string[]) => {
-    const r = spawnSync("git", args, {
-      cwd,
-      encoding: "utf8",
-      env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
-    });
-    if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
-    return (r.stdout ?? "").trim();
-  };
-  // A local bare "origin" and a pushed branch: the driver's diff reads are
-  // `origin/<base>...origin/<head>`, so a local-only commit is an unreadable
-  // diff and the step returns before any prompt is built.
-  run(root, ["init", "-q", "--bare", "--initial-branch=main", originDir]);
-  run(repo, ["init", "-q", "-b", "main"]);
-  run(repo, ["config", "user.email", "t@t"]);
-  run(repo, ["config", "user.name", "t"]);
-  writeFileSync(path.join(repo, "meter.ts"), "export const draw = () => 1;\n");
-  run(repo, ["add", "-A"]);
-  run(repo, ["commit", "-q", "-m", "base"]);
-  run(repo, ["remote", "add", "origin", originDir]);
-  run(repo, ["push", "-q", "-u", "origin", "main"]);
-  run(repo, ["remote", "set-head", "origin", "main"]);
-  run(repo, ["checkout", "-q", "-b", "feature/issue-2009"]);
-  writeFileSync(
-    path.join(repo, "quota.ts"),
-    "export const quota = () => { throw new Error('x'); };\n",
-  );
-  run(repo, ["add", "-A"]);
-  run(repo, ["commit", "-q", "-m", "feat: quota"]);
-  run(repo, ["push", "-q", "-u", "origin", "feature/issue-2009"]);
-  return repo;
-}
-
-async function lensContextOf(opts: {
-  label: string;
-  body?: string;
-  issues?: number[];
-}): Promise<string> {
-  const repoRoot = initRepo(opts.label);
-  const s = initialState(2009, 1_000_000);
-  s.pipelineState.worktrees = { default: repoRoot };
-  s.pipelineState.branchName = "feature/issue-2009";
-  s.pipelineState.baseSha = undefined;
-  if (opts.issues) s.issues = opts.issues;
-  if (opts.body !== undefined) {
-    s.pipelineState.issueBodyArtifact = cachedArtifact(repoRoot, 2009, opts.body);
-  }
-  let seen = "";
-  const ctx = {
-    host: { sendUserMessage: () => undefined },
-    repoRoot,
-    issue: 2009,
-    lensReviewFn: async (a: { context?: string }) => {
-      seen = a.context ?? "";
-      return mkLensSummary({ verdict: "APPROVED" });
-    },
-  } as unknown as DriverContext;
-  await runLens(ctx, s, Date.now());
-  return seen;
-}
-
 console.log("# /work: the lens context carries the issue block");
 {
-  const context = await lensContextOf({
+  const context = await captureLensContext({
     label: "body",
     // `### INJECT` stays at column zero on purpose: the disarm that matters is
     // the FENCE, and a fence that indents its payload hides whether the rule
@@ -199,19 +108,19 @@ console.log("# /work: the lens context carries the issue block");
     "and the body's own backticks were neutralised: no fence the prompt did not open is left in the brief",
   );
 
-  const empty = await lensContextOf({ label: "empty", body: "   \n" });
+  const empty = await captureLensContext({ label: "empty", body: "   \n" });
   assert(
     !empty.includes("judge it against THIS") && !empty.includes("undefined"),
     'an empty cached body produces no issue block and no "undefined" in the lens context',
   );
 
-  const none = await lensContextOf({ label: "none" });
+  const none = await captureLensContext({ label: "none" });
   assert(
     !none.includes("judge it against THIS") && !none.includes("undefined"),
     "and a cycle with no cached artifact at all prints no block either",
   );
 
-  const big = await lensContextOf({ label: "big", body: OVER_BODY });
+  const big = await captureLensContext({ label: "big", body: OVER_BODY });
   const markers = big.match(/…\(issue truncated\)/g) ?? [];
   assert(
     markers.length === 1,
@@ -222,7 +131,7 @@ console.log("# /work: the lens context carries the issue block");
     "and the fence's own clip marker never appears — one marker, one meaning",
   );
 
-  const grouped = await lensContextOf({
+  const grouped = await captureLensContext({
     label: "grouped",
     body: ISSUE_BODY,
     issues: [2009, 2010],
@@ -236,74 +145,11 @@ console.log("# /work: the lens context carries the issue block");
 // ═══════════════════════════════════════════════════════════════════════════
 // 2. /work lens-fix: BOTH literals carry the block plus the fixer rule.
 // ═══════════════════════════════════════════════════════════════════════════
-async function captureLensFixPrompts(resend: boolean): Promise<string[]> {
-  const repoRoot = tmp(resend ? "ticket-fix-resend" : "ticket-fix");
-  const tree = path.join(repoRoot, ".worktrees", "issue-2009");
-  mkdirSync(tree, { recursive: true });
-  const s = initialState(2009, 1_000_000);
-  s.pipelineState.currentStep = "lens-fix";
-  s.pipelineState.worktrees = { default: tree };
-  s.pipelineState.branchName = "";
-  s.pipelineState.reviewRound = 1;
-  s.pipelineState.issueBodyArtifact = cachedArtifact(repoRoot, 2009, ISSUE_BODY);
-  const log: Record<string, unknown>[] = [
-    {
-      kind: "lens-issues-found",
-      at: 1_100_000,
-      jobId: "j-1",
-      round: 1,
-      findings: FINDINGS,
-      verdict: "ISSUES_FOUND",
-    },
-  ];
-  if (resend) {
-    log.push({
-      kind: "lens-fix-empty-resend",
-      at: 1_150_000,
-      jobId: "j-2",
-      round: 1,
-      worktree: tree,
-      evidence: "no committed fix",
-    });
-  }
-  const prompts: string[] = [];
-  const prevResume = process.env.PI_ENSEMBLE_RESUME;
-  process.env.PI_ENSEMBLE_RESUME = "0";
-  try {
-    const ctx = {
-      host: makeFakePi(),
-      repoRoot,
-      issue: 2009,
-      verifyExecFn: async (_cmd: string, o?: { argv?: string[] }) => {
-        const a = (o?.argv ?? []).join(" ");
-        if (a.includes("rev-parse HEAD")) return { stdout: `${"0".repeat(40)}\n` };
-        if (a.includes("rev-list")) return { stdout: "0\n" };
-        return { stdout: "" };
-      },
-      dispatchFn: async (_h: unknown, spec: { role: string; prompt: string }) => {
-        prompts.push(spec.prompt);
-        return {
-          role: "developer",
-          ok: true,
-          text: "done",
-          toolUses: [],
-          ms: 5,
-          exitCode: 0,
-          transcriptPath: "/tmp/stub.json",
-        } as DispatchResult;
-      },
-    } as unknown as DriverContext;
-    await runLensFix(ctx, { ...s, eventLog: log } as never, 1_200_000);
-  } finally {
-    if (prevResume === undefined) process.env.PI_ENSEMBLE_RESUME = undefined;
-    else process.env.PI_ENSEMBLE_RESUME = prevResume;
-  }
-  return prompts;
-}
-
 console.log("# /work: both lens-fix literals carry the issue block and the fixer rule");
 {
-  const ordinary = (await captureLensFixPrompts(false))[0] ?? "";
+  const ordinary =
+    (await captureLensFixPrompts(tmp("ticket-fix"), { resend: false, findings: FINDINGS }))[0] ??
+    "";
   assert(
     ordinary.includes("six-pass review findings"),
     "the ordinary lens-fix prompt is the real one",
@@ -326,7 +172,35 @@ console.log("# /work: both lens-fix literals carry the issue block and the fixer
     "a heading inside the issue body cannot open a line of the fixer's brief",
   );
 
-  const resendPrompts = await captureLensFixPrompts(true);
+  // Same disarm asserted on the injected payload, driven through the real step:
+  // the shared fixture's `### INJECT` is not at column zero, so only this body
+  // can show the fence holds for the ordinary literal too.
+  const inj =
+    (
+      await captureLensFixPrompts(tmp("ticket-fix-inj"), {
+        resend: false,
+        findings: FINDINGS,
+        body: INJECT_BODY,
+      })
+    )[0] ?? "";
+  assert(
+    /```text\n[\s\S]*?### INJECT/.test(inj),
+    "the ordinary lens-fix prompt puts the injected heading inside a ```text fenced region",
+  );
+  assert(
+    insidePromptFence(inj, "### INJECT"),
+    "and that heading begins a line of the brief in no place but inside the fence",
+  );
+  const injFences = inj.match(/^```/gm) ?? [];
+  assert(
+    injFences.length % 2 === 0 && injFences.length >= 2,
+    `and it opens and closes its own fences (saw ${String(injFences.length)})`,
+  );
+
+  const resendPrompts = await captureLensFixPrompts(tmp("ticket-fix-resend"), {
+    resend: true,
+    findings: FINDINGS,
+  });
   const resend = resendPrompts.find((p) => p.includes("RE-DISPATCH")) ?? "";
   assert(resend.includes("RE-DISPATCH"), "the fixture really drove the RE-DISPATCH branch");
   assert(
@@ -350,13 +224,11 @@ console.log("# the adversarial reviewer is shown the body, not the file path");
   // stubs its way past them never proves what the reviewer was handed. A real
   // repo with a real commit on a real branch is the smallest state that gets
   // there. `adversarialLoopFn` is the sanctioned seam for the reviewer itself.
-  const repoRoot = initRepo("adv");
-  const artifact = cachedArtifact(repoRoot, 2009, `Meter quota check\n\n${ISSUE_BODY}`);
+  const { repoRoot, baseSha, artifact } = adversarialFixture("adv");
   // The pass reads its diff as `git diff <baseSha>` against the working tree, so
   // a state with no base compares HEAD to itself: an empty read, the #286 skip,
   // and no reviewer reached at all. The base is the mainline commit the branch
   // was cut from.
-  const baseSha = gitIn(repoRoot, ["rev-parse", "origin/main"]);
   const s = initialState(2009, 1_000_000);
   s.pipelineState = {
     ...s.pipelineState,
@@ -431,13 +303,55 @@ console.log("# the adversarial reviewer is shown the body, not the file path");
   const fixPromptBuilt = buildFixPrompt({
     findings: "1. reword the exception message",
     context: "/work issue #2009",
-    diff: "diff --git a/src/meter.ts\n+x",
+    diff: "diff --git a/src/meter.ts\nx",
     round: 1,
     issueBody: ISSUE_BODY,
   });
   assert(
     fixPromptBuilt.includes(CONSTRAINT) && /contradict|do not apply/i.test(fixPromptBuilt),
     "the loop's own fix prompt carries the block and a rule against applying a contradicting finding",
+  );
+  // The fixer is WRITE-capable, so its copy of the body is disarmed at the print
+  // site exactly as the lens and lens-fix briefs disarm theirs. The adversarial
+  // REVIEWER's prompt prints the body unfenced (`issueSection`) — a read-only
+  // brief — so these three assertions are the fixer's own, and the reviewer's
+  // prompt is asserted separately above.
+  const inj = buildFixPrompt({
+    findings: "1. f",
+    context: "c",
+    diff: "d",
+    round: 1,
+    issueBody: INJECT_BODY,
+  });
+  assert(
+    inj.includes("### INJECT"),
+    "non-vacuity: the injected heading reached the fixer's brief at all",
+  );
+  assert(
+    insidePromptFence(inj, "### INJECT"),
+    "and it begins a line of the brief in no place but inside a fence the prompt opened",
+  );
+  // Non-vacuity: the fence IS the change. The same body printed through the
+  // layer's unbounded renderer (what the unfenced arm used) opens a section.
+  const unfenced = fencedIssuePromptBlock(INJECT_BODY, "rule", (body) => body);
+  assert(
+    /^### INJECT/m.test(unfenced) && !/```text/.test(unfenced),
+    "non-vacuity: the unfenced render of the same body does open a line of the brief (so the fence is what the assertions above can fail on)",
+  );
+  // The fence's backtick neutralisation must not disturb the diff block this
+  // prompt also prints: `fenceText` is the one renderer, and a payload that
+  // could break the diff fence would truncate the brief silently.
+  const diffBacktick = buildFixPrompt({
+    findings: "1. f",
+    context: "c",
+    diff: "diff --git a/x.ts\n+const tick = ```;\n",
+    round: 1,
+    issueBody: ISSUE_BODY,
+  });
+  assert(
+    diffBacktick.includes("const tick = ```") &&
+      (diffBacktick.match(/^```/gm) ?? []).length % 2 === 0,
+    "the fenced body leaves the prompt's own diff block and its fence count whole",
   );
   const noIssueFix = buildFixPrompt({
     findings: "f",
@@ -451,7 +365,7 @@ console.log("# the adversarial reviewer is shown the body, not the file path");
   );
 }
 
-for (const dir of ROOTS) {
+for (const dir of scratchRoots()) {
   try {
     rmSync(dir, { recursive: true, force: true });
   } catch {

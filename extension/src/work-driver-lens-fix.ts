@@ -87,6 +87,10 @@ export function inlineLensFixPrompt(
    *  to print — the gate still refuses anything it cannot verify. */
   fenceLines?: readonly string[],
 ): string {
+  // ONE render of the issue block, two uses: the block itself, and the gate on
+  // whether the decline rule may print at all. Calling the renderer twice is two
+  // renderings of the same text that could disagree.
+  const issueBlock = issuePromptBlockForReview(issueBody);
   return [
     "Address the six-pass review findings below against the diff currently on this worktree.",
     // The issue first: the fixer judges each finding against what the ticket
@@ -94,8 +98,8 @@ export function inlineLensFixPrompt(
     // contradicts it. Both arms of this step print it through the one renderer
     // so the second literal cannot lose the rule the way #1156 lost the
     // test-scope line. An absent or blank body prints neither line.
-    issuePromptBlockForReview(issueBody),
-    issuePromptBlockForReview(issueBody) === "" ? "" : FIXER_DECLINE_RULE,
+    issueBlock,
+    issueBlock === "" ? "" : FIXER_DECLINE_RULE,
     "",
     "  - Make the minimal change per finding. Group by file.",
     "  - Run local quality gates before declaring complete.",

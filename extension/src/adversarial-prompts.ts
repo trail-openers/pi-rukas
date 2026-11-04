@@ -31,6 +31,7 @@
 
 import { type DiffRange, boundDiffForPrompt } from "./adversarial-diff-cap.ts";
 import { COMMENT_JUDGEMENT_PROSE } from "./comment-evidence.ts";
+import { fenceText } from "./lean/text-fence.ts";
 
 /** Keeps a pathological issue body from crowding out the diff. Exported so
  * every site that prints an issue block bounds it the same way — a second
@@ -158,6 +159,13 @@ export function fencedIssuePromptBlock(
   return `\n\n${ISSUE_PROMPT_LEAD} ${rule}\n\n${render(body)}`;
 }
 
+/** The one sentence this fixer is held to about the issue. A fixer shown the
+ * spec and not told what to do with it is the fixer that "fixes" a finding by
+ * violating the ticket. Printed with the block rather than on its own: the
+ * sentence is only actionable against the requirement it names. */
+const FIXER_ISSUE_RULE =
+  "Do not apply a finding that contradicts a requirement stated in the issue above — name it in your reply and leave the code the issue asked for.";
+
 export function issueSection(issueBody: string | undefined): string {
   const body = boundedIssueBody(issueBody);
   if (body === "") return "";
@@ -241,13 +249,6 @@ export function buildFixPrompt(opts: {
   diff: string;
   round: number;
   issueBody?: string;
-  /**
-   * The one sentence this fixer is held to about the issue. A fixer shown the
-   * spec and not told what to do with it is the fixer that "fixes" a finding by
-   * violating the ticket. Defaults to this loop's own wording; the caller may
-   * supply it, and every caller that prints an issue block prints a rule with it.
-   */
-  issueRule?: string;
   priorFindings?: string[];
   /** See `buildAdversarialPrompt.diffRange` — the ref range this diff came from,
    * which the truncation notice names when the diff is over the inline cap. */
@@ -259,18 +260,18 @@ export function buildFixPrompt(opts: {
     : "";
   const bounded = boundDiffForPrompt(opts.diff, opts.diffRange);
   const note = bounded.note ? NOTE_SEP + bounded.note : "";
-  // The fixer's rule, printed with the issue block rather than on its own: the
-  // sentence is only actionable against the requirement it names.
-  const issue = issueSection(opts.issueBody);
-  const fixerRule =
-    issue === ""
-      ? ""
-      : `\n\n${opts.issueRule ?? "Do not apply a finding that contradicts a requirement stated in the issue above — name it in your reply and leave the code the issue asked for."}`;
+  // The issue is the author's text and this brief goes to a write-capable
+  // developer, so it is disarmed at the print site like every other block that
+  // crosses into a child — one `### heading` or a ``` fence inside it would
+  // otherwise open a section of this prompt the driver never wrote.
+  const issue = fencedIssuePromptBlock(opts.issueBody, FIXER_ISSUE_RULE, (body) =>
+    fenceText(body, MAX_ISSUE_CHARS + 1),
+  );
   return `Fix the following adversarial review findings. Original context: ${opts.context}
 Round ${opts.round} fix.
 
 Findings:
-${opts.findings}${priorSection}${issue}${fixerRule}
+${opts.findings}${priorSection}${issue}
 
 Make the minimal changes needed to address every finding. Run local quality gates before returning.
 

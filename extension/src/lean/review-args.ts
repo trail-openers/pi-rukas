@@ -155,15 +155,10 @@ export interface LensArgs {
    * picked.
    */
   pr: number | undefined;
-  /** The context lines this step composes (see `lensContext` in `review-deps.ts`). */
+  /** The context lines this step composes (see `lensContext` in `review-deps.ts`).
+   * The run's issue reaches the lenses inside it: `lensContext` prints the
+   * fenced block there, so the arg shape carries no separate body. */
   context: string;
-  /**
-   * The run's issue body, threaded to the lens pass so every lens judges the
-   * diff against the ticket rather than against generic best practice. Printed
-   * by `lensContext`, which disarms it at the print site; the step reads it once
-   * and hands the same text to both passes and to the fixer.
-   */
-  issueBody: string;
   /**
    * The base of the range this round reviews, when the round is the re-review.
    *
