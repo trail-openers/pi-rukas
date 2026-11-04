@@ -72,6 +72,10 @@ export interface CiLandLog {
   worktree: string;
   /** The oid the worktree's HEAD really holds (a real `git rev-parse`). */
   worktreeHead: string;
+  /** Move the context's clock on by `ms`. Always present: the recorders' injected
+   *  `sleep` calls it, so a poll whose bound the case forgot to make reachable
+   *  hangs on a frozen clock instead of burning a real 60 s per poll. */
+  tick: (ms: number) => void;
   ctx: HandlerCtx;
 }
 
@@ -123,6 +127,13 @@ export function ciLandLog(
     noPr?: boolean;
     /** Leave the worktree an empty directory — no checkout, so no head to report. */
     noWorktree?: boolean;
+    /** Start the context's clock here instead of at the frozen `4`, and give the
+     *  case a `tick` that moves it. A `ci` that POLLS the forge bounds its wait on
+     *  this clock and advances it only through the injected `sleep`, so every
+     *  waiting case must ask for a moving clock: a frozen one can never cross the
+     *  bound and the poll reads the forge forever. Non-waiting cases leave it
+     *  frozen, which is what keeps a step that reads time from seeing a wall clock. */
+    clockMs?: number;
     /** Check the worktree out at this oid instead of the certified head. Pass
      *  `"other"` for a real second commit in the repo (a genuine `git checkout`
      *  of something else), rather than an oid the repo has never held. */
@@ -193,19 +204,26 @@ export function ciLandLog(
     baseSha: "a".repeat(40),
     branch,
   });
+  // The default clock is FROZEN at 4: a step that reads time must not find a
+  // running wall clock under a test. A polling case asks for `clockMs` and gets
+  // the same clock with a handle on it; a case that waits without asking hangs
+  // rather than sleeping for real, which is the loud failure the suite wants.
+  let clockMs = opts.clockMs ?? 4;
   return {
     repoRoot,
     head,
     branch,
     worktree: wt,
     worktreeHead,
+    ...(opts.clockMs === undefined ? {} : { clockMs: opts.clockMs }),
+    tick: (ms: number) => (clockMs += ms),
     ctx: {
       repoRoot,
       issue,
       run: { ...run0, steps },
       steps,
       stepKey: `${String(issue)}:land:0`,
-      now: () => 4,
+      now: () => clockMs,
     },
   };
 }

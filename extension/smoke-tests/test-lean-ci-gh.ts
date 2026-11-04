@@ -84,6 +84,20 @@ interface Case {
   headOnDisk?: string;
   /** HEAD answers with no branch at all (a detached tree). */
   detached?: boolean;
+  /** One `gh pr view` reply PER POLL (a string is returned verbatim); the last
+   *  entry repeats, so a case never runs out of replies. */
+  viewSeq?: unknown[];
+  /** One `gh pr checks` reply PER POLL; same rule as `viewSeq`. */
+  checksSeq?: unknown[];
+  /** Reject the Nth `gh pr checks` read with this error — where gh's exit-8
+   *  pending reply is expressed, since the real CLI rejects with `code: 8`. */
+  checksThrows?: unknown[];
+  /** The wait's bound in ms, so a budget case does not wait 30 real minutes. */
+  waitTimeoutMs?: number;
+  /** The run's whole-cycle deadline, on the record the way the engine persists it. */
+  deadlineMs?: number;
+  /** Start the context's clock here (and give the poll a clock that MOVES). */
+  clockMs?: number;
 }
 
 /** Run one git command in the fixture's real repo and report what git really says. */
@@ -108,6 +122,8 @@ interface Ran {
   cmds: string[];
   /** How many times the full tier command ran. */
   tierRuns: number;
+  /** How many `gh pr view` reads ran — one per poll, never one per step. */
+  views: number;
 }
 
 /**
@@ -119,7 +135,14 @@ interface Ran {
  */
 async function run(
   c: Case,
-): Promise<{ outcome?: Outcome; threw?: Error; ran: Ran; wt: string; head: string }> {
+): Promise<{
+  outcome?: Outcome;
+  threw?: Error;
+  ran: Ran;
+  slept: number[];
+  wt: string;
+  head: string;
+}> {
   const f = ciLandLog(900 + Math.floor(Math.random() * 90000), {
     ...(c.headOnDisk === undefined
       ? {}
@@ -128,11 +151,13 @@ async function run(
     ...(c.dirtyFile === undefined ? {} : { dirtyFile: c.dirtyFile }),
   });
   const tier = c.full ?? "";
-  const ran: Ran = { cmds: [], tierRuns: 0 };
+  const ran: Ran = { cmds: [], tierRuns: 0, views: 0 };
+  const slept: number[] = [];
   const reads = ghReads(77);
   const deps: CiDeps = {
     exec: async (cmd, o) => {
       ran.cmds.push(cmd);
+      if (cmd === reads.view || cmd.startsWith("gh pr view ")) ran.views++;
       if (cmd === tier && tier !== "") {
         ran.tierRuns++;
         if (c.tierFails !== undefined) throw c.tierFails;
@@ -164,11 +189,20 @@ async function run(
       verify: c.noTierAtAll === true || c.full === undefined ? {} : { full: c.full },
     }),
     tierTimeoutMs: 5_000,
+    ...(c.waitTimeoutMs === undefined ? {} : { waitTimeoutMs: c.waitTimeoutMs }),
+    // The injected sleep MOVES the clock the wait is bounded by — the shape
+    // `test-forge-ci-watch.ts` drives `ciWatch` with. A sleep that only slept
+    // would let the bound never expire and the case would hang.
+    sleep: async (ms) => {
+      slept.push(ms);
+      f.tick?.(ms);
+    },
+    now: () => f.ctx.now(),
   };
   try {
-    return { outcome: await ciOutcome(f.ctx, deps), ran, wt: f.repoRoot, head: f.head };
+    return { outcome: await ciOutcome(f.ctx, deps), ran, slept, wt: f.repoRoot, head: f.head };
   } catch (err) {
-    return { threw: err as Error, ran, wt: f.repoRoot, head: f.head };
+    return { threw: err as Error, ran, slept, wt: f.repoRoot, head: f.head };
   }
 }
 
