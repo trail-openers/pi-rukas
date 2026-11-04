@@ -91,11 +91,10 @@ export async function spawnSpecialist(
   opts: SpawnOptions = {},
 ): Promise<DispatchResult> {
   // #1528 — the per-process cap first, then the host-wide one (host-spawn-slots.ts).
-  // #1975 — the reviewer isolation choke point, beside the spawn-slot bounds.
+  // #1975 — the reviewer isolation choke point: `runWithReviewerTree` relocates
+  // a reviewer child's cwd and releases the tree in its own finally.
   return runWithReviewerTree(spec, (s) =>
-    withSpawnSlot(() =>
-      withHostSpawnSlot(() => spawnSpecialistInner(s, opts), opts.signal),
-    ),
+    withSpawnSlot(() => withHostSpawnSlot(() => spawnSpecialistInner(s, opts), opts.signal)),
   );
 }
 

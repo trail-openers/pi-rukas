@@ -38,6 +38,12 @@ import { isolateLedger } from "./lib/review-ledger-test-helpers.ts";
 import { installStubChild, makeGit } from "./lib/reviewer-child-stub.ts";
 
 isolateLedger();
+// The child is a `node` stub, never a Pi process — but the dispatch reaches the
+// real `child_process.spawn` seam, which the suite forbids by default
+// (verify-loop.sh exports PI_ENSEMBLE_FORBID_LIVE_SPAWN). This file opts into
+// the spawn path for its own process only, exactly as test-cancel.ts and
+// test-child-process-group.ts do for theirs.
+process.env.PI_ENSEMBLE_ALLOW_LIVE_SPAWN = "1";
 const gitEnv = gitTestEnv();
 const stub = installStubChild(gitEnv);
 
