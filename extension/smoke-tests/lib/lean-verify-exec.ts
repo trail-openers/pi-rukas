@@ -11,7 +11,7 @@
  *    its cwd at the repo root, so the add is recognised by the path it names rather
  *    than by a cwd that does not have it yet.
  * 2. **Inside the probe, is this the tier or the frozen contract?** Command identity,
- *    not the binary's name: `failTier()` builds a tier that is itself `sh -c '…'`, and
+ *    not the binary's name: a failTier tier is itself a quoted sh -c string, and the
  *    the frozen runner template is `sh {file}`, so "the binary is sh" separates nothing.
  *    What separates them is that a tier reaches the executor as a whole shell string
  *    with no argv, while the runner arrives in argv form with the test path as its
@@ -22,90 +22,24 @@
  *
  * Everything else — the porcelain checks, the HEAD and branch reads, the tamper
  * comparisons — is passed to a real `git`, because a stub that answered those would be
- * testing the stub.
+ * testing the stub. The two facts that identify the probe's own tree — its canonical
+ * path and the registration test — are the subject of `lean-verify-probe-tree.ts`.
+ *
+ * Prose in this file is read by the unscrubbed-spawn gate in
+ * test-verify-loop-git-env.ts, which blanks quoted spans BEFORE it blanks comments. A
+ * quote pair that opens on one line and closes on another therefore deletes the lines
+ * between them from that analysis, and a code span here would hide the scrubbed env a
+ * git spawn passes. Prose in this file keeps every quote pair on one line.
  */
 
-import { spawnSync } from "node:child_process";
-import { realpathSync } from "node:fs";
-import path from "node:path";
 import { execp } from "../../src/exec.ts";
 import type { WorkConfig } from "../../src/lean/config.ts";
 import type { Outcome, Step } from "../../src/lean/state.ts";
-import { NO_HOOKS } from "../../src/lean/specify-reset.ts";
-import { baselineProbeWorktreePath } from "../../src/lean/verify-baseline.ts";
 import type { VerifyExec } from "../../src/lean/verify-types.ts";
 import { gitTestEnv } from "./git-test-env.ts";
+import { namesProbeTree } from "./lean-verify-probe-tree.ts";
 
-/**
- * The probe's tree path, canonicalised the way `probeTierAtBase` builds it.
- *
- * On macOS `tmpdir()` is `/var/…`, a symlink to `/private/var`, and a path built from
- * the raw tmpdir is never equal to the one the probe actually runs in — so a probe call
- * would be mistaken for a HEAD run and answered from the run's own red counter. The
- * tree does not exist yet, so `realpathSync` cannot resolve it; its PARENT (which the
- * fixture created) is canonicalised and the leaf re-joined.
- */
-export function canonicalProbeDir(repoRoot: string, issue: number): string {
-  const probePath = baselineProbeWorktreePath(repoRoot, issue);
-  const probeParent = path.dirname(probePath);
-  return path.join(realpathSync(probeParent), probePath.slice(probeParent.length + 1));
-}
-
-/**
- * The ONE fact that makes an exec call "the probe": it names the probe's own tree, and
- * that tree is REGISTERED with git.
- *
- * Both halves are needed, and each kills one way the fixture could lie to itself.
- *
- * Naming the probe's path is what separates the probe from every other call the step
- * makes: the run's OWN worktree is a registered worktree too, so "is a registered
- * worktree" alone would answer the step's `rev-parse HEAD` in its own tree as a probe
- * call and every case would die at the very first read.
- *
- * Registration is what keeps a stubbed failure honest. When a case makes `worktree add`
- * refuse, the tree was never created; without this check the add itself (whose argv
- * names the path) would be answered from the base options, so the probe would be reading
- * its own `git worktree add` as a red frozen test and the run would surface `unusable`
- * for the wrong reason. `probeTierAtBase` removes the tree in a `finally`, so the window
- * in which git lists it is exactly the window in which the probe runs.
- *
- * The path is matched EXACTLY against what production names, and the tree must also be
- * REGISTERED with git right now. Each half kills a distinct way the fixture could lie:
- *
- *   - exact path, because the run's OWN worktree is a registered worktree too — a test
- *     that asked only "is this a registered tree?" would answer the step's `rev-parse
- *     HEAD` in its own worktree as a probe call and every case would die at its first
- *     read, and a probe moved INSIDE the repo is a path production never runs its
- *     commands at, so nothing matches it and the probe's colour comes out wrong;
- *   - registration, because when a case makes `worktree add` refuse the tree was never
- *     created: without this the add itself (whose argv names the path) would be answered
- *     from the base options and the probe would report its own `git worktree add` as a
- *     red contract. `probeTierAtBase` removes the tree in a `finally`, so the window in
- *     which git lists it is exactly the window in which the probe runs.
- */
-function namesProbeTree(
-  repoRoot: string,
-  probeDir: string,
-  o2: Parameters<VerifyExec>[1] | undefined,
-): boolean {
-  const named: string[] = [];
-  if (typeof o2?.cwd === "string") named.push(o2.cwd);
-  if (Array.isArray(o2?.argv)) named.push(...o2.argv.filter((a) => typeof a === "string"));
-  if (!named.some((p) => p === probeDir)) return false;
-  const listed = spawnSync("git", [...NO_HOOKS, "worktree", "list", "--porcelain"], {
-    cwd: repoRoot,
-    encoding: "utf8",
-    env: gitTestEnv(),
-  });
-  if (listed.status !== 0) return false;
-  const registered = new Set(
-    (listed.stdout ?? "")
-      .split("\n")
-      .filter((l) => l.startsWith("worktree "))
-      .map((l) => l.slice("worktree ".length)),
-  );
-  return named.some((p) => registered.has(p));
-}
+export { canonicalProbeDir } from "./lean-verify-probe-tree.ts";
 
 import {
   type ProbeShapeOpts,
