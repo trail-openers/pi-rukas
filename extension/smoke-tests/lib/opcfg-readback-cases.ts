@@ -42,6 +42,7 @@ import { execFileSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
+  linkSync,
   lstatSync,
   readFileSync,
   rmSync,
@@ -342,6 +343,56 @@ export async function runPostChildReadCases(
     );
     rmSync(tap, { force: true });
     void env;
+  }
+
+  {
+    // The same TOCTOU one syscall later, and the one shape the identity check is
+    // blind to. `post.stat()` runs on the fd, so the inode it describes is by
+    // construction the one the open reached and the one the predicate approved;
+    // a name raced in AFTER the check shares that inode and the `dev`/`ino`
+    // comparison agrees with itself. The open would then truncate and write the
+    // operator's bytes out under the child's second name. The predicate cannot
+    // refuse it either — at `lstat` time there was nothing to refuse. Only the
+    // link count on the post-open stat sees it, so this asserts that half of the
+    // verdict on the PRESENT arm, where the identity matches and nothing else
+    // can. Deterministic by arrangement: the alias exists before the helper is
+    // called, and its inode is asserted to be the approved one, so `replace`
+    // here has exactly one possible cause.
+    //
+    // `nlink` is read from `post` on BOTH arms; with it moved back inside the
+    // `approved === "absent"` branch this goes red while the absent-arm case in
+    // `lib/opcfg-entry-cases.ts` stays green — which is why the arm is asserted
+    // here rather than argued from the shared expression.
+    const { home } = sentinelHome("post-open-hardlink");
+    const target = join(home, ".config", "gh", "hosts.yml");
+    const operator = readFileSync(target);
+    const payload = "github.com:\n    oauth_token: attacker\n";
+    const alias = join(dirname(home), "late-alias");
+    rmSync(alias, { force: true });
+    // The child's payload sits at the protected path: the violation `restoreOne`
+    // is being asked to repair, and the byte that must NOT reach the alias.
+    writeFileSync(target, payload);
+    const approved = await lstat(target);
+    // The second name, raced in after the predicate's `lstat` and before the
+    // open: same inode, so only `nlink` can see it.
+    linkSync(target, alias);
+    assert(
+      lstatSync(alias).nlink === 2 && lstatSync(target).ino === approved.ino,
+      `post-open-hardlink: the precondition holds — the approved inode has a second name (${lstatSync(alias).nlink} links, same ino ${lstatSync(target).ino === approved.ino})`,
+    );
+    assert(
+      (await __openInPlaceForTest(target, operator, approved)) === "replace",
+      "post-open-hardlink: the in-place open refuses the approved inode because a second name shares it",
+    );
+    assert(
+      readFileSync(alias).equals(Buffer.from(payload)),
+      `post-open-hardlink: the refused open wrote nothing through the child's alias — it still holds the child's payload, not the operator's token (${JSON.stringify(readFileSync(alias).toString().slice(0, 34))})`,
+    );
+    assert(
+      readFileSync(target).equals(Buffer.from(payload)),
+      "post-open-hardlink: the refusal truncated nothing, so the replace arm still has the entry to repair",
+    );
+    rmSync(alias, { force: true });
   }
 
   {

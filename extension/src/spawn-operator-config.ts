@@ -251,13 +251,18 @@ async function restoreOne(target: string, bytes: Buffer | null): Promise<string 
  * Three things have to agree for this arm to be safe, and one of them is only
  * knowable AFTER the open: `open()` re-resolves the path, so a symlink the child
  * put at the target in the window since the check would receive the operator's
- * bytes, and an entry the child replaced with a fresh inode would be truncated
- * and written under a name the check never saw. So: open with `O_NOFOLLOW` (a
- * link is `ELOOP`, never a write-through), then compare `handle.stat()`'s
- * `dev`/`ino` with the `lstat` the caller's predicate settled on — what the
+ * bytes, an entry the child replaced with a fresh inode would be truncated and
+ * written under a name the check never saw, and a hard link raced in after the
+ * check shares the very inode the check approved — so identity matches and only
+ * the link count gives it away. So: open with `O_NOFOLLOW` (a link is `ELOOP`,
+ * never a write-through), then compare `handle.stat()`'s `dev`/`ino` with the
+ * `lstat` the caller's predicate settled on — what the
  * handle points at must be the very inode that predicate approved. Comparing
- * against a stat taken here instead would only ever agree with itself. Any
- * disagreement, and any error from the open, returns "replace": the caller falls
+ * against a stat taken here instead would only ever agree with itself. The
+ * `nlink` half of that verdict applies whichever identity was approved: a second
+ * name for the approved inode shares the bytes an in-place write is about to
+ * change, and the identity comparison cannot see it. Any disagreement, and any
+ * error from the open, returns "replace": the caller falls
  * to the arm that unlinks the entry it found and creates a fresh file, which is
  * always safe and reports honestly.
  *
@@ -288,11 +293,15 @@ export async function __openInPlaceForTest(
   }
   try {
     const post = await handle.stat();
-    if (
-      approved === "absent"
-        ? post.nlink !== 1
-        : post.ino !== approved.ino || post.dev !== approved.dev
-    ) {
+    // The share is refused on BOTH arms. A second name raced in after the check
+    // shares the inode the predicate approved, so the identity comparison alone
+    // agrees with itself and the truncate writes the operator's bytes out under
+    // the child's name; `nlink` is the only thing that sees it. For the absent
+    // arm there is no identity to compare, so `nlink` is all there is.
+    const leaky =
+      post.nlink !== 1 ||
+      (approved !== "absent" && (post.ino !== approved.ino || post.dev !== approved.dev));
+    if (leaky) {
       return "replace";
     }
     await handle.truncate(0);
