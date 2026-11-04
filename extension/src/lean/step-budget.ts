@@ -18,6 +18,7 @@ import { capsEnabled } from "../spawn-child-bound.ts";
 import { traceWarn } from "../trace.ts";
 import type { DispatchResult, DispatchUsage } from "../types.ts";
 import type { Budget, WorkConfig } from "./config.ts";
+import { DISPATCHES_MAX_ROWS } from "./state-outcome.ts";
 import type { LeanState, Outcome } from "./state.ts";
 
 /** Which ceiling was crossed, with what it was and what the child used. */
@@ -423,6 +424,14 @@ export function budgetVerdict(state: LeanState, fired: BudgetFired): Outcome {
  * Same sentence as {@link budgetVerdict} — the reason text is what the operator
  * is taught to read — with the cost rows attached, so a stopped round's tokens
  * reach the host instead of vanishing with the child.
+ *
+ * CLIPPED HERE, once, like every other writer of `dispatches` (`cleanPass`,
+ * `ReviewInfraError`, `errorOutcome`, `specify`'s merge): this step's `rows`
+ * accumulate across the whole attempt, and past the validator's cap
+ * `assertRunFile` does not drop the field the way the other paths do — it refuses
+ * the WHOLE state file, so a stopped step with no route back costs the run its
+ * resume and every child it paid for. The tail is kept, because the child that
+ * ran last is the one the ceiling stopped.
  */
 export function budgetVerdictWithRows(
   state: LeanState,
@@ -430,5 +439,5 @@ export function budgetVerdictWithRows(
   rows: DispatchUsageRow[],
 ): Outcome {
   const verdict = budgetVerdict(state, fired);
-  return rows.length === 0 ? verdict : { ...verdict, dispatches: rows };
+  return rows.length === 0 ? verdict : { ...verdict, dispatches: rows.slice(-DISPATCHES_MAX_ROWS) };
 }
