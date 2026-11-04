@@ -155,9 +155,7 @@ export function reviewDeps(headless: boolean): ReviewDeps {
         ...(a.threshold === undefined ? {} : { threshold: a.threshold }),
         // The test-only lens-child seam (see `ReviewDeps.lensChildFn`): set it and
         // the real engine fans out over the test's children instead of Pi ones.
-        ...(deps.lensChildFn === undefined
-          ? {}
-          : { lensChildFn: deps.lensChildFn }),
+        ...(deps.lensChildFn === undefined ? {} : { lensChildFn: deps.lensChildFn }),
         ...arms,
         ...leanChildOpts(a.headless),
       });
@@ -195,9 +193,7 @@ export function reviewDeps(headless: boolean): ReviewDeps {
         // indistinguishable from a whole-branch one — the guard refuses the round
         // and the run hands back. Carried only when the layer set it: a full review
         // has no delta to name, and an invented stamp would be a lie about a range.
-        ...(summary.deltaReview === undefined
-          ? {}
-          : { deltaReview: summary.deltaReview }),
+        ...(summary.deltaReview === undefined ? {} : { deltaReview: summary.deltaReview }),
         // The disclosure the round owed and may not have made. `runLensReview`
         // posts it itself for an ISSUES_FOUND round and reports a failed post
         // here, so this step adds nothing and only carries the reason to the
