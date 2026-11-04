@@ -202,11 +202,18 @@ export function reviewDeps(headless: boolean): ReviewDeps {
       };
     },
     dispatch: (spec, o) =>
+      // The arms are forwarded KEY BY KEY, not spread, because this is the one
+      // lean dispatch that also adds its own options: an object spread here would
+      // let a future arm collide silently with `processGroup`/`leanChildOpts`
+      // rather than being named. `budgetTurns` is the #1991 steer's denominator
+      // (#1988 follow-up 4) — drop this line and a lean fixer is killed at its
+      // turns ceiling with nothing committed and nothing said to it.
       spawnSpecialist(spec, {
         processGroup: true,
         writeFence: o.writeFence,
         extraArgs: o.extraArgs,
         ...(o.childBoundMs === undefined ? {} : { childBoundMs: o.childBoundMs }),
+        budgetTurns: o.budgetTurns,
         ...(o.signal === undefined ? {} : { signal: o.signal }),
         ...(o.onProgress === undefined ? {} : { onProgress: o.onProgress }),
         ...leanChildOpts(headless),
@@ -403,5 +410,7 @@ A fix that turns a frozen test green by changing it has destroyed the only evide
 
 Fix every finding you can without widening the change: no guards for inputs that cannot occur, no refactors beside the fix, no comments narrating this round. Check your own work by running the frozen tests and the project's fast typecheck and lint — **do not run the project's full test suite**, the verify step runs it.
 
-Commit what you changed (do not push, do not amend, do not rebase). If a finding is wrong or out of scope, leave it and say why in your reply rather than arguing with it in code.`;
+Work the findings highest severity first, and commit each fix as you finish it rather than saving the commits for the end: if this wave has a turn budget, one that runs out keeps only what it committed, so an uncommitted fix is a fix that did not happen. A finding whose closure needs an edit to a file in the Untouchable list, or a change outside this diff, is out of scope — name it in your reply and move on to the next rather than spending the wave on it.
+
+Commit what you changed before you reply (do not push, do not amend, do not rebase). If a finding is wrong or out of scope, leave it and say why in your reply rather than arguing with it in code.`;
 }
