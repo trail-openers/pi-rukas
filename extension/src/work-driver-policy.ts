@@ -124,13 +124,15 @@ export function policyOutcome(seam: Decision): PolicyDecision {
   // than the label must read this field.
   const quoteVerified = seam.evidence?.passed === true && !!quote;
   if (seam.answer === "permitted" && quoteVerified) {
+    // `quote`/`quoteVerified` are both read off the same verified value, so one
+    // cannot claim a citation the other did not check.
     return {
       permitted: true,
       verdict: "permitted",
       quote: quote?.slice(0, 400),
       sourceFile,
-      quoteVerified: true,
-      reason: `${sourceFile ?? "a document"} permits it ("${(quote ?? "").slice(0, 200)}")`,
+      quoteVerified,
+      reason: `${sourceFile ?? "a document"} permits it ("${quote.slice(0, 200)}")`,
     };
   }
   if (seam.answer === "forbidden") {

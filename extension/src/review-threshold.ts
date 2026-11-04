@@ -59,16 +59,12 @@ export interface ReviewThreshold {
  *   - a project may **tighten** it freely — a stricter answer needs no proof,
  *     since being cautious on someone else's behalf is never the failure mode
  *     worth guarding against
- *   - **the verified quote decides the severity, not the judge's label.** A
- *     judge that quotes this repo's own "blocking at HIGH severity and above"
- *     verbatim and names the right file has told us the bar, whether it
- *     labelled that sentence `permitted` or `forbidden`. On the `policy-judge`
- *     seam a non-passing answer (`forbidden`) is honoured by composition with
- *     no evidence check at all, so `permitted` is false for a perfectly good
- *     citation; gating the bar on the label flipped this project's own bar
- *     between HIGH and MEDIUM run to run. Only a quote the seam verified
- *     (`quoteVerified`) counts; an unverified or absent one still yields the
- *     default
+ *   - **the verified quote decides the severity, not the judge's label.** On
+ *     the `policy-judge` seam a non-passing answer (`forbidden`) is honoured by
+ *     composition with no evidence check at all, so `permitted` is false for a
+ *     perfectly good citation and gating the bar on the label flips it run to
+ *     run. A judge that quotes this repo's own "blocking at HIGH severity and
+ *     above" verbatim has told us the bar, whatever it labelled that sentence.
  *   - the operator's env override beats both, as everywhere else
  */
 export async function resolveReviewThreshold(
@@ -94,9 +90,11 @@ export async function resolveReviewThreshold(
   }
 
   const decision = await askPolicy(judge, REVIEW_THRESHOLD_QUESTION, docs, where);
-  // The citation, not the label: `quoteVerified` is the seam's evidence check,
-  // and it is the only thing that makes a sentence this project wrote count.
-  const named = decision.quoteVerified ? severityFromQuote(decision.quote ?? "") : undefined;
+  // The citation, not the label: `quoteVerified` is the seam's own evidence
+  // check, so nothing is read off `quote` unless it survived it — which is also
+  // why a project can only loosen the bar with a citation that verifies.
+  const named =
+    decision.quoteVerified && decision.quote ? severityFromQuote(decision.quote) : undefined;
   if (!named) {
     return {
       severity: defaultSeverity,
@@ -105,18 +103,6 @@ export async function resolveReviewThreshold(
     };
   }
 
-  // A citation that loosens must have survived verification, which `named`
-  // above already required; one that tightens is honoured either way. Kept
-  // explicit rather than relying on the coupling, so a future change to
-  // `quoteVerified` cannot silently let an unverified looser bar through.
-  const loosens = SEVERITIES.indexOf(named) < SEVERITIES.indexOf(defaultSeverity);
-  if (loosens && !decision.quoteVerified) {
-    return {
-      severity: defaultSeverity,
-      source: "default",
-      reason: `a looser blocking severity (${named}) was claimed but not verifiably cited — keeping ${defaultSeverity}`,
-    };
-  }
   return {
     severity: named,
     quote: decision.quote,

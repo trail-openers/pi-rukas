@@ -251,6 +251,29 @@ const judgeSaying = (a: Record<string, unknown> | undefined) => async () => ({
 });
 const docs = (text: string): DoctrineDoc[] => [{ file: "AGENTS.md", text }];
 
+/**
+ * The §1 sentences that could set this repo's own blocking bar, read out of
+ * AGENTS.md rather than hard-coded so a rewording cannot leave a test asserting
+ * a quote that no longer exists in the doctrine.
+ *
+ * Split on sentence FINAL punctuation, not on every period: the paragraph's
+ * first sentence ends inside markdown bold (`…and above.**`), so a bare
+ * `(?<=\.)` split glues sentences 1 and 2 together and both counts lie. Bold
+ * markers and whitespace are stripped by `normaliseForCitation`, so the leading
+ * `**` / trailing `.` fragment still verifies as a citation.
+ */
+const ownBlockingSentences = (doctrine: string): string[] => {
+  const para = doctrine
+    .split("\n")
+    .find((line) => line.startsWith("**Six-pass review findings are blocking"));
+  return (para ?? "")
+    .split(/(?<=[.!?])\*\*|(?<=[.!?])\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+};
+
+const HIGH_BAR = /^\**Six-pass review findings are blocking at [A-Z]+ severity and above\.*$/;
+
 {
   const none = await resolveReviewThreshold(judgeSaying(undefined), []);
   assert(
@@ -313,14 +336,6 @@ const docs = (text: string): DoctrineDoc[] => [{ file: "AGENTS.md", text }];
 // --------------------------------- this repo's own AGENTS.md §1, end to end
 
 {
-  // With the judge disabled, `askPolicy` denies before the stub is called and
-  // every resolution below falls to the default — which is exactly the shape
-  // these assertions must NOT silently pass on. Fail loudly instead.
-  assert(
-    policyJudgeEnabled(),
-    "the policy judge is enabled (PI_ENSEMBLE_POLICY_JUDGE unset) — with it off every resolution here would fall to the default and pass for the wrong reason",
-  );
-
   const root = path.resolve(import.meta.dirname, "..", "..");
   const text = await fs.readFile(path.join(root, "AGENTS.md"), "utf8");
   assert(
@@ -329,25 +344,9 @@ const docs = (text: string): DoctrineDoc[] => [{ file: "AGENTS.md", text }];
   );
   // The code default is unchanged by that operator decision: silent doctrine
   // still gets MEDIUM, asserted above in the resolution block.
-  // Derive the sentences the judge would quote from the file itself rather than
-  // hard-coding them — a rewording of §1 must not leave this test asserting a
-  // quote that no longer exists in the doctrine.
-  const thresholdPara = text
-    .split("\n")
-    .find((line) => line.startsWith("**Six-pass review findings are blocking"));
-  assert(thresholdPara !== undefined, "§1's threshold paragraph is present");
-  // Split on sentence FINAL punctuation, not on every period: the paragraph's
-  // first sentence ends inside markdown bold (`…and above.**`), so a bare
-  // `(?<=\.)` split glues sentences 1 and 2 together and both counts lie.
-  // Bold markers and whitespace are stripped by `normaliseForCitation`, so the
-  // leading `**` / trailing `.` fragment still verifies as a citation.
-  const sentences = (thresholdPara ?? "")
-    .split(/(?<=[.!?])\*\*|(?<=[.!?])\s+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const OWN_QUOTE = sentences.find((s) =>
-    /^\**Six-pass review findings are blocking at [A-Z]+ severity and above\.\**$/.test(s),
-  );
+  const sentences = ownBlockingSentences(text);
+  assert(sentences.length > 0, "§1's threshold paragraph is present");
+  const OWN_QUOTE = sentences.find((s) => HIGH_BAR.test(s));
   assert(OWN_QUOTE !== undefined, "§1's blocking sentence is found verbatim in AGENTS.md");
   // Negative direction: no single sentence of §1's threshold paragraph may read
   // as a LOOSER bar than HIGH. A sentence that says MEDIUM or LOW blocks would
@@ -413,27 +412,27 @@ const docs = (text: string): DoctrineDoc[] => [{ file: "AGENTS.md", text }];
 {
   // The follow-up defect in #1988, observed on a real headless proof run: the
   // judge answered `forbidden` while quoting §1's HIGH sentence VERBATIM, with
-  // the citation verified (`source "llm"`, reason `replace: evidence verified`).
-  // `resolveReviewThreshold` gated the bar on `decision.permitted`, which is
-  // false for every `forbidden` answer whatever its citation, so this repo's own
-  // bar silently became MEDIUM and a round with only MEDIUM/LOW findings bought
-  // a fix wave.
+  // the citation verified. `resolveReviewThreshold` gated the bar on
+  // `decision.permitted`, which is false for every `forbidden` answer whatever
+  // its citation, so this repo's own bar silently became MEDIUM and a round
+  // with only MEDIUM/LOW findings bought a fix wave.
+  //
+  // With the judge disabled, `askPolicy` denies before the stub is called and
+  // every resolution below falls to the default — exactly the shape these
+  // assertions must NOT silently pass on. Fail loudly instead.
+  assert(
+    policyJudgeEnabled(),
+    "the policy judge is enabled (PI_ENSEMBLE_POLICY_JUDGE unset) — with it off every resolution here would fall to the default and pass for the wrong reason",
+  );
+
   const ownDoctrine = await fs.readFile(
     path.resolve(import.meta.dirname, "..", "..", "AGENTS.md"),
     "utf8",
   );
-  const thresholdPara = ownDoctrine
-    .split("\n")
-    .find((line) => line.startsWith("**Six-pass review findings are blocking"));
-  const sentences = (thresholdPara ?? "")
-    .split(/(?<=[.!?])\*\*|(?<=[.!?])\s+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const HIGH_SENTENCE =
-    sentences.find((s) =>
-      /^\**Six-pass review findings are blocking at [A-Z]+ severity and above\.\**$/.test(s),
-    ) ?? "";
+  const HIGH_SENTENCE = ownBlockingSentences(ownDoctrine).find((s) => HIGH_BAR.test(s)) ?? "";
 
+  // Case 1 — the judge's `forbidden` label carries a quote the seam verified:
+  // it still decides HIGH. Proves the bar comes from the citation, not `permitted`.
   const forbiddenVerified = await resolveReviewThreshold(
     judgeSaying({ verdict: "forbidden", quote: HIGH_SENTENCE, sourceFile: "AGENTS.md" }),
     docs(ownDoctrine),
@@ -447,9 +446,9 @@ const docs = (text: string): DoctrineDoc[] => [{ file: "AGENTS.md", text }];
     `...and the sentence relied on is recorded verbatim (got ${String(forbiddenVerified.quote).slice(0, 60)})`,
   );
 
-  // The negative: the same `forbidden` label quoting a sentence the documents do
-  // not contain. Verification is what decided the case above, so an unverified
-  // quote must still fall to the default whatever the label.
+  // Case 2 — the same label quoting a sentence the documents do not contain.
+  // Verification is what decided case 1, so an unverified quote falls to the
+  // default whatever the label says.
   const forbiddenUnverified = await resolveReviewThreshold(
     judgeSaying({
       verdict: "forbidden",
@@ -463,8 +462,9 @@ const docs = (text: string): DoctrineDoc[] => [{ file: "AGENTS.md", text }];
     `an UNVERIFIED quote under a 'forbidden' label still yields the default (got ${forbiddenUnverified.severity}/${forbiddenUnverified.source}) — a sentence the documents lack decides nothing`,
   );
 
-  // Mirror of the permitted path, over the same real doctrine: an answer the
-  // judge did not give never sets the bar, verified-looking quote or not.
+  // Case 3 — a `forbidden` with NO quote: there is no sentence to read a bar
+  // off, so the default stands. Proves the bar comes from a quote and never
+  // from the verdict alone.
   const forbiddenNoQuote = await resolveReviewThreshold(
     judgeSaying({ verdict: "forbidden", sourceFile: "AGENTS.md" }),
     docs(ownDoctrine),
