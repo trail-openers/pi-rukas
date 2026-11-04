@@ -8,6 +8,24 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.48](https://github.com/trail-openers/pi-rukas/compare/v0.14.47...v0.14.48) (2026-11-04)
+
+
+### Features
+
+* **lean:** one fix wave and a scoped re-review in lean review ([#1994](https://github.com/trail-openers/pi-rukas/issues/1994)) ([27d96e1](https://github.com/trail-openers/pi-rukas/commit/27d96e1c90fab15b556f6c8310446b697f51969d))
+* **prompts:** developers commit first and stop chasing a red test ([#1990](https://github.com/trail-openers/pi-rukas/issues/1990)) ([e7f1fc4](https://github.com/trail-openers/pi-rukas/commit/e7f1fc4661b2b180e628cb7c15e1938ee9527cab))
+* **work:** two review rounds — one fix wave and a scoped re-review ([#1997](https://github.com/trail-openers/pi-rukas/issues/1997)) ([6a54565](https://github.com/trail-openers/pi-rukas/commit/6a54565c7bddba750523541fe184c844a13f6be3))
+
+
+### Bug Fixes
+
+* **lean:** bound the review step's adversarial reviewer with the review budget ([#2000](https://github.com/trail-openers/pi-rukas/issues/2000)) ([3617f60](https://github.com/trail-openers/pi-rukas/commit/3617f6071b80941ed1643e530225fc46e5e8083f))
+* **lean:** buy the fix wave for findings at the project's review bar ([#1998](https://github.com/trail-openers/pi-rukas/issues/1998)) ([eb67923](https://github.com/trail-openers/pi-rukas/commit/eb67923abed6701414aaec8923156d46fca52105))
+* **lean:** give build a machine exit when the frozen tests conflict ([#1986](https://github.com/trail-openers/pi-rukas/issues/1986)) ([c51f495](https://github.com/trail-openers/pi-rukas/commit/c51f49572eed3f6ec3037f4b42469f3ecdeb2d8e))
+* **prompts:** drop the commit-gating wording left after the commit-first doctrine ([#1996](https://github.com/trail-openers/pi-rukas/issues/1996)) ([61b79b9](https://github.com/trail-openers/pi-rukas/commit/61b79b98b47f3cb68d82fc2c0b9f28266ee27e0a))
+* **review:** keep reviewer children inside the review lane ([#1999](https://github.com/trail-openers/pi-rukas/issues/1999)) ([ea9b430](https://github.com/trail-openers/pi-rukas/commit/ea9b430019ca08e5707ac78a8fa79a7e0217084f))
+
 ## [0.14.47](https://github.com/trail-openers/pi-rukas/compare/v0.14.46...v0.14.47) (2026-11-03)
 
 
