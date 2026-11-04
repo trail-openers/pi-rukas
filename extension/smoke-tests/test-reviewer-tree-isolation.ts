@@ -114,7 +114,9 @@ const driveLensChild = (reviewedCwd: string, childCwd: string) =>
     runId: "run-1975",
     skillsDir: SKILLS,
     context: "ctx",
-    roster: [{ name: "SECURITY", skill: "code-review-security", dir: "code-review-security" } as never],
+    roster: [
+      { name: "SECURITY", skill: "code-review-security", dir: "code-review-security" } as never,
+    ],
     opts: { diff: "+added", cwd: reviewedCwd, childCwd },
     bumpBatch: () => {},
   });
@@ -130,7 +132,11 @@ function makeRepo(tag: string): { dir: string; head: string; branch: string } {
   // An untracked-but-stageable file: staging unrelated paths is the field
   // incident (25 files in an index, swept by the next developer commit).
   writeFileSync(path.join(dir, "unrelated.txt"), "do not stage me\n");
-  return { dir, head: gitOut(dir, "rev-parse", "HEAD"), branch: gitOut(dir, "symbolic-ref", "--short", "HEAD") };
+  return {
+    dir,
+    head: gitOut(dir, "rev-parse", "HEAD"),
+    branch: gitOut(dir, "symbolic-ref", "--short", "HEAD"),
+  };
 }
 
 /**
@@ -226,21 +232,29 @@ const strayTrees = (dir: string) =>
       "A: the lens child's cwd is the throwaway tree, not the reviewed one",
     );
     assert(childCwd !== dir, "A: the reviewer never ran in the reviewed worktree");
-    assert(attempted.length === 5, `A: all five mutation classes attempted (${attempted.join(", ")})`);
+    assert(
+      attempted.length === 5,
+      `A: all five mutation classes attempted (${attempted.join(", ")})`,
+    );
 
     const after = snapshot(dir);
     const unchangedA = JSON.stringify(after) === JSON.stringify(before);
     assert(
       unchangedA,
       "A: the reviewed worktree is byte-identical after all five mutations (status clean, same HEAD/branch/index)" +
-        (unchangedA ? "" : `\n    before: ${JSON.stringify(before)}\n    after:  ${JSON.stringify(after)}`),
+        (unchangedA
+          ? ""
+          : `\n    before: ${JSON.stringify(before)}\n    after:  ${JSON.stringify(after)}`),
     );
     assert(!existsSync(path.join(dir, "PWNED")), "A: no PWNED file at the reviewed tree's root");
     assert(
       !gitOut(dir, "log", "--oneline", "HEAD").includes("reviewer experiment"),
       "A: the reviewer's commit is not reachable from the reviewed tree's HEAD",
     );
-    assert(gitOut(dir, "rev-parse", "main") === head, "A: the reviewed branch still points at the reviewed head");
+    assert(
+      gitOut(dir, "rev-parse", "main") === head,
+      "A: the reviewed branch still points at the reviewed head",
+    );
 
     // C — AC2, read BEFORE the tree is released: the reviewer's own tree was
     // detached at the reviewed head (its ref, its index and its HEAD all say
@@ -295,7 +309,10 @@ const strayTrees = (dir: string) =>
     new AbortController().signal,
     "job-1975",
   );
-  assert(result.ok === true, `B: the loop still produced its verdict (${result.text.slice(0, 60)})`);
+  assert(
+    result.ok === true,
+    `B: the loop still produced its verdict (${result.text.slice(0, 60)})`,
+  );
   const reviewers = spawnCalls.filter((c) => c.role === "adversarial-developer");
   assert(reviewers.length >= 1, "B: the adversarial reviewer was dispatched");
   assert(
@@ -308,7 +325,9 @@ const strayTrees = (dir: string) =>
   assert(
     unchangedB,
     "B: the reviewed worktree is unchanged by the reviewer's mutations" +
-      (unchangedB ? "" : `\n    before: ${JSON.stringify(before)}\n    after:  ${JSON.stringify(after)}`),
+      (unchangedB
+        ? ""
+        : `\n    before: ${JSON.stringify(before)}\n    after:  ${JSON.stringify(after)}`),
   );
   assert(
     spawnCalls.every((c) => c.role !== "developer" || c.cwd === dir),
@@ -324,7 +343,10 @@ const strayTrees = (dir: string) =>
     !gitOut(dir, "log", "--oneline", "HEAD").includes("reviewer experiment"),
     "B: the reviewer's commit is not reachable from the reviewed tree",
   );
-  assert(gitOut(dir, "rev-parse", "main") === head, "B: the reviewed branch still points at the reviewed head");
+  assert(
+    gitOut(dir, "rev-parse", "main") === head,
+    "B: the reviewed branch still points at the reviewed head",
+  );
 }
 
 // ================================================================ D
@@ -397,7 +419,12 @@ const strayTrees = (dir: string) =>
   );
   assert(strayTrees(dir).length === 0, "F: the fan-out removed the tree when the batch returned");
   // A throwing child still releases the tree.
-  const throwing = { ...input, lensChildFn: (async () => { throw new Error("child threw"); }) as never };
+  const throwing = {
+    ...input,
+    lensChildFn: (async () => {
+      throw new Error("child threw");
+    }) as never,
+  };
   let threw = false;
   try {
     await runLensFanOut(throwing, head);
@@ -428,7 +455,10 @@ const strayTrees = (dir: string) =>
 
   process.env.PI_ENSEMBLE_REVIEWER_ISOLATION = "0";
   const opted = await openReviewerTree(execp, dir, head);
-  assert(!opted.cwd && !!opted.fallback, "E: the operator's opt-out falls back to the reviewed tree, with the reason");
+  assert(
+    !opted.cwd && !!opted.fallback,
+    "E: the operator's opt-out falls back to the reviewed tree, with the reason",
+  );
   delete process.env.PI_ENSEMBLE_REVIEWER_ISOLATION;
 }
 

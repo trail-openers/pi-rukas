@@ -16,12 +16,12 @@
  * tree at a commit somebody guessed at.
  */
 
+import type { AdversarialLoopParams } from "./adversarial-loop-params.ts";
 import { execp } from "./exec.ts";
 import { resolveHeadSha } from "./review-head-sha.ts";
 import { type ReviewerTree, openReviewerTree } from "./reviewer-tree.ts";
 import { trace } from "./trace.ts";
 import type { ExecFn } from "./worktree.ts";
-import type { AdversarialLoopParams } from "./adversarial-loop-params.ts";
 
 /** What {@link openAdversarialReviewerTree} decided, and how to use it. */
 export interface ReviewerIsolation {
@@ -49,10 +49,9 @@ export interface ReviewerIsolation {
  * three loop fields it reads rather than the whole params bag, so the loop's call
  * site stays one line at the 500-line gate.
  */
-export async function openAdversarialReviewerTree(params: Pick<
-  AdversarialLoopParams,
-  "workCwd" | "head" | "commentExecFn"
->): Promise<ReviewerIsolation> {
+export async function openAdversarialReviewerTree(
+  params: Pick<AdversarialLoopParams, "workCwd" | "head" | "commentExecFn">,
+): Promise<ReviewerIsolation> {
   const fallbackCwd = params.workCwd;
   const headRef = params.head;
   const execFn = params.commentExecFn;
@@ -62,11 +61,7 @@ export async function openAdversarialReviewerTree(params: Pick<
     withRelease: async (fn) => fn(),
   });
   if (fallbackCwd === undefined) return none("no workCwd: the reviewer runs where the loop runs");
-  const headSha = await resolveHeadSha(
-    fallbackCwd,
-    headRef ?? "HEAD",
-    execFn ?? execp,
-  );
+  const headSha = await resolveHeadSha(fallbackCwd, headRef ?? "HEAD", execFn ?? execp);
   if (headSha === undefined) {
     return none(
       `reviewed head ${JSON.stringify((headRef ?? "HEAD").slice(0, 40))} did not resolve to a SHA`,

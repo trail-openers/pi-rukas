@@ -248,7 +248,12 @@ export async function runLensChild(opts: {
       }
       try {
         result = await spawnSpecialist(
-          { role: "code-review-specialist", prompt, cwd: runOpts.childCwd ?? runOpts.cwd, lens: lens.name },
+          {
+            role: "code-review-specialist",
+            prompt,
+            cwd: runOpts.childCwd ?? runOpts.cwd,
+            lens: lens.name,
+          },
           {
             runId,
             tag,

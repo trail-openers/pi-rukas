@@ -16,8 +16,8 @@
  */
 
 import { execp } from "./exec.ts";
-import type { LensRunResult } from "./lens-review-types.ts";
 import { withLensModelSlot } from "./lens-model-slots.ts";
+import type { LensRunResult } from "./lens-review-types.ts";
 import { openReviewerTree } from "./reviewer-tree.ts";
 import { trace } from "./trace.ts";
 
@@ -52,7 +52,8 @@ export async function openLensReviewerTree(
 ): Promise<LensIsolation> {
   if (spawnCount === 0 || headSha === undefined) return NO_LENS_TREE;
   const tree = await openReviewerTree(execp, reviewedCwd, headSha);
-  if (!tree.cwd) return { childCwd: undefined, fallback: tree.fallback, release: async () => undefined };
+  if (!tree.cwd)
+    return { childCwd: undefined, fallback: tree.fallback, release: async () => undefined };
   const childCwd = tree.cwd;
   trace(`lens-review: ${spawnCount} lens children run in ${childCwd} at ${headSha.slice(0, 12)}`);
   return { childCwd, release: () => tree.release?.() ?? Promise.resolve() };

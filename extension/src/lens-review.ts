@@ -39,12 +39,12 @@ import {
   dedupeFindings,
   piSkillsDir,
 } from "./lens-review-format.ts";
+import { runLensFanOut } from "./lens-review-isolation.ts";
 import { priorFindingsFor } from "./lens-review-memory.ts";
 import { installBlockRowsForRoster, skillsDirUsable } from "./lens-review-skills.ts";
 import type { Finding, LensRunResult } from "./lens-review-types.ts";
 import { CLAIM_SCAN, type RosterEntry, buildExpectedRoster } from "./lens-roster.ts";
 import { isFullCommitSha, resolveHeadSha } from "./review-head-sha.ts";
-import { runLensFanOut } from "./lens-review-isolation.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 

@@ -118,7 +118,7 @@ async function gitCommonDir(execFn: ReviewerTreeExecFn, repoRoot: string): Promi
  * problem is traced, not fatal — the reviewed diff arrives in the prompt.
  */
 export async function openReviewerTree(
-  execFn: ReviewerTreeExecFn = execp,
+  execFn: ReviewerTreeExecFn,
   repoRoot: string,
   headSha: string,
 ): Promise<ReviewerTree> {
@@ -181,7 +181,7 @@ export async function openReviewerTree(
  * inside), and the trailing prune keeps the object store's admin list honest.
  */
 export async function removeReviewerTree(
-  execFn: ReviewerTreeExecFn = execp,
+  execFn: ReviewerTreeExecFn,
   repoRoot: string,
   dir: string,
 ): Promise<void> {
