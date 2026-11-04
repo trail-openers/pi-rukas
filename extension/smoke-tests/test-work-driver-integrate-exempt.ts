@@ -162,12 +162,11 @@ const gitOut = async (cwd: string, args: string[]): Promise<string> =>
       const scratchC = path.join(rootC, "scratch");
       mkdirSync(scratchC, { recursive: true });
       try {
-        await execFileP("git", [
-          "init",
-          "--bare",
-          "--initial-branch=main",
-          path.join(rootC, "origin.git"),
-        ]);
+        await execFileP(
+          "git",
+          ["init", "--bare", "--initial-branch=main", path.join(rootC, "origin.git")],
+          { env: gitTestEnv() },
+        );
         await execFileP("git", ["init", "--initial-branch=main", repoC], { env: gitTestEnv() });
         await git(repoC, ["config", "user.email", "t@example.com"]);
         await git(repoC, ["config", "user.name", "T"]);

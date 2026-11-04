@@ -23,6 +23,7 @@ import { promisify } from "node:util";
 import { execp } from "../../src/exec.ts";
 import type { VerifyExecFn } from "../../src/work-driver-git.ts";
 import { isFullCommitSha, resolveHeadSha } from "../../src/review-head-sha.ts";
+import { gitTestEnv } from "./git-test-env.ts";
 
 const execFileP = promisify(execFile);
 
@@ -57,7 +58,9 @@ export async function realClone(
   const dir = path.join(root, "repo");
   const branch = "feature/x";
   const init = (target: string) =>
-    execFileP("git", ["-c", "commit.gpgsign=false", "init", "--initial-branch=main", target]);
+    execFileP("git", ["-c", "commit.gpgsign=false", "init", "--initial-branch=main", target], {
+      env: gitTestEnv(),
+    });
   await execFileP("git", [
     "-c",
     "commit.gpgsign=false",
@@ -65,10 +68,12 @@ export async function realClone(
     "--bare",
     "--initial-branch=main",
     origin,
-  ]);
+  ], {
+    env: gitTestEnv(),
+  });
   await init(dir);
   const git = (args: string[]) =>
-    execFileP("git", ["-c", "commit.gpgsign=false", ...args], { cwd: dir });
+    execFileP("git", ["-c", "commit.gpgsign=false", ...args], { cwd: dir, env: gitTestEnv() });
   await git(["config", "user.email", "fixture@example.invalid"]);
   await git(["config", "user.name", "Fixture"]);
   writeFileSync(path.join(dir, "base.txt"), "base\n");
@@ -115,7 +120,10 @@ export async function forgeHeadOf(dir: string, branch: string): Promise<string> 
   if (oid === undefined || !isFullCommitSha(oid))
     throw new Error(`fixture: origin/${branch} did not resolve to a commit`);
   try {
-    await execFileP("git", ["merge-base", "--is-ancestor", oid, "HEAD"], { cwd: dir });
+    await execFileP("git", ["merge-base", "--is-ancestor", oid, "HEAD"], {
+      cwd: dir,
+      env: gitTestEnv(),
+    });
   } catch {
     throw new Error(
       `fixture: origin/${branch} resolved to ${oid.slice(0, 8)}, not a commit in ${dir} — the read left this repository`,

@@ -91,6 +91,32 @@
  * production seam an exec it does not control (the driver's `ExecFn`) has to
  * have the value visible in the ambient env too.
  *
+ * THE LOCATION VARIABLES ARE DELETED, NOT SET
+ * ---------------------------------------------------------------------------
+ * `gitTestEnv()` is the ONE sanctioned fixture git env, so it is the one place
+ * the repository-location variables can be removed for every fixture at once.
+ * It starts from a copy of the base — the caller's `process.env` by default —
+ * and DELETES every name in `GIT_LOCATION_VARS` from that copy before returning
+ * it, so `GIT_DIR` / `GIT_WORK_TREE` / `GIT_INDEX_FILE` / `GIT_COMMON_DIR` and
+ * the rest of the set never reach the git child. Those variables are honoured
+ * AHEAD of `-C <path>` and ahead of `cwd`, so a fixture that makes commits with
+ * an inherited `GIT_DIR` writes them into whatever repository that variable
+ * names, and git exits 0 doing it: no stderr, no failed assertion, only the
+ * stray commits. Deleting them costs a fixture nothing, because a fixture names
+ * its repository by path and no fixture means a location variable to mean
+ * anything; `ensureGitIdentity` above sets author/committer variables only, and
+ * no fixture under `smoke-tests/` sets a location variable on purpose.
+ *
+ * The deletion is unconditional — it also runs on the `PI_ENSEMBLE_SMOKE_HOST_GIT`
+ * escape hatch, which disables CONFIG isolation and nothing else. An operator
+ * asking for the host's gitconfig is not asking for their repository.
+ *
+ * The ambient half cannot do this: `ensure()` deliberately does not delete from
+ * `process.env`, because bun drops `process.env` mutations on synchronous
+ * spawns and production code under test reads the ambient env. So the scrub is
+ * only in the RETURNED env, which is why the static gate
+ * (`test-fixture-git-env.ts`) requires every fixture git call to thread it.
+ *
  * DO NOT USE THIS FROM `src/`. It exists so a test can pin what git reports;
  * production git calls must keep reading the operator's configuration. The
  * only production module that touches these variables scrubs them for a
@@ -100,6 +126,7 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
+import { GIT_LOCATION_VARS } from "../../src/git-env.ts";
 
 /**
  * #1606 — every temp dir this module (or a fixture, through `trackedTempDir`)
@@ -195,7 +222,11 @@ export function gitTestEnv(
   if (fresh) ensure();
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(base)) if (v !== undefined) out[k] = v;
-  return { ...out, ...cached };
+  const merged = { ...out, ...cached };
+  // The location scrub, on the copy rather than on `process.env` — see the
+  // module header. Runs on the escape-hatch path too.
+  for (const name of GIT_LOCATION_VARS) delete merged[name];
+  return merged;
 }
 
 function build(): Record<string, string> {

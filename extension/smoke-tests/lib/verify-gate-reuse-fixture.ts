@@ -12,6 +12,7 @@ import { promisify } from "node:util";
 import type { runConsolidatedVerify } from "../../src/work-driver-consolidated-verify.ts";
 import type { AlreadyVerifiedTree } from "../../src/work-driver-verify-tree.ts";
 import { verifyTreeId } from "../../src/work-driver-verify-tree.ts";
+import { gitTestEnv } from "./git-test-env.ts";
 
 /**
  * The reuse seam task A owns (#1415). Loaded by a DYNAMIC import at run time:
@@ -50,7 +51,7 @@ function missingSeamExports(): string[] {
 }
 
 export const execFileP = promisify(execFile);
-export const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
+export const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd, env: gitTestEnv() });
 
 export const root = mkdtempSync(path.join(tmpdir(), "pi-ens-1415-reuse-"));
 
@@ -100,8 +101,8 @@ export async function fixture(name: string, ids: string[]) {
   const originDir = path.join(dir, "origin.git");
   const repo = path.join(dir, "repo");
   mkdirSync(dir, { recursive: true });
-  await execFileP("git", ["init", "--bare", "--initial-branch=main", originDir]);
-  await execFileP("git", ["init", "-q", "--initial-branch=main", repo]);
+  await execFileP("git", ["init", "--bare", "--initial-branch=main", originDir], { env: gitTestEnv() });
+  await execFileP("git", ["init", "-q", "--initial-branch=main", repo], { env: gitTestEnv() });
   await git(repo, ["config", "user.email", "t@example.com"]);
   await git(repo, ["config", "user.name", "T"]);
   writeFileSync(path.join(repo, "tracked.txt"), "base\n");

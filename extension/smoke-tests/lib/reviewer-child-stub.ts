@@ -18,6 +18,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { gitTestEnv } from "./git-test-env.ts";
 
 const REAL_CP = require("node:child_process") as typeof import("node:child_process");
 
@@ -98,8 +99,12 @@ export function installStubChild(env: Record<string, string>): StubChild {
 
 /** `git -C dir …` returning trimmed stdout, under the fixture's isolated env. */
 export function makeGit(dir: string, env: Record<string, string>) {
+  // `gitTestEnv()` IS the caller's env plus the fixture's isolation, with the
+  // git location variables removed: passing the two options separately would
+  // have one silently win over the other (#1981).
+  const scrubbed = gitTestEnv(env);
   const out = (...args: string[]) =>
-    execFileSync("git", ["-C", dir, ...args], { stdio: "pipe", env })
+    execFileSync("git", ["-C", dir, ...args], { stdio: "pipe", env: scrubbed })
       .toString()
       .trim();
   return { out, run: (...args: string[]) => void out(...args) };

@@ -13,6 +13,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { gitTestEnv } from "./git-test-env.ts";
 
 export const execp = promisify(exec);
 
@@ -29,21 +30,22 @@ export async function mkRepo(): Promise<{
   mkdirSync(dir, { recursive: true });
   const ledgerFile = path.join(base, "review-ledger.json");
   process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = ledgerFile;
-  await execp("git init -q -b main", { cwd: dir });
+  await execp("git init -q -b main", { cwd: dir, env: gitTestEnv() });
   await execp('git config user.email "t@t" && git config user.name "T"', {
     cwd: dir,
     shell: "/bin/bash",
+    env: gitTestEnv(),
   });
   writeFileSync(path.join(dir, "base.txt"), "hello\n");
-  await execp("git add -A && git commit -q -m c0", { cwd: dir, shell: "/bin/bash" });
-  const c0 = (await execp("git rev-parse HEAD", { cwd: dir })).stdout.trim();
-  await execp("git checkout -qb feature/work", { cwd: dir });
+  await execp("git add -A && git commit -q -m c0", { cwd: dir, shell: "/bin/bash", env: gitTestEnv() });
+  const c0 = (await execp("git rev-parse HEAD", { cwd: dir, env: gitTestEnv() })).stdout.trim();
+  await execp("git checkout -qb feature/work", { cwd: dir, env: gitTestEnv() });
   writeFileSync(path.join(dir, "first.txt"), "one\n");
-  await execp("git add first.txt && git commit -q -m c1", { cwd: dir, shell: "/bin/bash" });
-  const c1 = (await execp("git rev-parse HEAD", { cwd: dir })).stdout.trim();
+  await execp("git add first.txt && git commit -q -m c1", { cwd: dir, shell: "/bin/bash", env: gitTestEnv() });
+  const c1 = (await execp("git rev-parse HEAD", { cwd: dir, env: gitTestEnv() })).stdout.trim();
   writeFileSync(path.join(dir, "second.txt"), "two\n");
-  await execp("git add second.txt && git commit -q -m c2", { cwd: dir, shell: "/bin/bash" });
-  const c2 = (await execp("git rev-parse HEAD", { cwd: dir })).stdout.trim();
+  await execp("git add second.txt && git commit -q -m c2", { cwd: dir, shell: "/bin/bash", env: gitTestEnv() });
+  const c2 = (await execp("git rev-parse HEAD", { cwd: dir, env: gitTestEnv() })).stdout.trim();
   return { dir, c0, c1, c2, ledgerFile };
 }
 
@@ -74,9 +76,10 @@ export async function mergeMainFixture(): Promise<
     },
   );
   await execp("git checkout -q feature/work && git merge -q -m merge-main main", {
+    env: gitTestEnv(),
     cwd: r.dir,
     shell: "/bin/bash",
   });
-  const merge = (await execp("git rev-parse HEAD", { cwd: r.dir })).stdout.trim();
+  const merge = (await execp("git rev-parse HEAD", { cwd: r.dir, env: gitTestEnv() })).stdout.trim();
   return { ...r, merge };
 }

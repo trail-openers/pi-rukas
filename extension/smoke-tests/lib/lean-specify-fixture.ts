@@ -167,6 +167,7 @@ export async function worktreePaths(wt: string): Promise<string[]> {
   const { stdout } = await execp("git", {
     argv: ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
     cwd: wt,
+    env: gitTestEnv(),
   });
   return parsePorcelainZ(stdout).map((e) => e.path);
 }

@@ -16,6 +16,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { commandOf } from "./argv-shell.ts";
+import { gitTestEnv } from "./git-test-env.ts";
 
 const execFileP = promisify(execFile);
 
@@ -42,7 +43,7 @@ export const HUNG_STREAM = [
 export const sh = (cwd: string, cmd: string) => execFileP("/bin/sh", ["-c", cmd], { cwd });
 
 /** Run git for real. */
-export const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
+export const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd, env: gitTestEnv() });
 
 /** Rejection shaped exactly like `execTree`'s timeout: killed + the group it killed. */
 export function killedError(

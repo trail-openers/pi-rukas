@@ -5,6 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { integrateBackupRef } from "../../src/work-driver-integrate-cycle.ts";
 import type { ExecFn } from "../../src/worktree.ts";
+import { gitTestEnv } from "./git-test-env.ts";
 
 /**
  * Shared fixtures for the worktree smoke tests (#475, #654, #1170).
@@ -55,7 +56,7 @@ export const realExecWithStderr = async (
 };
 
 /** Run git for real in `cwd`. */
-export const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
+export const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd, env: gitTestEnv() });
 
 /** A fresh temp directory to act as a repo root. The caller removes it. */
 export function makeFakeRepoRoot(prefix: string): string {

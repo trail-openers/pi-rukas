@@ -16,6 +16,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { findLostComments } from "../../src/comment-retention.ts";
 import type { ExecFn } from "../../src/worktree.ts";
+import { gitTestEnv } from "./git-test-env.ts";
 
 export const execFileP = promisify(execFile);
 
@@ -29,7 +30,7 @@ export const realExec: ExecFn = async (cmd, o) => {
 };
 
 export const git = (cwd: string, args: string[]) =>
-	execFileP("git", args, { cwd });
+	execFileP("git", args, { cwd, env: gitTestEnv() });
 
 /**
  * Scratch repo: `base` files committed first, then `head` applied in a second
@@ -40,7 +41,7 @@ export async function repoWithFiles(
 	head: Record<string, string | null>,
 ): Promise<string> {
 	const dir = mkdtempSync(path.join(tmpdir(), "pi-ens-hunks-"));
-	await execFileP("git", ["init", "-q", "-b", "main"], { cwd: dir });
+	await execFileP("git", ["init", "-q", "-b", "main"], { cwd: dir, env: gitTestEnv() });
 	await git(dir, ["config", "user.email", "t@example.com"]);
 	await git(dir, ["config", "user.name", "T"]);
 	for (const [file, content] of Object.entries(base)) {

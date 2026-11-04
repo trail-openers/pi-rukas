@@ -33,6 +33,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } fro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseWorktreeIssue } from "../../src/work-driver-sweep-rules.ts";
+import { gitTestEnv } from "./git-test-env.ts";
 import type { WorkCapLiteral } from "../../src/workflow-state-events-caps.ts";
 import {
   type WorkEvent,
@@ -44,7 +45,7 @@ import {
 
 /** Run one git command, throwing with its stderr so a fixture failure names the cause. */
 function git(cwd: string, args: string[]): string {
-  const r = spawnSync("git", args, { cwd, encoding: "utf8" });
+  const r = spawnSync("git", args, { cwd, encoding: "utf8", env: gitTestEnv() });
   if (r.status !== 0) {
     throw new Error(
       `worktree-sweep-fixture: git ${args.join(" ")} failed in ${cwd}: ${(r.stderr ?? r.stdout ?? "").trim()}`,

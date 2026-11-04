@@ -25,6 +25,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { initialState } from "../../src/workflow-state.ts";
 import type { WorkState } from "../../src/workflow-state.ts";
 import { realExec } from "./restore-start-ref-fixtures.ts";
+import { gitTestEnv } from "./git-test-env.ts";
 
 /**
  * How an executor fails the PROJECT's command. Each arm names what it proves:
@@ -44,8 +45,8 @@ export type ProbeFailureShape =
 
 /** Commit whatever the working tree holds — a rewritten gate, a seeded test. */
 export function commitAll(repo: string, message: string): void {
-  execFileSync("git", ["add", "-A"], { cwd: repo });
-  execFileSync("git", ["commit", "-q", "-m", message], { cwd: repo });
+  execFileSync("git", ["add", "-A"], { cwd: repo, env: gitTestEnv() });
+  execFileSync("git", ["commit", "-q", "-m", message], { cwd: repo, env: gitTestEnv() });
 }
 
 /**
