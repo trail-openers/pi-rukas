@@ -46,7 +46,7 @@ All findings must follow this structure:
 ## Severity Scale
 
 - **CRITICAL**: A type gap that reaches a real failure and the finding says how — a cast that lets unvalidated input through a boundary that then corrupts or leaks data, or a schema mismatch that breaks a contract another component depends on.
-- **HIGH**: A concrete, reachable failure on a realistic input that the type error permits — the finding names the input and the wrong result. Naming a typing defect is not evidence on its own.
+- **HIGH**: A concrete, reachable failure on a realistic input that the type error permits — the finding names the input and the wrong result, e.g. a cast that lets `{}` through a boundary whose reader then throws on `.items.length`. Naming a typing defect is not evidence on its own.
 - **MEDIUM**: Type nits — missing annotations where one would help, `implicit any`, verbose or redundant type definitions, a cast that could be a guard without changing behaviour.
 - **LOW**: Cosmetic type style.
 

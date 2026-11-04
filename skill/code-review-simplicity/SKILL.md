@@ -46,7 +46,7 @@ All findings must follow this structure:
 ## Severity Scale
 
 - **CRITICAL**: A failure you can reach and name — data loss or corruption, an exploit an attacker can actually drive, or a requirement the issue states that this diff violates. The finding states which.
-- **HIGH**: A concrete, reachable failure on a realistic input, which the finding names along with what goes wrong — e.g. a scoring branch whose cap sits below its floor, so a tier's output is constant for every input. An adjective is not evidence: "significant", "impedes maintenance" or "could lead to" do not make a finding HIGH.
+- **HIGH**: A concrete, reachable failure on a realistic input, which the finding names along with what goes wrong — e.g. a scoring branch whose cap sits below its floor, so a tier's output is constant for every input. An adjective is not evidence: "significant", or a claim that something hampers upkeep, does not make a finding HIGH.
 - **MEDIUM**: Style, naming and typing nits (missing annotations, `Any`, implicit any), duplication, dead code, findings about test-only code, unclear naming, missing documentation, and performance claims that were not measured on a demonstrated hot path.
 - **LOW**: Cosmetic improvements.
 

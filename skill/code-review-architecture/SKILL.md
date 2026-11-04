@@ -46,7 +46,7 @@ All findings must follow this structure:
 ## Severity Scale
 
 - **CRITICAL**: A structural violation that reaches a real failure the finding can name — a dependency cycle that takes down both sides at once, a layer boundary crossed so writes bypass their validation, unfixable data corruption.
-- **HIGH**: Demonstrated harm from the structure, not an opinion about it — the finding names the concrete consequence and how it is reached (e.g. a shared mutable singleton that a second request mutates while the first is in flight, so two users see each other's state). "Impedes maintenance or evolution" is a maintainability opinion and caps at MEDIUM.
+- **HIGH**: Data loss or corruption, or a reachable failure the finding names along with how it is reached — e.g. a shared mutable singleton that a second request mutates while the first is in flight, so two users see each other's state. A structural preference argued only as an upkeep concern caps at MEDIUM.
 - **MEDIUM**: Structural and maintainability improvements — coupling, layering, cohesion, naming of modules — argued but not shown to break anything.
 - **LOW**: Minor structural suggestions, cosmetic issues.
 
