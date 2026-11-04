@@ -20,73 +20,133 @@
  */
 
 import { exec } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { reviewDeps } from "../src/lean/review-deps.ts";
+import type { runLensChild } from "../src/lens-review-child.ts";
+import type { LensRunResult } from "../src/lens-review-types.ts";
+import { LENS_ROSTER } from "../src/lens-roster.ts";
 import type { BudgetArms } from "../src/lean/step-budget.ts";
+import { gitTestEnv } from "./lib/git-test-env.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 
 const { assert, failures } = makeAssert();
 const execp = promisify(exec);
 
-const BRANCH = "lean/issue-1967";
+const BRANCH = "lean/review-round-2";
 
-/** A clone of this repo with the run's shape: a branch whose head is one commit
- * past `since`, in a clone that has an `origin/main`. Real commits, so the layer
- * resolves refs itself rather than trusting a fixture's word for them. */
-async function mkRunRepo(): Promise<{ root: string; dir: string; base: string; since: string; head: string }> {
+/**
+ * The run's shape, built from nothing but `git init`: a bare origin carrying
+ * `main`, and a clone whose run branch is two commits past it.
+ *
+ * NOT a clone of this repo. The first version cloned the checkout it ran from
+ * and branched off `origin/main`, and died on CI's checkout — a detached HEAD
+ * with no local `main`, so the clone carried no `origin/main` to branch from
+ * (`fatal: 'origin/main' is not a commit`). The fixture's verdict was a property
+ * of the host's git state. Building the repo here makes every ref the layer
+ * resolves (`main`, `origin/main`, the branch, both commits) one this fixture
+ * created, which is also what makes the file runnable outside a git checkout.
+ */
+async function mkRunRepo(): Promise<{
+  root: string;
+  skills: string;
+  dir: string;
+  base: string;
+  since: string;
+  head: string;
+}> {
   const root = mkdtempSync(path.join(os.tmpdir(), "lean-delta-stamp-"));
+  const origin = path.join(root, "origin.git");
   const dir = path.join(root, "repo");
-  const G = (args: string) => execp(`git ${args}`, { cwd: dir, maxBuffer: 64 * 1024 * 1024 });
-  // Clone THIS repo so the run has a real `origin/main` (the layer resolves a
-  // mainline base, and a fixture without one silently loses the delta path).
-  const repoRoot = path.resolve(import.meta.dirname, "..", "..");
-  await execp(`git clone -q --no-local ${repoRoot} ${dir}`);
-  await G("config user.email t@t");
-  await G("config user.name T");
-  // A commit on the branch, then one more: `since` is the first, `head` the
-  // second, so the fix range is exactly one commit and cannot be confused with
-  // the branch diff (which carries the whole feature).
-  await G(`checkout -qb ${BRANCH} origin/main`);
+  const env = gitTestEnv();
+  // Args are quoted because the command goes through a shell: an unquoted commit
+  // subject with spaces reaches git as three arguments and fails as a pathspec.
+  const G = (cwd: string, ...args: string[]) =>
+    execp(`git ${args.map((a) => `'${a}'`).join(" ")}`, {
+      cwd,
+      env,
+      maxBuffer: 64 * 1024 * 1024,
+    });
+  await G(root, "init", "-q", "--bare", origin);
+  mkdirSync(dir);
+  await G(dir, "init", "-q", "-b", "main");
+  await G(dir, "config", "user.email", "t@t");
+  await G(dir, "config", "user.name", "T");
+  writeFileSync(path.join(dir, "base.ts"), "export const base = 0;\n");
+  await G(dir, "add", "-A");
+  await G(dir, "commit", "-q", "-m", "base");
+  const base = (await G(dir, "rev-parse", "HEAD")).stdout.trim();
+  await G(dir, "remote", "add", "origin", origin);
+  await G(dir, "push", "-q", "-u", "origin", "main");
+  // The run branch, then two commits: `since` is the pre-fix head the step
+  // re-reviewed FROM, `head` the tip the fix wave left. Two, not one, so the fix
+  // range is a single commit and cannot be confused with the branch diff (which
+  // carries the whole feature).
+  await G(dir, "checkout", "-qb", BRANCH);
   writeFileSync(path.join(dir, "lean-delta-first.ts"), "export const first = 1;\n");
-  await G("add -A");
-  await G("commit -q -m 'review: pre-fix head'");
-  const since = (await G("rev-parse HEAD")).stdout.trim();
+  await G(dir, "add", "-A");
+  await G(dir, "commit", "-q", "-m", "review: pre-fix head");
+  const since = (await G(dir, "rev-parse", "HEAD")).stdout.trim();
   writeFileSync(path.join(dir, "lean-delta-fix.ts"), "export const fix = 2;\n");
-  await G("add -A");
-  await G("commit -q -m 'fix: the fix wave commit'");
-  const head = (await G("rev-parse HEAD")).stdout.trim();
-  const base = (await G("merge-base origin/main HEAD")).stdout.trim();
-  return { root, dir, base, since, head };
+  await G(dir, "add", "-A");
+  await G(dir, "commit", "-q", "-m", "fix: the fix wave commit");
+  const head = (await G(dir, "rev-parse", "HEAD")).stdout.trim();
+  return { root, skills: installLensSkills(root), dir, base, since, head };
 }
 
-/** A clean lens child: one lens, no findings. Only the CHILD is stubbed — the
- * diff resolution, the delta decision and the summary are the real layer's. */
-const cleanLensChild = async () =>
-  ({
-    lens: "SECURITY",
-    ok: true,
-    ms: 0,
-    startMs: Date.now(),
-    findings: [],
-    attempts: 1,
-    blocked: false,
-    summary: "clean",
-  }) as never;
+/**
+ * The installed-skills dir the lens roster reads: one valid `SKILL.md` per
+ * bundled lens.
+ *
+ * Pointing at this repo's own `skill/` dir worked only while the test ran from a
+ * checkout, and the roster reading it made the round's completeness depend on the
+ * host too. The fixture writes what the roster needs, the same shape
+ * `lib/review-findings-fixtures.ts` installs; the bundled set is the expected one,
+ * so `buildExpectedRoster` finds every lens installed and none blocked.
+ */
+function installLensSkills(root: string): string {
+  const skills = path.join(root, "skills");
+  let prec = 10;
+  for (const l of LENS_ROSTER) {
+    mkdirSync(path.join(skills, l.skill), { recursive: true });
+    writeFileSync(
+      path.join(skills, l.skill, "SKILL.md"),
+      `---\nname: ${l.skill}\nprecedence: ${prec}\n---\n`,
+    );
+    prec += 10;
+  }
+  return skills;
+}
+
+/** A clean lens child: every lens answers with prose and no findings. Only the
+ * CHILD is stubbed — the diff resolution, the delta decision and the summary are
+ * the real layer's, which is where the stamp was being lost. */
+const cleanLensChild: typeof runLensChild = async (args): Promise<LensRunResult> => ({
+  lens: args.lens.name,
+  ok: true,
+  ms: 0,
+  startMs: Date.now(),
+  findings: [],
+  attempts: 1,
+  blocked: false,
+  summary: "clean",
+});
 
 const dir0 = await mkRunRepo();
 const savedLedger = process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;
 const savedSkills = process.env.PI_ENSEMBLE_SKILLS_DIR;
-// The roster reads the installed skills dir, which CI does not have; the repo's
-// own skill/ dir is the offline stand-in the other lens tests use.
-process.env.PI_ENSEMBLE_SKILLS_DIR = path.resolve(import.meta.dirname, "..", "..", "skill");
-process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = path.join(dir0.root, "ledger.json");
 
 try {
+  // The roster reads the installed skills dir, which CI does not have, and the
+  // ledger must not land in a real clone: both are redirected INSIDE the try, so
+  // the finally below restores the env however this body leaves it.
+  process.env.PI_ENSEMBLE_SKILLS_DIR = dir0.skills;
+  process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = path.join(dir0.root, "ledger.json");
+
   const deps = reviewDeps(false);
-  deps.lensChildFn = cleanLensChild as never;
+  deps.lensChildFn = cleanLensChild;
   // NO `lensEngine`: the seam must call the real `runLensReview`, which is where
   // the range is decided and where the stamp was being lost.
   const round = await deps.lens({
