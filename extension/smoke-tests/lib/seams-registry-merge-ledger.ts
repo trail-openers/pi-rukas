@@ -66,6 +66,16 @@ export const SEAMS_MERGE_LEDGER: Seam[] = [
       // `makeLedgerWrite`. Exercised by test-adversarial-ledger-writer-shapes.ts.
       normaliseLedgerWriteReturn:
         "#1449 — the pure return-shape arm; called by makeLedgerWrite, asserted directly by test-adversarial-ledger-writer-shapes.ts",
+      // The writer is built by `makeLoopLedger` (its production caller) and takes
+      // the binding state, `decorate` and `note` as arguments, so the three arms
+      // that pin its return-shape tolerance (#1449) have to construct it directly:
+      // `test-merge-guard-provenance-fault.ts`, `test-adversarial-ledger-binding-state.ts`
+      // and `lib/writer-shape-mock-arms.test.ts` (via `test-adversarial-ledger-writer-shapes.ts`).
+      // Not routable through `makeLoopLedger`: that calls the writer by name, and a
+      // mock only rewrites the module's EXPORT bindings, so an internal call keeps
+      // the binding it resolved at load time and the arms go green vacuously.
+      makeLedgerWrite:
+        "#1449 — the loop's ledger writer, built by makeLoopLedger in this module; exported so its return-shape tolerance is driven directly by test-merge-guard-provenance-fault.ts, test-adversarial-ledger-binding-state.ts and lib/writer-shape-mock-arms.test.ts",
     },
     canary: { symbol: "captureRound", importer: "adversarial.ts" },
   },

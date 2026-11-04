@@ -21,6 +21,20 @@ import { noteCycleDeadline, runWithCycleClock } from "../src/cycle-deadline-cloc
 import { adversarialChildBoundMs } from "../src/review-bounds.ts";
 import { childBoundGraceMs, childBoundSchedule } from "../src/spawn-child-bound.ts";
 import { runAdversarialLoop, spawnCalls } from "./lib/adversarial-reviewer-harness.ts";
+// The harness calls `isolateLedger()` — from `lib/review-ledger-test-helpers.ts`
+// — before `adversarial.ts` loads, so the real `writeAdversarialLedgerEntry`
+// this run reaches writes its row to a private temp file, never the main clone's
+// `.git/review-ledger.json`. Named here because #1069's static scan reads THIS
+// file for the marker: the isolation is the harness's, but the exposure — a
+// loop driven at `process.cwd()`, which IS this clone — is the test's, and the
+// two are only safe while that import stays in the harness.
+import { isolateLedger } from "./lib/review-ledger-test-helpers.ts";
+
+// Acquired here too, not only in the harness: the isolation is idempotent-per-
+// call and the helper releases every live one on process exit, so this is the
+// file's own claim on the guarantee #1069 requires (its `runAdversarialLoop`
+// runs at `process.cwd()`, which in a worktree is the real clone).
+const isolation = isolateLedger();
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -159,4 +173,5 @@ assert(fix?.reviewSkillPath === undefined, "the fix-pass developer gets NO revie
 }
 
 console.log(`\nexit ${exit}`);
+isolation();
 process.exit(exit);
