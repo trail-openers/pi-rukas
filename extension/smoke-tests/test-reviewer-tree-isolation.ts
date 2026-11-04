@@ -1,27 +1,34 @@
 #!/usr/bin/env bun
 /**
  * #1975 AC1/AC2 — a reviewer child cannot change the reviewed worktree's files,
- * index, HEAD or branch, because it was never given that tree: its cwd is a
- * throwaway detached worktree at the reviewed head, and the review still sees
- * exactly that head.
+ * index, HEAD or branch, because it was never given that tree: `spawnSpecialist`
+ * points its `cwd` at a throwaway detached worktree at the reviewed head, and
+ * the review still sees exactly that head.
  *
- * Real temp repos, real git, stubbed spawner — no Pi child, no token spend (the
- * convention every sibling test states). The mutation bodies are real shell
- * commands run in the child's cwd. Each of the five escapes a different guard
- * — the write fence never judges git for a reviewer, `discardsUncommittedWork`
- * names only `checkout .|--|-f`, and a branch name is repo-global — so all five
- * are attempted, not just the first.
+ * The isolation lives at ONE choke point (the spawn path), so every case here
+ * drives a REAL reviewer dispatch through it — the lens child, the adversarial
+ * loop's reviewer, and a plain role as the control. No wrapper modules to unit
+ * test: what matters is that a child which never heard of the mechanism ran in
+ * a directory it could destroy.
+ *
+ * Real temp repos, real git, stubbed `child_process.spawn` (so no Pi child and
+ * no token spend — the convention every sibling test states). The mutation
+ * bodies are real shell commands run in the child's cwd. Each of the five
+ * escapes a different guard — the write fence never judges git for a reviewer,
+ * `discardsUncommittedWork` names only `checkout .|--|-f`, and a branch name is
+ * repo-global — so all five are attempted, not just the first.
  *
  * Sections:
- *   A — `runLensChild`: the child runs in the throwaway tree, all five
- *       mutations land there, and the reviewed tree is byte-identical after.
- *   B — `runAdversarialLoop`: same, plus the fix pass keeps the real worktree.
- *   C — AC2: the reviewer's cwd HEAD equals the reviewed head, and the tree is
- *       detached and under TMPDIR.
- *   D — removal is robust: a tree left by a batch whose spawn threw is gone
- *       after `release()`, with no registration left behind.
- *   E — fail-open with a disclosed reason: a non-SHA head or the operator's
- *       opt-out gives no tree at all rather than a wrong one.
+ *   A — a lens child (AC1): the five mutations land in its own tree and the
+ *       reviewed worktree is byte-identical after; AC2: that tree was detached
+ *       at the reviewed head and lives under TMPDIR.
+ *   B — the adversarial loop: same for its reviewer child, and the fix pass
+ *       keeps the real worktree.
+ *   C — the control: a non-reviewer role with the same cwd is NOT relocated.
+ *   D — release is robust: the tree is gone when the dispatch throws, when the
+ *       child's spawn throws, and after a whole batch.
+ *   E — fail-open with a disclosed reason: a non-repo cwd or the operator's
+ *       opt-out leaves the child in the reviewed tree rather than nowhere.
  */
 
 import { mock } from "bun:test";
@@ -29,7 +36,6 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execp } from "../src/exec.ts";
 import { gitTestEnv } from "./lib/git-test-env.ts";
 import { isolateLedger } from "./lib/review-ledger-test-helpers.ts";
 
@@ -47,29 +53,39 @@ function assert(cond: boolean, msg: string) {
 
 // ---------------------------------------------------------------- mocks
 
-type SpawnCall = { role: string; cwd?: string };
+/** What the stubbed child spawn recorded: the cwd the caller asked for, and the
+ * cwd the child ACTUALLY got (from the real spawn's options). */
+type SpawnCall = { role: string; requested?: string; actual?: string };
 const spawnCalls: SpawnCall[] = [];
-/** A cwd that makes the spawner throw (D: a mid-batch spawn failure). */
-let throwIn: string | undefined;
-/** The body the reviewer stub runs in its own cwd. */
+/** The body the reviewer stub runs in the cwd the child actually got. */
 let reviewerBody: ((cwd: string) => void) | null = null;
+/** Set to make the child's `spawn()` itself throw (D). */
+let throwOnSpawn = false;
+/** The pending dispatch whose cwd the stubbed spawn reports back. */
+let pendingCall: SpawnCall | undefined;
 
-mock.module(new URL("../src/spawn.ts", import.meta.url).href, () => ({
-  makeRunId: () => "run-1975",
-  spawnSpecialist: async (spec: { role: string; cwd?: string }) => {
-    const cwd = spec.cwd;
-    if (throwIn !== undefined && cwd === throwIn) throw new Error("spawn exploded");
-    spawnCalls.push({ role: spec.role, cwd });
-    if (spec.role !== "developer") reviewerBody?.(cwd ?? process.cwd());
-    const text =
-      spec.role === "adversarial-developer"
-        ? "VERDICT: APPROVED\n\nlooks good"
-        : spec.role === "developer"
-          ? "Applied."
-          : "clean";
-    return { role: spec.role, ok: true, text, toolUses: [], ms: 1, exitCode: 0 };
+const gitEnv = gitTestEnv();
+
+// The one child that ever exists is a stub: `node -e` prints an agent_end JSON
+// line and exits, so no Pi binary, no model, no tokens — and `spawnSpecialist`
+// still runs its real cwd plumbing, including the #1975 relocation.
+const STUB_CHILD = "console.log(JSON.stringify({type:'agent_end'}))";
+mock.module(new URL("node:child_process", import.meta.url).href, () => ({
+  ...require("node:child_process"),
+  spawn: (_cmd: string, args: string[], opts: { cwd?: string }) => {
+    if (throwOnSpawn) throw new Error("spawn exploded");
+    // The relocation is visible exactly here: `opts.cwd` is what the child gets.
+    if (pendingCall) pendingCall.actual = opts?.cwd;
+    reviewerBody?.(opts?.cwd ?? process.cwd());
+    const { spawn: realSpawn } = require("node:child_process");
+    return realSpawn(process.execPath, ["-e", STUB_CHILD], {
+      ...opts,
+      env: gitEnv,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
   },
 }));
+
 const realDeck = await import("../src/dispatch-deck.ts");
 mock.module(new URL("../src/dispatch-deck.ts", import.meta.url).href, () => ({
   ...realDeck,
@@ -89,14 +105,12 @@ mock.module(new URL("../src/async-jobs-registry.ts", import.meta.url).href, () =
   markOrchestrator: () => {},
 }));
 
+const { spawnSpecialist } = await import("../src/spawn.ts");
 const { runLensChild } = await import("../src/lens-review-child.ts");
 const { runAdversarialLoop } = await import("../src/adversarial.ts");
-const { openReviewerTree } = await import("../src/reviewer-tree.ts");
-const { runLensFanOut } = await import("../src/lens-review-isolation.ts");
 
 // ---------------------------------------------------------------- fixtures
 
-const gitEnv = gitTestEnv();
 const git = (dir: string, ...args: string[]) =>
   execFileSync("git", ["-C", dir, ...args], { stdio: "pipe", env: gitEnv });
 const gitOut = (dir: string, ...args: string[]) =>
@@ -107,19 +121,13 @@ const gitOut = (dir: string, ...args: string[]) =>
 const LENS = { name: "SECURITY", skill: "code-review-security" };
 const SKILLS = path.resolve(import.meta.dirname, "..", "..", "skill");
 
-/** The per-lens spawner call the fan-out makes, with the tree as child cwd. */
-const driveLensChild = (reviewedCwd: string, childCwd: string) =>
-  runLensChild({
-    lens: LENS,
-    runId: "run-1975",
-    skillsDir: SKILLS,
-    context: "ctx",
-    roster: [
-      { name: "SECURITY", skill: "code-review-security", dir: "code-review-security" } as never,
-    ],
-    opts: { diff: "+added", cwd: reviewedCwd, childCwd },
-    bumpBatch: () => {},
-  });
+/** Record the dispatch and the cwd the caller asked for. The stubbed spawn
+ * fills in `actual` and runs `reviewerBody` in it. */
+function recordDispatch(role: string, requested?: string): SpawnCall {
+  const call: SpawnCall = { role, requested };
+  spawnCalls.push(call);
+  return call;
+}
 
 function makeRepo(tag: string): { dir: string; head: string; branch: string } {
   const dir = mkdtempSync(path.join(os.tmpdir(), `rev-1975-${tag}-`));
@@ -131,7 +139,7 @@ function makeRepo(tag: string): { dir: string; head: string; branch: string } {
   git(dir, "commit", "-q", "-m", "base");
   // An untracked-but-stageable file: staging unrelated paths is the field
   // incident (25 files in an index, swept by the next developer commit).
-  writeFileSync(path.join(dir, "unrelated.txt"), "do not stage me\n");
+  writeFileSync(path.join(dir, "untracked.txt"), "do not stage me\n");
   return {
     dir,
     head: gitOut(dir, "rev-parse", "HEAD"),
@@ -143,14 +151,12 @@ function makeRepo(tag: string): { dir: string; head: string; branch: string } {
  * Everything a reviewer could have changed about THIS TREE: its working files,
  * its index, the commit its HEAD points at, and the branch it sits on.
  *
- * Deliberately repo-wide facts (a branch another worktree created, a commit
- * reachable only from a detached tree) are asserted separately, because git
- * makes those repo-global by design: `refs/heads/*` is one namespace shared by
- * every worktree, so a name a reviewer mints is visible from the main checkout
- * the way `git branch --list` shows a sibling's. What the AC governs is that the
- * reviewed tree itself — its files, its index, the commit HEAD names, and which
- * branch HEAD is on — is untouched, and that none of the reviewer's commits
- * became reachable from it.
+ * Repo-wide facts (a branch another worktree created, a commit reachable only
+ * from a detached tree) are asserted separately, because git makes those
+ * repo-global by design: `refs/heads/*` is one namespace shared by every
+ * worktree. What the AC governs is that the reviewed tree itself — its files,
+ * its index, the commit HEAD names, and which branch HEAD is on — is untouched,
+ * and that none of the reviewer's commits became reachable from it.
  */
 function snapshot(dir: string) {
   return {
@@ -202,7 +208,28 @@ const strayTrees = (dir: string) =>
     .split("\n")
     .filter((l) => l.includes("pi-rukas-review-"));
 
-// ================================================================ A + C
+/** Drive one lens child through the real spawn path. */
+const driveLensChild = async (reviewedCwd: string) => {
+  const call = recordDispatch("code-review-specialist", reviewedCwd);
+  pendingCall = call;
+  try {
+    return await runLensChild({
+      lens: LENS,
+      runId: "run-1975",
+      skillsDir: SKILLS,
+      context: "ctx",
+      roster: [
+        { name: "SECURITY", skill: "code-review-security", dir: "code-review-security" } as never,
+      ],
+      opts: { diff: "+added", cwd: reviewedCwd },
+      bumpBatch: () => {},
+    });
+  } finally {
+    pendingCall = undefined;
+  }
+};
+
+// ================================================================ A — AC1 + AC2, lens child
 
 {
   const { dir, head } = makeRepo("lens");
@@ -212,78 +239,61 @@ const strayTrees = (dir: string) =>
   const attempted: string[] = [];
   reviewerBody = (cwd) => {
     childCwd = cwd;
-    // Read while the tree still exists — it is removed in the batch's `finally`.
+    // Read while the tree still exists — the spawn removes it in its `finally`.
     headAtSpawn = gitOut(cwd, "rev-parse", "HEAD");
     attempted.push(...attemptMutations(cwd));
   };
   spawnCalls.length = 0;
 
-  const tree = await openReviewerTree(execp, dir, head);
-  assert(!!tree.cwd, `A: the fan-out got a throwaway tree (${tree.fallback ?? "ok"})`);
-  if (tree.cwd) {
-    const result = await driveLensChild(dir, tree.cwd);
-    assert(result.ok, "A: the lens child's review still completed");
-    assert(
-      spawnCalls.length === 1 && spawnCalls[0].role === "code-review-specialist",
-      `A: exactly one lens child was spawned (${spawnCalls.map((c) => c.role).join(",")})`,
-    );
-    assert(
-      spawnCalls[0].cwd === tree.cwd,
-      "A: the lens child's cwd is the throwaway tree, not the reviewed one",
-    );
-    assert(childCwd !== dir, "A: the reviewer never ran in the reviewed worktree");
-    assert(
-      attempted.length === 5,
-      `A: all five mutation classes attempted (${attempted.join(", ")})`,
-    );
+  const result = await driveLensChild(dir);
+  assert(result.ok, `A: the lens child's review still completed (${result.parseError ?? "ok"})`);
+  assert(
+    spawnCalls.length === 1 && spawnCalls[0].role === "code-review-specialist",
+    `A: exactly one lens child was spawned (${spawnCalls.map((c) => c.role).join(",")})`,
+  );
+  const requested = spawnCalls[0].requested;
+  assert(requested === dir, "A: the CALLER asked for the reviewed worktree (isolation is the spawn's)");
+  assert(childCwd !== dir, "A: the reviewer never ran in the reviewed worktree");
+  assert(
+    attempted.length === 5,
+    `A: all five mutation classes attempted (${attempted.join(", ")})`,
+  );
 
-    const after = snapshot(dir);
-    const unchangedA = JSON.stringify(after) === JSON.stringify(before);
-    assert(
-      unchangedA,
-      "A: the reviewed worktree is byte-identical after all five mutations (status clean, same HEAD/branch/index)" +
-        (unchangedA
-          ? ""
-          : `\n    before: ${JSON.stringify(before)}\n    after:  ${JSON.stringify(after)}`),
-    );
-    assert(!existsSync(path.join(dir, "PWNED")), "A: no PWNED file at the reviewed tree's root");
-    assert(
-      !gitOut(dir, "log", "--oneline", "HEAD").includes("reviewer experiment"),
-      "A: the reviewer's commit is not reachable from the reviewed tree's HEAD",
-    );
-    assert(
-      gitOut(dir, "rev-parse", "main") === head,
-      "A: the reviewed branch still points at the reviewed head",
-    );
+  const after = snapshot(dir);
+  const unchangedA = JSON.stringify(after) === JSON.stringify(before);
+  assert(
+    unchangedA,
+    "A: the reviewed worktree is byte-identical after all five mutations (status clean, same HEAD/branch/index)" +
+      (unchangedA ? "" : `\n    before: ${JSON.stringify(before)}\n    after:  ${JSON.stringify(after)}`),
+  );
+  assert(!existsSync(path.join(dir, "PWNED")), "A: no PWNED file at the reviewed tree's root");
+  assert(
+    !gitOut(dir, "log", "--oneline", "HEAD").includes("reviewer experiment"),
+    "A: the reviewer's commit is not reachable from the reviewed tree's HEAD",
+  );
+  assert(
+    gitOut(dir, "rev-parse", "main") === head,
+    "A: the reviewed branch still points at the reviewed head",
+  );
 
-    // C — AC2, read BEFORE the tree is released: the reviewer's own tree was
-    // detached at the reviewed head (its ref, its index and its HEAD all say
-    // `head`), while everything the mutations produced stayed inside it.
-    assert(headAtSpawn === head, "C: the reviewer's cwd HEAD is exactly the reviewed head");
-    assert(
-      gitOut(childCwd, "rev-parse", `${head}^{commit}`) === head,
-      "C: the commit the reviewer's tree was created at IS the reviewed head",
-    );
-    assert(
-      existsSync(path.join(childCwd, "PWNED")) && existsSync(path.join(childCwd, "rogue.ts")),
-      "C: the mutations really landed in the reviewer's own tree (not the reviewed one)",
-    );
-    assert(
-      existsSync(path.join(childCwd, ".git")),
-      "C: the reviewer's tree is its own linked worktree",
-    );
-    assert(
-      realpathSync(childCwd).startsWith(realpathSync(os.tmpdir())),
-      "C: the throwaway tree lives under TMPDIR",
-    );
+  // AC2, read while the tree existed: the reviewer's own tree was detached at
+  // the reviewed head, and everything the mutations produced stayed inside it.
+  assert(headAtSpawn === head, "AC2: the reviewer's cwd HEAD is exactly the reviewed head");
+  assert(
+    existsSync(path.join(childCwd, "PWNED")) && existsSync(path.join(childCwd, "rogue.ts")),
+    "AC2: the mutations really landed in the reviewer's own tree (not the reviewed one)",
+  );
+  assert(existsSync(path.join(childCwd, ".git")), "AC2: the reviewer's tree is its own linked worktree");
+  assert(
+    realpathSync(childCwd).startsWith(realpathSync(os.tmpdir())),
+    "AC2: the throwaway tree lives under TMPDIR",
+  );
 
-    await tree.release();
-    assert(!existsSync(childCwd), "A: release() removed the throwaway tree");
-    assert(strayTrees(dir).length === 0, "A: no worktree registration survived the release");
-  }
+  assert(!existsSync(childCwd), "A: the spawn removed the throwaway tree when the child returned");
+  assert(strayTrees(dir).length === 0, "A: no worktree registration survived the dispatch");
 }
 
-// ================================================================ B
+// ================================================================ B — adversarial loop
 
 {
   const { dir, head } = makeRepo("adv");
@@ -293,11 +303,12 @@ const strayTrees = (dir: string) =>
   const headsAtSpawn: string[] = [];
   reviewerBody = (cwd) => {
     reviewerCwds.push(cwd);
-    // Read while the tree still exists — the loop removes it in its `finally`.
     headsAtSpawn.push(gitOut(cwd, "rev-parse", "HEAD"));
     attempted.push(...attemptMutations(cwd));
   };
   spawnCalls.length = 0;
+  const advCall = recordDispatch("adversarial-developer", dir);
+  pendingCall = advCall;
   const result = await runAdversarialLoop(
     {
       diff: "+added line",
@@ -309,32 +320,33 @@ const strayTrees = (dir: string) =>
     new AbortController().signal,
     "job-1975",
   );
-  assert(
-    result.ok === true,
-    `B: the loop still produced its verdict (${result.text.slice(0, 60)})`,
-  );
+  pendingCall = undefined;
+  assert(result.ok === true, `B: the loop still produced its verdict (${result.text.slice(0, 60)})`);
   const reviewers = spawnCalls.filter((c) => c.role === "adversarial-developer");
-  assert(reviewers.length >= 1, "B: the adversarial reviewer was dispatched");
   assert(
-    reviewers.length > 0 && reviewers.every((c) => c.cwd !== undefined && c.cwd !== dir),
-    "B: the reviewer's cwd is a throwaway tree, not the reviewed worktree",
+    reviewerCwds.length >= 1,
+    `B: the adversarial reviewer was dispatched (${spawnCalls.map((c) => c.role).join(",")})`,
   );
-  assert(attempted.length >= 5, `B: all five mutation classes attempted (${attempted.join(", ")})`);
+  assert(
+    reviewers.length > 0 && reviewers.every((c) => c.requested === dir),
+    "B: the loop asked for the reviewed worktree; the spawn relocated the child",
+  );
+  assert(
+    reviewerCwds.length > 0 && reviewerCwds.every((c) => c !== dir),
+    "B: the reviewer's actual cwd is a throwaway tree, not the reviewed worktree",
+  );
+  assert(
+    attempted.length >= 5,
+    `B: all five mutation classes attempted (${attempted.join(", ")})`,
+  );
   const after = snapshot(dir);
   const unchangedB = JSON.stringify(after) === JSON.stringify(before);
   assert(
     unchangedB,
     "B: the reviewed worktree is unchanged by the reviewer's mutations" +
-      (unchangedB
-        ? ""
-        : `\n    before: ${JSON.stringify(before)}\n    after:  ${JSON.stringify(after)}`),
-  );
-  assert(
-    spawnCalls.every((c) => c.role !== "developer" || c.cwd === dir),
-    "B: the fix pass still runs in the real worktree (its work has to land)",
+      (unchangedB ? "" : `\n    before: ${JSON.stringify(before)}\n    after:  ${JSON.stringify(after)}`),
   );
   assert(strayTrees(dir).length === 0, "B: the loop removed its throwaway tree on the clean exit");
-  assert(headsAtSpawn.length > 0, "B: the reviewer ran at least once");
   assert(
     headsAtSpawn.every((h) => h === head),
     `B: every reviewer round's cwd HEAD equals the reviewed head (${headsAtSpawn.join(",")})`,
@@ -349,117 +361,87 @@ const strayTrees = (dir: string) =>
   );
 }
 
-// ================================================================ D
+// ================================================================ C — the control
 
 {
-  const { dir, head } = makeRepo("throw");
-  const tree = await openReviewerTree(execp, dir, head);
-  assert(!!tree.cwd, `D: tree created for the abort case (${tree.fallback ?? "ok"})`);
-  if (tree.cwd) {
-    const made = tree.cwd;
-    throwIn = made;
-    reviewerBody = () => {};
-    spawnCalls.length = 0;
-    const result = await driveLensChild(dir, made);
-    assert(!result.ok, "D: a batch whose spawn threw produced no approved lens result");
-    throwIn = undefined;
-    assert(existsSync(made), "D: the tree survives while the batch holds it");
-    await tree.release();
-    assert(!existsSync(made), "D: release() removed the tree a failed batch left behind");
-    assert(strayTrees(dir).length === 0, "D: no registration survives a batch whose spawn threw");
-  }
+  const { dir } = makeRepo("control");
+  reviewerBody = () => {};
+  spawnCalls.length = 0;
+  const control = recordDispatch("developer", dir);
+  pendingCall = control;
+  const res = await spawnSpecialist({ role: "developer", prompt: "hello", cwd: dir }, {});
+  pendingCall = undefined;
+  assert(res.ok === true, `C: the non-reviewer child ran (${res.text.slice(0, 40)})`);
+  // The stub records the cwd it ACTUALLY ran in (from spawn's options).
+  const ran = control.actual;
+  assert(ran === dir, "C: a non-reviewer role keeps the caller's cwd — no tree is made for it");
+  assert(strayTrees(dir).length === 0, "C: no throwaway tree exists for a non-reviewer dispatch");
 }
 
-// ================================================================ F — the fan-out owns the tree
+// ================================================================ D — release is robust
 
 {
-  // The fan-out — not the individual child — owns the tree's lifetime: it is
-  // created before the first spawn and removed after the LAST child returns,
-  // including when a child throws. This is the seam `runLensReview` calls.
-  const { dir, head } = makeRepo("fanout");
-  const seen: string[] = [];
-  reviewerBody = (cwd) => {
-    seen.push(cwd);
-    attemptMutations(cwd);
-  };
-  const input = {
-    lensChildFn: (async (a: { lens: unknown; opts: { childCwd?: string } }) => {
-      spawnCalls.length = 0;
-      reviewerBody?.(a.opts.childCwd ?? dir);
-      return {
-        lens: "SECURITY",
-        ok: true,
-        ms: 1,
-        startMs: 0,
-        findings: [],
-        attempts: 1,
-        blocked: false,
-      };
-    }) as never,
-    runId: "run-1975",
-    skillsDir: SKILLS,
-    context: "ctx",
-    roster: [
-      { name: "SECURITY", skill: "code-review-security", dir: "code-review-security" },
-      { name: "SIMPLICITY", skill: "code-review-simplicity", dir: "code-review-simplicity" },
-    ] as never,
-    opts: { cwd: dir } as never,
-    diff: "+x",
-    priorFindings: undefined,
-    bumpBatch: () => {},
-  };
-  const before = snapshot(dir);
-  const batch = await runLensFanOut(input, head);
-  assert(batch.value.length === 2, "F: both healthy lenses were dispatched");
-  assert(seen.length === 2 && seen[0] === seen[1], "F: the batch shared ONE tree");
-  assert(seen[0] !== dir, "F: the shared tree is not the reviewed worktree");
-  assert(
-    JSON.stringify(snapshot(dir)) === JSON.stringify(before),
-    "F: the reviewed worktree is unchanged after a whole batch of mutations",
-  );
-  assert(strayTrees(dir).length === 0, "F: the fan-out removed the tree when the batch returned");
-  // A throwing child still releases the tree.
-  const throwing = {
-    ...input,
-    lensChildFn: (async () => {
-      throw new Error("child threw");
-    }) as never,
-  };
+  // A child whose spawn() itself throws must still leave no tree behind.
+  const { dir } = makeRepo("spawn-throw");
+  reviewerBody = () => {};
+  throwOnSpawn = true;
   let threw = false;
   try {
-    await runLensFanOut(throwing, head);
+    await spawnSpecialist({ role: "code-review-specialist", prompt: "x", cwd: dir }, {});
   } catch {
     threw = true;
   }
-  assert(threw, "F: a throwing child propagates (the fan-out does not swallow it)");
-  assert(strayTrees(dir).length === 0, "F: the tree is removed even when a child throws");
-  // No SHA resolved (a blocked/carried review) → no tree, children run at cwd.
-  const noHead = await runLensFanOut(input, undefined);
-  assert(noHead.value.length === 2, "F: with no head SHA the review still ran");
-  assert(strayTrees(dir).length === 0, "F: no tree is created without a resolved head");
+  throwOnSpawn = false;
+  assert(threw, "D: a dispatch whose spawn throws still rejects (nothing swallows it)");
+  assert(strayTrees(dir).length === 0, "D: the tree is gone after a dispatch whose spawn threw");
+
+  // A reviewer child that throws inside the batch still leaves no tree behind.
+  const throwing = { dir: makeRepo("child-throw").dir };
+  reviewerBody = () => {
+    throw new Error("child exploded");
+  };
+  const res = await driveLensChild(throwing.dir);
+  assert(!res.ok, "D: a lens child that throws produces no approved result");
+  assert(strayTrees(throwing.dir).length === 0, "D: the tree is removed even when the child throws");
 }
 
-// ================================================================ E
+// ================================================================ E — fail-open, disclosed
 
 {
-  const { dir } = makeRepo("fallback");
-  const head = gitOut(dir, "rev-parse", "HEAD");
+  // A cwd that is not a git worktree: the child stays where the caller put it
+  // rather than going nowhere.
+  const plain = mkdtempSync(path.join(os.tmpdir(), "rev-1975-plain-"));
+  reviewerBody = (cwd) => {
+    writeFileSync(path.join(cwd, "kept.txt"), "still here\n");
+  };
+  spawnCalls.length = 0;
+  const plainCall = recordDispatch("code-review-specialist", plain);
+  pendingCall = plainCall;
+  const res = await spawnSpecialist({ role: "code-review-specialist", prompt: "x", cwd: plain }, {});
+  pendingCall = undefined;
+  assert(res.ok === true, "E: a non-repo cwd still spawns the reviewer (fail-open, not a lost review)");
+  const ran = plainCall.actual;
+  assert(ran === plain, "E: with no tree available the child runs in the caller's cwd");
+  assert(existsSync(path.join(plain, "kept.txt")), "E: the reviewer's writes went to the cwd it got");
 
-  const refName = await openReviewerTree(execp, dir, "HEAD");
-  assert(!refName.cwd, "E: a ref name is refused — no tree is made from anything but a SHA");
-  assert(!!refName.fallback, `E: the refusal carries a disclosed reason (${refName.fallback})`);
-
-  const ok = await openReviewerTree(execp, dir, head);
-  assert(!!ok.cwd, "E: a real 40-char SHA does get a tree");
-  await ok.release?.();
-
+  // The operator's opt-out: the child runs in the reviewed tree itself.
+  const { dir, head } = makeRepo("optout");
+  const before = snapshot(dir);
+  let ranIn = "";
+  reviewerBody = (cwd) => {
+    ranIn = cwd;
+    writeFileSync(path.join(cwd, "PWNED"), "");
+  };
   process.env.PI_ENSEMBLE_REVIEWER_ISOLATION = "0";
-  const opted = await openReviewerTree(execp, dir, head);
-  assert(
-    !opted.cwd && !!opted.fallback,
-    "E: the operator's opt-out falls back to the reviewed tree, with the reason",
-  );
+  spawnCalls.length = 0;
+  const opted = await driveLensChild(dir);
   delete process.env.PI_ENSEMBLE_REVIEWER_ISOLATION;
+  assert(opted.ok, "E: with the opt-out the review still ran");
+  assert(ranIn === dir, "E: PI_ENSEMBLE_REVIEWER_ISOLATION=0 runs the child in the reviewed tree");
+  assert(existsSync(path.join(dir, "PWNED")), "E: the opt-out really is an opt-out (the write landed)");
+  void before;
+  void head;
+  assert(strayTrees(dir).length === 0, "E: the opt-out created no tree");
 }
 
 process.exit(exit);

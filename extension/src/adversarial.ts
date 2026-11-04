@@ -25,7 +25,6 @@ import {
   projectReviewerKillCause,
   synthKillCause,
 } from "./adversarial-reviewer-arm.ts";
-import { runReviewerRounds } from "./adversarial-reviewer-isolation.ts";
 import { type RoundReview, roundAfterReread } from "./adversarial-round-state.ts";
 import { createUsageTally } from "./adversarial-usage.ts";
 import {
@@ -266,221 +265,218 @@ export async function runAdversarialLoop(
   });
 
   const firstRound = params.reportRound ?? 1;
-  const done = await runReviewerRounds(params, async (reviewerCwd) => {
-    for (let round = firstRound; round <= MAX_ROUNDS; round++) {
-      if (signal.aborted) break;
-      if (round > firstRound && getDiff) {
-        // One attempt per round, deliberately: a diff read is deterministic, so a
-        // second try says the same thing (#1634's park skips the retry ladders for
-        // the same reason). The `try` below decides what a failure means.
-        try {
-          const fresh = await getDiff();
-          // #1360 — a round after a fix pass reviews what the fixer left in the
-          // worktree, so its head is the branch tip, not the ref the caller
-          // named at entry (that ref is where the round-1 diff came from). The
-          // head re-read sits with the diff re-read — #859's rule, now covering
-          // both halves of the range. A failed re-read keeps the previous diff,
-          // so it keeps the previous round's head too.
-          headRef = roundHeadRef(headRef, { isRefRangeRound: range !== null, freshDiff: fresh });
-          // #1816 — the range is minted HERE, beside the head it describes, and
-          // TOGETHER with the diff it produced: the notice must print the command
-          // for the range this round actually reviewed.
-          review = roundAfterReread(review, range, headRef, true, fresh);
-        } catch (err) {
-          // Who owned the read decides what a failed re-read is: a transient the
-          // loop rides out on the previous diff, or the gate's own read failing —
-          // in which case the loop must not produce a verdict for a round whose
-          // diff it could not read, and never dispatches a reviewer against one.
-          // Both branches, and why, are in `adversarial-reread.ts`.
-          const failure = onRereadFailure(round, err, rereadIsLoopOwn);
-          if (failure.action === "rethrow") throw err;
-          // #859 + #1816: the previous diff plus the live worktree is what the
-          // reviewer had before this round, so it reviews that again — and with no
-          // range for this round, since the notice may not name one it never read.
-          review = roundAfterReread(review, range, headRef, false, undefined);
-          diffRereadNotes.push(rereadStalenessNote(round, failure.reason));
-        }
+  for (let round = firstRound; round <= MAX_ROUNDS; round++) {
+    if (signal.aborted) break;
+    if (round > firstRound && getDiff) {
+      // One attempt per round, deliberately: a diff read is deterministic, so a
+      // second try says the same thing (#1634's park skips the retry ladders for
+      // the same reason). The `try` below decides what a failure means.
+      try {
+        const fresh = await getDiff();
+        // #1360 — a round after a fix pass reviews what the fixer left in the
+        // worktree, so its head is the branch tip, not the ref the caller
+        // named at entry (that ref is where the round-1 diff came from). The
+        // head re-read sits with the diff re-read — #859's rule, now covering
+        // both halves of the range. A failed re-read keeps the previous diff,
+        // so it keeps the previous round's head too.
+        headRef = roundHeadRef(headRef, { isRefRangeRound: range !== null, freshDiff: fresh });
+        // #1816 — the range is minted HERE, beside the head it describes, and
+        // TOGETHER with the diff it produced: the notice must print the command
+        // for the range this round actually reviewed.
+        review = roundAfterReread(review, range, headRef, true, fresh);
+      } catch (err) {
+        // Who owned the read decides what a failed re-read is: a transient the
+        // loop rides out on the previous diff, or the gate's own read failing —
+        // in which case the loop must not produce a verdict for a round whose
+        // diff it could not read, and never dispatches a reviewer against one.
+        // Both branches, and why, are in `adversarial-reread.ts`.
+        const failure = onRereadFailure(round, err, rereadIsLoopOwn);
+        if (failure.action === "rethrow") throw err;
+        // #859 + #1816: the previous diff plus the live worktree is what the
+        // reviewer had before this round, so it reviews that again — and with no
+        // range for this round, since the notice may not name one it never read.
+        review = roundAfterReread(review, range, headRef, false, undefined);
+        diffRereadNotes.push(rereadStalenessNote(round, failure.reason));
       }
-      lastComments = await roundComments(
-        review.diff,
-        headRef,
-        params.workCwd,
-        params.commentTimeoutMs,
-        params.commentExecFn,
+    }
+    lastComments = await roundComments(
+      review.diff,
+      headRef,
+      params.workCwd,
+      params.commentTimeoutMs,
+      params.commentExecFn,
+    );
+    // #1360 — capture what THIS round is about to review, immediately before
+    // the reviewer dispatch — gated on the provenance marker, because the driver
+    // path never consults a binding and so pays for none.
+    if (toolPath) await captureRound(params.workCwd ?? process.cwd(), params.base, headRef);
+    // Round-scoped, so every result this round produces came from its own child.
+    reviewerKillCause = undefined;
+    // The loop's OWN abort ends the pass; the step's BUDGET abort is refused in
+    // `makeRunPhase`, whose cause the `rejected` tail below cannot carry.
+    if (signal.aborted) break;
+    const adv = await runPhaseWithInfraRetry(
+      "adversarial-developer",
+      `round${round}-review`,
+      buildAdversarialPrompt({
+        diff: review.diff,
+        context: params.context,
+        round,
+        maxRounds: MAX_ROUNDS,
+        issueBody: params.issueBody,
+        fixDelta: round === firstRound ? params.fixDelta : undefined,
+        gateCmd: params.gateCmd,
+        // #1040 — comments this round's diff removed, for the reviewer to judge.
+        commentEvidence: renderCommentEvidence(lastComments),
+        // #1137 — scope the review to this workstream (N>1 only; absent on N=1).
+        // A plain pass-through now that the value is optional: an absent scope
+        // leaves the key undefined, exactly as the conditional spread did, and
+        // the builder already branches on `opts.scope`.
+        scope: params.scope,
+        // Only non-undefined on the ref-range path; a pasted diff keeps today's prompt.
+        diffRange: review.range,
+      }),
+      params.workCwd,
+      // #1978 — the ladder decides with the SAME classifier the loop reports with.
+      { runPhase, accumulate: tally.accumulate, signal, classify: classifyReviewer },
+    );
+    // #1978 — recorded BEFORE the classifier's early return: a killed child leaves
+    // the loop there, so a projection after it could never fire.
+    if (params.reportOnly) reviewerKillCause = adv.killCause;
+    const advCls = classifyReviewer(adv);
+    if (advCls.cause !== "success") {
+      // A killed reviewer ENDED this round: no re-dispatch, no fixer, and the
+      // cause rides out on the result so the step names the budget instead of
+      // calling an operator's ceiling an infrastructure failure.
+      return ledgerWrite(
+        withProjectedKillCause(infraFailureResult(round, "review", adv, advCls, infraCtxNow())),
       );
-      // #1360 — capture what THIS round is about to review, immediately before
-      // the reviewer dispatch — gated on the provenance marker, because the driver
-      // path never consults a binding and so pays for none.
-      if (toolPath) await captureRound(params.workCwd ?? process.cwd(), params.base, headRef);
-      // Round-scoped, so every result this round produces came from its own child.
-      reviewerKillCause = undefined;
-      // The loop's OWN abort ends the pass; the step's BUDGET abort is refused in
-      // `makeRunPhase`, whose cause the `rejected` tail below cannot carry.
-      if (signal.aborted) break;
-      const adv = await runPhaseWithInfraRetry(
-        "adversarial-developer",
-        `round${round}-review`,
-        buildAdversarialPrompt({
-          diff: review.diff,
-          context: params.context,
-          round,
-          maxRounds: MAX_ROUNDS,
-          issueBody: params.issueBody,
-          fixDelta: round === firstRound ? params.fixDelta : undefined,
-          gateCmd: params.gateCmd,
-          // #1040 — comments this round's diff removed, for the reviewer to judge.
-          commentEvidence: renderCommentEvidence(lastComments),
-          // #1137 — scope the review to this workstream (N>1 only; absent on N=1).
-          // A plain pass-through now that the value is optional: an absent scope
-          // leaves the key undefined, exactly as the conditional spread did, and
-          // the builder already branches on `opts.scope`.
-          scope: params.scope,
-          // Only non-undefined on the ref-range path; a pasted diff keeps today's prompt.
-          diffRange: review.range,
-        }),
-        reviewerCwd,
-        // #1978 — the ladder decides with the SAME classifier the loop reports with.
-        { runPhase, accumulate: tally.accumulate, signal, classify: classifyReviewer },
-      );
-      // #1978 — recorded BEFORE the classifier's early return: a killed child leaves
-      // the loop there, so a projection after it could never fire.
-      if (params.reportOnly) reviewerKillCause = adv.killCause;
-      const advCls = classifyReviewer(adv);
-      if (advCls.cause !== "success") {
-        // A killed reviewer ENDED this round: no re-dispatch, no fixer, and the
-        // cause rides out on the result so the step names the budget instead of
-        // calling an operator's ceiling an infrastructure failure.
-        return ledgerWrite(
-          withProjectedKillCause(infraFailureResult(round, "review", adv, advCls, infraCtxNow())),
-        );
-      }
+    }
 
-      const verdict = parseVerdict(adv.text);
-      rounds.push({ round, verdict, ms: adv.ms });
-      if (params.reportOnly) {
-        if (verdict.verdictParsed !== true) {
-          return ledgerWrite(
-            infraFailureResult(
-              round,
-              "review",
-              adv,
-              { ...advCls, headline: "produced no readable VERDICT marker" },
-              infraCtxNow(),
-            ),
-          );
-        }
-        // #912 — the review ledger keys on the latest entry per branch, so every
-        // reviewed round records its verdict: a pass is `approved`, anything the
-        // driver will route back or reject is `rejected` (replaced by a later pass).
-        const terminalRound = reportTerminal ? MAX_ROUNDS : round;
-        const passed = decideLoopAction(verdict.status, terminalRound, MAX_ROUNDS, true) === "pass";
-        return ledgerWrite(
-          synthesizeResult({
-            ok: true,
-            loopOutcome: passed ? "approved" : "rejected",
-            text: verdict.findings,
-            ms: Date.now() - start,
-            usage,
-            transcriptPath: tally.lastTranscript,
-            model: tally.lastModel,
-            adversarialRounds: toRoundRecords(rounds),
-            ...synthKillCause(reviewerKillCause),
-          }),
-        );
-      }
-      const action = decideLoopAction(verdict.status, round, MAX_ROUNDS, verdict.verdictParsed);
-      if (action === "incomplete") {
-        // Out of rounds with no readable verdict on the last one. Nothing was
-        // reviewed, so this is not an approval and not a rejection — it is the
-        // same "no verdict exists" case the infra path already reports, and the
-        // step router already knows to retry it once.
+    const verdict = parseVerdict(adv.text);
+    rounds.push({ round, verdict, ms: adv.ms });
+    if (params.reportOnly) {
+      if (verdict.verdictParsed !== true) {
         return ledgerWrite(
           infraFailureResult(
             round,
             "review",
             adv,
-            {
-              ...advCls,
-              headline: "produced no readable VERDICT marker on the final round",
-            },
+            { ...advCls, headline: "produced no readable VERDICT marker" },
             infraCtxNow(),
           ),
         );
       }
-      if (action === "pass") {
-        // The round-scoped cause was already cleared before this round's dispatch;
-        // the projection is scoped to the report-only gate that reads it — a loop
-        // that ran a fix pass is the /work driver's own review, whose results must
-        // stay byte-identical for the fan-out's cap-kill readers.
-        // `PASSED WITH FINDINGS` rather than `APPROVED` when something is still
-        // outstanding — the operator (and the lens gate) must tell the two apart;
-        // `commit-pr` carries the findings into the PR body.
-        const commentsLine = await commentsLineNow();
-        const r = synthesizeResult({
+      // #912 — the review ledger keys on the latest entry per branch, so every
+      // reviewed round records its verdict: a pass is `approved`, anything the
+      // driver will route back or reject is `rejected` (replaced by a later pass).
+      const terminalRound = reportTerminal ? MAX_ROUNDS : round;
+      const passed = decideLoopAction(verdict.status, terminalRound, MAX_ROUNDS, true) === "pass";
+      return ledgerWrite(
+        synthesizeResult({
           ok: true,
-          loopOutcome: "approved",
-          text: passedRoundText({
-            clean: verdict.status === "APPROVED",
-            round,
-            status: verdict.status,
-            findings: verdict.findings,
-            commentsLine,
-            notes: diffRereadNotes,
-          }),
+          loopOutcome: passed ? "approved" : "rejected",
+          text: verdict.findings,
           ms: Date.now() - start,
           usage,
           transcriptPath: tally.lastTranscript,
           model: tally.lastModel,
           adversarialRounds: toRoundRecords(rounds),
-        });
-        return ledgerWrite(r);
-      }
-      if (action === "reject") break;
-      if (!params.workCwd) {
-        return ledgerWrite(workCwdRequiredResult(round, verdict, roundStateNow(rounds)));
-      }
-      // #1104 — the fence checks workCwd (a worktree of the caller's repo) before
-      // the first fix round, and runs the caller-repo check after every round,
-      // even one whose dispatch throws. A refused round dispatches nothing.
-      let fixRun: FencedRound<DispatchResult>;
-      try {
-        fixRun = await fence.round(round, params.workCwd, () =>
-          runPhaseWithInfraRetry(
-            "developer",
-            `round${round}-fix`,
-            buildFixPrompt({
-              findings: verdict.findings,
-              context: params.context,
-              diff: review.diff,
-              round,
-              issueBody: params.issueBody,
-              priorFindings: [...priorFindings],
-              diffRange: review.range,
-            }),
-            params.workCwd,
-            { runPhase, accumulate: tally.accumulate, signal },
-          ),
-        );
-      } catch (err) {
-        // A throwing dispatch must not lose the fence's records: the ledger write
-        // carries them (the check ran in the fence's finally before this throw).
-        return ledgerWrite(fixThrewResult(round, err, roundStateNow(rounds)));
-      }
-      if (!fixRun.ran) {
-        return ledgerWrite(fixRefusedResult(fixRun.outcome, fixRun.reason, roundStateNow(rounds)));
-      }
-      const fix = fixRun.value;
-      // Record what this round asked for, so the next fixer does not undo it.
-      priorFindings.push(
-        `Round ${round} (${verdict.status}): ${summariseFindings(verdict.findings)}`,
+          ...synthKillCause(reviewerKillCause),
+        }),
       );
-      const fixCls = classifyDispatchOutcome(fix);
-      if (fixCls.cause !== "success") {
-        return ledgerWrite(infraFailureResult(round, "fix", fix, fixCls, infraCtxNow()));
-      }
     }
-  });
-  if (done !== undefined) return done;
+    const action = decideLoopAction(verdict.status, round, MAX_ROUNDS, verdict.verdictParsed);
+    if (action === "incomplete") {
+      // Out of rounds with no readable verdict on the last one. Nothing was
+      // reviewed, so this is not an approval and not a rejection — it is the
+      // same "no verdict exists" case the infra path already reports, and the
+      // step router already knows to retry it once.
+      return ledgerWrite(
+        infraFailureResult(
+          round,
+          "review",
+          adv,
+          {
+            ...advCls,
+            headline: "produced no readable VERDICT marker on the final round",
+          },
+          infraCtxNow(),
+        ),
+      );
+    }
+    if (action === "pass") {
+      // The round-scoped cause was already cleared before this round's dispatch;
+      // the projection is scoped to the report-only gate that reads it — a loop
+      // that ran a fix pass is the /work driver's own review, whose results must
+      // stay byte-identical for the fan-out's cap-kill readers.
+      // `PASSED WITH FINDINGS` rather than `APPROVED` when something is still
+      // outstanding — the operator (and the lens gate) must tell the two apart;
+      // `commit-pr` carries the findings into the PR body.
+      const commentsLine = await commentsLineNow();
+      const r = synthesizeResult({
+        ok: true,
+        loopOutcome: "approved",
+        text: passedRoundText({
+          clean: verdict.status === "APPROVED",
+          round,
+          status: verdict.status,
+          findings: verdict.findings,
+          commentsLine,
+          notes: diffRereadNotes,
+        }),
+        ms: Date.now() - start,
+        usage,
+        transcriptPath: tally.lastTranscript,
+        model: tally.lastModel,
+        adversarialRounds: toRoundRecords(rounds),
+      });
+      return ledgerWrite(r);
+    }
+    if (action === "reject") break;
+    if (!params.workCwd) {
+      return ledgerWrite(workCwdRequiredResult(round, verdict, roundStateNow(rounds)));
+    }
+    // #1104 — the fence checks workCwd (a worktree of the caller's repo) before
+    // the first fix round, and runs the caller-repo check after every round,
+    // even one whose dispatch throws. A refused round dispatches nothing.
+    let fixRun: FencedRound<DispatchResult>;
+    try {
+      fixRun = await fence.round(round, params.workCwd, () =>
+        runPhaseWithInfraRetry(
+          "developer",
+          `round${round}-fix`,
+          buildFixPrompt({
+            findings: verdict.findings,
+            context: params.context,
+            diff: review.diff,
+            round,
+            issueBody: params.issueBody,
+            priorFindings: [...priorFindings],
+            diffRange: review.range,
+          }),
+          params.workCwd,
+          { runPhase, accumulate: tally.accumulate, signal },
+        ),
+      );
+    } catch (err) {
+      // A throwing dispatch must not lose the fence's records: the ledger write
+      // carries them (the check ran in the fence's finally before this throw).
+      return ledgerWrite(fixThrewResult(round, err, roundStateNow(rounds)));
+    }
+    if (!fixRun.ran) {
+      return ledgerWrite(fixRefusedResult(fixRun.outcome, fixRun.reason, roundStateNow(rounds)));
+    }
+    const fix = fixRun.value;
+    // Record what this round asked for, so the next fixer does not undo it.
+    priorFindings.push(
+      `Round ${round} (${verdict.status}): ${summariseFindings(verdict.findings)}`,
+    );
+    const fixCls = classifyDispatchOutcome(fix);
+    if (fixCls.cause !== "success") {
+      return ledgerWrite(infraFailureResult(round, "fix", fix, fixCls, infraCtxNow()));
+    }
+  }
 
   const last = rounds[rounds.length - 1];
   const commentsLine = await commentsLineNow();

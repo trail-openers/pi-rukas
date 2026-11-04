@@ -39,7 +39,6 @@ import {
   dedupeFindings,
   piSkillsDir,
 } from "./lens-review-format.ts";
-import { runLensFanOut } from "./lens-review-isolation.ts";
 import { priorFindingsFor } from "./lens-review-memory.ts";
 import { installBlockRowsForRoster, skillsDirUsable } from "./lens-review-skills.ts";
 import type { Finding, LensRunResult } from "./lens-review-types.ts";
@@ -403,14 +402,24 @@ export async function runLensReview(opts: {
   const lensChildFn = opts.lensChildFn ?? runLensChild;
   const blocked = roster.filter((e) => e.error !== undefined);
   const healthy = roster.filter((e) => e.error === undefined);
-  // #1975 — every lens child runs in one throwaway tree at the reviewed head,
-  // released once the batch returns and before the ledger write; rules and the
-  // fan-out itself live in `lens-review-isolation.ts`. Every review READ — the
-  // diff, the identity, the ledger, the findings pass — stays on `opts.cwd`, so
-  // isolating the child's cwd cannot change what the round is judged on.
-  const { value: results } = await runLensFanOut(
-    { lensChildFn, runId, skillsDir, context, roster, opts, diff, priorFindings, bumpBatch },
-    headSha,
+  const results = await Promise.all(
+    healthy.map((lens) =>
+      withLensModelSlot(
+        lens.name,
+        () =>
+          lensChildFn({
+            lens,
+            runId,
+            skillsDir,
+            context,
+            roster,
+            opts: { ...opts, diff: diff ?? "", priorFindings },
+            bumpBatch,
+            ...(opts.pi ? { pi: opts.pi } : {}),
+          }),
+        opts.signal,
+      ),
+    ),
   );
   const blockedRows = blocked.map(
     (e): LensRunResult => ({

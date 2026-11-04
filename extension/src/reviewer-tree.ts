@@ -9,28 +9,23 @@
  * swept in. Prompt-layer instructions ("use a private /tmp copy") are prose,
  * and prose is not enforcement (AGENTS.md §7.7).
  *
- * The mechanism is a directory the reviewer may destroy. One detached worktree
- * is created at the reviewed head before the batch's first spawn, becomes every
- * reviewer child's cwd, and is removed in the caller's `finally`. The reviewed
- * worktree keeps its files, its index, its HEAD and its branch: a child cannot
- * change what it was never given.
+ * The mechanism is a directory the reviewer may destroy, and it sits at ONE
+ * choke point: every reviewer child — the six lens passes and the adversarial
+ * reviewer — reaches git through `spawnSpecialist`, so that one call opens the
+ * tree, points the child's `cwd` at it, and removes it in a `finally`. Nothing
+ * in `lens-review*.ts` or `adversarial.ts` knows the tree exists.
  *
- * Three rules the callers must keep:
+ * Three rules this module keeps:
  *
- *   - **The tree is created at a 40-char SHA, never a ref.** `HEAD` and a branch
- *     name resolve to whatever the reviewed tree holds at the moment of the
- *     creation, and a review must be able to name the commit it read. Callers
- *     resolve the head to an SHA before any spawn; this module refuses anything
- *     else — a ref would also let a leading dash reach git as an option.
- *   - **One tree per review batch, owned by the fan-out site**, not by the
- *     individual child: six lens children share one tree, and the adversarial
- *     loop's reviewer rounds share one. That is the smaller cost (one `worktree
- *     add`, one provisioning) and the shape that survives a mid-batch abort.
- *   - **Every failure falls back to the caller's tree** and says so. A review
- *     that cannot be isolated still gets run, with the reason traced and
- *     returned — the same fail-open-with-a-disclosed-reason rule as
- *     `plan-base-tree.ts`. A reviewer is a gate, and gate plumbing that cannot
- *     start must not cost the gate its answer.
+ *   - **A tree is created only for a caller-named cwd that is a git worktree.**
+ *     No cwd, or a plain directory, is not ours to relocate.
+ *   - **The tree is created at a 40-char SHA, never a ref.** `HEAD` answers with
+ *     whatever the tree holds at the moment of creation, and a review must be
+ *     able to name the commit it read.
+ *   - **Every failure falls back to the caller's cwd** and says so (the same
+ *     fail-open-with-a-disclosed-reason rule as `plan-base-tree.ts`). A reviewer
+ *     is a gate; gate plumbing that cannot start must not cost the gate its
+ *     answer. `PI_ENSEMBLE_REVIEWER_ISOLATION=0` is the operator's opt-out.
  */
 
 import { randomBytes } from "node:crypto";
@@ -38,8 +33,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { isFullCommitSha } from "./commit-sha.ts";
-import { execp } from "./exec.ts";
-import { trace } from "./trace.ts";
+import { trace, traceWarn } from "./trace.ts";
 import { provisionWorktree } from "./worktree-provision.ts";
 
 /**
@@ -55,15 +49,12 @@ export type ReviewerTreeExecFn = (
 
 /** What {@link openReviewerTree} hands back, or why it did not.
  *
- * Every field is optional and the two shapes are told apart by `cwd`: a tree is
- * the only arm that carries one. That is deliberate — a caller that cannot
- * create the tree still has to run its review, so both arms are usable and
- * `release` is present whenever a tree exists. */
+ * The two arms are told apart by `cwd`: a tree is the only arm that carries one.
+ * A caller that cannot create the tree still has to run its review, so both arms
+ * are usable and `release` is present whenever a tree exists. */
 export type ReviewerTree = {
   /** The directory to spawn reviewer children in; absent when none was made. */
   cwd?: string;
-  /** The 40-char commit that tree is detached at. */
-  headSha?: string;
   /** Remove this tree. Best-effort; never throws. */
   release?: () => Promise<void>;
   /** Why this review runs unisolated (traced, and for the caller to record). */
@@ -86,10 +77,9 @@ function stderrOf(err: unknown): string {
  * is exactly what a reviewed `/work` tree is — `--git-dir` answers with that
  * worktree's own admin dir, so `worktree add` run from a worktree writes its
  * registration where nothing looks for it and the tree comes back detached at
- * the CURRENT head instead of the SHA asked for (observed: the reviewer's tree
- * landed at the reviewed tree's HEAD, with a commit the mutation had made).
- * `--git-common-dir` is the shared dir every worktree registers in, and passing
- * it explicitly makes the creation independent of the caller's own worktree.
+ * the CURRENT head instead of the SHA asked for. `--git-common-dir` is the
+ * shared dir every worktree registers in, and passing it explicitly makes the
+ * creation independent of the caller's own worktree.
  */
 async function gitCommonDir(execFn: ReviewerTreeExecFn, repoRoot: string): Promise<string> {
   const { stdout } = await execFn("git", {
@@ -106,11 +96,11 @@ async function gitCommonDir(execFn: ReviewerTreeExecFn, repoRoot: string): Promi
 /**
  * Open one throwaway tree detached at `headSha`.
  *
- * `repoRoot` is the clone whose object store the tree reads — for a reviewed
- * worktree that is the main checkout, which `rev-parse --git-common-dir`
- * reports from anywhere inside it. The tree itself lands under `$TMPDIR`, never
- * under the repo: a reviewer-created tree inside `.worktrees/` is read by the
- * harness's own sibling scan as an unregistered/dirty tree, which parks a cycle.
+ * `repoRoot` is the tree the reviewer would otherwise have run in; its object
+ * store is the one the new tree reads. The tree itself lands under `$TMPDIR`,
+ * never under the repo: a reviewer-created tree inside `.worktrees/` is read by
+ * the harness's own sibling scan as an unregistered/dirty tree, which parks a
+ * cycle.
  *
  * Provisioning is best-effort (`provisionWorktree` never throws): a bare tree
  * has tracked files only, so a reviewer that runs the project's typecheck in an
@@ -158,14 +148,14 @@ export async function openReviewerTree(
   } catch (err) {
     if (dir) await removeReviewerTree(execFn, repoRoot, dir);
     const reason = `reviewer tree at ${headSha.slice(0, 12)} could not be created (${stderrOf(err).slice(0, 200)})`;
-    trace(`reviewer-tree: ${reason} — the reviewer runs in the reviewed tree`);
+    traceWarn(`reviewer-tree: ${reason} — the reviewer runs in the reviewed tree`);
     return { fallback: reason };
   }
   const provisioned = await provisionWorktree(execFn, repoRoot, dir).catch(() => undefined);
   if (provisioned?.problem) {
     trace(`reviewer-tree: provisioning incomplete — ${provisioned.problem}`);
   }
-  return { cwd: dir, headSha, release: () => removeReviewerTree(execFn, repoRoot, dir) };
+  return { cwd: dir, release: () => removeReviewerTree(execFn, repoRoot, dir) };
 }
 
 /**
@@ -195,28 +185,4 @@ export async function removeReviewerTree(
   await rm([...admin, "worktree", "remove", "--force", dir], 60_000);
   await fs.rm(path.dirname(dir), { recursive: true, force: true }).catch(() => undefined);
   await rm([...admin, "worktree", "prune"], 10_000);
-}
-
-/**
- * Run `fn` with this review batch's isolated tree, releasing the tree however
- * `fn` ends — a spawn throw, an abort, a cap kill.
- *
- * Returns the caller's value, or `{ value, fallback }` naming why no isolation
- * was possible: the review still ran, in `fallbackCwd`.
- */
-export async function withReviewerTree<T>(
-  execFn: ReviewerTreeExecFn,
-  repoRoot: string,
-  headSha: string,
-  fallbackCwd: string,
-  fn: (cwd: string) => Promise<T>,
-): Promise<{ value: T; fallback?: string }> {
-  const tree = await openReviewerTree(execFn, repoRoot, headSha);
-  if (!tree.cwd) return { value: await fn(fallbackCwd), fallback: tree.fallback };
-  const cwd = tree.cwd;
-  try {
-    return { value: await fn(cwd) };
-  } finally {
-    await tree.release?.();
-  }
 }

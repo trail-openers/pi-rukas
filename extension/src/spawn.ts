@@ -51,6 +51,7 @@ import {
 import { groupSpawnOpts, leadsProcessGroup, registerChild } from "./spawn-kill.ts";
 import { applyChildPermissionEnv, planChildPermissions } from "./spawn-permission.ts";
 import { failedByKill, recordKillBudgets, wireReviewBounds } from "./spawn-review-bounds.ts";
+import { isolateReviewerSpec } from "./spawn-reviewer-isolation.ts";
 import { withSpawnSlot } from "./spawn-semaphore.ts";
 // The two spawn-level KILLING timers owned by neither the caps session nor the run
 // bound (§12 size cap). A child is ended from outside by four owners: these two,
@@ -92,10 +93,17 @@ export async function spawnSpecialist(
   spec: DispatchSpec,
   opts: SpawnOptions = {},
 ): Promise<DispatchResult> {
+  // #1975 — the reviewer isolation choke point, and the `finally` that releases
+  // the tree on every exit (a spawn throw, an abort, a cap kill).
+  const isolated = await isolateReviewerSpec(spec);
   // #1528 — the per-process cap first, then the host-wide one (host-spawn-slots.ts).
-  return withSpawnSlot(() =>
-    withHostSpawnSlot(() => spawnSpecialistInner(spec, opts), opts.signal),
-  );
+  try {
+    return await withSpawnSlot(() =>
+      withHostSpawnSlot(() => spawnSpecialistInner(isolated.spec, opts), opts.signal),
+    );
+  } finally {
+    await isolated.release();
+  }
 }
 
 async function spawnSpecialistInner(
@@ -125,7 +133,6 @@ async function spawnSpecialistInner(
   const transcriptPath = transcriptPathFor(spec.role, runId, opts.seq, opts.tag);
   await fs.mkdir(path.dirname(transcriptPath), { recursive: true });
 
-  // Resolve which model this child should run on (spec > lens env > role > global env > Pi default).
   const modelChoice = resolveModel(spec.role, spec.model, spec.lens);
 
   // Subagent-permission wiring (spawn-permission.ts, #1666): strict children get
