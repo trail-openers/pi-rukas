@@ -14,6 +14,7 @@
  * were each dropped once, so nothing in it may be a hand-typed copy.
  */
 
+import { fenceText } from "./lean/text-fence.ts";
 import { LENS_FIX_COMMIT_INSTRUCTION } from "./work-driver-lens-fix.ts";
 import { FIXER_DECLINE_RULE, issuePromptBlockForReview } from "./work-driver-lens-issue.ts";
 import { scratchHygieneSection } from "./work-driver-prompts-late.ts";
@@ -51,10 +52,11 @@ export function lensFixResendPrompt(
     // the rule got dropped once.
     `  - ${developTestScopeLine()}`,
     "",
+    // Reviewer-authored prose read back off the event log: the same renderer
+    // lean's `fixPrompt` uses, so a line of three backticks inside a finding
+    // cannot close the fence this prompt opens and become the fixer's brief.
     "Findings (JSON-encoded array of {path, line, severity, title, suggestion}):",
-    "```json",
-    findings,
-    "```",
+    fenceText(findings, 20_000),
     // #1852 — the resend is a SECOND prompt literal built alongside the
     // function above, and it is the same developer in the same tree under
     // the same fence: printing the fence in one and not the other is how

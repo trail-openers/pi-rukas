@@ -248,6 +248,7 @@
     "smoke-tests/lib/ticket-issue-fixture.ts",
     "smoke-tests/lib/ticket-prompt-fence.ts",
     "smoke-tests/lib/lean-review-ticket-fixture.ts",
+    "smoke-tests/lib/ticket-adversarial-fixture.ts",
     "smoke-tests/test-ticket-aware-review.ts",
     "smoke-tests/test-ticket-aware-review-lean.ts"
   ]

@@ -182,10 +182,6 @@ export function fencedIssuePromptBlock(
 const FIXER_ISSUE_RULE =
   "Do not apply a finding that contradicts a requirement stated in the issue above — name it in your reply and leave the code the issue asked for.";
 
-export function issueSection(issueBody: string | undefined): string {
-  return fencedIssuePromptBlock(issueBody, ADVERSARIAL_FINDING_RULE, fencedIssueBody);
-}
-
 export function buildAdversarialPrompt(opts: {
   diff: string;
   context: string;
@@ -240,6 +236,11 @@ export function buildAdversarialPrompt(opts: {
   const checks = opts.gateCmd
     ? `Do NOT run the project's full gate — \`${opts.gateCmd}\` — or anything that wraps it or the whole test suite: the driver runs that exact command itself. Its verify gate had to clear this tree before you were dispatched, and it runs again on the consolidated tree before the pull request opens, so a re-run here costs the whole gate's wall-clock and proves nothing new.`
     : "";
+  // The issue block is the author's text in a read-only child's brief, so it is
+  // disarmed at the print site through the SAME renderer as every sibling print
+  // site — inline here rather than behind a one-line alias, which was a seam a
+  // later edit could route back to a raw print without a compiler noticing.
+  const issue = fencedIssuePromptBlock(opts.issueBody, ADVERSARIAL_FINDING_RULE, fencedIssueBody);
   return `You are reviewing the diff below. Context: ${opts.context}
 Round: ${opts.round} of ${opts.maxRounds}.
 
@@ -249,7 +250,7 @@ Attack this implementation. Find edge cases, security holes, race conditions, AP
   VERDICT: ISSUES_FOUND
   VERDICT: CRITICAL_ISSUES_FOUND
 
-Use the severity your role prompt defines. Only CRITICAL_ISSUES_FOUND blocks the commit; the others are recorded and carried into the pull request. Inflating a finding's severity to avoid approving is the worst failure mode of this role.${scopeSection}${issueSection(opts.issueBody)}${commentSection}${opts.fixDelta ?? ""}
+Use the severity your role prompt defines. Only CRITICAL_ISSUES_FOUND blocks the commit; the others are recorded and carried into the pull request. Inflating a finding's severity to avoid approving is the worst failure mode of this role.${scopeSection}${issue}${commentSection}${opts.fixDelta ?? ""}
 
 Diff:
 ${FENCE}diff

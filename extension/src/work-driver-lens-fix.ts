@@ -5,6 +5,7 @@
  */
 
 import { execp } from "./exec.ts";
+import { fenceText } from "./lean/text-fence.ts";
 import { lensFixBoundMs } from "./review-budget.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
@@ -124,10 +125,12 @@ export function inlineLensFixPrompt(
     // passes, never after a full suite.
     LENS_FIX_COMMIT_INSTRUCTION,
     "",
+    // Reviewer-authored prose from a `lens-issues-found` event, so it goes
+    // through the same renderer lean's `fixPrompt` uses: a line of three
+    // backticks in one finding's suggestion would otherwise close the fence the
+    // prompt opens here and the rest of the payload becomes the fixer's brief.
     "Findings (JSON-encoded array of {path, line, severity, title, suggestion}):",
-    "```json",
-    findings,
-    "```",
+    fenceText(findings, 20_000),
     // #1852 — the fence printed in the same dispatch as the findings it bounds,
     // rendered from the object the gate reads rather than re-derived here.
     ...(fenceLines ?? []),
