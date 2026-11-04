@@ -13,6 +13,9 @@
  * Offline: temp directories only, and one `--capabilities` run of the CLI.
  */
 import { execFileSync } from "node:child_process";
+import { GIT_LOCATION_VARS, scrubGitLocation } from "../src/git-env.ts";
+import { gitTestEnv } from "./lib/git-test-env.ts";
+import { gitCommit, headOf, mkRepo } from "./lib/headless-contract-git.ts";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -41,6 +44,12 @@ function assert(cond: boolean, msg: string) {
     exit = 1;
   }
 }
+
+// The fixture's own git view: isolated config (#1145) and no inherited git
+// location variables (#1981). `execFileSync` with no `env` inherits the real
+// environ, so a bare `git commit` here would honour an inherited GIT_DIR over
+// the `-C` path and write fixture commits into whoever's repository that names.
+const GIT_ENV = gitTestEnv();
 
 // ── The cap vocabulary.
 {
@@ -208,20 +217,24 @@ const capHit = (cap: string, at: number): WorkEvent =>
     mkdirSync(path.join(root, "extension"), { recursive: true });
     writeFileSync(path.join(root, "extension", "package.json"), '{"version":"9.9.9"}');
     // Inside a git repository that is not the install root itself.
-    execFileSync("git", ["init", "-q", tmp]);
-    execFileSync("git", [
-      "-C",
-      tmp,
-      "-c",
-      "user.email=t@t",
-      "-c",
-      "user.name=t",
-      "commit",
-      "-q",
-      "--allow-empty",
-      "-m",
-      "x",
-    ]);
+    execFileSync("git", ["init", "-q", tmp], { env: GIT_ENV });
+    execFileSync(
+      "git",
+      [
+        "-C",
+        tmp,
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "x",
+      ],
+      { env: GIT_ENV },
+    );
     assert(readBuildCommit(root) === null, "a parent repository's HEAD is not reported");
     assert(readBuildVersion(path.join(root, "extension", "package.json")) === "9.9.9", "version");
     mkdirSync(path.join(root, ".pi"));
@@ -230,16 +243,25 @@ const capHit = (cap: string, at: number): WorkEvent =>
     const sha = "0123456789abcdef0123456789abcdef01234567";
     writeFileSync(path.join(root, ".pi", "pi-rukas-commit"), `${sha}\n`);
     assert(readBuildCommit(root) === sha, "the baked marker wins");
-    const head = execFileSync("git", ["-C", tmp, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    const head = execFileSync("git", ["-C", tmp, "rev-parse", "HEAD"], {
+      encoding: "utf8",
+      env: GIT_ENV,
+    }).trim();
     assert(readBuildCommit(tmp) === head, "an install root that is a checkout reports its HEAD");
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
   const out = execFileSync(
-    "bun",
+    process.execPath,
     [path.resolve(import.meta.dirname, "../src/headless/cli.ts"), "--capabilities"],
     {
       encoding: "utf8",
+      // The capabilities child reports THIS checkout, so it keeps the ambient
+      // `process.env` that the checkout probe reads — hence `scrubGitLocation`
+      // on the ambient copy rather than `gitTestEnv()`, which would also hide
+      // the host's gitconfig. The location scrub is the point: the child's
+      // probe must answer for this checkout alone (#1981).
+      env: scrubGitLocation({ ...process.env }),
     },
   );
   const caps = JSON.parse(out) as { commit: string | null; schemaVersion: number };
@@ -303,28 +325,6 @@ const capHit = (cap: string, at: number): WorkEvent =>
 
 // ── readCheckoutCommit answers for the root it was given, nothing else.
 {
-  const gitCommit = (dir: string) =>
-    execFileSync("git", [
-      "-C",
-      dir,
-      "-c",
-      "user.email=t@t",
-      "-c",
-      "user.name=t",
-      "commit",
-      "-q",
-      "--allow-empty",
-      "-m",
-      "x",
-    ]);
-  const headOf = (dir: string) =>
-    execFileSync("git", ["-C", dir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-  const mkRepo = (dir: string) => {
-    mkdirSync(dir, { recursive: true });
-    execFileSync("git", ["init", "-q", dir]);
-    gitCommit(dir);
-    return dir;
-  };
   const tmp = mkdtempSync(path.join(os.tmpdir(), "pi-checkout-"));
   try {
     // A checkout reached through an absolute symlink still reports its HEAD:
@@ -350,10 +350,7 @@ const capHit = (cap: string, at: number): WorkEvent =>
     // GIT_WORK_TREE pointing at another repository, the answer is still the
     // root's own HEAD (or null), never that repository's.
     const decoy = mkRepo(path.join(tmp, "decoy"));
-    const saved = {
-      GIT_DIR: process.env.GIT_DIR,
-      GIT_WORK_TREE: process.env.GIT_WORK_TREE,
-    };
+    const saved = { GIT_DIR: process.env.GIT_DIR, GIT_WORK_TREE: process.env.GIT_WORK_TREE };
     process.env.GIT_DIR = path.join(decoy, ".git");
     process.env.GIT_WORK_TREE = decoy;
     try {
@@ -378,14 +375,10 @@ const capHit = (cap: string, at: number): WorkEvent =>
     // A harness that ran pi-rukas inside a git hook inherits all of these.
     const savedAll: Record<string, string | undefined> = {};
     for (const name of [
-      "GIT_OBJECT_DIRECTORY",
-      "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+      ...GIT_LOCATION_VARS,
       "GIT_CEILING_DIRECTORIES",
       "GIT_CONFIG_GLOBAL",
       "GIT_CONFIG_SYSTEM",
-      "GIT_INDEX_FILE",
-      "GIT_NAMESPACE",
-      "GIT_COMMON_DIR",
     ]) {
       savedAll[name] = process.env[name];
     }

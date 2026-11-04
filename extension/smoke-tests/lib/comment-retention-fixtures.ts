@@ -16,20 +16,35 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { findLostComments } from "../../src/comment-retention.ts";
 import type { ExecFn } from "../../src/worktree.ts";
+import { gitTestEnv } from "./git-test-env.ts";
 
 export const execFileP = promisify(execFile);
 
 /** Real exec, matching the driver's ExecFn contract. The argv form (#1134) runs the executable directly. */
 export const realExec: ExecFn = async (cmd, o) => {
-	const opts = { cwd: o?.cwd, maxBuffer: o?.maxBuffer ?? 8 * 1024 * 1024 };
+	// `shell` is the caller's interpreter choice for the STRING form and is
+	// never an execFile option: with `shell` set, execFile joins its argv into
+	// one string for that shell, so the `-c`/`cmd` pair below would run
+	// `sh -c git` (#1981).
+	const { shell, ...rest } = o ?? {};
+	const opts = {
+		cwd: rest.cwd,
+		maxBuffer: rest.maxBuffer ?? 8 * 1024 * 1024,
+		// Both branches run git for real, and with no `env` the child inherits
+		// the real environ — an inherited `GIT_DIR` retargets the diff read
+		// ahead of `cwd` (#1981). A caller that pinned its own env keeps it.
+		env: o?.env ? { ...gitTestEnv(), ...o.env } : gitTestEnv(),
+	};
 	const { stdout } = o?.argv
 		? await execFileP(cmd, o.argv, opts)
-		: await execFileP("/bin/sh", ["-c", cmd], opts);
+		// Named inline, not `opts`: the gate credits only a git/shell call whose
+		// own options name the scrub.
+		: await execFileP(shell ?? "/bin/sh", ["-c", cmd], { ...opts, env: opts.env });
 	return { stdout };
 };
 
 export const git = (cwd: string, args: string[]) =>
-	execFileP("git", args, { cwd });
+	execFileP("git", args, { cwd, env: gitTestEnv() });
 
 /**
  * Scratch repo: `base` files committed first, then `head` applied in a second
@@ -40,7 +55,7 @@ export async function repoWithFiles(
 	head: Record<string, string | null>,
 ): Promise<string> {
 	const dir = mkdtempSync(path.join(tmpdir(), "pi-ens-hunks-"));
-	await execFileP("git", ["init", "-q", "-b", "main"], { cwd: dir });
+	await execFileP("git", ["init", "-q", "-b", "main"], { cwd: dir, env: gitTestEnv() });
 	await git(dir, ["config", "user.email", "t@example.com"]);
 	await git(dir, ["config", "user.name", "T"]);
 	for (const [file, content] of Object.entries(base)) {

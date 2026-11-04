@@ -26,6 +26,7 @@ import type { DriverHost } from "../../src/work-driver-host.ts";
 import { createEmitSink } from "../../src/work-state-emit.ts";
 import { type WorkEvent, type WorkState, initialState } from "../../src/workflow-state.ts";
 import { commandOf } from "./argv-shell.ts";
+import { gitTestEnv } from "./git-test-env.ts";
 
 const execFileP = promisify(execFile);
 
@@ -42,7 +43,7 @@ export const HEAD_SHA = "9f3c1e5d7a2b4c6d8e0f1a3b5c7d9e1f3a5b7c9d";
 export const OTHER_HEAD_SHA = "11223344556677889900aabbccddeeff00112233";
 
 const git = (cwd: string, args: string[]) =>
-  execFileP("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd });
+  execFileP("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd, env: gitTestEnv() });
 
 /** A repo on a feature branch with one commit (the reposition gate's
  *  `already-at-tip` shape, so runLensFix reaches its dispatch). */

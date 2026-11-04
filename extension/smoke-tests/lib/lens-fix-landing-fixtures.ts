@@ -24,6 +24,7 @@ import type { LensFixFenceSnapshot } from "../../src/workflow-state-schema.ts";
 import { initialState } from "../../src/workflow-state.ts";
 import type { WorkState } from "../../src/workflow-state.ts";
 import { git, repoWithFile, silentSink } from "./adversarial-fix-fixtures.ts";
+import { gitTestEnv } from "./git-test-env.ts";
 
 /** The findings the lens round reported, naming only the in-scope file. */
 export const FINDINGS = '[{"path":"a.txt","severity":"MEDIUM","title":"t","suggestion":"s"}]';
@@ -41,7 +42,7 @@ function repoOnBranch(label: string): LandingFixture {
   // A real `origin` so the landing arm's push has somewhere to go (and so the
   // test can see whether it tried).
   const remote = `${repoRoot}-origin`;
-  execSync(`git init -q --bare ${remote}`, { cwd: repoRoot, stdio: "pipe" });
+  execSync(`git init -q --bare ${remote}`, { cwd: repoRoot, stdio: "pipe", env: gitTestEnv() });
   git(repoRoot, `remote add origin ${remote}`);
   // An identity in the repo config: the landing arm's `git commit` runs in a
   // test process whose HOME is isolated (gitTestEnv), so without this the

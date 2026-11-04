@@ -24,6 +24,7 @@ import { runLensFix } from "../../src/work-driver-lens-fix.ts";
 import type { WorkState } from "../../src/workflow-state.ts";
 import { initialState } from "../../src/workflow-state.ts";
 import { git, repoWithFile, silentSink } from "./adversarial-fix-fixtures.ts";
+import { gitTestEnv } from "./git-test-env.ts";
 
 const FINDINGS = '[{"path":"a.txt","severity":"MEDIUM","title":"t","suggestion":"s"}]';
 const STRAY = "fixer-stray.md";
@@ -42,7 +43,7 @@ export function unrecordedRepo(
   const repoRoot = repoWithFile(label);
   const branch = "feature/issue-1852";
   const remote = `${repoRoot}-origin`;
-  execSync(`git init -q --bare ${remote}`, { cwd: repoRoot, stdio: "pipe" });
+  execSync(`git init -q --bare ${remote}`, { cwd: repoRoot, stdio: "pipe", env: gitTestEnv() });
   git(repoRoot, `remote add origin ${remote}`);
   git(repoRoot, "config user.email t@t");
   git(repoRoot, "config user.name t");
