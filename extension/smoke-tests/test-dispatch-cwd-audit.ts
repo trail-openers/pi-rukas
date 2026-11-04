@@ -337,6 +337,11 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
   // runs.
   const SEAM_PLUMBING = new Set([
     "dispatch.ts",
+    // #1975 — the reviewer-isolation wrapper: it holds no dispatch site of its
+    // own, it wraps the caller's `dispatch` to relocate a reviewer spec's cwd
+    // and release the throwaway tree, so it adds no site. `spawn.ts` remains
+    // the only file that calls `spawnSpecialist` here.
+    "spawn-reviewer-isolation.ts",
     // #1024 — enterCycle binds the default dispatch to the cycle's AbortSignal;
     // it forwards each caller's spec (and cwd) unchanged, so it adds no site.
     "work-driver-cycle-entry.ts",

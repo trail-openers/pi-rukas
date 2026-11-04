@@ -46,10 +46,10 @@
  */
 import fs from "node:fs/promises";
 import path from "node:path";
-import { trace } from "./trace.ts";
+import { NO_HOOKS } from "./lean/specify-reset.ts";
 import { NESTED_DEP, SHAREABLE_DEPS } from "./worktree-dep-contract.ts";
 import { depsExpectedAt, packageDirsAt, runHookProvisioning } from "./worktree-provision-hook.ts";
-import { resolvedNonEmptyDirectory } from "./worktree-provision-verify.ts";
+import { linkFoundDeps } from "./worktree-provision-verify.ts";
 
 /**
  * The exec shape `worktree.ts` already uses.
@@ -127,6 +127,10 @@ export async function ignoredStatus(
   execFn: ExecFn,
   repoRoot: string,
   rel: string,
+  // Callers that must not trip a repo's hooks pass `NO_HOOKS`
+  // (`lean/specify-reset.ts`); an empty prefix keeps every other caller's argv
+  // byte-identical, so the shared probe stays one probe.
+  prefix: readonly string[] = [],
 ): Promise<IgnoreVerdict> {
   try {
     // argv form (#1394): `rel` is a filesystem path this module did not name,
@@ -134,7 +138,7 @@ export async function ignoredStatus(
     await execFn("git", {
       cwd: repoRoot,
       maxBuffer: 64 * 1024,
-      argv: ["check-ignore", "-q", "--", rel],
+      argv: [...prefix, "check-ignore", "-q", "--", rel],
     });
     return "ignored";
   } catch (err) {
@@ -145,8 +149,13 @@ export async function ignoredStatus(
   }
 }
 
-async function isIgnored(execFn: ExecFn, repoRoot: string, rel: string): Promise<boolean> {
-  return (await ignoredStatus(execFn, repoRoot, rel)) === "ignored";
+async function isIgnored(
+  execFn: ExecFn,
+  repoRoot: string,
+  rel: string,
+  prefix: readonly string[] = [],
+): Promise<boolean> {
+  return (await ignoredStatus(execFn, repoRoot, rel, prefix)) === "ignored";
 }
 
 /**
@@ -242,6 +251,7 @@ async function findDepDirs(
   execFn: ExecFn,
   repoRoot: string,
   packageDirs: string[],
+  prefix: readonly string[] = [],
 ): Promise<{ found: Array<{ dep: string; dirRel: string; source: string }>; faults: string[] }> {
   const locations: Array<{ dirRel: string; source: string }> = [
     { dirRel: "", source: repoRoot },
@@ -258,7 +268,7 @@ async function findDepDirs(
       // with another; `slice` bounds the whole string, not the code.
       if (probe.fault !== undefined) faults.push(`${path.join(dirRel, dep)}: ${probe.fault}`);
       if (!probe.nonEmpty) continue;
-      if (!(await isIgnored(execFn, repoRoot, path.join(dirRel, dep)))) continue;
+      if (!(await isIgnored(execFn, repoRoot, path.join(dirRel, dep), prefix))) continue;
       found.push({ dep, dirRel, source: abs });
     }
   }
@@ -325,69 +335,19 @@ export async function provisionWorktree(
 
   const packageDirs = await packageDirsAt(repoRoot);
   const { found, faults } = await findDepDirs(execFn, repoRoot, packageDirs);
-  const linked: string[] = [];
-  const linkedRel: string[] = [];
-  // Probe faults first: an unreadable tree explains every "no dependency
-  // tree" that follows it, and a reader who sees the two in this order reads
-  // the cause rather than the symptom.
-  const problems: string[] = [...faults];
-  for (const { dep, dirRel, source } of found) {
-    const target = path.join(worktreeAbs, dirRel, dep);
-    try {
-      // Nested candidates need their parent directory to exist; `git
-      // worktree add` materialises the tracked `extension/` (or `pkg/`), but
-      // the mkdir is a no-op when it already does and guards the case where
-      // the package directory itself is untracked.
-      await fs.mkdir(path.dirname(target), { recursive: true });
-      await fs.symlink(source, target, "dir");
-      linked.push(dep);
-      linkedRel.push(dirRel === "" ? dep : path.join(dirRel, dep));
-    } catch (err) {
-      problems.push(
-        `${dirRel === "" ? dep : path.join(dirRel, dep)}: ${(err as Error).message?.slice(0, 120)}`,
-      );
-    }
-  }
-  // #765 — verify what the SYMLINK path just linked: a source that resolved
-  // at scan time can still leave the worktree link pointing at a tree that
-  // is now empty or gone (the #761 fork-B shape). A link that does not
-  // resolve to a non-empty directory is pulled from `linked` (so it is
-  // never reported as a useful link) and recorded as a `problem`.
-  for (const { dep, dirRel, source } of found) {
-    const target = path.join(worktreeAbs, dirRel, dep);
-    if (await resolvedNonEmptyDirectory(target)) continue;
-    const rel = dirRel === "" ? dep : path.join(dirRel, dep);
-    problems.push(
-      `${rel}: linked but the link does not resolve to a non-empty directory (source: ${source})`,
-    );
-    const i = linkedRel.indexOf(rel);
-    if (i >= 0) linkedRel.splice(i, 1);
-    const di = linked.indexOf(dep);
-    if (di >= 0) linked.splice(di, 1);
-  }
-  if (linked.length > 0) {
-    const sources = found.map((f) => `${path.join(f.dirRel, f.dep)} → ${f.source}`).join(", ");
-    trace(`worktree: linked ${linkedRel.join(", ")} (source: ${sources})`);
-    await hideFromGit(execFn, worktreeAbs, linkedRel);
-  }
-  // #481 — a project that plainly needs dependencies (a manifest/lockfile at
-  // the root or in a discovered package directory) but had no gitignored
-  // non-empty tree anywhere findable gets a `problem`, not a silent bare
-  // worktree. Still never throws: the branch step continues, and the
-  // develop gate's missing-deps hint (#445) is the backstop that names the
-  // failure to the operator.
-  if (found.length === 0 && (await depsExpectedAt(repoRoot, packageDirs))) {
-    problems.push(
-      "no dependency tree found for a project with a manifest/lockfile — " +
+  return linkFoundDeps(execFn, worktreeAbs, found, faults, {
+    // #481 — a project that plainly needs dependencies (a manifest/lockfile at
+    // the root or in a discovered package directory) but had no gitignored
+    // non-empty tree anywhere findable gets a `problem`, not a silent bare
+    // worktree. Still never throws: the branch step continues, and the
+    // develop gate's missing-deps hint (#445) is the backstop that names the
+    // failure to the operator.
+    reportNeeds: (await depsExpectedAt(repoRoot, packageDirs))
+      ? "no dependency tree found for a project with a manifest/lockfile — " +
         "worktree will be bare; if the verify command needs dependencies it " +
-        "will fail with a module-not-found error",
-    );
-  }
-  return {
-    via: linked.length > 0 ? "symlink" : "none",
-    linked,
-    problem: problems.length > 0 ? `could not link ${problems.join("; ")}` : undefined,
-  };
+        "will fail with a module-not-found error"
+      : undefined,
+  });
 }
 
 /**
@@ -411,28 +371,27 @@ export async function provisionWorktree(
  * escaping symlinks independently, so this is the tidy fix rather than the
  * load-bearing one — worktrees provisioned before this landed are still safe.
  */
-async function hideFromGit(execFn: ExecFn, worktreeAbs: string, deps: string[]): Promise<void> {
-  try {
-    const { stdout } = await execFn("git rev-parse --git-common-dir", {
-      cwd: worktreeAbs,
-      maxBuffer: 64 * 1024,
-    });
-    const commonDir = path.resolve(worktreeAbs, stdout.trim());
-    const excludeFile = path.join(commonDir, "info", "exclude");
-    await fs.mkdir(path.dirname(excludeFile), { recursive: true });
-    const current = await fs.readFile(excludeFile, "utf8").catch(() => "");
-    const have = new Set(current.split("\n").map((l) => l.trim()));
-    // No trailing slash: that is the whole point — it must match the symlink.
-    const missing = deps.filter((d) => !have.has(d));
-    if (missing.length === 0) return;
-    const prefix = current.length > 0 && !current.endsWith("\n") ? "\n" : "";
-    await fs.appendFile(excludeFile, `${prefix}${missing.join("\n")}\n`);
-    trace(`worktree: excluded ${missing.join(", ")} via ${excludeFile}`);
-  } catch (err) {
-    trace(`worktree: could not exclude links from git: ${(err as Error).message?.slice(0, 160)}`);
-  }
-}
-
+/**
+ * Make git blind to the links we just created.
+ *
+ * A `.gitignore` entry of `node_modules/` — the overwhelmingly common form,
+ * used by both this repo and every project measured — matches a DIRECTORY.
+ * A symlink is not a directory, so the pattern does not match it and the link
+ * surfaces as `?? node_modules` in `git status --porcelain`. That is our own
+ * scaffolding appearing as if it were the developer's work:
+ * `stagePorcelainPaths` stages every path porcelain lists, so the link was
+ * staged, captured into the patch as an absolute-path `mode 120000` entry, and
+ * applying it at repoRoot failed `Directory not empty` — aborting the whole
+ * mechanized integration on every Node or Python project.
+ *
+ * The exclude goes to `$GIT_COMMON_DIR/info/exclude`, verified as the only one
+ * a linked worktree reads: `$GIT_DIR/info/exclude` resolves to
+ * `.git/worktrees/<name>/info/exclude`, which git ignores entirely.
+ *
+ * Best-effort, like the rest of provisioning. `stagePorcelainPaths` refuses
+ * escaping symlinks independently, so this is the tidy fix rather than the
+ * load-bearing one — worktrees provisioned before this landed are still safe.
+ */
 async function fileExists(abs: string): Promise<boolean> {
   try {
     await fs.access(abs);
@@ -440,6 +399,30 @@ async function fileExists(abs: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Symlink the shareable dependency dirs into `worktreeAbs` — the symlink half
+ * of {@link provisionWorktree}, on its own.
+ *
+ * The caller that needs the half and not the whole is the reviewer tree
+ * (#1975): a reviewer child runs the project's targeted checks, so it needs
+ * `node_modules`, but a throwaway directory another process's bash can reach
+ * must not have the project's `.pi/worktree-setup` executed in it. The hook
+ * branch of `provisionWorktree` is deliberately absent here — symlinks only,
+ * never a hook.
+ *
+ * Same contract as the whole: never throws; reports what it linked and why it
+ * could not.
+ */
+export async function linkShareableDeps(
+  execFn: ExecFn,
+  repoRoot: string,
+  worktreeAbs: string,
+): Promise<ProvisionResult> {
+  const packageDirs = await packageDirsAt(repoRoot);
+  const { found, faults } = await findDepDirs(execFn, repoRoot, packageDirs, NO_HOOKS);
+  return linkFoundDeps(execFn, worktreeAbs, found, faults);
 }
 
 /**

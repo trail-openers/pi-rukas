@@ -2,9 +2,14 @@
  * worktree-provision-verify — #765 post-hook / post-symlink filesystem
  * verification helpers for `provisionWorktree`.
  *
- * Extracted from `worktree-provision.ts` (file-size cap). The functions here
- * answer ONE question: after provisioning, does the expected dependency
- * location actually exist, resolve, and contain content?
+ * Extracted from `worktree-provision.ts` (file-size cap). Two things live here:
+ * the probes that answer "after provisioning, does the expected dependency
+ * location actually exist, resolve, and contain content?", and the symlink
+ * body (`linkFoundDeps`) those probes verify — the link loop, its #765
+ * re-check and its `info/exclude` write are one seam, and splitting them across
+ * two modules would leave each unreadable on its own. The symlink body is also
+ * what `linkShareableDeps` exposes to the reviewer tree (#1975), which needs
+ * the links and never the project's hook.
  *
  * #1394 adds a second invariant these functions must never break: **a probe
  * fault is a reported value, never a rejection.** Every `fs` call in this file
@@ -20,8 +25,9 @@
  */
 import fs from "node:fs/promises";
 import path from "node:path";
+import { trace } from "./trace.ts";
 import { SHAREABLE_DEPS } from "./worktree-dep-contract.ts";
-import { type ExecFn, ignoredStatus } from "./worktree-provision.ts";
+import { type ExecFn, type ProvisionResult, ignoredStatus } from "./worktree-provision.ts";
 import type { IgnoreVerdict } from "./worktree-provision.ts";
 
 /** A directory probe that cannot fail: what it found, and why if it could not look. */
@@ -392,4 +398,102 @@ async function resolveNonEmpty(abs: string): Promise<{ resolves: boolean; fault?
   }
   const probe = await probeNonEmptyDirectory(resolved);
   return probe.nonEmpty ? { resolves: true } : { resolves: false, fault: probe.fault };
+}
+
+/**
+ * Link every candidate `findDepDirs` resolved, verify the links, and report.
+ *
+ * The symlink half of provisioning, shared by {@link provisionWorktree}'s
+ * symlink branch (through `worktree-provision.ts`) and by
+ * `linkShareableDeps`, which the reviewer tree (#1975) calls on its own. It
+ * lives here because `worktree-provision.ts` sits at the §12 size cap and this
+ * is the seam the file was already split along: `resolvedNonEmptyDirectory` —
+ * the #765 check that a link is a useful link — is this module's own.
+ *
+ * `reportNeeds` is the branch-step question — "this project plainly needs
+ * dependencies and none was found" — which only the branch step asks; a
+ * reviewer tree has no develop gate to hint to.
+ */
+export async function linkFoundDeps(
+  execFn: ExecFn,
+  worktreeAbs: string,
+  found: Array<{ dep: string; dirRel: string; source: string }>,
+  faults: string[],
+  opts: { reportNeeds?: string } = {},
+): Promise<ProvisionResult> {
+  const linked: string[] = [];
+  const linkedRel: string[] = [];
+  // Probe faults first: an unreadable tree explains every "no dependency
+  // tree" that follows it, and a reader who sees the two in this order reads
+  // the cause rather than the symptom.
+  const problems: string[] = [...faults];
+  for (const { dep, dirRel, source } of found) {
+    const target = path.join(worktreeAbs, dirRel, dep);
+    try {
+      // Nested candidates need their parent directory to exist; `git
+      // worktree add` materialises the tracked `extension/` (or `pkg/`), but
+      // the mkdir is a no-op when it already does and guards the case where
+      // the package directory itself is untracked.
+      await fs.mkdir(path.dirname(target), { recursive: true });
+      await fs.symlink(source, target, "dir");
+      linked.push(dep);
+      linkedRel.push(dirRel === "" ? dep : path.join(dirRel, dep));
+    } catch (err) {
+      problems.push(
+        `${dirRel === "" ? dep : path.join(dirRel, dep)}: ${(err as Error).message?.slice(0, 120)}`,
+      );
+    }
+  }
+  // #765 — verify what the SYMLINK path just linked: a source that resolved
+  // at scan time can still leave the worktree link pointing at a tree that
+  // is now empty or gone (the #761 fork-B shape). A link that does not
+  // resolve to a non-empty directory is pulled from `linked` (so it is
+  // never reported as a useful link) and recorded as a `problem`.
+  for (const { dep, dirRel, source } of found) {
+    const target = path.join(worktreeAbs, dirRel, dep);
+    if (await resolvedNonEmptyDirectory(target)) continue;
+    const rel = dirRel === "" ? dep : path.join(dirRel, dep);
+    problems.push(
+      `${rel}: linked but the link does not resolve to a non-empty directory (source: ${source})`,
+    );
+    const i = linkedRel.indexOf(rel);
+    if (i >= 0) linkedRel.splice(i, 1);
+    const di = linked.indexOf(dep);
+    if (di >= 0) linked.splice(di, 1);
+  }
+  if (linked.length > 0) {
+    const sources = found.map((f) => `${path.join(f.dirRel, f.dep)} → ${f.source}`).join(", ");
+    trace(`worktree: linked ${linkedRel.join(", ")} (source: ${sources})`);
+    await hideFromGit(execFn, worktreeAbs, linkedRel);
+  }
+  if (found.length === 0 && opts.reportNeeds !== undefined) {
+    problems.push(opts.reportNeeds);
+  }
+  return {
+    via: linked.length > 0 ? "symlink" : "none",
+    linked,
+    problem: problems.length > 0 ? `could not link ${problems.join("; ")}` : undefined,
+  };
+}
+
+async function hideFromGit(execFn: ExecFn, worktreeAbs: string, deps: string[]): Promise<void> {
+  try {
+    const { stdout } = await execFn("git rev-parse --git-common-dir", {
+      cwd: worktreeAbs,
+      maxBuffer: 64 * 1024,
+    });
+    const commonDir = path.resolve(worktreeAbs, stdout.trim());
+    const excludeFile = path.join(commonDir, "info", "exclude");
+    await fs.mkdir(path.dirname(excludeFile), { recursive: true });
+    const current = await fs.readFile(excludeFile, "utf8").catch(() => "");
+    const have = new Set(current.split("\n").map((l) => l.trim()));
+    // No trailing slash: that is the whole point — it must match the symlink.
+    const missing = deps.filter((d) => !have.has(d));
+    if (missing.length === 0) return;
+    const prefix = current.length > 0 && !current.endsWith("\n") ? "\n" : "";
+    await fs.appendFile(excludeFile, `${prefix}${missing.join("\n")}\n`);
+    trace(`worktree: excluded ${missing.join(", ")} via ${excludeFile}`);
+  } catch (err) {
+    trace(`worktree: could not exclude links from git: ${(err as Error).message?.slice(0, 160)}`);
+  }
 }

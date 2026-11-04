@@ -51,6 +51,7 @@ import {
 import { groupSpawnOpts, leadsProcessGroup, registerChild } from "./spawn-kill.ts";
 import { applyChildPermissionEnv, planChildPermissions } from "./spawn-permission.ts";
 import { failedByKill, recordKillBudgets, wireReviewBounds } from "./spawn-review-bounds.ts";
+import { runWithReviewerTree } from "./spawn-reviewer-isolation.ts";
 import { withSpawnSlot } from "./spawn-semaphore.ts";
 // The two spawn-level KILLING timers owned by neither the caps session nor the run
 // bound (§12 size cap). A child is ended from outside by four owners: these two,
@@ -76,9 +77,6 @@ import type { DispatchResult, DispatchSpec } from "./types.ts";
 import { vipuneChildEnv } from "./vipune.ts";
 import { childEnvFor, writeFenceChildEnv } from "./write-fence-contract.ts";
 
-// `buildChildArgs` lives in spawn-support.ts (§12): argument construction is
-// invocation plumbing, which that module already holds. Re-exported here
-// because smoke tests assert on the argument ORDER, which is load-bearing.
 export { buildChildArgs, buildCwdHint, makeRunId };
 
 /**
@@ -93,8 +91,10 @@ export async function spawnSpecialist(
   opts: SpawnOptions = {},
 ): Promise<DispatchResult> {
   // #1528 — the per-process cap first, then the host-wide one (host-spawn-slots.ts).
-  return withSpawnSlot(() =>
-    withHostSpawnSlot(() => spawnSpecialistInner(spec, opts), opts.signal),
+  // #1975 — the reviewer isolation choke point: `runWithReviewerTree` relocates
+  // a reviewer child's cwd and releases the tree in its own finally.
+  return runWithReviewerTree(spec, (s) =>
+    withSpawnSlot(() => withHostSpawnSlot(() => spawnSpecialistInner(s, opts), opts.signal)),
   );
 }
 
