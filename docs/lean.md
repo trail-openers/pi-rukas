@@ -143,7 +143,7 @@ pins the table against literals, so changing a number is a deliberate edit):
 
 | State | turns | tokens | minutes |
 |---|---|---|---|
-| `specify` | 250 | 40M | 20 |
+| `specify` | 400 | 60M | 20 |
 | `build` | 400 | 60M | 45 |
 | `challenge` | 400 | 60M | 15 |
 | `review` | 400 | 60M | 30 |
