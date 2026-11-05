@@ -361,7 +361,7 @@ installNoPlanCacheStub();
     !filed.includes(PI_SPEC_HEADING) &&
       parsePiSpec(filed).ok === false &&
       filed.includes(PI_SPEC_OMISSION_PREFIX) &&
-      filed.includes("criterion AC1 is"),
+      filed.includes("criteria AC1 ("),
     `omission: no block is filed and the body says why (${JSON.stringify(
       filed.split(PI_SPEC_OMISSION_PREFIX)[1]?.trim().slice(0, 60),
     )})`,

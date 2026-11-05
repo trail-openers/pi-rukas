@@ -31,7 +31,7 @@
  */
 import { type PiSpec, parsePiSpec, readiness } from "../src/lean/spec.ts";
 import { finalDraftBody } from "../src/plan-gap-disclosure.ts";
-import { sectionBullets } from "../src/plan-pi-spec-text.ts";
+import { oneLine, sectionBullets } from "../src/plan-pi-spec-text.ts";
 import {
   PI_SPEC_CRITERION_MAX_CHARS,
   PI_SPEC_EXAMPLE_INFO,
@@ -168,7 +168,7 @@ import { assert, draftBody, mustSpec, specExit } from "./lib/plan-pi-spec-fixtur
       !refused.body.includes(PI_SPEC_HEADING) &&
       refused.body.includes(PI_SPEC_OMISSION_PREFIX) &&
       (refused.omitted ?? "").includes("AC1") &&
-      (refused.omitted ?? "").includes(String(overLong.length)),
+      (refused.omitted ?? "").includes(`(${overLong.length} chars)`),
     `over-long criterion: the block is omitted, disclosed, and the reason names AC1 and its ${overLong.length} chars (got ${JSON.stringify(refused.omitted)})`,
   );
   // The clip never decides what a criterion is: a span past it is prose as well.
@@ -385,7 +385,7 @@ assert(
   // one-line collapsing; bullets `sectionBullets` drops are the stated exception.
   const parsedSpec = parsed.ok ? parsed.spec : undefined;
   const proseBullets = sectionBullets(plain, "Acceptance criteria").map((b) =>
-    b.replace(/\s+/g, " ").trim(),
+    neutraliseFenceRuns(oneLine(b)),
   );
   assert(
     proseBullets.length === 3 &&

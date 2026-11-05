@@ -84,9 +84,10 @@ S, M, L" are distinct reasons, and they are the rules `decline` posts.
 block is not injected any other way. `plan-pi-spec.ts` maps the
 drafted spec onto the contract, bounds every field it emits (title clipped, at
 most 12 criteria, all `verify: "test"`, no `scope`), and **never files a criterion
-cut**: an acceptance-criterion bullet longer than 200 characters makes the whole
-block omit, with a plain `pi-spec block omitted:` line in the body naming the
-criterion and its length — the issue then reads as not ready rather than as a
+cut**: ANY acceptance-criterion bullet longer than 200 characters — including the
+ones past the 12 the block embeds — makes the whole block omit, with a plain
+`pi-spec block omitted:` line in the body naming every over-long criterion and its
+length — the issue then reads as not ready rather than as a
 contract nobody wrote. It places the section at the
 **top** of the body (so an unclosed fence in prose below cannot swallow it), and
 reads the block back through the real parser before filing. Any `pi-spec v1`

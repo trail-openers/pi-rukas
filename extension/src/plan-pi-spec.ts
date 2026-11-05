@@ -359,20 +359,19 @@ export function placePiSpecSection(
   // clip, so a text that differs from its own bullet is one the clip shortened.
   // Lean builds and tests against the block's text, so half a sentence is a
   // contract the drafter never made — the whole block is left out and the body
-  // says why, naming the criterion and how long its bullet was.
-  const bullets = sectionBullets(body, "Acceptance criteria");
-  const overLong = spec.criteria.findIndex(
-    (c, i) => c.text !== neutraliseFenceRuns(oneLine(bullets[i] ?? "")),
+  // says why. The ONE list below is what the mapper bounds (same slicing, same
+  // neutralise/one-line, no clip), so the guard cannot drift from the mapper and
+  // checks EVERY bullet — including the ones past the embedded cap, whose
+  // over-length still refuses the whole block. Every offender is named, so a
+  // drafter told about one is not refused again for the next.
+  const forms = sectionBullets(body, "Acceptance criteria").map((b) =>
+    neutraliseFenceRuns(oneLine(b)),
   );
-  if (overLong >= 0) {
-    return omit(
-      body,
-      type,
-      title,
-      `criterion AC${overLong + 1} is ${bullets[overLong]?.length} chars, over the ${PI_SPEC_CRITERION_MAX_CHARS}-char bound`,
-      true,
-      true,
-    );
+  const offenders = forms
+    .map((form, i) => ({ id: `AC${i + 1}`, length: form.length }))
+    .filter((form) => form.length > PI_SPEC_CRITERION_MAX_CHARS);
+  if (offenders.length > 0) {
+    return omit(body, type, title, overLongCriterionReason(offenders), true, true);
   }
   const section = renderPiSpecSection(spec);
   // The ceiling is asserted on the RENDER, not inferred from the mapper's bounds:
@@ -425,6 +424,28 @@ function omit(
     spec: undefined,
     omitted: shown,
   };
+}
+
+/**
+ * The disclosure for over-long criteria: every offender by id and by the length the
+ * bound was measured against, singular wording for one. The reason is clipped by
+ * `omit`, so when the list itself would not fit, it names as many as fit and says
+ * how many are unlisted — never a silent truncation of the offenders.
+ */
+function overLongCriterionReason(offenders: { id: string; length: number }[]): string {
+  const word = offenders.length === 1 ? "is" : "are";
+  const render = (shown: { id: string; length: number }[], rest: number): string =>
+    `criteria ${shown.map((o) => `${o.id} (${o.length} chars)`).join(", ")}${rest > 0 ? ` and ${rest} more` : ""} ${word} over the ${PI_SPEC_CRITERION_MAX_CHARS}-char bound`;
+  let shown = offenders;
+  let rest = 0;
+  while (
+    shown.length > 1 &&
+    render(shown, offenders.length - shown.length).length > PI_SPEC_OMISSION_REASON_MAX_CHARS
+  ) {
+    shown = shown.slice(0, shown.length - 1);
+    rest = offenders.length - shown.length;
+  }
+  return render(shown, rest);
 }
 
 /** Why there is no block when the mapper produced no spec. */
