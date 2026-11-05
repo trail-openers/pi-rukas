@@ -261,6 +261,13 @@
     "smoke-tests/test-batch-report-failure.ts",
     "smoke-tests/lib/opcfg-entry-cases.ts",
     "smoke-tests/lib/opcfg-readback-cases.ts",
-    "smoke-tests/lib/seams-registry-spawn-config.ts"
+    "smoke-tests/lib/seams-registry-spawn-config.ts",
+    "smoke-tests/lib/review-changed-lines-fixture.ts",
+    "smoke-tests/test-review-findings-code-changed-arm.ts",
+    "smoke-tests/test-AC1-code-changed-not-reported.ts",
+    "smoke-tests/test-AC2-unchanged-lines-still-carry.ts",
+    "smoke-tests/test-AC3-rereported-stays-open.ts",
+    "smoke-tests/test-AC4-high-low-siblings-resolve.ts",
+    "smoke-tests/test-AC5-round-cap-blocking-count.ts"
   ]
 }
