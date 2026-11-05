@@ -77,21 +77,57 @@ function identitiesOfLine(candidate: string): TestIdentity[] {
   const verdict = classifyFailureLine(line);
   if (verdict === undefined || !verdict.namesTest) return [];
   if (verdict.shape !== "pytest-failed" && verdict.shape !== "pytest-error") return [];
-  // Each `; `-separated span of a packed line is its own test, with the shape's
-  // own marker stripped from every span (`FAILED a::t; FAILED b::u`) — a token
-  // that kept the marker, or swallowed the second failure, would match nothing
-  // at base and the excuse would be refused over a formatting fact.
+  // Each span of a packed line is its own test, with the shape's own marker stripped
+  // from every span (`FAILED a::t; FAILED b::u`). SPLIT ONLY WHERE THE NEXT SPAN
+  // STARTS WITH THE MARKER: a bare `;` is legal inside a parametrisation
+  // (`a.py::t[x; 1]`), and splitting there cuts the token in half, which then stands
+  // for every other value of that parameter. A span whose brackets do not balance is
+  // an identity this module cannot read, and the whole excuse refuses rather than
+  // comparing a truncated token.
   const spans = /^\s*(?:FAILED|ERROR)\s+(.*)$/s.exec(line)?.[1] ?? "";
+  const tokens = splitPackedSpans(spans).map((token) => stripTrailingReason(stripMarker(token)));
+  if (tokens.some((token) => !balanced(token))) return [];
   return (
-    spans
-      .split(";")
-      .map((token) => stripTrailingReason(stripMarker(token.trim())))
+    tokens
       // The `::` is what makes a token an identity at all: a pytest token carries the
       // file the check lives in beside the check's name, and a token without one is not
       // a name this module is willing to compare between two trees.
       .filter((token) => token.includes("::"))
       .map((token) => ({ name: token }))
   );
+}
+
+/** Where a packed failure line separates one test from the next: a `;` before a marker. */
+const PACKED_SPAN = /;\s*(?=(?:FAILED|ERROR)\s)/;
+
+/** The spans of a packed failure line, split on a marker only, never on a bare `;`. */
+function splitPackedSpans(spans: string): string[] {
+  return spans
+    .split(PACKED_SPAN)
+    .map((token) => token.trim())
+    .filter((token) => token.length > 0);
+}
+
+/** Are every kind of bracket in this token closed? An unclosed one is a cut, not a name. */
+function balanced(token: string): boolean {
+  const OPEN = "([{";
+  const CLOSE = "])}";
+  const depth: number[] = [0, 0, 0];
+  for (const ch of token) {
+    const open = OPEN.indexOf(ch);
+    if (open >= 0) {
+      depth[open] = (depth[open] ?? 0) + 1;
+      continue;
+    }
+    const close = CLOSE.indexOf(ch);
+    if (close < 0) continue;
+    // Close the innermost open bracket, whichever kind it was: a mismatched pair is
+    // as unreadable as an unclosed one.
+    const inner = depth.findIndex((d) => d > 0);
+    if (inner < 0 || inner !== close) return false;
+    depth[close] = (depth[close] ?? 0) - 1;
+  }
+  return depth.every((d) => d === 0);
 }
 
 /** A repeated shape marker on a span of a packed failure line (`FAILED a::t; FAILED b::u`). */
@@ -122,12 +158,17 @@ function namesUnreadableIdentity(stream: string): boolean {
 /**
  * Drop pytest's trailing ` - <reason>` from an identity token.
  *
- * Safe because pytest's identity is the `path::name` printed BEFORE the reason, so
- * the cut cannot land inside a name: two checks in one file differ in the `::name`
- * half, which survives, and never in the reason the runner appended.
+ * A trailing reason is delimited by WHITESPACE (` - `), so the cut is taken at the
+ * LAST such separator rather than the first: a parametrisation may itself contain ` - `
+ * (`test_total[EUR - 3.99]`), and cutting at the first one would fold that parameterisation
+ * and every sibling value onto the one token before the separator — excusing a failure
+ * only this run authored. Whatever the cut leaves behind must still balance its
+ * brackets (see {@link balanced}); a token that does not is refused by the caller, so
+ * no cut here can yield a truncated identity.
  */
 function stripTrailingReason(token: string): string {
-  return (token.split(" - ")[0] ?? "").trim();
+  const cut = token.lastIndexOf(" - ");
+  return (cut < 0 ? token : token.slice(0, cut)).trim();
 }
 
 /**

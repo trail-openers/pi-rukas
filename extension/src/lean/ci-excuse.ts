@@ -37,11 +37,15 @@ import { isFullCommitSha } from "../commit-sha.ts";
 import { frozenFromLog } from "./build.ts";
 import type { CiDeps } from "./ci-deps.ts";
 import type { HandlerCtx } from "./engine.ts";
-import { neverStarted, wasKilled } from "./specify-proof.ts";
 import type { PreexistingTierRecord } from "./state-outcome-maps.ts";
 import { newestDecided } from "./state.ts";
 import { baseStreamOf, baselineExcuse } from "./verify-baseline-excuse.ts";
-import { baselineProbeWorktreePath, probeTierAtBase } from "./verify-baseline.ts";
+import {
+  baselineProbeWorktreePath,
+  probeTierAtBase,
+  tierExitCode,
+  tierObserved,
+} from "./verify-baseline.ts";
 
 /** The tier name the full tier's record is keyed by, in `ci`'s own outcome. */
 export const CI_FULL_TIER = "full";
@@ -58,14 +62,21 @@ export const CI_FULL_TIER = "full";
  * all the excuse would get to read, and the omitted half can hold the failure this
  * run authored. So the excuse is refused and today's red stands.
  *
- * `wasKilled` / `neverStarted` are asked here as well rather than trusting the
- * caller's own arms: `verify`'s excuse is reached only behind `tierObserved`, and
- * `ci`'s must not be reachable behind a shape `verify` would have refused.
+ * The observation test is `verify`'s own `tierObserved` — the same predicate that
+ * gates `verify`'s excuse, so `ci`'s cannot be reached behind a shape `verify` would
+ * have refused. On top of it a run must have ANSWERED with a numeric exit code: a
+ * rejection that stamped nothing at all (`new Error("boom")`, `{}`) is neither killed
+ * nor un-startable nor overflowed, and reading it as observed would grade the excuse on
+ * a stream nobody produced. `verify`'s `confirmTierRedFrom` requires the same numeric
+ * code — and the same absence of an object means the same thing there, because an
+ * executor that resolves with no result object at all is the fixture's "exited 0 with no
+ * output" and stays admissible.
  */
 export function ciTierObserved(ran: unknown): boolean {
-  return (
-    !wasKilled(ran) && !neverStarted(ran) && (ran as { overflow?: unknown })?.overflow === undefined
-  );
+  if (!tierObserved(ran)) return false;
+  if (ran === null || typeof ran !== "object") return false;
+  if (!("stdout" in (ran as object))) return false;
+  return tierExitCode(ran) !== undefined;
 }
 
 /**

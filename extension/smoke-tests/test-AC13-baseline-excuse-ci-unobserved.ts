@@ -14,6 +14,7 @@ import type { PreexistingTierRecord } from "../src/lean/state-outcome-maps.ts";
  * Three no-observation shapes must stay RED with no record, and the observed pair
  * below is the control that keeps the guard from being a blanket refusal.
  */
+import { ciTierObserved } from "../src/lean/ci-excuse.ts";
 import { cleanUp, run } from "./lib/lean-ci-recorder.ts";
 
 const SELF = "test-AC13-baseline-excuse-ci-unobserved.ts";
@@ -59,6 +60,21 @@ const UNOBSERVED: Record<string, unknown> = {
   killed: Object.assign(new Error("was killed"), { killed: true, code: 1, stdout: STREAM }),
   neverStarted: Object.assign(new Error("spawn ENOENT"), { code: "ENOENT", stdout: STREAM }),
 };
+
+// A rejection that stamped NOTHING at all — no `code`, no kill, no `overflow`, no
+// `ENOENT` — is not an observed run either. `wasKilled` and `neverStarted` both answer
+// no for it, so the guard used to call it observed and hand its stream to the excuse:
+// the same reading `verify`'s `confirmTierRedFrom` refuses by requiring a numeric `code`.
+// It cannot be driven through the step, because `tierFailure` throws such a rejection
+// back as an infrastructure error before the excuse is reached, so the predicate itself
+// is asked.
+// is asked. `JSON.stringify` renders all four the same, so the label is `String(shape)`.
+for (const unstamped of [new Error("boom"), {}, null, undefined]) {
+  assert(
+    ciTierObserved(unstamped) === false,
+    `(unstamped) ${String(unstamped)} is not an observed run`,
+  );
+}
 
 for (const [shape, reject] of Object.entries(UNOBSERVED)) {
   const r = await run({

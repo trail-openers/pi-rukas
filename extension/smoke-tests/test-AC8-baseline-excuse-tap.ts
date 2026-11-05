@@ -101,6 +101,40 @@ const namesOf = (stream: string): string[] => testIdentitiesOf(stream).map((i) =
   );
 }
 
+// ------------------------- (pytest ambiguity) an identity this module cannot read
+{
+  // pytest's own reason separator is inside the parametrisation, so cutting at the
+  // first ` - ` folds `test_total[EUR - 3.99]` and `test_total[EUR - 4.99]` onto one
+  // token. A head that fails BOTH would then be excused by a base that fails only 3.99.
+  const BASE = "FAILED tests/test_cart.py::test_total[EUR - 3.99] - AssertionError";
+  const HEAD = [
+    "FAILED tests/test_cart.py::test_total[EUR - 3.99] - AssertionError",
+    "FAILED tests/test_cart.py::test_total[EUR - 4.99] - AssertionError",
+  ];
+  assert(
+    excuseOf(HEAD, [BASE]).kind === "refused",
+    `(pytest ambiguity) a head parametrisation the base never failed is not excused (${excuseOf(HEAD, [BASE]).kind})`,
+  );
+  assert(
+    namesOf(HEAD[1] ?? "").length === 0,
+    `(pytest ambiguity) and no unbalanced-bracket token is read as an identity (${JSON.stringify(namesOf(HEAD[1] ?? ""))})`,
+  );
+}
+{
+  // Same fold through the packed-line split: a bare `;` inside the parametrisation
+  // cuts `a.py::t[x; 1]` into `a.py::t[x`, which then also stands for `a.py::t[x; 2]`.
+  const BASE = "FAILED a.py::t[x; 1] - AssertionError";
+  const HEAD = ["FAILED a.py::t[x; 1]; FAILED a.py::t[x; 2] - AssertionError"];
+  assert(
+    excuseOf(HEAD, [BASE]).kind === "refused",
+    `(packed) a packed line split on a bare ';' is not excused (${excuseOf(HEAD, [BASE]).kind})`,
+  );
+  assert(
+    namesOf(HEAD[0] ?? "").length === 0,
+    `(packed) and no truncated token is read as an identity (${JSON.stringify(namesOf(HEAD[0] ?? ""))})`,
+  );
+}
+
 // ------------------------------------- (ci reuse) pytest names round-trip whole
 {
   const NAMES = ["tests/x_test.py::test_a", "tests/x_test.py::test_b"];
