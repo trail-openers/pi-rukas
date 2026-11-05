@@ -50,6 +50,7 @@ function run(state: LeanState, over: Partial<LeanRun> = {}): LeanRun {
 const COUNTER_VARIANTS = [
   INITIAL_COUNTERS,
   { ...INITIAL_COUNTERS, buildAttempts: MAX_BUILD_ATTEMPTS },
+  { ...INITIAL_COUNTERS, buildAttempts: MAX_BUILD_ATTEMPTS - 1 },
   { ...INITIAL_COUNTERS, buildAttempts: 1, draft: true },
   { ...INITIAL_COUNTERS, challengeDone: false, reviewDone: true, ciFixUsed: true },
 ] as const;

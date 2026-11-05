@@ -217,7 +217,7 @@ assert(
   // contract the run's own builder proved unsatisfiable opens a PR whose CI can
   // go green without anyone satisfying the tests. And the edge charges no build
   // attempt — the run did not earn a round by reporting a conflict.
-  for (const buildAttempts of [0, 1, MAX_BUILD_ATTEMPTS]) {
+  for (const buildAttempts of [0, 1, MAX_BUILD_ATTEMPTS - 1, MAX_BUILD_ATTEMPTS]) {
     const blocked = next(run("build", { counters: { ...INITIAL_COUNTERS, buildAttempts } }), {
       kind: "blocked",
     });
@@ -231,6 +231,68 @@ assert(
     );
     assert(blocked.counters.draft === false, "build blocked does not set the draft marker");
   }
+}
+
+{
+  // The field sequence the cap used to break, driven through the real `next()`
+  // one engine entry at a time. `viaBuild` bills `buildAttempts` on ENTERING
+  // build, so the counter runs one ahead of the rounds completed and three
+  // entries exhaust it by any route. The chain is the field case exactly: the
+  // first build earns the challenge, the challenge's NEW TESTS earn the second
+  // build, and the red that follows earns the third — which is the entry the old
+  // cap refused, handing the whole run back with no PR and a two-line fix
+  // outstanding. Each edge below is correct read on its own; only the chain shows
+  // that the round the challenge spends has to leave one for the red.
+  const walk: string[] = [];
+  let seq: LeanRun = run("build");
+  for (const kind of ["ok", "new-tests", "ok", "red"] as const) {
+    // The engine stops asking once a run is terminal, so the walk does too.
+    if (seq.state === "handback") break;
+    const moved = next(seq, { kind });
+    walk.push(`${moved.state}/${String(moved.counters.buildAttempts)}`);
+    seq = { ...seq, state: moved.state, counters: moved.counters };
+  }
+  // The counter is billed on ENTERING build, so it runs one ahead of the rounds
+  // completed and three entries exhaust it by any route. `build + ok` offers the
+  // challenge round while one remains and goes to `verify` once the cap has
+  // answered for build — so the challenge's new tests are what spend the second
+  // entry, and a run whose red arrives there has already spent its last round
+  // elsewhere: it hands back rather than shipping work its own gate called red.
+  // The load-bearing half is the assertion after this one — at one attempt BELOW
+  // the cap the same red does earn the third build, which is what the old cap of
+  // two refused and left the field run without a PR.
+  assert(
+    walk.join(" → ") === "challenge/1 → build/2 → verify/3 → handback/3",
+    `the field walk is the field case: three entries spent, the challenge's round among them (got ${walk.join(" → ")})`,
+  );
+  // The red the third round exists to answer rides with it: `viaBuild` passes the
+  // marker through rather than clearing it, so a run cannot out-grind its own gate.
+  assert(
+    seq.state === "handback" &&
+      seq.counters.buildAttempts === 3 &&
+      seq.counters.challengeDone === true,
+    `the run ends handed back on its THIRD round, not published (${seq.state} at ${String(seq.counters.buildAttempts)}, challenged ${String(seq.counters.challengeDone)})`,
+  );
+  // The load-bearing half: the round the challenge spent no longer exhausts the
+  // red-verify retry. One attempt below the cap — where the walk above stood when
+  // its first red came in — a red still earns the third build, red marker and all.
+  const thirdRound = next(
+    run("verify", { counters: { ...INITIAL_COUNTERS, buildAttempts: MAX_BUILD_ATTEMPTS - 1 } }),
+    { kind: "red" },
+  );
+  assert(
+    thirdRound.state === "build" &&
+      thirdRound.counters.buildAttempts === MAX_BUILD_ATTEMPTS &&
+      thirdRound.counters.draft === true,
+    `a red verify one attempt below the cap earns the third build round, red marker and all (got ${thirdRound.state} at ${String(thirdRound.counters.buildAttempts)}, draft ${String(thirdRound.counters.draft)})`,
+  );
+  assert(
+    next(
+      { ...run("verify"), counters: { ...thirdRound.counters }, state: "verify" },
+      { kind: "red" },
+    ).state === "handback",
+    "a red verify at the third round's cap hands back rather than a fourth build",
+  );
 }
 
 process.exit(exit);

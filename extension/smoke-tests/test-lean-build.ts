@@ -24,8 +24,9 @@
  *   (l) a worktree that is not ours        -> THROW before the dispatch
  *   (m) child edits agents.json + .gitmodules -> both reverted, the tracked one restored
  *
- * The wiring and config cases live in test-lean-build-wiring.ts; the link and
- * kind-change cases live in test-lean-build-tree.ts.
+ * The wiring and config cases live in test-lean-build-wiring.ts, where the third
+ * build round's prompt also lives; the link and kind-change cases live in
+ * test-lean-build-tree.ts.
  *
  * Every git call the step makes carries the hook and fsmonitor guard (case a).
  */
