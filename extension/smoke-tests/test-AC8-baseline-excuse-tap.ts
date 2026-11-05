@@ -16,6 +16,9 @@
  *            unnumbered TAP lines must yield the SAME token
  *   (go)     a head run whose every `--- FAIL: TestX` the recorded base set carries
  *            is graded green by `ci` on ONE tier run, with no base probe at all
+ *
+ * A bare identity is compared WHOLE — no cut at the runner's ` - ` separator — which
+ * `test-AC8b-baseline-excuse-tap-reason.ts` tests.
  */
 import { baseStreamOf, testIdentitiesOf } from "../src/lean/verify-baseline-excuse.ts";
 import { cleanUp, run } from "./lib/lean-ci-recorder.ts";
@@ -50,12 +53,6 @@ const namesOf = (stream: string): string[] => testIdentitiesOf(stream).map((i) =
   assert(
     numbered.join() === unnumbered.join() && numbered[0] === "checkout renders the total",
     `(tap) numbered and unnumbered TAP lines yield the same token (${JSON.stringify(numbered)} vs ${JSON.stringify(unnumbered)})`,
-  );
-  // The tail a TAP harness prints beside the description is still not the name.
-  assert(
-    namesOf("not ok 3 - checkout renders the total - expected 3 got 4").join() ===
-      "checkout renders the total",
-    "(tap) the trailing reason is still stripped from a numbered line",
   );
 }
 

@@ -48,7 +48,7 @@ import { parsePiSpec } from "./spec.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import { specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
 import { PR_URL, PR_URL_MAX_CHARS } from "./state-outcome.ts";
-import { type Outcome, Step, newestDecided } from "./state.ts";
+import { type Outcome, newestDecided } from "./state.ts";
 import { oneLine } from "./text-fence.ts";
 
 /** Run git in `wt`, rejecting a read that cannot answer as infrastructure. */

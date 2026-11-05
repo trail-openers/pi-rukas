@@ -80,7 +80,13 @@ function identitiesOfLine(candidate: string): TestIdentity[] {
   }
   const stripped = stripShapePrefix(line, verdict.shape);
   if (stripped === undefined) return [];
-  const token = stripTrailingReason(stripped);
+  // A bare identity is compared WHOLE. The ` - ` a runner puts between a name and
+  // its failure text is not a delimiter here: cutting at the first one makes
+  // `checkout - expected 3 got 4` and `checkout - other assertion` one name, and a
+  // failure only this run authored is then excused as pre-existing — the one thing
+  // this feature must never do. If the two runs word the reason differently the
+  // excuse is refused and today's red stands, which is the safe direction.
+  const token = stripped.trim();
   return token === "" ? [] : [{ name: token, pathBearing: token.includes("::") }];
 }
 
@@ -111,7 +117,13 @@ function stripShapePrefix(line: string, shape: string): string | undefined {
   return undefined;
 }
 
-/** Drop a runner's trailing ` - <reason>` from an identity token. */
+/**
+ * Drop pytest's trailing ` - <reason>` from an identity token.
+ *
+ * Safe ONLY for the path-bearing arm: pytest's identity is the `path::name` before
+ * the reason, so the cut cannot merge two different tests. The non-path arm does not
+ * call it — see {@link identitiesOfLine}.
+ */
 function stripTrailingReason(token: string): string {
   return (token.split(" - ")[0] ?? "").trim();
 }
@@ -222,12 +234,6 @@ function relativeWithin(root: string, path: string): string | undefined {
     rootSegments.length <= parts.length && rootSegments.every((seg, i) => parts[i] === seg);
   const rel = rooted ? parts.slice(rootSegments.length).join("/") : joined;
   return rel === "" ? undefined : rel;
-}
-
-/** The two trees of one comparison, each resolved once — see {@link TreePair}. */
-interface TreePair {
-  headRoot: string;
-  probeRoot: string;
 }
 
 /**
