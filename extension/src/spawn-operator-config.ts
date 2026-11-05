@@ -53,7 +53,8 @@
  * about a name the child creates elsewhere under the operator's home (`~/.pi`,
  * `~/.cache`, a dotfile of its own). Listing is disclosure, never deletion: the
  * operator's own entries are not this guard's to remove, and a line naming a
- * leftover costs one read to act on.
+ * leftover costs one read to act on. `home-watch.ts` owns what may be named, and
+ * `fs-clock.ts` why the window's bounds are read from the filesystem.
  *
  * What the guard cannot catch: a write that lands after the child exits (a
  * detached grandchild), since one snapshot set belongs to one child. Group-kill
@@ -62,18 +63,17 @@
  */
 
 import type { Stats } from "node:fs";
-import {
-  constants,
-  type FileHandle,
-  access,
-  lstat,
-  open,
-  readFile,
-  readdir,
-  rm,
-} from "node:fs/promises";
+import { constants, type FileHandle, access, lstat, open, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { createFsClock } from "./fs-clock.ts";
+import {
+  type HomeBaseline,
+  homeEntries,
+  homeNewEntryLines,
+  recordAfterListing,
+  recordBaseline,
+} from "./home-watch.ts";
 import { isPlainObject } from "./plain-object.ts";
 import { isReviewerRole } from "./review-bounds.ts";
 import { traceWarn } from "./trace.ts";
@@ -81,6 +81,13 @@ import type { DispatchResult } from "./types.ts";
 
 /** A process environment shaped enough to resolve the protected paths from. */
 export type OperatorConfigEnv = Record<string, string | undefined>;
+
+/**
+ * Run counter, so each guard entry has an identity of its own in the `$HOME` sighting
+ * ledger (`home-watch.ts`). Overlapping reviewer children are told apart by when each
+ * took its baseline, so they must not share a key.
+ */
+let runs = 0;
 
 /**
  * One protected file that WAS readable before the child ran, and the bytes it
@@ -346,34 +353,6 @@ function differsFrom(snap: Buffer | null, now: Buffer | null | undefined): boole
 }
 
 /**
- * The `$HOME` before/after listing for a reviewer child, as one call made ONCE
- * before the child and once after it: the caller subtracts the two results, and
- * never deletes anything.
- *
- * `undefined` is the pre-run verdict "no baseline": an unreadable home is not
- * evidence of a child write, so a child that made entries in it is not accused —
- * the same rule `readSnapshot` applies to a protected file with no baseline.
- * `[]` means "the top level is unchanged", which is not a verdict at all.
- */
-async function homeEntries(home: string): Promise<string[] | undefined> {
-  try {
-    return await readdir(home);
-  } catch {
-    return undefined;
-  }
-}
-
-/** Why the listing of `$HOME` could not be taken, with the errno that says so. */
-async function snapshotCode(home: string): Promise<string> {
-  try {
-    await readdir(home);
-    return "unknown";
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code ?? "unknown";
-  }
-}
-
-/**
  * Run `runChild` with the operator's git/gh config guarded: snapshot the
  * protected files first, and in a `finally` — whatever ended the child, a
  * spawn throw, an abort, a cap kill — restore any file it changed and record a
@@ -402,9 +381,25 @@ export async function withOperatorConfigGuard<R>(
     const bytes = await readSnapshot(target);
     if (bytes !== undefined) snapshots.push({ path: target, bytes });
   }
-  // The listing is gated on the SAME predicate the reviewer bounds use, so a
-  // role can never be half-covered by a second hand-kept list.
-  const homeBaseline = isReviewerRole(role) ? await homeEntries(homeDir(process.env)) : undefined;
+  // The REPORT is gated on the SAME predicate the reviewer bounds use, so a role can
+  // never be half-covered by a second hand-kept list. The LISTING is not: every run
+  // files what it saw, because the witness that keeps a reviewer off a sibling's entry
+  // is whichever run happened to be watching the home at the time, reviewer or not.
+  const report = isReviewerRole(role);
+  const home = homeDir(process.env);
+  // The window's bounds are stamped by the home's own filesystem, so they mean the same
+  // thing as the inode times they bracket (`fs-clock.ts`).
+  const clock = createFsClock(home);
+  const homeBaseline: HomeBaseline = await homeEntries(home);
+  // One identity per guard entry, so a listing is attributed to the run that took it and
+  // never to a sibling whose window happens to overlap it.
+  const runId = `${role}#${++runs}`;
+  // The baseline's bound and its contents, filed with the home's ledger: a run that
+  // started later and already found an entry there can show the entry predates it.
+  const baselineAt: number | null = "names" in homeBaseline ? await clock.now() : null;
+  if (baselineAt !== null && "names" in homeBaseline) {
+    recordBaseline(home, runId, homeBaseline.names, baselineAt);
+  }
   let result: R | null = null;
   try {
     result = await runChild();
@@ -422,28 +417,36 @@ export async function withOperatorConfigGuard<R>(
           : `operator-config: ${snap.path} modified during the ${role} run — NOT restored (${code})`,
       );
     }
-    // The $HOME disclosure, in the same channel and the same array as the
-    // restore lines. A baseline that was never taken is not a child write: one
-    // line says why, and no entry is named.
+    // The $HOME disclosure, in the same channel and the same array as the restore
+    // lines. `home-watch.ts` owns which names may be named; the two failure shapes are
+    // kept apart here, because with no baseline there is nothing to compare against (no
+    // entry is named, one line says why), while a baseline plus a failed second listing
+    // is "cannot prove unchanged" — a fact about the home, never attributable to an
+    // entry the child made.
     let homeLines: string[] = [];
-    if (homeBaseline !== undefined) {
-      const after = await homeEntries(homeDir(process.env));
-      if (after === undefined) {
-        // There "cannot read" means "cannot prove unchanged" — a fact about the
-        // home, not attributable to any entry the child made.
-        const code = await snapshotCode(homeDir(process.env));
-        homeLines = [`operator-config: could not re-read $HOME (${code})`];
-      } else {
-        const had = new Set(homeBaseline);
-        homeLines = after
-          .filter((name) => !had.has(name))
-          .map((name) => `${name} created in $HOME during the ${role} run`);
+    if ("names" in homeBaseline) {
+      const after = await homeEntries(home);
+      const seenAt = await clock.now();
+      // File the run's second listing BEFORE judging any claim: the run that ends first
+      // is the one whose witness the runs still to come need, and a name is judged
+      // against what every overlapping run has observed. Filed for every role — a
+      // non-reviewer's own listing is the cleanest proof a reviewer can get that an
+      // entry in it is not the reviewer's.
+      if ("names" in after) {
+        recordAfterListing(home, runId, after.names, seenAt);
+        if (report) {
+          homeLines = homeNewEntryLines(role, home, runId, homeBaseline, after, {
+            baselineAt,
+            seenAt,
+          });
+        }
+      } else if (report) {
+        homeLines = [`operator-config: could not re-read $HOME (${after.code ?? "unknown"})`];
       }
-    } else if (isReviewerRole(role)) {
-      homeLines = [
-        `operator-config: could not snapshot $HOME (${await snapshotCode(homeDir(process.env))})`,
-      ];
+    } else if (report) {
+      homeLines = [`operator-config: could not snapshot $HOME (${homeBaseline.code ?? "unknown"})`];
     }
+    await clock.clear();
     for (const line of violations) traceWarn(line);
     for (const line of homeLines) traceWarn(line);
     // Disclosure, never a verdict: `ok` and `loopOutcome` are left exactly as
