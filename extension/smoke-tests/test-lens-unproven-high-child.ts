@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
- * #2040 — the unproven-HIGH cap, half 2 of 2: the child plumbing, the stored
- * row, and every surface that renders a severity.
+ * #2040 — the unproven-HIGH cap, half 2 of 4: the child plumbing, the stored
+ * row, and the round summary.
  *
  * Half 1 (`test-lens-unproven-high.ts`) asserts the rule where it is written.
  * This file asserts the two things that file cannot:
@@ -11,26 +11,19 @@
  *       "green tests, dead feature" shape AGENTS.md §7 warns about;
  *   (d) the row that reaches `review-findings.json` is the capped row, and the
  *       operator-facing summary names the cap — a cap that only fired in memory
- *       would be invisible where the decision is actually made;
- *   (e) every renderer that prints a severity prints the marker beside it, since
- *       the lean fixer brief and the handback line are separate code paths from
- *       the round summary, and the fixer's brief is what tells the next developer
- *       why a HIGH arrived as a MEDIUM.
+ *       would be invisible where the decision is actually made.
  *
- * The builders both halves use are shared in `lib/unproven-high-harness.ts`;
- * `spawn.ts` is mocked there before the lens modules load, in the
- * `test-lens-kill-child.ts` shape.
+ * The renderers that carry the row onward are half 4
+ * (`test-lens-unproven-high-render.ts`); the builders every half uses are shared
+ * in `lib/unproven-high-harness.ts`, where `spawn.ts` is mocked before the lens
+ * modules load, in the `test-lens-kill-child.ts` shape.
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { renderLensFindings } from "../src/lens-findings-render.ts";import { renderPriorFindingsBlock } from "../src/lens-residuals.ts";
-import { renderFinding } from "../src/lean/review-waves.ts";
-import { renderFindings } from "../src/lean/review-deps.ts";
 import { runLensReview } from "../src/lens-review.ts";
 import { renderSummary } from "../src/lens-review-render.ts";
-import type { Finding } from "../src/lens-review-types.ts";
 import { readBranchRows } from "../src/review-findings-store.ts";
 import {
   FULL_DIFF,
@@ -42,26 +35,21 @@ import {
   HIGH,
   PROOF_COMMAND,
   bash,
+  createAssert,
   findingCall,
   makeChildHarness,
   provenCall,
   recordedCalls,
+  recordedResults,
   repro,
+  toolResult,
 } from "./lib/unproven-high-harness.ts";
 
 // #1069 / test-ledger-isolation.ts: any file that can reach runLensReview must
 // isolate the ledger before the src modules load.
 isolateLedger();
 
-let exit = 0;
-function assert(cond: boolean, msg: string) {
-  if (cond) console.log(`✓ ${msg}`);
-  else {
-    console.error(`✗ ${msg}`);
-    exit = 1;
-  }
-}
-
+const { assert, failures } = createAssert();
 // ---------------------------------------------------------------------------
 // (c) The child plumbing — the recorded tool calls that carry the proof from
 // child to parent.
@@ -76,7 +64,8 @@ const runOneChild = () => harness.runChild();
     role: "code-review-specialist",
     ok: true,
     text: "reviewed",
-    toolUses: [bash(PROOF_COMMAND)],
+    toolUses: [bash(PROOF_COMMAND, "c1")],
+    toolResults: [toolResult("c1", false)],
     ms: 10,
     exitCode: 0,
   }));
@@ -85,6 +74,14 @@ const runOneChild = () => harness.runChild();
     JSON.stringify(recordedCalls(r)).includes(PROOF_COMMAND),
     "(c) runLensChild attaches the child's recorded toolUses",
   );
+  // #2040 review (adversarial ISSUE 2): the RESULTS ride along too, or the
+  // parent cannot tell a call that ran from one Pi refused. Without this the
+  // per-child matcher could read a field the child never produced and every
+  // parent-side assertion would still pass.
+  assert(
+    JSON.stringify(recordedResults(r)).includes('"isError":false'),
+    "(c) runLensChild attaches the child's recorded toolResults",
+  );
 }
 
 {
@@ -92,7 +89,8 @@ const runOneChild = () => harness.runChild();
     role: "code-review-specialist",
     ok: false,
     text: "",
-    toolUses: [bash("echo before the failure")],
+    toolUses: [bash("echo before the failure", "c1")],
+    toolResults: [toolResult("c1", true, "schema refused")],
     ms: 10,
     exitCode: 1,
   }));
@@ -101,6 +99,10 @@ const runOneChild = () => harness.runChild();
   assert(
     JSON.stringify(recordedCalls(r)).includes("echo before the failure"),
     "(c) a failed child's recorded calls ride along too — a child that died is not a child that ran nothing",
+  );
+  assert(
+    JSON.stringify(recordedResults(r)).includes('"isError":true'),
+    "(c) a failed child's recorded results ride along too — the parent must see what it refused",
   );
 }
 
@@ -113,6 +115,7 @@ const runOneChild = () => harness.runChild();
     // shape `spawnSpecialist` returns, and what the parent must not do is read
     // `undefined` as a list it can prove anything against.
     toolUses: [],
+    toolResults: [],
     ms: 10,
     exitCode: 0,
   }));
@@ -120,6 +123,10 @@ const runOneChild = () => harness.runChild();
   assert(
     Array.isArray(recordedCalls(r)) && recordedCalls(r).length === 0,
     "(c) a child that recorded nothing yields an empty list, not undefined",
+  );
+  assert(
+    Array.isArray(recordedResults(r)) && recordedResults(r).length === 0,
+    "(c) a child that recorded no results yields an empty list, not undefined",
   );
 }
 
@@ -208,7 +215,11 @@ harness.cleanup();
     prefix: "lens-unproven-proven",
     files: { "src/a.ts": "// header\nexport const a = 1;\n" },
     report: () => reportNow,
-    toolUses: () => [bash(PROOF_COMMAND)],
+    toolUses: () => [bash(PROOF_COMMAND, "c1")],
+    // The result is what records that the call RAN (#2040): a call alone is a
+    // request, and a round whose child recorded no successful result for the
+    // command is a round in which nothing was reproduced.
+    toolResults: () => [toolResult("c1", false)],
   });
   try {
     reportNow = [
@@ -248,105 +259,193 @@ harness.cleanup();
   }
 }
 
-// ---------------------------------------------------------------------------
-// (e) Every renderer that prints a severity prints the marker beside it. The
-// round summary is covered in (d); these are the surfaces that carry the row
-// onward — lean's fixer brief (`renderFindings`) and lean's handback line
-// (`renderFinding`) — plus the residual disclosure's line and the
-// prior-findings block, each asserted at its OWN call site, because each is a
-// separate code path and a marker that reaches one does not reach the others.
-// ---------------------------------------------------------------------------
-const capped: Finding = {
-  ...HIGH("capped row"),
-  severity: "MEDIUM",
-  severityCapped: "unproven",
-};
-const plain: Finding = { ...HIGH("plain row"), severity: "MEDIUM" };
-
 {
-  const out = renderLensFindings(
-    JSON.stringify([
-      { severity: "MEDIUM", path: "src/a.ts", line: 2, title: "capped row", lens: "SIMPLICITY", severityCapped: "unproven" },
-      { severity: "MEDIUM", path: "src/b.ts", line: 2, title: "plain row", lens: "SIMPLICITY" },
-    ]),
-    "ISSUES_FOUND",
-  ).join("\n");
-  assert(
-    out.includes("(capped: unproven)") && out.split("(capped: unproven)").length === 2,
-    "(e) renderLensFindings marks the capped row and only the capped row",
-  );
+  // #2040 review (adversarial ISSUE 1) — EVIDENCE IS NOT POOLED ACROSS LENSES.
+  // The parent used to concatenate every child's `toolUses` and match each row
+  // against the whole round, so a command one lens ran proved a HIGH another
+  // lens had reported. The proof must come from the child that made the claim:
+  // lens A reports the HIGH and never runs anything, lens B runs the exact
+  // command. Round-wide pooling keeps it HIGH; per-child matching caps it.
+  let reportNow: StubFinding[] = [];
+  const fixture = setupReviewFixture({
+    prefix: "lens-unproven-per-child",
+    files: { "src/a.ts": "// header\nexport const a = 1;\n" },
+    report: () => reportNow,
+    toolUses: () => [],
+    toolUsesOther: () => [bash(PROOF_COMMAND, "other"), toolResult("other", false)],
+  });
+  try {
+    reportNow = [
+      {
+        severity: "HIGH",
+        path: "src/a.ts",
+        line: 2,
+        title: "HIGH whose command only another lens ran",
+        reproduction: repro(PROOF_COMMAND, "assertion failed"),
+      },
+    ];
+    const summary = await runLensReview({
+      cwd: fixture.repo,
+      branch: "main",
+      diff: FULL_DIFF,
+      head: fixture.sh("git rev-parse HEAD"),
+      full: true,
+      lensChildFn: fixture.stubLens,
+    });
+    assert(
+      summary.findings.some((f) => f.title === "HIGH whose command only another lens ran") &&
+        summary.findings.every((f) => f.severity === "MEDIUM"),
+      "(d) a HIGH is judged against its own child's calls, not another lens's",
+    );
+    assert(
+      summary.findings.every((f) => f.severityCapped === "unproven"),
+      "(d) the borrowed-proof row carries the unproven marker",
+    );
+    assert(
+      summary.verdict !== "ISSUES_FOUND" && summary.verdict !== "CRITICAL_ISSUES_FOUND",
+      `(d) a HIGH another lens ran does not block the round (verdict ${summary.verdict})`,
+    );
+  } finally {
+    fixture.cleanup();
+  }
 }
 
 {
-  const out = renderFinding(capped);
-  assert(out.includes("(capped: unproven)"), "(e) lean's handback line carries the marker");
-  assert(
-    !renderFinding(plain).includes("capped"),
-    "(e) lean's handback line stays clean for an uncapped row",
-  );
+  // #2040 review (adversarial ISSUE 2) — A REQUEST IS NOT A RUN. The same
+  // fixture with the SAME command recorded, but whose Pi result is an error:
+  // `toolUses` is what the child asked for, `toolResults` is what it accepted
+  // (types.ts), so a refused call proves nothing and the HIGH caps.
+  let reportNow: StubFinding[] = [];
+  const fixture = setupReviewFixture({
+    prefix: "lens-unproven-refused",
+    files: { "src/a.ts": "// header\nexport const a = 1;\n" },
+    report: () => reportNow,
+    toolUses: () => [bash(PROOF_COMMAND, "c1")],
+    toolResults: () => [toolResult("c1", true, "bun: command not found")],
+  });
+  try {
+    reportNow = [
+      {
+        severity: "HIGH",
+        path: "src/a.ts",
+        line: 2,
+        title: "HIGH whose reproduction failed to run",
+        reproduction: repro(PROOF_COMMAND, "assertion failed"),
+      },
+    ];
+    const summary = await runLensReview({
+      cwd: fixture.repo,
+      branch: "main",
+      diff: FULL_DIFF,
+      head: fixture.sh("git rev-parse HEAD"),
+      full: true,
+      lensChildFn: fixture.stubLens,
+    });
+    assert(
+      summary.findings.every(
+        (f) => f.severity === "MEDIUM" && f.severityCapped === "unproven",
+      ),
+      "(d) a bash call whose result is an error does not prove the HIGH that cited it",
+    );
+  } finally {
+    fixture.cleanup();
+  }
 }
 
 {
-  // `renderFindings` is exported rather than re-spelled here: this is the line
-  // format the fixer's brief is built from, and an assertion that rebuilt the
-  // string in the test would pin the test's own rendering, not the product's.
-  const out = renderFindings({
-    verdict: "ISSUES_FOUND",
-    findings: [capped, plain],
-  } as unknown as Parameters<typeof renderFindings>[0]);
-  assert(
-    out.includes("(capped: unproven)") && out.split("(capped: unproven)").length === 2,
-    "(e) the fixer brief marks the capped row and only the capped row, so the next developer knows why a HIGH arrived as a MEDIUM",
-  );
+  // #2040 review (lens HIGH) — A CARRIED HIGH IS JUDGED AGAINST THIS ROUND.
+  // A row an earlier round recorded, held at HIGH by a cap marker, used to skip
+  // the check entirely (`severityCapped !== undefined` returned the row), so a
+  // stale reproduction kept blocking rounds forever whatever this round's
+  // children ran. Two rounds on one clone: round 1 reports the HIGH and its
+  // child DOES run the command (so the row is legitimately HIGH and is filed at
+  // HIGH with a marker claiming otherwise — the shape a stored or corrupted row
+  // presents); round 2 is silent about the row and its children run nothing, so
+  // the carried row must be capped, not carried at HIGH again.
+  let reportNow: StubFinding[] = [];
+  let callsNow: unknown[] = [bash(PROOF_COMMAND, "c1"), toolResult("c1", false)];
+  const fixture = setupReviewFixture({
+    prefix: "lens-unproven-carried",
+    files: { "src/a.ts": "// header\nexport const a = 1;\n" },
+    report: () => reportNow,
+    toolUses: () => callsNow,
+  });
+  try {
+    reportNow = [
+      {
+        severity: "HIGH",
+        path: "src/a.ts",
+        line: 2,
+        title: "Carried HIGH with a stale reproduction",
+        // A HIGH that arrives HIGH while already claiming a cap marker: the
+        // shape a stored/corrupted row can present, and the one the old
+        // skip-on-any-marker rule let through unjudged.
+        reproduction: repro(PROOF_COMMAND, "nothing happened"),
+      },
+    ];
+    const first = await runLensReview({
+      cwd: fixture.repo,
+      branch: "main",
+      diff: FULL_DIFF,
+      head: fixture.sh("git rev-parse HEAD"),
+      full: true,
+      lensChildFn: fixture.stubLens,
+    });
+    const stored = (await readBranchRows(fixture.repo, "main")).find(
+      (r) => r.title === "Carried HIGH with a stale reproduction",
+    );
+    assert(stored !== undefined, "(d) the round filed the row");
+    assert(
+      stored?.severity === "HIGH",
+      `(d) round 1's own child ran the claimed command, so the row is filed at HIGH (got ${stored?.severity})`,
+    );
+    // Round 2: the lens is silent, so the row is CARRIED — and this round's
+    // children ran no command matching the row's stale claim.
+    reportNow = [];
+    callsNow = [];
+    const second = await runLensReview({
+      cwd: fixture.repo,
+      branch: "main",
+      diff: FULL_DIFF,
+      head: fixture.sh("git rev-parse HEAD"),
+      full: true,
+      lensChildFn: fixture.stubLens,
+    });
+    const carried = second.findings.find(
+      (f) => f.title === "Carried HIGH with a stale reproduction",
+    );
+    assert(
+      first.verdict === "ISSUES_FOUND",
+      `(d) round 1 blocked on the HIGH (verdict ${first.verdict})`,
+    );
+    assert(
+      carried !== undefined,
+      "(d) the row is carried into round 2 rather than resolved (its cited code is unchanged)",
+    );
+    assert(
+      carried?.severity === "MEDIUM",
+      `(d) a carried HIGH whose reproduction no child ran THIS round is capped, not carried at HIGH (got ${carried?.severity})`,
+    );
+    assert(
+      carried?.severityCapped === "unproven",
+      "(d) the carried row says the harness moved it this round",
+    );
+    assert(
+      second.verdict !== "ISSUES_FOUND" && second.verdict !== "CRITICAL_ISSUES_FOUND",
+      `(d) an unproven carried HIGH does not block the round (verdict ${second.verdict})`,
+    );
+    const storedAfter = (await readBranchRows(fixture.repo, "main")).find(
+      (r) => r.title === "Carried HIGH with a stale reproduction",
+    );
+    assert(
+      storedAfter?.severity === "MEDIUM",
+      `(d) the stored row is the capped severity, so round 3 cannot carry it at HIGH again (got ${storedAfter?.severity})`,
+    );
+  } finally {
+    fixture.cleanup();
+  }
 }
 
-{
-  const out = renderPriorFindingsBlock([
-    {
-      id: "r1",
-      branch: "b",
-      status: "open",
-      path: "src/a.ts",
-      anchor: "a",
-      titleClass: "t",
-      title: "carried capped row",
-      severity: "MEDIUM",
-      lens: "SIMPLICITY",
-      snippetHash: "h",
-      firstSeen: 1,
-      lastSeen: 2,
-      severityCapped: "unproven",
-      reproduction: repro(PROOF_COMMAND, "observed text"),
-    },
-  ]);
-  assert(
-    out.includes("(capped: unproven)"),
-    "(e) the prior-findings block keeps the marker on a row carried across rounds",
-  );
-  assert(
-    !out.includes("observed text"),
-    "(e) the block never prints the row's `observed` text into a prompt",
-  );
-}
 
-{
-  // The blob path is the untrusted one — a findings blob is agent-writable
-  // content — so `renderOne` validates the marker against the closed enum. A row
-  // that claims a cap the harness never applies must print nothing rather than a
-  // line that reads as a harness decision.
-  const blob = JSON.stringify([
-    { severity: "MEDIUM", path: "src/a.ts", line: 2, title: "forged", lens: "SIMPLICITY", severityCapped: "unproven forged" },
-    { severity: "MEDIUM", path: "src/b.ts", line: 2, title: "real", lens: "SIMPLICITY", severityCapped: "unproven" },
-  ]);
-  const out = renderLensFindings(blob, "ISSUES_FOUND").join("\n");
-  assert(
-    out.includes("(capped: unproven)") && !out.includes("unproven forged"),
-    "(e) the blob renderer prints the marker only for a recognised cap spelling",
-  );
-  assert(
-    out.includes("src/b.ts") && !out.includes("src/a.ts") === false,
-    "(e) an unrecognised marker does not drop the row — only its blocking power is at stake, and it is already MEDIUM",
-  );
-}
-
-console.log(`\nexit ${exit}`);
+console.log(`\nexit 0`, failures());
+process.exit(failures());

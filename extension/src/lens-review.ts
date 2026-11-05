@@ -34,7 +34,7 @@ import {
   piSkillsDir,
 } from "./lens-review-format.ts";
 import { priorFindingsFor } from "./lens-review-memory.ts";
-import { mergeLensFindings } from "./lens-review-merge.ts";
+import { lensMerge } from "./lens-review-merge.ts";
 import { installBlockRowsForRoster, skillsDirUsable } from "./lens-review-skills.ts";
 import { normalExitSummary } from "./lens-review-summary.ts";
 import type { Finding, LensRunResult } from "./lens-review-types.ts";
@@ -438,11 +438,11 @@ export async function runLensReview(opts: {
   // a HIGH on a test path comes down to MEDIUM, and so does a HIGH whose claimed
   // reproduction this round's lens children did not run (#2040) — before
   // anything downstream reads a severity: the verdict, the counts, the ledger's
-  // `hasCritical`, and the findings-store row a later round carries from
-  // (lens-review-merge.ts). The calls are every child's own, concatenated; a
-  // row's evidence is matched against the children that produced the findings.
-  const recordedToolUses = lensResults.flatMap((r) => r.toolUses ?? []);
-  const deduped = mergeLensFindings(all, roster, recordedToolUses);
+  // `hasCritical`, and the findings-store row a later round carries from.
+  // `lensMerge` also returns the round's per-child record of what ran, which
+  // the findings round below threads to the store so CARRIED rows are judged by
+  // these same children (lens-review-merge.ts).
+  const { deduped, evidence } = lensMerge(all, roster, lensResults);
   // #1105/#1140/#1125 — the round is recorded against the findings memory (the
   // memory seam's `recordRound`, so the round's evidence and its rows come from
   // one store read), accepted rows suppress, unchanged open rows carry, a refused
@@ -481,6 +481,9 @@ export async function runLensReview(opts: {
   // write carries it through to all paths.
   // #984 — the ledger write's promise is discarded (fire-and-forget in
   // production; the await seam is for tests, not for the driver).
+  // The SAME per-child evidence the merge exit read: `reported` also holds the
+  // rows carried from the findings store, which that exit never saw, so the
+  // summary judges them against this round's calls too (#2040).
   return finishWith(
     normalExitSummary({
       verdict,

@@ -29,6 +29,7 @@ import {
   type LensRunResult,
   carriedHeading,
   isCarried,
+  isSeverityCap,
 } from "./lens-review-types.ts";
 
 /**
@@ -97,7 +98,11 @@ function lensLine(r: LensRunResult, maxLensAttempts: number): string {
  * would read to the next round as an open HIGH and be re-reported.
  */
 export function cappedSuffix(f: Pick<Finding, "severityCapped">): string {
-  return f.severityCapped === undefined ? "" : ` (capped: ${f.severityCapped})`;
+  // Validated before it is printed. The value reaching a renderer is not always
+  // the typed one — the findings blob and the findings file are agent-writable —
+  // so an unrecognised spelling prints nothing rather than echoing free text
+  // into a line an operator reads as a harness decision.
+  return isSeverityCap(f.severityCapped) ? ` (capped: ${f.severityCapped})` : "";
 }
 
 export function renderSummary(s: LensReviewSummary, maxLensAttempts: number): string {

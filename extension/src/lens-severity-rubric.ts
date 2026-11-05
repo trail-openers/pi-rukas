@@ -34,14 +34,7 @@
 import { sortFindings } from "./lens-review-format.ts";
 import type { Finding } from "./lens-review-types.ts";
 import { isLensTestPath } from "./lens-test-path.ts";
-import { capUnprovenHighFindings } from "./lens-unproven-high.ts";
-
-/** The tool whose recorded calls can carry a reproduction (#2040). A child
- * that ran its command through anything else recorded nothing the harness can
- * read, and the harness does not second-guess what a lens chose to run. */
-const REPRODUCTION_TOOL = "bash";
-/** The argument naming the command on a recorded call. */
-const COMMAND_KEY = "command";
+import { type ReproductionEvidence, capUnprovenHighFindings } from "./lens-unproven-high.ts";
 
 /**
  * The severity rubric every lens is handed. One rubric for six lenses because
@@ -126,19 +119,22 @@ export function capTestPathFindings(findings: readonly Finding[]): Finding[] {
   return findings.map(capTestPathFinding).sort(sortFindings);
 }
 
+/** Nothing was run by anybody: the evidence surface a blocked exit passes. */
+const NO_EVIDENCE: readonly unknown[] = [];
+
 /**
  * The ONE composition of the two caps, so the ordering claim — test-path first,
  * and a row the test-path cap moved is never re-capped — lives in one function
- * that both merge exits call. `toolUses` are the recorded calls of every lens
- * child in the round, concatenated: a row's evidence is matched against the
- * calls recorded for the children that produced the findings, which is the child
- * that ran the command or did not (the rule itself: lens-unproven-high.ts).
+ * that both merge exits call. `evidence` is the round's per-child record of what
+ * ran (#2040): the calls belong to the lens child that made them, and a row is
+ * matched against its OWN child's calls — never a round-wide pool, which is the
+ * shape that let one lens's command prove another lens's HIGH.
  */
 export function capFindings(
   findings: readonly Finding[],
-  toolUses: readonly unknown[] = [],
+  evidence: ReproductionEvidence = NO_EVIDENCE,
 ): Finding[] {
-  return capUnprovenHighFindings(capTestPathFindings(findings), toolUses);
+  return capUnprovenHighFindings(capTestPathFindings(findings), evidence);
 }
 
 /** Re-exported so a caller of the rubric names both caps at one module; the

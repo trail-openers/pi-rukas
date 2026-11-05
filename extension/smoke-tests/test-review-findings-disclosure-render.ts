@@ -252,6 +252,9 @@ try {
     headOf: () => head,
     review: "full",
     confirmations: { ledger, patchId: PATCH, headSha: HEAD_SHA },
+    // #2040 — no lens children in this fixture: an empty surface caps
+    // any HIGH it would carry, and this row is CRITICAL, which the cap moves.
+    evidence: new Map(),
     now,
   });
 

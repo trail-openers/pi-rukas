@@ -6,10 +6,11 @@
  * One job: fold the round's four inputs — the verdict already computed, the
  * BLOCKING findings the verdict was computed from, the per-lens rows, and the
  * delta/forced-full provenance — into the summary shape, plus the memory fields
- * and the cap-kill fields each of their own module owns. It reads no git, spawns
- * nothing and decides nothing: the verdict arrives decided, and `hasCritical` is
- * derived at the call site because the ledger write, not the summary, is what
- * needs it.
+ * and the cap-kill fields each of their own module owns.
+ *
+ * The summary for a normal round. It reads no git, spawns nothing and decides
+ * nothing: the verdict arrives decided, and `hasCritical` is derived at the call
+ * site because the ledger write, not the summary, is what needs it.
  *
  * `findings`/`bySeverity`/`totalFindings` are all derived from the SAME array
  * the verdict read (`reported` — the blocking half, never the advisory tier),
@@ -26,6 +27,9 @@ import { type LensReviewSummary, type Verdict, bySeverityCounts } from "./lens-r
 import type { Finding, LensRunResult } from "./lens-review-types.ts";
 import { aggregateLensUsage } from "./lens-review-usage.ts";
 
+/**
+ * The summary for a normal round.
+ */
 export function normalExitSummary(opts: {
   verdict: Verdict;
   reported: Finding[];

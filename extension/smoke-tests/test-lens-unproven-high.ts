@@ -1,7 +1,6 @@
 #!/usr/bin/env bun
 /**
- * #2040 — the unproven-HIGH cap, half 1 of 2: the pure pass and the assembly
- * exit.
+ * #2040 — the unproven-HIGH cap, half 1 of 3: the pure pass.
  *
  * Field evidence (several PRs on one day): a six-lens round on a ~780-line diff
  * reported 138 findings, 2 HIGH; one asked for behaviour the issue put out of
@@ -19,15 +18,15 @@
  * content: no renderer prints it.
  *
  * This half asserts the rule where the rule is written:
- *   (a) `capUnprovenHighFinding` / `capUnprovenHighFindings` over a list plus a
- *       recorded-call list, and what `extractFindings` does with the field;
- *   (b) `mergeLensFindings` — the ONE point every lens finding passes on its way
- *       to a ledger row, asserted there and not only at the pure function,
- *       because an exit that dropped the cap call must read red, not green.
+ *   (a) `capUnprovenHighFinding` / `capUnprovenHighFindings` over a per-child
+ *       evidence surface, and what `extractFindings` does with the field.
  *
+ * The merge exit — the one point every lens finding passes on its way to a
+ * ledger row — is half 1b (`test-lens-unproven-high-fanin.ts`), asserted there
+ * as well because an exit that dropped the cap call must read red, not green.
  * The child plumbing, the store round and the renderers are half 2
- * (`test-lens-unproven-high-child.ts`); the builders both halves compare against
- * are shared in `lib/unproven-high-harness.ts` so the two files cannot drift.
+ * (`test-lens-unproven-high-child.ts`). The builders all three compare against
+ * are shared in `lib/unproven-high-harness.ts` so they cannot drift.
  *
  * What is NOT capped, and each pinned: CRITICAL keeps every mechanism it had
  * (`hasCritical`, the delta veto, CRITICAL carry); CLAIM_SCAN rows are
@@ -36,30 +35,28 @@
  * cannot rescue a HIGH that cited a test file.
  */
 
-import path from "node:path";
 import { extractFindings } from "../src/lens-findings-extract.ts";
-import { mergeLensFindings } from "../src/lens-review-merge.ts";
 import {
   SEVERITY_RUBRIC,
   capUnprovenHighFinding,
   capUnprovenHighFindings,
 } from "../src/lens-severity-rubric.ts";
 import type { Finding } from "../src/lens-review-types.ts";
-import { buildLensRoster } from "../src/lens-roster.ts";
-import { HIGH, PROOF_COMMAND, bash, repro } from "./lib/unproven-high-harness.ts";
+import {
+  HIGH,
+  PROOF_COMMAND,
+  bash,
+  createAssert,
+  repro,
+  toolResult,
+} from "./lib/unproven-high-harness.ts";
 
-let exit = 0;
-function assert(cond: boolean, msg: string) {
-  if (cond) console.log(`✓ ${msg}`);
-  else {
-    console.error(`✗ ${msg}`);
-    exit = 1;
-  }
-}
+const { assert, failures } = createAssert();
 
-const REPO_ROSTER = buildLensRoster(path.resolve(import.meta.dirname, "..", "..", "skill"));
-/** The recorded-call list that makes `PROOF_COMMAND` a command the child ran. */
-const PROVEN: unknown[] = [bash(PROOF_COMMAND)];
+/** The recorded-call list that makes `PROOF_COMMAND` a command the child ran.
+ * #2040 review: a call is a REQUEST — the result is what records that it ran,
+ * so every fixture that proves a command now carries its successful result too. */
+const PROVEN: unknown[] = [bash(PROOF_COMMAND), toolResult(`call-${PROOF_COMMAND}`, false)];
 // ---------------------------------------------------------------------------
 // (a) The pure pass.
 // ---------------------------------------------------------------------------
@@ -204,6 +201,144 @@ const PROVEN: unknown[] = [bash(PROOF_COMMAND)];
     "(a) the pure pass knows only its own rule — a test-path HIGH caps as unproven here",
   );
 
+  // A REQUEST IS NOT A RUN (#2040 review, adversarial ISSUE 2). `toolUses` is
+  // what the child asked for; `toolResults` is what Pi accepted (types.ts).
+  // The pair is joined by `toolCallId`, and only a result carrying
+  // `isError === false` proves the command ran — a refused or failing bash call
+  // is the opposite of a reproduction: it is evidence the command did NOT work.
+  const refused = capUnprovenHighFinding(
+    HIGH("refused", { reproduction: repro("bun test x", "boom") }),
+    [bash("bun test x", "c1"), toolResult("c1", true)],
+  );
+  assert(
+    refused.severity === "MEDIUM",
+    "(a) a bash call whose result is an error does not prove a HIGH — a refused call is not a run",
+  );
+  assert(
+    refused.severityCapped === "unproven",
+    "(a) the error-result row carries the unproven marker",
+  );
+  const halfProved = capUnprovenHighFinding(
+    HIGH("one refused one ok", { reproduction: repro("bun test x", "boom") }),
+    [
+      bash("bun test x", "bad"),
+      toolResult("bad", true),
+      bash("bun test x", "good"),
+      toolResult("good", false),
+    ],
+  );
+  assert(
+    halfProved.severity === "HIGH",
+    "(a) one successful call of the same command is enough — a refusal does not veto its sibling",
+  );
+  const unmatchedResult = capUnprovenHighFinding(
+    HIGH("unjoined", { reproduction: repro("bun test x", "boom") }),
+    [bash("bun test x", "c1"), toolResult("other-call", false)],
+  );
+  assert(
+    unmatchedResult.severity === "MEDIUM",
+    "(a) a success whose toolCallId matches no call proves nothing about this one",
+  );
+  const noResults = capUnprovenHighFinding(
+    HIGH("no results recorded", { reproduction: repro("bun test x", "boom") }),
+    [bash("bun test x", "c1")],
+  );
+  assert(
+    noResults.severity === "HIGH",
+    "(a) a child whose session recorded no results at all is not held to a ledger it never had",
+  );
+  const allBadResults = capUnprovenHighFinding(
+    HIGH("results for other tools only", { reproduction: repro("bun test x", "boom") }),
+    [bash("bun test x", "c1"), { toolCallId: "r2", toolName: "read", isError: false, text: "" }],
+  );
+  assert(
+    allBadResults.severity === "HIGH",
+    "(a) results recorded for OTHER tools leave the ledger empty, not failed",
+  );
+  const garbageResults = capUnprovenHighFinding(
+    HIGH("garbage results", { reproduction: repro("bun test x", "boom") }),
+    [null, bash("bun test x", "c1"), "string", 7, undefined],
+  );
+  assert(
+    garbageResults.severity === "HIGH",
+    "(a) malformed entries that are no record at all never become a refusal (nor a crash)",
+  );
+  const errorAndGarbage = capUnprovenHighFinding(
+    HIGH("error among garbage", { reproduction: repro("bun test x", "boom") }),
+    [bash("bun test x", "c1"), null, "string", { toolCallId: "c1", isError: true }],
+  );
+  assert(
+    errorAndGarbage.severity === "MEDIUM",
+    "(a) a refusal is still read through a list carrying garbage entries",
+  );
+
+  // A row already carrying a cap marker is NOT skipped by this pass (#2040
+  // review, lens HIGH). A stored or carried row can arrive as HIGH while
+  // claiming some other marker, and honouring that marker is how a row keeps
+  // blocking on a cap the harness never applied to it this round. Only
+  // `"test-path"` — the cap that genuinely runs FIRST, in the same pass —
+  // short-circuits. The pair below is the SAME row except for the marker
+  // spelling, so the first cannot be passing for the reason the second fails.
+  const claimedTestPath = capUnprovenHighFinding(
+    HIGH("stored test-path", {
+      severity: "HIGH",
+      path: "src/a.ts",
+      severityCapped: "test-path",
+      reproduction: repro("bun test x", "boom"),
+    }),
+    [bash("bun test x", "c1"), toolResult("c1", false)],
+  );
+  assert(
+    claimedTestPath.severity === "HIGH",
+    "(a) a row the test-path cap moved is still HIGH here — that cap runs first and wins",
+  );
+  const claimedOther = capUnprovenHighFinding(
+    HIGH("stored marker", {
+      severity: "HIGH",
+      path: "src/a.ts",
+      severityCapped: "because-i-said-so" as never,
+      reproduction: repro("bun test x", "boom"),
+    }),
+    [bash("bun test x", "c1"), toolResult("c1", false)],
+  );
+  assert(
+    claimedOther.severity === "HIGH",
+    "(a) an unrecognized marker is not the test-path cap, so the same evidence still keeps HIGH",
+  );
+  const forgedCapUnproven = capUnprovenHighFinding(
+    HIGH("forged unproven", { severity: "HIGH", severityCapped: "unproven" }),
+    [],
+  );
+  assert(
+    forgedCapUnproven.severity === "MEDIUM",
+    "(a) a HIGH carrying a stored `unproven` marker is RE-CHECKED, so a carried row cannot stay HIGH unproven",
+  );
+  const forgedTestPathOnHigh = capUnprovenHighFinding(
+    HIGH("forged test-path", {
+      severity: "HIGH",
+      path: "src/normal.ts",
+      severityCapped: "test-path",
+    }),
+    [],
+  );
+  assert(
+    forgedTestPathOnHigh.severity === "HIGH",
+    "(a) this pass honours the test-path marker alone — the test-path rule itself belongs to the other cap",
+  );
+
+  // CLAIM_SCAN rows stay exempt whatever else is true of them: a scan row the
+  // unproven pass capped would mean the cap now moves rows the other cap
+  // deliberately exempts. The pair is the same row except for `lens`, so the
+  // exemption cannot be passing for the reason the lens row caps.
+  const scanWithMarker = capUnprovenHighFinding(
+    HIGH("scan", { lens: "CLAIM_SCAN", severityCapped: "unproven" }),
+    [],
+  );
+  assert(
+    scanWithMarker.severity === "HIGH",
+    "(a) a CLAIM_SCAN row is exempt even carrying a cap marker",
+  );
+
   // The pass sorts like its sibling: rows move between severity levels, and
   // every report reads this array's order. `aaa.ts` sorts FIRST pre-cap (path
   // breaks the tie at equal severity), so if the pass did not re-sort a row the
@@ -232,162 +367,77 @@ const PROVEN: unknown[] = [bash(PROOF_COMMAND)];
 }
 
 // ---------------------------------------------------------------------------
-// (a, continued) extractFindings carries the evidence field, and refuses a
-// malformed one rather than trusting it.
+// (a, continued) The evidence surface is PER CHILD, not round-wide (#2040
+// review, adversarial ISSUE 1). One lens running a command is not evidence for
+// a finding another lens reported: the pool is keyed by the child that made the
+// calls, so the row's `lens` picks which child's calls may prove it.
 // ---------------------------------------------------------------------------
 {
-  const call = (arguments_: Record<string, unknown>) => ({
-    type: "toolCall",
-    name: "report_finding",
-    arguments: arguments_,
-  });
-  const { findings, skipped } = extractFindings(
+  const SECURITY = "SECURITY";
+  const SIMPLICITY = "SIMPLICITY";
+  const perChild = new Map<string, unknown[]>([
+    [SECURITY, [bash("bun test security", "sa"), toolResult("sa", false)]],
+    [SIMPLICITY, [bash("bun test simplicity", "si"), toolResult("si", false)]],
+  ]);
+  const rows = [
+    HIGH("security proven", {
+      lens: SECURITY,
+      path: "src/sec.ts",
+      reproduction: repro("bun test security", "boom"),
+    }),
+    HIGH("borrowed proof", {
+      lens: SIMPLICITY,
+      path: "src/sim.ts",
+      reproduction: repro("bun test security", "boom"),
+    }),
+    HIGH("scan", { lens: "CLAIM_SCAN", path: "src/scan.ts" }),
+  ];
+  const capped = capUnprovenHighFindings(rows, perChild);
+  const byPath = new Map(capped.map((x) => [x.path, x]));
+  assert(
+    byPath.get("src/sec.ts")?.severity === "HIGH",
+    "(a) a HIGH is proven by its OWN child's call",
+  );
+  assert(
+    byPath.get("src/sim.ts")?.severity === "MEDIUM",
+    "(a) a HIGH whose command only ANOTHER lens's child ran is capped",
+  );
+  assert(
+    byPath.get("src/sim.ts")?.severityCapped === "unproven",
+    "(a) the borrowed-proof row says the harness moved it",
+  );
+  assert(
+    byPath.get("src/scan.ts")?.severity === "HIGH",
+    "(a) a CLAIM_SCAN row stays exempt from the per-child match",
+  );
+  // A row from a child the round recorded no calls for is judged against an
+  // empty list — which caps, exactly as a child that ran nothing.
+  const noEntry = capUnprovenHighFindings(
     [
-      call({
-        severity: "HIGH",
-        path: "src/a.ts",
-        line: 2,
-        title: "with evidence",
-        reproduction: { command: "bun test x", observed: "1 failure" },
+      HIGH("unknown lens", {
+        lens: "PERFORMANCE",
+        path: "src/p.ts",
+        reproduction: repro("bun test security", "boom"),
       }),
-      call({
-        severity: "HIGH",
-        path: "src/b.ts",
-        title: "malformed evidence",
-        reproduction: "bun test x",
-      }),
-      call({
-        severity: "HIGH",
-        path: "src/c.ts",
-        title: "half evidence",
-        reproduction: { command: "bun test x" },
-      }),
-      call({ severity: "HIGH", path: "src/d.ts", title: "no evidence" }),
     ],
-    "SECURITY",
+    perChild,
   );
-  assert(skipped === 0, "(a) a malformed reproduction does not skip the finding itself");
-  assert(findings.length === 4, "(a) every well-formed call is still one finding");
   assert(
-    findings[0]?.reproduction?.command === "bun test x" &&
-      findings[0]?.reproduction?.observed === "1 failure",
-    "(a) a well-formed reproduction survives extraction",
+    noEntry[0]?.severity === "MEDIUM",
+    "(a) a row whose lens recorded no calls at all has no evidence, whoever ran what",
   );
-  assert(findings[1]?.reproduction === undefined, "(a) a string reproduction is dropped");
+  // A list (the shape the blocked exit and every pre-#2040 caller passes) is
+  // matched against EVERY row: it is one undifferentiated evidence pool, and
+  // reading it per child would invent an attribution the caller never made.
+  const flat = [bash("bun test security", "sa"), toolResult("sa", false)];
+  const flatCapped = capUnprovenHighFindings(rows, flat);
   assert(
-    findings[2]?.reproduction === undefined,
-    "(a) a reproduction missing `observed` is dropped",
+    flatCapped.every((x) => x.severity === "HIGH"),
+    "(a) a plain call list still proves every HIGH it holds the command for",
   );
-  assert(findings[3]?.reproduction === undefined, "(a) a call with no reproduction has none");
 }
 
 // ---------------------------------------------------------------------------
-// (a, continued) The rubric tells the child the rule before it calls the tool.
-// ---------------------------------------------------------------------------
-{
-  for (const phrase of [
-    "reproduction",
-    "command",
-    "observed",
-    "caps the finding to MEDIUM",
-    "A HIGH must name a command you ran",
-  ]) {
-    assert(
-      SEVERITY_RUBRIC.includes(phrase),
-      `(a) the rubric names «${phrase}» so the child knows the rule before it calls`,
-    );
-  }
-}
 
-// ---------------------------------------------------------------------------
-// (b) The merge exit — the single point every lens finding passes through.
-// ---------------------------------------------------------------------------
-{
-  const calls = [bash("bun test x")];
-  const merged = mergeLensFindings(
-    [
-      HIGH("proven", { path: "src/proven.ts", reproduction: repro("bun test x", "boom") }),
-      HIGH("unproven", { path: "src/unproven.ts", reproduction: repro("bun test y", "boom") }),
-      HIGH("bare", { path: "src/bare.ts" }),
-      HIGH("critical", { path: "src/crit.ts", severity: "CRITICAL" }),
-      HIGH("scan", { path: "src/scan.ts", lens: "CLAIM_SCAN" }),
-      HIGH("test path", { path: "tests/x.py", reproduction: repro("bun test x", "boom") }),
-    ],
-    REPO_ROSTER,
-    calls,
-  );
-  const byPath = new Map(merged.map((x) => [x.path, x]));
-  assert(merged.length === 6, "(b) the merge kept every finding");
-  assert(byPath.get("src/proven.ts")?.severity === "HIGH", "(b) the proven HIGH stays HIGH");
-  assert(
-    !("severityCapped" in (byPath.get("src/proven.ts") ?? {})),
-    "(b) the proven row carries no marker",
-  );
-  assert(byPath.get("src/unproven.ts")?.severity === "MEDIUM", "(b) the unproven HIGH is capped");
-  assert(
-    byPath.get("src/unproven.ts")?.severityCapped === "unproven",
-    "(b) the capped row says the harness moved it",
-  );
-  assert(byPath.get("src/bare.ts")?.severity === "MEDIUM", "(b) a HIGH with no evidence is capped");
-  assert(
-    byPath.get("src/crit.ts")?.severity === "CRITICAL",
-    "(b) the merge leaves a CRITICAL alone",
-  );
-  assert(byPath.get("src/scan.ts")?.severity === "HIGH", "(b) the merge exempts CLAIM_SCAN");
-  assert(
-    byPath.get("tests/x.py")?.severityCapped === "test-path",
-    "(b) the test-path cap wins over the reproduction at the merge exit",
-  );
-
-  // The surviving row of a dedup collision decides. CLAIM_SCAN outranks every
-  // lens (its precedence is -∞), so the scan row survives and its exemption is
-  // what the round is judged by — a colliding lens row's evidence never comes
-  // back, because the row it rode on is not in the deduped list.
-  const collision = mergeLensFindings(
-    [
-      HIGH("same", {
-        path: "src/same.ts",
-        line: 1,
-        lens: "SECURITY",
-        reproduction: repro("bun test x", "boom"),
-      }),
-      HIGH("same", { path: "src/same.ts", line: 1, lens: "CLAIM_SCAN" }),
-    ],
-    REPO_ROSTER,
-    calls,
-  );
-  assert(collision.length === 1, "(b) the collision deduped to one row");
-  assert(
-    collision[0]?.lens === "CLAIM_SCAN" && collision[0]?.severity === "HIGH",
-    "(b) the surviving CLAIM_SCAN row is exempt, so the collision keeps HIGH",
-  );
-  const bothLens = mergeLensFindings(
-    [
-      HIGH("same", { path: "src/same.ts", line: 1, lens: "SECURITY" }),
-      HIGH("other", { path: "src/other.ts", line: 1, lens: "SIMPLICITY" }),
-    ],
-    REPO_ROSTER,
-    calls,
-  );
-  assert(
-    bothLens.length === 2 &&
-      bothLens.every((f) => f.severity === "MEDIUM" && f.severityCapped === "unproven"),
-    "(b) two unproven lens rows both cap (no CLAIM_SCAN to exempt them)",
-  );
-
-  // Absent and empty recorded-call lists both mean nothing was proven.
-  assert(
-    mergeLensFindings([HIGH("bare", { path: "src/bare.ts" })], REPO_ROSTER).every(
-      (f) => f.severity === "MEDIUM",
-    ),
-    "(b) no recorded-call list at all → every HIGH caps",
-  );
-  assert(
-    mergeLensFindings([HIGH("bare", { path: "src/bare.ts" })], REPO_ROSTER, []).every(
-      (f) => f.severity === "MEDIUM",
-    ),
-    "(b) an empty recorded-call list caps too",
-  );
-}
-
-console.log(`\nexit 0`, exit);
+console.log(`\nexit 0`, failures());
+process.exit(failures());

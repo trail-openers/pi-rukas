@@ -53,6 +53,13 @@ export type FindingSource = LensName | "CLAIM_SCAN";
  */
 export type SeverityCap = "test-path" | "unproven";
 
+/** True for the harness's own closed set of cap markers. One predicate for the
+ * renderers and the file validator: a marker is printed or stored only when this
+ * says so, so no surface can echo free text into the `(capped: …)` slot. */
+export function isSeverityCap(v: unknown): v is SeverityCap {
+  return v === "test-path" || v === "unproven";
+}
+
 export interface Finding extends RawFinding {
   severity: Severity;
   lens: FindingSource;
@@ -77,6 +84,14 @@ export interface Finding extends RawFinding {
  */
 export interface CarriedFinding extends Finding {
   carried: true;
+  /**
+   * The no-line marker the STORED row carried (#1469). A file-level claim is
+   * still one when it comes back, and the renderer's `:?` depends on the row
+   * saying so — a carried row that lost it renders as a claim about code it
+   * never cites. Required so the store's carry site cannot forget it silently;
+   * `undefined` is the honest value for a row that cited a line.
+   */
+  noLine?: boolean;
 }
 
 /** True when `f` is a row carried from an earlier round (see `CarriedFinding`). */
@@ -131,6 +146,15 @@ export interface LensRunResult {
    * looked — see `lensProducedEvidence`.
    */
   summary?: string;
+  /**
+   * #1652 — the results this child's session recorded for its calls, keyed by
+   * `toolCallId`, carried alongside `toolUses` for the same reason (#2040):
+   * `toolUses` is what the child ASKED for and `toolResults` is what Pi
+   * accepted, so a matcher that reads only the calls counts refusals as runs.
+   * Absent when the replay carried none, which the cap reads as "no ledger", not
+   * as "everything failed".
+   */
+  toolResults?: DispatchResult["toolResults"];
   /**
    * #534 — the child's tokens/cost. Previously discarded (the per-lens
    * `result.usage` was dropped here); carried so the driver can fold the

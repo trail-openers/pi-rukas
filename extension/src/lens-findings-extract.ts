@@ -5,7 +5,7 @@
  * `extractFindings` is now imported from here — its only definition.
  */
 import type { Severity } from "./lens-review-format.ts";
-import type { Finding, SeverityCap } from "./lens-review-types.ts";
+import type { Finding } from "./lens-review-types.ts";
 import { readReproduction } from "./review-findings-reproduction.ts";
 
 /**
@@ -65,20 +65,15 @@ export function extractFindings(
       ...(readReproduction(i.reproduction)
         ? { reproduction: readReproduction(i.reproduction) }
         : {}),
-      // The cap provenance is the row's own history: a row extracted straight
-      // from a tool call was never moved by a cap, and the merge-path caps are
-      // the only writers of the marker. Read it back only when the call carried
-      // one (a row replayed from a stored blob), so an absent field never
-      // becomes an own `undefined`.
-      ...(readCap(i.severityCapped) ? { severityCapped: readCap(i.severityCapped) } : {}),
+      // The cap provenance is NOT read from the call at all (#2040 review). It
+      // is the harness's own record of a cap it applied, and the merge-path caps
+      // are its only writers; a child that set `severityCapped: "test-path"` on
+      // its own HIGH would otherwise buy the one marker that short-circuits the
+      // unproven check. A row replayed from a stored blob carries the marker on
+      // the `Finding`, never back through this input path.
     });
   }
   return { findings: out, skipped };
-}
-
-/** The cap marker, or nothing: an unknown spelling is no marker at all. */
-function readCap(v: unknown): SeverityCap | undefined {
-  return v === "test-path" || v === "unproven" ? v : undefined;
 }
 
 function normalisePath(p: string): string {

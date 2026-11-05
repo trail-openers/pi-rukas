@@ -435,6 +435,7 @@ export async function runLensChild(opts: {
       // reproduction is checked against THIS child, and a row that keeps none
       // reads as a child that ran nothing.
       toolUses: result?.toolUses ?? [],
+      ...(result?.toolResults ? { toolResults: result.toolResults } : {}),
       ...(hasEvidence && result ? { model: result.model } : {}),
       ...(hasEvidence && result?.transcriptPath ? { transcriptPath: result.transcriptPath } : {}),
       ...(result?.killCause ? { killCause: result.killCause } : {}),
@@ -483,5 +484,6 @@ export async function runLensChild(opts: {
     // #2040 — see the failed-branch site above: the child's own recorded calls
     // are the evidence the unproven-HIGH cap reads, kept per child.
     toolUses: result.toolUses,
+    ...(result.toolResults ? { toolResults: result.toolResults } : {}),
   };
 }

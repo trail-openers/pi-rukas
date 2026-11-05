@@ -35,7 +35,7 @@
  */
 
 import { neutraliseMarkdownField } from "./comment-evidence.ts";
-import { type Finding, isCarried } from "./lens-review-types.ts";
+import { type Finding, isCarried, isSeverityCap } from "./lens-review-types.ts";
 import { type ReviewSeverity, isBlockingSeverity } from "./review-threshold.ts";
 
 /** Worst first. Anything unrecognised sorts last but is still shown. */
@@ -138,13 +138,10 @@ function renderOne(f: StoredFinding): string {
   const lens = neutraliseMarkdownField(f.lens ?? "UNKNOWN");
   const title = neutraliseMarkdownField(f.title ?? "(no title)");
   // #2040 — the cap marker beside the severity. The value is the harness's own
-  // closed enum, so it is checked before it is printed: a blob is agent-writable
-  // content and an unrecognised spelling is no marker at all (the same rule the
-  // findings file applies in `rowProblem`).
-  const capped =
-    f.severityCapped === "test-path" || f.severityCapped === "unproven"
-      ? ` (capped: ${f.severityCapped})`
-      : "";
+  // closed enum, so it is checked before it is printed through the ONE predicate
+  // the renderers and the file validator share: a blob is agent-writable content
+  // and an unrecognised spelling is no marker at all.
+  const capped = isSeverityCap(f.severityCapped) ? ` (capped: ${f.severityCapped})` : "";
   return `- **${sev}${capped}** \`${lens}\` — \`${where}\` — ${title}`;
 }
 

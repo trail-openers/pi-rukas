@@ -284,6 +284,8 @@ const reReportWithConfirmation = (
       patchId,
       headSha,
     },
+    // #2040 — no lens children in this fixture: see `runRound`.
+    evidence: new Map(),
     now: NOW,
   });
 

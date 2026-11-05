@@ -17,6 +17,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import type { Severity } from "./lens-review-format.ts";
 import type { FindingReproduction, SeverityCap } from "./lens-review-types.ts";
+import { isSeverityCap } from "./lens-review-types.ts";
 import { hashText } from "./review-findings-match.ts";
 import { reproductionProblem } from "./review-findings-reproduction.ts";
 import { trace } from "./trace.ts";
@@ -296,11 +297,8 @@ function rowProblem(v: unknown): string | undefined {
   // The cap provenance is a closed enum or nothing: a row that claims the
   // harness lowered its severity with some other spelling is a row somebody
   // edited, and the only honest reading of an unreadable marker is no marker.
-  if (
-    r.severityCapped !== undefined &&
-    r.severityCapped !== "test-path" &&
-    r.severityCapped !== "unproven"
-  ) {
+  // One predicate with the renderers that print it (lens-review-types.ts).
+  if (r.severityCapped !== undefined && !isSeverityCap(r.severityCapped)) {
     return `severityCapped "${String(r.severityCapped)}" is invalid`;
   }
   // #2040 — the same rule for the evidence a row carries: a `reproduction` that

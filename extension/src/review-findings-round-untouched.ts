@@ -13,6 +13,8 @@
  */
 
 import type { CarriedFinding, Finding } from "./lens-review-types.ts";
+import { capUnprovenHighFinding } from "./lens-unproven-high.ts";
+import type { ReproductionEvidence } from "./lens-unproven-high.ts";
 import type { ChangedRanges } from "./review-diff.ts";
 import { type ReviewKind, rowFate } from "./review-findings-fate.ts";
 import type { StoredFinding } from "./review-findings-file.ts";
@@ -32,6 +34,16 @@ export interface UntouchedRowSinks {
   confirmationLapses: ConfirmationLapse[];
   /** The round's confirmation lookup for one row; undefined when the round may not act on any. */
   confirmedFor: (row: StoredFinding) => string | undefined;
+  /**
+   * #2040 review (lens HIGH) — the round's per-child record of what ran, applied
+   * to the rows it CARRIES. A carried row is judged by this round, not by the
+   * round that filed it: a HIGH whose claimed reproduction no child of THIS
+   * round ran comes back capped, and the cap is written onto the row as well as
+   * reported, so the next round is not asked to re-litigate a claim the store
+   * already holds at HIGH. Built by the caller from the lens children it owns —
+   * this module reads no child.
+   */
+  evidence: ReproductionEvidence;
 }
 
 /**
@@ -55,6 +67,76 @@ export function findingCapFields(
   };
 }
 
+/**
+ * The carried row this round reports, and the row it writes back.
+ *
+ * Built from the stored row first, then put through the unproven-HIGH cap with
+ * THIS round's per-child evidence: a row is judged by the calls made now, not by
+ * the ones made in the round that filed it. The cap returns the same object when
+ * it moves nothing, so `mine[slot]` is written only for a row the cap actually
+ * moved — which is what makes the row's severity a fact of THIS round rather
+ * than of its history: a stored HIGH nobody ran a reproduction for must not be
+ * HIGH for the round after next either.
+ */
+function carriedRow(
+  r: StoredFinding,
+  evidence: ReproductionEvidence,
+  mine: StoredFinding[],
+  slot: number,
+): CarriedFinding {
+  const judged = capUnprovenHighFinding(carriedFields(r), evidence);
+  if (judged.severity !== r.severity) {
+    // Same object, severity and marker swapped — no other field of the stored row
+    // is touched (stamps, hashes, acceptance and provenance all stand).
+    mine[slot] = {
+      ...r,
+      severity: judged.severity,
+      ...(judged.severityCapped === undefined
+        ? { severityCapped: undefined }
+        : { severityCapped: judged.severityCapped }),
+    };
+  }
+  return judged as CarriedFinding;
+}
+
+/**
+ * A stored row read as the `Finding` shape a carried row is reported in.
+ *
+ * The cast is the store's side of a deliberate split: `Finding`'s `lens` is
+ * `FindingSource` (a lens or `CLAIM_SCAN`), while a stored row's `lens` is the
+ * unbounded string its reader keeps — the roster is data-driven (#873), so a
+ * row filed by a lens this build's roster does not name still comes back and
+ * still must be reported. `carriedFields` is the ONLY place the shape is built
+ * (its return type is `CarriedFinding`, and the sole call site passes the result
+ * to the cap and back), so the widening is checked here once rather than at
+ * every consumer. The fields themselves are read straight off the row.
+ */
+function carriedFields(r: StoredFinding): CarriedFinding {
+  return {
+    carried: true,
+    lens: r.lens,
+    severity: r.severity,
+    // The cap provenance is kept by the row rather than recomputed from the
+    // path: a row the cap lowered in an earlier round must still read as a
+    // capped row when it comes back, or it arrives looking like a finding the
+    // lens itself called medium.
+    ...(r.severityCapped === undefined ? {} : { severityCapped: r.severityCapped }),
+    // #2040 — and the evidence the row stored, so a carried HIGH re-enters a
+    // later round judgeable rather than blankly unproven.
+    ...(r.reproduction === undefined ? {} : { reproduction: r.reproduction }),
+    path: r.path,
+    line: r.line,
+    // A carried row keeps the marker it stored: it is still a file-level claim,
+    // and the renderer's `:?` depends on the row saying so.
+    ...(r.noLine === undefined ? {} : { noLine: r.noLine }),
+    title: r.title,
+    // A carried row is re-reported to the operator verbatim from the row: the
+    // stored description rides along so it never renders empty (#1130).
+    ...(r.description === undefined ? {} : { description: r.description }),
+    ...(r.suggestion === undefined ? {} : { suggestion: r.suggestion }),
+  } as CarriedFinding;
+}
+
 export function applyUntouchedRowFate(opts: UntouchedRowSinks): void {
   const {
     mine,
@@ -66,6 +148,7 @@ export function applyUntouchedRowFate(opts: UntouchedRowSinks): void {
     resolved,
     confirmationLapses,
     confirmedFor,
+    evidence,
   } = opts;
   mine.forEach((r, i) => {
     if (r.status === "accepted") {
@@ -150,29 +233,7 @@ export function applyUntouchedRowFate(opts: UntouchedRowSinks): void {
       // on (the string the row carried while it stood), so the disclosure is a
       // statement about a real review and not "something changed". A row nobody
       // ever retired carries no field and is not listed.
-      carried.push({
-        carried: true,
-        lens: r.lens,
-        severity: r.severity,
-        // The cap provenance is kept by the row rather than recomputed from the
-        // path: a row the cap lowered in an earlier round must still read as a
-        // capped row when it comes back, or it arrives looking like a finding the
-        // lens itself called medium.
-        ...(r.severityCapped === undefined ? {} : { severityCapped: r.severityCapped }),
-        // #2040 — and the evidence the row stored, so a carried HIGH re-enters a
-        // later round judgeable rather than blankly unproven.
-        ...(r.reproduction === undefined ? {} : { reproduction: r.reproduction }),
-        path: r.path,
-        line: r.line,
-        // A carried row keeps the marker it stored: it is still a file-level
-        // claim, and the renderer's `:?` depends on the row saying so.
-        ...(r.noLine === undefined ? {} : { noLine: r.noLine }),
-        title: r.title,
-        // A carried row is re-reported to the operator verbatim from the row: the
-        // stored description rides along so it never renders empty (#1130).
-        ...(r.description === undefined ? {} : { description: r.description }),
-        ...(r.suggestion === undefined ? {} : { suggestion: r.suggestion }),
-      });
+      carried.push(carriedRow(r, evidence, mine, i));
       // #1934 — the AC4 lapse notice for an UNTOUCHED row is produced by the
       // `resolved` pass earlier in the round (review-findings-round.ts:233-260),
       // and this `else` arm can never produce one. Probed, not reasoned: driving

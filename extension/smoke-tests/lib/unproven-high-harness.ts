@@ -1,14 +1,16 @@
 /**
- * unproven-high-harness — the shared scaffolding for the two halves of the
+ * unproven-high-harness — the shared scaffolding for the three halves of the
  * #2040 unproven-HIGH cap suite (AGENTS.md §12's 500-line gate split the cases
- * into `test-lens-unproven-high.ts` for the pure pass and the merge exit, and
+ * into `test-lens-unproven-high.ts` for the pure pass,
+ * `test-lens-unproven-high-fanin.ts` for the merge exit, and
  * `test-lens-unproven-high-child.ts` for the child plumbing, the store round and
  * the renderers).
  *
  * What lives here is the part a split must not duplicate: the row and tool-call
- * builders the two files compare against must be the SAME definitions, or the
- * pure half and the plumbing half would each be pinning its own idea of a
- * reproduction and a `bash` call.
+ * builders the files compare against must be the SAME definitions, or each half
+ * would be pinning its own idea of a reproduction and a `bash` call. Same for
+ * `createAssert`: three files counting passes and failures must count them the
+ * same way, or one can report green while red.
  *
  * `makeChildHarness` installs the `spawn.ts` mock and builds the skills dir, so
  * a child-level file gets `runLensChild` offline in the `test-lens-kill-child.ts`
@@ -41,12 +43,23 @@ export const HIGH = (title: string, over: Partial<Finding> = {}): Finding => ({
 /** The evidence claim a HIGH makes. */
 export const repro = (command: string, observed: string) => ({ command, observed });
 
-/** One recorded `bash` call, in the shape the child's session records it. */
-export const bash = (command: string) => ({
+/** One recorded `bash` call, in the shape the child's session records it.
+ * `id` names the call so a `toolResult` can be joined to it (#2040 review): a
+ * call is a request, and only its result says whether it ran. */
+export const bash = (command: string, id = `call-${command}`) => ({
   type: "toolCall",
   name: "bash",
+  id,
   arguments: { command },
 });
+
+/** One recorded tool result, in the shape `spawnSpecialist` returns them: the
+ * child asked for `toolCallId` and Pi accepted (`isError: false`) or refused it. */
+export const toolResult = (
+  toolCallId: string,
+  isError: boolean,
+  text = isError ? "command failed" : "ok",
+) => ({ toolCallId, toolName: "bash", isError, text });
 
 /** One `report_finding` tool call, `arguments` given verbatim. */
 export const findingCall = (arguments_: Record<string, unknown>) => ({
@@ -74,6 +87,37 @@ export const provenCall = (
 /** The recorded tool calls of a `LensRunResult`, as the merge exit reads them. */
 export function recordedCalls(r: unknown): unknown[] {
   return (r as { toolUses?: unknown[] }).toolUses ?? [];
+}
+
+/** The recorded tool RESULTS of a `LensRunResult`, same seam. */
+export function recordedResults(r: unknown): unknown[] {
+  return (r as { toolResults?: unknown[] }).toolResults ?? [];
+}
+
+/**
+ * The pass/fail printer a suite file reports with, plus the tally it exits on.
+ *
+ * Shared for the same reason the builders are: three files now assert against
+ * these helpers, and a counter that differs between them (one that swallowed a
+ * failure, or one that printed its own `exit` line differently) is a suite that
+ * reports green while red.
+ */
+export function createAssert(): {
+  /** Failures so far — what the file's last line exits with. */
+  failures: () => number;
+  assert: (cond: boolean, msg: string) => void;
+} {
+  let failed = 0;
+  return {
+    failures: () => failed,
+    assert: (cond, msg) => {
+      if (cond) console.log(`✓ ${msg}`);
+      else {
+        console.error(`✗ ${msg}`);
+        failed++;
+      }
+    },
+  };
 }
 
 /**

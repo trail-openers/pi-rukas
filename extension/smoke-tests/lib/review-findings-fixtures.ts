@@ -108,6 +108,18 @@ export function setupReviewFixture(opts: {
    * cap refuses; one that records the call proves it accepts.
    */
   toolUses?: () => unknown[];
+  /**
+   * #2040 review — the recorded calls of the OTHER lenses (every lens but the
+   * reporting one). The cap is per child, so a fixture must be able to say
+   * "lens A reported a HIGH whose command only lens B ran" and have the
+   * round cap it; the parent pools nothing, so this is the shape that proves it.
+   */
+  toolUsesOther?: () => unknown[];
+  /** The tool RESULTS of the reporting lens (#2040 review): what Pi accepted.
+   * A call with no successful result is a request, not a run. */
+  toolResults?: () => unknown[];
+  /** The tool RESULTS of the other lenses. */
+  toolResultsOther?: () => unknown[];
   /** When set true, all lenses but the first are blocked (an incomplete round). */
   blockNonFirst?: () => boolean;
   /** Install the six lens skills and set PI_ENSEMBLE_SKILLS_DIR (default true). */
@@ -184,8 +196,23 @@ export function setupReviewFixture(opts: {
       summary: blocked ? "" : "reviewed the diff",
       findings: reported.map((f) => ({ lens: args.lens.name, ...f })),
       // #2040 — the child's recorded tool calls travel on the result, which is
-      // what the parent reads for the unproven-HIGH matcher.
-      toolUses: first && !blocked ? (opts.toolUses?.() ?? []) : [],
+      // what the parent reads for the unproven-HIGH matcher. The non-reporting
+      // lenses carry their own list so a round can show one child running what
+      // another child claimed.
+      toolUses: blocked
+        ? []
+        : first
+          ? (opts.toolUses?.() ?? [])
+          : (opts.toolUsesOther?.() ?? []),
+      ...(opts.toolResults || opts.toolResultsOther
+        ? {
+            toolResults: blocked
+              ? []
+              : first
+                ? (opts.toolResults?.() ?? [])
+                : (opts.toolResultsOther?.() ?? []),
+          }
+        : {}),
     } as unknown as LensRunResult;
   };
 
