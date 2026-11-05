@@ -1110,7 +1110,7 @@ cd ~/.config/opencode/pi-rukas && ./install.sh
 
 Verify post-rebuild: `pi-rukas shell` → `which parallel-cli` returns a path; `parallel-cli --version` prints; `parallel-cli search "test"` returns structured results (requires `PARALLEL_API_KEY` exported on host — auto-forwarded by the wrapper).
 
-If you don't have a parallel.ai account, @explore degrades to telling you to set up one. There's no other web-search path baked into the role — webfetch / Context7 are documented as unreliable for real-time data.
+If you don't have a parallel.ai account, @explore degrades to telling you to set up one. There's no other web-search path baked into the role — webfetch / Context7 are documented as unreliable for real-time data. The `/research` wigolo fallback is no web fallback either: the image does not ship `wigolo`, so a fallback angle reports "wigolo not installed" and the angle is recorded as failed. On a host that installed the `wigolo` CLI itself, the fallback works and `WIGOLO_LLM_API_KEY` chooses a synthesized over a raw brief.
 
 PR: [#218](https://github.com/trail-openers/pi-rukas/pull/218)
 

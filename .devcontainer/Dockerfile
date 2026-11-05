@@ -32,16 +32,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 python3-pip \
       sudo \
       ripgrep fd-find \
-      docker.io \
+      docker-compose-v2 \
       util-linux \
       tini \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/bin/fdfind /usr/local/bin/fd
-# docker.io: CLI only (we never spawn the daemon inside the container — the
+# Docker: CLI only (we never spawn the daemon inside the container — the
 # wrapper bind-mounts the HOST docker socket by default,
 # unless opted out with PI_ENSEMBLE_NO_DOCKER_SOCKET=1, and
 # our CLI calls become sibling containers on the host daemon). Enables
 # docker-based MCP servers in .pi/mcp.json (e.g. `docker run -i some-db-mcp`).
+# Ubuntu ships no CLI-only docker package: `docker.io` is the engine and
+# hard-depends on containerd, iptables and dockerd (~0.3 GB of binaries no
+# container here ever runs). So the `docker` binary is extracted from the
+# docker.io deb below — which also means the `docker.io` package name must
+# not reappear in an apt list (test-dockerfile-pins.ts gates it) — and
+# `docker compose` comes from Ubuntu's `docker-compose-v2` cli-plugin.
 # util-linux: brings `setpriv` for the entrypoint's root → vscode drop.
 # ripgrep + fd-find: Pi's built-in rg/search tooling looks for `rg` and `fd`
 # on $PATH and self-downloads them into ~/.pi/agent/bin/ on first run if
@@ -102,6 +108,9 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
       | sh -s -- -y --no-modify-path --profile minimal --default-toolchain stable \
     && rustup component add rustfmt clippy \
     && chmod -R a+rwX "$CARGO_HOME" "$RUSTUP_HOME"
+# Any later `cargo install` repopulates the registry cache; every purge of it
+# in this image lives in the RUN that creates it (a later `rm` layer leaves
+# the bytes in the earlier layer and shrinks nothing).
 
 # -----------------------------------------------------------------------------
 # 5. CLI prerequisites (system-wide where possible)
@@ -119,19 +128,25 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
 # (operator decision 2026-10-02; supply-chain check done); the override
 # lived in extension/bunfig.toml minimumReleaseAgeExcludes and was removed
 # in #963 once the embargo lifted.
-RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.0.0
+RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.0.0 \
+    && npm cache clean --force \
+    && rm -rf /root/.npm
 
 # ctx7 — current library docs
-RUN npm install -g --ignore-scripts ctx7 || true
+RUN { npm install -g --ignore-scripts ctx7 || true; } \
+    && npm cache clean --force \
+    && rm -rf /root/.npm
 
 # vipune — cross-session memory
 RUN cargo install vipune \
-    && install -m 0755 /usr/local/cargo/bin/vipune /usr/local/bin/vipune
+    && install -m 0755 /usr/local/cargo/bin/vipune /usr/local/bin/vipune \
+    && rm -rf /usr/local/cargo/registry
 
 # oo (double-o) — context-efficient wrapper for chatty CLIs
 # Pinned to the install floor 0.5.0 (install-preflight.sh MIN_OO_VERSION, #715).
 RUN cargo install double-o --version 0.5.0 \
-    && install -m 0755 /usr/local/cargo/bin/oo /usr/local/bin/oo
+    && install -m 0755 /usr/local/cargo/bin/oo /usr/local/bin/oo \
+    && rm -rf /usr/local/cargo/registry
 
 # codebase-memory-mcp — knowledge-graph code indexer (ships as a static binary)
 # The upstream installer auto-detects arch and drops to ~/.local/bin/. We
@@ -139,9 +154,10 @@ RUN cargo install double-o --version 0.5.0 \
 RUN curl -fsSL https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/main/install.sh \
       | bash || true \
     && if [ -x /root/.local/bin/codebase-memory-mcp ]; then \
-         install -m 0755 /root/.local/bin/codebase-memory-mcp /usr/local/bin/codebase-memory-mcp; \
+         install -m 0755 /root/.local/bin/codebase-memory-mcp /usr/local/bin/codebase-memory-mcp \
+         && rm -f /root/.local/bin/codebase-memory-mcp; \
        fi \
-    && rm -rf /root/.local/share
+    && rm -rf /root/.local/share /root/.local/bin /root/.cache/ort.pyke.io
 
 # parallel-cli — web research tool for the @explore role. Subcommands:
 # search / fetch / research run|poll. Auth via PARALLEL_API_KEY env (auto-
@@ -160,22 +176,24 @@ RUN curl -fsSL https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/ma
 # postinstall hook runs and pulls the binary from
 # github.com/parallel-web/parallel-web-tools/releases.
 # `|| true` is preserved so a transient GitHub outage doesn't break the build.
-RUN npm install -g parallel-web-cli || true
+RUN { npm install -g parallel-web-cli || true; } \
+    && npm cache clean --force \
+    && rm -rf /root/.npm
 
-# wigolo — keyless local web-intelligence CLI; the /research fallback when
-# parallel-cli fails with credit-exhausted / auth-missing / network-failed
-# (#773). One-shot tools used here: search / fetch / research run.
-# Unlike parallel-web-cli (whose postinstall downloads a platform binary),
-# wigolo@0.2.1 ships NO install scripts — only build/test/lint dev scripts —
-# so --ignore-scripts is safe and keeps the supply-chain posture of the rest
-# of this image. Node >= 20 (the image carries Node 22). Its ~1.5 GB browser
-# engine downloads lazily on first use, so the image stays small. Soft-fail
-# like parallel-cli above: an upstream npm hiccup must not break the build,
-# and the fallback is optional by definition.
-# `|| true` preserved for the same reason as the parallel-cli line.
-# The ~1.5 GB engine is fetched lazily at runtime by wigolo itself, unpinned and without a checksum — accepted because wigolo is an optional fallback that runs only after a Parallel failure; revisit if wigolo becomes primary.
-RUN npm install -g --ignore-scripts wigolo@0.2.1 || true
-
+# -----------------------------------------------------------------------------
+# 5b. Docker CLI (no engine)
+#     Above the repo COPY because it reads no checkout file, and in its own
+#     RUN because apt never installs the deb — it only downloads it, so the
+#     engine's binaries never reach a layer of this image.
+# -----------------------------------------------------------------------------
+RUN set -e; tmp="$(mktemp -d)"; cd "$tmp" \
+    && apt-get update \
+    && apt-get download docker.io \
+    && dpkg-deb -x docker.io_*.deb ./d \
+    && install -m 0755 ./d/usr/bin/docker /usr/local/bin/docker \
+    && cd / && rm -rf "$tmp" /var/lib/apt/lists/* \
+    && command -v docker && docker --version && docker compose version \
+    && ! test -e /usr/bin/dockerd && ! test -e /usr/bin/containerd
 # -----------------------------------------------------------------------------
 # 6. Pre-fetch vipune's embedding model so it doesn't need network at first run
 #    Sits ABOVE the repo COPY on purpose: nothing here reads the checkout, so
@@ -193,7 +211,8 @@ RUN npm install -g --ignore-scripts wigolo@0.2.1 || true
 # pi-ensemble-cache volumes don't need to `pi-rukas prune` after the
 # upgrade — first launch of the new image automatically populates.
 USER root
-RUN pip3 install --no-cache-dir --break-system-packages "huggingface_hub>=0.20"
+RUN pip3 install --no-cache-dir --break-system-packages "huggingface_hub>=0.20" \
+    && rm -rf /root/.cache/pip
 USER vscode
 RUN huggingface-cli download \
       BAAI/bge-small-en-v1.5 \

@@ -42,8 +42,6 @@ const EXCEPTIONS: Record<string, string> = {
   // npm installs `parallel-web-cli`; the binary is `parallel-cli` (REQUIRED_CLIS).
   "parallel-web-cli":
     "npm package name — installs the `parallel-cli` binary already in REQUIRED_CLIS",
-  // #773: wigolo — optional /research fallback (Dockerfile + docs only, not a prerequisite).
-  "wigolo@0.2.1": "optional /research fallback (#773): baked into the image, documented in docs/configuration.md; not a required prerequisite",
 };
 
 let exit = 0;
