@@ -53,8 +53,8 @@
  * about a name the child creates elsewhere under the operator's home (`~/.pi`,
  * `~/.cache`, a dotfile of its own). Listing is disclosure, never deletion: the
  * operator's own entries are not this guard's to remove, and a line naming a
- * leftover costs one read to act on. `home-watch.ts` owns what may be named, and
- * `fs-clock.ts` why the window's bounds are read from the filesystem.
+ * leftover costs one read to act on. `home-watch.ts` owns the name-set difference
+ * and what may be named.
  *
  * What the guard cannot catch: a write that lands after the child exits (a
  * detached grandchild), since one snapshot set belongs to one child. Group-kill
@@ -66,14 +66,7 @@ import type { Stats } from "node:fs";
 import { constants, type FileHandle, access, lstat, open, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createFsClock } from "./fs-clock.ts";
-import {
-  type HomeBaseline,
-  homeEntries,
-  homeNewEntryLines,
-  recordAfterListing,
-  recordBaseline,
-} from "./home-watch.ts";
+import { type HomeBaseline, homeEntries, homeNewEntryLines } from "./home-watch.ts";
 import { isPlainObject } from "./plain-object.ts";
 import { isReviewerRole } from "./review-bounds.ts";
 import { traceWarn } from "./trace.ts";
@@ -81,13 +74,6 @@ import type { DispatchResult } from "./types.ts";
 
 /** A process environment shaped enough to resolve the protected paths from. */
 export type OperatorConfigEnv = Record<string, string | undefined>;
-
-/**
- * Run counter, so each guard entry has an identity of its own in the `$HOME` sighting
- * ledger (`home-watch.ts`). Overlapping reviewer children are told apart by when each
- * took its baseline, so they must not share a key.
- */
-let runs = 0;
 
 /**
  * One protected file that WAS readable before the child ran, and the bytes it
@@ -381,25 +367,13 @@ export async function withOperatorConfigGuard<R>(
     const bytes = await readSnapshot(target);
     if (bytes !== undefined) snapshots.push({ path: target, bytes });
   }
-  // The REPORT is gated on the SAME predicate the reviewer bounds use, so a role can
-  // never be half-covered by a second hand-kept list. The LISTING is not: every run
-  // files what it saw, because the witness that keeps a reviewer off a sibling's entry
-  // is whichever run happened to be watching the home at the time, reviewer or not.
+  // The check is gated on the SAME predicate the reviewer bounds use, so a role can
+  // never be half-covered by a second hand-kept list.
   const report = isReviewerRole(role);
   const home = homeDir(process.env);
-  // The window's bounds are stamped by the home's own filesystem, so they mean the same
-  // thing as the inode times they bracket (`fs-clock.ts`).
-  const clock = createFsClock(home);
+  // The baseline is taken here, before the child, and is the only evidence a name is
+  // new. Where the listing failed there is no baseline, and no name gets accused.
   const homeBaseline: HomeBaseline = await homeEntries(home);
-  // One identity per guard entry, so a listing is attributed to the run that took it and
-  // never to a sibling whose window happens to overlap it.
-  const runId = `${role}#${++runs}`;
-  // The baseline's bound and its contents, filed with the home's ledger: a run that
-  // started later and already found an entry there can show the entry predates it.
-  const baselineAt: number | null = "names" in homeBaseline ? await clock.now() : null;
-  if (baselineAt !== null && "names" in homeBaseline) {
-    recordBaseline(home, runId, homeBaseline.names, baselineAt);
-  }
   let result: R | null = null;
   try {
     result = await runChild();
@@ -418,35 +392,24 @@ export async function withOperatorConfigGuard<R>(
       );
     }
     // The $HOME disclosure, in the same channel and the same array as the restore
-    // lines. `home-watch.ts` owns which names may be named; the two failure shapes are
-    // kept apart here, because with no baseline there is nothing to compare against (no
-    // entry is named, one line says why), while a baseline plus a failed second listing
-    // is "cannot prove unchanged" — a fact about the home, never attributable to an
-    // entry the child made.
+    // lines, and for a reviewer role only. The two failure shapes are kept apart here,
+    // because with no baseline there is nothing to compare against (no entry is named,
+    // one line says why), while a baseline plus a failed second listing is "cannot prove
+    // unchanged" — a fact about the home, never attributable to an entry the child made.
     let homeLines: string[] = [];
-    if ("names" in homeBaseline) {
-      const after = await homeEntries(home);
-      const seenAt = await clock.now();
-      // File the run's second listing BEFORE judging any claim: the run that ends first
-      // is the one whose witness the runs still to come need, and a name is judged
-      // against what every overlapping run has observed. Filed for every role — a
-      // non-reviewer's own listing is the cleanest proof a reviewer can get that an
-      // entry in it is not the reviewer's.
-      if ("names" in after) {
-        recordAfterListing(home, runId, after.names, seenAt);
-        if (report) {
-          homeLines = homeNewEntryLines(role, home, runId, homeBaseline, after, {
-            baselineAt,
-            seenAt,
-          });
-        }
-      } else if (report) {
-        homeLines = [`operator-config: could not re-read $HOME (${after.code ?? "unknown"})`];
+    if (report) {
+      if ("names" in homeBaseline) {
+        const after = await homeEntries(home);
+        homeLines =
+          "names" in after
+            ? homeNewEntryLines(role, homeBaseline, after)
+            : [`operator-config: could not re-read $HOME (${after.code ?? "unknown"})`];
+      } else {
+        homeLines = [
+          `operator-config: could not snapshot $HOME (${homeBaseline.code ?? "unknown"})`,
+        ];
       }
-    } else if (report) {
-      homeLines = [`operator-config: could not snapshot $HOME (${homeBaseline.code ?? "unknown"})`];
     }
-    await clock.clear();
     for (const line of violations) traceWarn(line);
     for (const line of homeLines) traceWarn(line);
     // Disclosure, never a verdict: `ok` and `loopOutcome` are left exactly as
