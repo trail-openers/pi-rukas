@@ -14,6 +14,15 @@
  * install line must be ABSENT from the Dockerfile, and the pi version must
  * still be pinned to the install floor (1.0.0, per install-preflight.sh).
  *
+ * #2047 adds the image-bloat half of the gate: the build context is the whole
+ * repo, so a .dockerignore is what keeps `.git` out of the image, and two
+ * heavyweight installs are banned outright — `wigolo` (its npm tree is ~780 MB
+ * for an optional /research fallback that reports a failed angle when absent)
+ * and the `docker.io` apt package (the engine: dockerd + containerd, ~0.3 GB,
+ * when the sandbox only ever talks to the host's bind-mounted socket). Both
+ * are apt/npm install sites, so the assertions read executable lines only —
+ * prose that explains why the engine is banned must stay free to name it.
+ *
  * Proven in both directions (AGENTS.md §12 canary discipline): inline
  * fixture strings with the adapter present fail (the regression shape),
  * with the adapter absent pass.
@@ -21,7 +30,7 @@
  * Escape hatch: PI_ENSEMBLE_DOCKERFILE_PINS=0.
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..", "..");
@@ -68,6 +77,45 @@ export function piVersionInDockerfile(dockerfile: string): string {
 }
 
 /**
+ * An executable (non-comment) line that installs a heavyweight package the
+ * image must not carry: a global npm install of `pkg`, or `pkg` as a bare word
+ * in apt-install lines. Comments are skipped so prose may explain the ban.
+ * Returns the 1-based line number of the first hit, or -1.
+ */
+export function findBannedInstallLine(dockerfile: string, pkg: string): number {
+  const lines = dockerfile.split("\n");
+  // An apt package token: bare `pkg`, optionally followed by a version
+  // qualifier, and optionally ending the line with a RUN continuation.
+  const pkgToken = new RegExp(`(^|\\s)${pkg}(?:=[\\w.:+~-]+)?(?:\\s|$|\\\\$)`);
+  // A global npm install of `pkg` (with or without a version tag).
+  const npmInstall = new RegExp(`npm\\s+install\\s+-g[^\\n]*\\b${pkg}(@[\\w.+-]+)?\\b`);
+  // A RUN's continuation lines carry the apt package list, so the install
+  // context is tracked across the whole instruction, not per line.
+  let aptInstall = false;
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim();
+    if (t.startsWith("#")) continue;
+    if (npmInstall.test(t)) return i + 1;
+    if (/^RUN\b/.test(t)) aptInstall = false;
+    if (/apt-get\s+install\b/.test(t)) aptInstall = true;
+    if (aptInstall && pkgToken.test(t)) return i + 1;
+    if (!t.endsWith("\\")) aptInstall = false;
+  }
+  return -1;
+}
+
+/**
+ * True when the .dockerignore text ignores `.git` (a leading-exclusion line,
+ * not a comment or a negation).
+ */
+export function dockerignoreExcludesGit(text: string): boolean {
+  return text
+    .split("\n")
+    .map((l) => l.trim())
+    .some((l) => l === ".git" || /^\.git\b\/*$/.test(l));
+}
+
+/**
  * The troubleshooting.md section for the GHCR pull failure: from the
  * `### … returns `denied`` heading to the next `###` heading (exclusive).
  */
@@ -102,6 +150,29 @@ if (process.env.PI_ENSEMBLE_DOCKERFILE_PINS === "0") {
   assert(
     piVersion !== "",
     `Dockerfile pi install is version-pinned (got: ${piVersion === "" ? "unpinned — the #713 EALLOWREMOTE window" : piVersion})`,
+  );
+  // #2047: the two heavyweight installs that made the image ~4.8 GB. Neither
+  // may come back as an executable install line.
+  for (const [pkg, why] of [
+    ["wigolo", "~780 MB npm tree for an optional /research fallback"],
+    ["docker.io", "the docker engine (dockerd + containerd) when only the CLI is used"],
+  ] as const) {
+    const line = findBannedInstallLine(dockerfile, pkg);
+    assert(
+      line === -1,
+      `Dockerfile does NOT install ${pkg} (line ${line === -1 ? "(absent — correct)" : line}) — ${why} (issue #2047)`,
+    );
+  }
+  // #2047: the build context is the whole repo, so .dockerignore is the only
+  // thing keeping .git (and other local-only trees) out of the image.
+  const dockerignorePath = path.join(REPO_ROOT, ".dockerignore");
+  assert(
+    existsSync(dockerignorePath),
+    ".dockerignore exists at the repo root (the build context of all three build sites)",
+  );
+  assert(
+    existsSync(dockerignorePath) && dockerignoreExcludesGit(read(".dockerignore")),
+    ".dockerignore excludes .git from the build context (issue #2047)",
   );
 }
 
@@ -159,6 +230,61 @@ if (process.env.PI_ENSEMBLE_DOCKERFILE_PINS === "0") {
   assert(
     findAdapterInstallLine(npmLatestOnly) === -1,
     "canary: `npm install -g npm@latest` is not treated as a pi-mcp-adapter install site",
+  );
+
+  // Canary 5 (#2047): the banned-install scanner trips on each regression
+  // shape, and stays quiet on the shipped forms — the comment that explains
+  // the ban, the deb-extraction line, and the compose plugin's apt entry.
+  const wigoloMutant = [
+    "# wigolo — keyless local web-intelligence CLI",
+    "RUN npm install -g --ignore-scripts wigolo@0.2.1 || true",
+  ].join("\n");
+  assert(
+    findBannedInstallLine(wigoloMutant, "wigolo") === 2,
+    "canary: a reintroduced wigolo global install IS detected (line 2 of the fixture)",
+  );
+  const dockerIoMutant = [
+    "RUN apt-get update && apt-get install -y --no-install-recommends \\",
+    "      git jq \\",
+    "      docker.io \\",
+    "      tini \\",
+    "    && rm -rf /var/lib/apt/lists/*",
+  ].join("\n");
+  assert(
+    findBannedInstallLine(dockerIoMutant, "docker.io") === 3,
+    "canary: `docker.io` back in the apt install list IS detected (line 3 of the fixture)",
+  );
+  const cleanDocker = [
+    // The comment names the banned package to explain the ban — comments never count.
+    "# `docker.io` is the engine, so we never apt-install it.",
+    // The compose plugin is an apt install and must not trip the docker.io check.
+    "      docker-compose-v2 \\",
+    // The CLI is extracted from the deb; apt only downloads it, never installs.
+    "    && apt-get download docker.io \\",
+    "    && dpkg-deb -x docker.io_*.deb ./d \\",
+    "RUN npm install -g --ignore-scripts ctx7 || true \\",
+  ].join("\n");
+  assert(
+    findBannedInstallLine(cleanDocker, "docker.io") === -1,
+    "canary: apt-get download / dpkg-deb of the docker.io deb and its comment are NOT an install site",
+  );
+  assert(
+    findBannedInstallLine(cleanDocker, "wigolo") === -1,
+    "canary: a Dockerfile without a wigolo install passes the absence check",
+  );
+
+  // Canary 6 (#2047): the .dockerignore scanner rejects a missing/renamed entry.
+  assert(
+    dockerignoreExcludesGit(".git\nnode_modules\n"),
+    "canary: a .dockerignore with `.git` passes the exclusion check",
+  );
+  assert(
+    !dockerignoreExcludesGit("# .git is large\n.gitignore\nnode_modules\n"),
+    "canary: a .dockerignore that only comments or names .gitignore fails the exclusion check",
+  );
+  assert(
+    !dockerignoreExcludesGit("!.git\nnode_modules\n"),
+    "canary: a negated `!.git` line fails the exclusion check (it un-ignores, not ignores)",
   );
 }
 

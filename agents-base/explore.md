@@ -115,19 +115,16 @@ parallel-cli research poll RUN_ID               # blocks until done — wrap in 
 ❌ Do NOT use `parallel-search_*` or `parallel-task_*` as MCP tool calls — those servers are removed.
 ❌ Do NOT fall back to `webfetch` on google.com — Google blocks scraping.
 
-**wigolo fallback** (only when the dispatch-time line says `research fallback: enabled` AND parallel-cli failed with credit-exhausted, auth-missing or network-failed — see the `parallel-outcome:` rule at the end of this step): wigolo is a keyless local web-intelligence CLI that mirrors the three Parallel surfaces. It queries public engines, not a hosted API, so bot blocks and flaky engines replace credit errors; its first run downloads ~1.5 GB lazily.
+**No web fallback in the sandbox image.** When the dispatch-time line says `research fallback: enabled` and parallel-cli failed with credit-exhausted, auth-missing or network-failed (see the `parallel-outcome:` rule at the end of this step), the driver re-dispatches the angle ONCE against a second web CLI. The sandbox image ships only `parallel-cli`, so on the shipped image that preflight fails:
 
 ```bash
 command -v wigolo >/dev/null 2>&1 || echo "wigolo not installed"   # preflight FIRST
-wigolo search "q" --json 2>/dev/null
-wigolo fetch <url> --json 2>/dev/null            # fetch, not extract: fetch covers JS pages and returns markdown
-wigolo research "q" --depth standard --json 2>/dev/null
 ```
 
-- If the preflight prints `wigolo not installed`, DO NOT report `empty-result` — end your reply with `backend: wigolo` and `parallel-outcome: network-failed` with the text "wigolo not installed".
-- With `WIGOLO_LLM_API_KEY` set, `research` returns a SYNTHESIZED brief; without it, a RAW brief. State which one ran.
+- If the preflight prints `wigolo not installed`, DO NOT report `empty-result` — end your reply with `backend: wigolo` and `parallel-outcome: network-failed` with the text "wigolo not installed". Do not install it and do not substitute bare `curl` scraping.
+- Only a host that installed the `wigolo` CLI itself reaches its search / fetch / research surfaces; there `WIGOLO_LLM_API_KEY` makes `research` return a SYNTHESIZED brief, without it a RAW one. State which one ran.
 - An empty Parallel result is a valid answer and NEVER triggers the fallback.
-- **Bounded-timeout doctrine for blocking commands:** any command here that blocks until complete (`parallel-cli research run`, `parallel-cli search --mode agentic`, `wigolo research`) may stall on a half-open network connection with no error at all. Run it with a time bound (e.g. `timeout 120 wigolo research "q" --depth standard --json`) so a stuck call settles on its own instead of holding the dispatch open-ended. A command that exits on its timeout is handled exactly like a provider failure: report the gap it left (`parallel-outcome: network-failed`) and move on — a bounded failure is always better than a silent stall.
+- **Bounded-timeout doctrine for blocking commands:** any command here that blocks until complete (`parallel-cli research run`, `parallel-cli search --mode agentic`, a host-side `wigolo research`) may stall on a half-open network connection with no error at all. Run it with a time bound (e.g. `timeout 120 parallel-cli research run "q"`) so a stuck call settles on its own instead of holding the dispatch open-ended. A command that exits on its timeout is handled exactly like a provider failure: report the gap it left (`parallel-outcome: network-failed`) and move on — a bounded failure is always better than a silent stall.
 - monitor / findall / enrichment: no fallback available — report a gap instead.
 - On any Parallel failure, end your reply with `parallel-outcome: <class>` where `<class>` is one of `success`, `credit-exhausted`, `auth-missing`, `network-failed`, `empty-result`, `unparseable` (anchor credit-exhausted on the verbatim `Insufficient credit` / exit 4; wigolo's `blocked_by_challenge` is network-failed, not empty). Always end with `backend: parallel|wigolo`.
 
