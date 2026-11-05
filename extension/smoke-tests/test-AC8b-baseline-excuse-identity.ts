@@ -2,20 +2,22 @@
 /**
  * #2042 — the identity a pytest line yields, and what refuses the whole excuse.
  *
- * Two rules the TAP/go removal left as the whole of the reader's contract:
+ * Three rules the TAP/go removal left as the whole of the reader's contract:
  *
  *   - an unreadable failure line REFUSES, it is never merely omitted. A head of
  *     `[readable A, unreadable B]` against a base that named only A used to excuse,
  *     because `identitiesOfLine` dropped B and the subset test never saw the failure
  *     this run authored;
- *   - the trailing ` - <reason>` is cut at the FIRST separator at bracket DEPTH 0.
- *     The last-separator cut leaked reason text into the identity
- *     (`a.py::t - assert 1 - 2` read as `a.py::t - assert 1`), and a first-separator
- *     cut anywhere folds `test_total[EUR - 3.99]` and `test_total[EUR - 4.99]` onto
- *     one token, which excuses a failure only this run authored.
+ *   - a line that OPENS with pytest's own `FAILED `/`ERROR ` marker must yield an identity
+ *     even where the shared classifier recognises nothing: a collection error
+ *     (`ERROR tests/test_new.py`, no `::`) and a bare `FAILED tests/y.py` went unseen by a
+ *     classifier-only walk, so the excuse covered a failure the base never printed;
+ *   - the trailing ` - <reason>` is cut at the FIRST separator at bracket DEPTH 0 — a
+ *     last-separator cut leaks reason text into the identity and a first-separator cut
+ *     anywhere folds `test_total[EUR - 3.99]` onto its siblings.
  *
- * The parametrised positive control is what keeps the reader from being a blanket
- * refusal: the SAME `t[1]` line on both sides excuses, and its identity is `t[1]`.
+ * The positive controls keep the reader from being a blanket refusal: the SAME `t[1]` line
+ * on both sides excuses with identity `t[1]`, and so does an ordinary line.
  */
 import { baselineExcuse, testIdentitiesOf } from "../src/lean/verify-baseline-excuse.ts";
 import type { BaseProbe } from "../src/lean/verify-baseline.ts";
@@ -51,16 +53,22 @@ function excuseOf(headLines: string[], baseLines: string[]) {
 
 const namesOf = (stream: string): string[] => testIdentitiesOf(stream).map((i) => i.name);
 
-// ------------------------------------- (positive control) a parametrisation reads
+// ---------------------------- (positive control) an ordinary line, and a parametrisation
 {
-  const PARAM = "FAILED a.py::t[1] - AssertionError";
+  const ORD = "built 14 packages in 3s";
+  const SAME = "FAILED a.py::t[1] - AssertionError";
+  const BOTH = [ORD, SAME];
   assert(
-    excuseOf([PARAM], [PARAM]).kind === "excused",
-    `(param) the SAME parametrised line on both sides excuses (${excuseOf([PARAM], [PARAM]).kind})`,
+    excuseOf(BOTH, BOTH).kind === "excused",
+    `(control) an ordinary line beside the failure is excused (${excuseOf(BOTH, BOTH).kind})`,
   );
   assert(
-    namesOf(PARAM).join() === "a.py::t[1]",
-    `(param) and its identity is the parametrisation, brackets and all (${JSON.stringify(namesOf(PARAM))})`,
+    excuseOf([SAME], [SAME]).kind === "excused",
+    `(param) the SAME parametrised line on both sides excuses (${excuseOf([SAME], [SAME]).kind})`,
+  );
+  assert(
+    namesOf(SAME).join() === "a.py::t[1]",
+    `(param) and its identity is the parametrisation, brackets and all (${JSON.stringify(namesOf(SAME))})`,
   );
 }
 
@@ -69,15 +77,12 @@ const namesOf = (stream: string): string[] => testIdentitiesOf(stream).map((i) =
   const REASON = "FAILED a.py::t - assert 1 - 2";
   assert(
     namesOf(REASON).join() === "a.py::t",
-    `(cut) a reason containing ' - ' does not leak into the identity (${JSON.stringify(namesOf(REASON))})`,
+    `(cut) a reason with ' - ' does not leak into the identity (${JSON.stringify(namesOf(REASON))})`,
   );
   assert(
-    namesOf("FAILED a.py::t - x - y").join() === "a.py::t",
-    `(cut) and neither does a second separator (${JSON.stringify(namesOf("FAILED a.py::t - x - y"))})`,
-  );
-  assert(
-    namesOf("FAILED a.py::t[1]").join() === "a.py::t[1]",
-    `(cut) a token with no depth-0 separator stays whole (${JSON.stringify(namesOf("FAILED a.py::t[1]"))})`,
+    namesOf("FAILED a.py::t - x - y").join() === "a.py::t" &&
+      namesOf("FAILED a.py::t[1]").join() === "a.py::t[1]",
+    `(cut) a second separator does not either, and a token with none stays whole (${JSON.stringify(namesOf("FAILED a.py::t[1]"))})`,
   );
 }
 
@@ -85,12 +90,9 @@ const namesOf = (stream: string): string[] => testIdentitiesOf(stream).map((i) =
 {
   const HEAD = ["FAILED a.py::t[EUR - 3.99] - x", "FAILED a.py::t[EUR - 4.99] - x"];
   assert(
-    namesOf(HEAD[0] ?? "").join() === "a.py::t[EUR - 3.99]",
-    `(sibling) 3.99 reads as its own identity (${JSON.stringify(namesOf(HEAD[0] ?? ""))})`,
-  );
-  assert(
-    namesOf(HEAD[1] ?? "").join() === "a.py::t[EUR - 4.99]",
-    `(sibling) 4.99 reads as its own identity, not folded onto 3.99 (${JSON.stringify(namesOf(HEAD[1] ?? ""))})`,
+    namesOf(HEAD[0] ?? "").join() === "a.py::t[EUR - 3.99]" &&
+      namesOf(HEAD[1] ?? "").join() === "a.py::t[EUR - 4.99]",
+    `(sibling) each value reads as its own identity, not folded onto the other (${namesOf(HEAD[0] ?? "")}/${namesOf(HEAD[1] ?? "")})`,
   );
   assert(
     excuseOf(HEAD, [HEAD[0] ?? ""]).kind === "refused",
@@ -100,21 +102,44 @@ const namesOf = (stream: string): string[] => testIdentitiesOf(stream).map((i) =
 
 // ------------------------------------- (unreadable) a failure line nothing can name
 {
-  // The HIGH case: B's brackets never close, so no identity comes out of it. Omitting
-  // it instead of refusing let a base that named only A excuse a tier that also failed B.
+  // B's brackets never close, so no identity comes out of it. Omitting it instead of
+  // refusing let a base that named only A excuse a tier that also failed B.
   const A = "FAILED tests/x_test.py::test_a - AssertionError";
   const B = "FAILED tests/x_test.py::test_b[ - oops";
   assert(
-    excuseOf([A, B], [A]).kind === "refused",
-    `(unreadable) a head line this module cannot read refuses the excuse (${excuseOf([A, B], [A]).kind})`,
+    excuseOf([A, B], [A]).kind === "refused" && excuseOf([A], [A, B]).kind === "refused",
+    `(unreadable) a head line this module cannot read refuses it, and an unreadable BASE line too (${excuseOf([A, B], [A]).kind}/${excuseOf([A], [A, B]).kind})`,
   );
   assert(
     namesOf(B).length === 0,
     `(unreadable) and no truncated token is offered as an identity (${JSON.stringify(namesOf(B))})`,
   );
+}
+
+// --------------------- (unrecognised marker) a pytest line the classifier never saw
+{
+  const A = "FAILED tests/x.py::test_a - AssertionError";
+  // Neither line below matches a shape in the table (no `::`), so the classifier answers
+  // "not a failure line"; the marker alone has to be enough to refuse.
+  const COLLECTION_ERROR = "ERROR tests/test_brand_new.py";
+  const BARE_FAILED = "FAILED tests/y.py";
+  const HEADS: string[][] = [
+    [A, COLLECTION_ERROR],
+    [A, BARE_FAILED],
+  ];
+  for (const head of HEADS) {
+    assert(
+      excuseOf(head, [A]).kind === "refused",
+      `(marker) ${head[1]} in head refuses the excuse (${excuseOf(head, [A]).kind})`,
+    );
+  }
   assert(
-    excuseOf([A], [A, B]).kind === "refused",
-    `(unreadable) an unreadable BASE line refuses it too (${excuseOf([A], [A, B]).kind})`,
+    excuseOf([A], [A, COLLECTION_ERROR]).kind === "refused",
+    `(marker) the same on the BASE side refuses it (${excuseOf([A], [A, COLLECTION_ERROR]).kind})`,
+  );
+  assert(
+    namesOf(BARE_FAILED).length === 0 && namesOf(COLLECTION_ERROR).length === 0,
+    `(marker) and neither bare line yields an identity (${JSON.stringify(namesOf(BARE_FAILED))}/${JSON.stringify(namesOf(COLLECTION_ERROR))})`,
   );
 }
 

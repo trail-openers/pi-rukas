@@ -28,6 +28,11 @@
  *     prints differently between two runs of one tree — and a stream that yields
  *     ANY identity without one refuses the excuse outright, rather than comparing
  *     tokens that might be one check spelled two ways or two checks spelled one;
+ *   - a line whose trimmed text starts with `FAILED ` or `ERROR ` is pytest declaring a
+ *     failing test, so it must yield a readable identity even where the classifier
+ *     recognises nothing: `ERROR tests/x.py` (a collection error, no `::`) and a bare
+ *     `FAILED tests/y.py` excuse nothing — dropping one grades a tier green on a failure
+ *     the base never printed.
  *   - both sets must be non-empty and EVERY head name must match a base name.
  *     One unmatched name is a failure this run authored, and `unknown` from
  *     `compareNames` counts as unmatched — never as a match;
@@ -69,14 +74,17 @@ export type BaselineExcuse =
 
 /** The identity tokens one failure line carries (a runner may pack several onto one). */
 function identitiesOfLine(candidate: string): LineIdentities {
-  // ONE clip for the whole line, then every parser below reads the clipped text:
-  // the classifier bounds its own view, but the identity parsers reach into the
-  // line's LAST characters, so an over-long candidate handed to them unclipped
-  // would make those tails scan the whole string.
+  // ONE clip for the whole line, then every parser below reads the clipped text: the
+  // classifier bounds its own view, but the identity parsers reach into the line's LAST
+  // characters, so an over-long candidate handed to them unclipped would scan it all.
   const unreadable: LineIdentities = { identities: [], unreadable: true };
-  const line = clipForScan(candidate);
+  const line = clipForScan(candidate.trim());
   const verdict = classifyFailureLine(line);
-  if (verdict === undefined || !verdict.namesTest) return { identities: [], unreadable: false };
+  // A marker at the line's head is pytest declaring a failing test, so an unrecognised
+  // line still owes a readable identity rather than going uncounted.
+  if (verdict === undefined || !verdict.namesTest) {
+    return DECLARED_FAILURE.test(line) ? unreadable : { identities: [], unreadable: false };
+  }
   if (verdict.shape !== "pytest-failed" && verdict.shape !== "pytest-error") return unreadable;
   // Each span of a packed line is its own test, with the shape's own marker stripped
   // from every span (`FAILED a::t; FAILED b::u`). SPLIT ONLY ON A `;` AT BRACKET DEPTH 0
@@ -103,6 +111,12 @@ interface LineIdentities {
 
 /** Where a packed failure line separates one test from the next: a `;` before a marker. */
 const PACKED_SPAN = /;\s*(?=(?:FAILED|ERROR)\s)/;
+
+/** A line pytest itself opened: its own word for a test that did not pass. */
+const DECLARED_FAILURE = /^(?:FAILED|ERROR)\s/;
+
+/** The shapes whose tokens {@link identitiesOfLine} parses. */
+const PYTEST_SHAPES = new Set(["pytest-failed", "pytest-error"]);
 
 /**
  * The spans of one packed failure line.
@@ -155,12 +169,15 @@ function stripMarker(token: string): string {
  * skips those shapes rather than parsing them, so this asks the SHAPES directly:
  * anything that declares it names a test and is not a pytest line is a name this
  * module does not read, and the caller keeps today's red.
+ *
+ * It walks the RAW stream lines: `failureLines` classifies first, so an unrecognised
+ * `FAILED tests/y.py` or `ERROR tests/test_new.py` never reaches its output.
  */
 function namesUnreadableIdentity(stream: string): boolean {
-  for (const line of failureLines(stream)) {
+  for (const line of stream.split(/\r\n|\r|\n/)) {
+    // Asked of every line, recognised or not: an unrecognised one is judged by its marker.
     const verdict = classifyFailureLine(clipForScan(line));
-    if (verdict?.namesTest !== true) continue;
-    if (verdict.shape !== "pytest-failed" && verdict.shape !== "pytest-error") return true;
+    if (verdict?.namesTest === true && !PYTEST_SHAPES.has(verdict.shape)) return true;
     if (identitiesOfLine(line).unreadable) return true;
   }
   return false;

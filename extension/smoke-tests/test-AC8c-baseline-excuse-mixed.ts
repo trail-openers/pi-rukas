@@ -14,7 +14,7 @@
 import { baselineExcuse } from "../src/lean/verify-baseline-excuse.ts";
 import type { BaseProbe } from "../src/lean/verify-baseline.ts";
 
-const SELF = "test-AC8-baseline-excuse-tap.ts";
+const SELF = "test-AC8c-baseline-excuse-mixed.ts";
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
   if (cond) console.log(`✓ ${msg}`);
