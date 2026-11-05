@@ -66,7 +66,7 @@ function run(state: LeanState, over: Partial<LeanRun> = {}): LeanRun {
 }
 
 const VERIFY_COUNTERS: Counters[] = [];
-for (const buildAttempts of [0, 1, MAX_BUILD_ATTEMPTS]) {
+for (const buildAttempts of [0, 1, MAX_BUILD_ATTEMPTS - 1, MAX_BUILD_ATTEMPTS]) {
   for (const challengeDone of [false, true]) {
     for (const reviewDone of [false, true]) {
       for (const ciFixUsed of [false, true]) {

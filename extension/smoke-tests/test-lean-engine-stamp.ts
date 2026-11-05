@@ -84,15 +84,20 @@ function writeStampedBeyondItsLog(
 
 /**
  * A drive whose CI goes RED first and green second — the one fix round
- * `ciFixUsed` allows. At the build cap that walk hands back (the fix round's
- * build is the third, which `MAX_BUILD_ATTEMPTS` refuses), so its log is a real
- * drive's bytes in which the newest word on the merge is a red CI verdict.
+ * `ciFixUsed` allows. Its log is a real drive's bytes in which the newest word
+ * on the merge is a red CI verdict, and it reaches that point by being refused
+ * the build the red CI earned: the walk enters build once per round and spends the
+ * cap of `MAX_BUILD_ATTEMPTS` — the first build, the re-verification after the
+ * challenge round, and the CI fix round — so the fourth entry, which the red CI
+ * asks for, is the one the cap refuses and the run hands back on. One fewer round
+ * anywhere and this drive would land instead of handing back, and the fixture that
+ * cuts its log would be pairing a merge stamp with a log that earned it.
  */
 function ciRedThenGreen(): Partial<Record<LeanState, Outcome[]>> {
   return {
     ready: [{ kind: "ok" }],
     specify: [{ kind: "ok" }],
-    build: [{ kind: "ok" }, { kind: "ok" }],
+    build: [{ kind: "ok" }, { kind: "ok" }, { kind: "ok" }],
     challenge: [{ kind: "none" }, { kind: "none" }],
     verify: [{ kind: "green" }, { kind: "green" }],
     publish: [{ kind: "ok" }],

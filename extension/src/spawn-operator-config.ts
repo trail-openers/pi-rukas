@@ -47,6 +47,15 @@
  * apart: paths that could be read go into `snapshots` and are compared and
  * repaired, a path with no baseline never enters that set and is left alone.
  *
+ * For a REVIEWER role the same window also lists the top level of `$HOME` before
+ * and after the child and reports one line per NEW entry — a reviewer is the
+ * child that probes hostile config, and the four protected files say nothing
+ * about a name the child creates elsewhere under the operator's home (`~/.pi`,
+ * `~/.cache`, a dotfile of its own). Listing is disclosure, never deletion: the
+ * operator's own entries are not this guard's to remove, and a line naming a
+ * leftover costs one read to act on. `home-watch.ts` owns the name-set difference
+ * and what may be named.
+ *
  * What the guard cannot catch: a write that lands after the child exits (a
  * detached grandchild), since one snapshot set belongs to one child. Group-kill
  * (`spawn-kill.ts`) is what reaps a lingering grandchild; that is a separate
@@ -57,7 +66,9 @@ import type { Stats } from "node:fs";
 import { constants, type FileHandle, access, lstat, open, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { type HomeBaseline, homeEntries, homeNewEntryLines } from "./home-watch.ts";
 import { isPlainObject } from "./plain-object.ts";
+import { isReviewerRole } from "./review-bounds.ts";
 import { traceWarn } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 
@@ -356,6 +367,14 @@ export async function withOperatorConfigGuard<R>(
     const bytes = await readSnapshot(target);
     if (bytes !== undefined) snapshots.push({ path: target, bytes });
   }
+  // The check is gated on the SAME predicate the reviewer bounds use, so a role can
+  // never be half-covered by a second hand-kept list.
+  const report = isReviewerRole(role);
+  const home = homeDir(process.env);
+  // The baseline is taken here, before the child, and is the only evidence a name is
+  // new. Only a reviewer role is listed at all — a developer dispatch does no $HOME I/O.
+  // Where the listing failed there is no baseline, and no name gets accused.
+  const homeBaseline: HomeBaseline | undefined = report ? await homeEntries(home) : undefined;
   let result: R | null = null;
   try {
     result = await runChild();
@@ -373,12 +392,33 @@ export async function withOperatorConfigGuard<R>(
           : `operator-config: ${snap.path} modified during the ${role} run — NOT restored (${code})`,
       );
     }
+    // The $HOME disclosure, in the same channel and the same array as the restore
+    // lines, and for a reviewer role only. The two failure shapes are kept apart here,
+    // because with no baseline there is nothing to compare against (no entry is named,
+    // one line says why), while a baseline plus a failed second listing is "cannot prove
+    // unchanged" — a fact about the home, never attributable to an entry the child made.
+    let homeLines: string[] = [];
+    if (report && homeBaseline !== undefined) {
+      if ("names" in homeBaseline) {
+        const after = await homeEntries(home);
+        homeLines =
+          "names" in after
+            ? homeNewEntryLines(role, homeBaseline, after)
+            : [`operator-config: could not re-read $HOME (${after.code ?? "unknown"})`];
+      } else {
+        homeLines = [
+          `operator-config: could not snapshot $HOME (${homeBaseline.code ?? "unknown"})`,
+        ];
+      }
+    }
     for (const line of violations) traceWarn(line);
+    for (const line of homeLines) traceWarn(line);
     // Disclosure, never a verdict: `ok` and `loopOutcome` are left exactly as
     // the child's own run set them. When `result` is null the callback threw and
     // there is nothing to annotate — the traceWarn above is the only record.
-    if (violations.length > 0 && result !== null && isDispatchResult(result)) {
-      result.operatorConfig = violations;
+    const lines = [...violations, ...homeLines];
+    if (lines.length > 0 && result !== null && isDispatchResult(result)) {
+      result.operatorConfig = [...(result.operatorConfig ?? []), ...lines];
     }
   }
 }

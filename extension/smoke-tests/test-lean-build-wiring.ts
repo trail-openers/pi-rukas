@@ -9,6 +9,8 @@
  *       developer is dispatched, and the builder's scope contract reaches the
  *       child verbatim (the "smallest change / no impossible guards / never the
  *       full suite" paragraph the first lean trial showed was missing)
+ *   (i2) the third build round, the one a red verify earned, is labelled attempt
+ *       3 and carries that red's reason and the challenge's new frozen test
  */
 
 import { BuildInfraError } from "../src/lean/build-errors.ts";
@@ -91,6 +93,46 @@ function assert(cond: boolean, msg: string): void {
   assert(
     prompt.includes("never the history of the change"),
     "(o) the prompt forbids history-narrating comments",
+  );
+}
+
+// ------------- (i2) the third round, earned by the red itself, carries that red
+//
+// The field case: a challenge added tests, so the round it earned was spent and
+// the red that followed found no round left to answer it. `build.ts` derives the
+// attempt label and the re-entry reason from the step log, so this pins both
+// surviving the third round — the one the cap used to refuse, which ended such a
+// run handed back with a two-line fix outstanding.
+{
+  const reason = "AC1 tests/AC1-retry.test.sh: exited 1 — meta-test: not in the always-run list";
+  const r = await runBuild({
+    issue: 130,
+    extraFrozen: { "tests/AC2-adversary.test.sh": "#!/bin/sh\nexit 1\n" },
+    extraSteps: [
+      { key: "130:build:0", state: "build", startedAt: 3, outcome: { kind: "ok" } },
+      { key: "130:challenge:0", state: "challenge", startedAt: 4, outcome: { kind: "none" } },
+      { key: "130:build:1", state: "build", startedAt: 5, outcome: { kind: "ok" } },
+      { key: "130:verify:0", state: "verify", startedAt: 6, outcome: { kind: "red", reason } },
+      { key: "130:build:2", state: "build", startedAt: 7 },
+    ],
+    child: (wt) => put(wt, "src/retry.ts", "export const retry = () => 6;\n"),
+  });
+  const prompt = r.prompts[0] ?? "";
+  assert(
+    r.threw === undefined && r.outcome?.kind === "ok",
+    `(i2) the third round ran: ${r.threw?.message ?? r.outcome?.kind}`,
+  );
+  assert(
+    prompt.includes(reason) && prompt.includes("Why this round exists"),
+    "(i2) the third round's prompt carries the red verify's reason verbatim",
+  );
+  assert(
+    prompt.includes("This is attempt 3."),
+    `(i2) the prompt labels the round attempt 3 (got ${prompt.match(/This is attempt \d+/)?.[0] ?? "none"})`,
+  );
+  assert(
+    prompt.includes("tests/AC2-adversary.test.sh"),
+    "(i2) the challenge's new frozen test is in the third round's contract",
   );
 }
 
