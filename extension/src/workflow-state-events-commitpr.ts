@@ -13,9 +13,10 @@
  * (`mechanizedCommitPr` / `runCommitPrLocked` in work-driver-commit.ts)
  * imports it, and the `plumb-report` event field references it — the two
  * sites must never re-declare the union inline, or they drift the way the
- * adversarial verdict vocabulary did. `apply-conflict` remains for
- * pre-#539 state; the writer now labels apply failures `other` because
- * integrate()'s structured `failure` names only dirty-repoRoot.
+ * adversarial verdict vocabulary did. `apply-conflict` names an aborted
+ * cherry-pick batch or a rejected patch apply — the arms integrate() calls
+ * `apply` (#2030); a commit-message publish refusal is `apply-publish` and
+ * stays `other`, because nothing failed to apply there.
  *
  * #1439 — `push-refused` names the forge's server-side refusal of the push (GitHub
  * push protection / repository rules / a non-fast-forward). It is in this vocabulary

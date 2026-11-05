@@ -65,8 +65,10 @@ export async function commitMessageToPublish(
  * Judge the commit message the cherry-pick/patch path is about to write, and
  * hand back the bytes to write.
  *
- * Returns the `{ ok: false, failure: "apply" }` result the caller returns
- * verbatim when the message is refused, and the title/body to commit when it is
+ * Returns the `{ ok: false, failure: "apply-publish" }` result the caller
+ * returns verbatim when the message is refused — its own discriminator, not
+ * `"apply"`: nothing failed to APPLY here, the batch is intact and merely
+ * uncommittable, so the cause classifier must not report it as a conflict. and the title/body to commit when it is
  * not. `restoreRoot`/`claimFor` are the caller's verified-restore pair — the
  * same ones every other pre-push exit of `integrate()` uses, so a refusal leaves
  * repoRoot in the state the operator was told about rather than the state the
@@ -90,7 +92,7 @@ export async function cherryPickCommitGate(
   return {
     refusalResult: {
       ok: false,
-      failure: "apply",
+      failure: "apply-publish",
       reason: `${checked.refusal} ${claimFor(restore)}.`,
     },
   };

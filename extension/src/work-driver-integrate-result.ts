@@ -12,6 +12,22 @@ import type { ConsolidationCompleteness } from "./work-driver-completeness.ts";
 import type { NoDiff } from "./work-driver-integrate.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 
+/**
+ * The structured failure discriminator of a failed `integrate()` (#539).
+ *
+ * `apply` is a real conflict: a cherry-pick batch that aborted, or a patch
+ * the worktree's own tree refused. `apply-publish` is not: the commit-message
+ * hygiene guard refused the message the consolidation was about to write, so
+ * nothing failed to apply and the batch is merely uncommittable. Cause readers
+ * key on this field, so the two must not share a value.
+ */
+export type IntegrateFailureKind =
+  | "dirty-repoRoot"
+  | "apply"
+  | "apply-publish"
+  | "verify"
+  | "push-refused";
+
 export type IntegrateResult =
   | {
       ok: true;
@@ -70,7 +86,7 @@ export type IntegrateResult =
        * can lift a refusal the remote issued, so the fallback dispatch is 40 minutes of rediscovery
        * and the cause classifier must not call the change healthy.
        */
-      failure?: "dirty-repoRoot" | "apply" | "verify" | "push-refused";
+      failure?: IntegrateFailureKind;
       /** #1324 — the `verify` failure was a run killed at its bound. */
       timedOut?: boolean;
       /**
