@@ -47,6 +47,19 @@ export interface FindingRun {
    * quoted separately could disagree with the diff they came from (#1125
    * decision 5). */
   deltaDiff?: string;
+  /**
+   * #2027 — the base of the range a DELTA round reviewed (`since..headSha`),
+   * as a full commit SHA. Its presence lets the round read the range's
+   * PER-COMMIT changed lines (review-delta-hunks.ts) for the fate rule: the
+   * `deltaDiff` above is the reviewed PATCH, whose hunks the round subtracted,
+   * and the two disagree about exactly the line a fix commit rewrote.
+   *
+   * Optional, and nothing asks for it: an absent base simply means the round
+   * has no per-commit evidence and the changed-lines arm retires nothing. It is
+   * never inferred from the diff text — a diff says what the round showed the
+   * lenses, not what the commits changed.
+   */
+  deltaSince?: string;
   /** When to stamp the rows (defaults to `Date.now()`). */
   now?: number;
   /**

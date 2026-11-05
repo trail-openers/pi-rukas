@@ -177,6 +177,22 @@ export interface FateContext {
    * confirmation, which is the ordinary case and retires nothing new.
    */
   confirmedBy?: string;
+  /**
+   * #2027 — the changed lines of the round's own `since..head` range, read
+   * straight from git (`commitChangeRanges` in review-delta-hunks.ts) and
+   * therefore INDEPENDENT of the hunk subtraction that produced `deltaRanges`.
+   * Set only for a delta round whose base and head both resolved to commits;
+   * absent when the range could not be read, which retires nothing — the arm
+   * is evidence, never a default.
+   *
+   * `deltaRanges` is the reviewed PATCH: `subtractReviewedHunks` removes every
+   * hunk identical to one the previous round reviewed, so a fix hunk the round
+   * treated as already reviewed vanishes from it while head still shows the
+   * cited line rewritten. That is the shape in which a fixed HIGH carried
+   * forever: the round saw the line, its own range evidence said it had not,
+   * and step 9 refused (#2027).
+   */
+  deltaCommitRanges?: ChangedRanges;
 }
 
 /** Is `line` of `path` inside the delta's changed ranges? */
@@ -363,5 +379,33 @@ function linesFate(
     (review === "delta" &&
       row.lens.trim().toUpperCase() !== SECURITY_LENS &&
       insideDelta(row.path, row.line, deltaRanges));
-  return reviewed ? { kind: "resolve", reason: "code-gone" } : CARRY;
+  if (reviewed) return { kind: "resolve", reason: "code-gone" };
+  // #2027 — the arm step 9 cannot reach. The row got here because neither its
+  // window nor its cited-line hash occurs anywhere in the head file: the cited
+  // CODE IS GONE. What step 9 refused was the round's claim of coverage, and
+  // the coverage question has a second, independent answer — the union of
+  // `git diff since..head`, which no hunk subtraction can shrink. When that
+  // range contains the stored line, the round reviewed it, reported nothing
+  // about it (a re-report is matched in `applyFindingRound` and never comes
+  // here), and the row is retired.
+  //
+  // The refusals this arm does NOT take are the same rules the surrounding
+  // code already states, and it inherits each by falling through to them:
+  //   - an INCOMPLETE round carries — the delta branch of the coverage test is
+  //     what refuses it here, so `review === "delta"` is not decoration;
+  //   - a SECURITY row carries — the same carve-out as step 9, one constant;
+  //   - a CRITICAL never reaches this line: the arm above owns it and retires
+  //     it only on a complete full review (#1832);
+  //   - a row the per-commit evidence does not name carries: absence of the
+  //     evidence is never read as coverage, exactly as an absent `deltaRanges`
+  //     is never read as one.
+  if (
+    review === "delta" &&
+    row.status === "open" &&
+    row.lens.trim().toUpperCase() !== SECURITY_LENS &&
+    insideDelta(row.path, row.line, ctx.deltaCommitRanges)
+  ) {
+    return { kind: "resolve", reason: "code-changed-not-reported" };
+  }
+  return CARRY;
 }

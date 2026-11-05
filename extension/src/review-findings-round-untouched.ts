@@ -29,6 +29,13 @@ export interface UntouchedRowSinks {
   headOf: HeadOf;
   review: ReviewKind;
   deltaRanges?: ChangedRanges;
+  /**
+   * #2027 — the per-commit changed lines of the round's own `since..head`
+   * range, threaded to `rowFate` unchanged. The fate rule owns the rule about
+   * what it proves; this pass owns no rule, so it passes it along the same way
+   * it passes `deltaRanges`.
+   */
+  deltaCommitRanges?: ChangedRanges;
   carried: CarriedFinding[];
   resolved: ResolvedNotice[];
   confirmationLapses: ConfirmationLapse[];
@@ -144,6 +151,7 @@ export function applyUntouchedRowFate(opts: UntouchedRowSinks): void {
     headOf,
     review,
     deltaRanges,
+    deltaCommitRanges,
     carried,
     resolved,
     confirmationLapses,
@@ -204,6 +212,7 @@ export function applyUntouchedRowFate(opts: UntouchedRowSinks): void {
         : rowFate(r, head, review, {
             deltaRanges,
             ...(confirmedBy === undefined ? {} : { confirmedBy }),
+            ...(deltaCommitRanges === undefined ? {} : { deltaCommitRanges }),
           });
     if (fate.kind === "resolve") {
       mine[i] = {

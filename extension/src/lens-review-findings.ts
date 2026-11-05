@@ -36,6 +36,7 @@ import { evidenceByLens } from "./lens-unproven-high.ts";
 import type { ReviewKind } from "./review-findings-fate.ts";
 import type { ResolvedNotice, SetAsideNotice } from "./review-findings-file.ts";
 import type { ConfirmationLapse } from "./review-findings-store-types.ts";
+import { isFullCommitSha } from "./review-head-sha.ts";
 
 /** The kind of review the findings memory records this round as (#1105): a
  * delta covers only its range, an incomplete one re-reported nothing reliably,
@@ -134,6 +135,12 @@ export async function resolveReportedFindings(opts: {
     review,
     evidence,
     ...(delta ? { deltaDiff: opts.diff } : {}),
+    // #2027 — a delta round also names the base it reviewed from, so the store
+    // can read the range's per-commit changed lines. The automatic delta's
+    // `since` is the previous recorded head (a full SHA); an explicit `since`
+    // the operator passed is kept only when it is one too, because the store
+    // requires a full SHA for any ref it hands git.
+    ...(delta && isFullCommitSha(delta.since) ? { deltaSince: delta.since } : {}),
     // #1934 — a confirmation binds only with all four present: a branch, a head,
     // the patch id, and a COMPLETE FULL review. Missing any: the pre-#1934 shape.
     ...(identity?.patchId !== undefined &&

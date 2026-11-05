@@ -26,6 +26,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { execp } from "./exec.ts";
 import { detectMainline } from "./mainline.ts";
+import { type ChangedRanges, changedLineRanges } from "./review-diff.ts";
 import { resolveHeadSha } from "./review-head-sha.ts";
 import { trace } from "./trace.ts";
 
@@ -158,6 +159,48 @@ async function git(cwd: string, args: string[]): Promise<string> {
     maxBuffer: DIFF_MAX_BUFFER,
   });
   return stdout;
+}
+
+/**
+ * #2027 — the changed lines of a delta range as its COMMITS produced them,
+ * independent of the hunk subtraction that builds the reviewed patch.
+ *
+ * `subtractReviewedHunks` removes every hunk identical to one the previous
+ * round reviewed, and that is the right rule for what the LENSES read — nobody
+ * should re-review the same hunk twice. It is the wrong rule for what the
+ * findings memory may conclude about coverage: a fix hunk the round considered
+ * already reviewed disappears from the ranges, while head shows the cited line
+ * rewritten, and a HIGH row citing it then carried forever (#2027). This read
+ * asks the question the hunk list cannot answer: did ANY commit of `since..head`
+ * touch this line?
+ *
+ * Two-dot, deliberately: the range is the one the round reviewed, not the
+ * branch's own changes against a mainline. A `-U0` read is enough — the memory
+ * wants spans, not context — and an unreadable range answers `undefined`, which
+ * the fate rule reads as "no evidence", never as coverage.
+ */
+export async function commitChangeRanges(
+  cwd: string,
+  since: string,
+  head: string,
+): Promise<ChangedRanges | undefined> {
+  if (!since || !head || since.startsWith("-") || head.startsWith("-")) return undefined;
+  try {
+    const stdout = await git(cwd, [
+      "diff",
+      "-U0",
+      "--no-color",
+      "--no-ext-diff",
+      `${since}..${head}`,
+    ]);
+    const ranges = changedLineRanges(stdout);
+    return ranges.size === 0 ? undefined : ranges;
+  } catch (err) {
+    trace(
+      `review-findings: per-commit delta ranges unavailable for ${since.slice(0, 8)}..${head.slice(0, 8)} (${((err as Error)?.message ?? String(err)).slice(0, 120)}) — the changed-lines arm retires nothing`,
+    );
+    return undefined;
+  }
 }
 
 /**

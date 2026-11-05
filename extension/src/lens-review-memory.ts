@@ -60,6 +60,12 @@ export function recordRound(opts: {
   /** The delta diff, given only for a delta round (the ranges derive from it). */
   deltaDiff?: string;
   /**
+   * #2027 — the base of the delta's `since..headSha` range, given only for a
+   * delta round whose base is a resolved commit. Forwarded to the store, which
+   * reads that range's per-commit changed lines for the fate rule.
+   */
+  deltaSince?: string;
+  /**
    * #1934 — the round's patch id, and whether to consult the ledger for an
    * independent confirmation. Both come from the caller that resolved the
    * review identity; with either absent the round records without one.
@@ -80,6 +86,7 @@ export function recordRound(opts: {
     findings: opts.findings,
     review: opts.review,
     ...(opts.deltaDiff !== undefined ? { deltaDiff: opts.deltaDiff } : {}),
+    ...(opts.deltaSince !== undefined ? { deltaSince: opts.deltaSince } : {}),
     ...(opts.patchId !== undefined ? { patchId: opts.patchId } : {}),
     ...(opts.confirmFixes === true ? { confirmFixes: true } : {}),
     ...(opts.evidence !== undefined ? { evidence: opts.evidence } : {}),
