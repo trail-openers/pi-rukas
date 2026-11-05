@@ -96,7 +96,7 @@ export const NON_TERMINAL_STATES = [
  */
 export function counterVariants(): Array<Record<string, unknown>> {
   const out: Array<Record<string, unknown>> = [];
-  for (const buildAttempts of [0, 1, 2, MAX_BUILD_ATTEMPTS + 1])
+  for (const buildAttempts of [0, 1, MAX_BUILD_ATTEMPTS - 1, MAX_BUILD_ATTEMPTS + 1])
     for (const challengeDone of [false, true])
       for (const reviewDone of [false, true])
         for (const ciFixUsed of [false, true])

@@ -32,7 +32,7 @@ import {
   tempDir,
   ticking,
 } from "./lib/lean-engine-fixtures.ts";
-import { driveRun, writePrefix } from "./lib/lean-real-log-fixture.ts";
+import { driveRun, foldOf, writePrefix } from "./lib/lean-real-log-fixture.ts";
 
 const { assert, failures } = makeAssert();
 
@@ -291,13 +291,17 @@ function forgedCiRed(dir: string, issue: number): void {
       state: "verify",
       counters: {
         ...INITIAL_COUNTERS,
-        // What the table bills on the walk below: the first build, and the CI
-        // fix round that red CI bought. The blank `verify:1` tail is a step the
-        // run was routed INTO by a build that already billed its own round, so
-        // it owes nothing extra — and that is half of what the case pins: the
-        // other half is that a blank tail at a gate state never reads as a red
-        // verdict when the land gate asks the record.
-        buildAttempts: 2,
+        // A PRE-CHANGE record: written while `MAX_BUILD_ATTEMPTS` was 2, and it
+        // still folds. What the table bills on this walk is the first build and
+        // the CI fix round that red CI bought — 3 attempts today, because a round
+        // is billed on ENTERING build, and the same 3 the old cap billed too: that
+        // cap refused a FOURTH, so raising it cannot re-price a log that never
+        // asked for one. The blank `verify:1` tail is a step the run was routed
+        // INTO by a build that already billed its own round, so it owes nothing
+        // extra — and that is half of what the case pins: the other half is that a
+        // blank tail at a gate state never reads as a red verdict when the land
+        // gate asks the record.
+        buildAttempts: 3,
         challengeDone: true,
         reviewDone: true,
         ciFixUsed: true,
@@ -318,6 +322,13 @@ function forgedCiRed(dir: string, issue: number): void {
     };
     writeFileSync(leanStateFile(dir, 43), JSON.stringify(seed, null, 2), "utf8");
     const { handlers, calls } = scripted(HAPPY);
+    // The fold's own answer for this pre-change log, asserted rather than assumed:
+    // a bump to the cap must not invalidate a record a run wrote under the old one.
+    const folded = foldOf(seed);
+    assert(
+      folded.state === "verify" && JSON.stringify(folded.counters) === JSON.stringify(seed.counters),
+      `a pre-change log still folds to its own counters (${folded.state} ${JSON.stringify(folded.counters)})`,
+    );
     const result = await runLean({ repoRoot: dir, issue: 43, handlers, now: ticking().now });
     assert(
       result.state === "landed" && result.code === 0 && calls.land === 1,

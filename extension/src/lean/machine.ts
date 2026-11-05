@@ -111,7 +111,7 @@ export function exitCodeFor(state: LeanState): number {
 }
 
 /** How many build rounds a run gets before it ships a draft instead. */
-export const MAX_BUILD_ATTEMPTS = 2;
+export const MAX_BUILD_ATTEMPTS = 3;
 
 /** The `decline` kind that says the comment did not reach the forge. */
 export const REPORT_FAILED_KIND = "report-failed";
