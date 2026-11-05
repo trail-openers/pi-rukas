@@ -32,7 +32,11 @@
  */
 
 import { realpathSync } from "node:fs";
-import { classifyFailureLine, failureLines } from "../work-driver-verify-failures.ts";
+import {
+  FAILURE_LINE_SCAN_MAX,
+  classifyFailureLine,
+  failureLines,
+} from "../work-driver-verify-failures.ts";
 import {
   PREEXISTING_BASE_NAMES_CAP,
   PREEXISTING_NAMES_CAP,
@@ -54,7 +58,12 @@ export type BaselineExcuse =
   | { kind: "refused" };
 
 /** The identity tokens one failure line carries (a runner may pack several onto one). */
-function identitiesOfLine(line: string): TestIdentity[] {
+function identitiesOfLine(candidate: string): TestIdentity[] {
+  // ONE clip for the whole line, then every parser below reads the clipped text:
+  // the classifier bounds its own view, but the identity parsers reach into the
+  // line's LAST characters, so an over-long candidate handed to them unclipped
+  // would make those tails scan the whole string.
+  const line = clipForScan(candidate);
   const verdict = classifyFailureLine(line);
   if (verdict === undefined || !verdict.namesTest) return [];
   if (verdict.shape === "pytest-failed" || verdict.shape === "pytest-error") {
@@ -88,7 +97,13 @@ function stripShapePrefix(line: string, shape: string): string | undefined {
   }
   if (shape === "go-fail") return /^\s*---\s+FAIL:\s+(.*)$/s.exec(line)?.[1];
   if (shape === "tap-not-ok")
-    return /^\s*not\s+ok\b[^\S\n]*(?:[0-9]+[^\S\n]*-[^\S\n]*)?(.*)$/is.exec(line)?.[1];
+    // Two INDEPENDENT optionals: the number, and the ` - ` the harness puts between
+    // number and description. `not ok 1 - x`, `not ok 1 x`, `not ok - x` and
+    // `not ok x` are four spellings of one identity and must yield the SAME token —
+    // one optional group tying the separator to the number made the unnumbered
+    // spelling keep its leading `- `, and a name that reads back differently never
+    // matches the token the other run recorded.
+    return /^\s*not\s+ok\b[^\S\n]*(?:[0-9]+[^\S\n]*)?(?:-[^\S\n]*)?(.*)$/is.exec(line)?.[1];
   // Every remaining `namesTest: true` shape (`diagnostic`, `named-file`,
   // `script-tally`, `fail-header`, `assertion-mark`, the payload marker) carries
   // prose rather than a test identity, and comparing prose between two runs would
@@ -99,6 +114,17 @@ function stripShapePrefix(line: string, shape: string): string | undefined {
 /** Drop a runner's trailing ` - <reason>` from an identity token. */
 function stripTrailingReason(token: string): string {
   return (token.split(" - ")[0] ?? "").trim();
+}
+
+/**
+ * One candidate line clipped to the scan window BEFORE anything reads it.
+ *
+ * The same bound `work-driver-verify-full.ts`'s `clipForScanSlice` applies to a
+ * packed slice: a pathological line costs the window and no more, in the classifier
+ * and in the identity parsers alike.
+ */
+function clipForScan(line: string): string {
+  return line.length > FAILURE_LINE_SCAN_MAX ? line.slice(0, FAILURE_LINE_SCAN_MAX) : line;
 }
 
 /**
@@ -132,6 +158,9 @@ export function testIdentitiesOf(stream: string): TestIdentity[] {
  * LONGEST EXISTING PREFIX resolves — the probe's own tree is deleted before this
  * comparison runs, and resolving its parent still puts it in the same spelling as
  * every other path here.
+ *
+ * Called ONCE per {@link baselineExcuse} for each side, never per candidate: a
+ * tier that names hundreds of tests asked this hundreds of times before.
  */
 function treeRoot(dir: string): string {
   const parts = dir
@@ -161,36 +190,17 @@ function segments(value: string): string[] {
 }
 
 /**
- * Is the name the SAME test in both trees?
- *
- * The two runs print the SAME project-relative path — one ran in the run's
- * worktree, the other in a throwaway checkout of the base — so equality is the
- * equality of the two RELATIVE names, with each side first normalised (back
- * slashes, `.` segments, a leading `./`) and each side anchored through its OWN
- * tree to catch a spelling that escapes it (a name printed as an absolute path, or
- * under the other tree's prefix, is not placeable and never matches). There is no
- * shared-tail branch: a tail match only ever excuses, so `p/q/r/tests/x.py` would
- * excuse `tests/x.py`.
+ * The two trees of one comparison, each resolved once, and refused if they are not
+ * two trees.
  *
  * The two roots must be DIFFERENT directories. If they are the same tree, or two
  * spellings of it, every name matches its own echo and the comparison proves
- * nothing about which run printed what — that is `unknown`, never a match.
+ * nothing about which run printed what — the caller refuses the excuse rather than
+ * grading a green on an identity's own echo.
  */
-function sameTest(
-  headPath: string,
-  basePath: string,
-  headRest: string,
-  baseRest: string,
-  roots: { headRoot: string; probeRoot: string },
-): boolean {
-  if (headRest !== baseRest) return false;
-  const headRoot = treeRoot(roots.headRoot);
-  const probeRoot = treeRoot(roots.probeRoot);
-  if (headRoot === probeRoot) return false;
-  const headRel = relativeWithin(headRoot, headPath);
-  const baseRel = relativeWithin(probeRoot, basePath);
-  if (headRel === undefined || baseRel === undefined) return false;
-  return headRel.length > 0 && headRel === baseRel;
+interface TreePair {
+  headRoot: string;
+  probeRoot: string;
 }
 
 /**
@@ -214,26 +224,70 @@ function relativeWithin(root: string, path: string): string | undefined {
   return rel === "" ? undefined : rel;
 }
 
-/** Does `name` appear in `base`? Path halves are anchored, everything else is exact. */
-function nameMatches(
-  name: TestIdentity,
-  base: readonly TestIdentity[],
-  roots: { headRoot: string; probeRoot: string },
-): boolean {
-  const [headPath = "", ...headRest] = name.name.split("::");
-  for (const candidate of base) {
-    if (candidate.pathBearing !== name.pathBearing) continue;
-    if (!name.pathBearing) {
-      if (candidate.name === name.name) return true;
+/** The two trees of one comparison, each resolved once — see {@link TreePair}. */
+interface TreePair {
+  headRoot: string;
+  probeRoot: string;
+}
+
+/**
+ * The base set indexed for the subset test, so the test costs O(H+B) and not O(H*B).
+ *
+ * Two indexes, because the two kinds of identity are compared differently:
+ *
+ *   - `bare` holds every non-path identity (a go `TestFoo`, a TAP description) and is
+ *     answered by exact string equality, which is what the unindexed loop did;
+ *   - `anchored` holds the path-bearing identities keyed by the project-relative
+ *     name each one anchors to INSIDE THE BASE TREE. A head name looks up its own
+ *     anchored remainder and a match is a key hit, so the hundreds of candidates a
+ *     chatty suite prints are never each anchored against the head.
+ *
+ * A base identity whose path half is not placeable in the probe tree is indexed
+ * under no key: it is not placeable, so it can stand for nothing — the same answer
+ * the unindexed loop gave, where `relativeWithin` refused it.
+ */
+interface BaseIndex {
+  bare: Set<string>;
+  anchored: Map<string, Set<string>>;
+}
+
+/** Index the base set once for one comparison; see {@link BaseIndex}. */
+function indexBase(base: readonly TestIdentity[], roots: TreePair): BaseIndex {
+  const bare = new Set<string>();
+  const anchored = new Map<string, Set<string>>();
+  for (const identity of base) {
+    if (!identity.pathBearing) {
+      bare.add(identity.name);
       continue;
     }
-    const [basePath = "", ...baseRest] = candidate.name.split("::");
-    // There is no shared-tail branch: a tail match only ever excuses, so
-    // `p/q/r/tests/x.py` would excuse `tests/x.py`.
-    const ok = sameTest(headPath, basePath, headRest.join("::"), baseRest.join("::"), roots);
-    if (ok) return true;
+    const [basePath = "", ...baseRest] = identity.name.split("::");
+    const rel = relativeWithin(roots.probeRoot, basePath);
+    if (rel === undefined || rel === "") continue;
+    const rest = baseRest.join("::");
+    const bucket = anchored.get(rel);
+    if (bucket === undefined) anchored.set(rel, new Set([rest]));
+    else bucket.add(rest);
   }
-  return false;
+  return { bare, anchored };
+}
+
+/**
+ * Does `name` appear in `base`? Path halves are anchored, everything else is exact.
+ *
+ * A head identity whose path half is not placeable in the run's own tree matches
+ * nothing — there is no project-relative name to look up, and guessing one from a
+ * tail is exactly the shared-tail match this module refuses.
+ */
+function nameMatches(name: TestIdentity, index: BaseIndex, roots: TreePair): boolean {
+  if (!name.pathBearing) return index.bare.has(name.name);
+  const [headPath = "", ...headRest] = name.name.split("::");
+  const headRel = relativeWithin(roots.headRoot, headPath);
+  if (headRel === undefined || headRel === "") return false;
+  const bucket = index.anchored.get(headRel);
+  if (bucket === undefined) return false;
+  // The `::name` half compares by exact string equality, as before; there is no
+  // shared-tail branch, so `p/q/r/tests/x.py` never excuses `tests/x.py`.
+  return bucket.has(headRest.join("::"));
 }
 
 /**
@@ -287,8 +341,14 @@ export function baselineExcuse(opts: {
   // prints can stand as evidence the base was red.
   if (baseRedIsMissingDeps(baseStream)) return { kind: "refused" };
   if (head.length === 0 || base.length === 0) return { kind: "refused" };
-  const roots = { headRoot: opts.headRoot, probeRoot: opts.probeRoot };
-  if (!head.every((name) => nameMatches(name, base, roots))) return { kind: "refused" };
+  // Both trees resolved ONCE for this comparison, and a probe tree that is the run's
+  // own tree — or another spelling of it — compares against nothing.
+  const headRoot = treeRoot(opts.headRoot);
+  const probeRoot = treeRoot(opts.probeRoot);
+  if (headRoot === probeRoot) return { kind: "refused" };
+  const roots: TreePair = { headRoot, probeRoot };
+  const index = indexBase(base, roots);
+  if (!head.every((name) => nameMatches(name, index, roots))) return { kind: "refused" };
   // The subset test ran on the COMPLETE parsed sets; the caps below bound only what
   // is persisted and rendered. `baseNames` is what lets `ci` reuse this record
   // instead of paying for its own base probe, and an oversized one is omitted
@@ -326,6 +386,6 @@ export function preexistingReason(names: readonly string[]): string {
  */
 export function baseStreamOf(names: readonly string[]): string {
   return names
-    .map((name) => (name.includes("::") ? `FAILED ${name}` : `not ok - ${name}`))
+    .map((name) => (name.includes("::") ? `FAILED ${name}` : `not ok 1 - ${name}`))
     .join("\n");
 }

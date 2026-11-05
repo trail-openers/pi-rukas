@@ -48,7 +48,7 @@ import { parsePiSpec } from "./spec.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import { specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
 import { PR_URL, PR_URL_MAX_CHARS } from "./state-outcome.ts";
-import { type Outcome, newestDecided } from "./state.ts";
+import { type Outcome, Step, newestDecided } from "./state.ts";
 import { oneLine } from "./text-fence.ts";
 
 /** Run git in `wt`, rejecting a read that cannot answer as infrastructure. */
@@ -363,10 +363,20 @@ export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promis
         ? {}
         : { commandNotRunnable: v.outcome.commandNotRunnable }),
       // The tiers the gate excused over the base commit, from the record — the body
-      // renders its disclosure from this and never from the reason prose.
-      ...(v?.outcome?.preexistingFailures === undefined
-        ? {}
-        : { preexistingFailures: v.outcome.preexistingFailures }),
+      // renders its disclosure from this and never from the reason prose. BOTH steps
+      // that can excuse a tier are read: `ci` excuses the project's FULL tier under
+      // its own key, and a body that read only `verify` would print a clean PR for a
+      // run whose full tier exited non-zero and was let go on the base commit's
+      // colour. A newer `ci` verdict with no disclosure replaces an older one — the
+      // newest decided step of each kind is the claim that stands, as it is for
+      // `verifyKind`.
+      ...(() => {
+        const excused = {
+          ...(v?.outcome?.preexistingFailures ?? {}),
+          ...(newestDecided(ctx.steps, "ci")?.outcome?.preexistingFailures ?? {}),
+        };
+        return Object.keys(excused).length === 0 ? {} : { preexistingFailures: excused };
+      })(),
       // The optional adversary round that ran out of its own ceiling, read off
       // the log rather than out of a closure, so a resumed run prints the same
       // line a live one would. The reader's object IS the pair (`{limit, value}`)

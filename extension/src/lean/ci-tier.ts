@@ -13,10 +13,9 @@ import type { WorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { neverStarted, wasKilled } from "./specify-proof.ts";
 import { oneLine } from "./text-fence.ts";
+import { TIER_TAIL_LINES, tailLines } from "./verify-steps.ts";
 import { VerifyInfraError } from "./verify-types.ts";
-
-/** How many trailing lines of the tier's output a red reason carries. */
-const TIER_TAIL_LINES = 40;
+import { clipReason } from "./verify.ts";
 
 /**
  * The project config, read ONCE per step by `ciOutcome` and passed down.
@@ -61,10 +60,13 @@ export async function tierFailure(
     throw new VerifyInfraError(
       `the ci full tier could not be started: ${cmd}: ${oneLine(out, 300)}`,
     );
-  const tail = out
-    .split(/\r?\n/)
-    .filter((l) => l.trim() !== "")
-    .slice(-TIER_TAIL_LINES)
-    .join("\n");
-  return { reason: `the full verify tier exited ${String(e.code)}: ${cmd}\n${tail}`, stream: out };
+  // The tail and the bound are `verify`'s own, not a second copy of them: the step
+  // log is one JSON document and `build`'s re-entry pastes a red reason into a
+  // prompt, so a tail bound alone still lets one very long line — a minified bundle
+  // echoed by a failing diff — carry the whole log into the record.
+  const tail = tailLines(out, TIER_TAIL_LINES);
+  return {
+    reason: clipReason(`the full verify tier exited ${String(e.code)}: ${cmd}\n${tail}`),
+    stream: out,
+  };
 }

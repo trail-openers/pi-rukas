@@ -173,6 +173,14 @@ export interface VerifyOpts extends ProbeShapeOpts {
    */
   headRerunSilentReject?: boolean;
   /**
+   * Reject the step's RE-RUN at HEAD with a value the case names — the executor's own
+   * kill, `overflow` or `ENOENT` shape, each of which `tierObserved` says `false` for.
+   * These shapes still carry a `stdout`, so the re-run is the one place a tier that
+   * nobody saw fail twice can print the very names the base printed, and an excuse
+   * built from it grades a green on an unobserved run.
+   */
+  headRerunRejects?: unknown;
+  /**
    * What the BASE PROBE's tier run printed (combined stdout+stderr), for the cases
    * that decide what the base NAMED rather than only what it exited. The base runs
    * at a commit the case built, so only the case can say what that run printed —
@@ -307,6 +315,7 @@ export function makeVerifyExec(opts: {
     // executor's own group kill fires on it and on nothing else.
     let bound = o.headRerunKilled === true && run === 1 ? (o.timeoutMs ?? 2_000) : o.timeoutMs;
     if (o.headRerunSilentReject === true && run === 1) return Promise.reject(new Error("nope"));
+    if (o.headRerunRejects !== undefined && run === 1) return Promise.reject(o.headRerunRejects);
     // A case whose tier must NAME failing tests owns the stream both of HEAD's runs
     // print; the exit code stays the executor's own non-zero shape, so `runTier` reads
     // a real red rather than a kill or a command that never started.

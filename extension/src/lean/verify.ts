@@ -74,6 +74,7 @@ import {
   baselineUnusableError,
   flakeReason,
   probeTierAtBase,
+  tierObserved,
 } from "./verify-baseline.ts";
 import { confirmTierRedFrom } from "./verify-baseline.ts";
 import { type CommandCriteriaOutcome, commandCriteriaOutcome } from "./verify-commands.ts";
@@ -317,6 +318,17 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
       );
       if (frozenRan.kind !== "pass")
         return { kind: "red", reason: clipReason(baselineRedReason(name, cmd, ctx.run.baseSha)) };
+      // The excuse reads the re-run's OUTPUT, so the re-run must have OBSERVED the
+      // work. `confirmTierRedFrom` above already refuses to call an unobserved re-run
+      // a flake, but a kill, an overflow or an un-startable command still arrives with
+      // a `stdout` — the text the tier printed before the signal — and that text can
+      // name the very tests the base printed. An excuse built from it would grade a
+      // green over a tier nobody saw fail twice, which is the outcome this arm exists
+      // to refuse, so the first red stands exactly as it did before the excuse.
+      if (!tierObserved(rerun.ran)) {
+        tierResults.push(one);
+        break;
+      }
       const excuse = excuseOverBase({
         tierName: name,
         cmd,
