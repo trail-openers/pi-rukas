@@ -1,7 +1,7 @@
 # Probe Hygiene
 
 A probe that needs hostile, alternate or empty config — an unreadable
-`~/.gitconfig`, a foreign `GH_CONFIG_GLOBAL`, a git identity that must not be the
+`~/.gitconfig`, a foreign `GH_CONFIG_DIR`, a git identity that must not be the
 operator's — runs in a scratch directory you made: point `HOME`,
 `GIT_CONFIG_GLOBAL` and `XDG_CONFIG_HOME` at one `mktemp -d` and pass that env
 to the command.

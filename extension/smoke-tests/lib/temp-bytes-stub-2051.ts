@@ -9,7 +9,8 @@
  * under the temp dir and never removed them).
  */
 
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import { trackedTempDir } from "./git-test-env.ts";
 
 /**
@@ -29,5 +30,6 @@ export function childFreeTemp(tag: string): string {
  * here would clear the threshold arm while allocating nothing at all.
  */
 export function writeRealBytes(file: string, bytes: number): void {
+  mkdirSync(path.dirname(file), { recursive: true });
   writeFileSync(file, Buffer.alloc(bytes, 0x78));
 }
