@@ -59,8 +59,7 @@ mkdirSync(home, { recursive: true });
 
 // --- the accepted overlap: a sibling's entry inside the reviewer's window
 
-const reviewerWindow = (async () =>
-  guarded("code-review-specialist", home, null, 80))();
+const reviewerWindow = (async () => guarded("code-review-specialist", home, null, 80))();
 await new Promise((settle) => setTimeout(settle, 20));
 const other = await guarded("developer", home, "not-the-reviewers.txt");
 const reviewer = await reviewerWindow;

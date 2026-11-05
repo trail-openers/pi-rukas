@@ -8,10 +8,13 @@
  * another checkout's build. Either way the abort probe's spawn read a path the
  * test does not own (ENOENT, or a sibling tree being rebuilt under it).
  *
- * Import this module FIRST in test-cancel.ts: ES modules evaluate in import
- * order, so this side effect runs before `roles.ts` is evaluated. The fake
- * `pi` never reads the prompt, so a one-line stub per role is enough to make
- * the spawn's read succeed without depending on the build.
+ * Import this module FIRST in a test that spawns: ES modules evaluate in import
+ * order, so this side effect runs before `roles.ts` is evaluated. The fake or
+ * stub `pi` never reads the prompt, so a one-line stub per role is enough to
+ * make the spawn's read succeed without depending on the build — which is also
+ * why a spawn test that shares the verify loop with a builder (`test-AC1` runs
+ * `build.sh`, whose `rm -f "$OUTPUT_DIR"/*.md` would otherwise delete a prompt
+ * mid-run) needs this rather than the real `dist/`.
  *
  * Intentionally NOT named `test-*.ts` (same shape as the other lib helpers).
  * It must not import `roles.ts` itself, or that import would run before the

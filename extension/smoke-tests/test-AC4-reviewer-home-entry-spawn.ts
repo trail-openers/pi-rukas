@@ -21,9 +21,15 @@
  * child — bun does not write env mutations back to the real environ).
  */
 
+// Must stay first: points the role prompts at a test-owned dir before src/roles.ts
+// resolves them at module load, so AC4 never reads `<repo>/dist/prompts/standard/*`
+// that a sibling test's build.sh is replacing under it (#1579, same helper as
+// test-cancel.ts).
+import "./lib/cancel-prompts.ts";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { homeEntries, homeNewEntryLines } from "../src/home-watch.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import { gitTestEnv } from "./lib/git-test-env.ts";
 import { isolateLedger } from "./lib/review-ledger-test-helpers.ts";
@@ -121,21 +127,35 @@ async function dispatchWithProbe(role: string, home: string, name: string | null
   );
 }
 
-// 4 — the mutant: what the run looks like with the compare step skipped. The
-// entry is created outside the guard's window (after the dispatch returned), so
-// no listing can see it: the entry survives and the result says nothing, which
-// is the state case 1 exists to catch when the guard does its comparison.
+// 4 — the mutant: what the run looks like with the compare step skipped. Following
+// the G mutant of test-operator-config-guard.ts: the SAME hostile run (the child
+// writes $HOME inside the window, as case 1 does), once with the pre-run listing
+// taken and never compared — which is all that is left when the compare step is
+// deleted — and once with the guard in place. If this pair ever goes green-to-green,
+// case 1 is vacuous too.
 {
   const home = mkdtempSync(path.join(os.tmpdir(), "pi-2031-ac4-mutant-"));
-  let res: Awaited<ReturnType<typeof spawnSpecialist>> | undefined;
+  // The mutant: pre-run listing, run the child, return — never compare.
+  const mutant = await homeEntries(home);
   await withEnv({ HOME: home }, async () => {
-    res = await dispatchWithProbe("code-review-specialist", home, null);
+    await dispatchWithProbe("code-review-specialist", home, "probe.txt");
   });
-  writeFileSync(path.join(home, "probe.txt"), "probe\n");
+  const lines = homeNewEntryLines("code-review-specialist", mutant, await homeEntries(home));
+  assert(
+    existsSync(path.join(home, "probe.txt")) && lines.length === 1,
+    `AC4 mutant "compare step skipped": an entry made INSIDE the window survives while the only thing missing was the comparison (${JSON.stringify(lines)})`,
+  );
+  // And the guard's own comparison proves the difference is the compare step, not
+  // the fixture.
+  const guardHome = mkdtempSync(path.join(os.tmpdir(), "pi-2031-ac4-guard-"));
+  let res: Awaited<ReturnType<typeof spawnSpecialist>> | undefined;
+  await withEnv({ HOME: guardHome }, async () => {
+    res = await dispatchWithProbe("code-review-specialist", guardHome, "probe.txt");
+  });
   const reported = (res?.operatorConfig ?? []).filter((l) => l.includes("created in $HOME"));
   assert(
-    existsSync(path.join(home, "probe.txt")) && reported.length === 0,
-    `AC4 mutant "compare step skipped": an entry made with no comparison leaves it unreported (${JSON.stringify(reported)})`,
+    existsSync(path.join(guardHome, "probe.txt")) && reported.length === 1,
+    `AC4: the same run with the guard's comparison in place reports the entry (${JSON.stringify(reported)})`,
   );
 }
 

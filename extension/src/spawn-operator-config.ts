@@ -372,8 +372,9 @@ export async function withOperatorConfigGuard<R>(
   const report = isReviewerRole(role);
   const home = homeDir(process.env);
   // The baseline is taken here, before the child, and is the only evidence a name is
-  // new. Where the listing failed there is no baseline, and no name gets accused.
-  const homeBaseline: HomeBaseline = await homeEntries(home);
+  // new. Only a reviewer role is listed at all — a developer dispatch does no $HOME I/O.
+  // Where the listing failed there is no baseline, and no name gets accused.
+  const homeBaseline: HomeBaseline | undefined = report ? await homeEntries(home) : undefined;
   let result: R | null = null;
   try {
     result = await runChild();
@@ -397,7 +398,7 @@ export async function withOperatorConfigGuard<R>(
     // one line says why), while a baseline plus a failed second listing is "cannot prove
     // unchanged" — a fact about the home, never attributable to an entry the child made.
     let homeLines: string[] = [];
-    if (report) {
+    if (report && homeBaseline !== undefined) {
       if ("names" in homeBaseline) {
         const after = await homeEntries(home);
         homeLines =
@@ -417,7 +418,7 @@ export async function withOperatorConfigGuard<R>(
     // there is nothing to annotate — the traceWarn above is the only record.
     const lines = [...violations, ...homeLines];
     if (lines.length > 0 && result !== null && isDispatchResult(result)) {
-      result.operatorConfig = lines;
+      result.operatorConfig = [...(result.operatorConfig ?? []), ...lines];
     }
   }
 }

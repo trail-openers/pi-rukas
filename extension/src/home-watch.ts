@@ -26,9 +26,15 @@
  *
  * Both are disclosure only: `ok`, `loopOutcome` and the verdicts are untouched, because
  * there is nothing to repair.
+ *
+ * A name is also UNTRUSTED text: a child picks it, and the line it lands in reaches
+ * stderr and the PM's report. `neutraliseFenceEntry` is the repo's one-line sanitiser
+ * for exactly that (a control character there is a log-injection primitive), so the
+ * name goes through it before it is interpolated.
  */
 
 import { readdir } from "node:fs/promises";
+import { neutraliseFenceEntry } from "./plan-fence-render.ts";
 
 /** The result of a listing: the names it saw, or the errno that stopped it. */
 export type HomeBaseline = { names: string[] } | { code: string | undefined };
@@ -61,7 +67,8 @@ export function homeNewEntryLines(
   const had = new Set(baseline.names);
   const lines: string[] = [];
   for (const name of new Set(after.names)) {
-    if (!had.has(name)) lines.push(`${name} created in $HOME during the ${role} run`);
+    if (!had.has(name))
+      lines.push(`${neutraliseFenceEntry(name)} created in $HOME during the ${role} run`);
   }
   return lines;
 }
