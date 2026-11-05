@@ -114,11 +114,15 @@ import { assert, draftBody, mustSpec, specExit } from "./lib/plan-pi-spec-fixtur
   // two characters, so the most a field can cost. Fourteen bullets, so the cap
   // applies and `size L` is in the note.
   const bs = "\\";
+  // Exactly AT the bound, never over it: a criterion longer than
+  // `PI_SPEC_CRITERION_MAX_CHARS` is no longer clipped into the block, it makes
+  // the whole block refuse to file, so the render this measures must be the widest
+  // one that actually files.
   const worst = mustSpec(
     piSpecFromDraft({
       type: "feature",
       title: bs.repeat(500),
-      body: draftBody(Array.from({ length: 14 }, () => `${bs.repeat(300)} \`bun run x\``)),
+      body: draftBody(Array.from({ length: 14 }, () => bs.repeat(200))),
     }),
     "ceiling: worst",
   );
@@ -132,7 +136,7 @@ import { assert, draftBody, mustSpec, specExit } from "./lib/plan-pi-spec-fixtur
     `ceiling: the worst case comes close to the ceiling, so it is not inflated (${section.length} vs ${PI_SPEC_SECTION_MAX_CHARS})`,
   );
   const placed = placePiSpecSection(
-    draftBody(Array.from({ length: 14 }, () => bs.repeat(300))),
+    draftBody(Array.from({ length: 14 }, () => bs.repeat(200))),
     "feature",
     bs.repeat(500),
   );

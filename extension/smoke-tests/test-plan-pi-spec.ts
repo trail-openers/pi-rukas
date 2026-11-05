@@ -31,6 +31,7 @@
  */
 import { type PiSpec, parsePiSpec, readiness } from "../src/lean/spec.ts";
 import { finalDraftBody } from "../src/plan-gap-disclosure.ts";
+import { sectionBullets } from "../src/plan-pi-spec-text.ts";
 import {
   PI_SPEC_CRITERION_MAX_CHARS,
   PI_SPEC_EXAMPLE_INFO,
@@ -147,14 +148,28 @@ import { assert, draftBody, mustSpec, specExit } from "./lib/plan-pi-spec-fixtur
 }
 
 {
+  // An over-long bullet is NEVER cut: a criterion the block cannot carry whole is
+  // one lean would build and test against half a sentence, so the whole block is
+  // left out and the filed body says why. `piSpecFromDraft` still maps it at the
+  // bound; only `placePiSpecSection` decides.
+  const overLong = `criterion ${"x".repeat(3_000)}`;
   const spec = piSpecFromDraft({
     type: "feature",
     title: "t",
-    body: draftBody([`criterion ${"x".repeat(3_000)}`]),
+    body: draftBody([overLong]),
   });
   assert(
     (spec?.criteria[0]?.text.length ?? 0) === PI_SPEC_CRITERION_MAX_CHARS,
-    `mapper: criterion text is clipped to ${PI_SPEC_CRITERION_MAX_CHARS} (got ${spec?.criteria[0]?.text.length})`,
+    `mapper: criterion text is bounded at ${PI_SPEC_CRITERION_MAX_CHARS} (got ${spec?.criteria[0]?.text.length})`,
+  );
+  const refused = placePiSpecSection(draftBody([overLong]), "feature", "t");
+  assert(
+    refused.spec === undefined &&
+      !refused.body.includes(PI_SPEC_HEADING) &&
+      refused.body.includes(PI_SPEC_OMISSION_PREFIX) &&
+      (refused.omitted ?? "").includes("AC1") &&
+      (refused.omitted ?? "").includes(String(overLong.length)),
+    `over-long criterion: the block is omitted, disclosed, and the reason names AC1 and its ${overLong.length} chars (got ${JSON.stringify(refused.omitted)})`,
   );
   // The clip never decides what a criterion is: a span past it is prose as well.
   const late = piSpecFromDraft({
@@ -364,6 +379,19 @@ assert(
   assert(
     body.startsWith(`${PI_SPEC_HEADING}\n`),
     "placement: the section is the FIRST thing in the body",
+  );
+  // AC2: the block and the prose say the same thing. For an UN-COMPACTED filing
+  // every criterion's text equals its surviving bullet after the mapper's own
+  // one-line collapsing; bullets `sectionBullets` drops are the stated exception.
+  const parsedSpec = parsed.ok ? parsed.spec : undefined;
+  const proseBullets = sectionBullets(plain, "Acceptance criteria").map((b) =>
+    b.replace(/\s+/g, " ").trim(),
+  );
+  assert(
+    proseBullets.length === 3 &&
+      (parsedSpec?.criteria.length ?? 0) === proseBullets.length &&
+      proseBullets.every((b, i) => parsedSpec?.criteria[i]?.text === b),
+    `body: each criteria[i].text equals its surviving prose bullet, one-line collapsed (got ${JSON.stringify(parsedSpec?.criteria.map((c) => c.text))})`,
   );
   assert(
     body.indexOf(PI_SPEC_HEADING) < body.indexOf("## Acceptance criteria") &&

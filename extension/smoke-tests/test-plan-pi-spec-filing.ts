@@ -124,15 +124,30 @@ installNoPlanCacheStub();
   // ~2,950 chars overflow stage 0's 20-per-kind render and fit stage 1's 10. The
   // block is placed AFTER the fitter, so compaction has no way to reach it and
   // the reservation is what keeps the total inside the forge cap.
+  //
+  // The criteria themselves come from the operator OUTCOME channel, which the
+  // drafter renders verbatim: an angle-derived criterion is clipped to 220 chars
+  // by the draft, and a bullet over the block's 200-char bound now makes the whole
+  // block refuse to file rather than arrive cut — so the long angle items stay what
+  // they are (overflow material) and the contract's criteria are stated short.
   const marker = { line: "x".repeat(300), marker: { run: "smoke", actor: "plan" } };
   forgeStub.created.length = 0;
   forgeStub.mode = "ok";
   forgeStub.existing = null;
   installForgeStub();
   installOverflowDispatch(`the pi-spec block must survive ${"x".repeat(2950)} end`, 100);
+  const operatorCriteria = Array.from(
+    { length: 14 },
+    (_, i) =>
+      `operator criterion ${i + 1}: the filed block must carry it whole after compaction ${"y".repeat(40)}`,
+  );
   const r = await runPlanPipeline(
     {} as never,
-    { descriptor: DESC, provenance: marker },
+    {
+      descriptor: DESC,
+      provenance: marker,
+      context: `Done when:\n${operatorCriteria.map((s) => `- ${s}`).join("\n")}`,
+    },
     process.cwd(),
   );
   const filed = forgeStub.created[0]?.body ?? "";
@@ -156,6 +171,10 @@ installNoPlanCacheStub();
     parsed.ok === true &&
       JSON.stringify(parsed.ok ? parsed.spec : null) === JSON.stringify(embedded),
     "pipeline: the block in the filed body parses and deep-equals the PiSpec the renderer embedded",
+  );
+  assert(
+    !filed.includes(PI_SPEC_OMISSION_PREFIX),
+    "pipeline: an un-cuttable criterion is the only reason to omit, so this filing carries no omission line",
   );
   assert(
     parsed.ok === true &&
@@ -301,6 +320,57 @@ installNoPlanCacheStub();
       !noTitlePlain.body.includes(PI_SPEC_HEADING),
     "read-back: the no-provenance placer reports the omission it could not contract",
   );
+}
+
+// ------------------- an over-long criterion files no block and says so
+
+{
+  // The filed-body half of the rule: a 220-character criterion is over the block's
+  // 200-char bound, so the filing carries NO block and one plain line naming the
+  // criterion — lean then refuses the issue as not ready instead of building and
+  // testing against half a sentence.
+  forgeStub.created.length = 0;
+  forgeStub.mode = "ok";
+  forgeStub.existing = null;
+  installForgeStub();
+  setPlanDispatch(
+    makeDispatchStub(
+      "GAP: HIGH clarify the boundary — proposed resolution: add a criterion\nVERDICT: READY",
+    ),
+  );
+  const longCriterion = `the block must carry this criterion whole, with every clause of it kept intact, ${"z".repeat(140)}`;
+  const r = await runPlanPipeline(
+    {} as never,
+    {
+      descriptor: "add a pi-spec block that never cuts a criterion",
+      type: "feature",
+      // The operator OUTCOME channel is the drafter's verbatim AC source: an
+      // angle-derived criterion is clipped to 220 chars on the way in, which would
+      // make this fixture about the drafter's clip rather than the block's bound.
+      context: `Done when:\n- ${longCriterion}`,
+    },
+    process.cwd(),
+  );
+  const filed = forgeStub.created[0]?.body ?? "";
+  const acSection = filed.split("## Acceptance criteria")[1]?.split("## ")[0] ?? "";
+  assert(
+    r.filed === true && acSection.includes(`- ${longCriterion}`),
+    "omission: the filed prose carries the over-long criterion in full",
+  );
+  assert(
+    !filed.includes(PI_SPEC_HEADING) &&
+      parsePiSpec(filed).ok === false &&
+      filed.includes(PI_SPEC_OMISSION_PREFIX) &&
+      filed.includes("criterion AC1 is"),
+    `omission: no block is filed and the body says why (${JSON.stringify(
+      filed.split(PI_SPEC_OMISSION_PREFIX)[1]?.trim().slice(0, 60),
+    )})`,
+  );
+  assert(
+    !filed.includes("```pi-spec v1"),
+    "omission: the filed body carries no fence at all, so there is no half-text to trust",
+  );
+  setPlanDispatch(null);
 }
 
 console.log(`\n${specExit() === 0 ? "PASS" : "FAIL"} test-plan-pi-spec-filing`);
