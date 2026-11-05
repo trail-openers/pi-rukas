@@ -47,9 +47,11 @@ export interface ChangedLinesRepo {
  */
 export function setupChangedLinesRepo(branch = "feat/x"): ChangedLinesRepo {
   const dir = mkdtempSync(path.join(tmpdir(), "changed-lines-2027-"));
-  const env = gitTestEnv();
   const git = (...args: string[]) =>
-    execFileSync("git", ["-C", dir, ...args], { env, encoding: "utf8" }).trim();
+    execFileSync("git", ["-C", dir, ...args], {
+      env: gitTestEnv(),
+      encoding: "utf8",
+    }).trim();
   const write = (rel: string, body: string) => writeFileSync(path.join(dir, rel), body);
   git("init", "-q", "-b", "main");
   git("config", "user.email", "t@t");
