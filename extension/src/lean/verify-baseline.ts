@@ -474,10 +474,8 @@ export function baselineUnusableError(reason: string): VerifyInfraError {
   return new VerifyInfraError(reason);
 }
 /**
-The judgement {@link confirmTierRed} makes about a re-run it did not itself spawn.
+ * The judgement {@link confirmTierRed} makes about a re-run it did not itself spawn.
  *
- * `verify` needs the re-run's OUTPUT as well as its colour — the baseline excuse
- * reads which tests it named — so it spawns the child once through
  * `verify` needs the re-run's OUTPUT as well as its colour — the baseline excuse
  * reads which tests it named — so it spawns the child once through `tierRunStream`
  * in `verify-tier-rerun.ts` and asks this. One predicate for both callers is what

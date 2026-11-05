@@ -49,10 +49,10 @@ import { verifyHostEnv } from "../work-driver-verify-cmd.ts";
 import { type CiDeps, ghReads } from "./ci-deps.ts";
 import { CI_FULL_TIER, fullTierExcuse } from "./ci-excuse.ts";
 import { ciTierBudgetMs } from "./ci-tier-budget.ts";
+import { ciConfig, tierFailure } from "./ci-tier.ts";
 import { DEFAULT_BUDGETS, type WorkConfig } from "./config.ts";
 import { MINUTE_MS, deadlineStopsSteps } from "./deadline.ts";
 import type { HandlerCtx } from "./engine.ts";
-import { neverStarted, wasKilled } from "./specify-proof.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import { specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
 import type { PreexistingTierRecord } from "./state-outcome-maps.ts";
@@ -64,7 +64,6 @@ import { assertTreeClean } from "./verify-recheck.ts";
 import { VerifyInfraError } from "./verify-types.ts";
 
 /** The last lines of a tier's output — the part that says what actually broke. */
-const TIER_TAIL_LINES = 40;
 
 /** How long to wait between two reads of the forge while its checks run. */
 export const CI_POLL_MS = 60_000;
@@ -389,49 +388,6 @@ async function assertDiskAtVerifiedHead(
       `the worktree ${wt} is not on the run's branch ${branch} — the full tier would run on a tree taken off the ref everything after this step pushes`,
     );
   await assertTreeClean(deps.exec, wt, "ci");
-}
-
-/**
- * The project config, read ONCE per step by `ciOutcome` and passed down.
- *
- * Three halves of this step want it — the configured full tier, the wait bound
- * and the tier's bound — and all three read it through this one call, so they
- * cannot disagree about which commit's `.pi/work.json` they obeyed.
- */
-async function ciConfig(deps: CiDeps, ctx: HandlerCtx): Promise<WorkConfig> {
-  return await deps.loadConfig(ctx.repoRoot, ctx.run.baseSha).catch((err: unknown) => {
-    throw new VerifyInfraError(`could not load the project config: ${(err as Error).message}`);
-  });
-}
-
-/** Run the full tier in the worktree; a kill or an un-startable command throws. */
-async function tierFailure(
-  deps: CiDeps,
-  cmd: string,
-  wt: string,
-  timeoutMs: number,
-): Promise<{ reason: string; stream: string } | undefined> {
-  const ran = await deps
-    .exec(cmd, { cwd: wt, timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, killGroup: true })
-    .then((r) => ({ err: undefined as unknown, out: r }))
-    .catch((err: unknown) => ({ err, out: undefined as unknown }));
-  if (ran.err === undefined) return undefined;
-  const e = ran.err as { code?: unknown; stdout?: string; stderr?: string; message?: string };
-  const out = [e.stdout, e.stderr, e.message].filter(Boolean).join("\n");
-  if (wasKilled(ran.err))
-    throw new VerifyInfraError(
-      `the ci full tier was killed or timed out at ${timeoutMs}ms: ${cmd}`,
-    );
-  if (neverStarted(ran.err))
-    throw new VerifyInfraError(
-      `the ci full tier could not be started: ${cmd}: ${oneLine(out, 300)}`,
-    );
-  const tail = out
-    .split(/\r?\n/)
-    .filter((l) => l.trim() !== "")
-    .slice(-TIER_TAIL_LINES)
-    .join("\n");
-  return { reason: `the full verify tier exited ${String(e.code)}: ${cmd}\n${tail}`, stream: out };
 }
 
 /**
