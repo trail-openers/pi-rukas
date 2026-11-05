@@ -18,9 +18,9 @@
  * run that has no evidence should print that rather than print nothing.
  */
 
+import type { PiSpec } from "./spec.ts";
 import type { PreexistingTierRecord } from "./state-outcome-maps.ts";
 import { PREEXISTING_NAMES_CAP } from "./state-outcome-maps.ts";
-import type { PiSpec } from "./spec.ts";
 import type { Step } from "./state.ts";
 import { budgetTrio } from "./step-budget.ts";
 import { fenceText, oneLine } from "./text-fence.ts";

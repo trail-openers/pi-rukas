@@ -33,8 +33,8 @@ import type { CiDeps } from "./ci-deps.ts";
 import type { HandlerCtx } from "./engine.ts";
 import type { PreexistingTierRecord } from "./state-outcome-maps.ts";
 import { newestDecided } from "./state.ts";
+import { baseStreamOf, baselineExcuse } from "./verify-baseline-excuse.ts";
 import { baselineProbeWorktreePath, probeTierAtBase } from "./verify-baseline.ts";
-import { baselineExcuse, baseStreamOf } from "./verify-baseline-excuse.ts";
 
 /** The tier name the full tier's record is keyed by, in `ci`'s own outcome. */
 export const CI_FULL_TIER = "full";

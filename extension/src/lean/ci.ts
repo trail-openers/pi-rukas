@@ -47,6 +47,7 @@
 import { isFullCommitSha } from "../commit-sha.ts";
 import { verifyHostEnv } from "../work-driver-verify-cmd.ts";
 import { type CiDeps, ghReads } from "./ci-deps.ts";
+import { CI_FULL_TIER, fullTierExcuse } from "./ci-excuse.ts";
 import { ciTierBudgetMs } from "./ci-tier-budget.ts";
 import { DEFAULT_BUDGETS, type WorkConfig } from "./config.ts";
 import { MINUTE_MS, deadlineStopsSteps } from "./deadline.ts";
@@ -54,12 +55,11 @@ import type { HandlerCtx } from "./engine.ts";
 import { neverStarted, wasKilled } from "./specify-proof.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import { specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
-import type { Outcome } from "./state.ts";
 import type { PreexistingTierRecord } from "./state-outcome-maps.ts";
-import { CI_FULL_TIER, fullTierExcuse } from "./ci-excuse.ts";
-import { preexistingReason } from "./verify-baseline-excuse.ts";
+import type { Outcome } from "./state.ts";
 import { budgetFor } from "./step-budget.ts";
 import { oneLine } from "./text-fence.ts";
+import { preexistingReason } from "./verify-baseline-excuse.ts";
 import { assertTreeClean } from "./verify-recheck.ts";
 import { VerifyInfraError } from "./verify-types.ts";
 

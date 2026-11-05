@@ -10,8 +10,8 @@
  */
 
 import type { HandoffChannel } from "../work-driver-handoff-channel.ts";
-import type { DispatchUsageRow } from "./step-budget.ts";
 import type { PreexistingTierRecord } from "./state-outcome-maps.ts";
+import type { DispatchUsageRow } from "./step-budget.ts";
 
 /**
  * What a step's handler returned. The engine routes on `kind` and reads the

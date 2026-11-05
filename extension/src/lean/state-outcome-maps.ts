@@ -252,7 +252,8 @@ export function preexistingFailuresProblem(value: unknown): string | undefined {
     const keyProblem = frozenKeyProblem(tier);
     if (keyProblem !== undefined)
       return `outcome preexistingFailures key ${JSON.stringify(tier)} is not a valid tier name: ${keyProblem}`;
-    if (notAMap(raw)) return `outcome preexistingFailures[${JSON.stringify(tier)}] must be an object`;
+    if (notAMap(raw))
+      return `outcome preexistingFailures[${JSON.stringify(tier)}] must be an object`;
     const entry = raw as Record<string, unknown>;
     if (typeof entry.cmd !== "string" || entry.cmd.trim() === "")
       return `outcome preexistingFailures[${JSON.stringify(tier)}].cmd must be a non-empty string`;
@@ -307,10 +308,13 @@ export function validatedPreexistingFailures(
     if (entry.names.length > PREEXISTING_NAMES_CAP) continue;
     if (entry.names.some((name) => recordedNameProblem(name) !== undefined)) continue;
     const baseNames = Array.isArray(entry.baseNames) ? entry.baseNames : undefined;
-    if (baseNames !== undefined)
-      if (baseNames.length === 0 || baseNames.length > PREEXISTING_BASE_NAMES_CAP)
-        continue;
-      else if (baseNames.some((name) => recordedNameProblem(name) !== undefined)) continue;
+    if (
+      baseNames !== undefined &&
+      (baseNames.length === 0 ||
+        baseNames.length > PREEXISTING_BASE_NAMES_CAP ||
+        baseNames.some((name) => recordedNameProblem(name) !== undefined))
+    )
+      continue;
     out[tier] = {
       cmd: entry.cmd,
       names: [...entry.names] as string[],

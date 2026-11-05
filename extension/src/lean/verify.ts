@@ -65,7 +65,9 @@ import type { HandlerCtx } from "./engine.ts";
 import { fetchIssueBody } from "./io.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import { assertSpecifyWorktreeOwned, specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
+import type { PreexistingTierRecord } from "./state-outcome-maps.ts";
 import type { Outcome, Step } from "./state.ts";
+import { baselineExcuse as excuseOverBase, preexistingReason } from "./verify-baseline-excuse.ts";
 import { baselineProbeWorktreePath } from "./verify-baseline.ts";
 import {
   baselineRedReason,
@@ -73,12 +75,6 @@ import {
   flakeReason,
   probeTierAtBase,
 } from "./verify-baseline.ts";
-import { tierRunStream } from "./verify-tier-rerun.ts";
-import { type PreexistingTierRecord } from "./state-outcome-maps.ts";
-import {
-  baselineExcuse as excuseOverBase,
-  preexistingReason,
-} from "./verify-baseline-excuse.ts";
 import { confirmTierRedFrom } from "./verify-baseline.ts";
 import { type CommandCriteriaOutcome, commandCriteriaOutcome } from "./verify-commands.ts";
 import { frozenTamperReason } from "./verify-frozen.ts";
@@ -97,6 +93,7 @@ import {
   runTier,
   tiersOf,
 } from "./verify-steps.ts";
+import { tierRunStream } from "./verify-tier-rerun.ts";
 import { type VerifyExec, VerifyInfraError, type VerifyTiers } from "./verify-types.ts";
 
 /**
@@ -424,7 +421,10 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
   // does, and in its own recorded field besides: the prose warns the reader, the
   // record is what `publish` renders the disclosure from and what `ci` re-reads
   // instead of probing the base a second time.
-  const excuseNote = Object.keys(preexisting).length === 0 ? "" : ` — ${preexistingReason(Object.keys(preexisting))}`;
+  const excuseNote =
+    Object.keys(preexisting).length === 0
+      ? ""
+      : ` — ${preexistingReason(Object.keys(preexisting))}`;
   return {
     kind: "green",
     reason: `frozen tests and project tiers passed at ${head}${note}${flake === undefined ? "" : ` — ${flake}`}${excuseNote}`,

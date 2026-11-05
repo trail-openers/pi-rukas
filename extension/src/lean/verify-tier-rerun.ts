@@ -37,8 +37,6 @@ export async function tierRunStream(
     env: verifyChildEnv(),
   }).catch((err: unknown) => err);
   const e = ran as { stdout?: string; stderr?: string; message?: string } | undefined;
-  const stream = [e?.stdout, e?.stderr, e?.message]
-    .filter((s) => typeof s === "string")
-    .join("\n");
+  const stream = [e?.stdout, e?.stderr, e?.message].filter((s) => typeof s === "string").join("\n");
   return { ran, stream };
 }

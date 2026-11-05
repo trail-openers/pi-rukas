@@ -31,14 +31,14 @@
  * hand-back `verify-baseline.ts` produced before this module existed.
  */
 
-import { classifyFailureLine, failureLines } from "../work-driver-verify-failures.ts";
 import { realpathSync } from "node:fs";
-import { type BaseProbe, baselineRedReason } from "./verify-baseline.ts";
+import { classifyFailureLine, failureLines } from "../work-driver-verify-failures.ts";
 import {
   PREEXISTING_BASE_NAMES_CAP,
   PREEXISTING_NAMES_CAP,
   type PreexistingTierRecord,
 } from "./state-outcome-maps.ts";
+import { type BaseProbe, baselineRedReason } from "./verify-baseline.ts";
 
 /** The name of a failing check as one stream printed it, plus how it is compared. */
 export interface TestIdentity {
@@ -208,8 +208,8 @@ function relativeWithin(root: string, path: string): string | undefined {
   // A name the runner printed as an absolute path inside its own tree, or already
   // relative: either way, strip the tree's own prefix when it is a leading run of
   // segments and keep the remainder as the project-relative name.
-  const rooted = rootSegments.length <= parts.length &&
-    rootSegments.every((seg, i) => parts[i] === seg);
+  const rooted =
+    rootSegments.length <= parts.length && rootSegments.every((seg, i) => parts[i] === seg);
   const rel = rooted ? parts.slice(rootSegments.length).join("/") : joined;
   return rel === "" ? undefined : rel;
 }
@@ -325,5 +325,7 @@ export function preexistingReason(names: readonly string[]): string {
  * parse than a fresh probe would have used.
  */
 export function baseStreamOf(names: readonly string[]): string {
-  return names.map((name) => (name.includes("::") ? `FAILED ${name}` : `not ok - ${name}`)).join("\n");
+  return names
+    .map((name) => (name.includes("::") ? `FAILED ${name}` : `not ok - ${name}`))
+    .join("\n");
 }

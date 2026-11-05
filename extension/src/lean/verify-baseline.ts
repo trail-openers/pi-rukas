@@ -499,4 +499,3 @@ export function confirmTierRedFrom(ran: unknown): boolean {
   if (ran !== undefined && typeof ran === "object" && !("stdout" in (ran as object))) return true;
   return tierExitCode(ran) !== undefined;
 }
-
