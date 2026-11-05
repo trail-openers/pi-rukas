@@ -20,6 +20,13 @@ export function causeFromIntegrateFailure(res: IntegrateResult): CommitPrFallbac
   switch (res.failure) {
     case "dirty-repoRoot":
       return "dirty-repoRoot";
+    // #2030 — integrate() names an aborted cherry-pick batch, and a rejected
+    // patch apply, `apply`; the operator's word for either is a conflict on
+    // the pick. The commit-message publish refusal is `apply-publish` (see
+    // `IntegrateResult.failure`): a refused message is not a conflict, so it
+    // keeps the label it had before this mapping existed.
+    case "apply":
+      return "apply-conflict";
     // #1439 — the forge refused the push. Terminal (see `IntegrateResult.failure`),
     // but the label still reaches the plumb-report the terminal halt writes.
     case "push-refused":

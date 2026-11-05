@@ -3034,6 +3034,31 @@ If you see repeated fallbacks in the plumb-reports, the reason string says why; 
 
 There is no way to force the LLM ops dispatch. #393 deleted `PI_ENSEMBLE_MECHANIZE_OPS=0`, because every worst-class incident in this harness's history — #245/#253 silent merges, v0.12.13 shipping 1 of 3 workstreams — was LLM ops improvising exactly the operations mechanization now executes. The LLM path still runs as a **fallback when mechanization fails**, which is recovery from environment variance rather than an opt-out; a plumb-report records every such fallback so you can see it happened.
 
+### A second commit-pr fell back to the ops dispatch on a cherry-pick conflict
+
+**Symptom.** The cycle's first commit-pr opened its PR normally. A later one — the
+CI-fix round (`ci-status: failure → develop → adversarial → commit-pr`) or a round after
+a lens-fix landed — parks with the plumb-report
+"Mechanized commit-pr fell back to the ops dispatch: cherry-pick conflict — the batch was
+aborted", and the handoff blames the change rather than the pick. Nothing was pushed and no
+replacement PR is opened.
+
+**Cause.** The pick batch asks "is this commit already on the branch?" with two reads: the
+SHA is in the branch's history, or the commit's tree equals the branch TIP's tree. The
+consolidation writes its own commit, so round 1's commits reach the branch under new SHAs,
+and a lens-fix on the tip then puts a different tree there. Both reads miss, the batch
+re-picks round 1's commits, their context no longer matches what the branch holds, and git
+conflicts. A commit whose PATCH the branch already carries is invisible to both reads, and
+recognising it is an open question — see #2030.
+
+**What the driver does today.** The fallback still runs, and its plumb-report now carries
+the cause `apply-conflict` for this failure rather than the catch-all `other`, so the
+handoff names the pick as the thing that failed instead of blaming the change. A commit that
+was never applied is not affected: a refused commit-message publish keeps its own
+discriminator (`apply-publish`) and still answers `other`. Expect the round to fall back to
+the ops dispatch — that is recovery, not a defect — and check the plumb-report's reason for
+which commit the batch could not place.
+
 ### A push the forge refused parks instead of falling back (#1439)
 
 **Symptom.** A cycle parks at `commit-pr`, the state file shows cap `push-refused:commit-pr`, and the cap's `evidence` quotes GitHub — `GH013: Repository rule violations`, `GITHUB PUSH PROTECTION`, and `Push the commit again to allow the secret: https://github.com/...` URLs. Before #1439 this shape recorded `verify-failed:commit-pr`, dispatched the LLM ops fallback, and the ops child spent 40 minutes re-deriving the same refusal text before the cycle parked anyway — with a cause verdict blaming the change ("the verify command failed … fix the change"), which is not what happened.

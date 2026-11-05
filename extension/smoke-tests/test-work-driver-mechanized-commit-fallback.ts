@@ -179,26 +179,28 @@ const mkDispatchFn =
           ),
           "M2: apply conflict → plumb-report explains the fallback",
         );
-        // #539 — the structured cause travels from integrate() to the event,
-        // no re-parse of the free-text reason. An apply failure is NOT
-        // guessed as apply-conflict: integrate()'s failure discriminator
-        // names only dirty-repoRoot structurally, so everything else is
-        // `other` (the text still says it is an apply failure).
+        // #539/#2030 — the structured cause travels from integrate() to the event, no
+        // re-parse of the free-text reason. AC3: an apply failure IS the conflict
+        // the operator hears about — integrate() names the aborted pick batch and
+        // the rejected patch apply `apply`, and the classifier maps that to the
+        // union's existing `apply-conflict` rather than the catch-all `other`.
+        // A refusal integrate() does not call an apply (the commit-message publish
+        // refusal, `apply-publish`) keeps answering `other`.
         assert(
           after?.eventLog.some(
-            (e) =>
-              e.kind === "plumb-report" && e.step === "commit-pr" && e.fallbackCause === "other",
-          ),
-          "M2: apply failure → plumb-report carries fallbackCause=other (no structured cause)",
-        );
-        assert(
-          !after?.eventLog.some(
             (e) =>
               e.kind === "plumb-report" &&
               e.step === "commit-pr" &&
               e.fallbackCause === "apply-conflict",
           ),
-          "M2: an apply failure is NOT guessed as apply-conflict",
+          "M2: apply failure → plumb-report carries fallbackCause=apply-conflict",
+        );
+        assert(
+          !after?.eventLog.some(
+            (e) =>
+              e.kind === "plumb-report" && e.step === "commit-pr" && e.fallbackCause === "other",
+          ),
+          "M2: an apply failure is no longer reported as the catch-all `other`",
         );
         assert(
           after?.eventLog.some(

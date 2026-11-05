@@ -17,6 +17,8 @@ export const ALWAYS_RUN: readonly string[] = [
   "smoke-tests/test-AC1-movetotip-no-bypatchequivalence.ts",
   "smoke-tests/test-AC1-reviewer-probe-hygiene-prompt.ts",
   "smoke-tests/test-AC2-home-entry-attribution.ts",
+  "smoke-tests/test-AC3-apply-arm-git-apply.ts",
+  "smoke-tests/test-AC4-troubleshooting-second-commit-pr.ts",
   "smoke-tests/test-adversarial-diff-cap-note.ts",
   "smoke-tests/test-adversarial-ledger-row-identity.ts",
   "smoke-tests/test-adversarial-range-recompute.ts",

@@ -291,7 +291,7 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
       const restore = await restoreRoot();
       return {
         ok: false,
-        failure: "apply",
+        failure: "apply-publish",
         reason: `${orchResult._publishRefusal.reason} ${claimFor(restore)}.`,
       };
     }
