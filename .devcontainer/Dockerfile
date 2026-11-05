@@ -192,7 +192,7 @@ RUN set -e; tmp="$(mktemp -d)"; cd "$tmp" \
     && dpkg-deb -x docker.io_*.deb ./d \
     && install -m 0755 ./d/usr/bin/docker /usr/local/bin/docker \
     && cd / && rm -rf "$tmp" /var/lib/apt/lists/* \
-    && command -v docker && docker --version \
+    && command -v docker && docker --version && docker compose version \
     && ! test -e /usr/bin/dockerd && ! test -e /usr/bin/containerd
 # -----------------------------------------------------------------------------
 # 6. Pre-fetch vipune's embedding model so it doesn't need network at first run

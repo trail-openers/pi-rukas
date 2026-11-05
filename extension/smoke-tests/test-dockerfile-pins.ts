@@ -20,8 +20,11 @@
  * for an optional /research fallback that reports a failed angle when absent)
  * and the `docker.io` apt package (the engine: dockerd + containerd, ~0.3 GB,
  * when the sandbox only ever talks to the host's bind-mounted socket). Both
- * are apt/npm install sites, so the assertions read executable lines only —
- * prose that explains why the engine is banned must stay free to name it.
+ * are apt/npm install sites, so the assertions read executable RUN
+ * instructions only (backslash continuations joined) — prose that explains
+ * why the engine is banned must stay free to name it. A package matches as a
+ * whole token with its legal qualifiers (`=ver`, `@ver`, `_arch.deb`), never
+ * as a substring of a longer package name.
  *
  * Proven in both directions (AGENTS.md §12 canary discipline): inline
  * fixture strings with the adapter present fail (the regression shape),
@@ -77,42 +80,105 @@ export function piVersionInDockerfile(dockerfile: string): string {
 }
 
 /**
- * An executable (non-comment) line that installs a heavyweight package the
- * image must not carry: a global npm install of `pkg`, or `pkg` as a bare word
- * in apt-install lines. Comments are skipped so prose may explain the ban.
- * Returns the 1-based line number of the first hit, or -1.
+ * The package names that may never be installed into the image (#2047), each
+ * with the reason the ban exists. Consumed by the gate loop below and by the
+ * canaries, so a new banned package is one entry here.
+ */
+const BANNED_PACKAGES: readonly (readonly [string, string])[] = [
+  ["wigolo", "~780 MB npm tree for an optional /research fallback"],
+  ["docker.io", "the docker engine (dockerd + containerd) when only the CLI is used"],
+];
+
+/** The install sites that make an instruction an install of `pkg`. */
+const INSTALL_PATTERNS: readonly RegExp[] = [
+  /\bapt-get\s+install\b/,
+  /\bapt\s+install\b/,
+  /\bdpkg\s+-i\b/,
+  // npm/bun global installs only — a local `npm install wigolo` is not this gate's concern.
+  /\bnpm\s+i(?:nstall)?\b[^\n]*(?:\s-g\b|\s--global\b)/,
+  /\bbun\s+add\b[^\n]*(?:\s-g\b|\s--global\b)/,
+  /\bnpx\b/,
+];
+
+/**
+ * The executable RUN instructions of a Dockerfile, each joined across its
+ * backslash continuations so a package on a continuation line is seen in the
+ * same install context as the `apt-get install` that introduced it. Comment
+ * lines are dropped (prose may name a banned package to explain the ban) and
+ * line numbers are reported against the FIRST line of the instruction.
+ */
+function runInstructions(dockerfile: string): { startLine: number; text: string }[] {
+  const raw = dockerfile.split("\n");
+  const instructions: { startLine: number; text: string }[] = [];
+  let current: { startLine: number; parts: string[] } | null = null;
+  for (let i = 0; i < raw.length; i++) {
+    const t = raw[i].trim();
+    if (t.startsWith("#")) continue;
+    // A trailing backslash is the continuation marker, not shell text.
+    const continued = t.endsWith("\\");
+    const body = continued ? t.slice(0, -1).trim() : t;
+    if (/^RUN\b/.test(body) && current === null) {
+      current = { startLine: i + 1, parts: [] };
+    }
+    if (current === null) continue;
+    current.parts.push(body);
+    if (!continued) {
+      instructions.push({ startLine: current.startLine, text: current.parts.join(" ") });
+      current = null;
+    }
+  }
+  if (current !== null) {
+    instructions.push({ startLine: current.startLine, text: current.parts.join(" ") });
+  }
+  return instructions;
+}
+
+/**
+ * An executable RUN instruction that installs a package the image must not
+ * carry: an apt install / dpkg -i listing it, a global npm or bun install of
+ * it, or an `npx` of it. Matching is per whitespace-separated token, so a
+ * substring of another package name (`docker-compose-v2`, a future
+ * `wigolo-helper`) never trips the ban. Comments never count and
+ * `apt-get download` / `dpkg-deb -x` of a deb are not install sites. Returns
+ * the 1-based line of the instruction's first line, or -1.
  */
 export function findBannedInstallLine(dockerfile: string, pkg: string): number {
-  const lines = dockerfile.split("\n");
-  // An apt package token: bare `pkg`, optionally followed by a version
-  // qualifier, and optionally ending the line with a RUN continuation.
-  const pkgToken = new RegExp(`(^|\\s)${pkg}(?:=[\\w.:+~-]+)?(?:\\s|$|\\\\$)`);
-  // A global npm install of `pkg` (with or without a version tag).
-  const npmInstall = new RegExp(`npm\\s+install\\s+-g[^\\n]*\\b${pkg}(@[\\w.+-]+)?\\b`);
-  // A RUN's continuation lines carry the apt package list, so the install
-  // context is tracked across the whole instruction, not per line.
-  let aptInstall = false;
-  for (let i = 0; i < lines.length; i++) {
-    const t = lines[i].trim();
-    if (t.startsWith("#")) continue;
-    if (npmInstall.test(t)) return i + 1;
-    if (/^RUN\b/.test(t)) aptInstall = false;
-    if (/apt-get\s+install\b/.test(t)) aptInstall = true;
-    if (aptInstall && pkgToken.test(t)) return i + 1;
-    if (!t.endsWith("\\")) aptInstall = false;
+  const escaped = pkg.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // A package token is the name plus any of its legal qualifier forms: an apt
+  // pin (`=1.2`), an npm tag (`@1.2`), a deb filename (`_24.0.7_amd64.deb`,
+  // wildcard included), or a dotted suffix that follows a name character
+  // (`.deb`, `.tools`). A hyphen never separates — `wigolo-helper` is another
+  // package — so a substring of a longer name never matches.
+  const QUALIFIER = "(?:[=@][\\w.+-:~]+|_[^\\s]*|(?<=\\w)\\.(?:[\\w.+-:~]+|deb))";
+  const pkgToken = new RegExp(`^${escaped}${QUALIFIER}*$`);
+  for (const instr of runInstructions(dockerfile)) {
+    if (!INSTALL_PATTERNS.some((re) => re.test(instr.text))) continue;
+    for (const token of instr.text.split(/\s+/)) {
+      if (pkgToken.test(token)) return instr.startLine;
+    }
   }
   return -1;
 }
 
 /**
- * True when the .dockerignore text ignores `.git` (a leading-exclusion line,
- * not a comment or a negation).
+ * True when the .dockerignore text ignores the VCS tree: one of the accepted
+ * exclusion forms below, on a line that is neither a comment nor a negation
+ * (a leading `!` un-ignores rather than ignores).
  */
+const GIT_IGNORE_FORMS: readonly RegExp[] = [
+  /^\.git$/,
+  /^\/\.git$/,
+  /^\.git\/$/,
+  /^\.git\/\*\*$/,
+  /^\*\*\/\.git$/,
+];
+
 export function dockerignoreExcludesGit(text: string): boolean {
   return text
     .split("\n")
     .map((l) => l.trim())
-    .some((l) => l === ".git" || /^\.git\b\/*$/.test(l));
+    .filter((l) => l !== "" && !l.startsWith("#"))
+    .some((l) => !l.startsWith("!") && GIT_IGNORE_FORMS.some((re) => re.test(l)));
 }
 
 /**
@@ -153,10 +219,7 @@ if (process.env.PI_ENSEMBLE_DOCKERFILE_PINS === "0") {
   );
   // #2047: the two heavyweight installs that made the image ~4.8 GB. Neither
   // may come back as an executable install line.
-  for (const [pkg, why] of [
-    ["wigolo", "~780 MB npm tree for an optional /research fallback"],
-    ["docker.io", "the docker engine (dockerd + containerd) when only the CLI is used"],
-  ] as const) {
+  for (const [pkg, why] of BANNED_PACKAGES) {
     const line = findBannedInstallLine(dockerfile, pkg);
     assert(
       line === -1,
@@ -180,7 +243,10 @@ if (process.env.PI_ENSEMBLE_DOCKERFILE_PINS === "0") {
   const section = ghcrTroubleshootingSection(read("docs/troubleshooting.md"));
   assert(section.length > 0, "docs/troubleshooting.md has the GHCR pull-failure (denied) entry");
   if (section.length > 0) {
-    assert(/`?denied`?/.test(section), "GHCR troubleshooting entry names the `denied` daemon error string");
+    assert(
+      /`?denied`?/.test(section),
+      "GHCR troubleshooting entry names the `denied` daemon error string",
+    );
     assert(
       /`?unauthorized`?/.test(section),
       "GHCR troubleshooting entry names the `unauthorized` symptom variant (both point at the private-package fix)",
@@ -251,8 +317,8 @@ if (process.env.PI_ENSEMBLE_DOCKERFILE_PINS === "0") {
     "    && rm -rf /var/lib/apt/lists/*",
   ].join("\n");
   assert(
-    findBannedInstallLine(dockerIoMutant, "docker.io") === 3,
-    "canary: `docker.io` back in the apt install list IS detected (line 3 of the fixture)",
+    findBannedInstallLine(dockerIoMutant, "docker.io") === 1,
+    "canary: `docker.io` back in the apt install list IS detected (the RUN instruction at line 1 of the fixture)",
   );
   const cleanDocker = [
     // The comment names the banned package to explain the ban — comments never count.
@@ -285,6 +351,73 @@ if (process.env.PI_ENSEMBLE_DOCKERFILE_PINS === "0") {
   assert(
     !dockerignoreExcludesGit("!.git\nnode_modules\n"),
     "canary: a negated `!.git` line fails the exclusion check (it un-ignores, not ignores)",
+  );
+
+  // Canary 7 (#2047 fix wave): the reinstall gate reads whole RUN instructions,
+  // so every common way of bringing a banned package back is an install site —
+  // not just the `apt-get install` / `npm install -g` the first revision knew.
+  const reinstallMutants: readonly (readonly [string, string, string])[] = [
+    ["`npm i -g wigolo@0.2.1`", "RUN npm i -g wigolo@0.2.1 || true", "wigolo"],
+    ["`npm install --global wigolo`", "RUN npm install --global wigolo", "wigolo"],
+    ["`bun add -g wigolo`", "RUN bun add -g wigolo", "wigolo"],
+    [
+      "a multi-line `npm install -g` with the package on the next line",
+      "RUN npm install -g \\\n      wigolo \\\n      && true",
+      "wigolo",
+    ],
+    ["`npx wigolo`", "RUN npx wigolo --version", "wigolo"],
+    ["a bare `apt install docker.io`", "RUN apt install -y docker.io", "docker.io"],
+    ["`dpkg -i docker.io_*.deb`", "RUN dpkg -i docker.io_*.deb", "docker.io"],
+  ];
+  for (const [shape, src, pkg] of reinstallMutants) {
+    assert(
+      findBannedInstallLine(src, pkg) === 1,
+      `canary: ${shape} IS detected as an install site (issue #2047)`,
+    );
+  }
+  // The ban matches whole package tokens, so lookalikes never trip it and a
+  // banned name inside a longer one is not mistaken for the package.
+  assert(
+    findBannedInstallLine(
+      "RUN apt-get install -y --no-install-recommends docker-compose-v2 wigolo-helper",
+      "docker.io",
+    ) === -1 &&
+      findBannedInstallLine(
+        "RUN apt-get install -y --no-install-recommends docker-compose-v2 wigolo-helper",
+        "wigolo",
+      ) === -1,
+    "canary: `docker-compose-v2` / `wigolo-helper` are NOT the banned packages (whole-token match, not substring)",
+  );
+  // A comment between the instruction and a continuation must not split the
+  // install context, and must not itself count as an install site.
+  assert(
+    findBannedInstallLine(
+      [
+        "# wigolo is banned (issue #2047) — this comment must not trip the gate",
+        "RUN apt-get update && apt-get install -y --no-install-recommends \\",
+        "      git jq \\",
+        "    && rm -rf /var/lib/apt/lists/*",
+      ].join("\n"),
+      "wigolo",
+    ) === -1,
+    "canary: a comment naming the banned package is still not an install site",
+  );
+
+  // Canary 8 (#2047 fix wave): every .dockerignore spelling that excludes the
+  // VCS tree counts; comments and negations still do not.
+  for (const form of [".git", "/.git", ".git/", "**/.git", ".git/**"]) {
+    assert(
+      dockerignoreExcludesGit(`node_modules\n${form}\ndist\n`),
+      `canary: a .dockerignore entry \`${form}\` counts as the .git exclusion`,
+    );
+  }
+  assert(
+    !dockerignoreExcludesGit("# .git/\n# **/.git\n"),
+    "canary: commented-out .git exclusion forms do NOT count",
+  );
+  assert(
+    !dockerignoreExcludesGit("!.git/\n!**/.git\n"),
+    "canary: negated .git exclusion forms do NOT count",
   );
 }
 
