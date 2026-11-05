@@ -63,8 +63,6 @@ import { preexistingReason } from "./verify-baseline-excuse.ts";
 import { assertTreeClean } from "./verify-recheck.ts";
 import { VerifyInfraError } from "./verify-types.ts";
 
-/** The last lines of a tier's output — the part that says what actually broke. */
-
 /** How long to wait between two reads of the forge while its checks run. */
 export const CI_POLL_MS = 60_000;
 
@@ -453,7 +451,15 @@ export async function ciOutcome(ctx: HandlerCtx, deps: CiDeps): Promise<Outcome>
   // was already red at the run's base commit — the same rule `verify` applies to its
   // own tiers, with the recorded proof reused when ci's command is the tier verify
   // already proved and re-probed otherwise.
-  const excuse = await fullTierExcuse({ deps, ctx, full, verified, wt, stream: tier.stream });
+  const excuse = await fullTierExcuse({
+    deps,
+    ctx,
+    full,
+    verified,
+    wt,
+    stream: tier.stream,
+    ran: tier.ran,
+  });
   if (excuse === undefined) return { kind: "red", reason: tier.reason };
   return {
     kind: "green",

@@ -25,12 +25,19 @@
  * reuse most and earns it least, because the machine puts a fresh `verify` between
  * the two — probes the run's `baseSha` in the throwaway sibling checkout, the way
  * `verify` does, and pays one extra full-tier run for it.
+ *
+ * And neither half of the comparison may rest on a run that observed nothing: the
+ * head side arrives through {@link tierFailure}, which turns a kill, an overflow or
+ * an un-startable command into an infrastructure throw, so by the time this module
+ * sees a stream the tier really ran. `classifyBaseRun` is the base side's equivalent
+ * guard and is what `verify`'s own excuse is reached through.
  */
 
 import { isFullCommitSha } from "../commit-sha.ts";
 import { frozenFromLog } from "./build.ts";
 import type { CiDeps } from "./ci-deps.ts";
 import type { HandlerCtx } from "./engine.ts";
+import { neverStarted, wasKilled } from "./specify-proof.ts";
 import type { PreexistingTierRecord } from "./state-outcome-maps.ts";
 import { newestDecided } from "./state.ts";
 import { baseStreamOf, baselineExcuse } from "./verify-baseline-excuse.ts";
@@ -40,10 +47,34 @@ import { baselineProbeWorktreePath, probeTierAtBase } from "./verify-baseline.ts
 export const CI_FULL_TIER = "full";
 
 /**
+ * Did `ci`'s own full-tier run observe the work, or did the harness speak?
+ *
+ * `tierFailure` throws for a kill and for a command that never started, so the
+ * shapes that reach here are an ordinary non-zero exit and — the one that does not
+ * throw on its own — an output BUFFER OVERFLOW: `exec` stamps `overflow` beside the
+ * captured streams and `ci` treats it as a red with a tail, because a tier that
+ * flooded its buffer really did fail. It is NOT evidence about WHICH tests failed:
+ * the stream is truncated at the bound, so the names it printed before the cut are
+ * all the excuse would get to read, and the omitted half can hold the failure this
+ * run authored. So the excuse is refused and today's red stands.
+ *
+ * `wasKilled` / `neverStarted` are asked here as well rather than trusting the
+ * caller's own arms: `verify`'s excuse is reached only behind `tierObserved`, and
+ * `ci`'s must not be reachable behind a shape `verify` would have refused.
+ */
+export function ciTierObserved(ran: unknown): boolean {
+  return (
+    !wasKilled(ran) && !neverStarted(ran) && (ran as { overflow?: unknown })?.overflow === undefined
+  );
+}
+
+/**
  * A red full tier excused over the base commit, or `undefined` when it is not.
  *
  * `stream` is what the full tier printed on its red run in the run's worktree —
- * the head side of the comparison, which `ci` already has in hand.
+ * the head side of the comparison, which `ci` already has in hand. `ran` is the
+ * executor's result object for that same run, which carries the kill / overflow /
+ * `ENOENT` stamps {@link ciTierObserved} reads.
  */
 export async function fullTierExcuse(opts: {
   deps: CiDeps;
@@ -52,8 +83,12 @@ export async function fullTierExcuse(opts: {
   verified: string;
   wt: string;
   stream: string;
+  ran: unknown;
 }): Promise<PreexistingTierRecord | undefined> {
-  const { deps, ctx, full, verified, wt, stream } = opts;
+  const { deps, ctx, full, verified, wt, stream, ran } = opts;
+  // A tier that never judged the code names nothing: no record is written and no
+  // green is granted on its output.
+  if (!ciTierObserved(ran)) return undefined;
   const reuse = reusableRecord(ctx, full, verified);
   if (reuse !== undefined) {
     const excuse = baselineExcuse({

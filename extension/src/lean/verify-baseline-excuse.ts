@@ -11,19 +11,30 @@
  *
  * It is deliberately stricter than "the base was red too":
  *
- *   - names come ONLY from the shapes in `work-driver-verify-shapes.ts` whose
- *     entry declares `namesTest: true`, read through `failureLines` /
- *     `classifyFailureLine` so the per-line 8 KiB scan window is the bound here
- *     too. A stream whose only failing line sits past that window names nothing,
- *     and a stream that names nothing excuses nothing;
+ *   - names come ONLY from pytest's own failing lines — the `pytest-failed` /
+ *     `pytest-error` shapes in `work-driver-verify-shapes.ts` — read through
+ *     `failureLines` / `classifyFailureLine` so the per-line 8 KiB scan window is
+ *     the bound here too. A stream whose only failing line sits past that window
+ *     names nothing, and a stream that names nothing excuses nothing;
+ *   - **the identity is pytest's `path::name`, and nothing else.** Every other
+ *     runner's failing line was tried and removed: no parser for a TAP description
+ *     or a go test name survived three reviews without finding a new way to fold
+ *     two different checks onto one token — cutting at the runner's ` - ` merged
+ *     `checkout - expected 3 got 4` with `checkout - other assertion`, and an
+ *     optional test-number group merged `not ok 1 - 1 - boom` with
+ *     `not ok 2 - 1 - boom`. A folded name excuses a failure only this run
+ *     authored, which is the one thing this feature must never do. So an identity
+ *     must carry a path and a `::` — two facts no field-observed pytest line
+ *     prints differently between two runs of one tree — and a stream that yields
+ *     ANY identity without one refuses the excuse outright, rather than comparing
+ *     tokens that might be one check spelled two ways or two checks spelled one;
  *   - both sets must be non-empty and EVERY head name must match a base name.
  *     One unmatched name is a failure this run authored, and `unknown` from
  *     `compareNames` counts as unmatched — never as a match;
- *   - path-bearing identities (pytest's `path::name`) are anchored against the
- *     tree each run actually executed in and the two remainders must be EQUAL —
- *     a shared tail never excuses anything. The `::name` half and every non-path
- *     identity (go's `TestFoo`, a TAP description) compare by exact string
- *     equality; an unplaceable name counts as unmatched, never as a match;
+ *   - identities are anchored against the tree each run actually executed in and
+ *     the two remainders must be EQUAL — a shared tail never excuses anything, and
+ *     the `::name` half compares by exact string equality; an unplaceable name
+ *     counts as unmatched, never as a match;
  *   - a base run whose red looks like a missing dependency tree is not evidence
  *     the commit is red, it is evidence the probe was not provisioned.
  *
@@ -41,15 +52,14 @@ import {
   PREEXISTING_BASE_NAMES_CAP,
   PREEXISTING_NAMES_CAP,
   type PreexistingTierRecord,
+  preexistingFailuresProblem,
 } from "./state-outcome-maps.ts";
 import { type BaseProbe, baselineRedReason } from "./verify-baseline.ts";
 
-/** The name of a failing check as one stream printed it, plus how it is compared. */
+/** A failing test as one stream printed it: pytest's `path::name`, anchored by its path half. */
 export interface TestIdentity {
-  /** The identity token: pytest `path::name`, a go test name, or a TAP description. */
+  /** The identity token: pytest's `path::name`, with its trailing ` - <reason>` removed. */
   name: string;
-  /** Whether the token's first half is a path to be anchored, or a bare name. */
-  pathBearing: boolean;
 }
 
 /** Why the base red cannot excuse this tier's red. */
@@ -66,28 +76,22 @@ function identitiesOfLine(candidate: string): TestIdentity[] {
   const line = clipForScan(candidate);
   const verdict = classifyFailureLine(line);
   if (verdict === undefined || !verdict.namesTest) return [];
-  if (verdict.shape === "pytest-failed" || verdict.shape === "pytest-error") {
-    // Each `; `-separated span of a packed line is its own test, with the shape's
-    // own marker stripped from every span (`FAILED a::t; FAILED b::u`) — a token
-    // that kept the marker, or swallowed the second failure, would match nothing
-    // at base and the excuse would be refused over a formatting fact.
-    const spans = /^\s*(?:FAILED|ERROR)\s+(.*)$/s.exec(line)?.[1] ?? "";
-    return spans
+  if (verdict.shape !== "pytest-failed" && verdict.shape !== "pytest-error") return [];
+  // Each `; `-separated span of a packed line is its own test, with the shape's
+  // own marker stripped from every span (`FAILED a::t; FAILED b::u`) — a token
+  // that kept the marker, or swallowed the second failure, would match nothing
+  // at base and the excuse would be refused over a formatting fact.
+  const spans = /^\s*(?:FAILED|ERROR)\s+(.*)$/s.exec(line)?.[1] ?? "";
+  return (
+    spans
       .split(";")
       .map((token) => stripTrailingReason(stripMarker(token.trim())))
+      // The `::` is what makes a token an identity at all: a pytest token carries the
+      // file the check lives in beside the check's name, and a token without one is not
+      // a name this module is willing to compare between two trees.
       .filter((token) => token.includes("::"))
-      .map((token) => ({ name: token, pathBearing: true }));
-  }
-  const stripped = stripShapePrefix(line, verdict.shape);
-  if (stripped === undefined) return [];
-  // A bare identity is compared WHOLE. The ` - ` a runner puts between a name and
-  // its failure text is not a delimiter here: cutting at the first one makes
-  // `checkout - expected 3 got 4` and `checkout - other assertion` one name, and a
-  // failure only this run authored is then excused as pre-existing — the one thing
-  // this feature must never do. If the two runs word the reason differently the
-  // excuse is refused and today's red stands, which is the safe direction.
-  const token = stripped.trim();
-  return token === "" ? [] : [{ name: token, pathBearing: token.includes("::") }];
+      .map((token) => ({ name: token }))
+  );
 }
 
 /** A repeated shape marker on a span of a packed failure line (`FAILED a::t; FAILED b::u`). */
@@ -95,34 +99,32 @@ function stripMarker(token: string): string {
   return /^\s*(?:FAILED|ERROR)\s+(.*)$/s.exec(token)?.[1] ?? token;
 }
 
-/** The line with its shape's leading marker removed, or `undefined` for no marker. */
-function stripShapePrefix(line: string, shape: string): string | undefined {
-  if (shape === "pytest-failed" || shape === "pytest-error") {
-    const rest = /^\s*(?:FAILED|ERROR)\s+(.*)$/s.exec(line)?.[1];
-    return rest === undefined || !rest.includes("::") ? undefined : rest;
+/**
+ * Does this stream name a failing check this module cannot identify?
+ *
+ * One non-pytest identity is enough to refuse the whole excuse. A runner this
+ * module cannot name — TAP, go, a script tally, a bare `error:` — still exits
+ * non-zero, and excusing a tier that printed such a line beside its pytest output
+ * would wave the unnamed failures through with the named ones. `testIdentitiesOf`
+ * skips those shapes rather than parsing them, so this asks the SHAPES directly:
+ * anything that declares it names a test and is not a pytest line is a name this
+ * module does not read, and the caller keeps today's red.
+ */
+function namesUnreadableIdentity(stream: string): boolean {
+  for (const line of failureLines(stream)) {
+    const verdict = classifyFailureLine(clipForScan(line));
+    if (verdict?.namesTest !== true) continue;
+    if (verdict.shape !== "pytest-failed" && verdict.shape !== "pytest-error") return true;
   }
-  if (shape === "go-fail") return /^\s*---\s+FAIL:\s+(.*)$/s.exec(line)?.[1];
-  if (shape === "tap-not-ok")
-    // Two INDEPENDENT optionals: the number, and the ` - ` the harness puts between
-    // number and description. `not ok 1 - x`, `not ok 1 x`, `not ok - x` and
-    // `not ok x` are four spellings of one identity and must yield the SAME token —
-    // one optional group tying the separator to the number made the unnumbered
-    // spelling keep its leading `- `, and a name that reads back differently never
-    // matches the token the other run recorded.
-    return /^\s*not\s+ok\b[^\S\n]*(?:[0-9]+[^\S\n]*)?(?:-[^\S\n]*)?(.*)$/is.exec(line)?.[1];
-  // Every remaining `namesTest: true` shape (`diagnostic`, `named-file`,
-  // `script-tally`, `fail-header`, `assertion-mark`, the payload marker) carries
-  // prose rather than a test identity, and comparing prose between two runs would
-  // be comparing messages, not tests. They name nothing here.
-  return undefined;
+  return false;
 }
 
 /**
  * Drop pytest's trailing ` - <reason>` from an identity token.
  *
- * Safe ONLY for the path-bearing arm: pytest's identity is the `path::name` before
- * the reason, so the cut cannot merge two different tests. The non-path arm does not
- * call it — see {@link identitiesOfLine}.
+ * Safe because pytest's identity is the `path::name` printed BEFORE the reason, so
+ * the cut cannot land inside a name: two checks in one file differ in the `::name`
+ * half, which survives, and never in the reason the runner appended.
  */
 function stripTrailingReason(token: string): string {
   return (token.split(" - ")[0] ?? "").trim();
@@ -140,8 +142,8 @@ function clipForScan(line: string): string {
 }
 
 /**
- * Every failing test this stream names, in stream order, read ONLY through the
- * shapes whose table entry declares `namesTest: true`.
+ * Every failing test this stream names, in stream order — pytest's `path::name`
+ * identities only, see {@link identitiesOfLine}.
  *
  * Exported because the caller keeps both runs' streams and must ask the same
  * question of each. Deduplicated: a runner repeats a summary line, and a set that
@@ -239,33 +241,23 @@ function relativeWithin(root: string, path: string): string | undefined {
 /**
  * The base set indexed for the subset test, so the test costs O(H+B) and not O(H*B).
  *
- * Two indexes, because the two kinds of identity are compared differently:
- *
- *   - `bare` holds every non-path identity (a go `TestFoo`, a TAP description) and is
- *     answered by exact string equality, which is what the unindexed loop did;
- *   - `anchored` holds the path-bearing identities keyed by the project-relative
- *     name each one anchors to INSIDE THE BASE TREE. A head name looks up its own
- *     anchored remainder and a match is a key hit, so the hundreds of candidates a
- *     chatty suite prints are never each anchored against the head.
+ * Keyed by the project-relative name each identity anchors to INSIDE THE BASE TREE.
+ * A head name looks up its own anchored remainder and a match is a key hit, so the
+ * hundreds of candidates a chatty suite prints are never each anchored against the
+ * head.
  *
  * A base identity whose path half is not placeable in the probe tree is indexed
  * under no key: it is not placeable, so it can stand for nothing — the same answer
  * the unindexed loop gave, where `relativeWithin` refused it.
  */
 interface BaseIndex {
-  bare: Set<string>;
   anchored: Map<string, Set<string>>;
 }
 
 /** Index the base set once for one comparison; see {@link BaseIndex}. */
 function indexBase(base: readonly TestIdentity[], roots: TreePair): BaseIndex {
-  const bare = new Set<string>();
   const anchored = new Map<string, Set<string>>();
   for (const identity of base) {
-    if (!identity.pathBearing) {
-      bare.add(identity.name);
-      continue;
-    }
     const [basePath = "", ...baseRest] = identity.name.split("::");
     const rel = relativeWithin(roots.probeRoot, basePath);
     if (rel === undefined || rel === "") continue;
@@ -274,18 +266,17 @@ function indexBase(base: readonly TestIdentity[], roots: TreePair): BaseIndex {
     if (bucket === undefined) anchored.set(rel, new Set([rest]));
     else bucket.add(rest);
   }
-  return { bare, anchored };
+  return { anchored };
 }
 
 /**
- * Does `name` appear in `base`? Path halves are anchored, everything else is exact.
+ * Does `name` appear in `base`? Its path half is anchored, its `::name` half is exact.
  *
  * A head identity whose path half is not placeable in the run's own tree matches
  * nothing — there is no project-relative name to look up, and guessing one from a
  * tail is exactly the shared-tail match this module refuses.
  */
 function nameMatches(name: TestIdentity, index: BaseIndex, roots: TreePair): boolean {
-  if (!name.pathBearing) return index.bare.has(name.name);
   const [headPath = "", ...headRest] = name.name.split("::");
   const headRel = relativeWithin(roots.headRoot, headPath);
   if (headRel === undefined || headRel === "") return false;
@@ -346,6 +337,9 @@ export function baselineExcuse(opts: {
   // red belongs to the probe's provisioning, not to the commit, and no name it
   // prints can stand as evidence the base was red.
   if (baseRedIsMissingDeps(baseStream)) return { kind: "refused" };
+  // pytest identities only, on BOTH sides: see {@link namesUnreadableIdentity}.
+  if (namesUnreadableIdentity(opts.headStream ?? "")) return { kind: "refused" };
+  if (namesUnreadableIdentity(baseStream)) return { kind: "refused" };
   if (head.length === 0 || base.length === 0) return { kind: "refused" };
   // Both trees resolved ONCE for this comparison, and a probe tree that is the run's
   // own tree — or another spelling of it — compares against nothing.
@@ -366,6 +360,16 @@ export function baselineExcuse(opts: {
     baseSha: opts.baseSha,
     ...(base.length <= PREEXISTING_BASE_NAMES_CAP ? { baseNames: base.map((n) => n.name) } : {}),
   };
+  // The record is about to be WRITTEN to the step log, and the log's own reader
+  // (`preexistingFailuresProblem`, applied by `loadRun`) refuses a name longer than
+  // `PREEXISTING_NAME_MAX_CHARS` or carrying a control character — which the 8 KiB
+  // scan-window clip can produce on its own, by cutting a name in the middle of an
+  // astral character. A record the reader rejects is worse than no record: `saveRun`
+  // writes it and `loadRun` then refuses the WHOLE run file, so the excuse would
+  // take the run down with it. Ask the validator the question it will ask, and refuse
+  // the excuse rather than persisting a record the run cannot be read back with.
+  if (preexistingFailuresProblem({ [opts.tierName]: record }) !== undefined)
+    return { kind: "refused" };
   return { kind: "excused", record };
 }
 
@@ -388,10 +392,10 @@ export function preexistingReason(names: readonly string[]): string {
  * the names it holds are the only evidence left of what the base printed. Feeding
  * them back as pytest `FAILED` lines keeps ONE reader — {@link testIdentitiesOf} —
  * for both sides of the comparison, so a reuse cannot be graded on a different
- * parse than a fresh probe would have used.
+ * parse than a fresh probe would have used. Every recorded name is a pytest
+ * `path::name` by construction (see {@link baselineExcuse}), so the rebuilt stream
+ * never carries the non-pytest shape that would refuse it.
  */
 export function baseStreamOf(names: readonly string[]): string {
-  return names
-    .map((name) => (name.includes("::") ? `FAILED ${name}` : `not ok 1 - ${name}`))
-    .join("\n");
+  return names.map((name) => `FAILED ${name}`).join("\n");
 }

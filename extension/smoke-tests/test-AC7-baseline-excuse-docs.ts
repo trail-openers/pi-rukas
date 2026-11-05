@@ -61,13 +61,11 @@ const ciRow = row("ci");
     "(verify) the row names the hand-back the excuse does not replace",
   );
   assert(
-    verifyRow.includes("acceptance tests green") || verifyRow.includes("frozen acceptance tests green"),
+    verifyRow.includes("acceptance tests green") ||
+      verifyRow.includes("frozen acceptance tests green"),
     "(verify) the row states the frozen acceptance tests must be green to be excused",
   );
-  assert(
-    /build round/.test(verifyRow),
-    "(verify) the row says neither arm bills a build round",
-  );
+  assert(/build round/.test(verifyRow), "(verify) the row says neither arm bills a build round");
 }
 
 // ------------------------------------------------------------------ (ci row)
@@ -108,6 +106,16 @@ const ciRow = row("ci");
   assert(
     /naming no test at all|names nothing/.test(troubleshooting),
     "(troubleshooting) it says a tier that names no test is not excusable",
+  );
+  assert(
+    /pytest/.test(troubleshooting) &&
+      /other runner|any other runner|TAP/.test(troubleshooting) &&
+      /go/.test(troubleshooting),
+    "(troubleshooting) it says the excuse reads pytest-named failures and no other runner's",
+  );
+  assert(
+    /pytest/.test(verifyRow) || /pytest/.test(ciRow),
+    "(docs) the step table says the name rule is pytest-only",
   );
   assert(
     /dependency|dependencies/.test(troubleshooting),

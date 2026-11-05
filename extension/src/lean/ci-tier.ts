@@ -36,15 +36,17 @@ export async function ciConfig(deps: CiDeps, ctx: HandlerCtx): Promise<WorkConfi
  * `undefined` is a pass. A kill, a timeout or a command that never started is an
  * infrastructure fault — the tier never got to answer a question about the code, so
  * the run hands back rather than taking a build round. Anything else that exits
- * non-zero is a real red, returned with both the reason (what a red step records)
- * and the combined stream (what the baseline excuse parses test names from).
+ * non-zero is a real red, returned with both the reason (what a red step records),
+ * the combined stream (what the baseline excuse parses test names from) and the
+ * executor's own result object (what `ciTierObserved` decides the excuse's admissibility
+ * from — the stream alone cannot tell a full run from one truncated at its buffer).
  */
 export async function tierFailure(
   deps: CiDeps,
   cmd: string,
   wt: string,
   timeoutMs: number,
-): Promise<{ reason: string; stream: string } | undefined> {
+): Promise<{ reason: string; stream: string; ran: unknown } | undefined> {
   const ran = await deps
     .exec(cmd, { cwd: wt, timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, killGroup: true })
     .then((r) => ({ err: undefined as unknown, out: r }))
@@ -68,5 +70,6 @@ export async function tierFailure(
   return {
     reason: clipReason(`the full verify tier exited ${String(e.code)}: ${cmd}\n${tail}`),
     stream: out,
+    ran: ran.err,
   };
 }

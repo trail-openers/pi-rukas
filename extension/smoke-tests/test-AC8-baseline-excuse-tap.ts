@@ -1,28 +1,31 @@
 #!/usr/bin/env bun
-/**
- * #2042 — the recorded base set must ROUND-TRIP through `baseStreamOf`.
- *
- * `ci` reuses `verify`'s base-name set instead of paying for its own probe, and it
- * does so by rebuilding a stream and reading it back through the SAME parser a fresh
- * probe would have used (`testIdentitiesOf`). A token that does not survive that
- * round-trip makes reuse silently never match, and `ci` pays a probe it was promised
- * it would not — worst for the runner whose names are bare (go, TAP), because those
- * are the ones emitted as TAP lines.
- *
- * Two shapes, both real output:
- *
- *   (tap)    a bare identity — a TAP description or a go name — written as
- *            `not ok 1 - <name>` must read back as `<name>`, and numbered and
- *            unnumbered TAP lines must yield the SAME token
- *   (go)     a head run whose every `--- FAIL: TestX` the recorded base set carries
- *            is graded green by `ci` on ONE tier run, with no base probe at all
- *
- * A bare identity is compared WHOLE — no cut at the runner's ` - ` separator — which
- * `test-AC8b-baseline-excuse-tap-reason.ts` tests.
- */
-import { baseStreamOf, testIdentitiesOf } from "../src/lean/verify-baseline-excuse.ts";
-import { cleanUp, run } from "./lib/lean-ci-recorder.ts";
 import type { PreexistingTierRecord } from "../src/lean/state-outcome-maps.ts";
+/**
+ * #2042 — a TAP-only or go-only pair is REFUSED, not excused.
+ *
+ * Earlier rounds of this feature tried to read identities from TAP (`not ok 1 - …`)
+ * and go (`--- FAIL: TestX`) lines. Three reviews each found a new way for such a
+ * parser to fold two different checks onto one token — cutting at the runner's
+ * ` - ` merged `checkout - expected 3 got 4` with `checkout - other assertion`, and
+ * an optional test-number group merged `not ok 1 - 1 - boom` with
+ * `not ok 2 - 1 - boom` — and a folded name excuses a failure only this run
+ * authored. So the excuse reads pytest's `path::name` identities and nothing else:
+ * a non-pytest identity anywhere in either stream refuses it, and today's red
+ * stands. (Both pairs below WOULD have been excused under the old parsers, which is
+ * why they are the cases.)
+ *
+ * The pytest pair stays green, and it also pins the `ci` reuse round-trip: the
+ * recorded base set rebuilds through `baseStreamOf` and reads back through the
+ * SAME parser a fresh probe would have used (`testIdentitiesOf`), which is what
+ * lets `ci` excuse on one tier run and no base probe.
+ */
+import {
+  baseStreamOf,
+  baselineExcuse,
+  testIdentitiesOf,
+} from "../src/lean/verify-baseline-excuse.ts";
+import type { BaseProbe } from "../src/lean/verify-baseline.ts";
+import { cleanUp, run } from "./lib/lean-ci-recorder.ts";
 
 const SELF = "test-AC8-baseline-excuse-tap.ts";
 let exit = 0;
@@ -34,72 +37,113 @@ function assert(cond: boolean, msg: string): void {
   }
 }
 
+const RED: BaseProbe = { status: "red" };
+
+/** Two trees that are definitely different directories. */
+const HEAD_ROOT = "/tmp/pi-rukas-2042-tap/worktree";
+const PROBE_ROOT = "/tmp/pi-rukas-2042-tap/repo.baseline-lean-verify-9";
+
+/** One comparison, on the lines each run printed. */
+function excuseOf(headLines: string[], baseLines: string[]) {
+  return baselineExcuse({
+    tierName: "fast",
+    cmd: "sh -c 'prove -r t'",
+    baseSha: "a".repeat(40),
+    probe: RED,
+    headStream: headLines.join("\n"),
+    baseStream: baseLines.join("\n"),
+    headRoot: HEAD_ROOT,
+    probeRoot: PROBE_ROOT,
+  });
+}
+
 const namesOf = (stream: string): string[] => testIdentitiesOf(stream).map((i) => i.name);
 
-// ------------------------------------------------ (tap) a bare name round-trips
+// ----------------------------------------------------- (tap) head-only TAP pair
 {
-  const names = ["checkout renders the total", "TestRetryBackoff"];
-  const rebuilt = baseStreamOf(names);
+  // Identical on both sides — the shape that earned an excuse when TAP was parsed.
+  const COMMON = "not ok 1 - checkout - expected 3 got 4";
+  const r = excuseOf([COMMON], [COMMON]);
   assert(
-    !rebuilt.includes("not ok - "),
-    `(tap) the emitted line carries a number, not a bare "not ok - " (${JSON.stringify(rebuilt.split("\n")[0])})`,
+    r.kind === "refused",
+    `(tap) a TAP-only pair that used to excuse is now refused (${r.kind})`,
   );
   assert(
-    namesOf(rebuilt).join("\n") === names.join("\n"),
-    `(tap) every bare name survives the stream round-trip (${JSON.stringify(namesOf(rebuilt))})`,
+    namesOf(COMMON).length === 0,
+    `(tap) and no TAP token is read as an identity at all (${JSON.stringify(namesOf(COMMON))})`,
   );
-  const numbered = namesOf("not ok 7 - checkout renders the total");
-  const unnumbered = namesOf("not ok - checkout renders the total");
+}
+// --------------------------------------------------------- (go) head-only pair
+{
+  const GO = ["--- FAIL: TestRetryBackoff (0.31s)", "--- FAIL: TestVerifyGate (0.02s)"];
+  const r = excuseOf(GO, GO);
   assert(
-    numbered.join() === unnumbered.join() && numbered[0] === "checkout renders the total",
-    `(tap) numbered and unnumbered TAP lines yield the same token (${JSON.stringify(numbered)} vs ${JSON.stringify(unnumbered)})`,
+    r.kind === "refused",
+    `(go) a go-only pair that used to excuse is now refused (${r.kind})`,
+  );
+  assert(
+    namesOf(GO.join("\n")).length === 0,
+    `(go) and no go name is read as an identity (${JSON.stringify(namesOf(GO.join("\n")))})`,
   );
 }
 
-// --------------------------------------------------------- (go) ci reuses on go
-const GO_NAMES = ["TestRetryBackoff", "TestVerifyGate"];
-const FULL = "sh -c 'go test ./...'";
-/** go's own red: `--- FAIL: TestX` lines, which is what a go head run prints. */
-const GO_HEAD = GO_NAMES.map((n) => `--- FAIL: ${n}`).join("\n") + "\nFAIL\n";
-/** The run's frozen contract, committed at the base and rewritten at HEAD. */
-const PROBE = {
-  frozenBytes: {
-    path: "tests/AC1-retry.test.sh",
-    bytes: "#!/bin/sh\nexit 0\n",
-    baseBytes: "#!/bin/sh\nexit 1\n",
-  },
-} as const;
-
-/** The record `verify` writes for an excused tier, keyed `full` by the recorder. */
-const record: PreexistingTierRecord = {
-  cmd: FULL,
-  names: GO_NAMES,
-  total: GO_NAMES.length,
-  baseSha: "b".repeat(40),
-  baseNames: GO_NAMES,
-};
-
+// ------------------------------------- (mixed) a pytest pair poisoned by one line
 {
-  const r = await run({ full: FULL, tierExit: 1, tierStdout: GO_HEAD, ...PROBE, reuseRecord: record });
+  const PY = "FAILED tests/x_test.py::test_a - AssertionError";
+  assert(excuseOf([PY], [PY]).kind === "excused", "(mixed) the pytest pair alone still excuses");
+  assert(
+    excuseOf([PY, "not ok 1 - a bats check"], [PY]).kind === "refused",
+    "(mixed) one TAP line in the HEAD stream refuses the whole excuse",
+  );
+  assert(
+    excuseOf([PY], [PY, "--- FAIL: TestSolo (0.01s)"]).kind === "refused",
+    "(mixed) one go line in the BASE stream refuses it too",
+  );
+}
+
+// ------------------------------------- (ci reuse) pytest names round-trip whole
+{
+  const NAMES = ["tests/x_test.py::test_a", "tests/x_test.py::test_b"];
+  const rebuilt = baseStreamOf(NAMES);
+  assert(
+    !rebuilt.includes("not ok"),
+    `(ci reuse) a recorded name is rebuilt as a pytest line, never a TAP one (${JSON.stringify(rebuilt.split("\n")[0])})`,
+  );
+  assert(
+    namesOf(rebuilt).join("\n") === NAMES.join("\n"),
+    `(ci reuse) every name survives baseStreamOf -> testIdentitiesOf unchanged (${JSON.stringify(namesOf(rebuilt))})`,
+  );
+
+  const FULL = "sh -c 'pytest'";
+  const record: PreexistingTierRecord = {
+    cmd: FULL,
+    names: NAMES,
+    total: NAMES.length,
+    baseSha: "b".repeat(40),
+    baseNames: NAMES,
+  };
+  const r = await run({
+    full: FULL,
+    tierExit: 1,
+    tierStdout: NAMES.map((n) => `FAILED ${n} - Assert`).join("\n"),
+    frozenBytes: {
+      path: "tests/AC1-retry.test.sh",
+      bytes: "#!/bin/sh\nexit 0\n",
+      baseBytes: "#!/bin/sh\nexit 1\n",
+    },
+    reuseRecord: record,
+  });
   assert(
     r.outcome?.kind === "green",
-    `(go) a head run whose names the recorded base carries is graded green (got ${r.outcome?.kind ?? `threw: ${r.threw?.message}`}; ${(r.outcome?.reason ?? "").slice(0, 140)})`,
+    `(ci reuse) the recorded pytest set excuses ci's red full tier (got ${r.outcome?.kind ?? `threw: ${r.threw?.message}`}; ${(r.outcome?.reason ?? "").slice(0, 140)})`,
   );
   assert(
     r.cmds.filter((c) => c === FULL).length === 1,
-    `(go) ONE tier run at HEAD (${String(r.cmds.filter((c) => c === FULL).length)})`,
+    `(ci reuse) ONE tier run at HEAD (${String(r.cmds.filter((c) => c === FULL).length)})`,
   );
   assert(
-    (r.tierRuns ?? 0) === 1,
-    `(go) and the tier never ran in a base checkout (${String(r.tierRuns)})`,
-  );
-  assert(
-    !r.cmds.some((c) => c.includes(".baseline-lean-verify-")),
-    "(go) no throwaway base checkout was created for ci's own probe",
-  );
-  assert(
-    !r.cmds.some((c) => c.includes("worktree") && c.includes("add")),
-    "(go) no base-probe command ran (git worktree add never asked for)",
+    (r.tierRuns ?? 0) === 1 && !r.cmds.some((c) => c.includes(".baseline-lean-verify-")),
+    `(ci reuse) and no base probe ran (${String(r.tierRuns)})`,
   );
 }
 
