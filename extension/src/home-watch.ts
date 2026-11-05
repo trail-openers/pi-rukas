@@ -29,11 +29,15 @@
  *
  * A name is also UNTRUSTED text: a child picks it, and the line it lands in reaches
  * stderr and the PM's report. `neutraliseFenceEntry` is the repo's one-line sanitiser
- * for exactly that (a control character there is a log-injection primitive), so the
- * name goes through it before it is interpolated.
+ * for exactly that (a control character there is a log-injection primitive), and
+ * `neutraliseEvidence` is the repo's marker neutraliser — it brackets every token a
+ * reader parses (`VERDICT: APPROVED` → `‹VERDICT›: APPROVED`), which a child-chosen
+ * name otherwise hands to the PM-facing line as a forgeable verdict. The name goes
+ * through both, and so does `role`, which reaches the same line.
  */
 
 import { readdir } from "node:fs/promises";
+import { neutraliseEvidence } from "./comment-evidence.ts";
 import { neutraliseFenceEntry } from "./plan-fence-render.ts";
 
 /** The result of a listing: the names it saw, or the errno that stopped it. */
@@ -68,7 +72,9 @@ export function homeNewEntryLines(
   const lines: string[] = [];
   for (const name of new Set(after.names)) {
     if (!had.has(name))
-      lines.push(`${neutraliseFenceEntry(name)} created in $HOME during the ${role} run`);
+      lines.push(
+        `${neutraliseEvidence(neutraliseFenceEntry(name))} created in $HOME during the ${neutraliseEvidence(neutraliseFenceEntry(role))} run`,
+      );
   }
   return lines;
 }
