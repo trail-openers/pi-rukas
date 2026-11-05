@@ -117,6 +117,12 @@ export const RESOLVE_REASONS = [
   "path-gone",
   "line-past-eof",
   "code-gone",
+  // #2027: the cited line still occurs at head nowhere, but the round that
+  // failed to re-report it was a DELTA whose hunk-level patch had lost the fix
+  // hunk, so its changed ranges do not name the line. The evidence that closes
+  // it is the per-commit union of the round's own `since..head` range, which is
+  // independent of hunk subtraction.
+  "code-changed-not-reported",
   // #1469: a row with no cited line has no cited code to prove gone, so the
   // only evidence that can close it is a COMPLETE full review that no longer
   // reports it (same lens, path and title).

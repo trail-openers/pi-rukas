@@ -99,6 +99,13 @@ export function applyFindingRound(opts: {
   /** The delta's changed line ranges; required for a delta round to resolve anything. */
   deltaRanges?: ChangedRanges;
   /**
+   * #2027 — the per-commit changed lines of the delta's own `since..head`
+   * range (see `FateContext.deltaCommitRanges`). Optional and read only by
+   * `rowFate`: the round states no rule about it, and a caller that cannot
+   * produce it retires nothing that the pre-#2027 rule did not.
+   */
+  deltaCommitRanges?: ChangedRanges;
+  /**
    * #1934 — the ledger rows and the commit identity an independent confirmation
    * is read against. Absent (the default, and every caller that has no ledger
    * to hand) means NO confirmation is consulted: rows retire exactly as before,
@@ -118,6 +125,11 @@ export function applyFindingRound(opts: {
 }): RoundOutcome {
   const { branch, findings, mine, headOf, review, deltaRanges, now, confirmations, evidence } =
     opts;
+  // #2027 — the per-commit evidence belongs to a DELTA round alone: a full
+  // round covers the whole branch, and an incomplete one reached no verdict to
+  // vouch for either reading. Deriving it once here keeps the two row passes
+  // (matched and untouched) asking the SAME question of the same value.
+  const deltaCommitRanges = review === "delta" ? opts.deltaCommitRanges : undefined;
   // #1934 — the ids of the rows this round holds, handed to the confirmation
   // join. The join in review-confirmation.ts matches a ledger row on its
   // `rowId`; bounding that match to the rows the round owns is what keeps a
@@ -441,6 +453,7 @@ export function applyFindingRound(opts: {
     headOf,
     review,
     deltaRanges,
+    ...(deltaCommitRanges === undefined ? {} : { deltaCommitRanges }),
     carried,
     resolved,
     confirmationLapses,

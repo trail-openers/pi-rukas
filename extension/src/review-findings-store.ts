@@ -49,6 +49,7 @@
 import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { execp } from "./exec.ts";
 import type { Finding } from "./lens-review-types.ts";
+import { commitChangeRanges } from "./review-delta-hunks.ts";
 import { type ChangedRanges, changedLineRanges } from "./review-diff.ts";
 import type { ReviewKind } from "./review-findings-fate.ts";
 import {
@@ -239,6 +240,16 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
       }
       ranges = changedLineRanges(run.deltaDiff);
     }
+    // #2027 — the same range's per-commit changed lines, read from git when the
+    // round named its base. Read BEFORE the lock, like the head reads and the
+    // ledger read below: a git read inside the critical section would widen the
+    // window the #1071 lock exists to shorten. An unreadable range (or no base
+    // at all) is `undefined`, which the fate rule reads as no evidence — the
+    // round then resolves exactly what it resolved before #2027.
+    const commitRanges =
+      run.review === "delta" && run.deltaSince !== undefined
+        ? await commitChangeRanges(run.cwd, run.deltaSince, run.headSha)
+        : undefined;
     // The branch's rows for this round, read ONCE: the paths to judge, and any
     // malformed row the branch carries. A file that EXISTS but cannot be read
     // FAILS the round: recording a round on "no memory" would resolve open rows
@@ -352,6 +363,7 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
           // which the round reads as nothing ran (every carried HIGH caps).
           evidence: run.evidence ?? new Map(),
           ...(ranges ? { deltaRanges: ranges } : {}),
+          ...(commitRanges ? { deltaCommitRanges: commitRanges } : {}),
           ...(useConfirmations
             ? {
                 confirmations: {
