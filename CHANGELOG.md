@@ -8,6 +8,22 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.54](https://github.com/trail-openers/pi-rukas/compare/v0.14.53...v0.14.54) (2026-11-05)
+
+
+### Features
+
+* **review:** cap a lens HIGH to MEDIUM unless the lens ran a reproduction ([#2041](https://github.com/trail-openers/pi-rukas/issues/2041)) ([a7e04df](https://github.com/trail-openers/pi-rukas/commit/a7e04df280af3ef75bc15606a314b2140e9f44eb)), closes [#2040](https://github.com/trail-openers/pi-rukas/issues/2040)
+
+
+### Bug Fixes
+
+* **lean:** allow a third build round after a challenge ([#2039](https://github.com/trail-openers/pi-rukas/issues/2039)) ([cd3f12a](https://github.com/trail-openers/pi-rukas/commit/cd3f12afa18aa1c1ea53210c164305cf924f3a9e)), closes [#2037](https://github.com/trail-openers/pi-rukas/issues/2037)
+* **lean:** give specify the build budget it measures against ([#2035](https://github.com/trail-openers/pi-rukas/issues/2035)) ([803390c](https://github.com/trail-openers/pi-rukas/commit/803390cfee8f0ae2b23996f096fc00469e9d0ccf))
+* **lean:** size the specify token budget above its turn ceiling ([#2033](https://github.com/trail-openers/pi-rukas/issues/2033)) ([b18c792](https://github.com/trail-openers/pi-rukas/commit/b18c7920c6b397dc1cab863c0376fe05a81ad798))
+* **spawn:** keep reviewer probes out of the operator's home and report new home entries ([#2036](https://github.com/trail-openers/pi-rukas/issues/2036)) ([dc58c82](https://github.com/trail-openers/pi-rukas/commit/dc58c82388b535834a6c89d2c13de03d9b1ceb44)), closes [#2031](https://github.com/trail-openers/pi-rukas/issues/2031)
+* **work:** report a cherry-pick conflict as apply-conflict ([#2038](https://github.com/trail-openers/pi-rukas/issues/2038)) ([df0843e](https://github.com/trail-openers/pi-rukas/commit/df0843e7b6c31c0c8d77abf68e80aa6ad5734d63))
+
 ## [0.14.53](https://github.com/trail-openers/pi-rukas/compare/v0.14.52...v0.14.53) (2026-11-04)
 
 
