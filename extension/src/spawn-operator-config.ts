@@ -47,6 +47,14 @@
  * apart: paths that could be read go into `snapshots` and are compared and
  * repaired, a path with no baseline never enters that set and is left alone.
  *
+ * For a REVIEWER role the same window also lists the top level of `$HOME` before
+ * and after the child and reports one line per NEW entry — a reviewer is the
+ * child that probes hostile config, and the four protected files say nothing
+ * about a name the child creates elsewhere under the operator's home (`~/.pi`,
+ * `~/.cache`, a dotfile of its own). Listing is disclosure, never deletion: the
+ * operator's own entries are not this guard's to remove, and a line naming a
+ * leftover costs one read to act on.
+ *
  * What the guard cannot catch: a write that lands after the child exits (a
  * detached grandchild), since one snapshot set belongs to one child. Group-kill
  * (`spawn-kill.ts`) is what reaps a lingering grandchild; that is a separate
@@ -54,10 +62,20 @@
  */
 
 import type { Stats } from "node:fs";
-import { constants, type FileHandle, access, lstat, open, readFile, rm } from "node:fs/promises";
+import {
+  constants,
+  type FileHandle,
+  access,
+  lstat,
+  open,
+  readFile,
+  readdir,
+  rm,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { isPlainObject } from "./plain-object.ts";
+import { isReviewerRole } from "./review-bounds.ts";
 import { traceWarn } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 
@@ -328,6 +346,34 @@ function differsFrom(snap: Buffer | null, now: Buffer | null | undefined): boole
 }
 
 /**
+ * The `$HOME` before/after listing for a reviewer child, as one call made ONCE
+ * before the child and once after it: the caller subtracts the two results, and
+ * never deletes anything.
+ *
+ * `undefined` is the pre-run verdict "no baseline": an unreadable home is not
+ * evidence of a child write, so a child that made entries in it is not accused —
+ * the same rule `readSnapshot` applies to a protected file with no baseline.
+ * `[]` means "the top level is unchanged", which is not a verdict at all.
+ */
+async function homeEntries(home: string): Promise<string[] | undefined> {
+  try {
+    return await readdir(home);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Why the listing of `$HOME` could not be taken, with the errno that says so. */
+async function snapshotCode(home: string): Promise<string> {
+  try {
+    await readdir(home);
+    return "unknown";
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code ?? "unknown";
+  }
+}
+
+/**
  * Run `runChild` with the operator's git/gh config guarded: snapshot the
  * protected files first, and in a `finally` — whatever ended the child, a
  * spawn throw, an abort, a cap kill — restore any file it changed and record a
@@ -356,6 +402,9 @@ export async function withOperatorConfigGuard<R>(
     const bytes = await readSnapshot(target);
     if (bytes !== undefined) snapshots.push({ path: target, bytes });
   }
+  // The listing is gated on the SAME predicate the reviewer bounds use, so a
+  // role can never be half-covered by a second hand-kept list.
+  const homeBaseline = isReviewerRole(role) ? await homeEntries(homeDir(process.env)) : undefined;
   let result: R | null = null;
   try {
     result = await runChild();
@@ -373,12 +422,36 @@ export async function withOperatorConfigGuard<R>(
           : `operator-config: ${snap.path} modified during the ${role} run — NOT restored (${code})`,
       );
     }
+    // The $HOME disclosure, in the same channel and the same array as the
+    // restore lines. A baseline that was never taken is not a child write: one
+    // line says why, and no entry is named.
+    let homeLines: string[] = [];
+    if (homeBaseline !== undefined) {
+      const after = await homeEntries(homeDir(process.env));
+      if (after === undefined) {
+        // There "cannot read" means "cannot prove unchanged" — a fact about the
+        // home, not attributable to any entry the child made.
+        const code = await snapshotCode(homeDir(process.env));
+        homeLines = [`operator-config: could not re-read $HOME (${code})`];
+      } else {
+        const had = new Set(homeBaseline);
+        homeLines = after
+          .filter((name) => !had.has(name))
+          .map((name) => `${name} created in $HOME during the ${role} run`);
+      }
+    } else if (isReviewerRole(role)) {
+      homeLines = [
+        `operator-config: could not snapshot $HOME (${await snapshotCode(homeDir(process.env))})`,
+      ];
+    }
     for (const line of violations) traceWarn(line);
+    for (const line of homeLines) traceWarn(line);
     // Disclosure, never a verdict: `ok` and `loopOutcome` are left exactly as
     // the child's own run set them. When `result` is null the callback threw and
     // there is nothing to annotate — the traceWarn above is the only record.
-    if (violations.length > 0 && result !== null && isDispatchResult(result)) {
-      result.operatorConfig = violations;
+    const lines = [...violations, ...homeLines];
+    if (lines.length > 0 && result !== null && isDispatchResult(result)) {
+      result.operatorConfig = lines;
     }
   }
 }
