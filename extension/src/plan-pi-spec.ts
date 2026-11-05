@@ -9,6 +9,11 @@
  *     TITLE clipped to 200 UTF-16 units (never body prose), at most 12 criteria
  *     at 200 units each, no `scope` at all. Every criterion is `verify: "test"`
  *     with no command: the drafter never makes a criterion executable.
+ *   - a CRITERION LONGER THAN THE BOUND IS NEVER CUT: the clip exists only so the
+ *     bound can be checked, and `placePiSpecSection` omits the whole block when any
+ *     criterion's text is not its bullet whole, with the filed body carrying the
+ *     `PI_SPEC_OMISSION_PREFIX` line that names the criterion and its length. Lean
+ *     then refuses the issue as not ready instead of building from half a sentence.
  *   - `placePiSpecSection` puts `## Spec (pi-spec v1)` at the TOP of the body
  *     (under the provenance italic line when the caller has one), above every
  *     drafted and disclosed section. Then it READS THE BLOCK BACK through the
@@ -42,8 +47,8 @@
 import type { PiSpec } from "./lean/spec.ts";
 import { SPEC_INFO, parsePiSpec, readiness, renderPiSpec } from "./lean/spec.ts";
 import { fencePrefix, opensFenceWith } from "./plan-pi-spec-fences.ts";
+import { clip, oneLine, sectionBullets } from "./plan-pi-spec-text.ts";
 import type { PlanType } from "./plan-types.ts";
-import { AC_FALLBACK } from "./plan-validate.ts";
 import { trace, traceWarn } from "./trace.ts";
 
 /** The section heading the block renders under. */
@@ -158,25 +163,6 @@ export const PI_SPEC_OMISSION_LINE_MAX_CHARS =
 const SIZE_SMALL_MAX = 3;
 const SIZE_MEDIUM_MAX = 8;
 
-/**
- * `## <heading>` ... content up to the next `## ` (or end of body).
- *
- * The pattern is assembled from plain (non-template) string literals, and that
- * is load-bearing: inside a template literal `\s` and `\S` lose their backslashes,
- * so `[\s\S]` silently becomes the class `[sS]` - which matches neither a space nor
- * a newline - and a `\n` written for a regex class becomes the two characters
- * backslash and n. Either way the lazy capture stops at the section's first
- * line, the mapper finds zero criteria, and the issue files with NO spec block
- * and no error anywhere. A regex source that must contain a backslash is built
- * from String.raw / plain literals, never from a template.
- */
-const NOT_NL = String.raw`[^\n]`;
-const ANY = String.raw`[\s\S]`;
-const SLICE_HEAD = String.raw`^## `;
-const SLICE_TAIL = String.raw`*\n`;
-const SECTION_SLICE = (heading: string): RegExp =>
-  new RegExp(`${SLICE_HEAD}${heading}${NOT_NL}${SLICE_TAIL}(${ANY}*?)(?=^## |$(?!${ANY}))`, "gm");
-
 /** The fields the mapper reads - all of them sections the draft really renders. */
 export interface PiSpecDraft {
   type: PlanType;
@@ -230,59 +216,6 @@ export function neutraliseFenceRuns(s: string): string {
   return out;
 }
 
-/**
- * Clip to `max` UTF-16 code UNITS, never splitting a surrogate pair.
- *
- * The ceiling every caller enforces is measured in `.length` — the same units
- * `parsePiSpec`, the forge cap and the budget reservation are counted in — so a
- * code-point clip would let astral text (emoji, CJK extension B) over-run the very
- * bound it is supposed to keep. A trailing high surrogate is dropped rather than
- * left dangling.
- */
-function clip(s: string, max: number): string {
-  if (s.length <= max) return s;
-  let out = s.slice(0, max);
-  const last = out.charCodeAt(max - 1);
-  if (last >= 0xd800 && last <= 0xdbff) out = out.slice(0, max - 1);
-  return out;
-}
-
-/**
- * One printable line: control characters become spaces, a lone surrogate becomes
- * U+FFFD, and whitespace runs collapse. Iterated by code point, so a valid surrogate
- * pair (an emoji) arrives whole; only an unpaired surrogate is in the surrogate range.
- */
-function oneLine(s: string): string {
-  const printable = Array.from(s, (ch) => {
-    const cp = ch.codePointAt(0) ?? 0;
-    if (cp >= 0xd800 && cp <= 0xdfff) return "�";
-    if (cp < 0x20 || (cp >= 0x7f && cp <= 0x9f)) return " ";
-    return ch;
-  });
-  return printable.join("").replace(/\s+/g, " ").trim();
-}
-
-/** The bullets of one `## <heading>` section, in order, status-only bullets dropped. */
-function sectionBullets(body: string, heading: string): string[] {
-  const m = SECTION_SLICE(heading).exec(body);
-  if (!m?.[1]) return [];
-  return m[1]
-    .split("\n")
-    .map((l) => l.trim())
-    .filter((l) => l.startsWith("- ") || l.startsWith("* "))
-    .map((l) => l.replace(/^[-*]\s+/, "").trim())
-    .filter(
-      (l) => l !== "" && !l.startsWith("_") && !l.startsWith(AC_FALLBACK) && !l.startsWith("..."),
-    );
-}
-
-// Why `sectionBullets` above drops the `AC_FALLBACK` bullet instead of filing it
-// as a criterion: it is the ONE string `plan-draft.ts` renders when no criterion
-// exists and the one `validateDraft` refuses a plan over, so `plan-validate.ts`
-// is the only spelling that cannot drift. This used to be an
-// `AC_FALLBACK_BULLET = AC_FALLBACK` alias — a third name for one string nobody
-// keeps in step, and the day it drifts the mapper files the placeholder as AC1.
-
 /** S → at most 3 criteria, M → at most 8, L → more. */
 function sizeOf(count: number): PiSpec["size"] {
   if (count <= SIZE_SMALL_MAX) return "S";
@@ -313,7 +246,10 @@ export function piSpecFromDraft(draft: PiSpecDraft): PiSpec | undefined {
     id: `AC${i + 1}`,
     // Neutralise FIRST, then clip: the 1:1 look-alikes keep the width honest (they
     // are BMP code points, so a neutralised field never carries a surrogate pair),
-    // and a bullet whose fences collapse cannot lose its tail to the clip.
+    // and a bullet whose fences collapse cannot lose its tail to the clip. The clip
+    // is never what ships a short criterion: `placePiSpecSection` compares this
+    // text with the bullet's own neutralised form and omits the block when the clip
+    // took anything.
     text: clip(neutraliseFenceRuns(oneLine(bullet)), PI_SPEC_CRITERION_MAX_CHARS),
     verify: "test" as const,
   }));
@@ -418,6 +354,25 @@ export function placePiSpecSection(
 ): PiSpecPlacement {
   const spec = piSpecFromDraft({ type, body, title });
   if (!spec) return omit(body, type, title, reasonWithoutSpec(type, title));
+  // A criterion longer than the bound is NEVER filed cut: `text` is `oneLine` +
+  // `neutraliseFenceRuns` + `clip` of its bullet, all width-preserving except the
+  // clip, so a text that differs from its own bullet is one the clip shortened.
+  // Lean builds and tests against the block's text, so half a sentence is a
+  // contract the drafter never made — the whole block is left out and the body
+  // says why. The ONE list below is what the mapper bounds (same slicing, same
+  // neutralise/one-line, no clip), so the guard cannot drift from the mapper and
+  // checks EVERY bullet — including the ones past the embedded cap, whose
+  // over-length still refuses the whole block. Every offender is named, so a
+  // drafter told about one is not refused again for the next.
+  const forms = sectionBullets(body, "Acceptance criteria").map((b) =>
+    neutraliseFenceRuns(oneLine(b)),
+  );
+  const offenders = forms
+    .map((form, i) => ({ id: `AC${i + 1}`, length: form.length }))
+    .filter((form) => form.length > PI_SPEC_CRITERION_MAX_CHARS);
+  if (offenders.length > 0) {
+    return omit(body, type, title, overLongCriterionReason(offenders), true, true);
+  }
   const section = renderPiSpecSection(spec);
   // The ceiling is asserted on the RENDER, not inferred from the mapper's bounds:
   // `PI_SPEC_SECTION_MAX_CHARS` must hold for ANY input, and the only honest way
@@ -469,6 +424,28 @@ function omit(
     spec: undefined,
     omitted: shown,
   };
+}
+
+/**
+ * The disclosure for over-long criteria: every offender by id and by the length the
+ * bound was measured against, singular wording for one. The reason is clipped by
+ * `omit`, so when the list itself would not fit, it names as many as fit and says
+ * how many are unlisted — never a silent truncation of the offenders.
+ */
+function overLongCriterionReason(offenders: { id: string; length: number }[]): string {
+  const word = offenders.length === 1 ? "is" : "are";
+  const render = (shown: { id: string; length: number }[], rest: number): string =>
+    `criteria ${shown.map((o) => `${o.id} (${o.length} chars)`).join(", ")}${rest > 0 ? ` and ${rest} more` : ""} ${word} over the ${PI_SPEC_CRITERION_MAX_CHARS}-char bound`;
+  let shown = offenders;
+  let rest = 0;
+  while (
+    shown.length > 1 &&
+    render(shown, offenders.length - shown.length).length > PI_SPEC_OMISSION_REASON_MAX_CHARS
+  ) {
+    shown = shown.slice(0, shown.length - 1);
+    rest = offenders.length - shown.length;
+  }
+  return render(shown, rest);
 }
 
 /** Why there is no block when the mapper produced no spec. */

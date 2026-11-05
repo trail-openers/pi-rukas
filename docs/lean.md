@@ -83,7 +83,12 @@ S, M, L" are distinct reasons, and they are the rules `decline` posts.
 `plan-pi-spec.ts`), and that assembled body is the one the driver files — the
 block is not injected any other way. `plan-pi-spec.ts` maps the
 drafted spec onto the contract, bounds every field it emits (title clipped, at
-most 12 criteria, all `verify: "test"`, no `scope`), places the section at the
+most 12 criteria, all `verify: "test"`, no `scope`), and **never files a criterion
+cut**: ANY acceptance-criterion bullet longer than 200 characters — including the
+ones past the 12 the block embeds — makes the whole block omit, with a plain
+`pi-spec block omitted:` line in the body naming every over-long criterion and its
+length — the issue then reads as not ready rather than as a
+contract nobody wrote. It places the section at the
 **top** of the body (so an unclosed fence in prose below cannot swallow it), and
 reads the block back through the real parser before filing. Any `pi-spec v1`
 fence already in the drafted prose is renamed to `pi-spec-example v1`, so a
