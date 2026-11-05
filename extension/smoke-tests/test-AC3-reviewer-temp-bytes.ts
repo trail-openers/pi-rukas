@@ -1,13 +1,13 @@
 // Must stay first: points the role prompts at a test-owned dir before src/roles.ts
 // resolves them at module load (#1579, same helper as test-AC4).
 import "./lib/cancel-prompts.ts";
+import { execFileSync } from "node:child_process";
 import {
   chmodSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   rmSync,
-  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import os from "node:os";
@@ -25,7 +25,14 @@ import { withEnv } from "./lib/env-scope.ts";
 import { gitTestEnv } from "./lib/git-test-env.ts";
 import { isolateLedger } from "./lib/review-ledger-test-helpers.ts";
 import { installStubChild } from "./lib/reviewer-child-stub.ts";
-import { childFreeTemp, writeRealBytes } from "./lib/temp-bytes-stub-2051.ts";
+import {
+  childFreeTemp,
+  childModeDir,
+  duBytes,
+  harnessModeDir,
+  makeForeignOwnedDir,
+  writeRealBytes,
+} from "./lib/temp-bytes-stub-2051.ts";
 
 const SELF = "test-AC3-reviewer-temp-bytes.ts";
 isolateLedger();
@@ -44,12 +51,36 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
+/**
+ * Every line the guard wrote to stderr, whatever ended the child's run. The
+ * `warn` channel is the record that survives a result the dispatch never built
+ * (a child whose run threw), so the failure arms below assert on it as well as
+ * on `operatorConfig` — the same thing `test-AC3-home-snapshot-failure.ts` does
+ * for its `could not snapshot $HOME` line. Drained per case, so a case asserts
+ * only on its own lines.
+ */
+let errWrites: string[] = [];
+process.stderr.write = ((chunk: string | Uint8Array) => {
+  errWrites.push(String(chunk));
+  return true;
+}) as typeof process.stderr.write;
+function drainWarns(): string[] {
+  const seen = errWrites.flatMap((c) => String(c).split("\n"));
+  errWrites = [];
+  return seen.filter((l) => l !== "");
+}
+
 const { spawnSpecialist } = await import("../src/spawn.ts");
 
 /** Bytes a leak case writes: above the 64 MB threshold, small enough to be cheap. */
 const LEAK_BYTES = 70 * 1024 * 1024;
 const LEAK_NAME = "synthetic-transcript.bin";
 const ROLE = "code-review-specialist";
+
+/** `mkdtemp` a root this case owns, removed by the fixture helper's process-end sweep. */
+function walkRoot(tag: string): string {
+  return childFreeTemp(`walk-${tag}`);
+}
 
 /**
  * One dispatch whose child writes `leakBytes` of real content at `name` under a
@@ -189,47 +220,50 @@ for (const [tag, leak] of [
   assert(res?.ok === true, `AC3: and the disclosure still never changes ok (${res?.ok})`);
 }
 
-// --- the walk's own rules, measured directly through the two functions the
-// guard calls. The end-to-end cases above cover one path each (real bytes over
-// the bar); the symlink rule, the ownership skip, both ceilings and the failure
-// arms below have no other coverage anywhere in the suite.
-
-/** `mkdtemp` a root this case owns and removes at process end. */
-function walkRoot(tag: string): string {
-  return childFreeTemp(`walk-${tag}`);
-}
-
-{
-  const root = walkRoot("rules");
-  // R1/ownership: a directory symlink whose target holds a huge leak counts 0 —
-  // the walk never leaves the root.
-  const outside = walkRoot("outside");
-  writeRealBytes(path.join(outside, "outside-huge.bin"), 200 * 1024 * 1024);
-  symlinkSync(outside, path.join(root, "dirlink"));
-  // R1/ownership: a harness tree made the way the harness makes them (mkdtemp's
-  // 0700) is skipped; a child's own dir carrying a harness prefix is NOT, and a
-  // nested dir of either kind is measured, since the skip is top-level only.
-  const harness = path.join(root, "pi-rukas-review-abc");
-  mkdirSync(harness, { mode: 0o700 });
-  chmodSync(harness, 0o700);
-  writeRealBytes(path.join(harness, "tree.bin"), 100 * 1024 * 1024);
-  writeRealBytes(path.join(root, "pi-rukas-child-named", "leak.bin"), 70 * 1024 * 1024);
-  writeRealBytes(path.join(root, "nested", "deeper", "child.bin"), 2 * 1024 * 1024);
-  const walked = await tempAllocatedBytes(root);
-  assert(
-    "bytes" in walked &&
-      walked.bytes === 70 * 1024 * 1024 + 2 * 1024 * 1024 &&
-      walked.bound === undefined,
-    `temp-watch: one walk counts the child's bytes only — symlink target excluded, our own 0700 tree excluded, a harness-PREFIXED child dir and every nested dir counted (${JSON.stringify(walked)})`,
+// `operatorConfig`, the way `test-AC3-home-snapshot-failure.ts` asserts its
+// `could not snapshot $HOME` line. The warn is the record that survives a run with
+// no result object to annotate — a child whose dispatch THROWS leaves `result ===
+// null` inside the guard, so the `traceWarn` is the whole disclosure — and it is
+// what the docs name as the record for a child whose run threw. Case 6 pins the
+// same shape on `operatorConfig`; asserting only there is what lets an end-to-end
+// regression that drops the line from the spawn path pass on an empty array.
+if (process.getuid !== undefined && process.getuid() !== 0) {
+  const scratch = childFreeTemp("unreadable");
+  writeRealBytes(path.join(scratch, "operator-owned-before.bin"), 1024);
+  drainWarns(); // the fixtures' own noise, so this case asserts on its own lines only
+  let res: DispatchResult | undefined;
+  await withEnv({ TMPDIR: scratch }, async () => {
+    res = await withOperatorConfigGuard(ROLE, async () => {
+      // The child's last act locks the root it ran in: the baseline exists and the
+      // after-walk cannot run. `000` on a root the parent owns is unreadable to this
+      // non-root process, which is the same fault the removed root of case 6 raises.
+      chmodSync(scratch, 0o000);
+      return {
+        role: ROLE,
+        ok: true,
+        text: "done",
+        toolUses: [],
+        ms: 1,
+        exitCode: 0,
+      } satisfies DispatchResult;
+    });
+  });
+  chmodSync(scratch, 0o700);
+  const warned = drainWarns().filter(
+    (l) => l.includes("temp-bytes:") || l.includes("could not measure the temp directory"),
   );
   assert(
-    tempBytesLines(
-      ROLE,
-      { bytes: 0, bound: undefined },
-      { bytes: 200 * 1024 * 1024, bound: undefined },
-    )[0] === `temp-bytes: ${200 * 1024 * 1024} (allocated) during the ${ROLE} run`,
-    "temp-watch: a completed walk prints the line with no partial-walk tail",
+    warned.length === 1 &&
+      /operator-config: could not measure the temp directory \(E[A-Z]+\)/.test(warned[0] ?? ""),
+    `AC3: a temp root the parent cannot re-walk warns exactly one "could not measure" line, with no byte figure (${JSON.stringify(warned)})`,
   );
+  assert(
+    !(res?.operatorConfig ?? []).some((l) => l.includes("temp-bytes:")),
+    `AC3: and the same shape appends no byte total to the result (got ${JSON.stringify(res?.operatorConfig ?? [])})`,
+  );
+  rmSync(scratch, { recursive: true, force: true });
+} else {
+  console.log("– AC3 warn-channel case skipped: running as root, mode 000 is not unreadable");
 }
 
 {
@@ -313,6 +347,26 @@ function walkRoot(tag: string): string {
       !injected[0].includes("`"),
     `temp-watch: a child-chosen role or bound cannot put a newline or an unbalanced fence on the line (got ${JSON.stringify(injected)})`,
   );
+  // A NEGATIVE delta is the other lie the two independent walks can produce: a
+  // third process freeing bytes inside the window, and a truncated baseline can hand
+  // that number the partial-walk tail. It prints nothing. The `delta < 0` clause is
+  // stated for what it is — belt to the `<=` arm's arithmetic, and equivalent to it
+  // for every input (so no fixture can witness it separately) — while the arm itself
+  // is observed AT the bar below, which is what pins the behaviour.
+  const negativeUnder = tempBytesLines(
+    ROLE,
+    { bytes: TEMP_BYTES_REPORT_THRESHOLD + 1024 * 1024, bound: "entry bound 20000" },
+    { bytes: 0, bound: undefined },
+  );
+  const negativeBig = tempBytesLines(
+    ROLE,
+    { bytes: 2 * 1024 * 1024 * 1024, bound: "entry bound 20000" },
+    { bytes: 0, bound: undefined },
+  );
+  assert(
+    negativeUnder.length === 0 && negativeBig.length === 0,
+    `temp-watch: a negative delta prints no byte figure at any size, with or without a partial-walk tail (got ${JSON.stringify([negativeUnder, negativeBig])})`,
+  );
   const atTheBar = tempBytesLines(
     ROLE,
     { bytes: 0, bound: undefined },
@@ -332,6 +386,11 @@ function walkRoot(tag: string): string {
 {
   // The root the child ran with is decided at call time, not at module load:
   // that is what lets a test (or a driver) point the measurement somewhere.
+  // R1, each conjunct of the skip on its own ground. The skip needs the harness
+  // prefix AND our uid AND mode 0700, and a child can hand itself any one of the
+  // three: the prefix by typing it, the mode by leaving the umask alone. So each
+  // fixture carries its OWN bytes, and each conjunct is also pinned against the
+  // shipped predicate on a directory the harness itself could have made.
   const root = walkRoot("root");
   await withEnv({ TMPDIR: root }, async () => {
     assert(tempRoot({}) === root, "temp-watch: tempRoot reads TMPDIR at call time");

@@ -41,13 +41,18 @@
  *     exactly that way: `writeRolePromptFile`'s prompt dir, the permission
  *     socket's directory, `host-spawn-slots`' slot dir, `reviewer-tree`'s
  *     checkout and `work-driver-toolchain-canary`'s probe dir all `mkdtemp` and
- *     set `0700` explicitly. A child's own `mkdir` gets `0777 & ~umask`, which on
- *     the normal umask `022` is `0755` and reads as a leak — and a child that
- *     `chmod 700`s its own directory is read as a leak too, because the walk
- *     cannot read inside a directory it is skipping, so that choice is
- *     indistinguishable from the honest one. Counting the harness's own scratch
- *     would blame the child for a number no operator can act on; that is why the
- *     trees are skipped at all, and why the skip is the narrow thing it is.
+ *     set `0700` explicitly. A child's own `mkdir` gets `0777 & ~umask`, which at any
+ *     umask up to `007` is wider than `0700` and reads as a leak. What a child CAN
+ *     do is `chmod 700` its own harness-prefixed directory and match all three — the
+ *     honest shapes and that one are indistinguishable from the parent's side, since
+ *     nothing records which directories the harness made in this window. That is the
+ *     accepted residual, stated rather than papered over: it takes deliberate
+ *     mimicry to reach (two properties a child would have to choose on purpose), the
+ *     hygiene rule in the reviewer prompts is what keeps a probe tree from growing
+ *     large enough to matter, and it is the reason the skip requires all three rather
+ *     than the name it could not trust alone. Counting the harness's own scratch would
+ *     blame the child for a number no operator can act on; that is why the trees are
+ *     skipped at all, and why the skip is the narrow thing it is.
  *   - Symlinks are never followed: `withFileTypes` + `isSymbolicLink()`, never
  *     `recursive: true`, which follows a link and would walk a child's one link
  *     out of the temp root into whatever it names.
@@ -122,7 +127,7 @@ const BLOCK_BYTES = 512;
  * `writeRolePromptFile`), the permission socket (`spawn-permission.ts`), the
  * host-wide slot dir (`host-spawn-slots.ts`) and the type-checker probe dir
  * (`work-driver-toolchain-canary.ts`). Matched against the top-level name only,
- * and NOT sufficient on its own: `isHarnessOwnedDir` requires the owner and the
+ * and NOT sufficient on its own: `isHarnessEntry` requires the owner and the
  * mode too, because a prefix a child can type is a prefix a child can use.
  */
 export const HARNESS_TEMP_PREFIXES: readonly string[] = [
@@ -221,20 +226,26 @@ export async function tempAllocatedBytes(
 
 /**
  * A top-level temp entry the harness made and removes itself: our name, our uid,
- * and a directory no one but the owner can read. All three, because a name alone
- * is a skip a child grants itself. See the header for why mode `0700` is safe to
- * require of every harness tree and why a child cannot use that requirement to
- * hide anything.
+ * and a directory no one but the owner can read — three properties, ALL of them
+ * required, because a name alone is a skip a child grants itself. The three are
+ * deliberately separate clauses rather than one mask: each is a distinct property
+ * the walk refuses to take on trust (what we own, and how wide the door is), and
+ * collapsing them into a single bitwise test would let one clause stand in for
+ * another. See the header for why mode `0700` is safe to require of every harness
+ * tree and why a child cannot use that requirement to hide anything.
  */
 async function isHarnessEntry(root: string, name: string): Promise<boolean> {
   if (!HARNESS_TEMP_PREFIXES.some((prefix) => name.startsWith(prefix))) return false;
   const st = await lstatForMeasure(path.join(root, name));
-  return (
-    st.isDirectory() &&
-    st.uid === currentUid() &&
-    (st.mode & 0o777) === 0o700 &&
-    (st.mode & NON_OWNER_MODE_BITS) === 0
-  );
+  if (!st.isDirectory()) return false;
+  // Ours: every harness tree is made by this process or one of its children, all
+  // of which share its uid, so an entry owned by anyone else cannot be one.
+  if (st.uid !== currentUid()) return false;
+  // Private: exactly the owner's rwx, with no group or other bit anywhere. Both
+  // clauses are needed — the first would accept `0777`-shaped modes read as
+  // "executable by the owner", the second alone would accept `0000`.
+  if ((st.mode & 0o777) !== 0o700) return false;
+  return (st.mode & NON_OWNER_MODE_BITS) === 0;
 }
 
 /** The uid the parent runs as — the uid every harness tree is owned by. */
@@ -266,7 +277,13 @@ export function tempBytesLines(role: string, baseline: TempMeasure, after: TempM
     ];
   }
   const delta = after.bytes - baseline.bytes;
-  if (delta <= TEMP_BYTES_REPORT_THRESHOLD) return [];
+  // Negative and below-bar are both silence. The two walks are not an atomic pair,
+  // so a third process freeing bytes inside the window can make the delta negative,
+  // and a truncated baseline can hand that number the partial-walk tail it would
+  // otherwise have to earn. `<= threshold` already refuses every negative; the
+  // explicit `delta < 0` is the same answer stated twice, so a later change to the
+  // threshold's arithmetic cannot turn a negative into a disclosed figure.
+  if (delta < 0 || delta <= TEMP_BYTES_REPORT_THRESHOLD) return [];
   const bound = after.bound ?? baseline.bound;
   const tail =
     bound === undefined
