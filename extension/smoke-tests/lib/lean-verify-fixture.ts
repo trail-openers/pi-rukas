@@ -86,6 +86,9 @@ export const TEST =
   '#!/bin/sh\nif [ ! -f src/DONE ]; then echo "not ok - tests/AC1-retry.test.sh" 1>&2; exit 1; fi\nexit 0\n';
 /** A frozen test that passes whatever the source does: a contract nobody wrote. */
 export const GREEN_TEST = "#!/bin/sh\nexit 0\n";
+/** The frozen contract RED whatever the tree holds — the acceptance-red half of a pair. */
+export const RED_ACCEPTANCE_TEST =
+  "#!/bin/sh\necho 'not ok - tests/AC1-retry.test.sh' 1>&2\nexit 1\n";
 /**
  * An acceptance test the BASE commit carries and cannot pass: the mainline that is
  * already red on this host. Committed at `baseSha` for the baseline-red cases, so the
@@ -165,8 +168,9 @@ async function fixture(
   issue: number,
   baseRedContract: boolean,
   hook?: { script: string; marksDir: string },
+  frozenText?: string,
 ): Promise<Fixture> {
-  const built = fixtureSync(issue, baseRedContract, hook);
+  const built = fixtureSync(issue, baseRedContract, hook, frozenText);
   if (hook !== undefined) await provisionHookedTree(built, hook, gitEnv());
   return built;
 }
@@ -179,6 +183,7 @@ function fixtureSync(
   issue: number,
   baseRedContract: boolean,
   hook?: { script: string; marksDir: string },
+  frozenText?: string,
 ): Fixture {
   const repoRoot = mkdtempSync(path.join(tmpdir(), "lean-verify-"));
   ROOTS.push(repoRoot);
@@ -226,7 +231,11 @@ function fixtureSync(
   // put the branch on a tree without also checking it out in `repoRoot`.
   const wt = path.join(repoRoot, ".worktrees", `lean-${issue}`);
   git(repoRoot, "worktree", "add", "-q", "-B", branch, wt, baseSha);
-  const head = commitFreeze(wt, issue, TEST);
+  // The frozen contract's bytes: the fixture's own red-until-implemented test, or the
+  // case's, for the pair that fixes the ACCEPTANCE half of a verdict (green for an
+  // excuse case, red for the case asking what an acceptance-red run does on the
+  // excuse path).
+  const head = commitFreeze(wt, issue, frozenText ?? TEST);
 
   const run = createRun({ issue, version: "test", models: {}, baseSha, branch });
   // The record is what the step reads back, so it must be the bytes the FREEZE holds at
@@ -234,7 +243,10 @@ function fixtureSync(
   // of it: it belongs to the mainline, and a run cannot freeze a test it did not author.
   // What makes the base red is that the base carries a test at all whose bytes the run's
   // contract does not satisfy, which the probe reads off the base commit itself.
-  const frozen: Record<string, string> = { [FROZEN_FILE]: sha(TEST) };
+  // The record must hold the sha of the bytes the FREEZE actually holds — the case's
+  // bytes when the case fixed them — or the integrity check reads a green contract as
+  // a tampered one.
+  const frozen: Record<string, string> = { [FROZEN_FILE]: sha(frozenText ?? TEST) };
   const steps: Step[] = [
     { key: `${issue}:ready:0`, state: "ready", startedAt: 1, outcome: { kind: "ok" } },
     {
@@ -272,7 +284,12 @@ export function sha(text: string | Buffer): string {
 
 /** Run `verify` against a fixture repo; a throw comes back as `threw`. */
 export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
-  const f = await fixture(opts.issue, opts.baseRedContract === true, opts.hookAtBase);
+  const f = await fixture(
+    opts.issue,
+    opts.baseRedContract === true,
+    opts.hookAtBase,
+    opts.frozenText,
+  );
 
   const wt = f.wt;
   const repoRoot = f.repoRoot;

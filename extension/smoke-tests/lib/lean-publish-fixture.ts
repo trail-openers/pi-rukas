@@ -30,6 +30,7 @@ import type { HandlerCtx } from "../../src/lean/engine.ts";
 import type { PublishDeps } from "../../src/lean/publish-deps.ts";
 import { renderPiSpec } from "../../src/lean/spec.ts";
 import type { PiSpec } from "../../src/lean/spec.ts";
+import type { PreexistingTierRecord } from "../../src/lean/state-outcome-maps.ts";
 import { NO_HOOKS } from "../../src/lean/specify-reset.ts";
 import { specifyWorktreePath } from "../../src/lean/specify-tree.ts";
 import type { LeanRun, Outcome, Step } from "../../src/lean/state.ts";
@@ -184,6 +185,11 @@ export interface PublishOpts {
   /** The verify step to log; omit for a run that never reached a verdict. */
   verify?: { kind: "green" | "red"; head?: string; reason?: string } | undefined;
   /**
+   * The `preexistingFailures` the green verify recorded — the #2042 disclosure, so a
+   * case can ask what a green whose tier was excused over the base commit still buys.
+   */
+  preexistingFailures?: Record<string, PreexistingTierRecord>;
+  /**
    * The `commandCriteria` the green verify recorded (criterion id -> `passed`).
    * The seam for a body that must print `passed (command)` from the record the
    * step actually writes, rather than from a verdict it never made.
@@ -241,6 +247,9 @@ function logFor(issue: number, o: PublishOpts, head: string): Step[] {
         ...(o.verify.reason === undefined ? {} : { reason: o.verify.reason }),
         ...(o.verify.kind === "green" ? { verifiedHead: o.verify.head ?? head } : {}),
         ...(o.commandCriteria === undefined ? {} : { commandCriteria: o.commandCriteria }),
+        ...(o.preexistingFailures === undefined
+          ? {}
+          : { preexistingFailures: o.preexistingFailures }),
       },
     });
   }

@@ -14,6 +14,29 @@ Symptoms → causes → fixes. Most issues here come from running an older sandb
 
 **The scrub is not only in the shell executor (#1642).** The executor-level scrub covers a command that reaches `shellExecp` with no `env` of its own; it does not cover a seam that builds the child env by hand or passes none and lets the child inherit the parent. The commit-pr / integration tier (`work-driver-integrate-verify.ts` and its flake re-run, which build `{ ...process.env }` for the #1404 report channel), the ci verify-full tier (`work-driver-verify-full.ts`, `work-driver-ci-verify.ts`), the per-worktree and smoke tiers, the consolidated develop probe, and the baseline probes each pass `verifyChildEnv()` themselves, so a headless runner's knobs cannot reach the suite at any of those gates; `test-verify-child-env-paths.ts` drives each one with `PI_ENSEMBLE_HANDOFF_CHANNEL` set in the driver's own environment and asserts the child never sees it. The one deliberate exception: a verify probe's own `git worktree` calls keep `PI_ENSEMBLE_HANDOFF_CHANNEL` (`verifyChildEnv`'s `keep`) — they are the driver's calls, and scrubbing them would silently move a host-channel cycle's handoff into the forge for the length of one probe.
 
+## Lean runs
+
+### Symptom: a lean run hands back with `baseline red: tier <name> is red at the base commit`
+
+**Cause:** the project's own verify tier fails on the run's head AND on its base commit, and
+the two runs did not prove the same thing. A tier red at HEAD re-runs once, and a still-red
+tier is re-run at the base in a throwaway checkout; the run is handed back unless every test
+the head run named also failed there. That hand-back is the honest answer for: a test the head
+run named that the base did not (this run broke it), a tier that exited non-zero while naming
+no test at all (nothing to compare), or a base run whose red is the shape of a checkout whose
+dependencies were never linked (the probe's provisioning, not the commit's).
+
+**Fix:** read the two name sets in the run's verify reason. A head-only name is the run's own
+regression and belongs in a build round. A tier that names nothing needs a runner that prints
+one failing-test line per test (`pytest -v`, `go test -v`), because a gate that cannot tell
+which tests failed cannot tell which ones the base already had. A base red shaped like a missing
+dependency tree means the project's dependency install is not reproducible from a bare
+checkout; make it so, or configure a tier that does not need the tree. A run whose every failure
+the base also printed does NOT hand back: it is graded green, the failures are recorded as
+`preexistingFailures` on the verify/ci step, and the PR body's `## Pre-existing test failures`
+section — "failing on the base commit too; not introduced by this change" — names the tier, its
+command, the base commit, the capped names and the true total.
+
 ## Platform support
 
 ### `./install.sh` fails on Windows — bash parse errors, or a half-finished install

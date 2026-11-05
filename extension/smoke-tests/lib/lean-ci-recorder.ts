@@ -35,6 +35,7 @@ import { defaultConfig } from "../../src/lean/config.ts";
 import type { Budget } from "../../src/lean/config.ts";
 import { ciOutcome } from "../../src/lean/ci.ts";
 import type { CiDeps } from "../../src/lean/ci-deps.ts";
+import type { PreexistingTierRecord } from "../../src/lean/state-outcome-maps.ts";
 import type { Outcome } from "../../src/lean/state.ts";
 import { ROOTS, ciLandLog } from "./lean-ci-land-fixture.ts";
 import { gitTestEnv } from "./git-test-env.ts";
@@ -54,6 +55,8 @@ export interface CiCase {
   tierFails?: unknown;
   /** A tier that runs and exits non-zero (a real red), as a rejected exec. */
   tierExit?: number;
+  /** The stream a red tier prints on its run at HEAD, for the #2042 name cases. */
+  tierStdout?: string;
   /** The oid the verify step records, in place of the repo's own head. */
   verifiedHead?: string;
   /** The log carries no verified head at all. */
@@ -98,6 +101,19 @@ export interface CiCase {
    *  step actually read. A `minutes: 0` row is what the shipped-default rule is
    *  caught by: read literally it is a wait that expired before it started. */
   ciBudget?: Budget;
+  /**
+   * A `preexistingFailures` record to carry on the newest decided verify, for the
+   * #2042 reuse cases: `ci` may reuse `verify`'s proof only when the command it is
+   * about to run is byte-identical to the recorded one and that green certified the
+   * very head `ci` judges, so the case declares the record and the recorder puts it
+   * where production would have written it.
+   */
+  reuseRecord?: PreexistingTierRecord;
+  /** What the base probe's full-tier run printed, for the re-probe cases. */
+  baseTierOutput?: string;
+  /** The run's frozen contract, committed at the base AND the run's head and recorded
+   *  on the step log (see `lib/lean-ci-land-fixture.ts`'s `frozenFile`). */
+  frozenBytes?: { path: string; bytes: string; baseBytes: string };
 }
 
 /**
@@ -147,6 +163,8 @@ export interface Ran {
   tierTimeoutMs?: number;
   /** The oid the fixture's real repo holds, which is the head the PR must match. */
   head: string;
+  /** How many times the full tier's command ran — at HEAD, and at the base probe. */
+  tierRuns?: number;
 }
 
 /** The log a run carries when it arrives at `ci`, minus what the case removes. */
@@ -160,6 +178,7 @@ function logOpts(c: CiCase): Parameters<typeof ciLandLog>[1] {
     ...(c.dirtyFile === undefined ? {} : { dirtyFile: c.dirtyFile }),
     ...(c.noWorktree === true ? { noWorktree: true } : {}),
     ...(c.clockMs === undefined ? {} : { clockMs: c.clockMs }),
+    ...(c.frozenBytes === undefined ? {} : { frozenFile: { ...c.frozenBytes } }),
   };
 }
 
@@ -174,9 +193,17 @@ export async function run(c: CiCase): Promise<Ran> {
   // The engine writes the resolved cycle deadline onto the record; a case that
   // wants the poll to see one sets it here, on the object the handler is given.
   if (c.deadlineMs !== undefined) f.ctx.run = { ...f.ctx.run, deadlineMs: c.deadlineMs };
-  const ran: Ran = { cmds: [], slept: [], head: f.head };
+  const ran: Ran = { cmds: [], slept: [], head: f.head, tierRuns: 0 };
   let viewReads = 0;
   let checksReads = 0;
+  // The #2042 reuse cases put `verify`'s disclosure on the newest decided verify —
+  // the one field of that record the case is allowed to own. The head it certified
+  // stays whatever `logOpts` built, because whether reuse is allowed IS that fact.
+  if (c.reuseRecord !== undefined) {
+    const v = f.ctx.steps.find((s) => s.state === "verify");
+    if (v?.outcome !== undefined)
+      v.outcome = { ...v.outcome, preexistingFailures: { full: c.reuseRecord } };
+  }
   const marker = c.full ?? c.verifyCmd ?? "";
   const deps: CiDeps = {
     exec: async (cmd, o) => {
@@ -185,14 +212,41 @@ export async function run(c: CiCase): Promise<Ran> {
         // The bound the step asked for, recorded before anything can throw: this
         // is the tier's own wall clock, and the case that cares reads it here.
         ran.tierTimeoutMs = o?.timeout;
+        ran.tierRuns = (ran.tierRuns ?? 0) + 1;
+        // The base probe runs the SAME command in a throwaway checkout; a case that
+        // declares what that run printed owns its stream, exactly as the verify
+        // recorder does for `verify`'s own probe. The probe's tree is identified by
+        // PATH, not by a counter: a case that reuses a record never reaches a second
+        // run, and a counter alone would grade a third HEAD run as the base.
+        if (c.baseTierOutput !== undefined && String(o?.cwd ?? "").includes(".baseline-lean-verify-"))
+          throw Object.assign(new Error(`Command failed: ${cmd}`), {
+            code: 1,
+            stdout: c.baseTierOutput,
+            stderr: "",
+          });
         if (c.tierFails !== undefined) throw c.tierFails;
         if (c.tierExit !== undefined)
           throw Object.assign(new Error(`Command failed: ${cmd}`), {
             code: c.tierExit,
-            stdout: "",
+            stdout: c.tierStdout ?? "",
             stderr: "boom from the full tier\n",
           });
         return { stdout: "" };
+      }
+      if (
+        cmd === "git" &&
+        c.baseTierOutput !== undefined &&
+        String(o?.cwd ?? "") === f.repoRoot &&
+        Array.isArray(o?.argv) &&
+        o.argv.some((a, i) => a === "worktree" && o.argv?.[i + 1] === "add")
+      ) {
+        // Only a case that owns the probe's tier output can reach the tier at all, so
+        // only such a case gets its `git worktree add` sent to the fixture's REAL git —
+        // a checkout the recorder invented would be a tree the cleanup cases could not
+        // read back. Every other case keeps this recorder's pre-existing behaviour,
+        // which answers a git command the step never asked it to script with an empty
+        // success (the poll suite counts reads and depends on that).
+        return realGit(String(o?.cwd ?? f.repoRoot), (o?.argv ?? []) as string[]);
       }
       if (cmd.startsWith("gh pr ") && c.ghFails === true)
         throw new Error("gh: could not reach the API");
