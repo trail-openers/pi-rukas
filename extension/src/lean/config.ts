@@ -165,9 +165,9 @@ async function gitType(
  * with several children pays for each separately. `tokens` counts all usage
  * including cache re-reads (~150k per turn measured), which is why the 400-turn
  * rows carry 60M. Each row's tokens sit at or above its turns × ~150k, so the
- * turn ceiling binds no later than the token ceiling (`specify`: 250 × 150k ≈
- * 37.5M, hence 40M). A child's own bound knob can only ever lower `minutes`,
- * never raise it. `ci`'s minutes is the verify tier timeout, not a child bound;
+ * turn ceiling binds no later than the token ceiling. A child's own bound knob
+ * can only ever lower `minutes`, never raise it. `ci`'s minutes is the verify
+ * tier timeout, not a child bound;
  * the review row bounds the lens and fixer children, and has no wall clock of
  * its own — `REVIEW_CHILD_BUDGET` × the per-child bounds end it.
  *
@@ -181,7 +181,7 @@ async function gitType(
  * `lean/ci.ts`.
  */
 export const DEFAULT_BUDGETS: Readonly<Record<string, Budget>> = Object.freeze({
-  specify: Object.freeze({ turns: 250, tokens: 40_000_000, minutes: 20 }),
+  specify: Object.freeze({ turns: 400, tokens: 60_000_000, minutes: 20 }),
   build: Object.freeze({ turns: 400, tokens: 60_000_000, minutes: 45 }),
   challenge: Object.freeze({ turns: 400, tokens: 60_000_000, minutes: 15 }),
   review: Object.freeze({ turns: 400, tokens: 60_000_000, minutes: 30 }),
