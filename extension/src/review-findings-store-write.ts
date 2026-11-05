@@ -14,6 +14,7 @@
 
 import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import type { Finding } from "./lens-review-types.ts";
+import type { ReproductionEvidence } from "./lens-unproven-high.ts";
 import type { ReviewKind } from "./review-findings-fate.ts";
 import {
   type CorruptCopy,
@@ -74,6 +75,15 @@ export interface FindingRun {
    * isolated with.
    */
   confirmFixes?: boolean;
+  /**
+   * #2040 review (lens HIGH) — the round's per-child record of what ran (built
+   * by the lens review from its own children, `lens-unproven-high.ts`). The
+   * untouched-row pass reads it, so a row CARRIED by this round is judged by the
+   * calls this round made and the verdict is written back onto the row. Absent
+   * means the round ran nothing: every carried HIGH is capped, which is the
+   * honest reading of a round with no children to its name.
+   */
+  evidence?: ReproductionEvidence;
 }
 
 /** The result of recording one round: the decisions, or why nothing was recorded. */

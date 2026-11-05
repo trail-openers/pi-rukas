@@ -29,6 +29,7 @@ import {
   type LensRunResult,
   carriedHeading,
   isCarried,
+  isSeverityCap,
 } from "./lens-review-types.ts";
 
 /**
@@ -88,12 +89,20 @@ function lensLine(r: LensRunResult, maxLensAttempts: number): string {
 
 /**
  * The provenance a capped row shows beside its severity: `[MEDIUM (capped:
- * test-path)]`. Without it the operator reads a capped row exactly like one the
- * lens itself called MEDIUM, and the marker the cap exists to leave behind is
- * invisible on the surface that carries it.
+ * test-path)]`, `[MEDIUM (capped: unproven)]` (#2040). Without it the operator
+ * reads a capped row exactly like one the lens itself called MEDIUM, and the
+ * marker the cap exists to leave behind is invisible on the surface that carries
+ * it. The value is the harness's own closed enum (`SeverityCap`), never file or
+ * model text, so it is printed as-is by every renderer that shows a severity —
+ * including the prior-findings block, where a capped row that did not say so
+ * would read to the next round as an open HIGH and be re-reported.
  */
-export function cappedSuffix(f: Finding): string {
-  return f.severityCapped === undefined ? "" : ` (capped: ${f.severityCapped})`;
+export function cappedSuffix(f: Pick<Finding, "severityCapped">): string {
+  // Validated before it is printed. The value reaching a renderer is not always
+  // the typed one — the findings blob and the findings file are agent-writable —
+  // so an unrecognised spelling prints nothing rather than echoing free text
+  // into a line an operator reads as a harness decision.
+  return isSeverityCap(f.severityCapped) ? ` (capped: ${f.severityCapped})` : "";
 }
 
 export function renderSummary(s: LensReviewSummary, maxLensAttempts: number): string {

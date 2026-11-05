@@ -5,7 +5,8 @@
  * `extractFindings` is now imported from here — its only definition.
  */
 import type { Severity } from "./lens-review-format.ts";
-import type { Finding } from "./lens-review.ts";
+import type { Finding } from "./lens-review-types.ts";
+import { readReproduction } from "./review-findings-reproduction.ts";
 
 /**
  * Extract findings from the child's tool_use events. Each report_finding
@@ -55,6 +56,21 @@ export function extractFindings(
       title,
       description: typeof i.description === "string" ? i.description : undefined,
       suggestion: typeof i.suggestion === "string" ? i.suggestion : undefined,
+      // #2040 — the reproduction the child claims for a HIGH. Carried only in
+      // its well-formed shape: a string, an object missing either field, or one
+      // whose fields are not strings is DROPPED rather than counted as a
+      // malformed call. The finding itself is a real finding; only its evidence
+      // claim is unreadable, and the cap treats a row with no evidence exactly
+      // as unproven, so refusing the field cannot under-report.
+      ...(readReproduction(i.reproduction)
+        ? { reproduction: readReproduction(i.reproduction) }
+        : {}),
+      // The cap provenance is NOT read from the call at all (#2040 review). It
+      // is the harness's own record of a cap it applied, and the merge-path caps
+      // are its only writers; a child that set `severityCapped: "test-path"` on
+      // its own HIGH would otherwise buy the one marker that short-circuits the
+      // unproven check. A row replayed from a stored blob carries the marker on
+      // the `Finding`, never back through this input path.
     });
   }
   return { findings: out, skipped };

@@ -17,6 +17,7 @@
  */
 
 import type { CarriedFinding, Finding } from "./lens-review-types.ts";
+import type { ReproductionEvidence } from "./lens-unproven-high.ts";
 import { confirmationsFor } from "./review-confirmation.ts";
 import type { ChangedRanges } from "./review-diff.ts";
 import {
@@ -35,8 +36,9 @@ import { newRowId } from "./review-findings-file.ts";
 import type { HeadState } from "./review-findings-head.ts";
 import { type FindingIdentity, identityOf, pickMatch, sameTitle } from "./review-findings-match.ts";
 import { reopen } from "./review-findings-reopen.ts";
+import { applyConfirmationLapsePass } from "./review-findings-round-ac4.ts";
 import type { ConfirmationSource, HeadOf } from "./review-findings-round-confirmation.ts";
-import { applyUntouchedRowFate } from "./review-findings-round-untouched.ts";
+import { applyUntouchedRowFate, findingCapFields } from "./review-findings-round-untouched.ts";
 import type { ConfirmationLapse } from "./review-findings-store-types.ts";
 import type { LedgerEntry } from "./review-ledger-entry.ts";
 
@@ -104,9 +106,18 @@ export function applyFindingRound(opts: {
    * Present but unmatching also retires nothing — see review-confirmation.ts.
    */
   confirmations?: ConfirmationSource;
+  /**
+   * #2040 review (lens HIGH) — the round's per-child record of what ran, read by
+   * the untouched-row pass so a CARRIED HIGH is judged by this round's calls and
+   * the verdict is written back onto the row. A round with no lens children (a
+   * caller with nothing to report) passes an empty surface, which caps every
+   * carried HIGH — the honest reading of a round that ran nothing.
+   */
+  evidence: ReproductionEvidence;
   now: number;
 }): RoundOutcome {
-  const { branch, findings, mine, headOf, review, deltaRanges, now, confirmations } = opts;
+  const { branch, findings, mine, headOf, review, deltaRanges, now, confirmations, evidence } =
+    opts;
   // #1934 — the ids of the rows this round holds, handed to the confirmation
   // join. The join in review-confirmation.ts matches a ledger row on its
   // `rowId`; bounding that match to the rows the round owns is what keeps a
@@ -201,57 +212,10 @@ export function applyFindingRound(opts: {
     ).get(r.id);
   };
 
-  // #1934 AC4 — a retirement is not a latch. A row a previous round retired on a
-  // confirmation is put back on the table by THIS round when (a) the round is a
-  // complete full one, so it actually looked at the commit, and (b) the
-  // confirmation no longer binds — same patchId and headSha absent, the row
-  // un-passed, or the confirmation gone from the ledger. The row itself is not
-  // touched: same `line`, same `lineHash`, same `firstSeen` — the row that was
-  // retired is the row that comes back, and only the evidence changed. A row
-  // that a confirmation retired and whose confirmation still binds is left alone
-  // (the matched pass below resolves it again), and a row nobody ever retired is
-  // untouched, which is every row in every round before this issue existed.
-  if (reviewable !== undefined) {
-    mine.forEach((r, i) => {
-      if (r.status !== "resolved" || r.resolvedReason !== "confirmed") return;
-      if (r.lastSeen >= now) return;
-      const stillBinds =
-        confirmationsFor(
-          reviewable.ledger,
-          branch,
-          { patchId: reviewable.patchId, headSha: reviewable.headSha },
-          { firstSeen: r.firstSeen, lastSeen: r.lastSeen },
-          heldRowIds,
-        ).get(r.id) !== undefined;
-      if (stillBinds) return;
-      // Two sources for the notice, and the rule is one: a row whose retirement
-      // was made by a confirmation is this driver's own, so its lapse is reportable.
-      // `confirmedBy` is the field that says so (written by both retirement sites
-      // and refused by the file's schema for any other reason), so it is the gate —
-      // and a row that already carries the notice is not re-stamped, because the
-      // array would grow every round and the disclosure would stop being about an
-      // event.
-      if (r.confirmationLapsed === true) return;
-      const provenance = r.confirmedBy;
-      if (provenance === undefined) return;
-      // The row comes back EXACTLY as it stood — `reopen` clears the retirement
-      // and nothing else, so `line`, `lineHash` and `firstSeen` are the row's
-      // own — and it carries the notice that says why: a row whose retirement
-      // was made by a confirmation and whose confirmation no longer binds is
-      // open on changed evidence, not on its original filing.
-      // `confirmedBy` CANNOT survive the reopen: the file's schema refuses a row
-      // carrying provenance without the confirmed resolve reason (rowProblem in
-      // review-findings-file.ts), and the row is open again. So the provenance
-      // lives in the NOTICE this round reports, and the row carries only the
-      // boolean — which is what the store's reader accepts on an open row.
-      mine[i] = {
-        ...reopen(r),
-        confirmedBy: undefined,
-        confirmationLapsed: true,
-      };
-      confirmationLapses.push({ rowId: r.id, title: r.title, provenance });
-    });
-  }
+  // #1934 AC4 — a retirement is not a latch: its own module
+  // (review-findings-round-ac4.ts) states the rule and the no-op condition.
+  applyConfirmationLapsePass({ mine, now, reviewable, branch, heldRowIds, confirmationLapses });
+
   const normalised = findings.map((f) => (noFile(f.path) ? { ...f, line: undefined } : f));
   const identities = normalised.map((f) => identityOf(f, linesOf(f.path)));
   // The explicit no-line marker (#1469), derived from the IDENTITY rather than
@@ -289,10 +253,10 @@ export function applyFindingRound(opts: {
         ...(f.description ? { description: f.description } : {}),
         ...(f.suggestion ? { suggestion: f.suggestion } : {}),
         severity: f.severity,
-        // The cap provenance rides with the row (#1469's both-sites rule): a row
-        // created from a capped finding says so, and a row the cap never touched
-        // carries nothing rather than an own property holding undefined.
-        ...(f.severityCapped ? { severityCapped: f.severityCapped } : {}),
+        // The cap provenance and the evidence claim ride with the row, so a row
+        // carried in a later round still says the harness moved it and can still
+        // be judged (#1469's both-sites rule; #2040).
+        ...findingCapFields(f),
         lens: f.lens,
         ...(f.line ? { line: f.line } : {}),
         ...(id.hasLine ? {} : { noLine: true as const }),
@@ -333,10 +297,10 @@ export function applyFindingRound(opts: {
       // The newest report of the finding is the freshest prose for it.
       ...(f.description ? { description: f.description } : {}),
       ...(f.suggestion ? { suggestion: f.suggestion } : {}),
-      // And the freshest provenance: a row re-reported by a capped finding is a
-      // capped row. Written conditionally for the same reason `line` is — an own
-      // `undefined` still shows up in `Object.keys`.
-      ...(f.severityCapped ? { severityCapped: f.severityCapped } : {}),
+      // And the freshest provenance and evidence claim: a row re-reported by a
+      // capped finding is a capped row, written through the ONE helper the new-row
+      // site uses too, so the two sites cannot drift (#1469).
+      ...findingCapFields(f),
     };
     // #1934 AC4 — a row the round RE-REPORTED while it was still retired was
     // reopened by `reopen` below, and a re-report is the strongest form of "the
@@ -481,6 +445,7 @@ export function applyFindingRound(opts: {
     resolved,
     confirmationLapses,
     confirmedFor,
+    evidence,
   });
   return {
     decisions,

@@ -16,7 +16,10 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import type { Severity } from "./lens-review-format.ts";
+import type { FindingReproduction, SeverityCap } from "./lens-review-types.ts";
+import { isSeverityCap } from "./lens-review-types.ts";
 import { hashText } from "./review-findings-match.ts";
+import { reproductionProblem } from "./review-findings-reproduction.ts";
 import { trace } from "./trace.ts";
 import { looksLikeSecret } from "./vipune.ts";
 
@@ -60,14 +63,27 @@ interface StoredBase {
   severity: Severity;
   /**
    * The harness's cap provenance, copied from the finding that created the row
-   * (`capTestPathFinding`, lens-severity-rubric.ts): set when the merge-path cap
-   * lowered this row from HIGH to MEDIUM because it cites test code. It is
-   * persisted so a row carried in a LATER round still says the harness moved it,
-   * rather than arriving looking like a finding the lens called medium. Optional
-   * — every row written before the cap existed, and every row the cap did not
-   * touch, carries nothing.
+   * (the caps in lens-severity-rubric.ts): `"test-path"` when the merge-path cap
+   * lowered this row from HIGH to MEDIUM because it cites test code, and
+   * `"unproven"` (#2040) when it lowered the row because the reproduction the
+   * HIGH claimed was not a command that lens child is recorded as having run. It
+   * is persisted so a row carried in a LATER round still says the harness moved
+   * it, rather than arriving looking like a finding the lens called medium. It
+   * also keeps the row JUDGABLE: a carried row re-enters a later round with its
+   * evidence intact, so a cap that ran once is never undone by a carry.
+   * Optional — every row written before the caps existed, and every row a cap
+   * did not touch, carries nothing.
    */
-  severityCapped?: "test-path";
+  severityCapped?: SeverityCap;
+  /**
+   * #2040 — the reproduction the finding claimed, copied from the finding that
+   * created the row, for the same reason as `severityCapped`: the carried row is
+   * the row a later round judges, and a carried HIGH with no evidence on it is a
+   * carried HIGH the cap must move again with nothing to read. FILE CONTENT like
+   * every other field here — no renderer prints it, and nothing may interpolate
+   * it into a prompt or a commit message (see `StoredBase.description`).
+   */
+  reproduction?: FindingReproduction;
   lens: string;
   line?: number;
   /**
@@ -278,11 +294,18 @@ function rowProblem(v: unknown): string | undefined {
   for (const key of ["description", "suggestion", "confirmedBy"] as const) {
     if (r[key] !== undefined && typeof r[key] !== "string") return `${key} is not a string`;
   }
-  // The cap provenance is a one-valued enum or nothing: a row that claims the
+  // The cap provenance is a closed enum or nothing: a row that claims the
   // harness lowered its severity with some other spelling is a row somebody
   // edited, and the only honest reading of an unreadable marker is no marker.
-  if (r.severityCapped !== undefined && r.severityCapped !== "test-path") {
+  // One predicate with the renderers that print it (lens-review-types.ts).
+  if (r.severityCapped !== undefined && !isSeverityCap(r.severityCapped)) {
     return `severityCapped "${String(r.severityCapped)}" is invalid`;
+  }
+  // #2040 — the same rule for the evidence a row carries: a `reproduction` that
+  // is not exactly two strings is unreadable, and an unreadable claim of
+  // evidence must not read as evidence (the rule itself: review-findings-reproduction.ts).
+  if (r.reproduction !== undefined && reproductionProblem(r.reproduction) !== undefined) {
+    return `reproduction ${reproductionProblem(r.reproduction)}`;
   }
   // #1934 — a provenance string beside any OTHER resolve reason would be read
   // as "this line is gone" plus "a confirmation retired it": two claims, one

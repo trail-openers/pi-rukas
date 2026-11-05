@@ -64,10 +64,19 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { LensRunResult } from "../../src/lens-review-types.ts";
 import { LENS_ROSTER } from "../../src/lens-roster.ts";
+import { PROOF_COMMAND, bash, repro, toolResult } from "./unproven-high-harness.ts";
 import { gitTestEnv } from "./git-test-env.ts";
 
-/** One seeded/stub finding as the test states it. */
-export type Raw = { severity: string; path: string; line: number; title: string };
+/** One seeded/stub finding as the test states it. A `reproduction` is optional
+ * because only a fresh HIGH from the stub needs one — a carried row arrives from
+ * the store, which the round's cap does not re-judge against these calls. */
+export type Raw = {
+  severity: string;
+  path: string;
+  line: number;
+  title: string;
+  reproduction?: { command: string; observed: string };
+};
 
 export interface AdvisoryFixture {
   /** The temp dir holding the clone, the skills dir and the ledger. */
@@ -196,8 +205,21 @@ export function buildAdvisoryFixture(root: string): AdvisoryFixture {
       () => undefined,
     );
   };
-  const stubLens = async (args: { lens: { name: string } }): Promise<LensRunResult> =>
-    ({
+  const stubLens = async (args: { lens: { name: string } }): Promise<LensRunResult> => {
+    const findings =
+      args.lens.name === LENS_ROSTER[0]?.name
+        ? report.map((f) => ({ lens: args.lens.name, ...f }))
+        : [];
+    // #2040 — a HIGH keeps its severity only when the child that reported it is
+    // recorded as HAVING RUN the command its `reproduction` names. So the calls
+    // this stub records are derived from the rows it reports: every HIGH claims
+    // `PROOF_COMMAND` and every HIGH's child ran it, and the row keeps or loses
+    // its blocking power for the reason this suite is actually testing (the
+    // advisory split), never because the fixture forgot a tool call. A recorded
+    // result with `isError: false` is what makes the call a RUN rather than a
+    // request (`lens-unproven-high.ts`).
+    const proven = findings.filter((f) => f.severity === "HIGH");
+    return {
       lens: args.lens.name,
       ok: true,
       ms: 1,
@@ -205,11 +227,11 @@ export function buildAdvisoryFixture(root: string): AdvisoryFixture {
       attempts: 1,
       blocked: false,
       summary: "reviewed the diff",
-      findings:
-        args.lens.name === LENS_ROSTER[0]?.name
-          ? report.map((f) => ({ lens: args.lens.name, ...f }))
-          : [],
-    }) as unknown as LensRunResult;
+      findings,
+      toolUses: proven.map((_, i) => bash(PROOF_COMMAND, `call-proof-${i}`)),
+      toolResults: proven.map((_, i) => toolResult(`call-proof-${i}`, false)),
+    } as unknown as LensRunResult;
+  };
 
   return {
     root,
@@ -218,7 +240,15 @@ export function buildAdvisoryFixture(root: string): AdvisoryFixture {
     headSha,
     sh,
     setReport: (rows: Raw[]) => {
-      report = rows;
+      // A HIGH without a claim would be capped to MEDIUM by the #2040 pass and
+      // silently stop deciding the verdict, so the fixture supplies the claim
+      // that matches the calls `stubLens` records. Any other row is left exactly
+      // as the test stated it.
+      report = rows.map((r) =>
+        r.severity === "HIGH" && !r.reproduction
+          ? { ...r, reproduction: repro(PROOF_COMMAND, "the failure the row states") }
+          : r,
+      );
     },
     stubLens,
     // Both vars the fixture set, each back to its exact prior value — `delete`

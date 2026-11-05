@@ -32,6 +32,7 @@ import type { AutoDeltaInfo } from "./lens-review-delta-disclose.ts";
 import { isReviewIncomplete } from "./lens-review-incomplete.ts";
 import { type MemoryDisclosure, memoryDisclosure, recordRound } from "./lens-review-memory.ts";
 import type { Finding, LensRunResult } from "./lens-review-types.ts";
+import { evidenceByLens } from "./lens-unproven-high.ts";
 import type { ReviewKind } from "./review-findings-fate.ts";
 import type { ResolvedNotice, SetAsideNotice } from "./review-findings-file.ts";
 import type { ConfirmationLapse } from "./review-findings-store-types.ts";
@@ -117,6 +118,10 @@ export async function resolveReportedFindings(opts: {
 }): Promise<ReportedFindings> {
   const { deduped, lensResults, delta, branchResolved, headSha, identity } = opts;
   const review = reviewKind(delta, lensResults);
+  // The round's per-child record of what ran (#2040 review): the same surface
+  // the merge exit read, threaded to the store so the rows this round CARRIES
+  // are judged by its own children rather than by the round that filed them.
+  const evidence = evidenceByLens(lensResults);
   // The round is recorded through the memory seam (#1408): the same module that
   // shows the lenses their prior findings writes the round, so the evidence the
   // round acted on and the rows it recorded against cannot come from different
@@ -127,6 +132,7 @@ export async function resolveReportedFindings(opts: {
     headSha,
     findings: deduped,
     review,
+    evidence,
     ...(delta ? { deltaDiff: opts.diff } : {}),
     // #1934 — a confirmation binds only with all four present: a branch, a head,
     // the patch id, and a COMPLETE FULL review. Missing any: the pre-#1934 shape.

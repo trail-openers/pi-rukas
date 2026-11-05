@@ -347,6 +347,10 @@ export async function recordFindingRunOutcome(run: FindingRun): Promise<RecordOu
           taken: new Set(all.map((r) => r.id)),
           headOf: (p: string) => heads.get(p),
           review: run.review,
+          // #2040 — the round's per-child evidence, so a carried HIGH is judged
+          // by what THIS round ran. A caller with no children passes nothing,
+          // which the round reads as nothing ran (every carried HIGH caps).
+          evidence: run.evidence ?? new Map(),
           ...(ranges ? { deltaRanges: ranges } : {}),
           ...(useConfirmations
             ? {

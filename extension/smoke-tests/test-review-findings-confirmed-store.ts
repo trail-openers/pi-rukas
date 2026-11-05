@@ -223,6 +223,18 @@ validator_case: {
     ["resolved + confirmed + provenance", bad({ status: "resolved", resolvedReason: "confirmed", confirmedBy: "adv#r1 patch=aa" }), false],
     ["plain open", bad({ status: "open" }), false],
     ["accepted without provenance", bad({ status: "accepted", acceptance: { by: "author", reason: "wontfix", at: 2, snippetHash: "h" } }), false],
+    // #2040 — the two cap spellings and the evidence field. `unproven` is a
+    // value the merge path now writes, so a validator that still refuses it
+    // copies every capped row aside as malformed and the operator loses the
+    // finding AND its suppression. The reverse direction matters equally: a row
+    // claiming some other cap spelling was edited by hand and is not readable.
+    ["unproven cap marker", bad({ status: "open", severityCapped: "unproven", severity: "MEDIUM" }), false],
+    ["test-path cap marker", bad({ status: "open", severityCapped: "test-path", severity: "MEDIUM" }), false],
+    ["unknown cap marker", bad({ status: "open", severityCapped: "because-i-said-so" }), true],
+    ["a two-string reproduction", bad({ status: "open", reproduction: { command: "bun test", observed: "1 fail" } }), false],
+    ["a reproduction that is a string", bad({ status: "open", reproduction: "bun test" }), true],
+    ["a reproduction missing observed", bad({ status: "open", reproduction: { command: "bun test" } }), true],
+    ["a reproduction with a non-string field", bad({ status: "open", reproduction: { command: 1, observed: "x" } }), true],
   ];
   for (const [label, row, expectRefused] of refusals) {
     const r = splitRows([row]);

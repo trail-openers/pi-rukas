@@ -61,6 +61,23 @@ const f = (severity: Finding["severity"], p: string, title = "t", lens: Finding[
   title,
 });
 
+/**
+ * #2040 — this suite pins the TEST-PATH cap, so its HIGH fixtures must not also
+ * trip the unproven cap: a bare HIGH is now capped by default, which would make
+ * every "stays HIGH" assertion below a statement about the wrong pass. `withProof`
+ * gives a row the evidence the harness accepts and `NO_CALLS` is the recorded
+ * call list that matches it, so the rows this suite says stay HIGH do so because
+ * the test-path pass left them alone — the reason the suite is claiming.
+ */
+const PROOF_COMMAND = "bun test proof";
+const NO_CALLS: unknown[] = [
+  { type: "toolCall", name: "bash", arguments: { command: PROOF_COMMAND } },
+];
+const proven = (finding: Finding): Finding => ({
+  ...finding,
+  reproduction: { command: PROOF_COMMAND, observed: "1 failure" },
+});
+
 // ---------------------------------------------------------------------------
 // (a) The rubric reaches the child through the prompt.
 // ---------------------------------------------------------------------------
@@ -258,13 +275,14 @@ const f = (severity: Finding["severity"], p: string, title = "t", lens: Finding[
 {
   const merged = mergeLensFindings(
     [
-      f("HIGH", "tests/x.py", "a"),
-      f("HIGH", "src/x.ts", "b"),
-      f("CRITICAL", "test_foo.py", "c"),
-      f("HIGH", "a/foo.spec.ts", "d"),
+      proven(f("HIGH", "tests/x.py", "a")),
+      proven(f("HIGH", "src/x.ts", "b")),
+      proven(f("CRITICAL", "test_foo.py", "c")),
+      proven(f("HIGH", "a/foo.spec.ts", "d")),
       f("MEDIUM", "tests/y.py", "e"),
     ],
     REPO_ROSTER,
+    NO_CALLS,
   );
   const byPath = new Map(merged.map((x) => [x.path, x]));
   assert(merged.length === 5, "(c) the merge kept every finding");
@@ -283,7 +301,14 @@ const f = (severity: Finding["severity"], p: string, title = "t", lens: Finding[
     "(c) a native MEDIUM on a test path carries no marker",
   );
   // A list nothing caps still comes back as a list of the same rows, in order.
-  const untouched = mergeLensFindings([f("HIGH", "src/a.ts", "a"), f("LOW", "src/b.ts", "b")], REPO_ROSTER);
+  // #2040 — both rows carry evidence: without it the LOW is the only row that
+  // would survive at its own severity and the ORDER assertion below would be
+  // reading a round the unproven cap had already re-sorted.
+  const untouched = mergeLensFindings(
+    [proven(f("HIGH", "src/a.ts", "a")), f("LOW", "src/b.ts", "b")],
+    REPO_ROSTER,
+    NO_CALLS,
+  );
   assert(untouched.map((x) => x.path).join(",") === "src/a.ts,src/b.ts", "(c) merge order preserved");
   // Gap-check 7 — the cap re-sorts. `dedupeFindings` sorted BEFORE the cap moved
   // rows between severity levels. The capped row cites a test DIRECTORY and the
@@ -291,8 +316,12 @@ const f = (severity: Finding["severity"], p: string, title = "t", lens: Finding[
   // first and the native HIGH is listed after a row the round no longer calls HIGH
   // — the order every report the operator reads is built from.
   const sorted = mergeLensFindings(
-    [f("HIGH", "tests/aaa-capped.ts", "capped"), f("HIGH", "zzz-native.ts", "native")],
+    [
+      proven(f("HIGH", "tests/aaa-capped.ts", "capped")),
+      proven(f("HIGH", "zzz-native.ts", "native")),
+    ],
     REPO_ROSTER,
+    NO_CALLS,
   );
   assert(
     sorted.map((x) => `${x.title}/${x.severity}`).join(",") === "native/HIGH,capped/MEDIUM",
@@ -317,13 +346,26 @@ const f = (severity: Finding["severity"], p: string, title = "t", lens: Finding[
     prefix: "lens-severity-cap",
     files: { "src/a.ts": "// header\nexport const a = 1;\n" },
     report: () => reportNow,
+    // #2040 — the production row below must stay HIGH, and the only thing that
+    // now keeps a HIGH uncapped is a command this child is recorded as having
+    // run. Without this the row would cap for the wrong reason and the
+    // "production row survives" assertion here would be vacuous.
+    toolUses: () => [
+      { type: "toolCall", name: "bash", arguments: { command: PROOF_COMMAND } },
+    ],
   });
   try {
     const repo = fixture.repo;
     const head = () => fixture.sh("git rev-parse HEAD");
     reportNow = [
       { severity: "HIGH", path: "smoke-tests/test-a.ts", line: 1, title: "Test helper duplication" },
-      { severity: "HIGH", path: "src/a.ts", line: 2, title: "Real production defect" },
+      {
+        severity: "HIGH",
+        path: "src/a.ts",
+        line: 2,
+        title: "Real production defect",
+        reproduction: { command: PROOF_COMMAND, observed: "1 failure" },
+      },
     ];
     const summary = await runLensReview({
       cwd: repo,

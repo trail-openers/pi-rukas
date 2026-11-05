@@ -91,6 +91,17 @@ console.log("# lean: both lens passes and the fixer brief carry the issue");
   };
   const brief = fixPrompt({ ...fixerBase, issueBody: ISSUE_BODY } as never);
   assert(brief.includes(CONSTRAINT), "the lean fixer's brief contains the issue's constraint");
+  // #2040 — the fixer's brief is where a capped row costs the most if the marker
+  // is missing: the wave spends its budget on a row the harness already moved to
+  // MEDIUM. The row arrives as text this renderer produced, so the marker has to
+  // be in the line the fixer reads.
+  assert(
+    fixPrompt({
+      ...fixerBase,
+      findings: "- [MEDIUM (capped: unproven)] SECURITY a.ts:1: unverifiable claim",
+    } as never).includes("[MEDIUM (capped: unproven)]"),
+    "the lean fixer's brief carries the cap marker on a capped row it was handed",
+  );
   assert(
     brief.includes(ISSUE_DECLINE_MARKER) && brief.includes(FIXER_DECLINE_RULE),
     "and the decline rule with the shared greppable marker",

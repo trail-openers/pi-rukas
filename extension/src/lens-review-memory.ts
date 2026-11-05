@@ -25,6 +25,7 @@
 
 import { renderPriorFindingsBlock } from "./lens-residuals.ts";
 import type { Finding } from "./lens-review-types.ts";
+import type { ReproductionEvidence } from "./lens-unproven-high.ts";
 import type { ReviewKind } from "./review-findings-fate.ts";
 import type { SetAsideNotice } from "./review-findings-file.ts";
 import type { ConfirmationLapse } from "./review-findings-store-types.ts";
@@ -65,6 +66,11 @@ export function recordRound(opts: {
    */
   patchId?: string;
   confirmFixes?: boolean;
+  /**
+   * #2040 review — the round's per-child record of what ran, forwarded to the
+   * store so the rows this round CARRIES are judged by its own lens children.
+   */
+  evidence?: ReproductionEvidence;
 }) {
   if (!opts.branch || !opts.headSha) return Promise.resolve(undefined);
   return recordFindingRunOutcome({
@@ -76,6 +82,7 @@ export function recordRound(opts: {
     ...(opts.deltaDiff !== undefined ? { deltaDiff: opts.deltaDiff } : {}),
     ...(opts.patchId !== undefined ? { patchId: opts.patchId } : {}),
     ...(opts.confirmFixes === true ? { confirmFixes: true } : {}),
+    ...(opts.evidence !== undefined ? { evidence: opts.evidence } : {}),
   });
 }
 

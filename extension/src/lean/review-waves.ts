@@ -33,6 +33,7 @@
 import { neutraliseEvidence } from "../comment-evidence.ts";
 import type { Severity, Verdict } from "../lens-review-format.ts";
 import { SEVERITY_RANK, findingDescription } from "../lens-review-format.ts";
+import { cappedSuffix } from "../lens-review-render.ts";
 import type { Finding } from "../lens-review-types.ts";
 
 /** How many lenses one review pass dispatches — the roster the step buys. */
@@ -191,7 +192,10 @@ export function atOrAboveBar(f: { severity: Finding["severity"] }, threshold: Se
  */
 export function renderFinding(f: Finding): string {
   const where = `${neutraliseEvidence(f.path)}:${f.line ?? "?"}`;
-  return `[${f.severity}] ${neutraliseEvidence(f.lens)} ${where} — ${neutraliseEvidence(f.title)}: ${neutraliseEvidence(findingDescription(f))}`;
+  // #2040 — the cap marker, from the one renderer the review layer uses for it:
+  // a fixer told to fix a HIGH that the harness had already moved to MEDIUM
+  // spends the wave on a row that no longer blocks.
+  return `[${f.severity}${cappedSuffix(f)}] ${neutraliseEvidence(f.lens)} ${where} — ${neutraliseEvidence(f.title)}: ${neutraliseEvidence(findingDescription(f))}`;
 }
 
 /**

@@ -19,6 +19,12 @@
  *     round is recorded, so the findings-store row — and any row a later round
  *     carries from it — holds the capped severity.
  *
+ * A second executed half came from the same evidence problem (#2040): the rubric
+ * asks a HIGH to state a reachable failure, but a stated failure is still a
+ * claim. Its check — a HIGH keeps its severity only on a command the same lens
+ * child is recorded as having run — is `capUnprovenHighFindings`, in
+ * lens-unproven-high.ts, composed with this one by `capFindings` below.
+ *
  * The cap is the one class where there is no judgment to make: a finding about
  * test-only code is not a merge blocker under the rubric, and the prompt alone
  * did not hold (test-only deltas were the loudest source of inflated HIGHs in
@@ -28,6 +34,7 @@
 import { sortFindings } from "./lens-review-format.ts";
 import type { Finding } from "./lens-review-types.ts";
 import { isLensTestPath } from "./lens-test-path.ts";
+import { type ReproductionEvidence, capUnprovenHighFindings } from "./lens-unproven-high.ts";
 
 /**
  * The severity rubric every lens is handed. One rubric for six lenses because
@@ -63,7 +70,18 @@ enforces on test paths:**
 This rubric OVERRIDES your lens skill wherever the two conflict, including any
 severity ladder that assigns HIGH to a category of code or to maintainability
 alone. Where your skill calls a class of finding HIGH and this rubric caps it,
-report the severity the reachable impact of your finding actually warrants.`;
+report the severity the reachable impact of your finding actually warrants.
+
+## A HIGH must name a command you ran
+
+The harness checks the harm a HIGH claims. Alongside the four conditions above, a
+HIGH must carry \`reproduction\`: \`{ "command": ..., "observed": ... }\` — the
+ONE command you ran that demonstrates it, spelled exactly as you ran it, and the
+output you actually saw. The harness compares \`command\` against the tool calls
+recorded for THIS review pass of yours and caps the finding to MEDIUM unless it
+matches one and \`observed\` says what happened. A HIGH you did not run something
+for is a MEDIUM; run the check, or report the finding at the severity the claim
+without it warrants. CRITICAL is not affected.`;
 
 /**
  * Deterministic cap: a HIGH finding whose cited path is test code comes down to
@@ -100,3 +118,25 @@ export function capTestPathFinding(finding: Finding): Finding {
 export function capTestPathFindings(findings: readonly Finding[]): Finding[] {
   return findings.map(capTestPathFinding).sort(sortFindings);
 }
+
+/** Nothing was run by anybody: the evidence surface a blocked exit passes. */
+const NO_EVIDENCE: readonly unknown[] = [];
+
+/**
+ * The ONE composition of the two caps, so the ordering claim — test-path first,
+ * and a row the test-path cap moved is never re-capped — lives in one function
+ * that both merge exits call. `evidence` is the round's per-child record of what
+ * ran (#2040): the calls belong to the lens child that made them, and a row is
+ * matched against its OWN child's calls — never a round-wide pool, which is the
+ * shape that let one lens's command prove another lens's HIGH.
+ */
+export function capFindings(
+  findings: readonly Finding[],
+  evidence: ReproductionEvidence = NO_EVIDENCE,
+): Finding[] {
+  return capUnprovenHighFindings(capTestPathFindings(findings), evidence);
+}
+
+/** Re-exported so a caller of the rubric names both caps at one module; the
+ * definitions and their reasoning live in lens-unproven-high.ts. */
+export { capUnprovenHighFinding, capUnprovenHighFindings } from "./lens-unproven-high.ts";

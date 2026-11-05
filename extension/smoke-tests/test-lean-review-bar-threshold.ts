@@ -82,6 +82,62 @@ const { assert, failures } = makeAssert();
     `(b1a) and the wave re-reviews the fix, as a CRITICAL round's does (${String(b1aRounds)} lens rounds)`,
   );
 
+  // (b1a-2040) #2040 — a row the harness CAPPED does not buy the wave. The cap
+  // runs at the merge exit, so by the time `lensBlocks` sees the round the row is
+  // already MEDIUM with the marker on it; this is the reader that turns the cap
+  // into "no fixer for an unproven claim", which is the whole point of the issue.
+  // It is a bar-HIGH case on purpose: at a MEDIUM bar the same row would (rightly)
+  // buy a fixer, so only this bar distinguishes capped from uncapped.
+  const { repoRoot: rrC, baseSha: bsC } = makeRepo();
+  await setup({ repoRoot: rrC, baseSha: bsC, branch: BRANCH, feature: "export const f = 39;\n" });
+  let b1cFixers = 0;
+  const b1c = await run(
+    ctxFor(rrC, bsC, BRANCH),
+    depsWith({
+      adversarial: async () => result({ loopOutcome: "approved" }),
+      reviewThreshold: async () => "HIGH" as const,
+      lens: async (a) =>
+        a.wave === "full"
+          ? lensRoundWith("ISSUES_FOUND", [
+              blockingFinding({ severity: "MEDIUM", severityCapped: "unproven" }),
+            ])
+          : lensRoundFor(a, "APPROVED", []),
+      dispatch: async (spec) => {
+        b1cFixers++;
+        return fixerThatCommits("b1c")(spec);
+      },
+    }),
+  );
+  assert(
+    b1c.threw === undefined && b1cFixers === 0,
+    `(b1c) bar HIGH: a row the unproven cap moved to MEDIUM buys NO fixer (${b1c.threw?.message ?? `kind ${String(b1c.outcome?.kind)}, ${String(b1cFixers)} fixers`})`,
+  );
+  // The control: the same row at HIGH — what the round would carry if the cap had
+  // not run — does buy the wave, so the assertion above is not satisfied by a step
+  // that reads no rows at all.
+  const { repoRoot: rrD, baseSha: bsD } = makeRepo();
+  await setup({ repoRoot: rrD, baseSha: bsD, branch: BRANCH, feature: "export const f = 40;\n" });
+  let b1dFixers = 0;
+  const b1d = await run(
+    ctxFor(rrD, bsD, BRANCH),
+    depsWith({
+      adversarial: async () => result({ loopOutcome: "approved" }),
+      reviewThreshold: async () => "HIGH" as const,
+      lens: async (a) =>
+        a.wave === "full"
+          ? lensRoundWith("ISSUES_FOUND", [blockingFinding({ severityCapped: "unproven" })])
+          : lensRoundFor(a, "APPROVED", []),
+      dispatch: async (spec) => {
+        b1dFixers++;
+        return fixerThatCommits("b1d")(spec);
+      },
+    }),
+  );
+  assert(
+    b1dFixers === 1,
+    `(b1d) control: the same row still written HIGH blocks even carrying the marker — severity decides, not the marker (${String(b1dFixers)} fixers)`,
+  );
+
   // (b1b) MEDIUM row, CRITICAL bar → no fixer, disclosed, one pass only. The bar
   // and the row are deliberately different values: a step that hard-coded HIGH into
   // the wave bar would buy a fixer here, and one that read the rows not at all would

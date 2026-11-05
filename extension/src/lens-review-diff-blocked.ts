@@ -18,6 +18,7 @@ import { mergeLensFindings } from "./lens-review-merge.ts";
 import type { LensRunResult, Severity } from "./lens-review.ts";
 import type { Finding } from "./lens-review.ts";
 import type { RosterEntry } from "./lens-roster.ts";
+import { evidenceByLens } from "./lens-unproven-high.ts";
 
 /**
  * Build the blocked rows for an unresolvable diff from the EXPECTED roster
@@ -87,11 +88,15 @@ export function blockedReviewSummary(
   }
   dispatchDeck.clearBatchEntry(batchKey);
   const all = [...(extraFindings ?? [])];
-  // The same merge the normal path uses — dedup plus the ONE severity-cap pass —
-  // so a HIGH claim about a test file is capped on this exit too. The blocked
-  // path carries only the deterministic claim-scan rows today, but it is a merge
-  // exit like any other and must not be the one shape that skips the cap.
-  const deduped = mergeLensFindings(all, roster);
+  // The same merge the normal path uses — dedup plus the severity caps — so a
+  // HIGH claim about a test file, and a HIGH whose reproduction nobody ran
+  // (#2040), is capped on this exit too. The evidence is built from THESE rows:
+  // no lens child ran anything on this exit, so every lens's entry is empty and
+  // a HIGH carried by an extra finding is judged against nothing — the honest
+  // answer, and the same shape the normal path builds rather than a special case
+  // that could drift from it. It is a merge exit like any other and must not be
+  // the one shape that skips the cap.
+  const deduped = mergeLensFindings(all, roster, evidenceByLens(blockRows));
   return {
     verdict: computeVerdict(deduped, blockRows, threshold),
     totalFindings: deduped.length,

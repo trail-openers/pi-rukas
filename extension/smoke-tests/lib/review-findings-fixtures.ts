@@ -42,6 +42,8 @@ export interface StubFinding {
   title: string;
   description?: string;
   lens?: string;
+  /** #2040 — the reproduction evidence a HIGH claims; see `Finding.reproduction`. */
+  reproduction?: { command: string; observed: string };
 }
 
 export interface ReviewFixture {
@@ -51,10 +53,19 @@ export interface ReviewFixture {
   ledgerDir: string;
   /** Run one git command inside `repo` and return trimmed stdout. */
   sh: (cmd: string) => string;
-  /** The stub lens spawner to pass to `runLensReview` as `lensChildFn`. */
-  stubLens: unknown;
+  /**
+   * The stub lens spawner to pass to `runLensReview` as `lensChildFn`. Typed as
+   * the seam itself rather than `unknown` so a type-checked smoke test can pass
+   * it straight through: the seam's signature is `runLensChild`'s, and this stub
+   * is deliberately a subset of it (it reads only `lens.name` and
+   * `opts.priorFindings` and returns a hand-built `LensRunResult`), which is what
+   * a function assignable to a wider one is allowed to do.
+   */
+  stubLens: typeof import("../../src/lens-review-child.ts").runLensChild;
   /** Findings a COMPLETE round's lens prompt receives as the prior block. */
   seenPrior: string[];
+  /** The recorded tool calls the stub hands back for the reporting lens (#2040). */
+  toolUses: unknown[];
   /** Remove the temp root. Call from a `finally`. */
   cleanup: () => void;
 }
@@ -89,6 +100,26 @@ export function setupReviewFixture(opts: {
   branch?: string;
   /** The findings the first lens reports, read fresh each round. */
   report: () => StubFinding[];
+  /**
+   * #2040 — the tool calls the reporting lens's child is recorded as having
+   * made. The unproven-HIGH cap reads the SAME child's calls as its findings
+   * (a reproduction the child did not run is no evidence), so a fixture that
+   * reports a HIGH with a reproduction but records no bash call proves the
+   * cap refuses; one that records the call proves it accepts.
+   */
+  toolUses?: () => unknown[];
+  /**
+   * #2040 review — the recorded calls of the OTHER lenses (every lens but the
+   * reporting one). The cap is per child, so a fixture must be able to say
+   * "lens A reported a HIGH whose command only lens B ran" and have the
+   * round cap it; the parent pools nothing, so this is the shape that proves it.
+   */
+  toolUsesOther?: () => unknown[];
+  /** The tool RESULTS of the reporting lens (#2040 review): what Pi accepted.
+   * A call with no successful result is a request, not a run. */
+  toolResults?: () => unknown[];
+  /** The tool RESULTS of the other lenses. */
+  toolResultsOther?: () => unknown[];
   /** When set true, all lenses but the first are blocked (an incomplete round). */
   blockNonFirst?: () => boolean;
   /** Install the six lens skills and set PI_ENSEMBLE_SKILLS_DIR (default true). */
@@ -164,6 +195,24 @@ export function setupReviewFixture(opts: {
       // round INCOMPLETE, which is a different scenario than these tests assert.
       summary: blocked ? "" : "reviewed the diff",
       findings: reported.map((f) => ({ lens: args.lens.name, ...f })),
+      // #2040 — the child's recorded tool calls travel on the result, which is
+      // what the parent reads for the unproven-HIGH matcher. The non-reporting
+      // lenses carry their own list so a round can show one child running what
+      // another child claimed.
+      toolUses: blocked
+        ? []
+        : first
+          ? (opts.toolUses?.() ?? [])
+          : (opts.toolUsesOther?.() ?? []),
+      ...(opts.toolResults || opts.toolResultsOther
+        ? {
+            toolResults: blocked
+              ? []
+              : first
+                ? (opts.toolResults?.() ?? [])
+                : (opts.toolResultsOther?.() ?? []),
+          }
+        : {}),
     } as unknown as LensRunResult;
   };
 
@@ -173,6 +222,7 @@ export function setupReviewFixture(opts: {
     sh,
     stubLens,
     seenPrior,
+    toolUses: opts.toolUses?.() ?? [],
     cleanup: () => {
       rmSync(root, { recursive: true, force: true });
       if (savedLedger === undefined) delete process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE;

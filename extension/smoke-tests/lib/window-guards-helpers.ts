@@ -309,5 +309,10 @@ export const runRound = (
     headOf: HEAD_OF,
     review: "full",
     confirmations: { ledger, patchId, headSha },
+    // #2040 — a round with no lens children of its own: an empty surface,
+    // which caps any HIGH it would carry. These cases judge the confirmation
+    // window, not the reproduction cap, and their rows are CRITICAL (a
+    // severity the cap never moves).
+    evidence: new Map(),
     now: NOW,
   });
