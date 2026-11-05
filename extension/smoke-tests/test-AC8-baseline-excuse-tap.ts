@@ -87,53 +87,9 @@ const namesOf = (stream: string): string[] => testIdentitiesOf(stream).map((i) =
   );
 }
 
-// ------------------------------------- (mixed) a pytest pair poisoned by one line
-{
-  const PY = "FAILED tests/x_test.py::test_a - AssertionError";
-  assert(excuseOf([PY], [PY]).kind === "excused", "(mixed) the pytest pair alone still excuses");
-  assert(
-    excuseOf([PY, "not ok 1 - a bats check"], [PY]).kind === "refused",
-    "(mixed) one TAP line in the HEAD stream refuses the whole excuse",
-  );
-  assert(
-    excuseOf([PY], [PY, "--- FAIL: TestSolo (0.01s)"]).kind === "refused",
-    "(mixed) one go line in the BASE stream refuses it too",
-  );
-}
-
-// ------------------------- (pytest ambiguity) an identity this module cannot read
-{
-  // pytest's own reason separator is inside the parametrisation, so cutting at the
-  // first ` - ` folds `test_total[EUR - 3.99]` and `test_total[EUR - 4.99]` onto one
-  // token. A head that fails BOTH would then be excused by a base that fails only 3.99.
-  const BASE = "FAILED tests/test_cart.py::test_total[EUR - 3.99] - AssertionError";
-  const HEAD = [
-    "FAILED tests/test_cart.py::test_total[EUR - 3.99] - AssertionError",
-    "FAILED tests/test_cart.py::test_total[EUR - 4.99] - AssertionError",
-  ];
-  assert(
-    excuseOf(HEAD, [BASE]).kind === "refused",
-    `(pytest ambiguity) a head parametrisation the base never failed is not excused (${excuseOf(HEAD, [BASE]).kind})`,
-  );
-  assert(
-    namesOf(HEAD[1] ?? "").length === 0,
-    `(pytest ambiguity) and no unbalanced-bracket token is read as an identity (${JSON.stringify(namesOf(HEAD[1] ?? ""))})`,
-  );
-}
-{
-  // Same fold through the packed-line split: a bare `;` inside the parametrisation
-  // cuts `a.py::t[x; 1]` into `a.py::t[x`, which then also stands for `a.py::t[x; 2]`.
-  const BASE = "FAILED a.py::t[x; 1] - AssertionError";
-  const HEAD = ["FAILED a.py::t[x; 1]; FAILED a.py::t[x; 2] - AssertionError"];
-  assert(
-    excuseOf(HEAD, [BASE]).kind === "refused",
-    `(packed) a packed line split on a bare ';' is not excused (${excuseOf(HEAD, [BASE]).kind})`,
-  );
-  assert(
-    namesOf(HEAD[0] ?? "").length === 0,
-    `(packed) and no truncated token is read as an identity (${JSON.stringify(namesOf(HEAD[0] ?? ""))})`,
-  );
-}
+// The pytest identity reader's own cases — the depth-0 reason cut, sibling
+// parametrisations, and an unreadable line refusing rather than being omitted — are
+// pinned in `test-AC8b-baseline-excuse-identity.ts`.
 
 // ------------------------------------- (ci reuse) pytest names round-trip whole
 {

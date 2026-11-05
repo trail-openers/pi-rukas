@@ -68,39 +68,49 @@ export type BaselineExcuse =
   | { kind: "refused" };
 
 /** The identity tokens one failure line carries (a runner may pack several onto one). */
-function identitiesOfLine(candidate: string): TestIdentity[] {
+function identitiesOfLine(candidate: string): LineIdentities {
   // ONE clip for the whole line, then every parser below reads the clipped text:
   // the classifier bounds its own view, but the identity parsers reach into the
   // line's LAST characters, so an over-long candidate handed to them unclipped
   // would make those tails scan the whole string.
+  const unreadable: LineIdentities = { identities: [], unreadable: true };
   const line = clipForScan(candidate);
   const verdict = classifyFailureLine(line);
-  if (verdict === undefined || !verdict.namesTest) return [];
-  if (verdict.shape !== "pytest-failed" && verdict.shape !== "pytest-error") return [];
+  if (verdict === undefined || !verdict.namesTest) return { identities: [], unreadable: false };
+  if (verdict.shape !== "pytest-failed" && verdict.shape !== "pytest-error") return unreadable;
   // Each span of a packed line is its own test, with the shape's own marker stripped
-  // from every span (`FAILED a::t; FAILED b::u`). SPLIT ONLY WHERE THE NEXT SPAN
-  // STARTS WITH THE MARKER: a bare `;` is legal inside a parametrisation
-  // (`a.py::t[x; 1]`), and splitting there cuts the token in half, which then stands
-  // for every other value of that parameter. A span whose brackets do not balance is
-  // an identity this module cannot read, and the whole excuse refuses rather than
-  // comparing a truncated token.
+  // from every span (`FAILED a::t; FAILED b::u`). SPLIT ONLY ON A `;` AT BRACKET DEPTH 0
+  // WHOSE NEXT SPAN STARTS WITH THE MARKER: a bare `;` is legal inside a parametrisation
+  // (`a.py::t[x; 1]`), and splitting there cuts the token in half, which then stands for
+  // every other value of that parameter.
   const spans = /^\s*(?:FAILED|ERROR)\s+(.*)$/s.exec(line)?.[1] ?? "";
-  const tokens = splitPackedSpans(spans).map((token) => stripTrailingReason(stripMarker(token)));
-  if (tokens.some((token) => !balanced(token))) return [];
-  return (
-    tokens
-      // The `::` is what makes a token an identity at all: a pytest token carries the
-      // file the check lives in beside the check's name, and a token without one is not
-      // a name this module is willing to compare between two trees.
-      .filter((token) => token.includes("::"))
-      .map((token) => ({ name: token }))
-  );
+  const tokens = splitPackedSpans(spans).map((span) => stripTrailingReason(stripMarker(span)));
+  // A failure line whose token this module cannot read is a failing test it cannot NAME,
+  // and an unnamed failure must never be excused. Dropping the token instead would let a
+  // head of `[readable A, unreadable B]` match a base that named only A and grade the
+  // tier green on a failure this run authored, so one unreadable token refuses the WHOLE
+  // excuse — on either stream — rather than going uncounted.
+  if (tokens.some((token) => !balanced(token) || !token.includes("::"))) return unreadable;
+  return { identities: tokens.map((token) => ({ name: token })), unreadable: false };
+}
+
+/** What one failure line yielded: the identities it names, and whether it named one it could not read. */
+interface LineIdentities {
+  identities: TestIdentity[];
+  /** A line that declares a failing test this module could not identify. */
+  unreadable: boolean;
 }
 
 /** Where a packed failure line separates one test from the next: a `;` before a marker. */
 const PACKED_SPAN = /;\s*(?=(?:FAILED|ERROR)\s)/;
 
-/** The spans of a packed failure line, split on a marker only, never on a bare `;`. */
+/**
+ * The spans of one packed failure line.
+ *
+ * A `;` is a span boundary only at BRACKET DEPTH 0 and only when the next span opens
+ * with the runner's own marker (see {@link PACKED_SPAN}); together they keep
+ * `a.py::t[x; 1]; a.py::t[x; 2]` one test where a bare split makes two truncated ones.
+ */
 function splitPackedSpans(spans: string): string[] {
   return spans
     .split(PACKED_SPAN)
@@ -108,26 +118,26 @@ function splitPackedSpans(spans: string): string[] {
     .filter((token) => token.length > 0);
 }
 
-/** Are every kind of bracket in this token closed? An unclosed one is a cut, not a name. */
+/** Are every kind of bracket in this token closed, and closed in the right order? */
 function balanced(token: string): boolean {
-  const OPEN = "([{";
-  const CLOSE = "])}";
-  const depth: number[] = [0, 0, 0];
+  // The two tables are indexed BY KIND, so the close bracket at index N belongs to the
+  // open bracket at index N — tables that do not line up refuse every `t[x]`
+  // parametrisation as unreadable, which switches the feature off on the runner it exists
+  // for. ONE STACK, not a counter per kind: a `(` closed by `]` is as unreadable as a `(`
+  // never closed at all, and counters cannot see the difference.
+  const OPEN = ["(", "[", "{"] as const;
+  const CLOSE = [")", "]", "}"] as const;
+  const stack: string[] = [];
   for (const ch of token) {
-    const open = OPEN.indexOf(ch);
-    if (open >= 0) {
-      depth[open] = (depth[open] ?? 0) + 1;
+    if (OPEN.some((bracket) => bracket === ch)) {
+      stack.push(ch);
       continue;
     }
-    const close = CLOSE.indexOf(ch);
+    const close = CLOSE.findIndex((bracket) => bracket === ch);
     if (close < 0) continue;
-    // Close the innermost open bracket, whichever kind it was: a mismatched pair is
-    // as unreadable as an unclosed one.
-    const inner = depth.findIndex((d) => d > 0);
-    if (inner < 0 || inner !== close) return false;
-    depth[close] = (depth[close] ?? 0) - 1;
+    if (stack.pop() !== OPEN[close]) return false;
   }
-  return depth.every((d) => d === 0);
+  return stack.length === 0;
 }
 
 /** A repeated shape marker on a span of a packed failure line (`FAILED a::t; FAILED b::u`). */
@@ -151,6 +161,7 @@ function namesUnreadableIdentity(stream: string): boolean {
     const verdict = classifyFailureLine(clipForScan(line));
     if (verdict?.namesTest !== true) continue;
     if (verdict.shape !== "pytest-failed" && verdict.shape !== "pytest-error") return true;
+    if (identitiesOfLine(line).unreadable) return true;
   }
   return false;
 }
@@ -159,16 +170,46 @@ function namesUnreadableIdentity(stream: string): boolean {
  * Drop pytest's trailing ` - <reason>` from an identity token.
  *
  * A trailing reason is delimited by WHITESPACE (` - `), so the cut is taken at the
- * LAST such separator rather than the first: a parametrisation may itself contain ` - `
- * (`test_total[EUR - 3.99]`), and cutting at the first one would fold that parameterisation
- * and every sibling value onto the one token before the separator — excusing a failure
- * only this run authored. Whatever the cut leaves behind must still balance its
- * brackets (see {@link balanced}); a token that does not is refused by the caller, so
- * no cut here can yield a truncated identity.
+ * FIRST such separator at BRACKET DEPTH 0 — the depth count is the only way to tell
+ * pytest's own separator from one that lives inside the parametrisation. Cutting at the
+ * LAST one leaked the reason into the identity (`a.py::t - assert 1 - 2` read as
+ * `a.py::t - assert 1`), and cutting at the first ` - ` anywhere would fold
+ * `test_total[EUR - 3.99]` and every sibling value onto the one token before the
+ * separator — excusing a failure only this run authored. A token with no depth-0
+ * separator stays whole. Whatever the cut leaves behind must still balance its brackets
+ * (see {@link balanced}); a token that does not is unreadable, and the caller refuses
+ * the excuse rather than comparing a truncated identity.
  */
 function stripTrailingReason(token: string): string {
-  const cut = token.lastIndexOf(" - ");
-  return (cut < 0 ? token : token.slice(0, cut)).trim();
+  const cut = bracketDepth(token);
+  return cut === undefined || cut < 0 ? token.trim() : token.slice(0, cut).trim();
+}
+
+/**
+ * The token's first ` - ` that sits at bracket DEPTH 0, or -1 when it carries none.
+ *
+ * `undefined` for a token whose brackets never balance: an unclosed or mismatched one is
+ * a cut, not a name. A separator still inside a parametrisation (`[EUR - 3.99]`) is part
+ * of the test's own name, not pytest's delimiter, and cutting there folds every sibling
+ * value of that parameter onto one token.
+ */
+function bracketDepth(token: string): number | undefined {
+  let depth = 0;
+  let firstSeparatorAt = -1;
+  for (let i = 0; i < token.length; i++) {
+    const ch = token[i];
+    if (ch === "(" || ch === "[" || ch === "{") {
+      depth++;
+      continue;
+    }
+    if (ch === ")" || ch === "]" || ch === "}") {
+      if (depth === 0) return undefined;
+      depth--;
+      continue;
+    }
+    if (depth === 0 && firstSeparatorAt < 0 && token.startsWith(" - ", i)) firstSeparatorAt = i;
+  }
+  return depth === 0 ? firstSeparatorAt : undefined;
 }
 
 /**
@@ -194,7 +235,7 @@ export function testIdentitiesOf(stream: string): TestIdentity[] {
   const seen = new Set<string>();
   const out: TestIdentity[] = [];
   for (const line of failureLines(stream)) {
-    for (const identity of identitiesOfLine(line)) {
+    for (const identity of identitiesOfLine(line).identities) {
       if (seen.has(identity.name)) continue;
       seen.add(identity.name);
       out.push(identity);
