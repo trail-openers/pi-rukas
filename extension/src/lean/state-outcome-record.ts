@@ -11,6 +11,7 @@
 
 import type { HandoffChannel } from "../work-driver-handoff-channel.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
+import type { PreexistingTierRecord } from "./state-outcome-maps.ts";
 
 /**
  * What a step's handler returned. The engine routes on `kind` and reads the
@@ -71,6 +72,16 @@ export interface Outcome {
    * frozen-path rule.
    */
   blockedBy?: Record<string, string>;
+  /**
+   * `verify` and `ci` only: the tiers this step found red at HEAD whose every
+   * failing test ALSO failed at the run's base commit, so the step graded green and
+   * disclosed them instead of handing the run back. Keyed by tier name; each entry
+   * is the command, the capped names, the true total and the base sha, and `verify`
+   * also carries the base run's complete name set so `ci` can reuse the proof. A
+   * record is evidence only as much as its validator allows — see
+   * `preexistingFailuresProblem` in `state-outcome-maps.ts`.
+   */
+  preexistingFailures?: Record<string, PreexistingTierRecord>;
   /**
    * `publish` only: the PR's https URL, as the forge returned it. Publish-only
    * by contract — no other step writes it, and `handback` reads no other field

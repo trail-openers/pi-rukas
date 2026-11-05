@@ -55,6 +55,9 @@ import { neverStarted, wasKilled } from "./specify-proof.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import { specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
 import type { Outcome } from "./state.ts";
+import type { PreexistingTierRecord } from "./state-outcome-maps.ts";
+import { CI_FULL_TIER, fullTierExcuse } from "./ci-excuse.ts";
+import { preexistingReason } from "./verify-baseline-excuse.ts";
 import { budgetFor } from "./step-budget.ts";
 import { oneLine } from "./text-fence.ts";
 import { assertTreeClean } from "./verify-recheck.ts";
@@ -407,7 +410,7 @@ async function tierFailure(
   cmd: string,
   wt: string,
   timeoutMs: number,
-): Promise<string | undefined> {
+): Promise<{ reason: string; stream: string } | undefined> {
   const ran = await deps
     .exec(cmd, { cwd: wt, timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, killGroup: true })
     .then((r) => ({ err: undefined as unknown, out: r }))
@@ -428,7 +431,7 @@ async function tierFailure(
     .filter((l) => l.trim() !== "")
     .slice(-TIER_TAIL_LINES)
     .join("\n");
-  return `the full verify tier exited ${String(e.code)}: ${cmd}\n${tail}`;
+  return { reason: `the full verify tier exited ${String(e.code)}: ${cmd}\n${tail}`, stream: out };
 }
 
 /**
@@ -485,10 +488,20 @@ export async function ciOutcome(ctx: HandlerCtx, deps: CiDeps): Promise<Outcome>
   // {@link ciTierBudgetMs}.
   const timeoutMs = ciTierBudgetMs(ctx, deps.tierTimeoutMs, ciMinutes(cfg));
   const tier = await tierFailure(deps, full, wt, timeoutMs);
-  if (tier !== undefined) return { kind: "red", reason: tier };
-
+  if (tier === undefined)
+    return {
+      kind: "green",
+      reason: `required checks CLEAN and the full verify tier passed at ${verified}`,
+    };
+  // The full tier is red. Before red-ding the run, ask whether every test it named
+  // was already red at the run's base commit — the same rule `verify` applies to its
+  // own tiers, with the recorded proof reused when ci's command is the tier verify
+  // already proved and re-probed otherwise.
+  const excuse = await fullTierExcuse({ deps, ctx, full, verified, wt, stream: tier.stream });
+  if (excuse === undefined) return { kind: "red", reason: tier.reason };
   return {
     kind: "green",
-    reason: `required checks CLEAN and the full verify tier passed at ${verified}`,
+    reason: `required checks CLEAN at ${verified} — ${preexistingReason([CI_FULL_TIER])}`,
+    preexistingFailures: { full: excuse },
   };
 }

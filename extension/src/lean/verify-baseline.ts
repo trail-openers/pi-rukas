@@ -177,22 +177,11 @@ export async function confirmTierRed(opts: {
   exec: VerifyExec;
   timeoutMs: number;
 }): Promise<boolean> {
-  const ran = await tierCode(opts.exec, opts.cmd, opts.wt, opts.timeoutMs);
-  // An excuse needs a re-run that SAW the work and came back clean: two positive facts,
-  // not the absence of an exit code. The executor's kill, timeout, overflow and `ENOENT`
-  // shapes reject with a non-numeric `code` (`null`, or a string) and so does a rejection
-  // that stamped nothing at all, so reading "no numeric code" as "exited 0" would report
-  // a green on a tier nobody saw pass. The base probe's sibling `classifyBaseRun` asks
-  // the same question through `tierObserved` first; a re-run is held to the same standard.
-  if (!tierObserved(ran)) return true;
-  // A run that observed the work still has to have ANSWERED. `tierCode` folds a
-  // rejection into the value it returns, so a rejection that stamped no `code`, no kill
-  // and no `ENOENT` would otherwise be read as a clean exit by `tierExitCode` alone — a
-  // green handed out for a re-run that reported nothing. An executor that resolves with
-  // no result object at all is the fixture's "exited 0 with no output", and stays green.
-  if (ran !== undefined && typeof ran === "object" && !("stdout" in (ran as object))) return true;
-  return tierExitCode(ran) !== undefined;
+  return confirmTierRedFrom(await tierCode(opts.exec, opts.cmd, opts.wt, opts.timeoutMs));
 }
+
+/** What the base tier run printed alongside its colour — see `probeTierAtBase`. */
+export type BaseProbeOutcome = BaseProbe & { stream?: string };
 
 /**
  * What one tier's command does at the run's base commit, in a throwaway checkout.
@@ -207,6 +196,12 @@ export async function confirmTierRed(opts: {
  * It is removed in a `finally` — including when the base run threw — and removed
  * before the add as well, because the only thing a killed process can leave behind is
  * a tree this function is about to overwrite.
+ *
+ * The answer carries the base tier run's COMBINED stream (`stream`) beside its colour:
+ * the caller decides whether the base NAMED the head run's failures, and it must
+ * decide that from the bytes the base run printed rather than from its exit code
+ * alone. The tree is gone by the time the caller reads it, so the stream is kept here
+ * rather than re-read there.
  */
 export async function probeTierAtBase(opts: {
   repoRoot: string;
@@ -217,7 +212,7 @@ export async function probeTierAtBase(opts: {
   exec: VerifyExec;
   /** The run's frozen contract, whose BYTES the base is compared against. */
   frozen: Record<string, string>;
-}): Promise<BaseProbe> {
+}): Promise<BaseProbeOutcome> {
   const { repoRoot, baseSha, cmd, timeoutMs, exec } = opts;
   const abs = baselineProbeWorktreePath(repoRoot, opts.issue);
   // The probe's OWN git calls are the driver's, so they keep the one knob that
@@ -296,7 +291,11 @@ export async function probeTierAtBase(opts: {
         };
     }
     trace(`lean/verify: baseline probe — running \`${cmd}\` at base ${baseSha.slice(0, 12)}`);
-    return await classifyBaseRun(await tierCode(exec, cmd, abs, timeoutMs), contractEstablished);
+    const ran = await tierCode(exec, cmd, abs, timeoutMs);
+    const verdict = classifyBaseRun(ran, contractEstablished);
+    const e = ran as { stdout?: string; stderr?: string } | undefined;
+    const stream = [e?.stdout, e?.stderr].filter((s) => typeof s === "string").join("\n");
+    return stream === "" ? verdict : { ...verdict, stream };
   } finally {
     // Visible rather than swallowed: a tree git still holds makes the NEXT probe at this
     // path refuse its `worktree add`, and a leak nobody can see is found as a mystery.
@@ -408,6 +407,10 @@ function gitPathAbsent(err: unknown): boolean {
 /**
  * A base tier run's colour, from the same exit code the HEAD runs are judged by.
  *
+ * The optional `stream` carries the base run's combined output so the caller can ask
+ * WHICH tests the base failed, not merely whether it failed; the classification below
+ * never reads it, so a verdict cannot drift with what a run printed.
+ *
  * Exported for the smoke test that judges this function's ORDER directly: `verify` reads
  * `unknown` and `green` identically (both leave the tier's red standing), so the difference
  * between them is invisible end-to-end and can only be judged where it is made.
@@ -470,3 +473,30 @@ export function baselineProbeWorktreePath(repoRoot: string, issue: number): stri
 export function baselineUnusableError(reason: string): VerifyInfraError {
   return new VerifyInfraError(reason);
 }
+/**
+The judgement {@link confirmTierRed} makes about a re-run it did not itself spawn.
+ *
+ * `verify` needs the re-run's OUTPUT as well as its colour — the baseline excuse
+ * reads which tests it named — so it spawns the child once through
+ * `verify` needs the re-run's OUTPUT as well as its colour — the baseline excuse
+ * reads which tests it named — so it spawns the child once through `tierRunStream`
+ * in `verify-tier-rerun.ts` and asks this. One predicate for both callers is what
+ * keeps "a kill is not a pass" from meaning two things.
+ */
+export function confirmTierRedFrom(ran: unknown): boolean {
+  // An excuse needs a re-run that SAW the work and came back clean: two positive facts,
+  // not the absence of an exit code. The executor's kill, timeout, overflow and `ENOENT`
+  // shapes reject with a non-numeric `code` (`null`, or a string) and so does a rejection
+  // that stamped nothing at all, so reading "no numeric code" as "exited 0" would report
+  // a green on a tier nobody saw pass. The base probe's sibling `classifyBaseRun` asks
+  // the same question through `tierObserved` first; a re-run is held to the same standard.
+  if (!tierObserved(ran)) return true;
+  // A run that observed the work still has to have ANSWERED. `tierCode` folds a
+  // rejection into the value it returns, so a rejection that stamped no `code`, no kill
+  // and no `ENOENT` would otherwise be read as a clean exit by `tierExitCode` alone — a
+  // green handed out for a re-run that reported nothing. An executor that resolves with
+  // no result object at all is the fixture's "exited 0 with no output", and stays green.
+  if (ran !== undefined && typeof ran === "object" && !("stdout" in (ran as object))) return true;
+  return tierExitCode(ran) !== undefined;
+}
+

@@ -187,3 +187,137 @@ export function validatedBlockedBy(value: unknown): Record<string, string> {
   }
   return out;
 }
+
+/**
+ * How many failing test names one tier's disclosure may RECORD. The subset test
+ * itself runs on the complete parsed sets (`verify-baseline-excuse`); this bounds
+ * only what is persisted and printed, so a suite with 200 pre-existing failures
+ * records twenty names and the true total rather than two hundred names nobody
+ * skims. Chosen in stream order — the runner's own order is the one an operator
+ * who re-runs the command sees.
+ */
+export const PREEXISTING_NAMES_CAP = 20;
+
+/** How long one recorded test name may be. A longer token is not a name. */
+export const PREEXISTING_NAME_MAX_CHARS = 200;
+
+/**
+ * How large a tier's persisted base-name set may be. It exists so the `ci` step
+ * can reuse `verify`'s proof instead of paying for its own base probe; a set
+ * larger than this is OMITTED rather than truncated, because a partial base set
+ * would let `ci` compare against names it cannot claim are the whole story and
+ * excuse a failure it never saw at base.
+ */
+export const PREEXISTING_BASE_NAMES_CAP = 500;
+
+/** What one tier's pre-existing-failure disclosure records. */
+export interface PreexistingTierRecord {
+  /** The tier's command, verbatim: `ci` reuses the record only on a byte match. */
+  cmd: string;
+  /** The head run's failing names, in stream order, capped at {@link PREEXISTING_NAMES_CAP}. */
+  names: string[];
+  /** The head run's TRUE failing count, which the cap above does not touch. */
+  total: number;
+  /** The commit the base run ran at — the run's `baseSha`. */
+  baseSha: string;
+  /** The base run's complete name set, present only when it fits the cap above. */
+  baseNames?: string[];
+}
+
+/** Is this a recorded name — bounded text with no control character? */
+function recordedNameProblem(name: unknown): string | undefined {
+  if (typeof name !== "string") return "must be a string";
+  if (/\p{Cc}/u.test(name)) return "must not contain a control character";
+  if (name.length > PREEXISTING_NAME_MAX_CHARS)
+    return `must be at most ${PREEXISTING_NAME_MAX_CHARS} characters`;
+  return undefined;
+}
+
+/**
+ * Why a `preexistingFailures` map is not a disclosure this run may print, or undefined.
+ *
+ * The record licenses a GREEN over a tier that exited non-zero, so every field it
+ * asserts is checked: a name that could not have been printed is refused, a total
+ * that is not a count is refused, and a tier with no names is refused rather than
+ * rendered as an empty list under a heading that claims failures exist. A record
+ * this refuses forfeits the excuse — the caller keeps today's `baseline red:`
+ * hand-back — it never throws.
+ */
+export function preexistingFailuresProblem(value: unknown): string | undefined {
+  if (notAMap(value)) return "outcome preexistingFailures must be an object";
+  const tiers = Object.entries(value as Record<string, unknown>);
+  if (tiers.length > RECORD_MAX_ENTRIES)
+    return `outcome preexistingFailures must hold at most ${RECORD_MAX_ENTRIES} tiers`;
+  for (const [tier, raw] of tiers) {
+    const keyProblem = frozenKeyProblem(tier);
+    if (keyProblem !== undefined)
+      return `outcome preexistingFailures key ${JSON.stringify(tier)} is not a valid tier name: ${keyProblem}`;
+    if (notAMap(raw)) return `outcome preexistingFailures[${JSON.stringify(tier)}] must be an object`;
+    const entry = raw as Record<string, unknown>;
+    if (typeof entry.cmd !== "string" || entry.cmd.trim() === "")
+      return `outcome preexistingFailures[${JSON.stringify(tier)}].cmd must be a non-empty string`;
+    if (typeof entry.baseSha !== "string" || !/^[0-9a-f]{40}$/.test(entry.baseSha))
+      return `outcome preexistingFailures[${JSON.stringify(tier)}].baseSha must be a 40-hex commit sha`;
+    if (!Number.isSafeInteger(entry.total) || (entry.total as number) < 1)
+      return `outcome preexistingFailures[${JSON.stringify(tier)}].total must be a positive integer`;
+    if (!Array.isArray(entry.names) || entry.names.length === 0)
+      return `outcome preexistingFailures[${JSON.stringify(tier)}].names must be a non-empty string[]`;
+    if (entry.names.length > PREEXISTING_NAMES_CAP)
+      return `outcome preexistingFailures[${JSON.stringify(tier)}].names must hold at most ${PREEXISTING_NAMES_CAP} names`;
+    for (const name of entry.names) {
+      const problem = recordedNameProblem(name);
+      if (problem !== undefined)
+        return `outcome preexistingFailures[${JSON.stringify(tier)}] names entry ${problem}`;
+    }
+    if (entry.baseNames === undefined) continue;
+    if (!Array.isArray(entry.baseNames) || entry.baseNames.length === 0)
+      return `outcome preexistingFailures[${JSON.stringify(tier)}].baseNames must be a non-empty string[]`;
+    if (entry.baseNames.length > PREEXISTING_BASE_NAMES_CAP)
+      return `outcome preexistingFailures[${JSON.stringify(tier)}].baseNames must hold at most ${PREEXISTING_BASE_NAMES_CAP} names`;
+    for (const name of entry.baseNames) {
+      const problem = recordedNameProblem(name);
+      if (problem !== undefined)
+        return `outcome preexistingFailures[${JSON.stringify(tier)}] baseNames entry ${problem}`;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The `preexistingFailures` map, rebuilt from entries this module actually checked.
+ *
+ * Rebuilt rather than cast, for the reason {@link validatedCommandCriteria} gives:
+ * `buildOutcome`'s claim is that every field it returns was looked at, and here a
+ * half-valid entry must not survive — an entry that fails any rule is DROPPED, so
+ * the tier it described loses its disclosure and the reader of the record cannot
+ * mistake it for one the gate proved.
+ */
+export function validatedPreexistingFailures(
+  value: unknown,
+): Record<string, PreexistingTierRecord> | undefined {
+  if (notAMap(value)) return undefined;
+  const out: Record<string, PreexistingTierRecord> = {};
+  for (const [tier, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (frozenKeyProblem(tier) !== undefined || notAMap(raw)) continue;
+    const entry = raw as Record<string, unknown>;
+    if (typeof entry.cmd !== "string" || entry.cmd.trim() === "") continue;
+    if (typeof entry.baseSha !== "string" || !/^[0-9a-f]{40}$/.test(entry.baseSha)) continue;
+    if (!Number.isSafeInteger(entry.total) || (entry.total as number) < 1) continue;
+    if (!Array.isArray(entry.names) || entry.names.length === 0) continue;
+    if (entry.names.length > PREEXISTING_NAMES_CAP) continue;
+    if (entry.names.some((name) => recordedNameProblem(name) !== undefined)) continue;
+    const baseNames = Array.isArray(entry.baseNames) ? entry.baseNames : undefined;
+    if (baseNames !== undefined)
+      if (baseNames.length === 0 || baseNames.length > PREEXISTING_BASE_NAMES_CAP)
+        continue;
+      else if (baseNames.some((name) => recordedNameProblem(name) !== undefined)) continue;
+    out[tier] = {
+      cmd: entry.cmd,
+      names: [...entry.names] as string[],
+      total: entry.total as number,
+      baseSha: entry.baseSha,
+      ...(baseNames === undefined ? {} : { baseNames: [...baseNames] as string[] }),
+    };
+  }
+  return Object.keys(out).length === 0 ? undefined : out;
+}

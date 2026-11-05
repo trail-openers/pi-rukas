@@ -362,6 +362,11 @@ export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promis
       ...(v?.outcome?.commandNotRunnable === undefined
         ? {}
         : { commandNotRunnable: v.outcome.commandNotRunnable }),
+      // The tiers the gate excused over the base commit, from the record — the body
+      // renders its disclosure from this and never from the reason prose.
+      ...(v?.outcome?.preexistingFailures === undefined
+        ? {}
+        : { preexistingFailures: v.outcome.preexistingFailures }),
       // The optional adversary round that ran out of its own ceiling, read off
       // the log rather than out of a closure, so a resumed run prints the same
       // line a live one would. The reader's object IS the pair (`{limit, value}`)
