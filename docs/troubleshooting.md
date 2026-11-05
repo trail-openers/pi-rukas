@@ -3043,21 +3043,21 @@ a lens-fix landed — parks with the plumb-report
 aborted", and the handoff blames the change rather than the pick. Nothing was pushed and no
 replacement PR is opened.
 
-**Cause.** The pick batch asked "is this commit already on the branch?" with two reads: the
+**Cause.** The pick batch asks "is this commit already on the branch?" with two reads: the
 SHA is in the branch's history, or the commit's tree equals the branch TIP's tree. The
 consolidation writes its own commit, so round 1's commits reach the branch under new SHAs,
 and a lens-fix on the tip then puts a different tree there. Both reads miss, the batch
 re-picks round 1's commits, their context no longer matches what the branch holds, and git
-conflicts. A commit whose PATCH the branch already carries was invisible to the test.
+conflicts. A commit whose PATCH the branch already carries is invisible to both reads, and
+recognising it is an open question — see #2030.
 
-**Fix.** The branch's commits are now reduced to their `git patch-id --stable` ids and
-compared with the candidate's own (the identity the review ledger already records), so a
-patch-equivalent commit is skipped rather than re-picked and the round consolidates onto the
-existing PR. A commit with no patch, and any commit whose patch-id git would not answer,
-falls through to the pick as before — the skip is a proof, never a guess. If you still see
-this symptom, the re-picked commit is not patch-equivalent to anything on the branch: `git log
---oneline <branch>..HEAD` in the cycle's worktree names it, and that commit genuinely needs
-reconciling with what the lens-fix rewrote.
+**What the driver does today.** The fallback still runs, and its plumb-report now carries
+the cause `apply-conflict` for this failure rather than the catch-all `other`, so the
+handoff names the pick as the thing that failed instead of blaming the change. A commit that
+was never applied is not affected: a refused commit-message publish keeps its own
+discriminator (`apply-publish`) and still answers `other`. Expect the round to fall back to
+the ops dispatch — that is recovery, not a defect — and check the plumb-report's reason for
+which commit the batch could not place.
 
 ### A push the forge refused parks instead of falling back (#1439)
 

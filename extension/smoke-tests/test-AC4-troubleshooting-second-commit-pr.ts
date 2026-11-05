@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 /**
- * AC4 (#2030) — `docs/troubleshooting.md` carries the symptom → cause → fix
- * entry for the second commit-pr that fell back to the ops dispatch because the
- * pick batch re-picked what the branch already holds.
+ * AC4 (#2030) — `docs/troubleshooting.md` carries the symptom → cause entry for
+ * the second commit-pr that fell back to the ops dispatch because the pick batch
+ * re-picked what the branch already holds.
  *
  * The fallback's plumb-report body is the literal text an operator reads in the
  * handoff (`work-driver-commit-lock.ts`: "Mechanized commit-pr fell back to the
@@ -10,7 +10,9 @@
  * `test-dockerfile-pins.ts` already pins that a docs entry exists for another
  * recurring failure; this is the same rule for this one.
  *
- * Fails today: the file has no entry naming that symptom.
+ * The entry must NOT claim the re-pick is solved: recognising a commit whose
+ * patch is already on the branch is open (#2030), so the entry says the round
+ * falls back to the ops dispatch and that the report now names the cause.
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -45,8 +47,20 @@ if (entry) {
     `…written as a Symptom (got: ${entry.split("\n")[0].slice(0, 70)})`,
   );
   assert(/\*\*Cause:?\*\*|\bCause\b/i.test(entry), "…with a Cause naming the re-pick of what the branch already holds");
-  assert(/\*\*Fix:?\*\*|\bFix\b|fixed:/i.test(entry), "…with a Fix the operator can act on");
   assert(/commit-pr/i.test(entry), "…on a SECOND commit-pr (not the first round's conflict)");
+  // The cause the fix actually ships, and nothing more than that.
+  assert(
+    /apply-conflict/.test(entry),
+    "…naming the cause the fallback now reports (apply-conflict)",
+  );
+  assert(
+    !/patch-id/.test(entry),
+    "…without claiming the patch-id skip shipped — recognising an already-applied commit is open (#2030)",
+  );
+  assert(
+    !/now skips|are skipped|is skipped rather/.test(entry),
+    "…without claiming already-applied commits are now skipped",
+  );
 }
 
 console.log(`\nexit ${exit}`);

@@ -68,8 +68,8 @@ export async function commitMessageToPublish(
  * Returns the `{ ok: false, failure: "apply-publish" }` result the caller
  * returns verbatim when the message is refused — its own discriminator, not
  * `"apply"`: nothing failed to APPLY here, the batch is intact and merely
- * uncommittable, so the cause classifier must not report it as a conflict. and the title/body to commit when it is
- * not. `restoreRoot`/`claimFor` are the caller's verified-restore pair — the
+ * uncommittable, so the cause classifier must not report it as a conflict. And it returns the title/body
+ * to commit when the message is not refused. `restoreRoot`/`claimFor` are the caller's verified-restore pair — the
  * same ones every other pre-push exit of `integrate()` uses, so a refusal leaves
  * repoRoot in the state the operator was told about rather than the state the
  * half-applied batch left it in.

@@ -364,8 +364,8 @@ await withEnv(env, async () => {
   );
   assert(
     gateSrc.includes("commitMessageForPublish(") &&
-      /refusalResult:[\s\S]{0,160}?ok: false,[\s\S]{0,80}?failure: "apply"/.test(gateSrc),
-    "the gate checks the message and returns a parked failure (ok:false/apply) rather than throwing",
+      /refusalResult:[\s\S]{0,160}?ok: false,[\s\S]{0,80}?failure: "apply-publish"/.test(gateSrc),
+    "the gate checks the message and returns a parked failure (ok:false/apply-publish) rather than throwing",
   );
   assert(
     !/\bthrow\s+new\b/.test(gateSrc),

@@ -182,8 +182,8 @@ await withEnv({ PI_ENSEMBLE_PUBLIC_DENYLIST: denylistPath }, async () => {
   assert(
     "refusalResult" in gateRefused &&
       gateRefused.refusalResult.ok === false &&
-      gateRefused.refusalResult.failure === "apply",
-    "a refused cherry-pick message is a parked apply failure, never a throw",
+      gateRefused.refusalResult.failure === "apply-publish",
+    "a refused cherry-pick message is a parked failure with its own discriminator, never a throw",
   );
   assert(
     gateRun.every((r) => !(r.cmd === "git" && r.argv?.[0] === "commit")),
