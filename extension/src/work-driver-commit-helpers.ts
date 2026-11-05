@@ -20,6 +20,10 @@ export function causeFromIntegrateFailure(res: IntegrateResult): CommitPrFallbac
   switch (res.failure) {
     case "dirty-repoRoot":
       return "dirty-repoRoot";
+    // integrate() names an aborted cherry-pick batch (and a failed patch
+    // apply) `apply`; the operator's word for it is a conflict on the pick.
+    case "apply":
+      return "apply-conflict";
     // #1439 — the forge refused the push. Terminal (see `IntegrateResult.failure`),
     // but the label still reaches the plumb-report the terminal halt writes.
     case "push-refused":
