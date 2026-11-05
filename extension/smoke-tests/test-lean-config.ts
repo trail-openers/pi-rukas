@@ -345,7 +345,7 @@ assert(defaultConfig().verify.full === undefined, "defaultConfig() without one l
 // `JSON.stringify` equality says "the table is wrong" and leaves the reader to
 // diff two objects by eye, and it also depends on key insertion order.
 const EXPECTED_BUDGETS: Record<string, Budget> = {
-  specify: { turns: 250, tokens: 30_000_000, minutes: 20 },
+  specify: { turns: 250, tokens: 40_000_000, minutes: 20 },
   build: { turns: 400, tokens: 60_000_000, minutes: 45 },
   challenge: { turns: 400, tokens: 60_000_000, minutes: 15 },
   review: { turns: 400, tokens: 60_000_000, minutes: 30 },
