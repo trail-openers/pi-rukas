@@ -76,6 +76,22 @@ assert(
   !block.includes("Finding 1 ") && block.includes("Finding 20"),
   "prior block: newest rows are the ones shown",
 );
+// #2040 — the one surface whose whole purpose is telling the NEXT round's lenses
+// what is already known. A row the harness capped that arrived here as a bare
+// `[HIGH]` would be read as an open HIGH and re-reported, which is the finding
+// loop this cap exists to stop; the marker has to be on the DATA line itself.
+const cappedBlock = renderPriorFindingsBlock([
+  stored(77, { severity: "MEDIUM", severityCapped: "unproven" }),
+  stored(78, { severity: "HIGH" }),
+]);
+assert(
+  cappedBlock.includes("[MEDIUM (capped: unproven)]"),
+  "prior block: a capped row says the harness moved it, beside its severity",
+);
+assert(
+  cappedBlock.includes("[HIGH]"),
+  "prior block: an uncapped HIGH beside it still reads as the round called it",
+);
 const longTitle = stored(99, { title: `${"w".repeat(400)}` });
 const longBlock = renderPriorFindingsBlock([longTitle]);
 const item = longBlock.split("\n").find((l) => l.startsWith("[MEDIUM]")) ?? "";

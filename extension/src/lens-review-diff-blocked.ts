@@ -87,11 +87,14 @@ export function blockedReviewSummary(
   }
   dispatchDeck.clearBatchEntry(batchKey);
   const all = [...(extraFindings ?? [])];
-  // The same merge the normal path uses — dedup plus the ONE severity-cap pass —
-  // so a HIGH claim about a test file is capped on this exit too. The blocked
-  // path carries only the deterministic claim-scan rows today, but it is a merge
-  // exit like any other and must not be the one shape that skips the cap.
-  const deduped = mergeLensFindings(all, roster);
+  // The same merge the normal path uses — dedup plus the severity caps — so a
+  // HIGH claim about a test file, and a HIGH whose reproduction nobody ran
+  // (#2040), is capped on this exit too. The blocked path carries only the
+  // deterministic claim-scan rows today, and no lens child ran anything on this
+  // exit, so the empty list is the honest answer: no recorded call exists to
+  // prove anything. It is a merge exit like any other and must not be the one
+  // shape that skips the cap.
+  const deduped = mergeLensFindings(all, roster, []);
   return {
     verdict: computeVerdict(deduped, blockRows, threshold),
     totalFindings: deduped.length,

@@ -14,14 +14,24 @@
  * review path. The blocked/aborted path has its own merge (blockedReviewSummary
  * in lens-review-diff-blocked.ts) and applies the same pass there, so no review
  * shape escapes it.
+ *
+ * `recordedToolUses` is the evidence the second cap reads: the tool calls
+ * recorded for the lens children that produced these findings (#2040). It is a
+ * parameter rather than something this module reads because the calls belong to
+ * the children, which live in the caller — and passing them here is what makes
+ * a HIGH that cites a command nobody ran impossible to keep.
  */
 
 import { dedupeFindings } from "./lens-review-format.ts";
 import type { Finding } from "./lens-review-types.ts";
 import type { RosterEntry } from "./lens-roster.ts";
-import { capTestPathFindings } from "./lens-severity-rubric.ts";
+import { capFindings } from "./lens-severity-rubric.ts";
 
-/** Dedup, then cap. Order matters — see the module jsdoc. */
-export function mergeLensFindings(findings: Finding[], roster: RosterEntry[]): Finding[] {
-  return capTestPathFindings(dedupeFindings(findings, roster));
+/** Dedup, then cap (test-path first, then unproven). Order matters — see the module jsdoc. */
+export function mergeLensFindings(
+  findings: Finding[],
+  roster: RosterEntry[],
+  recordedToolUses: readonly unknown[] = [],
+): Finding[] {
+  return capFindings(dedupeFindings(findings, roster), recordedToolUses);
 }

@@ -434,11 +434,15 @@ export async function runLensReview(opts: {
   // indistinguishable downstream from a lens's own — same precedence rules,
   // same threshold, same rendering. They are findings, not a side channel.
   const all = [...lensResults.flatMap((r) => r.findings), ...(opts.extraFindings ?? [])];
-  // The merge (dedup by path/line/title + precedence, then the ONE severity-cap
-  // pass): a HIGH on a test path comes down to MEDIUM before anything downstream
-  // reads a severity — the verdict, the counts, the ledger's `hasCritical`, and
-  // the findings-store row a later round carries from (lens-review-merge.ts).
-  const deduped = mergeLensFindings(all, roster);
+  // The merge (dedup by path/line/title + precedence, then the severity caps):
+  // a HIGH on a test path comes down to MEDIUM, and so does a HIGH whose claimed
+  // reproduction this round's lens children did not run (#2040) — before
+  // anything downstream reads a severity: the verdict, the counts, the ledger's
+  // `hasCritical`, and the findings-store row a later round carries from
+  // (lens-review-merge.ts). The calls are every child's own, concatenated; a
+  // row's evidence is matched against the children that produced the findings.
+  const recordedToolUses = lensResults.flatMap((r) => r.toolUses ?? []);
+  const deduped = mergeLensFindings(all, roster, recordedToolUses);
   // #1105/#1140/#1125 — the round is recorded against the findings memory (the
   // memory seam's `recordRound`, so the round's evidence and its rows come from
   // one store read), accepted rows suppress, unchanged open rows carry, a refused

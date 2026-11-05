@@ -64,6 +64,26 @@ assert(
   "a carried MEDIUM is disclosed like any other sub-blocking row",
 );
 
+// #2040 — the cap's effect reaches THIS reader through the row's severity, which
+// is the only field it reads. The row the store carries for an unproven HIGH is
+// stored at MEDIUM with the marker beside it, so the round-cap `ci` route opens
+// for a round whose only carried HIGH the harness had already moved — and the
+// marker itself never rescues a row still written at HIGH, because this reader
+// judges severity and nothing else. Both directions matter: if the cap wrote the
+// marker but left the severity, the second case would be the one that broke.
+assert(
+  noBlockingCarriedFinding(
+    blob([row(1, { severity: "MEDIUM", carried: true, severityCapped: "unproven" })]),
+  ) === true,
+  "#2040: a carried row the cap stored at MEDIUM does not park the round-cap route",
+);
+assert(
+  noBlockingCarriedFinding(
+    blob([row(1, { severity: "HIGH", carried: true, severityCapped: "unproven" })]),
+  ) === false,
+  "#2040: a carried HIGH still blocks even carrying the cap marker — severity decides, not the marker",
+);
+
 // ------------------------------------------- unknown severity fails closed
 
 assert(

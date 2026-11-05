@@ -281,6 +281,7 @@ For every issue you identify in your lane, call the \`report_finding\` tool ONCE
   - title (required): short title (< 80 chars)
   - description: 1–3 sentence description of the issue
   - suggestion: short suggested fix
+  - reproduction: for a HIGH, the \`{ "command": ..., "observed": ... }\` you ran it against — see the severity rubric below
 
 ${SEVERITY_RUBRIC}
 

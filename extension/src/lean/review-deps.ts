@@ -35,6 +35,7 @@ import {
 import { runAdversarialLoop } from "../adversarial.ts";
 import { execp } from "../exec.ts";
 import type { LensReviewSummary, Severity } from "../lens-review-format.ts";
+import { cappedSuffix } from "../lens-review-render.ts";
 import { runLensReview } from "../lens-review.ts";
 import { adversarialChildBoundMs as loopChildBoundMs } from "../review-bounds.ts";
 import { resolveLensReviewThreshold } from "../review-threshold-at-base.ts";
@@ -251,11 +252,11 @@ export function reviewDeps(headless: boolean): ReviewDeps {
  * solution from scratch, so one line per finding, with the lens and location the
  * fix has to land at.
  */
-function renderFindings(summary: LensReviewSummary): string {
+export function renderFindings(summary: LensReviewSummary): string {
   return summary.findings
     .map(
       (f) =>
-        `- [${f.severity}] ${f.lens} ${f.path}${f.line === undefined ? "" : `:${String(f.line)}`}: ${f.title}${f.description === undefined || f.description === "" ? "" : ` — ${f.description}`}`,
+        `- [${f.severity}${cappedSuffix(f)}] ${f.lens} ${f.path}${f.line === undefined ? "" : `:${String(f.line)}`}: ${f.title}${f.description === undefined || f.description === "" ? "" : ` — ${f.description}`}`,
     )
     .join("\n");
 }

@@ -15,6 +15,7 @@ import {
   neutraliseMarkdownField,
   neutralisePostField,
 } from "./comment-evidence.ts";
+import { cappedSuffix } from "./lens-review-render.ts";
 import type { Finding } from "./lens-review-types.ts";
 import type { ResolvedNotice, SetAsideNotice } from "./review-findings-file.ts";
 import type { StoredFinding } from "./review-findings-file.ts";
@@ -44,7 +45,7 @@ export function renderPriorFindingsBlock(rows: readonly StoredFinding[]): string
   if (live.length === 0) return "";
   const items = live.map((r) =>
     neutraliseEvidence(
-      `[${r.severity}] ${r.path}:${r.line ?? "?"} — ${r.title}${
+      `[${r.severity}${cappedSuffix(r)}] ${r.path}:${r.line ?? "?"} — ${r.title}${
         r.status === "accepted" ? " (accepted by the operator)" : ""
       } (id ${r.id})`,
     ),

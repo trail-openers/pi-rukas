@@ -5,7 +5,8 @@
  * `extractFindings` is now imported from here — its only definition.
  */
 import type { Severity } from "./lens-review-format.ts";
-import type { Finding } from "./lens-review.ts";
+import type { Finding, SeverityCap } from "./lens-review-types.ts";
+import { readReproduction } from "./review-findings-reproduction.ts";
 
 /**
  * Extract findings from the child's tool_use events. Each report_finding
@@ -55,9 +56,29 @@ export function extractFindings(
       title,
       description: typeof i.description === "string" ? i.description : undefined,
       suggestion: typeof i.suggestion === "string" ? i.suggestion : undefined,
+      // #2040 — the reproduction the child claims for a HIGH. Carried only in
+      // its well-formed shape: a string, an object missing either field, or one
+      // whose fields are not strings is DROPPED rather than counted as a
+      // malformed call. The finding itself is a real finding; only its evidence
+      // claim is unreadable, and the cap treats a row with no evidence exactly
+      // as unproven, so refusing the field cannot under-report.
+      ...(readReproduction(i.reproduction)
+        ? { reproduction: readReproduction(i.reproduction) }
+        : {}),
+      // The cap provenance is the row's own history: a row extracted straight
+      // from a tool call was never moved by a cap, and the merge-path caps are
+      // the only writers of the marker. Read it back only when the call carried
+      // one (a row replayed from a stored blob), so an absent field never
+      // becomes an own `undefined`.
+      ...(readCap(i.severityCapped) ? { severityCapped: readCap(i.severityCapped) } : {}),
     });
   }
   return { findings: out, skipped };
+}
+
+/** The cap marker, or nothing: an unknown spelling is no marker at all. */
+function readCap(v: unknown): SeverityCap | undefined {
+  return v === "test-path" || v === "unproven" ? v : undefined;
 }
 
 function normalisePath(p: string): string {

@@ -431,6 +431,10 @@ export async function runLensChild(opts: {
           : (lastError ?? "unknown failure"),
       summary: hasEvidence ? summary : undefined,
       usage: result?.usage,
+      // #2040 — the calls this child made travel with its findings: a HIGH's
+      // reproduction is checked against THIS child, and a row that keeps none
+      // reads as a child that ran nothing.
+      toolUses: result?.toolUses ?? [],
       ...(hasEvidence && result ? { model: result.model } : {}),
       ...(hasEvidence && result?.transcriptPath ? { transcriptPath: result.transcriptPath } : {}),
       ...(result?.killCause ? { killCause: result.killCause } : {}),
@@ -476,5 +480,8 @@ export async function runLensChild(opts: {
     // #534 — was previously dropped at this return; the cycle total needs it.
     usage: result.usage,
     skillDelivered,
+    // #2040 — see the failed-branch site above: the child's own recorded calls
+    // are the evidence the unproven-HIGH cap reads, kept per child.
+    toolUses: result.toolUses,
   };
 }

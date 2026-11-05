@@ -36,7 +36,7 @@ import type { HeadState } from "./review-findings-head.ts";
 import { type FindingIdentity, identityOf, pickMatch, sameTitle } from "./review-findings-match.ts";
 import { reopen } from "./review-findings-reopen.ts";
 import type { ConfirmationSource, HeadOf } from "./review-findings-round-confirmation.ts";
-import { applyUntouchedRowFate } from "./review-findings-round-untouched.ts";
+import { applyUntouchedRowFate, findingCapFields } from "./review-findings-round-untouched.ts";
 import type { ConfirmationLapse } from "./review-findings-store-types.ts";
 import type { LedgerEntry } from "./review-ledger-entry.ts";
 
@@ -289,10 +289,10 @@ export function applyFindingRound(opts: {
         ...(f.description ? { description: f.description } : {}),
         ...(f.suggestion ? { suggestion: f.suggestion } : {}),
         severity: f.severity,
-        // The cap provenance rides with the row (#1469's both-sites rule): a row
-        // created from a capped finding says so, and a row the cap never touched
-        // carries nothing rather than an own property holding undefined.
-        ...(f.severityCapped ? { severityCapped: f.severityCapped } : {}),
+        // The cap provenance and the evidence claim ride with the row, so a row
+        // carried in a later round still says the harness moved it and can still
+        // be judged (#1469's both-sites rule; #2040).
+        ...findingCapFields(f),
         lens: f.lens,
         ...(f.line ? { line: f.line } : {}),
         ...(id.hasLine ? {} : { noLine: true as const }),
@@ -333,10 +333,10 @@ export function applyFindingRound(opts: {
       // The newest report of the finding is the freshest prose for it.
       ...(f.description ? { description: f.description } : {}),
       ...(f.suggestion ? { suggestion: f.suggestion } : {}),
-      // And the freshest provenance: a row re-reported by a capped finding is a
-      // capped row. Written conditionally for the same reason `line` is — an own
-      // `undefined` still shows up in `Object.keys`.
-      ...(f.severityCapped ? { severityCapped: f.severityCapped } : {}),
+      // And the freshest provenance and evidence claim: a row re-reported by a
+      // capped finding is a capped row, written through the ONE helper the new-row
+      // site uses too, so the two sites cannot drift (#1469).
+      ...findingCapFields(f),
     };
     // #1934 AC4 — a row the round RE-REPORTED while it was still retired was
     // reopened by `reopen` below, and a re-report is the strongest form of "the

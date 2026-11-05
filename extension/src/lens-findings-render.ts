@@ -60,6 +60,9 @@ interface StoredFinding {
   path?: string;
   line?: number;
   title?: string;
+  /** #2040 — the cap provenance, carried through the blob so every surface that
+   * prints a severity can print the marker beside it. */
+  severityCapped?: string;
 }
 
 /**
@@ -134,7 +137,15 @@ function renderOne(f: StoredFinding): string {
   const sev = (f.severity ?? "UNKNOWN").toUpperCase();
   const lens = neutraliseMarkdownField(f.lens ?? "UNKNOWN");
   const title = neutraliseMarkdownField(f.title ?? "(no title)");
-  return `- **${sev}** \`${lens}\` — \`${where}\` — ${title}`;
+  // #2040 — the cap marker beside the severity. The value is the harness's own
+  // closed enum, so it is checked before it is printed: a blob is agent-writable
+  // content and an unrecognised spelling is no marker at all (the same rule the
+  // findings file applies in `rowProblem`).
+  const capped =
+    f.severityCapped === "test-path" || f.severityCapped === "unproven"
+      ? ` (capped: ${f.severityCapped})`
+      : "";
+  return `- **${sev}${capped}** \`${lens}\` — \`${where}\` — ${title}`;
 }
 
 /**

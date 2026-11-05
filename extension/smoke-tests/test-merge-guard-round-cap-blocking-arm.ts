@@ -168,6 +168,35 @@ for (const bar of ["low", "MEDIUM".toLowerCase(), "BLOCKER", "CRITICAL LOW", 3, 
   );
 }
 
+// #2040 — the capped row reaches this reader. `nothingBlocking` reads
+// `blockingCounts`, which `lens-review-finish.ts` derives from `bySeverity`, so
+// the cap has to run BEFORE the counts are computed for a round whose only HIGH
+// was unproven to be mergeable on this arm. The pair below is the difference:
+// the same round scored at the bar it answered to, once with the HIGH still
+// counted and once with the harness's cap applied. The refusal is the witness —
+// delete the cap from the merge exit and the second case is the one that stops
+// being reachable, not the one that reddens.
+{
+  const r = await hook(
+    "gh pr merge 12",
+    [ADV, roundOne({ blockingCounts: { CRITICAL: 0, HIGH: 1, MEDIUM: 0 }, blockingBar: "HIGH" })],
+  );
+  assert(
+    r.block === true,
+    "#2040: a round still counting its HIGH at the HIGH bar → refused (the cap did not run)",
+  );
+}
+{
+  const r = await hook(
+    "gh pr merge 12",
+    [ADV, roundOne({ blockingCounts: { CRITICAL: 0, HIGH: 0, MEDIUM: 1 }, blockingBar: "HIGH" })],
+  );
+  assert(
+    r.block === false,
+    "#2040: the same round once the unproven HIGH is counted at MEDIUM → nothing blocks, allowed",
+  );
+}
+
 if (PREV_ENV === undefined) delete process.env.PI_ENSEMBLE_REVIEW_THRESHOLD;
 else process.env.PI_ENSEMBLE_REVIEW_THRESHOLD = PREV_ENV;
 

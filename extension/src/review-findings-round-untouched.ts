@@ -12,7 +12,7 @@
  * collections as arguments instead of deciding anything independently.
  */
 
-import type { CarriedFinding } from "./lens-review-types.ts";
+import type { CarriedFinding, Finding } from "./lens-review-types.ts";
 import type { ChangedRanges } from "./review-diff.ts";
 import { type ReviewKind, rowFate } from "./review-findings-fate.ts";
 import type { StoredFinding } from "./review-findings-file.ts";
@@ -32,6 +32,27 @@ export interface UntouchedRowSinks {
   confirmationLapses: ConfirmationLapse[];
   /** The round's confirmation lookup for one row; undefined when the round may not act on any. */
   confirmedFor: (row: StoredFinding) => string | undefined;
+}
+
+/**
+ * The cap provenance and the evidence claim a finding carries, shaped for a
+ * stored row (#2040; the both-sites rule #1469 established for `line`).
+ *
+ * BOTH row-write sites in the round apply it — a row created here and a row
+ * re-reported here — because writing it at one site only makes a row's fate
+ * depend on whether it had ever been re-reported, which is the exact divergence
+ * #1469 recorded. Each field is spread conditionally rather than written as
+ * `field: undefined`: an own property holding `undefined` still appears in
+ * `Object.keys`, so a row the cap never touched would come back carrying a
+ * marker it never earned.
+ */
+export function findingCapFields(
+  f: Pick<Finding, "severityCapped" | "reproduction">,
+): Pick<StoredFinding, "severityCapped" | "reproduction"> {
+  return {
+    ...(f.severityCapped ? { severityCapped: f.severityCapped } : {}),
+    ...(f.reproduction ? { reproduction: f.reproduction } : {}),
+  };
 }
 
 export function applyUntouchedRowFate(opts: UntouchedRowSinks): void {
@@ -138,6 +159,9 @@ export function applyUntouchedRowFate(opts: UntouchedRowSinks): void {
         // capped row when it comes back, or it arrives looking like a finding the
         // lens itself called medium.
         ...(r.severityCapped === undefined ? {} : { severityCapped: r.severityCapped }),
+        // #2040 — and the evidence the row stored, so a carried HIGH re-enters a
+        // later round judgeable rather than blankly unproven.
+        ...(r.reproduction === undefined ? {} : { reproduction: r.reproduction }),
         path: r.path,
         line: r.line,
         // A carried row keeps the marker it stored: it is still a file-level

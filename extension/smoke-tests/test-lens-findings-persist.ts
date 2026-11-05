@@ -143,6 +143,20 @@ const mkFinding = (
   const blob = JSON.stringify([
     mkFinding("SECURITY", "CRITICAL", "src/mod.rs", "config root deleted", 10),
     mkFinding("SIMPLICITY", "MEDIUM", "src/session.rs", "duplicate locks", 85),
+    // #2040 — the residual disclosure / PR section reads the `lens-issues-found`
+    // blob, so a row the cap moved must carry its marker THROUGH the blob: this
+    // is the surface an operator reads when a round parked, and a capped HIGH
+    // printed as a bare `**HIGH**` would send them to look for a blocker that
+    // the harness already discounted. The blob is agent-writable file content,
+    // so an unrecognised spelling prints no marker (asserted below).
+    {
+      ...mkFinding("SIMPLICITY", "MEDIUM", "src/capped.ts", "unproven claim", 3),
+      severityCapped: "unproven",
+    },
+    {
+      ...mkFinding("SIMPLICITY", "MEDIUM", "src/edited.ts", "edited marker", 4),
+      severityCapped: "because-i-said-so",
+    },
   ]);
   const log: WorkEvent[] = [
     {
@@ -156,6 +170,14 @@ const mkFinding = (
   ];
   const rendered = renderLensFindingsSection(log);
   assert(rendered.includes("## Lens review — findings"), "the section has a top-level heading");
+  assert(
+    rendered.includes("**MEDIUM (capped: unproven)**") && rendered.includes("src/capped.ts"),
+    "#2040: a capped row shows the cap marker beside its severity in the PR section",
+  );
+  assert(
+    !rendered.includes("because-i-said-so"),
+    "#2040: an unrecognised cap spelling in a hand-edited blob prints no marker",
+  );
   assert(rendered.includes("CRITICAL"), "...carries the severity");
   assert(
     rendered.includes("`SECURITY`") && rendered.includes("src/mod.rs:10"),

@@ -21,6 +21,21 @@ export interface RawFinding {
   title: string;
   description?: string;
   suggestion?: string;
+  /**
+   * #2040 — the evidence a HIGH claims to stand on: a command the lens child
+   * actually ran, and the output it saw. A claim, not a fact: the harness
+   * checks the `command` against the SAME child's recorded tool calls
+   * (`capUnprovenHighFinding`, lens-severity-rubric.ts) and caps the row when
+   * it does not match. `observed` is a gate, never content — no renderer
+   * prints it, so untrusted child text cannot reach a prompt or a post.
+   */
+  reproduction?: FindingReproduction;
+}
+
+/** What a HIGH must name to keep its severity (see `RawFinding.reproduction`). */
+export interface FindingReproduction {
+  command: string;
+  observed: string;
 }
 
 /**
@@ -31,18 +46,26 @@ export interface RawFinding {
  */
 export type FindingSource = LensName | "CLAIM_SCAN";
 
+/**
+ * Which deterministic cap moved a row. `"test-path"` — a HIGH citing test code;
+ * `"unproven"` (#2040) — a HIGH whose claimed reproduction the harness could
+ * not match against that lens child's own recorded tool calls.
+ */
+export type SeverityCap = "test-path" | "unproven";
+
 export interface Finding extends RawFinding {
   severity: Severity;
   lens: FindingSource;
   /**
-   * Set ONLY by the deterministic test-path cap (`capTestPathFinding`,
-   * lens-severity-rubric.ts) on a row whose HIGH it lowered to MEDIUM. It is
-   * the harness's own provenance, not the lens's claim: a row that arrived at
+   * Set ONLY by a deterministic severity cap on a row whose HIGH it lowered to
+   * MEDIUM — `"test-path"` for `capTestPathFinding`, `"unproven"` for
+   * `capUnprovenHighFinding` (both in lens-severity-rubric.ts). It is the
+   * harness's own provenance, not the lens's claim: a row that arrived at
    * MEDIUM from the lens carries nothing, so an operator reading a capped row
    * can tell "the lens called this medium" from "the harness overrode the
    * lens", and neither can be confused for the other in the disclosure.
    */
-  severityCapped?: "test-path";
+  severityCapped?: SeverityCap;
 }
 
 /**
@@ -124,4 +147,13 @@ export interface LensRunResult {
    * evidence of what stopped it.
    */
   skillDelivered?: string;
+  /**
+   * #2040 — what this child's session recorded it as having asked for, kept on
+   * the row so the parent can check a HIGH's claimed reproduction against the
+   * child that made it (`capUnprovenHighFinding`, lens-severity-rubric.ts).
+   * Per-child rather than round-wide by design: a command one lens ran is not
+   * evidence for a finding another lens reported. Absent on a row that never
+   * spawned, which is the same reading as an empty list — nothing was run.
+   */
+  toolUses?: unknown[];
 }
