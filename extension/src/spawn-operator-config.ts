@@ -432,9 +432,11 @@ export async function withOperatorConfigGuard<R>(
     // measurement that could not complete is one honest line, never silence and
     // never a zero (`temp-watch.ts`); a below-threshold delta pushes nothing.
     const tempAfter = report ? await tempAllocatedBytes(tempDir) : undefined;
+    // The same guard the $HOME listing above uses: with either walk absent there is
+    // no pair to compare, and a cast would only hide that from the compiler.
     const tempLines: string[] | undefined =
-      report && tempAfter !== undefined
-        ? tempBytesLines(role, tempBaseline as TempMeasure, tempAfter)
+      report && tempBaseline !== undefined && tempAfter !== undefined
+        ? tempBytesLines(role, tempBaseline, tempAfter)
         : undefined;
     for (const line of violations) traceWarn(line);
     for (const line of homeLines) traceWarn(line);

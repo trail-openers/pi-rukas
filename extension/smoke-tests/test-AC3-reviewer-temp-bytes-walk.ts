@@ -5,6 +5,7 @@ import { rmSync, symlinkSync } from "node:fs";
 import path from "node:path";
 import {
   HARNESS_TEMP_PREFIXES,
+  TEMP_BYTES_REPORT_THRESHOLD,
   tempAllocatedBytes,
   tempBytesLines,
 } from "../src/temp-watch.ts";
@@ -45,8 +46,28 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-/** Bytes above the report threshold, small enough for a fixture to write for real. */
-const LEAK_BYTES = 70 * 1024 * 1024;
+/**
+ * The smallest leak the walk must still call a leak — one block over the 64 MB
+ * report bar, which is what an always-run fixture writes when the assertion is
+ * "this counts" rather than "this is large" (#2051's own subject is a temp quota
+ * filled by bytes, so a fixture is not exempt from it).
+ */
+const LEAK_BYTES = TEMP_BYTES_REPORT_THRESHOLD + 1024 * 1024;
+/**
+ * A tree the walk must SKIP, or must count the moment the skip fails — and the
+ * harness tree whose exclusion the root total is checked against. It carries real
+ * margin over the threshold (not the minimum printable figure) because the case is
+ * the skip itself: a tree that only just cleared the bar would let a walk that got
+ * the boundary wrong look like one that got the skip wrong.
+ */
+const BULK_BYTES = TEMP_BYTES_REPORT_THRESHOLD + 1024 * 1024;
+/**
+ * A tree that only has to be BIG for `du` to witness it: no assertion reads a byte
+ * total out of it, so it needs no threshold margin. Kept apart from
+ * {@link BULK_BYTES} because the two are different claims — and because these
+ * fixtures are in the always-run suite, where every MB is paid on every run.
+ */
+const LINK_BYTES = 4 * 1024 * 1024;
 const ROLE = "code-review-specialist";
 
 /** `mkdtemp` a root this case owns and removes at process end. */
@@ -62,7 +83,8 @@ function walkRoot(tag: string): string {
  */
 async function walkBytes(root: string): Promise<{ bytes: number; bound: string | undefined }> {
   const m = await tempAllocatedBytes(root);
-  if (!("bytes" in m)) throw new Error(`expected a completed byte walk of ${root}, got ${JSON.stringify(m)}`);
+  if (!("bytes" in m))
+    throw new Error(`expected a completed byte walk of ${root}, got ${JSON.stringify(m)}`);
   return m;
 }
 
@@ -81,43 +103,39 @@ async function walkBytes(root: string): Promise<{ bytes: number; bound: string |
   // could be fooled are covered: a plain-named one (a following walk would add its
   // target's bytes) and a harness-NAMED one (the case the top-level skip cannot be
   // trusted to cover, since it matches a name the child chose).
-  writeRealBytes(path.join(outside, "outside-huge.bin"), 200 * 1024 * 1024);
+  writeRealBytes(path.join(outside, "outside-huge.bin"), LINK_BYTES);
   symlinkSync(outside, path.join(root, "childlink"));
   const harnessLink = walkRoot("harness-named"); // OUTSIDE the root, like any leak target
   setMode(harnessLink, 0o700); // the mode a real harness tree carries
-  writeRealBytes(path.join(harnessLink, "tree.bin"), 100 * 1024 * 1024);
+  writeRealBytes(path.join(harnessLink, "tree.bin"), LINK_BYTES);
   symlinkSync(harnessLink, path.join(root, "pi-rukas-review-linked"));
   const linksOnly = await walkBytes(root);
   assert(
-    linksOnly.bytes === 0 &&
-      duBytes(outside) >= 200 * 1024 * 1024 &&
-      duBytes(harnessLink) >= 100 * 1024 * 1024,
+    linksOnly.bytes === 0 && duBytes(outside) >= LINK_BYTES && duBytes(harnessLink) >= LINK_BYTES,
     `temp-watch: the two links alone count nothing, though the trees they name really hold ${duBytes(outside) + duBytes(harnessLink)} — a walk that followed either would print that (${JSON.stringify(linksOnly)})`,
   );
   // Every harness-named entry below is built `harnessModeDir`-style: own uid and
   // mode 0700, the only shape the skip may accept. The child's own dirs come from
   // `childWideDir`, whose mode no umask can make 0700.
   const harness = harnessModeDir(path.join(root, "pi-rukas-review-abc"));
-  writeRealBytes(path.join(harness, "tree.bin"), 100 * 1024 * 1024);
+  writeRealBytes(path.join(harness, "tree.bin"), BULK_BYTES);
   // The leaks sit under NESTED directories rather than loose in the root, so the
   // totals double as the witness for recursion: a walk that queued only the root's
   // own directories finds nothing here and still agrees with every other number.
-  writeRealBytes(path.join(root, "pi-rukas-child-named", "deeper", "leak.bin"), LEAK_BYTES);
-  writeRealBytes(path.join(root, "nested", "deeper", "child.bin"), LEAK_BYTES);
+  writeRealBytes(path.join(root, "pi-rukas-child-named", "deeper", "leak.bin"), LINK_BYTES);
+  writeRealBytes(path.join(root, "nested", "deeper", "child.bin"), LINK_BYTES);
   const walked = await walkBytes(root);
   assert(
     "bytes" in walked &&
-      duBytes(root, "childlink", "pi-rukas-review-linked", "plainlink") -
-        duBytes(harness) ===
-        walked.bytes,
+      duBytes(root, "childlink", "pi-rukas-review-linked") - duBytes(harness) === walked.bytes,
     "temp-watch: and that total is what an independent enumeration of the same tree reports (walk minus the one harness tree)",
   );
   assert(
     tempBytesLines(
       ROLE,
       { bytes: 0, bound: undefined },
-      { bytes: 200 * 1024 * 1024, bound: undefined },
-    )[0] === `temp-bytes: ${200 * 1024 * 1024} (allocated) during the ${ROLE} run`,
+      { bytes: TEMP_BYTES_REPORT_THRESHOLD + 512, bound: undefined },
+    )[0] === `temp-bytes: ${TEMP_BYTES_REPORT_THRESHOLD + 512} (allocated) during the ${ROLE} run`,
     "temp-watch: a completed walk prints the line with no partial-walk tail",
   );
 }
@@ -141,33 +159,39 @@ async function walkBytes(root: string): Promise<{ bytes: number; bound: string |
     `temp-watch: a harness-PREFIXED dir at the mode a child's own mkdir gets is a leak, not a harness tree, and matches du (${JSON.stringify([measuredWide, duBytes(root)])})`,
   );
   const ours = harnessModeDir(path.join(root, "pi-rukas-spawn-slots-1006"));
-  writeRealBytes(path.join(ours, "tree.bin"), 100 * 1024 * 1024);
+  writeRealBytes(path.join(ours, "tree.bin"), BULK_BYTES);
   const skipped = await tempAllocatedBytes(root);
   assert(
     "bytes" in skipped &&
       skipped.bytes === LEAK_BYTES &&
       duBytes(root) - duBytes(ours) === skipped.bytes,
-    `temp-watch: our own uid + mode 0700 is the ONLY thing a harness name buys — du says the root holds 100 MB more and the walk excludes exactly that one tree (${JSON.stringify([skipped, duBytes(root)])})`,
+    `temp-watch: our own uid + mode 0700 is the ONLY thing a harness name buys — du says the root holds ${BULK_BYTES / LINK_BYTES}x the link tree and the walk excludes exactly that one tree (${JSON.stringify([skipped, duBytes(root)])})`,
   );
   setMode(ours, 0o755); // same name, same owner, one bit wider
   const widened = await tempAllocatedBytes(root);
   assert(
-    "bytes" in widened && widened.bytes === LEAK_BYTES + 100 * 1024 * 1024,
-    `temp-watch: and the moment that tree is not 0700 the whole 100 MB is counted — the mode is not decoration (${JSON.stringify(widened)})`,
+    "bytes" in widened && widened.bytes === LEAK_BYTES + BULK_BYTES,
+    `temp-watch: and the moment that tree is not 0700 the whole harness tree is counted — the mode is not decoration (${JSON.stringify(widened)})`,
   );
-  const foreign = await makeForeignOwnedDir(path.join(root, "pi-rukas-canary-other"), LEAK_BYTES);
+  // A harness-prefixed tree the PARENT does not own, carrying bytes: the conjunct
+  // under test is the OWNER, not the size, so no assertion reads a byte total out of
+  // the tree itself (the expected sum below is the root's other entries). A few MB
+  // witness it as well as a hundred would — and this host cannot even make one.
+  const foreign = await makeForeignOwnedDir(path.join(root, "pi-rukas-canary-other"), LINK_BYTES);
   if (foreign !== undefined) {
     const withForeign = await tempAllocatedBytes(root);
     assert(
-      "bytes" in withForeign && withForeign.bytes === 2 * LEAK_BYTES + 100 * 1024 * 1024,
+      "bytes" in withForeign && withForeign.bytes === 2 * LEAK_BYTES + BULK_BYTES,
       `temp-watch: a harness-prefixed 0700 dir the parent does not own is measured, not skipped (${JSON.stringify(withForeign)})`,
     );
     rmSync(foreign, { recursive: true, force: true });
   } else {
-    console.log("– foreign-uid skip case skipped: this process cannot create another uid's directory");
+    console.log(
+      "– foreign-uid skip case skipped: this process cannot create another uid's directory",
+    );
   }
 }
 
-
 console.log(`\nexit ${exit}`);
+
 process.exit(exit);

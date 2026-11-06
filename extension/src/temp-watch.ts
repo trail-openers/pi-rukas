@@ -284,11 +284,18 @@ export function tempBytesLines(role: string, baseline: TempMeasure, after: TempM
   // explicit `delta < 0` is the same answer stated twice, so a later change to the
   // threshold's arithmetic cannot turn a negative into a disclosed figure.
   if (delta < 0 || delta <= TEMP_BYTES_REPORT_THRESHOLD) return [];
-  const bound = after.bound ?? baseline.bound;
-  const tail =
-    bound === undefined
-      ? ""
-      : ` — partial walk (${neutraliseEvidence(neutraliseFenceEntry(bound))})`;
+  // EITHER walk being bounded makes the delta an underestimate, so either one gets
+  // named — and named as itself: a partial baseline under-counts what the child
+  // started from and so inflates the delta, a partial after-walk under-counts what
+  // it left and so deflates it. One shared word for both told an operator nothing
+  // about which direction to distrust the figure in.
+  const bound =
+    after.bound !== undefined
+      ? `partial after-walk: ${after.bound}`
+      : baseline.bound !== undefined
+        ? `partial baseline: ${baseline.bound}`
+        : undefined;
+  const tail = bound === undefined ? "" : ` — ${neutraliseEvidence(neutraliseFenceEntry(bound))}`;
   return [
     `temp-bytes: ${delta} (allocated) during the ${neutraliseEvidence(neutraliseFenceEntry(role))} run${tail}`,
   ];

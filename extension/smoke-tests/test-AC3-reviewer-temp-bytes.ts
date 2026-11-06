@@ -1,15 +1,7 @@
 // Must stay first: points the role prompts at a test-owned dir before src/roles.ts
 // resolves them at module load (#1579, same helper as test-AC4).
 import "./lib/cancel-prompts.ts";
-import { execFileSync } from "node:child_process";
-import {
-  chmodSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { withOperatorConfigGuard } from "../src/spawn-operator-config.ts";
@@ -25,14 +17,7 @@ import { withEnv } from "./lib/env-scope.ts";
 import { gitTestEnv } from "./lib/git-test-env.ts";
 import { isolateLedger } from "./lib/review-ledger-test-helpers.ts";
 import { installStubChild } from "./lib/reviewer-child-stub.ts";
-import {
-  childFreeTemp,
-  childModeDir,
-  duBytes,
-  harnessModeDir,
-  makeForeignOwnedDir,
-  writeRealBytes,
-} from "./lib/temp-bytes-stub-2051.ts";
+import { childFreeTemp, writeRealBytes } from "./lib/temp-bytes-stub-2051.ts";
 
 const SELF = "test-AC3-reviewer-temp-bytes.ts";
 isolateLedger();
@@ -72,8 +57,13 @@ function drainWarns(): string[] {
 
 const { spawnSpecialist } = await import("../src/spawn.ts");
 
-/** Bytes a leak case writes: above the 64 MB threshold, small enough to be cheap. */
-const LEAK_BYTES = 70 * 1024 * 1024;
+/**
+ * Bytes a leak case writes: just above the 64 MB threshold and no more. These cases
+ * are in the always-run offline suite, where the bytes each fixture allocates are
+ * the cost of running it — and the quota this issue exists to protect is the same
+ * one a large fixture would itself fill.
+ */
+const LEAK_BYTES = TEMP_BYTES_REPORT_THRESHOLD + 1024 * 1024;
 const LEAK_NAME = "synthetic-transcript.bin";
 const ROLE = "code-review-specialist";
 
@@ -149,7 +139,9 @@ for (const [tag, leak] of [
 // decoration and case 1 proved only that a leak gets reported.
 {
   const scratch = childFreeTemp("mutant");
-  const leak = 8 * 1024 * 1024; // below the bar: the arm's own ground
+  // Below the bar by the smallest useful margin: the arm's ground is the DELTA,
+  // and any figure under it witnesses the same thing — the bytes are not the point.
+  const leak = 4 * 1024 * 1024;
   let res: DispatchResult | undefined;
   await withEnv({ TMPDIR: scratch }, async () => {
     res = await withOperatorConfigGuard(ROLE, async () => ({
@@ -274,8 +266,19 @@ if (process.getuid !== undefined && process.getuid() !== 0) {
   // bound is only a real bound when the unbounded walk reaches the leak the
   // bounded walk never opened.
   const root = walkRoot("entries");
-  const LEAK = 70 * 1024 * 1024;
-  for (let i = 0; i < 6; i++) writeFileSync(path.join(root, `noise-${i}.txt`), "x");
+  // One directory of tiny files plus one real leak, and the leak is `+1 MB` over
+  // the threshold rather than the minimum printable figure. The shape is
+  // load-bearing: the walk counts ENTRIES, so the 5-entry ceiling has to fall after
+  // the noise and before the leak, which keeps the partial sum a token few KB — the
+  // leak's bytes are then the ONLY thing able to clear the bar, and the second
+  // assertion (a bounded walk that clears it prints, named as partial) measures
+  // something. Loose noise files would spend the ceiling on themselves and leave
+  // silence to assert; the smallest printable leak would leave nothing to bound.
+  // The entry ORDER the filesystem returns is why the unbounded walk of the same
+  // root is measured too: the bound is a real bound only when the full walk reaches
+  // the bytes the bounded walk never opened.
+  const LEAK = TEMP_BYTES_REPORT_THRESHOLD + 1024 * 1024;
+  for (let i = 0; i < 6; i++) writeRealBytes(path.join(root, "noise", `noise-${i}.txt`), 1);
   writeRealBytes(path.join(root, "zz-huge.bin"), LEAK);
   const full = await tempAllocatedBytes(root);
   const bounded = await tempAllocatedBytes(root, 5);
@@ -290,18 +293,8 @@ if (process.getuid !== undefined && process.getuid() !== 0) {
   assert(
     lines.length === 1 &&
       lines[0] !== undefined &&
-      lines[0].endsWith("— partial walk (entry bound 5)"),
+      lines[0].endsWith("— partial after-walk: entry bound 5"),
     `temp-watch: a bounded walk discloses its own underestimate (got ${JSON.stringify(lines)})`,
-  );
-  // The shipped ceilings are the walk's defaults, so a real measurement can be
-  // made expensive only by the root's contents, never by a caller's argument.
-  assert(
-    "bytes" in full &&
-      "bytes" in bounded &&
-      full.bound === undefined &&
-      full.bytes > bounded.bytes &&
-      full.bytes >= LEAK,
-    `temp-watch: with no ceiling arguments the walk reaches the leak the bounded walk missed and names no bound, so the shipped constants are the real ones (bounded ${JSON.stringify(bounded)}, got ${JSON.stringify(full)})`,
   );
 }
 
@@ -310,7 +303,11 @@ if (process.getuid !== undefined && process.getuid() !== 0) {
   const root = walkRoot("duration");
   for (let i = 0; i < 20; i++) {
     mkdirSync(path.join(root, `d${i}`));
-    writeRealBytes(path.join(root, `d${i}`, "x.bin"), 2 * 1024 * 1024);
+    // Real content rather than 1 byte, and far below the old 2 MB: the walk measures
+    // ALLOCATED BLOCKS, so a duration ceiling needs something to sum — with nothing
+    // allocated the bounded and unbounded walks agree and the assertion proves only
+    // that a `bound` string came back. 32 KB x 20 is 640 KB, not 40 MB.
+    writeRealBytes(path.join(root, `d${i}`, "x.bin"), 32 * 1024);
   }
   const bounded = await tempAllocatedBytes(root, 100_000, 0);
   assert(

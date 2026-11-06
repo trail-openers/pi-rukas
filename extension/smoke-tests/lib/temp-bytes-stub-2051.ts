@@ -51,18 +51,6 @@ export function harnessModeDir(dir: string): string {
 }
 
 /**
- * A directory built the way a CHILD's own `mkdir` builds one: `mkdir` with no
- * mode at all, which is `0777 & ~umask` — never `0700` on any umask at or below
- * `007`. Paired with {@link harnessModeDir} so the walk's two opposite
- * expectations (skip this, measure that) are both stated by name instead of by
- * whatever the host's umask happens to produce.
- */
-export function childModeDir(dir: string): string {
-  mkdirSync(dir, { recursive: true });
-  return dir;
-}
-
-/**
  * Allocated bytes of a tree, measured OUTSIDE this module: `du` counts 1024-byte
  * blocks, so its figure is scaled to the 512-byte blocks the walk sums. A walk
  * assertion that compared only against a byte number the test itself chose could be
@@ -90,10 +78,7 @@ export function duBytes(target: string, ...exclude: string[]): number {
  * locked-down kernel), in which case the caller states the conjunct rather than
  * pretending to measure it.
  */
-export async function makeForeignOwnedDir(
-  dir: string,
-  bytes: number,
-): Promise<string | undefined> {
+export async function makeForeignOwnedDir(dir: string, bytes: number): Promise<string | undefined> {
   mkdirSync(dir, { recursive: true });
   writeRealBytes(path.join(dir, "leak.bin"), bytes);
   const quoted = JSON.stringify(dir);
