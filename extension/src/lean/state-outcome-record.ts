@@ -10,9 +10,20 @@
  */
 
 import type { HandoffChannel } from "../work-driver-handoff-channel.ts";
-import type { ReviewBoundRecord } from "./review-bound.ts";
 import type { PreexistingTierRecord } from "./state-outcome-maps.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
+
+/// What the `review` step records when its OWN clock stopped it: the wave it
+/// reached, the lanes that never got a verdict, and the stop's own sentence. Lens
+/// names come from a skill roster — data from outside this process — so each is
+/// neutralised and count-capped on the way in. Absent means the step finished
+/// inside its bound, the normal case.
+
+export interface ReviewBoundRecord {
+  wave: "full" | "fix";
+  unreviewedLanes: string[];
+  reason: string;
+}
 
 /**
  * What a step's handler returned. The engine routes on `kind` and reads the
@@ -144,21 +155,10 @@ export interface Outcome {
    * `"forge"` — the channel with a forge to post to.
    */
   channel?: HandoffChannel;
-  /**
-   * `review` only: the step's OWN wall clock stopped it, not one child's budget.
-   *
-   * The step's per-child levers (`budgets.review` armed through `armBudget`) bound
-   * each reviewer and fixer separately and could leave a whole step running for
-   * hours, so this is a second, distinct clock and it needs fields of its own
-   * rather than the budget trio: `limit`/`value`/`used` belong to a `budget` kind
-   * and `review` has none, and a reader must be able to tell "the fixer hit its
-   * 20 minutes" apart from "the step as a whole hit its 30 and stopped early".
-   *
-   * Which wave it reached, which lanes never got a verdict, and the stop's own
-   * sentence. Absent means the step finished inside its bound — which is the
-   * normal case and every reader's default, so a reader that finds nothing says
-   * "fully reviewed" and never guesses a stop from the absence of anything else.
-   */
+  /// `review` only: the step's OWN wall clock stopped it, not one child's budget —
+  /// a distinct clock, so not the budget trio (that belongs to a `budget` kind and
+  /// `review` has none). Shape and bounds: `ReviewBoundRecord`.
+
   reviewBound?: ReviewBoundRecord;
   /**
    * `specify`, `build` and `challenge` only: one row per dispatch the step

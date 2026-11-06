@@ -108,13 +108,13 @@ import { frozenFromLog } from "./build.ts";
 import type { HandlerCtx } from "./engine.ts";
 import {
   RE_REVIEW_LANE,
-  type ReviewBoundRecord,
   type StepStop,
   reviewBoundComment,
   reviewBoundRecord,
   stepBound,
   stepStopOf,
 } from "./review-bound.ts";
+
 import { assertReviewEntry } from "./review-entry.ts";
 import { adversarialGate, lensGate } from "./review-gates.ts";
 import { fixRound, reviewedHead } from "./review-git.ts";
@@ -156,20 +156,6 @@ export type {
   LensRound,
   ReviewDeps,
 } from "./review-args.ts";
-// The step's own wall clock: the record, its shape and the reserve constant are
-// re-exported for the readers of the step's outcome (the validator, the headless
-// projection, the smoke suites) without an import that reaches into the step.
-export {
-  REVIEW_DEADLINE_RESERVE_MS,
-  type ReviewBoundRecord,
-  type StepBoundLimit,
-  type StepStop,
-  reviewBoundComment,
-  reviewBoundRecord,
-  stepBound,
-  stepBoundSentence,
-  stepStopOf,
-} from "./review-bound.ts";
 // The one-wave policy — the child budget, the blocking bar and the named handback
 // causes — lives in `review-waves.ts`; re-exported for the same reason as the
 // argument shapes.
@@ -184,27 +170,17 @@ export {
 } from "./review-waves.ts";
 import type { LensRound, ReviewDeps, ReviewWave } from "./review-args.ts";
 import { ReviewInfraError } from "./review-errors.ts";
-import type { Outcome } from "./state.ts";
+import type { Outcome, ReviewBoundRecord } from "./state.ts";
 import type { BudgetArms, BudgetFired, DispatchUsageRow } from "./step-budget.ts";
-import {
-  armBudget,
-  budgetFor,
-  lastChildMs,
-  stepFired,
-} from "./step-budget.ts";
+import { armBudget, budgetFor } from "./step-budget.ts";
 
 /** The fixer's wall clock, the shape the other steps pass as `childBoundMs`. */
 export const FIX_BOUND_MS = 20 * 60_000;
 
-/**
- * The lens names a pass was supposed to judge and did not.
- *
- * The names come from the round's own per-child records — the skill roster's
- * names, not a literal this step invented — and the count is the difference
- * between the roster the step buys (`LENSES_PER_PASS`) and the children that
- * actually ran. A round that named nothing at all reports the count alone, which
- * is the honest answer for a round nobody could read names from.
- */
+/// The lens names a pass was supposed to judge and did not: the roster the step buys
+/// (`LENSES_PER_PASS`) minus the children that ran, named from the round's own
+/// records. A round that named nothing reports the count alone.
+
 export function unjudgedLenses(round: LensRound | undefined): string[] {
   const ran = round?.lenses.length ?? 0;
   const missing = LENSES_PER_PASS - ran;
@@ -285,41 +261,30 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
   // ci and land still need, which the engine's between-steps check cannot protect
   // because it never looks while a step runs. See `review-bound.ts`.
   const reviewMinutes = budgetFor(config, "review")?.minutes ?? 0;
-  // One disclosure, filled by whichever arm the clock closed in, posted once at
-  // the end of the step: one comment on the PR, not one per stop point.
+  // One disclosure, filled by whichever arm closed, posted once at the end.
   let boundRecord: ReviewBoundRecord | undefined;
   /** The step's clock at this instant; the caller decides what a stop means. */
   const clock = (): StepStop | undefined =>
     stepStopOf(stepBound(ctx, reviewMinutes, ctx.now(), ctx.stepStartedAt));
-  /**
-   * Record a stop the caller has just decided how to route, and say it out loud.
-   *
-   * `traceWarn`, not `trace`: the step's two boundary lines are debug-gated, and
-   * the run that produced the field failure was a fire-and-forget run with no
-   * debug on — a bound visible only under `PI_ENSEMBLE_DEBUG` is visible in
-   * exactly the runs that do not need it.
-   */
+  /** Record a stop the caller has routed, and say it out loud: `traceWarn`, not
+   * the debug-gated `trace` — a bound visible only under `PI_ENSEMBLE_DEBUG` is
+   * visible in exactly the runs that do not need it. */
   const noteStop = (stop: StepStop, wave: ReviewWave, lanes: string[]): void => {
     boundRecord = reviewBoundRecord(stop, wave, lanes);
     traceWarn(`lean review #${String(issue)}: ${stop.reason}`);
   };
-  /**
-   * The handback a step-clock stop takes, with the stop's numbers in the trio the
-   * shared `budgetSentence` renders. The step is throwing where its children's
-   * stops throw too — the clock that closed is named in the disclosure, and R8
-   * keeps a per-child stop's own cause line ahead of this one wherever both hold.
-   */
-  const stepStopped = (stop: StepStop): ReviewInfraError =>
-    budgetStopped(stepFired(stop), rows);
-  /**
-   * The pass the step returns, with the step's own stop on it when there was one
-   * (and EXACTLY the shape it returns today when there was not — no key at all,
-   * which is what keeps every existing review case green).
-   *
-   * `stopAfterFix` is its one routed arm: a stop after the fixer pushed routes
-   * `fixed`, back through `verify`, because origin holds a head the fix moved and
-   * `ci` refuses to certify one the gate never read after it (R2).
-   */
+  /// The handback a step-clock stop takes, on the stop's OWN sentence: a step-total
+  /// stop is a different clock from a child's, so it does not go through
+  /// `budgetSentence`. The disclosure rides the throw because a pass-1 stop has no
+  /// verdict to carry it, and `errorOutcome` moves it from here to the record.
+  const stepStopped = (stop: StepStop): ReviewInfraError => {
+    const err = new ReviewInfraError(stop.reason, rows);
+    if (boundRecord !== undefined) err.reviewBound = boundRecord;
+    return err;
+  };
+  /** The pass the step returns, with the step's stop on it when it had one — and
+   * EXACTLY today's shape when it did not (no key at all), which is what keeps
+   * every existing review case green. */
   const passWithBound = (pass: Outcome): Outcome =>
     boundRecord === undefined ? pass : { ...pass, reviewBound: boundRecord };
 
@@ -336,9 +301,8 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
 
   try {
     // ── pass 1: the full review — the adversarial gate, then the six lenses ──
-    // R1: a stop anywhere in pass 1 hands back. Nothing has been reviewed yet, so
-    // there is no verdict to proceed on and no head to certify; the step records
-    // the lanes it did not judge and throws, which is the engine's handback path.
+    // R1: a stop anywhere in pass 1 hands back — nothing reviewed, no verdict to
+    // proceed on and no head to certify. The step records its unjudged lanes.
     const preGate = clock();
     if (preGate !== undefined) {
       noteStop(preGate, "full", unjudgedLenses(undefined));
@@ -414,9 +378,7 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
       return passWithBound(cleanPass(review, rows, fixedFromLog(ctx.steps)));
     }
 
-    // Between the first round and the fixer: the wave has not started, so a stop
-    // here is still a pass-1 stop (R1) — nothing of the fix has been reviewed and
-    // the branch is unchanged, which is the handback case, not the proceed case.
+    // The wave has not started, so this is still a pass-1 stop (R1): handback.
     const preFix = clock();
     if (preFix !== undefined) {
       noteStop(preFix, "full", unjudgedLenses(review));
@@ -616,11 +578,10 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
       ),
     );
   } finally {
-    // One comment, whatever arm the clock closed in: `publish` ran before this
-    // step, so the PR body cannot carry the disclosure and this is the only
-    // surface a person reading the PR will see. A failed post never changes the
-    // verdict — the record and the warn line already carry the stop, and a review
-    // step that could reach the forge is not the reason a run ends.
+    // One comment, whatever arm closed: `publish` ran before this step, so the PR
+    // body cannot carry the disclosure and this is the only surface a person
+    // reading the PR sees. A failed post never changes the verdict — the record
+    // and the warn line already carry the stop.
     if (boundRecord !== undefined && pr !== undefined && deps.prComment !== undefined) {
       await deps
         .prComment(repoRoot, pr, reviewBoundComment(boundRecord))

@@ -146,6 +146,7 @@ export const ALWAYS_RUN: readonly string[] = [
   "smoke-tests/test-lean-line-budget.ts",
   "smoke-tests/test-lean-lock.ts",
   "smoke-tests/test-lean-review-row-roundtrip.ts",
+  "smoke-tests/test-lean-review-step-bound.ts",
   "smoke-tests/test-lean-review-tree.ts",
   "smoke-tests/test-lean-seed-base.ts",
   "smoke-tests/test-lean-specify-rewrite.ts",

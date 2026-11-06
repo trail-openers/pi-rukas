@@ -15,7 +15,57 @@
  * comparison the whole per-role study between the two engines rests on.
  */
 
+import { LANES_CAP } from "./review-bound.ts";
+import type { ReviewBoundRecord } from "./state.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
+
+/** The two waves a bound record may say the step reached — `review-args`'s own. */
+const BOUND_WAVES = ["full", "fix"] as const;
+
+/** A printable, single-line name: a lane or a reason that would print as STRUCTURE
+ * in the PR comment or the handback is not a disclosure anyone can read. */
+function printableLine(value: unknown, max: number): string | undefined {
+  if (typeof value !== "string" || value === "" || value !== value.trim())
+    return "must be non-empty and trimmed";
+  if (value.length > max) return `must be at most ${String(max)} characters`;
+  if (/\p{Cc}/u.test(value)) return "must not contain a control character";
+  return undefined;
+}
+
+/**
+ * Why a `reviewBound` is not a record this run may hold, or `undefined`. The
+ * record is the only permanent account that a head reached `ci` with lanes nobody
+ * judged, so all three parts are checked — a record that merely existed would read
+ * as a disclosure while carrying nothing a reader could print.
+ */
+export function reviewBoundProblem(value: unknown): string | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return "outcome reviewBound must be an object";
+  const rec = value as Record<string, unknown>;
+  if (!BOUND_WAVES.some((wave) => wave === rec.wave))
+    return `outcome reviewBound.wave must be one of ${BOUND_WAVES.join(" | ")}`;
+  if (!Array.isArray(rec.unreviewedLanes))
+    return "outcome reviewBound.unreviewedLanes must be an array";
+  if (rec.unreviewedLanes.length > LANES_CAP)
+    return `outcome reviewBound.unreviewedLanes must hold at most ${String(LANES_CAP)} lanes`;
+  for (const [i, lane] of rec.unreviewedLanes.entries()) {
+    const problem = printableLine(lane, 80);
+    if (problem !== undefined)
+      return `outcome reviewBound.unreviewedLanes[${String(i)}] ${problem}`;
+  }
+  const reason = printableLine(rec.reason, 400);
+  return reason === undefined ? undefined : `outcome reviewBound.reason ${reason}`;
+}
+
+/** The bound record, rebuilt from the parts this module actually checked. */
+export function validatedReviewBound(value: unknown): ReviewBoundRecord {
+  const rec = value as Record<string, unknown>;
+  return {
+    wave: rec.wave === "fix" ? "fix" : "full",
+    unreviewedLanes: (rec.unreviewedLanes as string[]).map((lane) => lane.trim()),
+    reason: rec.reason as string,
+  };
+}
 
 const USAGE_COUNTERS = ["input", "output", "cacheRead", "cacheWrite", "turns"] as const;
 
