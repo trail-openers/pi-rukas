@@ -31,8 +31,8 @@ import { dispatch, makeFakePi, type Handler } from "./test-child-guards-helpers.
   childGuards(fake as unknown as ExtensionAPI);
   const n = fake.handlers.tool_call?.length ?? 0;
   assert(
-    n === 7,
-    `registers exactly 7 tool_call hooks (the mode-independent guards incl. #1105 review-accept, #1113 developer-push, #1666 vipune-write and #1788 public-hygiene, oo-rewrite excluded; got ${n})`,
+    n === 8,
+    `registers exactly 8 tool_call hooks (the mode-independent guards incl. #1105 review-accept, #1113 developer-push, #1666 vipune-write, #1788 public-hygiene and the claude-auth guard; oo-rewrite excluded; got ${n})`,
   );
   assert(fake.registeredTools.length === 0, "registers no tools (hook-only companion)");
   assert(fake.registeredCommands.length === 0, "registers no commands");

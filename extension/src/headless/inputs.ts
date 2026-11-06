@@ -132,6 +132,7 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("ADVERSARIAL_DIFF_CAP", true),
   flag("ADVERSARIAL_EMPTY_SKIP", true),
   ms("ADVERSARIAL_PHASE_BUDGET_MS", 1_800_000),
+  flag("ALLOW_CLAUDE_AUTH", false),
   flag("ALLOW_DESTRUCTIVE_GIT", false),
   flag("ALLOW_DEVELOPER_PUSH", false),
   flag("ALLOW_DIRECT_ISSUE_CREATE", false),

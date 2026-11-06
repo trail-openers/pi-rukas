@@ -161,6 +161,9 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
     // are the defaults, so a trust or sandbox child that got only this block
     // would otherwise publish private text unguarded.
     "registerPublicHygieneGuard",
+    // The `claude auth logout`/`login` refusal: destroys a credential no agent
+    // can restore, so it sits with the others rather than behind a bypass.
+    "registerClaudeAuthGuard",
   ];
   // The companion delegates to the shared block — the single list.
   assert(

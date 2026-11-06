@@ -8,6 +8,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { registerClaudeAuthGuard } from "./claude-auth-guard.ts";
 import { registerDeveloperPushGuard } from "./developer-push-guard.ts";
 import { execp } from "./exec.ts";
 import { registerIssueCreationGuard } from "./issue-creation-guard.ts";
@@ -76,4 +77,10 @@ export function registerModeIndependentGuards(pi: ExtensionAPI): void {
   // through registerPermissionGuard, so one call here is one hook per process
   // — a second one would run the push scan's git calls twice per push.
   registerPublicHygieneGuard(pi, HYGIENE_OPTS);
+  // `claude auth logout` deletes the CLI's token and nothing in this harness can
+  // restore it: every later child spawn fails on authentication, mid-cycle, with
+  // no remedy but an interactive re-login. Refused for every role — a read-only
+  // reviewer has no more business destroying the operator's session than a
+  // developer does. `PI_ENSEMBLE_ALLOW_CLAUDE_AUTH=1` registers nothing.
+  registerClaudeAuthGuard(pi);
 }
