@@ -134,7 +134,7 @@ The extension's npm dependencies are guarded against zero-day supply-chain attac
 - **Reviewers apply the same rule.** A finding whose fix would add more than it protects is said to be so, with that reasoning, rather than filed as a demand.
 - ❌ "Nice to have" features not in the issue · premature abstractions that appear once · defensive coding for unlikely scenarios · backwards-compat shims for in-progress refactors (this project is alpha; break things deliberately and document it).
 - **Comments state the current WHY, in present tense.** No incident history, no "it used to…", no issue-number narration. Docs follow the same rule: history belongs to git and the PRs.
-- `extension/src/lean/` has a committed line budget (`.pi/lean-line-budget`, 25,000 hard cap) that an offline test enforces in both directions.
+- `extension/src/lean/` has a committed line budget (`.pi/lean-line-budget`, 25,000 hard cap) that an offline test enforces both ways.
 - Growing lean past it means raising the budget in the same PR with its reason in the PR body; deleting is preferred.
 
 ---

@@ -14,11 +14,10 @@
  *   - **A 25,000-line hard cap** that no budget value can lift. The ceiling for
  *     the tree as a whole is an operator decision, so the gate checks it against
  *     the literal and not against the file the same PR could edit.
- *   - **A ratcheting budget in `.pi/lean-line-budget`**, initially the current
- *     size plus 300 lines of slack. Growing lean past it fails and names the
- *     file to raise; shrinking it more than the slack below the budget also
- *     fails and names the file to lower. Headroom therefore cannot accumulate in
- *     either direction.
+ *   - **A ratcheting budget in `.pi/lean-line-budget`**, the current size plus
+ *     300 lines of slack. Growing lean past it fails and names the file to raise;
+ *     shrinking it more than the slack below the budget also fails and names the
+ *     file to lower. Headroom therefore cannot accumulate in either direction.
  *
  * **The budget is read from the committed tree** (`git show HEAD:.pi/lean-line-budget`),
  * never the working copy, so a change cannot raise the number it is judged
@@ -39,12 +38,13 @@
 
 import { execFileSync } from "node:child_process";
 import {
+  type Dirent,
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -56,7 +56,7 @@ const HARD_CAP = 25_000;
 const SLACK = 300;
 /** Committed gate file holding the budget, read from HEAD. */
 const BUDGET_FILE = ".pi/lean-line-budget";
-/** The directory under budget: flat `.ts` files only, no subdirectories. */
+/** The directory under budget: every `.ts` file at any depth. */
 const LEAN_DIR = path.join("src", "lean");
 
 const REPO_ROOT = path.join(import.meta.dirname, "..", "..");
@@ -74,28 +74,47 @@ function lineCount(file: string): number {
   return (text.match(/\n/g) ?? []).length;
 }
 
-/** Total lines across the `.ts` files directly under `root`/src/lean. */
+/**
+ * A counting failure: the tree could not be measured, so no verdict is honest.
+ * The real tree always has `src/lean`, so an unreadable one is a broken gate,
+ * and counting it as 0 would tell the author to lower the budget.
+ */
+export class LeanCountError extends Error {}
+
+/**
+ * Total lines across every `.ts` file under `root`/src/lean, at any depth — a
+ * subdirectory is still lean code, so it must count. Symlinked directories are
+ * never followed: a link out of the tree would pull in files that are not lean
+ * (or loop). A directory or file that cannot be read is a gate failure, not a
+ * zero.
+ */
 function leanTotal(root: string): { total: number; files: number } {
-  const dir = path.join(root, LEAN_DIR);
-  let entries: string[];
-  try {
-    entries = readdirSync(dir);
-  } catch {
-    return { total: 0, files: 0 }; // no lean directory — the real tree always has one
-  }
   let total = 0;
   let files = 0;
-  for (const entry of entries) {
-    if (!entry.endsWith(".ts")) continue;
-    const full = path.join(dir, entry);
+  const fail = (target: string, err: unknown) =>
+    new LeanCountError(`${target} is not readable: ${(err as { code?: string }).code ?? err}`);
+  const walk = (dir: string) => {
+    let entries: Dirent[];
     try {
-      if (!statSync(full).isFile()) continue;
-    } catch {
-      continue; // a broken symlink is not a violation
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch (err) {
+      throw fail(dir, err);
     }
-    total += lineCount(full);
-    files++;
-  }
+    for (const entry of entries) {
+      if (entry.isSymbolicLink()) continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.isFile() && entry.name.endsWith(".ts")) {
+        try {
+          total += lineCount(full);
+        } catch (err) {
+          throw fail(full, err);
+        }
+        files++;
+      }
+    }
+  };
+  walk(path.join(root, LEAN_DIR));
   return { total, files };
 }
 
@@ -260,8 +279,8 @@ function assert(cond: boolean, msg: string) {
 {
   const fixture = mkdtempSync(path.join(tmpdir(), "pi-ens-leanbudget-"));
   try {
-    // The rule under test: 10 lines + 5 lines + a 3-line file with no trailing
-    // newline (2 newlines = `wc -l` semantics) = 17.
+    // The rule under test: 10 + 5 + a file with no trailing newline (2 newlines
+    // = `wc -l` semantics) + a nested file = 117. The `.md` files never count.
     const lean = path.join(fixture, LEAN_DIR);
     mkdirSync(lean, { recursive: true });
     writeFileSync(path.join(lean, "a.ts"), "x\n".repeat(10));
@@ -270,16 +289,48 @@ function assert(cond: boolean, msg: string) {
     writeFileSync(path.join(lean, "notes.md"), "x\n".repeat(100)); // not .ts
     const nested = path.join(lean, "nested");
     mkdirSync(nested);
-    writeFileSync(path.join(nested, "d.ts"), "x\n".repeat(100)); // subdirectory is out of scope
+    writeFileSync(path.join(nested, "d.ts"), "x\n".repeat(100)); // nested .ts COUNTS
+    writeFileSync(path.join(nested, "notes.md"), "x\n".repeat(100)); // nested, still not .ts
     const got = leanTotal(fixture);
     assert(
-      got.total === 17 && got.files === 3,
-      `canary: the counter sums flat .ts files with wc -l semantics (got ${got.total} lines over ${got.files} files, want 17 over 3)`,
+      got.total === 117 && got.files === 4,
+      `canary: the counter recurses and sums .ts files with wc -l semantics, .md excluded (got ${got.total} lines over ${got.files} files, want 117 over 4)`,
     );
     const violation = checkLeanLines(got.total, 10);
     assert(
-      violation?.kind === "over-budget" && violation.message.includes("7 over its budget"),
+      violation?.kind === "over-budget" && violation.message.includes("107 over its budget"),
       `canary: the same fixture, sized over a fixture budget, IS flagged red (${violation?.message ?? "not flagged"})`,
+    );
+    // The two ways the tree becomes unmeasurable, each of which must throw
+    // rather than return a total of 0. A missing directory is one; a directory
+    // the process cannot read is the other, and root ignores mode 000 so that
+    // arm is only observable as a non-root uid.
+    const missing = mkdtempSync(path.join(tmpdir(), "pi-ens-leanmissing-"));
+    let missingErr = "";
+    try {
+      leanTotal(missing);
+    } catch (err) {
+      missingErr = err instanceof LeanCountError ? err.message : `non-gate throw: ${err}`;
+    }
+    rmSync(missing, { recursive: true, force: true });
+    assert(
+      missingErr.includes("is not readable") && missingErr.includes("ENOENT"),
+      `canary: a missing lean directory THROWS instead of counting as 0 (${missingErr || "no throw"})`,
+    );
+    const unreadableDir = path.join(fixture, "blocked");
+    mkdirSync(path.join(unreadableDir, LEAN_DIR), { recursive: true });
+    let dirErr = "";
+    const canMakeUnreadable = process.getuid !== undefined && process.getuid() !== 0;
+    if (canMakeUnreadable) chmodSync(path.join(unreadableDir, LEAN_DIR), 0o000);
+    try {
+      leanTotal(unreadableDir);
+    } catch (err) {
+      dirErr = err instanceof LeanCountError ? err.message : `non-gate throw: ${err}`;
+    }
+    if (canMakeUnreadable) chmodSync(path.join(unreadableDir, LEAN_DIR), 0o755);
+    assert(
+      dirErr.includes("is not readable"),
+      `canary: an unreadable lean directory THROWS instead of counting as 0 (${canMakeUnreadable ? dirErr || "no throw" : "not observable as root"})`,
     );
   } finally {
     rmSync(fixture, { recursive: true, force: true });
@@ -341,21 +392,34 @@ function assert(cond: boolean, msg: string) {
       assert(true, `the working-tree ${BUDGET_FILE} matches HEAD`);
     }
 
-    const { total, files } = leanTotal(EXTENSION_ROOT);
-    const violation = checkLeanLines(total, parsed.budget);
-    if (violation === null) {
+    let counted: { total: number; files: number } | null = null;
+    try {
+      counted = leanTotal(EXTENSION_ROOT);
+    } catch (err) {
       assert(
-        true,
-        `extension/src/lean is ${total} lines over ${files} files (budget ${parsed.budget}, hard cap ${HARD_CAP})`,
+        false,
+        `cannot measure extension/src/lean — the gate cannot pass an unmeasured tree: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
       );
-    } else {
-      assert(false, violation.message);
     }
-    // The headroom that remains before the next raise is needed, so the number
-    // to watch is known before a PR trips it.
-    console.log(
-      `  headroom: ${parsed.budget - total} lines to the budget, ${HARD_CAP - total} to the cap`,
-    );
+    if (counted !== null) {
+      const { total, files } = counted;
+      const violation = checkLeanLines(total, parsed.budget);
+      if (violation === null) {
+        assert(
+          true,
+          `extension/src/lean is ${total} lines over ${files} files (budget ${parsed.budget}, hard cap ${HARD_CAP})`,
+        );
+      } else {
+        assert(false, violation.message);
+      }
+      // The headroom that remains before the next raise is needed, so the number
+      // to watch is known before a PR trips it.
+      console.log(
+        `  headroom: ${parsed.budget - total} lines to the budget, ${HARD_CAP - total} to the cap`,
+      );
+    }
   }
 }
 
