@@ -153,18 +153,21 @@ export function tempRoot(env: Record<string, string | undefined> = process.env):
 
 /**
  * The one `lstat` the walk makes, on its own so a test can watch what the walk
- * asks for. An entry it cannot stat counts as nothing rather than failing the
- * walk: a file another process removed while the walk ran is a shared temp root
- * behaving normally, not a measurement that failed.
+ * asks for, and handed to {@link tempAllocatedBytes} as `stat` so a test can arrange
+ * an entry's removal at the moment the walk asks for it (the fs module namespace is
+ * read-only under bun and jiti, so it cannot be patched from outside). An entry it
+ * cannot stat counts as nothing rather than failing the walk: a file another process
+ * removed while the walk ran is a shared temp root behaving normally, not a
+ * measurement that failed.
  */
 async function lstatForMeasure(target: string): Promise<Stats> {
   const { lstat } = await import("node:fs/promises");
   return lstat(target);
 }
-async function allocatedBytes(target: string): Promise<number> {
+async function allocatedBytes(target: string, stat: StatEntry): Promise<number> {
   let st: Stats;
   try {
-    st = await lstatForMeasure(target);
+    st = await stat(target);
   } catch {
     return 0;
   }
@@ -178,10 +181,14 @@ async function allocatedBytes(target: string): Promise<number> {
  * a line that printed the number without saying so is how a disclosure starts
  * reporting a confident wrong answer.
  */
+/** The walk's stat seam: one entry's stats, or the error the filesystem returned. */
+type StatEntry = (target: string) => Promise<Stats>;
+
 export async function tempAllocatedBytes(
   root: string,
   maxEntries = TEMP_WALK_MAX_ENTRIES,
   maxMs = TEMP_WALK_MAX_MS,
+  stat: StatEntry = lstatForMeasure,
 ): Promise<TempMeasure> {
   const started = Date.now();
   const queue: string[] = [root];
@@ -203,7 +210,7 @@ export async function tempAllocatedBytes(
     let stopped: string | undefined;
     for (const entry of listed) {
       if (entry.isSymbolicLink()) continue;
-      if (dir === root && (await isHarnessEntry(root, entry.name))) continue;
+      if (dir === root && (await isHarnessEntry(root, entry.name, stat))) continue;
       // The bound is checked before the entry is opened, so the count is the
       // number of entries the walk touched, not one more than it touched.
       entries++;
@@ -216,7 +223,7 @@ export async function tempAllocatedBytes(
         queue.push(target);
         continue;
       }
-      if (entry.isFile()) bytes += await allocatedBytes(target);
+      if (entry.isFile()) bytes += await allocatedBytes(target, stat);
     }
     if (stopped !== undefined) return { bytes, bound: stopped };
     if (Date.now() - started > maxMs) return { bytes, bound: `duration bound ${maxMs}ms` };
@@ -234,9 +241,19 @@ export async function tempAllocatedBytes(
  * another. See the header for why mode `0700` is safe to require of every harness
  * tree and why a child cannot use that requirement to hide anything.
  */
-async function isHarnessEntry(root: string, name: string): Promise<boolean> {
+async function isHarnessEntry(root: string, name: string, stat: StatEntry): Promise<boolean> {
   if (!HARNESS_TEMP_PREFIXES.some((prefix) => name.startsWith(prefix))) return false;
-  const st = await lstatForMeasure(path.join(root, name));
+  let st: Stats;
+  try {
+    st = await stat(path.join(root, name));
+  } catch {
+    // An entry we cannot stat is not provably a harness tree, so it is not skipped.
+    // A shared temp root is another process's to empty, and an entry removed between
+    // the readdir and this lstat is that. Measuring it instead costs nothing: it is
+    // gone, so `allocatedBytes` yields 0 — whereas throwing here escapes the walk,
+    // the guard's `finally`, and the dispatch it was measuring.
+    return false;
+  }
   if (!st.isDirectory()) return false;
   // Ours: every harness tree is made by this process or one of its children, all
   // of which share its uid, so an entry owned by anyone else cannot be one.
