@@ -39,6 +39,7 @@ Prerequisites for the full table.
 | `cd extension && bun run smoke-tests/test-async-dispatch.ts` | Unit smoke for the async-job registry + push-callback delivery (offline). |
 | `cd extension && bun run smoke-tests/test-cancel.ts` | Unit smoke for tool cancellation (offline). |
 | `cd extension && bun run smoke-tests/test-file-size-limit.ts` | File-size ratchet (#171, AGENTS.md §12) — fails if any `extension/src` or `extension/smoke-tests` `.ts` file exceeds 500 lines (offline). |
+| `cd extension && bun run smoke-tests/test-lean-line-budget.ts` | Lean line budget (AGENTS.md §6) — fails if `extension/src/lean` exceeds its committed budget in `.pi/lean-line-budget` or the 25,000-line hard cap, or sits more than 300 lines under it (offline). |
 | `cd extension && bun run smoke-tests/test-spawn-live.ts` | **Live** — spawns a real Pi child, costs a few cents. |
 | `cd extension && bun run smoke-tests/test-parallel-live.ts` | **Live** — three concurrent children. |
 | `cd extension && bun run smoke-tests/test-progress-live.ts` | **Live** — multi-turn child verifies progress callbacks. |

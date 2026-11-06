@@ -133,7 +133,9 @@ The extension's npm dependencies are guarded against zero-day supply-chain attac
 - A new gate must be observed failing on a deliberate mutant, in the same change that ships it. A gate never run in a failing state proves nothing and is itself bloat.
 - **Reviewers apply the same rule.** A finding whose fix would add more than it protects is said to be so, with that reasoning, rather than filed as a demand.
 - ❌ "Nice to have" features not in the issue · premature abstractions that appear once · defensive coding for unlikely scenarios · backwards-compat shims for in-progress refactors (this project is alpha; break things deliberately and document it).
-- **Comments state the current WHY, in present tense.** No incident history, no "it used to…", no issue-number narration. Docs follow the same rule: history belongs to git, the PRs and `docs/troubleshooting.md`.
+- **Comments state the current WHY, in present tense.** No incident history, no "it used to…", no issue-number narration. Docs follow the same rule: history belongs to git and the PRs.
+- `extension/src/lean/` has a committed line budget (`.pi/lean-line-budget`, 25,000 hard cap) that an offline test enforces both ways.
+- Growing lean past it means raising the budget in the same PR with its reason in the PR body; deleting is preferred.
 
 ---
 
@@ -285,14 +287,13 @@ The rule is enforced, not just stated: a mode-independent hook refuses a publish
 
 - Biome (lint + format) is the single source of truth: `bun run check`
 - No `// @ts-ignore`, no `// @ts-expect-error` without an explicit reason in the comment
-- Imports sorted automatically by Biome (`bun x biome format --write src/`)
 - Avoid `any` — use `unknown` and narrow with type guards. If you must cast, comment WHY.
 
 ### File size limits
 
 - **Hard limit**: 500 lines per source file · **ideal**: 300 or fewer · **refactor trigger**: over the cap, or 3+ distinct responsibilities
 
-The gate scans the **whole repository** — every `.ts`, `.sh` and workflow `.yml`, not just `extension/`. Markdown and JSON are excluded deliberately: the limit is about logic a person holds in their head, and `docs/troubleshooting.md` is legitimately long. Excluded directories are named explicitly in the test, because an implicit exclusion is indistinguishable from a gap. Enforcement is `extension/smoke-tests/test-file-size-limit.ts`, in the same offline loop as every other smoke test (§1); it asserts both directions — the repo is clean, and a deliberately oversized fixture is caught — and prints the file closest to the cap. Split large modules along a natural seam (per-step handlers each in their own file behind a shared context module is the house pattern) and keep the comment that explains the seam: a size cap is never met by shortening prose.
+The gate scans the **whole repository** — every `.ts`, `.sh` and workflow `.yml`, not just `extension/`. Markdown and JSON are excluded deliberately: the limit is about logic a person holds in their head, and `docs/troubleshooting.md` is long by design. Excluded directories are named explicitly in the test, because an implicit exclusion is indistinguishable from a gap. Enforcement is `extension/smoke-tests/test-file-size-limit.ts`, observed red on an oversized fixture and printing the file closest to the cap. Split large modules along a natural seam (per-step handlers each in their own file behind a shared context module is the house pattern) and keep the comment that explains the seam.
 
 ### Markdown (`modules/`)
 
