@@ -34,7 +34,15 @@ function assert(cond: boolean, msg: string) {
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
 
-/** A fake pi that records every handler by event name. */
+/**
+ * A fake pi that records every handler by event name.
+ *
+ * The companion's env switches are cleared for the whole run: the write fence is
+ * gated on `PI_ENSEMBLE_WRITE_ROOT` (and the hatch) and the claude-auth guard on
+ * its own opt-out, so an ambient value from the developer's shell would silently
+ * add or drop a hook and every count below would be about the caller, not the
+ * code. Per-assertion pins (E) still set what they judge.
+ */
 function fakePi() {
   const handlers: Record<string, Handler[]> = {};
   return {
@@ -61,6 +69,10 @@ const ENV_KEYS = [
   "PI_ENSEMBLE_WRITE_SCRATCH",
   "PI_ENSEMBLE_WRITE_FENCE",
   "PI_ENSEMBLE_SUBAGENT_MODE",
+  // The companion's hook counts are about the guard set, so every registration
+  // switch is cleared for the run: an ambient opt-out in the caller's shell would
+  // silently drop a guard and the counts would judge the environment, not the code.
+  "PI_ENSEMBLE_ALLOW_CLAUDE_AUTH",
   // #1879: the dependency rule registers on the ROLE alone, so an ambient reviewer
   // role in the caller's environment would make it register in section E's
   // "registers nothing" assertions. Saved, cleared and restored like the rest.
@@ -84,6 +96,9 @@ process.env.PI_ENSEMBLE_WRITE_REPO = fx.repo;
 process.env.PI_ENSEMBLE_WRITE_SCRATCH = fx.scratch;
 Reflect.deleteProperty(process.env, "PI_ENSEMBLE_WRITE_FENCE");
 Reflect.deleteProperty(process.env, "PI_ENSEMBLE_SUBAGENT_MODE");
+// The count assertions in D/E are about the guard set, so the auth guard's opt-out
+// is off for the run rather than whatever the caller's shell happens to carry.
+Reflect.deleteProperty(process.env, "PI_ENSEMBLE_ALLOW_CLAUDE_AUTH");
 // #1879: the dependency rule registers on the ROLE alone, so an ambient reviewer
 // role in the caller's environment would add a second tool_call hook to every
 // fakePi below and shift the counts in D/E.
@@ -193,8 +208,8 @@ for (const [tool, input] of directAllowed) {
   const trust = fakePi();
   childGuards(trust);
   assert(
-    (trust.handlers.tool_call ?? []).length === 8,
-    `D: trust mode: the seven mode-independent guards plus the fence (got ${trust.handlers.tool_call?.length ?? 0}, want 8)`,
+    (trust.handlers.tool_call ?? []).length === 9,
+    `D: trust mode: the eight mode-independent guards plus the fence (got ${trust.handlers.tool_call?.length ?? 0}, want 9)`,
   );
   const refusal = await toolCall(trust, {
     toolName: "write",
@@ -239,9 +254,12 @@ for (const [tool, input] of directAllowed) {
   );
   const bare = fakePi();
   childGuards(bare);
+  // The guard block's seven hooks (six guards plus the review-accept hook
+  // issue-creation registers alongside it): with no write root the whole-tree fence
+  // is the only registration the companion drops.
   assert(
-    (bare.handlers.tool_call ?? []).length === 6,
-    "E: no root, writer role: the companion keeps its six guards and no fence",
+    (bare.handlers.tool_call ?? []).length === 7,
+    `E: no root, writer role: the companion keeps its guards and no fence (got ${bare.handlers.tool_call?.length ?? 0}, want 7)`,
   );
   process.env.PI_ENSEMBLE_WRITE_ROOT = savedRoot;
 

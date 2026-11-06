@@ -22,11 +22,20 @@ import { assert } from "./merge-guard-helpers.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import { dispatch, makeFakePi, type Handler } from "./test-child-guards-helpers.ts";
 
+// The fence self-gates on the write root, so with no root in the environment the
+// companion is exactly the guard block: the counts below are about the code, not
+// about whatever fence switches the developer's shell carries.
+const NO_FENCE_ENV = {
+  PI_ENSEMBLE_WRITE_ROOT: undefined,
+  PI_ENSEMBLE_WRITE_FENCE: undefined,
+  PI_ENSEMBLE_ALLOW_CLAUDE_AUTH: undefined,
+};
+
 // ============================================================
 // 1. Loading with no SUBAGENT_MODE: the mode-independent guards, no tools,
 //    no commands.
 // ============================================================
-{
+await withEnv(NO_FENCE_ENV, async () => {
   const fake = makeFakePi();
   childGuards(fake as unknown as ExtensionAPI);
   const n = fake.handlers.tool_call?.length ?? 0;
@@ -36,7 +45,7 @@ import { dispatch, makeFakePi, type Handler } from "./test-child-guards-helpers.
   );
   assert(fake.registeredTools.length === 0, "registers no tools (hook-only companion)");
   assert(fake.registeredCommands.length === 0, "registers no commands");
-}
+});
 
 // ============================================================
 // 2. The loaded hooks refuse the merge (no ledger → gh pr view fails →
@@ -147,7 +156,7 @@ import { dispatch, makeFakePi, type Handler } from "./test-child-guards-helpers.
 // ============================================================
 // 4. NO-OP: PI_ENSEMBLE_SUBAGENT_MODE=1 → zero hooks registered.
 // ============================================================
-await withEnv({ PI_ENSEMBLE_SUBAGENT_MODE: "1" }, async () => {
+await withEnv({ ...NO_FENCE_ENV, PI_ENSEMBLE_SUBAGENT_MODE: "1" }, async () => {
   const fake = makeFakePi();
   childGuards(fake as unknown as ExtensionAPI);
   const n = fake.handlers.tool_call?.length ?? 0;
