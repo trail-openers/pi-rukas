@@ -144,7 +144,6 @@ export function reviewBoundRecord(
   const named = lanes.map((lane) => neutraliseEvidence(lane)).filter((l) => l !== "");
   return { wave, unreviewedLanes: named.slice(0, LANES_CAP), reason: stop.reason };
 }
-
 /**
  * The comment that discloses an unreviewed head on the PR: `publish` ran before
  * this step, so the PR body cannot carry it. The list printed is the list the
