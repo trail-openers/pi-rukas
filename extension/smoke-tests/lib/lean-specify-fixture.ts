@@ -187,10 +187,17 @@ export interface RunOpts {
   baseSha: string;
   issue: number;
   config: WorkConfig;
-  /** The child's work, while it is still working. */
-  writes: (wt: string) => void;
-  /** The child's `submit_tests` calls — a list, or one built at the declaration. */
-  toolUses: unknown[] | (() => unknown[]);
+  /**
+   * The child's work, while it is still working. The argument is the 1-based
+   * dispatch index, so one case can script a DIFFERENT attempt — the size
+   * retry, where attempt 1 overshoots and attempt 2 splits.
+   */
+  writes: (wt: string, dispatch: number) => void;
+  /**
+   * The child's `submit_tests` calls — a list, or one built at the declaration.
+   * A function gets the 1-based dispatch index for the same reason `writes` does.
+   */
+  toolUses: unknown[] | ((dispatch: number) => unknown[]);
   /** The child's write after its dispatch returns, before the step reads anything. */
   afterSubmit?: (wt: string) => void;
   /**
@@ -243,7 +250,7 @@ export async function runSpecify(opts: RunOpts): Promise<RunResult> {
     dispatched++;
     opts.prompts?.push(spec.prompt);
     const wt = spec.cwd as string;
-    opts.writes(wt);
+    opts.writes(wt, dispatched);
     const turns =
       typeof opts.progressTurns === "function" ? opts.progressTurns(dispatched) : opts.progressTurns;
     if (turns !== undefined)
@@ -259,7 +266,8 @@ export async function runSpecify(opts: RunOpts): Promise<RunResult> {
     // The child's worktree state at the moment its `submit_tests` calls are
     // made. Everything after this line is what the child leaves behind, and the
     // step must not be able to be moved by it.
-    const declared = typeof opts.toolUses === "function" ? opts.toolUses() : [...opts.toolUses];
+    const declared =
+      typeof opts.toolUses === "function" ? opts.toolUses(dispatched) : [...opts.toolUses];
     opts.afterSubmit?.(wt);
     return opts.dispatchOk === false
       ? { ...okResult(declared), ok: false, exitCode: 1 }
