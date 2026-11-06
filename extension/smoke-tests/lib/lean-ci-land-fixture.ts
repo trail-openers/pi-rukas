@@ -28,6 +28,7 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -142,6 +143,13 @@ export function ciLandLog(
     detached?: boolean;
     /** Write this untracked file into the tree, so the porcelain is not empty. */
     dirtyFile?: string;
+    /** The run's frozen contract: the path, the bytes the run's HEAD holds, and the
+     *  DIFFERENT bytes the run's `baseSha` holds there. Both are real commits and the
+     *  step log records the head's sha256, so a baseline probe reads a base whose copy
+     *  of this test is not the shape the run is held to — `baseCarriedFrozen`'s `red`,
+     *  the only answer that lets a probe reach its tier. With nothing frozen the probe
+     *  answers `carries-nothing` instead. */
+    frozenFile?: { path: string; bytes: string; baseBytes: string };
   } = {},
 ): CiLandLog {
   const repoRoot = mkdtempSync(path.join(tmpdir(), "lean-ci-land-"));
@@ -149,8 +157,26 @@ export function ciLandLog(
   git(repoRoot, "init", "-q", "-b", "main");
   mkdirSync(path.join(repoRoot, "src"), { recursive: true });
   writeFileSync(path.join(repoRoot, "src/retry.ts"), "export const retry = () => 1;\n");
+  // The base commit, holding whatever the case says the contract looked like BEFORE
+  // this run. It is a real commit the repo holds, which a baseline probe must be able
+  // to check out — a fabricated sha is `unusable`.
+  if (opts.frozenFile !== undefined) {
+    const target = path.join(repoRoot, opts.frozenFile.path);
+    mkdirSync(path.dirname(target), { recursive: true });
+    writeFileSync(target, opts.frozenFile.baseBytes, { mode: 0o755 });
+  }
   git(repoRoot, "add", "-A");
-  git(repoRoot, "commit", "-q", "-m", "feat: implemented the retry helper");
+  git(repoRoot, "commit", "-q", "-m", "chore: the base commit");
+  const baseCommit = git(repoRoot, "rev-parse", "HEAD");
+  // The run's own commit, which REWRITES the contract into its frozen shape: the base
+  // holds other bytes at that path, which is the probe's `red`.
+  if (opts.frozenFile !== undefined) {
+    writeFileSync(path.join(repoRoot, opts.frozenFile.path), opts.frozenFile.bytes, {
+      mode: 0o755,
+    });
+    git(repoRoot, "add", "-A");
+    git(repoRoot, "commit", "-q", "-m", "test: the run freezes its contract");
+  }
   const head = git(repoRoot, "rev-parse", "HEAD");
   const branch = `lean/issue-${String(issue)}`;
   git(repoRoot, "branch", branch, head);
@@ -186,6 +212,25 @@ export function ciLandLog(
     ...(opts.noVerifiedHead === true ? {} : { verifiedHead: opts.verifiedHead ?? head }),
   };
   const steps: Step[] = [
+    // The frozen contract the run recorded, when the case gave one: `ci`'s baseline
+    // probe reads these bytes at the base.
+    ...(opts.frozenFile === undefined
+      ? []
+      : [
+          {
+            key: `${String(issue)}:specify:0`,
+            state: "specify" as const,
+            startedAt: 0,
+            outcome: {
+              kind: "ok" as const,
+              frozen: {
+                [opts.frozenFile.path]: createHash("sha256")
+                  .update(opts.frozenFile.bytes)
+                  .digest("hex"),
+              },
+            },
+          },
+        ]),
     { key: `${String(issue)}:ready:0`, state: "ready", startedAt: 1, outcome: { kind: "ok" } },
     { key: `${String(issue)}:verify:0`, state: "verify", startedAt: 2, outcome: verify },
   ];
@@ -201,7 +246,7 @@ export function ciLandLog(
     issue,
     version: "test",
     models: {},
-    baseSha: "a".repeat(40),
+    baseSha: baseCommit,
     branch,
   });
   // The default clock is FROZEN at 4: a step that reads time must not find a

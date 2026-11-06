@@ -65,14 +65,18 @@ import type { HandlerCtx } from "./engine.ts";
 import { fetchIssueBody } from "./io.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import { assertSpecifyWorktreeOwned, specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
+import type { PreexistingTierRecord } from "./state-outcome-maps.ts";
 import type { Outcome, Step } from "./state.ts";
+import { baselineExcuse as excuseOverBase, preexistingReason } from "./verify-baseline-excuse.ts";
+import { baselineProbeWorktreePath } from "./verify-baseline.ts";
 import {
   baselineRedReason,
   baselineUnusableError,
-  confirmTierRed,
   flakeReason,
   probeTierAtBase,
+  tierObserved,
 } from "./verify-baseline.ts";
+import { confirmTierRedFrom } from "./verify-baseline.ts";
 import { type CommandCriteriaOutcome, commandCriteriaOutcome } from "./verify-commands.ts";
 import { frozenTamperReason } from "./verify-frozen.ts";
 import {
@@ -90,6 +94,7 @@ import {
   runTier,
   tiersOf,
 } from "./verify-steps.ts";
+import { tierRunStream } from "./verify-tier-rerun.ts";
 import { type VerifyExec, VerifyInfraError, type VerifyTiers } from "./verify-types.ts";
 
 /**
@@ -253,6 +258,8 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
   // `flake` remembers an excused tier so the green it produced says so in its reason.
   const timeoutMs = deps.timeoutMs ?? TIER_TIMEOUT_MS;
   let flake: string | undefined;
+  /** A tier excused over a base that already failed the very tests it names. */
+  const preexisting: Record<string, PreexistingTierRecord> = {};
   const tierResults: Executed[] = [];
   for (const [name, cmd] of tiers) {
     const one = await runTier(name, cmd, wt, deps.exec, deps.timeoutMs);
@@ -266,7 +273,10 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
     }
     // One re-run at HEAD. A tier that goes green there saw nothing stable the first
     // time, so it is a flake and the gate does not bill a build round for it.
-    if (!(await confirmTierRed({ name, cmd, wt, exec: deps.exec, timeoutMs }))) {
+    // The re-run's OWN stream is kept, because the arm below decides whether this
+    // tier's failures are pre-existing by reading what that run printed.
+    const rerun = await tierRunStream(deps.exec, cmd, wt, timeoutMs);
+    if (!confirmTierRedFrom(rerun.ran)) {
       flake = flakeReason(name, cmd);
       trace(`lean/verify: ${flake}`);
       continue;
@@ -287,8 +297,53 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
       frozen,
     });
     if (probe.status === "unusable") throw baselineUnusableError(probe.reason);
-    if (probe.status === "red")
-      return { kind: "red", reason: clipReason(baselineRedReason(name, cmd, ctx.run.baseSha)) };
+    if (probe.status === "red") {
+      // The base is red. Before handing the run back, ask the narrower question:
+      // does the base fail the SAME tests, and does the run's own contract pass
+      // here? A tier whose every head failure the base also printed — with the
+      // frozen acceptance tests green — is a gate the mainline authored, and this
+      // run is graded green with the failures disclosed rather than handed back.
+      // Any other answer is exactly the hand-back this path produced before the
+      // excuse existed, and no build round is billed for either.
+      //
+      // The frozen verdict is asked FIRST, on purpose: `firstFailure` below never
+      // sees it when this arm returns, so a run whose own acceptance tests are red
+      // must not be graded green on the strength of a tier the base also fails.
+      const frozenRan = await frozenTestFailure(
+        frozen,
+        config.verify.test,
+        wt,
+        deps.exec,
+        deps.timeoutMs,
+      );
+      if (frozenRan.kind !== "pass")
+        return { kind: "red", reason: clipReason(baselineRedReason(name, cmd, ctx.run.baseSha)) };
+      // The excuse reads the re-run's OUTPUT, so the re-run must have OBSERVED the
+      // work. `confirmTierRedFrom` above already refuses to call an unobserved re-run
+      // a flake, but a kill, an overflow or an un-startable command still arrives with
+      // a `stdout` — the text the tier printed before the signal — and that text can
+      // name the very tests the base printed. An excuse built from it would grade a
+      // green over a tier nobody saw fail twice, which is the outcome this arm exists
+      // to refuse, so the first red stands exactly as it did before the excuse.
+      if (!tierObserved(rerun.ran)) {
+        tierResults.push(one);
+        break;
+      }
+      const excuse = excuseOverBase({
+        tierName: name,
+        cmd,
+        baseSha: ctx.run.baseSha,
+        probe,
+        headStream: rerun.stream,
+        baseStream: probe.stream,
+        headRoot: wt,
+        probeRoot: baselineProbeWorktreePath(repoRoot, issue),
+      });
+      if (excuse.kind === "refused")
+        return { kind: "red", reason: clipReason(baselineRedReason(name, cmd, ctx.run.baseSha)) };
+      preexisting[name] = excuse.record;
+      continue;
+    }
     tierResults.push(one);
     break;
   }
@@ -374,10 +429,19 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
   // not from an object handed back by a call whose result type was asserted.
   const executed = Object.entries(commands.executed);
   const notRunnable = Object.entries(commands.notRunnable);
+  // A tier excused over the base commit rides in the reason the same way a flake
+  // does, and in its own recorded field besides: the prose warns the reader, the
+  // record is what `publish` renders the disclosure from and what `ci` re-reads
+  // instead of probing the base a second time.
+  const excuseNote =
+    Object.keys(preexisting).length === 0
+      ? ""
+      : ` — ${preexistingReason(Object.keys(preexisting))}`;
   return {
     kind: "green",
-    reason: `frozen tests and project tiers passed at ${head}${note}${flake === undefined ? "" : ` — ${flake}`}`,
+    reason: `frozen tests and project tiers passed at ${head}${note}${flake === undefined ? "" : ` — ${flake}`}${excuseNote}`,
     verifiedHead: head,
+    ...(Object.keys(preexisting).length === 0 ? {} : { preexistingFailures: preexisting }),
     ...(executed.length === 0
       ? {}
       : {

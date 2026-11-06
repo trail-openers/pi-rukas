@@ -19,6 +19,8 @@
  */
 
 import type { PiSpec } from "./spec.ts";
+import type { PreexistingTierRecord } from "./state-outcome-maps.ts";
+import { PREEXISTING_NAMES_CAP } from "./state-outcome-maps.ts";
 import type { Step } from "./state.ts";
 import { budgetTrio } from "./step-budget.ts";
 import { fenceText, oneLine } from "./text-fence.ts";
@@ -42,6 +44,9 @@ const FULL_SHA = /^[0-9a-f]{40}$/;
 
 /** How much of the gate's reason the PR body quotes — see its use site. */
 const VERIFY_REASON_CLIP = 2000;
+
+/** How long a printed command may be before the body clips it. */
+const PREEXISTING_COMMAND_CLIP = 120;
 
 export interface PublishBodyInput {
   issue: number;
@@ -68,6 +73,13 @@ export interface PublishBodyInput {
    * difference between an issue to fix and a step to re-run.
    */
   commandNotRunnable?: Record<string, string>;
+  /**
+   * The tiers the gate excused over the run's base commit, read off the verify
+   * record. The body renders the bounded disclosure from THIS field and never from
+   * the prose reason: a reader must be able to see which tier, which command, which
+   * base commit and which tests without parsing a sentence the gate composed.
+   */
+  preexistingFailures?: Record<string, PreexistingTierRecord>;
   /**
    * The challenge round's own ceiling, when the step log carries a `challenge`
    * `budget` outcome. The optional adversary round that strengthens the frozen
@@ -173,6 +185,44 @@ export function challengeBudgetFromLog(
 }
 
 /**
+ * The `## Pre-existing test failures` section, built from the recorded field.
+ *
+ * A green over a tier that exited non-zero is a claim a reviewer is entitled to
+ * see spelled out: which tier, which command, which base commit, which tests and
+ * how many. The heading and the one-line explanation are the SAME words the
+ * /work commit-pr body uses (`preExistingFailuresSectionOf`), so one reader-facing
+ * name means one thing across the two drivers. Prints nothing when the record is
+ * empty — an absent section means "no tier was excused", never an empty list.
+ *
+ * The names printed are the record's capped list; `N total` is the record's true
+ * count, so a suite with more pre-existing failures than the cap is disclosed
+ * honestly rather than read as twenty.
+ */
+export function leanPreexistingFailuresSection(
+  records: Record<string, PreexistingTierRecord> | undefined,
+): string {
+  const tiers = Object.entries(records ?? {});
+  if (tiers.length === 0) return "";
+  const lines: string[] = [
+    "",
+    "## Pre-existing test failures",
+    "",
+    "Failing on the base commit too; not introduced by this change.",
+  ];
+  for (const [tier, record] of tiers) {
+    lines.push(
+      "",
+      `### \`${oneLine(tier, 60)}\``,
+      `- command: \`${oneLine(record.cmd, PREEXISTING_COMMAND_CLIP)}\``,
+      `- base commit: \`${record.baseSha}\``,
+      `- ${String(record.total)} total, ${String(Math.min(record.names.length, PREEXISTING_NAMES_CAP))} named:`,
+      ...record.names.map((name) => `  - \`${oneLine(name, 200)}\``),
+    );
+  }
+  return lines.join("\n");
+}
+
+/**
  * The full PR body.
  *
  * `verifyKind` is the newest DECIDED `verify` verdict and `verifiedHead` the
@@ -210,6 +260,11 @@ export function publishBody(o: PublishBodyInput): string {
   lines.push(`- pi-rukas ${oneLine(o.version, 40)}`);
   if (FULL_SHA.test(o.baseSha)) lines.push(`- base \`${o.baseSha}\``);
   lines.push(`- models: ${modelsLine(o.models)}`);
+  // The pre-existing failures come AFTER the verification section they qualify and
+  // before the run's own bookkeeping: the reader learns the gate was green, then
+  // learns which part of it was green only because the base was already red.
+  const preexisting = leanPreexistingFailuresSection(o.preexistingFailures);
+  if (preexisting !== "") lines.push(preexisting);
   // One line, only when the log records the stop. The counter pair is the one
   // the run carries into verify either way, so this is the only place the fact
   // survives into the PR; `value`/`limit` are typed numbers/enums off the step

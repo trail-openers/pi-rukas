@@ -31,9 +31,11 @@ import {
   blockedByProblem,
   commandCriteriaProblem,
   commandNotRunnableProblem,
+  preexistingFailuresProblem,
   validatedBlockedBy,
   validatedCommandCriteria,
   validatedCommandNotRunnable,
+  validatedPreexistingFailures,
 } from "./state-outcome-maps.ts";
 // The two print caps for a `blockedBy` entry live with the validator that enforces
 // the record's own bound, and reach their two render sites through here — the same
@@ -203,6 +205,10 @@ const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>>
   // pass together. `handback` prints it as the run's cause, so a step that never
   // ran those tests may not carry it.
   blockedBy: "build",
+  // The tiers a verify/ci step excused over the base commit. They license a GREEN
+  // over a tier that exited non-zero, so a step that never ran that tier may not
+  // carry the record that would excuse it.
+  preexistingFailures: ["verify", "ci"],
   // Owned by whichever dispatching step hit its ceiling: a handback inventing a
   // ceiling the step never crossed would print it as the run's cause.
   limit: BUDGET_STATES,
@@ -340,6 +346,10 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
     const problem = blockedByProblem(oc.blockedBy);
     if (problem !== undefined) return problem;
   }
+  if (oc.preexistingFailures !== undefined) {
+    const problem = preexistingFailuresProblem(oc.preexistingFailures);
+    if (problem !== undefined) return problem;
+  }
   if (oc.dispatches !== undefined) {
     const problem = dispatchesProblem(oc.dispatches);
     if (problem !== undefined) return problem;
@@ -400,6 +410,9 @@ export function buildOutcome(oc: Record<string, unknown>): Outcome {
       ? {}
       : { commandNotRunnable: validatedCommandNotRunnable(oc.commandNotRunnable) }),
     ...(oc.blockedBy === undefined ? {} : { blockedBy: validatedBlockedBy(oc.blockedBy) }),
+    ...(oc.preexistingFailures === undefined
+      ? {}
+      : { preexistingFailures: validatedPreexistingFailures(oc.preexistingFailures) }),
     ...(typeof oc.prUrl === "string" ? { prUrl: oc.prUrl } : {}),
     ...(typeof oc.publishedHead === "string" ? { publishedHead: oc.publishedHead } : {}),
     ...(typeof oc.draft === "boolean" ? { draft: oc.draft } : {}),

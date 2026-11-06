@@ -65,3 +65,17 @@ export function writeTier(rel: string, text: string, commit = false): string {
  * never does.
  */
 export const DETACH_TIER = 'sh -c "git checkout -q --detach; exit 0"';
+
+/**
+ * A tier command that fails and PRINTS `names` as pytest failing lines.
+ *
+ * The shape a bare exit code cannot fake: the baseline excuse compares failing
+ * test NAMES between the head run and the base run, so a tier that exits 1 while
+ * naming nothing is a tier the excuse must refuse. `marker` keeps the tier's own
+ * identity in its output, which is how the other cases recognise their red.
+ */
+export function pytestFailTier(marker: string, names: readonly string[]): string {
+  const printed = names.map((n) => `FAILED ${n} - AssertionError`).join("; ");
+  const tally = `=== ${String(names.length)} failed, 0 passed in 0.10s ===`;
+  return `sh -c 'echo tier-said-${marker} 1>&2; echo "${printed}" 1>&2; echo "${tally}" 1>&2; exit 1'`;
+}

@@ -172,6 +172,34 @@ export interface VerifyOpts extends ProbeShapeOpts {
    * reading is "nobody told us anything" and the first red must stand.
    */
   headRerunSilentReject?: boolean;
+  /**
+   * Reject the step's RE-RUN at HEAD with a value the case names — the executor's own
+   * kill, `overflow` or `ENOENT` shape, each of which `tierObserved` says `false` for.
+   * These shapes still carry a `stdout`, so the re-run is the one place a tier that
+   * nobody saw fail twice can print the very names the base printed, and an excuse
+   * built from it grades a green on an unobserved run.
+   */
+  headRerunRejects?: unknown;
+  /**
+   * What the BASE PROBE's tier run printed (combined stdout+stderr), for the cases
+   * that decide what the base NAMED rather than only what it exited. The base runs
+   * at a commit the case built, so only the case can say what that run printed —
+   * the same reason `baseBlobBytes` answers the base's bytes.
+   */
+  baseTierOutput?: string;
+  /**
+   * What the tier prints when the run's OWN worktree runs it red, for the cases
+   * whose head tier must name failing tests. Absent means the tier's own script
+   * output, which is every case that came before the baseline-excuse cases.
+   */
+  headTierOutput?: string;
+  /**
+   * The bytes to freeze as the run's acceptance test, for the case that fixes the
+   * ACCEPTANCE half of the verdict rather than deriving it (`GREEN_TEST` and
+   * `RED_ACCEPTANCE_TEST` in `lib/lean-verify-fixture.ts`). Absent means the
+   * fixture's own red-until-implemented test.
+   */
+  frozenText?: string;
   /** Log lines to add after the fixture's own. */
   extraSteps?: Step[];
 }
@@ -227,6 +255,8 @@ export function makeVerifyExec(opts: {
   let headTierRuns = 0;
   /** Runs of the tier the BASE PROBE has made in its throwaway checkout. */
   let baseTierRuns = 0;
+  /** The tier's own marker, so a stubbed red prints the identity of ITS tier. */
+  const markerOf = (cmd: string): string => cmd.match(/tier-said-([A-Za-z0-9_-]+)/)?.[1] ?? "red";
   /**
    * Is this exec call the step running a project tier's shell command?
    *
@@ -263,6 +293,19 @@ export function makeVerifyExec(opts: {
       // STEP's runs at HEAD, and a case that wants to know whether the probe reached its
       // tier — rather than settling on an earlier arm — asks for this one.
       baseTierRuns++;
+      if (o.baseTierOutput !== undefined) {
+        // A case that declares what the base printed: the executor's own non-zero shape
+        // carrying that stream, which is the only way to ask "what did the base name"
+        // about a run in a tree the case built — the same seam `baseBlobBytes` uses for
+        // the base's bytes.
+        return Promise.reject(
+          Object.assign(new Error(`Command failed: ${cmd}`), {
+            code: 1,
+            stdout: o.baseTierOutput,
+            stderr: "",
+          }),
+        );
+      }
       return execp(cmd, { ...o2, env: o2?.env ?? gitTestEnv(), cwd: o2?.cwd ?? probeDir });
     }
     const run = headTierRuns;
@@ -272,12 +315,16 @@ export function makeVerifyExec(opts: {
     // executor's own group kill fires on it and on nothing else.
     let bound = o.headRerunKilled === true && run === 1 ? (o.timeoutMs ?? 2_000) : o.timeoutMs;
     if (o.headRerunSilentReject === true && run === 1) return Promise.reject(new Error("nope"));
-    if (run < redBudget - 1) {
+    if (o.headRerunRejects !== undefined && run === 1) return Promise.reject(o.headRerunRejects);
+    // A case whose tier must NAME failing tests owns the stream both of HEAD's runs
+    // print; the exit code stays the executor's own non-zero shape, so `runTier` reads
+    // a real red rather than a kill or a command that never started.
+    if (run < redBudget - 1 || o.headTierOutput !== undefined) {
       return Promise.reject(
         Object.assign(new Error(`Command failed: ${cmd}`), {
           code: 1,
-          stdout: "",
-          stderr: `tier-said-red-${String(run + 1)}\n`,
+          stdout: o.headTierOutput ?? "",
+          stderr: `tier-said-${markerOf(cmd)}-${String(run + 1)}\n`,
         }),
       );
     }
