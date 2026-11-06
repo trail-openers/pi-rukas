@@ -122,7 +122,8 @@ function terminalCause(steps: Step[]): string | undefined {
  * Rendered from the typed fields (`limit` / `value` / `used`), not from the
  * step's `reason` prose: {@link budgetTrio} reads those three, the same check
  * every reader of a recorded breach makes, so a breach missing a field falls
- * through to the next cause rather than printing a half-sentence.
+ * through to the next cause rather than printing a half-sentence. Its one part taken
+ * from prose is the step's own tail, the attempts a budget build spent (#2067 R5).
  */
 /** The newest step that was WORK — a report state is how a run ended, not work. */
 function newestWorkStep(steps: Step[]): Step | undefined {
@@ -136,7 +137,12 @@ function newestWorkStep(steps: Step[]): Step | undefined {
 function budgetCause(steps: Step[]): string | undefined {
   const step = newestWorkStep(steps);
   const fired = step === undefined ? undefined : budgetTrio(step.outcome);
-  return step === undefined || fired === undefined ? undefined : budgetSentence(step.state, fired);
+  if (step === undefined || fired === undefined) return undefined;
+  // The step's own clause about the attempts it spent, kept if it made one.
+  const used = step.outcome?.reason?.match(/after \d+ build attempts/)?.[0];
+  return used === undefined
+    ? budgetSentence(step.state, fired)
+    : `${budgetSentence(step.state, fired)} ${used}`;
 }
 
 /**

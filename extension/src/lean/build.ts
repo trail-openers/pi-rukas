@@ -73,12 +73,13 @@ import {
   budgetVerdictWithRows,
   readDispatched,
 } from "./step-budget.ts";
+import { clipList } from "./text-fence.ts";
 
 /** The re-entry reason the child is given, clipped so a log dump cannot bloat a prompt. */
 const REENTRY_CLIP = 4096;
 
-/** How of the adversary's files a re-entry line names. Beyond it, the count. */
-const CHALLENGE_LIST_CLIP = 20;
+/** How many names one reason line lists, and how many the fold re-runs. */
+const LIST_CLIP = 20;
 
 export interface BuildDeps {
   exec: BuildExec;
@@ -87,10 +88,8 @@ export interface BuildDeps {
   loadConfig: (repoRoot: string, baseSha: string) => Promise<WorkConfig>;
   /** The aggregate capture ceiling in bytes; absent, the production ceiling applies. */
   captureCeiling?: number;
-  /**
-   * The bound on each of the driver's re-runs of a reported frozen test. A test
-   * shortens it to observe a hang; absent, `runTestFile`'s own ceiling applies.
-   */
+  /** The bound on the driver's re-runs of a frozen test — the blocked report's loop
+   * and the stopped build's sweep alike. A test shortens it to watch a hang. */
   blockedTimeoutMs?: number;
 }
 
@@ -179,11 +178,8 @@ export function addedByChallengeFromLog(steps: Step[]): string | undefined {
     if (step?.state !== "challenge" || step.outcome?.kind !== "new-tests") continue;
     const paths = Object.keys(step.outcome.frozen ?? {});
     if (paths.length === 0) continue;
-    const kept = paths.slice(0, CHALLENGE_LIST_CLIP).map((p) => `- \`${p}\``);
-    const more =
-      paths.length > CHALLENGE_LIST_CLIP
-        ? `\n- …and ${paths.length - CHALLENGE_LIST_CLIP} more`
-        : "";
+    const kept = paths.slice(0, LIST_CLIP).map((p) => `- \`${p}\``);
+    const more = paths.length > LIST_CLIP ? `\n- …and ${paths.length - LIST_CLIP} more` : "";
     const line = `the adversary's challenge round added these frozen tests:\n${kept.join("\n")}${more}`;
     return line.length > REENTRY_CLIP ? `${line.slice(0, REENTRY_CLIP)}…` : line;
   }
@@ -289,25 +285,30 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
       break;
     }
     // Its own ceiling stopped it: fold the work into this attempt's commit and
-    // re-run the frozen files, so verify finds a clean tree and the retry's prompt
-    // names what is still failing (#2067). The kind stays `budget`.
+    // re-run the frozen files under ONE wall clock, so verify finds a clean tree and
+    // the retry's prompt names what is still failing (#2067). The kind stays `budget`.
+    // R5: a run the cap ENDS here names the attempts too, which `handback` prints —
+    // a ceiling alone cannot say the retries were spent.
+    const attempts = ctx.run.counters.buildAttempts + tries + 1;
+    const atCap = attempts >= MAX_BUILD_ATTEMPTS;
     const { kept, failing } = await foldStoppedBuild({
       ...fold(attempt),
       template: config.verify.test,
       ceiling: deps.captureCeiling,
+      ...(deps.blockedTimeoutMs === undefined ? {} : { timeoutMs: deps.blockedTimeoutMs }),
     });
     // The line the step log, handback and the retry's prompt all read (R3/R5).
     const verdict: Outcome = {
       ...budgetVerdictWithRows("build", read.stop, rows),
-      ...(failing.length === 0 ? {} : { failing }),
       reason: joinNotes([
         budgetSentence("build", read.stop),
-        `still failing: ${failing.join(", ")}`,
+        ...(atCap ? [`after ${String(attempts)} build attempts`] : []),
+        failing.length === 0 ? "" : `still failing: ${clipList(failing, LIST_CLIP)}`,
         kept.files.length === 0 ? "" : `kept ${String(kept.files.length)} file(s)`,
       ]),
     };
     stopped = verdict.reason;
-    if (ctx.run.counters.buildAttempts + tries + 1 >= MAX_BUILD_ATTEMPTS) return verdict;
+    if (atCap) return verdict;
   }
 
   // 4b. The child's own "these cannot all pass together", if it made one: a CLAIM,

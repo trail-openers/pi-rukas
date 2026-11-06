@@ -86,10 +86,9 @@ export type BlockedVerdict =
  *
  * One wall clock bounds the WHOLE loop, not each runner: a report naming the 32
  * files the tool may ask for would otherwise cost 32 ceilings, and the step's own
- * budget is no substitute because the re-run happens after the child is paid. The
- * bound is enforced TWICE — nothing STARTS once spent, and a runner in flight is
- * abandoned at the same instant. A file whose runner could not start or was killed
- * is skipped, not fatal; if nothing came back red the report is not honoured.
+ * budget is no substitute because the re-run happens after the child is paid
+ * ({@link runFrozen}). A file whose runner could not start or was killed is skipped,
+ * not fatal; no red means the claim is not honoured.
  */
 export async function blockedProved(opts: {
   exec: BuildExec;
@@ -118,79 +117,35 @@ export async function blockedProved(opts: {
       honoured: false,
       why: `named ${unvetted.length} file(s) the run never froze: ${unvetted.slice(0, 4).join(", ")}`,
     };
-  // ONE deadline for the whole loop, enforced at both ends of a runner: no file
-  // may START once it is spent, and one in flight is abandoned at the same instant
-  // (see the race below). Each runner keeps its own ceiling too, so an ordinary
-  // hung test is killed and classified as infra rather than abandoned.
+  // ONE deadline for the loop, enforced at both ends of a runner (`runFrozen`).
   const perFile = opts.timeoutMs ?? TEST_TIMEOUT_MS;
   const deadline = Date.now() + perFile;
   const ran: string[] = [];
   const skipped: string[] = [];
   for (const file of paths) {
-    const left = deadline - Date.now();
-    if (left <= 0) {
-      return {
-        honoured: false,
-        why: `the re-run budget of ${String(perFile)}ms ran out after ${String(ran.length)} file(s)`,
-      };
-    }
-    // "The driver ran it and saw red" is evidence only while the bytes behind the
-    // name are the bytes the freeze hashed: a frozen file the child edited into one
-    // that fails is its own edit, and to the runner the two look identical. Refused
-    // by name, not skipped — such a red says nothing about the files after it.
-    const bytes = await blobAt(exec, wt, "HEAD", file);
-    if (bytes === undefined || bytes.length === 0 || sha256(bytes) !== frozen[file]) {
-      return {
-        honoured: false,
-        why: `${file} is no longer the bytes the run froze — the frozen test was edited`,
-      };
-    }
-    // The in-flight runner is bounded too, not just the decision to start one:
-    // `runTestFile` carries its own ceiling and group kill, but nothing here can
-    // assume it honours either — a process that swallows the SIGKILL, or a
-    // grandchild holding the pipe, keeps the `await` alive past this deadline.
-    // Racing it means the step refuses AT the budget rather than whenever the
-    // runaway exits, and an abandoned run counts `infra`: it observed nothing. The
-    // timer is cleared once the race settles (an abandoned runner would otherwise
-    // leave it for the life of the process), and the guard is not defensive — when
-    // the timer wins, its `resolve` runs before the assignment below is observed.
-    let abandonTimer: ReturnType<typeof setTimeout> | undefined;
-    const proof = await Promise.race([
-      runTestFile(exec, {
-        wt,
-        template,
-        file,
-        limits: { timeoutMs: Math.min(perFile, left), env: verifyChildEnv() },
-      }),
-      new Promise<Proof>((resolve) => {
-        abandonTimer = setTimeout(
-          () =>
-            resolve({
-              kind: "infra",
-              cmd: renderTestCommand(template, file),
-              detail: `gave up at the ${String(perFile)}ms re-run budget`,
-            }),
-          left,
-        );
-      }),
-    ]);
-    if (abandonTimer !== undefined) {
-      clearTimeout(abandonTimer);
-      abandonTimer.unref();
-    }
-    // Only the kinds that ANSWERED reach `ran`, the set the record is built from.
-    // Infra/unclear prove nothing but are not fatal: one broken file must not
-    // hide a genuine conflict among the rest.
+    // Only an ANSWERED file is evidence, and only a `red` honours the report: an
+    // `unclear` exit named no file and an abandoned run saw nothing, so either SKIPs
+    // it — one broken file must not hide a genuine conflict in another.
+    const proof = await runFrozen(exec, { wt, template, file }, deadline - Date.now());
     if (proof.kind === "infra" || proof.kind === "unclear") {
       trace(`lean build: blocked report skipped one file — ${file}: ${proof.detail}`);
       skipped.push(file);
       continue;
     }
+    // Every file the driver JUDGED reaches `ran`, greens included: the cause's map
+    // carries the whole set the report named, not only the one that failed.
     ran.push(file);
-    // ONLY `red`. An `unclear` exit named no file, and a cause that says "these
-    // frozen tests cannot all pass together" would attribute that failure to the
-    // contract; this gate does not honour a claim it cannot tie to a file.
-    if (proof.kind === "red") return { honoured: true, red: file, ran };
+    if (proof.kind === "green") continue;
+    // A red counts only while the bytes behind its name are the bytes the freeze
+    // hashed: a frozen file the child edited into one that fails is its own edit,
+    // and to the runner the two look identical. Refused by name, not skipped.
+    const bytes = await blobAt(exec, wt, "HEAD", file);
+    if (bytes === undefined || bytes.length === 0 || sha256(bytes) !== frozen[file])
+      return {
+        honoured: false,
+        why: `${file} is no longer the bytes the run froze — the frozen test was edited`,
+      };
+    return { honoured: true, red: file, ran };
   }
   return {
     honoured: false,
@@ -201,10 +156,44 @@ export async function blockedProved(opts: {
   };
 }
 
+/** One frozen file's verdict under the loop's ONE remaining budget — the race both
+ * frozen-test loops share ({@link blockedProved}, {@link foldStoppedBuild}). A runner
+ * that swallows the SIGKILL, or one a grandchild holds open, is ABANDONED at the
+ * deadline and counts `infra`, so the step refuses AT its bound.
+ */
+async function runFrozen(
+  exec: BuildExec,
+  run: { wt: string; template: string; file: string },
+  left: number,
+): Promise<Proof> {
+  if (left <= 0) return abandoned(run, left);
+  let abandonTimer: ReturnType<typeof setTimeout> | undefined;
+  const proof = await Promise.race([
+    runTestFile(exec, {
+      ...run,
+      limits: { timeoutMs: Math.min(TEST_TIMEOUT_MS, left), env: verifyChildEnv() },
+    }),
+    new Promise<Proof>((resolve) => {
+      abandonTimer = setTimeout(() => resolve(abandoned(run, left)), left);
+    }),
+  ]);
+  if (abandonTimer !== undefined) clearTimeout(abandonTimer);
+  return proof;
+}
+
+/** The verdict of a run the deadline took: it observed nothing, so it is `infra`. */
+function abandoned(run: { template: string; file: string }, left: number): Proof {
+  return {
+    kind: "infra",
+    cmd: renderTestCommand(run.template, run.file),
+    detail: `gave up at the ${String(left)}ms re-run budget`,
+  };
+}
+
 /**
  * Fold a budget-stopped builder's work into its attempt's commit, then say what is
  * still red on the tree that commit made (#2067) — one function because the probe
- * must read the RESET tree the fold produced.
+ * must read the RESET tree the fold produced. Its sweep shares {@link runFrozen}.
  */
 export async function foldStoppedBuild(opts: {
   exec: BuildExec;
@@ -217,17 +206,23 @@ export async function foldStoppedBuild(opts: {
   issue: number;
   template: string | undefined;
   ceiling?: number;
+  /** Bounds the whole sweep of frozen tests; a test shortens it to watch a hang. */
+  timeoutMs?: number;
 }): Promise<{ kept: NormaliseReport; failing: string[] }> {
   const { exec, wt, frozen, template } = opts;
   const kept = await normaliseBuild({ ...opts, budget: new CaptureBudget(opts.ceiling) });
-  // Only a runner that ANSWERED counts, and only bytes the freeze hashed: the
-  // working tree is whatever the killed child left, so each file comes out of HEAD.
+  // Only a runner that ANSWERED counts, and only bytes the freeze hashed: the tree
+  // is whatever the killed child left, so each file comes out of HEAD.
   const failing: string[] = [];
+  const deadline = Date.now() + (opts.timeoutMs ?? TEST_TIMEOUT_MS);
   if (template?.trim())
     for (const file of Object.keys(frozen)) {
+      // ONE deadline for the sweep: once it is spent, no later file starts at all.
+      const left = deadline - Date.now();
+      if (left <= 0) break;
       const bytes = await blobAt(exec, wt, "HEAD", file);
       if (bytes === undefined || bytes.length === 0 || sha256(bytes) !== frozen[file]) continue;
-      if ((await runTestFile(exec, { wt, template, file })).kind === "red") failing.push(file);
+      if ((await runFrozen(exec, { wt, template, file }, left)).kind === "red") failing.push(file);
     }
   return { kept, failing };
 }

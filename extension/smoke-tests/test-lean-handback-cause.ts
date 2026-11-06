@@ -263,8 +263,6 @@ function breach(state: "build" | "challenge") {
   );
 }
 
-process.exit(exit);
-
 // ── the last attempt's budget is the cause; one the cap let past is not (R5) ──
 {
   // A budget no longer ends the run, so position is the only honest test of
@@ -290,3 +288,30 @@ process.exit(exit);
     "the attempt the cap ended the run on still names its budget",
   );
 }
+
+// ── the handback at the attempt cap names the attempts used (R5, AC3) ──────
+{
+  // A budget no longer ends the run, so the ceiling alone no longer says why the
+  // run is over: the operator needs to know the retries were spent. The build step
+  // composes that clause into the verdict's own `reason`, which is what the cause
+  // line prints — `budgetSentence` on its own names only the ceiling.
+  const capped = decided("build", {
+    kind: "budget",
+    limit: "turns",
+    value: 400,
+    used: 401,
+    reason:
+      "build stopped: turns budget 400 exceeded (used 401); after 3 build attempts; kept 4 file(s)",
+  });
+  const needed = neededFromLog([capped, decided("handback", { kind: "done" })]);
+  assert(
+    needed.includes("after 3 build attempts"),
+    `the handback at the cap names the attempts used (got ${needed})`,
+  );
+  assert(
+    needed.includes("turns budget 400"),
+    `and still names the ceiling that stopped it (got ${needed})`,
+  );
+}
+
+process.exit(exit);

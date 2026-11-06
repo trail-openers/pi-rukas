@@ -39,6 +39,12 @@ function assert(cond: boolean, msg: string): void {
   }
 }
 
+/** One turn past a `turns: N` ceiling — the call `spawn.ts` makes at `message_end`. */
+function breachTurns(turns: number) {
+  return (onProgress: BudgetOpts["onProgress"]) =>
+    onProgress?.({ ...emptyRunningState("developer"), turns: turns + 1 });
+}
+
 // ── a budget-stopped build folds its work and retries ─────────────────────
 //
 // The field shape (#2067): a six-criterion issue, a builder killed at the 400-turn
@@ -135,6 +141,57 @@ function assert(cond: boolean, msg: string): void {
   );
 }
 
+// ── the fold's sweep of the frozen tests shares ONE deadline ─────────────────
+{
+  // The fold re-runs every frozen file AFTER the child was paid (#2067), so a sweep
+  // with no deadline outlives the step's own budget: each runner sleeps thirty
+  // seconds, far past the bound the case sets — and once the deadline is spent, no
+  // later file may even start. A file whose runner never answered is not one the
+  // driver watched fail, so it is not named as failing either.
+  const STARTED: string[] = [];
+  const HANG_A = "tests/hang-a.test.sh";
+  const HANG_B = "tests/hang-b.test.sh";
+  const SLEEPER = "#!/bin/sh\nsleep 30\necho \"not ok - $0\" 1>&2\nexit 1\n";
+  const began = Date.now();
+  const r = await runBuild({
+    issue: 141,
+    config: {
+      ...configWithRunner(),
+      budgets: { ...defaultConfig().budgets, build: { turns: 1, tokens: 0, minutes: 0 } },
+    },
+    // Both sleepers hang past the bound the case sets: with a per-file ceiling
+    // instead of one shared deadline, three attempts would cost six sleeps.
+    extraFrozen: { [HANG_A]: SLEEPER, [HANG_B]: SLEEPER },
+    child: (wt) => put(wt, "src/retry.ts", "export const retry = () => 1;\n"),
+    onProgressTick: breachTurns(1),
+    blockedTimeoutMs: 150,
+    execSpy: (cmd, o) => {
+      if (cmd !== "git") STARTED.push(String((o as { argv?: string[] })?.argv?.[0] ?? cmd));
+    },
+  });
+  const reason = r.outcome?.reason ?? "";
+  assert(r.threw === undefined, `(h) the hung sweep does not throw: ${r.threw?.message ?? "clean"}`);
+  assert(
+    r.outcome?.kind === "budget",
+    `(h) the stopped round still reports its budget verdict (got ${r.outcome?.kind ?? r.threw?.message})`,
+  );
+  assert(
+    Date.now() - began < 10_000,
+    `(h) the fold returned at its bound, not when the sleeping runners finished`,
+  );
+  assert(
+    !reason.includes("still failing") && !reason.includes(HANG_A) && !reason.includes(HANG_B),
+    `(h) a file whose runner never answered is not named as failing (got ${reason})`,
+  );
+  // One sweep per attempt, and it never runs the list past the bound: the sleeper is
+  // abandoned at the deadline and the sweep returns, so three attempts cost three
+  // bounded sweeps — not three sleeps of thirty seconds. AC1 answers green before
+  // each sleeper starts, so every sweep pays exactly one abandoned runner.
+  assert(
+    STARTED.length === 6 && STARTED.filter((f) => f === HANG_A).length === 3,
+    `(h) the sweep stopped at its bound every attempt (${JSON.stringify(STARTED)})`,
+  );
+}
 
 for (const dir of ROOTS) {
   try {

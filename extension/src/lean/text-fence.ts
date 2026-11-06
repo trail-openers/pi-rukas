@@ -121,3 +121,10 @@ export function promptText(s: string, max: number): string {
   if (out.length > max) out = `${out.slice(0, max)}${HORIZONTAL_ELLIPSIS}`;
   return out;
 }
+
+/** A list inside a reason line: the first `cap` items, then how many more. */
+export function clipList(items: string[], cap: number): string {
+  return items.length > cap
+    ? `${items.slice(0, cap).join(", ")} (+${String(items.length - cap)} more)`
+    : items.join(", ");
+}

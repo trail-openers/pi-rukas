@@ -12,7 +12,8 @@
  * The fixture builds the state the step expects rather than pretending it: a repo
  * whose HEAD holds the frozen test commit, a worktree on the run's branch at that
  * HEAD, and a step log with the `ready` / `specify` outcomes. The frozen sha256 is
- * the one the committed blob really hashes to, so a case that must throw breaks the * record on purpose, which is how the check is shown to read bytes.
+ * the one the committed blob really hashes to, so a case that must break the check
+ * breaks the record on purpose, which is how the check is shown to read bytes.
 
  *
  * The child's acts are a callback so each case decides what its developer did:
