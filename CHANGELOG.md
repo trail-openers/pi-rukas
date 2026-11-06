@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.56](https://github.com/trail-openers/pi-rukas/compare/v0.14.55...v0.14.56) (2026-11-06)
+
+
+### Bug Fixes
+
+* **lean:** bound the review step as a whole by its budget and the run deadline ([#2069](https://github.com/trail-openers/pi-rukas/issues/2069)) ([c1ba300](https://github.com/trail-openers/pi-rukas/commit/c1ba3001cd3ed7447187681ef986f34d462c8d9a))
+
 ## [0.14.55](https://github.com/trail-openers/pi-rukas/compare/v0.14.54...v0.14.55) (2026-11-06)
 
 
