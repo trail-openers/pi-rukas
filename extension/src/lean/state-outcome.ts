@@ -322,18 +322,13 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
         return `outcome tests[${JSON.stringify(id)}] must be a string[]`;
     }
   }
-  // `failing` is the still-red list the next build attempt's prompt prints, so it
-  // is checked the way `frozen`'s keys are: a path a frozen rule refuses is a name
-  // no step froze and no runner of this run answered for.
-  if (oc.failing !== undefined) {
-    if (!Array.isArray(oc.failing)) return "outcome failing must be a string[]";
-    for (const file of oc.failing as unknown[]) {
-      if (typeof file !== "string") return "outcome failing must be a string[]";
-      const keyProblem = frozenKeyProblem(file);
-      if (keyProblem !== undefined)
-        return `outcome failing ${JSON.stringify(file)} is not a valid test path: ${keyProblem}`;
-    }
-  }
+  // Checked like `frozen`'s keys: a name no step froze has no evidence behind it.
+  if (
+    oc.failing !== undefined &&
+    (!Array.isArray(oc.failing) ||
+      oc.failing.some((file) => typeof file !== "string" || frozenKeyProblem(file) !== undefined))
+  )
+    return "outcome failing must be a string[] of frozen test paths";
   // `verifiedHead` is what the land gate compares to the PR head, so a
   // truncated or mistyped sha is refused rather than carried: it would compare
   // unequal forever and no reader could tell a broken record from a run that

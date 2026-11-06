@@ -75,9 +75,8 @@ export interface Outcome {
   blockedBy?: Record<string, string>;
   /**
    * `build` only (kind `budget`): the frozen files the DRIVER re-ran red on the
-   * stopped child's tree after its ceiling ended it — what the next attempt's
-   * prompt names as still failing (#2067 R3). A file whose runner never answered
-   * is in neither list: an unobserved run proves nothing.
+   * stopped child's tree — what the next attempt's prompt names as still failing
+   * (#2067). A file whose runner never answered is in neither list.
    */
   failing?: string[];
   /**

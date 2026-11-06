@@ -116,7 +116,7 @@ export const MAX_BUILD_ATTEMPTS = 3;
 /** The `decline` kind that says the comment did not reach the forge. */
 export const REPORT_FAILED_KIND = "report-failed";
 
-/** A step's own budget ended the child: a verdict like `exhausted` (#1883). */
+/** A step's own budget ended the child: a verdict, not a crash (#1883). */
 export const BUDGET_KIND = "budget";
 
 /**
@@ -182,11 +182,10 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
           // back from one has already been challenged and goes to verify.
           return viaBuild(run, c.challengeDone ? "verify" : "challenge");
         case BUDGET_KIND:
-          // The same edges as `ok`: the ceiling cut work short, it did not judge
-          // it, and the round is billed either way. `build` retries a stopped child
-          // inside the step, so the table has no self-edge to route on — and no
-          // uncommitted bytes reach the gate, because the step folded that work
-          // into its attempt's commit first (#2067).
+          // The same edges as `ok`: the ceiling cut work short, it did not judge it,
+          // and the round is billed either way. `build` retries a stopped child inside
+          // the step, so the table has no self-edge — and no uncommitted bytes reach
+          // the gate, because the step folded that work in first (#2067).
           if (c.buildAttempts >= MAX_BUILD_ATTEMPTS) return to(run, "verify");
           return viaBuild(run, c.challengeDone ? "verify" : "challenge");
         case "blocked":

@@ -4,9 +4,8 @@
  *
  * The child's report is narration, not executed evidence (AGENTS.md §7 rule 1). A
  * builder that could end a run by naming a conflict would end runs whose contract it
- * never read, or one that is perfectly satisfiable — the shape of a child that gave
- * up on the hard case. So the driver honours the report only when BOTH hold, and the
- * second is a command the driver itself ran:
+ * never read, or one that is satisfiable — the shape of a child that gave up. So the
+ * driver honours the report only when BOTH hold, and the second is its own command:
  *
  *   1. **every named path is in the run's frozen map** — read off the same
  *      `frozenFromLog` every other reader of the contract uses, so a file the
@@ -17,12 +16,11 @@
  *
  * A runner that could not be started or was killed is NOT a red — it observed
  * nothing — and the report is ignored rather than honoured on a toolchain fault.
- * A green named test is not a conflict either. When the report is ignored the
- * caller traces the reason and continues its ordinary `ok`/`exhausted` path:
- * there is no third verdict, and nothing is recorded.
+ * A green named test is not a conflict either. When ignored, the caller traces the
+ * reason and continues its ordinary path: there is no third verdict.
  *
- * The entry and reason bounds here are the DURABLE record's bounds, so an entry
- * that could not be persisted is refused before anything is spent running it.
+ * The entry and reason bounds here are the DURABLE record's, so an entry that could
+ * not be persisted is refused before anything is spent running it.
  */
 
 import { trace, traceWarn } from "../trace.ts";
@@ -44,22 +42,21 @@ import { RECORD_MAX_ENTRIES, RECORD_REASON_MAX_CHARS } from "./state-outcome-map
 import { BLOCKED_PATH_CAP, BLOCKED_REASON_CAP, frozenKeyProblem } from "./state-outcome.ts";
 import { oneLine } from "./text-fence.ts";
 
-/** How many conflicts one report may name — the durable record's own bound,
- * imported from the module that enforces it rather than restated, so the gate
- * never spends a runner on an entry the loader then refuses. */
+/** How many conflicts one report may name — the record's own bound, imported from
+ * the module that enforces it so the gate never runs an entry it would refuse. */
 export const BLOCKED_MAX_ENTRIES = RECORD_MAX_ENTRIES;
 
 /** How long one stated conflict may be. Same single source as the entry cap. */
 export const BLOCKED_MAX_REASON_CHARS = RECORD_REASON_MAX_CHARS;
 
-/** The cause LINE's ceiling: the two renderer caps plus the sentence around them. */
+/** The cause LINE's ceiling: the renderer caps plus the sentence around them. */
 const BLOCKED_CAUSE_CAP = BLOCKED_PATH_CAP + BLOCKED_REASON_CAP + 44;
 
 /**
  * The child's reported conflicts, filtered to entries the record could hold, in the
- * child's own order: `blockedProved` runs them in it and stops at the first red, so
- * a re-sorted list would prove a different file than the builder feared. A path that
- * is not a legal frozen key is dropped here, before any `git`/runner call.
+ * child's own order: `blockedProved` runs them in it and stops at the first red, so a
+ * re-sorted list would prove a file the builder never feared. Illegal frozen keys are
+ * dropped here, before any `git`/runner call.
  */
 export function usableConflicts(rows: Array<{ path: string; reason: string }>): string[] {
   const seen = new Set<string>();
@@ -74,11 +71,7 @@ export function usableConflicts(rows: Array<{ path: string; reason: string }>): 
 
 /** What the gate decided, and the sentence the caller traces when it refused. */
 export type BlockedVerdict =
-  /**
-   * `red` is the file the driver itself ran and saw fail; `ran` is every file it
-   * executed, in order, up to and including that one. Nothing outside `ran` may
-   * be recorded as the run's cause.
-   */
+  /** `ran` is every file the driver executed, up to and including the `red`. */
   | { honoured: true; red: string; ran: string[] }
   /** `why` is the reason the report was ignored, for the trace line. */
   | { honoured: false; why: string };
@@ -86,13 +79,10 @@ export type BlockedVerdict =
 /**
  * Did the driver itself prove the named tests disagree?
  *
- * `wt` is the child's tree — the one it was left in, before any reset — so the red
- * is a fact about the child's work, not the base. Which is why each named file is
- * hashed before its runner starts: the frozen map proves what the contract SAID and
- * the tree is the child's, so a builder that rewrote a frozen file into one that
- * fails would otherwise be handed a red the driver watched and the record would
- * print the contract's own words as the cause. Only what `ran` lists — every file
- * the driver actually executed, up to and including the red — may be recorded.
+ * `wt` is the child's tree, before any reset, so the red is a fact about the child's
+ * work. Hence each named file is hashed before its runner starts: a builder that
+ * rewrote a frozen file into one that fails would otherwise be handed a red the
+ * driver watched. Only what `ran` lists may be recorded.
  *
  * One wall clock bounds the WHOLE loop, not each runner: a report naming the 32
  * files the tool may ask for would otherwise cost 32 ceilings, and the step's own
@@ -114,10 +104,9 @@ export async function blockedProved(opts: {
   // The list's ceiling is applied where it is built (`usableConflicts`).
   if (paths.length === 0) return { honoured: false, why: "the report named no usable path" };
   if (template === undefined || template.trim() === "") {
-    // No runner means no proof, so the report is ignored and the build runs on like
-    // every other refusal here. The silence is named because `verify` calls the same
-    // missing template an error, and a project with no runner would otherwise see a
-    // builder probe to the ceiling with no line saying why the valve never opened.
+    // No runner means no proof, so the report is ignored like every other refusal
+    // here. The silence is named because `verify` calls the same missing template an
+    // error, and a project with none would see a builder probe the ceiling silently.
     traceWarn(
       "lean build: no verify.test runner is configured, so a blocked report cannot be re-run — set verify.test to enable it",
     );
@@ -146,11 +135,9 @@ export async function blockedProved(opts: {
       };
     }
     // "The driver ran it and saw red" is evidence only while the bytes behind the
-    // name are the bytes the freeze hashed (`blobAt` reads the committed blob back).
-    // A frozen file the child edited into one that fails is its own edit, not a
-    // contradiction, and to the runner the two look identical. Refused by name rather
-    // than skipped: a red bought with bytes the run never agreed to says nothing
-    // about the remaining files either.
+    // name are the bytes the freeze hashed: a frozen file the child edited into one
+    // that fails is its own edit, and to the runner the two look identical. Refused
+    // by name, not skipped — such a red says nothing about the files after it.
     const bytes = await blobAt(exec, wt, "HEAD", file);
     if (bytes === undefined || bytes.length === 0 || sha256(bytes) !== frozen[file]) {
       return {
@@ -191,10 +178,9 @@ export async function blockedProved(opts: {
       clearTimeout(abandonTimer);
       abandonTimer.unref();
     }
-    // Only the kinds that ANSWERED reach `ran`, the set the record is built from:
-    // infra/unclear observed nothing, so they prove nothing — but they are not
-    // fatal either, since a toolchain fault on ONE file must not hide a genuine
-    // conflict among the rest.
+    // Only the kinds that ANSWERED reach `ran`, the set the record is built from.
+    // Infra/unclear prove nothing but are not fatal: one broken file must not
+    // hide a genuine conflict among the rest.
     if (proof.kind === "infra" || proof.kind === "unclear") {
       trace(`lean build: blocked report skipped one file — ${file}: ${proof.detail}`);
       skipped.push(file);
