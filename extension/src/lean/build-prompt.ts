@@ -73,6 +73,12 @@ export interface BuildPromptOpts {
   testRunner?: string;
   /** Why this round exists: the `verify:red` or `ci:red` reason, clipped by the caller. */
   reentry?: string;
+  /**
+   * The previous attempt's budget verdict plus the frozen files the driver re-ran
+   * red, when this round retries a build its own ceiling stopped (#2067) — no gate
+   * judged a killed builder, so this is not a gate's complaint.
+   */
+  budgetStop?: string;
 }
 
 function criteriaBlock(spec: PiSpec): string {
@@ -99,19 +105,28 @@ export function buildPrompt(opts: BuildPromptOpts): string {
     opts.frozenPaths.length === 0
       ? "(none — this run froze no tests)"
       : opts.frozenPaths.map((p) => `- \`${p}\``).join("\n");
+  // One section, two framings: a gate judged the last round and said this, or no
+  // gate judged it at all and its own ceiling stopped it. A killed builder's work
+  // is committed, so the difference is "fix THAT" versus "build ON it".
+  const judged = opts.reentry?.trim() ?? "";
+  const stopped = opts.budgetStop?.trim() ?? "";
   const reentry =
-    opts.reentry === undefined || opts.reentry.trim() === ""
+    stopped === "" && judged === ""
       ? ""
       : [
           "## Why this round exists",
           "",
-          "An earlier round was checked and **failed**. Its gate said:",
+          stopped === ""
+            ? "An earlier round was checked and **failed**. Its gate said:"
+            : "Your **previous attempt ran out of budget** — a ceiling stopped it, nothing judged its work. It is committed, so build ON it: read what is there before writing any of it again. The driver re-ran the frozen tests on that tree and these are **still failing**:",
           "",
           "```",
-          opts.reentry.trim(),
+          stopped === "" ? judged : stopped,
           "```",
           "",
-          "Fix THAT. Do not re-derive the feature from scratch and do not assume the previous attempt was right — the failure above is the thing you are answering.",
+          stopped === ""
+            ? "Fix THAT. Do not re-derive the feature from scratch and do not assume the previous attempt was right — the failure above is the thing you are answering."
+            : "Finish THAT. Do not restart the feature from scratch.",
           "",
         ].join("\n");
   const added =

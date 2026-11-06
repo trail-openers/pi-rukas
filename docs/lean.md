@@ -21,7 +21,7 @@ Every state in that walk has a handler. A review that fixed its head re-enters
 |---|---|---|
 | `ready` | driver | Fetches the issue, parses its `pi-spec v1` block, judges readiness, resolves the mainline sha, loads `.pi/work.json` **at that sha**. Any failure is a `fail` outcome. |
 | `specify` | adversary (a `developer` child) | Writes the acceptance tests and submits them. Each submitted file is run against the base commit; a file that passes there is dropped. Freeze a contract with no red test and the step returns `no-red-test` and the run is refused. If the boundary dropped a submitted test, `specify` retries once with the refusal reasons in the adversary's prompt, and the second attempt's result is final. |
-| `build` | builder (a `developer` child) | Makes the frozen tests pass. The frozen paths are named individually and marked untouchable. At most 3 build rounds (`MAX_BUILD_ATTEMPTS`, `machine.ts`). |
+| `build` | builder (a `developer` child) | Makes the frozen tests pass. The frozen paths are named individually and marked untouchable. At most 3 build rounds (`MAX_BUILD_ATTEMPTS`, `machine.ts`) — rounds a red verify, a challenge and a child stopped by its own budget all draw from the same three. |
 | `challenge` | adversary | Tries to break the builder's claim with new tests. Runs at most once. New tests earn one more build round, within the same bound of at most 3 build rounds; none — or a round stopped by its own budget — go to verify. |
 | `verify` | driver | The run's own gate, no model in it: clean tree, frozen-test integrity (blobs still hash to their records), a compiler canary, every frozen test, then `verify.fast` / `verify.full`, then the spec's `command` criteria. `green` or `red`.  A tier red at HEAD re-runs once (a flake is excused on a green re-run); still red, it is re-run at the run's base commit in a throwaway checkout, and a base that is not red leaves the tier's own red standing. A base that IS red is graded by NAME, and the name is a **pytest identity only** — `path::name` from a `FAILED`/`ERROR` line, read from both runs: `green`, with the failures recorded as `preexistingFailures` and disclosed in the PR body, only when every test the head run named also failed at the base (the frozen acceptance tests green, both name sets non-empty, each head name matching a base name). Any other answer — a name only the head printed, no names at all, a name from any other runner (TAP, go, a shell tally), a tier whose re-run observed nothing, a base red shaped like an unprovisioned tree, or a record the step log's own reader would refuse — stays the `baseline red:` hand-back. Neither arm bills a build round. |
 | `publish` | driver | Pushes the branch under a lease bound to a sha it just read from origin, and opens (or reuses) the PR. Refuses to publish a green it did not observe at the head it is pushing. |
@@ -160,10 +160,14 @@ bound**, then a kill at **bound + grace (`PI_ENSEMBLE_CHILD_BOUND_GRACE_MS`,
 10 min)**. Every lever bounds ONE CHILD, not a step's whole spend. For
 `specify`, `build` and `challenge` a breach is a **verdict** the table routes:
 the step returns `{kind: "budget"}` with `limit`, `value` and `used`, a
-`specify` or `build` breach ends the run (`handback`, **10**), and a
-**`challenge`** breach **continues to `verify`** like a round that added no tests
-— optional strengthening, and a non-converged round says nothing about what
-`verify` still checks. **`review` is the exception**: it has no `budget` kind, so
+a `specify` breach ends the run (`handback`, **10**); a **`build`** breach counts
+as the one build round it was and **re-enters `build`** while `MAX_BUILD_ATTEMPTS`
+allows — the stopped child's work is folded into that attempt's commit first, so
+the retry starts from it and its prompt names what the driver re-ran still red —
+and only the attempt the cap ends hands back; a **`challenge`** breach
+**continues to `verify`** like a round that added no tests — optional
+strengthening, and a non-converged round says nothing about what `verify` still
+checks. **`review` is the exception**: it has no `budget` kind, so
 a stopped review child THROWS `ReviewInfraError` whose message is the shared
 `budgetSentence(state, fired)` and whose rows are the children the step bought;
 the run hands back (**10**) with that sentence as its cause, on the step record

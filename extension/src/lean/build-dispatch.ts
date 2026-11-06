@@ -36,8 +36,10 @@ export interface BuildDispatchOpts {
   attempt: number;
   /** The project's `verify.test` runner template (e.g. `bun run {file}`), if configured. */
   testRunner?: string;
-  /** The verify-red / CI-red reason this round is a fix for, if any. */
+  /** Why this round exists: the `verify:red` or `ci:red` reason, if any. */
   reentry?: string;
+  /** The previous attempt's budget stop and what is still failing, if it was one. */
+  budgetStop?: string;
   /**
    * What the adversary's challenge round added, if it added anything: the frozen
    * paths it froze, named so this round knows which files are new to it.
@@ -79,6 +81,7 @@ export async function dispatchBuilder(
     attempt: opts.attempt,
     ...(opts.testRunner === undefined ? {} : { testRunner: opts.testRunner }),
     ...(opts.reentry === undefined ? {} : { reentry: opts.reentry }),
+    ...(opts.budgetStop === undefined ? {} : { budgetStop: opts.budgetStop }),
     ...(opts.added === undefined ? {} : { added: opts.added }),
   });
   const result = await dispatch(

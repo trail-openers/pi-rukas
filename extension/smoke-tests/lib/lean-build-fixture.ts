@@ -9,14 +9,12 @@
  * stub: the fake dispatch performs the child's acts in the worktree and hands
  * back a `DispatchResult`.
  *
- * The fixture builds the state the step expects rather than pretending it: a
- * repo whose HEAD holds the frozen test commit (a `src/` file plus a test that
- * fails against it), a registered worktree on the run's branch at that HEAD,
- * and a step log carrying the `ready` / `specify` outcomes the run would have
- * earned on the way here. The frozen sha256 recorded in the log is the one the
- * committed blob really hashes to, so the case that must throw — (g) — has to
- * break the record on purpose, which is the only way to show the check reads
- * bytes rather than vibes.
+ * The fixture builds the state the step expects rather than pretending it: a repo
+ * whose HEAD holds the frozen test commit, a worktree on the run's branch at that
+ * HEAD, and a step log with the `ready` / `specify` outcomes. The frozen sha256 is
+ * the one the committed blob really hashes to, so a case that must break the check
+ * breaks the record on purpose, which is how the check is shown to read bytes.
+
  *
  * The child's acts are a callback so each case decides what its developer did:
  * edited `src/`, rewrote a frozen test, committed on its own, edited `.pi/` and
@@ -314,6 +312,8 @@ export interface RunResult {
   headAfter: string;
   /** The argv of every git call the step made, for the hook-guard canary. */
   gitArgvs: string[][];
+  /** The fixture the case ran on, so a second run can continue where this one left off. */
+  built: Built;
 }
 
 export interface RunOpts {
@@ -382,6 +382,19 @@ export interface RunOpts {
 
 /** Run the step against a fresh fixture; a throw comes back as the error. */
 export async function runBuild(opts: RunOpts): Promise<RunResult> {
+  // Everything a run observed, from the fixture it ran on — the one shape both
+  // the returned result and the thrown one carry.
+  const finish = () => ({
+    dispatched,
+    prompts,
+    specs,
+    extraArgs,
+    worktree: built.worktree,
+    headBefore: built.headBefore,
+    headAfter: headOf(built.worktree),
+    gitArgvs,
+    built,
+  });
   const built =
     opts.built ??
     buildFixture(opts.issue, {
@@ -465,27 +478,13 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
     const outcome = await buildOutcome(built.ctx, deps);
     return {
       outcome,
-      dispatched,
-      prompts,
-      specs,
-      extraArgs,
-      worktree: built.worktree,
-      headBefore: built.headBefore,
-      headAfter: headOf(built.worktree),
-      gitArgvs,
+      ...finish(),
     };
   } catch (err) {
     return {
       threw: err as Error,
       deadDispatches: err instanceof BuildInfraError ? err.dispatches : undefined,
-      dispatched,
-      prompts,
-      specs,
-      extraArgs,
-      worktree: built.worktree,
-      headBefore: built.headBefore,
-      headAfter: headOf(built.worktree),
-      gitArgvs,
+      ...finish(),
     };
   }
 }

@@ -122,21 +122,27 @@ function terminalCause(steps: Step[]): string | undefined {
  * Rendered from the typed fields (`limit` / `value` / `used`), not from the
  * step's `reason` prose: {@link budgetTrio} reads those three, the same check
  * every reader of a recorded breach makes, so a breach missing a field falls
- * through to the next cause rather than printing a half-sentence.
+ * through to the next cause rather than printing a half-sentence. Its one part taken
+ * from prose is the step's own tail, the attempts a budget build spent (#2067 R5).
  */
-function budgetCause(steps: Step[]): string | undefined {
-  let newest: number | undefined;
+/** The newest step that was WORK — a report state is how a run ended, not work. */
+function newestWorkStep(steps: Step[]): Step | undefined {
   for (let i = steps.length - 1; i >= 0; i--) {
     const step = steps[i];
-    if (step === undefined || REPORT_STATES.includes(step.state)) continue;
-    newest = i;
-    break;
+    if (step !== undefined && !REPORT_STATES.includes(step.state)) return step;
   }
-  if (newest === undefined) return undefined;
-  const step = steps[newest];
-  const fired = budgetTrio(step?.outcome);
-  if (fired === undefined) return undefined;
-  return step === undefined ? undefined : budgetSentence(step.state, fired);
+  return undefined;
+}
+
+function budgetCause(steps: Step[]): string | undefined {
+  const step = newestWorkStep(steps);
+  const fired = step === undefined ? undefined : budgetTrio(step.outcome);
+  if (step === undefined || fired === undefined) return undefined;
+  // The step's own clause about the attempts it spent, kept if it made one.
+  const used = step.outcome?.reason?.match(/after \d+ build attempts/)?.[0];
+  return used === undefined
+    ? budgetSentence(step.state, fired)
+    : `${budgetSentence(step.state, fired)} ${used}`;
 }
 
 /**
@@ -164,14 +170,7 @@ function budgetCause(steps: Step[]): string | undefined {
  * than printing a fragment.
  */
 function blockedCause(steps: Step[]): string | undefined {
-  let newest: number | undefined;
-  for (let i = steps.length - 1; i >= 0; i--) {
-    const step = steps[i];
-    if (step === undefined || REPORT_STATES.includes(step.state)) continue;
-    newest = i;
-    break;
-  }
-  const step = newest === undefined ? undefined : steps[newest];
+  const step = newestWorkStep(steps);
   if (step?.state !== "build" || step.outcome?.kind !== "blocked") return undefined;
   const entries = Object.entries(step.outcome.blockedBy ?? {});
   if (entries.length === 0) return undefined;

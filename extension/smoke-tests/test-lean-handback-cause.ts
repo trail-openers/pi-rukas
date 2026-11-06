@@ -263,4 +263,55 @@ function breach(state: "build" | "challenge") {
   );
 }
 
+// ── the last attempt's budget is the cause; one the cap let past is not (R5) ──
+{
+  // A budget no longer ends the run, so position is the only honest test of
+  // which attempt's ceiling the operator came for — the same rule the challenge
+  // breach above is judged by, now applied to build's own.
+  const survived = [
+    decided("build", breach("build")),
+    decided("build", breach("build")),
+    decided("verify", { kind: "red", reason: "AC1 exited 1 — the retry never passed" }),
+  ];
+  const needed = neededFromLog(survived);
+  assert(
+    needed.includes("the retry never passed"),
+    `a run that retried past a budget reports the gate's red, not the ceiling (got ${needed})`,
+  );
+  assert(
+    !needed.includes("minutes budget 15"),
+    `and the budget it carried past stays out of first position (got ${needed})`,
+  );
+  const last = [decided("build", breach("build")), decided("handback", { kind: "done" })];
+  assert(
+    neededFromLog(last).includes("minutes budget 15"),
+    "the attempt the cap ended the run on still names its budget",
+  );
+}
+
+// ── the handback at the attempt cap names the attempts used (R5, AC3) ──────
+{
+  // A budget no longer ends the run, so the ceiling alone no longer says why the
+  // run is over: the operator needs to know the retries were spent. The build step
+  // composes that clause into the verdict's own `reason`, which is what the cause
+  // line prints — `budgetSentence` on its own names only the ceiling.
+  const capped = decided("build", {
+    kind: "budget",
+    limit: "turns",
+    value: 400,
+    used: 401,
+    reason:
+      "build stopped: turns budget 400 exceeded (used 401); after 3 build attempts; kept 4 file(s)",
+  });
+  const needed = neededFromLog([capped, decided("handback", { kind: "done" })]);
+  assert(
+    needed.includes("after 3 build attempts"),
+    `the handback at the cap names the attempts used (got ${needed})`,
+  );
+  assert(
+    needed.includes("turns budget 400"),
+    `and still names the ceiling that stopped it (got ${needed})`,
+  );
+}
+
 process.exit(exit);

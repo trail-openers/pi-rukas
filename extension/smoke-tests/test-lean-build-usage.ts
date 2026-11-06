@@ -7,10 +7,10 @@
  * dispatching steps must never do is drop the expensive case: a child the
  * budget stopped, or one whose transport died, spent its tokens before anybody
  * knew, so a total that counted only successes would report the run's most
- * costly failures as free.
+ * costly failures as free — one row per child the step actually paid for.
  *
  *   (f2) an `ok` build            -> exactly one row, the developer's own usage
- *   (f3) a budget-stopped build   -> the `budget` verdict still carries the row
+ *   (f3) a budget-stopped build   -> the `budget` verdict still carries a row per child
  *   (f4) a build whose child died -> the rows ride on the infra THROW, marked
  *                                    not-ok, because the engine records no
  *                                    outcome for a throw and it is the only path
@@ -73,6 +73,10 @@ function assert(cond: boolean, msg: string): void {
     child: (wt) => {
       writeFileSync(path.join(wt, "src/retry.ts"), "export const retry = () => 1;\n");
     },
+    // One child's row is billed before the cap is reached, so exactness is checkable:
+    // the step retries a ceiling-stopped build in place and a row accumulates per
+    // attempt (see `blockedTimeoutMs` — the fold's sweep is what decides the round).
+    blockedTimeoutMs: 1,
     // The same call `spawn.ts` makes at every `message_end`: one turn past the
     // single-turn ceiling, so the step's own budget ends the child.
     onProgressTick: (onProgress) =>
@@ -92,8 +96,8 @@ function assert(cond: boolean, msg: string): void {
     `(f3) the build stopped on budget (got ${r.outcome?.kind})`,
   );
   assert(
-    (r.outcome?.dispatches ?? []).length === 1,
-    `(f3) the budget verdict carries the dispatch it paid for (${JSON.stringify(r.outcome?.dispatches)})`,
+    (r.outcome?.dispatches ?? []).length === r.dispatched && r.dispatched > 0,
+    `(f3) the budget verdict carries exactly one row per child it paid for (${String(r.outcome?.dispatches?.length)} rows / ${String(r.dispatched)} children)`,
   );
   assert(
     (r.outcome?.dispatches?.[0]?.usage.input ?? 0) === 11,
