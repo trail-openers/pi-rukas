@@ -107,7 +107,6 @@ import type { WriteFence } from "../write-fence-contract.ts";
 import { frozenFromLog } from "./build.ts";
 import type { HandlerCtx } from "./engine.ts";
 import {
-  RE_REVIEW_LANE,
   type StepStop,
   reviewBoundComment,
   reviewBoundRecord,
@@ -177,19 +176,20 @@ import { armBudget, budgetFor } from "./step-budget.ts";
 /** The fixer's wall clock, the shape the other steps pass as `childBoundMs`. */
 export const FIX_BOUND_MS = 20 * 60_000;
 
-/// The lens names a pass was supposed to judge and did not: the roster the step buys
-/// (`LENSES_PER_PASS`) minus the children that ran, named from the round's own
-/// records. A round that named nothing reports the count alone.
+/// The lens names a pass was meant to judge and did not: the roster the step buys
+/// minus the children that ran, named from the round's own records. A round that
+/// named nothing reports the count alone, so a disclosure never claims lanes nobody
+/// can read. The lane named when a pushed fix went unjudged rides with it.
 
-export function unjudgedLenses(round: LensRound | undefined): string[] {
+export function unjudgedLenses(round: LensRound | undefined, reReview = false): string[] {
   const ran = round?.lenses.length ?? 0;
   const missing = LENSES_PER_PASS - ran;
-  if (missing <= 0) return [];
   const named = (round?.lenses ?? [])
     .map((lens) => lens.lens)
     .filter((name) => typeof name === "string" && name !== "");
-  if (named.length === 0) return [`six-lens round (${String(missing)} lenses unrun)`];
-  return named;
+  const lanes =
+    missing <= 0 ? [] : named.length === 0 ? [`${String(missing)} lenses unrun`] : named;
+  return reReview ? ["adversarial re-review", ...lanes] : lanes;
 }
 
 /**
@@ -254,37 +254,34 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
   // review costs.
   const budget = armBudget(budgetFor(config, "review"));
   if (budget.warning !== undefined) traceWarn(`lean review #${String(issue)}: ${budget.warning}`);
-  // **The step's OWN clock, beside the per-child arms and for a different job.**
-  // `armBudget` bounds one child at a time; this bounds the step. Its minutes
-  // come from the same `budgets.review` row the children read, and its deadline
-  // lever is the handoff allowance plus the review reserve — the time publish,
-  // ci and land still need, which the engine's between-steps check cannot protect
-  // because it never looks while a step runs. See `review-bound.ts`.
+  // **The step's OWN clock, beside the per-child arms and for a different job** —
+  // `armBudget` bounds one child at a time, this bounds the step. Its spend comes
+  // off `ctx.stepStartedAt`, the engine's write-ahead entry, so a resumed attempt
+  // counts what its crashed self already spent. One disclosure, filled by whichever
+  // arm closed. See `review-bound.ts`.
   const reviewMinutes = budgetFor(config, "review")?.minutes ?? 0;
-  // One disclosure, filled by whichever arm closed, posted once at the end.
   let boundRecord: ReviewBoundRecord | undefined;
-  /** The step's clock at this instant; the caller decides what a stop means. */
-  const clock = (): StepStop | undefined =>
-    stepStopOf(stepBound(ctx, reviewMinutes, ctx.now(), ctx.stepStartedAt));
-  /** Record a stop the caller has routed, and say it out loud: `traceWarn`, not
-   * the debug-gated `trace` — a bound visible only under `PI_ENSEMBLE_DEBUG` is
-   * visible in exactly the runs that do not need it. */
-  const noteStop = (stop: StepStop, wave: ReviewWave, lanes: string[]): void => {
-    boundRecord = reviewBoundRecord(stop, wave, lanes);
-    traceWarn(`lean review #${String(issue)}: ${stop.reason}`);
-  };
-  /// The handback a step-clock stop takes, on the stop's OWN sentence: a step-total
-  /// stop is a different clock from a child's, so it does not go through
-  /// `budgetSentence`. The disclosure rides the throw because a pass-1 stop has no
-  /// verdict to carry it, and `errorOutcome` moves it from here to the record.
-  const stepStopped = (stop: StepStop): ReviewInfraError => {
-    const err = new ReviewInfraError(stop.reason, rows);
-    if (boundRecord !== undefined) err.reviewBound = boundRecord;
+  /** The step's clock at this instant; a caller routes it — `handback` below for a
+   * pass-1 stop, `fixed` after a push, or a disclosure. */
+  const clock = (): StepStop => stepBound(ctx, reviewMinutes, ctx.now(), ctx.stepStartedAt);
+  /** The handback a step-clock stop takes, on the stop's OWN sentence (a step-total
+   * stop is a different clock from a child's, so not `budgetSentence`). The
+   * disclosure rides the throw because a pass-1 stop has no verdict to carry it. */
+  const stepStopped = (rec: ReviewBoundRecord): ReviewInfraError => {
+    const err = new ReviewInfraError(rec.reason, rows);
+    err.reviewBound = rec;
     return err;
   };
-  /** The pass the step returns, with the step's stop on it when it had one — and
-   * EXACTLY today's shape when it did not (no key at all), which is what keeps
-   * every existing review case green. */
+  /** Record a stop and say it out loud: `traceWarn`, not the debug-gated `trace` —
+   * a bound visible only under `PI_ENSEMBLE_DEBUG` is visible in exactly the runs
+   * that do not need it. */
+  const noteStop = (stop: StepStop, wave: ReviewWave, lanes: string[]): ReviewBoundRecord => {
+    boundRecord = reviewBoundRecord(stop, wave, lanes);
+    traceWarn(`lean review #${String(issue)}: ${boundRecord.reason}`);
+    return boundRecord;
+  };
+  /** The stop on a pass the step returns — and EXACTLY today's shape when there was
+   * none (no key at all), which is what keeps every existing review case green. */
   const passWithBound = (pass: Outcome): Outcome =>
     boundRecord === undefined ? pass : { ...pass, reviewBound: boundRecord };
 
@@ -303,11 +300,11 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
     // ── pass 1: the full review — the adversarial gate, then the six lenses ──
     // R1: a stop anywhere in pass 1 hands back — nothing reviewed, no verdict to
     // proceed on and no head to certify. The step records its unjudged lanes.
+    const handback = (stop: StepStop, lanes: string[]): never => {
+      throw stepStopped(noteStop(stop, "full", lanes));
+    };
     const preGate = clock();
-    if (preGate !== undefined) {
-      noteStop(preGate, "full", unjudgedLenses(undefined));
-      throw stepStopped(preGate);
-    }
+    if (preGate.live) handback(preGate, unjudgedLenses(undefined));
     const gate = await adversarialGate(deps, ctx, {
       base,
       head,
@@ -324,10 +321,7 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
     // header for why this step throws where the other three route).
     if (gate.stop !== undefined) throw budgetStopped(gate.stop, rows);
     const preLens = clock();
-    if (preLens !== undefined) {
-      noteStop(preLens, "full", unjudgedLenses(undefined));
-      throw stepStopped(preLens);
-    }
+    if (preLens.live) handback(preLens, unjudgedLenses(undefined));
     // Findings the adversarial pass passed on WITHOUT blocking travel to the
     // lenses, which are told to judge them; the lens round's `carried` parameter
     // exists for this one value and nothing else. That is the non-blocking reading
@@ -380,10 +374,7 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
 
     // The wave has not started, so this is still a pass-1 stop (R1): handback.
     const preFix = clock();
-    if (preFix !== undefined) {
-      noteStop(preFix, "full", unjudgedLenses(review));
-      throw stepStopped(preFix);
-    }
+    if (preFix.live) handback(preFix, unjudgedLenses(review));
 
     // ── the one fix wave: a single fixer, given every blocking finding ────────
     // Reached only when something blocked: the lens round's CRITICAL verdict, or
@@ -434,8 +425,8 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
     // `done` (`ci` would certify a head its gate never read after a fix). It is
     // `fixed`: back through `verify`, with the unjudged lanes disclosed.
     const preReReview = clock();
-    if (preReReview !== undefined) {
-      noteStop(preReReview, "fix", [RE_REVIEW_LANE, ...unjudgedLenses(review)]);
+    if (preReReview.live) {
+      noteStop(preReReview, "fix", unjudgedLenses(review, true));
       return passWithBound(cleanPass(review, rows, true));
     }
 
