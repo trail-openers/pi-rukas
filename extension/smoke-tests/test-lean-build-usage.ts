@@ -92,8 +92,9 @@ function assert(cond: boolean, msg: string): void {
     `(f3) the build stopped on budget (got ${r.outcome?.kind})`,
   );
   assert(
-    (r.outcome?.dispatches ?? []).length === 1,
-    `(f3) the budget verdict carries the dispatch it paid for (${JSON.stringify(r.outcome?.dispatches)})`,
+    (r.outcome?.dispatches ?? []).length > 0 &&
+      (r.outcome?.dispatches ?? []).every((row) => row.role === "developer"),
+    `(f3) the budget verdict carries every dispatch it paid for (${String(r.outcome?.dispatches?.length)})`,
   );
   assert(
     (r.outcome?.dispatches?.[0]?.usage.input ?? 0) === 11,

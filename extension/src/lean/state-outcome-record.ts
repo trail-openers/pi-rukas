@@ -74,6 +74,13 @@ export interface Outcome {
    */
   blockedBy?: Record<string, string>;
   /**
+   * `build` only (kind `budget`): the frozen files the DRIVER re-ran red on the
+   * stopped child's tree after its ceiling ended it — what the next attempt's
+   * prompt names as still failing (#2067 R3). A file whose runner never answered
+   * is in neither list: an unobserved run proves nothing.
+   */
+  failing?: string[];
+  /**
    * `verify` and `ci` only: the tiers this step found red at HEAD whose every
    * failing test ALSO failed at the run's base commit, so the step graded green and
    * disclosed them instead of handing the run back. Keyed by tier name; each entry

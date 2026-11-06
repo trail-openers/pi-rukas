@@ -34,7 +34,19 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { BuildInfraError } from "../src/lean/build-errors.ts";
-import { SPEC_BODY, commitPaths, status, subject, subjectsAbove } from "./lib/lean-build-asserts.ts";
+import { emptyRunningState } from "../src/progress.ts";
+import type { BudgetOpts } from "../src/lean/step-budget.ts";
+import type { Step } from "../src/lean/state.ts";
+import type { WorkConfig } from "../src/lean/config.ts";
+import { defaultConfig } from "../src/lean/config.ts";
+import {
+  SPEC_BODY,
+  commitPaths,
+  configWithRunner,
+  status,
+  subject,
+  subjectsAbove,
+} from "./lib/lean-build-asserts.ts";
 import { phase1Handlers } from "../src/lean/command.ts";
 import {
   AGENTS_JSON,

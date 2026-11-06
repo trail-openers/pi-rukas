@@ -56,6 +56,15 @@ const log = leanLog;
 {
   const steps = [
     stepWith("ready", { kind: "ok" }),
+    // A first attempt the ceiling stopped and the step folded, then a retry that
+    // died on a different ceiling (#2067): only the newest breach ended the run.
+    stepWith("build", {
+      kind: "budget",
+      limit: "turns",
+      value: 400,
+      used: 401,
+      dispatches: CHILDREN,
+    }),
     stepWith("build", {
       kind: "budget",
       limit: "minutes",
@@ -102,6 +111,33 @@ const log = leanLog;
     `survived-budget: the red gate is the cause, not the ceiling (got ${JSON.stringify(failure)})`,
   );
   assert(i.cap === undefined, `survived-budget: no cap (got ${String(i.cap)})`);
+}
+
+// ── (3d2) a build retried after its OWN ceiling: the LAST attempt is the cause.
+// #2067 makes `build + budget` a continuation, so a log can hold two build
+// breaches and only the newest one ended the run. The projection blames the
+// newest WORKING step, so the survived round must not be dropped silently and
+// the final one must read as a timeout like any other breach.
+{
+  const steps = [
+    stepWith("ready", { kind: "ok" }),
+    stepWith("build", { kind: "budget", limit: "turns", value: 400, used: 401, dispatches: CHILDREN }),
+    stepWith("build", {
+      kind: "budget",
+      limit: "minutes",
+      value: 45,
+      used: 46,
+      dispatches: CHILDREN,
+    }),
+    stepWith("handback", { kind: "done", posted: true, reason: "handback comment posted" }),
+  ];
+  const r = await drive("handed-back", 10, steps);
+  assert(r.violations.length === 0, `build-retry: output contract (${r.violations.join("; ")})`);
+  const failure = (r.issue ?? {}).failure as Record<string, unknown>;
+  assert(
+    failure?.kind === "timeout" && String(failure?.message).includes("minutes budget 45"),
+    `build-retry: the attempt the cap ended the run on is the timeout reported (got ${JSON.stringify(failure)})`,
+  );
 }
 
 // ── (3e) a handback whose comment never reached the forge says SO in the

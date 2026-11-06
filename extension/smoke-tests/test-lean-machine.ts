@@ -241,6 +241,27 @@ assert(
     .state === "verify",
   "a build that already earned its challenge goes to verify",
 );
+// A budget-stopped build is ONE attempt, so it re-enters build through
+// `viaBuild` while a round remains, and hands back at the cap. The pair claim
+// (this edge re-enters build; only the cap ends the run) lives here beside the
+// other single-edge assertions; the step's work-keeping lives in
+// test-lean-build.ts.
+for (const challengeDone of [false, true]) {
+  const stopped = next(run("build", { counters: { ...INITIAL_COUNTERS, challengeDone } }), {
+    kind: "budget",
+  });
+  assert(
+    stopped.state === (challengeDone ? "verify" : "challenge") &&
+      stopped.counters.buildAttempts === 1,
+    `build + budget bills the round the child ran and leaves build (challengeDone=${String(challengeDone)}: ${stopped.state}/${stopped.counters.buildAttempts})`,
+  );
+}
+assert(
+  next(run("build", { counters: { ...INITIAL_COUNTERS, buildAttempts: MAX_BUILD_ATTEMPTS } }), {
+    kind: "budget",
+  }).counters.buildAttempts === MAX_BUILD_ATTEMPTS,
+  "build + budget at the cap bills no round beyond it",
+);
 const exhausted = next(run("build"), { kind: "exhausted" });
 assert(
   exhausted.state === "publish" && exhausted.counters.draft === true,

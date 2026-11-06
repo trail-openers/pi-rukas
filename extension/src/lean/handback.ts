@@ -124,19 +124,19 @@ function terminalCause(steps: Step[]): string | undefined {
  * every reader of a recorded breach makes, so a breach missing a field falls
  * through to the next cause rather than printing a half-sentence.
  */
-function budgetCause(steps: Step[]): string | undefined {
-  let newest: number | undefined;
+/** The newest step that was WORK — a report state is how a run ended, not work. */
+function newestWorkStep(steps: Step[]): Step | undefined {
   for (let i = steps.length - 1; i >= 0; i--) {
     const step = steps[i];
-    if (step === undefined || REPORT_STATES.includes(step.state)) continue;
-    newest = i;
-    break;
+    if (step !== undefined && !REPORT_STATES.includes(step.state)) return step;
   }
-  if (newest === undefined) return undefined;
-  const step = steps[newest];
-  const fired = budgetTrio(step?.outcome);
-  if (fired === undefined) return undefined;
-  return step === undefined ? undefined : budgetSentence(step.state, fired);
+  return undefined;
+}
+
+function budgetCause(steps: Step[]): string | undefined {
+  const step = newestWorkStep(steps);
+  const fired = step === undefined ? undefined : budgetTrio(step.outcome);
+  return step === undefined || fired === undefined ? undefined : budgetSentence(step.state, fired);
 }
 
 /**
@@ -164,14 +164,7 @@ function budgetCause(steps: Step[]): string | undefined {
  * than printing a fragment.
  */
 function blockedCause(steps: Step[]): string | undefined {
-  let newest: number | undefined;
-  for (let i = steps.length - 1; i >= 0; i--) {
-    const step = steps[i];
-    if (step === undefined || REPORT_STATES.includes(step.state)) continue;
-    newest = i;
-    break;
-  }
-  const step = newest === undefined ? undefined : steps[newest];
+  const step = newestWorkStep(steps);
   if (step?.state !== "build" || step.outcome?.kind !== "blocked") return undefined;
   const entries = Object.entries(step.outcome.blockedBy ?? {});
   if (entries.length === 0) return undefined;

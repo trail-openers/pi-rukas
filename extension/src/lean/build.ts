@@ -34,11 +34,15 @@
  *      `build-git.ts`, the single-descriptor read in `build-capture.ts`, and
  *      the child in `build-dispatch.ts`.
  *   6. A child that produced nothing is `exhausted`, which the table routes —
- *      not a throw, and not a green.
+ *      not a throw, and not a green. A child its OWN ceiling stopped is
+ *      `budget`: its work is folded and committed first, and the step retries it
+ *      in place while the round budget allows.
  *
  * The re-entry context is read from the log too: the newest decided `verify:red`
- * reason, else the newest `ci:red`, clipped to 4 KB. That is the difference
- * between a fix round that knows what failed and a second attempt that guesses.
+ * reason, else the newest `ci:red`, clipped to 4 KB — the difference between a
+ * fix round that knows what failed and an attempt that guesses. The newest
+ * `build:budget` step is read the same way, so a retry names what its ceiling cut
+ * off and the frozen files that step re-ran red.
  */
 
 import { existsSync } from "node:fs";
@@ -50,7 +54,7 @@ import { assertSafeRef } from "../worktree-loss.ts";
 import type { ExecFn } from "../worktree.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
 import { extractBlockedReport } from "./build-blocked-extract.ts";
-import { blockedProved, usableConflicts } from "./build-blocked.ts";
+import { foldStoppedBuild, judgeBlockedReport } from "./build-blocked.ts";
 import { dispatchBuilder } from "./build-dispatch.ts";
 import { BuildInfraError } from "./build-errors.ts";
 import { headSha } from "./build-git.ts";
@@ -61,17 +65,20 @@ import type { WorkConfig } from "./config.ts";
 import { loadWorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { fetchIssueBody } from "./io.ts";
+import { MAX_BUILD_ATTEMPTS } from "./machine.ts";
 import { type PiSpec, parsePiSpec } from "./spec.ts";
 import { CaptureBudget } from "./specify-capture.ts";
 import { assertSpecifyWorktreeOwned, specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
 import { BLOCKED_PATH_CAP, BLOCKED_REASON_CAP } from "./state-outcome.ts";
 import type { Outcome, Step } from "./state.ts";
+import type { DispatchUsageRow } from "./step-budget.ts";
 import {
   type BudgetArms,
   type BudgetOpts,
   type BudgetStop,
   armBudget,
   budgetFor,
+  budgetSentence,
   budgetVerdictWithRows,
   readDispatched,
 } from "./step-budget.ts";
@@ -105,37 +112,32 @@ export interface BuildDeps {
   blockedTimeoutMs?: number;
 }
 
+/** Is this step one that froze tests: a decided `specify:ok` or `challenge:new-tests`. */
+function frozeTests(step: Step): boolean {
+  return (
+    (step.state === "specify" && step.outcome?.kind === "ok") ||
+    (step.state === "challenge" && step.outcome?.kind === "new-tests")
+  );
+}
+
 /** The step log's frozen map: every `specify:ok` / `challenge:new-tests`, in order. */
 export function frozenFromLog(steps: Step[]): Record<string, string> {
   const frozen: Record<string, string> = {};
-  for (const step of steps) {
-    if (step.outcome === undefined) continue;
-    const decided =
-      (step.state === "specify" && step.outcome.kind === "ok") ||
-      (step.state === "challenge" && step.outcome.kind === "new-tests");
-    if (!decided) continue;
-    for (const [rel, sha] of Object.entries(step.outcome.frozen ?? {})) frozen[rel] = sha;
-  }
+  for (const step of steps.filter(frozeTests))
+    for (const [rel, sha] of Object.entries(step.outcome?.frozen ?? {})) frozen[rel] = sha;
   return frozen;
 }
 
 /**
- * The criterion -> tests map, unioned over every step that recorded one.
- *
- * The run-level file quota seeds from here: `MAX_TEST_FILES_PER_CRITERION`
- * bounds what a criterion ENDS UP WITH across the run, and only this map knows
- * what an earlier round already froze for it. Same decided outcomes as
- * `frozenFromLog`, so the two readers of the run's test record cannot disagree.
+ * The criterion -> tests map, unioned over every step that recorded one. The
+ * run-level file quota seeds from here: `MAX_TEST_FILES_PER_CRITERION` bounds
+ * what a criterion ENDS UP WITH across the run, and only this map knows what an
+ * earlier round already froze for it. Same decided outcomes as `frozenFromLog`.
  */
 export function testsFromLog(steps: Step[]): Record<string, string[]> {
   const tests: Record<string, string[]> = {};
-  for (const step of steps) {
-    if (step.outcome === undefined) continue;
-    const decided =
-      (step.state === "specify" && step.outcome.kind === "ok") ||
-      (step.state === "challenge" && step.outcome.kind === "new-tests");
-    if (!decided) continue;
-    for (const [id, files] of Object.entries(step.outcome.tests ?? {})) {
+  for (const step of steps.filter(frozeTests)) {
+    for (const [id, files] of Object.entries(step.outcome?.tests ?? {})) {
       const seen = new Set(tests[id] ?? []);
       for (const f of files) seen.add(f);
       tests[id] = [...seen];
@@ -144,37 +146,53 @@ export function testsFromLog(steps: Step[]): Record<string, string[]> {
   return tests;
 }
 
-/**
- * Why this round exists, in the gate's own words: the newest decided
- * `verify:red` reason, or the newest `ci:red` one, clipped.
- *
- * A build re-entered after a `challenge` round that ADDED tests gets the same
- * treatment from {@link addedByChallengeFromLog} rather than a reason: nobody
- * judged those files, the adversary simply froze them, and a builder that is not
- * told which files are new treats them as the contract it already knew.
- */
-export function reentryFromLog(steps: Step[]): string | undefined {
-  for (const state of ["verify", "ci"] as const) {
-    for (let i = steps.length - 1; i >= 0; i--) {
-      const step = steps[i];
-      if (step?.state !== state || step.outcome?.kind !== "red") continue;
-      const reason = step.outcome.reason ?? step.outcome.message;
-      if (typeof reason !== "string" || reason.trim() === "") continue;
-      return reason.length > REENTRY_CLIP ? `${reason.slice(0, REENTRY_CLIP)}…` : reason;
-    }
+/** The `; `-joined non-empty parts of a step's reason line. */
+function joinNotes(parts: string[]): string {
+  return parts.filter((p) => p !== "").join("; ");
+}
+
+/** The newest decided `state` + `kind` step's reason, clipped for a prompt. */
+function reasonFromLog(
+  steps: Step[],
+  state: "verify" | "ci" | "build",
+  kind: "red" | "budget",
+): string | undefined {
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const oc = steps[i]?.state === state ? steps[i]?.outcome : undefined;
+    if (oc?.kind !== kind) continue;
+    const reason = oc.reason ?? oc.message;
+    if (typeof reason !== "string" || reason.trim() === "") continue;
+    return reason.length > REENTRY_CLIP ? `${reason.slice(0, REENTRY_CLIP)}…` : reason;
   }
   return undefined;
 }
 
 /**
+ * Why this round exists, in the gate's own words: the newest decided `verify:red`
+ * reason, or the newest `ci:red` one, clipped. A build that came back from a
+ * `challenge` round which ADDED tests is told by {@link addedByChallengeFromLog}
+ * instead — nobody judged those files, the adversary just froze them.
+ */
+export function reentryFromLog(steps: Step[]): string | undefined {
+  return reasonFromLog(steps, "verify", "red") ?? reasonFromLog(steps, "ci", "red");
+}
+
+/**
+ * What stopped the PREVIOUS attempt and what still fails: the newest decided
+ * `build:budget` reason, which that step composed from its ceiling and the frozen
+ * files it re-ran red. No gate judged a killed builder, so `reentryFromLog` has
+ * nothing to say and a child told only "the last round stopped" re-derives the
+ * feature from scratch.
+ */
+function budgetStopFromLog(steps: Step[]): string | undefined {
+  return reasonFromLog(steps, "build", "budget");
+}
+
+/**
  * What the adversary added, in the builder's own brief: the frozen paths of the
- * newest decided `challenge:new-tests` step, or `undefined` when the log holds
- * none.
- *
- * `reentryFromLog` answers "what did the gate complain about", and an adversary
- * that froze a stricter test has complained about nothing yet — it just made the
- * contract bigger. The paths come from the same decided outcomes `frozenFromLog`
- * reads, so the two readers of the run's test record cannot disagree.
+ * newest decided `challenge:new-tests` step. A gate judged nothing here — the
+ * adversary only made the contract bigger — so the files are named rather than a
+ * complaint quoted. Same decided outcomes as `frozenFromLog`.
  */
 export function addedByChallengeFromLog(steps: Step[]): string | undefined {
   for (let i = steps.length - 1; i >= 0; i--) {
@@ -193,7 +211,7 @@ export function addedByChallengeFromLog(steps: Step[]): string | undefined {
   return undefined;
 }
 
-/** The spec, re-read from the forge. A build against a spec nobody re-read is a build against a fiction. */
+/** The spec, re-read from the forge: a build against an unread spec is fiction. */
 async function specOf(deps: BuildDeps, repoRoot: string, issue: number): Promise<PiSpec> {
   let body: string;
   try {
@@ -206,85 +224,6 @@ async function specOf(deps: BuildDeps, repoRoot: string, issue: number): Promise
   return parsed.spec;
 }
 
-/**
- * The child's blocked report, judged. Returns the outcome's two fields when the
- * driver itself proved the claim, and `undefined` when it did not — in which
- * case the caller continues as though no call were made.
- *
- * Split from `buildOutcome` because the judgement has its own three steps (read,
- * vet the names, re-run them) and its own failure direction: everything here
- * says "not honoured", never "the contract is unsatisfiable".
- */
-async function blockedReport(opts: {
-  exec: BuildExec;
-  wt: string;
-  template: string | undefined;
-  frozen: Record<string, string>;
-  toolUses: unknown[];
-  issue: number;
-  timeoutMs?: number;
-}): Promise<{ reason: string; blockedBy: Record<string, string> } | undefined> {
-  const extracted = extractBlockedReport(opts.toolUses);
-  if (extracted.rows.length === 0) {
-    if (extracted.skipped > 0)
-      trace(
-        `lean build #${String(opts.issue)}: ignored ${String(extracted.skipped)} unreadable report_blocked call(s)`,
-      );
-    return undefined;
-  }
-  const paths = usableConflicts(extracted.rows);
-  const proved = await blockedProved({
-    exec: opts.exec,
-    wt: opts.wt,
-    template: opts.template,
-    frozen: opts.frozen,
-    paths,
-    ...(opts.timeoutMs === undefined ? {} : { timeoutMs: opts.timeoutMs }),
-  });
-  if (!proved.honoured) {
-    traceWarn(`lean build #${String(opts.issue)}: blocked report ignored — ${proved.why}`);
-    return undefined;
-  }
-  // The map is rebuilt from the files the driver ACTUALLY RAN, and only those:
-  // `proved.ran` stops at the red, so an entry the driver never executed cannot
-  // enter the record as though the run had proved it. The reason is rendered
-  // through `oneLine` with the caps `handback`'s `blockedCause` uses — the value
-  // is the child's prose and this is the durable record a public comment prints,
-  // so it is sanitised HERE rather than relying on every reader to do it: the
-  // cause LINE below goes through the same fence as the map, since the path it
-  // leads with is the child's string and `frozenKeyProblem` refuses control
-  // characters and traversals but not the markdown structure in `a test.md`.
-  // The
-  // record's own bounds are enforced on read (`blockedByProblem`), so the map is
-  // not re-counted here: the gate already refused a wider report.
-  // `proved.ran` is already the vetted list: `blockedProved` receives only what
-  // `usableConflicts` accepted and refuses a report naming anything outside the
-  // frozen map, so `ran` cannot contain a name the child never reported. One
-  // filter, at the layer that actually observed the run.
-  const ran = new Set(proved.ran);
-  const blockedBy: Record<string, string> = {};
-  // `row.path in blockedBy` keeps the FIRST reason the child gave for a path it
-  // named twice: `usableConflicts` de-dupes the path list, so without this the
-  // later row silently overwrites the earlier one's words.
-  for (const row of extracted.rows) {
-    if (!ran.has(row.path) || row.path in blockedBy) continue;
-    blockedBy[oneLine(row.path, BLOCKED_PATH_CAP)] = oneLine(row.reason, BLOCKED_REASON_CAP);
-  }
-  const red = proved.red;
-  if (!(red in blockedBy)) return undefined;
-  // The cause line leads with the file the DRIVER watched come back red, not the
-  // first name the child typed and not the last entry of the map: `blockedProved`
-  // returns on its first red, so anything else in the sentence is a file the
-  // driver ran green, or never ran. The full map rides on `blockedBy`.
-  return {
-    reason: oneLine(
-      `frozen tests cannot all pass together: ${red} — ${blockedBy[red] ?? ""}`,
-      BLOCKED_CAUSE_CAP,
-    ),
-    blockedBy,
-  };
-}
-
 /** The `build` step. Returns `ok` | `exhausted` | `blocked`; THROWS on infrastructure. */
 export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Outcome> {
   const { repoRoot, issue } = ctx;
@@ -292,7 +231,7 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
   // 1. The contract, read out of the run's own record.
   const frozen = frozenFromLog(ctx.steps);
 
-  // 2. The tree, and the head it is supposed to be at.
+  // 2. The tree, and the head it must sit at.
   const wt = specifyWorktreePath(repoRoot, issue);
   if (!existsSync(wt)) throw new BuildInfraError(`the worktree ${wt} does not exist`);
   const branch = specifyBranch(ctx.run.branch, issue);
@@ -305,9 +244,7 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
   }
   const headBefore = await headSha(deps.exec, wt);
   try {
-    // Ownership, checked against the head the frozen records were hashed at
-    // rather than the base: `specify` committed the tests on top of the base,
-    // and a tree sitting anywhere else is not this run's to write into.
+    // Ownership against the head the frozen records were hashed at, not the base.
     await assertSpecifyWorktreeOwned(deps.exec, {
       repoRoot,
       wt,
@@ -319,11 +256,10 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
     throw new BuildInfraError((err as Error).message);
   }
 
-  // 3. The preconditions, BEFORE the child is paid.
+  // 3. The preconditions, BEFORE the child is paid. A config the step cannot read
+  //    is infrastructure: building without the runner the project named is not a
+  //    verdict on the work.
   await assertFrozenIntact(deps.exec, wt, headBefore, frozen);
-
-  // A config the step cannot read is infrastructure: the developer would build
-  // without the runner the project named, and that is not a verdict on the work.
   const config = await deps.loadConfig(repoRoot, base).catch((err: unknown) => {
     throw new BuildInfraError(`could not load the project config: ${(err as Error).message}`);
   });
@@ -331,49 +267,83 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
   const attempt =
     ctx.steps.filter((s) => s.state === "build" && s.outcome !== undefined).length + 1;
 
-  // 4. The builder, under the state's budget (#1883). A breach is a routed
-  //    verdict; the child's work goes back with the tree, nothing is committed.
-  //    A child that died THROWS, and a throw records no outcome — so the rows
-  //    ride on the error and the engine puts them on the error outcome it writes
-  //    (see `error-outcome.ts`, #1920 A). Nothing here catches them: the original
-  //    error already carries them, and re-wrapping it could only drop them.
+  // 4. The builder, under the state's budget (#1883). A child that died THROWS, so
+  //    the rows ride on the error to the outcome the engine writes (#1920 A). A
+  //    child its OWN ceiling stopped is retried HERE — the table has no `build`
+  //    self-edge to route on — and its work rides forward on the commit its fold
+  //    made, which is also where the retry and every later step start.
   const reentry = reentryFromLog(ctx.steps);
   const added = addedByChallengeFromLog(ctx.steps);
-  const budget = armBudget(budgetFor(config, "build"));
-  if (budget.warning !== undefined) traceWarn(`lean build #${String(issue)}: ${budget.warning}`);
-  const [dispatched, row] = await dispatchBuilder(deps.dispatch, {
-    issue,
-    spec,
-    frozen,
-    wt,
-    repoRoot,
-    attempt,
-    testRunner: config.verify.test,
-    budget,
-    ...(reentry === undefined ? {} : { reentry }),
-    ...(added === undefined ? {} : { added }),
-  });
-  const rows = [row];
-  const read = readDispatched(dispatched);
-  if ("stop" in read) return budgetVerdictWithRows("build", read.stop, rows);
+  let stopped = budgetStopFromLog(ctx.steps);
+  const rows: DispatchUsageRow[] = [];
+  let toolUses: unknown[] = [];
+  for (let tries = 0; ; tries++) {
+    const budget = armBudget(budgetFor(config, "build"));
+    if (budget.warning !== undefined) traceWarn(`lean build #${String(issue)}: ${budget.warning}`);
+    const [dispatched, row] = await dispatchBuilder(deps.dispatch, {
+      issue,
+      spec,
+      frozen,
+      wt,
+      repoRoot,
+      attempt,
+      testRunner: config.verify.test,
+      budget,
+      ...(reentry === undefined ? {} : { reentry }),
+      ...(added === undefined ? {} : { added }),
+      ...(stopped === undefined ? {} : { budgetStop: stopped }),
+    });
+    rows.push(row);
+    const read = readDispatched(dispatched);
+    if (!("stop" in read)) {
+      toolUses = read.result.toolUses ?? [];
+      break;
+    }
+    // The child wrote code and its own ceiling stopped it: fold that work into
+    // this attempt's commit and re-run the frozen files, so verify and ci find a
+    // clean tree and the next child's prompt names what is still failing (#2067
+    // R3/R4). The kind stays `budget` — a fold never turns a stop into an `ok`.
+    const { kept, failing } = await foldStoppedBuild({
+      exec: deps.exec,
+      wt,
+      repoRoot,
+      branch,
+      headBefore,
+      frozen,
+      attempt,
+      issue,
+      template: config.verify.test,
+      ceiling: deps.captureCeiling,
+    });
+    // The per-attempt line the step log and handback print (R5). The retry's
+    // prompt reads the same sentence (R3).
+    const verdict: Outcome = {
+      ...budgetVerdictWithRows("build", read.stop, rows),
+      ...(failing.length === 0 ? {} : { failing }),
+      reason: joinNotes([
+        budgetSentence("build", read.stop),
+        `still failing: ${failing.join(", ")}`,
+        kept.files.length === 0 ? "" : `kept ${String(kept.files.length)} file(s)`,
+      ]),
+    };
+    stopped = verdict.reason;
+    if (ctx.run.counters.buildAttempts + tries + 1 >= MAX_BUILD_ATTEMPTS) return verdict;
+  }
 
-  // 4b. The child's own "these cannot all pass together", if it made one. The
-  //     report is a CLAIM: it is honoured only once the driver has run the named
-  //     frozen tests itself on the child's tree and seen one come back red. An
-  //     ignored report traces one line and records nothing, and the step
-  //     continues its ordinary path — there is no third verdict.
-  const blocked = await blockedReport({
+  // 4b. The child's own "these cannot all pass together", if it made one: a CLAIM,
+  //     honoured only once the driver ran the named frozen tests on its tree and saw
+  //     one come back red. An ignored report traces a line and records nothing.
+  const blocked = await judgeBlockedReport({
     exec: deps.exec,
     wt,
     template: config.verify.test,
     frozen,
-    toolUses: read.result.toolUses ?? [],
+    toolUses,
     issue,
     ...(deps.blockedTimeoutMs === undefined ? {} : { timeoutMs: deps.blockedTimeoutMs }),
   });
   if (blocked !== undefined) {
-    // No reset and no commit, exactly as the budget stop: the child's work goes
-    // back with the tree, and `verify` is not asked to judge a tree this step
+    // No reset and no commit: `verify` is never asked to judge a tree this step
     // cannot account for.
     return {
       kind: "blocked",
@@ -397,16 +367,19 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
   });
   if (report.files.length === 0)
     return { kind: "exhausted", reason: "the developer produced no change", dispatches: rows };
-  const notes = [
-    `${report.files.length} file(s) changed`,
-    report.restored.length > 0 ? `restored: ${report.restored.join(", ")}` : "",
-    report.reverted.length > 0 ? `reverted: ${report.reverted.join(", ")}` : "",
-    report.removed.length > 0
-      ? `removed: ${report.removed.map((r) => `${r.path} (${r.why})`).join(", ")}`
-      : "",
-    report.deleted.length > 0 ? `deleted: ${report.deleted.join(", ")}` : "",
-  ].filter((s) => s !== "");
-  return { kind: "ok", reason: notes.join("; "), dispatches: rows };
+  return {
+    kind: "ok",
+    reason: joinNotes([
+      `${String(report.files.length)} file(s) changed`,
+      report.restored.length > 0 ? `restored: ${report.restored.join(", ")}` : "",
+      report.reverted.length > 0 ? `reverted: ${report.reverted.join(", ")}` : "",
+      report.removed.length > 0
+        ? `removed: ${report.removed.map((r) => `${r.path} (${r.why})`).join(", ")}`
+        : "",
+      report.deleted.length > 0 ? `deleted: ${report.deleted.join(", ")}` : "",
+    ]),
+    dispatches: rows,
+  };
 }
 
 /** The build step's dependencies: the outside world, injected. */
@@ -421,10 +394,8 @@ export function buildDeps(headless: boolean): BuildDeps {
         writeFence: o.writeFence,
         extraArgs: o.extraArgs,
         // Forwarded so the ceiling binds the child. `budgetTurns` is the same
-        // ceiling read as the denominator of the #1991 budget-progress steer: the
-        // build child is the other observed 401/400 overrun, and a seam that
-        // forwards the arms key by key must forward that one too or the steer has
-        // nothing to count down to.
+        // ceiling the #1991 budget-progress steer counts down from, so a seam
+        // that forwards the arms key by key must forward that one too.
         childBoundMs: o.childBoundMs,
         signal: o.signal,
         onProgress: o.onProgress,

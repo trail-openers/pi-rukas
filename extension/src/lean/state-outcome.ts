@@ -205,6 +205,7 @@ const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>>
   // pass together. `handback` prints it as the run's cause, so a step that never
   // ran those tests may not carry it.
   blockedBy: "build",
+  failing: "build",
   // The tiers a verify/ci step excused over the base commit. They license a GREEN
   // over a tier that exited non-zero, so a step that never ran that tier may not
   // carry the record that would excuse it.
@@ -321,6 +322,18 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
         return `outcome tests[${JSON.stringify(id)}] must be a string[]`;
     }
   }
+  // `failing` is the still-red list the next build attempt's prompt prints, so it
+  // is checked the way `frozen`'s keys are: a path a frozen rule refuses is a name
+  // no step froze and no runner of this run answered for.
+  if (oc.failing !== undefined) {
+    if (!Array.isArray(oc.failing)) return "outcome failing must be a string[]";
+    for (const file of oc.failing as unknown[]) {
+      if (typeof file !== "string") return "outcome failing must be a string[]";
+      const keyProblem = frozenKeyProblem(file);
+      if (keyProblem !== undefined)
+        return `outcome failing ${JSON.stringify(file)} is not a valid test path: ${keyProblem}`;
+    }
+  }
   // `verifiedHead` is what the land gate compares to the PR head, so a
   // truncated or mistyped sha is refused rather than carried: it would compare
   // unequal forever and no reader could tell a broken record from a run that
@@ -419,6 +432,7 @@ export function buildOutcome(oc: Record<string, unknown>): Outcome {
       ? {}
       : { commandNotRunnable: validatedCommandNotRunnable(oc.commandNotRunnable) }),
     ...(oc.blockedBy === undefined ? {} : { blockedBy: validatedBlockedBy(oc.blockedBy) }),
+    ...(oc.failing === undefined ? {} : { failing: [...(oc.failing as string[])] }),
     ...(oc.preexistingFailures === undefined
       ? {}
       : { preexistingFailures: validatedPreexistingFailures(oc.preexistingFailures) }),

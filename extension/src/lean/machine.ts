@@ -173,25 +173,28 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
     case "build":
       switch (outcome.kind) {
         case "ok":
-          // The cap is a TABLE invariant, not a handler courtesy: a handler
-          // that never returns `exhausted` must not walk past the budget. At
-          // the cap the run stops building and goes to its gate, which either
-          // clears the draft by going green or ends the run.
+          // At the cap the run stops building and goes to its gate, which either
+          // clears the draft by going green or ends the run: the cap is a TABLE
+          // invariant, not a handler courtesy, so a handler that never returns
+          // `exhausted` cannot walk past the budget.
           if (c.buildAttempts >= MAX_BUILD_ATTEMPTS) return to(run, "verify");
           // The first build ever earned a challenge round; a build that came
           // back from one has already been challenged and goes to verify.
           return viaBuild(run, c.challengeDone ? "verify" : "challenge");
         case BUDGET_KIND:
-          // `exhausted`'s shape with no draft to clear: the child's work went
-          // back with the tree, so there is nothing to verify.
-          return to(run, "handback");
+          // The same edges as `ok`: the ceiling cut work short, it did not judge
+          // it, and the round is billed either way. `build` retries a stopped child
+          // inside the step, so the table has no self-edge to route on — and no
+          // uncommitted bytes reach the gate, because the step folded that work
+          // into its attempt's commit first (#2067).
+          if (c.buildAttempts >= MAX_BUILD_ATTEMPTS) return to(run, "verify");
+          return viaBuild(run, c.challengeDone ? "verify" : "challenge");
         case "blocked":
           // Straight to `handback`, and never through the `exhausted` route:
           // publishing a PR over tests the run's own builder proved
           // unsatisfiable is the one shape where a contract nobody satisfied
           // reaches `land`. `to()` rather than `viaBuild()` — no round was
-          // earned here, and charging one would bill a build the run did not
-          // do and could shift the cap a later round sees.
+          // earned here, so charging one would bill a build the run did not do.
           return to(run, "handback");
         case "exhausted":
           // Out of build attempts. Whether this is a degradation or a defeat

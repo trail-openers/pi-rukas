@@ -251,12 +251,8 @@ function progress(over: Partial<RunningState>): RunningState {
 
 // ── (7) the build STEP turns a breach into a verdict, not a throw ──────────
 {
-  // The default build ceiling is whatever `DEFAULT_BUDGETS` says, so a case
-  // that wants a breach has to say the child went past THAT rather than past a
-  // number it chose — which is also the more useful assertion: it proves the
-  // step armed the config's own budget and not some other figure.
-  // The config is the one the STEP reads, so the number the verdict carries is
-  // the one the config set — which is the whole claim of this case.
+  // The child is driven past `DEFAULT_BUDGETS`' own figure rather than a number
+  // this case picked, which is the claim: the step armed the config's budget.
   const BUILD_TURNS = 3;
   assert(
     defaultConfig().budgets.build?.turns === DEFAULT_BUDGETS.build?.turns,
@@ -300,11 +296,14 @@ function progress(over: Partial<RunningState>): RunningState {
     r.outcome?.used === BUILD_TURNS + 1,
     `(7) the used amount is what the child hit (got ${r.outcome?.used})`,
   );
-  assert(r.dispatched === 1, `(7) the child was dispatched once (got ${r.dispatched})`);
+  // Every stopped attempt is billed, and the step retries a ceiling-stopped child
+  // in place while the round budget allows (#2067). The fold, the clean tree and
+  // the retry's prompt are build's own claims: test-lean-build-budget-retry.ts.
   assert(
-    r.headBefore === r.headAfter,
-    "(7) nothing was committed after the breach — the tree is left as the child found it",
+    (r.outcome?.dispatches ?? []).length === r.dispatched && r.dispatched > 0,
+    `(7) every child the step paid for is billed (got ${r.dispatched})`,
   );
+  assert(r.headAfter !== r.headBefore, "(7) the breach's work is folded into a commit");
 }
 
 // ── (8) a budget that does not bind the step is not a verdict ──────────────
@@ -373,16 +372,18 @@ function progress(over: Partial<RunningState>): RunningState {
     counters: { ...INITIAL_COUNTERS },
     steps: [],
   });
-  // A ceiling hit BEFORE the contract exists, or with the builder's work still
-  // in its tree, ends the run: there is nothing verified to hand on.
-  for (const state of ["specify", "build"]) {
+  // A ceiling hit BEFORE the contract exists ends the run — nothing was proved.
+  // A BUILD ceiling no longer does (#2067): the attempt was spent, the work is
+  // committed, and the table re-enters build while the cap allows, so only a run
+  // already at MAX_BUILD_ATTEMPTS hands back. Both halves are pinned in
+  // `test-lean-machine.ts`; here the pair stays in the table.
+  for (const state of ["specify", "build"])
     assert(hasTransition(state as never, "budget"), `${state} + budget is in the table`);
-    const moved = next(run(state) as never, { kind: "budget" } as never);
-    assert(
-      (moved as { state: string }).state === "handback",
-      `${state} + budget routes to handback (got ${(moved as { state: string }).state})`,
-    );
-  }
+  assert(
+    (next(run("specify") as never, { kind: "budget" } as never) as { state: string }).state ===
+      "handback",
+    "specify + budget still routes to handback",
+  );
   // A ceiling hit in the OPTIONAL challenge round does not: the contract is
   // already frozen and `verify` still runs every test of it (#1883).
   assert(hasTransition("challenge" as never, "budget"), "challenge + budget is in the table");

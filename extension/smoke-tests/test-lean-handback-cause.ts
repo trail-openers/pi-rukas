@@ -264,3 +264,29 @@ function breach(state: "build" | "challenge") {
 }
 
 process.exit(exit);
+
+// ── the last attempt's budget is the cause; one the cap let past is not (R5) ──
+{
+  // A budget no longer ends the run, so position is the only honest test of
+  // which attempt's ceiling the operator came for — the same rule the challenge
+  // breach above is judged by, now applied to build's own.
+  const survived = [
+    decided("build", breach("build")),
+    decided("build", breach("build")),
+    decided("verify", { kind: "red", reason: "AC1 exited 1 — the retry never passed" }),
+  ];
+  const needed = neededFromLog(survived);
+  assert(
+    needed.includes("the retry never passed"),
+    `a run that retried past a budget reports the gate's red, not the ceiling (got ${needed})`,
+  );
+  assert(
+    !needed.includes("minutes budget 15"),
+    `and the budget it carried past stays out of first position (got ${needed})`,
+  );
+  const last = [decided("build", breach("build")), decided("handback", { kind: "done" })];
+  assert(
+    neededFromLog(last).includes("minutes budget 15"),
+    "the attempt the cap ended the run on still names its budget",
+  );
+}

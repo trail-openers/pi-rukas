@@ -20,7 +20,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { runLean } from "../src/lean/engine.ts";
-import type { LeanRun, LeanState, Outcome } from "../src/lean/state.ts";
+import type { LeanRun, LeanState, Outcome, Step } from "../src/lean/state.ts";
 import { INITIAL_COUNTERS, leanStateFile, loadRun } from "../src/lean/state.ts";
 import { formatIdentity, selfIdentity } from "../src/process-liveness.ts";
 import {
