@@ -171,6 +171,36 @@ and in the host's `failure.message` alike. A review step therefore never carries
 the `limit`/`value`/`used` trio — the prose is its channel. `PI_ENSEMBLE_DISPATCH_CAPS=0`
 makes the wall clock inert, and the step says so.
 
+**The review step's own clock.** Every lever above bounds ONE CHILD; the `review`
+step also bounds ITSELF, because it buys two adversarial passes, twelve lens
+children and one fixer serially and each child can sit inside its own bound while
+the step runs for hours. Two numbers, both visible in the step log (an ungated
+`traceWarn` at the stop) and in the host's document as `issues[].reviewBound`:
+
+| Number | Where it comes from |
+|---|---|
+| the step bound | `budgets.review.minutes` — the SAME row the children are armed from. No separate knob. |
+| the deadline reserve | `PI_ENSEMBLE_HANDOFF_TIMEOUT_MS` (the handoff allowance) **+ `REVIEW_DEADLINE_RESERVE_MS` = 15 min** held for publish, ci and land. |
+
+The step asks its clock **before each dispatch**: spent, it dispatches no further
+reviewer or fixer. What happens next depends on what had been reviewed — a stop
+before the first six-lens round completes **hands back** (nothing has been
+reviewed); a stop after a complete, unblocked first round **proceeds** to `ci`;
+a stop after the fixer pushed routes **`fixed`**, back through `verify`, because
+origin holds a head the gate has not re-read. The step records
+`outcome.reviewBound` — `{ wave: "full" | "fix", unreviewedLanes, reason }` — and, on the
+forge channel, posts **one PR comment** listing the lanes it never judged (a lane list,
+plus `adversarial re-review` where that pass never ran): `publish` runs *before*
+`review`, so the PR body cannot carry it. On `PI_ENSEMBLE_HANDOFF_CHANNEL=host` nothing is
+posted — the host owns every post, as it does for the two reporting steps — and the record
+and the warn line carry the stop. `reviewDone` is set whatever the answer,
+so a head whose only unjudged lanes are re-review lanes proceeds — disclosed —
+since every lane was judged once in the first pass. A stop whose per-child cause
+is already on the record keeps that cause line; the step-total stop is disclosed
+beside it, never instead of it. Under `PI_ENSEMBLE_DISPATCH_CAPS=0` the step clock
+is **inert** and carries the same "budget is inert" warning the child lever prints
+— a bound the runtime has disabled is never reported as one that held.
+
 **Bounds on a frozen test.** A kept acceptance test must be new at the base
 commit, at most **150 lines** (`MAX_TEST_LINES`), at most **24 KiB**
 (`MAX_TEST_BYTES`), and at most **2 per criterion** across the whole run
@@ -206,7 +236,10 @@ at the first boundary that resolves it, so a resume keeps the clock its first
 round started and a host can tell a deadline stop from any other handback. A
 step already running is bounded by its own budget (`WorkConfig.budgets`) alone:
 unlike `work`, lean opens no cycle clock, so the deadline decides only when a step
-may START and never shortens a child that is already up. Size the step budgets
+may START and never shortens a child that is already up. The `review` step is the
+one step that consults the deadline from *inside* itself, stopping when the time
+left falls inside the handoff allowance plus `REVIEW_DEADLINE_RESERVE_MS` (see
+"The review step's own clock" above). Size the step budgets
 under the caller's kill, and pass the deadline so the run reports before it.
 
 **Who delivers the report.** On `PI_ENSEMBLE_HANDOFF_CHANNEL=host`

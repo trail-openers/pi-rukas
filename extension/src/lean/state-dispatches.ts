@@ -15,7 +15,58 @@
  * comparison the whole per-role study between the two engines rests on.
  */
 
+import { LANES_CAP, MAX_REASON_CHARS } from "./review-bound.ts";
+import type { ReviewBoundRecord } from "./review-bound.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
+
+/// The two waves a bound record may name, and the shape one lane or its reason must
+/// hold: a value that would print as STRUCTURE in the PR comment or the handback is no
+/// disclosure anyone can read — a string, trimmed, printable, within `max`, the shape
+/// `isMeasure` and `isRunId` pin for a row field.
+function isLine(value: unknown, max: number): boolean {
+  return (
+    max > 0 &&
+    typeof value === "string" &&
+    value !== "" &&
+    value === value.trim() &&
+    value.length <= max &&
+    !/\p{Cc}/u.test(value)
+  );
+}
+
+/// Why a `reviewBound` is not a record this run may hold, or `undefined`, and the
+/// same value rebuilt from the parts checked here — one pair, like every row rule
+/// above. The record is the only permanent account that a head reached `ci` with
+/// lanes nobody judged, so all three parts are checked: a record that merely existed
+/// would read as a disclosure while carrying nothing a reader could print.
+
+export function reviewBoundProblem(value: unknown): string | undefined {
+  const rec = value as Record<string, unknown> | null;
+  if (typeof rec !== "object" || rec === null || Array.isArray(rec))
+    return "outcome reviewBound must be an object";
+  if (rec.wave !== "full" && rec.wave !== "fix")
+    return "outcome reviewBound.wave must be full or fix";
+  if (!Array.isArray(rec.unreviewedLanes))
+    return "outcome reviewBound.unreviewedLanes must be an array";
+  if (rec.unreviewedLanes.length > LANES_CAP)
+    return `outcome reviewBound.unreviewedLanes must hold at most ${String(LANES_CAP)} lanes`;
+  for (const [i, lane] of rec.unreviewedLanes.entries())
+    if (!isLine(lane, 80))
+      return `outcome reviewBound.unreviewedLanes[${String(i)}] must be a short printable single line`;
+  return isLine(rec.reason, MAX_REASON_CHARS)
+    ? undefined
+    : `outcome reviewBound.reason must be a single printable line of at most ${String(MAX_REASON_CHARS)} characters`;
+}
+
+export function validatedReviewBound(value: unknown): ReviewBoundRecord | undefined {
+  if (reviewBoundProblem(value) !== undefined) return undefined;
+  const rec = value as Record<string, unknown>;
+  return {
+    wave: rec.wave === "fix" ? "fix" : "full",
+    unreviewedLanes: (rec.unreviewedLanes as string[]).map((lane) => lane.trim()),
+    reason: rec.reason as string,
+  };
+}
 
 const USAGE_COUNTERS = ["input", "output", "cacheRead", "cacheWrite", "turns"] as const;
 

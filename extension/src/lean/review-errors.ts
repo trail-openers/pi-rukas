@@ -16,6 +16,7 @@
  * "the review found nothing wrong" from being reachable by an error path.
  */
 
+import type { ReviewBoundRecord } from "./review-bound.ts";
 import { DISPATCHES_MAX_ROWS } from "./state-outcome.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 
@@ -34,4 +35,7 @@ export class ReviewInfraError extends Error {
     this.dispatches = rows.slice(-DISPATCHES_MAX_ROWS);
   }
   readonly dispatches: DispatchUsageRow[];
+  /// The step's own clock-stop disclosure, set only on a step-bound handback: a pass-1
+  /// stop has no verdict to carry it, so `errorOutcome` reads it off here.
+  reviewBound?: ReviewBoundRecord;
 }

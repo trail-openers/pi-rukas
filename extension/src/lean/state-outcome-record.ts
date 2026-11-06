@@ -10,6 +10,7 @@
  */
 
 import type { HandoffChannel } from "../work-driver-handoff-channel.ts";
+import type { ReviewBoundRecord } from "./review-bound.ts";
 import type { PreexistingTierRecord } from "./state-outcome-maps.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 
@@ -143,6 +144,10 @@ export interface Outcome {
    * `"forge"` — the channel with a forge to post to.
    */
   channel?: HandoffChannel;
+  /// `review` only: the step's OWN wall clock stopped it, not one child's budget, so
+  /// not the budget trio (which belongs to a `budget` kind, and `review` has none).
+
+  reviewBound?: ReviewBoundRecord;
   /**
    * `specify`, `build` and `challenge` only: one row per dispatch the step
    * paid for, including the ones that died or were stopped by their budget.

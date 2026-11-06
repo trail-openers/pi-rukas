@@ -172,8 +172,12 @@ export function lensRoundWith(
   verdict: LensRound["verdict"],
   rows: Finding[],
   advisory: Finding[] = [],
+  over: { lenses?: Partial<LensRunResult>[] } = {},
 ): LensRound {
-  const lenses = LENS_NAMES.map((_, i) => lensRowResult(i));
+  // Timings the caller owns: a case that measures the step's own clock needs children
+  // that report a duration without reaching their OWN per-child bound, and the default
+  // (100..600 ms) is indistinguishable from "nobody ran" on a cost record.
+  const lenses = LENS_NAMES.map((_, i) => lensRowResult(i, over.lenses?.[i] ?? {}));
   return {
     verdict,
     findings: renderFixtureFindings(rows),
@@ -270,8 +274,8 @@ function renderFixtureFindings(rows: Finding[]): string {
  * fixture's own arithmetic while the rows the step actually bills came from
  * `lensRows`, and the two could drift with nothing red.
  */
-export function cleanLensRound(): LensRound {
-  return lensRoundWith("APPROVED", []);
+export function cleanLensRound(over: { lenses?: Partial<LensRunResult>[] } = {}): LensRound {
+  return lensRoundWith("APPROVED", [], [], over);
 }
 
 /**
@@ -470,16 +474,11 @@ export {
 } from "../../src/lean/review.ts";
 export type { DispatchUsageRow, FixRunId } from "../../src/lean/step-budget.ts";
 import type { FixRunId as _FixRunId } from "../../src/lean/step-budget.ts";
-/**
- * A tree-run identity the step will accept.
- *
- * `FixRunId` is a branded string — the brand is what stops an arbitrary string
- * reaching `fixTreeName` and naming a tree nobody claims. A fixture has to build
- * one legitimately rather than `as never` past the check, or the suite drives a
- * value production would refuse and the assertion proves nothing about the real
- * path. The shape asserted here is `FIX_RUN_ID_SHAPE`'s own, so a fixture that
- * drifted from the validator's grammar fails at construction, not in a
- * downstream assertion that would have blamed the step.
+/** A tree-run identity the step will accept. `FixRunId` is branded — the brand is what
+ * stops an arbitrary string reaching `fixTreeName` and naming a tree nobody claims, so a
+ * fixture builds one legitimately rather than `as never` past the check, or the suite
+ * drives a value production would refuse. The shape is `FIX_RUN_ID_SHAPE`'s own, so a
+ * drifted fixture fails at construction, not in a downstream assertion.
  */
 export function fixRunId(millis: string): _FixRunId {
   if (!FIX_RUN_ID_SHAPE.test(millis))

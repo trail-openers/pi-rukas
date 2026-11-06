@@ -19,6 +19,7 @@ import type { DispatchUsage } from "../types.ts";
 import { HANDOFF_CHANNELS, type HandoffChannel } from "../work-driver-handoff-channel.ts";
 import { CRITERION_ID } from "./spec.ts";
 import { normaliseRelPath, pathProblem } from "./specify-path.ts";
+import { reviewBoundProblem, validatedReviewBound } from "./state-dispatches.ts";
 import {
   DISPATCHES_MAX_ROWS,
   dispatchesProblem,
@@ -180,8 +181,7 @@ export const DISPATCH_STATES: readonly LeanState[] = [...BUDGET_STATES, "review"
  * opened (or claiming a head this run never verified) is never driven.
  */
 const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>> = {
-  prUrl: "publish",
-  // Publish's own record of what it pushed; elsewhere it claims a commit that
+  prUrl: "publish", // Publish's own record of what it pushed; elsewhere it claims a commit that
   // step never shipped. Same shape rule as `verifiedHead`, which it is matched
   // to for equality: a prefix or mistyped oid compares unequal forever.
   publishedHead: "publish",
@@ -214,6 +214,9 @@ const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>>
   limit: BUDGET_STATES,
   value: BUDGET_STATES,
   used: BUDGET_STATES,
+  // The review step's own clock. On any other step it is a claim that a review
+  // stopped short of judging its lanes when no review of this run stopped at all.
+  reviewBound: "review",
 };
 
 /** The ceilings a budget verdict may name; the only reader of the field's type. */
@@ -354,6 +357,12 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
     const problem = dispatchesProblem(oc.dispatches);
     if (problem !== undefined) return problem;
   }
+  // The review step's own clock: refused rather than carried, because a record
+  // whose wave or lanes will not load is a disclosure no reader can print.
+  if (oc.reviewBound !== undefined) {
+    const problem = reviewBoundProblem(oc.reviewBound);
+    if (problem !== undefined) return problem;
+  }
   // `prUrl` is the address `handback` prints, so it is refused when it is not
   // https url text rather than carried into a comment as a fake link; the
   // length bound keeps a blob a handler stuffed in here out of the record.
@@ -424,6 +433,7 @@ export function buildOutcome(oc: Record<string, unknown>): Outcome {
     ...(oc.channel === "host" || oc.channel === "forge" ? { channel: oc.channel } : {}),
     ...(typeof oc.report === "string" ? { report: oc.report } : {}),
     ...rowsField(validatedDispatches(oc.dispatches)),
+    ...(oc.reviewBound === undefined ? {} : { reviewBound: validatedReviewBound(oc.reviewBound) }),
     ...(isBudgetLimit(oc.limit) ? { limit: oc.limit } : {}),
     ...(isCount(oc.value) ? { value: oc.value as number } : {}),
     ...(isCount(oc.used) ? { used: oc.used as number } : {}),

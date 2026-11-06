@@ -236,6 +236,12 @@ export interface ReviewDeps {
    * lens call received, and the step has to be drivable without a judge child.
    */
   reviewThreshold: (repoRoot: string, baseSha: string) => Promise<Severity>;
+  /** Post one comment on the run's PR: the disclosure of lanes the step never
+   * judged, which only this step can put in front of a human because `publish`
+   * runs BEFORE `review`, so the PR body cannot carry it. Injected like every
+   * other outside world here, so a case can observe the text that reached the
+   * forge. Absent means no disclosure surface; the step still logs and records. */
+  prComment?: (repoRoot: string, prNumber: number, body: string) => Promise<void>;
   /**
    * The six-lens engine, defaulting to `runLensReview` in the wiring.
    *

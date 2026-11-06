@@ -442,6 +442,18 @@ export function leanIssueResult(run: LeanRun, code: number): IssueResult {
     prState,
   };
   if (cap !== undefined) result.cap = cap;
+  // R3: A review that stopped at its clock still hands back 10 with a ready PR, so
+  // nothing else in this projection says "some lanes were never judged" — and a host
+  // deciding whether to merge reads this document, not stderr. Read off the step log
+  // (the loader validated it, so it cannot disagree with what a resume reads); absent
+  // means "fully reviewed", the normal case.
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const rec = steps[i]?.state === "review" ? steps[i]?.outcome?.reviewBound : undefined;
+    if (rec === undefined) continue;
+    const lanes = rec.unreviewedLanes.join(", ");
+    result.reviewBound = `${rec.reason}; wave ${rec.wave}; unreviewed: ${lanes === "" ? "none named" : lanes}`;
+    break;
+  }
   // `failedStep` is reported ONLY when the cap names it: `capStep()` is the
   // driver's own rule for a step-template cap, and lean's states are not
   // `WorkStep`s, so a guessed step would be a wrong answer rather than a

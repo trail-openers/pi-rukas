@@ -98,14 +98,20 @@
  * table where the truth is a stopped child.
  */
 
-import { neutraliseEvidence } from "../comment-evidence.ts";
-import { isCarried } from "../lens-review-types.ts";
 import type { runLensReview } from "../lens-review.ts";
 import { traceWarn } from "../trace.ts";
 import type { DispatchResult, DispatchSpec } from "../types.ts";
+import { handoffChannel } from "../work-driver-handoff-channel.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
 import { frozenFromLog } from "./build.ts";
 import type { HandlerCtx } from "./engine.ts";
+import {
+  type StepStop,
+  reviewBoundComment,
+  reviewBoundRecord,
+  stepBound,
+  unjudgedLenses,
+} from "./review-bound.ts";
 import { assertReviewEntry } from "./review-entry.ts";
 import { adversarialGate, lensGate } from "./review-gates.ts";
 import { fixRound, reviewedHead } from "./review-git.ts";
@@ -116,21 +122,12 @@ import {
   prNumberFromLog,
   reviewAttemptFromLog,
 } from "./review-log.ts";
-import { cleanPass, disclosureNote } from "./review-pass.ts";
+import { cleanPass } from "./review-pass.ts";
 import { assertFixAdvanced } from "./review-progress.ts";
 import { assertRan, assertRangedOverTheFix } from "./review-round-guards.ts";
-import { budgetStopped } from "./review-step.ts";
+import { budgetStopped, reviewedPass } from "./review-step.ts";
 import { closeFixTrees } from "./review-tree.ts";
-import {
-  CAUSE_NEW_CRITICAL,
-  CAUSE_NOT_ADDRESSED,
-  CAUSE_NO_CHANGE,
-  LENS_DID_NOT_RUN,
-  atOrAboveBar,
-  lensBlocks,
-  renderFinding,
-  renderRows,
-} from "./review-waves.ts";
+import { CAUSE_NO_CHANGE, LENS_DID_NOT_RUN, lensBlocks } from "./review-waves.ts";
 import { specifyBranch } from "./specify-tree.ts";
 // The error lives in a leaf module so the extracted predicates can throw it without
 // importing this handler back. Re-exported so every existing `import { ... }
@@ -158,9 +155,9 @@ export {
   REVIEW_CHILD_BUDGET,
   REVIEW_PASSES,
 } from "./review-waves.ts";
-import type { LensRound, ReviewDeps } from "./review-args.ts";
+import type { LensRound, ReviewDeps, ReviewWave } from "./review-args.ts";
 import { ReviewInfraError } from "./review-errors.ts";
-import type { Outcome } from "./state.ts";
+import type { Outcome, ReviewBoundRecord } from "./state.ts";
 import type { BudgetArms, BudgetFired, DispatchUsageRow } from "./step-budget.ts";
 import { armBudget, budgetFor } from "./step-budget.ts";
 
@@ -229,6 +226,27 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
   // review costs.
   const budget = armBudget(budgetFor(config, "review"));
   if (budget.warning !== undefined) traceWarn(`lean review #${String(issue)}: ${budget.warning}`);
+  // **The step's OWN clock, beside the per-child arms and for a different job** — it
+  // bounds the whole wave, and its spend comes
+  // off the durable review entry so a resumed attempt counts what its crashed self
+  // spent. A stop is `traceWarn`, not the debug-gated `trace`: a bound visible only
+  // under `PI_ENSEMBLE_DEBUG` is visible in exactly the runs that do not need it. A
+  // stop with no pass to carry it rides the throw; on a returned pass it is absent
+  // entirely, which is what keeps every existing case green.
+  const reviewMinutes = budgetFor(config, "review")?.minutes ?? 0;
+  let boundRecord: ReviewBoundRecord | undefined;
+  const clock = (): StepStop => stepBound(ctx, reviewMinutes, ctx.now());
+  /** Record a stop, say it out loud, hand the record back for the caller to route:
+   * pass-1 handback, `fixed` after a push, or a bare disclosure. */
+  const noteStop = (stop: StepStop, wave: ReviewWave, lanes: string[]): ReviewBoundRecord => {
+    boundRecord = reviewBoundRecord(stop, wave, lanes);
+    traceWarn(`lean review #${String(issue)}: ${boundRecord.reason}`);
+    return boundRecord;
+  };
+  const stopped = (rec: ReviewBoundRecord): ReviewInfraError =>
+    Object.assign(new ReviewInfraError(rec.reason, rows), { reviewBound: rec });
+  const withBound = (pass: Outcome): Outcome =>
+    boundRecord === undefined ? pass : { ...pass, reviewBound: boundRecord };
 
   // `rows` accumulates across the WHOLE step, not one pass: the handback must say
   // what every child cost, including the one that failed. Nothing re-derives it
@@ -243,6 +261,13 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
 
   try {
     // ── pass 1: the full review — the adversarial gate, then the six lenses ──
+    // R1: a stop anywhere in pass 1 hands back — nothing reviewed, no verdict to
+    // proceed on and no head to certify — with the unjudged lanes recorded.
+    const handback = (stop: StepStop, lanes: string[]): never => {
+      throw stopped(noteStop(stop, "full", lanes));
+    };
+    const preGate = clock();
+    if (preGate.live) handback(preGate, unjudgedLenses(undefined));
     const gate = await adversarialGate(deps, ctx, {
       base,
       head,
@@ -258,6 +283,8 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
     // child has no route and must not be mistaken for one (see this file's
     // header for why this step throws where the other three route).
     if (gate.stop !== undefined) throw budgetStopped(gate.stop, rows);
+    const preLens = clock();
+    if (preLens.live) handback(preLens, unjudgedLenses(undefined));
     // Findings the adversarial pass passed on WITHOUT blocking travel to the
     // lenses, which are told to judge them; the lens round's `carried` parameter
     // exists for this one value and nothing else. That is the non-blocking reading
@@ -305,8 +332,12 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
       // stopping the run has them carried to the lenses above and disclosed by the
       // review layer, and the step pays nobody to fix what the reviewing layer itself
       // declined to block on.
-      return cleanPass(review, rows, fixedFromLog(ctx.steps));
+      return withBound(cleanPass(review, rows, fixedFromLog(ctx.steps)));
     }
+
+    // The wave has not started, so this is still a pass-1 stop (R1): handback.
+    const preFix = clock();
+    if (preFix.live) handback(preFix, unjudgedLenses(review));
 
     // ── the one fix wave: a single fixer, given every blocking finding ────────
     // Reached only when something blocked: the lens round's CRITICAL verdict, or
@@ -351,6 +382,17 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
     const preFixHead = review.head;
     head = await assertFixAdvanced(review.head, fix.head, rows);
 
+    // R2: the fixer pushed, so the head origin holds is one nobody has re-judged.
+    // A stop here is neither a handback (the fix is already on the branch, and
+    // throwing would strand it with the run handing back over a moved head) nor a
+    // `done` (`ci` would certify a head its gate never read after a fix). It is
+    // `fixed`: back through `verify`, with the unjudged lanes disclosed.
+    const preReReview = clock();
+    if (preReReview.live) {
+      noteStop(preReReview, "fix", unjudgedLenses(review, true));
+      return withBound(cleanPass(review, rows, true));
+    }
+
     // ── pass 2: the re-review, scoped to the fix range and nothing else ───────
     const reReview = await lensGate(deps, ctx, {
       base,
@@ -370,9 +412,9 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
         `the re-review of the fix did not complete (${reReview.verdict}${reReview.note === undefined ? "" : `; disclosure: ${reReview.note}`}) — an incomplete round is not evidence that the fix answered anything`,
         rows,
       );
-    // THE RE-REVIEW MUST PROVE WHICH RANGE IT JUDGED — the stamp's presence and
-    // both of its bounds are preconditions on the round's evidence, so they are the
-    // guards' question, not the step's (see `assertRangedOverTheFix`).
+    // THE RE-REVIEW MUST PROVE WHICH RANGE IT JUDGED — the stamp's presence and both
+    // of its bounds are preconditions on the round's evidence, asked BEFORE the second
+    // gate pass is bought (see `assertRangedOverTheFix`).
     await assertRangedOverTheFix(deps, repoRoot, reReview, { since: preFixHead, head }, rows);
     // The adversarial gate's second pass runs AFTER the delta round it judges:
     // its range is the fix's own `since..head`, the same range the lenses were
@@ -393,91 +435,31 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
       budget,
     });
     if (reGate.stop !== undefined) throw budgetStopped(reGate.stop, rows);
-
-    // THE RE-REVIEW'S DECISION, read off the review layer's own record and
-    // nothing else: its verdict, and its rows. The layer has already decided each
-    // row's fate — `rowFate` refuses to resolve an open row whose cited code is
-    // unchanged, so a row that reaches `reported` carrying `carried` IS the
-    // layer's statement that the fix did not answer it, and everything else the
-    // layer concluded lives in its own `resolved`/advisory sets and residual post.
-    // The step used to keep a per-finding fate table beside that (`classifyFates`,
-    // `findingKey`, an open-row set and title matching against the resolve
-    // notices): a second source of truth for a judgement the layer owns, and each
-    // of its rules — a title-only resolve match, a re-reported row read as
-    // addressed — was a HIGH finding away from the layer's own answer. One source
-    // of truth is the cheaper invariant, so the three readings below are all the
-    // step does: the layer's CRITICAL verdict, a carried row at the project's bar
-    // or above, and the gate's own CRITICAL record.
-    //
-    // The carried scan reads BOTH row sets the layer hands over. `reported` is the
-    // BLOCKING half, and `advisory` holds what `splitAdvisory` moved out of it — so
-    // a carried HIGH whose cited line fell outside the PR's changed lines is not in
-    // `reported` at all, and a check that read only that list would call the wave
-    // cleared on a row the layer still holds open. That is not the step discounting
-    // a finding (the layer's own range rule did) — it is the step letting the
-    // layer's discount decide a question the layer never put to it, since the
-    // advisory tier is excluded from the verdict, the counts and `hasCritical`. A
-    // carried row is the layer saying "not addressed", whatever tier it sits in.
-    const unresolved = [...reReview.reported, ...reReview.advisory].filter(
-      (f) => isCarried(f) && atOrAboveBar(f, threshold),
-    );
-    // The gate's own words join the refusal only when that pass BLOCKED — the
-    // re-gate's CRITICAL record is a demand on the fix, and its wording survives
-    // nowhere else (lean has no PR body). A non-blocking pass is disclosure, and
-    // its prose never renders as a demand.
-    const gateRow =
-      reGate.blocking && reGate.findings.trim() !== ""
-        ? [`[HIGH] ADVERSARIAL ${neutraliseEvidence(reGate.findings).slice(0, 300)}`]
-        : [];
-    if (unresolved.length > 0 || gateRow.length > 0)
-      throw new ReviewInfraError(
-        `${CAUSE_NOT_ADDRESSED}: ${renderRows([...unresolved.map(renderFinding), ...gateRow])} — the fix wave ran, the re-review carried these blocking rows against the fixed head, and a second wave is not what a gate that repeated itself needs. Origin is at the fixer's head: the fix IS pushed. Fix range ${preFixHead.slice(0, 12)}..${head.slice(0, 12)}.`,
-        rows,
-      );
-    if (reReview.verdict === "CRITICAL_ISSUES_FOUND")
-      throw new ReviewInfraError(
-        `${CAUSE_NEW_CRITICAL}: the re-review of the fix range refused the fixed head (${reReview.verdict}) — ${renderRows(reReview.reported.map(renderFinding))}. Origin is at the fixer's head: the fix IS pushed. Fix range ${preFixHead.slice(0, 12)}..${head.slice(0, 12)}.`,
-        rows,
-      );
-    // A CRITICAL the report-only adversarial pass found in the fix range that the
-    // lenses did not name is still a CRITICAL the fix introduced, and the pass's
-    // own record is what says so: only a CRITICAL status blocks (the policy is
-    // that only a new CRITICAL blocks), read by `blockingRecord` off the trailing
-    // record. A non-blocking pass (MINOR_OBSERVATIONS, ISSUES_FOUND, or the
-    // findings it carried onward) is disclosed and never ends the wave.
-    if (reGate.findings !== "" && reGate.blocking)
-      throw new ReviewInfraError(
-        `${CAUSE_NEW_CRITICAL}: the adversarial pass on the fix range reported a CRITICAL — ${reGate.findings.slice(0, 500)}. Origin is at the fixer's head: the fix IS pushed. Fix range ${preFixHead.slice(0, 12)}..${head.slice(0, 12)}.`,
-        rows,
-      );
-    // Nothing carried and no CRITICAL anywhere: the wave cleared. What the
-    // re-review disclosed, and any non-blocking word from the gate, is stated here,
-    // in the reason the operator reads, as well as by the review layer's own
-    // residual post. A non-blocking gate pass has no other consumer in this step:
-    // lean has no PR body to hand it to (see `openFromPass`), so its count and its
-    // text are put on the outcome rather than dropped — and both are neutralised
-    // and bounded by `disclosureNote` on the way there. It is never a reason to buy
-    // another wave.
-    //
-    // The count is the rows this step can say were DISCLOSED, which is not
-    // `reported.length`: a row that was carried is one the layer said is still
-    // open, and the arm above only refuses it at the blocking bar, so a carried
-    // row below the bar does reach here — reported by a round the step is calling
-    // clean, and disclosed by the layer's residual post under its carried heading.
-    // `reported` also excludes the rows `splitAdvisory` moved out of it, and those
-    // are the layer's to account for, in its own post. `atOrAboveBar` is the same
-    // predicate the wave reads, so the two arms cannot disagree about which
-    // rows blocked: what is neither carried nor blocking is disclosed.
-    return cleanPass(
-      reReview,
-      rows,
-      true,
-      disclosureNote(
-        reReview.reported.filter((f) => !isCarried(f) && !atOrAboveBar(f, threshold)).length,
-        reGate.open ? reGate.findings : "",
-      ),
-    );
+    // Both the re-review round and the second adversarial pass have run: the wave is
+    // complete, every lane judged once, so a stop here can only be a disclosure (R7).
+    // What the pass says it disclosed, and each refusal it can still raise, are read
+    // by `reviewedPass` off the two rounds' own records.
+    return withBound(reviewedPass(reReview, reGate, { threshold, preFixHead, head, rows }));
   } finally {
+    // One comment, whatever arm closed, and only on the forge channel: `publish` ran before
+    // this step, so the PR body cannot carry the disclosure; on
+    // `PI_ENSEMBLE_HANDOFF_CHANNEL=host` the host owns every post, as the two reporting
+    // steps do. A failed post never changes the verdict — the record and the warn line
+    // already carry the stop.
+    if (
+      boundRecord !== undefined &&
+      handoffChannel() !== "host" &&
+      pr !== undefined &&
+      deps.prComment !== undefined
+    ) {
+      await deps
+        .prComment(repoRoot, pr, reviewBoundComment(boundRecord))
+        .catch((err: unknown) =>
+          traceWarn(
+            `lean review #${String(issue)}: could not post the unreviewed-lanes disclosure: ${(err as Error)?.message ?? String(err)}`,
+          ),
+        );
+    }
     // Scoped to THIS attempt's trees (issue, attempt, epoch) — see `closeFixTrees`.
     // An unscoped `-fix-` match tore down a concurrent attempt's live tree, which
     // is the case `test-lean-review-tree.ts` (w) now drives.
