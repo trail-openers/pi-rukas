@@ -38,6 +38,16 @@ import {
 import { extractSubmitTests } from "./submit-tests-extract.ts";
 import { SUBMIT_TESTS_REPORTER_PATH } from "./submit-tests-reporter.ts";
 
+/**
+ * The size refusals — the sentences in `test-size.ts` that say a file is too
+ * long, too big, or not a text file. A drop carrying one of these is the one
+ * the child can fix by making the file smaller, so it is the one whose detail
+ * the operator's decline needs; a quota or location drop says a file should not
+ * have been written at all, and stays attributed in the reason alone.
+ */
+const SIZE_REFUSAL =
+  / lines; an acceptance test is at most | bytes; an acceptance test is at most | is not a text file/;
+
 /** Everything one attempt needs, all of it decided by the caller before the first dispatch. */
 export interface SpecifyAttemptArgs {
   deps: SpecifyDeps;
@@ -184,6 +194,8 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
     };
   const toolUses = dispatchedRead.result.toolUses ?? [];
   const refused: string[] = [];
+  /** The attributed drops whose reason is a size refusal — see `SIZE_REFUSAL`. */
+  const sizeRefused: string[] = [];
   const pipeline = await runTestPipeline(
     {
       exec: deps.exec,
@@ -223,6 +235,9 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
           ...(testLocation === undefined ? {} : { testLocation }),
         });
         refused.push(...verdict.dropped.map(droppedLabel));
+        sizeRefused.push(
+          ...verdict.dropped.filter((d) => SIZE_REFUSAL.test(d.reason)).map(droppedLabel),
+        );
         return verdict;
       },
       prepare: () =>
@@ -260,12 +275,20 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
   // refusal this step returned before the split for the same cause — and, as
   // there, the reason LEADS with the rules rather than opening on the drop
   // notes, so the two fields a caller might render say the same thing first.
-  const rules = wanted.map((c) => `criterion ${c.id} has no red test`);
+  // The size drops follow as their own rules: a decline that only ever says
+  // "criterion ACn has no red test" leaves the operator to work out that the
+  // child wrote 154 lines against a cap of 150, and the per-file count is the
+  // one fact that makes the two attempts' overshoot legible after the retry.
+  const generic = wanted.map((c) => `criterion ${c.id} has no red test`);
+  const rules = [...generic, ...sizeRefused];
   return {
     outcome: {
       kind: "no-red-test",
       failedRules: rules,
-      reason: [rules.join("; "), pipeline.reason].filter((s) => s !== "").join("; "),
+      // `reason` opens with the GENERIC rules only, then the pipeline's own
+      // drop notes: `rules` is what `failedRules` carries, and a reason that
+      // repeated every size drop the notes already spell would say it twice.
+      reason: [generic.join("; "), pipeline.reason].filter((s) => s !== "").join("; "),
       dispatches: rows,
     },
     refused,

@@ -44,6 +44,34 @@ const REFUSAL_LINES_MAX = 20;
 const REFUSAL_LINE_MAX = 300;
 
 /**
+ * Why a dropped file is a SIZE refusal, as opposed to a misplaced, duplicated
+ * or already-green one: only these sentences describe a file the child can fix
+ * by making it smaller. The line sentence is the one the lean runs that die at
+ * specify meet; the byte and NUL sentences are its siblings. An `lstat` count is
+ * deliberately NOT matched — `fileProblem` states a link's hard-link count, which
+ * no amount of splitting fixes, and a remedy that fires there teaches the child
+ * that the rules are arbitrary.
+ */
+const SIZE_REFUSAL =
+  / lines; an acceptance test is at most | bytes; an acceptance test is at most | is not a text file/;
+
+/**
+ * The one remedy the retry states that the bullets do not: HOW to fix an
+ * over-cap test. A bullet says "154 lines, cap 150" and stops there, and the
+ * contract above pushes the other way ("Prefer one focused file per
+ * criterion"), so a child that obeyed it had no legal way down and overshot
+ * again. `MAX_TEST_FILES_PER_CRITERION` already allows a split, so the remedy
+ * names both numbers and says plainly which two sentences it overrides for
+ * this attempt. It sits OUTSIDE the per-reason clip, like the closing line
+ * below, because a remedy inside a bullet is destroyed by the same 300
+ * characters that hid the reason it explains.
+ */
+function splitInstruction(reasons: string[]): string {
+  if (!reasons.some((reason) => SIZE_REFUSAL.test(reason))) return "";
+  return `**This attempt: split each over-long test into at most ${MAX_TEST_FILES_PER_CRITERION} files of at most ${MAX_TEST_LINES} lines each.** For this attempt that supersedes "Write ONE test file for each criterion" and "Prefer one focused file per criterion": both files stay directly in the test folder the contract above names, each prints its own basename, and each is a file you create.`;
+}
+
+/**
  * The section a retried adversary reads after the normal prompt: each drop the
  * boundary made on its last submission, attributed (`<criterionId> <path>: <reason>`,
  * see `droppedLabel`), one per line. The child never saw those reasons, so an
@@ -65,6 +93,8 @@ export function refusalFeedback(reasons: string[]): string {
     "",
     ...shown,
     ...(more > 0 ? [`(+${more} more)`] : []),
+    "",
+    splitInstruction(reasons),
     "",
     "Fix exactly these problems and call submit_tests again for every criterion. The limits in the contract above still apply.",
   ].join("\n");
