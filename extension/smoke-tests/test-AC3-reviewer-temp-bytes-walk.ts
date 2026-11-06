@@ -13,6 +13,7 @@ import {
   childFreeTemp,
   childWideDir,
   duBytes,
+  duEntries,
   harnessModeDir,
   makeForeignOwnedDir,
   setMode,
@@ -27,11 +28,17 @@ import {
  * one owns the walk itself.
  *
  * Each rule gets its OWN root, and each total is compared against an independent
- * enumeration of that root (`du -As`, whose 1024-byte blocks are scaled against
- * this walk's 512-byte ones). A fixture that asked only for a byte number the test
- * itself chose could be satisfied by a walk that measured something else; agreeing
- * with an external enumeration is what makes "what is counted" the assertion. One
- * root per rule also keeps the failure modes apart: a shared root let two opposite
+ * enumeration of that root (`duBytes`, i.e. `du -sk`, whose 1024-byte blocks are
+ * scaled against this walk's 512-byte ones). A fixture that asked only for a byte
+ * number the test itself chose could be satisfied by a walk that measured something
+ * else; agreeing with an external enumeration is what makes "what is counted" the
+ * assertion. The comparison is a one-4 KiB-block-per-entry band rather than an
+ * equality — see {@link duWithinBlockTolerance} — and the band is what pins the
+ * witness: it is far tighter than the fixture's own numbers (the entries here
+ * allocate whole megabytes, and a byte of the wrong kind moves the total by one of
+ * them), so a walk that measured apparent size, counted a directory, or skipped an
+ * entry a peer did not is out of it while a rounding difference is in it. One root
+ * per rule also keeps the failure modes apart: a shared root let two opposite
  * mistakes cancel exactly, which is how a name-only harness skip could stay green.
  */
 
@@ -76,6 +83,26 @@ function walkRoot(tag: string): string {
 }
 
 /**
+ * What `du` rounds each entry up to: a 1 KiB block reported in KiB, i.e. 4 KiB of
+ * allocation on a 4 KiB-block filesystem. The unit the witness-to-walk band is
+ * scaled by, and the size a byte of the wrong kind would have to be missed at.
+ */
+const DU_BLOCK_BYTES = 4 * 1024;
+
+/**
+ * Whether `du`'s allocated total for a tree agrees with the walk's `st_blocks`
+ * sum for the same tree. `du -sk` rounds every entry up to a 1 KiB block and
+ * charges directories the walk does not stat as bytes, so the two agree only to
+ * one 4 KiB block per entry the enumeration walked — and never below the walk's
+ * own total, because rounding is up. `entries` is what the tolerance is scaled
+ * by: it counts the fixture's own entries, not a guess, so the band cannot be
+ * widened by a fixture that added entries it did not count.
+ */
+function duWithinBlockTolerance(duTotal: number, walkBytes: number, entries: number): boolean {
+  return duTotal >= walkBytes && duTotal - walkBytes < (entries + 1) * DU_BLOCK_BYTES;
+}
+
+/**
  * A walk that was expected to COMPLETE and total. The arms that must NOT be
  * silent have their own assertions; where a fixture is measuring which bytes are
  * IN, a `{ code }` result is a broken fixture rather than a red assertion, and
@@ -110,9 +137,21 @@ async function walkBytes(root: string): Promise<{ bytes: number; bound: string |
   writeRealBytes(path.join(harnessLink, "tree.bin"), LINK_BYTES);
   symlinkSync(harnessLink, path.join(root, "pi-rukas-review-linked"));
   const linksOnly = await walkBytes(root);
+  // The two link targets' `du` totals minus what they REALLY allocate, less the
+  // rounding band those two trees can account for. A walk that followed a link
+  // would print the whole LINK_BYTES of each target, so the residual it would have
+  // to hide inside is what this prints — and it must stay under one block.
+  const linkResidual =
+    duBytes(outside) -
+    LINK_BYTES -
+    duEntries(outside) * DU_BLOCK_BYTES +
+    (duBytes(harnessLink) - LINK_BYTES - duEntries(harnessLink) * DU_BLOCK_BYTES);
   assert(
-    linksOnly.bytes === 0 && duBytes(outside) >= LINK_BYTES && duBytes(harnessLink) >= LINK_BYTES,
-    `temp-watch: the two links alone count nothing, though the trees they name really hold ${duBytes(outside) + duBytes(harnessLink)} — a walk that followed either would print that (${JSON.stringify(linksOnly)})`,
+    linksOnly.bytes === 0 &&
+      duBytes(outside) >= LINK_BYTES &&
+      duBytes(harnessLink) >= LINK_BYTES &&
+      linkResidual < DU_BLOCK_BYTES,
+    `temp-watch: the two links alone count nothing, though the trees they name really hold ${duBytes(outside) + duBytes(harnessLink)} — a walk that followed either would have to hide that inside ${linkResidual} (${JSON.stringify(linksOnly)})`,
   );
   // Every harness-named entry below is built `harnessModeDir`-style: own uid and
   // mode 0700, the only shape the skip may accept. The child's own dirs come from
@@ -125,10 +164,20 @@ async function walkBytes(root: string): Promise<{ bytes: number; bound: string |
   writeRealBytes(path.join(root, "pi-rukas-child-named", "deeper", "leak.bin"), LINK_BYTES);
   writeRealBytes(path.join(root, "nested", "deeper", "child.bin"), LINK_BYTES);
   const walked = await walkBytes(root);
+  // Entries the two figures disagree about: what `du` charges outside the one
+  // harness tree it excludes, plus what it charges INSIDE that tree — the tree
+  // whose own total is subtracted, so its entries are the other half of the band.
+  // The +2 is the two link roots `du` enters by name but `duEntries(root)` never
+  // sees (a link is not an entry it walks).
+  const tol = duEntries(root) + duEntries(harness) + 2;
   assert(
     "bytes" in walked &&
-      duBytes(root, "childlink", "pi-rukas-review-linked") - duBytes(harness) === walked.bytes,
-    "temp-watch: and that total is what an independent enumeration of the same tree reports (walk minus the one harness tree)",
+      duWithinBlockTolerance(
+        duBytes(root, "childlink", "pi-rukas-review-linked") - duBytes(harness),
+        walked.bytes,
+        tol,
+      ),
+    `temp-watch: and that total is what an independent enumeration of the same tree reports (walk minus the one harness tree, within ${tol} blocks — du ${duBytes(root, "childlink", "pi-rukas-review-linked") - duBytes(harness)} vs walk ${JSON.stringify(walked)})`,
   );
   assert(
     tempBytesLines(
@@ -155,8 +204,8 @@ async function walkBytes(root: string): Promise<{ bytes: number; bound: string |
   assert(
     "bytes" in measuredWide &&
       measuredWide.bytes === LEAK_BYTES &&
-      measuredWide.bytes === duBytes(root),
-    `temp-watch: a harness-PREFIXED dir at the mode a child's own mkdir gets is a leak, not a harness tree, and matches du (${JSON.stringify([measuredWide, duBytes(root)])})`,
+      duWithinBlockTolerance(duBytes(root), measuredWide.bytes, duEntries(root)),
+    `temp-watch: a harness-PREFIXED dir at the mode a child's own mkdir gets is a leak, not a harness tree, and matches du (${JSON.stringify([measuredWide, duBytes(root), duEntries(root)])})`,
   );
   const ours = harnessModeDir(path.join(root, "pi-rukas-spawn-slots-1006"));
   writeRealBytes(path.join(ours, "tree.bin"), BULK_BYTES);
@@ -164,8 +213,12 @@ async function walkBytes(root: string): Promise<{ bytes: number; bound: string |
   assert(
     "bytes" in skipped &&
       skipped.bytes === LEAK_BYTES &&
-      duBytes(root) - duBytes(ours) === skipped.bytes,
-    `temp-watch: our own uid + mode 0700 is the ONLY thing a harness name buys — du says the root holds ${BULK_BYTES / LINK_BYTES}x the link tree and the walk excludes exactly that one tree (${JSON.stringify([skipped, duBytes(root)])})`,
+      duWithinBlockTolerance(
+        duBytes(root) - duBytes(ours),
+        skipped.bytes,
+        duEntries(root) + duEntries(ours),
+      ),
+    `temp-watch: our own uid + mode 0700 is the ONLY thing a harness name buys — du says the root holds ${BULK_BYTES / LINK_BYTES}x the link tree and the walk excludes exactly that one tree (${JSON.stringify([skipped, duBytes(root), duBytes(ours)])})`,
   );
   setMode(ours, 0o755); // same name, same owner, one bit wider
   const widened = await tempAllocatedBytes(root);

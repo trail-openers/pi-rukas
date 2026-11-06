@@ -10,7 +10,14 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { chmodSync, lstatSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { trackedTempDir } from "./git-test-env.ts";
 
@@ -51,11 +58,15 @@ export function harnessModeDir(dir: string): string {
 }
 
 /**
- * Allocated bytes of a tree, measured OUTSIDE this module: `du` counts 1024-byte
- * blocks, so its figure is scaled to the 512-byte blocks the walk sums. A walk
- * assertion that compared only against a byte number the test itself chose could be
- * satisfied by a walk that measured something else; agreeing with an external
- * enumeration of the same tree is what makes "what is counted" the assertion.
+ * Allocated bytes of a tree, measured OUTSIDE this module. `-s` (summarise) and
+ * `-k` (1 KiB blocks) are the portable spelling of allocated size: `-A` means
+ * `--apparent-size` in uutils `du` and is not an option in GNU `du` at all, so a
+ * witness built on it is red on a runner with GNU coreutils — and apparent size is
+ * the wrong measure anyway, since the walk sums `st_blocks * 512` and `-k` reports
+ * allocated KiB, the same quantity scaled. A walk assertion that compared only
+ * against a byte number the test itself chose could be satisfied by a walk that
+ * measured something else; agreeing with an external enumeration of the same tree
+ * is what makes "what is counted" the assertion.
  *
  * `exclude` matches NAMES, not paths, so a name listed here is skipped wherever it
  * appears — which is why a caller must not name a fixture after another fixture's
@@ -64,9 +75,32 @@ export function harnessModeDir(dir: string): string {
  * tree against its target's own `duBytes`, not the link's.
  */
 export function duBytes(target: string, ...exclude: string[]): number {
-  const args = ["-As", ...exclude.map((p) => `--exclude=${p}`), target];
+  const args = ["-sk", ...exclude.map((p) => `--exclude=${p}`), target];
   const out = execFileSync("du", args).toString().trim().split(/\s+/)[0];
   return Number(out) * 1024;
+}
+
+/**
+ * How many filesystem entries an external enumeration of `dir` reports, counting
+ * files and directories alike and never crossing a symlink. `duBytes` is not an
+ * exact witness for {@link tempAllocatedBytes}: `du` reports whole 1 KiB blocks and
+ * charges every entry it walks, while the walk sums `st_blocks * 512` over regular
+ * files only. So a comparison of the two is bounded per entry rather than exact —
+ * one 4 KiB block per entry — and this is what an assertion counts to apply that
+ * bound where its own fixtures put the entries.
+ */
+export function duEntries(dir: string): number {
+  let count = 0;
+  const queue: string[] = [dir];
+  while (queue.length > 0) {
+    const here = queue.shift() as string;
+    for (const entry of readdirSync(here, { withFileTypes: true })) {
+      if (entry.isSymbolicLink()) continue;
+      count++;
+      if (entry.isDirectory()) queue.push(path.join(here, entry.name));
+    }
+  }
+  return count;
 }
 
 /**
