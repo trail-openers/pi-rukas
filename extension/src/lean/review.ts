@@ -98,10 +98,10 @@
  * table where the truth is a stopped child.
  */
 
-import { neutraliseEvidence } from "../comment-evidence.ts";
 import type { runLensReview } from "../lens-review.ts";
 import { traceWarn } from "../trace.ts";
 import type { DispatchResult, DispatchSpec } from "../types.ts";
+import { handoffChannel } from "../work-driver-handoff-channel.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
 import { frozenFromLog } from "./build.ts";
 import type { HandlerCtx } from "./engine.ts";
@@ -441,11 +441,17 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
     // by `reviewedPass` off the two rounds' own records.
     return withBound(reviewedPass(reReview, reGate, { threshold, preFixHead, head, rows }));
   } finally {
-    // One comment, whatever arm closed: `publish` ran before this step, so the PR
-    // body cannot carry the disclosure and this is the only surface a person
-    // reading the PR sees. A failed post never changes the verdict — the record
-    // and the warn line already carry the stop.
-    if (boundRecord !== undefined && pr !== undefined && deps.prComment !== undefined) {
+    // One comment, whatever arm closed, and only on the forge channel: `publish` ran before
+    // this step, so the PR body cannot carry the disclosure; on
+    // `PI_ENSEMBLE_HANDOFF_CHANNEL=host` the host owns every post, as the two reporting
+    // steps do. A failed post never changes the verdict — the record and the warn line
+    // already carry the stop.
+    if (
+      boundRecord !== undefined &&
+      handoffChannel() !== "host" &&
+      pr !== undefined &&
+      deps.prComment !== undefined
+    ) {
       await deps
         .prComment(repoRoot, pr, reviewBoundComment(boundRecord))
         .catch((err: unknown) =>

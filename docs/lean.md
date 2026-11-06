@@ -188,10 +188,12 @@ before the first six-lens round completes **hands back** (nothing has been
 reviewed); a stop after a complete, unblocked first round **proceeds** to `ci`;
 a stop after the fixer pushed routes **`fixed`**, back through `verify`, because
 origin holds a head the gate has not re-read. The step records
-`outcome.reviewBound` — `{ wave: "full" | "fix", unreviewedLanes, reason }` — and
-posts **one PR comment** listing the lanes it never judged (a lane list, plus
-`adversarial re-review` where that pass never ran): `publish` runs *before*
-`review`, so the PR body cannot carry it. `reviewDone` is set whatever the answer,
+`outcome.reviewBound` — `{ wave: "full" | "fix", unreviewedLanes, reason }` — and, on the
+forge channel, posts **one PR comment** listing the lanes it never judged (a lane list,
+plus `adversarial re-review` where that pass never ran): `publish` runs *before*
+`review`, so the PR body cannot carry it. On `PI_ENSEMBLE_HANDOFF_CHANNEL=host` nothing is
+posted — the host owns every post, as it does for the two reporting steps — and the record
+and the warn line carry the stop. `reviewDone` is set whatever the answer,
 so a head whose only unjudged lanes are re-review lanes proceeds — disclosed —
 since every lane was judged once in the first pass. A stop whose per-child cause
 is already on the record keeps that cause line; the step-total stop is disclosed

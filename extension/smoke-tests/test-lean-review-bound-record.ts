@@ -22,15 +22,27 @@
 
 import { defaultConfig } from "../src/lean/config.ts";
 import { runLean } from "../src/lean/engine.ts";
+import { HEAD_SHA } from "./lib/lens-fix-budget-share-fixture.ts";
 import { handoffAllowanceMs } from "../src/lean/deadline.ts";
-import { REVIEW_DEADLINE_RESERVE_MS } from "../src/lean/review-bound.ts";
+import {
+  MAX_REASON_CHARS,
+  REVIEW_DEADLINE_RESERVE_MS,
+  reviewBoundRecord,
+  unjudgedLenses,
+} from "../src/lean/review-bound.ts";
+import type { StepStop } from "../src/lean/review-bound.ts";
+import type { LensRunResult } from "../src/lens-review-types.ts";
+import { LENSES_PER_PASS } from "../src/lean/review-waves.ts";import { loadRun, saveRun } from "../src/lean/state-store.ts";
 import { ReviewInfraError } from "../src/lean/review.ts";
 import { leanIssueResult } from "../src/headless/work-lean-result.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
+import { tempDir } from "./lib/lean-engine-fixtures.ts";
+import { createRun } from "../src/lean/state.ts";
 import {
   BRANCH,
   cleanupRoots,
   fixerThatCommits,
+  lensRowResult,
   makeRepo,
   runStep,
   setup,
@@ -41,12 +53,23 @@ import {
   captureWarns,
   cfg,
   ctxWithPr,
+  reReviewRound,
   slowDeps,
   waveDeps,
 } from "./lib/lean-review-bound-fixtures.ts";
 import type { Posts } from "./lib/lean-review-bound-fixtures.ts";
 
 const { assert, failures } = makeAssert();
+/** The roster's six names, so a case builds a round that ran FIVE of them and says
+ * which one the duplicate or the dead row stands in for. */
+const LENSES_NAMES = [
+  "SECURITY",
+  "PERFORMANCE",
+  "SIMPLICITY",
+  "ARCHITECTURE",
+  "ERROR_HANDLING",
+  "TYPE_SAFETY",
+];
 const SHIPPED = defaultConfig().budgets.review?.minutes ?? 30;
 // The surfaces one stop must reach — the durable record, the ungated log, the host's
 // document (R3, AC5) and the count-bounded PR disclosure (R7). Each is ONE conjunction:
@@ -171,6 +194,113 @@ const pastItsBudget = () => runNow() + 61 * MIN;
       capsOff.gates === 1 &&
       inert.some((w) => /inert/.test(w)),
     `(e2) with PI_ENSEMBLE_DISPATCH_CAPS=0 the step bound stops NOTHING past its minutes and inside the reserve, and the run carries the same inert disclosure the child lever prints (${threw?.message ?? `kind ${String(outcome?.kind)}, ${String(capsOff.gates)} gate, ${JSON.stringify(inert)}`})`,
+  );
+}
+
+cleanupRoots();
+
+// ── (f) R3: the writer CLIPS the reason, so the loader can never refuse a record the
+// step wrote. The two bounds are written in different files (`MAX_REASON_CHARS` here,
+// `isLine` in `state-dispatches.ts`), and a step whose deadline sentence outgrew the
+// validator would lose its WHOLE record on the next resume — the one permanent account
+// that a head reached `ci` with lanes nobody judged.
+{
+  const long: StepStop = {
+    live: true,
+    inert: false,
+    limit: "cycle-deadline",
+    usedMinutes: 61,
+    value: 23,
+    reason: `review STEP stopped: ${"deadline ".repeat(80)}`,
+  };
+  const rec = reviewBoundRecord(long, "fix", ["adversarial re-review", "SECURITY"]);
+  const { dir, cleanup } = tempDir();
+  const run = createRun({
+    issue: 7,
+    version: "test",
+    models: {},
+    baseSha: HEAD_SHA,
+    branch: BRANCH,
+  });
+  run.steps.push({ key: "7:review:0", state: "review", startedAt: 0, outcome: { kind: "fixed" } });
+  run.steps[0]!.outcome!.reviewBound = rec;
+  saveRun(dir, run);
+  const loaded = loadRun(dir, 7);
+  assert(
+    rec.reason.length === MAX_REASON_CHARS &&
+      loaded?.steps[0]?.outcome?.reviewBound?.reason === rec.reason &&
+      loaded?.steps[0]?.outcome?.reviewBound?.unreviewedLanes.join(",") ===
+        rec.unreviewedLanes.join(","),
+    `(f) a reason longer than the record's bound is clipped AT THE WRITER and the durable record round-trips the loader intact (${String(rec.reason.length)} chars, loaded ${JSON.stringify(loaded?.steps[0]?.outcome?.reviewBound?.reason?.slice(0, 40))})`,
+  );
+  cleanup();
+}
+
+// ── (g) AC3: lanes are counted by DISTINCT name, and a row that never judged is not a
+// lane that ran. Two rows for one lens, or a cap-killed row, must not let a row count
+// stand in for six judged lanes and name no missing lane at all.
+{
+  const judged = (over: Partial<LensRunResult>[]) =>
+    reReviewRound({ wave: "fix", head: HEAD_SHA }, over);
+  const five = (skip: number): LensRunResult[] =>
+    Array.from({ length: LENSES_NAMES.length - 1 }, (_unused, i) =>
+      lensRowResult(i, { lens: LENSES_NAMES[i >= skip ? i + 1 : i] }),
+    );
+  const dup = judged([...five(1), lensRowResult(1, { lens: "SECURITY" })]);
+  const killed = judged([
+    ...five(1),
+    lensRowResult(1, { lens: "PERFORMANCE", killCause: "token-budget" }),
+  ]);
+  const dead = judged([
+    ...five(1),
+    lensRowResult(5, { lens: "TYPE_SAFETY", parseError: "no VERDICT block" }),
+  ]);
+  const full = judged(LENSES_NAMES.map((lens, i) => lensRowResult(i, { lens })));
+  assert(
+    unjudgedLenses(full).length === 0 &&
+      unjudgedLenses(dup, true).join(",") === "adversarial re-review,1 of 6 lenses unjudged" &&
+      unjudgedLenses(killed).join(",") === "1 of 6 lenses unjudged" &&
+      unjudgedLenses(dead).join(",") === "1 of 6 lenses unjudged" &&
+      unjudgedLenses(undefined).join(",") === "6 of 6 lenses unjudged",
+    `(g) a round whose rows repeat one lens name, or carry a cap-killed or unparsable row, is counted SHORT of the roster — a row count would have called all six judged (${JSON.stringify(unjudgedLenses(dup, true))}, ${JSON.stringify(unjudgedLenses(killed))}, ${JSON.stringify(unjudgedLenses(dead))})`,
+  );
+}
+
+// ── (h) R7 on the host channel: the step posts NOTHING to the forge, and still records
+// and logs the stop. `PI_ENSEMBLE_HANDOFF_CHANNEL=host` makes the host the only
+// deliverer (the two reporting steps already refuse their posts the same way), and the
+// host reads `issues[].reviewBound`, not a comment it never posted.
+{
+  const { repoRoot, baseSha } = makeRepo();
+  await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 8;\n" });
+  const posts: Posts = [];
+  const warns: string[] = [];
+  let outcome: { kind?: string; reviewBound?: unknown } | undefined;
+  const saved = process.env.PI_ENSEMBLE_HANDOFF_CHANNEL;
+  process.env.PI_ENSEMBLE_HANDOFF_CHANNEL = "host";
+  try {
+    const times = [0, 0, 0, 0, 24 * MIN, 24 * MIN];
+    let tick = 0;
+    const r = await captureWarns("STEP stopped", warns, async () => {
+      outcome = (await runStep(
+        ctxWithPr(repoRoot, baseSha, BRANCH, {
+          startedAt: 0,
+          now: () => times[Math.min(tick++, times.length - 1)] ?? 0,
+        }),
+        waveDeps(fixerThatCommits("host-bound"), 20, posts),
+      )).outcome;
+    });
+    void r;
+  } finally {
+    if (saved === undefined) delete process.env.PI_ENSEMBLE_HANDOFF_CHANNEL;
+    else process.env.PI_ENSEMBLE_HANDOFF_CHANNEL = saved;
+  }
+  assert(
+    outcome?.kind === "fixed" &&
+      posts.length === 0 &&
+      warns.length > 0 &&
+      outcome?.reviewBound !== undefined,
+    `(h) on the host channel the step posts NO disclosure comment (the host owns every post) and still hands back the same record and the same ungated warn line (${posts.length} post(s), ${warns.length} warn line(s), ${JSON.stringify(outcome?.reviewBound)})`,
   );
 }
 

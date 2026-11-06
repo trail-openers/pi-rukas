@@ -11,7 +11,9 @@
 
 import { type HandlerCtx, type LeanHandlers } from "../../src/lean/engine.ts";
 import { defaultConfig } from "../../src/lean/config.ts";
-import type { ReviewDeps } from "../../src/lean/review-args.ts";
+import type { LensRound, ReviewDeps, ReviewWave } from "../../src/lean/review-args.ts";
+import type { LensRunResult } from "../../src/lens-review-types.ts";
+import { aggregateLensUsage } from "../../src/lens-review-usage.ts";
 import type { DispatchResult, DispatchSpec } from "../../src/types.ts";
 import {
   FIXER_ROLE,
@@ -21,6 +23,7 @@ import {
   depsWith,
   lensRoundFor,
   lensRoundWith,
+  lensRowResult,
   parsedRound,
   result,
 } from "./lean-review-fixtures.ts";
@@ -165,6 +168,30 @@ export function waveDeps(
       posts.push({ pr, body });
     },
   });
+}
+
+/** The re-review of a wave: an ISSUES_FOUND round stamped with the range the step
+ * named, whose six lens rows come from the caller — so a case drives WHICH lanes judged
+ * (duplicate names, a cap-killed row) without touching the roster fold. The rows are
+ * the layer's OWN record shape, built by `lensRowResult`, so a row cannot arrive here
+ * with `ok` defaulted away by a partial: a lane that did not judge is said so by the
+ * field the fold reads, not by an absent one. */
+export function reReviewRound(
+  args: { wave: ReviewWave; since?: string; head: string },
+  lenses: readonly Partial<LensRunResult>[],
+): LensRound {
+  // `lensRowResult`'s OWN defaults fill each partial, so a row cannot arrive with `ok`
+  // defaulted away: a lane that did not judge is said so by the field the fold reads.
+  const rows: LensRunResult[] = lenses.map((over, i) => lensRowResult(i, over));
+  return {
+    verdict: "ISSUES_FOUND",
+    findings: "",
+    reported: [],
+    advisory: [],
+    lenses: rows,
+    usage: aggregateLensUsage(rows),
+    deltaReview: { since: args.since ?? args.head, head: args.head },
+  };
 }
 
 /** Capture what `traceWarn` printed while `body` ran — the ungated log a stop must

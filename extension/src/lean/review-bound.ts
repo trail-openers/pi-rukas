@@ -87,15 +87,18 @@ function reserveMinutes(): number {
   return Math.round(reserveMs() / MINUTE_MS);
 }
 
-/// The lanes a stop must disclose: the roster the step buys minus the lens children
-/// that ran, named off the round's own records (a round that named nothing reports the
-/// count alone, so a disclosure never claims lanes nobody can read), plus the
-/// re-review lane when a pushed fix went unjudged.
+/// The lanes a stop must disclose: the roster the step buys MINUS the lens children that
+/// JUDGED, counted by DISTINCT name — a cap-killed or unparsable row judged nothing, so two
+/// rows for one lens cannot stand in for six judged lanes as a row count would have. The
+/// records name WHICH rows ran, never which of the roster was asked, so the gap is counted.
+/// The re-review lane is added when a pushed fix went unjudged.
 export function unjudgedLenses(round: LensRound | undefined, reReview = false): string[] {
-  const named = (round?.lenses ?? []).map((lens) => lens.lens).filter((n) => n !== "");
-  const missing = LENSES_PER_PASS - named.length;
-  const lanes =
-    missing <= 0 ? [] : named.length === 0 ? [`${String(missing)} lenses unrun`] : named;
+  const rows = (round?.lenses ?? []).filter(
+    (lens) => lens.killCause === undefined && lens.parseError === undefined,
+  );
+  const judged = new Set(rows.map((lens) => lens.lens.trim()).filter((name) => name !== ""));
+  const gap = LENSES_PER_PASS - judged.size;
+  const lanes = gap <= 0 ? [] : [`${String(gap)} of ${String(LENSES_PER_PASS)} lenses unjudged`];
   return reReview ? ["adversarial re-review", ...lanes] : lanes;
 }
 
@@ -129,11 +132,10 @@ export function reviewBoundRecord(
     .map((lane) => neutraliseEvidence(lane))
     .filter((l) => l !== "")
     .slice(0, LANES_CAP);
-  return {
-    wave,
-    unreviewedLanes: named,
-    reason: stop.reason ?? `review STEP stopped at ${String(stop.value)}`,
-  };
+  // Clipped HERE, not in the loader: the shape the step wrote must never be one it refuses.
+  const cap = MAX_REASON_CHARS;
+  const reason = (stop.reason ?? `review STEP stopped at ${String(stop.value)}`).slice(0, cap);
+  return { wave, unreviewedLanes: named, reason };
 }
 
 /// The comment that discloses an unreviewed head on the PR: `publish` ran before this
