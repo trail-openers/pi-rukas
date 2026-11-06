@@ -8,6 +8,22 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.55](https://github.com/trail-openers/pi-rukas/compare/v0.14.54...v0.14.55) (2026-11-06)
+
+
+### Features
+
+* **lean:** grade a baseline-red tier green when every failure also fails on base ([#2054](https://github.com/trail-openers/pi-rukas/issues/2054)) ([f89ca8b](https://github.com/trail-openers/pi-rukas/commit/f89ca8b3fa8de09f434d09aeb02b6a308ee13806))
+
+
+### Bug Fixes
+
+* **lean:** tell the specify retry to split an over-cap test ([#2062](https://github.com/trail-openers/pi-rukas/issues/2062)) ([e833ab6](https://github.com/trail-openers/pi-rukas/commit/e833ab6f1faa8f4e1735f75636b7462fac9868fb))
+* **plan:** omit the pi-spec block instead of cutting an over-long criterion ([#2048](https://github.com/trail-openers/pi-rukas/issues/2048)) ([8f130e6](https://github.com/trail-openers/pi-rukas/commit/8f130e6491facb9f77e4c87c3d8b5e49aaf7c5ef)), closes [#2045](https://github.com/trail-openers/pi-rukas/issues/2045)
+* **review:** report temp-dir bytes a reviewer child leaves behind ([#2060](https://github.com/trail-openers/pi-rukas/issues/2060)) ([fcc98a8](https://github.com/trail-openers/pi-rukas/commit/fcc98a8cccbd02deaa377128696ae85484ac3040))
+* **review:** retire a carried finding whose cited code a delta commit rewrote ([#2053](https://github.com/trail-openers/pi-rukas/issues/2053)) ([94ac7dd](https://github.com/trail-openers/pi-rukas/commit/94ac7dd0a2cc36570a3503fa971d97585bb061ba)), closes [#2027](https://github.com/trail-openers/pi-rukas/issues/2027)
+* **review:** treat a temp entry that vanishes mid-walk as gone ([#2063](https://github.com/trail-openers/pi-rukas/issues/2063)) ([cdd50f5](https://github.com/trail-openers/pi-rukas/commit/cdd50f5ebd8b174a472f643964c0d5828e1cd2e5))
+
 ## [0.14.54](https://github.com/trail-openers/pi-rukas/compare/v0.14.53...v0.14.54) (2026-11-05)
 
 
