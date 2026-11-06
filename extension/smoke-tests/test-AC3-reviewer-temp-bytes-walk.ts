@@ -1,7 +1,8 @@
 // Must stay first: points the role prompts at a test-owned dir before src/roles.ts
 // resolves them at module load (#1579, same helper as test-AC4).
 import "./lib/cancel-prompts.ts";
-import { rmSync, symlinkSync } from "node:fs";
+import { existsSync, lstatSync, rmSync, symlinkSync } from "node:fs";
+import { lstat } from "node:fs/promises";
 import path from "node:path";
 import {
   HARNESS_TEMP_PREFIXES,
@@ -243,6 +244,49 @@ async function walkBytes(root: string): Promise<{ bytes: number; bound: string |
       "– foreign-uid skip case skipped: this process cannot create another uid's directory",
     );
   }
+}
+
+{
+  // R1, a shared root that a peer empties: an entry removed between the readdir and
+  // its lstat is normal here, so the walk must report a total rather than throw out
+  // of itself, out of the guard's `finally`, and so out of a reviewer dispatch. The
+  // removal is made from inside the stat seam — the one call the walk makes per entry
+  // — so the entry is seen by the listing and gone by the lstat deterministically.
+  // `isHarnessEntry` cannot prove such an entry is a harness tree, so it measures it;
+  // measuring a file that is already gone is 0.
+  const root = walkRoot("vanish");
+  const gone = path.join(root, "pi-rukas-vanish.bin");
+  writeRealBytes(gone, LEAK_BYTES);
+  let removed = false;
+  let threw: string | undefined;
+  let vanished: Awaited<ReturnType<typeof tempAllocatedBytes>> | undefined;
+  const statAfterPeerRemoves = async (target: string) => {
+    if (!removed && target === gone) {
+      rmSync(gone);
+      removed = true;
+    }
+    try {
+      return await lstat(target);
+    } catch (err) {
+      threw = (err as NodeJS.ErrnoException).code;
+      throw err;
+    }
+  };
+  try {
+    vanished = await tempAllocatedBytes(root, undefined, undefined, statAfterPeerRemoves);
+  } catch (err) {
+    threw = `walk threw ${(err as Error).message}`;
+  }
+  assert(
+    removed &&
+      threw === "ENOENT" &&
+      !existsSync(gone) &&
+      vanished !== undefined &&
+      "bytes" in vanished &&
+      vanished.bytes === 0 &&
+      vanished.bound === undefined,
+    `temp-watch: a harness-prefixed entry that vanishes between readdir and lstat is measured as gone, not thrown (${JSON.stringify([threw, vanished])})`,
+  );
 }
 
 console.log(`\nexit ${exit}`);
