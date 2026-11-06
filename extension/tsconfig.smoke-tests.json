@@ -168,6 +168,8 @@
     "smoke-tests/test-lean-specify-tamper.ts",
     "smoke-tests/lib/lean-specify-fixture.ts",
     "smoke-tests/test-lean-build.ts",
+    "smoke-tests/test-lean-build-budget-retry.ts",
+    "smoke-tests/test-lean-resume-build-budget.ts",
     "smoke-tests/lib/lean-build-fixture.ts",
     "smoke-tests/test-lean-publish.ts",
     "smoke-tests/lib/lean-publish-fixture.ts",
