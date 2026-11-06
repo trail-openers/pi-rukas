@@ -22,38 +22,47 @@
 
 import { defaultConfig } from "../src/lean/config.ts";
 import { runLean } from "../src/lean/engine.ts";
-import type { HandlerCtx, LeanHandlers } from "../src/lean/engine.ts";
 import { handoffAllowanceMs } from "../src/lean/deadline.ts";
 import { REVIEW_DEADLINE_RESERVE_MS } from "../src/lean/review-bound.ts";
 import { ReviewInfraError } from "../src/lean/review.ts";
 import { leanIssueResult } from "../src/headless/work-lean-result.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
-import { BRANCH, cleanupRoots, depsWith, fixerThatCommits, makeRepo, runStep, setup } from "./lib/lean-review-fixtures.ts";
-import { MIN, captureWarns, cfg, clocked, slowDeps, waveDeps } from "./lib/lean-review-bound-fixtures.ts";
+import {
+  BRANCH,
+  cleanupRoots,
+  fixerThatCommits,
+  makeRepo,
+  runStep,
+  setup,
+} from "./lib/lean-review-fixtures.ts";
+import {
+  MIN,
+  boundHandlers,
+  captureWarns,
+  cfg,
+  ctxWithPr,
+  slowDeps,
+  waveDeps,
+} from "./lib/lean-review-bound-fixtures.ts";
 import type { Posts } from "./lib/lean-review-bound-fixtures.ts";
 
 const { assert, failures } = makeAssert();
 const SHIPPED = defaultConfig().budgets.review?.minutes ?? 30;
-/** The four surfaces one pass-1 stop must reach — the durable record, the ungated
- * log, and the host's document (R3, AC5) — plus the count bound on the PR disclosure
- * (R7). Each is ONE conjunction: a surface that stopped being written is a red case,
- * not a red sub-assertion somebody reads as colour. */
-const onRecord = (rec: { kind?: string; reviewBound?: unknown } | undefined): boolean =>
-  rec?.kind === "error" && typeof rec.reviewBound === "object";
-const onLog = (warns: string[]): boolean =>
-  warns.length > 0 && warns.every((w) => /STEP stopped/.test(w));
-const onDocument = (projected: Record<string, unknown>): boolean =>
-  typeof projected.reviewBound === "string" &&
-  /STEP stopped/.test(projected.reviewBound) &&
-  /wave/.test(projected.reviewBound);
+// The surfaces one stop must reach — the durable record, the ungated log, the host's
+// document (R3, AC5) and the count-bounded PR disclosure (R7). Each is ONE conjunction:
+// a surface that stopped being written is a red case, not a sub-assertion read as colour.
+const onRecord = (r: { kind?: string; reviewBound?: unknown } | undefined): boolean =>
+  r?.kind === "error" && typeof r.reviewBound === "object";
+const onLog = (w: string[]): boolean => w.length > 0 && w.every((x) => /STEP stopped/.test(x));
+const onDocument = (p: Record<string, unknown>): boolean =>
+  typeof p.reviewBound === "string" && /STEP stopped/.test(p.reviewBound) && /wave/.test(p.reviewBound);
 const disclosed = (posts: Posts): boolean =>
   posts.length === 1 &&
   posts[0]?.pr === 42 &&
   /adversarial re-review/.test(posts[0]?.body ?? "") &&
   (posts[0]?.body.match(/^-/gm) ?? []).length <= 8;
-/** A review driven past its budget while the RUN's clock stands still: the field
- * shape that starved publish, ci and land, and the between-steps exemption the step
- * bound exists to close. */
+// A review past its budget while the RUN's clock stands still: the field shape that
+// starved publish, ci and land, and the between-steps exemption the bound closes.
 const runNow = () => 60 * MIN;
 const pastItsBudget = () => runNow() + 61 * MIN;
 
@@ -65,7 +74,7 @@ const pastItsBudget = () => runNow() + 61 * MIN;
   const now = 1_700_000_000_000;
   const bought = slowDeps();
   const { threw } = await runStep(
-    clocked(repoRoot, baseSha, BRANCH, {
+    ctxWithPr(repoRoot, baseSha, BRANCH, {
       startedAt: now - 2 * MIN,
       now: () => now,
       deadlineMs: now + handoffAllowanceMs() + REVIEW_DEADLINE_RESERVE_MS - MIN,
@@ -92,7 +101,7 @@ const pastItsBudget = () => runNow() + 61 * MIN;
   const times = [0, 0, 0, 0, 24 * MIN, 24 * MIN];
   let tick = 0;
   const { outcome, threw } = await runStep(
-    clocked(repoRoot, baseSha, BRANCH, {
+    ctxWithPr(repoRoot, baseSha, BRANCH, {
       startedAt: 0,
       now: () => times[Math.min(tick++, times.length - 1)] ?? 0,
       prUrl: "https://github.com/o/r/pull/42",
@@ -115,33 +124,13 @@ const pastItsBudget = () => runNow() + 61 * MIN;
   const { repoRoot, baseSha } = makeRepo();
   await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 4;\n" });
   let stepRecord: { kind?: string; reviewBound?: unknown } | undefined;
-  const pass = async (kind: string) => ({ kind });
-  const handlers: LeanHandlers = {
-    ready: () => pass("ok"),
-    specify: () => pass("ok"),
-    build: () => pass("ok"),
-    challenge: () => pass("none"),
-    verify: () => pass("green"),
-    publish: () => pass("ok"),
-    review: async (ctx: HandlerCtx) => {
-      const { reviewOutcome } = await import("../src/lean/review.ts");
-      return reviewOutcome(
-        { ...ctx, now: pastItsBudget },
-        depsWith({ loadConfig: async () => cfg(SHIPPED) }),
-      );
-    },
-    ci: () => pass("green"),
-    land: () => pass("merged"),
-    handback: () => pass("done"),
-    decline: () => pass("done"),
-  };
   const warns: string[] = [];
   const projected: Record<string, unknown> = {};
   await captureWarns("STEP stopped", warns, async () => {
     const run = await runLean({
       repoRoot,
       issue: 7,
-      handlers,
+      handlers: boundHandlers(pastItsBudget, SHIPPED),
       now: runNow,
       seed: { baseSha, branch: BRANCH },
     });
@@ -167,7 +156,7 @@ const pastItsBudget = () => runNow() + 61 * MIN;
     process.env.PI_ENSEMBLE_DISPATCH_CAPS = "0";
     try {
       const r = await runStep(
-        clocked(repoRoot, baseSha, BRANCH, { startedAt: 0, now: () => 10 * MIN, deadlineMs: 11 * MIN }),
+        ctxWithPr(repoRoot, baseSha, BRANCH, { startedAt: 0, now: () => 10 * MIN, deadlineMs: 11 * MIN }),
         { ...capsOff, loadConfig: async () => cfg(SHIPPED) },
       );
       outcome = r.outcome;

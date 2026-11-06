@@ -167,13 +167,10 @@ export interface IssueResult {
    * `--capabilities`' `features.workLeanResultSchema` first.
    */
   prState?: "ready" | "draft" | "none";
-  /**
-   * #2066 — the lean `review` step stopped at its OWN time bound and did not
-   * judge every lane, as one bounded line: which lever closed, which wave it
-   * reached and which lanes went unreviewed. `work` writes none of it — the
-   * classic driver bounds its review loop elsewhere — and a lean run with no
-   * bound stop omits it, so its absence means "fully reviewed", never "unknown".
-   */
+  /** The lean `review` step stopped at its OWN time bound and judged no further lane:
+   * one line for which lever closed, which wave it reached and which lanes went
+   * unreviewed. `work` writes none of it; a run with no bound stop omits it, so absence
+   * means "fully reviewed", never "unknown". */
   reviewBound?: string;
   /** Present whenever a state existed to sum. */
   usage?: ResultUsage;

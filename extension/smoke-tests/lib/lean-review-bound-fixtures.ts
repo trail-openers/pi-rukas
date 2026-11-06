@@ -1,17 +1,15 @@
 /**
  * #2066 — the clock rig and the stubs both review-step suites drive.
  *
- * The step's own wall clock reads two things no other review fixture sets: the
- * pending step's `startedAt` and the run's `deadlineMs`. `clocked` supplies them
- * over `ctxWithClock`/`ctxWithPr`, and every child it builds reports CHILD_MS —
- * far inside its OWN per-child bound (lens 30 min, gate 30, fixer 20) while the
- * case's clock pushes the STEP past its ceiling. That gap is the defect's
- * signature: no child here is ever over its own bound, so a case that stopped on
- * one would be measuring a child and not the step.
+ * The step's own wall clock reads the pending step's `startedAt` and the run's
+ * `deadlineMs`, which no other review fixture sets: `ctxWithClock`/`ctxWithPr` supply
+ * them, and every child here reports CHILD_MS — far inside its OWN per-child bound (lens
+ * 30 min, gate 30, fixer 20) while the case's clock pushes the STEP past its ceiling.
+ * That gap is the defect's signature: no child is ever over its own bound, so a case
+ * that stopped on one would be measuring a child and not the step.
  */
 
-import type { ReviewDeps } from "../../src/lean/review-args.ts";
-import type { HandlerCtx } from "../../src/lean/engine.ts";
+import { type HandlerCtx, type LeanHandlers } from "../../src/lean/engine.ts";
 import { defaultConfig } from "../../src/lean/config.ts";
 import type { ReviewDeps } from "../../src/lean/review-args.ts";
 import type { DispatchResult, DispatchSpec } from "../../src/types.ts";
@@ -19,14 +17,79 @@ import {
   FIXER_ROLE,
   blockingFinding,
   cleanLensRound,
-  ctxWithClock,
-  ctxWithPr,
+  ctxFor,
   depsWith,
   lensRoundFor,
   lensRoundWith,
   parsedRound,
   result,
 } from "./lean-review-fixtures.ts";
+
+/** The harness with the step's clock under the case's control. The step's own wall clock
+ * reads two things no other review fixture sets — the pending step's `startedAt` (the
+ * engine writes it ahead of the handler; a hand-built context has none) and the run's
+ * `deadlineMs` — and needs `now` to advance: every other review fixture freezes it at 1,
+ * which is exactly why no case could ever make the step clock fire.
+ */
+export function ctxWithClock(
+  repoRoot: string,
+  baseSha: string,
+  branch: string,
+  opts: { startedAt?: number; now?: () => number; deadlineMs?: number } = {},
+): HandlerCtx {
+  const ctx = ctxFor(repoRoot, baseSha, branch);
+  if (opts.now !== undefined) ctx.now = opts.now;
+  if (opts.deadlineMs !== undefined) ctx.run = { ...ctx.run, deadlineMs: opts.deadlineMs };
+  // The engine's write-ahead entry, so the step's clock measures from a start the
+  // record holds rather than from "nothing has been spent".
+  ctx.run.steps.push({ key: ctx.stepKey, state: "review", startedAt: opts.startedAt ?? 0 });
+  return ctx;
+}
+
+/** The same context with the `publish` step's PR record, for the disclosure cases: a
+ * case that asserts the step's disclosure post must put that record on the log the step
+ * reads, since `prNumberFromLog` DERIVES the number from the URL, never takes it directly.
+ */
+export function ctxWithPr(
+  repoRoot: string,
+  baseSha: string,
+  branch: string,
+  opts: { startedAt?: number; now?: () => number; deadlineMs?: number; prUrl?: string } = {},
+): HandlerCtx {
+  const ctx = ctxWithClock(repoRoot, baseSha, branch, opts);
+  ctx.run.steps.push({
+    key: "7:publish:0",
+    state: "publish",
+    startedAt: 0,
+    outcome: { kind: "ok", prUrl: opts.prUrl ?? "https://github.com/o/r/pull/42" },
+  });
+  return ctx;
+}
+
+/** The whole run with only `review` real, driven past its budget: the engine's error
+ * path is where a pass-1 stop's record has to land, so a case that asserts the durable
+ * record, the log line and the host's document all at once needs a cycle that reaches
+ * `review` and nothing else real. */
+export function boundHandlers(now: () => number, minutes: number): LeanHandlers {
+  const pass = async (kind: string) => ({ kind });
+  const ok = (kind: string) => () => pass(kind);
+  return {
+    ready: ok("ok"),
+    specify: ok("ok"),
+    build: ok("ok"),
+    challenge: ok("none"),
+    verify: ok("green"),
+    publish: ok("ok"),
+    review: async (ctx: HandlerCtx) => {
+      const { reviewOutcome } = await import("../../src/lean/review.ts");
+      return reviewOutcome({ ...ctx, now }, depsWith({ loadConfig: async () => cfg(minutes) }));
+    },
+    ci: ok("green"),
+    land: ok("merged"),
+    handback: ok("done"),
+    decline: ok("done"),
+  };
+}
 
 export const MIN = 60_000;
 /** Every child stays well inside its own per-child bound (lens 30, gate 30, fixer 20 min). */
@@ -43,7 +106,8 @@ export function cfg(minutes: number) {
   return cfg;
 }
 
-/** A clean roster: one approved gate pass and one six-lens round, both counted. */
+/** A clean roster: one approved gate pass and one six-lens round, both counted — so a
+ * case can say the step bought NOBODY, and not infer it from an absent verdict. */
 export function slowDeps(over: Partial<ReviewDeps> = {}): ReviewDeps & { gates: number; lenses: number } {
   const counts = { gates: 0, lenses: 0 };
   const deps = depsWith({
@@ -65,7 +129,7 @@ export function slowDeps(over: Partial<ReviewDeps> = {}): ReviewDeps & { gates: 
   // The counters are READ AT ASSERTION TIME, never snapshotted by a spread: a case
   // that builds its deps with `{ ...slowDeps(), loadConfig }` would otherwise read
   // the zeros the copy carried when the stubs had not yet run.
-  return Object.defineProperties(deps, {
+  return Object.defineProperties(deps as ReviewDeps & { gates: number; lenses: number }, {
     gates: { get: () => counts.gates },
     lenses: { get: () => counts.lenses },
   });
@@ -101,18 +165,6 @@ export function waveDeps(
       posts.push({ pr, body });
     },
   });
-}
-
-/** The context with the clock the case controls — `startedAt` on the log, `now` advancing. */
-export function clocked(
-  repoRoot: string,
-  baseSha: string,
-  branch: string,
-  opts: { startedAt?: number; now?: () => number; deadlineMs?: number; prUrl?: string } = {},
-): HandlerCtx {
-  return opts.prUrl === undefined
-    ? ctxWithClock(repoRoot, baseSha, branch, opts)
-    : ctxWithPr(repoRoot, baseSha, branch, opts);
 }
 
 /** Capture what `traceWarn` printed while `body` ran — the ungated log a stop must

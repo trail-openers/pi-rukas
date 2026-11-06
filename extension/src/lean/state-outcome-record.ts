@@ -10,20 +10,9 @@
  */
 
 import type { HandoffChannel } from "../work-driver-handoff-channel.ts";
+import type { ReviewBoundRecord } from "./review-bound.ts";
 import type { PreexistingTierRecord } from "./state-outcome-maps.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
-
-/// What the `review` step records when its OWN clock stopped it: the wave it
-/// reached, the lanes that never got a verdict, and the stop's own sentence. Lens
-/// names come from a skill roster — data from outside this process — so each is
-/// neutralised and count-capped on the way in. Absent means the step finished
-/// inside its bound, the normal case.
-
-export interface ReviewBoundRecord {
-  wave: "full" | "fix";
-  unreviewedLanes: string[];
-  reason: string;
-}
 
 /**
  * What a step's handler returned. The engine routes on `kind` and reads the
@@ -155,9 +144,8 @@ export interface Outcome {
    * `"forge"` — the channel with a forge to post to.
    */
   channel?: HandoffChannel;
-  /// `review` only: the step's OWN wall clock stopped it, not one child's budget —
-  /// a distinct clock, so not the budget trio (that belongs to a `budget` kind and
-  /// `review` has none). Shape and bounds: `ReviewBoundRecord`.
+  /// `review` only: the step's OWN wall clock stopped it, not one child's budget, so
+  /// not the budget trio (which belongs to a `budget` kind, and `review` has none).
 
   reviewBound?: ReviewBoundRecord;
   /**

@@ -174,10 +174,9 @@ export function lensRoundWith(
   advisory: Finding[] = [],
   over: { lenses?: Partial<LensRunResult>[] } = {},
 ): LensRound {
-  // Timings the caller owns: a case that measures the step's own wall clock needs
-  // children that report a duration without ever reaching their OWN per-child
-  // bound, and the default (100 ms .. 600 ms) is indistinguishable from "nobody
-  // ran" on a cost record.
+  // Timings the caller owns: a case that measures the step's own clock needs children
+  // that report a duration without reaching their OWN per-child bound, and the default
+  // (100..600 ms) is indistinguishable from "nobody ran" on a cost record.
   const lenses = LENS_NAMES.map((_, i) => lensRowResult(i, over.lenses?.[i] ?? {}));
   return {
     verdict,
@@ -329,56 +328,6 @@ export function ctxFor(repoRoot: string, baseSha: string, branch: string): Handl
   return { repoRoot, issue: 7, run, steps: run.steps, stepKey: "7:review:0", now: () => 1 };
 }
 
-/**
- * The same harness, with the step's clock under the case's control.
- *
- * The review step's own wall clock reads two things no existing fixture sets: the
- * pending step's `startedAt` (the engine writes it ahead of the handler; a
- * hand-built context has no such entry) and the run's `deadlineMs`. A case that
- * drives the STEP bound therefore needs a context that carries them, and needs
- * `now` to advance — every other review fixture freezes it at 1, which is exactly
- * why no case could ever make the step clock fire.
- */
-export function ctxWithClock(
-  repoRoot: string,
-  baseSha: string,
-  branch: string,
-  opts: { startedAt?: number; now?: () => number; deadlineMs?: number } = {},
-): HandlerCtx {
-  const ctx = ctxFor(repoRoot, baseSha, branch);
-  if (opts.now !== undefined) ctx.now = opts.now;
-  if (opts.deadlineMs !== undefined) ctx.run = { ...ctx.run, deadlineMs: opts.deadlineMs };
-  const started = opts.startedAt ?? 0;
-  // The engine's write-ahead entry, so the step's clock measures from a start the
-  // record holds rather than from "nothing has been spent".
-  ctx.run.steps.push({ key: ctx.stepKey, state: "review", startedAt: started });
-  ctx.stepStartedAt = started;
-  return ctx;
-}
-
-/**
- * The same context with the `publish` step's PR record, for the disclosure cases.
- *
- * The step posts its unreviewed-lanes comment to the PR `publish` recorded, so a
- * case that asserts the post must put that record on the log the step reads — the
- * number is DERIVED from the URL by `prNumberFromLog`, never handed over directly.
- */
-export function ctxWithPr(
-  repoRoot: string,
-  baseSha: string,
-  branch: string,
-  opts: { startedAt?: number; now?: () => number; deadlineMs?: number; prUrl?: string } = {},
-): HandlerCtx {
-  const ctx = ctxWithClock(repoRoot, baseSha, branch, opts);
-  ctx.run.steps.push({
-    key: "7:publish:0",
-    state: "publish",
-    startedAt: 0,
-    outcome: { kind: "ok", prUrl: opts.prUrl ?? "https://github.com/o/r/pull/42" },
-  });
-  return ctx;
-}
-
 /** Publish `branch` on origin and in the run's worktree, at a commit on `base`. */
 export async function setup(opts: {
   repoRoot: string;
@@ -525,16 +474,11 @@ export {
 } from "../../src/lean/review.ts";
 export type { DispatchUsageRow, FixRunId } from "../../src/lean/step-budget.ts";
 import type { FixRunId as _FixRunId } from "../../src/lean/step-budget.ts";
-/**
- * A tree-run identity the step will accept.
- *
- * `FixRunId` is a branded string — the brand is what stops an arbitrary string
- * reaching `fixTreeName` and naming a tree nobody claims. A fixture has to build
- * one legitimately rather than `as never` past the check, or the suite drives a
- * value production would refuse and the assertion proves nothing about the real
- * path. The shape asserted here is `FIX_RUN_ID_SHAPE`'s own, so a fixture that
- * drifted from the validator's grammar fails at construction, not in a
- * downstream assertion that would have blamed the step.
+/** A tree-run identity the step will accept. `FixRunId` is branded — the brand is what
+ * stops an arbitrary string reaching `fixTreeName` and naming a tree nobody claims, so a
+ * fixture builds one legitimately rather than `as never` past the check, or the suite
+ * drives a value production would refuse. The shape is `FIX_RUN_ID_SHAPE`'s own, so a
+ * drifted fixture fails at construction, not in a downstream assertion.
  */
 export function fixRunId(millis: string): _FixRunId {
   if (!FIX_RUN_ID_SHAPE.test(millis))

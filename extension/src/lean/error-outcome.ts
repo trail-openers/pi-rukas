@@ -57,15 +57,14 @@ export function errorOutcome(state: LeanState, err: unknown): ErrorOutcome {
   const rows = recordsDispatches(state)
     ? validatedDispatches((err as { dispatches?: unknown })?.dispatches).slice(-DISPATCHES_MAX_ROWS)
     : [];
-  // A pass-1 step-clock stop has no verdict to carry the disclosure, so the throw
-  // holds it and the record is the only place it can be read. `OWNER_OF_FIELD`
-  // gives it to `review` alone, so no other step's throw can put one on the run.
-  const bound =
-    state === "review"
-      ? validatedReviewBound((err as { reviewBound?: unknown })?.reviewBound)
-      : undefined;
+  // A pass-1 step-clock stop has no verdict to carry its disclosure, so the throw
+  // holds it and the record is the only place it can be read; `OWNER_OF_FIELD` gives
+  // the field to `review` alone, so no other step's throw can put one on the run.
   const out: ErrorOutcome = { kind: "error", message };
   if (rows.length > 0) out.dispatches = rows;
-  if (bound !== undefined) out.reviewBound = bound;
+  if (state === "review") {
+    const bound = validatedReviewBound((err as { reviewBound?: unknown })?.reviewBound);
+    if (bound !== undefined) out.reviewBound = bound;
+  }
   return out;
 }

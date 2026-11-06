@@ -2,18 +2,16 @@
 /**
  * #2066 — the `review` STEP as a whole respects its minutes budget (AC1, AC4, R9).
  *
- * `budgets.review.minutes` was armed on every CHILD and bounded none of them as a
- * step: the step buys its adversarial passes, six lens children and a fixer
- * serially, each under its own per-child bound, so a field run spent 69 of its
- * ~89 minutes here and handed a clean, mergeable PR back at the deadline with
- * publish, ci and land never started.
+ * `budgets.review.minutes` armed every CHILD and bounded none of them as a step: the
+ * step buys its passes, six lens children and a fixer serially, each under its own
+ * per-child bound, so a field run spent 69 of its ~89 minutes here and handed a clean,
+ * mergeable PR back at the deadline with publish, ci and land never started.
  *
- * R9 is what makes the red line mean something rather than a fixture artefact, so
- * (a) and (b) are a pair on ONE clock and ONE set of stubs: at a time past the
- * ceiling the bound stops the step buying anyone, and with the bound off (the
- * operator's own `budgets.review.minutes: 0`) the same stubs buy the FULL roster.
- * Every child that does run reports a duration below its OWN bound, which is the
- * defect's signature — see `lib/lean-review-bound-fixtures.ts`.
+ * R9 is what makes the red line mean something rather than a fixture artefact, so (a)
+ * and (b) are a pair on ONE clock and ONE set of stubs: past the ceiling the bound
+ * stops the step buying anyone, and with the bound off (`budgets.review.minutes: 0`) the
+ * same stubs buy the FULL roster. Every child that runs reports a duration below its OWN
+ * bound — the defect's signature; the rigs come from `lib/lean-review-bound-fixtures.ts`.
  *
  * Real temp repos, stubbed models, no child spawned, no token spent.
  */
@@ -38,21 +36,18 @@ import {
   runStep,
   setup,
 } from "./lib/lean-review-fixtures.ts";
-import { CHILD_MS, MIN, cfg, clocked, slowDeps } from "./lib/lean-review-bound-fixtures.ts";
+import { CHILD_MS, MIN, cfg, ctxWithPr, slowDeps } from "./lib/lean-review-bound-fixtures.ts";
 
 const { assert, failures } = makeAssert();
 const SHIPPED = defaultConfig().budgets.review?.minutes ?? 30;
-/** Children at this shape: gate 1 row + six lens rows, or those plus the fixer. */
-const ROSTER_ROWS = 1 + 6;
-
-// ── (a) AC1: at a clock past its budget the step pays for NO child. Red at base,
-// where the whole roster was bought at this very clock.
+// (a) AC1: at a clock past its budget the step pays for NO child — red at base, where
+// the whole roster was bought at this very clock.
 {
   const { repoRoot, baseSha } = makeRepo();
   await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 1;\n" });
   const bounded = slowDeps({});
   const { threw } = await runStep(
-    clocked(repoRoot, baseSha, BRANCH, { startedAt: 0, now: () => SHIPPED * MIN }),
+    ctxWithPr(repoRoot, baseSha, BRANCH, { startedAt: 0, now: () => SHIPPED * MIN }),
     // `loadConfig` is passed separately: merging it into the deps object AFTER the
     // stubs were built is what silently un-armed them — the step read the shipped
     // budget, but the case read counters off a copy nothing called.
@@ -83,7 +78,7 @@ const ROSTER_ROWS = 1 + 6;
   await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 1;\n" });
   const unbounded = slowDeps({});
   const { outcome, threw } = await runStep(
-    clocked(repoRoot, baseSha, BRANCH, { startedAt: 0, now: () => SHIPPED * MIN }),
+    ctxWithPr(repoRoot, baseSha, BRANCH, { startedAt: 0, now: () => SHIPPED * MIN }),
     { ...unbounded, loadConfig: async () => cfg(0) },
   );
   assert(
@@ -91,7 +86,7 @@ const ROSTER_ROWS = 1 + 6;
       outcome?.kind === "done" &&
       unbounded.gates === 1 &&
       unbounded.lenses === 6 &&
-      (outcome?.dispatches?.length ?? 0) === ROSTER_ROWS,
+      (outcome?.dispatches?.length ?? 0) === 7, // 1 gate row + 6 lens rows
     `(b) with the bound disabled the same slow reviewers run the step to a clean pass and buy it IN FULL — one adversarial pass, six lens children, no re-review for a branch with no fix wave, all seven on the cost record (got kind ${String(outcome?.kind)}, ${String(unbounded.gates)} gate, ${String(unbounded.lenses)} lens, ${String(outcome?.dispatches?.length)} rows; threw ${threw?.message ?? "nothing"})`,
   );
   assert(
@@ -108,7 +103,7 @@ const ROSTER_ROWS = 1 + 6;
   const { repoRoot, baseSha } = makeRepo();
   await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 2;\n" });
   const commit = fixerThatCommits("unbound-wave");
-  const inside = () => clocked(repoRoot, baseSha, BRANCH, { startedAt: 0, now: () => 2 * MIN });
+  const inside = () => ctxWithPr(repoRoot, baseSha, BRANCH, { startedAt: 0, now: () => 2 * MIN });
   const clean = await runStep(inside(), { ...slowDeps(), dispatch: async (spec) => commit(spec) });
   assert(
     clean.threw === undefined &&

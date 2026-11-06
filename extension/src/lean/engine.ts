@@ -65,12 +65,6 @@ export interface HandlerCtx {
   steps: Step[];
   /** The step being executed, already written ahead with its startedAt. */
   stepKey: string;
-  /// The same key's `startedAt` from the log — `stepKey` is a string and a handler
-  /// must not re-parse it. A step's own wall clock reads this, not a fresh `now()`:
-  /// the engine writes the entry ahead of the handler and reuses the SAME entry on a
-  /// crash-mid-step, so it is the one record of when this attempt began. Absent on a
-  /// hand-built context, where the honest spend is nothing.
-  stepStartedAt?: number;
   /** The injected clock. The only way a handler sees time. */
   now: () => number;
 }
@@ -298,7 +292,6 @@ async function settle(
       run,
       steps: run.steps,
       stepKey: key,
-      stepStartedAt: run.steps.find((s) => s.key === key)?.startedAt,
       now,
     });
   } catch (err) {

@@ -19,7 +19,7 @@ import { traceWarn } from "../trace.ts";
 import type { DispatchResult, DispatchUsage } from "../types.ts";
 import type { Budget, WorkConfig } from "./config.ts";
 import { DISPATCHES_MAX_ROWS } from "./state-dispatches.ts";
-import type { LeanState, Outcome, Step } from "./state.ts";
+import type { LeanState, Outcome } from "./state.ts";
 
 /** Which ceiling was crossed, with what it was and what the child used. */
 export interface BudgetFired {
@@ -390,22 +390,6 @@ export function lensRows(lenses: LensRunResult[]): DispatchUsageRow[] {
     ok: lens.ok && lens.blocked !== true && lens.killCause === undefined,
     usage: lens.usage ?? zeroDispatchUsage(),
   }));
-}
-
-/**
- * The run's one line about a review that reached its verdict with lanes nobody
- * judged, read off the step log rather than a closure: the loader validated it, so
- * the projection cannot disagree with the record a resume reads. Undefined when no
- * review of this run stopped at its bound — "fully reviewed", the normal case.
- */
-export function reviewBoundLine(steps: Step[]): string | undefined {
-  for (let i = steps.length - 1; i >= 0; i--) {
-    const rec = steps[i]?.state === "review" ? steps[i]?.outcome?.reviewBound : undefined;
-    if (rec === undefined) continue;
-    const lanes = rec.unreviewedLanes.join(", ");
-    return `${rec.reason}; wave ${rec.wave}; unreviewed: ${lanes === "" ? "none named" : lanes}`;
-  }
-  return undefined;
 }
 
 /**

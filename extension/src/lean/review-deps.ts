@@ -226,11 +226,8 @@ export function reviewDeps(headless: boolean): ReviewDeps {
         ...leanChildOpts(headless),
       }),
     fetchIssueBody,
-    // The bound stop's disclosure, on the PR `publish` opened. Through the same
-    // forge adapter every other lean post goes by, so the body meets the
-    // public-text check that every other comment meets — a review step that
-    // could put un-neutralised child prose on a public PR would be a disclosure
-    // that leaks more than it discloses.
+    // The bound stop's disclosure, through the same forge adapter every other lean
+    // post uses, so the body meets the public-text check every other comment meets.
     prComment: async (repoRoot, prNumber, body) => {
       const forge = await forgeFor(repoRoot);
       if (forge === undefined)

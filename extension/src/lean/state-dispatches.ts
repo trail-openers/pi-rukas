@@ -16,16 +16,13 @@
  */
 
 import { LANES_CAP, MAX_REASON_CHARS } from "./review-bound.ts";
-import type { ReviewBoundRecord } from "./state.ts";
+import type { ReviewBoundRecord } from "./review-bound.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 
-/** The two waves a bound record may say the step reached — `review-args`'s own. */
-const BOUND_WAVES = ["full", "fix"] as const;
-
-/// A lane or a reason that would print as STRUCTURE in the PR comment or the
-/// handback is not a disclosure anyone can read: a string, trimmed, printable, and
-/// within `max` characters — the same shape `isMeasure` and `isRunId` pin for the
-/// row fields, so each part of a field is one predicate this module owns.
+/// The two waves a bound record may name, and the shape one lane or its reason must
+/// hold: a value that would print as STRUCTURE in the PR comment or the handback is no
+/// disclosure anyone can read — a string, trimmed, printable, within `max`, the shape
+/// `isMeasure` and `isRunId` pin for a row field.
 function isLine(value: unknown, max: number): boolean {
   return (
     max > 0 &&
@@ -37,18 +34,18 @@ function isLine(value: unknown, max: number): boolean {
   );
 }
 
-/**
- * Why a `reviewBound` is not a record this run may hold, or `undefined`. The record
- * is the only permanent account that a head reached `ci` with lanes nobody judged, so
- * all three parts are checked: a record that merely existed would read as a disclosure
- * while carrying nothing a reader could print.
- */
+/// Why a `reviewBound` is not a record this run may hold, or `undefined`, and the
+/// same value rebuilt from the parts checked here — one pair, like every row rule
+/// above. The record is the only permanent account that a head reached `ci` with
+/// lanes nobody judged, so all three parts are checked: a record that merely existed
+/// would read as a disclosure while carrying nothing a reader could print.
+
 export function reviewBoundProblem(value: unknown): string | undefined {
   const rec = value as Record<string, unknown> | null;
   if (typeof rec !== "object" || rec === null || Array.isArray(rec))
     return "outcome reviewBound must be an object";
-  if (!BOUND_WAVES.some((wave) => wave === rec.wave))
-    return `outcome reviewBound.wave must be one of ${BOUND_WAVES.join(" | ")}`;
+  if (rec.wave !== "full" && rec.wave !== "fix")
+    return "outcome reviewBound.wave must be full or fix";
   if (!Array.isArray(rec.unreviewedLanes))
     return "outcome reviewBound.unreviewedLanes must be an array";
   if (rec.unreviewedLanes.length > LANES_CAP)
@@ -61,8 +58,8 @@ export function reviewBoundProblem(value: unknown): string | undefined {
     : `outcome reviewBound.reason must be a single printable line of at most ${String(MAX_REASON_CHARS)} characters`;
 }
 
-/** The bound record, rebuilt from the parts this module actually checked. */
-export function validatedReviewBound(value: unknown): ReviewBoundRecord {
+export function validatedReviewBound(value: unknown): ReviewBoundRecord | undefined {
+  if (reviewBoundProblem(value) !== undefined) return undefined;
   const rec = value as Record<string, unknown>;
   return {
     wave: rec.wave === "fix" ? "fix" : "full",

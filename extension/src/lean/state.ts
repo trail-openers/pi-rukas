@@ -24,8 +24,9 @@ import { assertDeadline } from "./deadline-record.ts";
 // The verdict SHAPE is re-exported so every caller of the record keeps one
 // import site: `state.ts` says what a run IS, `state-outcome-record.ts` says
 // what a step may report into it, `state-store.ts` says where it lives.
-import type { Outcome, ReviewBoundRecord } from "./state-outcome-record.ts";
-export type { Outcome, ReviewBoundRecord } from "./state-outcome-record.ts";
+import type { Outcome } from "./state-outcome-record.ts";
+export type { Outcome } from "./state-outcome-record.ts";
+export type { ReviewBoundRecord } from "./review-bound.ts";
 import { buildOutcome, outcomeProblem } from "./state-outcome.ts";
 // The store is re-exported so every caller of the record keeps one import site;
 // the layout of `.pi/lean-state/` is stated once, in `state-store.ts`.
