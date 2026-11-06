@@ -17,6 +17,7 @@
 import { isFullCommitSha } from "../commit-sha.ts";
 import type { DispatchUsage } from "../types.ts";
 import { HANDOFF_CHANNELS, type HandoffChannel } from "../work-driver-handoff-channel.ts";
+import { LANES_CAP, type ReviewBoundRecord } from "./review-bound.ts";
 import { CRITERION_ID } from "./spec.ts";
 import { normaliseRelPath, pathProblem } from "./specify-path.ts";
 import {
@@ -180,8 +181,7 @@ export const DISPATCH_STATES: readonly LeanState[] = [...BUDGET_STATES, "review"
  * opened (or claiming a head this run never verified) is never driven.
  */
 const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>> = {
-  prUrl: "publish",
-  // Publish's own record of what it pushed; elsewhere it claims a commit that
+  prUrl: "publish",  // Publish's own record of what it pushed; elsewhere it claims a commit that
   // step never shipped. Same shape rule as `verifiedHead`, which it is matched
   // to for equality: a prefix or mistyped oid compares unequal forever.
   publishedHead: "publish",
@@ -214,10 +214,66 @@ const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>>
   limit: BUDGET_STATES,
   value: BUDGET_STATES,
   used: BUDGET_STATES,
+  // The review step's own clock. On any other step it is a claim that a review
+  // stopped short of judging its lanes when no review of this run stopped at all.
+  reviewBound: "review",
 };
 
 /** The ceilings a budget verdict may name; the only reader of the field's type. */
 const LIMITS = ["minutes", "turns", "tokens"] as const;
+
+/** The two waves a bound record may say the step reached — `review-args`'s own. */
+const BOUND_WAVES = ["full", "fix"] as const;
+
+/** One lane name as it may sit on the durable record: text, bounded, one line. */
+function boundLaneProblem(lane: unknown): string | undefined {
+  if (typeof lane !== "string") return "must be a string";
+  if (lane === "" || lane !== lane.trim()) return "must be non-empty and trimmed";
+  if (lane.length > 80) return "must be at most 80 characters";
+  // Control characters would make a lane name print as structure in the comment
+  // the step posts, which is the surface this list is written for.
+  if (/\p{Cc}/u.test(lane)) return "must not contain a control character";
+  return undefined;
+}
+
+/**
+ * Why a `reviewBound` is not a record this run may hold, or `undefined`.
+ *
+ * The record is the only permanent account that a head reached `ci` with lanes
+ * nobody judged, so all three of its parts are checked: the wave is one of the
+ * two the step can be in, the lanes are printable single-line names bounded in
+ * count, and the reason is one bounded line of prose. A record that merely
+ * existed would read as a disclosure while carrying nothing readable.
+ */
+function reviewBoundProblem(value: unknown): string | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return "outcome reviewBound must be an object";
+  const rec = value as Record<string, unknown>;
+  if (!BOUND_WAVES.some((wave) => wave === rec.wave))
+    return `outcome reviewBound.wave must be one of ${BOUND_WAVES.join(" | ")}`;
+  if (!Array.isArray(rec.unreviewedLanes))
+    return "outcome reviewBound.unreviewedLanes must be an array";
+  if (rec.unreviewedLanes.length > LANES_CAP)
+    return `outcome reviewBound.unreviewedLanes must hold at most ${String(LANES_CAP)} lanes`;
+  for (const [i, lane] of rec.unreviewedLanes.entries()) {
+    const problem = boundLaneProblem(lane);
+    if (problem !== undefined) return `outcome reviewBound.unreviewedLanes[${String(i)}] ${problem}`;
+  }
+  if (typeof rec.reason !== "string" || rec.reason === "" || rec.reason.length > 400)
+    return "outcome reviewBound.reason must be a non-empty string of at most 400 characters";
+  if (/\p{Cc}/u.test(rec.reason)) return "outcome reviewBound.reason must not be multi-line";
+  return undefined;
+}
+
+/** The bound record, rebuilt from the parts this module actually checked. */
+function validatedReviewBound(value: unknown): ReviewBoundRecord {
+  const rec = value as Record<string, unknown>;
+  return {
+    wave: rec.wave === "fix" ? "fix" : "full",
+    unreviewedLanes: (rec.unreviewedLanes as string[]).map((lane) => lane.trim()),
+    reason: rec.reason as string,
+  };
+}
 
 /**
  * Is this a count a ceiling can be compared against? A float, a negative or
@@ -354,6 +410,12 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
     const problem = dispatchesProblem(oc.dispatches);
     if (problem !== undefined) return problem;
   }
+  // The review step's own clock: refused rather than carried, because a record
+  // whose wave or lanes will not load is a disclosure no reader can print.
+  if (oc.reviewBound !== undefined) {
+    const problem = reviewBoundProblem(oc.reviewBound);
+    if (problem !== undefined) return problem;
+  }
   // `prUrl` is the address `handback` prints, so it is refused when it is not
   // https url text rather than carried into a comment as a fake link; the
   // length bound keeps a blob a handler stuffed in here out of the record.
@@ -424,6 +486,7 @@ export function buildOutcome(oc: Record<string, unknown>): Outcome {
     ...(oc.channel === "host" || oc.channel === "forge" ? { channel: oc.channel } : {}),
     ...(typeof oc.report === "string" ? { report: oc.report } : {}),
     ...rowsField(validatedDispatches(oc.dispatches)),
+    ...(oc.reviewBound === undefined ? {} : { reviewBound: validatedReviewBound(oc.reviewBound) }),
     ...(isBudgetLimit(oc.limit) ? { limit: oc.limit } : {}),
     ...(isCount(oc.value) ? { value: oc.value as number } : {}),
     ...(isCount(oc.used) ? { used: oc.used as number } : {}),

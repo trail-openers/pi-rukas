@@ -19,7 +19,7 @@ import { traceWarn } from "../trace.ts";
 import type { DispatchResult, DispatchUsage } from "../types.ts";
 import type { Budget, WorkConfig } from "./config.ts";
 import { DISPATCHES_MAX_ROWS } from "./state-dispatches.ts";
-import type { LeanState, Outcome } from "./state.ts";
+import type { LeanState, Outcome, Step } from "./state.ts";
 
 /** Which ceiling was crossed, with what it was and what the child used. */
 export interface BudgetFired {
@@ -390,6 +390,51 @@ export function lensRows(lenses: LensRunResult[]): DispatchUsageRow[] {
     ok: lens.ok && lens.blocked !== true && lens.killCause === undefined,
     usage: lens.usage ?? zeroDispatchUsage(),
   }));
+}
+
+/**
+ * One row's `ms` as a step's wall clock, when that row IS the step's last child.
+ *
+ * The step's clock is the durable `startedAt`, not a sum of child durations — but
+ * the disclosure must be able to say the child that was running when the bound
+ * closed cost less than its own per-child bound, which is what separates "the
+ * step ran out of time" from "one child ran long". The newest row is that child.
+ */
+export function lastChildMs(rows: DispatchUsageRow[]): number {
+  return rows.length === 0 ? 0 : (rows[rows.length - 1]?.ms ?? 0);
+}
+
+/**
+ * The typed trio a STEP-level stop borrows for a step whose breach is a throw.
+ *
+ * `review` has no `budget` kind, so a stop there is a throw carrying
+ * `budgetSentence`'s wording — and that renderer takes the same `limit`/`value`/
+ * `used` trio a per-child breach carries. Only the numbers cross over: the step
+ * clock's own lever names are not this union and its sentence is its own, so the
+ * two clocks cannot be mistaken for one another in the cause line.
+ */
+export function stepFired(stop: { value: number; used: number }): BudgetFired {
+  return { limit: "minutes", value: stop.value, used: stop.used };
+}
+
+/**
+ * The one line that says a review reached its verdict on a head some of its lanes
+ * were never judged on, from the step's own record.
+ *
+ * Every surface that reports the run's cost reads the step log rather than a
+ * closure, and this is no different: the record is the loader's own validated
+ * `reviewBound`, so a projection that printed the lanes cannot disagree with the
+ * record a resume reads — and a step that recorded nothing prints nothing.
+ */
+export function reviewBoundLine(steps: Step[]): string | undefined {
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const step = steps[i];
+    if (step?.state !== "review" || step.outcome?.reviewBound === undefined) continue;
+    const rec = step.outcome.reviewBound;
+    const lanes = rec.unreviewedLanes.join(", ");
+    return `${rec.reason}; wave ${rec.wave}; unreviewed: ${lanes === "" ? "none named" : lanes}`;
+  }
+  return undefined;
 }
 
 /**
