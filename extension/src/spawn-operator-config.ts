@@ -56,6 +56,14 @@
  * leftover costs one read to act on. `home-watch.ts` owns the name-set difference
  * and what may be named.
  *
+ * The same window measures a second leftover a name cannot express: the BYTES a
+ * reviewer child leaves under the temp root it ran with. A lens that builds
+ * synthetic fixtures to test its own claim can fill a temp quota and take the
+ * next child down with it, and neither the four config files nor a `$HOME` name
+ * says anything about that. `temp-watch.ts` owns the walk, its bounds and what
+ * may be reported; the pair of measurements is taken here, in the same window,
+ * for the same reason and with the same accepted overlap in attribution.
+ *
  * What the guard cannot catch: a write that lands after the child exits (a
  * detached grandchild), since one snapshot set belongs to one child. Group-kill
  * (`spawn-kill.ts`) is what reaps a lingering grandchild; that is a separate
@@ -69,6 +77,7 @@ import path from "node:path";
 import { type HomeBaseline, homeEntries, homeNewEntryLines } from "./home-watch.ts";
 import { isPlainObject } from "./plain-object.ts";
 import { isReviewerRole } from "./review-bounds.ts";
+import { type TempMeasure, tempAllocatedBytes, tempBytesLines, tempRoot } from "./temp-watch.ts";
 import { traceWarn } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 
@@ -375,6 +384,14 @@ export async function withOperatorConfigGuard<R>(
   // new. Only a reviewer role is listed at all — a developer dispatch does no $HOME I/O.
   // Where the listing failed there is no baseline, and no name gets accused.
   const homeBaseline: HomeBaseline | undefined = report ? await homeEntries(home) : undefined;
+  // And the temp root's allocated bytes, over the same window and for the same roles:
+  // a reviewer's probe scratch is bytes rather than a name, and bytes are what fill a
+  // temp quota. Resolved here, before the child, so the walk measures the root this
+  // child actually ran with.
+  const tempDir = tempRoot(process.env);
+  const tempBaseline: TempMeasure | undefined = report
+    ? await tempAllocatedBytes(tempDir)
+    : undefined;
   let result: R | null = null;
   try {
     result = await runChild();
@@ -411,12 +428,23 @@ export async function withOperatorConfigGuard<R>(
         ];
       }
     }
+    // The temp-byte disclosure, in the same channel and for the same roles. A
+    // measurement that could not complete is one honest line, never silence and
+    // never a zero (`temp-watch.ts`); a below-threshold delta pushes nothing.
+    const tempAfter = report ? await tempAllocatedBytes(tempDir) : undefined;
+    // The same guard the $HOME listing above uses: with either walk absent there is
+    // no pair to compare, and a cast would only hide that from the compiler.
+    const tempLines: string[] | undefined =
+      report && tempBaseline !== undefined && tempAfter !== undefined
+        ? tempBytesLines(role, tempBaseline, tempAfter)
+        : undefined;
     for (const line of violations) traceWarn(line);
     for (const line of homeLines) traceWarn(line);
+    for (const line of tempLines ?? []) traceWarn(line);
     // Disclosure, never a verdict: `ok` and `loopOutcome` are left exactly as
     // the child's own run set them. When `result` is null the callback threw and
     // there is nothing to annotate — the traceWarn above is the only record.
-    const lines = [...violations, ...homeLines];
+    const lines = [...violations, ...homeLines, ...(tempLines ?? [])];
     if (lines.length > 0 && result !== null && isDispatchResult(result)) {
       result.operatorConfig = [...(result.operatorConfig ?? []), ...lines];
     }

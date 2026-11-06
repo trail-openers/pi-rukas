@@ -43,7 +43,9 @@ writeFileSync(
 /** Per-dispatch knobs the test sets before it spawns. */
 export interface StubChild {
   /** The cwd the last stubbed child was spawned with — where the relocation is
-   * observable, since that is the option the child actually received. */
+   * observable, since that is the option the child actually received. Read
+   * through the `as` cast below: `lastCwd` is the stub's own private field, kept
+   * off this interface so a caller cannot write it. */
   lastChildCwd: () => string | undefined;
   /** Make the next child's `spawn()` itself throw (a spawn-layer failure). */
   throwSpawn: boolean;
@@ -63,7 +65,7 @@ export interface StubChild {
  * own git calls do.
  */
 export function installStubChild(env: Record<string, string>): StubChild {
-  const stub: StubChild = {
+  const stub = {
     lastChildCwd: () => stub.lastCwd,
     throwSpawn: false,
     childFail: false,

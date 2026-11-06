@@ -3,7 +3,11 @@
  * #2031 AC1 — both reviewer ROLE PROMPTS tell the reviewer that a probe needing
  * hostile or alternate config points HOME, GIT_CONFIG_GLOBAL and XDG_CONFIG_HOME
  * at a mktemp directory, and that a reviewer never writes under $HOME or outside
- * its review tree.
+ * its review tree. #2051 AC1 adds the other half of the same rule: the probes go
+ * in ONE directory the reviewer made for the run, that directory stays under
+ * 50 MB in total, and the reviewer deletes it before reporting — the temp-dir
+ * leak this rule exists to stop is a lens that filled the host's temp quota and
+ * took the next child down with it.
  *
  * Asserted against the BUILT prompt (`dist/prompts/standard/<role>.md`, rebuilt
  * here through build.sh, the same way test-built-prompts.ts inspects it), so the
@@ -51,6 +55,14 @@ function hasRule(prompt: string): { missing: string[] } {
   for (const lever of LEVERS) if (!prompt.includes(lever)) missing.push(lever);
   if (!/never write under \$HOME/i.test(prompt)) missing.push("never write under $HOME");
   if (!/outside (its|the|your) review tree/i.test(prompt)) missing.push("outside its review tree");
+  // #2051 AC1 — the size and cleanup half of the rule, asserted as three separate
+  // obligations: each one the module must state, and each one a rule a reviewer
+  // can ignore while still honouring the mktemp/HOME sentences above.
+  if (!/one (mktemp -d|directory)[^.]*(for|in) (this|the) run/i.test(prompt))
+    missing.push("one directory for the run");
+  if (!/under 50 MB/i.test(prompt)) missing.push("under 50 MB");
+  if (!/delete[s]? (the|it|your|all)[^.]*before (you |it )?report/i.test(prompt))
+    missing.push("delete the directory before reporting");
   return { missing };
 }
 
@@ -68,6 +80,12 @@ for (const role of ["developer", "ops"]) {
   assert(
     !/never write under \$HOME/i.test(prompt),
     `${role}: built prompt does not carry the reviewer-only probe-hygiene rule`,
+  );
+  // The size and cleanup sentences are reviewer-only too: a developer's own
+  // scratch under the temp dir is the work, not a probe leak.
+  assert(
+    !/under 50 MB/i.test(prompt),
+    `${role}: built prompt does not carry the reviewer-only 50 MB probe bound`,
   );
 }
 
