@@ -65,7 +65,7 @@ function path48(): Partial<Record<LeanState, Outcome[]>> {
   };
 }
 
-const STEP = (issue: number, state: string, n: number, kind: string) => ({
+const STEP = (issue: number, state: LeanState, n: number, kind: string): Step => ({
   key: `${issue}:${state}:${n}`,
   state,
   startedAt: CLOCK,
