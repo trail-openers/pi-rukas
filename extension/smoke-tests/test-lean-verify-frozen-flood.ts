@@ -26,11 +26,10 @@
  */
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { execp } from "../src/exec.ts";
-import { type Proof, runTestFile } from "../src/lean/specify-proof.ts";
+import { runTestFile } from "../src/lean/specify-proof.ts";
 import { frozenTestFailure } from "../src/lean/verify-steps.ts";
 import { VerifyInfraError, type VerifyExec } from "../src/lean/verify-types.ts";
 
@@ -53,7 +52,7 @@ function floodingTest(rel: string): string {
   return (
     "#!/bin/sh\n" +
     `echo "not ok - ${rel}" 1>&2\n` +
-    "yes 0123456789abcdefghijklmnopqrstuvwxyz | head -c 1000000\n" +
+    `yes 0123456789abcdefghijklmnopqrstuvwxyz | head -c ${FLOOD_BYTES}\n` +
     "exit 1\n"
   );
 }
@@ -76,9 +75,9 @@ const exec: VerifyExec = (cmd, o) =>
   // `execp` is what kills the run and stamps the rejection, in both paths.
   execp(cmd, { ...o, maxBuffer: 64 * 1024 });
 
-// ------------------ (a) a run whose output breaks the bound classifies as `overflowed`
+// ---------------------- (a) a run whose output breaks the bound classifies as `overflowed`
 {
-  const proof: Proof = await runTestFile(exec, {
+  const proof = await runTestFile(exec, {
     wt,
     template: "sh {file}",
     file: FLOOD_FILE,

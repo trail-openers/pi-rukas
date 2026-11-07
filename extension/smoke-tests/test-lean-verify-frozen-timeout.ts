@@ -15,11 +15,14 @@
  * runner that could not be STARTED (`ENOENT`) and a template with nothing to run.
  *
  *   (a) a hanging frozen test -> red whose reason leads with the timeout wording
- *   (b) every timed-out frozen file is collected into that one reason
+ *   (b) the FIRST hang ends the tier: one runner invocation, and the reason counts
+ *       the frozen file it did not run
  *   (c) an un-startable runner still throws
- *   (d) the baseline-excuse arm grades the same red instead of throwing
+ *   (d) the baseline-excuse arm grades the same red instead of throwing, and does
+ *       NOT pay a second bound for it
  *   (e) the other arm still hands back: an un-startable runner on a red base
- *   (f) a hang AND a plainly-red frozen file report BOTH in one reason
+ *   (f) a hang keeps the plainly-red frozen file it already judged, and still costs
+ *       one bound
  *
  * The hang is a real `sh` spawn past a real bound (500ms), never a stubbed rejection,
  * so the kill, the `killed`/`timedOutKill` stamps and the classification all come
@@ -92,8 +95,12 @@ const HANGING_ACCEPTANCE_TEST = hangingTest("tests/AC1-retry.test.sh");
   assert(r.outcome?.verifiedHead === undefined, "(a) a red records no verified head");
 }
 
-// ------------------------- (b) every timed-out frozen file lands in one reason
+// ---------------- (b) the first hang ends the tier: one bound, the rest counted
 {
+  // A wall-clock kill costs the WHOLE bound, and the files after it would each cost
+  // another, serially, for a reason that says the same thing about all of them. So the
+  // tier stops at the first kill. Counted by INVOCATIONS rather than wall clock: timing
+  // this would pay the second bound to prove it was not paid.
   const r = await runVerify({
     issue: 402,
     config: { fast: PASS_TIER },
@@ -109,8 +116,20 @@ const HANGING_ACCEPTANCE_TEST = hangingTest("tests/AC1-retry.test.sh");
     `(b) two hung frozen files are still one red (got ${r.outcome?.kind ?? `threw: ${r.threw?.message}`})`,
   );
   assert(
-    reason.includes("tests/AC2-hang-a.test.sh") && reason.includes("tests/AC3-hang-b.test.sh"),
-    `(b) one reason collects every timed-out file (${reason.slice(0, 200)})`,
+    r.frozenRuns === 2,
+    `(b) exactly one kill: the fixture's own test plus the hung one, and the second hang was never run (got ${String(r.frozenRuns)} frozen runs)`,
+  );
+  assert(
+    reason.includes("tests/AC2-hang-a.test.sh"),
+    `(b) the reason still names the frozen file that hung (${reason.slice(0, 200)})`,
+  );
+  assert(
+    reason.includes("1 other frozen file not run"),
+    `(b) the reason says a frozen file was skipped rather than implying all ran (${reason.slice(0, 200)})`,
+  );
+  assert(
+    !reason.includes("tests/AC3-hang-b.test.sh"),
+    `(b) a file nobody ran is not accused of hanging (${reason.slice(0, 200)})`,
   );
 }
 
@@ -170,6 +189,13 @@ const HANGING_ACCEPTANCE_TEST = hangingTest("tests/AC1-retry.test.sh");
     !reason.startsWith("baseline red:"),
     `(d) a contract nobody could run is not excused as the mainline's own (${reason.slice(0, 120)})`,
   );
+  // The arm sits behind the main path's own frozen run, which hung here. A re-run of
+  // the contract would pay the bound a second time in the same verify for a verdict
+  // already observed — so the arm reuses it, and the counter is the evidence.
+  assert(
+    r.frozenRuns === 1,
+    `(d) a hang already graded by the main path is not run again by the baseline arm (got ${String(r.frozenRuns)} frozen run(s))`,
+  );
 }
 
 // ------------ (e) the other arm still hands back: an un-startable runner on a red base
@@ -191,34 +217,42 @@ const HANGING_ACCEPTANCE_TEST = hangingTest("tests/AC1-retry.test.sh");
   );
 }
 
-// ------------- (f) a hang beside a plainly-red frozen file keeps both failures
+// ------- (f) a hang keeps the plain failure it already judged, and costs one bound
 {
-  // One reason per run, so the fix round hears about every failure at once; a
-  // graded hang that returned on its own would hide the second file until the
-  // next round paid for it. The timeout clause still leads, for the clip.
+  // The fixture's own frozen test (which exits 1) sorts before the hang, so it is
+  // judged first and its clause must ride along with the timeout wording: a second
+  // defect nobody was told about waits for a whole round to be paid for it. The file
+  // sorted after the hang is named by count, not run.
   const r = await runVerify({
     issue: 406,
     config: { fast: PASS_TIER },
     extraFrozen: {
-      "tests/AC2-hang.test.sh": hangingTest("tests/AC2-hang.test.sh"),
       // Names ITSELF as it fails, so it is a plain red and not an `unclear`.
-      "tests/AC3-plain-red.test.sh":
-        "#!/bin/sh\necho 'not ok - tests/AC3-plain-red.test.sh' 1>&2\nexit 1\n",
+      "tests/AC2-plain-red.test.sh":
+        "#!/bin/sh\necho 'not ok - tests/AC2-plain-red.test.sh' 1>&2\nexit 1\n",
+      "tests/AC3-hang.test.sh": hangingTest("tests/AC3-hang.test.sh"),
     },
     timeoutMs: 500,
   });
   const reason = r.outcome?.reason ?? "";
   assert(
     r.threw === undefined && r.outcome?.kind === "red",
-    `(f) a hang and a plain red together are still one red (got ${r.outcome?.kind ?? `threw: ${r.threw?.message}`})`,
+    `(f) a hang beside a plain red is still one red (got ${r.outcome?.kind ?? `threw: ${r.threw?.message}`})`,
   );
   assert(
     reason.startsWith(FROZEN_TIMEOUT_HEAD),
     `(f) the reason still leads with the timeout wording (${reason.slice(0, 120)})`,
   );
   assert(
-    reason.includes("tests/AC2-hang.test.sh") && reason.includes("tests/AC3-plain-red.test.sh"),
-    `(f) the reason names the hung file AND the plainly-red one, which is the point of one reason (${reason.slice(0, 220)})`,
+    reason.includes("tests/AC3-hang.test.sh") && reason.includes("tests/AC2-plain-red.test.sh"),
+    `(f) the reason names the hung file AND the plainly-red one it had already judged (${reason.slice(0, 220)})`,
+  );
+  // The three frozen files this case holds are the fixture's own (which exits 1), the
+  // plainly-red one, and the hang — so three runs, ONE of them a kill, is the whole
+  // claim: the plain verdicts before the hang were collected, and nothing ran after it.
+  assert(
+    r.frozenRuns === 3,
+    `(f) both plain reds ran, the hang was the ONE kill, and nothing ran past it (got ${String(r.frozenRuns)} frozen runs)`,
   );
 }
 

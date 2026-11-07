@@ -59,8 +59,17 @@ export interface VerifyRun {
   probeDir?: string;
   /** How many times the tier command ran, across HEAD and the probe. */
   tierRuns?: number;
-  /** How many times the BASE PROBE ran the tier in its throwaway checkout (0 = it never got there). */
+  /**
+   * How many times the BASE PROBE ran the tier in its throwaway checkout (0 = it never got there).
+   */
   baseTierRuns?: number;
+  /**
+   * How many times the step ran a FROZEN file through the `verify.test` runner. The
+   * cost-bound cases assert on this rather than on wall clock: a hang's whole cost IS
+   * the bound, so counting invocations says "one bound" in milliseconds where timing it
+   * would pay a second one to prove it was not paid.
+   */
+  frozenRuns?: number;
   /** The run's repo root, for a case that wants to ask git about its worktrees. */
   repoRoot?: string;
 }
@@ -233,7 +242,7 @@ export function makeVerifyExec(opts: {
   hookMarks?: string;
   /** The run's base sha — what identifies the probe's `<base>:<path>` blob reads. */
   baseSha?: string;
-}): { exec: VerifyExec; redRunsSeen: () => number; baseTierRunsSeen: () => number } {
+}): { exec: VerifyExec; redRunsSeen: () => number; baseTierRunsSeen: () => number; frozenRunsSeen: () => number } {
   const { wt, probeDir, repoRoot, tiers, opts: o } = opts;
   const hookMarks = opts.hookMarks;
   const baseSha = opts.baseSha;
@@ -270,8 +279,10 @@ export function makeVerifyExec(opts: {
   let tierRuns = 0;
   /** How many of HEAD's runs the tier is allowed to fail before it goes green. */
   const redBudget = o.headTierRedRuns ?? 0;
-  /** Runs of the tier the step has made in the RUN's own worktree. */
+  /** How many of HEAD's runs the step made in the RUN's own worktree. */
   let headTierRuns = 0;
+  /** Runs of a FROZEN file through the runner template — see `VerifyRun.frozenRuns`. */
+  let frozenRuns = 0;
   /** Runs of the tier the BASE PROBE has made in its throwaway checkout. */
   let baseTierRuns = 0;
   /** The tier's own marker, so a stubbed red prints the identity of ITS tier. */
@@ -356,6 +367,14 @@ export function makeVerifyExec(opts: {
   };
 
   const exec: VerifyExec = (cmd, o2) => {
+    // A frozen-test run is the argv-form call the runner template makes: `runTestFile`
+    // renders `<bin> <args…>` and submits it as `exec(bin, { argv })` with the kill-group
+    // bound, so the file path reaches the executor in argv and never in the command string.
+    // Tiers arrive the other way — whole command string, no argv — and git's own argv reads
+    // of a frozen path (`git show <ref>:tests/AC1-….test.sh`) carry no `killGroup`, so
+    // neither can be mistaken for a run of the contract.
+    if ((o2 as { killGroup?: boolean } | undefined)?.killGroup === true && Array.isArray(o2?.argv))
+      frozenRuns++;
     // The tier command is the marker between the step's pre-tier reads and its
     // post-tier re-checks; only the HEAD read on the far side of it goes quiet.
     if (cmd !== "git" && cmd !== "sh") tierRan = true;
@@ -491,5 +510,10 @@ export function makeVerifyExec(opts: {
     return execp(cmd, { ...o2, env: o2?.env ?? childEnv(), cwd: o2?.cwd ?? wt });
   };
 
-  return { exec, redRunsSeen: () => tierRuns, baseTierRunsSeen: () => baseTierRuns };
+  return {
+    exec,
+    redRunsSeen: () => tierRuns,
+    baseTierRunsSeen: () => baseTierRuns,
+    frozenRunsSeen: () => frozenRuns,
+  };
 }

@@ -136,12 +136,17 @@ export const FROZEN_TIMEOUT_HEAD = "frozen tests timed out (the head's code may 
 /**
  * Run the frozen acceptance tests with the project's per-file runner template.
  *
- * EVERY frozen file runs: a step that stopped at the first failure could report
- * the same reason tomorrow for a different file, and the fix round would only
- * learn about the second failure after paying for the first.
+ * EVERY plain verdict is collected: a step that stopped at the first failure could
+ * report the same reason tomorrow for a different file, and the fix round would only
+ * learn about the second failure after paying for the first. A HANG is the exception,
+ * and the exception is a cost bound: a wall-clock kill costs the whole bound, so a
+ * contract whose files all hang would pay it once per file, serially, for a reason
+ * that says one thing about all of them. After the first kill nothing further runs and
+ * the reason counts what was skipped, so a hang costs at most ONE bound per verify.
  *
- * A wall-clock kill is a RED here, collected with the other failures into one
- * reason. Every file in the frozen contract was proved red against the base before
+ * A wall-clock kill is a RED here — the same proof the plain failure rests on, and
+ * reported with the plain failures already observed. Every file in the frozen
+ * contract was proved red against the base before
  * `runTestPipeline` committed it — that is the only way a file gets frozen, for
  * `specify` and `challenge` alike — so membership in the contract is the proof this
  * file was red and named when it was written. A head that now hangs it is the code
@@ -162,8 +167,8 @@ export async function frozenTestFailure(
   if (template === undefined)
     throw new VerifyInfraError("no verify.test runner template is configured for the frozen tests");
   const failures: string[] = [];
-  const timedOut: string[] = [];
-  for (const file of Object.keys(frozen)) {
+  const files = Object.keys(frozen);
+  for (const [i, file] of files.entries()) {
     const proof = await runTestFile(exec, {
       wt,
       template,
@@ -182,12 +187,24 @@ export async function frozenTestFailure(
       // wall clock did not fire — and a flood is not a hang: it throws with the rest,
       // or a chatty test costs a build round hunting a loop that is not there.
       switch (proof.infraShape) {
-        case "killed":
-          timedOut.push(file);
-          break;
+        case "killed": {
+          // One bound per verify: the files this kill stopped short of are counted,
+          // not run. The reason still says which file hung and keeps every plain
+          // failure this run already observed, so nothing the fix round could act on
+          // is lost — only the minutes a second hang would have cost it.
+          const skipped = files.length - i - 1;
+          const parts = [`${FROZEN_TIMEOUT_HEAD} ${file}`];
+          if (failures.length > 0) parts.push(`frozen tests failing: ${failures.join(", ")}`);
+          if (skipped > 0)
+            parts.push(`${skipped} other frozen file${skipped === 1 ? "" : "s"} not run`);
+          return { kind: "fail", reason: parts.join(" — ") };
+        }
         case "overflowed":
         case "never-started":
         case "nothing-to-run":
+          // Each of these observed nothing, so each throws; the `default` below is the
+          // only way out of the switch that keeps running the loop, so `continue` lives
+          // there rather than after the switch, where it would be unreachable.
           throw new VerifyInfraError(
             `the frozen test ${file} could not be judged: ${proof.detail}`,
           );
@@ -196,7 +213,6 @@ export async function frozenTestFailure(
           throw new VerifyInfraError(`unhandled infra shape ${String(unhandled)}`);
         }
       }
-      continue;
     }
     // A non-zero exit whose output never named this file is a RED, not
     // infrastructure (the PM's call, reversing the earlier reading — and its
@@ -214,16 +230,6 @@ export async function frozenTestFailure(
         reason: `frozen test ${file} failed (${exitLabel(proof.code)}; output did not name it)`,
       };
     if (proof.kind !== "green") failures.push(`${file} (${proof.detail})`);
-  }
-  // One reason per run, for one reason: the fix round hears about EVERY failure at
-  // once. The timeout clause leads — the reason may be clipped on its way to the next
-  // build child's prompt, and the hang hint is the part it must never lose — but the
-  // files that merely failed ride along behind it, or a second defect waits for a
-  // whole round to be paid for before anyone is told about it.
-  if (timedOut.length > 0) {
-    const parts = [`${FROZEN_TIMEOUT_HEAD} ${timedOut.join(", ")}`];
-    if (failures.length > 0) parts.push(`frozen tests failing: ${failures.join(", ")}`);
-    return { kind: "fail", reason: parts.join(" — ") };
   }
   if (failures.length === 0) return { kind: "pass" };
   return { kind: "fail", reason: `frozen tests failing: ${failures.join(", ")}` };

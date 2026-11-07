@@ -310,13 +310,16 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
       // The frozen verdict is asked FIRST, on purpose: `firstFailure` below never
       // sees it when this arm returns, so a run whose own acceptance tests are red
       // must not be graded green on the strength of a tier the base also fails.
-      const frozenRan = await frozenTestFailure(
-        frozen,
-        config.verify.test,
-        wt,
-        deps.exec,
-        deps.timeoutMs,
-      );
+      // A RED the main path already observed is reused rather than re-run: this arm is
+      // only reached with `tests` in hand, and re-running the contract here would pay
+      // the per-file wall clock a second time in one verify — for a hang that is a
+      // whole extra bound spent on a verdict already in the variable. A GREEN `tests`
+      // is no evidence about the contract here (the tier may have touched the tree
+      // since, and this arm asks what the contract says NOW), so that case re-runs.
+      const frozenRan =
+        tests.kind === "fail"
+          ? tests
+          : await frozenTestFailure(frozen, config.verify.test, wt, deps.exec, deps.timeoutMs);
       // A run whose own acceptance tests are RED here is red whatever the base did, and
       // it keeps the arm's own `baseline red:` wording — the sentence this branch has
       // always produced, and other cases pin it. A timed-out frozen file is the one

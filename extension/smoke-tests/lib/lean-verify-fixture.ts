@@ -329,7 +329,7 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
   const ctx: HandlerCtx = { ...f.ctx, steps: all };
   ctx.run = { ...ctx.run, steps: all };
 
-  const { exec, redRunsSeen, baseTierRunsSeen } = makeVerifyExec({
+  const { exec, redRunsSeen, baseTierRunsSeen, frozenRunsSeen } = makeVerifyExec({
     wt,
     probeDir,
     repoRoot,
@@ -371,6 +371,7 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
       repoRoot,
       tierRuns: redRunsSeen(),
       baseTierRuns: baseTierRunsSeen(),
+      frozenRuns: frozenRunsSeen(),
     };
   } catch (err) {
     return {
@@ -381,6 +382,7 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
       repoRoot,
       tierRuns: redRunsSeen(),
       baseTierRuns: baseTierRunsSeen(),
+      frozenRuns: frozenRunsSeen(),
     };
   }
 }

@@ -45,6 +45,11 @@ needs more of it has to be made faster or split. Nor is it a test that printed t
 a flood of output hands the run back as `the frozen test … could not be judged: the
 runner's output passed the executor's bound`, and is not graded red — the executor's
 output kill is a different shape from its clock kill, and only the clock kill is a hang.
+One hang is also all the gate will wait for: the wall clock is per file and the files run
+serially, so after the first kill the remaining frozen files are **not** run and the reason
+closes `— N other frozen file(s) not run`. That is a cost bound, not a verdict about those
+files — a contract where every file hangs would otherwise pay the full bound once per file,
+and the reason says the same thing about all of them either way.
 
 ### Symptom: a lean run hands back with `baseline red: tier <name> is red at the base commit`
 

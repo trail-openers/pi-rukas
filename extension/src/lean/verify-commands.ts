@@ -257,8 +257,10 @@ export function commandCriterionProblem(command: string | undefined): string | u
  *
  * Every runnable criterion runs, in spec order, because a gate that stopped at
  * the first failure would report a different reason tomorrow for a different
- * criterion (the reasoning `frozenTestFailure` gives for running every frozen
- * file). Each must exit **0**: green is the pass condition for a preservation
+ * criterion (the reasoning `frozenTestFailure` gives for collecting every plain
+ * verdict, and whose cost bound stops it at the first hang — which is why the
+ * criteria have no bound to share with it). Each must exit **0**: green is the pass
+ * condition for a preservation
  * criterion, and a non-zero exit is the regression it exists to catch.
  *
  * The tier is bounded twice over. At `COMMAND_CRITERION_MAX` criteria run — more
