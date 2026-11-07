@@ -22,13 +22,14 @@ import {
   registerPermissionGuard,
 } from "../src/permission-guard.js";
 
-// The devcontainer sets PI_ENSEMBLE_SANDBOX_MODE=1, and with it the guard
-// bypasses all gating, so the round-trip below never runs. This test is about
-// the gate itself, so the whole file runs with the gate on, and the caller's
-// value is put back at the end (the save/delete/restore shape of the L9 case
-// in test-permission-guard-runtime.ts).
-const prevSandboxMode = process.env.PI_ENSEMBLE_SANDBOX_MODE;
-delete process.env.PI_ENSEMBLE_SANDBOX_MODE;
+// The devcontainer sets PI_ENSEMBLE_SANDBOX_MODE=1 and a pi-rukas child sets
+// PI_ENSEMBLE_SUBAGENT_MODE=1; either makes registerPermissionGuard return before
+// the round-trip below runs. This test is about the gate itself, so the whole
+// file runs with the gate on, and the caller's values are put back at the end
+// (the save/delete/restore shape of the L9 case in test-permission-guard-runtime.ts).
+const GUARD_MODE_VARS = ["PI_ENSEMBLE_SANDBOX_MODE", "PI_ENSEMBLE_SUBAGENT_MODE"];
+const prevModes = GUARD_MODE_VARS.map((name) => [name, process.env[name]] as const);
+for (const name of GUARD_MODE_VARS) delete process.env[name];
 
 let exitCode = 0;
 function assert(cond: boolean, msg: string) {
@@ -365,8 +366,10 @@ if (existsSync(tmpDir)) {
 }
 
 // Put the caller's environment back before the process leaves.
-if (prevSandboxMode === undefined) delete process.env.PI_ENSEMBLE_SANDBOX_MODE;
-else process.env.PI_ENSEMBLE_SANDBOX_MODE = prevSandboxMode;
+for (const [name, value] of prevModes) {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}
 
 console.log("\n=== test-interactive-permissions summary ===");
 console.log(`exit ${exitCode}`);
