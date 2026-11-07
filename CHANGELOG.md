@@ -8,6 +8,14 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.58](https://github.com/trail-openers/pi-rukas/compare/v0.14.57...v0.14.58) (2026-11-07)
+
+
+### Bug Fixes
+
+* **lean:** commit a review fixer's uncommitted edits instead of discarding them ([#2076](https://github.com/trail-openers/pi-rukas/issues/2076)) ([f7c7c9e](https://github.com/trail-openers/pi-rukas/commit/f7c7c9ec7880f9b848503f1c2bb9097f899d350b))
+* **lean:** reset the challenge tree when the round leaves bytes behind ([#2078](https://github.com/trail-openers/pi-rukas/issues/2078)) ([b79ec7d](https://github.com/trail-openers/pi-rukas/commit/b79ec7d27867024ed53029148eebcb71ed918523))
+
 ## [0.14.57](https://github.com/trail-openers/pi-rukas/compare/v0.14.56...v0.14.57) (2026-11-06)
 
 
