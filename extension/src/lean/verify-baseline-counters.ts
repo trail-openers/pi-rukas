@@ -43,62 +43,18 @@
  * classifier did NOT read as a failure: a summary, a tally, a collection count. {@link
  * failureLineFold} applies that gate and is the only fold the comparison consults.
  *
- * THE IMPORT DIRECTION. `verify-baseline-allow-list.ts` imports {@link COUNTER_WORD_LIST}, {@link
- * failureLineFold} and {@link scrubInvisible} from this file, so the vocabulary and the normalisation
- * every arm applies live on the side the other imports — the allow-list may read the fold, never the
- * other way round. That is why the whole-line veto is HERE rather than there: {@link declaresFailure}
- * decides both what a head-only line may BE and which lines the fold reads as failure-reporting, and
- * a fold that consulted its own importer's veto would be a cycle. `isKnownCleanLine` keeps reading the
- * same predicate through this module, so there is still exactly one answer to "does this line name a
- * failure?".
+ * THE IMPORT DIRECTION. `verify-baseline-allow-list.ts` imports {@link COUNTER_WORD_LIST} and {@link
+ * failureLineFold} from this file, so the vocabulary and the normalisation every arm applies live on the
+ * side the other imports — the allow-list may read the fold, never the other way round. The whole-line
+ * veto this fold consults now lives one level below both readers, in `verify-baseline-veto.ts`, because
+ * a fold that consulted its own importer's veto would be a cycle: readers import the veto, never each
+ * other through it. `isKnownCleanLine` reads the same predicate from there, so there is still exactly
+ * one answer to "does this line name a failure?".
  */
 
 import { classifyFailureLine } from "../work-driver-verify-failures.ts";
-
-/**
- * The line's own words, anywhere in it, say something went wrong.
- *
- * THE whole-line veto, and the one failure vocabulary this seam has — owned here so the two rules
- * that turn on it cannot drift: {@link isKnownCleanLine} refuses a head-only line whose text carries
- * one of these words, and {@link foldsAsCounter} refuses to fold a digit on such a line. A split
- * between the two would be a line that the allow-list called a failure and the fold read as a tally.
- *
- * The words are a fixed set, matched case-insensitively and WORD-BOUNDED (`fail\w*` reaches `failed`,
- * `failing`, `failures`; it does not reach `focus` or `definitely`), plus the five failure glyph
- * runners actually print (`✗ ✘ × ✕ ✖`), which have no letters to bound, plus the two verdict
- * SPELLINGS a runner prints for a failed check — TAP's `not ok` and go's `--- FAIL:` / jest's
- * `=== FAIL:`. Those two are here because the exemption invariant asks this predicate of EVERY
- * line, and a runner's own verdict must count as declaring failure wherever that question is asked:
- * neither is reached by the word set — `not ok` is a phrase with no `fail` in it at all, and
- * `--- FAIL` is caught by `fail\w*` only when a letter or digit sits before the dashes, so the run of
- * dashes is its own arm. `not\s+ok` is bounded on both sides (`book ok`, `notoka`, `xnot ok y` are
- * not verdicts) and the dash run on its right only, so an indented `----- FAIL:` still reads as one.
- * The set is wide on purpose —
- * it reaches further than the classifier's anchored shapes, on purpose — and it is asked only of the
- * lines this seam is asked about, never of a stream: being wide costs a hand-back for a passing test
- * whose name happens to read like a failure (`ok 7 - login timeout retried` printed head-only) and for
- * a summary whose run total merely sits beside a `Failures:` count, while being narrow would cost a
- * green on a line that said it broke. The direction is what makes an enumeration safe here where it
- * is not safe for counters: this predicate can only ever REFUSE a permission, never grant one, so a
- * failure word the list lacks costs a hand-back and no more.
- */
-// The `not ok` / `= FAIL` / `- FAIL` arms sit OUTSIDE the `\b(?:…)\b` group above them: a word
-// boundary before a branch opening with a punctuation class (`=` or `-`) matches nothing at all,
-// since neither side of that position is a word character. Each therefore carries its own right-hand
-// `\b` and no left-hand one — its run of `=`/`-` is what makes it a verdict rather than prose.
-const FAILURE_VETO =
-  /\b(?:fail\w*|error\w*|crash\w*|abort\w*|panic\w*|timed?\s*out|timeout|segfault|broken|exception\w*|fatal|critical|killed|leak\w*)\b|\bnot\s+ok\b|={3,}\s*FAIL\b|-{3,}\s*FAIL\b|[✗✘×✕✖]/i;
-
-/**
- * Does this line's own text declare a failure, anywhere in it?
- *
- * Scrubbed for the same reason as every arm of the excuse: the veto IS the whole-line rule, and a
- * word split by an invisible character is the word — a veto that read the raw text would be the one
- * arm that still saw `fa\u200biled` as ordinary text while everything else saw `failed`.
- */
-export function declaresFailure(line: string): boolean {
-  return FAILURE_VETO.test(scrubInvisible(line));
-}
+import { scrubInvisible } from "./verify-baseline-scrub.ts";
+import { declaresFailure } from "./verify-baseline-veto.ts";
 
 /**
  * The placeholder a folded field is replaced with.
@@ -107,75 +63,6 @@ export function declaresFailure(line: string): boolean {
  * never collide with a folded one and two lines that differ by content never collapse onto it.
  */
 const PLACEHOLDER = "#";
-
-/**
- * The invisible characters a runner's output can carry inside a WORD.
- *
- * grave, a byte-order mark. None of them renders, all of them break a word in two: a word with a
- * zero-width space inside it is not that word to a `\b`-bounded vocabulary, to the classifier's
- * anchored shapes, or to a strict line comparison, and a human reading the log sees the word.
- * `\u00ad` (soft hyphen), `\u200b-\u200d` (zero-width space, joiner, non-joiner), `\u2060` (word
- * joiner), `\u034f` (combining grave) and `\ufeff` (BOM) — written as escapes, which is the only way
- * to name them without putting the characters themselves in the source. The class is a fixed set of
- * format characters, not a general Unicode sweep: it is NOT `\p{Cf}` and not a control-character class,
- * because a line's printable content is evidence and is left exactly as printed. Each range is written
- * on its own rather than merged into one class, so a reader — and Biome's misleading-character-class
- * rule — can see each character this arm removes.
- */
-const INVISIBLE_CHARS = new RegExp(
-  `[${["\\u00ad", "\\u200b-\\u200d", "\\u2060", "\\u034f", "\\ufeff"].join("")}]`,
-  "g",
-);
-
-/**
- * An ANSI CSI sequence: an escape, a parameter string, and a final byte.
- *
- * A colour or cursor sequence sits inside a line the same way an invisible character does — a colour
- * code between the halves of a verdict prints as that verdict — and is stripped by {@link
- * scrubInvisible} for the same reason.
- *
- * Built from `String.fromCharCode(27)` rather than a `\u001b` escape in the literal: Biome's
- * `noControlCharactersInRegex` is right that a control character written into a pattern is easy to
- * misread, and here it is genuinely easy to misread — the ESC byte is the whole meaning of the arm and
- * nothing around it shows it. `fromCharCode` is the house form for this byte (`merge-lex-views.ts`,
- * `write-fence-bash-words.ts` both name ESC the same way). The parameter bytes are `[\d;?]*`, which
- * never include the final byte, and the final byte is one character: no quantifier may stretch across
- * a line, so no input makes this backtrack.
- */
-const ANSI_CSI = new RegExp(`${String.fromCharCode(27)}\\[[\d;?]*[A-Za-z@]`, "g");
-
-/**
- * The Unicode line separators, mapped to a space rather than removed.
- *
- * U+2028, U+2029 and C1 U+0085 are line boundaries to some tools and ordinary characters to others,
- * so one stream can carry two lines that this gate reads as one. Replacing them with a space keeps the
- * words either side of them separate — removing them would glue a crash count to the tally beside it —
- * and leaves the line as ONE line for every arm. Written with `\p{Cc}` plus the two Unicode separators
- * rather than literal control characters: the set is "every character some renderer breaks a line on",
- * which is the property the arm needs, and a control character has no place in a source pattern.
- */
-const LINE_SEPARATORS = /[\p{Cc}\u2028\u2029]/gu;
-
-/**
- * A line as EVERY arm of the baseline excuse must read it: invisible characters out, ANSI sequences out, line separators flattened.
- *
- * THE one normalisation of the whole comparison, applied where the excuse reads lines — {@link
- * streamLines} in `verify-baseline-allow-list.ts`, and the head of {@link failureLineFold} here — so no
- * arm can judge a text another arm did not. It runs BEFORE classification and before any veto, which
- * is the only ordering that makes the promise true: a failure word split by an invisible character IS
- * that word, and an arm that normalised after its own match would be vouching for text the next arm
- * never saw. Printable content is untouched, so nothing a runner actually printed is erased.
- *
- * Control characters go to a space, not nothing: a C1 in the middle of a stream is a boundary a reader
- * would honour, and deleting it would splice two fields into one word.
- *
- * Lives in this leaf module because both sides of the excuse seam need it and the seam must stay one
- * way: `verify-baseline-allow-list.ts` imports the counter vocabulary from here, so the normalisation
- * every arm applies cannot be moved to the importer without cutting the other direction.
- */
-export function scrubInvisible(line: string): string {
-  return line.replace(ANSI_CSI, "").replace(INVISIBLE_CHARS, "").replace(LINE_SEPARATORS, " ");
-}
 
 /**
  * A digit run the runner printed as a COUNT or a TIMING, followed by its word.

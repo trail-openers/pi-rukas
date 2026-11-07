@@ -13,13 +13,16 @@
  * statement about WHO wrote a line, and it must not become a statement about what the line REPORTS,
  * so {@link declaresFailure} is consulted before any exemption takes effect: {@link
  * isHarnessEchoOf} asks it of the echoed command, and `judgeableLines` in the allow-list module asks
- * it of every line before either harness or passing-check door is opened. The harness's own words
- * are discounted by {@link harnessWordsRemoved} — `Command failed:` and the trace prefixes are the
- * executor's sentences, printed on every failed command, and their spelling is not a runner
- * declaring a failure — and nothing else's text is discounted.
+ * it of every line before either harness or passing-check door is opened. What is discounted by
+ * {@link harnessWordsRemoved} is the executor's PREFIX — `Command failed:` and the `$ `/`+ ` trace
+ * markers, printed on every failed command, whose spelling is not a runner declaring a failure — and
+ * nothing else's text is discounted. The harness's own kill stamps (`killed`, `Exit code: N`) keep
+ * their words: they are excused by {@link isHarnessLine} on their own shape, never by having their
+ * words removed from the invariant.
  */
 
-import { declaresFailure, scrubInvisible } from "./verify-baseline-counters.ts";
+import { scrubInvisible } from "./verify-baseline-scrub.ts";
+import { declaresFailure } from "./verify-baseline-veto.ts";
 
 /**
  * Did the HARNESS write this line, rather than the gate?
@@ -68,12 +71,19 @@ export function isHarnessLine(line: string): boolean {
  * while `$ not ok 1 - t/brand_new.t - boom` is none of those forms and the veto's `not ok` arm
  * catches it on the stripped text regardless. A gate line that merely QUOTES one of these sentences
  * keeps its words as content, because quoting buys nothing: the prefix is discounted, not believed.
+ *
+ * WHAT IS NOT DISCOUNTED, and the boundary a helper that strips a prefix has to state: only the
+ * PREFIX. An earlier version blanked the whole line whenever the stripped text was one of {@link
+ * isHarnessLine}'s own forms, and that read as a pardon for the harness's kill stamps — `killed`,
+ * `killed by signal SIGTERM`, `Exit code: 1` are all harness forms and all spell failures, so the
+ * invariant came back declaring nothing and a head-only kill was graded green over a run nothing
+ * judged. The harness door excuses those lines on their OWN shape, on the raw text; the invariant's
+ * job is to keep them in the stream for anything else, and an empty string here is how it stopped
+ * doing that job. A `$ `-prefixed line whose text behind the prefix names no failure — `$ bats t/` —
+ * is the case the discount is FOR, and it keeps its exemption.
  */
 export function harnessWordsRemoved(line: string): string {
-  const withoutPrefix = line.replace(/^\s*(?:Command failed:|\$\s+|\+\s+)/i, "").trim();
-  // A line that IS one of the harness's own full-line forms has no runner text left to judge: its
-  // word is the harness's (`killed`, `Exit code: 1`), and the invariant has nothing to say about it.
-  return isHarnessLine(withoutPrefix) ? "" : withoutPrefix;
+  return line.replace(/^\s*(?:Command failed:|\$\s+|\+\s+)/i, "").trim();
 }
 
 /**

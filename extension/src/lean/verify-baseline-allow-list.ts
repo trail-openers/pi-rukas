@@ -55,14 +55,11 @@
  */
 
 import { classifyFailureLine, isSuccessLine } from "../work-driver-verify-failures.ts";
-import {
-  COUNTER_WORD_LIST,
-  declaresFailure,
-  failureLineFold,
-  scrubInvisible,
-} from "./verify-baseline-counters.ts";
+import { COUNTER_WORD_LIST, failureLineFold } from "./verify-baseline-counters.ts";
 import { stripRoot } from "./verify-baseline-excuse.ts";
 import { harnessWordsRemoved, isHarnessEchoOf, isHarnessLine } from "./verify-baseline-harness.ts";
+import { scrubInvisible } from "./verify-baseline-scrub.ts";
+import { declaresFailure } from "./verify-baseline-veto.ts";
 
 /**
  * A line that reports a check as PASSING, in the dialects the allow-list has to read.

@@ -75,7 +75,15 @@ the safe way — an unknown shape costs a hand-back, never a green — and a new
 needs no change to be caught, only to be excused. The harness's own writing (`Command failed:`
 of a command the tier really ran, `Exit code: N`, a bare `killed`, a `tier-said-*` marker) is
 excluded from both sides, as is any line the classifier reads as a PASSING check — neither is
-gate output, and a PR adding passing tests prints new passing lines every run. Whole lines, not
+gate output, and a PR adding passing tests prints new passing lines every run. The exemption is
+only for WHO wrote the line, never for what it REPORTS — which is what the two harness kill stamps
+named above, a bare `killed` and `Exit code: N`, are: they stay in the comparison and a head-only
+one refuses, exactly like any other failure line, while the same stamp the base printed too still
+excuses. A tier that traces its commands (`sh -x`, so the stream carries `$ ` lines) gets no
+exemption for a line that carries a failure word behind the prefix — a head-only `$ killed`,
+`$ Exit code: 1` or `$ not ok 1 - t/new.t` refuses, because an unjudged kill is not evidence the
+base was red — while a traced line the classifier cannot read and that names no failure
+(`$ bats t/`) is exempt on the harness's own shape. Whole lines, not
 parsed test names, are deliberate: every identity parser tried for a non-pytest runner found a
 new way to fold two different checks onto one token, and a folded name excuses a failure this
 run authored — the one thing the excuse must never do.

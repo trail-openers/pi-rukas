@@ -44,7 +44,7 @@
  */
 import { isKnownCleanLine, judgeableLines } from "../src/lean/verify-baseline-allow-list.ts";
 import { isHarnessEchoOf } from "../src/lean/verify-baseline-harness.ts";
-import { declaresFailure } from "../src/lean/verify-baseline-counters.ts";
+import { declaresFailure } from "../src/lean/verify-baseline-veto.ts";
 import { baselineExcuse } from "../src/lean/verify-baseline-excuse.ts";
 import type { BaseProbe } from "../src/lean/verify-baseline.ts";
 
