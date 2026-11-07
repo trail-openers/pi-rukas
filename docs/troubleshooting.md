@@ -41,7 +41,10 @@ the run as `handler error at verify: the frozen test … could not be judged: th
 could not be started` / `runner template has nothing to run`, and the thing to fix is
 the project's `verify.test` configuration in `.pi/work.json`. Nor is it a slow suite — and
 there is no bound to raise: the per-file limit is a constant, so a test that legitimately
-needs more of it has to be made faster or split.
+needs more of it has to be made faster or split. Nor is it a test that printed too much:
+a flood of output hands the run back as `the frozen test … could not be judged: the
+runner's output passed the executor's bound`, and is not graded red — the executor's
+output kill is a different shape from its clock kill, and only the clock kill is a hang.
 
 ### Symptom: a lean run hands back with `baseline red: tier <name> is red at the base commit`
 

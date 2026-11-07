@@ -297,6 +297,7 @@
     "smoke-tests/test-AC5-round-cap-blocking-count.ts",
     "smoke-tests/lib/lean-verify-bytes.ts",
     "smoke-tests/lib/lean-verify-git.ts",
-    "smoke-tests/test-lean-verify-frozen-timeout.ts"
+    "smoke-tests/test-lean-verify-frozen-timeout.ts",
+    "smoke-tests/test-lean-verify-frozen-flood.ts"
   ]
 }

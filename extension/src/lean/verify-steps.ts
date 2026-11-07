@@ -147,8 +147,10 @@ export const FROZEN_TIMEOUT_HEAD = "frozen tests timed out (the head's code may 
  * file was red and named when it was written. A head that now hangs it is the code
  * under build failing, which is a verdict the developer can act on, not a machine
  * that refused to answer. The other `infra` shapes stay throws: a runner that never
- * started and a template with nothing to run both observed nothing, and neither is
- * evidence about the work however the file behaved when it was frozen.
+ * started, a template with nothing to run and a run whose output flooded past the
+ * executor's bound all observed nothing, and none of them is evidence about the work
+ * however the file behaved when it was frozen. The flood in particular is not a hang:
+ * grading it red would send a builder to hunt a loop in code that merely printed a lot.
  */
 export async function frozenTestFailure(
   frozen: Record<string, string>,
@@ -171,19 +173,28 @@ export async function frozenTestFailure(
     if (proof.kind === "infra") {
       // Switched on the classifier's own `infraShape` rather than re-derived here:
       // two definitions of "was it killed" in one pipeline is how the halves start
-      // disagreeing about a hang. No `default` — a fourth shape must fail type-check.
+      // disagreeing about a hang. The `default` is the exhaustiveness check: a fifth
+      // shape reaches it and fails type-check.
       // A `never-started` proof whose detail reports a deadline rather than a failed
       // spawn is another module's abandoned re-run: still a run that observed
-      // nothing, still a throw. Nothing here guesses at the difference.
+      // nothing, still a throw. Nothing here guesses at the difference. An
+      // `overflowed` proof is the executor's maxBuffer kill — `killed: true`, but the
+      // wall clock did not fire — and a flood is not a hang: it throws with the rest,
+      // or a chatty test costs a build round hunting a loop that is not there.
       switch (proof.infraShape) {
         case "killed":
           timedOut.push(file);
           break;
+        case "overflowed":
         case "never-started":
         case "nothing-to-run":
           throw new VerifyInfraError(
             `the frozen test ${file} could not be judged: ${proof.detail}`,
           );
+        default: {
+          const unhandled: never = proof.infraShape;
+          throw new VerifyInfraError(`unhandled infra shape ${String(unhandled)}`);
+        }
       }
       continue;
     }
