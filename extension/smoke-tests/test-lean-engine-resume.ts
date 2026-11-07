@@ -87,12 +87,12 @@ function forgedCiRed(dir: string, issue: number): void {
     // step — index 8 — says RED. Replaying the older `ci:0 = green` is what
     // used to walk this into the merge.
     state: "ci",
-    // The log is the walk the table produces and the counters beside it are
-    // DERIVED from it — the fixture folds the very steps it wrote, never a literal.
     // The forgery this file commits is the ONE the case judges: `state: "ci"` while
     // the newest `ci` row says red, which is what the engine's replay path used to
-    // apply as `ci:0 = green` and merge. Every other field is the table's own answer,
-    // so a refusal cannot come from a counter or a step label someone hand-carried.
+    // apply as `ci:0 = green` and merge. The log and the counters beside it both come
+    // from the fixture — the log typed (it is a forgery, so no walk produces it) and
+    // the counters folded from the prefix a real drive wrote — so a refusal cannot
+    // come from a step label or a build count someone hand-carried.
     counters: forgedCiRedCounters(issue),
     steps: forgedCiRedSteps(issue),
   };
@@ -219,39 +219,115 @@ function forgedCiRed(dir: string, issue: number): void {
       state: "verify",
       counters: {
         ...INITIAL_COUNTERS,
-        // A PRE-CHANGE record: written while `MAX_BUILD_ATTEMPTS` was 2, and it
-        // still folds. DERIVED rather than typed — `foldLog` over the very log
-        // below is what the table bills on this walk, so the case keeps its real
-        // claim (the snapshot and the log agree, and a blank tail at a gate state
-        // is not a red verdict when the land gate asks the record) instead of
-        // pinning whichever number today's billing rule happens to produce. What
-        // the walk bills is the first build and the CI fix round that red CI
-        // bought; the blank `verify:1` tail is a step the run was routed INTO by a
-        // build that already billed its own round, so it owes nothing extra.
-        ...foldOf({
-          schema: 1,
-          issue: 43,
-          version: "test",
-          models: {},
-          baseSha: FIXTURE_BASE_SHA,
-          branch: "feature/issue-43",
-          state: "ready",
-          counters: { ...INITIAL_COUNTERS },
-          steps: seed43Steps,
-        }).counters,
+        // A PRE-CHANGE record — the bytes a drive saved while an edge LEAVING build
+        // still billed a round — so this is the OLD rule's number typed as it was
+        // written: `3`, where `specify:ok` bought one, the `build:0 → challenge` visit
+        // bought a second, and the `ci:red` fix round bought the third. R1 settles what
+        // happens to such a record: lean is alpha, there is no migration and no schema
+        // bump, so it may simply refuse to resume, and the case below asserts that
+        // documented refusal. `foldLog` over this very log is the NEW rule's answer —
+        // `2`, because only an edge whose destination is `build` bills now and the
+        // challenge visit is free — and the blank `verify:1` tail is the step the run
+        // was routed INTO by a build that already billed its own round, so it owes
+        // nothing extra. The counter is therefore TYPED here — `3`, on top of
+        // `INITIAL_COUNTERS` above — and the `foldLog` spread that filled this object a
+        // moment ago is gone: deriving the snapshot would delete the disagreement the
+        // case is about.
+        buildAttempts: 3,
+        challengeDone: true,
+        reviewDone: true,
+        ciFixUsed: true,
+        draft: false,
       },
       steps: seed43Steps,
     };
     writeFileSync(leanStateFile(dir, 43), JSON.stringify(seed, null, 2), "utf8");
     const { handlers, calls } = scripted(HAPPY);
-    // The fold's own answer for this pre-change log, asserted rather than assumed:
-    // a bump to the cap must not invalidate a record a run wrote under the old one.
+    // The new rule's answer for the same log, pinned rather than assumed: the old
+    // record's `3` and the fold's `2` are the whole disagreement, so this assertion
+    // is what stops the case below passing on a file that no longer contradicts
+    // itself (a fixture whose snapshot the fold reproduced would resume, land, and
+    // prove nothing about a pre-fix record).
     const folded = foldOf(seed);
     assert(
-      folded.state === "verify" && JSON.stringify(folded.counters) === JSON.stringify(seed.counters),
-      `a pre-change log still folds to its own counters (${folded.state} ${JSON.stringify(folded.counters)})`,
+      folded.state === "verify" && folded.counters.buildAttempts === 2,
+      `the same log folds to 2 dispatched rounds under the new rule (${folded.state} ${JSON.stringify(folded.counters)})`,
     );
-    const result = await runLean({ repoRoot: dir, issue: 43, handlers, now: ticking().now });
+    assert(
+      seed.counters.buildAttempts === 3,
+      `the pre-change snapshot carries the old entry-billed count (${seed.counters.buildAttempts})`,
+    );
+    // R1: a record written before the billing fix may refuse to resume. That refusal
+    // is the documented behaviour, not a crash to work around — lean is alpha, there is
+    // no migration and no schema bump (docs/lean.md). So the drive never reaches a
+    // handler, and nothing rewrites the file.
+    let thrown: unknown;
+    try {
+      await runLean({ repoRoot: dir, issue: 43, handlers, now: ticking().now });
+    } catch (err) {
+      thrown = err;
+    }
+    assert(
+      thrown instanceof Error &&
+        thrown.name === "LeanStateError" &&
+        /snapshot disagrees with the step log/.test(thrown.message),
+      `a pre-change log is refused with the documented disagreement (got: ${String(thrown)})`,
+    );
+    assert(
+      Object.keys(calls).length === 0,
+      `the refusal runs no handler (calls: ${JSON.stringify(calls)})`,
+    );
+  } finally {
+    cleanup();
+  }
+}
+
+// ── the same log, priced by the new rule, resumes and lands ──────────────
+
+{
+  const { dir, cleanup } = tempDir();
+  try {
+    mkdirSync(path.dirname(leanStateFile(dir, 49)), { recursive: true });
+    // Byte-for-byte the log of the case above, with the snapshot the NEW rule
+    // derives. This is the half the refusal cannot show on its own: a blank tail at a
+    // GATE state is not a red verdict when the land gate asks the record, so the run
+    // resumes, re-runs the step it owes, and merges.
+    const steps: LeanRun["steps"] = [
+      STEP(49, "ready", 0, "ok"),
+      STEP(49, "specify", 0, "ok"),
+      STEP(49, "build", 0, "ok"),
+      STEP(49, "challenge", 0, "none"),
+      STEP(49, "verify", 0, "green"),
+      STEP(49, "publish", 0, "ok"),
+      STEP(49, "review", 0, "done"),
+      STEP(49, "ci", 0, "red"),
+      STEP(49, "build", 1, "ok"),
+      // A crash mid-second-verify, after the fix build came back.
+      { key: "49:verify:1", state: "verify", startedAt: CLOCK },
+    ];
+    const seed: LeanRun = {
+      schema: 1,
+      issue: 49,
+      version: "test",
+      models: {},
+      baseSha: FIXTURE_BASE_SHA,
+      branch: "feature/issue-49",
+      ...foldOf({
+        schema: 1,
+        issue: 49,
+        version: "test",
+        models: {},
+        baseSha: FIXTURE_BASE_SHA,
+        branch: "feature/issue-49",
+        state: "ready",
+        counters: { ...INITIAL_COUNTERS },
+        steps,
+      }),
+      steps,
+    };
+    writeFileSync(leanStateFile(dir, 49), JSON.stringify(seed, null, 2), "utf8");
+    const { handlers, calls } = scripted(HAPPY);
+    const result = await runLean({ repoRoot: dir, issue: 49, handlers, now: ticking().now });
     assert(
       result.state === "landed" && result.code === 0 && calls.land === 1,
       `an outcome-less trailing verify does not refuse a green land (got ${result.state}: ${result.run.result?.reason})`,

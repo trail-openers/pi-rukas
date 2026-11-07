@@ -11,7 +11,10 @@
  *     `build` is the only state that consumes an attempt. So "did this edge bill
  *     a round" is answerable by looking for a `viaBuild` call AND reading where
  *     it routes — an edge LEAVING build (to `challenge`, to `verify`) bills
- *     nothing, since the round was already paid for on the way in.
+ *     nothing, since the round was already paid for on the way in. The one edge
+ *     that LEAVES build and bills is `build + exhausted`, which takes the run
+ *     straight to `publish`: it buys the dispatch it never ran with the round it
+ *     is giving up, so a run that cannot build any more still gets published.
  *   - the `draft` marker is a THREE-way parameter, not a boolean. `undefined`
  *     passes the run's current value through untouched — which is what lets a
  *     CI fix round re-enter build without clearing the red a verify step
