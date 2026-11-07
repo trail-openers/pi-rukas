@@ -102,11 +102,10 @@ export async function runFixer(
  * Fold the fixer's UNCOMMITTED bytes into one commit before `removeWorktree`
  * destroys the tree with them — `build`'s `normaliseBuild`, so a fixer that edited
  * and never commits is captured rather than discarded. The gate is HEAD read from
- * git rather than believed: a fixer that committed moved it, and folding that round
- * would reset its commits away. `branch: ""` resets DETACHED — this tree owns no
- * branch — and the frozen refusal is the one `build` has no use for: its reset
- * restores an EDITED frozen path either way, so the throw guards the wave, which has
- * not answered its findings.
+ * git rather than believed: folding a round whose fixer committed would reset its
+ * commits away. `branch: ""` resets DETACHED (this tree owns none), and the frozen
+ * refusal is the one `build` has no use for: its reset restores an EDITED frozen
+ * path either way, so the throw guards the wave, which has not answered its findings.
  */
 export async function foldFix(
   deps: ReviewDeps,
@@ -116,8 +115,7 @@ export async function foldFix(
 ): Promise<string> {
   const at = (await gitQuiet(deps.exec, wt, ["rev-parse", "HEAD"]))?.stdout ?? "";
   const head = at.trim();
-  // The gate, and the value the caller reads back as this round's head: a child
-  // that committed its own work left a head the fold must not overwrite.
+  // The gate, and the round's head when the fold must not run on it.
   if (head !== opts.head) return head;
   const report = await normaliseBuild({
     exec: deps.exec,

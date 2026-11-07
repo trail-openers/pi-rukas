@@ -295,9 +295,11 @@ async function verifyCommit(
   frozen: Record<string, string>,
   report: NormaliseReport,
 ): Promise<void> {
-  const newHead = await headSha(exec, wt);
   // Whole SHAs compared as full strings: a short `rev-parse` and a full
   // `headBefore` would never be equal, and a prefix match would pass a fork.
+  // `HEAD^` is the commit before the one just made, so this also proves HEAD
+  // moved — a fold that made no commit has an unreadable parent here.
+  const newHead = await headSha(exec, wt);
   const parent = await must(exec, wt, ["rev-parse", "HEAD^"], "read the build commit's parent");
   if (parent !== headBefore)
     throw new BuildInfraError(

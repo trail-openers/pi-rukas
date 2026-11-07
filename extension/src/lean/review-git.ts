@@ -166,8 +166,8 @@ export type FixRoundOutcome = { head?: string; stop?: BudgetFired };
  * The head it returns is the head now on origin, read back from git rather than
  * assumed from what the child reported doing. The row the child cost is appended
  * to `opts.rows` by `runFixer` — success and death — so this function never
- * touches it; the budget's verdict keeps precedence over the fold, since a
- * fixer the step's own ceiling killed is the stop the operator armed.
+ * touches it, and the budget's verdict outranks the fold: a fixer the step's own
+ * ceiling killed is the stop the operator armed.
  */
 export async function fixRound(
   deps: ReviewDeps,
@@ -224,17 +224,11 @@ export async function fixRound(
       budget: opts.budget,
       stop,
     });
-    // The step's own ceiling ending the fixer is a VERDICT, read before anything
-    // else the round reports, so the fold below cannot capture a partial child.
+    // The ceiling's verdict first, so the fold below cannot capture a partial child.
     if (stop.fired !== undefined) return { stop: stop.fired };
     return await integrate(deps, ctx, {
       gateRead: opts.head,
-      fixHead: await foldFix(deps, ctx, wt, {
-        head: opts.head,
-        frozen: opts.frozen,
-        attempt: opts.attempt,
-        rows: opts.rows,
-      }),
+      fixHead: await foldFix(deps, ctx, wt, opts),
       frozen: opts.frozen,
       rows: opts.rows,
     });
