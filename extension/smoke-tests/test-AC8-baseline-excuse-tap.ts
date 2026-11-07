@@ -1,31 +1,34 @@
 #!/usr/bin/env bun
-import type { PreexistingTierRecord } from "../src/lean/state-outcome-maps.ts";
 /**
- * #2042 — a TAP-only or go-only pair is REFUSED, not excused.
+ * #2064 — the excuse compares WHOLE failure lines, so it excuses any runner the shared
+ * classifier recognises, and a line whose text changed is a line the base never printed.
  *
- * Earlier rounds of this feature tried to read identities from TAP (`not ok 1 - …`)
- * and go (`--- FAIL: TestX`) lines. Three reviews each found a new way for such a
- * parser to fold two different checks onto one token — cutting at the runner's
- * ` - ` merged `checkout - expected 3 got 4` with `checkout - other assertion`, and
- * an optional test-number group merged `not ok 1 - 1 - boom` with
- * `not ok 2 - 1 - boom` — and a folded name excuses a failure only this run
- * authored. So the excuse reads pytest's `path::name` identities and nothing else:
- * a non-pytest identity anywhere in either stream refuses it, and today's red
- * stands. (Both pairs below WOULD have been excused under the old parsers, which is
- * why they are the cases.)
+ * The parser this replaces read pytest's `path::name` out of each line and compared
+ * tokens, which is why TAP and go used to be refused outright: every token parser tried
+ * for them found a new way to fold two checks onto one token. Whole lines cannot fold,
+ * so both now excuse — and the cases that pinned the folding refusal come back as the
+ * cases that pin it NOT happening.
  *
- * The pytest pair stays green, and it also pins the `ci` reuse round-trip: the
- * recorded base set rebuilds through `baseStreamOf` and reads back through the
- * SAME parser a fresh probe would have used (`testIdentitiesOf`), which is what
- * lets `ci` excuse on one tier run and no base probe.
+ *   (tap) two runs of one TAP suite print the same `not ok 1 - checkout - expected 3
+ *     got 4` -> excused, and the sibling `not ok 2 - checkout - other assertion` — the
+ *     line a ` - ` cut used to fold onto the first — is refused when only the head
+ *     printed it
+ *   (go) an identical `--- FAIL:` pair excuses; a base that printed only one of two
+ *     head failures does not
+ *   (reason) a head line whose reason text differs from the base's is a NEW failure
+ *     line, so a changed reason refuses where an identity parser saw one name
+ *   (paths) each tree's own root is stripped as a literal prefix, so one check printed
+ *     in two trees is one line, and a different project-relative path is not
+ *   (marker) a line that opens with a runner's own `FAILED `/`ERROR ` marker and that
+ *     the classifier does not recognise refuses the whole excuse, on either side
+ *   (ci reuse) a recorded NON-pytest set replays through `baseStreamOf` and excuses
+ *   (tier) a tier that really printed TAP lines excuses end to end
  */
-import {
-  baseStreamOf,
-  baselineExcuse,
-  testIdentitiesOf,
-} from "../src/lean/verify-baseline-excuse.ts";
+import type { PreexistingTierRecord } from "../src/lean/state-outcome-maps.ts";
+import { baselineExcuse } from "../src/lean/verify-baseline-excuse.ts";
 import type { BaseProbe } from "../src/lean/verify-baseline.ts";
 import { cleanUp, run } from "./lib/lean-ci-recorder.ts";
+import { failLinesTier } from "./lib/lean-verify-tiers.ts";
 
 const SELF = "test-AC8-baseline-excuse-tap.ts";
 let exit = 0;
@@ -40,8 +43,8 @@ function assert(cond: boolean, msg: string): void {
 const RED: BaseProbe = { status: "red" };
 
 /** Two trees that are definitely different directories. */
-const HEAD_ROOT = "/tmp/pi-rukas-2042-tap/worktree";
-const PROBE_ROOT = "/tmp/pi-rukas-2042-tap/repo.baseline-lean-verify-9";
+const HEAD_ROOT = "/tmp/pi-rukas-2064-tap/worktree";
+const PROBE_ROOT = "/tmp/pi-rukas-2064-tap/repo.baseline-lean-verify-9";
 
 /** One comparison, on the lines each run printed. */
 function excuseOf(headLines: string[], baseLines: string[]) {
@@ -57,65 +60,100 @@ function excuseOf(headLines: string[], baseLines: string[]) {
   });
 }
 
-const namesOf = (stream: string): string[] => testIdentitiesOf(stream).map((i) => i.name);
-
-// ----------------------------------------------------- (tap) head-only TAP pair
+// -------------------------------------------------------------- (tap) TAP excuses
 {
-  // Identical on both sides — the shape that earned an excuse when TAP was parsed.
-  const COMMON = "not ok 1 - checkout - expected 3 got 4";
-  const r = excuseOf([COMMON], [COMMON]);
+  const A = "not ok 1 - checkout - expected 3 got 4";
+  const B = "not ok 2 - checkout - other assertion";
   assert(
-    r.kind === "refused",
-    `(tap) a TAP-only pair that used to excuse is now refused (${r.kind})`,
+    excuseOf([A], [A]).kind === "excused",
+    `(tap) a TAP line the base printed identically excuses (${excuseOf([A], [A]).kind})`,
+  );
+  // The pair a depth-0 ` - ` cut used to fold onto one token: under whole-line
+  // comparison they are two lines, so a base that printed only one cannot excuse both.
+  assert(
+    excuseOf([A, B], [A]).kind === "refused",
+    `(tap) its sibling line, printed only at head, refuses (${excuseOf([A, B], [A]).kind})`,
   );
   assert(
-    namesOf(COMMON).length === 0,
-    `(tap) and no TAP token is read as an identity at all (${JSON.stringify(namesOf(COMMON))})`,
+    excuseOf([A, B], [A, B]).kind === "excused",
+    `(tap) and both lines printed at base excuse (${excuseOf([A, B], [A, B]).kind})`,
   );
 }
-// --------------------------------------------------------- (go) head-only pair
+
+// ----------------------------------------------------------------- (go) go excuses
 {
   const GO = ["--- FAIL: TestRetryBackoff (0.31s)", "--- FAIL: TestVerifyGate (0.02s)"];
-  const r = excuseOf(GO, GO);
   assert(
-    r.kind === "refused",
-    `(go) a go-only pair that used to excuse is now refused (${r.kind})`,
+    excuseOf(GO, GO).kind === "excused",
+    `(go) a go-only pair excuses, as a TAP or pytest pair does (${excuseOf(GO, GO).kind})`,
   );
   assert(
-    namesOf(GO.join("\n")).length === 0,
-    `(go) and no go name is read as an identity (${JSON.stringify(namesOf(GO.join("\n")))})`,
+    excuseOf(GO, [GO[0] as string]).kind === "refused",
+    `(go) a base that failed only one of the two keeps the red (${excuseOf(GO, [GO[0] as string]).kind})`,
   );
 }
 
-// The pytest identity reader's own cases — the depth-0 reason cut, sibling
-// parametrisations, and an unreadable line refusing rather than being omitted — are
-// pinned in `test-AC8b-baseline-excuse-identity.ts`.
-
-// ------------------------------------- (ci reuse) pytest names round-trip whole
+// ---------------------------------------------------- (reason) a changed reason refuses
 {
-  const NAMES = ["tests/x_test.py::test_a", "tests/x_test.py::test_b"];
-  const rebuilt = baseStreamOf(NAMES);
+  const HEAD = "FAILED tests/x_test.py::test_a - assert 1 == 2";
+  const BASE = "FAILED tests/x_test.py::test_a - assert 1 == 3";
   assert(
-    !rebuilt.includes("not ok"),
-    `(ci reuse) a recorded name is rebuilt as a pytest line, never a TAP one (${JSON.stringify(rebuilt.split("\n")[0])})`,
+    excuseOf([HEAD], [BASE]).kind === "refused",
+    `(reason) a failure line whose reason text changed is a new line, and refuses (${excuseOf([HEAD], [BASE]).kind})`,
   );
   assert(
-    namesOf(rebuilt).join("\n") === NAMES.join("\n"),
-    `(ci reuse) every name survives baseStreamOf -> testIdentitiesOf unchanged (${JSON.stringify(namesOf(rebuilt))})`,
+    excuseOf([HEAD], [HEAD]).kind === "excused",
+    `(reason) the same line unchanged still excuses (${excuseOf([HEAD], [HEAD]).kind})`,
   );
+}
 
-  const FULL = "sh -c 'pytest'";
+// ------------------------------------ (paths) the two trees' own prefixes are not content
+{
+  const HEAD = `not ok 1 - ${HEAD_ROOT}/t/checkout.t - expected 3 got 4`;
+  const BASE = `not ok 1 - ${PROBE_ROOT}/t/checkout.t - expected 3 got 4`;
+  assert(
+    excuseOf([HEAD], [BASE]).kind === "excused",
+    `(paths) the same check printed in two trees excuses (${excuseOf([HEAD], [BASE]).kind})`,
+  );
+  const shifted = `not ok 1 - ${PROBE_ROOT}/t/other.t - expected 3 got 4`;
+  assert(
+    excuseOf([HEAD], [shifted]).kind === "refused",
+    `(paths) a different project-relative path is a different line (${excuseOf([HEAD], [shifted]).kind})`,
+  );
+}
+
+// --------------------------------- (unrecognised marker) a declared failure nothing reads
+{
+  const A = "FAILED tests/x_test.py::test_a - AssertionError";
+  // Neither line below matches a shape in the table, so the classifier answers "not a
+  // failure line"; a runner's own marker has to be enough to refuse.
+  const COLLECTION_ERROR = "ERROR tests/test_brand_new.py";
+  const BARE_FAILED = "FAILED tests/y.py";
+  assert(
+    excuseOf([A, COLLECTION_ERROR], [A]).kind === "refused",
+    `(marker) an unrecognised ERROR line in head refuses the excuse (${excuseOf([A, COLLECTION_ERROR], [A]).kind})`,
+  );
+  assert(
+    excuseOf([A], [A, BARE_FAILED]).kind === "refused",
+    `(marker) the same on the BASE side refuses it (${excuseOf([A], [A, BARE_FAILED]).kind})`,
+  );
+}
+
+// ------------------------------------------- (ci reuse) recorded lines replay verbatim
+{
+  const LINES = ["not ok 1 - a bats check", "--- FAIL: TestSolo (0.01s)"];
+  const FULL = "sh -c 'prove -r t'";
   const record: PreexistingTierRecord = {
     cmd: FULL,
-    names: NAMES,
-    total: NAMES.length,
+    names: LINES,
+    total: LINES.length,
     baseSha: "b".repeat(40),
-    baseNames: NAMES,
+    baseNames: LINES,
   };
   const r = await run({
     full: FULL,
     tierExit: 1,
-    tierStdout: NAMES.map((n) => `FAILED ${n} - Assert`).join("\n"),
+    tierStdout: LINES.join("\n"),
     frozenBytes: {
       path: "tests/AC1-retry.test.sh",
       bytes: "#!/bin/sh\nexit 0\n",
@@ -125,7 +163,7 @@ const namesOf = (stream: string): string[] => testIdentitiesOf(stream).map((i) =
   });
   assert(
     r.outcome?.kind === "green",
-    `(ci reuse) the recorded pytest set excuses ci's red full tier (got ${r.outcome?.kind ?? `threw: ${r.threw?.message}`}; ${(r.outcome?.reason ?? "").slice(0, 140)})`,
+    `(ci reuse) a recorded NON-pytest set excuses ci's red full tier (got ${r.outcome?.kind ?? `threw: ${r.threw?.message}`}; ${(r.outcome?.reason ?? "").slice(0, 140)})`,
   );
   assert(
     r.cmds.filter((c) => c === FULL).length === 1,
@@ -134,6 +172,26 @@ const namesOf = (stream: string): string[] => testIdentitiesOf(stream).map((i) =
   assert(
     (r.tierRuns ?? 0) === 1 && !r.cmds.some((c) => c.includes(".baseline-lean-verify-")),
     `(ci reuse) and no base probe ran (${String(r.tierRuns)})`,
+  );
+}
+
+// ------------------------------------- (tier fixture) a real TAP tier excuses end to end
+{
+  const LINES = ["not ok 1 - a bats check", "not ok 2 - another one - expected 3 got 4"];
+  const r = await run({
+    full: failLinesTier("tap-e2e", LINES),
+    tierExit: 1,
+    tierStdout: LINES.join("\n"),
+    baseTierOutput: LINES.join("\n"),
+    frozenBytes: {
+      path: "tests/AC1-retry.test.sh",
+      bytes: "#!/bin/sh\nexit 0\n",
+      baseBytes: "#!/bin/sh\nexit 1\n",
+    },
+  });
+  assert(
+    r.outcome?.kind === "green",
+    `(tier) a red tier that really printed TAP lines excuses over a base that printed them (${r.outcome?.kind ?? `threw: ${r.threw?.message}`}; ${(r.outcome?.reason ?? "").slice(0, 140)})`,
   );
 }
 

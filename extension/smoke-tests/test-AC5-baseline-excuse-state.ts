@@ -35,10 +35,17 @@ function check(cond: boolean, msg: string): void {
 /** A record of the shape `verify` writes for one excused tier. */
 const RECORD: PreexistingTierRecord = {
   cmd: "pnpm test",
-  names: ["tests/a.spec.ts::t1", "tests/b.spec.ts::t2"],
+  names: [
+    "FAILED tests/a.spec.ts::t1 - Assert",
+    "FAILED tests/b.spec.ts::t2 - Assert",
+  ],
   total: 7,
   baseSha: "c".repeat(40),
-  baseNames: ["tests/a.spec.ts::t1", "tests/b.spec.ts::t2", "tests/c.spec.ts::t3"],
+  baseNames: [
+    "FAILED tests/a.spec.ts::t1 - Assert",
+    "FAILED tests/b.spec.ts::t2 - Assert",
+    "FAILED tests/c.spec.ts::t3 - Assert",
+  ],
 };
 
 /** Write a run whose newest step is `step`, then load it back. */
@@ -112,7 +119,7 @@ const verifyStep = (outcome: Record<string, unknown>): Record<string, unknown> =
     ["an empty printed name set", { fast: { ...RECORD, names: [] } }],
     [
       "a name carrying a control character",
-      { fast: { ...RECORD, names: ["tests/a\u0000b::t1"] } },
+      { fast: { ...RECORD, names: ["FAILED tests/a\u0000b::t1 - Assert"] } },
     ],
     ["a tier value that is not an object", { fast: "pytest said so" }],
   ];

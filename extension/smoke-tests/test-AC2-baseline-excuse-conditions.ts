@@ -41,8 +41,11 @@ function assert(cond: boolean, msg: string): void {
   }
 }
 
-const NAMES = ["tests/x_test.py::test_a", "tests/x_test.py::test_b"];
-const stream = (names: string[]): string => names.map((n) => `FAILED ${n} - Assert`).join("\n");
+const NAMES = [
+  "FAILED tests/x_test.py::test_a - Assert",
+  "FAILED tests/x_test.py::test_b - Assert",
+];
+const stream = (names: string[]): string => names.join("\n");
 
 type Ran = Awaited<ReturnType<typeof runVerify>>;
 function record(r: Ran): { names: string[]; total: number } | undefined {
@@ -121,7 +124,10 @@ function record(r: Ran): { names: string[]; total: number } | undefined {
 
 // -------------------------------------------------------------------- (cap)
 {
-  const many = Array.from({ length: PREEXISTING_NAMES_CAP + 5 }, (_, i) => `tests/x_test.py::t${i}`);
+  const many = Array.from(
+    { length: PREEXISTING_NAMES_CAP + 5 },
+    (_, i) => `FAILED tests/x_test.py::t${String(i)} - Assert`,
+  );
   const r = await runVerify({
     issue: 554,
     implement: true,

@@ -20,28 +20,32 @@ Symptoms → causes → fixes. Most issues here come from running an older sandb
 
 **Cause:** the project's own verify tier fails on the run's head AND on its base commit, and
 the two runs did not prove the same thing. A tier red at HEAD re-runs once, and a still-red
-tier is re-run at the base in a throwaway checkout; the run is handed back unless every test
-the head run named also failed there. Names are read from **pytest's own failing lines only**
-(`FAILED`/`ERROR path::name`): a tier whose output names failures in any other runner's dialect
-(TAP `not ok`, go `--- FAIL:`, a shell tally) is not excusable, and neither is a tier that
-exited non-zero while naming no test at all, a head-only name, a re-run or base run that
-observed nothing (a kill, a buffer overflow, an un-startable command), or a base run whose red
-is the shape of a checkout whose dependencies were never linked (the probe's provisioning, not
-the commit's). The narrow rule is deliberate: every parser tried for a non-pytest identity
-found a new way to fold two different checks onto one token, and a folded name excuses a
-failure this run authored — the one thing the excuse must never do.
+tier is re-run at the base in a throwaway checkout; the run is handed back unless every failure
+line the head run printed also appears among the base run's. Comparison is of the **whole
+failure line**, so any runner the shared failure-line classifier reads is excusable — pytest
+`FAILED path::name`, TAP/bats `not ok`, go `--- FAIL:`, a script tally, a `FAIL` header, the
+driver's own diagnostic dialect — with each tree's own root stripped so the same check printed
+in two trees is one line. What refuses: a line only the head printed (including one whose
+reason text differs from the base's), a stream with no recognised failure line at all, a line
+that opens with a runner's own `FAILED `/`ERROR ` marker in a dialect the classifier does not
+read, a re-run or base run that observed nothing (a kill, a buffer overflow, an un-startable
+command), or a base run whose red is the shape of a checkout whose dependencies were never
+linked (the probe's provisioning, not the commit's). Whole lines, not parsed test names, are
+deliberate: every identity parser tried for a non-pytest runner found a new way to fold two
+different checks onto one token, and a folded name excuses a failure this run authored — the one
+thing the excuse must never do.
 
-**Fix:** read the two name sets in the run's verify reason. A head-only name is the run's own
-regression and belongs in a build round. A tier that names nothing needs a runner that prints
-one pytest-style failing-test line per test (`pytest -v` prints them; `go test -v` and `prove`
-do not, and their output keeps the hand-back whatever it names), because a gate that cannot
-tell which tests failed cannot tell which ones the base already had. A base red shaped like a
-missing dependency tree means the project's dependency install is not reproducible from a bare
-checkout; make it so, or configure a tier that does not need the tree. A run whose every failure
-the base also printed does NOT hand back: it is graded green, the failures are recorded as
-`preexistingFailures` on the verify/ci step, and the PR body's `## Pre-existing test failures`
-section — "failing on the base commit too; not introduced by this change" — names the tier, its
-command, the base commit, the capped names and the true total.
+**Fix:** read the two line sets in the run's verify reason. A head-only line is the run's own
+regression and belongs in a build round. A tier that prints no recognised failure line needs a
+runner that prints one failing-test line per test — most do (`pytest -v`, `go test -v`, `prove`
+and a bats run all print their failing checks); a gate that says only that it failed cannot tell
+you which tests the base already had. A base red shaped like a missing dependency tree means the
+project's dependency install is not reproducible from a bare checkout; make it so, or configure
+a tier that does not need the tree. A run whose every failure line the base also printed does NOT
+hand back: it is graded green, the failures are recorded as `preexistingFailures` on the
+verify/ci step, and the PR body's `## Pre-existing test failures` section — "failing on the base
+commit too; not introduced by this change" — names the tier, its command, the base commit, the
+capped failure lines and the true total.
 
 ## Platform support
 

@@ -9,9 +9,9 @@
  * the prose from drifting away from the gate it describes (R8).
  *
  * The needles are the ones a reader needs, not incidental words: that the excuse is
- * decided by NAME, that the disclosure is recorded in `preexistingFailures`, that a
- * head-only name keeps the hand-back, and that the PR body prints the disclosure under
- * the section `publish` actually renders.
+ * decided by FAILURE LINE (runner-agnostic, no parser), that the disclosure is recorded in
+ * `preexistingFailures`, that a head-only line keeps the hand-back, and that the PR body prints
+ * the disclosure under the section `publish` actually renders.
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -53,8 +53,8 @@ const ciRow = row("ci");
     "(verify) the row names the field the disclosure is recorded in",
   );
   assert(
-    /by NAME|by name/.test(verifyRow),
-    "(verify) the row says the base's red is graded by test NAME, not by colour alone",
+    /FAILURE LINE|failure line/.test(verifyRow),
+    "(verify) the row says the base's red is graded by whole failure LINE, not by colour alone",
   );
   assert(
     verifyRow.includes("baseline red:"),
@@ -71,8 +71,8 @@ const ciRow = row("ci");
 // ------------------------------------------------------------------ (ci row)
 {
   assert(
-    /same NAME rule|same name rule|NAME rule/.test(ciRow),
-    "(ci) the row says the full tier is excused by the same name rule",
+    /same LINE rule|same line rule|LINE rule/.test(ciRow),
+    "(ci) the row says the full tier is excused by the same line rule",
   );
   assert(
     ciRow.includes("byte-identical"),
@@ -104,18 +104,20 @@ const ciRow = row("ci");
     "(troubleshooting) the fix names the record the disclosure lives in",
   );
   assert(
-    /naming no test at all|names nothing/.test(troubleshooting),
-    "(troubleshooting) it says a tier that names no test is not excusable",
+    /no recognised failure line|recognised failure line at all/.test(troubleshooting),
+    "(troubleshooting) it says a tier that prints no recognised failure line is not excusable",
   );
   assert(
     /pytest/.test(troubleshooting) &&
-      /other runner|any other runner|TAP/.test(troubleshooting) &&
-      /go/.test(troubleshooting),
-    "(troubleshooting) it says the excuse reads pytest-named failures and no other runner's",
+      /TAP/.test(troubleshooting) &&
+      /\bgo\b/.test(troubleshooting) &&
+      /any runner|excusable|is excusable|any runner the shared/.test(troubleshooting),
+    "(troubleshooting) it says any runner the classifier reads — pytest, TAP, go — is excusable",
   );
   assert(
-    /pytest/.test(verifyRow) || /pytest/.test(ciRow),
-    "(docs) the step table says the name rule is pytest-only",
+    /whole\n?failure line|whole failure line/.test(troubleshooting) &&
+      /whole failure line|LINE rule|line rule/.test(verifyRow + ciRow),
+    "(docs) the step table and the entry both say the rule compares WHOLE failure lines",
   );
   assert(
     /dependency|dependencies/.test(troubleshooting),
@@ -129,7 +131,7 @@ const ciRow = row("ci");
   // following the troubleshooting entry finds nothing under the heading it named.
   const rec: PreexistingTierRecord = {
     cmd: "pytest",
-    names: ["tests/x_test.py::test_a"],
+    names: ["FAILED tests/x_test.py::test_a - AssertionError"],
     total: 3,
     baseSha: "d".repeat(40),
   };

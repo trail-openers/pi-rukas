@@ -1,15 +1,17 @@
 #!/usr/bin/env bun
 /**
- * #2042 — one pytest line poisoning an otherwise excusable pair refuses the excuse.
+ * #2064 — one unreadable line poisons an otherwise excusable pair, in any dialect.
  *
- * The excuse reads pytest's `path::name` identities and nothing else, and a stream
- * that carries a failing line this module cannot name is not evidence about which
- * tests failed: a TAP description or a go test name folds two different checks onto
- * one token in ways three reviews each found a new instance of. So one such line in
- * either stream refuses the WHOLE excuse — the pytest names it printed beside it do
- * not get to excuse the unnamed ones — and today's red stands.
+ * Whole-line matching is runner-agnostic across the shapes the shared classifier
+ * recognises, so a pytest pair, a TAP pair and a go pair each excuse on their own —
+ * those are the controls that keep this from being a blanket refusal. What still
+ * refuses is a line that declares a failing test the classifier does NOT recognise:
+ * one such line in either stream refuses the WHOLE excuse, because the lines it
+ * printed beside it do not get to excuse the unread one.
  *
- * The pytest pair below is the control that keeps this from being a blanket refusal.
+ * And the shape the parser-era tests pinned as a refusal is now a pass: a TAP line
+ * beside a pytest line, printed identically on both sides, excuses — the field case
+ * this change exists for.
  */
 import { baselineExcuse } from "../src/lean/verify-baseline-excuse.ts";
 import type { BaseProbe } from "../src/lean/verify-baseline.ts";
@@ -26,8 +28,8 @@ function assert(cond: boolean, msg: string): void {
 
 const RED: BaseProbe = { status: "red" };
 /** Two trees that are definitely different directories. */
-const HEAD_ROOT = "/tmp/pi-rukas-2042-tap/worktree";
-const PROBE_ROOT = "/tmp/pi-rukas-2042-tap/repo.baseline-lean-verify-9";
+const HEAD_ROOT = "/tmp/pi-rukas-2064-mixed/worktree";
+const PROBE_ROOT = "/tmp/pi-rukas-2064-mixed/repo.baseline-lean-verify-9";
 
 /** One comparison, on the lines each run printed. */
 function excuseOf(headLines: string[], baseLines: string[]) {
@@ -43,16 +45,82 @@ function excuseOf(headLines: string[], baseLines: string[]) {
   });
 }
 
+const PY = "FAILED tests/x_test.py::test_a - AssertionError";
+const TAP = "not ok 1 - a bats check";
+const GO = "--- FAIL: TestSolo (0.01s)";
+
+// ------------------------------------- (control) each recognised dialect excuses on its own
 {
-  const PY = "FAILED tests/x_test.py::test_a - AssertionError";
-  assert(excuseOf([PY], [PY]).kind === "excused", "(mixed) the pytest pair alone still excuses");
+  assert(excuseOf([PY], [PY]).kind === "excused", "(control) the pytest pair excuses");
+  assert(excuseOf([TAP], [TAP]).kind === "excused", "(control) the TAP pair excuses");
+  assert(excuseOf([GO], [GO]).kind === "excused", "(control) the go pair excuses");
+  // The mixed-runner pair the parser era refused outright.
   assert(
-    excuseOf([PY, "not ok 1 - a bats check"], [PY]).kind === "refused",
-    "(mixed) one TAP line in the HEAD stream refuses the whole excuse",
+    excuseOf([PY, TAP], [PY, TAP]).kind === "excused",
+    `(control) a pytest line beside a TAP line, both printed at base, excuses (${excuseOf([PY, TAP], [PY, TAP]).kind})`,
+  );
+}
+
+// ------------------------------------ (unreadable) one line refuses the whole excuse
+{
+  // A tally in a dialect the table does not carry, and a bare file verdict: both
+  // declare a failing test and neither is readable, so neither may go uncounted.
+  // A bare file verdict and a count the table does not carry: both declare a failing
+  // test and neither is readable, so neither may go uncounted.
+  const RECORDED = ["FAILED a test.sh", "ERROR 17 tests blew up"];
+  for (const unreadable of RECORDED) {
+    assert(
+      excuseOf([TAP, unreadable], [TAP]).kind === "refused",
+      `(unreadable) "${unreadable}" in the HEAD stream refuses the whole excuse (${excuseOf([TAP, unreadable], [TAP]).kind})`,
+    );
+    assert(
+      excuseOf([TAP], [TAP, unreadable]).kind === "refused",
+      `(unreadable) the same line in the BASE stream refuses it too (${excuseOf([TAP], [TAP, unreadable]).kind})`,
+    );
+  }
+  assert(
+    excuseOf([PY, TAP, GO], [PY, TAP, GO]).kind === "excused",
+    "(unreadable) three recognised dialects, no unreadable line, still excuse",
+  );
+}
+
+// ------------------------------------------- (empty) a stream that names nothing excuses
+{
+  assert(
+    excuseOf(["built 14 packages in 3s"], [PY]).kind === "refused",
+    "(empty) a head stream with no recognised failure line excuses nothing",
   );
   assert(
-    excuseOf([PY], [PY, "--- FAIL: TestSolo (0.01s)"]).kind === "refused",
-    "(mixed) one go line in the BASE stream refuses it too",
+    excuseOf([PY], ["built 14 packages in 3s"]).kind === "refused",
+    "(empty) a base stream with none excuses nothing either",
+  );
+  assert(
+    excuseOf([], []).kind === "refused",
+    "(empty) and two empty streams are no evidence about either run",
+  );
+}
+
+// -------------------------------------- (same tree) one tree compares against nothing
+{
+  const r = baselineExcuse({
+    tierName: "fast",
+    cmd: "sh -c 'prove -r t'",
+    baseSha: "a".repeat(40),
+    probe: RED,
+    headStream: TAP,
+    baseStream: TAP,
+    headRoot: HEAD_ROOT,
+    probeRoot: HEAD_ROOT,
+  });
+  assert(r.kind === "refused", `(same tree) one tree printed twice is every line its own echo (${r.kind})`);
+}
+
+// ------------------------------------------- (missing deps) an unprovisioned base refuses
+{
+  const r = excuseOf([PY], ["npm: command not found"]);
+  assert(
+    r.kind === "refused",
+    `(missing deps) a base red shaped like a tree that was never linked excuses nothing (${r.kind})`,
   );
 }
 

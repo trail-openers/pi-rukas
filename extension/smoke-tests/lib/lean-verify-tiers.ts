@@ -79,3 +79,17 @@ export function pytestFailTier(marker: string, names: readonly string[]): string
   const tally = `=== ${String(names.length)} failed, 0 passed in 0.10s ===`;
   return `sh -c 'echo tier-said-${marker} 1>&2; echo "${printed}" 1>&2; echo "${tally}" 1>&2; exit 1'`;
 }
+
+/**
+ * A tier command that fails and PRINTS `lines` verbatim as its failing lines.
+ *
+ * The sibling {@link pytestFailTier} needed for a runner-agnostic case: the baseline
+ * excuse compares WHOLE failure lines, so a case must be able to put a TAP `not ok`,
+ * a go `--- FAIL:` or any other recognised line on both runs' streams exactly as the
+ * runner would print it, rather than only pytest `path::name` tokens. Each entry is
+ * echoed on its own line, so what the tier prints is what the excuse compares.
+ */
+export function failLinesTier(marker: string, lines: readonly string[]): string {
+  const printed = lines.map((l) => `echo "${l}" 1>&2;`).join(" ");
+  return `sh -c 'echo tier-said-${marker} 1>&2; ${printed} exit 1'`;
+}
