@@ -229,24 +229,17 @@ export function parsePorcelainZ(out: string): PorcelainEntry[] {
     const xy = rec.slice(0, 2);
     const p = rec.slice(3);
     if (xy[0] === " " && xy[1] === " ") continue;
-    if (xy[0] === "R" || xy[0] === "C") i++; // its source path is the next field
+    if (xy[0] === "R" || xy[0] === "C") {
+      // Both sides are named: the source is where a byte the step is about to
+      // discard used to live, and a reason that omitted it reads as though
+      // nothing was touched there.
+      const src = fields[i + 1];
+      if (src !== undefined && src !== "") entries.push({ status: xy, path: src });
+      i++;
+    }
     entries.push({ status: xy, path: p });
   }
   return entries;
-}
-
-/** The paths a `git status --porcelain` block reports, deduplicated. A rename
- * carries `old -> new` and its target follows the arrow; a quoted name comes back
- * unquoted. Sliced one byte wrong this names a path that does not exist. */
-export function porcelainPaths(porcelain: string): string[] {
-  const out: string[] = [];
-  for (const line of porcelain.split("\n")) {
-    const renamed = / -> (.*)$/.exec(line);
-    const raw = renamed?.[1] ?? line.slice(3);
-    const p = (raw.startsWith('"') ? raw.slice(1, -1) : raw).trim();
-    if (p !== "") out.push(p);
-  }
-  return [...new Set(out)];
 }
 
 /** Paths git reports as changed, added or deleted in `wt` (base-relative). */

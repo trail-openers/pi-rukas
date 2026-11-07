@@ -49,7 +49,7 @@ import { assertSafeRef } from "../worktree-loss.ts";
 import { provisionWorktree } from "../worktree-provision.ts";
 import type { ExecFn } from "../worktree.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
-import { headSha, porcelain } from "./build-git.ts";
+import { headSha } from "./build-git.ts";
 import { assertFrozenIntact } from "./build-normalise.ts";
 import { frozenFromLog, testsFromLog } from "./build.ts";
 import { ChallengeInfraError, dispatchAdversary } from "./challenge-dispatch.ts";
@@ -61,12 +61,12 @@ import { loadWorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { fetchIssueBody } from "./io.ts";
 import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
-import { existsInCommit, fileProblem } from "./specify-path.ts";
+import { existsInCommit, fileProblem, pathProblem } from "./specify-path.ts";
 import { testCriteria } from "./specify-prompt.ts";
 import type { TestRunLimits } from "./specify-proof.ts";
-import { resetWorktreeToBase } from "./specify-reset.ts";
-import { SpecifyInfraError, runTestPipeline } from "./specify-run.ts";
-import { porcelainPaths } from "./specify-tree.ts";
+import { SpecifyResetError, resetWorktreeToBase } from "./specify-reset.ts";
+import { SpecifyInfraError, noteClause, runTestPipeline } from "./specify-run.ts";
+import { changedPaths } from "./specify-tree.ts";
 import {
   assertSpecifyWorktreeOwned,
   ensureSpecifyWorktreeWithProvision,
@@ -106,6 +106,11 @@ export interface ChallengeDeps {
  */
 const COMMIT_ID = /^[0-9a-f]{40}$/;
 
+/** The control characters `handback.ts` refuses to print in a path. */
+const CONTROL_CHARS = new RegExp(
+  `[${String.fromCharCode(0x00)}-${String.fromCharCode(0x1f)}${String.fromCharCode(0x7f)}]`,
+);
+
 /** The spec, re-read from the forge — the same contract the builder worked to. */
 async function specOf(deps: ChallengeDeps, repoRoot: string, issue: number): Promise<PiSpec> {
   let body: string;
@@ -127,12 +132,14 @@ async function specOf(deps: ChallengeDeps, repoRoot: string, issue: number): Pro
   return parsed.spec;
 }
 
-// A round can end holding bytes nobody judged, and `verify` refuses a dirty
-// tree: reset to `ref` (a head, so a commit the round made survives) and
-// provision again — `clean -fdx` takes the links, so the two are one move — and
-// name what went, a refused child's only notice, since it was told "recorded".
-// A clean tree answers "" with NO reset, whose clean would take links the next
-// step needs.
+// A round can end holding bytes nobody judged, and `verify` refuses a dirty tree:
+// reset to `ref` and provision again (`clean -fdx` takes the links, so the two are
+// one move), naming what went. The reset runs whether or not the tree was dirty: an
+// `empty` round committed nothing, so a HEAD above `ref` is the child's own unjudged
+// commit and it goes with it. Names come from `changedPaths` (git's `-z` status, the
+// only form surviving a space, quote or newline); one failing the boundary's path
+// rules or `handback.ts`'s control-character filter is dropped, not clipped, as the
+// reason reaches the issue as a public comment.
 async function resetAndProvision(
   deps: ChallengeDeps,
   repoRoot: string,
@@ -140,18 +147,23 @@ async function resetAndProvision(
   ref: string,
   branch: string,
 ): Promise<string> {
-  const paths = porcelainPaths(await porcelain(deps.exec, wt));
-  if (paths.length === 0) return "";
-  // One `try` for both: a failed reset is followed by a provision of a tree nobody
-  // cleaned, and `verify` refuses that dirty, so the pair has one outcome.
+  const dirty = await changedPaths(deps.exec, wt);
+  // Read before the reset, and compared to `ref` rather than a fresh HEAD.
+  const head = await headSha(deps.exec, wt);
+  const shown = [...new Set(dirty.map((e) => e.path))].filter(
+    (p) => pathProblem(p) === undefined && !CONTROL_CHARS.test(p),
+  );
+  const clause = noteClause("discarded", shown);
+  // One outcome for the pair: a failed reset leaves a provision of a tree nobody
+  // cleaned, and `verify` refuses that dirty. (The budget stop below runs the two
+  // moves as two `try`s, each with its own message, and names nothing.)
   try {
     await resetWorktreeToBase(deps.exec, wt, ref, branch);
     await provisionWorktree(deps.exec, repoRoot, wt);
   } catch (err) {
     throw new ChallengeInfraError(`could not reset the challenge tree: ${(err as Error).message}`);
   }
-  const shown = paths.slice(0, 8);
-  return ` discarded ${paths.length}: ${shown.join(", ")}${paths.length > 8 ? ` (+${paths.length - 8} more)` : ""}`;
+  return dirty.length === 0 && head === ref ? "" : clause === "" ? "" : ` ${clause}`;
 }
 
 /**
@@ -280,9 +292,26 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
   const rows = [row];
   const read = readDispatched(adversary);
   if ("stop" in read) {
-    // The stop returns before the pipeline is called, so nothing has reset what
-    // the child the budget stopped wrote; `verify` refuses a dirty tree.
-    await resetAndProvision(deps, repoRoot, wt, headBefore, branch);
+    // The stop returned before the pipeline, so nothing has reset what the child
+    // wrote. Both moves are UNCONDITIONAL (`clean -fdx` takes the dependency
+    // links, so even a clean-looking tree needs them rebuilt) and each keeps its
+    // own message: a failed reset and a failed provision are different repairs.
+    try {
+      await resetWorktreeToBase(deps.exec, wt, headBefore, branch);
+    } catch (err) {
+      if (err instanceof SpecifyResetError)
+        throw new ChallengeInfraError(
+          `could not reset the challenge worktree to ${headBefore} after the budget stop: ${err.message}`,
+        );
+      throw new ChallengeInfraError(`unexpected reset failure: ${String(err)}`);
+    }
+    try {
+      await provisionWorktree(deps.exec, repoRoot, wt);
+    } catch (err) {
+      throw new ChallengeInfraError(
+        `could not re-provision the challenge worktree after the budget stop: ${(err as Error).message}`,
+      );
+    }
     return budgetVerdictWithRows("challenge", read.stop, rows);
   }
   const toolUses = read.result.toolUses ?? [];
@@ -344,14 +373,14 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
     { toolUses },
   );
 
-  // The one exit that never reaches the pipeline's own reset: a round whose every
-  // submitted row was refused returns from the boundary without resetting. A
-  // committed round needs no sweep — step 3 of `runTestPipeline` resets the tree
-  // and writes back only the bytes it proved red — and `uncovered` belongs to the
-  // throw below, so neither pays for a reset.
+  // The one exit that never reached the pipeline's own reset. The sweep goes back
+  // to `headBefore`, not to a re-read HEAD: an `empty` round committed NOTHING, so
+  // a commit above it is the child's own unjudged work and it is discarded too.
+  // A committed round needs no sweep — step 3 of `runTestPipeline` resets the tree
+  // and writes back only the bytes it proved red — and `uncovered` is the throw.
   const swept =
     pipeline.kind === "empty"
-      ? await resetAndProvision(deps, repoRoot, wt, await headSha(deps.exec, wt), branch)
+      ? await resetAndProvision(deps, repoRoot, wt, headBefore, branch)
       : "";
 
   if (pipeline.kind === "committed")

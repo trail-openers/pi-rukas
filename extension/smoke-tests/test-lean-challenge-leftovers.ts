@@ -15,6 +15,9 @@
  *
  *   (a) every submitted row refused -> `none`, HEAD unmoved, `git status
  *       --porcelain -uall` EMPTY, and both discarded paths named in the reason.
+ *   (e) an `empty` round whose child committed its own file -> HEAD is back at
+ *       `headBefore` and the tree is clean; the names in the reason are the raw
+ *       `-z` paths (quoted, renamed and non-ASCII names included).
  *   (b) a committed round -> `new-tests`, HEAD moved by exactly one commit
  *       holding only the proved-red file, a clean tree, and NO extra reset: the
  *       sweep must never undo the commit the round just made.
@@ -116,6 +119,65 @@ function seeded(issue: number, seed: string[]) {
   assert(
     reason.includes("discarded 2: ") && reason.includes(STRAY) && reason.includes(FROZEN),
     `(a) and the step names both bytes its sweep removed (got ${reason})`,
+  );
+}
+
+// --------- (e) the sweep goes back to `headBefore`, not to whatever HEAD says now.
+// An `empty` round committed NOTHING, so a commit above `headBefore` is the
+// child's own — an unjudged file that reached HEAD through `git commit`, the one
+// route a dirty-tree check cannot see. A sweep to a re-read HEAD would keep it,
+// and `verify` would then re-run bytes nobody proved red. The same round also
+// names quoted, renamed and non-ASCII paths verbatim: they come from the `-z`
+// reader, so git's C-quoting never reaches the reason.
+{
+  const issue = 2404;
+  const committed = "tests/AC1-child-committed.test.sh";
+  const r = await runChallenge({
+    issue,
+    built: seeded(issue, ["tests/AC1-already-frozen.test.sh", "tests/AC1-other.test.sh"]),
+    child: (wt) => {
+      put(wt, committed, redEdge(committed), 0o755);
+      git(wt, "add", "--", committed);
+      git(wt, "commit", "-q", "-m", "unjudged work the round never declared");
+      // A rename git detects only because both sides hold the same bytes.
+      put(wt, "tests/AC1-renamed-from.test.sh", redEdge("renamed"), 0o755);
+      git(wt, "add", "-A", "--", "tests/AC1-renamed-from.test.sh");
+      git(wt, "commit", "-q", "-m", "the file that gets renamed");
+      git(wt, "mv", "tests/AC1-renamed-from.test.sh", "tests/AC1-renamed-to.test.sh");
+      put(wt, 'tests/"AC1 odd, quoted".test.sh', redEdge("quoted"), 0o755);
+      put(wt, "tests/AC1-caf\u00e9.test.sh", redEdge("caf\u00e9"), 0o755);
+    },
+    // A name the boundary has no reason to refuse, declared under a criterion
+    // whose run-level quota is already full — so the round ends `empty`, and the
+    // commits the child made on its own are still sitting above `headBefore`.
+    toolUses: [submit("AC1", [committed])],
+  });
+  const wt = r.worktree;
+  assert(r.threw === undefined, `(e) no throw: ${r.threw?.message ?? "clean"}`);
+  assert(r.outcome?.kind === "none", `(e) none, got ${r.outcome?.kind}`);
+  assert(
+    git(wt, "rev-parse", "HEAD") === r.headBefore,
+    `(e) HEAD is back at the head the step found (got ${git(wt, "rev-parse", "HEAD")})`,
+  );
+  assert(
+    subjectsAbove(wt, r.headBefore).join() === "",
+    `(e) no commit is left above it (got ${subjectsAbove(wt, r.headBefore).join(" | ")})`,
+  );
+  assert(existsSync(`${wt}/${committed}`) === false, "(e) the file only that commit held is gone");
+  assert(status(wt) === "", `(e) and the tree is clean for verify (got ${status(wt)})`);
+  const reason = r.outcome?.reason ?? "";
+  assert(
+    reason.includes('tests/"AC1 odd, quoted".test.sh'),
+    `(e) a name git would otherwise quote is named verbatim (got ${reason})`,
+  );
+  assert(
+    reason.includes("tests/AC1-renamed-from.test.sh") &&
+      reason.includes("tests/AC1-renamed-to.test.sh"),
+    `(e) both sides of a rename are named (got ${reason})`,
+  );
+  assert(
+    reason.includes("tests/AC1-caf\u00e9.test.sh") && !reason.includes('"tests/AC1-caf'),
+    `(e) a non-ASCII name is not C-quoted into something that does not exist (got ${reason})`,
   );
 }
 
