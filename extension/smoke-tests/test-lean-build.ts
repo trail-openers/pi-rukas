@@ -325,7 +325,11 @@ function assert(cond: boolean, msg: string): void {
 
 // ------------------------------------ (i) the re-entry reason reaches the prompt
 {
-  const reason = "AC1 tests/AC1-retry.test.sh: exited 1 — retry gave up on the first failure";
+  // The timeout wording is the part that must survive: `reentryFromLog` clips the
+  // reason on its way into the prompt, and a builder told only that a test failed
+  // re-derives the feature instead of looking for the hang the frozen test named.
+  const reason =
+    "frozen tests timed out (the head's code may hang): tests/AC1-retry.test.sh — the guard's predicate spins on a hyphenated input";
   const r = await runBuild({
     issue: 109,
     extraSteps: [
@@ -352,6 +356,10 @@ function assert(cond: boolean, msg: string): void {
   assert(
     prompt.includes("tests/AC1-retry.test.sh"),
     "(i) the frozen test path is named in the prompt",
+  );
+  assert(
+    prompt.includes("frozen tests timed out (the head's code may hang)"),
+    `(i) the timeout wording reaches the child's prompt verbatim (${prompt.slice(prompt.indexOf("Why this round exists"), prompt.indexOf("Why this round exists") + 220)})`,
   );
   assert(
     prompt.includes(RUNNER),

@@ -69,6 +69,25 @@ export interface VerifyOpts extends ProbeShapeOpts {
   issue: number;
   /** What the project configured; `fast` defaults to a passing tier. */
   config?: Partial<WorkConfig["verify"]>;
+  /**
+   * Freeze extra acceptance-test files besides the fixture's own, as path -> bytes.
+   * They are committed on top of the freeze and hashed into the record, so the step
+   * judges them as genuine frozen tests — the shape a hanging frozen file needs.
+   */
+  extraFrozen?: Record<string, string>;
+  /**
+   * The `verify.test` runner template verbatim, for the case that wants a runner it
+   * cannot start (`no-such-test-runner {file}`) rather than `sh {file}` or the
+   * silent helper.
+   */
+  frozenRunner?: string;
+  /**
+   * The run's frozen contract is one that fails whatever the tree holds, so the
+   * runner must name it — see `NAMING_RUNNER_TEMPLATE`. Used with `frozenText:
+   * RED_ACCEPTANCE_TEST`; without it the helper goes untracked-or-unused and an
+   * unconditional-red contract reads `unclear` rather than red.
+   */
+  alwaysRedFrozen?: boolean;
   /** Nothing configured at all: the frozen tests alone decide. */
   noCommand?: boolean;
   /** Bounds every tier and frozen-test run, so a hang is observable in seconds. */

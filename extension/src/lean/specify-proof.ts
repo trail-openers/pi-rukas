@@ -61,6 +61,21 @@ export const TEST_MAX_BUFFER = 8 * 1024 * 1024;
 
 export type ProofKind = "red" | "green" | "unclear" | "infra";
 
+/**
+ * Which of `runTestFile`'s three `infra` shapes produced a proof.
+ *
+ * The three say different things to the caller and must not be collapsed: a
+ * wall-clock kill means the code under test never returned (and for a FROZEN file,
+ * one already proven red at freeze time, that is a verdict — see
+ * `verify-steps.ts`'s `frozenTestFailure`), while a runner that could not be started
+ * and a template that named nothing to run observed nothing at all and stay
+ * infrastructure. `runTestFile` classifies the shape once, from the rejection's own
+ * stamps; a caller that re-derived it from the returned `Proof` would find no
+ * `killed`/`timedOutKill`/`code` on it — a `Proof` is a value, not the rejection —
+ * and would read every kill as a template problem. Hence the shape is carried out.
+ */
+export type ProofInfraShape = "killed" | "never-started" | "nothing-to-run";
+
 export interface Proof {
   kind: ProofKind;
   /** The runner command as run, for the outcome reason. */
@@ -69,6 +84,8 @@ export interface Proof {
   code?: number;
   /** The classification's evidence, verbatim. */
   detail: string;
+  /** Which `infra` shape this is; absent for every non-`infra` kind. */
+  infraShape?: ProofInfraShape;
 }
 
 /** Was this rejection a timeout or a signal rather than a non-zero exit? */
@@ -141,7 +158,12 @@ export async function runTestFile(
   if (bin === undefined || args.length === 0) {
     // A template with no arguments cannot name a file to run: the placeholder
     // check in config.ts rejects the shape, and this refuses it at the run.
-    return { kind: "infra", cmd, detail: `runner template has nothing to run: ${cmd}` };
+    return {
+      kind: "infra",
+      cmd,
+      detail: `runner template has nothing to run: ${cmd}`,
+      infraShape: "nothing-to-run",
+    };
   }
   const base = path.basename(opts.file);
   const ran = await exec(bin, {
@@ -160,9 +182,15 @@ export async function runTestFile(
       kind: "infra",
       cmd,
       detail: `the runner was killed or timed out at ${timeout}ms`,
+      infraShape: "killed",
     };
   if (neverStarted(err))
-    return { kind: "infra", cmd, detail: `the runner could not be started: ${trim(out)}` };
+    return {
+      kind: "infra",
+      cmd,
+      detail: `the runner could not be started: ${trim(out)}`,
+      infraShape: "never-started",
+    };
   const code = exitCodeOf(err);
   // The submitted PATH is what a runner echoes when it could not run the
   // file at all, and the BASENAME is what it echoes when the file ran and

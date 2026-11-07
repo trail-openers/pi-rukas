@@ -15,8 +15,10 @@
  *   - **the toolchain canary** runs first, before any verdict is recorded:
  *     a type-checker that has been stubbed to `exit 0` produces exactly the
  *     green this step must never report;
- *   - **the frozen tests** run through `runTestFile`, which classifies kills
- *     and un-startable runners as `infra` for this module to turn into a throw;
+ *   - **the frozen tests** run through `runTestFile`, which classifies a kill or an
+ *     un-startable runner as `infra`; of those, only a runner that could not be
+ *     started becomes a throw — a frozen file the head hangs is graded red, because
+ *     the freeze already proved it red against the base (see `frozenTestFailure`);
  *   - **the project tiers** run as shell commands with the driver's knobs
  *     scrubbed out of the child env (`verifyChildEnv`), in their own process
  *     group (`killGroup`) so a timeout actually kills the tree of processes a
@@ -26,8 +28,39 @@
 
 import { guardCompilerIntegrity, packageDirFor } from "../work-driver-toolchain-canary.ts";
 import { verifyChildEnv } from "../work-driver-verify-cmd.ts";
-import { neverStarted, runTestFile, wasKilled } from "./specify-proof.ts";
+import { type Proof, neverStarted, runTestFile, wasKilled } from "./specify-proof.ts";
 import { type VerifyExec, VerifyInfraError, type VerifyTiers } from "./verify-types.ts";
+
+/**
+ * How a frozen file's `infra` proof ended, as `frozenTestFailure` reads it.
+ *
+ * `runTestFile` collapses three refusals to answer into one `infra` kind, and only
+ * ONE of them may become a verdict: the wall-clock kill. The shape is read from the
+ * proof's own `infraShape` — the classifier's verdict, carried out of the module
+ * that made it — rather than re-derived here, where a second definition of "was it
+ * killed" would let the two halves of the pipeline disagree about a hang.
+ */
+type FrozenRun =
+  | { outcome: "timedOut"; detail: string }
+  | { outcome: "neverStarted"; detail: string }
+  | { outcome: "nothingToRun"; detail: string };
+
+/**
+ * Which refusal this `infra` proof is, defaulting to the shape a `Proof` built
+ * without one (a caller's own synthetic proof) can be read as: nothing was run.
+ * Never defaults to `timedOut` — grading an unproven run red is the mistake this
+ * function exists not to make.
+ */
+function frozenRunOf(proof: Proof): FrozenRun {
+  switch (proof.infraShape) {
+    case "killed":
+      return { outcome: "timedOut", detail: proof.detail };
+    case "never-started":
+      return { outcome: "neverStarted", detail: proof.detail };
+    default:
+      return { outcome: "nothingToRun", detail: proof.detail };
+  }
+}
 
 /** A tier gets half an hour; a suite that needs longer is a project bug. */
 export const TIER_TIMEOUT_MS = 30 * 60_000;
@@ -47,9 +80,11 @@ export const TIER_TAIL_LINES = 40;
  * What counts as "nothing was observed" is narrower than it looks, and
  * `frozenTestFailure` is where the line sits: a frozen test that exits non-zero
  * without echoing its own path is a `fail` (it was proven red at freeze time,
- * so a later non-zero exit is that failure continuing), while a runner that was
- * killed, timed out or never started is `infra` — that one never ran. The 126
- * and 127 the shell reports for "not executable" and "not found" are NOT a
+ * so a later non-zero exit is that failure continuing), and so is one the head's
+ * code made HANG — same proof, and a hang is a defect in the work rather than in
+ * the machine. The shapes that stay `infra` are the ones where nothing was ever
+ * run: a runner that could not be started, and a template with nothing to run.
+ * The 126 and 127 the shell reports for "not executable" and "not found" are NOT a
  * third shape: a real test can exit 127 after printing its own failure, and an
  * exit status alone says nothing about whether the code was ever judged, so
  * routing those two on the number alone hid genuine reds. They are reds like
@@ -120,11 +155,31 @@ export async function canaryFailure(
 }
 
 /**
+ * The head's code may hang wording, first in the reason and never only in its tail.
+ *
+ * The red reason is clipped to `RED_REASON_CLIP` and pasted into the next build
+ * child's prompt under "Why this round exists"; a reason whose only mention of the
+ * hang sat at the end could be clipped away and the builder would be sent off to fix
+ * a test failure with no hint that the real defect is a hang.
+ */
+export const FROZEN_TIMEOUT_HEAD = "frozen tests timed out (the head's code may hang):";
+
+/**
  * Run the frozen acceptance tests with the project's per-file runner template.
  *
  * EVERY frozen file runs: a step that stopped at the first failure could report
  * the same reason tomorrow for a different file, and the fix round would only
  * learn about the second failure after paying for the first.
+ *
+ * A wall-clock kill is a RED here, collected with the other failures into one
+ * reason. Every file in the frozen contract was proved red against the base before
+ * `runTestPipeline` committed it — that is the only way a file gets frozen, for
+ * `specify` and `challenge` alike — so membership in the contract is the proof this
+ * file was red and named when it was written. A head that now hangs it is the code
+ * under build failing, which is a verdict the developer can act on, not a machine
+ * that refused to answer. The other `infra` shapes stay throws: a runner that never
+ * started and a template with nothing to run both observed nothing, and neither is
+ * evidence about the work however the file behaved when it was frozen.
  */
 export async function frozenTestFailure(
   frozen: Record<string, string>,
@@ -136,6 +191,7 @@ export async function frozenTestFailure(
   if (template === undefined)
     throw new VerifyInfraError("no verify.test runner template is configured for the frozen tests");
   const failures: string[] = [];
+  const timedOut: string[] = [];
   for (const file of Object.keys(frozen)) {
     const proof = await runTestFile(exec, {
       wt,
@@ -143,8 +199,17 @@ export async function frozenTestFailure(
       file,
       ...(timeoutMs === undefined ? {} : { limits: { timeoutMs } }),
     });
-    if (proof.kind === "infra")
-      throw new VerifyInfraError(`the frozen test ${file} could not be judged: ${proof.detail}`);
+    if (proof.kind === "infra") {
+      // Asked of the proof the runner produced, in the order `runTestFile` asked it:
+      // a wall-clock kill carries `killed`/`timedOutKill` or a signal; an un-startable
+      // runner rejects with a string code and no exit status; a template with nothing
+      // to run was refused before any spawn, so it has neither.
+      const run: FrozenRun = frozenRunOf(proof);
+      if (run.outcome !== "timedOut")
+        throw new VerifyInfraError(`the frozen test ${file} could not be judged: ${run.detail}`);
+      timedOut.push(file);
+      continue;
+    }
     // A non-zero exit whose output never named this file is a RED, not
     // infrastructure (the PM's call, reversing the earlier reading — and its
     // 126/127 carve-out too, which is gone). The file was proven red-and-named
@@ -155,8 +220,6 @@ export async function frozenTestFailure(
     // the number alone cannot tell a broken runner from a genuine red, and
     // trusting it hid reds. Treating an unclear exit as infra handed the run
     // back for a test failure the developer can act on.
-    // Only the shapes where nobody ran anything — killed, timed out, never
-    // started — stay throws, because those observed nothing.
     if (proof.kind === "unclear")
       return {
         kind: "fail",
@@ -164,6 +227,10 @@ export async function frozenTestFailure(
       };
     if (proof.kind !== "green") failures.push(`${file} (${proof.detail})`);
   }
+  // The timeout clause leads: the reason may be clipped on its way to the next
+  // build child's prompt, and the hang hint is the part it must never lose.
+  if (timedOut.length > 0)
+    return { kind: "fail", reason: `${FROZEN_TIMEOUT_HEAD} ${timedOut.join(", ")}` };
   if (failures.length === 0) return { kind: "pass" };
   return { kind: "fail", reason: `frozen tests failing: ${failures.join(", ")}` };
 }
