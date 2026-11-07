@@ -153,13 +153,35 @@ const { assert, failures } = makeAssert();
     (r2a.outcome?.dispatches ?? []).length === PASS_ROWS,
     `(r2a) and the cost record is one pass's worth — ${String(PASS_ROWS)} rows, one gate and six lenses (got ${String((r2a.outcome?.dispatches ?? []).length)})`,
   );
-  // The findings are not dropped on the floor: they travel to the lenses, which is
-  // the disclosure the frozen driver's own loop makes for a pass-with-findings
-  // (`work-driver-adversarial.ts`, `adversarial-findings.ts`), and the pass reason
-  // says what the round actually reported instead of claiming nothing was.
+  // The findings are not silently RE-INTERPRETED: the step still ends on the lens
+  // round's own verdict and reports one pass, not a wave. #2082 moved where a
+  // non-blocking gate's prose surfaces when a wave DOES run (the fixer's brief and
+  // the re-review — `test-lean-review-concurrent-pass1.ts` (d)); in this shape the
+  // step buys no wave at all, so there is no brief and no re-review to carry it to,
+  // and pass 1's round is bought beside the gate and so cannot be carried with what
+  // the gate had not answered. That is R4's cost on the LENSES' side. On the gate's
+  // side there is no cost to accept: nothing else discloses a non-blocking gate on
+  // this shape (the residual post is the lens layer's and fires only on an
+  // `ISSUES_FOUND` round), so the step states the gate's own words on the reason —
+  // asserted below, because a disclosure nobody checks is the silent version of the
+  // finding it reports.
   assert(
-    r2LensSeen.some((c) => c.includes("a finding the reviewer reported without blocking")),
-    `(r2a) and the non-blocking findings still reach the lenses — non-blocking is not the same as discarded (${JSON.stringify(r2LensSeen[0]?.slice(0, 80))})`,
+    r2LensSeen.length === 1 &&
+      !r2LensSeen[0]!.includes("OUTSTANDING FROM THE ADVERSARIAL GATE"),
+    `(r2a) and pass 1's lens round carries nothing — the pair is bought together, so the lenses cannot be told what the gate had not yet reported (${JSON.stringify(r2LensSeen[0]?.slice(0, 80))})`,
+  );
+  // The disclosure's SHAPE is what is asserted, not a string chosen to fit: the
+  // gate's reply reaches the reason through `neutraliseEvidence`, whose clip is
+  // `MAX_RENDERED_CHARS`, so what survives is the reply's OWN first 160 characters
+  // flattened to one line. Quoting the stub's leading words (its verdict, which is
+  // the disclosure's content) plus the marker `disclosureNote` adds is the pair that
+  // separates "the gate's words are on the reason" from "some text is on the reason".
+  const GATE_HEAD = "Adversarial PASSED WITH FINDINGS after round 1";
+  assert(
+    r2a.outcome?.reason?.includes("DISCLOSED") === true &&
+      r2a.outcome.reason.includes("adversarial (non-blocking)") === true &&
+      r2a.outcome.reason.includes(GATE_HEAD) === true,
+    `(r2a) and the gate's non-blocking findings are DISCLOSED on the reason the operator reads — no wave, no brief and no residual post on this shape, so this is the only durable surface they reach (${String(r2a.outcome?.reason?.includes("DISCLOSED"))} / ${String(r2a.outcome?.reason?.includes("adversarial (non-blocking)"))} / ${String(r2a.outcome?.reason?.includes(GATE_HEAD))})`,
   );
   assert(
     r2a.outcome?.reason?.includes("APPROVED") === true,
