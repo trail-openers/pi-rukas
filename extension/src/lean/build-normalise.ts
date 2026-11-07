@@ -84,11 +84,8 @@ interface Classified {
 
 /**
  * Sort the child's changed paths into kept, restored, reverted, removed, deleted.
- *
- * Frozen and protected paths are NOT restored here — the reset is what undoes
- * them — they are only recorded. That is the whole reason the classification
- * runs before the reset: after it, "what the child did" is a fact only this
- * function still holds.
+ * Frozen and protected paths are only RECORDED here — the reset undoes them — which
+ * is why this runs first: after the reset, "what the child did" is unrecoverable.
  */
 function classify(
   wt: string,
@@ -178,7 +175,8 @@ export async function normaliseBuild(opts: {
 
   // 4. RESET — child commits, staging, untracked files, ignore tricks and the
   //    dependency links all go; frozen and protected files come back exactly as
-  //    at `headBefore`; provisioning rebuilds what the clean removed.
+  //    at `headBefore`; provisioning rebuilds what the clean removed. `branch`
+  //    empty resets DETACHED, for a tree that owns no branch of its own.
   try {
     await resetWorktreeToBase(exec, wt, headBefore, branch);
   } catch (err) {
@@ -294,11 +292,11 @@ async function verifyCommit(
   frozen: Record<string, string>,
   report: NormaliseReport,
 ): Promise<void> {
-  const newHead = await headSha(exec, wt);
-  if (newHead === headBefore)
-    throw new BuildInfraError("HEAD did not move — the build commit was never made");
   // Whole SHAs compared as full strings: a short `rev-parse` and a full
   // `headBefore` would never be equal, and a prefix match would pass a fork.
+  // `HEAD^` is the commit before the one just made, so this also proves HEAD
+  // moved — a fold that made no commit has an unreadable parent here.
+  const newHead = await headSha(exec, wt);
   const parent = await must(exec, wt, ["rev-parse", "HEAD^"], "read the build commit's parent");
   if (parent !== headBefore)
     throw new BuildInfraError(

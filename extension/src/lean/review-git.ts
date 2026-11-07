@@ -27,18 +27,17 @@
  * frozen blob still hashes to its record" is a test rather than a comment.
  */
 
-import path from "node:path";
 import { isFullCommitSha } from "../commit-sha.ts";
 import { resolveHeadShaOutcome } from "../review-head-sha.ts";
 import { traceWarn } from "../trace.ts";
-import type { DispatchResult } from "../types.ts";
 import { netRefProblem } from "../work-driver-net-git.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import { provisionWorktree } from "../worktree-provision.ts";
 import { frozenMatches } from "./build-git.ts";
 import type { HandlerCtx } from "./engine.ts";
 import type { ReviewWave } from "./review-args.ts";
-import { type ReviewFixArgs, fixPrompt } from "./review-deps.ts";
+import type { ReviewFixArgs } from "./review-deps.ts";
+import { foldFix, runFixer } from "./review-fix-child.ts";
 import {
   type FixArm,
   closeFixTrees,
@@ -48,11 +47,10 @@ import {
   restoredSentence,
 } from "./review-tree.ts";
 import type { ReviewDeps } from "./review.ts";
-import { FIX_BOUND_MS, type FixRunId, ReviewInfraError } from "./review.ts";
+import { type FixRunId, ReviewInfraError } from "./review.ts";
 import { gitQuiet, resetWorktreeToBase } from "./specify-reset.ts";
 import { assertSpecifyWorktreeOwned, specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
 import type { BudgetArms, BudgetFired, DispatchUsageRow } from "./step-budget.ts";
-import { FIXER_ROLE, dispatchUsageRow } from "./step-budget.ts";
 
 /**
  * The commit this round reviews: origin's branch, as a full sha.
@@ -146,94 +144,6 @@ async function resolveCommitArg(
   return isFullCommitSha(sha) ? sha : undefined;
 }
 
-/** One fixer, and the row it cost. */
-async function runFixer(
-  deps: ReviewDeps,
-  opts: ReviewFixArgs & { rows: DispatchUsageRow[]; worktreeRunId: FixRunId },
-): Promise<void> {
-  let result: DispatchResult;
-  // The budget arms are DESTRUCTURED rather than spread, for the one reason
-  // `review-deps.ts` gives for the lens leg: spreading `opts.budget.opts` after
-  // `childBoundMs: FIX_BOUND_MS` re-supplied the key and the budget's value WON,
-  // which made this constant decoration. `arms` is what the fixer may inherit
-  // (the abort signal and the progress hook) with the one key it must not own
-  // taken out of the object AND out of the type, so a future spread that could
-  // carry a `childBoundMs` is a compile error rather than a bug waiting for
-  // someone to reorder the lines. Same shape as `review-deps.ts`'s lens seam —
-  // one shape for this rule in the module, not a helper.
-  const { childBoundMs: budgetBoundMs, ...arms } = opts.budget.opts;
-  try {
-    result = await deps.dispatch(
-      { role: FIXER_ROLE, prompt: fixPrompt(opts), cwd: opts.worktree },
-      {
-        // The smaller of the step's own ceiling and the armed budget's: a budget
-        // may only ever TIGHTEN the fixer's bound, never lengthen it, which is
-        // what a budget has to mean for the most expensive child this step buys.
-        childBoundMs: Math.min(FIX_BOUND_MS, budgetBoundMs ?? Number.POSITIVE_INFINITY),
-        // The fixer is a developer with a worktree and a contract, which is what
-        // `build`'s builder is too — so it gets the same fence. Without one a
-        // fixer could write anywhere the process can write, and the whole
-        // purpose of the fence (#1655) is the child that writes outside its
-        // worktree. Same shape `BuildDispatch` passes: root, repo, and the run's
-        // own scratch dir one level up from the worktree's parent.
-        writeFence: {
-          root: opts.worktree,
-          repo: opts.repoRoot,
-          scratch: path.join(
-            path.dirname(opts.worktree),
-            "..",
-            "tmp",
-            `lean-${String(opts.issue)}`,
-          ),
-        },
-        // The step's budget's other arms: the abort the turns/tokens levers fire,
-        // the progress hook that fires it, AND `budgetTurns` — the same turns
-        // ceiling read as the denominator of the #1991 budget-progress steer, so
-        // the fixer is told where it stands and commits before the abort lands.
-        // `childBoundMs` is the one arm taken out above, so the spread cannot
-        // re-supply it.
-        ...arms,
-      },
-    );
-  } catch (err) {
-    throw new ReviewInfraError(
-      `the fix child could not be started: ${(err as Error)?.message ?? String(err)}`,
-      opts.rows,
-    );
-  }
-  // Billed BEFORE the verdict is read, and billed once: a child that died still
-  // spent its tokens, and a handback that cannot say so understates what the run
-  // cost. The row goes onto the caller's running total here rather than being
-  // returned — a total the caller re-derives per round is how a handback ends up
-  // reporting one round's cost as the step's, and returning it on the success arm
-  // while appending the death arm's copy is how one fixer gets billed twice.
-  const row = dispatchUsageRow(result);
-  // The tree's identity rides in its OWN field (`runId`), validated with the row
-  // by the loader. It used to ride by overwriting `ms` with a 13-digit epoch,
-  // which cost the fixer its only duration, made the row refusable by
-  // `isMeasure` (and so silently dropped, under-billing the step's most expensive
-  // child), let the row cap evict the row that carried the id, and forced the
-  // reader to identify the row by the generic `developer` role — the builder's
-  // role as well. `ms` is the child's real duration again.
-  row.runId = opts.worktreeRunId;
-  opts.rows.push(row);
-  // The step's own ceiling ending the fixer is a VERDICT, read before the infra
-  // throw below would have called it a dead child.
-  const fired = opts.budget.fired(result);
-  if (fired !== undefined) {
-    opts.stop.fired = fired;
-    return;
-  }
-  if (!result.ok || result.killCause !== undefined || result.errorStop !== undefined) {
-    const why =
-      result.killCause ??
-      result.errorStop?.message ??
-      result.errorStop?.reason ??
-      `exit ${String(result.exitCode)}`;
-    throw new ReviewInfraError(`the fix child failed: ${String(why)}`, opts.rows);
-  }
-}
-
 /**
  * What a fix round hands back: the head now on origin, or the budget's verdict
  * when the step's own ceiling stopped the fixer. `stop` is optional on both arms
@@ -245,18 +155,11 @@ export type FixRoundOutcome = { head?: string; stop?: BudgetFired };
  * One fix wave: the child in its disposable tree, then its commits moved onto the
  * branch.
  *
- * The step dispatches exactly one fixer, so `wave` and `arm` are constants of a
- * step rather than loop counters — they are kept because the tree's NAME must be
- * reproducible from the durable run (see `fixTreeName`), and the name is what a
- * resumed attempt re-enters. `runId` is the caller's, not this round's: the same
- * value has to name the tree for the whole wave, and a run identity a test can
- * predict is the difference between driving the collision path and merely hoping
- * not to hit it.
- *
- * The head it returns is the head now on origin, read back from git rather than
- * assumed from what the child reported doing. The row the child cost is appended
- * to `opts.rows` by `runFixer`, on both arms — success and death — so this
- * function never touches it.
+ * The step dispatches exactly one fixer, so `wave` and `arm` are constants rather
+ * than loop counters — kept because the tree's NAME must be reproducible from the
+ * durable run (see `fixTreeName`), which is what a resumed attempt re-enters. The
+ * head it returns is the head now on origin, read back from git rather than assumed
+ * from the child; `runFixer` appends the row it cost, on both arms.
  */
 export async function fixRound(
   deps: ReviewDeps,
@@ -276,10 +179,8 @@ export async function fixRound(
     budget: BudgetArms;
   },
 ): Promise<FixRoundOutcome> {
-  // The tree's whole name is derived from the durable run — arm, wave, attempt
-  // and the attempt's epoch — so a resume of this attempt recomputes the same
-  // path and re-enters the tree its killed self left (see `fixTreeName`). No
-  // counter of ours is involved, because a counter would restart at zero there.
+  // The tree's name comes from the durable run alone, so a resume recomputes the
+  // same path (see `fixTreeName`); a counter would restart at zero there.
   const treeSuffix = `${opts.arm}-${opts.wave}-${String(opts.attempt)}`;
   const wt = await fixTree(
     deps,
@@ -291,7 +192,6 @@ export async function fixRound(
     opts.runId,
     opts.rows,
   );
-  let fixHead = "";
   const stop: { fired?: BudgetFired } = {};
   try {
     await runFixer(deps, {
@@ -299,9 +199,6 @@ export async function fixRound(
       wave: opts.wave,
       gate: opts.gate,
       findings: opts.findings,
-      // The step's one issue body, threaded to the renderer: `fixRound` is handed
-      // it and `runFixer` prints it, so a call site that dropped it would leave
-      // the fixer judging the findings against nothing but the findings.
       issueBody: opts.issueBody,
       worktree: wt,
       repoRoot: ctx.repoRoot,
@@ -314,23 +211,17 @@ export async function fixRound(
       budget: opts.budget,
       stop,
     });
+    // The ceiling's verdict first, so the fold below cannot capture a partial child.
     if (stop.fired !== undefined) return { stop: stop.fired };
-    // Read BEFORE the tree is destroyed: what the child's last commit IS is the
-    // one value the integration acts on, and once `worktree remove` has run
-    // there is no commit left to ask about. A child that committed nothing
-    // leaves the head exactly where this step put it, which the identity claim
-    // in `integrate` then proves rather than the step assuming a commit occurred.
-    const fix = await gitQuiet(deps.exec, wt, ["rev-parse", "HEAD"]);
-    fixHead = (fix?.stdout ?? "").trim();
+    return await integrate(deps, ctx, {
+      gateRead: opts.head,
+      fixHead: await foldFix(deps, ctx, wt, opts),
+      frozen: opts.frozen,
+      rows: opts.rows,
+    });
   } finally {
     await removeWorktree(deps, ctx.repoRoot, wt);
   }
-  return await integrate(deps, ctx, {
-    gateRead: opts.head,
-    fixHead,
-    frozen: opts.frozen,
-    rows: opts.rows,
-  });
 }
 
 /**
@@ -338,19 +229,15 @@ export async function fixRound(
  *
  * Four claims, all stated against the same pair of shas, before origin is
  * touched: the tree belongs to this run; the fixer's head is the commit this step
- * handed it or a descendant of it (a child that reset or rebased has rewritten
- * history the run did not write); the run's own worktree is this run's tree on
- * this run's branch at that commit; and every frozen blob at the fixer's head
- * still hashes to its record.
+ * handed it or a descendant of it; the run's own worktree is this run's tree on
+ * this run's branch at that commit; and every frozen blob at the fixer's head still
+ * hashes to its record.
  *
  * A push that does not land is refused rather than retried — the alternative is a
  * run whose PR silently lacks the fix its review round was paid for. Every refusal
- * puts the tree back at the reviewed commit first, so a handback never leaves a
- * half-integrated branch checked out where `verify` and `publish` will look next.
- * "First" is awaited, not fired: the restore has to have run before the throw,
- * and its outcome is named in the cause, because "the tree is back where the gates
- * read it" and "the tree is still at the fixer's head" are different facts for an
- * operator about to run `verify`.
+ * puts the tree back at the reviewed commit first, awaited rather than fired, and
+ * names its outcome in the cause: "the tree is back where the gates read it" and
+ * "the tree is still at the fixer's head" are different facts for an operator.
  */
 async function integrate(
   deps: ReviewDeps,
