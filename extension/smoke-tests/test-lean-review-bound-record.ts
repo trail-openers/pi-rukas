@@ -120,8 +120,13 @@ const pastItsBudget = () => runNow() + 61 * MIN;
   const { repoRoot, baseSha } = makeRepo();
   await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 3;\n" });
   const posts: Posts = [];
-  // The clock crosses the ceiling only after the fixer's integrate has pushed.
-  const times = [0, 0, 0, 0, 24 * MIN, 24 * MIN];
+  // The clock crosses the ceiling only after the fixer's integrate has pushed. It
+  // counts the step's CLOCK READS, not wall time: #2082 made pass 1 ask once before
+  // the pair is bought (R1) instead of once per child, so a positional script that
+  // counted the old two pass-1 reads would trip the bound in the middle of pass 1
+  // and the case would measure a handback rather than the post-push stop it names.
+  // Slots: pair (pre-1), fixer (pre-fix), re-review (pre-re-review), and thereafter.
+  const times = [0, 0, 0, 24 * MIN, 24 * MIN];
   let tick = 0;
   const { outcome, threw } = await runStep(
     ctxWithPr(repoRoot, baseSha, BRANCH, {
@@ -279,7 +284,7 @@ cleanupRoots();
   const saved = process.env.PI_ENSEMBLE_HANDOFF_CHANNEL;
   process.env.PI_ENSEMBLE_HANDOFF_CHANNEL = "host";
   try {
-    const times = [0, 0, 0, 0, 24 * MIN, 24 * MIN];
+    const times = [0, 0, 0, 24 * MIN, 24 * MIN];
     let tick = 0;
     const r = await captureWarns("STEP stopped", warns, async () => {
       outcome = (await runStep(

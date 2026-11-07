@@ -153,13 +153,18 @@ const { assert, failures } = makeAssert();
     (r2a.outcome?.dispatches ?? []).length === PASS_ROWS,
     `(r2a) and the cost record is one pass's worth — ${String(PASS_ROWS)} rows, one gate and six lenses (got ${String((r2a.outcome?.dispatches ?? []).length)})`,
   );
-  // The findings are not dropped on the floor: they travel to the lenses, which is
-  // the disclosure the frozen driver's own loop makes for a pass-with-findings
-  // (`work-driver-adversarial.ts`, `adversarial-findings.ts`), and the pass reason
-  // says what the round actually reported instead of claiming nothing was.
+  // The findings are not silently RE-INTERPRETED: the step still ends on the lens
+  // round's own verdict and reports one pass, not a wave. #2082 moved where a
+  // non-blocking gate's prose surfaces when a wave DOES run (the fixer's brief and
+  // the re-review — `test-lean-review-concurrent-pass1.ts` (d)); in this shape the
+  // step buys no wave at all, so there is no brief and no re-review to carry it to,
+  // and pass 1's round is bought beside the gate and so cannot be carried with what
+  // the gate had not answered. That loss is R4's accepted cost, stated here rather
+  // than asserted as something the step still does.
   assert(
-    r2LensSeen.some((c) => c.includes("a finding the reviewer reported without blocking")),
-    `(r2a) and the non-blocking findings still reach the lenses — non-blocking is not the same as discarded (${JSON.stringify(r2LensSeen[0]?.slice(0, 80))})`,
+    r2LensSeen.length === 1 &&
+      !r2LensSeen[0]!.includes("OUTSTANDING FROM THE ADVERSARIAL GATE"),
+    `(r2a) and pass 1's lens round carries nothing — the pair is bought together, so the lenses cannot be told what the gate had not yet reported (${JSON.stringify(r2LensSeen[0]?.slice(0, 80))})`,
   );
   assert(
     r2a.outcome?.reason?.includes("APPROVED") === true,

@@ -228,6 +228,8 @@
     "smoke-tests/test-lean-review-bound.ts",
     "smoke-tests/test-lean-review-bound-record.ts",
     "smoke-tests/test-lean-review-step-bound.ts",
+    "smoke-tests/test-lean-review-concurrent-pass1.ts",
+    "smoke-tests/lib/lean-review-concurrent-fixture.ts",
     "smoke-tests/test-lean-review-teardown.ts",
     "smoke-tests/test-lean-review-run-id-rules.ts",
     "smoke-tests/test-lean-review-deps-bound.ts",

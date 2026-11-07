@@ -9,7 +9,8 @@
  * step stops. Where the bytes are and how they move is `review-git.ts` and
  * `review-tree.ts`; the shapes the two gates are called with are
  * `review-args.ts`; what the step says about its own cost is `review-step.ts`;
- * the one-wave policy it enforces is `review-waves.ts`; this file is the
+ * the one wave's policy it enforces is `review-waves.ts`; the two children the
+ * full review buys, bought together, are `review-pair.ts`; this file is the
  * decision procedure.
  *
  * **Both gates read a resolved commit, never a working copy.** A gate approves
@@ -122,6 +123,7 @@ import {
   prNumberFromLog,
   reviewAttemptFromLog,
 } from "./review-log.ts";
+import { buyFullReview } from "./review-pair.ts";
 import { cleanPass } from "./review-pass.ts";
 import { assertFixAdvanced } from "./review-progress.ts";
 import { assertRan, assertRangedOverTheFix } from "./review-round-guards.ts";
@@ -260,58 +262,46 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
   const attempt = reviewAttemptFromLog(ctx.steps);
 
   try {
-    // ── pass 1: the full review — the adversarial gate, then the six lenses ──
-    // R1: a stop anywhere in pass 1 hands back — nothing reviewed, no verdict to
-    // proceed on and no head to certify — with the unjudged lanes recorded.
+    // ── pass 1: the full review — the adversarial gate AND the six lenses ─────
+    // Both children are bought together and BOTH settle before the step reads a
+    // verdict: the ordering, the single shared budget read and the no-orphans rule
+    // are `buyFullReview`'s contract (see its header) rather than something to
+    // re-derive from a call site.
+    //
+    // R1: ONE clock read, immediately before the pair is bought. A live stop there
+    // hands back — nothing reviewed, no verdict to proceed on and no head to
+    // certify — naming the whole roster plus the re-review as unjudged. There is no
+    // second pass-1 check, because there is no longer a serial point to read one at.
     const handback = (stop: StepStop, lanes: string[]): never => {
       throw stopped(noteStop(stop, "full", lanes));
     };
-    const preGate = clock();
-    if (preGate.live) handback(preGate, unjudgedLenses(undefined));
-    const gate = await adversarialGate(deps, ctx, {
+    const prePair = clock();
+    if (prePair.live) handback(prePair, unjudgedLenses(undefined));
+    const { gate, review } = await buyFullReview(deps, ctx, {
       base,
       head,
       branch,
       issueBody,
-      wave: "full",
+      pr,
+      threshold,
       rows,
       budget,
     });
-    // The operator's ceiling stopping this step is read BEFORE the gate's own
-    // infra throw could mistake a stopped reviewer for "no verdict at all", and
-    // it THROWS: both arrows out of `review` are clean passes, so a stopped
-    // child has no route and must not be mistaken for one (see this file's
-    // header for why this step throws where the other three route).
-    if (gate.stop !== undefined) throw budgetStopped(gate.stop, rows);
-    const preLens = clock();
-    if (preLens.live) handback(preLens, unjudgedLenses(undefined));
-    // Findings the adversarial pass passed on WITHOUT blocking travel to the
-    // lenses, which are told to judge them; the lens round's `carried` parameter
-    // exists for this one value and nothing else. That is the non-blocking reading
-    // and it is deliberately the only one taken here.
-    const carried = gate.findings;
     // Whether the ADVERSARIAL gate is what bought this wave, decided by the one
     // thing that says so — `gate.blocking`, the trailing record read by
-    // `blockingRecord` — and never by `carried !== ""`. A non-blocking gate still
-    // has findings (that is what `carried` above is for), and deriving the gate's
-    // contribution from their presence would credit a disclosure with buying a
-    // fixer: the brief would name "adversarial pass" for findings the loop itself
-    // declined to stop the run for, the tree's arm would say `a` for a pass the
-    // six-lens round alone blocked on, and `fixTreeName`'s documented meaning of
-    // the arm would stop matching the step.
+    // `blockingRecord` — and never by whether findings were reported. A
+    // non-blocking gate still has findings, and deriving the gate's contribution
+    // from their presence would credit a disclosure with buying a fixer: the brief
+    // would name "adversarial pass" for findings the loop itself declined to stop
+    // the run for, the tree's arm would say `a` for a pass the six-lens round alone
+    // blocked on, and `fixTreeName`'s documented meaning of the arm would stop
+    // matching the step.
     const fromGate = gate.blocking;
-
-    const review = await lensGate(deps, ctx, {
-      base,
-      branch,
-      wave: "full",
-      issueBody,
-      pr,
-      carried,
-      rows,
-      budget,
-      threshold,
-    });
+    // The gate's findings — blocking or not — which is what `findings` below joins
+    // into the fixer's brief and what the re-review is handed as `carried`. Named
+    // here rather than at the fix wave so the one value the gate contributes to the
+    // rest of the step is visible in one place.
+    const carried = gate.findings;
     assertRan(review, rows);
     // A round that did not complete is refused BEFORE either verdict is read, in
     // both directions: it is not a pass to walk on, and it is not a verdict to fix

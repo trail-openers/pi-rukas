@@ -56,6 +56,7 @@ import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import {
   ADVERSARIAL_GATE_ROLE,
   BRANCH,
+  blockingFinding,
   blockingReject,
   DISPATCHES_MAX_ROWS,
   FIXER_ROLE,
@@ -63,6 +64,7 @@ import {
   REVIEW_PASSES,
   cleanLensRound,
   lensRoundFor,
+  lensRoundWith,
   cleanupRoots,
   ctxFor,
   depsWith,
@@ -157,25 +159,46 @@ const { assert, failures } = makeAssert();
     git(wt, "commit", "-q", "-m", "fix: the finding");
     return result({ role: FIXER_ROLE });
   };
-  let advCalls = 0;
   const runWithAdv = async (over: Partial<DispatchResult>) => {
     seen.length = 0;
-    advCalls = 0;
     // The findings text is FIXED for a given case, not varied per call. Under one
     // wave there is nothing to converge to and no round cap to reach: what has to
     // vary for THIS case is whether the carry reached the lens pass, and that is
     // read from `seen`, not from the gate's prose.
+    //
+    // `seen[0]` is the FULL round and `seen[1]` the re-review. #2082 put the two
+    // pass-1 children in parallel, so the full round can no longer be carried with
+    // what the gate had not answered yet — the `carried` cases below read the round
+    // that CONSUMES the carry, and `test-lean-review-concurrent-pass1.ts` (d) is
+    // the case that pins the full round carrying nothing.
+    //
+    // A clean full round buys no wave at all, so the second adversarial stub is not
+    // APPROVED but reports its OWN findings without the blocking status: the run
+    // then takes its one wave, and the re-review is the round that reads the first
+    // pass's records back as `carried`.
     return run(
       ctxFor(repoRoot, baseSha, BRANCH),
       depsWith({
         // Varied per call so the second pass is a distinct read: the case reads
         // `seen`, and a gate that said the same thing twice would leave the
         // re-review's own carry indistinguishable from the first pass's.
-        adversarial: async () =>
-          advCalls++ === 0 ? result(over) : result({ loopOutcome: "approved" }),
+        adversarial: async (a) =>
+          a.wave === "full"
+            ? result(over)
+            : result({
+                loopOutcome: "approved",
+                text: "Adversarial PASSED WITH FINDINGS: second pass, still open",
+              }),
         lens: async (a) => {
           seen.push(a.context);
-          return cleanLensRound();
+          // A round stamped for the pass it IS: an unstamped round on the fix wave
+          // is refused as a verdict on some other diff, and these cases are about
+          // the carry, not about that refusal. The FULL round BLOCKS — a clean one
+          // buys no wave at all, and with no wave there is no re-review to read the
+          // gate's records back as `carried`.
+          return a.wave === "fix"
+            ? lensRoundFor(a, "APPROVED", [])
+            : lensRoundWith("CRITICAL_ISSUES_FOUND", [blockingFinding()]);
         },
         dispatch: committing,
       }),
@@ -198,8 +221,8 @@ const { assert, failures } = makeAssert();
     `(o1) the round still clears once the gate is happy (${o1.threw?.message})`,
   );
   assert(
-    seen.length >= 1 && seen[0]!.includes("OUTSTANDING FROM THE ADVERSARIAL GATE"),
-    "(o1) and the non-APPROVED trailing record reached the lens context — decided by the RECORD, not the prose, which never said PASSED WITH FINDINGS",
+    seen.length >= 2 && seen[1]!.includes("OUTSTANDING FROM THE ADVERSARIAL GATE"),
+    "(o1) and the non-APPROVED trailing record reached the re-review's lens context — decided by the RECORD, not the prose, which never said PASSED WITH FINDINGS",
   );
 
   // (o2) Records beat prose in the other direction too.
@@ -213,7 +236,7 @@ const { assert, failures } = makeAssert();
     `(o2) an APPROVED trailing record clears (${o2.threw?.message})`,
   );
   assert(
-    seen.length >= 1 && !seen[0]!.includes("OUTSTANDING FROM THE ADVERSARIAL GATE"),
+    seen.length >= 2 && !seen[1]!.includes("OUTSTANDING FROM THE ADVERSARIAL GATE"),
     "(o2) and nothing is carried forward on an APPROVED record, even though the prose holds the findings marker",
   );
 
@@ -230,7 +253,7 @@ const { assert, failures } = makeAssert();
     `(o3) the step does not throw on an unparsed trailing record (${o3.threw?.message})`,
   );
   assert(
-    seen.length >= 1 && seen[0]!.includes("a real finding"),
+    seen.length >= 2 && seen[1]!.includes("a real finding"),
     "(o3) and the unparsed trailing record still counts as outstanding — a defaulted status is not an approval",
   );
 
@@ -240,7 +263,7 @@ const { assert, failures } = makeAssert();
     text: "Adversarial PASSED WITH FINDINGS: 2. the carried one",
   });
   assert(
-    o4.threw === undefined && seen.length >= 1 && seen[0]!.includes("the carried one"),
+    o4.threw === undefined && seen.length >= 2 && seen[1]!.includes("the carried one"),
     "(o4) with no records at all, the prose marker is what carries the findings",
   );
 
@@ -278,6 +301,9 @@ const { assert, failures } = makeAssert();
   // (o5) T6 — the carried block reaches the pass that CONSUMES it. The wave fixes
   // first and then re-reviews, so `carried` has to survive the fix: assigned before
   // the wave and read only after it, it was once dead on the path that used it.
+  // #2082 makes that the ONLY pass it can reach on the full round: the lenses are
+  // bought beside the gate now, so `seen[0]` holds no block and the finding lands
+  // on the re-review alone — which is the pass the carry was ever consumed by.
   const carriedSeen: (string | undefined)[] = [];
   // o5's OWN counter, not the `advCalls` the cases above share: `runWithAdv`
   // resets that one to 0 on every call, so a case reusing it would start its
@@ -318,16 +344,21 @@ const { assert, failures } = makeAssert();
     o5.threw === undefined && passed(o5.outcome?.kind),
     `(o5) the fix wave and the re-review both ran (${o5.threw?.message})`,
   );
-  // The carry is assigned before the wave and consumed by both lens passes, so
-  // finding it on the lens calls either side of the fix is the property; the
-  // original defect was that the assignment did not survive the wave, which is
-  // what this proves it now does. Asserting a specific pass number would pin the
-  // fixture's shape rather than the step's behaviour.
+  // The carry is assigned before the wave and consumed by the re-review, so
+  // finding it on the round that reads the fixed head is the property; the original
+  // defect was that the assignment did not survive the wave, which is what this
+  // proves it now does. #2082 added the other half: the FULL round must NOT hold
+  // it, because the gate had not answered when that round was bought.
   const carriedAny = carriedSeen.filter((c): c is string => c !== undefined);
   assert(
-    carriedAny.length >= 1 &&
-      carriedAny.some((c) => c.includes("the finding the fixer will answer")),
-    `(o5) both lens passes carry the adversarial gate's findings, surviving the fix (lens rounds ran ${String(carriedSeen.length)}x, ${String(carriedAny.length)} carried: ${JSON.stringify(carriedAny[0]?.slice(0, 90))})`,
+    carriedAny.length === 2 &&
+      carriedSeen[1]?.includes("the finding the fixer will answer") === true,
+    `(o5) the re-review carries the adversarial gate's findings, surviving the fix (lens rounds ran ${String(carriedSeen.length)}x, carried: ${JSON.stringify(carriedSeen[1]?.slice(-90))})`,
+  );
+  assert(
+    carriedSeen[0] !== undefined &&
+      !carriedSeen[0].includes("OUTSTANDING FROM THE ADVERSARIAL GATE"),
+    `(o5) and the FULL round carries nothing — pass 1's two children are bought together, so there is nothing to carry into the one that started beside the gate (${JSON.stringify(carriedSeen[0]?.slice(0, 80))})`,
   );
 }
 
