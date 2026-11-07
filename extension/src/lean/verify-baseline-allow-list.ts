@@ -28,24 +28,41 @@
  * is an exemption from the rule — a line that survives both filters and matches nothing is
  * refused on its face, whatever it opens with.
  *
+ * EVERY arm here vouches for the WHOLE LINE, which is what the third round of this rule
+ * established. Three arms used to read only as far as their own shape reached — a pass-marker arm
+ * that read the leading `ok`, a progress arm that read the run's length but not its glyphs, a
+ * tally arm that folded any number with a known counter word next to it — and each let through a
+ * line that went on to say the opposite (`ok, the brand new deploy check failed`, a result row
+ * carrying an `F`, `===== 999 crashed, 9 passed =====`). Two rules make the whole-line promise
+ * mechanical: {@link declaresFailure} vetoes any line whose text carries a failure word or a
+ * failure glyph ANYWHERE in it, and {@link COUNTER_WORDS} admits a counted word only by being on
+ * an explicit list of things a runner counts that did not go wrong — absence refuses. The cost of
+ * the first is accepted and documented: a PASSING test whose NAME contains such a word, when the
+ * line is head-only, is refused, and a refusal is a hand-back, never a green.
+ *
  * The comparison keys live here too ({@link normaliseRaw}, {@link counterFolded},
  * {@link leadingIndexFolded}) because WHAT MAY MOVE is the same question as WHAT MAY BE
  * EXCUSED, and it is answered in one place: only a runner's counters, never a failure count.
  */
 
 import { classifyFailureLine, isSuccessLine } from "../work-driver-verify-failures.ts";
+import { COUNTER_WORD_LIST } from "./verify-baseline-counters.ts";
 import { stripRoot } from "./verify-baseline-excuse.ts";
 
 /**
  * A line that reports a check as PASSING, in the dialects the allow-list has to read.
  *
- * Every arm is ANCHORED and every arm admits a passing verdict, never a failing one:
+ * Every arm is ANCHORED, every arm admits a passing verdict, and no arm vouches past the
+ * character it matched — {@link declaresFailure} reads the REST of the line:
  *
  *   - `ok`, `PASS`, `PASSED`, `✓` as the WORD a line OPENS with (`PASS tests/x.py::t`,
  *     `ok 3 - t/x.t`). The negative lookahead is what keeps `passage`, `okay` and `passive`
- *     from reading as pass markers, and a line opening `FAIL` or `not ok` cannot match;
- *   - a tally that counts PASSED checks (`3 passed`, `12 passed, 0 failed`), where the count
- *     opens the line; and
+ *     from reading as pass markers, and a line opening `FAIL` or `not ok` cannot match. What
+ *     follows the marker is the runner's own report of the check, and `ok 4 - brand new check
+ *     FAILED` is a failure wearing a pass marker — which is why the marker is necessary and
+ *     never sufficient, and why the veto rather than this arm answers that one;
+ *   - a tally that counts only things that did not go wrong (`3 passed`, `12 passed, 0 failed`),
+ *     where the count opens the line and every counted word is on {@link COUNTER_WORDS}; and
  *   - go test's per-check lines: `=== RUN   TestX` (a run banner, which carries no verdict)
  *     and `--- PASS: TestX`.
  *
@@ -53,7 +70,10 @@ import { stripRoot } from "./verify-baseline-excuse.ts";
  * first, so a line the table reads as a failure is not admitted here however it is shaped.
  * That ordering is what lets these arms be short anchored words instead of a complete
  * vocabulary of everything runners print — the vocabulary is the classifier's, and
- * duplicating it here is the mistake this module's existence is a correction of.
+ * duplicating it here is the mistake this module's existence is a correction of. The veto is
+ * not that vocabulary: it is the same idea applied to the text the classifier's anchored shapes
+ * do not reach, and it is deliberately WIDER than the table (see {@link declaresFailure})
+ * precisely because it is cheap to be wide here and expensive to be wide there.
  */
 const PASS_MARKER =
   /^(?:ok(?![A-Za-z0-9])|PASS(?:ED)?(?![A-Za-z0-9])|✓)[\s:]*|^\d[\d.,\s]*(?:passed|ok)\b/i;
@@ -69,8 +89,49 @@ const GO_RUN_LINE = /^\s*(?:={3,}\s*RUN\b|-{3,}\s*PASS:)/i;
  * admits only what a progress line is made of (path characters, dots, names, the bracketed
  * percentage) and the form REQUIRES a bracketed percentage, which a failure line does not
  * carry — `brand new check ... FAILED` has no `[N%]` to end on.
+ *
+ * WHAT THE RESULT RUN IS MADE OF is the second half of the arm, and the half the class alone
+ * left open: `F` is a failed check and `E` an error, and pytest prints them in the SAME run of
+ * characters it prints `.` in, so `tests/x.py ....F... [ 50%]` matched the class as printed and
+ * was vouched for by an arm that had read only its shape. A result glyph is therefore admitted by
+ * name — `.`, `s` (skipped) and `x` (expected-fail) are checks that did not go wrong — and every
+ * other character in the row's result run is what {@link PROGRESS_BAD_GLYPH} refuses. A row whose
+ * run carries an `F` is not the row the base printed, and the percentage moving with it is the
+ * runner counting more checks, not evidence the row is unchanged.
+ *
+ * The veto reads the run, never the line: `tests/deploy_timeouts.py ..  [100%]` carries `F` and `T`
+ * in its NAME and excuses, because a file name is not a verdict. The runner's own whitespace is the
+ * seam — path, result run, percentage — so a name can never veto its own row.
  */
 const PROGRESS_LINE = /^[\s./\\A-Za-z0-9_[\]%<>:-]*[.sx][\s.]*\[\s*\d+[\d.,]*%?\s*\]\s*$/;
+
+/** A character that is not a passing result glyph. `F` failed, `E` errored, `T` is pytest's timeout. */
+const PROGRESS_BAD_GLYPH = /[^.sx]/;
+
+/**
+ * Is this progress row's result run made only of passing glyphs?
+ *
+ * The row is split on the runner's own whitespace and the fields a result run NEVER lives in are
+ * dropped: the bracketed percentage (`[100%]`, `[ 50%]`, which splits into `[` and `50%]`), the
+ * separator padding a runner pads the row with (`=====`), and anything carrying a path separator,
+ * which is the file the row reports on and whose name is not a verdict — `tests/deploy_timeouts.py`
+ * has an `F` and a `T` in it and must not veto its own clean row. What is left, and starts with a
+ * result glyph, IS the result run, and a single character in it outside `.sx` is a failed check.
+ * A row with no such field reports no result at all and comes back not-clean: an arm that excused a
+ * row for showing nothing would excuse a row for showing nothing.
+ */
+function progressRowIsClean(line: string): boolean {
+  let sawResultRun = false;
+  for (const token of line.split(/\s+/)) {
+    if (token.length === 0) continue;
+    if (token.includes("[") || token.includes("]")) continue;
+    if (token.includes("/") || token.includes("\\")) continue;
+    if (!/^[.sx]/.test(token)) continue;
+    sawResultRun = true;
+    if (PROGRESS_BAD_GLYPH.test(token)) return false;
+  }
+  return sawResultRun;
+}
 
 /** A runner's section rule or banner: a run of ONE punctuation character only. */
 const SEPARATOR_LINE = /^([=\-_#*])\1{2,}$/;
@@ -95,12 +156,19 @@ const SEPARATOR_LINE = /^([=\-_#*])\1{2,}$/;
  *     comparison in `verify-baseline-excuse.ts`), so a tally that moved because a NEW check
  *     broke is describing a failure line the base never printed, and that comparison refuses.
  *
- * What this arm exists for is the case those two rules settle and a naive allow-list would get
- * wrong: a suite ALREADY RED at base, to which this PR ADDS PASSING tests. Its summary counts
- * differently from the base's (`5 passed` where the base printed `3 passed`), and an excuse
- * that read a moved count as a new failure line would refuse the one case it exists to grant.
- * A tally the table does not read as a failure, whose every failure line the base also printed,
- * is a runner counting its own run — and a count is not evidence about which checks failed.
+ * Why this arm exists, and the case a naive list would get wrong: a suite ALREADY RED at
+ * base, to which this PR ADDS PASSING tests. Its summary counts differently from the base's
+ * (`5 passed` where the base printed `3 passed`), and an excuse that read a moved count as a new
+ * failure line would refuse the one case it exists to grant. A tally the table does not read as a
+ * failure, whose every failure line the base also printed, is a runner counting its own run — and
+ * a count is not evidence about which checks failed.
+ *
+ * The third rule around it is the one that makes that sentence true rather than hopeful: every
+ * `<number> <word>` pair the shape matched must count something on {@link COUNTER_WORDS}. The
+ * shape answers "is this a tally?" and nothing else, so on its own it admitted `===== 999
+ * crashed, 9 passed =====` — `crashed` sat inside the tally arm's `\w+` the same way a counted
+ * word of a passing half does. A counted word is admitted by being KNOWN, and refused by being
+ * absent, which is the same direction the whole file runs in.
  */
 const RUN_SUMMARY =
   /^[\s=*_~.,:-]*(?:[A-Za-z][\w. -]{0,24}:\s*)?(?:\d[\d.]*\s+\w+[\w.,-]*\s*,?\s*){1,6}(?:in\s+[\d.]+\s*(?:ms|s|sec|secs|minutes?)?\s*)?[\s=*_~.,-]*$/i;
@@ -109,29 +177,44 @@ const RUN_SUMMARY =
 const PADDING = /^[\s=*_~.,:-]+|[\s=*_~.,:-]+$/g;
 
 /**
- * A tally's NON-ZERO count of things that did not pass — `1 failed`, `2 errors`.
+ * The words a runner counts that did NOT go wrong, as one closed set: `9 passed`, `2 skipped`.
  *
- * Requiring the count to be non-zero and to sit in a tally position is what tells apart the
- * two lines a runner prints: `5 passed` counts a clean run, so its number may move freely
- * between base and head and the excuse NEEDS it to; `1 failed, 5 passed` counts a FAILURE, and
- * a number that moved because a check broke is precisely the evidence the excuse must not wave
- * through — inside such a tally nothing distinguishes "+2 passing, the PR added checks" from
- * "+2 failing, the PR broke one", and the rule fails on the side that cannot produce a green.
- * Zero counts (`0 failed`) are the clean case and stay excusable, which is why the digit is
- * `[1-9]` and not `\d`.
- *
- * The classifier reads a non-zero counted tally as a FAILURE LINE and a failing-free tally as a
- * passing line, so this guard holds the allow-list to the reading the table already gives —
- * asked independently, so no padding or prefix can talk the tally arm into a pass.
- *
- * It is asked of {@link counterFolded}, not the raw line: a NON-ZERO failure count survives that
- * fold untouched, so a tally reporting one still refuses, while a number that belongs to a
- * NON-failure counter has already become the placeholder and no longer reads as a failure the
- * line does not report. Asking the raw line is what refused the field case — `1 failed, 3
- * passed` and `1 failed, 5 passed` are the same report about the same red suite.
+ * Owned by `verify-baseline-counters.ts`, where the reasoning for the closed set lives, and read
+ * HERE as well so the two rules that judge a runner's numbers cannot drift apart: the tally arm of
+ * {@link isKnownCleanLine} admits a summary only when EVERY `<number> <word>` pair names a word on
+ * it, and {@link counterFolded} folds a digit only when its neighbour is one of them. A word on the
+ * list is therefore both excusable and foldable, and a word off it is neither — which is why a new
+ * runner whose summary counts something unnamed needs exactly one edit, in one place, and why a new
+ * failure word needs no edit at all to be CAUGHT.
  */
-const FAILURE_WORD =
-  /(?:^|\D[\s=*_~.,:-]*)[1-9]\d*\s+(?:failed|failing|failures?|errors?|fatal|critical)\b/i;
+/** {@link COUNTER_WORD_LIST} as a whole word, which is how every reader of it must match it. */
+const COUNTER_WORDS = new RegExp(`^(?:${COUNTER_WORD_LIST})(?![A-Za-z0-9])$`, "i");
+
+/**
+ * A `<number> <word>` pair whose word is NOT a known counter — `999 crashed`, `3 panicked`.
+ *
+ * The veto the tally arm and {@link isPassingLine} share, so that ONE question — "does this line
+ * count something that is not a counter?" — has ONE answer wherever it is asked. Applied to the
+ * trimmed line with {@link PADDING} stripped for the tally arm (the `=====` a pytest summary wears
+ * is decoration, not a counted word), and to the bare trimmed line for the passing arm.
+ *
+ * The word is read AFTER the number, which is how every runner this file has to read spells a
+ * tally. The reverse spelling (`Failures: 1`) is not caught here — its word sits BEFORE its number
+ * — and that is a deliberate boundary, not a gap: that dialect is one the shared classifier already
+ * reads as a failure line, so both {@link isKnownCleanLine} and {@link isPassingLine} refuse it on
+ * the classifier's answer and {@link counterFolded} leaves its digits standing. The counter list
+ * answers for the spelled-after dialects and the classifier for the spelled-before ones, so neither
+ * mechanism has to become a vocabulary of failure words.
+ */
+const UNKNOWN_COUNTED_WORD = new RegExp(
+  // `[1-9]`, not `\d`: a count of ZERO is the clean case, not a report. `===== 0 failed, 3 passed
+  // in 0.2s =====` names nothing that broke, and the shared classifier agrees -- its own
+  // `hasCountedTally` requires a non-zero count before it reads a tally as a failure line. A
+  // veto that read `0 failed` as a counted non-counter would refuse the cleanest summary a
+  // runner prints, and the excuse would hand back a run whose suite is only red elsewhere.
+  `(?:^|[\\s(,;:])\\s*[1-9]\\d*\\s+(?!(?:${COUNTER_WORD_LIST})(?![A-Za-z0-9]))(?:[A-Za-z][\\w-]*)`,
+  "i",
+);
 
 /**
  * A TAP plan line: `1..9`, `1..10` — how many checks the runner INTENDS to print.
@@ -146,158 +229,73 @@ const TAP_PLAN = /^\s*\d+\.\.\d+\s*$/;
 const COLLECTION_LINE = /^collected\s+\d+\s+(?:item|test)s?\b/i;
 
 /**
- * The placeholder a folded field is replaced with.
- *
- * A character no runner prints (`#` is neither a digit nor a status word), so a real line can
- * never collide with a folded one and two lines that differ by content never collapse onto it.
- */
-const PLACEHOLDER = "#";
-
-/**
- * A digit run the runner printed as a COUNT or a TIMING, followed by its word.
- *
- * The fold is done by SPLITTING on digit runs and asking each one the same two questions about
- * the text around it, rather than by a chain of number-eating regexes: a regex fold either
- * swallows a failure count it must keep (the defect that makes `1 failed` equal `2 failed`) or
- * leaves a passing count standing (the defect that refuses the added-passing-tests case). A
- * digit run is folded ONLY when a counter or duration word sits immediately next to it —
- * `3 passed`, `2 skipped`, `5 tests`, `36 cases`, `2 warnings`, `5 total`, `1 warning`,
- * `2 xfailed`, `0.2s`, `1.5 seconds` — and keeps its digits everywhere else, which is what keeps
- * `assert 1 == 2`, `expected 3 to be 4`, a timestamp or a version standing as printed. A word
- * separated from the digits by any other character is not the word of THAT number.
- */
-const DIGIT_RUN = /\d+(?:\.\d+)*/g;
-
-/**
- * The counter words a runner prints AFTER its number: `3 passed`, `2 skipped`, `5 tests`.
- *
- * These are the numbers a PR that ADDS PASSING TESTS moves, which is the field case the whole
- * tally allowance exists for: a suite already red at base gains two checks and its summary line
- * changes ONLY in the passing half (`1 failed, 3 passed` → `1 failed, 5 passed`). Read
- * byte-for-byte that is a head-only line, so an excuse that compared digits would refuse the one
- * case it grants. FAILURE words are deliberately absent — see {@link NEAR_FAILURE}.
- */
-const COUNTER_WORD_AFTER =
-  /^\s*(?:passed|passes|pass|skipped|skips|deselected|xfailed|xpassed|warnings?|tests?|items?|cases|total)(?![A-Za-z0-9])/i;
-
-/** The same counter words printed BEFORE their number: `Tests: 5`, `Tests run: 3`, `Skipped: 0`. */
-const COUNTER_WORD_BEFORE =
-  /(?:^|[\s(,;:=])(?:passed|passes|pass|skipped|skips|deselected|xfailed|xpassed|warnings?|tests?|items?|cases|total|(?:tests\s+)?run|ran)[\s=:,;]*$/i;
-
-/** A duration unit printed after its number: `0.2s`, `12ms`, `1.5 seconds`. */
-const DURATION_AFTER = /^\s*(?:ms|s|sec|secs|seconds?|minutes?|hours?)(?![A-Za-z0-9])/i;
-
-/**
- * A FAILURE word adjacent to a digit run — on either side of it.
- *
- * THIS is the arm the whole change turns on. A count attached to `failed`, `failures`, `errors`
- * or the like is the evidence the excuse must read EXACTLY: `1 failed, 3 passed` and `2 failed,
- * 3 passed` are two reports about two different numbers of broken checks, and collapsing them
- * would grade a regression the base never printed. So adjacency to a failure word outranks
- * everything else — a number is never folded because its OTHER neighbour is a passing word. It is
- * also why `seconds 2 failed` folds nothing: `s` alone looks like a duration unit, but the digit
- * is attached to `failed`, and the failure question is asked first.
- *
- * The `\s` of a number's own tally SEPARATES it from its word (`1 failed, 3 passed` puts a comma
- * between the failure and the passing count) and the word boundary ends it, so a passing count
- * never reads as a failure count through the comma of the tally before it — which is the whole of
- * the added-passing-tests case — and an assertion value that only happens to sit before the word
- * `failed` in prose (`assert 1 == 2 failed to compile`) keeps its digits.
- */
-const NEAR_FAILURE =
-  /(?:^|[\s(,;:=])\d+\s+(?:failed|failing|failures?|errors?|fatal|critical)(?![A-Za-z0-9])|(?<=[\s(,;:=])(?:failed|failing|failures?|errors?|fatal|critical)\s*:?[\s]*$/i;
-
-/**
- * A tally's TOTAL — the count of how many checks ran, in its `Label: N` form.
- *
- * `Tests run: 3` and `Ran 5 tests` count checks, not verdicts, so the added-checks case moves
- * them and the excuse must not read them as evidence. They are folded on the digit's OWN text
- * rather than by {@link COUNTER_WORD_AFTER}, because the digit sits AFTER its label — past the
- * colon, where an adjacency test on the text after the number cannot reach it — and `run`/`ran`
- * cannot join that word list, or `expected 5 to run 6 passed` would have its assertion numbers
- * folded. A `Failures:` or `Errors:` label is not in this list, and neither label may be followed
- * by the word `failures`/`errors` (which is how a real `Failures: 1` is spelled): its count is a
- * failure count, and the second arm of {@link NEAR_FAILURE} refuses it again here.
- */
-const TALLY_TOTAL =
-  /^(?:tests\s+run|tests|run|ran)\s*:?\s*(?!\d*\s*(?:failed|failing|failures?|errors?|fatal|critical)\b)\d/i;
-
-/**
- * A line's numbers read as counters, for the looser comparison pass.
- *
- * THE question this file answers, in one function: what may a runner's line move by between the
- * base run and the head run and still be the same line? The answer is exactly the words above —
- * a NON-failure counter and a duration — and everything else stays byte-for-byte, above all every
- * count attached to a failure word. Two lines the runner means to be the same collapse; two
- * defects do not. Zero counts fold with the rest, and are safe in doing so: a number that moved
- * to or from zero changes the FAILURE arm's own match, so `0 failed` and `1 failed` cannot meet.
- *
- * WHY a second key is needed at all, when {@link isKnownCleanLine} already allows tallies:
- * `hasHeadOnlyUnrefusedLine` vouches for a head-only line by its SHAPE, but `baselineExcuse`
- * then compares the RECOGNISED failure lines strictly, and a runner's summary of a red run
- * (`===== 1 failed, 3 passed in 0.2s =====`) is one of them — the classifier reads a counted
- * failing tally as a failure line. So the one field a PR's added checks move has to be folded on
- * BOTH sides of that comparison, or the feature refuses the case it exists to grant.
- *
- * The fold is confined to this pass. The exact key in {@link normaliseRaw} keeps every digit, and
- * that key is what is RECORDED and replayed by `ci`; a fold that reached the record would turn a
- * moved failure count into an equality the base never printed — the outcome this whole module
- * exists to refuse. Both scans are linear over a line the classifier's window already bounds and
- * no arm nests a quantifier, so no fold can backtrack.
- */
-export function counterFolded(line: string): string {
-  let out = "";
-  let last = 0;
-  for (const match of line.matchAll(DIGIT_RUN)) {
-    const at = match.index ?? 0;
-    const before = line.slice(Math.max(0, at - 32), at);
-    const after = line.slice(at + match[0].length, at + match[0].length + 32);
-    out += line.slice(last, at);
-    // The text the digit ITSELF printed, so a failure word on the far side of the number
-    // (which the 32-char windows above can straddle from a neighbour) cannot decide this one.
-    const own = ` ${before.slice(Math.max(0, before.length - match[0].length))}${match[0]}${after}`;
-    out += NEAR_FAILURE.test(own)
-      ? match[0]
-      : COUNTER_WORD_AFTER.test(after) ||
-          COUNTER_WORD_BEFORE.test(before) ||
-          DURATION_AFTER.test(after) ||
-          TALLY_TOTAL.test(own)
-        ? PLACEHOLDER
-        : match[0];
-    last = at + match[0].length;
-  }
-  return `${out}${line.slice(last)}`.trim();
-}
-
-/**
  * Is a head-only line one the excuse may ignore, because it cannot declare a failure?
  *
- * The whole allow-list of the default-refuse rule, in one place: pass markers, go's run and
- * pass lines, a pure progress line, a separator, a passing tally, a plan, a collection count.
  * The DIRECTION is the point and it is the opposite of the rule this replaced: a shape this
  * list has never heard of REFUSES, which costs a hand-back, and is never read as clean, which
  * would cost a green. So the list may be imperfect only in the safe direction, and a new
  * runner's failure dialect needs no change here to be CAUGHT — only to be excused.
  *
- * The classifier is asked FIRST: a line the table reads as a failure is never clean, whatever
- * else it looks like. That single ordering is what keeps the arms above from having to be
- * exhaustive — `✗ x` opens like a pass glyph, `--- FAIL:` and `FAIL x` carry the same letters
- * as a pass marker, and a `FAILURES!` banner is built from separator characters. The classifier
- * answers for all of them before any arm here is consulted, and no arm here has to argue with
- * the table.
+ * Two rules apply to EVERY arm rather than to one of them, and together they are what "vouches
+ * for the whole line" means in code:
+ *
+ *   - the classifier is asked FIRST, so a line the table reads as a failure is never clean,
+ *     whatever else it looks like (`✗ x` opens like a pass glyph, `--- FAIL:` and `FAIL x`
+ *     carry the same letters as a pass marker, a `FAILURES!` banner is built from separator
+ *     characters); and
+ *   - {@link declaresFailure} vetoes a line whose text carries a failure word or glyph ANYWHERE,
+ *     so no arm ends its reading at its own match — an arm vouches for the whole line or not at
+ *     all. The classifier's shapes are anchored and cannot see `ok 4 - brand new check FAILED`;
+ *     the veto reads the whole line and does.
+ *
+ * THE COST, accepted: a PASSING test whose NAME contains a failure word — a head-only `ok 7 -
+ * login timeout retried` — is vetoed and therefore refused, and the tier hands back instead of
+ * excusing. A hand-back costs a human a look; the alternative is a green on a line that named a
+ * failure. The veto therefore errs long on the side that cannot produce one, and
+ * `docs/lean.md` / the troubleshooting entry state it in the words an operator reads.
  */
 export function isKnownCleanLine(line: string): boolean {
   if (classifyFailureLine(line) !== undefined) return false;
+  if (declaresFailure(line)) return false;
+  const tally = line.trim().replace(PADDING, "");
   return (
     PASS_MARKER.test(line) ||
     GO_RUN_LINE.test(line) ||
-    PROGRESS_LINE.test(line) ||
+    (PROGRESS_LINE.test(line) && progressRowIsClean(line)) ||
     SEPARATOR_LINE.test(line) ||
-    (RUN_SUMMARY.test(line.trim().replace(PADDING, "")) &&
-      !FAILURE_WORD.test(counterFolded(line))) ||
+    (RUN_SUMMARY.test(tally) && !UNKNOWN_COUNTED_WORD.test(tally)) ||
     TAP_PLAN.test(line) ||
     COLLECTION_LINE.test(line)
   );
+}
+
+/**
+ * Does this line's own text declare a failure, anywhere in it?
+ *
+ * The whole-line veto, and the reason no arm above has to be a vocabulary. Each arm vouches for
+ * the shape it matched and stops reading there, which is exactly where a runner's report of what
+ * went wrong lives: `ok 4 - brand new check FAILED`, `ok, the brand new deploy check failed` and
+ * `ok 3 - t/release.t the publish step failed` each open with a genuine pass marker in a genuine
+ * dialect and say, in the part no arm read, that something failed. The classifier does not catch
+ * those — its shapes are anchored (`not ok`, `FAILED <path>::`, `--- FAIL:`) and none of these
+ * matches one — so this is the arm that does, and it is asked of every candidate.
+ *
+ * The words are a fixed set, matched case-insensitively and WORD-BOUNDED (`fail\\w*` reaches
+ * `failed`, `failing`, `failures`; it does not reach `focus` or `definitely`), plus the five
+ * failure glyph runners actually print (`✗ ✘ × ✕ ✖`), which have no letters to bound. The set is
+ * wide on purpose — it reaches further than the classifier's anchored shapes, on purpose — and it
+ * is asked only of the lines this module is asked about, never of a stream: being wide here costs a
+ * hand-back for a passing test whose name happens to read like a failure (`ok 7 - login timeout
+ * retried` printed head-only), while being narrow here costs a green on a line that said it broke.
+ * {@link COUNTER_WORDS} is the mirror image of this rule for a tally's counted words, and the same
+ * direction.
+ */
+const FAILURE_VETO =
+  /\b(?:fail\w*|error\w*|crash\w*|abort\w*|panic\w*|timed?\s*out|timeout|segfault|broken|exception\w*|fatal|critical|killed|leak\w*)\b|[✗✘×✕✖]/i;
+
+/** The line's own words, anywhere in it, say something went wrong. */
+export function declaresFailure(line: string): boolean {
+  return FAILURE_VETO.test(line);
 }
 
 /**
@@ -337,8 +335,38 @@ export function isHarnessLine(line: string): boolean {
  * tests prints new ones of those on every run. The distinction is the classifier's own, which is
  * why this asks IT rather than keeping a second vocabulary of pass markers that could drift from
  * the table that decides what a failure is.
+ *
+ * The whole-line veto is asked HERE too, and that is load-bearing rather than tidy: this is the
+ * OTHER door a head-only line walks out through, since a line excluded as "passing" never reaches
+ * {@link isKnownCleanLine} at all. `ok 4 - brand new check FAILED` is read as SUCCESS by the
+ * classifier — its `\d+\s+passed` arm is an UNANCHORED substring search that fires on the `4` and the
+ * `FAILED` of a TAP line — so a pass marker the classifier guessed made a failing check's line exempt
+ * from every rule in this file. No exemption survives the line's own words saying something broke,
+ * which is what {@link declaresFailure} asks here as well as in {@link isKnownCleanLine}.
+ *
+ * ONE class of line is exempt from the veto at this door, and it is the reason the veto is not simply
+ * asked first: a runner's COUNTED SUMMARY of a red run — `===== 1 failed, 5 passed in 0.42s =====` —
+ * legitimately names failures, is read as success by that same arm, and is the line the
+ * added-passing-tests case MOVES (`3 passed` → `5 passed`). Refusing it here refused the one case the
+ * excuse exists to grant. So a line that is a tally is judged by {@link UNKNOWN_COUNTED_WORD} instead
+ * of by the word list: every count it carries must name a word on {@link COUNTER_WORD_LIST}, or the
+ * exemption goes. `999 crashed` has a tally's shape and a counted word on no list, so it is refused —
+ * which is the split the classifier cannot draw for itself, because `crashed` and `passed` reach its
+ * success arm identically.
+ *
+ * What the two arms together leave in the stream is the set that makes the rest of the design work.
+ * A clean pass line (`PASSED tests/x.py::t`, `ok 1 - a check`) leaves both streams together and cannot
+ * make a head-only line, so exempting it costs nothing. A counted summary of a red run is NOT exempt —
+ * `failed` is no counter — so it stays in the stream, is read by {@link counterFolded}, and the one
+ * field a PR's added checks move is folded there, which is the pass `baselineExcuse` exists to give.
+ * Exempting THAT line by the classifier's success arm is what refused the field case: an exempted
+ * summary is compared by nothing, so a head whose summary moved had no key and no exemption, and the
+ * tier was refused by the very rule meant to grant it.
  */
 function isPassingLine(line: string): boolean {
+  const tally = line.trim().replace(PADDING, "");
+  if (RUN_SUMMARY.test(tally)) return !UNKNOWN_COUNTED_WORD.test(tally);
+  if (declaresFailure(line)) return false;
   return classifyFailureLine(line) === undefined && isSuccessLine(line);
 }
 
@@ -352,6 +380,13 @@ function isPassingLine(line: string): boolean {
  * That proviso is what keeps the exemption honest: an echo of a command NEITHER run was asked to
  * run is a head-only line like any other, and a head carrying only such an echo has nothing
  * recognised left to compare, which is what refuses it.
+ *
+ * "Printed that command" is EXACT EQUALITY of a trimmed base line and the echoed command, which
+ * is the only reading that proviso supports: a base line that merely CONTAINS the command — a
+ * `make check` that quoted the pnpm invocation inside its own output, a log line naming it —
+ * records that the base MENTIONED it, not that the base RAN it, and a substring test here excused
+ * a head echoing a command neither run was asked to run. Every other arm of this module vouches
+ * for a whole line; an echo is vouched for the same way, by the whole command.
  */
 export function isHarnessEchoOf(
   headLine: string,
@@ -363,7 +398,7 @@ export function isHarnessEchoOf(
   const echoed = t.slice("Command failed:".length).trim();
   if (echoed.length === 0) return true;
   if (tierCommand !== undefined && echoed === tierCommand.trim()) return true;
-  return baseRawLines.some((line) => line === echoed || line.includes(echoed));
+  return baseRawLines.some((line) => line.trim() === echoed);
 }
 
 /**
@@ -383,9 +418,10 @@ export function streamLines(stream: string): string[] {
  * The lines the default-refuse rule may judge: neither the harness's nor a PASSING check.
  *
  * Both exclusions are about WHO WROTE THE LINE, never about what it says — see {@link
- * isHarnessLine} and {@link isPassingLine}. What is left is every failure line the classifier
- * read plus everything it did not, and the second group is exactly the group that must be
- * vouched for by {@link isKnownCleanLine} or refuse.
+ * isHarnessLine} and {@link isPassingLine}, the latter of which carries the counter veto for the
+ * passing side. What is left is every failure line the classifier read plus everything it did
+ * not, and the second group is exactly the group that must be vouched for by {@link
+ * isKnownCleanLine} or refuse.
  */
 export function judgeableLines(stream: string): string[] {
   return streamLines(stream).filter((line) => !isHarnessLine(line) && !isPassingLine(line));

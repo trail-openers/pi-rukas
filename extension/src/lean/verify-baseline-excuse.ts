@@ -72,7 +72,6 @@ import {
   preexistingFailuresProblem,
 } from "./state-outcome-maps.ts";
 import {
-  counterFolded,
   isHarnessEchoOf,
   isKnownCleanLine,
   judgeableLines,
@@ -80,6 +79,7 @@ import {
   normaliseRaw,
   streamLines,
 } from "./verify-baseline-allow-list.ts";
+import { counterFolded } from "./verify-baseline-counters.ts";
 import type { BaseProbe } from "./verify-baseline.ts";
 
 /** Why the base red cannot excuse this tier's red. */

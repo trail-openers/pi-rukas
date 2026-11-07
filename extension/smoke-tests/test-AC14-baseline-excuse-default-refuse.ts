@@ -214,7 +214,13 @@ const RED_LINE = "FAILED tests/x_test.py::test_a - AssertionError";
     // is either a pass marker, a progress row, or a tally whose failure count did not move.
     base: [
       "collected 12 items",
-      "tests/x_test.py ..F..                      [ 50%]",
+      // The base's own row for the file whose checks this PR adds to. It is BYTE-IDENTICAL to the
+      // head's copy, which is what lets it excuse: an added check makes the runner print a row of
+      // a different LENGTH, and a row whose length or percentage moved is a row the base never
+      // printed. It carries an `F` because the suite is red here, and the whole-line veto refuses
+      // a head-only row that does -- the accepted cost the docs state -- so a row that is clean at
+      // both runs is excused as the base's own, exactly like the identical `FAILED` line below.
+      "tests/x_test.py .....                    [ 50%]",
       "PASSED tests/x_test.py::test_a",
       "PASSED tests/x_test.py::test_b",
       RED_LINE,
@@ -222,7 +228,7 @@ const RED_LINE = "FAILED tests/x_test.py::test_a - AssertionError";
     ],
     head: [
       "collected 14 items",
-      "tests/x_test.py ..F....                    [ 57%]",
+      "tests/x_test.py .....                    [ 50%]",
       "tests/new_test.py ..                       [100%]",
       "PASSED tests/x_test.py::test_a",
       "PASSED tests/x_test.py::test_b",

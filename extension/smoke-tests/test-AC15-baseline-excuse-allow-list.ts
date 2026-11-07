@@ -20,7 +20,8 @@
  * word (`1 failed`, `Failures: 1`) is evidence about which checks broke and is read exactly.
  */
 import { classifyFailureLine } from "../src/work-driver-verify-failures.ts";
-import { counterFolded, isKnownCleanLine } from "../src/lean/verify-baseline-allow-list.ts";
+import { isKnownCleanLine } from "../src/lean/verify-baseline-allow-list.ts";
+import { counterFolded } from "../src/lean/verify-baseline-counters.ts";
 
 const SELF = "test-AC15-baseline-excuse-allow-list.ts";
 let exit = 0;
@@ -63,7 +64,6 @@ function assert(cond: boolean, msg: string): void {
     // added-passing-tests case lives here, including the dialects whose counters sit in a
     // `Label: N` form or name something other than passes.
     "12 passed, 1 warning in 0.5s",
-    "===== 0 failed, 3 passed in 0.2s =====",
     // A separator.
     "=====",
     "-----",
@@ -101,6 +101,14 @@ function assert(cond: boolean, msg: string): void {
     "===== 5 failed, 1 passed in 0.44s =====",
     "1 failed, 5 passed",
     "1 error, 5 passed",
+    // The whole-line veto is a WORD veto and it is absolute, so it reaches a tally whose failure
+    // count is ZERO: `===== 0 failed, 3 passed in 0.2s =====` reports a clean run and is still
+    // refused, because the veto cannot tell `0 failed` from `9 failed` without reading the digit, and
+    // a veto that could is a veto the next runner's dialect walks through. The direction is the one
+    // this rule always fails on — the line hands back rather than grading green — and the tier is
+    // still excused by the classifier's own reading of its failure lines. This is the veto's accepted
+    // cost, stated in `docs/lean.md` and the troubleshooting entry.
+    "===== 0 failed, 3 passed in 0.2s =====",
     // The same tallies in the padding a real runner prints. Each reports a NON-ZERO failure
     // count, and the counter fold leaves that count standing, so the tally arm still refuses
     // them: a moved passed-count excuses, a moved-or-not failed-count never does.
@@ -171,6 +179,9 @@ function assert(cond: boolean, msg: string): void {
     ["pack_release_test.sh: 36 cases, 1 failed", "pack_release_test.sh: 36 cases, 2 failed", "the comma tally's failing half"],
     ["FAILED t.py::a - assert 1 == 2", "FAILED t.py::a - assert 1 == 3", "an assertion's values are findings, not counters"],
     ["expected 3 to be 4", "expected 3 to be 5", "the same, in the assertion dialect"],
+    // The TAP check index is folded by `leadingIndexFolded`, the key built for it, and NOT by this
+    // one: the counter pass is reached only when the index pass has already failed for every line,
+    // so a key that folded the index too would collapse two different checks onto one line here.
     ["not ok 2 - a bats check", "not ok 3 - a bats check", "a TAP check number is folded elsewhere, never by this key"],
     ["0 failed", "1 failed", "a count that moved to or from zero changed the failure report"],
     ["10 failed", "11 failed", "a multi-digit failure count keeps its digits"],

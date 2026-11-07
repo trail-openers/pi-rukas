@@ -43,7 +43,19 @@ separator, a collection count, a TAP plan (`1..9`), or a tally that counts passe
 non-zero failure count (`5 passed`). A line whose non-zero count names failures (`1 failed, 5
 passed`) is a REPORTER, not a counter, and is refused: inside such a tally the rule cannot tell
 "+2 passing because the PR added checks" from "+2 failing because the PR broke one", and a
-hand-back is the right answer where the evidence cannot. So the allow-list may be imperfect only
+hand-back is the right answer where the evidence cannot. Every permission vouches for the WHOLE LINE
+rather than for the part of it a shape matched, and that is what closes the dialects a prefix read
+let through: a line whose own text carries a failure word or glyph ANYWHERE (`fail*`, `error*`,
+`crash*`, `abort*`, `panic*`, `timed out`/`timeout`, `segfault`, `broken`, `exception*`, `fatal`,
+`critical`, `killed`, `leak*`, and the glyphs ✗ ✘ × ✕ ✖) is not known-clean, so `ok, the brand new
+deploy check failed` and `ok 4 - brand new check FAILED` refuse on the word that follows their pass
+marker; a progress row is clean only when its result run holds `.`, `s` and `x`, so a row carrying an
+`F` or an `E` is a failed check; and a tally is clean only when EVERY `<number> <word>` pair names a
+COUNTER on the explicit list — `passed`, `skipped`, `deselected`, `xfailed`, `xpassed`, `warning(s)`,
+`test(s)`, `item(s)`, `cases`, `total`, `ok`, `pass` — so a counted word on no list refuses by absence
+and `===== 999 crashed, 9 passed =====` is neither clean nor folded. The cost of the word veto is
+accepted and runs the safe way: a PASSING test whose NAME carries such a word, when the line is
+head-only, is refused too — the accepted false refusal is a hand-back, never a green. So the allow-list may be imperfect only
 the safe way — an unknown shape costs a hand-back, never a green — and a new runner dialect
 needs no change to be caught, only to be excused. The harness's own writing (`Command failed:`
 of a command the tier really ran, `Exit code: N`, a bare `killed`, a `tier-said-*` marker) is
@@ -60,8 +72,9 @@ body's `## Pre-existing test failures` section renders. A head-only line is the 
 regression and belongs in a build round. A head-only line the allow-list does not know is the
 other hand-back, and it is not a regression claim: check whether the line is a runner output
 shape the list has simply never seen (a new runner, a new report format, a plugin's summary).
-If it reports a count of things that passed, it belongs on the list and the entry is one line in
-`isKnownCleanLine`; if it reports anything that failed, the hand-back is the correct verdict and
+If it reports a count of things that passed, it belongs on the list, and the entry is one word added
+to the COUNTER list (`COUNTER_WORD_LIST`) rather than a new shape — the tally arm and the fold read
+that one list, so a word on it is both excusable and foldable, and a word off it is neither; if it reports anything that failed, the hand-back is the correct verdict and
 the tier needs to say which checks failed. If you are unsure which, read the line's own words —
 the rule refuses exactly when its words cannot tell "more passing" from "more failing". A tier that prints no recognised failure line needs a
 runner that prints one failing-test line per test — most do (`pytest -v`, `go test -v`, `prove`
