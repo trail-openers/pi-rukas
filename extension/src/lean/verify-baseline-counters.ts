@@ -240,7 +240,7 @@ const COUNTER_WORD_BEFORE = new RegExp(
  * exemption reads this one field — which is the same restriction {@link COUNTER_WORD_BEFORE} puts on
  * its own label, stated once and read by both arms that need a label at all.
  */
-const LABEL_FIELD = new RegExp(`(?:^|[\\s(,;:])[\\w. -]*:\\s*$`, "i");
+const LABEL_FIELD = /(?:^|[\s(,;:])[\w. -]*:\s*$/i;
 
 /** A duration unit printed after its number: `0.2s`, `12ms`, `1.5 seconds`. */
 const DURATION_AFTER = /^\s*(?:ms|s|sec|secs|seconds?|minutes?|hours?)(?![A-Za-z0-9])/i;

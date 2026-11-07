@@ -30,14 +30,11 @@
  *     scrubbing that makes it refuse runs where the lines are read, so every arm sees the same text;
  *   (control) every case the rule exists to excuse is still green: `pytest -v`'s new PASSED line,
  *     pytest's default dots-only progress, TAP `ok` lines whose names hold no failure word,
- *     `go test -v`, and the summary whose PASSED count moved;
- *   (reporter) a digit whose OWN word names a failure — `1 failed`, `1 items failed`, `tests: 1
- *     failed`, `suite ran: 1 failed`, and the error/panic/segfault/timeout/killed spellings — never
- *     folds whatever label precedes it, so the moved count refuses; the PASSED half of the same
- *     summary and the `Tests run: N` total still fold;
- *   (index) the TAP check-index fold is gone: `not ok 3 - a bats check` against a base's `not ok 1 -
- *     a bats check` REFUSES, because a renumbering cannot say which check printed the line, and the
- *     accepted cost is a genuinely renumbered failure handing the run back.
+ *     `go test -v`, and the summary whose PASSED count moved.
+ *
+ * The two folds the COMPARISON may not use — a failure word's own count, and a TAP check index — are
+ * pinned in the companion file `test-AC16b-baseline-excuse-what-may-move.ts`, which asks the same
+ * question (WHAT MAY MOVE) from the other side of this module's seam.
  *
  * The veto's cost is stated where it is paid, in `docs/lean.md` and the troubleshooting entry:
  * a PASSING test whose NAME contains a failure word, when it is head-only, is refused — a
@@ -240,149 +237,6 @@ const RED_LINE = "FAILED tests/x_test.py::test_a - AssertionError";
     failureLineFold("a.py: 36 cases, 1 failed, 3 passed") !==
       failureLineFold("a.py: 36 cases, 1 failed, 5 passed"),
     `(fold) nothing folds inside a classifier-accepted failure line (${failureLineFold("a.py: 36 cases, 1 failed, 3 passed")})`,
-  );
-}
-
-// ------------- (reporter) a digit whose OWN word names a failure never folds, whatever precedes it
-{
-  // The fold's first question, asked before any counter arm. The counter arms answer "is the word
-  // next to this digit a counter?", and a LABEL in front of a broken count is exactly the spelling
-  // that answers yes: `ran` is a label word the fold admits for `Run: 3`, `tests` and `items` are on
-  // the counter list — so `suite ran: 1 failed` folded to the key of `suite ran: 2 failed`, and the
-  // second failed check was excused as the first. The refusal cannot come from the left, because a
-  // label vocabulary is unbounded; it comes from the digit's own word, which must be ADJACENT to it.
-  //
-  // Pinned through `baselineExcuse`, because that is what a green is graded on, and through
-  // `failureLineFold` as well, so the pair is refused wherever a key is built for it.
-  const REPORTER_PAIRS: [string, string, string][] = [
-    ["suite ran: 1 failed", "suite ran: 2 failed", "a `ran:` label beside a moved failed count"],
-    ["tests: 1 failed", "tests: 2 failed", "a `tests:` label beside a moved failed count"],
-    ["suite ran: 1 error", "suite ran: 2 errors", "the error spelling, singular at base and plural at head"],
-    ["suite ran: 1 panic", "suite ran: 2 panicked", "the panic spelling"],
-    ["suite ran: 1 segfault", "suite ran: 2 segfault", "the segfault spelling"],
-    ["suite ran: 1 timeout", "suite ran: 2 timed out", "the timeout spelling"],
-    ["suite ran: 1 killed", "suite ran: 2 killed", "a run killed by a signal"],
-  ];
-  for (const [head, base, why] of REPORTER_PAIRS) {
-    assert(
-      failureLineFold(head) !== failureLineFold(base),
-      `(reporter) ${why} keeps its digits (${failureLineFold(head)} / ${failureLineFold(base)})`,
-    );
-    assert(
-      excuseOf([RED_LINE, head], [RED_LINE, base]).kind === "refused",
-      `(reporter) ${why} refuses the excuse (${excuseOf([RED_LINE, head], [RED_LINE, base]).kind})`,
-    );
-  }
-
-  // The fold's own boundary, stated exactly: the reporter arm reads the word on the count's RIGHT,
-  // so a count whose own word is a reporter keeps its digits (`suite ran: 1 failed`, `tests: 1
-  // failed`). What it cannot do is reach past the word on the count's LEFT: `1 items failed` is the
-  // count of a real counter (`items`), so the counter list decides it and the digits fold — and the
-  // line still refuses, because the whole-line veto keeps a line that ends `failed` off the allow-list
-  // and the strict pass has no key for it. The fold is one of three arms; refusing a moved failure
-  // never rests on it alone.
-  assert(
-    classifyFailureLine("tests/x_test.py: 1 items failed") === undefined &&
-      !isKnownCleanLine("tests/x_test.py: 1 items failed"),
-    "(reporter) a `N items failed` row is no clean shape: the whole-line veto holds it in the stream",
-  );
-  // The fold's remaining edge, stated rather than papered over: `N items failed` counts a word that IS
-  // on the counter list (`items`), so the counter fold folds its digit and the two rows share a key —
-  // the fold cannot tell a tally's item count from a failed-check row without the classifier, and the
-  // classifier's anchored shapes do not read this bare spelling. Pinned so the boundary is a known one:
-  // the row stays in the stream (the whole-line veto refuses it as a clean shape), and every dialect a
-  // runner actually prints for a failed check — `1 failed`, `tests/x.py: 1 failed`, `Failures: 1` — is
-  // refused above.
-  assert(
-    excuseOf(
-      [RED_LINE, "tests/x_test.py: 1 items failed"],
-      [RED_LINE, "tests/x_test.py: 2 items failed"],
-    ).kind === "excused",
-    "(reporter) the disclosed edge: a bare `N items failed` row is a counter row to the fold, so it moves",
-  );
-
-  // The fold is not "refuse any line that mentions a failure word": the PASSED half of the same
-  // summary still folds, and a `Tests run: N` total beside an unchanged failure count still folds.
-  // These are the two must-move cases the reporter arm must not cost.
-  assert(
-    failureLineFold("===== 1 failed, 3 passed =====") ===
-      failureLineFold("===== 1 failed, 5 passed ====="),
-    `(reporter) a moved passed count still folds beside the standing failure count (${failureLineFold("===== 1 failed, 3 passed =====")})`,
-  );
-  assert(
-    failureLineFold("Tests run: 3") === failureLineFold("Tests run: 5"),
-    `(reporter) the Tests run: N total still folds when nothing else moved (${failureLineFold("Tests run: 5")})`,
-  );
-  assert(
-    failureLineFold("Tests run: 3, Failures: 1") === failureLineFold("Tests run: 5, Failures: 1"),
-    `(reporter) the Tests run: N total still folds beside an unchanged Failures count (${failureLineFold("Tests run: 5, Failures: 1")})`,
-  );
-
-  // And the same two through the excuse, as whole streams: the field case the rule exists to grant.
-  assert(
-    excuseOf(
-      [RED_LINE, "PASSED tests/x_test.py::test_b", "===== 1 failed, 5 passed ====="],
-      [RED_LINE, "PASSED tests/x_test.py::test_b", "===== 1 failed, 3 passed ====="],
-    ).kind === "excused",
-    "(reporter) the summary whose PASSED half moved still excuses over a base that printed the same failure",
-  );
-  assert(
-    excuseOf([RED_LINE, "Tests run: 5, Failures: 1"], [RED_LINE, "Tests run: 3, Failures: 1"]).kind ===
-      "excused",
-    "(reporter) the Surefire total that moved still excuses beside an unchanged Failures count",
-  );
-  // …and the reporter arm must not be a blanket refusal on any line that mentions `failed`: the SAME
-  // Surefire shape with its FAILURES count moved still refuses, so the exemption above is confined to
-  // the label that names the run's total.
-  assert(
-    excuseOf([RED_LINE, "Tests run: 5, Failures: 2"], [RED_LINE, "Tests run: 5, Failures: 1"]).kind ===
-      "refused",
-    "(reporter) the same Surefire shape whose Failures count moved still refuses",
-  );
-}
-
-// ----------------------- (index) a renumbered TAP failure is a line the base never printed
-{
-  // The check-index fold is deleted. It folded the digits a runner prints after its status word so
-  // that `not ok 3 - x` sat where the base printed `not ok 1 - x`, on the theory that a PR adding a
-  // passing test renumbers the failures after it. The theory does not survive a NEW failing check:
-  // the index is assigned by the order checks ran, so nothing ties it to a check, and a third failing
-  // check folded onto the base's first. The accepted cost is the opposite direction — a genuinely
-  // renumbered failure now refuses, which is a hand-back and never a green.
-  const RENUMBERED: [string, string, string][] = [
-    ["not ok 3 - a bats check", "not ok 1 - a bats check", "a TAP failure renumbered by an added check"],
-    ["not ok 3 - a bats check", "not ok 2 - a bats check", "the same, one apart"],
-    ["not ok 12 - t/release.t", "not ok 11 - t/release.t", "a two-digit index"],
-  ];
-  for (const [head, base, why] of RENUMBERED) {
-    assert(
-      excuseOf([RED_LINE, head], [RED_LINE, base]).kind === "refused",
-      `(index) ${why} refuses the excuse (${excuseOf([RED_LINE, head], [RED_LINE, base]).kind})`,
-    );
-    assert(
-      excuseOf([RED_LINE, head], [RED_LINE, head]).kind === "excused",
-      `(index) the same ${why} printed identically at base is the base's own red and excuses`,
-    );
-  }
-
-  // …and the renumbering cost stated as the field case it costs: the added-passing-tests run whose
-  // TAP failures shift by one. The plan and the new `ok` lines are clean shapes; the shifted failure
-  // line is not, and it is what hands the run back.
-  assert(
-    excuseOf(
-      ["ok 1 - a passing check", "ok 2 - a brand new passing check", "not ok 3 - a bats check", "1..10"],
-      ["ok 1 - a passing check", "not ok 2 - a bats check", "1..9"],
-    ).kind === "refused",
-    "(index) the added-passing-tests TAP run whose failure renumbered hands back — the accepted cost",
-  );
-  // …and the same run with the failure NOT renumbered, which is the case that must keep excusing:
-  // new `ok` lines and a moved plan are clean shapes, and nothing else moved.
-  assert(
-    excuseOf(
-      ["ok 1 - a passing check", "ok 2 - a brand new passing check", "not ok 2 - a bats check", "1..10"],
-      ["ok 1 - a passing check", "ok 2 - a brand new passing check", "not ok 2 - a bats check", "1..9"],
-    ).kind === "excused",
-    "(index) new `ok` lines and a moved plan still excuse while the failing line stands still",
   );
 }
 
