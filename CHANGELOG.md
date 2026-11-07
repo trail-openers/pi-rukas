@@ -8,6 +8,19 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.60](https://github.com/trail-openers/pi-rukas/compare/v0.14.59...v0.14.60) (2026-11-07)
+
+
+### Features
+
+* **lean:** run review pass 1's gate and lenses concurrently ([#2088](https://github.com/trail-openers/pi-rukas/issues/2088)) ([73ef73e](https://github.com/trail-openers/pi-rukas/commit/73ef73e7767b0df140ddadf7d53a79e3648a44dd))
+
+
+### Bug Fixes
+
+* **lean:** excuse a baseline-red failure by whole-line comparison, any runner ([#2080](https://github.com/trail-openers/pi-rukas/issues/2080)) ([307946b](https://github.com/trail-openers/pi-rukas/commit/307946bcdda09ae000950e829f17300172539941))
+* **lean:** grade a frozen test that times out at verify as red ([#2086](https://github.com/trail-openers/pi-rukas/issues/2086)) ([5fc5867](https://github.com/trail-openers/pi-rukas/commit/5fc58675e56e324097040dd8dee8d622f4afa390))
+
 ## [0.14.59](https://github.com/trail-openers/pi-rukas/compare/v0.14.58...v0.14.59) (2026-11-07)
 
 
