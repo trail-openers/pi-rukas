@@ -1,10 +1,11 @@
 #!/usr/bin/env bun
 /**
- * lean/resume — a build attempt the ceiling stopped folds to the round it billed
- * (#2067).
+ * lean/resume — a build the ceiling stopped folds to the round it DISPATCHED
+ * (#2067, #2081).
  *
- * `build + budget` now bills a round, so a run killed mid-attempt must fold to
- * the counters a drive persisted, or `verifiedPosition` refuses an honest file
+ * `build + budget` bills nothing on the way out — the round was billed on the
+ * edge that entered build — so a run killed mid-attempt must still fold to the
+ * counters a drive persisted, or `verifiedPosition` refuses an honest file
  * and the run cannot resume at all. Split from test-lean-engine-resume.ts for
  * the 500-line gate (AGENTS.md §12).
  */
@@ -28,8 +29,8 @@ const { assert, failures } = makeAssert();
 
 // ── a build attempt the ceiling stopped folds to the round it billed (#2067) ──
 //
-// `build + budget` now re-enters build through `viaBuild`, so a run killed
-// mid-second-attempt must fold to `buildAttempts` = rounds entered, or
+// A budget-stopped build leaves `build` on a plain move, so a run killed
+// mid-attempt must fold to `buildAttempts` = rounds DISPATCHED, or
 // `verifiedPosition` refuses an honest file and the run cannot resume at all.
 // The log below is the walk the table produces for one budget round followed by
 // a live second attempt, and the snapshot is what the fold derives.
@@ -93,7 +94,14 @@ const { assert, failures } = makeAssert();
     );
     assert(
       res.run.counters.buildAttempts === 1,
-      `the stopped round stayed billed as the one attempt it was (got ${res.run.counters.buildAttempts})`,
+      `the stopped round is billed as the one DISPATCH it was, on the edge that entered build (got ${res.run.counters.buildAttempts})`,
+    );
+    // Re-entering the step must not charge the round again: the log below has one
+    // decided `build:budget` row and the run leaves with one attempt, so a
+    // resumed visit that re-billed on entry would land on two and be refused.
+    assert(
+      res.run.steps.filter((s) => s.state === "build" && s.outcome?.kind === "budget").length === 1,
+      "the log carries exactly the one stopped round the counter bills (nothing double-billed)",
     );
     assert(!("build" in calls), `no second build was paid for (got ${String(calls.build ?? 0)})`);
   } finally {

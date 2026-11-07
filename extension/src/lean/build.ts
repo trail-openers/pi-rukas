@@ -239,22 +239,33 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
     throw new BuildInfraError(`could not load the project config: ${(err as Error).message}`);
   });
   const spec = await specOf(deps, repoRoot, issue);
-  const attempt =
-    ctx.steps.filter((s) => s.state === "build" && s.outcome !== undefined).length + 1;
-
+  // Rounds this run has DISPATCHED and paid for. `buildAttempts` is the authority
+  // now the table bills a round on entering `build` and never on leaving it: it
+  // counts dispatches, not table visits, so one child a ceiling stopped costs one
+  // round and the retry loop below stops only when the budget is spent. The round
+  // this visit is running is not in the count yet — the edge that enters `build`
+  // bills it when the engine applies the verdict — hence the +1 below.
+  const dispatchedBefore = ctx.run.counters.buildAttempts;
+  // What the child's prompt and its commit subject call the round: the decided
+  // `build` rows below this one — a LOG fact, so a resumed visit prints the number
+  // the log says and never repeats one. The counter and the log can disagree for a
+  // resumed record, and that is honest: the label counts rows, the cap below
+  // counts dispatches.
+  const label = ctx.steps.filter((s) => s.state === "build" && s.outcome !== undefined).length + 1;
   // 4. The builder, under the state's budget (#1883). A child that died THROWS, so
   //    the rows ride on the error to the outcome the engine writes (#1920 A). A
   //    child its OWN ceiling stopped is retried HERE — the table has no `build`
   //    self-edge — and its work rides forward on the commit its fold made.
   // The tree, head and contract every fold of this attempt is judged against.
-  const fold = (attempt: number) => ({
+  const fold = (n: number) => ({
     exec: deps.exec,
     wt,
     repoRoot,
     branch,
     headBefore,
     frozen,
-    attempt,
+    // The round the prompt and the commit subject name.
+    attempt: n,
     issue,
   });
   const reentry = reentryFromLog(ctx.steps);
@@ -262,16 +273,23 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
   let stopped = budgetStopFromLog(ctx.steps);
   const rows: DispatchUsageRow[] = [];
   let toolUses: unknown[] = [];
+  // Children this visit has put on the wire. The cap below is read against the
+  // rounds DISPATCHED — the ones already decided, plus the ones this loop has
+  // bought — because `buildAttempts` counts dispatches now and a child its own
+  // ceiling stopped was one: a budget stop buys another child while dispatches
+  // remain, which is what lets a run spend its third build on work rather than
+  // on a ceiling. (R3)
   for (let tries = 0; ; tries++) {
+    const dispatched = dispatchedBefore + tries + 1;
     const budget = armBudget(budgetFor(config, "build"));
     if (budget.warning !== undefined) traceWarn(`lean build #${String(issue)}: ${budget.warning}`);
-    const [dispatched, row] = await dispatchBuilder(deps.dispatch, {
+    const [dispatchedChild, row] = await dispatchBuilder(deps.dispatch, {
       issue,
       spec,
       frozen,
       wt,
       repoRoot,
-      attempt,
+      attempt: label,
       testRunner: config.verify.test,
       budget,
       ...(reentry === undefined ? {} : { reentry }),
@@ -279,7 +297,7 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
       ...(stopped === undefined ? {} : { budgetStop: stopped }),
     });
     rows.push(row);
-    const read = readDispatched(dispatched);
+    const read = readDispatched(dispatchedChild);
     if (!("stop" in read)) {
       toolUses = read.result.toolUses ?? [];
       break;
@@ -287,12 +305,11 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
     // Its own ceiling stopped it: fold the work into this attempt's commit and
     // re-run the frozen files under ONE wall clock, so verify finds a clean tree and
     // the retry's prompt names what is still failing (#2067). The kind stays `budget`.
-    // R5: a run the cap ENDS here names the attempts too, which `handback` prints —
+    // R5: a run the cap ENDS here names the dispatches too, which `handback` prints —
     // a ceiling alone cannot say the retries were spent.
-    const attempts = ctx.run.counters.buildAttempts + tries + 1;
-    const atCap = attempts >= MAX_BUILD_ATTEMPTS;
+    const atCap = dispatched >= MAX_BUILD_ATTEMPTS;
     const { kept, failing } = await foldStoppedBuild({
-      ...fold(attempt),
+      ...fold(label),
       template: config.verify.test,
       ceiling: deps.captureCeiling,
       ...(deps.blockedTimeoutMs === undefined ? {} : { timeoutMs: deps.blockedTimeoutMs }),
@@ -302,7 +319,7 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
       ...budgetVerdictWithRows("build", read.stop, rows),
       reason: joinNotes([
         budgetSentence("build", read.stop),
-        ...(atCap ? [`after ${String(attempts)} build attempts`] : []),
+        ...(atCap ? [`after ${String(dispatched)} build attempts`] : []),
         failing.length === 0 ? "" : `still failing: ${clipList(failing, LIST_CLIP)}`,
         kept.files.length === 0 ? "" : `kept ${String(kept.files.length)} file(s)`,
       ]),
@@ -335,7 +352,7 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
 
   // 5 + 6. Capture, reset, rewrite, commit — or say there was nothing to commit.
   const report = await normaliseBuild({
-    ...fold(attempt),
+    ...fold(label),
     budget: new CaptureBudget(deps.captureCeiling),
   });
   if (report.files.length === 0)

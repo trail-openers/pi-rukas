@@ -241,36 +241,73 @@ assert(
     .state === "verify",
   "a build that already earned its challenge goes to verify",
 );
-// A budget-stopped build is ONE attempt, so it re-enters build through
-// `viaBuild` while a round remains, and hands back at the cap. The pair claim
-// (this edge re-enters build; only the cap ends the run) lives here beside the
-// other single-edge assertions; the step's work-keeping lives in
-// test-lean-build.ts.
+// A build's round was billed on the edge that ENTERED build, so leaving on a
+// ceiling bills nothing more: the counter the stopped edge carries out is the
+// one it was handed. The pair claim (this edge leaves build and re-bills
+// nothing; only the cap ends the run) lives here beside the other single-edge
+// assertions; the step's work-keeping lives in test-lean-build.ts.
 for (const challengeDone of [false, true]) {
   const stopped = next(run("build", { counters: { ...INITIAL_COUNTERS, challengeDone } }), {
     kind: "budget",
   });
   assert(
     stopped.state === (challengeDone ? "verify" : "challenge") &&
-      stopped.counters.buildAttempts === 1,
-    `build + budget bills the round the child ran and leaves build (challengeDone=${String(challengeDone)}: ${stopped.state}/${stopped.counters.buildAttempts})`,
+      stopped.counters.buildAttempts === 0,
+    `build + budget leaves build and re-bills nothing — the round was billed on entry (challengeDone=${String(challengeDone)}: ${stopped.state}/${stopped.counters.buildAttempts})`,
   );
 }
 assert(
   next(run("build", { counters: { ...INITIAL_COUNTERS, buildAttempts: MAX_BUILD_ATTEMPTS } }), {
     kind: "budget",
   }).counters.buildAttempts === MAX_BUILD_ATTEMPTS,
-  "build + budget at the cap bills no round beyond it",
+  "build + budget at the cap goes to verify and bills no round beyond it",
 );
 const exhausted = next(run("build"), { kind: "exhausted" });
 assert(
   exhausted.state === "publish" && exhausted.counters.draft === true,
   "build exhausted → publish as a draft",
 );
+// The builder ran and produced nothing, so the round it was given is spent: this
+// edge bills one even though its destination is not `build`. Dropping the charge
+// would let a builder that keeps coming back empty re-enter build forever, since
+// every cap comparison in the table reads this counter and this is the edge a
+// no-change round leaves by.
+{
+  const billed = next(
+    run("build", { counters: { ...INITIAL_COUNTERS, buildAttempts: 1 } }),
+    { kind: "exhausted" },
+  );
+  assert(
+    billed.state === "publish" && billed.counters.buildAttempts === 2,
+    `build exhausted bills the round the builder was dispatched for (got ${billed.state}/${billed.counters.buildAttempts})`,
+  );
+}
 assert(
   next(run("challenge"), { kind: "new-tests" }).state === "build",
   "challenge new-tests → build while attempts remain",
 );
+{
+  // The counter counts rounds DISPATCHED, and this edge dispatches one: the
+  // builder the new tests earn. What it no longer does is bill anything on the
+  // way OUT of the previous build — that double charge is what read two real
+  // builds as three. The flag is charged here too, so the build this edge earns
+  // cannot offer a second challenge round.
+  const earned = next(run("challenge", { counters: { ...INITIAL_COUNTERS, buildAttempts: 1 } }), {
+    kind: "new-tests",
+  });
+  assert(
+    earned.state === "build" && earned.counters.buildAttempts === 2,
+    `challenge new-tests dispatches and bills exactly the one round it earns (got ${earned.state}/${earned.counters.buildAttempts})`,
+  );
+  const fourth = next(
+    run("challenge", { counters: { ...INITIAL_COUNTERS, buildAttempts: MAX_BUILD_ATTEMPTS } }),
+    { kind: "new-tests" },
+  );
+  assert(
+    fourth.state === "verify" && fourth.counters.buildAttempts === MAX_BUILD_ATTEMPTS,
+    `challenge new-tests at the cap goes to verify and bills nothing (got ${fourth.state}/${fourth.counters.buildAttempts})`,
+  );
+}
 {
   // True on BOTH branches of new-tests: below the cap the run goes back to
   // build, at the cap it goes to verify, and either way a second challenge

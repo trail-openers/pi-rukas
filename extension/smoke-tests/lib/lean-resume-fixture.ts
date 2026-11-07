@@ -17,9 +17,16 @@
  * case is about.
  */
 
+import { foldLog } from "../../src/lean/resume.ts";
+import {
+  INITIAL_COUNTERS,
+  type LeanRun,
+  type LeanState,
+  type Step,
+} from "../../src/lean/state.ts";
 import { CLOCK } from "./lean-engine-fixtures.ts";
 
-const step = (issue: number, state: string, n: number, kind: string) => ({
+const step = (issue: number, state: LeanState, n: number, kind: string): Step => ({
   key: `${issue}:${state}:${n}`,
   state,
   startedAt: CLOCK,
@@ -34,9 +41,8 @@ const step = (issue: number, state: string, n: number, kind: string) => ({
  * the build round below), then a green verify, publish, review, and a green
  * CI. Round two: that green CI is what `ci:0` below is — the run then took its
  * one CI fix round, re-built, re-verified, re-published, was reviewed again,
- * and the SECOND CI said red. `build:2`/`build:3` are the two `viaBuild` edges
- * that round crossed being itemised as entries; `buildAttempts: 4` is what the
- * table bills across all of them.
+ * and the SECOND CI said red. Under dispatch-billing the run dispatched three
+ * builds across that walk: the first, the red's fix, and the CI fix round.
  */
 export function forgedCiRedSteps(issue: number) {
   return [
@@ -62,11 +68,24 @@ export function forgedCiRedSteps(issue: number) {
   ];
 }
 
-/** Counters the table reaches on `forgedCiRedSteps`. */
-export const FORGED_COUNTERS = {
-  buildAttempts: 4,
-  challengeDone: true,
-  reviewDone: true,
-  ciFixUsed: true,
-  draft: false,
-};
+/**
+ * The counters the table reaches on `forgedCiRedSteps`.
+ *
+ * DERIVED, never typed: this is `foldLog` over the very log above, so a case
+ * that refuses this file for its FORGERY (the snapshot claiming `ci` while the
+ * newest `ci` row is red) is refused for that and nothing else. A hand-carried
+ * literal here is a second source of truth for the table's counter arithmetic,
+ * and the first thing it does when the billing rule moves is refuse an honest
+ * file for the wrong reason.
+ */
+export const FORGED_COUNTERS: LeanRun["counters"] = foldLog({
+  schema: 1,
+  issue: 0,
+  version: "test",
+  models: {},
+  baseSha: "",
+  branch: "",
+  state: "ready",
+  counters: { ...INITIAL_COUNTERS },
+  steps: forgedCiRedSteps(0),
+}).pos.counters;
