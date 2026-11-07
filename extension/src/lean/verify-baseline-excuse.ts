@@ -79,7 +79,7 @@ import {
   normaliseRaw,
   streamLines,
 } from "./verify-baseline-allow-list.ts";
-import { counterFolded } from "./verify-baseline-counters.ts";
+import { failureLineFold } from "./verify-baseline-counters.ts";
 import type { BaseProbe } from "./verify-baseline.ts";
 
 /** Why the base red cannot excuse this tier's red. */
@@ -101,14 +101,19 @@ export type BaselineExcuse =
  * judgeableLines}, so they cannot be traded away by putting noise on one stream only.
  *
  * Comparison is strict by design (see {@link normaliseRaw}), with exactly TWO looser keys, and
- * each folds ONE field — nothing else:
+ * each folds ONE field — nothing else, and never inside a line the classifier read as a failure:
  *
  *   - the CHECK INDEX, which a runner renumbers when a test is added before the check
  *     (`not ok 3 - x` where the base printed `not ok 2 - x`); and
- *   - the RUNNER COUNTERS and durations ({@link counterFolded}), which a PR that ADDS PASSING
- *     TESTS moves in the summary of an already-red suite (`1 failed, 3 passed` where the base
- *     printed `1 failed, 5 passed`). Every number attached to a FAILURE word is kept exact by
- *     that fold, so `1 failed` never becomes equal to `2 failed` by any route.
+ *   - the RUNNER COUNTERS and durations of a line the classifier did NOT read as a failure
+ *     ({@link failureLineFold}), which a PR that ADDS PASSING TESTS moves in the summary of an
+ *     already-red suite (`1 failed, 3 passed` where the base printed `1 failed, 5 passed`). Every
+ *     number attached to a FAILURE word is kept exact by that fold, so `1 failed` never becomes
+ *     equal to `2 failed` by any route; and a per-check failure line — `FAILED a.py::t - … got 5
+ *     items`, `not ok 1 - checkout - expected 3 items found 0` — is not folded at all, because the
+ *     number an assertion compared IS the finding and a counter word beside it does not make it a
+ *     tally. Two lines that differ only by such a number are two failures, and the run that
+ *     printed the one the base did not is refused.
  *
  * A line the strict key cannot place is otherwise excused only by the allow-list, never by
  * looser text — which is what makes the direction safe.
@@ -118,8 +123,9 @@ export type BaselineExcuse =
  * back out of the stream being judged: a rule that mined the expected command from the head stream
  * let one head-only `Command failed: touch /tmp/pwned` quote ITSELF into being the command the tier
  * ran and excuse the run. So the caller hands in what it actually asked the executor to run, and with
- * no caller command the base's own copy of the identical line is the only thing that vouches for an
- * echo — including an empty one, which names no command and proves nothing.
+ * no caller command the base's own copy of the identical raw echo line is the only thing that
+ * vouches for an echo — a base line that merely carries the command without the marker does not,
+ * including an empty echo, which names no command and proves nothing.
  *
  * The one case the base's copy does NOT excuse is a stream whose recognised set is EMPTY: with
  * nothing the classifier read there is no comparison to grade, and {@link baselineExcuse} refuses
@@ -140,14 +146,14 @@ export function hasHeadOnlyUnrefusedLine(
     [...baseStrict].map(leadingIndexFolded).filter((line) => line.length > 0),
   );
   const baseCounters = new Set(
-    [...baseStrict].map(counterFolded).filter((line) => line.length > 0),
+    [...baseStrict].map(failureLineFold).filter((line) => line.length > 0),
   );
   const baseRaw = streamLines(baseStream);
   return judgeableLines(headStream).some((line) => {
     const key = normaliseRaw(line, headRoot);
     if (key.length === 0 || baseStrict.has(key)) return false;
     if (baseLoose.has(leadingIndexFolded(key))) return false;
-    if (baseCounters.has(counterFolded(key))) return false;
+    if (baseCounters.has(failureLineFold(key))) return false;
     if (isHarnessEchoOf(line, baseRaw, tierCommand)) return false;
     return !isKnownCleanLine(line);
   });
@@ -359,13 +365,16 @@ export function baselineExcuse(opts: {
   //   - the CHECK-INDEX pass, for the shape a real runner forces on us: it numbers its
   //     checks, so ADDING a passing test renumbers the failures after it and
   //     `not ok 3 - a bats check` sits where the base printed `not ok 2 - a bats check`; and
-  //   - the RUNNER-COUNTER pass, for the other thing the same PR moves: the summary of the run
-  //     it is a failure line of. A suite already red at base that GAINS passing tests prints
-  //     `===== 1 failed, 5 passed in 0.3s =====` where the base printed `… 3 passed in 0.2s`,
-  //     and a counted failing tally IS a failure line the comparison below reads — so without
-  //     this pass the feature refuses the one case it exists to grant. {@link counterFolded}
-  //     keeps every count attached to a failure word exact, so a summary whose FAILURE count
-  //     moved has no key here and the tier still refuses.
+  //   - the RUNNER-COUNTER pass, for the other thing the same PR moves: a runner's summary of the
+  //     run. A suite already red at base that GAINS passing tests prints
+  //     `===== 1 failed, 5 passed in 0.3s =====` where the base printed `… 3 passed in 0.2s`, and
+  //     that summary is a line the comparison below reads — so without this pass the feature
+  //     refuses the one case it exists to grant. {@link failureLineFold} keeps every count attached
+  //     to a failure word exact, so a summary whose FAILURE count moved has no key here and the
+  //     tier still refuses; and it folds NOTHING inside a line the classifier read as one check's
+  //     failure, which is what keeps `… got 5 items` and `… got 50 items` two lines — the number an
+  //     assertion compared is the finding, and a counter word sitting beside it does not turn a
+  //     per-check report into a tally.
   //
   // The order is load-bearing. A looser pass is reached only when the passes above it failed
   // for EVERY line, so an assertion whose numbers genuinely changed is settled by the strict
@@ -377,8 +386,8 @@ export function baselineExcuse(opts: {
     const looseHead = headKey.map(leadingIndexFolded).filter((line) => line.length > 0);
     const looseBase = new Set([...baseKey].map(leadingIndexFolded));
     if (!looseHead.every((line) => looseBase.has(line))) {
-      const counterHead = headKey.map(counterFolded).filter((line) => line.length > 0);
-      const counterBase = new Set([...baseKey].map(counterFolded));
+      const counterHead = headKey.map(failureLineFold).filter((line) => line.length > 0);
+      const counterBase = new Set([...baseKey].map(failureLineFold));
       if (!counterHead.every((line) => counterBase.has(line))) return { kind: "refused" };
     }
   }

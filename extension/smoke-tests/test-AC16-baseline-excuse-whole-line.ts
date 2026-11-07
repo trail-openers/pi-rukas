@@ -23,8 +23,9 @@
  *   (tally) a counted word that is NOT on the counter list — `crashed`, `aborted`, `panicked`,
  *     `segfault` — refuses when its count moves, and the same line with the same counts excuses;
  *   (echo) a `Command failed:` echo is vouched for ONLY by the tier's real command — which the caller
- *     supplies and the stream is never asked for — or by a base line that IS the command; never by one
- *     that merely contains it, never by the echo's own text, and never by an empty echo;
+ *     supplies and the stream is never asked for — or by a base line that IS the identical raw echo;
+ *     never by a base line that carries the bare command, never by one that merely contains it, never
+ *     by the echo's own text, and never by an empty echo;
  *   (invisible) a failure word split by a zero-width space is the word: `fa\u200biled` refuses, and the
  *     scrubbing that makes it refuse runs where the lines are read, so every arm sees the same text;
  *   (control) every case the rule exists to excuse is still green: `pytest -v`'s new PASSED line,
@@ -36,7 +37,7 @@
  * hand-back. That is the accepted direction, and it is the direction this file keeps pinned.
  */
 import { classifyFailureLine } from "../src/work-driver-verify-failures.ts";
-import { counterFolded } from "../src/lean/verify-baseline-counters.ts";
+import { failureLineFold } from "../src/lean/verify-baseline-counters.ts";
 import { baselineExcuse } from "../src/lean/verify-baseline-excuse.ts";
 import {
   isHarnessEchoOf,
@@ -166,8 +167,8 @@ const RED_LINE = "FAILED tests/x_test.py::test_a - AssertionError";
     `(tally) a counted word that is not a counter keeps the line off the list (${isKnownCleanLine(CRASH_TALLY)})`,
   );
   assert(
-    counterFolded(CRASH_TALLY) !== counterFolded(CRASH_TALLY_MOVED),
-    `(tally) the crash count keeps its digits, so ${CRASH_TALLY} and ${CRASH_TALLY_MOVED} stay two lines (${counterFolded(CRASH_TALLY)} / ${counterFolded(CRASH_TALLY_MOVED)})`,
+    failureLineFold(CRASH_TALLY) !== failureLineFold(CRASH_TALLY_MOVED),
+    `(tally) the crash count keeps its digits, so ${CRASH_TALLY} and ${CRASH_TALLY_MOVED} stay two lines (${failureLineFold(CRASH_TALLY)} / ${failureLineFold(CRASH_TALLY_MOVED)})`,
   );
   for (const [a, b] of [
     ["===== 999 crashed, 9 passed =====", "===== 998 crashed, 9 passed ====="],
@@ -200,28 +201,38 @@ const RED_LINE = "FAILED tests/x_test.py::test_a - AssertionError";
   );
 
   // The fold's single rule, asked of the fold itself: a digit is folded ONLY when the word ADJACENT
-  // to it — after it, or before it as its `Label:` — is a counter. A counter word that is merely
+  // to it — after it, or before it as its `Label:` — is a counter, AND only on a line the classifier
+  // did not read as one check's failure. A counter word that is merely
   // reachable from a digit must not decide that digit, which is the exact shape that folded a crash
   // count because `cases` sat one comma away in the same tally.
   assert(
-    counterFolded("pack_release_test.sh: 36 cases, 999 crashed") !==
-      counterFolded("pack_release_test.sh: 36 cases, 998 crashed"),
-    `(fold) a count whose own word is not a counter keeps its digits beside a real counter (${counterFolded("pack_release_test.sh: 36 cases, 999 crashed")})`,
+    failureLineFold("pack_release_test.sh: 36 cases, 999 crashed") !==
+      failureLineFold("pack_release_test.sh: 36 cases, 998 crashed"),
+    `(fold) a count whose own word is not a counter keeps its digits beside a real counter (${failureLineFold("pack_release_test.sh: 36 cases, 999 crashed")})`,
   );
   assert(
-    counterFolded("a.py: 36 cases, 1 failed") !== counterFolded("a.py: 36 cases, 2 failed"),
-    `(fold) and the named-file failure count keeps its digits (${counterFolded("a.py: 36 cases, 1 failed")})`,
+    failureLineFold("a.py: 36 cases, 1 failed") !== failureLineFold("a.py: 36 cases, 2 failed"),
+    `(fold) and the named-file failure count keeps its digits (${failureLineFold("a.py: 36 cases, 1 failed")})`,
   );
-  // The must-move half of the same rule, so the fix is not "fold nothing": a moved PASSED count in
-  // the named-file dialect still folds, and so does its total.
+  // The must-move half of the same rule, so the fix is not "fold nothing": a moved PASSED count
+  // still folds on a line the classifier reads as a tally, and so does its total.
   assert(
-    counterFolded("a.py: 36 cases, 1 failed, 3 passed") ===
-      counterFolded("a.py: 36 cases, 1 failed, 5 passed"),
-    "(fold) a moved passed count still folds in the named-file dialect",
+    failureLineFold("===== 1 failed, 3 passed in 0.2s =====") ===
+      failureLineFold("===== 1 failed, 5 passed in 0.3s ====="),
+    "(fold) a moved passed count still folds in a runner's summary of a red run",
   );
   assert(
-    counterFolded("Tests: 3, Failures: 1") === counterFolded("Tests: 5, Failures: 1"),
+    failureLineFold("Tests: 3, Failures: 1") === failureLineFold("Tests: 5, Failures: 1"),
     "(fold) a count whose LABEL is a counter still folds (`Tests: N`)",
+  );
+  // …and the boundary the fold must not cross: a line the classifier READS as one check's failure
+  // is compared strictly, so no counter word inside it folds anything. `a.py: … 1 failed, 3 passed`
+  // is a `named-file` failure line, and the passing count that moves freely in a summary must keep
+  // its digits here — this is the fold that used to excuse `got 5` against `got 50`.
+  assert(
+    failureLineFold("a.py: 36 cases, 1 failed, 3 passed") !==
+      failureLineFold("a.py: 36 cases, 1 failed, 5 passed"),
+    `(fold) nothing folds inside a classifier-accepted failure line (${failureLineFold("a.py: 36 cases, 1 failed, 3 passed")})`,
   );
 }
 
@@ -235,9 +246,20 @@ const RED_LINE = "FAILED tests/x_test.py::test_a - AssertionError";
     !isHarnessEchoOf(echoed, ["make check  # runs pnpm run lint too"], "make check"),
     "(echo) a base line that only CONTAINS the echoed command does not vouch for the echo",
   );
+  // The inversion this round fixes: the arm used to strip its own `Command failed:` marker and
+  // compare the bare command to the base's raw lines, so the base's GATE output naming the command
+  // vouched while the base's own echo did not. The base vouches only by the identical raw echo line.
   assert(
-    isHarnessEchoOf(echoed, ["sh -c 'pnpm run lint'"], "make check"),
-    "(echo) a base line that IS the command still vouches for the echo",
+    !isHarnessEchoOf("Command failed: touch /tmp/pwned", ["touch /tmp/pwned"], "pytest"),
+    "(echo) a base line carrying the BARE command does not vouch for an echo of it",
+  );
+  assert(
+    isHarnessEchoOf("Command failed: touch /tmp/pwned", ["Command failed: touch /tmp/pwned"], "pytest"),
+    "(echo) the base's IDENTICAL raw echo line vouches for the echo",
+  );
+  assert(
+    isHarnessEchoOf(echoed, ["Command failed: sh -c 'pnpm run lint'"], "make check"),
+    "(echo) and the identical echo still vouches for a command other than the tier's own",
   );
   assert(
     isHarnessEchoOf(echoed, [], "sh -c 'pnpm run lint'"),
@@ -263,6 +285,59 @@ const RED_LINE = "FAILED tests/x_test.py::test_a - AssertionError";
   assert(
     excuseOf([RED_LINE, "Command failed: sh -c 'the tier'"], [RED_LINE]).kind === "excused",
     `(echo) the tier's own echo — the command the caller ran — still excuses (${excuseOf([RED_LINE, "Command failed: sh -c 'the tier'"], [RED_LINE]).kind})`,
+  );
+  // Pinned through `baselineExcuse` as well, because the bare-command arm was inverted at the whole-
+  // stream level too: a tier that ran `pytest` whose head echoed a `touch` neither run was asked to
+  // run excused whenever the base's own output carried the bare command line somewhere.
+  assert(
+    excuseOf([RED_LINE, "Command failed: touch /tmp/pwned"], [RED_LINE, "touch /tmp/pwned"]).kind ===
+      "refused",
+    `(echo) a head-only echo vouched for by nothing but a bare base command line refuses (${excuseOf([RED_LINE, "Command failed: touch /tmp/pwned"], [RED_LINE, "touch /tmp/pwned"]).kind})`,
+  );
+  // …and the case the arm exists for at the stream level: the base echoed the same command the head
+  // did, so the echo is the base's own writing and not a failure this run authored.
+  assert(
+    excuseOf(
+      [RED_LINE, "Command failed: touch /tmp/pwned"],
+      [RED_LINE, "Command failed: touch /tmp/pwned"],
+    ).kind === "excused",
+    `(echo) the identical echo on both streams excuses (${excuseOf([RED_LINE, "Command failed: touch /tmp/pwned"], [RED_LINE, "Command failed: touch /tmp/pwned"]).kind})`,
+  );
+}
+
+// ------------------- (strict) a per-check failure line is compared with every digit it printed
+{
+  // The counter fold used to be applied to WHATEVER line it was handed, including the lines the
+  // classifier had just accepted as failures. A counter word beside the number an assertion
+  // compared — `items`, `tests`, `cases` — was enough to erase that number, so `got 5 items` shared
+  // a key with `got 50 items` and the run was EXCUSED on a finding the base never printed. A
+  // classifier-recognised failure line now gets only the leading-root strip and, at most, the
+  // runner's own check-index fold; the counter fold reaches only tallies and summaries. Pinned
+  // through `baselineExcuse`, since that is what a green is graded on.
+  const STRICT_PAIRS: [string, string, string][] = [
+    ["FAILED a.py::t - AssertionError: got 5 items", "FAILED a.py::t - AssertionError: got 6 items", "a pytest assertion's item count"],
+    ["not ok 1 - checkout - expected 3 items found 0", "not ok 1 - checkout - expected 6 items found 0", "a TAP assertion's expected item count"],
+    ["--- FAIL: TestList - got 5 tests", "--- FAIL: TestList - got 6 tests", "a go assertion's test count"],
+    ["FAILED a.py::t - 3 cases ran", "FAILED a.py::t - 4 cases ran", "a case count inside a named failure line"],
+  ];
+  for (const [head, base, why] of STRICT_PAIRS) {
+    assert(
+      excuseOf([RED_LINE, head], [RED_LINE, base]).kind === "refused",
+      `(strict) ${why} differing between the runs refuses — the fold may not touch a failure line (${excuseOf([RED_LINE, head], [RED_LINE, base]).kind})`,
+    );
+    assert(
+      excuseOf([RED_LINE, head], [RED_LINE, head]).kind === "excused",
+      `(strict) the same ${why} on both streams is the base's own red and excuses (${excuseOf([RED_LINE, head], [RED_LINE, head]).kind})`,
+    );
+  }
+  // And the direction the gate must NOT lose: a moved PASSED count in a runner's summary of an
+  // already-red suite is not a per-check failure line, so it still excuses.
+  assert(
+    excuseOf(
+      [RED_LINE, "PASSED tests/x_test.py::test_b", "===== 1 failed, 5 passed in 0.44s ====="],
+      [RED_LINE, "PASSED tests/x_test.py::test_b", "===== 1 failed, 3 passed in 0.21s ====="],
+    ).kind === "excused",
+    "(strict) the moved passed-count summary still excuses — the fold survives on a tally",
   );
 }
 

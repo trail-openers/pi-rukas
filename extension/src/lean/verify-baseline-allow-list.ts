@@ -40,9 +40,10 @@
  * the first is accepted and documented: a PASSING test whose NAME contains such a word, when the
  * line is head-only, is refused, and a refusal is a hand-back, never a green.
  *
- * The comparison keys live here too ({@link normaliseRaw}, {@link counterFolded},
+ * The comparison keys live here too ({@link normaliseRaw}, {@link failureLineFold},
  * {@link leadingIndexFolded}) because WHAT MAY MOVE is the same question as WHAT MAY BE
- * EXCUSED, and it is answered in one place: only a runner's counters, never a failure count.
+ * EXCUSED, and it is answered in one place: only a runner's counters, never a failure count, and
+ * never anything at all inside a line the classifier read as one check's failure.
  *
  * And every arm reads the SAME text, because {@link scrubInvisible} runs once where the lines
  * are read: a word split by a zero-width space (`fa\u200biled`) is invisible to the eye, to
@@ -51,7 +52,7 @@
  */
 
 import { classifyFailureLine, isSuccessLine } from "../work-driver-verify-failures.ts";
-import { COUNTER_WORD_LIST, scrubInvisible } from "./verify-baseline-counters.ts";
+import { COUNTER_WORD_LIST, failureLineFold, scrubInvisible } from "./verify-baseline-counters.ts";
 import { stripRoot } from "./verify-baseline-excuse.ts";
 
 /**
@@ -187,7 +188,7 @@ const PADDING = /^[\s=*_~.,:-]+|[\s=*_~.,:-]+$/g;
  * Owned by `verify-baseline-counters.ts`, where the reasoning for the closed set lives, and read
  * HERE as well so the two rules that judge a runner's numbers cannot drift apart: the tally arm of
  * {@link isKnownCleanLine} admits a summary only when EVERY `<number> <word>` pair names a word on
- * it, and {@link counterFolded} folds a digit only when its neighbour is one of them. A word on the
+ * it, and {@link failureLineFold} folds a digit only when its neighbour is one of them. A word on the
  * list is therefore both excusable and foldable, and a word off it is neither — which is why a new
  * runner whose summary counts something unnamed needs exactly one edit, in one place, and why a new
  * failure word needs no edit at all to be CAUGHT.
@@ -207,7 +208,7 @@ const COUNTER_WORDS = new RegExp(`^(?:${COUNTER_WORD_LIST})(?![A-Za-z0-9])$`, "i
  * tally. The reverse spelling (`Failures: 1`) is not caught here — its word sits BEFORE its number
  * — and that is a deliberate boundary, not a gap: that dialect is one the shared classifier already
  * reads as a failure line, so both {@link isKnownCleanLine} and {@link isPassingLine} refuse it on
- * the classifier's answer and {@link counterFolded} leaves its digits standing. The counter list
+ * the classifier's answer and {@link failureLineFold} leaves its digits standing. The counter list
  * answers for the spelled-after dialects and the classifier for the spelled-before ones, so neither
  * mechanism has to become a vocabulary of failure words.
  */
@@ -370,7 +371,7 @@ export function isHarnessLine(line: string): boolean {
  * What the two arms together leave in the stream is the set that makes the rest of the design work.
  * A clean pass line (`PASSED tests/x.py::t`, `ok 1 - a check`) leaves both streams together and cannot
  * make a head-only line, so exempting it costs nothing. A counted summary of a red run is NOT exempt —
- * `failed` is no counter — so it stays in the stream, is read by {@link counterFolded}, and the one
+ * `failed` is no counter — so it stays in the stream, is read by {@link failureLineFold}, and the one
  * field a PR's added checks move is folded there, which is the pass `baselineExcuse` exists to give.
  * Exempting THAT line by the classifier's success arm is what refused the field case: an exempted
  * summary is compared by nothing, so a head whose summary moved had no key and no exemption, and the
@@ -398,13 +399,19 @@ function isPassingLine(line: string): boolean {
  * The command is NEVER read back out of the stream being judged. It is the tier's real command,
  * which only the CALLER knows — the thing `verify`/`ci` asked the executor to run — and a rule
  * that mined the expected command out of the head stream would let a head-only `Command failed:
- * touch /tmp/pwned` quote itself into being the command the tier ran. "Printed that command" is
- * therefore EXACT EQUALITY of a trimmed base line and the echoed command, the only reading the
- * proviso supports: a base line that merely CONTAINS the command — a `make check` that quoted the
- * pnpm invocation inside its own output, a log line naming it — records that the base MENTIONED
- * it, not that the base RAN it. With no caller-supplied command the base's copy is the ONLY
- * vouchsafe, and a `Command failed:` line whose echo the base did not print is a head-only line
- * like any other — including an empty echo, which names no command at all and so proves nothing.
+ * touch /tmp/pwned` quote itself into being the command the tier ran.
+ *
+ * The base's copy vouches only when the base printed the IDENTICAL RAW LINE — `l.trim() ===
+ * headLine.trim()`, the whole echo including its own `Command failed:` marker. Comparing the
+ * STRIPPED command against the base's raw lines inverted the arm: a base carrying the bare command
+ * as gate output (`touch /tmp/pwned`) vouched for a head echo nothing asked to run, while the base's
+ * own identical echo line did not vouch at all. A base that ran the tier echoes the tier, so the
+ * identical echo is exactly the evidence the arm may read, and a line that only MENTIONS the command
+ * — a `make check` that quoted the pnpm invocation in its own output, a bare command the runner
+ * printed itself — records that the base named it, not that the harness echoed it. With no
+ * caller-supplied command that identical echo is the ONLY vouchsafe, and an echo the base did not
+ * print is a head-only line like any other — including an empty echo, which names no command at all
+ * and so proves nothing.
  */
 export function isHarnessEchoOf(
   headLine: string,
@@ -417,7 +424,9 @@ export function isHarnessEchoOf(
   if (echoed.length === 0) return false;
   const asked = tierCommand?.trim();
   if (asked !== undefined && asked.length > 0 && echoed === asked) return true;
-  return baseRawLines.some((line) => line.trim() === echoed);
+  // The WHOLE head line, marker included, compared to the whole base line. Stripping the marker
+  // before this comparison is what inverted the arm (see the jsdoc).
+  return baseRawLines.some((line) => line.trim() === t);
 }
 
 /**
@@ -454,7 +463,7 @@ export function judgeableLines(stream: string): string[] {
  *
  * Digits are NOT folded here. A digit is the finding inside an assertion, so this is the STRICT
  * key — the one that keeps `assert 1 == 2` and `assert 1 == 3` two lines. What a runner may
- * move is folded separately and only by {@link counterFolded} and {@link leadingIndexFolded}.
+ * move is folded separately and only by {@link failureLineFold} and {@link leadingIndexFolded}.
  */
 export function normaliseRaw(line: string, root: string): string {
   return stripRoot(line, root).replace(/\s+/g, " ").trim();

@@ -6,7 +6,7 @@
  * answers WHAT MAY MOVE (which fields of a line the two runs mean to be the same). The two are one
  * question seen from two sides — a runner's counters are exactly the fields a PR that adds passing
  * tests moves — so they share {@link COUNTER_WORD_LIST}, the closed set both read, and are read
- * together by {@link isKnownCleanLine} and {@link counterFolded}.
+ * together by {@link isKnownCleanLine} and {@link failureLineFold}.
  *
  * The direction is the same as the allow-list's and it is the reason the list is closed: a digit is
  * folded ONLY when a counter or duration word sits immediately next to it, and a count of a word the
@@ -19,7 +19,19 @@
  * The fold is confined to the looser comparison pass. The exact key in `normaliseRaw` keeps every
  * digit and is what `ci` RECORDS and replays; a fold that reached the record would turn a moved
  * failure count into an equality the base never printed.
+ *
+ * THE FOLD'S OTHER BOUND, and the one the counter list cannot draw: the fold is asked of the lines
+ * the shared classifier ACCEPTED as failure lines as well as of the tallies it did not, and a
+ * per-check failure line is compared strictly. `FAILED a.py::t - AssertionError: got 5 items` and
+ * `… got 50 items` differ by the number the assertion is ABOUT, and `items` — a legitimate counter
+ * word for a tally — sits right next to it, so a fold driven only by the word list read the two as
+ * one line and excused the failure this run authored. Which line is a per-check report is the
+ * classifier's answer, not a word list's, so {@link foldsAsCounter} is reached only for a line the
+ * classifier did NOT read as a failure: a summary, a tally, a collection count. {@link
+ * failureLineFold} applies that gate and is the only fold the comparison consults.
  */
+
+import { classifyFailureLine } from "../work-driver-verify-failures.ts";
 
 /**
  * The placeholder a folded field is replaced with.
@@ -81,7 +93,7 @@ const LINE_SEPARATORS = /[\p{Cc}\u2028\u2029]/gu;
  * A line as EVERY arm of the baseline excuse must read it: invisible characters out, ANSI sequences out, line separators flattened.
  *
  * THE one normalisation of the whole comparison, applied where the excuse reads lines — {@link
- * streamLines} in `verify-baseline-allow-list.ts`, and the head of {@link counterFolded} here — so no
+ * streamLines} in `verify-baseline-allow-list.ts`, and the head of {@link failureLineFold} here — so no
  * arm can judge a text another arm did not. It runs BEFORE classification and before any veto, which
  * is the only ordering that makes the promise true: a failure word split by an invisible character IS
  * that word, and an arm that normalised after its own match would be vouching for text the next arm
@@ -253,10 +265,13 @@ const TALLY_TOTAL = /^(?:tests\s+run|tests|run|ran)\s*:?\s*\d$/i;
  *
  * WHY a second key is needed at all, when {@link isKnownCleanLine} already allows tallies:
  * `hasHeadOnlyUnrefusedLine` vouches for a head-only line by its SHAPE, but `baselineExcuse`
- * then compares the RECOGNISED failure lines strictly, and a runner's summary of a red run
- * (`===== 1 failed, 3 passed in 0.2s =====`) is one of them — the classifier reads a counted
- * failing tally as a failure line. So the one field a PR's added checks move has to be folded on
- * BOTH sides of that comparison, or the feature refuses the case it exists to grant.
+ * then compares the RECOGNISED failure lines too, and a runner's summary of a red run
+ * (`===== 1 failed, 3 passed in 0.2s =====`) is a line the added-passing-tests case moves. So the
+ * one field a PR's added checks move has to be folded on BOTH sides of that comparison, or the
+ * feature refuses the case it exists to grant.
+ *
+ * PRIVATE on purpose: every caller of this file is {@link failureLineFold}, which is where the one
+ * rule this fold must obey — never on a line the classifier read as a failure — is applied.
  *
  * The fold is confined to this pass. The exact key in {@link normaliseRaw} keeps every digit, and
  * that key is what is RECORDED and replayed by `ci`; a fold that reached the record would turn a
@@ -264,7 +279,7 @@ const TALLY_TOTAL = /^(?:tests\s+run|tests|run|ran)\s*:?\s*\d$/i;
  * exists to refuse. Both scans are linear over a line the classifier's window already bounds and
  * no arm nests a quantifier, so no fold can backtrack.
  */
-export function counterFolded(input: string): string {
+function counterFolded(input: string): string {
   // Scrubbed before the digit scan, for the one reason every arm of the excuse scrubs: a zero-width
   // character inside a counted word would otherwise leave the adjacency test reading a crash word split
   // in half — no counter word next to the digits, so they stand — while every other arm saw a clean
@@ -300,4 +315,36 @@ export function counterFolded(input: string): string {
     last = at + digits.length;
   }
   return `${out}${line.slice(last)}`.trim();
+}
+
+/**
+ * A line's counter numbers folded, UNLESS the classifier read the line as a failure line.
+ *
+ * THE fold every comparison pass consults, and the gate on it. A line the classifier ACCEPTED is
+ * a report about one check — `pytest-failed`, `tap-not-ok`, `go-fail`, the `named-file` dialect, an
+ * assertion mark — and it is compared byte-for-byte: `FAILED a.py::t - AssertionError: got 5 items`
+ * and `… got 50 items` are two findings, and `not ok 1 - checkout - expected 3 items found 0` and
+ * `… expected 6 items …` are two checks. Both pairs used to share a key here, because `items` is a
+ * legitimate counter word for a tally and sat next to the very digit that differed: the word list
+ * answers WHAT MAY MOVE inside a line that counts its own run, and it cannot answer whether the
+ * line is one check's verdict at all. Only the classifier can, so its answer is the gate.
+ *
+ * The fold therefore reaches only lines the classifier did NOT read as a failure — the tallies and
+ * summaries that ARE the added-passing-tests case (`===== 1 failed, 3 passed in 0.2s =====`,
+ * `Tests run: 5, Failures: 1`, `collected 14 items`). Those move legitimately when the PR adds
+ * checks, and every failure count they carry still keeps its digits by {@link foldsAsCounter},
+ * which the gate above does not replace but sits in front of.
+ *
+ * The one line whose fold still matters after this gate is the counted summary of a red run: the
+ * classifier's own `named-file` arm reads `a.py: 36 cases, 1 failed, 3 passed` as a failure line,
+ * so that line now compares strictly, and `hasHeadOnlyUnrefusedLine` vouches for its head-only
+ * copy by shape alone only when every count it carries names a counter. Nothing in either pass
+ * folds a number inside a line that names a broken check.
+ */
+export function failureLineFold(input: string): string {
+  // Asked of the line as printed: `classifyFailureLine` trims and applies its own scan window, and
+  // the two sides of the comparison hand it lines already scrubbed by {@link scrubInvisible}, which
+  // is the same text every other arm of the excuse judges.
+  if (classifyFailureLine(input) !== undefined) return input.trim();
+  return counterFolded(input);
 }

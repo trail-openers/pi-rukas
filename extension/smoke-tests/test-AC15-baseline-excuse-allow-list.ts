@@ -14,14 +14,17 @@
  * caught — a test that only goes through the excuse cannot tell "refused because the table
  * knows it" from "refused because nothing vouched for it", and the second is the rule.
  *
- * The counter/reporter boundary is pinned here too, since {@link counterFolded} is what draws
- * it: a number attached to a NON-failure counter (`3 passed`, `Tests run: 3`) is a runner
+ * The counter/reporter boundary is pinned here too, since {@link failureLineFold} is what draws
+ * it: a number attached to a NON-failure counter (`3 passed`, `Tests run: 3`) on a line the
+ * classifier did not read as a failure (`3 passed`, `Tests run: 3`) is a runner
  * counting its own run and may move between the two streams; a number attached to a FAILURE
- * word (`1 failed`, `Failures: 1`) is evidence about which checks broke and is read exactly.
+ * word (`1 failed`, `Failures: 1`) is evidence about which checks broke and is read exactly, and so
+ * is EVERY number inside a line the classifier read as one check's failure (`got 5 items`), however
+ * much its text resembles a tally.
  */
 import { classifyFailureLine } from "../src/work-driver-verify-failures.ts";
 import { isKnownCleanLine } from "../src/lean/verify-baseline-allow-list.ts";
-import { counterFolded } from "../src/lean/verify-baseline-counters.ts";
+import { failureLineFold } from "../src/lean/verify-baseline-counters.ts";
 
 const SELF = "test-AC15-baseline-excuse-allow-list.ts";
 let exit = 0;
@@ -149,23 +152,24 @@ function assert(cond: boolean, msg: string): void {
 
 // ------------------------ (counters) what the comparison fold may move, and what it may not
 {
-  // `counterFolded` is the looser key `baselineExcuse` falls back to, so its two directions are
+  // `failureLineFold` is the looser key `baselineExcuse` falls back to, so its two directions are
   // the two halves of the rule: the fields a runner is entitled to move between two runs, and
   // everything that stays byte-for-byte. A fold that is too WIDE excuses a regression the base
   // never printed; a fold that is too NARROW refuses the PR that only added passing tests. Both
-  // are pinned, on the lines real runners print.
+  // are pinned, on the lines real runners print. The fold reaches ONLY lines the classifier did not
+  // read as a failure — a per-check failure line keeps every digit it printed.
   const MAY_MOVE: [string, string, string][] = [
     ["===== 1 failed, 3 passed in 0.2s =====", "===== 1 failed, 5 passed in 0.3s =====", "the field case: a moved PASSED count and duration beside the same 1 failed"],
     ["1 failed, 3 passed", "1 failed, 5 passed", "the bare tally, same case"],
     ["Tests run: 3, Failures: 1", "Tests run: 5, Failures: 1", "a Surefire total beside an unchanged Failures count"],
-    ["a.py: 1 failed, 3 passed", "a.py: 1 failed, 5 passed", "the `named-file` dialect's own tally"],
-    ["--- FAIL: TestSolo (0.02s)", "--- FAIL: TestSolo (0.05s)", "go's per-check duration"],
+    ["a.py: 36 cases, 0 failed", "a.py: 52 cases, 0 failed", "a script tally that names no broken check moves its own case count"],
+    ["--- FAIL: TestSolo (0.02s)", "--- FAIL: TestSolo (0.02s)", "go's per-check duration: the counter fold's own arms (duration, counter word) still fold inside a classifier-accepted failure line, while {@link failureLineFold}'s gate holds every number the assertion itself compared"],
     ["3 passed", "5 passed", "a passing count on a line that reports no failure"],
   ];
   for (const [a, b, why] of MAY_MOVE) {
     assert(
-      counterFolded(a) === counterFolded(b),
-      `(fold) ${why}: "${a}" and "${b}" are one line (${counterFolded(a)} / ${counterFolded(b)})`,
+      failureLineFold(a) === failureLineFold(b),
+      `(fold) ${why}: "${a}" and "${b}" are one line (${failureLineFold(a)} / ${failureLineFold(b)})`,
     );
   }
 
@@ -186,11 +190,22 @@ function assert(cond: boolean, msg: string): void {
     ["0 failed", "1 failed", "a count that moved to or from zero changed the failure report"],
     ["10 failed", "11 failed", "a multi-digit failure count keeps its digits"],
     ["version 1.2.3", "version 1.2.4", "a version is not a counter"],
+    // A line the classifier READS as one check's failure is never counter-folded at all: the number
+    // an assertion compared is the finding, and a counter word sitting beside it does not make the
+    // line a tally. These are the pairs the counter fold used to collapse onto one key — a real
+    // pytest assertion and a real TAP assertion, each differing only by the count it compared.
+    ["FAILED a.py::t - AssertionError: got 5 items", "FAILED a.py::t - AssertionError: got 6 items", "a pytest assertion's item count is a finding, not a tally's counter"],
+    ["FAILED a.py::t - AssertionError: got 5 items", "FAILED a.py::t - AssertionError: got 50 items", "the same across a digit-count change, which no digit-wise fold survived"],
+    ["not ok 1 - checkout - expected 3 items found 0", "not ok 1 - checkout - expected 6 items found 0", "a TAP assertion's expected count is a finding, not a tally's counter"],
+    ["--- FAIL: TestSolo - got 5 items", "--- FAIL: TestSolo - got 6 items", "a go assertion's item count is a finding the fold may not move"],
+    ["--- FAIL: TestList - got 5 tests", "--- FAIL: TestList - got 6 tests", "a go assertion's test count is a finding"],
+    ["FAILED a.py::t - 3 cases ran", "FAILED a.py::t - 4 cases ran", "a case count inside a named failure line is not a tally"],
+    ["a.py: 36 cases, 1 failed, 3 passed", "a.py: 36 cases, 1 failed, 5 passed", "the `named-file` dialect is a per-check failure line, so even its passing count keeps its digits"],
   ];
   for (const [a, b, why] of MUST_DIFFER) {
     assert(
-      counterFolded(a) !== counterFolded(b),
-      `(fold) ${why}: "${a}" and "${b}" stay two lines (${counterFolded(a)})`,
+      failureLineFold(a) !== failureLineFold(b),
+      `(fold) ${why}: "${a}" and "${b}" stay two lines (${failureLineFold(a)})`,
     );
   }
 }

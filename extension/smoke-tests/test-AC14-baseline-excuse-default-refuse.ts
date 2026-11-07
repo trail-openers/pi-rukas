@@ -178,7 +178,7 @@ const RED_LINE = "FAILED tests/x_test.py::test_a - AssertionError";
     // counts exact: a PR ADDS PASSING TESTS to a suite that was ALREADY RED with the same
     // failure, and its summary moves ONLY in the passing half (`3 passed` → `5 passed`) while
     // `1 failed` stands. The classifier reads the counted failing tally as a failure line, so
-    // before {@link counterFolded} moved the non-failure counters this refused — the feature
+    // before {@link failureLineFold} moved the non-failure counters this refused — the feature
     // refusing the one case it grants. The line that does NOT excuse is the same pair with the
     // FAILURE count moved, pinned just below.
     base: [RED_LINE, "PASSED tests/x_test.py::test_b", "===== 1 failed, 4 passed in 0.42s ====="],
