@@ -24,18 +24,24 @@ tier is re-run at the base in a throwaway checkout; the run is handed back unles
 line the head run printed also appears among the base run's. Comparison is of the **whole
 failure line**, so any runner the shared failure-line classifier reads is excusable — pytest
 `FAILED path::name`, TAP/bats `not ok`, go `--- FAIL:`, a script tally, a `FAIL` header, the
-driver's own diagnostic dialect — with each tree's own root stripped so the same check printed
-in two trees is one line. What refuses: a line only the head printed (including one whose
-reason text differs from the base's), a stream with no recognised failure line at all, a line
-that opens with a runner's own `FAILED `/`ERROR ` marker in a dialect the classifier does not
-read, a re-run or base run that observed nothing (a kill, a buffer overflow, an un-startable
+driver's own diagnostic dialect. Normalisation is one rule, stated once: take a line the
+classifier ACCEPTS, strip that run's own worktree root from the front of its path, compare — so
+the same check printed in two trees is one line. What refuses: a line only the head printed
+(including one whose reason text differs from the base's), a stream with no recognised failure
+line at all, a head-only line carrying a runner's own failure token (`not ok`, `--- FAIL:`, a
+`FAIL` word with a name, `FAILED`/`ERROR` at the start) in a dialect the classifier does not
+read, any line past the classifier's own scan window on either side (a line no judge read whole
+is not evidence), a re-run or base run that observed nothing (a kill, a buffer overflow, an un-startable
 command), or a base run whose red is the shape of a checkout whose dependencies were never
 linked (the probe's provisioning, not the commit's). Whole lines, not parsed test names, are
 deliberate: every identity parser tried for a non-pytest runner found a new way to fold two
 different checks onto one token, and a folded name excuses a failure this run authored — the one
 thing the excuse must never do.
 
-**Fix:** read the two line sets in the run's verify reason. A head-only line is the run's own
+**Fix:** the run's verify reason names the tier and the hand-back; the two line sets are on the
+verify step's record in the run's step log (`preexistingFailures` — the head's capped failure
+lines and the base's set, alongside the base commit and the true total), which is what the PR
+body's `## Pre-existing test failures` section renders. A head-only line is the run's own
 regression and belongs in a build round. A tier that prints no recognised failure line needs a
 runner that prints one failing-test line per test — most do (`pytest -v`, `go test -v`, `prove`
 and a bats run all print their failing checks); a gate that says only that it failed cannot tell

@@ -73,9 +73,15 @@ const GO = "--- FAIL: TestSolo (0.01s)";
       excuseOf([TAP, unreadable], [TAP]).kind === "refused",
       `(unreadable) "${unreadable}" in the HEAD stream refuses the whole excuse (${excuseOf([TAP, unreadable], [TAP]).kind})`,
     );
+    // The base's copy of an unread line is not a NEW failure, so it does not refuse; what
+    // refuses is a base whose RECOGNISED set is empty — nothing to compare against.
     assert(
-      excuseOf([TAP], [TAP, unreadable]).kind === "refused",
-      `(unreadable) the same line in the BASE stream refuses it too (${excuseOf([TAP], [TAP, unreadable]).kind})`,
+      excuseOf([TAP], [TAP, unreadable]).kind === "excused",
+      `(unreadable) "${unreadable}" sitting on a base that named the same line too excuses (${excuseOf([TAP], [TAP, unreadable]).kind})`,
+    );
+    assert(
+      excuseOf([TAP], [unreadable]).kind === "refused",
+      `(unreadable) "${unreadable}" as the base's ONLY line is no evidence (${excuseOf([TAP], [unreadable]).kind})`,
     );
   }
   assert(

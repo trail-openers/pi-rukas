@@ -87,9 +87,16 @@ export function pytestFailTier(marker: string, names: readonly string[]): string
  * excuse compares WHOLE failure lines, so a case must be able to put a TAP `not ok`,
  * a go `--- FAIL:` or any other recognised line on both runs' streams exactly as the
  * runner would print it, rather than only pytest `path::name` tokens. Each entry is
- * echoed on its own line, so what the tier prints is what the excuse compares.
+ * printed on its own line through `printf` with a single-quoted argument, so a line
+ * carrying `"`, `$` or a backtick reaches the stream as written instead of being
+ * expanded by the harness's own shell.
  */
 export function failLinesTier(marker: string, lines: readonly string[]): string {
-  const printed = lines.map((l) => `echo "${l}" 1>&2;`).join(" ");
+  const printed = lines.map((l) => `printf '%s\\n' ${shQuote(l)} 1>&2;`).join(" ");
   return `sh -c 'echo tier-said-${marker} 1>&2; ${printed} exit 1'`;
+}
+
+/** One string as a single-quoted shell word, so `"`, `$` and backticks stay literal. */
+function shQuote(text: string): string {
+  return `'${text.replace(/'/g, "'\\''")}'`;
 }

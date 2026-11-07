@@ -9,19 +9,22 @@
  *   (lines) every recognised line of a stream reads back as its own comparable text,
  *     in stream order and deduplicated — a summary the runner repeats is one line, not
  *     two failures;
- *   (unreadable) a line that opens with a runner's own `FAILED `/`ERROR ` marker and
- *     that the classifier does not recognise REFUSES the excuse on either side; it is
- *     never merely omitted. Omitting it let a head of `[readable A, unreadable B]`
- *     match a base that printed only A and grade the tier green on a failure this run
- *     authored;
- *   (record) a line longer than the step log's own bound is CLIPPED, not refused —
- *     whole failure lines are far longer than the old `path::name` tokens, and the
- *     log's validator refuses an over-long entry rather than clipping it, so the clip
- *     has to happen here, on a character boundary, or the record takes the whole run
- *     file down with it on readback.
+ *   (unreadable) a line that carries a runner's failure token — a `FAILED `/`ERROR `
+ *     marker, a `not ok`, a `--- FAIL:`, a `FAIL` word with a name — and that the
+ *     classifier does not recognise REFUSES the excuse on either side; it is never
+ *     merely omitted. Omitting it let a head of `[readable A, unreadable B]` match a
+ *     base that printed only A and grade the tier green on a failure this run authored;
+ *   (over-window) a raw line past the classifier's own scan window REFUSES the excuse
+ *     too. The classifier judges such a line on its first 8 KiB, so two lines differing
+ *     only past the window can fold onto one comparison key — the folding this module
+ *     exists to prevent, arriving through length instead of through a token parser.
  *
  * The controls keep each guard from being a blanket refusal.
  */
+import {
+  FAILURE_LINE_SCAN_MAX,
+  classifyFailureLine as classify,
+} from "../src/work-driver-verify-failures.ts";
 import {
   PREEXISTING_NAME_MAX_CHARS,
   preexistingFailuresProblem,
@@ -83,7 +86,6 @@ function excuseOf(headLines: string[], baseLines: string[]) {
   const A = "FAILED tests/x_test.py::test_a - AssertionError";
   // A collection error and a bare file verdict: a runner declaring a failing test in a
   // dialect the shared table does not carry. `failureLines` drops both, so only the
-  // marker walk can see them — and it must refuse, not omit.
   const COLLECTION_ERROR = "ERROR tests/test_brand_new.py";
   const BARE_FAILED = "FAILED tests/y.py";
   assert(
@@ -91,12 +93,49 @@ function excuseOf(headLines: string[], baseLines: string[]) {
     `(unreadable) a head line the classifier cannot read refuses the excuse (${excuseOf([A, COLLECTION_ERROR], [A]).kind})`,
   );
   assert(
-    excuseOf([A], [A, BARE_FAILED]).kind === "refused",
-    `(unreadable) an unreadable BASE line refuses it too (${excuseOf([A], [A, BARE_FAILED]).kind})`,
+    excuseOf([A], [BARE_FAILED]).kind === "refused",
+    `(unreadable) a base whose only line is unreadable names nothing, and refuses (${excuseOf([A], [BARE_FAILED]).kind})`,
   );
   assert(
     failureLinesOf(COLLECTION_ERROR).length === 0 && failureLinesOf(BARE_FAILED).length === 0,
     `(unreadable) and neither bare line is offered as a comparable line (${JSON.stringify(failureLinesOf(BARE_FAILED))})`,
+  );
+  // A TAP COMMENT and a shell trace both carry the runner's `not ok` token, and neither
+  // matches the table's anchored `^\s*not\s+ok\b` — so the classifier drops them, and the
+  // ONLY thing standing between a head-only one of these and a green tier is this veto.
+  const TAP_COMMENT = "# not ok 9 - /t/brand_new.t - boom";
+  const SHELL_TRACE = "+ not ok 7 - a trace line the table does not carry";
+  assert(
+    failureLinesOf(TAP_COMMENT).length === 0 && failureLinesOf(SHELL_TRACE).length === 0,
+    `(unreadable) neither a TAP comment nor a shell trace is a line the classifier reads (${JSON.stringify(failureLinesOf(TAP_COMMENT))})`,
+  );
+  assert(
+    excuseOf([A, TAP_COMMENT], [A]).kind === "refused",
+    `(unreadable) a head-only TAP comment line refuses the excuse — it must not be omitted (${excuseOf([A, TAP_COMMENT], [A]).kind})`,
+  );
+  assert(
+    excuseOf([A, SHELL_TRACE], [A]).kind === "refused",
+    `(unreadable) a head-only shell-trace line refuses it too (${excuseOf([A, SHELL_TRACE], [A]).kind})`,
+  );
+  assert(
+    excuseOf([A, TAP_COMMENT], [A, TAP_COMMENT]).kind === "excused",
+    `(unreadable) the same unread line on BOTH sides is not a new failure, and the excuse stands on the recognised pair (${excuseOf([A, TAP_COMMENT], [A, TAP_COMMENT]).kind})`,
+  );
+  // The shape the same rule exists to allow: the harness echoes the tier's own command,
+  // so that echo carries `not ok` on BOTH runs. No prefix is exempt — it is refused for
+  // being unreadable until the base prints the identical line.
+  const ECHO = `Command failed: sh -c 'echo "${A}" 1>&2; exit 1'`;
+  assert(
+    classify(ECHO) === undefined,
+    `(unreadable) the harness echo is not a line the classifier reads (${JSON.stringify(classify(ECHO))})`,
+  );
+  assert(
+    excuseOf([A, ECHO], [A, ECHO]).kind === "excused",
+    `(unreadable) an identical unreadable harness echo on both sides does not refuse (${excuseOf([A, ECHO], [A, ECHO]).kind})`,
+  );
+  assert(
+    excuseOf([A, ECHO], [A]).kind === "refused",
+    `(unreadable) and the same echo printed only at head DOES refuse (${excuseOf([A, ECHO], [A]).kind})`,
   );
   assert(
     excuseOf([A], [A]).kind === "excused",
@@ -104,11 +143,68 @@ function excuseOf(headLines: string[], baseLines: string[]) {
   );
 }
 
+// ------------------------------------------------------ (over-window) one long line
+{
+  // A line past the classifier's own scan window is judged on its first 8 KiB, so the
+  // tail — where two distinct checks differ — is invisible to the judge. Two such lines
+  // can fold onto one comparison key, which is the defect whole-line comparison exists to
+  // close. The rule is not "compare what was seen": a line no judge fully saw is not
+  // evidence, so it refuses on either side.
+  const PAD = "x".repeat(FAILURE_LINE_SCAN_MAX);
+  const LONG_A = `not ok 1 - checkout ${PAD} variant alpha`;
+  const LONG_B = `not ok 1 - checkout ${PAD} variant omega`;
+  assert(
+    LONG_A.length > FAILURE_LINE_SCAN_MAX && LONG_B.length > FAILURE_LINE_SCAN_MAX,
+    `(over-window) both fixture lines really are past the window (${String(LONG_A.length)} vs ${String(FAILURE_LINE_SCAN_MAX)})`,
+  );
+  assert(
+    excuseOf([LONG_A], [LONG_B]).kind === "refused",
+    `(over-window) two long lines differing only past the window refuse — they must not fold (${excuseOf([LONG_A], [LONG_B]).kind})`,
+  );
+  assert(
+    excuseOf([LONG_A], [LONG_A]).kind === "refused",
+    `(over-window) an identical over-long pair refuses too — the line itself is not evidence (${excuseOf([LONG_A], [LONG_A]).kind})`,
+  );
+  assert(
+    excuseOf([LONG_A], [LONG_A]).kind === "refused" &&
+      excuseOf(["not ok 1 - checkout"], ["not ok 1 - checkout"]).kind === "excused",
+    "(over-window) and a line inside the window still excuses (the veto is not a blanket refusal)",
+  );
+  // The wrapper shape is the one that actually folded: the harness prefix pushes the
+  // gate's own text past the window, so the table read only the head of one check and
+  // answered for both.
+  const WRAPPED_A = `verify command \`prove -r t\` failed in ${PROBE_ROOT}: ${LONG_A}`;
+  const WRAPPED_B = `verify command \`prove -r t\` failed in ${PROBE_ROOT}: ${LONG_B}`;
+  assert(
+    excuseOf([WRAPPED_A], [WRAPPED_B]).kind === "refused",
+    `(over-window) two distinct harness-wrapped long lines refuse (${excuseOf([WRAPPED_A], [WRAPPED_B]).kind})`,
+  );
+}
+
+// -------------------------------------------------- (paths) only a LEADING root comes out
+{
+  // The tree prefix is where a run's own tree sits. A root that appears anywhere else in
+  // the line is CONTENT the tier printed — a path quoted in an assertion — and the other
+  // tree's line carries it too, so removing it from one side and not the other erases a
+  // difference the excuse then excused.
+  const MID = `not ok 1 - checkout - ${HEAD_ROOT}/t/other.t is quoted mid-line`;
+  assert(
+    failureLinesOf(MID)[0]?.includes(HEAD_ROOT) === true,
+    `(paths) a mid-line occurrence of the run's own root is KEPT (${JSON.stringify(failureLinesOf(MID)[0]?.slice(0, 60))})`,
+  );
+  assert(
+    excuseOf([MID], [`not ok 1 - checkout - /somewhere/else/t/other.t is quoted mid-line`]).kind ===
+      "refused",
+    `(paths) and so a head line quoting its own tree refuses over a base that quoted another (${excuseOf([MID], [`not ok 1 - checkout - /somewhere/else/t/other.t is quoted mid-line`]).kind})`,
+  );
+}
+
 // ----------------------------------------------------------- (record) an over-long line
 {
-  // Whole failure lines are routinely longer than the old `path::name` tokens, and the
-  // step log's reader REFUSES an over-long entry rather than clipping it. So the excuse
-  // clips, and the record it hands back must be one the log can be read back with.
+  // A line past the step log's bound cannot be persisted. `names` is a DISPLAY preview
+  // and is clipped; `baseNames` is the set `ci` REPLAYS, and a clipped replay line is a
+  // line the classifier would not accept, so `ci` would compare strings `verify` never
+  // compared. Over-long base lines mean the base set is OMITTED, and ci re-probes.
   const LONG = `FAILED tests/${"d".repeat(240)}_test.py::test_a - AssertionError`;
   assert(
     LONG.length > PREEXISTING_NAME_MAX_CHARS,
@@ -123,29 +219,21 @@ function excuseOf(headLines: string[], baseLines: string[]) {
   const r = excuseOf([LONG], [LONG]);
   assert(
     r.kind === "excused",
-    `(record) an over-long line that both runs printed still excuses, clipped (${r.kind})`,
+    `(record) a line both runs printed that fits the comparison still excuses (${r.kind})`,
   );
   assert(
     r.kind === "excused" &&
       r.record.names.every((n) => n.length <= PREEXISTING_NAME_MAX_CHARS) &&
       preexistingFailuresProblem({ fast: r.record }) === undefined,
-    `(record) every recorded line is inside the bound and validates (${String(r.kind === "excused" ? r.record.names[0]?.length : -1)})`,
+    `(record) every DISPLAYED line is inside the bound and validates (${String(r.kind === "excused" ? r.record.names[0]?.length : -1)})`,
+  );
+  assert(
+    r.kind === "excused" && r.record.baseNames === undefined,
+    `(record) an over-long BASE line omits baseNames rather than truncating it, so ci re-probes (${String(r.kind === "excused" ? (r.record.baseNames === undefined ? "omitted" : "REPLAYED") : r.kind)})`,
   );
   assert(
     r.kind === "excused" && r.record.total === 1,
     `(record) the total counts the line, not the clip (${String(r.kind === "excused" ? r.record.total : -1)})`,
-  );
-}
-
-// ------------------------------------------- (record) a clipped astral character cannot
-{
-  // A clip that lands inside an astral character leaves a lone surrogate, which the
-  // log's reader refuses for the same reason it refuses a control character.
-  const ASTRAL = `FAILED tests/sur_${"\u{1D400}".repeat(70)}t.py::test_a - x`;
-  const r = excuseOf([ASTRAL], [ASTRAL]);
-  assert(
-    r.kind === "excused" && !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(r.record.names.join()),
-    `(record) no clipped line carries a lone surrogate (${r.kind}; ${JSON.stringify(r.kind === "excused" ? r.record.names[0]?.slice(-4) : null)})`,
   );
 }
 

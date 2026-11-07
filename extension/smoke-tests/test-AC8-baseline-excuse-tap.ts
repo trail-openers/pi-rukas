@@ -134,8 +134,12 @@ function excuseOf(headLines: string[], baseLines: string[]) {
     `(marker) an unrecognised ERROR line in head refuses the excuse (${excuseOf([A, COLLECTION_ERROR], [A]).kind})`,
   );
   assert(
-    excuseOf([A], [A, BARE_FAILED]).kind === "refused",
-    `(marker) the same on the BASE side refuses it (${excuseOf([A], [A, BARE_FAILED]).kind})`,
+    excuseOf([A, BARE_FAILED], [A]).kind === "refused",
+    `(marker) a bare file verdict in head refuses it too (${excuseOf([A, BARE_FAILED], [A]).kind})`,
+  );
+  assert(
+    excuseOf([A], [BARE_FAILED]).kind === "refused",
+    `(marker) a base that named nothing but an unreadable line is no evidence (${excuseOf([A], [BARE_FAILED]).kind})`,
   );
 }
 

@@ -25,15 +25,20 @@
  *     outside that table prints nothing the excuse can read, names nothing, and
  *     excuses nothing;
  *   - the compared text is the classifier's own accepted view of a line — its
- *     trimmed text, judged through the same 8 KiB scan window the table used — with
- *     both worktree roots stripped as literal prefixes. A pair equal only past the
- *     window is a pair no judge saw, so a stream whose only failing line sits beyond
- *     the window names nothing and excuses nothing;
- *   - a line whose trimmed text starts with `FAILED ` or `ERROR ` is a runner declaring
- *     a failing test, so it must be recognised even where the classifier answers
- *     nothing: `ERROR tests/x.py` (a collection error) and a bare `FAILED tests/y.py`
- *     excuse nothing — dropping one grades a tier green on a failure the base never
- *     printed;
+ *     trimmed text — with the run's own worktree root out of it, and both sides read
+ *     the SAME full text: the classifier's table, {@link failureLinesOf}'s comparison
+ *     key, and the recorded set are all the whole line.
+ *   - one rule decides what the excuse may not see, and it REFUSES rather than
+ *     omitting: a line past {@link FAILURE_LINE_SCAN_MAX} refuses either side, and a
+ *     line carrying a runner's failure token (`not ok`, `--- FAIL:`, a `FAIL` word
+ *     followed by a name, `FAILED`/`ERROR` at the start) that the classifier does not
+ *     accepts refuses when it is HEAD-ONLY. An unread line is a failure no judge read,
+ *     so it excuses nothing — omitting one lets a head of `[readable A, unread B]`
+ *     match a base that printed only A and grades the tier green on a failure this run
+ *     authored; an over-long line is judged on a clipped view, so two distinct long
+ *     lines can fold onto one key, which is the same defect through the comparison
+ *     instead of the omission. A token line the BASE printed too is not a new failure
+ *     and does not refuse — see {@link hasHeadOnlyUnreadableLine}.
  *   - both sets must be non-empty and EVERY head line must equal a base line. One
  *     line the head printed and the base did not is a failure this run authored, and
  *     a changed reason is a different line;
@@ -51,7 +56,6 @@ import {
   FAILURE_LINE_SCAN_MAX,
   classifyFailureLine,
   failureLines,
-  harnessInnerLine,
 } from "../work-driver-verify-failures.ts";
 import {
   PREEXISTING_BASE_NAMES_CAP,
@@ -67,39 +71,86 @@ export type BaselineExcuse =
   | { kind: "excused"; record: PreexistingTierRecord }
   | { kind: "refused" };
 
-/** A runner opening its own line with a failing test — pytest's word for one. */
-const DECLARED_FAILURE = /^(?:FAILED|ERROR)\s/;
-
 /**
- * One candidate line clipped to the scan window BEFORE anything reads it.
+ * A line that declares a failing test, in any of the dialects runners print.
  *
- * The same bound `work-driver-verify-full.ts`'s `clipForScanSlice` applies to a
- * packed slice: a pathological line costs the window and no more, in the classifier
- * and in this module's own marker test alike.
+ * The vocabulary the classifier's table covers, plus the tokens a runner uses for a
+ * failing check the table does NOT carry. Deliberately looser than the table: this is
+ * the veto, not the comparison, and a line this matches that the classifier does not
+ * accept is a failure nobody read — see {@link hasHeadOnlyUnreadableLine}.
  */
-function clipForScan(line: string): string {
-  return line.length > FAILURE_LINE_SCAN_MAX ? line.slice(0, FAILURE_LINE_SCAN_MAX) : line;
+const DECLARED_FAILURE =
+  /(^|\s)not\s+ok(?=\s|$)|^\s*-{3,}\s*FAIL:|(?:^|\s)FAIL\s+\S|[^\w]*FAILED\s|[^\w]*ERROR\s/;
+
+/** Every raw line of a stream, trimmed, blanks dropped. */
+function streamLines(stream: string): string[] {
+  return stream
+    .split(/\r\n|\r|\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
 }
 
 /**
- * Is any line of this stream a failing test the shared classifier does not name?
+ * Does this stream hold a line past the classifier's scan window?
  *
- * A runner this module cannot classify — a bare `error:`, a `FAILED tests/y.py` with
- * no `::`, a tally in a dialect the table does not carry — still exits non-zero, and
- * excusing a tier that printed such a line beside its recognised ones would wave the
- * unread failures through with the read ones. So one such line refuses the WHOLE
- * excuse, on either stream, rather than going uncounted.
- *
- * The marker test is asked of every raw line: `failureLines` classifies first, so an
- * unrecognised `FAILED …` / `ERROR …` never reaches its output and only this walk
- * sees it.
+ * The classifier decides such a line on its first 8 KiB, so two lines differing only
+ * past the window answer the same and can fold onto one comparison key — the folding
+ * this whole module exists to prevent, arriving through length instead of through a
+ * token parser. A line no judge fully saw is not evidence, so it refuses on EITHER side
+ * and the comparison below reads only lines the classifier saw whole.
  */
-function hasUnreadableFailureLine(stream: string): boolean {
-  for (const line of stream.split(/\r\n|\r|\n/)) {
-    if (classifyFailureLine(clipForScan(line)) !== undefined) continue;
-    if (DECLARED_FAILURE.test(line.trim())) return true;
-  }
-  return false;
+function hasOverWindowLine(stream: string): boolean {
+  return streamLines(stream).some((line) => line.length > FAILURE_LINE_SCAN_MAX);
+}
+
+/**
+ * Does the HEAD stream print a failure token the base stream does not, on a line the
+ * classifier cannot read?
+ *
+ * `failureLines` drops every line the classifier rejects, so an unread one lets a head
+ * of `[readable A, unread B]` match a base that printed only A and grades a tier green
+ * on a failure this run authored — the one outcome this feature must never produce. So
+ * an unread line carrying a runner's failure token (`# not ok 9 - …`, a `+ not ok …`
+ * trace, a tally in a dialect the table does not carry) refuses when the base did not
+ * print it too.
+ *
+ * The veto is HEAD-ONLY, and that is the whole of it: what the excuse is allowed to
+ * grant is "the base printed this as well", so an unread line the base printed too
+ * cannot be a failure this run authored — the same text is standing on both streams,
+ * which is exactly what the comparison below could never have told us, the two lines
+ * being outside its alphabet. A `Command failed: …` harness echo of an identical tier
+ * command is that shape. An unread line that is absent from the base is NOT, and no
+ * echo exemption is given to any prefix: a line carrying a token and missing from the
+ * base refuses, whatever it opens with.
+ *
+ * Comparison is on each side's own text with ITS OWN tree prefix out, the same
+ * normalisation the recognised lines get, so an unread line that differs only in where
+ * each run ran is still one line.
+ *
+ * The one case the base's copy does NOT excuse is a stream whose recognised set is
+ * EMPTY: with nothing the classifier read there is no comparison to grade, and
+ * `baselineExcuse` refuses below on the empty set. That is what stops an unreadable BASE
+ * line being read as evidence the base was red.
+ *
+ * `failureLines` classifies first, so an unrecognised line never reaches its output and
+ * only this walk sees it; the marker test is asked of every RAW line, trimmed.
+ */
+function hasHeadOnlyUnreadableLine(
+  headStream: string,
+  baseStream: string,
+  headRoot: string,
+  baseRoot: string,
+): boolean {
+  const baseReads = new Set(
+    streamLines(baseStream)
+      .filter((line) => classifyFailureLine(line) === undefined)
+      .map((line) => stripRoot(line, baseRoot)),
+  );
+  return streamLines(headStream).some((line) => {
+    if (classifyFailureLine(line) !== undefined) return false;
+    if (!DECLARED_FAILURE.test(line)) return false;
+    return !baseReads.has(stripRoot(line, headRoot));
+  });
 }
 
 /**
@@ -126,48 +177,50 @@ export function failureLinesOf(stream: string): string[] {
 /**
  * The text two runs' lines are compared as: what the classifier ACCEPTED.
  *
- * "What it accepted" is the classifier's own view, obtained by asking its questions
- * in its own order — {@link harnessInnerLine} behind a harness wrapper, otherwise the
- * trimmed line, each as its table judged it inside the 8 KiB scan window. That is what
- * makes the recorded set replayable: {@link baseStreamOf} writes a recorded line back
- * unchanged, and a line the classifier accepted the first time accepts again, so `ci`
- * compares byte-for-byte the strings `verify` compared.
+ * "What it accepted" is the classifier's own answer to the question "is this line a
+ * failure line?", and the text is the whole trimmed line — no second cut in front of
+ * it, because {@link failureLines} already returns the trimmed line it classified and
+ * {@link hasOverWindowLine} has already refused any line the window could not show the
+ * judge. That is what makes the recorded set replayable: {@link baseStreamOf}
+ * writes a recorded line back unchanged, and a line the classifier accepted the first
+ * time accepts again, so `ci` compares byte-for-byte the strings `verify` compared.
  *
  * `undefined` for a line the classifier does not recognise — the same veto
  * {@link failureLinesOf} applies, asked here so a caller cannot hand an unread line
  * to the comparison.
  */
 function comparableLine(line: string): string | undefined {
-  // The UNCLIPPED line goes to the classifier: its own `scanWindow` is the single
-  // bound it documents, and it decides a harness wrapper's end over the whole line
-  // before clipping the gate's text. Clipping here first would be a second window in
-  // front of the one judge, and a wrapper whose command string runs past it would be
-  // judged as prose.
   if (classifyFailureLine(line) === undefined) return undefined;
-  // The classifier ACCEPTED the line, so its own cut — not the caller's raw text — is
-  // what a reader is shown for a harness-wrapped failure. Asked only on a line the
-  // table already read, so the two readers cannot disagree about what the gate printed.
-  const accepted = harnessInnerLine(line) ?? line.trim();
+  const accepted = line.trim();
   return accepted.length === 0 ? undefined : accepted;
 }
 
 /**
  * One run's tree prefix, out of a line.
  *
- * Asked as LITERAL prefixes, not as a path split: a TAP or a go line has no `::` to
- * split on, and `checkout - expected 3 got 4` has no path at all. Both spellings are
- * removed — with and without a trailing separator — so a runner that printed
- * `<root>/t/x.t` gives up its tree's text and keeps `t/x.t`, which is what a run in
- * the OTHER tree prints for the same check.
+ * The tree's own name sits at the FRONT of the part of the line that holds a path: a
+ * TAP line is `not ok 1 - <root>/t/x.t - …` and a go line `FAIL <root>/pkg`, so the
+ * prefix is measured at the first character that could begin a path (a `/`, a `.` or a
+ * Windows drive letter) and NOT at column 0, where the runner's own marker sits. Both
+ * spellings are tried — with and without a trailing separator — so a runner that printed
+ * `<root>/t/x.t` gives up its tree's text and keeps `t/x.t`, which is what a run in the
+ * OTHER tree prints for the same check.
+ *
+ * The search stops at that first path-shaped character. A root appearing LATER than it
+ * is content the tier printed — a path quoted in an assertion, a path in a diff — and
+ * the other tree's line carries it too, so a global removal would delete it from one
+ * side and not the other, and a difference the excuse erased is a difference it excused.
  */
 function stripRoot(line: string, root: string): string {
-  const resolved = root.trim();
-  if (resolved.length === 0) return line;
-  let out = line;
-  for (const spelling of [resolved, resolved.replace(/\/$/, "")]) {
-    if (spelling.length > 0) out = out.split(spelling).join("");
+  const trimmed = line.trim();
+  const pathAt = trimmed.search(/[/.]|[A-Za-z]:/);
+  if (pathAt < 0) return trimmed;
+  const at = trimmed.slice(pathAt);
+  for (const spelling of [root.trim(), root.trim().replace(/\/$/, "")]) {
+    if (spelling.length > 0 && at.startsWith(spelling))
+      return `${trimmed.slice(0, pathAt)}${at.slice(spelling.length)}`.trim();
   }
-  return out.trim();
+  return trimmed;
 }
 
 /**
@@ -249,22 +302,27 @@ export function baselineExcuse(opts: {
 }): BaselineExcuse {
   if (opts.probe.status !== "red") return { kind: "refused" };
   const baseStream = opts.baseStream ?? "";
-  const head = failureLinesOf(opts.headStream ?? "");
+  const headStream = opts.headStream ?? "";
+  const head = failureLinesOf(headStream);
   const base = failureLinesOf(baseStream);
-  // A bare checkout whose dependencies were never linked fails every command: that
-  // red belongs to the probe's provisioning, not to the commit, and no line it
-  // prints can stand as evidence the base was red.
-  if (baseRedIsMissingDeps(baseStream)) return { kind: "refused" };
-  // Every failing test either stream declares must be one the classifier names.
-  if (hasUnreadableFailureLine(opts.headStream ?? "")) return { kind: "refused" };
-  if (hasUnreadableFailureLine(baseStream)) return { kind: "refused" };
-  if (head.length === 0 || base.length === 0) return { kind: "refused" };
+  // A line either stream printed past the classifier's window is judged on a clipped
+  // view, so it cannot stand as evidence on either side.
+  if (hasOverWindowLine(headStream) || hasOverWindowLine(baseStream)) return { kind: "refused" };
   // Both trees resolved ONCE for this comparison, and a probe tree that is the run's
   // own tree — or another spelling of it — compares against nothing: every line is
   // its own echo.
   const headRoot = treeRoot(opts.headRoot);
   const probeRoot = treeRoot(opts.probeRoot);
   if (headRoot === probeRoot) return { kind: "refused" };
+  // A bare checkout whose dependencies were never linked fails every command: that
+  // red belongs to the probe's provisioning, not to the commit, and no line it
+  // prints can stand as evidence the base was red.
+  if (baseRedIsMissingDeps(baseStream)) return { kind: "refused" };
+  // A failure line the classifier cannot read excuses nothing, unless the base printed
+  // the same line too — see {@link hasHeadOnlyUnreadableLine}.
+  if (hasHeadOnlyUnreadableLine(headStream, baseStream, headRoot, probeRoot))
+    return { kind: "refused" };
+  if (head.length === 0 || base.length === 0) return { kind: "refused" };
   // The text two runs' lines are compared as: each side with ITS OWN tree's prefix out
   // of it, so head and base agree on what the check was, not on where each run ran.
   const headKey = head.map((line) => stripRoot(line, headRoot));
@@ -275,44 +333,46 @@ export function baselineExcuse(opts: {
   // is persisted and rendered. `baseNames` is what lets `ci` reuse this record
   // instead of paying for its own base probe, and an oversized one is omitted
   // rather than truncated: a partial base set would make ci's comparison a lie.
+  // A line past the log's own bound is omitted for the same reason — a clipped
+  // `baseNames` entry is a line `ci` would replay that the classifier would not
+  // accept, so ci would grade a comparison `verify` never ran.
+  const recordedBase = [...baseKey];
   const record: PreexistingTierRecord = {
     cmd: opts.cmd,
     names: matched.slice(0, PREEXISTING_NAMES_CAP).map(boundedLine),
     total: matched.length,
     baseSha: opts.baseSha,
-    ...(base.length <= PREEXISTING_BASE_NAMES_CAP
-      ? { baseNames: [...baseKey].map(boundedLine) }
+    ...(base.length <= PREEXISTING_BASE_NAMES_CAP &&
+    recordedBase.every((line) => line.length <= PREEXISTING_NAME_MAX_CHARS)
+      ? { baseNames: recordedBase }
       : {}),
   };
   // The record is about to be WRITTEN to the step log, and the log's own reader
   // (`preexistingFailuresProblem`, applied by `loadRun`) refuses a name longer than
-  // `PREEXISTING_NAME_MAX_CHARS` or carrying a control character — which the 8 KiB
-  // scan-window clip can produce on its own, by cutting a line in the middle of an
-  // astral character. `boundedLine` already cut every line inside the bound and on a
-  // character boundary, so this asks the validator the question it will ask anyway
-  // rather than persisting a record the run cannot be read back with: `saveRun`
-  // writes it and `loadRun` then refuses the WHOLE run file.
+  // `PREEXISTING_NAME_MAX_CHARS` or carrying a control character. `boundedLine` cut
+  // every displayed line inside the bound and an over-long BASE line omitted `baseNames`
+  // outright, so this asks the validator the question it will ask anyway rather than
+  // persisting a record the run cannot be read back with: `saveRun` writes it and
+  // `loadRun` then refuses the WHOLE run file.
   if (preexistingFailuresProblem({ [opts.tierName]: record }) !== undefined)
     return { kind: "refused" };
   return { kind: "excused", record };
 }
 
 /**
- * A comparable line cut to what the step log's reader accepts, on a character
- * boundary.
+ * A head line cut to what the step log's reader accepts, for DISPLAY.
  *
- * A whole failure line is far longer than `PREEXISTING_NAME_MAX_CHARS`, and the log's
- * validator REFUSES an over-long entry rather than clipping it — so the clip happens
- * here, where the excuse is still the caller's to forfeit, and never at the reader.
- * The cut steps back over a trailing high surrogate so it cannot leave the lone half
- * of an astral character behind, which `\p{Cc}` would refuse for the same reason.
+ * `names` is the capped preview a human reads in the PR body and `total` carries the
+ * true count; `baseNames` — the set `ci` replays — is never clipped at all (see
+ * {@link baselineExcuse}). A whole failure line is far longer than
+ * `PREEXISTING_NAME_MAX_CHARS` and the log's validator REFUSES an over-long entry, so
+ * the clip happens here, where the excuse is still the caller's to forfeit, and never
+ * at the reader.
  */
 function boundedLine(line: string): string {
-  const cut =
-    line.length > PREEXISTING_NAME_MAX_CHARS ? line.slice(0, PREEXISTING_NAME_MAX_CHARS) : line;
-  const last = cut.charCodeAt(cut.length - 1);
-  if (last >= 0xd800 && last <= 0xdbff) return cut.slice(0, -1);
-  return cut;
+  return line.length > PREEXISTING_NAME_MAX_CHARS
+    ? line.slice(0, PREEXISTING_NAME_MAX_CHARS)
+    : line;
 }
 
 /**
