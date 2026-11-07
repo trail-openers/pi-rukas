@@ -18,7 +18,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { emptyRunningState } from "../src/progress.ts";
 import type { BudgetOpts } from "../src/lean/step-budget.ts";
-import { INITIAL_COUNTERS, type LeanRun, type LeanState, type Step } from "../src/lean/state.ts";
+import { INITIAL_COUNTERS, type LeanRun, type LeanState, type RunCounters, type Step } from "../src/lean/state.ts";
 import { MAX_BUILD_ATTEMPTS, next } from "../src/lean/machine.ts";
 import type { WorkConfig } from "../src/lean/config.ts";
 import { defaultConfig } from "../src/lean/config.ts";
@@ -381,6 +381,90 @@ function breachTurns(turns: number) {
   assert(
     status(fix.worktree) === "",
     `(f) and the tree is clean for ci to re-check (got ${status(fix.worktree)})`,
+  );
+}
+
+// ── (g) the in-step retry bound is ONE ROUND BELOW THE CAP ────────────────
+//
+// (f) pins the visit entered one past the cap; (r) pins a visit entered at one
+// round spent. Neither discriminates the `- 1` in the loop's own bound: at
+// `buildAttempts` 4 a rule of `cap - dispatchedBefore` clamps to 0 all the same.
+// The round this visit is running is the one the `- 1` pays for, and the visit
+// that shows it is the one entered one round SHORT of the cap — where the
+// pre-fix rule still sees room for a retry and buys a child the run has no
+// round left to pay for. So walk the table to the LAST round it can bill
+// (`MAX_BUILD_ATTEMPTS - 1`), then compare what this visit buys there against
+// what it buys one round earlier.
+{
+  const BUILD_TURNS = 3;
+  const cfg: WorkConfig = {
+    ...configWithRunner(),
+    budgets: { ...defaultConfig().budgets, build: { turns: BUILD_TURNS, tokens: 0, minutes: 0 } },
+  };
+  // The shortest walk the table allows to the run's LAST billable build: the
+  // first build goes `ok` into the one challenge round the run gets, the second
+  // `ok` is capped so it goes straight to its gate, and the red there buys the
+  // third — the round `buildAttempts` reads `MAX_BUILD_ATTEMPTS - 1` entering.
+  // Derived through `next` rather than typed, the way (f) does.
+  const walk = [
+    { state: "build" as LeanState, kind: "ok" },
+    { state: "challenge" as LeanState, kind: "new-tests" },
+    { state: "build" as LeanState, kind: "ok" },
+    { state: "verify" as LeanState, kind: "red" },
+  ];
+  let last = { state: "build" as LeanState, counters: { ...INITIAL_COUNTERS } };
+  for (const step of walk) {
+    const moved = next({ ...runProbe(step.state), counters: last.counters }, { kind: step.kind });
+    last = { state: moved.state, counters: moved.counters };
+  }
+  assert(
+    last.state === "build" && last.counters.buildAttempts === MAX_BUILD_ATTEMPTS - 1,
+    `(g) the table's last billable build enters one round short of the cap (got ${last.state}/${last.counters.buildAttempts})`,
+  );
+  const stoppedAt = async (counters: RunCounters, issue: number) => {
+    const built = buildFixture(issue);
+    // Property-by-property, as (f) does: `runBuild` re-points `run.steps` when it
+    // wires the fixture, so replacing `run.counters` wholesale on the copy the
+    // case holds is the one edit the step never reads.
+    built.ctx.run.counters.buildAttempts = counters.buildAttempts;
+    built.ctx.run.counters.ciFixUsed = counters.ciFixUsed;
+    return runBuild({
+      issue,
+      built,
+      config: cfg,
+      child: (wt) => put(wt, "src/retry.ts", "export const retry = () => 1;\n"),
+      onProgressTick: breachTurns(BUILD_TURNS),
+    });
+  };
+  // Entered one round below the cap: the run has exactly one dispatch left to buy,
+  // the round this visit is, so the ceiling-stopped child runs once, folds, leaves.
+  const atCap = await stoppedAt(last.counters, 153);
+  assert(
+    atCap.threw === undefined,
+    `(g) the last-round visit does not throw: ${atCap.threw?.message ?? "clean"}`,
+  );
+  assert(
+    atCap.outcome?.kind === "budget",
+    `(g) and still reports its budget verdict (got ${atCap.outcome?.kind ?? atCap.threw?.message})`,
+  );
+  assert(
+    atCap.dispatched === Math.max(1, MAX_BUILD_ATTEMPTS - (MAX_BUILD_ATTEMPTS - 1)),
+    `(g) a ceiling stop on a visit entered at the cap less one dispatches NO in-step retry (got ${atCap.dispatched})`,
+  );
+  assert(
+    (atCap.outcome?.dispatches ?? []).length === atCap.dispatched,
+    `(g) and bills exactly the children it ran (got ${(atCap.outcome?.dispatches ?? []).length})`,
+  );
+  assert(
+    atCap.headAfter !== atCap.headBefore,
+    "(g) the last round's work is still folded, so a paid-for child is not thrown away",
+  );
+  // One round earlier the SAME ceiling buys the child that round pays for: the
+  // pair is what makes the bound discriminating rather than merely true.
+  const oneBeforeCap = await stoppedAt({ ...INITIAL_COUNTERS, buildAttempts: 1 }, 154);
+  assert(
+    oneBeforeCap.dispatched === Math.max(1, MAX_BUILD_ATTEMPTS - 1),
+    `(g) the same ceiling one round earlier DOES retry in-step (got ${oneBeforeCap.dispatched})`,
   );
 }
 
