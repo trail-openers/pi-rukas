@@ -18,21 +18,47 @@
  *   other one's failure. A child's throw is raised only once both have settled, and
  *   the adapters that wrap it already carry the rows of every child the step paid
  *   for, so the handback can price what the step bought.
- * - **The budget is read before the verdict.** The operator's ceiling ending the
- *   reviewer is a routed stop that the gate's own "no verdict" throw would otherwise
- *   report as infrastructure. So a breach is turned into the step's throw here,
- *   before either child's result is read for anything else — and because the step
- *   arms ONE budget for both children, the lever is named once for the pair.
+ * - **The budget is read before the verdict, for BOTH children.** The operator's
+ *   ceiling ending the reviewer is a routed stop that the gate's own "no verdict"
+ *   throw would otherwise report as infrastructure. The lever is the step's ONE
+ *   armed `hit`, which whichever child tripped it writes, so the pair asks the arm
+ *   itself once both have settled — not the gate's report alone: a child can trip
+ *   the lever after the gate's last read and still hand back a clean result, and a
+ *   pair that read only the gate would certify a head the operator's ceiling had
+ *   already stopped. The breach is turned into the step's throw there, before either
+ *   child's result is read for anything else, and because the step arms ONE budget
+ *   for both children the lever is named once for the pair.
  * - **The rows are APPENDED to the caller's running total, never returned** — the
  *   rule both gate adapters already hold (see `review-gates.ts`'s header).
  */
 
 import type { Severity } from "../lens-review-format.ts";
+import type { DispatchResult } from "../types.ts";
 import type { HandlerCtx } from "./engine.ts";
 import type { LensRound, ReviewDeps } from "./review-args.ts";
 import { type AdversarialGate, adversarialGate, lensGate } from "./review-gates.ts";
 import { budgetStopped } from "./review-step.ts";
 import type { BudgetArms, DispatchUsageRow } from "./step-budget.ts";
+
+/**
+ * What the budget arm is asked with, once both children have settled.
+ *
+ * `fired` needs a `DispatchResult` for one thing only — the `minutes` lever, which
+ * it infers from a `killCause: "child-bound"`. A child the shared abort ended, or one
+ * that answered normally, carries no such cause, so the stand-in below can only ever
+ * reach the turns/tokens branch that reads the frozen `hit` and ignores the argument.
+ * A real wall-clock breach is reported by the gate's own `stop` (the armed bound ends
+ * the child that holds it and the adapter reads it), which is why the arm is asked
+ * for the pair rather than the child.
+ */
+const BOTH_SETTLED: DispatchResult = {
+  role: "review-pair",
+  ok: true,
+  text: "",
+  toolUses: [],
+  ms: 0,
+  exitCode: 0,
+};
 
 /**
  * Buy pass 1's adversarial gate and six-lens round CONCURRENTLY and wait for both
@@ -95,14 +121,20 @@ export async function buyFullReview(
       threshold,
     }),
   ]);
-  // A ceiling that fired while both were in flight ends both children — they share
-  // the one `AbortController` `armBudget` armed for the step — and the step names
-  // that lever ONCE, here, with both children's rows on it. Only the gate can
-  // report one: `lensGate` has no stop arm, because `armBudget` freezes ONE `hit`
-  // for the step and the gate's own read is that same lever whichever child tripped
-  // it — so a stopped reviewer is never raised as infrastructure by the arms below.
-  if (gateSettled.status === "fulfilled" && gateSettled.value.stop !== undefined)
-    throw budgetStopped(gateSettled.value.stop, rows);
+  // A ceiling that fired while the pair ran ends both children — they share the one
+  // `AbortController` `armBudget` armed for the step — and the step names that lever
+  // ONCE, here, with both children's rows on it. It is read off the ARM as well as
+  // off the gate's report: `armBudget` freezes ONE `hit` for the step and the child
+  // that trips it is whichever tipped the lever, so the arm answers for the lens
+  // child too (`lensGate` has no stop arm of its own, and a lens child can trip the
+  // lever after the gate's last read and still hand back a clean round). The gate's
+  // own stop is the ordinary route, so it is read first. Read BEFORE the arms below:
+  // the same abort that trips the lever can REJECT a child, and a child the operator's
+  // ceiling killed is the operator's stop, not the adapters' infrastructure error.
+  const lever =
+    (gateSettled.status === "fulfilled" ? gateSettled.value.stop : undefined) ??
+    budget.fired(BOTH_SETTLED);
+  if (lever !== undefined) throw budgetStopped(lever, rows);
   // Neither child is in flight any more, so raising a throw now orphans nothing.
   // Both adapters wrap a dead child in the step's infra error carrying the rows.
   for (const settled of [gateSettled, lensSettled])
