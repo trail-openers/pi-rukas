@@ -113,6 +113,14 @@ export type BaselineExcuse =
  * A line the strict key cannot place is otherwise excused only by the allow-list, never by
  * looser text — which is what makes the direction safe.
  *
+ * The one exemption that is not a property of the line's own text is the harness's `Command failed:`
+ * echo, and its expected command is therefore a parameter, {@link tierCommand}, never something read
+ * back out of the stream being judged: a rule that mined the expected command from the head stream
+ * let one head-only `Command failed: touch /tmp/pwned` quote ITSELF into being the command the tier
+ * ran and excuse the run. So the caller hands in what it actually asked the executor to run, and with
+ * no caller command the base's own copy of the identical line is the only thing that vouches for an
+ * echo — including an empty one, which names no command and proves nothing.
+ *
  * The one case the base's copy does NOT excuse is a stream whose recognised set is EMPTY: with
  * nothing the classifier read there is no comparison to grade, and {@link baselineExcuse} refuses
  * below on the empty set. That is what stops a base that printed nothing meaningful from being
@@ -123,6 +131,7 @@ export function hasHeadOnlyUnrefusedLine(
   baseStream: string,
   headRoot: string,
   baseRoot: string,
+  tierCommand: string | undefined,
 ): boolean {
   const baseStrict = new Set(
     judgeableLines(baseStream).map((line) => normaliseRaw(line, baseRoot)),
@@ -133,25 +142,15 @@ export function hasHeadOnlyUnrefusedLine(
   const baseCounters = new Set(
     [...baseStrict].map(counterFolded).filter((line) => line.length > 0),
   );
-  const echoedCmd = echoCommandOf(headStream);
   const baseRaw = streamLines(baseStream);
   return judgeableLines(headStream).some((line) => {
     const key = normaliseRaw(line, headRoot);
     if (key.length === 0 || baseStrict.has(key)) return false;
     if (baseLoose.has(leadingIndexFolded(key))) return false;
     if (baseCounters.has(counterFolded(key))) return false;
-    if (isHarnessEchoOf(line, baseRaw, echoedCmd)) return false;
+    if (isHarnessEchoOf(line, baseRaw, tierCommand)) return false;
     return !isKnownCleanLine(line);
   });
-}
-
-/** The command the head stream's `Command failed:` echo quotes, if it has one. */
-function echoCommandOf(headStream: string): string | undefined {
-  for (const line of streamLines(headStream)) {
-    const t = line.trim();
-    if (/^Command failed:\s/.test(t)) return t.slice("Command failed:".length).trim();
-  }
-  return undefined;
 }
 
 /**
@@ -301,6 +300,12 @@ const MISSING_DEP_LINE =
  * the contract arm) and the frozen acceptance verdict. What is decided here is
  * whether the head run printed anything the base did not; every refusal means the
  * caller keeps the hand-back `verify-baseline.ts` produced before this module.
+ *
+ * `cmd` is not only the record's label: it is the tier's REAL command, the string the
+ * caller handed the executor, and it is what the harness's `Command failed:` echo is
+ * allowed to be matched against. A caller that left it out would make every real tier's
+ * own echo a head-only line — the base's stream of a single-tier probe need not repeat it —
+ * and a caller that took it from the stream would let an echo vouch for itself.
  */
 export function baselineExcuse(opts: {
   tierName: string;
@@ -338,7 +343,10 @@ export function baselineExcuse(opts: {
   // A head-only line the rule cannot vouch for excuses nothing — see {@link
   // hasHeadOnlyUnrefusedLine}. This is the default-refuse gate: it stands in front of the
   // comparison below so that no line the classifier never read can be excused by absence.
-  if (hasHeadOnlyUnrefusedLine(headStream, baseStream, headRoot, probeRoot))
+  // The tier's command goes in as the one thing the head stream is not allowed to tell us: an
+  // echo is vouched for by what the caller asked to run, or by the base's copy of the identical
+  // line, and never by the echo's own text.
+  if (hasHeadOnlyUnrefusedLine(headStream, baseStream, headRoot, probeRoot, opts.cmd))
     return { kind: "refused" };
   if (head.length === 0 || base.length === 0) return { kind: "refused" };
   // The text two runs' lines are compared as: each side with ITS OWN tree's prefix out of

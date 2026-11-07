@@ -30,6 +30,75 @@
 const PLACEHOLDER = "#";
 
 /**
+ * The invisible characters a runner's output can carry inside a WORD.
+ *
+ * grave, a byte-order mark. None of them renders, all of them break a word in two: a word with a
+ * zero-width space inside it is not that word to a `\b`-bounded vocabulary, to the classifier's
+ * anchored shapes, or to a strict line comparison, and a human reading the log sees the word.
+ * `\u00ad` (soft hyphen), `\u200b-\u200d` (zero-width space, joiner, non-joiner), `\u2060` (word
+ * joiner), `\u034f` (combining grave) and `\ufeff` (BOM) — written as escapes, which is the only way
+ * to name them without putting the characters themselves in the source. The class is a fixed set of
+ * format characters, not a general Unicode sweep: it is NOT `\p{Cf}` and not a control-character class,
+ * because a line's printable content is evidence and is left exactly as printed. Each range is written
+ * on its own rather than merged into one class, so a reader — and Biome's misleading-character-class
+ * rule — can see each character this arm removes.
+ */
+const INVISIBLE_CHARS = new RegExp(
+  `[${["\\u00ad", "\\u200b-\\u200d", "\\u2060", "\\u034f", "\\ufeff"].join("")}]`,
+  "g",
+);
+
+/**
+ * An ANSI CSI sequence: an escape, a parameter string, and a final byte.
+ *
+ * A colour or cursor sequence sits inside a line the same way an invisible character does — a colour
+ * code between the halves of a verdict prints as that verdict — and is stripped by {@link
+ * scrubInvisible} for the same reason.
+ *
+ * Built from `String.fromCharCode(27)` rather than a `\u001b` escape in the literal: Biome's
+ * `noControlCharactersInRegex` is right that a control character written into a pattern is easy to
+ * misread, and here it is genuinely easy to misread — the ESC byte is the whole meaning of the arm and
+ * nothing around it shows it. `fromCharCode` is the house form for this byte (`merge-lex-views.ts`,
+ * `write-fence-bash-words.ts` both name ESC the same way). The parameter bytes are `[\d;?]*`, which
+ * never include the final byte, and the final byte is one character: no quantifier may stretch across
+ * a line, so no input makes this backtrack.
+ */
+const ANSI_CSI = new RegExp(`${String.fromCharCode(27)}\\[[\d;?]*[A-Za-z@]`, "g");
+
+/**
+ * The Unicode line separators, mapped to a space rather than removed.
+ *
+ * U+2028, U+2029 and C1 U+0085 are line boundaries to some tools and ordinary characters to others,
+ * so one stream can carry two lines that this gate reads as one. Replacing them with a space keeps the
+ * words either side of them separate — removing them would glue a crash count to the tally beside it —
+ * and leaves the line as ONE line for every arm. Written with `\p{Cc}` plus the two Unicode separators
+ * rather than literal control characters: the set is "every character some renderer breaks a line on",
+ * which is the property the arm needs, and a control character has no place in a source pattern.
+ */
+const LINE_SEPARATORS = /[\p{Cc}\u2028\u2029]/gu;
+
+/**
+ * A line as EVERY arm of the baseline excuse must read it: invisible characters out, ANSI sequences out, line separators flattened.
+ *
+ * THE one normalisation of the whole comparison, applied where the excuse reads lines — {@link
+ * streamLines} in `verify-baseline-allow-list.ts`, and the head of {@link counterFolded} here — so no
+ * arm can judge a text another arm did not. It runs BEFORE classification and before any veto, which
+ * is the only ordering that makes the promise true: a failure word split by an invisible character IS
+ * that word, and an arm that normalised after its own match would be vouching for text the next arm
+ * never saw. Printable content is untouched, so nothing a runner actually printed is erased.
+ *
+ * Control characters go to a space, not nothing: a C1 in the middle of a stream is a boundary a reader
+ * would honour, and deleting it would splice two fields into one word.
+ *
+ * Lives in this leaf module because both sides of the excuse seam need it and the seam must stay one
+ * way: `verify-baseline-allow-list.ts` imports the counter vocabulary from here, so the normalisation
+ * every arm applies cannot be moved to the importer without cutting the other direction.
+ */
+export function scrubInvisible(line: string): string {
+  return line.replace(ANSI_CSI, "").replace(INVISIBLE_CHARS, "").replace(LINE_SEPARATORS, " ");
+}
+
+/**
  * A digit run the runner printed as a COUNT or a TIMING, followed by its word.
  *
  * The fold is done by SPLITTING on digit runs and asking each one the same two questions about
@@ -99,9 +168,25 @@ export const COUNTER_WORD_LIST =
  */
 const COUNTER_WORD_AFTER = new RegExp(`^\\s*(?:${COUNTER_WORD_LIST})(?![A-Za-z0-9])`, "i");
 
-/** The same counter words printed BEFORE their number: `Tests: 5`, `Tests run: 3`, `Skipped: 0`. */
+/**
+ * The counter words a runner prints BEFORE their number, as the LABEL of one: `Tests: 5`, `Run: 3`.
+ *
+ * The same closed set as {@link COUNTER_WORD_AFTER} plus the two tally-total words `run`/`ran`, and
+ * only in the `Label:` spelling — a colon and nothing else between the word and its digit. That is
+ * where a label ends (`Tests: 5`, `Run: 3`, `Failures: 1`), and the restriction to the colon is what
+ * makes this arm mean "the word of THIS number": with whitespace allowed as a separator the arm read
+ * `pack_release_test.sh: 36 cases, 999 crashed` as though `cases,` — a comma, a space and a digit run
+ * away — were the label of the `999`, folded a crash count that no counter list has ever named, and
+ * the line met the one a base that crashed 998 times printed. `cases` still folds its own 36, because
+ * there the word follows the digit and {@link COUNTER_WORD_AFTER} answers it.
+ *
+ * A `Failures: 1` / `Errors: 2` label is on no list, so its count keeps its digits by the same single
+ * rule and no failure-word enumeration is needed anywhere in this file. `ok` is out of the list for
+ * the reason recorded on {@link COUNTER_WORD_LIST}: a TAP runner prints its check index right after
+ * that very word.
+ */
 const COUNTER_WORD_BEFORE = new RegExp(
-  `(?:^|[\\s(,;:=])(?:${COUNTER_WORD_LIST}|(?:tests\\s+)?run|ran)[\\s=:,;]*$`,
+  `(?:^|[\\s(,;:=])(?:${COUNTER_WORD_LIST}|(?:tests\\s+)?run|ran):\\s*$`,
   "i",
 );
 
@@ -109,84 +194,50 @@ const COUNTER_WORD_BEFORE = new RegExp(
 const DURATION_AFTER = /^\s*(?:ms|s|sec|secs|seconds?|minutes?|hours?)(?![A-Za-z0-9])/i;
 
 /**
- * A count whose word is a FAILURE word — `1 failed`, `Failures: 1`, `2 errors`.
+ * Is THIS digit a runner's counter or duration?
  *
- * A narrow complement to {@link COUNTER_WORDS}, needed because the two mechanisms see different
- * halves of a tally. The counter list asks the word AFTER a number; the dialect the excuse must
- * fold — `1 failed, 3 passed` — writes its failure count as `N failed`, where "is the following
- * word a counter" sees `failed`, says no, and "is the preceding label a counter" sees nothing at
- * all. Without this arm `1 failed` folds to `# failed` and becomes the line the base printed as
- * `2 failed` — the one outcome the excuse exists to refuse.
+ * THE single rule of the fold, and the whole of it: a digit run is folded when the word ADJACENT to
+ * it is on {@link COUNTER_WORD_LIST} — printed after it (`3 passed`, `2 skipped`, `36 cases`) or
+ * before it as its `Label:` (`Tests: 5`, `Run: 3`) — or when what sits next to it is a duration unit
+ * (`0.2s`) or the `Tests run: N` total. Anything else keeps the digits exact. "Adjacent" is the load-
+ * bearing word: each arm reads only its own side and only the label's own separator, so a counter word
+ * that is merely REACHABLE from a digit — two commas away, inside another field of the same tally —
+ * does not decide that digit.
  *
- * BOTH arms read the number and the word on its OWN side, and the label arm ends in `\s*\d` so the
- * word is adjacent to the digit it counts. A label that is merely REACHABLE from the number is not
- * the number's label, and three shapes this file has carried were reachable-but-wrong: the
- * comma-stretching `:[^,\r\n]*` branch, a `:?` that let a colon float free (`Failures: 3` and
- * `Failures 3` alike), and above all the unbounded `\s*` on the digit side, which read
- * `Tests run: 3, Failures: 1` as though `Failures:` were the label of the `3` three characters away
- * — holding the TOTAL the added-checks case exists to fold — and read `1 failed, 3 passed` as though
- * `failed,` were the label of the `3`, refusing the same case from the other side. `\s*\d` costs
- * `Failures 1` (a spelling no runner in this file's experience prints) and buys both field cases.
+ * The rule is single, so there is no failure-word list anywhere in this file: `failed`, `crashed`,
+ * `panicked`, `aborted` and `segfault` are all absent from the counter list and all keep their counts
+ * exact by absence, which is the direction that cannot fall behind a runner's vocabulary.
  *
- * A word list this short is safe to enumerate where the allow-list is not: an omission here refuses
- * a clean line, which costs a hand-back, while an omission in a failure vocabulary used for
- * PERMISSION is what produced every earlier round of this rule. Failure words the table has never
- * heard are caught by {@link UNKNOWN_COUNTED_WORD}, which refuses by absence.
+ * This replaces three arms that existed only because the rule was not yet single. `FAILURE_COUNT` /
+ * `COUNTED_FAILURE_LABEL` / `foldsAsFailureLabel` enumerated failure words to hold them exact — right
+ * for the words they listed, wrong for the words they did not, and `999 crashed` was such a word: it
+ * reached the fold through the `cases` of its own tally and matched the line a base that crashed 998
+ * times printed. `TALLY_TOTAL` folded the `Tests run: N` total, which the label arms of this rule
+ * already cover. Both were a failure vocabulary in a file whose design says a failure vocabulary is
+ * unbounded, and one adjacency test that reads only its own side replaces all four.
  */
-const FAILURE_COUNT =
-  /[1-9]\d*\s+(?:failed|failing|failures?|errors?|fatal|critical)(?![A-Za-z0-9])/i;
+function foldsAsCounter(label: string, after: string): boolean {
+  return (
+    COUNTER_WORD_AFTER.test(after) ||
+    COUNTER_WORD_BEFORE.test(label) ||
+    DURATION_AFTER.test(after) ||
+    TALLY_TOTAL.test(label.trimStart())
+  );
+}
 
 /**
- * A tally's TOTAL — the count of how many checks ran, in its `Label: N` form.
+ * A tally's TOTAL — the count of how many checks ran, spelled as the label itself.
  *
- * `Tests run: 3` and `Ran 5 tests` count checks, not verdicts, so the added-checks case moves
- * them and the excuse must not read them as evidence. They are folded on the digit's OWN text
- * rather than by {@link COUNTER_WORD_AFTER}, because the digit sits AFTER its label — past the
- * colon, where an adjacency test on the text after the number cannot reach it — and `run`/`ran`
- * cannot join {@link COUNTER_WORDS}, or `expected 5 to run 6 passed` would have its assertion
- * numbers folded. A `Failures:` or `Errors:` label is not in this list at all: its count is a
- * failure count, and a label that is not a counter is never folded. The `:` is optional and only
- * the label's OWN separator may sit between it and its digit — `\s*:?\s*` is the label's whitespace,
- * not a wildcard, and `Tests run:3`, `Tests run: 3` and `Ran 3` all end their label at the digit
- * while `1 == 2 tests` keeps its digits.
+ * `Tests run: 3` and `Ran 5 tests` count checks, not verdicts, so the added-checks case moves them
+ * and the excuse must not read them as evidence. The label arm of {@link foldsAsCounter} carries
+ * `run`/`ran`, and this arm carries the spelling where the total has no word of its own after the
+ * digit — `Tests run: 3` ends its label at the digit, and the `3` is the whole of what follows the
+ * label, so the pair is read as one token here rather than by an adjacency test on the text after
+ * the number. `Failures`/`Errors` are not in this list at all: a label that is not a counter is
+ * never folded, and the `:` is only ever the label's own whitespace, never a wildcard, so
+ * `1 == 2 tests` keeps its digits.
  */
 const TALLY_TOTAL = /^(?:tests\s+run|tests|run|ran)\s*:?\s*\d$/i;
-
-/**
- * The fold's gate, for the counted word a per-digit adjacency test cannot see.
- *
- * A failure word printed BEFORE its number (`Failures: 1`, `Errors: 2`) has no "word after the
- * digit" for {@link FAILURE_COUNT} to read, and a window wide enough to reach one hands the same
- * verdict to the comma-separated neighbour of `Tests run: 3, Failures: 1` — holding the TOTAL the
- * added-checks case exists to fold. So the test is a property of the whole line, asked once, and of
- * the narrow `Label: N` spelling only: the colon is REQUIRED because `Failures: 1` is the shape every
- * runner in this file's experience prints, and an optional colon also matches the prose `errors 2`
- * that appears in a test's own name.
- *
- * The classifier is deliberately NOT this gate. The two questions are different widths and each is
- * right where it is asked: {@link UNKNOWN_COUNTED_WORD} asks whether EVERY counted word is a known
- * counter, finds `failed` on no list, and is the right test for PERMISSION, where absence refuses.
- * For a FOLD it is the wrong test — the fold exists precisely to move the passing half of a tally
- * that reports failures, so gating the fold on "this line names a failure" refused the field case
- * from the inside and `===== 1 failed, 3 passed =====` never met `===== 1 failed, 5 passed =====`.
- */
-const COUNTED_FAILURE_LABEL =
-  /(?:^|[\s(,;:=])(?:failed|failing|failures?|errors?|fatal|critical)\s*:\s*[1-9]\d*(?![A-Za-z0-9])/i;
-
-/**
- * Is THIS digit the count of a failure label — `Failures: 1`, `Errors: 2`?
- *
- * Asked per digit, which is what lets one line hold both of its halves: the Surefire tally
- * `Tests run: 3, Failures: 1` must fold its TOTAL (the added-checks case moves it) and hold its
- * `Failures:` count (a check that broke moves it), and no whole-line test can tell those two digits
- * apart. Only the digit a `Label:` immediately precedes is a failure count.
- */
-function foldsAsFailureLabel(label: string, digits: string): boolean {
-  return new RegExp(
-    `(?:^|[\\s(,;:=])(?:failed|failing|failures?|errors?|fatal|critical)\\s*:\\s*${digits}$`,
-    "i",
-  ).test(label);
-}
 
 /**
  * A line's numbers read as counters, for the looser comparison pass.
@@ -213,7 +264,14 @@ function foldsAsFailureLabel(label: string, digits: string): boolean {
  * exists to refuse. Both scans are linear over a line the classifier's window already bounds and
  * no arm nests a quantifier, so no fold can backtrack.
  */
-export function counterFolded(line: string): string {
+export function counterFolded(input: string): string {
+  // Scrubbed before the digit scan, for the one reason every arm of the excuse scrubs: a zero-width
+  // character inside a counted word would otherwise leave the adjacency test reading a crash word split
+  // in half — no counter word next to the digits, so they stand — while every other arm saw a clean
+  // count. Idempotent, and the classifier's window already bounds the line, so this is a bound and not
+  // a cost. The scrubbed text is held in its own binding because every question below is asked of the
+  // line as printed, and a fold that read a key it had built itself is how a moved count went unnoticed.
+  const line = scrubInvisible(input);
   // The digit runs are located ONCE, over the line as printed, and every question below is asked
   // of that original text. Building the key as it goes and asking the questions of the key would
   // let a folded neighbour decide the next digit: `1 failed, 3 passed` reaches the `3` as
@@ -238,15 +296,7 @@ export function counterFolded(line: string): string {
     // defect that let `36 cases, 1 failed` and `36 cases, 2 failed` share a key. The line is already
     // bounded by the classifier's own scan window, so this is a bound and not a cost.
     const label = before;
-    out +=
-      FAILURE_COUNT.test(` ${digits}${after}`) || foldsAsFailureLabel(label, digits)
-        ? digits
-        : COUNTER_WORD_AFTER.test(after) ||
-            COUNTER_WORD_BEFORE.test(label) ||
-            DURATION_AFTER.test(after) ||
-            TALLY_TOTAL.test(label.trimStart())
-          ? PLACEHOLDER
-          : digits;
+    out += foldsAsCounter(label, after) ? PLACEHOLDER : digits;
     last = at + digits.length;
   }
   return `${out}${line.slice(last)}`.trim();

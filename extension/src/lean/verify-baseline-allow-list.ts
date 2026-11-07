@@ -43,10 +43,15 @@
  * The comparison keys live here too ({@link normaliseRaw}, {@link counterFolded},
  * {@link leadingIndexFolded}) because WHAT MAY MOVE is the same question as WHAT MAY BE
  * EXCUSED, and it is answered in one place: only a runner's counters, never a failure count.
+ *
+ * And every arm reads the SAME text, because {@link scrubInvisible} runs once where the lines
+ * are read: a word split by a zero-width space (`fa\u200biled`) is invisible to the eye, to
+ * {@link declaresFailure}'s word-bounded vocabulary, and to the classifier's anchored shapes,
+ * so a rule that normalised in only one arm would be a rule the other arms did not apply.
  */
 
 import { classifyFailureLine, isSuccessLine } from "../work-driver-verify-failures.ts";
-import { COUNTER_WORD_LIST } from "./verify-baseline-counters.ts";
+import { COUNTER_WORD_LIST, scrubInvisible } from "./verify-baseline-counters.ts";
 import { stripRoot } from "./verify-baseline-excuse.ts";
 
 /**
@@ -255,17 +260,22 @@ const COLLECTION_LINE = /^collected\s+\d+\s+(?:item|test)s?\b/i;
  * `docs/lean.md` / the troubleshooting entry state it in the words an operator reads.
  */
 export function isKnownCleanLine(line: string): boolean {
-  if (classifyFailureLine(line) !== undefined) return false;
-  if (declaresFailure(line)) return false;
-  const tally = line.trim().replace(PADDING, "");
+  // The whole-line judgement is asked of the SCRUBBED text: this arm is reached both through
+  // {@link judgeableLines} (already scrubbed by {@link streamLines}) and directly, by a caller holding
+  // a raw line, and an arm that judged one text here and another there would be a rule the other arm
+  // never applied. Scrubbing twice is the same answer, so this arm does not ask where it came from.
+  const t = scrubInvisible(line).trim();
+  if (classifyFailureLine(t) !== undefined) return false;
+  if (declaresFailure(t)) return false;
+  const tally = t.replace(PADDING, "");
   return (
-    PASS_MARKER.test(line) ||
-    GO_RUN_LINE.test(line) ||
-    (PROGRESS_LINE.test(line) && progressRowIsClean(line)) ||
-    SEPARATOR_LINE.test(line) ||
+    PASS_MARKER.test(t) ||
+    GO_RUN_LINE.test(t) ||
+    (PROGRESS_LINE.test(t) && progressRowIsClean(t)) ||
+    SEPARATOR_LINE.test(t) ||
     (RUN_SUMMARY.test(tally) && !UNKNOWN_COUNTED_WORD.test(tally)) ||
-    TAP_PLAN.test(line) ||
-    COLLECTION_LINE.test(line)
+    TAP_PLAN.test(t) ||
+    COLLECTION_LINE.test(t)
   );
 }
 
@@ -295,7 +305,10 @@ const FAILURE_VETO =
 
 /** The line's own words, anywhere in it, say something went wrong. */
 export function declaresFailure(line: string): boolean {
-  return FAILURE_VETO.test(line);
+  // Scrubbed for the same reason as every arm here: the veto IS the whole-line rule, and a word split
+  // by an invisible character is the word — a veto that read the raw text would be the one arm that
+  // still saw `fa\u200biled` as ordinary text while everything else saw `failed`.
+  return FAILURE_VETO.test(scrubInvisible(line));
 }
 
 /**
@@ -315,7 +328,7 @@ export function declaresFailure(line: string): boolean {
  * first word of a line.
  */
 export function isHarnessLine(line: string): boolean {
-  const t = line.trim();
+  const t = scrubInvisible(line).trim();
   return (
     /^tier-said-[A-Za-z0-9_-]+(?:-\d+)?$/.test(t) ||
     /^boom from the [A-Za-z0-9_ -]+$/.test(t) ||
@@ -364,10 +377,11 @@ export function isHarnessLine(line: string): boolean {
  * tier was refused by the very rule meant to grant it.
  */
 function isPassingLine(line: string): boolean {
-  const tally = line.trim().replace(PADDING, "");
+  const t = scrubInvisible(line);
+  const tally = t.trim().replace(PADDING, "");
   if (RUN_SUMMARY.test(tally)) return !UNKNOWN_COUNTED_WORD.test(tally);
-  if (declaresFailure(line)) return false;
-  return classifyFailureLine(line) === undefined && isSuccessLine(line);
+  if (declaresFailure(t)) return false;
+  return classifyFailureLine(t) === undefined && isSuccessLine(t);
 }
 
 /**
@@ -381,36 +395,44 @@ function isPassingLine(line: string): boolean {
  * run is a head-only line like any other, and a head carrying only such an echo has nothing
  * recognised left to compare, which is what refuses it.
  *
- * "Printed that command" is EXACT EQUALITY of a trimmed base line and the echoed command, which
- * is the only reading that proviso supports: a base line that merely CONTAINS the command — a
- * `make check` that quoted the pnpm invocation inside its own output, a log line naming it —
- * records that the base MENTIONED it, not that the base RAN it, and a substring test here excused
- * a head echoing a command neither run was asked to run. Every other arm of this module vouches
- * for a whole line; an echo is vouched for the same way, by the whole command.
+ * The command is NEVER read back out of the stream being judged. It is the tier's real command,
+ * which only the CALLER knows — the thing `verify`/`ci` asked the executor to run — and a rule
+ * that mined the expected command out of the head stream would let a head-only `Command failed:
+ * touch /tmp/pwned` quote itself into being the command the tier ran. "Printed that command" is
+ * therefore EXACT EQUALITY of a trimmed base line and the echoed command, the only reading the
+ * proviso supports: a base line that merely CONTAINS the command — a `make check` that quoted the
+ * pnpm invocation inside its own output, a log line naming it — records that the base MENTIONED
+ * it, not that the base RAN it. With no caller-supplied command the base's copy is the ONLY
+ * vouchsafe, and a `Command failed:` line whose echo the base did not print is a head-only line
+ * like any other — including an empty echo, which names no command at all and so proves nothing.
  */
 export function isHarnessEchoOf(
   headLine: string,
   baseRawLines: readonly string[],
   tierCommand: string | undefined,
 ): boolean {
-  const t = headLine.trim();
+  const t = scrubInvisible(headLine).trim();
   if (!/^Command failed:\s/.test(t)) return false;
   const echoed = t.slice("Command failed:".length).trim();
-  if (echoed.length === 0) return true;
-  if (tierCommand !== undefined && echoed === tierCommand.trim()) return true;
+  if (echoed.length === 0) return false;
+  const asked = tierCommand?.trim();
+  if (asked !== undefined && asked.length > 0 && echoed === asked) return true;
   return baseRawLines.some((line) => line.trim() === echoed);
 }
 
 /**
- * Every raw line of a stream, trimmed, blanks dropped.
+ * Every raw line of a stream, scrubbed of invisible characters, trimmed, blanks dropped.
  *
  * Exported because the two rules that read a whole stream live on either side of the module
- * seam and must ask the SAME question of it — anything else is two definitions of "a line".
+ * seam and must ask the SAME question of it — anything else is two definitions of "a line",
+ * and with {@link scrubInvisible} in the seam, two definitions of "the text of a line". Every
+ * single-line arm in this file scrubs its own argument too, so a caller holding a raw line gets
+ * the same answer as a line that came through a stream.
  */
 export function streamLines(stream: string): string[] {
   return stream
     .split(/\r\n|\r|\n/)
-    .map((line) => line.trim())
+    .map((line) => scrubInvisible(line).trim())
     .filter((line) => line.length > 0);
 }
 

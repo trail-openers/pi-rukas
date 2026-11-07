@@ -22,8 +22,11 @@
  *     so the excuse goes;
  *   (tally) a counted word that is NOT on the counter list — `crashed`, `aborted`, `panicked`,
  *     `segfault` — refuses when its count moves, and the same line with the same counts excuses;
- *   (echo) a `Command failed:` echo is vouched for only by a base line that IS the command, never
- *     by one that merely contains it;
+ *   (echo) a `Command failed:` echo is vouched for ONLY by the tier's real command — which the caller
+ *     supplies and the stream is never asked for — or by a base line that IS the command; never by one
+ *     that merely contains it, never by the echo's own text, and never by an empty echo;
+ *   (invisible) a failure word split by a zero-width space is the word: `fa\u200biled` refuses, and the
+ *     scrubbing that makes it refuse runs where the lines are read, so every arm sees the same text;
  *   (control) every case the rule exists to excuse is still green: `pytest -v`'s new PASSED line,
  *     pytest's default dots-only progress, TAP `ok` lines whose names hold no failure word,
  *     `go test -v`, and the summary whose PASSED count moved.
@@ -171,6 +174,12 @@ const RED_LINE = "FAILED tests/x_test.py::test_a - AssertionError";
     ["===== 3 panicked, 1 passed =====", "===== 4 panicked, 1 passed ====="],
     ["===== 2 aborted, 1 passed =====", "===== 5 aborted, 1 passed ====="],
     ["===== 1 segfault, 1 passed =====", "===== 2 segfault, 1 passed ====="],
+    // The same words in the named-file dialect, where the count is reached through the tally's
+    // passing half: `36 cases` is a counter and must not lend its word to the crash count beside it.
+    ["pack_release_test.sh: 36 cases, 999 crashed", "pack_release_test.sh: 36 cases, 998 crashed"],
+    ["pack_release_test.sh: 36 cases, 3 panicked", "pack_release_test.sh: 36 cases, 4 panicked"],
+    ["pack_release_test.sh: 36 cases, 2 aborted", "pack_release_test.sh: 36 cases, 5 aborted"],
+    ["pack_release_test.sh: 36 cases, 1 segfault", "pack_release_test.sh: 36 cases, 2 segfault"],
   ] as const) {
     const pair = `base "${b}" / head "${a}"`;
     assert(
@@ -189,9 +198,34 @@ const RED_LINE = "FAILED tests/x_test.py::test_a - AssertionError";
     classifyFailureLine("999 crashed") === undefined && !isKnownCleanLine("999 crashed"),
     `(tally) a bare counted word is not a known-clean line on its own (classifier: ${String(classifyFailureLine("999 crashed"))}, clean: ${isKnownCleanLine("999 crashed")})`,
   );
+
+  // The fold's single rule, asked of the fold itself: a digit is folded ONLY when the word ADJACENT
+  // to it — after it, or before it as its `Label:` — is a counter. A counter word that is merely
+  // reachable from a digit must not decide that digit, which is the exact shape that folded a crash
+  // count because `cases` sat one comma away in the same tally.
+  assert(
+    counterFolded("pack_release_test.sh: 36 cases, 999 crashed") !==
+      counterFolded("pack_release_test.sh: 36 cases, 998 crashed"),
+    `(fold) a count whose own word is not a counter keeps its digits beside a real counter (${counterFolded("pack_release_test.sh: 36 cases, 999 crashed")})`,
+  );
+  assert(
+    counterFolded("a.py: 36 cases, 1 failed") !== counterFolded("a.py: 36 cases, 2 failed"),
+    `(fold) and the named-file failure count keeps its digits (${counterFolded("a.py: 36 cases, 1 failed")})`,
+  );
+  // The must-move half of the same rule, so the fix is not "fold nothing": a moved PASSED count in
+  // the named-file dialect still folds, and so does its total.
+  assert(
+    counterFolded("a.py: 36 cases, 1 failed, 3 passed") ===
+      counterFolded("a.py: 36 cases, 1 failed, 5 passed"),
+    "(fold) a moved passed count still folds in the named-file dialect",
+  );
+  assert(
+    counterFolded("Tests: 3, Failures: 1") === counterFolded("Tests: 5, Failures: 1"),
+    "(fold) a count whose LABEL is a counter still folds (`Tests: N`)",
+  );
 }
 
-// --------------------------------------- (echo) the base echoed the command, or it vouches for nothing
+// ---------------------------- (echo) only the CALLER'S command vouches for an echo, never the stream
 {
   const echoed = "Command failed: sh -c 'pnpm run lint'";
   // A base line that merely CONTAINS the command is not a record that the base ran it: the
@@ -208,6 +242,63 @@ const RED_LINE = "FAILED tests/x_test.py::test_a - AssertionError";
   assert(
     isHarnessEchoOf(echoed, [], "sh -c 'pnpm run lint'"),
     "(echo) and the tier's own command still vouches for its echo",
+  );
+  // An echo that names NO command proves nothing about what ran, so it is not exempt: with no
+  // caller command and no base copy it is a head-only line like any other.
+  assert(
+    !isHarnessEchoOf("Command failed:", [], undefined),
+    "(echo) an empty echo is not exempt on being an echo",
+  );
+  // The whole-line rule applied to the echo arm: the expected command came from the AUDITED head
+  // stream, so a single head-only `Command failed: touch /tmp/pwned` matched its own command and
+  // the run was EXCUSED on a line no one asked to run. Pinned through `baselineExcuse`, because
+  // that is what a green is graded on — `isHarnessEchoOf` vouching is only half the arm.
+  assert(
+    excuseOf([RED_LINE, "Command failed: touch /tmp/pwned"], [RED_LINE]).kind === "refused",
+    `(echo) a head-only echo of a command the tier never ran refuses — it cannot vouch for itself (${excuseOf([RED_LINE, "Command failed: touch /tmp/pwned"], [RED_LINE]).kind})`,
+  );
+  // And the fix must not cost the case the arm exists for: the tier's OWN echo, whose command the
+  // caller holds, still excuses on the head stream alone — the base of a single-tier probe need not
+  // have echoed it.
+  assert(
+    excuseOf([RED_LINE, "Command failed: sh -c 'the tier'"], [RED_LINE]).kind === "excused",
+    `(echo) the tier's own echo — the command the caller ran — still excuses (${excuseOf([RED_LINE, "Command failed: sh -c 'the tier'"], [RED_LINE]).kind})`,
+  );
+}
+
+// --------------------- (invisible) a zero-width character must not split a failure word past the veto
+{
+  // `fa\u200biled` is `failed` to the eye and nothing to a `\b`-bounded vocabulary: the veto, the
+  // classifier and the pass-marker arm all read the two halves as ordinary text, so a head carrying
+  // it excused. The scrubbing runs where the lines are read, so all arms answer on one text.
+  const ZWSP_FAILURE = "ok 4 - brand new check fa\u200biled";
+  assert(
+    !isKnownCleanLine(ZWSP_FAILURE),
+    `(invisible) a pass-marker line whose failure word carries a zero-width space is not clean (${isKnownCleanLine(ZWSP_FAILURE)})`,
+  );
+  assert(
+    excuseOf([RED_LINE, ZWSP_FAILURE], [RED_LINE]).kind === "refused",
+    `(invisible) head-only "${ZWSP_FAILURE}" refuses the excuse (${excuseOf([RED_LINE, ZWSP_FAILURE], [RED_LINE]).kind})`,
+  );
+  // The scrubbing is invisible characters and ANSI, not a rewrite of what the runner printed: a
+  // colour sequence inside a verdict is the same verdict, and a soft hyphen inside a word is the
+  // same word.
+  for (const [hidden, why] of [
+    ["ok 4 - brand new check\u001b[31m FAILED", "an ANSI colour sequence inside the verdict"],
+    ["ok 4 - brand new check so\u00adft failed", "a soft hyphen inside a word"],
+    ["ok 4 - brand new check fai\ufeffled", "a BOM inside a word"],
+  ] as const) {
+    assert(
+      !isKnownCleanLine(hidden) &&
+        excuseOf([RED_LINE, hidden], [RED_LINE]).kind === "refused",
+      `(invisible) ${why} does not hide a failure (${isKnownCleanLine(hidden)})`,
+    );
+  }
+  // Line separators become spaces rather than gluing words together: the line the gate reads is the
+  // line every arm judges, and a check whose verdict was split by \u2028 still reads as a verdict.
+  assert(
+    excuseOf([RED_LINE, "ok 4 - brand new check\u2028failed"], [RED_LINE]).kind === "refused",
+    "(invisible) a U+2028 inside a failure word refuses too",
   );
 }
 

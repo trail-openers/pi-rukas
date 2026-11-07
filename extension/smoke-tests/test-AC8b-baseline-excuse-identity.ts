@@ -48,10 +48,10 @@ const HEAD_ROOT = "/tmp/pi-rukas-2064-id/worktree";
 const PROBE_ROOT = "/tmp/pi-rukas-2064-id/repo.baseline-lean-verify-9";
 
 /** One comparison, on the lines each run printed. */
-function excuseOf(headLines: string[], baseLines: string[]) {
+function excuseOf(headLines: string[], baseLines: string[], cmd = "sh -c 'pytest'") {
   return baselineExcuse({
     tierName: "fast",
-    cmd: "sh -c 'pytest'",
+    cmd,
     baseSha: "a".repeat(40),
     probe: RED,
     headStream: headLines.join("\n"),
@@ -139,9 +139,14 @@ function excuseOf(headLines: string[], baseLines: string[]) {
   // authored, whether or not the base's stream happens to carry it: refusing on it would
   // hand back every real tier, since only the head run is echoed. An echo of a command
   // the tier never ran is a different matter, and is what the two lines below pin.
+  const ownCmd = `sh -c 'echo "${A}" 1>&2; exit 1'`;
   assert(
-    excuseOf([A, ECHO], [A]).kind === "excused",
-    `(unreadable) the harness's echo of the tier's OWN command does not refuse on its own (${excuseOf([A, ECHO], [A]).kind})`,
+    `Command failed: ${ownCmd}` === ECHO,
+    "(unreadable) the echo under test really is the echo of the command the caller passes",
+  );
+  assert(
+    excuseOf([A, ECHO], [A], ownCmd).kind === "excused",
+    `(unreadable) the harness's echo of the tier's OWN command does not refuse on its own (${excuseOf([A, ECHO], [A], ownCmd).kind})`,
   );
   const FOREIGN_ECHO = "Command failed: make -C /elsewhere check-release";
   assert(
