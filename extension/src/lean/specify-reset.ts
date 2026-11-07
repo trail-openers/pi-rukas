@@ -247,13 +247,20 @@ export async function resetWorktreeToBase(
   wt: string,
   baseSha: string,
   branch: string,
+  /** Reset detached. For a tree that owns no branch and must not take one. */
+  detached = false,
 ): Promise<void> {
   // `-B` first so the branch — not a detached HEAD — is what `reset --hard`
   // moves: the frozen commit has to land on the run's branch, and a leftover
   // branch from a previous attempt of the same run must move to the base
-  // rather than keep its commits.
+  // rather than keep its commits. A tree that owns no branch (the review fixer's,
+  // which is `--detach`'d while the run's own tree holds that branch) cannot be
+  // given one: git refuses the `-B` outright, and `reset --hard` alone puts such
+  // a tree at the base with no ref to move.
   const steps: string[][] = [
-    [...NO_HOOKS, "checkout", "-B", branch, baseSha],
+    detached
+      ? [...NO_HOOKS, "checkout", "--detach", baseSha]
+      : [...NO_HOOKS, "checkout", "-B", branch, baseSha],
     [...NO_HOOKS, "reset", "--hard", baseSha],
     [...NO_HOOKS, "clean", "-fdx"],
   ];

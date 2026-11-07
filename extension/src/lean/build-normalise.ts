@@ -161,6 +161,8 @@ export async function normaliseBuild(opts: {
   issue: number;
   /** The aggregate capture ceiling; the default is the production one. */
   budget?: CaptureBudget;
+  /** Fold a tree that owns no branch — see `resetWorktreeToBase`'s `detached`. */
+  detached?: boolean;
 }): Promise<NormaliseReport> {
   const { exec, wt, repoRoot, branch, headBefore, frozen } = opts;
 
@@ -180,7 +182,7 @@ export async function normaliseBuild(opts: {
   //    dependency links all go; frozen and protected files come back exactly as
   //    at `headBefore`; provisioning rebuilds what the clean removed.
   try {
-    await resetWorktreeToBase(exec, wt, headBefore, branch);
+    await resetWorktreeToBase(exec, wt, headBefore, branch, opts.detached === true);
   } catch (err) {
     throw new BuildInfraError(
       `could not reset the worktree to ${headBefore}: ${(err as Error).message}`,

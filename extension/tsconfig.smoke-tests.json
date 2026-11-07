@@ -237,6 +237,7 @@
     "smoke-tests/test-lean-review-tree.ts",
     "smoke-tests/test-lean-review-row-roundtrip.ts",
     "smoke-tests/test-lean-review-frozen.ts",
+    "smoke-tests/test-lean-review-fix-capture.ts",
     "smoke-tests/test-lean-review-push-guards.ts",
     "smoke-tests/test-lean-review-fixer-bound.ts",
     "smoke-tests/test-lean-review-lens-fence.ts",
