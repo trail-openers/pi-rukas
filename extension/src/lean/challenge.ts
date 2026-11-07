@@ -61,11 +61,12 @@ import { loadWorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { fetchIssueBody } from "./io.ts";
 import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
-import { existsInCommit, fileProblem } from "./specify-path.ts";
+import { existsInCommit, fileProblem, pathProblem } from "./specify-path.ts";
 import { testCriteria } from "./specify-prompt.ts";
 import type { TestRunLimits } from "./specify-proof.ts";
 import { SpecifyResetError, resetWorktreeToBase } from "./specify-reset.ts";
-import { SpecifyInfraError, runTestPipeline } from "./specify-run.ts";
+import { SpecifyInfraError, noteClause, runTestPipeline } from "./specify-run.ts";
+import { changedPaths } from "./specify-tree.ts";
 import {
   assertSpecifyWorktreeOwned,
   ensureSpecifyWorktreeWithProvision,
@@ -105,6 +106,11 @@ export interface ChallengeDeps {
  */
 const COMMIT_ID = /^[0-9a-f]{40}$/;
 
+/** The control characters `handback.ts` refuses to print in a path. */
+const CONTROL_CHARS = new RegExp(
+  `[${String.fromCharCode(0x00)}-${String.fromCharCode(0x1f)}${String.fromCharCode(0x7f)}]`,
+);
+
 /** The spec, re-read from the forge — the same contract the builder worked to. */
 async function specOf(deps: ChallengeDeps, repoRoot: string, issue: number): Promise<PiSpec> {
   let body: string;
@@ -124,6 +130,40 @@ async function specOf(deps: ChallengeDeps, repoRoot: string, issue: number): Pro
   if (rules.length > 0)
     throw new ChallengeInfraError(`the issue's spec is not ready: ${rules.join("; ")}`);
   return parsed.spec;
+}
+
+// A round can end holding bytes nobody judged, and `verify` refuses a dirty tree:
+// reset to `ref` and provision again (`clean -fdx` takes the links, so the two are
+// one move), naming what went. The reset runs whether or not the tree was dirty: an
+// `empty` round committed nothing, so a HEAD above `ref` is the child's own unjudged
+// commit and it goes with it. Names come from `changedPaths` (git's `-z` status, the
+// only form surviving a space, quote or newline); one failing the boundary's path
+// rules or `handback.ts`'s control-character filter is dropped, not clipped, as the
+// reason reaches the issue as a public comment.
+async function resetAndProvision(
+  deps: ChallengeDeps,
+  repoRoot: string,
+  wt: string,
+  ref: string,
+  branch: string,
+): Promise<string> {
+  const dirty = await changedPaths(deps.exec, wt);
+  // Read before the reset, and compared to `ref` rather than a fresh HEAD.
+  const head = await headSha(deps.exec, wt);
+  const shown = [...new Set(dirty.map((e) => e.path))].filter(
+    (p) => pathProblem(p) === undefined && !CONTROL_CHARS.test(p),
+  );
+  const clause = noteClause("discarded", shown);
+  // One outcome for the pair: a failed reset leaves a provision of a tree nobody
+  // cleaned, and `verify` refuses that dirty. (The budget stop below runs the two
+  // moves as two `try`s, each with its own message, and names nothing.)
+  try {
+    await resetWorktreeToBase(deps.exec, wt, ref, branch);
+    await provisionWorktree(deps.exec, repoRoot, wt);
+  } catch (err) {
+    throw new ChallengeInfraError(`could not reset the challenge tree: ${(err as Error).message}`);
+  }
+  return dirty.length === 0 && head === ref ? "" : clause === "" ? "" : ` ${clause}`;
 }
 
 /**
@@ -252,11 +292,10 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
   const rows = [row];
   const read = readDispatched(adversary);
   if ("stop" in read) {
-    // A killed child leaves whatever it wrote behind, and nothing else resets the
-    // tree before `verify`, which refuses a dirty one. So the stop resets to the
-    // head this step found, through the pipeline's own reset and clean-tree proof.
-    // The reset's `clean -fdx` also takes the dependency links, so the tree is
-    // provisioned again after it, the same order `build` uses.
+    // The stop returned before the pipeline, so nothing has reset what the child
+    // wrote. Both moves are UNCONDITIONAL (`clean -fdx` takes the dependency
+    // links, so even a clean-looking tree needs them rebuilt) and each keeps its
+    // own message: a failed reset and a failed provision are different repairs.
     try {
       await resetWorktreeToBase(deps.exec, wt, headBefore, branch);
     } catch (err) {
@@ -334,6 +373,16 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
     { toolUses },
   );
 
+  // The one exit that never reached the pipeline's own reset. The sweep goes back
+  // to `headBefore`, not to a re-read HEAD: an `empty` round committed NOTHING, so
+  // a commit above it is the child's own unjudged work and it is discarded too.
+  // A committed round needs no sweep — step 3 of `runTestPipeline` resets the tree
+  // and writes back only the bytes it proved red — and `uncovered` is the throw.
+  const swept =
+    pipeline.kind === "empty"
+      ? await resetAndProvision(deps, repoRoot, wt, headBefore, branch)
+      : "";
+
   if (pipeline.kind === "committed")
     return {
       kind: "new-tests",
@@ -357,7 +406,7 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
   // with the contract it already had and nothing committed. NOT an error, and
   // the reason has to say so plainly enough for an operator to tell it apart
   // from a round that was never run.
-  return { kind: "none", reason: pipeline.reason, dispatches: rows };
+  return { kind: "none", reason: pipeline.reason + swept, dispatches: rows };
 }
 
 export { ChallengeInfraError } from "./challenge-dispatch.ts";

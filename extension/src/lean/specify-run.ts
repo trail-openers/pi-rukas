@@ -19,7 +19,8 @@
  * response to a way a child can lie about what it wrote (a symlink swapped in
  * after validation, a commit of its own, a green file reported as red, a commit
  * that quietly contains a stray edit), and two copies drift — and the copy that
- * drifts is the one nobody is testing.
+ * drifts is the one nobody is testing. `noteClause` is exported so `challenge`'s
+ * sweep shares its cap with these.
  *
  * The ref is a parameter and nothing else may vary by step: `resetWorktreeToBase`
  * is named for the base but takes any commit, and it verifies the tree got there
@@ -145,10 +146,10 @@ function clip(detail: string): string {
 }
 
 /**
- * A capped `label: a; b; c` clause. Both note families go through here so a
- * run with fifty dropped files produces a bounded reason, not a wall.
+ * A capped `label N: a; b; c` clause, exported because every note family needs the
+ * same bound — the pipeline's drop notes and `challenge`'s discarded-path clause.
  */
-function noteClause(label: string, notes: string[]): string {
+export function noteClause(label: string, notes: string[]): string {
   if (notes.length === 0) return "";
   const shown = notes.slice(0, NOTE_CAP).map(clip);
   const more = notes.length - shown.length;
