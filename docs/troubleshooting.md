@@ -57,9 +57,17 @@ and `===== 999 crashed, 9 passed =====` is neither clean nor folded. The cost of
 accepted and runs the safe way: a PASSING test whose NAME carries such a word, when the line is
 head-only, is refused too — the accepted false refusal is a hand-back, never a green. A digit a
 failure word sits immediately after (`suite ran: 1 failed`, `tests: 1 failed`, `2 panicked`) is a
-count of what broke and is never folded whatever label precedes it, so `1 failed` never becomes the
-line a base printed as `2 failed`; only a runner's counters and durations fold, and only on a line the
-classifier did not read as one check's failure. A runner's CHECK INDEX folds by nothing: a renumbered
+count of what broke and is never folded whatever label precedes it. The rule is asked of the whole line
+rather than of one digit: on any line whose text carries a failure word anywhere, the only digit that
+folds is one immediately followed by a PASS word — `passed`, `skipped`, `deselected`, `xfailed`,
+`xpassed`, `warning(s)` — so `1 failed` never becomes the line a base printed as `2 failed`, `1 items
+failed` never becomes `2 items failed`, and a counter word like `items`, `tests` or `total` beside a
+broken count can no longer make it look like a tally (a duration unit still folds, since it counts no
+check). Only on a line that names no failure do a runner's counters and durations fold, and only on a
+line the classifier did not read as one check's failure does nothing fold at all. The accepted cost of
+reading the whole line: JUnit and Surefire's `Tests run: 3, Failures: 1` → `Tests run: 5, Failures: 1` —
+the run's own total moving because passing tests were added — now REFUSES, a third hand-back, never a
+green. A runner's CHECK INDEX folds by nothing: a renumbered
 TAP or bats failure — `not ok 3 - x` where the base printed `not ok 1 - x`, the usual effect of adding
 a passing test before the failing one — REFUSES, and that is the other accepted false refusal, again a
 hand-back, never a green. So the allow-list may be imperfect only

@@ -2,29 +2,34 @@
 /**
  * #2064 round 6 — the two folds the comparison may NOT use, pinned one per removed key.
  *
- * The comparison of head failure lines against base failure lines folds exactly one field: a
- * runner's own counters and durations, and only on a line the classifier did not read as one check's
- * failure ({@link failureLineFold}). This file pins the two keys that used to exist beside it and are
- * deleted, because each excused a failure the base never printed:
+ * The comparison of head failure lines against base failure lines folds exactly one field: a runner's
+ * own counters, and only on a line the classifier did not read as one check's failure ({@link
+ * failureLineFold}). Within that, what may move is decided by ONE question asked of the whole line: does
+ * its text name a failure ({@link declaresFailure})? This file pins the keys that used to sit beside the
+ * fold and are deleted, because each excused a failure the base never printed:
  *
- *   (reporter) a digit whose OWN word names a failure — `1 failed`, `tests: 1 failed`, `suite ran: 1
- *     failed`, and the error/panic/timeout/killed spellings — never folds, whatever label precedes it.
- *     The counter arms answer "is the word next to this digit a counter?", and a LABEL is exactly the
- *     spelling that lets a real counter word sit beside a broken count: `ran` is admitted for `Run: 3`,
- *     so `suite ran: 1 failed` folded onto `suite ran: 2 failed` and the second failed check was
- *     excused as the first. The refusal comes from the digit's own word, since a label vocabulary is
- *     unbounded; and
+ *   (reporter) on a line that names a failure ANYWHERE, the only digit that may fold is one immediately
+ *     followed by an explicit PASS word — `passed`, `skipped`, `deselected`, `xfailed`, `xpassed`,
+ *     `warning(s)`. Everything else on that line stays exact. The counter arms answer "is the word next
+ *     to this digit a counter?", and a counter word names a POPULATION, not a verdict: `items` is
+ *     admitted for a tally's `36 items`, so `tests/x_test.py: 1 items failed` folded onto the `2` the
+ *     head printed and a new failed check was excused as the base's. Same for `ran`/`tests` as LABELS —
+ *     `suite ran: 1 failed` folded onto `suite ran: 2 failed` — and for the run's own total in `Tests
+ *     run: 3, Failures: 1`. The refusal comes from the line's own text, since neither a label vocabulary
+ *     nor a per-digit failure vocabulary can be closed; and
  *   (index) a runner's CHECK INDEX folds by nothing. `not ok 3 - x` is not the line a base printed as
  *     `not ok 1 - x`: the index is assigned by the order checks ran, so it says nothing about WHICH
  *     check printed the line, and a new failing check printed third folded onto the base's first.
  *
- * The accepted costs, both in the safe direction and both stated in `docs/lean.md` and the
- * troubleshooting entry: a TAP or bats run whose failing checks were RENUMBERED — the usual effect of
- * adding a passing test before them — now refuses, and a passing test whose NAME carries a failure word
- * is refused. A hand-back, never a green.
+ * The accepted costs, all in the safe direction and all stated in `docs/lean.md` and the troubleshooting
+ * entry: a TAP or bats run whose failing checks were RENUMBERED — the usual effect of adding a passing
+ * test before them — now refuses; a passing test whose NAME carries a failure word is refused; and a
+ * JUnit/Surefire `Tests run: 3, Failures: 1` → `Tests run: 5, Failures: 1` — passing tests added, the
+ * run's own total moved — now hands back, because `run` is not a pass word. A hand-back, never a green.
  *
- * The counterpart of every refusal here is the must-move case: the PASSED half of the same summary and
- * the `Tests run: N` total still fold, so the fix is not "fold nothing".
+ * The counterpart of every refusal here is the must-move case: the PASSED half of the same summary still
+ * folds, and on a line that names no failure the whole counter list still folds — so the fix is not
+ * "fold nothing".
  */
 import { classifyFailureLine } from "../src/work-driver-verify-failures.ts";
 import { failureLineFold } from "../src/lean/verify-baseline-counters.ts";
@@ -88,45 +93,49 @@ const RED_LINE = "FAILED tests/x_test.py::test_a - AssertionError";
     );
   }
 
-  // The fold's own boundary, stated exactly. The reporter arm reads the word on the count's RIGHT, so a
-  // count whose own word is a reporter keeps its digits. What it cannot do is reach past the word on the
-  // count's LEFT: `N items failed` counts a word that IS on the counter list (`items`), so the counter
-  // arm decides it and the digit folds — the fold cannot tell a tally's item count from a failed-check
-  // row without the classifier, and the classifier's anchored shapes do not read this bare spelling.
-  // Pinned as the known edge it is: the row is still no clean shape (the whole-line veto holds it in the
-  // stream), and every dialect a runner actually prints for a failed check — `1 failed`, `tests/x.py: 1
-  // failed`, `Failures: 1` — is refused above.
+  // The fold's own boundary, stated exactly. On a line whose text names a failure ANYWHERE, the only
+  // digit that may fold is one immediately followed by an explicit PASS word. `N items failed` puts a
+  // word that IS on the counter list (`items`) beside the count of what broke, and the counter list
+  // cannot tell a tally's item count from a failed-check row — so the line's own text is what decides,
+  // and it says this row reports failures. Every digit on it keeps its digits.
   assert(
     classifyFailureLine("tests/x_test.py: 1 items failed") === undefined &&
       !isKnownCleanLine("tests/x_test.py: 1 items failed"),
     "(reporter) a `N items failed` row is no clean shape: the whole-line veto holds it in the stream",
   );
   assert(
+    failureLineFold("tests/x_test.py: 1 items failed") !==
+      failureLineFold("tests/x_test.py: 2 items failed"),
+    "(reporter) the false green this rule exists to close: a bare `N items failed` row keeps its count",
+  );
+  assert(
     excuseOf(
       [RED_LINE, "tests/x_test.py: 1 items failed"],
       [RED_LINE, "tests/x_test.py: 2 items failed"],
-    ).kind === "excused",
-    "(reporter) the disclosed edge: a bare `N items failed` row is a counter row to the fold, so it moves",
+    ).kind === "refused",
+    "(reporter) and the excuse refuses a `N items failed` row whose count moved",
   );
 
   // The fold is not "refuse any line that mentions a failure word": the PASSED half of the same summary
-  // still folds, and a `Tests run: N` total beside an unchanged failure count still folds. These are the
-  // must-move cases the reporter arm must not cost.
+  // still folds — that is the one digit a failure-reporting line may move. A `Tests run: N` total, by
+  // contrast, no longer folds beside a `Failures:` count: `run` is not a pass word, and that is the
+  // accepted cost stated in `docs/lean.md` and the troubleshooting entry.
   assert(
     failureLineFold("===== 1 failed, 3 passed =====") ===
       failureLineFold("===== 1 failed, 5 passed ====="),
-    `(reporter) a moved passed count still folds beside the standing failure count (${failureLineFold("===== 1 failed, 3 passed =====")})`,
+    "(reporter) a moved passed count still folds beside the standing failure count",
   );
   assert(
     failureLineFold("Tests run: 3") === failureLineFold("Tests run: 5"),
-    `(reporter) the Tests run: N total still folds when nothing else moved (${failureLineFold("Tests run: 5")})`,
+    "(reporter) the Tests run: N total still folds on a line that names no failure",
   );
   assert(
-    failureLineFold("Tests run: 3, Failures: 1") === failureLineFold("Tests run: 5, Failures: 1"),
-    `(reporter) the Tests run: N total still folds beside an unchanged Failures count (${failureLineFold("Tests run: 5, Failures: 1")})`,
+    failureLineFold("Tests run: 3, Failures: 1") !==
+      failureLineFold("Tests run: 5, Failures: 1"),
+    "(reporter) the accepted cost: the same total beside a Failures count keeps its digits",
   );
 
-  // And the same two through the excuse, as whole streams: the field case the rule exists to grant.
+  // And the must-move case through the excuse, as a whole stream: the field the rule exists to grant.
   assert(
     excuseOf(
       [RED_LINE, "PASSED tests/x_test.py::test_b", "===== 1 failed, 5 passed ====="],
@@ -134,18 +143,24 @@ const RED_LINE = "FAILED tests/x_test.py::test_a - AssertionError";
     ).kind === "excused",
     "(reporter) the summary whose PASSED half moved still excuses over a base that printed the same failure",
   );
+  // …and the JUnit total that moved is the refusal by design, pinned through the excuse as well as the
+  // key: passing tests added to a Surefire suite hand the run back rather than keep a fold that would
+  // also have equalled a moved `Failures:` count.
   assert(
     excuseOf([RED_LINE, "Tests run: 5, Failures: 1"], [RED_LINE, "Tests run: 3, Failures: 1"]).kind ===
-      "excused",
-    "(reporter) the Surefire total that moved still excuses beside an unchanged Failures count",
+      "refused",
+    "(reporter) the Surefire total that moved now refuses — the accepted cost, a hand-back not a green",
   );
-  // …and the reporter arm must not be a blanket refusal on any line that mentions `failed`: the SAME
-  // Surefire shape with its FAILURES count moved still refuses, so the exemption above is confined to the
-  // label that names the run's total.
   assert(
     excuseOf([RED_LINE, "Tests run: 5, Failures: 2"], [RED_LINE, "Tests run: 5, Failures: 1"]).kind ===
       "refused",
     "(reporter) the same Surefire shape whose Failures count moved still refuses",
+  );
+  // A line that names no failure still folds its totals and durations freely, so the narrowing is
+  // confined to lines the veto reads as failure-reporting.
+  assert(
+    failureLineFold("Tests: 5 passed, 5 total") === failureLineFold("Tests: 7 passed, 7 total"),
+    "(reporter) a pass-only tally still folds every count on the counter list",
   );
 }
 

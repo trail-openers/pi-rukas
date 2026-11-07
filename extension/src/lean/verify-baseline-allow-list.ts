@@ -55,7 +55,12 @@
  */
 
 import { classifyFailureLine, isSuccessLine } from "../work-driver-verify-failures.ts";
-import { COUNTER_WORD_LIST, failureLineFold, scrubInvisible } from "./verify-baseline-counters.ts";
+import {
+  COUNTER_WORD_LIST,
+  declaresFailure,
+  failureLineFold,
+  scrubInvisible,
+} from "./verify-baseline-counters.ts";
 import { stripRoot } from "./verify-baseline-excuse.ts";
 
 /**
@@ -284,36 +289,25 @@ export function isKnownCleanLine(line: string): boolean {
 }
 
 /**
- * Does this line's own text declare a failure, anywhere in it?
+ * The whole-line veto, {@link declaresFailure}, and the reason no arm above has to be a vocabulary.
  *
- * The whole-line veto, and the reason no arm above has to be a vocabulary. Each arm vouches for
- * the shape it matched and stops reading there, which is exactly where a runner's report of what
- * went wrong lives: `ok 4 - brand new check FAILED`, `ok, the brand new deploy check failed` and
- * `ok 3 - t/release.t the publish step failed` each open with a genuine pass marker in a genuine
- * dialect and say, in the part no arm read, that something failed. The classifier does not catch
- * those — its shapes are anchored (`not ok`, `FAILED <path>::`, `--- FAIL:`) and none of these
- * matches one — so this is the arm that does, and it is asked of every candidate.
+ * The pattern and the predicate both live in `verify-baseline-counters.ts`, which owns the ONE
+ * vocabulary of what a runner prints for what broke: the same predicate decides what a head-only line
+ * may BE here and what a line may MOVE there, so the two rules cannot drift apart on which word counts
+ * as a failure. The reasoning for the set — word-bounded `fail\w*` … `leak\w*` plus the glyphs
+ * ✗ ✘ × ✕ ✖, wider on purpose than the classifier's anchored shapes, because being wide costs a
+ * hand-back and being narrow costs a green — lives with it there.
  *
- * The words are a fixed set, matched case-insensitively and WORD-BOUNDED (`fail\\w*` reaches
- * `failed`, `failing`, `failures`; it does not reach `focus` or `definitely`), plus the five
- * failure glyph runners actually print (`✗ ✘ × ✕ ✖`), which have no letters to bound. The set is
- * wide on purpose — it reaches further than the classifier's anchored shapes, on purpose — and it
- * is asked only of the lines this module is asked about, never of a stream: being wide here costs a
- * hand-back for a passing test whose name happens to read like a failure (`ok 7 - login timeout
- * retried` printed head-only), while being narrow here costs a green on a line that said it broke.
+ * Each arm above vouches for the shape it matched and stops reading there, which is exactly where a
+ * runner's report of what went wrong lives: `ok 4 - brand new check FAILED` and `ok 3 - t/release.t
+ * the publish step failed` each open with a genuine pass marker in a genuine dialect and say, in the
+ * part no arm read, that something failed. The classifier does not catch those — its shapes are
+ * anchored (`not ok`, `FAILED <path>::`, `--- FAIL:`) and none of these matches one — so this is the
+ * arm that does, and it is asked of every candidate.
+ *
  * {@link COUNTER_WORDS} is the mirror image of this rule for a tally's counted words, and the same
  * direction.
  */
-const FAILURE_VETO =
-  /\b(?:fail\w*|error\w*|crash\w*|abort\w*|panic\w*|timed?\s*out|timeout|segfault|broken|exception\w*|fatal|critical|killed|leak\w*)\b|[✗✘×✕✖]/i;
-
-/** The line's own words, anywhere in it, say something went wrong. */
-export function declaresFailure(line: string): boolean {
-  // Scrubbed for the same reason as every arm here: the veto IS the whole-line rule, and a word split
-  // by an invisible character is the word — a veto that read the raw text would be the one arm that
-  // still saw `fa\u200biled` as ordinary text while everything else saw `failed`.
-  return FAILURE_VETO.test(scrubInvisible(line));
-}
 
 /**
  * Did the HARNESS write this line, rather than the gate?

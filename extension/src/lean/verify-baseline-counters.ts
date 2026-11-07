@@ -20,14 +20,18 @@
  * digit and is what `ci` RECORDS and replays; a fold that reached the record would turn a moved
  * failure count into an equality the base never printed.
  *
- * THE FOLD'S FIRST BOUND, and the one no closed list of COUNTERS can draw: a digit IMMEDIATELY
- * FOLLOWED by a failure word is a count of something that broke, and it never folds whatever sits
- * BEFORE it. The counter list answers for the word on a digit's right, and a word on its LEFT is a
- * LABEL whose spelling no vocabulary bounds — `ran: 1 failed`, `tests: 1 failed`, `1 items failed`
- * each put a real counter word next to the count of what broke, and each kept its digits only
- * because {@link FAILURE_WORD_AFTER} is asked first. The list is still the direction of the design,
- * and this rule does not become a failure vocabulary: it can only ever make a fold REFUSE, so a new
- * failure word is caught by being absent and needs no change here to be caught.
+ * THE FOLD'S FIRST BOUND, and the one no closed list of COUNTERS can draw: on a line whose own text
+ * carries a failure word ANYWHERE, the only digit that may fold is one IMMEDIATELY FOLLOWED by an
+ * explicit PASS word — `passed`, `skipped`, `deselected`, `xfailed`, `xpassed`, `warning(s)`. Every
+ * other digit on such a line keeps its digits, whatever word sits to its left. The counter list
+ * answers for the word on a digit's right, and a word on its LEFT is a LABEL whose spelling no
+ * vocabulary bounds — `ran: 1 failed`, `tests: 1 failed`, `1 items failed` and `Tests run: 3, Failures:
+ * 1` each put a real counter word next to the count of what broke, and each kept its digits only
+ * because {@link declaresFailure} is asked of the whole line first. The counter list is still the
+ * direction of the design for the lines a run prints about itself, and this bound does not make the
+ * fold a failure vocabulary it has to keep current: the veto it consults is the allow-list's, and it
+ * can only ever make a fold REFUSE, so a new failure word is caught by being absent and needs no
+ * change here to be caught.
  *
  * THE FOLD'S OTHER BOUND, and the one the counter list cannot draw: the fold is asked of the lines
  * the shared classifier ACCEPTED as failure lines as well as of the tallies it did not, and a
@@ -38,9 +42,51 @@
  * classifier's answer, not a word list's, so {@link foldsAsCounter} is reached only for a line the
  * classifier did NOT read as a failure: a summary, a tally, a collection count. {@link
  * failureLineFold} applies that gate and is the only fold the comparison consults.
+ *
+ * THE IMPORT DIRECTION. `verify-baseline-allow-list.ts` imports {@link COUNTER_WORD_LIST}, {@link
+ * failureLineFold} and {@link scrubInvisible} from this file, so the vocabulary and the normalisation
+ * every arm applies live on the side the other imports — the allow-list may read the fold, never the
+ * other way round. That is why the whole-line veto is HERE rather than there: {@link declaresFailure}
+ * decides both what a head-only line may BE and which lines the fold reads as failure-reporting, and
+ * a fold that consulted its own importer's veto would be a cycle. `isKnownCleanLine` keeps reading the
+ * same predicate through this module, so there is still exactly one answer to "does this line name a
+ * failure?".
  */
 
 import { classifyFailureLine } from "../work-driver-verify-failures.ts";
+
+/**
+ * The line's own words, anywhere in it, say something went wrong.
+ *
+ * THE whole-line veto, and the one failure vocabulary this seam has — owned here so the two rules
+ * that turn on it cannot drift: {@link isKnownCleanLine} refuses a head-only line whose text carries
+ * one of these words, and {@link foldsAsCounter} refuses to fold a digit on such a line. A split
+ * between the two would be a line that the allow-list called a failure and the fold read as a tally.
+ *
+ * The words are a fixed set, matched case-insensitively and WORD-BOUNDED (`fail\w*` reaches `failed`,
+ * `failing`, `failures`; it does not reach `focus` or `definitely`), plus the five failure glyph
+ * runners actually print (`✗ ✘ × ✕ ✖`), which have no letters to bound. The set is wide on purpose —
+ * it reaches further than the classifier's anchored shapes, on purpose — and it is asked only of the
+ * lines this seam is asked about, never of a stream: being wide costs a hand-back for a passing test
+ * whose name happens to read like a failure (`ok 7 - login timeout retried` printed head-only) and for
+ * a summary whose run total merely sits beside a `Failures:` count, while being narrow would cost a
+ * green on a line that said it broke. The direction is what makes an enumeration safe here where it
+ * is not safe for counters: this predicate can only ever REFUSE a permission, never grant one, so a
+ * failure word the list lacks costs a hand-back and no more.
+ */
+const FAILURE_VETO =
+  /\b(?:fail\w*|error\w*|crash\w*|abort\w*|panic\w*|timed?\s*out|timeout|segfault|broken|exception\w*|fatal|critical|killed|leak\w*)\b|[✗✘×✕✖]/i;
+
+/**
+ * Does this line's own text declare a failure, anywhere in it?
+ *
+ * Scrubbed for the same reason as every arm of the excuse: the veto IS the whole-line rule, and a
+ * word split by an invisible character is the word — a veto that read the raw text would be the one
+ * arm that still saw `fa\u200biled` as ordinary text while everything else saw `failed`.
+ */
+export function declaresFailure(line: string): boolean {
+  return FAILURE_VETO.test(scrubInvisible(line));
+}
 
 /**
  * The placeholder a folded field is replaced with.
@@ -175,23 +221,56 @@ function digitRuns(line: string): RegExpStringIterator<RegExpExecArray> {
  *
  * What this list CANNOT do is refuse a count on its own. `ran:` and `tests:` are on it, so a fold
  * driven only by adjacency reads the `1` of `suite ran: 1 failed` as a counter and makes it equal
- * the `2` of `suite ran: 2 failed`. The refusal of that fold lives in {@link FAILURE_WORD_AFTER},
- * which is asked BEFORE this list and is the only rule here that reads a word on the digit's RIGHT
- * for a reason other than "is it a counter".
+ * the `2` of `suite ran: 2 failed`; `items` is on it, so `tests/x_test.py: 1 items failed` equals the
+ * `2` of the same row. The refusal of those folds does not come from this list at all: it comes from
+ * {@link declaresFailure}, asked of the WHOLE line before any digit is decided — on a line that names
+ * a failure this list is not consulted at all, and only {@link PASS_WORD_AFTER} may fold.
  */
 export const COUNTER_WORD_LIST =
   "passed|pass|passes|skipped|skips|deselected|xfailed|xpassed|warnings?|tests?|items?|cases|total";
 
 /**
+ * The PASS words a digit may fold next to: `3 passed`, `2 skipped`, `1 warning`.
+ *
+ * The narrowed arm, and the WHOLE of the fold on a line whose text carries a failure word anywhere.
+ * A PR that adds passing tests to a suite already red at base moves exactly this kind of number — the
+ * count of checks that did NOT go wrong — and the words that spell it are named exhaustively: `passed`
+ * /`pass`/`passes`, `skipped`/`skips`, `deselected`, `xfailed`, `xpassed`, `warning(s)`. On such a
+ * line the rule is one NEGATIVE and nothing else: a digit may fold ONLY if a pass word follows it or if
+ * what follows it is no word at all — a runner's duration unit (`0.2s`, `12ms`), which counts no check
+ * and keeps folding, so `===== 1 failed, 3 passed in 0.2s =====` and `===== 1 failed, 5 passed in 0.3s
+ * =====` are one line. Every other digit — the one beside `items`, `tests`, `cases`, `total`,
+ * `run`/`ran`, any `Label: N`, or a version — stays exactly as the runner printed it.
+ *
+ * Why a PASS list and not the counter list: every counter word can name the POPULATION a failed check
+ * is counted in. `tests/x_test.py: 1 items failed` and the head's copy carrying `2` put `items` — a
+ * legitimate counter word for a tally — beside the number that says how many checks broke, and
+ * `Tests run: 3, Failures: 1` put the run's own total beside a failure report; each folded onto the
+ * line a base that broke more printed, which is the one green this feature must never produce. A pass
+ * word names a verdict that cannot be a broken check, so it is the only word the fold may trust once
+ * the line has said something broke. Spelled out here rather than derived from {@link
+ * COUNTER_WORD_LIST} so that adding a tally word there cannot widen this list by accident.
+ *
+ * THE ACCEPTED COST, in the safe direction and stated in `docs/lean.md` and the troubleshooting
+ * entry: JUnit and Surefire print how many checks RAN as `Tests run: 3, Failures: 1`, so the run's
+ * total sits on a line that names a failure and `run` is no pass word — `Tests run: 3, Failures: 1` →
+ * `Tests run: 5, Failures: 1`, the usual effect of adding passing tests, now hands back. A hand-back
+ * costs a human a look; the alternative was excusing a moved failure count.
+ */
+const PASS_WORD_AFTER =
+  /^\s*(?:passed|pass|passes|skipped|skips|deselected|xfailed|xpassed|warnings?)(?![A-Za-z0-9])/i;
+
+/**
  * The counter words a runner prints AFTER its number: `3 passed`, `2 skipped`, `5 tests`.
  *
  * These are the numbers a PR that ADDS PASSING TESTS moves, which is the field case the whole
- * tally allowance exists for: a suite already red at base gains two checks and its summary line
- * changes ONLY in the passing half (`1 failed, 3 passed` → `1 failed, 5 passed`). Read
- * byte-for-byte that is a head-only line, so an excuse that compared digits would refuse the one
- * case it grants. The words are {@link COUNTER_WORD_LIST} — ONE list for every reader — with the
- * leading whitespace of the fold's own slice in front of them, so the fold and the tally arm cannot
- * drift apart on what counts as a counter.
+ * tally allowance exists for. The words are {@link COUNTER_WORD_LIST} — ONE list for every reader —
+ * with the leading whitespace of the fold's own slice in front of them, so the fold and the tally arm
+ * cannot drift apart on what counts as a counter.
+ *
+ * Asked ONLY of a line {@link declaresFailure} did NOT read as failure-reporting. On a line that does,
+ * this arm is too generous — `items`, `tests` and `total` are on the list, and a failed-check row puts
+ * one of them beside the count of what broke — which is why {@link PASS_WORD_AFTER} exists.
  */
 const COUNTER_WORD_AFTER = new RegExp(`^\\s*(?:${COUNTER_WORD_LIST})(?![A-Za-z0-9])`, "i");
 
@@ -208,139 +287,88 @@ const COUNTER_WORD_AFTER = new RegExp(`^\\s*(?:${COUNTER_WORD_LIST})(?![A-Za-z0-
  * the line met the one a base that crashed 998 times printed. `cases` still folds its own 36, because
  * there the word follows the digit and {@link COUNTER_WORD_AFTER} answers it.
  *
- * Why this arm may not scan back through a whole field: the same reasoning that makes {@link
- * FAILURE_WORD_AFTER} read the digit's own word. A word merely REACHABLE from a count — inside a
- * tally's earlier field, a path, or the other half of the same summary — is not that count's label,
- * and every fold driven by a reachable word has folded a failure count. So the label must end in its
- * colon at the digit, and must itself begin the line or follow nothing but whitespace or a field
- * separator: `tests: 1 items failed` does NOT get `tests:` as the `1`'s label (the `1` is the value of
- * the `items` field, and `items failed` is a row about failed checks), while `Tests: 5` and
- * `Tests run: 3`, which are what a runner prints as its own totals, still fold. A counter word can only
- * ever MAKE a fold, so the cost of this restriction is a count that keeps its digits — the direction
- * that costs a hand-back.
+ * Why this arm may not scan back through a whole field: the same reasoning that makes the fold read a
+ * digit's OWN word rather than one merely reachable from it. A word merely REACHABLE from a count —
+ * inside a tally's earlier field, a path, or the other half of the same summary — is not that count's
+ * label, and every fold driven by a reachable word has folded a failure count. So the label must end
+ * in its colon at the digit, and must itself begin the line or follow nothing but whitespace or a
+ * field separator.
  *
- * A `Failures: 1` / `Errors: 2` label is on no list, so its count keeps its digits by the same single
- * rule and no failure-word enumeration is needed anywhere in this file. `ok` is out of the list for
- * the reason recorded on {@link COUNTER_WORD_LIST}: a TAP runner prints its check index right after
- * that very word.
+ * Asked only of a line {@link declaresFailure} did NOT read as failure-reporting — on one that does,
+ * only {@link PASS_WORD_AFTER} decides, so no label of any spelling folds a digit. A `Failures: 1` /
+ * `Errors: 2` label is on no list, so its count keeps its digits by the same single rule and no
+ * failure-word enumeration is needed. `ok` is out of the list for the reason recorded on {@link
+ * COUNTER_WORD_LIST}: a TAP runner prints its check index right after that very word.
  */
 const COUNTER_WORD_BEFORE = new RegExp(
   `(?:^|[\\s(,;:])(?:${COUNTER_WORD_LIST}|(?:tests\\s+)?run|ran):\\s*$`,
   "i",
 );
 
-/**
- * The label field of a `Label: N` pair — the run's own word for its total, plus its colon and the
- * whitespace after it, and nothing before it but the start of the line or a field separator.
- *
- * The {@link FAILURE_WORD_AFTER} exemption for the run-total needs the label to be a real label, not a
- * word the prefix happens to contain: a count that a counter word on its own right already answers
- * (`1 items failed`) belongs to that field, and letting the exemption reach back over the field to a
- * `tests:` two tokens earlier folded the failed-check count and excused the extra one. So the
- * exemption reads this one field — which is the same restriction {@link COUNTER_WORD_BEFORE} puts on
- * its own label, stated once and read by both arms that need a label at all.
- */
-const LABEL_FIELD = /(?:^|[\s(,;:])[\w. -]*:\s*$/i;
-
 /** A duration unit printed after its number: `0.2s`, `12ms`, `1.5 seconds`. */
 const DURATION_AFTER = /^\s*(?:ms|s|sec|secs|seconds?|minutes?|hours?)(?![A-Za-z0-9])/i;
 
 /**
- * A failure word printed immediately after a number: `1 failed`, `2 errors`, `9 panicked`.
+ * A tally's TOTAL — the count of how many checks ran, spelled as the label itself.
  *
- * THE first question {@link foldsAsCounter} asks, and the only one that can veto a fold: a count
- * whose OWN word names what broke is a report about which checks failed, and no label to its left
- * may make it a counter. The word must be ADJACENT — whitespace and nothing else between the digit
- * and the word — because a word one comma away belongs to a different field of the same tally, and
- * the defect this arm exists to refuse is exactly `pack_release_test.sh: 36 cases, 1 failed`, where
- * the `36`'s own word is `cases` and the `1`'s own word is `failed`.
- *
- * The set is the runner vocabulary this project has actually seen report a count — `failed`,
- * `failing`, `failure(s)`, `error(s)`, `crash(ed)`, `panic(ked)`, `abort(ed)`, `segfault`, `fatal`,
- * `critical`, `broken`, `killed`, `timeout`, `timed out` — and it is CLOSED, which is safe here in a
- * way the counter list's openness would not be: this rule only ever REFUSES a fold. A failure word
- * the list lacks leaves its count to the counter arms below, so the worst this enumeration can do is
- * be incomplete in the direction that costs a hand-back, never a green — which is why it can be a
- * fixed set where the counter list must be the open one.
- *
- * WHY it sits ahead of every counter arm rather than beside them: the counter arms answer "is the
- * word next to this digit a counter?", and a LABEL to the left of a count is exactly the spelling
- * that lets a real counter word sit next to a broken count. `ran:` is a legitimate label word, so
- * `suite ran: 1 failed` folds by adjacency and equals `suite ran: 2 failed`; `tests` and `items` are
- * on the counter list, so `tests: 1 failed` and `1 items failed` fold the same way. Asking the
- * digit's own word first answers all three, and asks nothing of the label — `===== 1 failed, 3
- * passed =====` still holds its `1` and still folds its `3`.
- *
- * THE ONE ARM IT MUST NOT SILENCE, and the reason the rule reads the digit's label as well as its own
- * word: JUnit and Surefire print how many checks RAN as `Tests run: 3`, so the total of a run carries
- * a failure word in its LABEL and moves every time a check is added — the exact field the
- * added-passing-tests case exists to fold, and the pair `Tests run: 3` / `Tests run: 5, Failures: 1`
- * must still excuse. A reporter word that immediately follows such a label is naming the field the
- * label counts, not reporting a broken check, so that digit is handed to {@link TALLY_TOTAL}.
- *
- * The exemption is confined by SHAPE, in both directions, because every fold this file has been
- * corrected for was a word that was merely REACHABLE from the count:
- *
- *   - the label must be the run-total word and nothing else — `^tests run:` over the run's own word
- *     plus {@link TALLY_TOTAL}'s own pair — so `suite ran: 1 failed` does not earn it. That line's
- *     `ran:` is a tally's verb, not a runner's total, and its digit IS the failure count; and
- *   - the reporter word must be the field the label governs, `Label: N <word>`, with the count the
- *     only thing between them — so `===== Tests run: 5, 3 failures in 0.2s =====` keeps its `3`. The
- *     exemption is for the dialect that names its total, not for any line on which a total happens to
- *     appear beside a count of what broke.
+ * `Tests run: 3` and `Ran 5 tests` count checks, not verdicts, so the added-checks case moves them
+ * and the excuse must not read them as evidence. Asked only of a line {@link declaresFailure} did NOT
+ * read as failure-reporting; the moment the line names a failure, {@link PASS_WORD_AFTER} is the only
+ * arm left, and the accepted cost of that is the `Tests run: 3, Failures: 1` total. The label arm of
+ * {@link foldsAsCounter} carries `run`/`ran`, and this arm carries the spelling where the total has no
+ * word of its own after the digit — `Tests run: 3` ends its label at the digit, and the `3` is the
+ * whole of what follows the label, so the pair is read as one token here rather than by an adjacency
+ * test on the text after the number. `Failures`/`Errors` are not in this list at all: a label that is
+ * not a counter is never folded, and the `:` is only ever the label's own whitespace, never a
+ * wildcard, so `1 == 2 tests` keeps its digits.
  */
-const FAILURE_WORD_AFTER =
-  /^\s*(?:failed|failing|failures?|errors?|crashed?|panicked?|aborted?|segfault|fatal|critical|broken|killed|timeout|timed\s+out)(?![A-Za-z0-9])/i;
+const TALLY_TOTAL = /^(?:tests\s+run|tests|run|ran)\s*:?\s*\d$/i;
 
 /**
- * A run-total label — `Tests run: N <reporter>` — the ONE shape {@link FAILURE_WORD_AFTER} exempts.
+ * Is THIS digit a runner's counter, a duration, or a count of checks that passed?
  *
- * `^` over the run's own word, so the label cannot be a verb borrowed from a tally (`suite ran: 1
- * failed`) and cannot be a field further into the line (`a.py: 5 items, 3 failures`); the count in the
- * middle, with nothing between it and either word, so the reporter is the field that label governs and
- * not a second count in the same summary. {@link TALLY_TOTAL} is asked of the same run because it is
- * the arm that decides this pair's fold, and a fold needs both to agree.
+ * THE single rule of the fold, in two halves decided by ONE question asked of the whole line first:
+ * does its text name a failure ({@link declaresFailure})?
+ *
+ *   - A line that names NONE is a runner counting its own run, and its digits fold next to any word on
+ *     {@link COUNTER_WORD_LIST} — printed after it (`3 passed`, `2 skipped`, `36 cases`) or before it
+ *     as its `Label:` (`Tests: 5`, `Run: 3`) — or next to a duration unit (`0.2s`), or as the `Tests
+ *     run: N` total. The counter list is closed on the counter side, so a word it has never heard
+ *     keeps its count exact by absence: `999 crashed` keeps its digits because `crashed` is on no list.
+ *   - A line that names ONE — anywhere, in any dialect — may move only the count of a PASS word
+ *     ({@link PASS_WORD_AFTER}). `===== 1 failed, 3 passed =====` still folds its `3` and holds its
+ *     `1`; `1 items failed`, `tests: 1 failed`, `suite ran: 1 failed` and `Tests run: 3, Failures: 1`
+ *     hold every digit they carry, because each puts a legitimate tally word beside the number that
+ *     says what broke, and a tally word counts a POPULATION, not a verdict.
+ *
+ * The failure half is deliberately not a per-digit vocabulary: the digits of a line are decided by
+ * whether the LINE names a failure at all, by the same wide whole-line veto the allow-list applies,
+ * never by which word happens to sit next to a given digit. That is what lets `1 items failed` refuse
+ * while `36 cases` folds — the first is on a line that said something broke, the second is not — and
+ * it is why no enumeration here can go stale the way the per-digit {@code FAILURE_COUNT} arms did.
+ * `TALLY_TOTAL` and the exemption pair that used to sit beside it (`FAILURE_WORD_AFTER` /
+ * `RUN_TOTAL_REPORTED` / `LABEL_FIELD`) tried to draw that line one digit at a time; each needed a
+ * shape saying which failure word counted, and each was one dialect away from excusing a moved failure
+ * count.
+ *
+ * "Adjacent" is the load-bearing word in both halves: each arm reads only its own side and only the
+ * label's own separator, so a counter word merely REACHABLE from a digit — two commas away, inside
+ * another field of the same tally, in a path — does not decide that digit.
  */
-const RUN_TOTAL_REPORTED = /^(?:tests\s+run|ran):\s*\d+(?:\.\d+)?\s*$/i;
-
-/**
- * Is THIS digit a runner's counter or duration?
- *
- * THE single rule of the fold, and the whole of it: a digit run is folded when the word ADJACENT to
- * it is on {@link COUNTER_WORD_LIST} — printed after it (`3 passed`, `2 skipped`, `36 cases`) or
- * before it as its `Label:` (`Tests: 5`, `Run: 3`) — or when what sits next to it is a duration unit
- * (`0.2s`) or the `Tests run: N` total. Anything else keeps the digits exact. "Adjacent" is the load-
- * bearing word: each arm reads only its own side and only the label's own separator, so a counter word
- * that is merely REACHABLE from a digit — two commas away, inside another field of the same tally —
- * does not decide that digit.
- *
- * The rule is single for the counter half, and {@link FAILURE_WORD_AFTER} is its one exception, asked
- * FIRST: a digit whose own word names a failure keeps its digits however its label reads, because a
- * label vocabulary cannot be closed and `ran: 1 failed` proves a counter list alone is not enough.
- * Beyond that arm there is still no failure vocabulary driving what MAY MOVE: the counter arms are
- * closed on the counter side, so a word they have never heard keeps its count exact by absence. What
- * both arms share is that a count is decided by the words that ADJOIN it — never by one merely
- * REACHABLE through the text to its left, which is the shape that folded `36 cases, 999 crashed` and
- * `tests/x_test.py: 1 items failed`.
- *
- * This replaces three arms that existed only because the rule was not yet single. `FAILURE_COUNT` /
- * `COUNTED_FAILURE_LABEL` / `foldsAsFailureLabel` enumerated failure words to hold them exact — right
- * for the words they listed, wrong for the words they did not, and `999 crashed` was such a word: it
- * reached the fold through the `cases` of its own tally and matched the line a base that crashed 998
- * times printed. `TALLY_TOTAL` folded the `Tests run: N` total, which the label arms of this rule
- * already cover. Both were a failure vocabulary in a file whose design says a failure vocabulary is
- * unbounded, and one adjacency test that reads only its own side replaces all four.
- */
-function foldsAsCounter(label: string, after: string): boolean {
-  // First, and before any counter arm: the count of a failure word is the finding, not a tally. The
-  // one exemption is a reporter word sitting directly after a `Tests run:` label, which names the
-  // field that label counts — the run's own total — so the tally-total arm decides it. See {@link
-  // FAILURE_WORD_AFTER} for why the label must be that whole word and must abut the digit.
+function foldsAsCounter(label: string, after: string, reportsFailure: boolean): boolean {
+  // On a failure-reporting line, a digit folds only if a PASS word follows it, or if what follows it is
+  // no word at all — a duration unit (`0.2s`), which counts no check. A digit followed by any WORD the
+  // pass list does not name is held exact however legitimate that word is as a tally's counter. See
+  // {@link PASS_WORD_AFTER} for why the excluded set is every counter word rather than a list of
+  // failure words.
   if (
-    FAILURE_WORD_AFTER.test(after) &&
-    !(LABEL_FIELD.test(label) && RUN_TOTAL_REPORTED.test(label) && TALLY_TOTAL.test(label))
-  )
+    reportsFailure &&
+    !DURATION_AFTER.test(after) &&
+    !PASS_WORD_AFTER.test(after) &&
+    after.trimStart().length > 0
+  ) {
     return false;
+  }
   return (
     COUNTER_WORD_AFTER.test(after) ||
     COUNTER_WORD_BEFORE.test(label) ||
@@ -350,30 +378,18 @@ function foldsAsCounter(label: string, after: string): boolean {
 }
 
 /**
- * A tally's TOTAL — the count of how many checks ran, spelled as the label itself.
- *
- * `Tests run: 3` and `Ran 5 tests` count checks, not verdicts, so the added-checks case moves them
- * and the excuse must not read them as evidence. The label arm of {@link foldsAsCounter} carries
- * `run`/`ran`, and this arm carries the spelling where the total has no word of its own after the
- * digit — `Tests run: 3` ends its label at the digit, and the `3` is the whole of what follows the
- * label, so the pair is read as one token here rather than by an adjacency test on the text after
- * the number. `Failures`/`Errors` are not in this list at all: a label that is not a counter is
- * never folded, and the `:` is only ever the label's own whitespace, never a wildcard, so
- * `1 == 2 tests` keeps its digits.
- */
-const TALLY_TOTAL = /^(?:tests\s+run|tests|run|ran)\s*:?\s*\d$/i;
-
-/**
  * A line's numbers read as counters, for the looser comparison pass.
  *
- * THE question this file answers, in one function: what may a runner's line move by between the
- * base run and the head run and still be the same line? The answer is exactly the words above —
- * a word on {@link COUNTER_WORDS} and a duration — and everything else stays byte-for-byte, above
- * all every count of a word that is NOT on that list. Two lines the runner means to be the same
- * failure words the shared table already reads, and the counter list for everything else — a digit
- * is folded ONLY when it is attached to a word on {@link COUNTER_WORD_LIST} (or a duration, or a
- * `Tests run: N` total), so there is no failure-word enumeration to fall behind for the words the
- * table has never heard: `999 crashed` folds to nothing because `crashed` is on no list.
+ * THE question this file answers, in one function: what may a runner's line move by between the base
+ * run and the head run and still be the same line? A line that names no failure folds next to any word
+ * on {@link COUNTER_WORD_LIST} (or a duration, or a `Tests run: N` total), so there is no failure-word
+ * enumeration to fall behind for the words the table has never heard: `999 crashed` keeps its digits
+ * because `crashed` is on no list. A line that names a failure anywhere folds only next to a PASS word
+ * ({@link PASS_WORD_AFTER}), so the whole of what may move there is the count of checks that passed.
+ *
+ * The failure-reporting flag is asked ONCE for the line, before any digit is decided, and by
+ * {@link declaresFailure} on the whole line rather than per digit — see {@link foldsAsCounter} for why
+ * that is the only shape of the rule that holds.
  *
  * WHY a second key is needed at all, when {@link isKnownCleanLine} already allows tallies:
  * `hasHeadOnlyUnrefusedLine` vouches for a head-only line by its SHAPE, but `baselineExcuse`
@@ -407,6 +423,11 @@ function counterFolded(input: string): string {
   // the scan takes a fresh iterator per line — a shared `/g` pattern resumes `lastIndex` on the
   // SECOND line and every comparison after the first read its counters as already folded.)
   const runs = [...digitRuns(line)].map((match) => ({ digits: match[0], at: match.index ?? 0 }));
+  // Asked of the WHOLE line, once, before the first digit is decided — the veto is a property of the
+  // line, not of any one number on it. Asking it per digit is the shape that let `1 items failed` and
+  // `2 items failed` share a key: the word beside each digit is a legitimate counter word, so only the
+  // line's own text can say that this row is about failed checks.
+  const reportsFailure = declaresFailure(line);
   let out = "";
   let last = 0;
   for (const { digits, at } of runs) {
@@ -423,7 +444,7 @@ function counterFolded(input: string): string {
     // defect that let `36 cases, 1 failed` and `36 cases, 2 failed` share a key. The line is already
     // bounded by the classifier's own scan window, so this is a bound and not a cost.
     const label = before;
-    out += foldsAsCounter(label, after) ? PLACEHOLDER : digits;
+    out += foldsAsCounter(label, after, reportsFailure) ? PLACEHOLDER : digits;
     last = at + digits.length;
   }
   return `${out}${line.slice(last)}`.trim();
@@ -443,9 +464,12 @@ function counterFolded(input: string): string {
  *
  * The fold therefore reaches only lines the classifier did NOT read as a failure — the tallies and
  * summaries that ARE the added-passing-tests case (`===== 1 failed, 3 passed in 0.2s =====`,
- * `Tests run: 5, Failures: 1`, `collected 14 items`). Those move legitimately when the PR adds
- * checks, and every failure count they carry still keeps its digits by {@link foldsAsCounter},
- * which the gate above does not replace but sits in front of.
+ * `collected 14 items`, `pack_release_test.sh: 36 cases, 0 failed`). Those move legitimately when the
+ * PR adds checks, and every failure count they carry still keeps its digits by {@link
+ * foldsAsCounter}, which the gate above does not replace but sits in front of. A line the classifier
+ * did not read is NOT thereby a clean line: `tests/x_test.py: 1 items failed` is neither, and on it
+ * the veto inside {@link foldsAsCounter} holds every digit — including the run's own `Tests run:` total
+ * beside a `Failures:` count, which is the accepted cost the docs name.
  *
  * The one line whose fold still matters after this gate is the counted summary of a red run: the
  * classifier's own `named-file` arm reads `a.py: 36 cases, 1 failed, 3 passed` as a failure line,

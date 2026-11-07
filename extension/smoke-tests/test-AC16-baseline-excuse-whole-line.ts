@@ -225,9 +225,17 @@ const RED_LINE = "FAILED tests/x_test.py::test_a - AssertionError";
       failureLineFold("===== 1 failed, 5 passed in 0.3s ====="),
     "(fold) a moved passed count still folds in a runner's summary of a red run",
   );
+  // …and the same arm's accepted cost: a `Tests: N` label beside a `Failures:` count is on a line that
+  // names a failure, and `tests` is no pass word, so the total keeps its digits. Same accepted cost as
+  // the JUnit `Tests run: N` total — a hand-back for the run whose passing checks were added.
   assert(
-    failureLineFold("Tests: 3, Failures: 1") === failureLineFold("Tests: 5, Failures: 1"),
-    "(fold) a count whose LABEL is a counter still folds (`Tests: N`)",
+    failureLineFold("Tests: 3, Failures: 1") !== failureLineFold("Tests: 5, Failures: 1"),
+    "(fold) the accepted cost: a counter LABEL beside a failure report no longer folds",
+  );
+  // …but the label arm still folds on a line that names no failure, which is where it is earned.
+  assert(
+    failureLineFold("Tests: 3") === failureLineFold("Tests: 5"),
+    "(fold) a count whose LABEL is a counter still folds where no failure is named (`Tests: N`)",
   );
   // …and the boundary the fold must not cross: a line the classifier READS as one check's failure
   // is compared strictly, so no counter word inside it folds anything. `a.py: … 1 failed, 3 passed`

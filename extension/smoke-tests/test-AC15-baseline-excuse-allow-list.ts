@@ -15,12 +15,12 @@
  * knows it" from "refused because nothing vouched for it", and the second is the rule.
  *
  * The counter/reporter boundary is pinned here too, since {@link failureLineFold} is what draws
- * it: a number attached to a NON-failure counter (`3 passed`, `Tests run: 3`) on a line the
- * classifier did not read as a failure (`3 passed`, `Tests run: 3`) is a runner
- * counting its own run and may move between the two streams; a number attached to a FAILURE
- * word (`1 failed`, `Failures: 1`) is evidence about which checks broke and is read exactly, and so
- * is EVERY number inside a line the classifier read as one check's failure (`got 5 items`), however
- * much its text resembles a tally.
+ * it: on a line that names no failure, a number attached to a counter word (`3 passed`, `Tests run: 3`,
+ * `36 cases`) is a runner counting its own run and may move between the two streams; on a line whose own
+ * text names a failure anywhere, only a count of a PASS word may move, so every other number on it —
+ * `1 items failed`, `Failures: 1`, a `Tests run: N` total — is read exactly, and so is EVERY number
+ * inside a line the classifier read as one check's failure (`got 5 items`), however much its text
+ * resembles a tally.
  */
 import { classifyFailureLine } from "../src/work-driver-verify-failures.ts";
 import { isKnownCleanLine } from "../src/lean/verify-baseline-allow-list.ts";
@@ -161,9 +161,7 @@ function assert(cond: boolean, msg: string): void {
   const MAY_MOVE: [string, string, string][] = [
     ["===== 1 failed, 3 passed in 0.2s =====", "===== 1 failed, 5 passed in 0.3s =====", "the field case: a moved PASSED count and duration beside the same 1 failed"],
     ["1 failed, 3 passed", "1 failed, 5 passed", "the bare tally, same case"],
-    ["Tests run: 3, Failures: 1", "Tests run: 5, Failures: 1", "a Surefire total beside an unchanged Failures count"],
-    ["a.py: 36 cases, 0 failed", "a.py: 52 cases, 0 failed", "a script tally that names no broken check moves its own case count"],
-    ["--- FAIL: TestSolo (0.02s)", "--- FAIL: TestSolo (0.02s)", "go's per-check duration: the counter fold's own arms (duration, counter word) still fold inside a classifier-accepted failure line, while {@link failureLineFold}'s gate holds every number the assertion itself compared"],
+    ["--- FAIL: TestSolo (0.02s)", "--- FAIL: TestSolo (0.02s)", "go's per-check line is byte-identical, so the fold's gate is what holds it (a classifier-accepted failure line keeps every digit it printed)"],
     ["3 passed", "5 passed", "a passing count on a line that reports no failure"],
   ];
   for (const [a, b, why] of MAY_MOVE) {
@@ -177,6 +175,9 @@ function assert(cond: boolean, msg: string): void {
     ["===== 1 failed, 3 passed in 0.2s =====", "===== 2 failed, 3 passed in 0.2s =====", "a moved FAILED count is a check that broke"],
     ["===== 1 failed, 3 passed in 0.2s =====", "===== 1 error, 3 passed in 0.2s =====", "failed and error are different reports, however both fold"],
     ["Failures: 1", "Failures: 2", "the Surefire failure count"],
+    ["Tests run: 3, Failures: 1", "Tests run: 5, Failures: 1", "the accepted cost: a Surefire run-total beside a failure report no longer folds — `run` is not a pass word, so the line is exact"],
+    ["tests/x_test.py: 1 items failed", "tests/x_test.py: 2 items failed", "the false green this rule exists to close: a failed-check row whose count moved"],
+    ["tests: 1 failed", "tests: 2 failed", "a `tests:` label beside a moved failed count"],
     ["Errors: 1", "Errors: 2", "the Surefire error count"],
     ["tests/x.py: 1 failed", "tests/x.py: 2 failed", "the `named-file` failure count"],
     ["tests/a.py: failed checks (1)", "tests/a.py: failed checks (2)", "the script tally's own count"],
@@ -189,6 +190,12 @@ function assert(cond: boolean, msg: string): void {
     // is a line the base never printed, and it refuses.
     ["not ok 2 - a bats check", "not ok 3 - a bats check", "a TAP check index is folded by nothing at all"],
     ["0 failed", "1 failed", "a count that moved to or from zero changed the failure report"],
+    // The veto that drives this half of the fold reads WORDS, not digits, so it cannot tell a zero count
+    // from a nine. `a.py: 36 cases, 0 failed` reports a clean script run and the classifier reads it as
+    // success, yet the veto reads `failed` and holds every digit on the line — including the `36`, which
+    // the added-checks case would have moved. The direction is the one this rule always fails on: the
+    // row is compared byte-for-byte, and a script tally whose case count moved hands back. Accepted cost,
+    // same shape as the `===== 0 failed, 3 passed =====` refusal the allow-list pins above.
     ["10 failed", "11 failed", "a multi-digit failure count keeps its digits"],
     ["version 1.2.3", "version 1.2.4", "a version is not a counter"],
     // A line the classifier READS as one check's failure is never counter-folded at all: the number

@@ -208,11 +208,16 @@ const RED_LINE = "FAILED tests/x_test.py::test_a - AssertionError";
     why: "pytest -v whose summary moved its FAILED count: a check broke, and that is not excusable",
   };
   const JUNIT_TOTALS_MOVED = {
-    // Surefire/JUnit's dialect: `Tests run: N, Failures: N`. The total of how many checks ran is
-    // a counter and moves; the `Failures: 1` beside it is a reporter and must not.
+    // Surefire/JUnit's dialect: `Tests run: N, Failures: N`. The line names a failure, so the ONLY
+    // digit the fold may move is a pass count — and `run` is not one. The run's total moving because
+    // this PR added two passing checks is therefore a line the base never printed, and it hands back.
+    // THE ACCEPTED COST, stated in `docs/lean.md` and the troubleshooting entry: a hand-back, never a
+    // green. The alternative was a fold that read `Tests run: 3, Failures: 1` and `Tests run: 5,
+    // Failures: 2` as one line whenever its exemption shape matched, which is the green this rule
+    // exists to make impossible.
     base: [RED_LINE, "Tests run: 3, Failures: 1"],
     head: [RED_LINE, "Tests run: 5, Failures: 1"],
-    why: "a `Tests run: N, Failures: N` tally whose TOTAL moved and whose failure count did not",
+    why: "a `Tests run: N, Failures: N` tally whose TOTAL moved: no pass word next to it, so the line is exact",
   };
   const JUNIT_FAILURES_MOVED = {
     // The same shape with the number that matters moved: `Failures: 1` beside `Failures: 2` is
@@ -253,11 +258,11 @@ const RED_LINE = "FAILED tests/x_test.py::test_a - AssertionError";
     ],
     why: "a full pytest stream that added two passing checks to a red suite: every moved line excuses",
   };
-  for (const c of [PYTEST_V, PYTEST_PLAIN, PYTEST_CLEAN_SUMMARY_MOVED, TAP, TAP_SUMMARY_MOVED, GO, PYTEST_SUMMARY_MOVED, JUNIT_TOTALS_MOVED, PYTEST_FULL_STREAM]) {
+  for (const c of [PYTEST_V, PYTEST_PLAIN, PYTEST_CLEAN_SUMMARY_MOVED, TAP, TAP_SUMMARY_MOVED, GO, PYTEST_SUMMARY_MOVED, PYTEST_FULL_STREAM]) {
     const r = excuseOf(c.head, c.base);
     assert(r.kind === "excused", `(excuse) ${c.why} — the added passing tests excuse (${r.kind})`);
   }
-  for (const c of [PYTEST_FAILURE_COUNT_MOVED, JUNIT_FAILURES_MOVED]) {
+  for (const c of [PYTEST_FAILURE_COUNT_MOVED, JUNIT_FAILURES_MOVED, JUNIT_TOTALS_MOVED]) {
     const r = excuseOf(c.head, c.base);
     assert(r.kind === "refused", `(refuse) ${c.why} (${r.kind})`);
   }
