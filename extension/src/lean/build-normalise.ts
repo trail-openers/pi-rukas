@@ -161,8 +161,6 @@ export async function normaliseBuild(opts: {
   issue: number;
   /** The aggregate capture ceiling; the default is the production one. */
   budget?: CaptureBudget;
-  /** Fold a tree that owns no branch — see `resetWorktreeToBase`'s `detached`. */
-  detached?: boolean;
 }): Promise<NormaliseReport> {
   const { exec, wt, repoRoot, branch, headBefore, frozen } = opts;
 
@@ -180,9 +178,10 @@ export async function normaliseBuild(opts: {
 
   // 4. RESET — child commits, staging, untracked files, ignore tricks and the
   //    dependency links all go; frozen and protected files come back exactly as
-  //    at `headBefore`; provisioning rebuilds what the clean removed.
+  //    at `headBefore`; provisioning rebuilds what the clean removed. `branch`
+  //    empty resets DETACHED, for a tree that owns no branch of its own.
   try {
-    await resetWorktreeToBase(exec, wt, headBefore, branch, opts.detached === true);
+    await resetWorktreeToBase(exec, wt, headBefore, branch);
   } catch (err) {
     throw new BuildInfraError(
       `could not reset the worktree to ${headBefore}: ${(err as Error).message}`,
@@ -297,8 +296,6 @@ async function verifyCommit(
   report: NormaliseReport,
 ): Promise<void> {
   const newHead = await headSha(exec, wt);
-  if (newHead === headBefore)
-    throw new BuildInfraError("HEAD did not move — the build commit was never made");
   // Whole SHAs compared as full strings: a short `rev-parse` and a full
   // `headBefore` would never be equal, and a prefix match would pass a fork.
   const parent = await must(exec, wt, ["rev-parse", "HEAD^"], "read the build commit's parent");
