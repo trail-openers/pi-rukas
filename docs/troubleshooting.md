@@ -27,22 +27,43 @@ failure line**, so any runner the shared failure-line classifier reads is excusa
 driver's own diagnostic dialect. Normalisation is one rule, stated once: take a line the
 classifier ACCEPTS, strip that run's own worktree root from the front of its path, compare — so
 the same check printed in two trees is one line. What refuses: a line only the head printed
-(including one whose reason text differs from the base's), a stream with no recognised failure
-line at all, a head-only line carrying a runner's own failure token (`not ok`, `--- FAIL:`, a
-`FAIL` word with a name, `FAILED`/`ERROR` at the start) in a dialect the classifier does not
-read, any line past the classifier's own scan window on either side (a line no judge read whole
-is not evidence), a re-run or base run that observed nothing (a kill, a buffer overflow, an un-startable
+(including one whose reason text differs from the base's) that nothing could vouch for, a stream
+with no recognised failure line at all, any line past the classifier's own scan window on either
+side (a line no judge read whole is not evidence), a re-run or base run that observed nothing (a
+kill, a buffer overflow, an un-startable
 command), or a base run whose red is the shape of a checkout whose dependencies were never
-linked (the probe's provisioning, not the commit's). Whole lines, not parsed test names, are
-deliberate: every identity parser tried for a non-pytest runner found a new way to fold two
-different checks onto one token, and a folded name excuses a failure this run authored — the one
-thing the excuse must never do.
+linked (the probe's provisioning, not the commit's). The head-only rule is DEFAULT-REFUSE and
+that direction is the design: a classifier drops every line it does not recognise, so "no line
+the classifier read" is a failure no judge read and excuses nothing. An early version kept a
+list of failure TOKENS and refused on a head-only token the list held; runners are unbounded and
+every review round produced a token the list lacked. Now the question is inverted — a head-only
+line is excused only when something POSITIVE says it cannot be a failure: a pass marker (`ok`,
+`PASS`, `PASSED`, `✓`), go's `=== RUN` / `--- PASS:`, a runner's progress line (`.. [ 50%]`), a
+separator, a collection count, a TAP plan (`1..9`), or a tally that counts passes and names no
+non-zero failure count (`5 passed`). A line whose non-zero count names failures (`1 failed, 5
+passed`) is a REPORTER, not a counter, and is refused: inside such a tally the rule cannot tell
+"+2 passing because the PR added checks" from "+2 failing because the PR broke one", and a
+hand-back is the right answer where the evidence cannot. So the allow-list may be imperfect only
+the safe way — an unknown shape costs a hand-back, never a green — and a new runner dialect
+needs no change to be caught, only to be excused. The harness's own writing (`Command failed:`
+of a command the tier really ran, `Exit code: N`, a bare `killed`, a `tier-said-*` marker) is
+excluded from both sides, as is any line the classifier reads as a PASSING check — neither is
+gate output, and a PR adding passing tests prints new passing lines every run. Whole lines, not
+parsed test names, are deliberate: every identity parser tried for a non-pytest runner found a
+new way to fold two different checks onto one token, and a folded name excuses a failure this
+run authored — the one thing the excuse must never do.
 
 **Fix:** the run's verify reason names the tier and the hand-back; the two line sets are on the
 verify step's record in the run's step log (`preexistingFailures` — the head's capped failure
 lines and the base's set, alongside the base commit and the true total), which is what the PR
 body's `## Pre-existing test failures` section renders. A head-only line is the run's own
-regression and belongs in a build round. A tier that prints no recognised failure line needs a
+regression and belongs in a build round. A head-only line the allow-list does not know is the
+other hand-back, and it is not a regression claim: check whether the line is a runner output
+shape the list has simply never seen (a new runner, a new report format, a plugin's summary).
+If it reports a count of things that passed, it belongs on the list and the entry is one line in
+`isKnownCleanLine`; if it reports anything that failed, the hand-back is the correct verdict and
+the tier needs to say which checks failed. If you are unsure which, read the line's own words —
+the rule refuses exactly when its words cannot tell "more passing" from "more failing". A tier that prints no recognised failure line needs a
 runner that prints one failing-test line per test — most do (`pytest -v`, `go test -v`, `prove`
 and a bats run all print their failing checks); a gate that says only that it failed cannot tell
 you which tests the base already had. A base red shaped like a missing dependency tree means the

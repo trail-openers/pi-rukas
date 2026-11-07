@@ -133,9 +133,27 @@ function excuseOf(headLines: string[], baseLines: string[]) {
     excuseOf([A, ECHO], [A, ECHO]).kind === "excused",
     `(unreadable) an identical unreadable harness echo on both sides does not refuse (${excuseOf([A, ECHO], [A, ECHO]).kind})`,
   );
+  // The echo is the HARNESS'S OWN line — node's rejection message, which the step appends
+  // to the stream — and what it echoes is the tier's command, the same command the base
+  // run was handed. So it is not a line the gate printed and never a failure this run
+  // authored, whether or not the base's stream happens to carry it: refusing on it would
+  // hand back every real tier, since only the head run is echoed. An echo of a command
+  // the tier never ran is a different matter, and is what the two lines below pin.
   assert(
-    excuseOf([A, ECHO], [A]).kind === "refused",
-    `(unreadable) and the same echo printed only at head DOES refuse (${excuseOf([A, ECHO], [A]).kind})`,
+    excuseOf([A, ECHO], [A]).kind === "excused",
+    `(unreadable) the harness's echo of the tier's OWN command does not refuse on its own (${excuseOf([A, ECHO], [A]).kind})`,
+  );
+  const FOREIGN_ECHO = "Command failed: make -C /elsewhere check-release";
+  assert(
+    // The echo names a command the tier never ran, and no gate line of either run is a
+    // recognised failure any more — so there is nothing left to compare, and the empty
+    // recognised set is what refuses. The echo is not excused by being an echo.
+    excuseOf([FOREIGN_ECHO], [A]).kind === "refused",
+    `(unreadable) an echo of a command the tier never ran still refuses (${excuseOf([FOREIGN_ECHO], [A]).kind})`,
+  );
+  assert(
+    excuseOf([A, FOREIGN_ECHO], [A, FOREIGN_ECHO]).kind === "excused",
+    `(unreadable) and the base's copy of that same echo settles it (${excuseOf([A, FOREIGN_ECHO], [A, FOREIGN_ECHO]).kind})`,
   );
   assert(
     excuseOf([A], [A]).kind === "excused",

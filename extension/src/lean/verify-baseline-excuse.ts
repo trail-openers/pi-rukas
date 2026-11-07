@@ -29,16 +29,23 @@
  *     the SAME full text: the classifier's table, {@link failureLinesOf}'s comparison
  *     key, and the recorded set are all the whole line.
  *   - one rule decides what the excuse may not see, and it REFUSES rather than
- *     omitting: a line past {@link FAILURE_LINE_SCAN_MAX} refuses either side, and a
- *     line carrying a runner's failure token (`not ok`, `--- FAIL:`, a `FAIL` word
- *     followed by a name, `FAILED`/`ERROR` at the start) that the classifier does not
- *     accepts refuses when it is HEAD-ONLY. An unread line is a failure no judge read,
- *     so it excuses nothing — omitting one lets a head of `[readable A, unread B]`
- *     match a base that printed only A and grades the tier green on a failure this run
- *     authored; an over-long line is judged on a clipped view, so two distinct long
- *     lines can fold onto one key, which is the same defect through the comparison
- *     instead of the omission. A token line the BASE printed too is not a new failure
- *     and does not refuse — see {@link hasHeadOnlyUnreadableLine}.
+ *     omitting, in BOTH directions of ignorance. A line past {@link FAILURE_LINE_SCAN_MAX}
+ *     refuses either side, because a judge that saw only its first 8 KiB cannot tell two
+ *     long lines apart. And a line that is HEAD-ONLY — one the base stream did not print —
+ *     refuses unless something POSITIVE vouches for it, which is {@link
+ *     hasHeadOnlyUnrefusedLine} asking {@link isKnownCleanLine}. That second half is
+ *     DEFAULT-REFUSE and the direction is the whole design: `failureLines` drops every line
+ *     the classifier does not recognise, so an omitted one let a head of `[readable A,
+ *     unread B]` match a base that printed only A and grade a tier green on a failure this
+ *     run authored. The first answer kept a list of failure TOKENS and refused on a head-only
+ *     token the table did not read; runners are unbounded and every review round produced a
+ *     token the list lacked. Now a head-only line needs permission, not a pardon: it is
+ *     excused only if it is provably not a failure (a pass marker, a progress line, a
+ *     separator, a count), and a new runner's failure dialect is caught by being absent from
+ *     that short list. Lines the harness itself wrote, and lines the classifier reads as
+ *     PASSING checks, are excluded from both sides — neither is gate output — but no
+ *     exemption is given to any prefix of a gate line: a line missing from the base refuses
+ *     whatever it opens with.
  *   - both sets must be non-empty and EVERY head line must equal a base line. One
  *     line the head printed and the base did not is a failure this run authored, and
  *     a changed reason is a different line;
@@ -64,6 +71,14 @@ import {
   type PreexistingTierRecord,
   preexistingFailuresProblem,
 } from "./state-outcome-maps.ts";
+import {
+  isHarnessEchoOf,
+  isKnownCleanLine,
+  judgeableLines,
+  leadingIndexFolded,
+  normaliseRaw,
+  streamLines,
+} from "./verify-baseline-allow-list.ts";
 import type { BaseProbe } from "./verify-baseline.ts";
 
 /** Why the base red cannot excuse this tier's red. */
@@ -72,22 +87,59 @@ export type BaselineExcuse =
   | { kind: "refused" };
 
 /**
- * A line that declares a failing test, in any of the dialects runners print.
+ * Does the HEAD stream print any line the base stream did not, that is not known clean?
  *
- * The vocabulary the classifier's table covers, plus the tokens a runner uses for a
- * failing check the table does NOT carry. Deliberately looser than the table: this is
- * the veto, not the comparison, and a line this matches that the classifier does not
- * accept is a failure nobody read — see {@link hasHeadOnlyUnreadableLine}.
+ * The default-refuse gate, and the whole of what the excuse may not see. The allow-list it
+ * consults lives in `verify-baseline-allow-list.ts` and carries the reasoning for the
+ * direction; what stays here is the COMPARISON that direction is applied to, because "head-only"
+ * is a question about two streams and cannot be answered by either alone.
+ *
+ * A line is not head-only if the base printed it too (the same text standing on both streams
+ * cannot be a failure this run authored), and not head-only if the harness wrote it or if the
+ * classifier reads it as a passing check — both exclusions are applied to BOTH sides by {@link
+ * judgeableLines}, so they cannot be traded away by putting noise on one stream only.
+ *
+ * Comparison is strict by design (see {@link normaliseRaw}), with exactly ONE looser key, and
+ * that key folds one field: the check index, which a runner renumbers when a test is added
+ * before the check (`not ok 3 - x` where the base printed `not ok 2 - x`). A line the strict key
+ * cannot place is otherwise excused only by the allow-list, never by looser text — which is what
+ * makes the direction safe.
+ *
+ * The one case the base's copy does NOT excuse is a stream whose recognised set is EMPTY: with
+ * nothing the classifier read there is no comparison to grade, and {@link baselineExcuse} refuses
+ * below on the empty set. That is what stops a base that printed nothing meaningful from being
+ * read as evidence the base was red.
  */
-const DECLARED_FAILURE =
-  /(^|\s)not\s+ok(?=\s|$)|^\s*-{3,}\s*FAIL:|(?:^|\s)FAIL\s+\S|[^\w]*FAILED\s|[^\w]*ERROR\s/;
+export function hasHeadOnlyUnrefusedLine(
+  headStream: string,
+  baseStream: string,
+  headRoot: string,
+  baseRoot: string,
+): boolean {
+  const baseStrict = new Set(
+    judgeableLines(baseStream).map((line) => normaliseRaw(line, baseRoot)),
+  );
+  const baseLoose = new Set(
+    [...baseStrict].map(leadingIndexFolded).filter((line) => line.length > 0),
+  );
+  const echoedCmd = echoCommandOf(headStream);
+  const baseRaw = streamLines(baseStream);
+  return judgeableLines(headStream).some((line) => {
+    const key = normaliseRaw(line, headRoot);
+    if (key.length === 0 || baseStrict.has(key)) return false;
+    if (baseLoose.has(leadingIndexFolded(key))) return false;
+    if (isHarnessEchoOf(line, baseRaw, echoedCmd)) return false;
+    return !isKnownCleanLine(line);
+  });
+}
 
-/** Every raw line of a stream, trimmed, blanks dropped. */
-function streamLines(stream: string): string[] {
-  return stream
-    .split(/\r\n|\r|\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
+/** The command the head stream's `Command failed:` echo quotes, if it has one. */
+function echoCommandOf(headStream: string): string | undefined {
+  for (const line of streamLines(headStream)) {
+    const t = line.trim();
+    if (/^Command failed:\s/.test(t)) return t.slice("Command failed:".length).trim();
+  }
+  return undefined;
 }
 
 /**
@@ -101,56 +153,6 @@ function streamLines(stream: string): string[] {
  */
 function hasOverWindowLine(stream: string): boolean {
   return streamLines(stream).some((line) => line.length > FAILURE_LINE_SCAN_MAX);
-}
-
-/**
- * Does the HEAD stream print a failure token the base stream does not, on a line the
- * classifier cannot read?
- *
- * `failureLines` drops every line the classifier rejects, so an unread one lets a head
- * of `[readable A, unread B]` match a base that printed only A and grades a tier green
- * on a failure this run authored — the one outcome this feature must never produce. So
- * an unread line carrying a runner's failure token (`# not ok 9 - …`, a `+ not ok …`
- * trace, a tally in a dialect the table does not carry) refuses when the base did not
- * print it too.
- *
- * The veto is HEAD-ONLY, and that is the whole of it: what the excuse is allowed to
- * grant is "the base printed this as well", so an unread line the base printed too
- * cannot be a failure this run authored — the same text is standing on both streams,
- * which is exactly what the comparison below could never have told us, the two lines
- * being outside its alphabet. A `Command failed: …` harness echo of an identical tier
- * command is that shape. An unread line that is absent from the base is NOT, and no
- * echo exemption is given to any prefix: a line carrying a token and missing from the
- * base refuses, whatever it opens with.
- *
- * Comparison is on each side's own text with ITS OWN tree prefix out, the same
- * normalisation the recognised lines get, so an unread line that differs only in where
- * each run ran is still one line.
- *
- * The one case the base's copy does NOT excuse is a stream whose recognised set is
- * EMPTY: with nothing the classifier read there is no comparison to grade, and
- * `baselineExcuse` refuses below on the empty set. That is what stops an unreadable BASE
- * line being read as evidence the base was red.
- *
- * `failureLines` classifies first, so an unrecognised line never reaches its output and
- * only this walk sees it; the marker test is asked of every RAW line, trimmed.
- */
-function hasHeadOnlyUnreadableLine(
-  headStream: string,
-  baseStream: string,
-  headRoot: string,
-  baseRoot: string,
-): boolean {
-  const baseReads = new Set(
-    streamLines(baseStream)
-      .filter((line) => classifyFailureLine(line) === undefined)
-      .map((line) => stripRoot(line, baseRoot)),
-  );
-  return streamLines(headStream).some((line) => {
-    if (classifyFailureLine(line) !== undefined) return false;
-    if (!DECLARED_FAILURE.test(line)) return false;
-    return !baseReads.has(stripRoot(line, headRoot));
-  });
 }
 
 /**
@@ -210,8 +212,11 @@ function comparableLine(line: string): string | undefined {
  * is content the tier printed — a path quoted in an assertion, a path in a diff — and
  * the other tree's line carries it too, so a global removal would delete it from one
  * side and not the other, and a difference the excuse erased is a difference it excused.
+ *
+ * Exported because the allow-list module builds its comparison keys with it, and the two sides
+ * of the seam must normalise a path the same way or a line differs by its tree alone.
  */
-function stripRoot(line: string, root: string): string {
+export function stripRoot(line: string, root: string): string {
   const trimmed = line.trim();
   const pathAt = trimmed.search(/[/.]|[A-Za-z]:/);
   if (pathAt < 0) return trimmed;
@@ -318,16 +323,34 @@ export function baselineExcuse(opts: {
   // red belongs to the probe's provisioning, not to the commit, and no line it
   // prints can stand as evidence the base was red.
   if (baseRedIsMissingDeps(baseStream)) return { kind: "refused" };
-  // A failure line the classifier cannot read excuses nothing, unless the base printed
-  // the same line too — see {@link hasHeadOnlyUnreadableLine}.
-  if (hasHeadOnlyUnreadableLine(headStream, baseStream, headRoot, probeRoot))
+  // A head-only line the rule cannot vouch for excuses nothing — see {@link
+  // hasHeadOnlyUnrefusedLine}. This is the default-refuse gate: it stands in front of the
+  // comparison below so that no line the classifier never read can be excused by absence.
+  if (hasHeadOnlyUnrefusedLine(headStream, baseStream, headRoot, probeRoot))
     return { kind: "refused" };
   if (head.length === 0 || base.length === 0) return { kind: "refused" };
-  // The text two runs' lines are compared as: each side with ITS OWN tree's prefix out
-  // of it, so head and base agree on what the check was, not on where each run ran.
-  const headKey = head.map((line) => stripRoot(line, headRoot));
-  const baseKey = new Set(base.map((line) => stripRoot(line, probeRoot)));
-  if (!headKey.every((line) => line.length > 0 && baseKey.has(line))) return { kind: "refused" };
+  // The text two runs' lines are compared as: each side with ITS OWN tree's prefix out of
+  // it and its whitespace collapsed, so head and base agree on what the check WAS, not on
+  // where each run ran. Compared TWICE, strict first, and the tier needs only ONE pass to
+  // place EVERY head line:
+  //
+  //   - the EXACT pass, which is the one that decides anything — it keeps digits, so it is
+  //     where `expected 3 to be 4` and `expected 3 to be 5` stay two defects; and
+  //   - the CHECK-INDEX pass, for the shape a real runner forces on us: it numbers its
+  //     checks, so ADDING a passing test renumbers the failures after it and
+  //     `not ok 3 - a bats check` sits where the base printed `not ok 2 - a bats check`.
+  //
+  // The order is load-bearing. The loose pass is reached only when the exact pass failed for
+  // EVERY line, so an assertion whose numbers genuinely changed is settled by the strict pass
+  // and refuses; the loose key is never consulted line by line and so can never rescue one
+  // shifted failure out of a set that otherwise matched.
+  const headKey = head.map((line) => normaliseRaw(line, headRoot));
+  const baseKey = new Set(base.map((line) => normaliseRaw(line, probeRoot)));
+  if (!headKey.every((line) => line.length > 0 && baseKey.has(line))) {
+    const looseHead = headKey.map(leadingIndexFolded).filter((line) => line.length > 0);
+    const looseBase = new Set([...baseKey].map(leadingIndexFolded));
+    if (!looseHead.every((line) => looseBase.has(line))) return { kind: "refused" };
+  }
   const matched = headKey.filter((line) => line.length > 0);
   // The comparison ran on the COMPLETE parsed sets; the caps below bound only what
   // is persisted and rendered. `baseNames` is what lets `ci` reuse this record
