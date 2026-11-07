@@ -75,7 +75,6 @@ import {
   isHarnessEchoOf,
   isKnownCleanLine,
   judgeableLines,
-  leadingIndexFolded,
   normaliseRaw,
   streamLines,
 } from "./verify-baseline-allow-list.ts";
@@ -100,20 +99,28 @@ export type BaselineExcuse =
  * classifier reads it as a passing check — both exclusions are applied to BOTH sides by {@link
  * judgeableLines}, so they cannot be traded away by putting noise on one stream only.
  *
- * Comparison is strict by design (see {@link normaliseRaw}), with exactly TWO looser keys, and
- * each folds ONE field — nothing else, and never inside a line the classifier read as a failure:
+ * Comparison is strict by design (see {@link normaliseRaw}), with exactly ONE looser key, and it
+ * folds ONE field — nothing else, and never inside a line the classifier read as a failure:
  *
- *   - the CHECK INDEX, which a runner renumbers when a test is added before the check
- *     (`not ok 3 - x` where the base printed `not ok 2 - x`); and
  *   - the RUNNER COUNTERS and durations of a line the classifier did NOT read as a failure
  *     ({@link failureLineFold}), which a PR that ADDS PASSING TESTS moves in the summary of an
- *     already-red suite (`1 failed, 3 passed` where the base printed `1 failed, 5 passed`). Every
+ *     already-red suite (`1 failed, 5 passed` where the base printed `1 failed, 3 passed`). Every
  *     number attached to a FAILURE word is kept exact by that fold, so `1 failed` never becomes
- *     equal to `2 failed` by any route; and a per-check failure line — `FAILED a.py::t - … got 5
- *     items`, `not ok 1 - checkout - expected 3 items found 0` — is not folded at all, because the
- *     number an assertion compared IS the finding and a counter word beside it does not make it a
- *     tally. Two lines that differ only by such a number are two failures, and the run that
- *     printed the one the base did not is refused.
+ *     equal to `2 failed` by any route — including a digit a LABEL sits in front of (`suite ran: 1
+ *     failed`, `tests: 1 failed`, `1 items failed`), which is refused before any counter arm is
+ *     asked; and a per-check failure line — `FAILED a.py::t - … got 5 items`, `not ok 1 - checkout -
+ *     expected 3 items found 0` — is not folded at all, because the number an assertion compared IS
+ *     the finding and a counter word beside it does not make it a tally. Two lines that differ only
+ *     by such a number are two failures, and the run that printed the one the base did not is refused.
+ *
+ * There used to be a second looser key, which folded a TAP runner's CHECK INDEX so that a head's
+ * `not ok 3 - x` sat where the base printed `not ok 1 - x`. It is deleted, and the reason is the
+ * whole-line rule this seam obeys everywhere else: a renumbering cannot vouch for a line. The index
+ * is assigned by the order checks ran, so a NEW failing check printed third folds onto the base's
+ * first failing check and the run that authored it is excused. The accepted cost — stated in
+ * `docs/lean.md` and the troubleshooting entry, and in the safe direction — is that a TAP or bats run
+ * whose failing checks were RENUMBERED because a passing test was added before them now refuses: a
+ * hand-back, never a green.
  *
  * A line the strict key cannot place is otherwise excused only by the allow-list, never by
  * looser text — which is what makes the direction safe.
@@ -142,9 +149,6 @@ export function hasHeadOnlyUnrefusedLine(
   const baseStrict = new Set(
     judgeableLines(baseStream).map((line) => normaliseRaw(line, baseRoot)),
   );
-  const baseLoose = new Set(
-    [...baseStrict].map(leadingIndexFolded).filter((line) => line.length > 0),
-  );
   const baseCounters = new Set(
     [...baseStrict].map(failureLineFold).filter((line) => line.length > 0),
   );
@@ -152,7 +156,6 @@ export function hasHeadOnlyUnrefusedLine(
   return judgeableLines(headStream).some((line) => {
     const key = normaliseRaw(line, headRoot);
     if (key.length === 0 || baseStrict.has(key)) return false;
-    if (baseLoose.has(leadingIndexFolded(key))) return false;
     if (baseCounters.has(failureLineFold(key))) return false;
     if (isHarnessEchoOf(line, baseRaw, tierCommand)) return false;
     return !isKnownCleanLine(line);
@@ -357,15 +360,12 @@ export function baselineExcuse(opts: {
   if (head.length === 0 || base.length === 0) return { kind: "refused" };
   // The text two runs' lines are compared as: each side with ITS OWN tree's prefix out of
   // it and its whitespace collapsed, so head and base agree on what the check WAS, not on
-  // where each run ran. Compared THREE times, strictest first, and the tier needs only ONE
-  // pass to place EVERY head line:
+  // where each run ran. Compared TWICE, strictest first, and the tier needs only ONE pass to
+  // place EVERY head line:
   //
   //   - the EXACT pass, which is the one that decides anything — it keeps digits, so it is
   //     where `expected 3 to be 4` and `expected 3 to be 5` stay two defects; and
-  //   - the CHECK-INDEX pass, for the shape a real runner forces on us: it numbers its
-  //     checks, so ADDING a passing test renumbers the failures after it and
-  //     `not ok 3 - a bats check` sits where the base printed `not ok 2 - a bats check`; and
-  //   - the RUNNER-COUNTER pass, for the other thing the same PR moves: a runner's summary of the
+  //   - the RUNNER-COUNTER pass, for the one thing the same PR moves: a runner's summary of the
   //     run. A suite already red at base that GAINS passing tests prints
   //     `===== 1 failed, 5 passed in 0.3s =====` where the base printed `… 3 passed in 0.2s`, and
   //     that summary is a line the comparison below reads — so without this pass the feature
@@ -376,6 +376,13 @@ export function baselineExcuse(opts: {
   //     assertion compared is the finding, and a counter word sitting beside it does not turn a
   //     per-check report into a tally.
   //
+  // A third pass used to fold a TAP runner's CHECK INDEX, and it is deleted: `not ok 3 - x` shared a
+  // key with a base's `not ok 1 - x`, so a NEW failing check that happened to be printed third was
+  // excused as the base's first. A runner numbers its checks in the order it ran them, so the number
+  // says nothing about which check it is, and a fold that cannot vouch for the whole line is the fold
+  // this module refuses everywhere else. The cost is a renumbered TAP/bats failure handing the run
+  // back — never a green.
+  //
   // The order is load-bearing. A looser pass is reached only when the passes above it failed
   // for EVERY line, so an assertion whose numbers genuinely changed is settled by the strict
   // pass and refuses; a loose key is never consulted line by line and so can never rescue one
@@ -383,13 +390,9 @@ export function baselineExcuse(opts: {
   const headKey = head.map((line) => normaliseRaw(line, headRoot));
   const baseKey = new Set(base.map((line) => normaliseRaw(line, probeRoot)));
   if (!headKey.every((line) => line.length > 0 && baseKey.has(line))) {
-    const looseHead = headKey.map(leadingIndexFolded).filter((line) => line.length > 0);
-    const looseBase = new Set([...baseKey].map(leadingIndexFolded));
-    if (!looseHead.every((line) => looseBase.has(line))) {
-      const counterHead = headKey.map(failureLineFold).filter((line) => line.length > 0);
-      const counterBase = new Set([...baseKey].map(failureLineFold));
-      if (!counterHead.every((line) => counterBase.has(line))) return { kind: "refused" };
-    }
+    const counterHead = headKey.map(failureLineFold).filter((line) => line.length > 0);
+    const counterBase = new Set([...baseKey].map(failureLineFold));
+    if (!counterHead.every((line) => counterBase.has(line))) return { kind: "refused" };
   }
   const matched = headKey.filter((line) => line.length > 0);
   // The comparison ran on the COMPLETE parsed sets; the caps below bound only what

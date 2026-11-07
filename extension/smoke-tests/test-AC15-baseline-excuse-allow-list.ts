@@ -183,10 +183,11 @@ function assert(cond: boolean, msg: string): void {
     ["pack_release_test.sh: 36 cases, 1 failed", "pack_release_test.sh: 36 cases, 2 failed", "the comma tally's failing half"],
     ["FAILED t.py::a - assert 1 == 2", "FAILED t.py::a - assert 1 == 3", "an assertion's values are findings, not counters"],
     ["expected 3 to be 4", "expected 3 to be 5", "the same, in the assertion dialect"],
-    // The TAP check index is folded by `leadingIndexFolded`, the key built for it, and NOT by this
-    // one: the counter pass is reached only when the index pass has already failed for every line,
-    // so a key that folded the index too would collapse two different checks onto one line here.
-    ["not ok 2 - a bats check", "not ok 3 - a bats check", "a TAP check number is folded elsewhere, never by this key"],
+    // The TAP check index is NOT folded by any key. The pass that folded it is deleted (a new
+    // failing check printed third shared the folded key of a base's first failing check), so the
+    // index keeps its digits here exactly as it keeps them in the strict key — a renumbered failure
+    // is a line the base never printed, and it refuses.
+    ["not ok 2 - a bats check", "not ok 3 - a bats check", "a TAP check index is folded by nothing at all"],
     ["0 failed", "1 failed", "a count that moved to or from zero changed the failure report"],
     ["10 failed", "11 failed", "a multi-digit failure count keeps its digits"],
     ["version 1.2.3", "version 1.2.4", "a version is not a counter"],

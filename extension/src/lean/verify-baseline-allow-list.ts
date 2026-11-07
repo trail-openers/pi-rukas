@@ -40,10 +40,13 @@
  * the first is accepted and documented: a PASSING test whose NAME contains such a word, when the
  * line is head-only, is refused, and a refusal is a hand-back, never a green.
  *
- * The comparison keys live here too ({@link normaliseRaw}, {@link failureLineFold},
- * {@link leadingIndexFolded}) because WHAT MAY MOVE is the same question as WHAT MAY BE
- * EXCUSED, and it is answered in one place: only a runner's counters, never a failure count, and
- * never anything at all inside a line the classifier read as one check's failure.
+ * The comparison keys live here too ({@link normaliseRaw}, {@link failureLineFold}) because WHAT MAY
+ * MOVE is the same question as WHAT MAY BE EXCUSED, and it is answered in one place: only a runner's
+ * counters, never a failure count, and never anything at all inside a line the classifier read as one
+ * check's failure. A second key once folded a TAP check index so that `not ok 3 - x` matched a base's
+ * `not ok 1 - x`; it excused a NEW failed check whenever the renumbering was not the whole difference,
+ * so it is deleted, and a renumbered failure is refused. See {@link failureLineFold} for the one field
+ * the comparison still folds.
  *
  * And every arm reads the SAME text, because {@link scrubInvisible} runs once where the lines
  * are read: a word split by a zero-width space (`fa\u200biled`) is invisible to the eye, to
@@ -462,25 +465,17 @@ export function judgeableLines(stream: string): string[] {
  * A line's comparison key: its own tree prefix out, its whitespace collapsed.
  *
  * Digits are NOT folded here. A digit is the finding inside an assertion, so this is the STRICT
- * key — the one that keeps `assert 1 == 2` and `assert 1 == 3` two lines. What a runner may
- * move is folded separately and only by {@link failureLineFold} and {@link leadingIndexFolded}.
+ * key — the one that keeps `assert 1 == 2` and `assert 1 == 3` two lines. The one field the
+ * comparison folds anywhere is a runner's counters, and only by {@link failureLineFold}.
+ *
+ * The key that used to fold a runner's CHECK INDEX (`not ok 3 - x` onto a base's `not ok 1 - x`)
+ * is deleted, and the reason is the same rule this file runs on everywhere else: the fold cannot
+ * vouch for the whole line. A check index is printed by the runner in the order it ran its checks,
+ * so nothing ties the number to the check — a brand new failing check printed third shares the
+ * folded key of a base that failed one check first, and the run that authored it is excused. The
+ * accepted cost is the opposite direction and a hand-back, never a green: a TAP or bats run whose
+ * failing checks were RENUMBERED, because a passing test was added before them, now refuses.
  */
 export function normaliseRaw(line: string, root: string): string {
   return stripRoot(line, root).replace(/\s+/g, " ").trim();
-}
-
-/**
- * A line with its CHECK INDEX folded — the only field a runner is allowed to move.
- *
- * The index is the digits a runner prints immediately after its status word (`not ok 3 - x`,
- * `ok 12 - t/x.t`), and it is the one thing that shifts when a test is ADDED before the check.
- * Everything else stays byte-for-byte, because the check's identity and its assertion ARE the
- * line: `assert 1 == 2` beside `assert 1 == 3`, or `expected 3 to be 4` beside `expected 3 to
- * be 5`, are two defects, and a fold of the whole line would excuse a regression the base never
- * printed — the exact outcome the excuse exists to refuse. A line that does not open with a
- * status word (`FAILED tests/x.py::t - assert 1 == 2`) comes back unchanged: nothing a
- * renumbering touches sits at its front.
- */
-export function leadingIndexFolded(line: string): string {
-  return line.replace(/^((?:not\s+)?ok)\s+\d+(?:\.\d+)?\b/i, "$1 #").trim();
 }

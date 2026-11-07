@@ -22,6 +22,11 @@
  *     (`1 failed, 3 passed` → `1 failed, 5 passed`) while the failure count stands;
  *   (refuse) the same summary with its FAILED count moved (`1 failed` → `2 failed`), and a
  *     `Failures: 1` line that became `Failures: 2` — the fold reaches counters, never reporters;
+ *   (refuse) the TAP run whose failing check was RENUMBERED by the added passing test
+ *     (`not ok 2 - a bats check` at base, `not ok 3 - a bats check` at head): the check-index fold
+ *     is deleted, because a runner's index says nothing about which check printed the line, so a new
+ *     failing check folded onto the base's first one. The TAP case below therefore keeps its failing
+ *     line byte-identical, and the renumbered form is the accepted cost — a hand-back, never a green;
  *   (direction) a line whose clean shape is NOT on the allow-list refuses: the rule's
  *     failure mode is a hand-back, and that is the only failure mode it has.
  *
@@ -83,6 +88,10 @@ const RED_LINE = "FAILED tests/x_test.py::test_a - AssertionError";
     "1) brand new check",
     "--- FAIL: TestSolo (0.01s)",
     "not ok 7 - a check the base never printed",
+    // The check-index fold is gone, so a renumbered failure is an ordinary head-only line: the
+    // runner's index is assigned by the order checks ran and says nothing about WHICH check printed
+    // the line, so the fold that used to place it excused a new failing check as the base's first.
+    "not ok 3 - a bats check",
     "FAILED tests/new_test.py::test_new - assert 1 == 2",
   ];
   for (const line of MUST_REFUSE) {
@@ -145,9 +154,14 @@ const RED_LINE = "FAILED tests/x_test.py::test_a - AssertionError";
     why: "pytest -v whose summary counts only passes: the moved count excuses",
   };
   const TAP = {
-    base: ["ok 1 - a passing check", "not ok 2 - a bats check", "1..9"],
-    head: ["ok 1 - a passing check", "ok 2 - a brand new passing check", "not ok 3 - a bats check", "1..10"],
-    why: "TAP: new `ok N` lines and a changed plan",
+    // The failing check's line is BYTE-IDENTICAL on both streams. The runner's check index used to
+    // be folded, so this case was written with the failure renumbered (`not ok 2` at base, `not ok 3`
+    // at head); that fold is deleted — a renumbering cannot say which check printed the line — so the
+    // renumbered form is now pinned as a REFUSAL in `test-AC16`, and what the case still grants here
+    // is the new `ok` lines and the moved plan.
+    base: ["ok 1 - a passing check", "ok 2 - a brand new passing check", "not ok 2 - a bats check", "1..9"],
+    head: ["ok 1 - a passing check", "ok 2 - a brand new passing check", "not ok 2 - a bats check", "1..10"],
+    why: "TAP: new `ok` N lines and a changed plan",
   };
   const TAP_SUMMARY_MOVED = {
     // The same run with a counting summary bolted on, which is what bats and Test::More
@@ -158,8 +172,8 @@ const RED_LINE = "FAILED tests/x_test.py::test_a - AssertionError";
     // inside a tally that reports failures, and the side it fails on is the one that cannot
     // produce a false green. The tier still excuses only while the summary is byte-identical
     // on both streams, which is why `head` below carries the SAME summary as `base`.
-    base: ["ok 1 - a passing check", "not ok 2 - a bats check", "1..9", "# 1 failed, 4 passed of 5"],
-    head: ["ok 1 - a passing check", "ok 2 - a brand new passing check", "not ok 3 - a bats check", "1..10", "# 1 failed, 4 passed of 5"],
+    base: ["ok 1 - a passing check", "ok 2 - a brand new passing check", "not ok 2 - a bats check", "1..9", "# 1 failed, 4 passed of 5"],
+    head: ["ok 1 - a passing check", "ok 2 - a brand new passing check", "not ok 2 - a bats check", "1..10", "# 1 failed, 4 passed of 5"],
     why: "TAP with a failure-reporting summary: the summary must be byte-identical to excuse",
   };
   const GO = {

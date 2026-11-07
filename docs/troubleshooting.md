@@ -55,7 +55,14 @@ COUNTER on the explicit list — `passed`, `skipped`, `deselected`, `xfailed`, `
 `test(s)`, `item(s)`, `cases`, `total`, `ok`, `pass` — so a counted word on no list refuses by absence
 and `===== 999 crashed, 9 passed =====` is neither clean nor folded. The cost of the word veto is
 accepted and runs the safe way: a PASSING test whose NAME carries such a word, when the line is
-head-only, is refused too — the accepted false refusal is a hand-back, never a green. So the allow-list may be imperfect only
+head-only, is refused too — the accepted false refusal is a hand-back, never a green. A digit a
+failure word sits immediately after (`suite ran: 1 failed`, `tests: 1 failed`, `2 panicked`) is a
+count of what broke and is never folded whatever label precedes it, so `1 failed` never becomes the
+line a base printed as `2 failed`; only a runner's counters and durations fold, and only on a line the
+classifier did not read as one check's failure. A runner's CHECK INDEX folds by nothing: a renumbered
+TAP or bats failure — `not ok 3 - x` where the base printed `not ok 1 - x`, the usual effect of adding
+a passing test before the failing one — REFUSES, and that is the other accepted false refusal, again a
+hand-back, never a green. So the allow-list may be imperfect only
 the safe way — an unknown shape costs a hand-back, never a green — and a new runner dialect
 needs no change to be caught, only to be excused. The harness's own writing (`Command failed:`
 of a command the tier really ran, `Exit code: N`, a bare `killed`, a `tier-said-*` marker) is
