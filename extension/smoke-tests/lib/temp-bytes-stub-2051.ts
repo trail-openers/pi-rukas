@@ -118,14 +118,14 @@ export async function makeForeignOwnedDir(dir: string, bytes: number): Promise<s
   const quoted = JSON.stringify(dir);
   for (const map of ["100000:0:1", "1:0:1"]) {
     try {
-      execFileSync("unshare", [
-        "-r",
-        `--map-users=${map}`,
-        `--map-groups=${map}`,
-        "sh",
-        "-c",
-        `chmod 700 ${quoted} && chown 0:0 ${quoted}`,
-      ]);
+      // Where `unshare` is refused (a default Docker container), its forked uid-map
+      // helper outlives it and holds inherited pipes open, so stdio is ignored;
+      // the timeout bounds any other stall. Either way the call throws and the case skips.
+      execFileSync(
+        "unshare",
+        ["-r", `--map-users=${map}`, `--map-groups=${map}`, "sh", "-c", `chmod 700 ${quoted} && chown 0:0 ${quoted}`],
+        { timeout: 5000, killSignal: "SIGKILL", stdio: "ignore" },
+      );
     } catch {
       continue;
     }
