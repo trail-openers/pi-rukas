@@ -72,6 +72,7 @@ import {
   preexistingFailuresProblem,
 } from "./state-outcome-maps.ts";
 import {
+  counterFolded,
   isHarnessEchoOf,
   isKnownCleanLine,
   judgeableLines,
@@ -99,11 +100,18 @@ export type BaselineExcuse =
  * classifier reads it as a passing check — both exclusions are applied to BOTH sides by {@link
  * judgeableLines}, so they cannot be traded away by putting noise on one stream only.
  *
- * Comparison is strict by design (see {@link normaliseRaw}), with exactly ONE looser key, and
- * that key folds one field: the check index, which a runner renumbers when a test is added
- * before the check (`not ok 3 - x` where the base printed `not ok 2 - x`). A line the strict key
- * cannot place is otherwise excused only by the allow-list, never by looser text — which is what
- * makes the direction safe.
+ * Comparison is strict by design (see {@link normaliseRaw}), with exactly TWO looser keys, and
+ * each folds ONE field — nothing else:
+ *
+ *   - the CHECK INDEX, which a runner renumbers when a test is added before the check
+ *     (`not ok 3 - x` where the base printed `not ok 2 - x`); and
+ *   - the RUNNER COUNTERS and durations ({@link counterFolded}), which a PR that ADDS PASSING
+ *     TESTS moves in the summary of an already-red suite (`1 failed, 3 passed` where the base
+ *     printed `1 failed, 5 passed`). Every number attached to a FAILURE word is kept exact by
+ *     that fold, so `1 failed` never becomes equal to `2 failed` by any route.
+ *
+ * A line the strict key cannot place is otherwise excused only by the allow-list, never by
+ * looser text — which is what makes the direction safe.
  *
  * The one case the base's copy does NOT excuse is a stream whose recognised set is EMPTY: with
  * nothing the classifier read there is no comparison to grade, and {@link baselineExcuse} refuses
@@ -122,12 +130,16 @@ export function hasHeadOnlyUnrefusedLine(
   const baseLoose = new Set(
     [...baseStrict].map(leadingIndexFolded).filter((line) => line.length > 0),
   );
+  const baseCounters = new Set(
+    [...baseStrict].map(counterFolded).filter((line) => line.length > 0),
+  );
   const echoedCmd = echoCommandOf(headStream);
   const baseRaw = streamLines(baseStream);
   return judgeableLines(headStream).some((line) => {
     const key = normaliseRaw(line, headRoot);
     if (key.length === 0 || baseStrict.has(key)) return false;
     if (baseLoose.has(leadingIndexFolded(key))) return false;
+    if (baseCounters.has(counterFolded(key))) return false;
     if (isHarnessEchoOf(line, baseRaw, echoedCmd)) return false;
     return !isKnownCleanLine(line);
   });
@@ -331,25 +343,36 @@ export function baselineExcuse(opts: {
   if (head.length === 0 || base.length === 0) return { kind: "refused" };
   // The text two runs' lines are compared as: each side with ITS OWN tree's prefix out of
   // it and its whitespace collapsed, so head and base agree on what the check WAS, not on
-  // where each run ran. Compared TWICE, strict first, and the tier needs only ONE pass to
-  // place EVERY head line:
+  // where each run ran. Compared THREE times, strictest first, and the tier needs only ONE
+  // pass to place EVERY head line:
   //
   //   - the EXACT pass, which is the one that decides anything — it keeps digits, so it is
   //     where `expected 3 to be 4` and `expected 3 to be 5` stay two defects; and
   //   - the CHECK-INDEX pass, for the shape a real runner forces on us: it numbers its
   //     checks, so ADDING a passing test renumbers the failures after it and
-  //     `not ok 3 - a bats check` sits where the base printed `not ok 2 - a bats check`.
+  //     `not ok 3 - a bats check` sits where the base printed `not ok 2 - a bats check`; and
+  //   - the RUNNER-COUNTER pass, for the other thing the same PR moves: the summary of the run
+  //     it is a failure line of. A suite already red at base that GAINS passing tests prints
+  //     `===== 1 failed, 5 passed in 0.3s =====` where the base printed `… 3 passed in 0.2s`,
+  //     and a counted failing tally IS a failure line the comparison below reads — so without
+  //     this pass the feature refuses the one case it exists to grant. {@link counterFolded}
+  //     keeps every count attached to a failure word exact, so a summary whose FAILURE count
+  //     moved has no key here and the tier still refuses.
   //
-  // The order is load-bearing. The loose pass is reached only when the exact pass failed for
-  // EVERY line, so an assertion whose numbers genuinely changed is settled by the strict pass
-  // and refuses; the loose key is never consulted line by line and so can never rescue one
+  // The order is load-bearing. A looser pass is reached only when the passes above it failed
+  // for EVERY line, so an assertion whose numbers genuinely changed is settled by the strict
+  // pass and refuses; a loose key is never consulted line by line and so can never rescue one
   // shifted failure out of a set that otherwise matched.
   const headKey = head.map((line) => normaliseRaw(line, headRoot));
   const baseKey = new Set(base.map((line) => normaliseRaw(line, probeRoot)));
   if (!headKey.every((line) => line.length > 0 && baseKey.has(line))) {
     const looseHead = headKey.map(leadingIndexFolded).filter((line) => line.length > 0);
     const looseBase = new Set([...baseKey].map(leadingIndexFolded));
-    if (!looseHead.every((line) => looseBase.has(line))) return { kind: "refused" };
+    if (!looseHead.every((line) => looseBase.has(line))) {
+      const counterHead = headKey.map(counterFolded).filter((line) => line.length > 0);
+      const counterBase = new Set([...baseKey].map(counterFolded));
+      if (!counterHead.every((line) => counterBase.has(line))) return { kind: "refused" };
+    }
   }
   const matched = headKey.filter((line) => line.length > 0);
   // The comparison ran on the COMPLETE parsed sets; the caps below bound only what

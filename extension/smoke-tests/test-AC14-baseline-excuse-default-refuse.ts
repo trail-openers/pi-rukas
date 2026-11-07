@@ -18,7 +18,10 @@
  *   (excuse) a PR that ADDS PASSING TESTS to a suite that was already red at base, in the
  *     four dialects the brief names — pytest -v, pytest default progress output, TAP,
  *     `go test -v` — excuses, with its new pass lines, its changed plan and its changed
- *     summary counts;
+ *     summary counts; and so does the case whose summary moves ONLY its PASSED count
+ *     (`1 failed, 3 passed` → `1 failed, 5 passed`) while the failure count stands;
+ *   (refuse) the same summary with its FAILED count moved (`1 failed` → `2 failed`), and a
+ *     `Failures: 1` line that became `Failures: 2` — the fold reaches counters, never reporters;
  *   (direction) a line whose clean shape is NOT on the allow-list refuses: the rule's
  *     failure mode is a hand-back, and that is the only failure mode it has.
  *
@@ -111,12 +114,13 @@ const RED_LINE = "FAILED tests/x_test.py::test_a - AssertionError";
   // failing line is identical on both sides.
   //
   // WHAT MAY MOVE AND WHAT MAY NOT, and this is the whole of the rule: a COUNTER may move
-  // (`1..9` to `1..10`, `3 passed`, a progress line's `[50%]`) because it reports how many
-  // checks ran, and a PR that adds checks changes it. A REPORTER may not, and a line naming
-  // a non-zero count of failures (`1 failed, 5 passed`) is a reporter: it is saying something
-  // broke, and a number that moved inside it is exactly the evidence the excuse must not
-  // wave through. Where a runner prints such a line, the tier excuses with that line
-  // byte-identical on both streams — which is what each fixture below does.
+  // (`1..9` to `1..10`, `3 passed`, a progress line's `[50%]`, a `Tests run: N` total) because it
+  // reports how many checks ran, and a PR that adds checks changes it. A REPORTER may not, and a
+  // line naming a non-zero count of failures is a reporter: it is saying something broke, and a
+  // number that moved inside IT is exactly the evidence the excuse must not wave through. The
+  // fold in `verify-baseline-allow-list.ts` draws that line by WORD rather than by position, so a
+  // tally that reports both halves (`1 failed, 5 passed`) keeps its failure count exact and may
+  // still move its passing half — which is what lets the case below excuse.
   const PYTEST_V = {
     base: [RED_LINE, "PASSED tests/x_test.py::test_b", "===== 1 failed, 5 passed in 0.42s ====="],
     head: [
@@ -169,24 +173,74 @@ const RED_LINE = "FAILED tests/x_test.py::test_a - AssertionError";
     ],
     why: "go test -v: new `=== RUN` and `--- PASS:` lines",
   };
-  const PYTEST_SUMMARY_REFUSES = {
-    // What the rule costs, and the cost is taken deliberately: the same run whose summary
-    // line counts differently between base and head REFUSES, because a summary that reports
-    // failures (`1 failed, N passed`) cannot distinguish "N rose because the PR added
-    // passing checks" from "N fell because the PR broke one". A hand-back is the right
-    // answer when the evidence cannot tell those apart; a green is not.
+  const PYTEST_SUMMARY_MOVED = {
+    // THE field case the whole rule exists for, and the reason the counter fold keeps failure
+    // counts exact: a PR ADDS PASSING TESTS to a suite that was ALREADY RED with the same
+    // failure, and its summary moves ONLY in the passing half (`3 passed` → `5 passed`) while
+    // `1 failed` stands. The classifier reads the counted failing tally as a failure line, so
+    // before {@link counterFolded} moved the non-failure counters this refused — the feature
+    // refusing the one case it grants. The line that does NOT excuse is the same pair with the
+    // FAILURE count moved, pinned just below.
     base: [RED_LINE, "PASSED tests/x_test.py::test_b", "===== 1 failed, 4 passed in 0.42s ====="],
     head: [RED_LINE, "PASSED tests/x_test.py::test_b", "PASSED tests/new_test.py::test_new", "===== 1 failed, 5 passed in 0.44s ====="],
-    why: "pytest -v whose failure-reporting summary moved: refuses rather than guesses",
+    why: "pytest -v whose failure-reporting summary moved only its PASSED count: the added passing tests excuse",
   };
-  for (const c of [PYTEST_V, PYTEST_PLAIN, PYTEST_CLEAN_SUMMARY_MOVED, TAP, TAP_SUMMARY_MOVED, GO]) {
+  const PYTEST_FAILURE_COUNT_MOVED = {
+    // The other half of the same rule, and the reason the fold is exact and not convenient: the
+    // same summary with its FAILURE count moved is a check that broke, and no fold may make
+    // `2 failed` the line the base printed as `1 failed`.
+    base: [RED_LINE, "PASSED tests/x_test.py::test_b", "===== 1 failed, 3 passed in 0.42s ====="],
+    head: [RED_LINE, "PASSED tests/x_test.py::test_b", "PASSED tests/new_test.py::test_new", "===== 2 failed, 3 passed in 0.42s ====="],
+    why: "pytest -v whose summary moved its FAILED count: a check broke, and that is not excusable",
+  };
+  const JUNIT_TOTALS_MOVED = {
+    // Surefire/JUnit's dialect: `Tests run: N, Failures: N`. The total of how many checks ran is
+    // a counter and moves; the `Failures: 1` beside it is a reporter and must not.
+    base: [RED_LINE, "Tests run: 3, Failures: 1"],
+    head: [RED_LINE, "Tests run: 5, Failures: 1"],
+    why: "a `Tests run: N, Failures: N` tally whose TOTAL moved and whose failure count did not",
+  };
+  const JUNIT_FAILURES_MOVED = {
+    // The same shape with the number that matters moved: `Failures: 1` beside `Failures: 2` is
+    // one more broken check, and the fold leaves both digits standing.
+    base: [RED_LINE, "Failures: 1"],
+    head: [RED_LINE, "Failures: 2"],
+    why: "a Failures: N tally whose failure count moved refuses",
+  };
+  const PYTEST_FULL_STREAM = {
+    // The whole stream of the field case, not one line of it: pytest's summary moves its
+    // passed count and its duration, the run gains per-check PASSED lines and a progress row,
+    // and the one recognised failure line is identical on both sides. Every line that differs
+    // is either a pass marker, a progress row, or a tally whose failure count did not move.
+    base: [
+      "collected 12 items",
+      "tests/x_test.py ..F..                      [ 50%]",
+      "PASSED tests/x_test.py::test_a",
+      "PASSED tests/x_test.py::test_b",
+      RED_LINE,
+      "===== 1 failed, 3 passed in 0.21s =====",
+    ],
+    head: [
+      "collected 14 items",
+      "tests/x_test.py ..F....                    [ 57%]",
+      "tests/new_test.py ..                       [100%]",
+      "PASSED tests/x_test.py::test_a",
+      "PASSED tests/x_test.py::test_b",
+      "PASSED tests/new_test.py::test_new_one",
+      "PASSED tests/new_test.py::test_new_two",
+      RED_LINE,
+      "===== 1 failed, 5 passed in 0.34s =====",
+    ],
+    why: "a full pytest stream that added two passing checks to a red suite: every moved line excuses",
+  };
+  for (const c of [PYTEST_V, PYTEST_PLAIN, PYTEST_CLEAN_SUMMARY_MOVED, TAP, TAP_SUMMARY_MOVED, GO, PYTEST_SUMMARY_MOVED, JUNIT_TOTALS_MOVED, PYTEST_FULL_STREAM]) {
     const r = excuseOf(c.head, c.base);
     assert(r.kind === "excused", `(excuse) ${c.why} — the added passing tests excuse (${r.kind})`);
   }
-  assert(
-    excuseOf(PYTEST_SUMMARY_REFUSES.head, PYTEST_SUMMARY_REFUSES.base).kind === "refused",
-    `(refuse) ${PYTEST_SUMMARY_REFUSES.why} (${excuseOf(PYTEST_SUMMARY_REFUSES.head, PYTEST_SUMMARY_REFUSES.base).kind})`,
-  );
+  for (const c of [PYTEST_FAILURE_COUNT_MOVED, JUNIT_FAILURES_MOVED]) {
+    const r = excuseOf(c.head, c.base);
+    assert(r.kind === "refused", `(refuse) ${c.why} (${r.kind})`);
+  }
 }
 
 // ---------------------------------- (direction) an unknown clean shape costs a hand-back

@@ -13,9 +13,14 @@
  * point of the reversal is that a new failure line no longer needs an entry anywhere to be
  * caught — a test that only goes through the excuse cannot tell "refused because the table
  * knows it" from "refused because nothing vouched for it", and the second is the rule.
+ *
+ * The counter/reporter boundary is pinned here too, since {@link counterFolded} is what draws
+ * it: a number attached to a NON-failure counter (`3 passed`, `Tests run: 3`) is a runner
+ * counting its own run and may move between the two streams; a number attached to a FAILURE
+ * word (`1 failed`, `Failures: 1`) is evidence about which checks broke and is read exactly.
  */
 import { classifyFailureLine } from "../src/work-driver-verify-failures.ts";
-import { isKnownCleanLine } from "../src/lean/verify-baseline-allow-list.ts";
+import { counterFolded, isKnownCleanLine } from "../src/lean/verify-baseline-allow-list.ts";
 
 const SELF = "test-AC15-baseline-excuse-allow-list.ts";
 let exit = 0;
@@ -54,7 +59,12 @@ function assert(cond: boolean, msg: string): void {
     // A TAP plan — how many checks the runner intends to print, not a verdict.
     "1..9",
     "1..10",
-    // Separators.
+    // A tally whose FAILURE count is zero or absent counts passes, and its number may move: the
+    // added-passing-tests case lives here, including the dialects whose counters sit in a
+    // `Label: N` form or name something other than passes.
+    "12 passed, 1 warning in 0.5s",
+    "===== 0 failed, 3 passed in 0.2s =====",
+    // A separator.
     "=====",
     "-----",
     "#######",
@@ -91,6 +101,12 @@ function assert(cond: boolean, msg: string): void {
     "===== 5 failed, 1 passed in 0.44s =====",
     "1 failed, 5 passed",
     "1 error, 5 passed",
+    // The same tallies in the padding a real runner prints. Each reports a NON-ZERO failure
+    // count, and the counter fold leaves that count standing, so the tally arm still refuses
+    // them: a moved passed-count excuses, a moved-or-not failed-count never does.
+    "===== 1 failed, 5 passed in 0.3s =====",
+    "Tests run: 5, Failures: 1",
+    "Failures: 1",
     // Words that merely CONTAIN a pass marker: the arms are anchored, so they do not pass.
     "okay we are fine",
     "token ok maybe",
@@ -120,6 +136,51 @@ function assert(cond: boolean, msg: string): void {
       `(refuse) the classifier reads "${line}" as a failure line`,
     );
     assert(!isKnownCleanLine(line), `(refuse) so "${line}" is never clean`);
+  }
+}
+
+// ------------------------ (counters) what the comparison fold may move, and what it may not
+{
+  // `counterFolded` is the looser key `baselineExcuse` falls back to, so its two directions are
+  // the two halves of the rule: the fields a runner is entitled to move between two runs, and
+  // everything that stays byte-for-byte. A fold that is too WIDE excuses a regression the base
+  // never printed; a fold that is too NARROW refuses the PR that only added passing tests. Both
+  // are pinned, on the lines real runners print.
+  const MAY_MOVE: [string, string, string][] = [
+    ["===== 1 failed, 3 passed in 0.2s =====", "===== 1 failed, 5 passed in 0.3s =====", "the field case: a moved PASSED count and duration beside the same 1 failed"],
+    ["1 failed, 3 passed", "1 failed, 5 passed", "the bare tally, same case"],
+    ["Tests run: 3, Failures: 1", "Tests run: 5, Failures: 1", "a Surefire total beside an unchanged Failures count"],
+    ["a.py: 1 failed, 3 passed", "a.py: 1 failed, 5 passed", "the `named-file` dialect's own tally"],
+    ["--- FAIL: TestSolo (0.02s)", "--- FAIL: TestSolo (0.05s)", "go's per-check duration"],
+    ["3 passed", "5 passed", "a passing count on a line that reports no failure"],
+  ];
+  for (const [a, b, why] of MAY_MOVE) {
+    assert(
+      counterFolded(a) === counterFolded(b),
+      `(fold) ${why}: "${a}" and "${b}" are one line (${counterFolded(a)} / ${counterFolded(b)})`,
+    );
+  }
+
+  const MUST_DIFFER: [string, string, string][] = [
+    ["===== 1 failed, 3 passed in 0.2s =====", "===== 2 failed, 3 passed in 0.2s =====", "a moved FAILED count is a check that broke"],
+    ["===== 1 failed, 3 passed in 0.2s =====", "===== 1 error, 3 passed in 0.2s =====", "failed and error are different reports, however both fold"],
+    ["Failures: 1", "Failures: 2", "the Surefire failure count"],
+    ["Errors: 1", "Errors: 2", "the Surefire error count"],
+    ["tests/x.py: 1 failed", "tests/x.py: 2 failed", "the `named-file` failure count"],
+    ["tests/a.py: failed checks (1)", "tests/a.py: failed checks (2)", "the script tally's own count"],
+    ["pack_release_test.sh: 36 cases, 1 failed", "pack_release_test.sh: 36 cases, 2 failed", "the comma tally's failing half"],
+    ["FAILED t.py::a - assert 1 == 2", "FAILED t.py::a - assert 1 == 3", "an assertion's values are findings, not counters"],
+    ["expected 3 to be 4", "expected 3 to be 5", "the same, in the assertion dialect"],
+    ["not ok 2 - a bats check", "not ok 3 - a bats check", "a TAP check number is folded elsewhere, never by this key"],
+    ["0 failed", "1 failed", "a count that moved to or from zero changed the failure report"],
+    ["10 failed", "11 failed", "a multi-digit failure count keeps its digits"],
+    ["version 1.2.3", "version 1.2.4", "a version is not a counter"],
+  ];
+  for (const [a, b, why] of MUST_DIFFER) {
+    assert(
+      counterFolded(a) !== counterFolded(b),
+      `(fold) ${why}: "${a}" and "${b}" stay two lines (${counterFolded(a)})`,
+    );
   }
 }
 

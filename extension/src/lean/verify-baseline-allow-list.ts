@@ -27,6 +27,10 @@
  * a PASSING check (a PR that adds passing tests prints new ones of those every run). Neither
  * is an exemption from the rule — a line that survives both filters and matches nothing is
  * refused on its face, whatever it opens with.
+ *
+ * The comparison keys live here too ({@link normaliseRaw}, {@link counterFolded},
+ * {@link leadingIndexFolded}) because WHAT MAY MOVE is the same question as WHAT MAY BE
+ * EXCUSED, and it is answered in one place: only a runner's counters, never a failure count.
  */
 
 import { classifyFailureLine, isSuccessLine } from "../work-driver-verify-failures.ts";
@@ -119,6 +123,12 @@ const PADDING = /^[\s=*_~.,:-]+|[\s=*_~.,:-]+$/g;
  * The classifier reads a non-zero counted tally as a FAILURE LINE and a failing-free tally as a
  * passing line, so this guard holds the allow-list to the reading the table already gives —
  * asked independently, so no padding or prefix can talk the tally arm into a pass.
+ *
+ * It is asked of {@link counterFolded}, not the raw line: a NON-ZERO failure count survives that
+ * fold untouched, so a tally reporting one still refuses, while a number that belongs to a
+ * NON-failure counter has already become the placeholder and no longer reads as a failure the
+ * line does not report. Asking the raw line is what refused the field case — `1 failed, 3
+ * passed` and `1 failed, 5 passed` are the same report about the same red suite.
  */
 const FAILURE_WORD =
   /(?:^|\D[\s=*_~.,:-]*)[1-9]\d*\s+(?:failed|failing|failures?|errors?|fatal|critical)\b/i;
@@ -134,6 +144,130 @@ const TAP_PLAN = /^\s*\d+\.\.\d+\s*$/;
 
 /** How many tests a collecting runner found — a count, not a verdict. */
 const COLLECTION_LINE = /^collected\s+\d+\s+(?:item|test)s?\b/i;
+
+/**
+ * The placeholder a folded field is replaced with.
+ *
+ * A character no runner prints (`#` is neither a digit nor a status word), so a real line can
+ * never collide with a folded one and two lines that differ by content never collapse onto it.
+ */
+const PLACEHOLDER = "#";
+
+/**
+ * A digit run the runner printed as a COUNT or a TIMING, followed by its word.
+ *
+ * The fold is done by SPLITTING on digit runs and asking each one the same two questions about
+ * the text around it, rather than by a chain of number-eating regexes: a regex fold either
+ * swallows a failure count it must keep (the defect that makes `1 failed` equal `2 failed`) or
+ * leaves a passing count standing (the defect that refuses the added-passing-tests case). A
+ * digit run is folded ONLY when a counter or duration word sits immediately next to it —
+ * `3 passed`, `2 skipped`, `5 tests`, `36 cases`, `2 warnings`, `5 total`, `1 warning`,
+ * `2 xfailed`, `0.2s`, `1.5 seconds` — and keeps its digits everywhere else, which is what keeps
+ * `assert 1 == 2`, `expected 3 to be 4`, a timestamp or a version standing as printed. A word
+ * separated from the digits by any other character is not the word of THAT number.
+ */
+const DIGIT_RUN = /\d+(?:\.\d+)*/g;
+
+/**
+ * The counter words a runner prints AFTER its number: `3 passed`, `2 skipped`, `5 tests`.
+ *
+ * These are the numbers a PR that ADDS PASSING TESTS moves, which is the field case the whole
+ * tally allowance exists for: a suite already red at base gains two checks and its summary line
+ * changes ONLY in the passing half (`1 failed, 3 passed` → `1 failed, 5 passed`). Read
+ * byte-for-byte that is a head-only line, so an excuse that compared digits would refuse the one
+ * case it grants. FAILURE words are deliberately absent — see {@link NEAR_FAILURE}.
+ */
+const COUNTER_WORD_AFTER =
+  /^\s*(?:passed|passes|pass|skipped|skips|deselected|xfailed|xpassed|warnings?|tests?|items?|cases|total)(?![A-Za-z0-9])/i;
+
+/** The same counter words printed BEFORE their number: `Tests: 5`, `Tests run: 3`, `Skipped: 0`. */
+const COUNTER_WORD_BEFORE =
+  /(?:^|[\s(,;:=])(?:passed|passes|pass|skipped|skips|deselected|xfailed|xpassed|warnings?|tests?|items?|cases|total|(?:tests\s+)?run|ran)[\s=:,;]*$/i;
+
+/** A duration unit printed after its number: `0.2s`, `12ms`, `1.5 seconds`. */
+const DURATION_AFTER = /^\s*(?:ms|s|sec|secs|seconds?|minutes?|hours?)(?![A-Za-z0-9])/i;
+
+/**
+ * A FAILURE word adjacent to a digit run — on either side of it.
+ *
+ * THIS is the arm the whole change turns on. A count attached to `failed`, `failures`, `errors`
+ * or the like is the evidence the excuse must read EXACTLY: `1 failed, 3 passed` and `2 failed,
+ * 3 passed` are two reports about two different numbers of broken checks, and collapsing them
+ * would grade a regression the base never printed. So adjacency to a failure word outranks
+ * everything else — a number is never folded because its OTHER neighbour is a passing word. It is
+ * also why `seconds 2 failed` folds nothing: `s` alone looks like a duration unit, but the digit
+ * is attached to `failed`, and the failure question is asked first.
+ *
+ * The `\s` of a number's own tally SEPARATES it from its word (`1 failed, 3 passed` puts a comma
+ * between the failure and the passing count) and the word boundary ends it, so a passing count
+ * never reads as a failure count through the comma of the tally before it — which is the whole of
+ * the added-passing-tests case — and an assertion value that only happens to sit before the word
+ * `failed` in prose (`assert 1 == 2 failed to compile`) keeps its digits.
+ */
+const NEAR_FAILURE =
+  /(?:^|[\s(,;:=])\d+\s+(?:failed|failing|failures?|errors?|fatal|critical)(?![A-Za-z0-9])|(?<=[\s(,;:=])(?:failed|failing|failures?|errors?|fatal|critical)\s*:?[\s]*$/i;
+
+/**
+ * A tally's TOTAL — the count of how many checks ran, in its `Label: N` form.
+ *
+ * `Tests run: 3` and `Ran 5 tests` count checks, not verdicts, so the added-checks case moves
+ * them and the excuse must not read them as evidence. They are folded on the digit's OWN text
+ * rather than by {@link COUNTER_WORD_AFTER}, because the digit sits AFTER its label — past the
+ * colon, where an adjacency test on the text after the number cannot reach it — and `run`/`ran`
+ * cannot join that word list, or `expected 5 to run 6 passed` would have its assertion numbers
+ * folded. A `Failures:` or `Errors:` label is not in this list, and neither label may be followed
+ * by the word `failures`/`errors` (which is how a real `Failures: 1` is spelled): its count is a
+ * failure count, and the second arm of {@link NEAR_FAILURE} refuses it again here.
+ */
+const TALLY_TOTAL =
+  /^(?:tests\s+run|tests|run|ran)\s*:?\s*(?!\d*\s*(?:failed|failing|failures?|errors?|fatal|critical)\b)\d/i;
+
+/**
+ * A line's numbers read as counters, for the looser comparison pass.
+ *
+ * THE question this file answers, in one function: what may a runner's line move by between the
+ * base run and the head run and still be the same line? The answer is exactly the words above —
+ * a NON-failure counter and a duration — and everything else stays byte-for-byte, above all every
+ * count attached to a failure word. Two lines the runner means to be the same collapse; two
+ * defects do not. Zero counts fold with the rest, and are safe in doing so: a number that moved
+ * to or from zero changes the FAILURE arm's own match, so `0 failed` and `1 failed` cannot meet.
+ *
+ * WHY a second key is needed at all, when {@link isKnownCleanLine} already allows tallies:
+ * `hasHeadOnlyUnrefusedLine` vouches for a head-only line by its SHAPE, but `baselineExcuse`
+ * then compares the RECOGNISED failure lines strictly, and a runner's summary of a red run
+ * (`===== 1 failed, 3 passed in 0.2s =====`) is one of them — the classifier reads a counted
+ * failing tally as a failure line. So the one field a PR's added checks move has to be folded on
+ * BOTH sides of that comparison, or the feature refuses the case it exists to grant.
+ *
+ * The fold is confined to this pass. The exact key in {@link normaliseRaw} keeps every digit, and
+ * that key is what is RECORDED and replayed by `ci`; a fold that reached the record would turn a
+ * moved failure count into an equality the base never printed — the outcome this whole module
+ * exists to refuse. Both scans are linear over a line the classifier's window already bounds and
+ * no arm nests a quantifier, so no fold can backtrack.
+ */
+export function counterFolded(line: string): string {
+  let out = "";
+  let last = 0;
+  for (const match of line.matchAll(DIGIT_RUN)) {
+    const at = match.index ?? 0;
+    const before = line.slice(Math.max(0, at - 32), at);
+    const after = line.slice(at + match[0].length, at + match[0].length + 32);
+    out += line.slice(last, at);
+    // The text the digit ITSELF printed, so a failure word on the far side of the number
+    // (which the 32-char windows above can straddle from a neighbour) cannot decide this one.
+    const own = ` ${before.slice(Math.max(0, before.length - match[0].length))}${match[0]}${after}`;
+    out += NEAR_FAILURE.test(own)
+      ? match[0]
+      : COUNTER_WORD_AFTER.test(after) ||
+          COUNTER_WORD_BEFORE.test(before) ||
+          DURATION_AFTER.test(after) ||
+          TALLY_TOTAL.test(own)
+        ? PLACEHOLDER
+        : match[0];
+    last = at + match[0].length;
+  }
+  return `${out}${line.slice(last)}`.trim();
+}
 
 /**
  * Is a head-only line one the excuse may ignore, because it cannot declare a failure?
@@ -159,7 +293,8 @@ export function isKnownCleanLine(line: string): boolean {
     GO_RUN_LINE.test(line) ||
     PROGRESS_LINE.test(line) ||
     SEPARATOR_LINE.test(line) ||
-    (RUN_SUMMARY.test(line.trim().replace(PADDING, "")) && !FAILURE_WORD.test(line)) ||
+    (RUN_SUMMARY.test(line.trim().replace(PADDING, "")) &&
+      !FAILURE_WORD.test(counterFolded(line))) ||
     TAP_PLAN.test(line) ||
     COLLECTION_LINE.test(line)
   );
@@ -260,8 +395,8 @@ export function judgeableLines(stream: string): string[] {
  * A line's comparison key: its own tree prefix out, its whitespace collapsed.
  *
  * Digits are NOT folded here. A digit is the finding inside an assertion, so this is the STRICT
- * key — the one that keeps `assert 1 == 2` and `assert 1 == 3` two lines. The single field a
- * runner may move is folded separately, and only by {@link leadingIndexFolded}.
+ * key — the one that keeps `assert 1 == 2` and `assert 1 == 3` two lines. What a runner may
+ * move is folded separately and only by {@link counterFolded} and {@link leadingIndexFolded}.
  */
 export function normaliseRaw(line: string, root: string): string {
   return stripRoot(line, root).replace(/\s+/g, " ").trim();
