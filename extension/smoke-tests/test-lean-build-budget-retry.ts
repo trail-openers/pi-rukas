@@ -301,6 +301,89 @@ function breachTurns(turns: number) {
   );
 }
 
+// ── (f) the ci:red fix round: entered AT the cap, one child, no in-step retry ─
+//
+// The other side of the same coin as (r). A CI fix round is the one build the
+// table enters with its dispatch budget ALREADY spent: three real rounds plus
+// the fix round itself — which no dispatch bought — leave `buildAttempts` at 4,
+// one past the cap. Read as `dispatchedBefore + tries + 1 >= cap`, that entry
+// still reads as room for a retry, and a ceiling-stopped fix round buys children
+// the run has no rounds left to pay for. The rule the loop obeys is the
+// dispatches-spent-so-far comparison, so this visit runs its one child, folds it,
+// and leaves.
+{
+  const BUILD_TURNS = 3;
+  const cfg: WorkConfig = {
+    ...configWithRunner(),
+    budgets: { ...defaultConfig().budgets, build: { turns: BUILD_TURNS, tokens: 0, minutes: 0 } },
+  };
+  const breach = (onProgress: BudgetOpts["onProgress"]) =>
+    onProgress?.({ ...emptyRunningState("developer"), turns: BUILD_TURNS + 1 });
+  const built = buildFixture(152);
+  // The counter the ci:red edge really hands a fix round — derived through the
+  // table rather than typed as a literal: three dispatched rounds, then the CI
+  // fix round itself, which no dispatch bought.
+  const ciFix = next(
+    {
+      ...runProbe("verify"),
+      counters: { ...INITIAL_COUNTERS, buildAttempts: MAX_BUILD_ATTEMPTS },
+    },
+    { kind: "red" },
+  );
+  const walked = next({ ...runProbe("ci"), counters: ciFix.counters }, { kind: "red" });
+  assert(
+    walked.state === "build" && walked.counters.buildAttempts === MAX_BUILD_ATTEMPTS + 1,
+    `(f) the table hands a ci fix round one round past the cap (got ${walked.state}/${walked.counters.buildAttempts})`,
+  );
+  // Written as properties of the fixture's own counters object, the way (r) does
+  // it: `runBuild` re-points `run.steps` when it wires the fixture, so a
+  // wholesale replace of `run.counters` on the stale copy the case holds is the
+  // one edit the step never reads.
+  built.ctx.run.counters.buildAttempts = walked.counters.buildAttempts;
+  built.ctx.run.counters.ciFixUsed = walked.counters.ciFixUsed;
+  const fix = await runBuild({
+    issue: 152,
+    built,
+    config: cfg,
+    child: (wt) => put(wt, "src/retry.ts", "export const retry = () => 1;\n"),
+    onProgressTick: breach,
+  });
+  assert(
+    fix.threw === undefined,
+    `(f) the fix round does not throw: ${fix.threw?.message ?? "clean"}`,
+  );
+  assert(
+    fix.outcome?.kind === "budget",
+    `(f) the stopped fix round reports its budget verdict (got ${fix.outcome?.kind ?? fix.threw?.message})`,
+  );
+  assert(
+    fix.dispatched === 1,
+    `(f) a budget-stopped child on a visit entered with buildAttempts at the cap dispatches exactly 1 child (got ${fix.dispatched})`,
+  );
+  assert(
+    (fix.outcome?.dispatches ?? []).length === 1,
+    `(f) and bills exactly the one child it ran (got ${(fix.outcome?.dispatches ?? []).length})`,
+  );
+  // The number the handback prints is the dispatches the run has PAID FOR: the
+  // three the table billed before this visit, plus the fix round this visit is.
+  // Deriving it from the walk's counter rather than typing it keeps the assertion
+  // the table's answer, not the case's guess about the cap.
+  assert(
+    (fix.outcome?.reason ?? "").includes(
+      `after ${String(walked.counters.buildAttempts + 1)} build attempts`,
+    ),
+    `(f) the verdict counts the round this visit is running among the dispatches spent (got ${fix.outcome?.reason})`,
+  );
+  assert(
+    fix.headAfter !== fix.headBefore,
+    "(f) the fix round's work is still folded, so a paid-for child is not thrown away",
+  );
+  assert(
+    status(fix.worktree) === "",
+    `(f) and the tree is clean for ci to re-check (got ${status(fix.worktree)})`,
+  );
+}
+
 for (const dir of ROOTS) {
   try {
     (await import("node:fs")).rmSync(dir, { recursive: true, force: true });

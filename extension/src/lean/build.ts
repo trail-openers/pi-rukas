@@ -273,14 +273,24 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
   let stopped = budgetStopFromLog(ctx.steps);
   const rows: DispatchUsageRow[] = [];
   let toolUses: unknown[] = [];
-  // Children this visit has put on the wire. The cap below is read against the
-  // rounds DISPATCHED — the ones already decided, plus the ones this loop has
-  // bought — because `buildAttempts` counts dispatches now and a child its own
-  // ceiling stopped was one: a budget stop buys another child while dispatches
-  // remain, which is what lets a run spend its third build on work rather than
-  // on a ceiling. (R3)
+  // Children this visit has put on the wire. `buildAttempts` counts rounds the
+  // table DISPATCHED, and the edge that entered `build` already billed the round
+  // this visit is running — so `dispatchedBefore` is what was spent BEFORE the
+  // first child here, and `MAX_BUILD_ATTEMPTS - dispatchedBefore` is what is left
+  // to buy. That difference is the whole rule: the loop may buy ANOTHER child only
+  // while the rounds dispatched SO FAR sit under the cap, so it runs the one child
+  // its own round paid for and stops the moment `dispatchedBefore + tries + 1`
+  // reaches the cap. The `+1` matters — a test on `dispatchedBefore >= cap` alone
+  // counts only what came before this visit, so a visit the table entered AT the
+  // cap keeps buying children the run has no rounds left to pay for. A ci:red fix
+  // round is exactly that shape: the table legitimately hands it `buildAttempts`
+  // one past `MAX_BUILD_ATTEMPTS` (three dispatched rounds plus the fix round
+  // itself, which no dispatch bought), and its ceiling-stopped child must run once,
+  // fold, and leave — never retry in-step. Below the cap a budget stop DOES buy
+  // another child, which is what lets a run spend its third build on work rather
+  // than on a ceiling. (R3)
+  const retriesAllowed = Math.max(0, MAX_BUILD_ATTEMPTS - dispatchedBefore - 1);
   for (let tries = 0; ; tries++) {
-    const dispatched = dispatchedBefore + tries + 1;
     const budget = armBudget(budgetFor(config, "build"));
     if (budget.warning !== undefined) traceWarn(`lean build #${String(issue)}: ${budget.warning}`);
     const [dispatchedChild, row] = await dispatchBuilder(deps.dispatch, {
@@ -306,8 +316,12 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
     // re-run the frozen files under ONE wall clock, so verify finds a clean tree and
     // the retry's prompt names what is still failing (#2067). The kind stays `budget`.
     // R5: a run the cap ENDS here names the dispatches too, which `handback` prints —
-    // a ceiling alone cannot say the retries were spent.
-    const atCap = dispatched >= MAX_BUILD_ATTEMPTS;
+    // a ceiling alone cannot say the retries were spent. The bound is read the SAME
+    // way the loop reads it, so the sentence the handback prints cannot disagree with
+    // the children this visit was allowed to buy; and the count named includes
+    // `dispatchedBefore`, because on a visit entered at or over the cap this loop ran
+    // no retry at all and `tries` alone would claim a child it never bought.
+    const atCap = tries >= retriesAllowed;
     const { kept, failing } = await foldStoppedBuild({
       ...fold(label),
       template: config.verify.test,
@@ -319,7 +333,7 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
       ...budgetVerdictWithRows("build", read.stop, rows),
       reason: joinNotes([
         budgetSentence("build", read.stop),
-        ...(atCap ? [`after ${String(dispatched)} build attempts`] : []),
+        ...(atCap ? [`after ${String(dispatchedBefore + tries + 1)} build attempts`] : []),
         failing.length === 0 ? "" : `still failing: ${clipList(failing, LIST_CLIP)}`,
         kept.files.length === 0 ? "" : `kept ${String(kept.files.length)} file(s)`,
       ]),

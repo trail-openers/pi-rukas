@@ -33,6 +33,7 @@ import {
   ticking,
 } from "./lib/lean-engine-fixtures.ts";
 import { driveRun, foldOf, writePrefix } from "./lib/lean-real-log-fixture.ts";
+import { forgedCiRedCounters, forgedCiRedSteps } from "./lib/lean-resume-fixture.ts";
 
 const { assert, failures } = makeAssert();
 
@@ -86,101 +87,14 @@ function forgedCiRed(dir: string, issue: number): void {
     // step — index 8 — says RED. Replaying the older `ci:0 = green` is what
     // used to walk this into the merge.
     state: "ci",
-    counters: {
-      ...INITIAL_COUNTERS,
-      // The counters the table itself reaches after this exact log — see the
-      // comment on `steps`: the log is a walk, so its counters are derivable.
-      buildAttempts: 4,
-      challengeDone: true,
-      reviewDone: true,
-      ciFixUsed: true,
-      draft: false,
-    },
-    steps: [
-      STEP(issue, "ready", 0, "ok"),
-      STEP(issue, "specify", 0, "ok"),
-      STEP(issue, "build", 0, "ok"),
-      STEP(issue, "challenge", 0, "none"),
-      {
-        key: `${issue}:verify:0`,
-        state: "verify",
-        startedAt: CLOCK,
-        endedAt: CLOCK,
-        outcome: { kind: "red" },
-      },
-      {
-        key: `${issue}:build:1`,
-        state: "build",
-        startedAt: CLOCK,
-        endedAt: CLOCK,
-        outcome: { kind: "ok" },
-      },
-      {
-        key: `${issue}:challenge:1`,
-        state: "build",
-        startedAt: CLOCK,
-        endedAt: CLOCK,
-        outcome: { kind: "ok" },
-      },
-      {
-        key: `${issue}:verify:1`,
-        state: "verify",
-        startedAt: CLOCK,
-        endedAt: CLOCK,
-        outcome: { kind: "green" },
-      },
-      {
-        key: `${issue}:publish:0`,
-        state: "publish",
-        startedAt: CLOCK,
-        endedAt: CLOCK,
-        outcome: { kind: "ok" },
-      },
-      {
-        key: `${issue}:review:0`,
-        state: "review",
-        startedAt: CLOCK,
-        endedAt: CLOCK,
-        outcome: { kind: "done" },
-      },
-      STEP(issue, "ci", 0, "green"),
-      {
-        key: `${issue}:build:2`,
-        state: "build",
-        startedAt: CLOCK,
-        endedAt: CLOCK,
-        outcome: { kind: "ok" },
-      },
-      {
-        key: `${issue}:build:3`,
-        state: "build",
-        startedAt: CLOCK,
-        endedAt: CLOCK,
-        outcome: { kind: "ok" },
-      },
-      {
-        key: `${issue}:verify:2`,
-        state: "verify",
-        startedAt: CLOCK,
-        endedAt: CLOCK,
-        outcome: { kind: "green" },
-      },
-      {
-        key: `${issue}:publish:1`,
-        state: "publish",
-        startedAt: CLOCK,
-        endedAt: CLOCK,
-        outcome: { kind: "ok" },
-      },
-      {
-        key: `${issue}:review:1`,
-        state: "review",
-        startedAt: CLOCK,
-        endedAt: CLOCK,
-        outcome: { kind: "done" },
-      },
-      STEP(issue, "ci", 1, "red"),
-    ],
+    // The log is the walk the table produces and the counters beside it are
+    // DERIVED from it — the fixture folds the very steps it wrote, never a literal.
+    // The forgery this file commits is the ONE the case judges: `state: "ci"` while
+    // the newest `ci` row says red, which is what the engine's replay path used to
+    // apply as `ci:0 = green` and merge. Every other field is the table's own answer,
+    // so a refusal cannot come from a counter or a step label someone hand-carried.
+    counters: forgedCiRedCounters(issue),
+    steps: forgedCiRedSteps(issue),
   };
   writeFileSync(leanStateFile(dir, issue), JSON.stringify(seed, null, 2), "utf8");
 }
@@ -281,6 +195,20 @@ function forgedCiRed(dir: string, issue: number): void {
   const { dir, cleanup } = tempDir();
   try {
     mkdirSync(path.dirname(leanStateFile(dir, 43)), { recursive: true });
+    // The log first, so the snapshot beside it can be DERIVED from it below.
+    const seed43Steps: LeanRun["steps"] = [
+      STEP(43, "ready", 0, "ok"),
+      STEP(43, "specify", 0, "ok"),
+      STEP(43, "build", 0, "ok"),
+      STEP(43, "challenge", 0, "none"),
+      STEP(43, "verify", 0, "green"),
+      STEP(43, "publish", 0, "ok"),
+      STEP(43, "review", 0, "done"),
+      STEP(43, "ci", 0, "red"),
+      STEP(43, "build", 1, "ok"),
+      // A crash mid-second-verify, after the fix build came back.
+      { key: "43:verify:1", state: "verify", startedAt: CLOCK },
+    ];
     const seed: LeanRun = {
       schema: 1,
       issue: 43,
@@ -292,33 +220,27 @@ function forgedCiRed(dir: string, issue: number): void {
       counters: {
         ...INITIAL_COUNTERS,
         // A PRE-CHANGE record: written while `MAX_BUILD_ATTEMPTS` was 2, and it
-        // still folds. What the table bills on this walk is the first build and
-        // the CI fix round that red CI bought — 3 attempts today, because a round
-        // is billed on ENTERING build, and the same 3 the old cap billed too: that
-        // cap refused a FOURTH, so raising it cannot re-price a log that never
-        // asked for one. The blank `verify:1` tail is a step the run was routed
-        // INTO by a build that already billed its own round, so it owes nothing
-        // extra — and that is half of what the case pins: the other half is that a
-        // blank tail at a gate state never reads as a red verdict when the land
-        // gate asks the record.
-        buildAttempts: 3,
-        challengeDone: true,
-        reviewDone: true,
-        ciFixUsed: true,
+        // still folds. DERIVED rather than typed — `foldLog` over the very log
+        // below is what the table bills on this walk, so the case keeps its real
+        // claim (the snapshot and the log agree, and a blank tail at a gate state
+        // is not a red verdict when the land gate asks the record) instead of
+        // pinning whichever number today's billing rule happens to produce. What
+        // the walk bills is the first build and the CI fix round that red CI
+        // bought; the blank `verify:1` tail is a step the run was routed INTO by a
+        // build that already billed its own round, so it owes nothing extra.
+        ...foldOf({
+          schema: 1,
+          issue: 43,
+          version: "test",
+          models: {},
+          baseSha: FIXTURE_BASE_SHA,
+          branch: "feature/issue-43",
+          state: "ready",
+          counters: { ...INITIAL_COUNTERS },
+          steps: seed43Steps,
+        }).counters,
       },
-      steps: [
-        STEP(43, "ready", 0, "ok"),
-        STEP(43, "specify", 0, "ok"),
-        STEP(43, "build", 0, "ok"),
-        STEP(43, "challenge", 0, "none"),
-        STEP(43, "verify", 0, "green"),
-        STEP(43, "publish", 0, "ok"),
-        STEP(43, "review", 0, "done"),
-        STEP(43, "ci", 0, "red"),
-        STEP(43, "build", 1, "ok"),
-        // A crash mid-second-verify, after the fix build came back.
-        { key: "43:verify:1", state: "verify", startedAt: CLOCK },
-      ] as LeanRun["steps"],
+      steps: seed43Steps,
     };
     writeFileSync(leanStateFile(dir, 43), JSON.stringify(seed, null, 2), "utf8");
     const { handlers, calls } = scripted(HAPPY);
