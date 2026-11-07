@@ -115,8 +115,9 @@ export async function buyFullReview(
   // Narrowed here rather than at the call site: the stop arm above threw, so the
   // findings the rest of the step reads are present. `open`/`blocking` are the
   // gate's own answers restated as the booleans the step reads, and `stop` is
-  // pinned to `undefined` because a stopped gate never reaches this line — the
-  // spread above would otherwise carry the discarded union arm's `stop` through.
+  // pinned to `undefined` because a stopped gate never reaches this line — an
+  // object spread of `gate` would otherwise carry the discarded union arm's `stop`
+  // through.
   return {
     gate: {
       findings: gate.findings ?? "",
