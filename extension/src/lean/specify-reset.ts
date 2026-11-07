@@ -227,7 +227,10 @@ export function writeCaptured(wt: string, captured: Map<string, Buffer>): void {
 /**
  * Reset `wt` completely to `baseSha`: child commits, staged changes, untracked
  * files, ignore tricks AND the provisioned dependency links all go, and the
- * run's branch is pointed at the base.
+ * run's branch is pointed at the base. A caller whose tree owns no branch — the
+ * review fixer's, `--detach`'d while the run's tree holds it — passes `""` for
+ * `branch` and is checked out detached, since git refuses to `-B` a name onto a
+ * tree whose branch somebody else holds.
  *
  * The clean carries no `-e` exemptions. Exempting the links by name meant a
  * leftover tree kept whatever links its first provisioning made, with nothing
@@ -238,9 +241,9 @@ export function writeCaptured(wt: string, captured: Map<string, Buffer>): void {
  * base checkout.
  *
  * Throws `SpecifyResetError` unless `git rev-parse HEAD` equals `baseSha` and
- * `git status --porcelain` reports nothing. That confirmation is the function:
- * the commands are routine, and the only failure mode that matters is the one
- * where they did not do what they say.
+ * `git status --porcelain` reports nothing — that confirmation is the function:
+ * the commands are routine, and the only failure that matters is the one where
+ * they did not do what they say.
  */
 export async function resetWorktreeToBase(
   exec: ExecFn,
@@ -250,11 +253,8 @@ export async function resetWorktreeToBase(
 ): Promise<void> {
   // `-B` first so the branch — not a detached HEAD — is what `reset --hard`
   // moves: the frozen commit has to land on the run's branch, and a leftover
-  // branch from a previous attempt of the same run must move to the base
-  // rather than keep its commits. A caller with no branch of its own (the review
-  // fixer's tree, `--detach`'d while the run's tree holds the branch) passes "",
-  // and takes `--detach` instead: git refuses to `-B` a name onto a tree whose
-  // branch somebody else holds.
+  // branch from a previous attempt of the same run must move to the base rather
+  // than keep its commits.
   const steps: string[][] = [
     branch === ""
       ? [...NO_HOOKS, "checkout", "--detach", baseSha]

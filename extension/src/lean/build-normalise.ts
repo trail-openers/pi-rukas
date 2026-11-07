@@ -84,11 +84,8 @@ interface Classified {
 
 /**
  * Sort the child's changed paths into kept, restored, reverted, removed, deleted.
- *
- * Frozen and protected paths are NOT restored here — the reset is what undoes
- * them — they are only recorded. That is the whole reason the classification
- * runs before the reset: after it, "what the child did" is a fact only this
- * function still holds.
+ * Frozen and protected paths are only RECORDED here — the reset undoes them — which
+ * is why this runs first: after the reset, "what the child did" is unrecoverable.
  */
 function classify(
   wt: string,

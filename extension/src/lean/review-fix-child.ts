@@ -1,8 +1,7 @@
 /**
- * lean/review-fix-child — the fixer's one dispatch, and the fold of what it left.
- *
- * The lifetime seam that put the tree's creation and destruction in
- * `review-tree.ts`: these are what happen to the disposable tree while it exists.
+ * lean/review-fix-child — the fixer's one dispatch, and the fold of what it left:
+ * what happens to the disposable tree while it exists, the other half of the
+ * lifetime seam that put its creation and destruction in `review-tree.ts`.
  */
 
 import path from "node:path";
@@ -23,23 +22,18 @@ export async function runFixer(
 ): Promise<void> {
   let result: DispatchResult;
   // `arms` is `opts.budget.opts` with `childBoundMs` out of the object AND its type,
-  // so no spread re-supplies it and wins over `FIX_BOUND_MS`. Same seam as the lens
-  // leg in `review-deps.ts`.
+  // so no spread re-supplies it and wins over `FIX_BOUND_MS` (as in `review-deps.ts`).
   const { childBoundMs: budgetBoundMs, ...arms } = opts.budget.opts;
   try {
     result = await deps.dispatch(
       { role: FIXER_ROLE, prompt: fixPrompt(opts), cwd: opts.worktree },
       {
-        // The smaller of the step's own ceiling and the armed budget's: a budget
-        // may only ever TIGHTEN the fixer's bound, never lengthen it, which is
-        // what a budget has to mean for the most expensive child this step buys.
+        // The smaller of the step's ceiling and the armed budget's: a budget may
+        // only ever TIGHTEN the bound of the step's most expensive child.
         childBoundMs: Math.min(FIX_BOUND_MS, budgetBoundMs ?? Number.POSITIVE_INFINITY),
-        // The fixer is a developer with a worktree and a contract, which is what
-        // `build`'s builder is too — so it gets the same fence. Without one a
-        // fixer could write anywhere the process can write, and the whole
-        // purpose of the fence (#1655) is the child that writes outside its
-        // worktree. Same shape `BuildDispatch` passes: root, repo, and the run's
-        // own scratch dir one level up from the worktree's parent.
+        // The fixer is a developer with a worktree and a contract, so it gets the
+        // same fence `build`'s builder gets (#1655): without one a fixer could write
+        // anywhere the process can. Same scratch shape as `BuildDispatch`.
         writeFence: {
           root: opts.worktree,
           repo: opts.repoRoot,
@@ -50,12 +44,9 @@ export async function runFixer(
             `lean-${String(opts.issue)}`,
           ),
         },
-        // The step's budget's other arms: the abort the turns/tokens levers fire,
-        // the progress hook that fires it, AND `budgetTurns` — the same turns
-        // ceiling read as the denominator of the #1991 budget-progress steer, so
-        // the fixer is told where it stands and commits before the abort lands.
-        // `childBoundMs` is the one arm taken out above, so the spread cannot
-        // re-supply it.
+        // The budget's other arms — the abort the turns/tokens levers fire, the hook
+        // that fires it, and `budgetTurns` for the #1991 progress steer. Only
+        // `childBoundMs` was taken out, so the spread cannot re-supply it.
         ...arms,
       },
     );
@@ -65,24 +56,13 @@ export async function runFixer(
       opts.rows,
     );
   }
-  // Billed BEFORE the verdict is read, and billed once: a child that died still
-  // spent its tokens, and a handback that cannot say so understates what the run
-  // cost. The row goes onto the caller's running total here rather than being
-  // returned — a total the caller re-derives per round is how a handback ends up
-  // reporting one round's cost as the step's, and returning it on the success arm
-  // while appending the death arm's copy is how one fixer gets billed twice.
+  // Billed before the verdict and billed once: a child that died still spent its
+  // tokens, and a per-round total is how one fixer gets billed on both arms.
   const row = dispatchUsageRow(result);
-  // The tree's identity rides in its OWN field (`runId`), validated with the row
-  // by the loader. It used to ride by overwriting `ms` with a 13-digit epoch,
-  // which cost the fixer its only duration, made the row refusable by
-  // `isMeasure` (and so silently dropped, under-billing the step's most expensive
-  // child), let the row cap evict the row that carried the id, and forced the
-  // reader to identify the row by the generic `developer` role — the builder's
-  // role as well. `ms` is the child's real duration again.
+  // The tree's identity rides in its own field (`runId`), validated with the row by
+  // the loader, which keeps `ms` the child's real duration.
   row.runId = opts.worktreeRunId;
   opts.rows.push(row);
-  // The step's own ceiling ending the fixer is a VERDICT, read before the infra
-  // throw below would have called it a dead child.
   const fired = opts.budget.fired(result);
   if (fired !== undefined) {
     opts.stop.fired = fired;
@@ -103,9 +83,9 @@ export async function runFixer(
  * destroys the tree with them — `build`'s `normaliseBuild`, so a fixer that edited
  * and never commits is captured rather than discarded. The gate is HEAD read from
  * git rather than believed: folding a round whose fixer committed would reset its
- * commits away. `branch: ""` resets DETACHED (this tree owns none), and the frozen
- * refusal is the one `build` has no use for: its reset restores an EDITED frozen
- * path either way, so the throw guards the wave, which has not answered its findings.
+ * commits away. `branch: ""` resets DETACHED (this tree owns none); the frozen
+ * refusal is `build`'s one spare — its reset restores an EDITED frozen path either
+ * way, so the throw guards a wave that never answered its findings.
  */
 export async function foldFix(
   deps: ReviewDeps,
@@ -115,7 +95,6 @@ export async function foldFix(
 ): Promise<string> {
   const at = (await gitQuiet(deps.exec, wt, ["rev-parse", "HEAD"]))?.stdout ?? "";
   const head = at.trim();
-  // The gate, and the round's head when the fold must not run on it.
   if (head !== opts.head) return head;
   const report = await normaliseBuild({
     exec: deps.exec,

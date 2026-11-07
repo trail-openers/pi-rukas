@@ -155,19 +155,11 @@ export type FixRoundOutcome = { head?: string; stop?: BudgetFired };
  * One fix wave: the child in its disposable tree, then its commits moved onto the
  * branch.
  *
- * The step dispatches exactly one fixer, so `wave` and `arm` are constants of a
- * step rather than loop counters — they are kept because the tree's NAME must be
- * reproducible from the durable run (see `fixTreeName`), and the name is what a
- * resumed attempt re-enters. `runId` is the caller's, not this round's: the same
- * value has to name the tree for the whole wave, and a run identity a test can
- * predict is the difference between driving the collision path and merely hoping
- * not to hit it.
- *
- * The head it returns is the head now on origin, read back from git rather than
- * assumed from what the child reported doing. The row the child cost is appended
- * to `opts.rows` by `runFixer` — success and death — so this function never
- * touches it, and the budget's verdict outranks the fold: a fixer the step's own
- * ceiling killed is the stop the operator armed.
+ * The step dispatches exactly one fixer, so `wave` and `arm` are constants rather
+ * than loop counters — kept because the tree's NAME must be reproducible from the
+ * durable run (see `fixTreeName`), which is what a resumed attempt re-enters. The
+ * head it returns is the head now on origin, read back from git rather than assumed
+ * from the child; `runFixer` appends the row it cost, on both arms.
  */
 export async function fixRound(
   deps: ReviewDeps,
@@ -187,10 +179,8 @@ export async function fixRound(
     budget: BudgetArms;
   },
 ): Promise<FixRoundOutcome> {
-  // The tree's whole name is derived from the durable run — arm, wave, attempt
-  // and the attempt's epoch — so a resume of this attempt recomputes the same
-  // path and re-enters the tree its killed self left (see `fixTreeName`). No
-  // counter of ours is involved, because a counter would restart at zero there.
+  // The tree's name comes from the durable run alone, so a resume recomputes the
+  // same path (see `fixTreeName`); a counter would restart at zero there.
   const treeSuffix = `${opts.arm}-${opts.wave}-${String(opts.attempt)}`;
   const wt = await fixTree(
     deps,
@@ -209,9 +199,6 @@ export async function fixRound(
       wave: opts.wave,
       gate: opts.gate,
       findings: opts.findings,
-      // The step's one issue body, threaded to the renderer: `fixRound` is handed
-      // it and `runFixer` prints it, so a call site that dropped it would leave
-      // the fixer judging the findings against nothing but the findings.
       issueBody: opts.issueBody,
       worktree: wt,
       repoRoot: ctx.repoRoot,
@@ -242,19 +229,15 @@ export async function fixRound(
  *
  * Four claims, all stated against the same pair of shas, before origin is
  * touched: the tree belongs to this run; the fixer's head is the commit this step
- * handed it or a descendant of it (a child that reset or rebased has rewritten
- * history the run did not write); the run's own worktree is this run's tree on
- * this run's branch at that commit; and every frozen blob at the fixer's head
- * still hashes to its record.
+ * handed it or a descendant of it; the run's own worktree is this run's tree on
+ * this run's branch at that commit; and every frozen blob at the fixer's head still
+ * hashes to its record.
  *
  * A push that does not land is refused rather than retried — the alternative is a
  * run whose PR silently lacks the fix its review round was paid for. Every refusal
- * puts the tree back at the reviewed commit first, so a handback never leaves a
- * half-integrated branch checked out where `verify` and `publish` will look next.
- * "First" is awaited, not fired: the restore has to have run before the throw,
- * and its outcome is named in the cause, because "the tree is back where the gates
- * read it" and "the tree is still at the fixer's head" are different facts for an
- * operator about to run `verify`.
+ * puts the tree back at the reviewed commit first, awaited rather than fired, and
+ * names its outcome in the cause: "the tree is back where the gates read it" and
+ * "the tree is still at the fixer's head" are different facts for an operator.
  */
 async function integrate(
   deps: ReviewDeps,
