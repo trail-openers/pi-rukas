@@ -18,6 +18,8 @@
  *   (b) every timed-out frozen file is collected into that one reason
  *   (c) an un-startable runner still throws
  *   (d) the baseline-excuse arm grades the same red instead of throwing
+ *   (e) the other arm still hands back: an un-startable runner on a red base
+ *   (f) a hang AND a plainly-red frozen file report BOTH in one reason
  *
  * The hang is a real `sh` spawn past a real bound (500ms), never a stubbed rejection,
  * so the kill, the `killed`/`timedOutKill` stamps and the classification all come
@@ -186,6 +188,37 @@ const HANGING_ACCEPTANCE_TEST = hangingTest("tests/AC1-retry.test.sh");
   assert(
     r.threw instanceof VerifyInfraError,
     `(e) the baseline arm still throws for an un-startable runner (got ${r.outcome?.kind ?? `${r.threw?.name}: ${r.threw?.message}`})`,
+  );
+}
+
+// ------------- (f) a hang beside a plainly-red frozen file keeps both failures
+{
+  // One reason per run, so the fix round hears about every failure at once; a
+  // graded hang that returned on its own would hide the second file until the
+  // next round paid for it. The timeout clause still leads, for the clip.
+  const r = await runVerify({
+    issue: 406,
+    config: { fast: PASS_TIER },
+    extraFrozen: {
+      "tests/AC2-hang.test.sh": hangingTest("tests/AC2-hang.test.sh"),
+      // Names ITSELF as it fails, so it is a plain red and not an `unclear`.
+      "tests/AC3-plain-red.test.sh":
+        "#!/bin/sh\necho 'not ok - tests/AC3-plain-red.test.sh' 1>&2\nexit 1\n",
+    },
+    timeoutMs: 500,
+  });
+  const reason = r.outcome?.reason ?? "";
+  assert(
+    r.threw === undefined && r.outcome?.kind === "red",
+    `(f) a hang and a plain red together are still one red (got ${r.outcome?.kind ?? `threw: ${r.threw?.message}`})`,
+  );
+  assert(
+    reason.startsWith(FROZEN_TIMEOUT_HEAD),
+    `(f) the reason still leads with the timeout wording (${reason.slice(0, 120)})`,
+  );
+  assert(
+    reason.includes("tests/AC2-hang.test.sh") && reason.includes("tests/AC3-plain-red.test.sh"),
+    `(f) the reason names the hung file AND the plainly-red one, which is the point of one reason (${reason.slice(0, 220)})`,
   );
 }
 

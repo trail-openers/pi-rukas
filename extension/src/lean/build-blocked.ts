@@ -181,10 +181,16 @@ async function runFrozen(
   return proof;
 }
 
-/** The verdict of a run the deadline took: it observed nothing, so it is `infra`. */
+/** The verdict of a run the deadline took: nothing may be read into it, so it is
+ * `infra`, and the shape is the one for a process that never answered. */
 function abandoned(run: { template: string; file: string }, left: number): Proof {
   return {
     kind: "infra",
+    // `killed`, not `never-started`: the process WAS started and the deadline took
+    // it — the same shape `runTestFile` gives its own wall-clock kill. A caller that
+    // read an abandoned re-run as a spawn failure would blame the project's toolchain
+    // for a budget the driver itself ran out of.
+    infraShape: "killed",
     cmd: renderTestCommand(run.template, run.file),
     detail: `gave up at the ${String(left)}ms re-run budget`,
   };

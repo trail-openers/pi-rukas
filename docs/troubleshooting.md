@@ -24,13 +24,13 @@ build round's "Why this round exists" repeats that sentence. The frozen test pas
 whole specify and build steps and only misbehaves at the gate.
 
 **Cause:** the head's own code makes a frozen acceptance test never return — most often
-something the change added that spins on the input that test feeds it. The test itself
-is not broken: `specify`/`challenge` commit a file only after their runner proved it red
-against the base commit inside the time bound, so a file in the frozen contract has
-already been seen failing and finishing. The only new thing at verify is the code under
-build, which is why this is graded as a verdict — a red that routes a build round — and
-not a machine fault. The wording leads the reason deliberately: the line is clipped on
-its way into the builder's prompt, and the hang hint is the part that must survive.
+something the change added that spins on the input that test feeds it. The test itself is
+not broken: a file enters the frozen contract only after a runner proved it red against
+the base inside the time bound, so it has already been seen failing and finishing. The
+code under build is the only new thing at verify, which is why this is graded as a verdict
+that routes a build round rather than a machine fault. The wording leads the reason
+because the line is clipped on its way into the builder's prompt and the hang hint is the
+part that must survive.
 
 **Fix:** read the hang as a defect in the change, not in the test or the harness.
 Reproduce it in the run's worktree with the project's own runner (`verify.test` with
@@ -39,9 +39,9 @@ introduced on that test's input. Two things this is **not**: a runner that could
 start at all, or a `verify.test` template that names nothing to run — those still end
 the run as `handler error at verify: the frozen test … could not be judged: the runner
 could not be started` / `runner template has nothing to run`, and the thing to fix is
-the project's `verify.test` configuration in `.pi/work.json`. Nor is it a slow suite:
-if the test finishes on its own, raise the bound instead — the timeout is the gate's
-bound, not a verdict about speed.
+the project's `verify.test` configuration in `.pi/work.json`. Nor is it a slow suite — and
+there is no bound to raise: the per-file limit is a constant, so a test that legitimately
+needs more of it has to be made faster or split.
 
 ### Symptom: a lean run hands back with `baseline red: tier <name> is red at the base commit`
 

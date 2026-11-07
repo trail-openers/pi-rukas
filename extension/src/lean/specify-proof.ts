@@ -14,9 +14,11 @@
  *   - `unclear`— non-zero without naming the file: something else failed and
  *                the output never mentioned this test. Dropped with a reason.
  *   - `infra`  — the ONLY kind that throws, and only two shapes of it: the
- *                runner was killed or timed out, or the runner could not be
- *                STARTED at all (the rejection carries a non-numeric `code`
- *                and no exit status — `ENOENT`, `EACCES`).
+ *                runner was killed or timed out (`infraShape: "killed"`), or the
+ *                runner could not be STARTED at all (the rejection carries a
+ *                non-numeric `code` and no exit status — `ENOENT`, `EACCES`). A
+ *                template that named nothing to run is the third shape, refused
+ *                before any spawn.
  *
  * There is deliberately no third `infra` shape any more. The classifier that
  * used to live here threw the whole run on any output containing
@@ -59,10 +61,8 @@ export interface TestRunLimits {
 /** Output ceiling for one test run; overflow is an infra fault, not a red. */
 export const TEST_MAX_BUFFER = 8 * 1024 * 1024;
 
-export type ProofKind = "red" | "green" | "unclear" | "infra";
-
 /**
- * Which of `runTestFile`'s three `infra` shapes produced a proof.
+ * The shape of a run that produced no verdict, as `runTestFile` classified it.
  *
  * The three say different things to the caller and must not be collapsed: a
  * wall-clock kill means the code under test never returned (and for a FROZEN file,
@@ -72,21 +72,34 @@ export type ProofKind = "red" | "green" | "unclear" | "infra";
  * infrastructure. `runTestFile` classifies the shape once, from the rejection's own
  * stamps; a caller that re-derived it from the returned `Proof` would find no
  * `killed`/`timedOutKill`/`code` on it — a `Proof` is a value, not the rejection —
- * and would read every kill as a template problem. Hence the shape is carried out.
+ * and would read every kill as a template problem. Hence the shape is carried out,
+ * and carried out REQUIRED: an `infra` proof nobody classified would otherwise be a
+ * `Proof` that reads as a red to a `kind` switch and as nothing to a shape switch.
  */
 export type ProofInfraShape = "killed" | "never-started" | "nothing-to-run";
 
-export interface Proof {
-  kind: ProofKind;
+/** What any proof carries, whatever it concluded. */
+interface ProofBase {
   /** The runner command as run, for the outcome reason. */
   cmd: string;
-  /** Exit status; undefined for a timeout/kill or a runner that never started. */
-  code?: number;
   /** The classification's evidence, verbatim. */
   detail: string;
-  /** Which `infra` shape this is; absent for every non-`infra` kind. */
-  infraShape?: ProofInfraShape;
 }
+
+/** A run that ended with an exit status the caller reads as a verdict about the code. */
+interface ProofVerdict extends ProofBase {
+  kind: "red" | "green" | "unclear";
+  /** Exit status; undefined for a timeout/kill or a runner that never started. */
+  code?: number;
+}
+
+/** A run that observed nothing. Which refusal it was is not optional. */
+interface ProofInfra extends ProofBase {
+  kind: "infra";
+  infraShape: ProofInfraShape;
+}
+
+export type Proof = ProofVerdict | ProofInfra;
 
 /** Was this rejection a timeout or a signal rather than a non-zero exit? */
 export function wasKilled(err: unknown): boolean {

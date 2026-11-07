@@ -28,39 +28,8 @@
 
 import { guardCompilerIntegrity, packageDirFor } from "../work-driver-toolchain-canary.ts";
 import { verifyChildEnv } from "../work-driver-verify-cmd.ts";
-import { type Proof, neverStarted, runTestFile, wasKilled } from "./specify-proof.ts";
+import { neverStarted, runTestFile, wasKilled } from "./specify-proof.ts";
 import { type VerifyExec, VerifyInfraError, type VerifyTiers } from "./verify-types.ts";
-
-/**
- * How a frozen file's `infra` proof ended, as `frozenTestFailure` reads it.
- *
- * `runTestFile` collapses three refusals to answer into one `infra` kind, and only
- * ONE of them may become a verdict: the wall-clock kill. The shape is read from the
- * proof's own `infraShape` — the classifier's verdict, carried out of the module
- * that made it — rather than re-derived here, where a second definition of "was it
- * killed" would let the two halves of the pipeline disagree about a hang.
- */
-type FrozenRun =
-  | { outcome: "timedOut"; detail: string }
-  | { outcome: "neverStarted"; detail: string }
-  | { outcome: "nothingToRun"; detail: string };
-
-/**
- * Which refusal this `infra` proof is, defaulting to the shape a `Proof` built
- * without one (a caller's own synthetic proof) can be read as: nothing was run.
- * Never defaults to `timedOut` — grading an unproven run red is the mistake this
- * function exists not to make.
- */
-function frozenRunOf(proof: Proof): FrozenRun {
-  switch (proof.infraShape) {
-    case "killed":
-      return { outcome: "timedOut", detail: proof.detail };
-    case "never-started":
-      return { outcome: "neverStarted", detail: proof.detail };
-    default:
-      return { outcome: "nothingToRun", detail: proof.detail };
-  }
-}
 
 /** A tier gets half an hour; a suite that needs longer is a project bug. */
 export const TIER_TIMEOUT_MS = 30 * 60_000;
@@ -200,14 +169,22 @@ export async function frozenTestFailure(
       ...(timeoutMs === undefined ? {} : { limits: { timeoutMs } }),
     });
     if (proof.kind === "infra") {
-      // Asked of the proof the runner produced, in the order `runTestFile` asked it:
-      // a wall-clock kill carries `killed`/`timedOutKill` or a signal; an un-startable
-      // runner rejects with a string code and no exit status; a template with nothing
-      // to run was refused before any spawn, so it has neither.
-      const run: FrozenRun = frozenRunOf(proof);
-      if (run.outcome !== "timedOut")
-        throw new VerifyInfraError(`the frozen test ${file} could not be judged: ${run.detail}`);
-      timedOut.push(file);
+      // Switched on the classifier's own `infraShape` rather than re-derived here:
+      // two definitions of "was it killed" in one pipeline is how the halves start
+      // disagreeing about a hang. No `default` — a fourth shape must fail type-check.
+      // A `never-started` proof whose detail reports a deadline rather than a failed
+      // spawn is another module's abandoned re-run: still a run that observed
+      // nothing, still a throw. Nothing here guesses at the difference.
+      switch (proof.infraShape) {
+        case "killed":
+          timedOut.push(file);
+          break;
+        case "never-started":
+        case "nothing-to-run":
+          throw new VerifyInfraError(
+            `the frozen test ${file} could not be judged: ${proof.detail}`,
+          );
+      }
       continue;
     }
     // A non-zero exit whose output never named this file is a RED, not
@@ -227,10 +204,16 @@ export async function frozenTestFailure(
       };
     if (proof.kind !== "green") failures.push(`${file} (${proof.detail})`);
   }
-  // The timeout clause leads: the reason may be clipped on its way to the next
-  // build child's prompt, and the hang hint is the part it must never lose.
-  if (timedOut.length > 0)
-    return { kind: "fail", reason: `${FROZEN_TIMEOUT_HEAD} ${timedOut.join(", ")}` };
+  // One reason per run, for one reason: the fix round hears about EVERY failure at
+  // once. The timeout clause leads — the reason may be clipped on its way to the next
+  // build child's prompt, and the hang hint is the part it must never lose — but the
+  // files that merely failed ride along behind it, or a second defect waits for a
+  // whole round to be paid for before anyone is told about it.
+  if (timedOut.length > 0) {
+    const parts = [`${FROZEN_TIMEOUT_HEAD} ${timedOut.join(", ")}`];
+    if (failures.length > 0) parts.push(`frozen tests failing: ${failures.join(", ")}`);
+    return { kind: "fail", reason: parts.join(" — ") };
+  }
   if (failures.length === 0) return { kind: "pass" };
   return { kind: "fail", reason: `frozen tests failing: ${failures.join(", ")}` };
 }
