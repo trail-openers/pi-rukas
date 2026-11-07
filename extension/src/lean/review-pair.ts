@@ -48,9 +48,14 @@ import type { BudgetArms, DispatchUsageRow } from "./step-budget.ts";
  * `undefined`: the step reads the gate's blocking record before it decides
  * anything, and the findings that are not blocking reach the fixer's brief and the
  * re-review, which is where the step acts on them at all. A run whose gate is
- * non-blocking and whose lenses are clean discloses them nowhere; that is the
- * accepted price of the overlap, and the review layer's own residual post remains
- * the disclosure path for what the lenses raised.
+ * non-blocking and whose lenses are clean has no brief and no re-review to carry
+ * them to, and the review layer's residual post is the LENS round's — it fires on
+ * an `ISSUES_FOUND` round only — so on that shape the step itself discloses the
+ * gate's words: `review.ts` joins them into the pass reason through
+ * `disclosureNote`, the surface the cleared wave already uses. Nothing is
+ * undisclosed. What the overlap costs is that the six lenses never get to judge
+ * those findings themselves — the gate had not answered when that round was
+ * bought, and no brief could have said what it had not yet said.
  *
  * `lensGate` re-resolves origin for its own read and refuses a range it cannot
  * open, so the two gates disagreeing about the commit is a refusal rather than a
@@ -92,7 +97,10 @@ export async function buyFullReview(
   ]);
   // A ceiling that fired while both were in flight ends both children — they share
   // the one `AbortController` `armBudget` armed for the step — and the step names
-  // that lever ONCE, here, with both children's rows on it.
+  // that lever ONCE, here, with both children's rows on it. Only the gate can
+  // report one: `lensGate` has no stop arm, because `armBudget` freezes ONE `hit`
+  // for the step and the gate's own read is that same lever whichever child tripped
+  // it — so a stopped reviewer is never raised as infrastructure by the arms below.
   if (gateSettled.status === "fulfilled" && gateSettled.value.stop !== undefined)
     throw budgetStopped(gateSettled.value.stop, rows);
   // Neither child is in flight any more, so raising a throw now orphans nothing.

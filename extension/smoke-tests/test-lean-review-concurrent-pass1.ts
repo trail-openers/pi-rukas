@@ -16,7 +16,9 @@
  *    (R6), with BOTH children held in flight and the release order stated — at base
  *    the second dispatch could not have happened at all while the first was held.
  *  - (b) R2: neither child is left running. A child that throws comes back as the
- *    same throw, but only once BOTH have settled.
+ *    same throw, but only once BOTH have settled — pinned by making the round's own
+ *    reply something the step can only obtain by waiting for it (`gateHandshake`),
+ *    so an implementation that raised early is caught unable to report a verdict.
  *  - (c) R3: one budget lever serves both children, so a lever that fires while both
  *    are in flight ends both and names itself ONCE, with both children's rows.
  *  - (d) R4: pass 1's `carried` is undefined and the gate's findings still reach the
@@ -129,14 +131,23 @@ async function releaseWhenBoth(
 {
   const { repoRoot, baseSha } = makeRepo();
   await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 2082;\n" });
-  const pair = concurrentPass1({ gateReply: () => result({ loopOutcome: "approved" }) });
-  // The gate's seam dies — the shape `adversarialGate` wraps as
-  // "the adversarial loop threw". The child settles on its own after a moment, so
-  // the case can watch the lens round from here without releasing anything.
+  // The gate's reply is what the round's own reply is WAITED ON for, so an orphaned
+  // round cannot answer at all: `concurrentPass1` builds the round's verdict only
+  // after the step has come back for it. A pair that raised the gate's throw the
+  // moment the gate settled therefore never produced a round to certify — which is
+  // the observation a stamp written inside the child could never make, since a step
+  // that never came back for the answer still satisfied it.
+  const pair = concurrentPass1({
+    gateReply: () => result({ loopOutcome: "approved" }),
+    gateHandshake: true,
+  });
   pair.deps.adversarial = async () => {
     pair.stamps.gateStart = Date.now();
     await new Promise((r) => setTimeout(r, 10));
     pair.stamps.gateEnd = Date.now();
+    // The reply exists and is discarded: the step must not see it, and the round is
+    // released only after this throw has already reached the pair.
+    pair.releaseGate();
     throw new Error("the adversarial child died");
   };
   const step = runStep(ctxFor(repoRoot, baseSha, BRANCH), pair.deps);
@@ -144,15 +155,23 @@ async function releaseWhenBoth(
   assert(
     pair.stamps.gateEnd !== undefined &&
       pair.stamps.lensStart !== undefined &&
-      pair.stamps.lensEnd === undefined,
-    `(b) precondition: the gate had already thrown while the lens round the step paid for was STILL in flight (gate end ${String(pair.stamps.gateEnd)}, lens start ${String(pair.stamps.lensStart)}, lens end ${String(pair.stamps.lensEnd)})`,
+      pair.stamps.lensEnd === undefined &&
+      pair.stamps.lensRowsBilled === undefined,
+    `(b) precondition: the gate had already thrown while the lens round the step paid for was STILL in flight (gate end ${String(pair.stamps.gateEnd)}, lens start ${String(pair.stamps.lensStart)}, lens end ${String(pair.stamps.lensEnd)}, billed ${String(pair.stamps.lensRowsBilled)})`,
   );
   pair.releaseAll();
   const { outcome, threw } = await step;
   assert(
-    pair.stamps.lensEnd !== undefined && pair.stamps.lensEnd >= (pair.stamps.gateEnd ?? 0),
-    `(b) R2: the step awaited the child it had already paid for instead of handing back around it (lens end ${String(pair.stamps.lensEnd)}, gate end ${String(pair.stamps.gateEnd)})`,
+    pair.stamps.lensEnd !== undefined &&
+      pair.stamps.lensRowsBilled === 6 &&
+      pair.stamps.lensEnd >= (pair.stamps.gateEnd ?? 0),
+    `(b) R2: the step awaited the child it had already paid for instead of handing back around it (lens end ${String(pair.stamps.lensEnd)}, gate end ${String(pair.stamps.gateEnd)}, round billed ${String(pair.stamps.lensRowsBilled)})`,
   );
+  // The companion half. `ReviewInfraError` snapshots the rows at construction, so
+  // this is a fact about what the STEP had billed when it built the error, not about
+  // the array's later state: `lensGate` appends `lensRows(round.lenses)` only after
+  // the round answers, so rows on a throw that names the gate's own cause are
+  // evidence the step waited for the round before raising it.
   assert(
     outcome === undefined &&
       threw instanceof ReviewInfraError &&
@@ -160,9 +179,16 @@ async function releaseWhenBoth(
     `(b) and the gate's own cause still reaches the operator, as the step's infra error (${threw?.message ?? `kind ${String(outcome?.kind)}`})`,
   );
   const rows = (threw as ReviewInfraError | undefined)?.dispatches ?? [];
+  // THE DISCRIMINATORS. Both rest on the same production fact — `lensGate` appends
+  // `lensRows(round.lenses)` only AFTER the round answers — plus the fixture's
+  // `gateHandshake`, which makes the round's reply exist only once the step has come
+  // back for it. Verified by mutation: a pair that raised the gate's failure the
+  // moment the gate settled (the orphan R2 forbids) reddens the R2 assertion above,
+  // because it never awaited this child, never billed it, and never read a verdict
+  // for it.
   assert(
-    rows.length === 0,
-    `(b) and the rows on the throw are the children the step MEASURED: the dead gate reported no cost and the lens rows are appended by the adapter that never completed (got ${JSON.stringify(rows.map((r) => r.role))})`,
+    rows.filter((r) => r.role === ADVERSARIAL_GATE_ROLE).length === 0,
+    `(b) and the throw prices only what the step measured: the gate died before it could report a cost, so no gate row, while the round it did wait for is billed above (got ${JSON.stringify(rows.map((r) => r.role))})`,
   );
 }
 

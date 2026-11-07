@@ -54,10 +54,12 @@
  * `ISSUES_FOUND` for anything at or above the project's bar (`computeVerdict`), so the
  * lens arm is judged on its rows (`lensBlocks`) rather than on that name. The step
  * therefore ENDS clean only when neither gate produced a blocking row or record — no
- * fixer, no re-review, no second gate pass — and its findings are disclosed by the
- * review layer's own residual post, which is where non-blocking findings have always
- * gone. The step pays for a fix only where the reviewing layer itself said the branch
- * must not proceed.
+ * fixer, no re-review, no second gate pass — and its findings are disclosed on the
+ * pass reason: the six-lens layer posts its own below-bar rows with the residual
+ * comment, but that post fires only on an `ISSUES_FOUND` round, so a non-blocking
+ * adversarial verdict on a clean-lenses pass has no other surface and the step
+ * states it itself (`disclosureNote`, beside the reason). The step pays for a fix
+ * only where the reviewing layer itself said the branch must not proceed.
  *
  * **What ends the step.** Both gates clean ends it, on one of two kinds that
  * differ only in what the step did to the branch: `done` when no fix wave ran
@@ -99,6 +101,7 @@
  * table where the truth is a stopped child.
  */
 
+import { isCarried } from "../lens-review-types.ts";
 import type { runLensReview } from "../lens-review.ts";
 import { traceWarn } from "../trace.ts";
 import type { DispatchResult, DispatchSpec } from "../types.ts";
@@ -124,12 +127,12 @@ import {
   reviewAttemptFromLog,
 } from "./review-log.ts";
 import { buyFullReview } from "./review-pair.ts";
-import { cleanPass } from "./review-pass.ts";
+import { cleanPass, disclosureNote } from "./review-pass.ts";
 import { assertFixAdvanced } from "./review-progress.ts";
 import { assertRan, assertRangedOverTheFix } from "./review-round-guards.ts";
 import { budgetStopped, reviewedPass } from "./review-step.ts";
 import { closeFixTrees } from "./review-tree.ts";
-import { CAUSE_NO_CHANGE, LENS_DID_NOT_RUN, lensBlocks } from "./review-waves.ts";
+import { CAUSE_NO_CHANGE, LENS_DID_NOT_RUN, atOrAboveBar, lensBlocks } from "./review-waves.ts";
 import { specifyBranch } from "./specify-tree.ts";
 // The error lives in a leaf module so the extracted predicates can throw it without
 // importing this handler back. Re-exported so every existing `import { ... }
@@ -319,10 +322,31 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
       // `gate.blocking` is the loop's trailing record read by `blockingRecord`, and
       // `lensBlocks` is the layer's CRITICAL verdict or a reported row at the
       // project's bar — a reviewer that reported findings below the bar without
-      // stopping the run has them carried to the lenses above and disclosed by the
-      // review layer, and the step pays nobody to fix what the reviewing layer itself
-      // declined to block on.
-      return withBound(cleanPass(review, rows, fixedFromLog(ctx.steps)));
+      // stopping the run has the lenses' share disclosed by the review layer, and
+      // the step pays nobody to fix what the reviewing layer itself declined to
+      // block on.
+      //
+      // The gate's share, though, is the STEP's to disclose, and this is the one
+      // exit on which it has no other consumer at all: with no wave there is no
+      // fixer's brief to join it into and no re-review to carry it, and the
+      // residual post is the LENS layer's, which posts nothing on an APPROVED round.
+      // So the gate's own words ride the reason, neutralised and bounded by
+      // `disclosureNote` — the same note `reviewedPass` puts on a cleared wave.
+      // #2082 made this load-bearing rather than merely tidy: before the overlap
+      // these findings also reached the six lens briefs, and the overlap took that
+      // route away, so an unposted non-blocking verdict was reaching no durable
+      // surface at all.
+      return withBound(
+        cleanPass(
+          review,
+          rows,
+          fixedFromLog(ctx.steps),
+          disclosureNote(
+            review.reported.filter((f) => !isCarried(f) && !atOrAboveBar(f, threshold)).length,
+            gate.open ? carried : "",
+          ),
+        ),
+      );
     }
 
     // The wave has not started, so this is still a pass-1 stop (R1): handback.

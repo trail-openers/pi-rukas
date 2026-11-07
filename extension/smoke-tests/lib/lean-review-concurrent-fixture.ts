@@ -14,6 +14,13 @@
  *
  * The release bar, not a timer: a `setTimeout` bound would make the case fail on
  * a loaded host rather than on the behaviour it names.
+ *
+ * `gateHandshake` is the second thing the bar makes observable. With it the round's
+ * reply is not a value the stub holds ready — it is built only once the gate's reply
+ * has been handed over, so a step that raised the gate's failure without coming back
+ * for the round never produces a round at all, and the step's own guards refuse it.
+ * A completion stamp written inside the child could not show that: the step's return
+ * or non-return is what decides whether the reply exists.
  */
 
 import type { ReviewDeps } from "../../src/lean/review.ts";
@@ -32,6 +39,11 @@ export interface Pass1Stamps {
   lensStart?: number;
   gateEnd?: number;
   lensEnd?: number;
+  /** `lenses.length` once the round has ANSWERED, which under `gateHandshake` needs
+   * the step to have come back for it. `lensGate` appends the six rows one line after
+   * the seam returns, so this and the rows on the step's own error are the same fact
+   * read two ways. */
+  lensRowsBilled?: number;
   /** Times the step dispatched the adversarial seam, in order (`full`, then `fix`). */
   gateWaves: string[];
   /** Times the step dispatched the lens seam, in order (`full`, then `fix`). */
@@ -41,8 +53,10 @@ export interface Pass1Stamps {
 export interface Pass1Pair {
   deps: ReviewDeps;
   stamps: Pass1Stamps;
-  /** The next in-flight child to release, oldest dispatch first. */
-  release: () => void;
+  /** Let the gate's child answer. The lens round's reply is built only after this,
+   * so the order the case observes is the order the step read: a step that never came
+   * back for the round gets no round to certify. */
+  releaseGate: () => void;
   /** Release every child the step is holding NOW, and any it buys afterwards:
    * a step that dispatches serially buys its second child only after the first
    * settles, so a single drain would leave it waiting on a queue entry that
@@ -57,6 +71,10 @@ export interface Pass1Pair {
 export function concurrentPass1(opts: {
   gateReply: (wave: string) => ReturnType<typeof result>;
   lensReply?: (a: Parameters<ReviewDeps["lens"]>[0]) => ReturnType<typeof cleanLensRound>;
+  /** Make the round's reply depend on the step reading the gate: see the header.
+   * A case that means "the gate threw while the round was still owed an answer"
+   * needs this — without it the round's reply exists whether or not the step waits. */
+  gateHandshake?: boolean;
 }): Pass1Pair {
   const stamps: Pass1Stamps = { gateWaves: [], lensWaves: [] };
   const queue: (() => void)[] = [];
@@ -70,10 +88,22 @@ export function concurrentPass1(opts: {
       if (open) resolve();
       else queue.push(resolve);
     });
-  const release = (): void => queue.shift()?.();
+  // The gate's child answers on the case's word, and the lens round's reply is not
+  // built until that word has been given — see the `gateHandshake` note.
+  let gateDone = false;
+  const gateWaiters: (() => void)[] = [];
+  const gateFinishedBy = (): Promise<void> =>
+    new Promise((resolve) => {
+      if (gateDone) resolve();
+      else gateWaiters.push(resolve);
+    });
   const releaseAll = (): void => {
     open = true;
     while (queue.length > 0) queue.shift()?.();
+  };
+  const finishGate = (): void => {
+    gateDone = true;
+    while (gateWaiters.length > 0) gateWaiters.shift()?.();
   };
   const deps = depsWith({
     adversarial: async (a) => {
@@ -81,17 +111,26 @@ export function concurrentPass1(opts: {
       stamps.gateWaves.push(a.wave);
       await hold();
       stamps.gateEnd = Date.now();
-      return opts.gateReply(a.wave);
+      const reply = opts.gateReply(a.wave);
+      gateDone = true;
+      while (gateWaiters.length > 0) gateWaiters.shift()?.();
+      return reply;
     },
     lens: async (a) => {
       if (stamps.lensStart === undefined) stamps.lensStart = Date.now();
       stamps.lensWaves.push(a.wave);
       await hold();
       stamps.lensEnd = Date.now();
+      if (opts.gateHandshake === true) await gateFinishedBy();
       const round =
         opts.lensReply === undefined
           ? cleanLensRound({ lenses: [{ startMs: stamps.lensStart }] })
           : opts.lensReply(a);
+      // The round answered. `lensGate` appends `lensRows(round.lenses)` one line
+      // after THIS returns, so the six rows on a step's outcome are what the step
+      // paid for and read; the stamp records the instant, which the case compares
+      // against the gate's.
+      stamps.lensRowsBilled = round.lenses.length;
       // The start instant the child was really dispatched at, never the fixture's
       // hardcoded 0 — an overlap assertion that read a constant proves the fixture.
       return {
@@ -103,5 +142,5 @@ export function concurrentPass1(opts: {
       };
     },
   });
-  return { deps, stamps, release, releaseAll };
+  return { deps, stamps, releaseAll, releaseGate: finishGate };
 }
