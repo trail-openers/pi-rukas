@@ -436,8 +436,10 @@ function breachTurns(turns: number) {
       onProgressTick: breachTurns(BUILD_TURNS),
     });
   };
-  // Entered one round below the cap: the run has exactly one dispatch left to buy,
-  // the round this visit is, so the ceiling-stopped child runs once, folds, leaves.
+  // A visit entered one round below the cap has exactly one dispatch left to buy
+  // — the round this visit IS — so the ceiling-stopped child runs once, folds,
+  // and leaves. The expected count is the cap minus what the table already spent,
+  // floored at the one child the current round pays for.
   const atCap = await stoppedAt(last.counters, 153);
   assert(
     atCap.threw === undefined,
@@ -448,7 +450,7 @@ function breachTurns(turns: number) {
     `(g) and still reports its budget verdict (got ${atCap.outcome?.kind ?? atCap.threw?.message})`,
   );
   assert(
-    atCap.dispatched === Math.max(1, MAX_BUILD_ATTEMPTS - (MAX_BUILD_ATTEMPTS - 1)),
+    atCap.dispatched === Math.max(1, MAX_BUILD_ATTEMPTS - last.counters.buildAttempts),
     `(g) a ceiling stop on a visit entered at the cap less one dispatches NO in-step retry (got ${atCap.dispatched})`,
   );
   assert(
@@ -461,9 +463,10 @@ function breachTurns(turns: number) {
   );
   // One round earlier the SAME ceiling buys the child that round pays for: the
   // pair is what makes the bound discriminating rather than merely true.
-  const oneBeforeCap = await stoppedAt({ ...INITIAL_COUNTERS, buildAttempts: 1 }, 154);
+  const oneBefore = { ...INITIAL_COUNTERS, buildAttempts: 1 };
+  const oneBeforeCap = await stoppedAt(oneBefore, 154);
   assert(
-    oneBeforeCap.dispatched === Math.max(1, MAX_BUILD_ATTEMPTS - 1),
+    oneBeforeCap.dispatched === Math.max(1, MAX_BUILD_ATTEMPTS - oneBefore.buildAttempts),
     `(g) the same ceiling one round earlier DOES retry in-step (got ${oneBeforeCap.dispatched})`,
   );
 }
