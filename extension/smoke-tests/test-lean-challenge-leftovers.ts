@@ -144,18 +144,32 @@ function seeded(issue: number, seed: string[]) {
     commitPaths(wt).join() === RED,
     `(b) that commit holds ONLY the proved-red file (got ${commitPaths(wt).join(", ")})`,
   );
-  assert(
-    existsSync(`${wt}/${RED}`) === true,
-    "(b) the file the round froze is still in the tree",
-  );
+  assert(existsSync(`${wt}/${RED}`) === true, "(b) the file the round froze is still in the tree");
   assert(status(wt) === "", `(b) no uncommitted bytes for verify (got ${status(wt)})`);
-  // The sweep must NOT add a reset over the tree the pipeline has already reset
-  // and proved: a second one would move the branch back to the head the round
-  // started at and throw the test it just froze away. Whatever resets this round
-  // made belong to step 3, and their number is unchanged by the sweep.
-  const resets = (argvs: string[][]): number =>
-    argvs.filter((a) => a.includes("reset") && a.includes("--hard")).length;
-  const before = await runChallenge({
+  const reason = r.outcome?.reason ?? "";
+  // (1) The committed round's bytes are the pipeline's own work, so the sweep
+  // adds NO git call at all here: a reset over a committed round would move the
+  // branch back to the head the round started at and throw the test it just froze
+  // away. (2) `discarded` is the sweep's word alone — the pipeline's own drop
+  // notes say `dropped` — so a reason claiming a discard this step did not make is
+  // a false account of the round, and resets links the next step still needs.
+  const calls = (argvs: string[][]): number =>
+    argvs.filter((a) => a.some((x) => /^(reset|clean|checkout)$/.test(x))).length;
+  // Two identical committed rounds, run separately. The one whose sweep is DISABLED
+  // must make the exact same git calls in the exact same order as the shipped one:
+  // a sweep that really ran would add a reset, push the branch back to the head the
+  // round started at, and lose the test it just froze.
+  const shape = (argvs: string[][]): string =>
+    argvs
+      .map((a) =>
+        a
+          .join(" ")
+          .replace(/lean\/issue-\d+/g, "lean/issue-N")
+          .replace(/[0-9a-f]{40}/g, "<sha>")
+          .replace(/#\d+/g, "#N"),
+      )
+      .join("\n");
+  const unswept = await runChallenge({
     issue: 2406,
     child: (wt) => {
       put(wt, RED, redEdge(RED), 0o755);
@@ -163,16 +177,12 @@ function seeded(issue: number, seed: string[]) {
     toolUses: [submit("AC1", [RED])],
   });
   assert(
-    resets(r.gitArgvs) === resets(before.gitArgvs),
-    `(b) the sweep adds NO reset to a committed round — ${resets(r.gitArgvs)} now, ${resets(before.gitArgvs)} without the sweep`,
+    calls(r.gitArgvs) === calls(unswept.gitArgvs) && shape(r.gitArgvs) === shape(unswept.gitArgvs),
+    `(b) the sweep adds NO git call to a committed round — identical argv, same order (${calls(r.gitArgvs)} reset/clean/checkout calls both ways)`,
   );
-  // A clean tree is the normal answer and must not be reported as a discard — a
-  // reason claiming bytes were removed when none were is a false account of the
-  // round, and resets the dependency links the next step still needs.
-  const reason = r.outcome?.reason ?? "";
   assert(
     reason.includes("froze 1 red test file(s)") && !reason.includes("discarded"),
-    `(b) nothing was swept, so the reason claims no discard (got ${reason})`,
+    `(b) and the reason claims no discard it did not make (got ${reason})`,
   );
 }
 
