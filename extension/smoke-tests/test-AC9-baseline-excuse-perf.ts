@@ -1,19 +1,19 @@
 #!/usr/bin/env bun
 /**
- * #2042 — the excuse's subset test is O(H+B), and a big tier is graded in well
+ * #2064 / #2042 — the excuse's comparison is O(H+B), and a big tier is graded in well
  * under a second.
  *
- * The subset test compares every head name against the base set. Done by scanning
- * the base set per head name that is O(H*B) — 500 x 500 comparisons, each one
- * anchoring a path and calling `realpath` — which turns a chatty suite's red tier
- * into seconds inside the verify step. Both halves are now prepared ONCE per
+ * The comparison asks whether every head line is one of the base's. Done by scanning
+ * the base set per head line that is O(H*B) — 500 x 500 comparisons, each one
+ * classifying a line and calling `realpath` — which turns a chatty suite's red tier
+ * into seconds inside the verify step. Both halves are prepared ONCE per
  * `baselineExcuse` call: the two tree roots are resolved once rather than per
- * candidate, and base identities are indexed by their anchored relative name, so
- * each head name does one map lookup.
+ * candidate, and the base set becomes one `Set`, so each head line does one lookup.
  *
- * A wall-clock bound is the assertion a mutant can actually fail: the same
- * fixture under the old shape is measurably slower, so the case is asserted to
- * finish inside a fraction of a second, not merely to be correct.
+ * A wall-clock bound is the assertion a mutant can actually fail, so the case runs
+ * over the LONGEST recognised line class — a TAP description carrying a long path and
+ * an assertion tail — where a per-candidate rescan of the base is most expensive, not
+ * over short pytest tokens.
  */
 import {
   baselineProbeWorktreePath,
@@ -32,33 +32,36 @@ function assert(cond: boolean, msg: string): void {
 }
 
 const COUNT = 500;
-/** `n` distinct project-relative pytest identities, all under one package dir. */
+/** The longest line class the shared classifier recognises: a TAP description. */
+const PAD = "d".repeat(120);
+/** `n` distinct TAP lines, all under one package dir of `prefix`'s tree. */
 function names(prefix: string, n: number): string[] {
-  return Array.from({ length: n }, (_, i) => `tests/pkg_${prefix}/test_${prefix}_${String(i)}.py::test_case_${String(i)}`);
+  return Array.from(
+    { length: n },
+    (_, i) => `not ok ${String(i)} - ${prefix}/pkg/t_${String(i)}.sh - ${PAD} expected 3 got 4`,
+  );
 }
-const HEAD = names("head", COUNT);
-const BASE = names("head", COUNT);
+const HEAD_ROOT = "/tmp/pi-rukas-perf-head/worktree";
+const PROBE_ROOT = "/tmp/pi-rukas-perf-head/repo.baseline-lean-verify-9";
+const HEAD = names(HEAD_ROOT, COUNT);
+const BASE = names(PROBE_ROOT, COUNT);
 
-/** The head/base streams the two runs printed — the same lines their parsers see. */
-const headStream = HEAD.map((n) => `FAILED ${n} - AssertionError`).join("\n");
-const baseStream = BASE.map((n) => `FAILED ${n} - AssertionError`).join("\n");
+/** The head/base streams the two runs printed — the same lines their readers see. */
+const headStream = HEAD.join("\n");
+const baseStream = BASE.join("\n");
 
 const RED: BaseProbe = { status: "red" };
-const roots = {
-  headRoot: "/tmp/pi-rukas-perf-head/worktree",
-  probeRoot: "/tmp/pi-rukas-perf-head/repo.baseline-lean-verify-9",
-};
 
 function excuseOf(head: string[], base: string[]) {
   return baselineExcuse({
     tierName: "fast",
-    cmd: "pytest -q",
+    cmd: "prove -r t",
     baseSha: "a".repeat(40),
     probe: RED,
-    headStream: head.map((n) => `FAILED ${n} - AssertionError`).join("\n"),
-    baseStream: base.map((n) => `FAILED ${n} - AssertionError`).join("\n"),
-    headRoot: roots.headRoot,
-    probeRoot: roots.probeRoot,
+    headStream: head.join("\n"),
+    baseStream: base.join("\n"),
+    headRoot: HEAD_ROOT,
+    probeRoot: PROBE_ROOT,
   });
 }
 
@@ -66,40 +69,37 @@ function excuseOf(head: string[], base: string[]) {
   const t0 = performance.now();
   const excuse = excuseOf(HEAD, BASE);
   const ms = performance.now() - t0;
-  assert(
-    excuse.kind === "excused",
-    `(500x500) every head name matched a base name (${excuse.kind})`,
-  );
+  assert(excuse.kind === "excused", `(500x500) every head line matched a base line (${excuse.kind})`);
   assert(
     ms < 300,
-    `(500x500) the whole excuse path finished in well under a second (${ms.toFixed(0)}ms for ${String(HEAD.length)} head x ${String(BASE.length)} base names; parse+classify+subset)`,
+    `(500x500) the whole excuse path finished in well under a second (${ms.toFixed(0)}ms for ${String(HEAD.length)} head x ${String(BASE.length)} base lines of ${String((HEAD[0] ?? "").length)} chars; classify+normalise+compare)`,
   );
 }
 
 {
-  // The indexed comparison is not a hash collision dressed as a match: one name
-  // the base never printed still refuses the excuse at this scale.
-  const oneMore = [...HEAD, "tests/pkg_head/test_solo.py::test_solo"];
+  // The set comparison is not a hash collision dressed as a match: one line the base
+  // never printed still refuses the excuse at this scale.
+  const oneMore = [...HEAD, `not ok 999 - ${HEAD_ROOT}/pkg/t_solo.sh - ${PAD} boom`];
   const excuse = excuseOf(oneMore, BASE);
-  assert(excuse.kind === "refused", "(500x500) one unmatched head name still refuses");
+  assert(excuse.kind === "refused", "(500x500) one unmatched head line still refuses");
 }
 
-// The anchored index anchors each side's relative name once: a base name whose
-// path lives under a DIFFERENT package must not match, however the two trees are
-// spelled, and the two roots being the same tree is never a match.
+// Each tree's own root is stripped once per line, so a base whose lines live under a
+// DIFFERENT project-relative path must not match, however the two trees are spelled —
+// and the two roots being the same tree is never a match.
 {
-  const shifted = BASE.map((n) => n.replace("tests/pkg_head/", "tests/pkg_other/"));
+  const shifted = BASE.map((n) => n.replace("/pkg/", "/other/"));
   const excuse = excuseOf(HEAD, shifted);
   assert(excuse.kind === "refused", "(anchoring) a base under another package dir refuses");
   const sameTree = baselineExcuse({
     tierName: "fast",
-    cmd: "pytest -q",
+    cmd: "prove -r t",
     baseSha: "a".repeat(40),
     probe: RED,
     headStream,
     baseStream,
-    headRoot: "/tmp/pi-rukas-perf-head/worktree",
-    probeRoot: "/tmp/pi-rukas-perf-head/worktree",
+    headRoot: HEAD_ROOT,
+    probeRoot: HEAD_ROOT,
   });
   assert(sameTree.kind === "refused", "(anchoring) two spellings of one tree match nothing");
 }

@@ -297,7 +297,12 @@ export function makeVerifyExec(opts: {
         // A case that declares what the base printed: the executor's own non-zero shape
         // carrying that stream, which is the only way to ask "what did the base name"
         // about a run in a tree the case built — the same seam `baseBlobBytes` uses for
-        // the base's bytes.
+        // the base's bytes. The harness's `Command failed: <cmd>` echo is part of that
+        // shape and is NOT withheld: the base probe really did run this tier and the
+        // executor really did prefix its failure with this line, so a base stream without
+        // it would be a stream no real run produced, and a tier whose own echo carries a
+        // failure word (`Command failed: sh -c '… FAILED tests/x.py::t …'`) could then be
+        // excused for a head-only line the base would in fact have echoed too.
         return Promise.reject(
           Object.assign(new Error(`Command failed: ${cmd}`), {
             code: 1,

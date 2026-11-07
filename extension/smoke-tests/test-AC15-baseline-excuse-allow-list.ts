@@ -1,0 +1,222 @@
+/**
+ * The allow-list the default-refuse rule reads, asked DIRECTLY.
+ *
+ * #2064 round 2. `isKnownCleanLine` is the whole of what a head-only line may be and still
+ * be excused, and its contract is one-directional — that direction is the point: a line it
+ * calls clean cannot declare a failure, and a line it has never heard of is REFUSED, which
+ * costs a hand-back and never a green. So this file pins both halves: the shapes it must
+ * admit (a PR's own passing lines, counters and banners) and the shapes it must not (every
+ * failure line produced from a real runner's vocabulary, and every line the shared
+ * classifier reads as a failure).
+ *
+ * It asks the allow-list ITSELF rather than through `baselineExcuse`, because the whole
+ * point of the reversal is that a new failure line no longer needs an entry anywhere to be
+ * caught — a test that only goes through the excuse cannot tell "refused because the table
+ * knows it" from "refused because nothing vouched for it", and the second is the rule.
+ *
+ * The counter/reporter boundary is pinned here too, since {@link failureLineFold} is what draws
+ * it: on a line that names no failure, a number attached to a counter word (`3 passed`, `Tests run: 3`,
+ * `36 cases`) is a runner counting its own run and may move between the two streams; on a line whose own
+ * text names a failure anywhere, only a count of a PASS word may move, so every other number on it —
+ * `1 items failed`, `Failures: 1`, a `Tests run: N` total — is read exactly, and so is EVERY number
+ * inside a line the classifier read as one check's failure (`got 5 items`), however much its text
+ * resembles a tally.
+ */
+import { classifyFailureLine } from "../src/work-driver-verify-failures.ts";
+import { isKnownCleanLine } from "../src/lean/verify-baseline-allow-list.ts";
+import { failureLineFold } from "../src/lean/verify-baseline-counters.ts";
+
+const SELF = "test-AC15-baseline-excuse-allow-list.ts";
+let exit = 0;
+function assert(cond: boolean, msg: string): void {
+  if (cond) console.log(`\u2713 ${msg}`);
+  else {
+    console.error(`\u2717 ${SELF}: ${msg}`);
+    exit = 1;
+  }
+}
+
+// -------------------------------------- the shapes the rule must admit (a PR's own lines)
+{
+  const CLEAN = [
+    // Pass markers, in the dialects the brief names.
+    "ok 1 - a passing check",
+    "ok 12 - t/x.t",
+    "ok 5 - t/x.t # skip reason",
+    "PASS",
+    "PASSED",
+    "PASSED tests/new_test.py::test_new",
+    "PASS pkg/foo",
+    "\u2713 x",
+    "3 passed",
+    "4 passed in 0.12s",
+    "===== 12 passed in 0.2s =====",
+    "Tests: 5 passed, 5 total",
+    // go test -v: the run line and the passing verdict.
+    "=== RUN   TestNew",
+    "--- PASS: TestNew (0.01s)",
+    "  --- PASS: TestBar (0.00s)",
+    // pytest's default progress output, and a collection count.
+    "tests/new_test.py ..  [100%]",
+    "..s.                                      [ 50%]",
+    "collected 25 items",
+    // A TAP plan — how many checks the runner intends to print, not a verdict.
+    "1..9",
+    "1..10",
+    // A tally whose FAILURE count is zero or absent counts passes, and its number may move: the
+    // added-passing-tests case lives here, including the dialects whose counters sit in a
+    // `Label: N` form or name something other than passes.
+    "12 passed, 1 warning in 0.5s",
+    // A separator.
+    "=====",
+    "-----",
+    "#######",
+  ];
+  for (const line of CLEAN) {
+    assert(
+      isKnownCleanLine(line),
+      `(clean) "${line}" is on the allow-list (${isKnownCleanLine(line)})`,
+    );
+  }
+}
+
+// ------------------------------- the shapes the rule must refuse (a failure in any dialect)
+{
+  // None of these is on the allow-list, and NONE needed to be recognised by a table entry
+  // to be refused — that is the whole of the reversal this round makes. Each is what a real
+  // runner prints, or what a harness prints, for something that failed.
+  const NOT_CLEAN = [
+    "Exit code: 1 - brand new check",
+    "killed - brand new check",
+    "1..9 - brand new check",
+    "brand new check ... FAILED",
+    "FAILURES!",
+    "== FAILURES ==",
+    "[FAIL] x",
+    "\u2717 x",
+    "\u00d7 x",
+    "Failure: x",
+    "AssertionError: expected 3 to be 4",
+    "Tests run: 1, Failures: 1",
+    "1) brand new check",
+    // A tally whose counts name failures is a line about them, and the classifier reads it
+    // that way — so the tally arm must not admit it either.
+    "===== 5 failed, 1 passed in 0.44s =====",
+    "1 failed, 5 passed",
+    "1 error, 5 passed",
+    // The whole-line veto is a WORD veto and it is absolute, so it reaches a tally whose failure
+    // count is ZERO: `===== 0 failed, 3 passed in 0.2s =====` reports a clean run and is still
+    // refused, because the veto cannot tell `0 failed` from `9 failed` without reading the digit, and
+    // a veto that could is a veto the next runner's dialect walks through. The direction is the one
+    // this rule always fails on — the line hands back rather than grading green — and the tier is
+    // still excused by the classifier's own reading of its failure lines. This is the veto's accepted
+    // cost, stated in `docs/lean.md` and the troubleshooting entry.
+    "===== 0 failed, 3 passed in 0.2s =====",
+    // The same tallies in the padding a real runner prints. Each reports a NON-ZERO failure
+    // count, and the counter fold leaves that count standing, so the tally arm still refuses
+    // them: a moved passed-count excuses, a moved-or-not failed-count never does.
+    "===== 1 failed, 5 passed in 0.3s =====",
+    "Tests run: 5, Failures: 1",
+    "Failures: 1",
+    // Words that merely CONTAIN a pass marker: the arms are anchored, so they do not pass.
+    "okay we are fine",
+    "token ok maybe",
+    "passage of arms",
+  ];
+  for (const line of NOT_CLEAN) {
+    assert(
+      !isKnownCleanLine(line),
+      `(refuse) "${line}" is NOT on the allow-list (${isKnownCleanLine(line)})`,
+    );
+  }
+
+  // Everything the classifier reads as a failure is refused FIRST, whatever it resembles —
+  // which is what lets the arms be anchored words rather than a complete vocabulary. Each
+  // line below is asserted to be a failure line by the classifier AND refused by the
+  // allow-list, so the ordering (classifier first) is what carries them, not their shape.
+  const READ_AS_FAILURE = [
+    "not ok 1 - x",
+    "not ok 7 - a check the base never printed",
+    "--- FAIL: TestSolo (0.01s)",
+    "FAIL a_test.sh: boom",
+    "FAILED tests/new_test.py::test_new - assert 1 == 2",
+  ];
+  for (const line of READ_AS_FAILURE) {
+    assert(
+      classifyFailureLine(line) !== undefined,
+      `(refuse) the classifier reads "${line}" as a failure line`,
+    );
+    assert(!isKnownCleanLine(line), `(refuse) so "${line}" is never clean`);
+  }
+}
+
+// ------------------------ (counters) what the comparison fold may move, and what it may not
+{
+  // `failureLineFold` is the looser key `baselineExcuse` falls back to, so its two directions are
+  // the two halves of the rule: the fields a runner is entitled to move between two runs, and
+  // everything that stays byte-for-byte. A fold that is too WIDE excuses a regression the base
+  // never printed; a fold that is too NARROW refuses the PR that only added passing tests. Both
+  // are pinned, on the lines real runners print. The fold reaches ONLY lines the classifier did not
+  // read as a failure — a per-check failure line keeps every digit it printed.
+  const MAY_MOVE: [string, string, string][] = [
+    ["===== 1 failed, 3 passed in 0.2s =====", "===== 1 failed, 5 passed in 0.3s =====", "the field case: a moved PASSED count and duration beside the same 1 failed"],
+    ["1 failed, 3 passed", "1 failed, 5 passed", "the bare tally, same case"],
+    ["--- FAIL: TestSolo (0.02s)", "--- FAIL: TestSolo (0.02s)", "go's per-check line is byte-identical, so the fold's gate is what holds it (a classifier-accepted failure line keeps every digit it printed)"],
+    ["3 passed", "5 passed", "a passing count on a line that reports no failure"],
+  ];
+  for (const [a, b, why] of MAY_MOVE) {
+    assert(
+      failureLineFold(a) === failureLineFold(b),
+      `(fold) ${why}: "${a}" and "${b}" are one line (${failureLineFold(a)} / ${failureLineFold(b)})`,
+    );
+  }
+
+  const MUST_DIFFER: [string, string, string][] = [
+    ["===== 1 failed, 3 passed in 0.2s =====", "===== 2 failed, 3 passed in 0.2s =====", "a moved FAILED count is a check that broke"],
+    ["===== 1 failed, 3 passed in 0.2s =====", "===== 1 error, 3 passed in 0.2s =====", "failed and error are different reports, however both fold"],
+    ["Failures: 1", "Failures: 2", "the Surefire failure count"],
+    ["Tests run: 3, Failures: 1", "Tests run: 5, Failures: 1", "the accepted cost: a Surefire run-total beside a failure report no longer folds — `run` is not a pass word, so the line is exact"],
+    ["tests/x_test.py: 1 items failed", "tests/x_test.py: 2 items failed", "the false green this rule exists to close: a failed-check row whose count moved"],
+    ["tests: 1 failed", "tests: 2 failed", "a `tests:` label beside a moved failed count"],
+    ["Errors: 1", "Errors: 2", "the Surefire error count"],
+    ["tests/x.py: 1 failed", "tests/x.py: 2 failed", "the `named-file` failure count"],
+    ["tests/a.py: failed checks (1)", "tests/a.py: failed checks (2)", "the script tally's own count"],
+    ["pack_release_test.sh: 36 cases, 1 failed", "pack_release_test.sh: 36 cases, 2 failed", "the comma tally's failing half"],
+    ["FAILED t.py::a - assert 1 == 2", "FAILED t.py::a - assert 1 == 3", "an assertion's values are findings, not counters"],
+    ["expected 3 to be 4", "expected 3 to be 5", "the same, in the assertion dialect"],
+    // The TAP check index is NOT folded by any key. The pass that folded it is deleted (a new
+    // failing check printed third shared the folded key of a base's first failing check), so the
+    // index keeps its digits here exactly as it keeps them in the strict key — a renumbered failure
+    // is a line the base never printed, and it refuses.
+    ["not ok 2 - a bats check", "not ok 3 - a bats check", "a TAP check index is folded by nothing at all"],
+    ["0 failed", "1 failed", "a count that moved to or from zero changed the failure report"],
+    // The veto that drives this half of the fold reads WORDS, not digits, so it cannot tell a zero count
+    // from a nine. `a.py: 36 cases, 0 failed` reports a clean script run and the classifier reads it as
+    // success, yet the veto reads `failed` and holds every digit on the line — including the `36`, which
+    // the added-checks case would have moved. The direction is the one this rule always fails on: the
+    // row is compared byte-for-byte, and a script tally whose case count moved hands back. Accepted cost,
+    // same shape as the `===== 0 failed, 3 passed =====` refusal the allow-list pins above.
+    ["10 failed", "11 failed", "a multi-digit failure count keeps its digits"],
+    ["version 1.2.3", "version 1.2.4", "a version is not a counter"],
+    // A line the classifier READS as one check's failure is never counter-folded at all: the number
+    // an assertion compared is the finding, and a counter word sitting beside it does not make the
+    // line a tally. These are the pairs the counter fold used to collapse onto one key — a real
+    // pytest assertion and a real TAP assertion, each differing only by the count it compared.
+    ["FAILED a.py::t - AssertionError: got 5 items", "FAILED a.py::t - AssertionError: got 6 items", "a pytest assertion's item count is a finding, not a tally's counter"],
+    ["FAILED a.py::t - AssertionError: got 5 items", "FAILED a.py::t - AssertionError: got 50 items", "the same across a digit-count change, which no digit-wise fold survived"],
+    ["not ok 1 - checkout - expected 3 items found 0", "not ok 1 - checkout - expected 6 items found 0", "a TAP assertion's expected count is a finding, not a tally's counter"],
+    ["--- FAIL: TestSolo - got 5 items", "--- FAIL: TestSolo - got 6 items", "a go assertion's item count is a finding the fold may not move"],
+    ["--- FAIL: TestList - got 5 tests", "--- FAIL: TestList - got 6 tests", "a go assertion's test count is a finding"],
+    ["FAILED a.py::t - 3 cases ran", "FAILED a.py::t - 4 cases ran", "a case count inside a named failure line is not a tally"],
+    ["a.py: 36 cases, 1 failed, 3 passed", "a.py: 36 cases, 1 failed, 5 passed", "the `named-file` dialect is a per-check failure line, so even its passing count keeps its digits"],
+  ];
+  for (const [a, b, why] of MUST_DIFFER) {
+    assert(
+      failureLineFold(a) !== failureLineFold(b),
+      `(fold) ${why}: "${a}" and "${b}" stay two lines (${failureLineFold(a)})`,
+    );
+  }
+}
+
+console.log(`\nexit ${String(exit)}`);
+process.exit(exit);

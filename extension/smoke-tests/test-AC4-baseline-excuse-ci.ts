@@ -35,9 +35,12 @@ function assert(cond: boolean, msg: string): void {
   }
 }
 
-const NAMES = ["tests/x_test.py::test_a", "tests/x_test.py::test_b"];
-/** The tier's own red output: pytest failing lines, so the excuse has names to read. */
-const TIER_STREAM = NAMES.map((n) => `FAILED ${n} - Assert`).join("\n");
+const NAMES = [
+  "FAILED tests/x_test.py::test_a - Assert",
+  "FAILED tests/x_test.py::test_b - Assert",
+];
+/** The tier's own red output: its failing lines verbatim, so the excuse has lines to read. */
+const TIER_STREAM = NAMES.join("\n");
 const FULL = "sh -c 'pytest'";
 /** The run's frozen contract: one test file, committed for the re-probe cases. */
 const FROZEN_FILE = "tests/AC1-retry.test.sh";

@@ -79,3 +79,37 @@ export function pytestFailTier(marker: string, names: readonly string[]): string
   const tally = `=== ${String(names.length)} failed, 0 passed in 0.10s ===`;
   return `sh -c 'echo tier-said-${marker} 1>&2; echo "${printed}" 1>&2; echo "${tally}" 1>&2; exit 1'`;
 }
+
+/**
+ * A tier command that fails and PRINTS `lines` verbatim as its failing lines.
+ *
+ * The sibling {@link pytestFailTier} needed for a runner-agnostic case: the baseline
+ * excuse compares WHOLE failure lines, so a case must be able to put a TAP `not ok`,
+ * a go `--- FAIL:` or any other recognised line on both runs' streams exactly as the
+ * runner would print it, rather than only pytest `path::name` tokens. Each entry is
+ * printed on its own line, and the lines are passed as POSITIONAL ARGS
+ * (`sh -c '… "$@"' _ a b`) rather than interpolated into the outer single-quoted word:
+ * a line carrying `'` CLOSES that word and re-parses the rest of the command, and one
+ * carrying `$` or a backtick is EXPANDED by the harness's own shell before the tier
+ * ever sees it. So a fixture line containing any of them would otherwise test the
+ * harness's quoting (or die on a syntax error) instead of the excuse. The `\n` in the
+ * printf format is escaped for the outer word, which is the only backslash the layers
+ * must agree on.
+ */
+export function failLinesTier(marker: string, lines: readonly string[]): string {
+  const args = lines.map((l) => shArg(l)).join(" ");
+  return `sh -c 'echo tier-said-${marker} 1>&2; printf "%s\\n" "$@" 1>&2; exit 1' _ ${args}`;
+}
+
+/**
+ * One line as a single-quoted shell word.
+ *
+ * The usual `'”\'”'` reconstruction is enough here BECAUSE the args reach the tier
+ * through `"$@"`: the outer word ends before them (`… exit 1' _ <args>`), so nothing
+ * they contain can re-open it, and `$`/backtick expansion is stopped by the arg's own
+ * quotes. A line with an apostrophe, a quote, a dollar and a backtick is printed
+ * byte-for-byte — the fixture line the baseline-excuse case checks.
+ */
+function shArg(text: string): string {
+  return `'${text.replace(/'/g, "'\\''")}'`;
+}

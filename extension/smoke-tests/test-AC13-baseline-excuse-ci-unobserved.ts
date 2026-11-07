@@ -27,9 +27,12 @@ function assert(cond: boolean, msg: string): void {
   }
 }
 
-const NAMES = ["tests/x_test.py::test_a", "tests/x_test.py::test_b"];
-/** Both runs name the SAME tests — the shape that earns an excuse when both saw the work. */
-const STREAM = NAMES.map((n) => `FAILED ${n} - AssertionError`).join("\n");
+const NAMES = [
+  "FAILED tests/x_test.py::test_a - AssertionError",
+  "FAILED tests/x_test.py::test_b - AssertionError",
+];
+/** Both runs print the SAME lines — the shape that earns an excuse when both saw the work. */
+const STREAM = NAMES.join("\n");
 const FULL = "sh -c 'pytest'";
 
 /** The record `verify` writes for an excused tier, so the reuse arm is the one asked. */

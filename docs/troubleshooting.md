@@ -20,28 +20,95 @@ Symptoms → causes → fixes. Most issues here come from running an older sandb
 
 **Cause:** the project's own verify tier fails on the run's head AND on its base commit, and
 the two runs did not prove the same thing. A tier red at HEAD re-runs once, and a still-red
-tier is re-run at the base in a throwaway checkout; the run is handed back unless every test
-the head run named also failed there. Names are read from **pytest's own failing lines only**
-(`FAILED`/`ERROR path::name`): a tier whose output names failures in any other runner's dialect
-(TAP `not ok`, go `--- FAIL:`, a shell tally) is not excusable, and neither is a tier that
-exited non-zero while naming no test at all, a head-only name, a re-run or base run that
-observed nothing (a kill, a buffer overflow, an un-startable command), or a base run whose red
-is the shape of a checkout whose dependencies were never linked (the probe's provisioning, not
-the commit's). The narrow rule is deliberate: every parser tried for a non-pytest identity
-found a new way to fold two different checks onto one token, and a folded name excuses a
-failure this run authored — the one thing the excuse must never do.
+tier is re-run at the base in a throwaway checkout; the run is handed back unless every failure
+line the head run printed also appears among the base run's. Comparison is of the **whole
+failure line**, so any runner the shared failure-line classifier reads is excusable — pytest
+`FAILED path::name`, TAP/bats `not ok`, go `--- FAIL:`, a script tally, a `FAIL` header, the
+driver's own diagnostic dialect. Normalisation is one rule, stated once: take a line the
+classifier ACCEPTS, strip that run's own worktree root from the front of its path, compare — so
+the same check printed in two trees is one line. What refuses: a line only the head printed
+(including one whose reason text differs from the base's) that nothing could vouch for, a stream
+with no recognised failure line at all, any line past the classifier's own scan window on either
+side (a line no judge read whole is not evidence), a re-run or base run that observed nothing (a
+kill, a buffer overflow, an un-startable
+command), or a base run whose red is the shape of a checkout whose dependencies were never
+linked (the probe's provisioning, not the commit's). The head-only rule is DEFAULT-REFUSE and
+that direction is the design: a classifier drops every line it does not recognise, so "no line
+the classifier read" is a failure no judge read and excuses nothing. An early version kept a
+list of failure TOKENS and refused on a head-only token the list held; runners are unbounded and
+every review round produced a token the list lacked. Now the question is inverted — a head-only
+line is excused only when something POSITIVE says it cannot be a failure: a pass marker (`ok`,
+`PASS`, `PASSED`, `✓`), go's `=== RUN` / `--- PASS:`, a runner's progress line (`.. [ 50%]`), a
+separator, a collection count, a TAP plan (`1..9`), or a tally that counts passes and names no
+non-zero failure count (`5 passed`). A line whose non-zero count names failures (`1 failed, 5
+passed`) is a REPORTER, not a counter, and is refused: inside such a tally the rule cannot tell
+"+2 passing because the PR added checks" from "+2 failing because the PR broke one", and a
+hand-back is the right answer where the evidence cannot. Every permission vouches for the WHOLE LINE
+rather than for the part of it a shape matched, and that is what closes the dialects a prefix read
+let through: a line whose own text carries a failure word or glyph ANYWHERE (`fail*`, `error*`,
+`crash*`, `abort*`, `panic*`, `timed out`/`timeout`, `segfault`, `broken`, `exception*`, `fatal`,
+`critical`, `killed`, `leak*`, and the glyphs ✗ ✘ × ✕ ✖) is not known-clean, so `ok, the brand new
+deploy check failed` and `ok 4 - brand new check FAILED` refuse on the word that follows their pass
+marker; a progress row is clean only when its result run holds `.`, `s` and `x`, so a row carrying an
+`F` or an `E` is a failed check; and a tally is clean only when EVERY `<number> <word>` pair names a
+COUNTER on the explicit list — `passed`, `skipped`, `deselected`, `xfailed`, `xpassed`, `warning(s)`,
+`test(s)`, `item(s)`, `cases`, `total`, `ok`, `pass` — so a counted word on no list refuses by absence
+and `===== 999 crashed, 9 passed =====` is neither clean nor folded. The cost of the word veto is
+accepted and runs the safe way: a PASSING test whose NAME carries such a word, when the line is
+head-only, is refused too — the accepted false refusal is a hand-back, never a green. A digit a
+failure word sits immediately after (`suite ran: 1 failed`, `tests: 1 failed`, `2 panicked`) is a
+count of what broke and is never folded whatever label precedes it. The rule is asked of the whole line
+rather than of one digit: on any line whose text carries a failure word anywhere, the only digit that
+folds is one immediately followed by a PASS word — `passed`, `skipped`, `deselected`, `xfailed`,
+`xpassed`, `warning(s)` — so `1 failed` never becomes the line a base printed as `2 failed`, `1 items
+failed` never becomes `2 items failed`, and a counter word like `items`, `tests` or `total` beside a
+broken count can no longer make it look like a tally (a duration unit still folds, since it counts no
+check). Only on a line that names no failure do a runner's counters and durations fold, and only on a
+line the classifier did not read as one check's failure does nothing fold at all. The accepted cost of
+reading the whole line: JUnit and Surefire's `Tests run: 3, Failures: 1` → `Tests run: 5, Failures: 1` —
+the run's own total moving because passing tests were added — now REFUSES, a third hand-back, never a
+green. A runner's CHECK INDEX folds by nothing: a renumbered
+TAP or bats failure — `not ok 3 - x` where the base printed `not ok 1 - x`, the usual effect of adding
+a passing test before the failing one — REFUSES, and that is the other accepted false refusal, again a
+hand-back, never a green. So the allow-list may be imperfect only
+the safe way — an unknown shape costs a hand-back, never a green — and a new runner dialect
+needs no change to be caught, only to be excused. The harness's own writing (`Command failed:`
+of a command the tier really ran, `Exit code: N`, a bare `killed`, a `tier-said-*` marker) is
+excluded from both sides, as is any line the classifier reads as a PASSING check — neither is
+gate output, and a PR adding passing tests prints new passing lines every run. The exemption is
+only for WHO wrote the line, never for what it REPORTS — which is what the two harness kill stamps
+named above, a bare `killed` and `Exit code: N`, are: they stay in the comparison and a head-only
+one refuses, exactly like any other failure line, while the same stamp the base printed too still
+excuses. A tier that traces its commands (`sh -x`, so the stream carries `$ ` lines) gets no
+exemption for a line that carries a failure word behind the prefix — a head-only `$ killed`,
+`$ Exit code: 1` or `$ not ok 1 - t/new.t` refuses, because an unjudged kill is not evidence the
+base was red — while a traced line the classifier cannot read and that names no failure
+(`$ bats t/`) is exempt on the harness's own shape. Whole lines, not
+parsed test names, are deliberate: every identity parser tried for a non-pytest runner found a
+new way to fold two different checks onto one token, and a folded name excuses a failure this
+run authored — the one thing the excuse must never do.
 
-**Fix:** read the two name sets in the run's verify reason. A head-only name is the run's own
-regression and belongs in a build round. A tier that names nothing needs a runner that prints
-one pytest-style failing-test line per test (`pytest -v` prints them; `go test -v` and `prove`
-do not, and their output keeps the hand-back whatever it names), because a gate that cannot
-tell which tests failed cannot tell which ones the base already had. A base red shaped like a
-missing dependency tree means the project's dependency install is not reproducible from a bare
-checkout; make it so, or configure a tier that does not need the tree. A run whose every failure
-the base also printed does NOT hand back: it is graded green, the failures are recorded as
-`preexistingFailures` on the verify/ci step, and the PR body's `## Pre-existing test failures`
-section — "failing on the base commit too; not introduced by this change" — names the tier, its
-command, the base commit, the capped names and the true total.
+**Fix:** the run's verify reason names the tier and the hand-back; the two line sets are on the
+verify step's record in the run's step log (`preexistingFailures` — the head's capped failure
+lines and the base's set, alongside the base commit and the true total), which is what the PR
+body's `## Pre-existing test failures` section renders. A head-only line is the run's own
+regression and belongs in a build round. A head-only line the allow-list does not know is the
+other hand-back, and it is not a regression claim: check whether the line is a runner output
+shape the list has simply never seen (a new runner, a new report format, a plugin's summary).
+If it reports a count of things that passed, it belongs on the list, and the entry is one word added
+to the COUNTER list (`COUNTER_WORD_LIST`) rather than a new shape — the tally arm and the fold read
+that one list, so a word on it is both excusable and foldable, and a word off it is neither; if it reports anything that failed, the hand-back is the correct verdict and
+the tier needs to say which checks failed. If you are unsure which, read the line's own words —
+the rule refuses exactly when its words cannot tell "more passing" from "more failing". A tier that prints no recognised failure line needs a
+runner that prints one failing-test line per test — most do (`pytest -v`, `go test -v`, `prove`
+and a bats run all print their failing checks); a gate that says only that it failed cannot tell
+you which tests the base already had. A base red shaped like a missing dependency tree means the
+project's dependency install is not reproducible from a bare checkout; make it so, or configure
+a tier that does not need the tree. A run whose every failure line the base also printed does NOT
+hand back: it is graded green, the failures are recorded as `preexistingFailures` on the
+verify/ci step, and the PR body's `## Pre-existing test failures` section — "failing on the base
+commit too; not introduced by this change" — names the tier, its command, the base commit, the
+capped failure lines and the true total.
 
 ## Platform support
 

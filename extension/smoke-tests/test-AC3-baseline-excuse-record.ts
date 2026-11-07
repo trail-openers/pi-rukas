@@ -41,8 +41,11 @@ function assert(cond: boolean, msg: string): void {
   }
 }
 
-const NAMES = ["tests/x_test.py::test_a", "tests/x_test.py::test_b"];
-const stream = (names: string[]): string => names.map((n) => `FAILED ${n} - Assert`).join("\n");
+const NAMES = [
+  "FAILED tests/x_test.py::test_a - Assert",
+  "FAILED tests/x_test.py::test_b - Assert",
+];
+const stream = (names: string[]): string => names.join("\n");
 
 type Ran = Awaited<ReturnType<typeof runVerify>>;
 function recordOf(r: Ran): PreexistingTierRecord | undefined {
@@ -92,7 +95,10 @@ function recordOf(r: Ran): PreexistingTierRecord | undefined {
   // More failures than the record may print: the total keeps telling the truth and
   // the printed set is bounded in stream order. Built through the validator rather
   // than a live tier so the case is about the bound, not about the fixture.
-  const many = Array.from({ length: PREEXISTING_NAMES_CAP + 5 }, (_, i) => `tests/x.py::t${i}`);
+  const many = Array.from(
+    { length: PREEXISTING_NAMES_CAP + 5 },
+    (_, i) => `FAILED tests/x.py::t${String(i)} - Assert`,
+  );
   const rec: PreexistingTierRecord = {
     cmd: "pytest",
     names: many.slice(0, PREEXISTING_NAMES_CAP),
@@ -115,10 +121,13 @@ function recordOf(r: Ran): PreexistingTierRecord | undefined {
   );
   const oversizedBase: PreexistingTierRecord = {
     cmd: "pytest",
-    names: ["tests/x.py::t0"],
+    names: ["FAILED tests/x.py::t0 - Assert"],
     total: 1,
     baseSha: "b".repeat(40),
-    baseNames: Array.from({ length: PREEXISTING_BASE_NAMES_CAP + 1 }, (_, i) => `tests/x.py::t${i}`),
+    baseNames: Array.from(
+      { length: PREEXISTING_BASE_NAMES_CAP + 1 },
+      (_, i) => `FAILED tests/x.py::t${String(i)} - Assert`,
+    ),
   };
   assert(
     preexistingFailuresProblem({ fast: oversizedBase }) !== undefined,
@@ -134,7 +143,7 @@ function recordOf(r: Ran): PreexistingTierRecord | undefined {
 {
   const good: PreexistingTierRecord = {
     cmd: "pytest",
-    names: ["tests/x.py::t0"],
+    names: ["FAILED tests/x.py::t0 - Assert"],
     total: 1,
     baseSha: "b".repeat(40),
   };
@@ -144,7 +153,7 @@ function recordOf(r: Ran): PreexistingTierRecord | undefined {
     ["a non-integer total", { fast: { ...good, total: 1.5 } }],
     ["a base sha that is not 40-hex", { fast: { ...good, baseSha: "abc" } }],
     ["an empty command", { fast: { ...good, cmd: "  " } }],
-    ["a name with a control character", { fast: { ...good, names: ["t\u0000x"] } }],
+    ["a name with a control character", { fast: { ...good, names: ["FAILED t\u0000x - Assert"] } }],
     ["a name that is not a string", { fast: { ...good, names: [1] } }],
     ["an empty base-name set", { fast: { ...good, baseNames: [] } }],
     ["not an object at all", { fast: "pytest said so" }],
@@ -168,7 +177,10 @@ function recordOf(r: Ran): PreexistingTierRecord | undefined {
 {
   const rec: PreexistingTierRecord = {
     cmd: "pnpm test --filter x",
-    names: ["tests/a.spec.ts::t1", "tests/b.spec.ts::t2"],
+    names: [
+      "FAILED tests/a.spec.ts::t1 - Assert",
+      "FAILED tests/b.spec.ts::t2 - Assert",
+    ],
     total: 7,
     baseSha: "c".repeat(40),
   };
@@ -183,8 +195,9 @@ function recordOf(r: Ran): PreexistingTierRecord | undefined {
   assert(body.includes(`\`${"c".repeat(40)}\``), "(body) the base commit is printed");
   assert(body.includes("7 total, 2 named:"), `(body) the true total, not the printed count (${body.slice(0, 0)})`);
   assert(
-    body.includes("`tests/a.spec.ts::t1`") && body.includes("`tests/b.spec.ts::t2`"),
-    "(body) every recorded name is printed",
+    body.includes("`FAILED tests/a.spec.ts::t1 - Assert`") &&
+      body.includes("`FAILED tests/b.spec.ts::t2 - Assert`"),
+    "(body) every recorded failure line is printed",
   );
   assert(leanPreexistingFailuresSection(undefined) === "", "(body) no record, no section");
   assert(leanPreexistingFailuresSection({}) === "", "(body) an empty record, no section");

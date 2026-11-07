@@ -26,7 +26,10 @@ function assert(cond: boolean, msg: string): void {
   }
 }
 
-const NAMES = ["tests/x_test.py::test_a", "tests/x_test.py::test_b"];
+const NAMES = [
+  "FAILED tests/x_test.py::test_a - AssertionError",
+  "FAILED tests/x_test.py::test_b - AssertionError",
+];
 
 /** The tier's record — the record is keyed by tier name — or `undefined`. */
 function record(r: Awaited<ReturnType<typeof runVerify>>): Record<string, unknown> | undefined {
@@ -43,8 +46,8 @@ function record(r: Awaited<ReturnType<typeof runVerify>>): Record<string, unknow
     config: { fast: pytestFailTier("preexisting", NAMES) },
     headTierRedRuns: 2,
     baseRedContract: true,
-    baseTierOutput: NAMES.map((n) => `FAILED ${n} - AssertionError`).join("\n"),
-    headTierOutput: NAMES.map((n) => `FAILED ${n} - AssertionError`).join("\n"),
+    baseTierOutput: NAMES.join("\n"),
+    headTierOutput: NAMES.join("\n"),
   } as never);
   assert(
     r.outcome?.kind === "green",
@@ -73,7 +76,7 @@ function record(r: Awaited<ReturnType<typeof runVerify>>): Record<string, unknow
 
 // ---- one head-only name: the excuse is forfeited, today's red stands
 {
-  const stream = (names: string[]): string => names.map((n) => `FAILED ${n} - Assert`).join("\n");
+  const stream = (names: string[]): string => names.join("\n");
   const r = await runVerify({
     issue: 502,
     implement: true,

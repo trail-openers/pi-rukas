@@ -33,7 +33,10 @@ function assert(cond: boolean, msg: string): void {
   }
 }
 
-const NAMES = ["tests/x_test.py::test_a", "tests/x_test.py::test_b"];
+const NAMES = [
+  "FAILED tests/x_test.py::test_a - Assert",
+  "FAILED tests/x_test.py::test_b - Assert",
+];
 
 /** The record `verify` writes when it excuses the `fast` tier over the base commit. */
 const EXCUSED: PreexistingTierRecord = {
@@ -123,7 +126,7 @@ const TEST_CRITERION = { id: "AC1", text: "the helper retries", verify: "test" }
   );
   assert(
     r.body.includes(NAMES[0] as string),
-    "(clean) every recorded name is printed, so the disclosure came from the record",
+    "(clean) every recorded failure line is printed, so the disclosure came from the record",
   );
 }
 
