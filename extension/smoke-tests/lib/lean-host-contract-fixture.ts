@@ -18,6 +18,7 @@ import { runWorkLeanVerb } from "../../src/headless/work-lean.ts";
 import type { LeanRunOutcome } from "../../src/headless/work-lean.ts";
 import { runWorkLean } from "../../src/lean/command.ts";
 import type { LeanHandlers } from "../../src/lean/engine.ts";
+import { MAX_BUILD_ATTEMPTS } from "../../src/lean/machine.ts";
 import {
   type LeanRun,
   type LeanState,
@@ -197,11 +198,20 @@ export function recording(
   return handlers;
 }
 
-/** The outcomes a green run's walk needs, in order. */
+/**
+ * The outcomes a green run's walk needs, in order.
+ *
+ * The queues are the length the TABLE makes them, not the length a reader
+ * expects: a build round is billed on the edge that ENTERS `build` (see
+ * `machine.ts`), so a walk that wants to reach its gate holds one `ok` per
+ * round it gets — `MAX_BUILD_ATTEMPTS` of them, one challenge round included.
+ * Price a shorter queue and the walk runs out mid-cycle and the step throws
+ * `no scripted outcome for build`, which reads as an engine defect.
+ */
 export const WALK: Partial<Record<LeanState, Outcome[]>> = {
   ready: [{ kind: "ok" }],
   specify: [{ kind: "ok" }],
-  build: [{ kind: "ok" }, { kind: "ok" }],
+  build: Array.from({ length: MAX_BUILD_ATTEMPTS }, () => ({ kind: "ok" }) as Outcome),
   challenge: [{ kind: "none" }],
   verify: [{ kind: "green" }],
   publish: [{ kind: "ok" }],
