@@ -16,6 +16,41 @@ Symptoms → causes → fixes. Most issues here come from running an older sandb
 
 ## Lean runs
 
+### Symptom: a lean run's verify reason says `frozen tests timed out (the head's code may hang)`
+
+**Symptom:** a lean run comes back from `verify` red with a reason that opens
+`frozen tests timed out (the head's code may hang): tests/AC1-….test.sh`, and the next
+build round's "Why this round exists" repeats that sentence. The frozen test passed the
+whole specify and build steps and only misbehaves at the gate.
+
+**Cause:** the head's own code makes a frozen acceptance test never return — most often
+something the change added that spins on the input that test feeds it. The test itself is
+not broken: a file enters the frozen contract only after a runner proved it red against
+the base inside the time bound, so it has already been seen failing and finishing. The
+code under build is the only new thing at verify, which is why this is graded as a verdict
+that routes a build round rather than a machine fault. The wording leads the reason
+because the line is clipped on its way into the builder's prompt and the hang hint is the
+part that must survive.
+
+**Fix:** read the hang as a defect in the change, not in the test or the harness.
+Reproduce it in the run's worktree with the project's own runner (`verify.test` with
+`{file}` replaced by the named path) and look for a loop, a lock, or a wait the change
+introduced on that test's input. Two things this is **not**: a runner that could not
+start at all, or a `verify.test` template that names nothing to run — those still end
+the run as `handler error at verify: the frozen test … could not be judged: the runner
+could not be started` / `runner template has nothing to run`, and the thing to fix is
+the project's `verify.test` configuration in `.pi/work.json`. Nor is it a slow suite — and
+there is no bound to raise: the per-file limit is a constant, so a test that legitimately
+needs more of it has to be made faster or split. Nor is it a test that printed too much:
+a flood of output hands the run back as `the frozen test … could not be judged: the
+runner's output passed the executor's bound`, and is not graded red — the executor's
+output kill is a different shape from its clock kill, and only the clock kill is a hang.
+One hang is also all the gate will wait for: the wall clock is per file and the files run
+serially, so after the first kill the remaining frozen files are **not** run and the reason
+closes `— N other frozen file(s) not run`. That is a cost bound, not a verdict about those
+files — a contract where every file hangs would otherwise pay the full bound once per file,
+and the reason says the same thing about all of them either way.
+
 ### Symptom: a lean run hands back with `baseline red: tier <name> is red at the base commit`
 
 **Cause:** the project's own verify tier fails on the run's head AND on its base commit, and

@@ -294,6 +294,10 @@
     "smoke-tests/test-AC2-unchanged-lines-still-carry.ts",
     "smoke-tests/test-AC3-rereported-stays-open.ts",
     "smoke-tests/test-AC4-high-low-siblings-resolve.ts",
-    "smoke-tests/test-AC5-round-cap-blocking-count.ts"
+    "smoke-tests/test-AC5-round-cap-blocking-count.ts",
+    "smoke-tests/lib/lean-verify-bytes.ts",
+    "smoke-tests/lib/lean-verify-git.ts",
+    "smoke-tests/test-lean-verify-frozen-timeout.ts",
+    "smoke-tests/test-lean-verify-frozen-flood.ts"
   ]
 }

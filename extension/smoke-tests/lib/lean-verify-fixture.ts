@@ -22,8 +22,6 @@
  * reads bytes rather than vibes is to change the bytes.
  */
 
-import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -33,7 +31,6 @@ import type { HandlerCtx } from "../../src/lean/engine.ts";
 import { type Outcome, type Step, createRun } from "../../src/lean/state.ts";
 
 import type { VerifyDeps } from "../../src/lean/verify.ts";
-import { gitTestEnv } from "./git-test-env.ts";
 import {
   DETACH_TIER,
   HANG_TIER,
@@ -41,6 +38,7 @@ import {
   failTier,
   flakeTier,
   killOnSecondTier,
+  pytestFailTier,
   writeTier,
 } from "./lean-verify-tiers.ts";
 export {
@@ -50,12 +48,15 @@ export {
   failTier,
   flakeTier,
   killOnSecondTier,
+  pytestFailTier,
   writeTier,
 } from "./lean-verify-tiers.ts";
 import { type Fixture, provisionHookedTree } from "./lean-verify-hook-tree.ts";
 import {
   type VerifyOpts,
   type VerifyRun,
+} from "./lean-verify-types.ts";
+import {
   canonicalProbeDir,
   makeVerifyExec,
 } from "./lean-verify-exec.ts";
@@ -67,74 +68,48 @@ export type { VerifyOpts, VerifyRun };
 /** Temp dirs this module made; the caller removes them at the end of the run. */
 export const ROOTS: string[] = [];
 
-/** The implementation the frozen test is red against. */
-export const SRC = "export const retry = () => { throw new Error('not implemented'); };\n";
 /**
- * The fixture's frozen test. It is RED while `src/DONE` is absent and goes green
- * when the case creates it (`implement: true`) — which is what makes the green
- * case and the red case the same repo with one file between them.
- *
- * The predicate is a file EXISTENCE check, not a `grep` for a marker string:
- * `grep -q "a-b"` proved host-dependent here (measured: GNU grep 3.12 in this
- * container reports no match for a hyphenated literal the file plainly holds,
- * while `grep -c --` on the same bytes matches). A frozen test whose red depends
- * on how one machine's grep parses a dash is not a contract. It names its own
- * path when it fails, which is how `runTestFile` tells a real red from a runner
- * that broke somewhere else.
+ * The frozen-test and runner-helper bytes, re-exported so a case imports the whole
+ * harness from one module. They live in `lean-verify-bytes.ts` with the reason each
+ * body has to take the shape it does.
  */
-export const TEST =
-  '#!/bin/sh\nif [ ! -f src/DONE ]; then echo "not ok - tests/AC1-retry.test.sh" 1>&2; exit 1; fi\nexit 0\n';
-/** A frozen test that passes whatever the source does: a contract nobody wrote. */
-export const GREEN_TEST = "#!/bin/sh\nexit 0\n";
-/** The frozen contract RED whatever the tree holds — the acceptance-red half of a pair. */
-export const RED_ACCEPTANCE_TEST =
-  "#!/bin/sh\necho 'not ok - tests/AC1-retry.test.sh' 1>&2\nexit 1\n";
+export {
+  GREEN_TEST,
+  NAMING_RUNNER_FILE,
+  NAMING_RUNNER_SCRIPT,
+  NAMING_RUNNER_TEMPLATE,
+  RED_ACCEPTANCE_TEST,
+  RED_BASE_TEST,
+  SILENT_RUNNER_FILE,
+  SILENT_RUNNER_SCRIPT,
+  SILENT_RUNNER_TEMPLATE,
+  SRC,
+  TEST,
+  commitFrozenFiles,
+} from "./lean-verify-bytes.ts";
+import {
+  NAMING_RUNNER_FILE,
+  NAMING_RUNNER_SCRIPT,
+  NAMING_RUNNER_TEMPLATE,
+  RED_ACCEPTANCE_TEST,
+  RED_BASE_TEST,
+  SILENT_RUNNER_FILE,
+  SILENT_RUNNER_SCRIPT,
+  SILENT_RUNNER_TEMPLATE,
+  SRC,
+  TEST,
+  commitFrozenFiles,
+} from "./lean-verify-bytes.ts";
+import { fixtureGitEnv, git, sha } from "./lean-verify-git.ts";
+
+export { git, sha };
+
 /**
- * An acceptance test the BASE commit carries and cannot pass: the mainline that is
- * already red on this host. Committed at `baseSha` for the baseline-red cases, so the
- * probe's frozen run goes red there for a reason the fixture can point at in git.
- *
- * It fails UNCONDITIONALLY rather than on a missing file: the run's own work is committed
- * on top of the base and cannot make the base's red go away, so a base that is red stays
- * red however much of the change the checkout happens to hold.
+ * The frozen contract of the BASE: an acceptance test the mainline carries and cannot
+ * pass. Its bytes live in `lean-verify-bytes.ts` beside the rest of the contract.
  */
-const RED_BASE_TEST = '#!/bin/sh\necho "not ok" 1>&2\nexit 1\n';
 /** The one acceptance-test path the fixture freezes, and the baseline probe judges. */
 const FROZEN_FILE = "tests/AC1-retry.test.sh";
-
-/** The committed name of the helper script the silent-runner case writes. */
-const SILENT_RUNNER_FILE = "silent-runner.sh";
-/**
- * The helper for the one case that needs a runner of its own: a frozen test
- * whose failure is not attributable to itself.
- *
- * The fixture's own `sh {file}` template cannot produce that shape — its test
- * echoes its own path when it fails — so the case that asks what an
- * unattributable failure becomes needs a runner that stays quiet and exits
- * non-zero. The file was proven red-and-named at freeze time, so that is the
- * same failure continuing: a RED.
- */
-const SILENT_RUNNER_SCRIPT = "exit 1\n";
-/** The template that case configures; `validateTestRunner` wants `{file}` whole. */
-const SILENT_RUNNER_TEMPLATE = "sh silent-runner.sh {file}";
-
-function gitEnv(): Record<string, string> {
-  return {
-    ...gitTestEnv(),
-    GIT_AUTHOR_NAME: "t",
-    GIT_AUTHOR_EMAIL: "t@t",
-    GIT_COMMITTER_NAME: "t",
-    GIT_COMMITTER_EMAIL: "t@t",
-  };
-}
-
-/** git in `dir`, with an identity in the child's environment. */
-export function git(dir: string, ...args: string[]): string {
-  const r = spawnSync("git", args, { cwd: dir, encoding: "utf8", env: gitEnv() });
-  if (r.status !== 0)
-    throw new Error(`git ${args.join(" ")} failed in ${dir}: ${(r.stderr ?? "").trim()}`);
-  return (r.stdout ?? "").trim();
-}
 
 /**
  * Commit the acceptance test in `dir` and return the resulting head. This is the
@@ -169,9 +144,10 @@ async function fixture(
   baseRedContract: boolean,
   hook?: { script: string; marksDir: string },
   frozenText?: string,
+  extraFrozen: Record<string, string> = {},
 ): Promise<Fixture> {
-  const built = fixtureSync(issue, baseRedContract, hook, frozenText);
-  if (hook !== undefined) await provisionHookedTree(built, hook, gitEnv());
+  const built = fixtureSync(issue, baseRedContract, hook, frozenText, extraFrozen);
+  if (hook !== undefined) await provisionHookedTree(built, hook, fixtureGitEnv());
   return built;
 }
 
@@ -184,6 +160,7 @@ function fixtureSync(
   baseRedContract: boolean,
   hook?: { script: string; marksDir: string },
   frozenText?: string,
+  extraFrozen: Record<string, string> = {},
 ): Fixture {
   const repoRoot = mkdtempSync(path.join(tmpdir(), "lean-verify-"));
   ROOTS.push(repoRoot);
@@ -236,6 +213,10 @@ function fixtureSync(
   // excuse case, red for the case asking what an acceptance-red run does on the
   // excuse path).
   const head = commitFreeze(wt, issue, frozenText ?? TEST);
+  // The case's own extra frozen files, committed ON TOP of the freeze: they must be
+  // the bytes the record names, or the step's tamper guard reports a hang as an
+  // edited contract.
+  if (Object.keys(extraFrozen).length > 0) commitFrozenFiles(wt, extraFrozen);
 
   const run = createRun({ issue, version: "test", models: {}, baseSha, branch });
   // The record is what the step reads back, so it must be the bytes the FREEZE holds at
@@ -247,6 +228,8 @@ function fixtureSync(
   // bytes when the case fixed them — or the integrity check reads a green contract as
   // a tampered one.
   const frozen: Record<string, string> = { [FROZEN_FILE]: sha(frozenText ?? TEST) };
+  for (const [rel, text] of Object.entries(extraFrozen)) frozen[rel] = sha(text);
+  const extraPaths = Object.keys(extraFrozen);
   const steps: Step[] = [
     { key: `${issue}:ready:0`, state: "ready", startedAt: 1, outcome: { kind: "ok" } },
     {
@@ -256,7 +239,7 @@ function fixtureSync(
       outcome: {
         kind: "ok",
         frozen,
-        tests: { AC1: [FROZEN_FILE] },
+        tests: { AC1: [FROZEN_FILE, ...extraPaths] },
       },
     },
   ];
@@ -277,11 +260,6 @@ function fixtureSync(
   };
 }
 
-/** The sha256 of a string's bytes, the way the freeze records them. */
-export function sha(text: string | Buffer): string {
-  return createHash("sha256").update(text).digest("hex");
-}
-
 /** Run `verify` against a fixture repo; a throw comes back as `threw`. */
 export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
   const f = await fixture(
@@ -289,6 +267,7 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
     opts.baseRedContract === true,
     opts.hookAtBase,
     opts.frozenText,
+    opts.extraFrozen ?? {},
   );
 
   const wt = f.wt;
@@ -339,6 +318,12 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
     writeFileSync(path.join(wt, SILENT_RUNNER_FILE), SILENT_RUNNER_SCRIPT, { mode: 0o755 });
     commitHere(wt, "chore: fixture runner that stays silent");
   }
+  if (opts.alwaysRedFrozen === true) {
+    // The same rule as the silent helper above: committed, and committed before
+    // `head` is read, so the tree the step judges is clean.
+    writeFileSync(path.join(wt, NAMING_RUNNER_FILE), NAMING_RUNNER_SCRIPT, { mode: 0o755 });
+    commitHere(wt, "chore: fixture runner that names its failing test");
+  }
   // The log's frozen record is the bytes the FREEZE committed. A case that
   // rewrote the file on disk or at HEAD afterwards faces a record that no
   // longer matches, which is exactly the tamper the step must catch.
@@ -346,7 +331,7 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
   const ctx: HandlerCtx = { ...f.ctx, steps: all };
   ctx.run = { ...ctx.run, steps: all };
 
-  const { exec, redRunsSeen, baseTierRunsSeen } = makeVerifyExec({
+  const { exec, redRunsSeen, baseTierRunsSeen, frozenRunsSeen } = makeVerifyExec({
     wt,
     probeDir,
     repoRoot,
@@ -361,7 +346,13 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
     loadConfig: async () => ({
       verify: {
         ...configured,
-        test: opts.silentRunner === true ? SILENT_RUNNER_TEMPLATE : "sh {file}",
+        test:
+          opts.frozenRunner ??
+          (opts.silentRunner === true
+            ? SILENT_RUNNER_TEMPLATE
+            : opts.alwaysRedFrozen === true
+              ? NAMING_RUNNER_TEMPLATE
+              : "sh {file}"),
       },
     }),
     readVerifyCmd: async () => undefined,
@@ -382,6 +373,7 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
       repoRoot,
       tierRuns: redRunsSeen(),
       baseTierRuns: baseTierRunsSeen(),
+      frozenRuns: frozenRunsSeen(),
     };
   } catch (err) {
     return {
@@ -392,6 +384,7 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
       repoRoot,
       tierRuns: redRunsSeen(),
       baseTierRuns: baseTierRunsSeen(),
+      frozenRuns: frozenRunsSeen(),
     };
   }
 }

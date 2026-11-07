@@ -33,176 +33,18 @@
  */
 
 import { execp } from "../../src/exec.ts";
-import type { WorkConfig } from "../../src/lean/config.ts";
-import type { Outcome, Step } from "../../src/lean/state.ts";
 import type { VerifyExec } from "../../src/lean/verify-types.ts";
 import { gitTestEnv } from "./git-test-env.ts";
 import { namesProbeTree } from "./lean-verify-probe-tree.ts";
+import type { VerifyOpts } from "./lean-verify-types.ts";
 
 export { canonicalProbeDir } from "./lean-verify-probe-tree.ts";
 
 import {
-  type ProbeShapeOpts,
   baseTierHangCommand,
   isProbeBlobRead,
   probeBlobReadTimeoutError,
 } from "./lean-verify-probe-shapes.ts";
-export interface VerifyRun {
-  outcome?: Outcome;
-  threw?: Error;
-  worktree: string;
-  head: string;
-  /**
-   * Where the baseline probe's throwaway tree lives, for the removal cases: it is
-   * derived from the fixture's own `repoRoot`, which the case never has to rebuild.
-   */
-  probeDir?: string;
-  /** How many times the tier command ran, across HEAD and the probe. */
-  tierRuns?: number;
-  /** How many times the BASE PROBE ran the tier in its throwaway checkout (0 = it never got there). */
-  baseTierRuns?: number;
-  /** The run's repo root, for a case that wants to ask git about its worktrees. */
-  repoRoot?: string;
-}
-
-export interface VerifyOpts extends ProbeShapeOpts {
-  issue: number;
-  /** What the project configured; `fast` defaults to a passing tier. */
-  config?: Partial<WorkConfig["verify"]>;
-  /** Nothing configured at all: the frozen tests alone decide. */
-  noCommand?: boolean;
-  /** Bounds every tier and frozen-test run, so a hang is observable in seconds. */
-  timeoutMs?: number;
-  /** Make the worktree dirty before the step looks at it. */
-  dirty?: boolean;
-  /** Rewrite the frozen file ON DISK, uncommitted, before the step looks. */
-  editDisk?: string;
-  /** Commit a rewrite of the frozen file at HEAD before the step looks. */
-  editAtHead?: string;
-  /** Commit the implementation, so the frozen test's own red goes away. */
-  implement?: boolean;
-  /**
-   * A second tier, run after `fast`: the re-check cases use it to rewrite a
-   * frozen file, drop an untracked file, or commit, once the tree has already
-   * been read clean. The command runs through a shell in the worktree.
-   */
-  full?: string;
-  /**
-   * Run the frozen tests through the silent helper runner instead of `sh {file}`:
-   * it exits non-zero without naming the file, so the proof arrives `unclear`.
-   * What the step is allowed to make of an unclear proof is what the case asks.
-   */
-  silentRunner?: boolean;
-  /**
-   * Reject the post-tier BRANCH read with exit 1 AND a message on stderr. git's
-   * own detached answer is exit 1 with NOTHING printed, so a noisy exit 1 is a
-   * git that could not reply and must not be read as "detached".
-   */
-  recheckBranchNoisyExit1?: boolean;
-  /**
-   * Make the HEAD read that happens AFTER the tiers reject, while every earlier
-   * git call still goes to the real git. That read is the post-tier re-check: a
-   * step that cannot re-read HEAD once the tiers have run has not observed a
-   * tier moving it — it has failed to read the tree, which is infrastructure.
-   */
-  recheckHeadFails?: boolean;
-  /**
-   * Reject the post-tier BRANCH read (`symbolic-ref --short -q HEAD`) while
-   * every earlier git call still goes to the real git — the shape a detached
-   * HEAD gives, since `-q` exits 1 without printing anything. A read that
-   * REJECTS rather than exiting 1 is covered by `recheckHeadFails` for the HEAD
-   * read; this one proves the branch read treats git's "detached" exit as an
-   * answer and not as a machine that could not reply.
-   */
-  recheckBranchDetached?: boolean;
-  /**
-   * The issue body the verify gate reads for its `command` criteria. Absent means
-   * an issue with no `pi-spec` block, which is the "the spec asked for no command
-   * criteria" shape — the ordinary case these cases are not about.
-   */
-  specBody?: string;
-  /**
-   * How many times the tier command may fail before it goes green, counted over
-   * EVERY tree it runs in (HEAD's first run, HEAD's re-run, the base probe, in that
-   * order): `1` is the flake — red at HEAD, green on the re-run; `2` is a tier red at
-   * HEAD twice and green at the base, which is the real failure that still earns a
-   * build round; `3` adds a base that is red too, which is the baseline hand-back.
-   */
-  headTierRedRuns?: number;
-  /**
-   * Make the BASE commit itself fail the run's frozen contract, with a real committed
-   * test that exits non-zero whatever the tree holds.
-   *
-   * This is the only honest way to make a baseline-red case: the probe re-runs the run's
-   * own acceptance tests inside the base checkout and reads their colour from the real
-   * runner, so a base that is red is red because git says so, not because the case said
-   * so. `false` is the boundary — a base with no red of its own, over which a tier may
-   * not be excused.
-   */
-  baseRedContract?: boolean;
-  /**
-   * Make the probe's `git worktree add` reject. The base then cannot be judged at
-   * all, which is infrastructure rather than a colour, and the probe tree must still
-   * be gone afterwards — which is what the removal case drives.
-   */
-  baseAddFails?: boolean;
-  /**
-   * Reject the probe's tier run. A base run that throws is the case where a cleanup
-   * that only ran on the happy path would leak its checkout, so the tree has to be
-   * gone from `git worktree list` afterwards even though the probe itself failed.
-   */
-  baseTierThrows?: boolean;
-  /**
-   * Make the step's RE-RUN at HEAD reject with the executor's own kill shape
-   * (`killed`, `timedOutKill`, `code: null`, no numeric exit code) — the shape a tier
-   * that hung on its second attempt really produces, and the one a numeric `code`
-   * cannot fake. The tier's OWN script is what hangs (see `killOnSecondTier`), so this
-   * only makes the hang observable in seconds by shortening the bound the step gives a
-   * tier: the SIGKILL, the `code: null`, and the `killed` stamp all come from the real
-   * executor, not from a stub. A re-run that observed nothing may not excuse the tier:
-   * the run must stay red, and a gate that read "no numeric code" as "exited 0" would
-   * call it a flake and report a green nobody observed.
-   */
-  headRerunKilled?: boolean;
-  /**
-   * Make the step's RE-RUN at HEAD reject with NOTHING on it: no exit `code`, no
-   * `killed`, no `overflow`, no `ENOENT`. This is the shape a harness speaks with rather
-   * than a gate, and it is the one an "absence of an exit code means green" test gets
-   * wrong — the rejection arrives as an object with no `stdout`, so the only honest
-   * reading is "nobody told us anything" and the first red must stand.
-   */
-  headRerunSilentReject?: boolean;
-  /**
-   * Reject the step's RE-RUN at HEAD with a value the case names — the executor's own
-   * kill, `overflow` or `ENOENT` shape, each of which `tierObserved` says `false` for.
-   * These shapes still carry a `stdout`, so the re-run is the one place a tier that
-   * nobody saw fail twice can print the very names the base printed, and an excuse
-   * built from it grades a green on an unobserved run.
-   */
-  headRerunRejects?: unknown;
-  /**
-   * What the BASE PROBE's tier run printed (combined stdout+stderr), for the cases
-   * that decide what the base NAMED rather than only what it exited. The base runs
-   * at a commit the case built, so only the case can say what that run printed —
-   * the same reason `baseBlobBytes` answers the base's bytes.
-   */
-  baseTierOutput?: string;
-  /**
-   * What the tier prints when the run's OWN worktree runs it red, for the cases
-   * whose head tier must name failing tests. Absent means the tier's own script
-   * output, which is every case that came before the baseline-excuse cases.
-   */
-  headTierOutput?: string;
-  /**
-   * The bytes to freeze as the run's acceptance test, for the case that fixes the
-   * ACCEPTANCE half of the verdict rather than deriving it (`GREEN_TEST` and
-   * `RED_ACCEPTANCE_TEST` in `lib/lean-verify-fixture.ts`). Absent means the
-   * fixture's own red-until-implemented test.
-   */
-  frozenText?: string;
-  /** Log lines to add after the fixture's own. */
-  extraSteps?: Step[];
-}
 
 export function makeVerifyExec(opts: {
   wt: string;
@@ -214,7 +56,7 @@ export function makeVerifyExec(opts: {
   hookMarks?: string;
   /** The run's base sha — what identifies the probe's `<base>:<path>` blob reads. */
   baseSha?: string;
-}): { exec: VerifyExec; redRunsSeen: () => number; baseTierRunsSeen: () => number } {
+}): { exec: VerifyExec; redRunsSeen: () => number; baseTierRunsSeen: () => number; frozenRunsSeen: () => number } {
   const { wt, probeDir, repoRoot, tiers, opts: o } = opts;
   const hookMarks = opts.hookMarks;
   const baseSha = opts.baseSha;
@@ -251,8 +93,10 @@ export function makeVerifyExec(opts: {
   let tierRuns = 0;
   /** How many of HEAD's runs the tier is allowed to fail before it goes green. */
   const redBudget = o.headTierRedRuns ?? 0;
-  /** Runs of the tier the step has made in the RUN's own worktree. */
+  /** How many of HEAD's runs the step made in the RUN's own worktree. */
   let headTierRuns = 0;
+  /** Runs of a FROZEN file through the runner template — see `VerifyRun.frozenRuns`. */
+  let frozenRuns = 0;
   /** Runs of the tier the BASE PROBE has made in its throwaway checkout. */
   let baseTierRuns = 0;
   /** The tier's own marker, so a stubbed red prints the identity of ITS tier. */
@@ -342,6 +186,14 @@ export function makeVerifyExec(opts: {
   };
 
   const exec: VerifyExec = (cmd, o2) => {
+    // A frozen-test run is the argv-form call the runner template makes: `runTestFile`
+    // renders `<bin> <args…>` and submits it as `exec(bin, { argv })` with the kill-group
+    // bound, so the file path reaches the executor in argv and never in the command string.
+    // Tiers arrive the other way — whole command string, no argv — and git's own argv reads
+    // of a frozen path (`git show <ref>:tests/AC1-….test.sh`) carry no `killGroup`, so
+    // neither can be mistaken for a run of the contract.
+    if ((o2 as { killGroup?: boolean } | undefined)?.killGroup === true && Array.isArray(o2?.argv))
+      frozenRuns++;
     // The tier command is the marker between the step's pre-tier reads and its
     // post-tier re-checks; only the HEAD read on the far side of it goes quiet.
     if (cmd !== "git" && cmd !== "sh") tierRan = true;
@@ -477,5 +329,10 @@ export function makeVerifyExec(opts: {
     return execp(cmd, { ...o2, env: o2?.env ?? childEnv(), cwd: o2?.cwd ?? wt });
   };
 
-  return { exec, redRunsSeen: () => tierRuns, baseTierRunsSeen: () => baseTierRuns };
+  return {
+    exec,
+    redRunsSeen: () => tierRuns,
+    baseTierRunsSeen: () => baseTierRuns,
+    frozenRunsSeen: () => frozenRuns,
+  };
 }

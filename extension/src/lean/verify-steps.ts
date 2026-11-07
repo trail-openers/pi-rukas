@@ -15,8 +15,10 @@
  *   - **the toolchain canary** runs first, before any verdict is recorded:
  *     a type-checker that has been stubbed to `exit 0` produces exactly the
  *     green this step must never report;
- *   - **the frozen tests** run through `runTestFile`, which classifies kills
- *     and un-startable runners as `infra` for this module to turn into a throw;
+ *   - **the frozen tests** run through `runTestFile`, which classifies a kill or an
+ *     un-startable runner as `infra`; of those, only a runner that could not be
+ *     started becomes a throw — a frozen file the head hangs is graded red, because
+ *     the freeze already proved it red against the base (see `frozenTestFailure`);
  *   - **the project tiers** run as shell commands with the driver's knobs
  *     scrubbed out of the child env (`verifyChildEnv`), in their own process
  *     group (`killGroup`) so a timeout actually kills the tree of processes a
@@ -47,9 +49,11 @@ export const TIER_TAIL_LINES = 40;
  * What counts as "nothing was observed" is narrower than it looks, and
  * `frozenTestFailure` is where the line sits: a frozen test that exits non-zero
  * without echoing its own path is a `fail` (it was proven red at freeze time,
- * so a later non-zero exit is that failure continuing), while a runner that was
- * killed, timed out or never started is `infra` — that one never ran. The 126
- * and 127 the shell reports for "not executable" and "not found" are NOT a
+ * so a later non-zero exit is that failure continuing), and so is one the head's
+ * code made HANG — same proof, and a hang is a defect in the work rather than in
+ * the machine. The shapes that stay `infra` are the ones where nothing was ever
+ * run: a runner that could not be started, and a template with nothing to run.
+ * The 126 and 127 the shell reports for "not executable" and "not found" are NOT a
  * third shape: a real test can exit 127 after printing its own failure, and an
  * exit status alone says nothing about whether the code was ever judged, so
  * routing those two on the number alone hid genuine reds. They are reds like
@@ -120,11 +124,38 @@ export async function canaryFailure(
 }
 
 /**
+ * The head's code may hang wording, first in the reason and never only in its tail.
+ *
+ * The red reason is clipped to `RED_REASON_CLIP` and pasted into the next build
+ * child's prompt under "Why this round exists"; a reason whose only mention of the
+ * hang sat at the end could be clipped away and the builder would be sent off to fix
+ * a test failure with no hint that the real defect is a hang.
+ */
+export const FROZEN_TIMEOUT_HEAD = "frozen tests timed out (the head's code may hang):";
+
+/**
  * Run the frozen acceptance tests with the project's per-file runner template.
  *
- * EVERY frozen file runs: a step that stopped at the first failure could report
- * the same reason tomorrow for a different file, and the fix round would only
- * learn about the second failure after paying for the first.
+ * EVERY plain verdict is collected: a step that stopped at the first failure could
+ * report the same reason tomorrow for a different file, and the fix round would only
+ * learn about the second failure after paying for the first. A HANG is the exception,
+ * and the exception is a cost bound: a wall-clock kill costs the whole bound, so a
+ * contract whose files all hang would pay it once per file, serially, for a reason
+ * that says one thing about all of them. After the first kill nothing further runs and
+ * the reason counts what was skipped, so a hang costs at most ONE bound per verify.
+ *
+ * A wall-clock kill is a RED here — the same proof the plain failure rests on, and
+ * reported with the plain failures already observed. Every file in the frozen
+ * contract was proved red against the base before
+ * `runTestPipeline` committed it — that is the only way a file gets frozen, for
+ * `specify` and `challenge` alike — so membership in the contract is the proof this
+ * file was red and named when it was written. A head that now hangs it is the code
+ * under build failing, which is a verdict the developer can act on, not a machine
+ * that refused to answer. The other `infra` shapes stay throws: a runner that never
+ * started, a template with nothing to run and a run whose output flooded past the
+ * executor's bound all observed nothing, and none of them is evidence about the work
+ * however the file behaved when it was frozen. The flood in particular is not a hang:
+ * grading it red would send a builder to hunt a loop in code that merely printed a lot.
  */
 export async function frozenTestFailure(
   frozen: Record<string, string>,
@@ -136,15 +167,53 @@ export async function frozenTestFailure(
   if (template === undefined)
     throw new VerifyInfraError("no verify.test runner template is configured for the frozen tests");
   const failures: string[] = [];
-  for (const file of Object.keys(frozen)) {
+  const files = Object.keys(frozen);
+  for (const [i, file] of files.entries()) {
     const proof = await runTestFile(exec, {
       wt,
       template,
       file,
       ...(timeoutMs === undefined ? {} : { limits: { timeoutMs } }),
     });
-    if (proof.kind === "infra")
-      throw new VerifyInfraError(`the frozen test ${file} could not be judged: ${proof.detail}`);
+    if (proof.kind === "infra") {
+      // Switched on the classifier's own `infraShape` rather than re-derived here:
+      // two definitions of "was it killed" in one pipeline is how the halves start
+      // disagreeing about a hang. The `default` is the exhaustiveness check: a fifth
+      // shape reaches it and fails type-check.
+      // A `never-started` proof whose detail reports a deadline rather than a failed
+      // spawn is another module's abandoned re-run: still a run that observed
+      // nothing, still a throw. Nothing here guesses at the difference. An
+      // `overflowed` proof is the executor's maxBuffer kill — `killed: true`, but the
+      // wall clock did not fire — and a flood is not a hang: it throws with the rest,
+      // or a chatty test costs a build round hunting a loop that is not there.
+      switch (proof.infraShape) {
+        case "killed": {
+          // One bound per verify: the files this kill stopped short of are counted,
+          // not run. The reason still says which file hung and keeps every plain
+          // failure this run already observed, so nothing the fix round could act on
+          // is lost — only the minutes a second hang would have cost it.
+          const skipped = files.length - i - 1;
+          const parts = [`${FROZEN_TIMEOUT_HEAD} ${file}`];
+          if (failures.length > 0) parts.push(`frozen tests failing: ${failures.join(", ")}`);
+          if (skipped > 0)
+            parts.push(`${skipped} other frozen file${skipped === 1 ? "" : "s"} not run`);
+          return { kind: "fail", reason: parts.join(" — ") };
+        }
+        case "overflowed":
+        case "never-started":
+        case "nothing-to-run":
+          // Each of these observed nothing, so each throws; the `default` below is the
+          // only way out of the switch that keeps running the loop, so `continue` lives
+          // there rather than after the switch, where it would be unreachable.
+          throw new VerifyInfraError(
+            `the frozen test ${file} could not be judged: ${proof.detail}`,
+          );
+        default: {
+          const unhandled: never = proof.infraShape;
+          throw new VerifyInfraError(`unhandled infra shape ${String(unhandled)}`);
+        }
+      }
+    }
     // A non-zero exit whose output never named this file is a RED, not
     // infrastructure (the PM's call, reversing the earlier reading — and its
     // 126/127 carve-out too, which is gone). The file was proven red-and-named
@@ -155,8 +224,6 @@ export async function frozenTestFailure(
     // the number alone cannot tell a broken runner from a genuine red, and
     // trusting it hid reds. Treating an unclear exit as infra handed the run
     // back for a test failure the developer can act on.
-    // Only the shapes where nobody ran anything — killed, timed out, never
-    // started — stay throws, because those observed nothing.
     if (proof.kind === "unclear")
       return {
         kind: "fail",
