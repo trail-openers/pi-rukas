@@ -55,6 +55,8 @@ import { type Fixture, provisionHookedTree } from "./lean-verify-hook-tree.ts";
 import {
   type VerifyOpts,
   type VerifyRun,
+} from "./lean-verify-types.ts";
+import {
   canonicalProbeDir,
   makeVerifyExec,
 } from "./lean-verify-exec.ts";
