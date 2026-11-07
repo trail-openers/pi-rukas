@@ -26,7 +26,8 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { type LeanHandlers, runLean } from "../src/lean/engine.ts";
 import type { LeanRun, LeanState, Outcome } from "../src/lean/state.ts";
-import { leanStateFile, loadRun } from "../src/lean/state.ts";
+import { INITIAL_COUNTERS, leanStateFile, loadRun } from "../src/lean/state.ts";
+import { foldOf } from "./lib/lean-real-log-fixture.ts";
 import {
   CLOCK,
   FIXTURE_BASE_SHA,
@@ -125,13 +126,38 @@ const { assert, failures } = makeAssert();
       baseSha: FIXTURE_BASE_SHA,
       branch: "feature/issue-11",
       state: "build",
-      counters: {
-        buildAttempts: 0,
-        challengeDone: false,
-        reviewDone: false,
-        ciFixUsed: false,
-        draft: false,
-      },
+      // The counters the table reaches on the log below, DERIVED — `foldLog` over
+      // the two decided entries, not a literal. Under dispatch-billing the edge
+      // that entered `build` bills the round this visit is running, so the write-
+      // ahead of a build already stands one attempt past the counter a run carries
+      // at `ready`; a hand-typed 0 here is a snapshot the fold cannot reproduce, and
+      // the case would refuse the file it means to resume.
+      counters: foldOf({
+        schema: 1,
+        issue: 11,
+        version: "test",
+        models: {},
+        baseSha: FIXTURE_BASE_SHA,
+        branch: "feature/issue-11",
+        state: "ready",
+        counters: { ...INITIAL_COUNTERS },
+        steps: [
+          {
+            key: "11:ready:0",
+            state: "ready",
+            startedAt: CLOCK,
+            endedAt: CLOCK,
+            outcome: { kind: "ok" },
+          },
+          {
+            key: "11:specify:0",
+            state: "specify",
+            startedAt: CLOCK,
+            endedAt: CLOCK,
+            outcome: { kind: "ok" },
+          },
+        ],
+      }).counters,
       steps: [
         {
           key: "11:ready:0",

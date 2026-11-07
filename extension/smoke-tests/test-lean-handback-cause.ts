@@ -295,6 +295,13 @@ function breach(state: "build" | "challenge") {
   // run is over: the operator needs to know the retries were spent. The build step
   // composes that clause into the verdict's own `reason`, which is what the cause
   // line prints — `budgetSentence` on its own names only the ceiling.
+  //
+  // N is the number of rounds the run DISPATCHED, not the number of table entries
+  // it walked into build: #2081 moved the billing site to the edge that enters
+  // `build`, so a challenge round and a ceiling stop no longer inflate it. The
+  // clause's SHAPE is what this pins — `handback.budgetCause` extracts it by regex
+  // from prose the step wrote, so a reworded clause silently drops out of the
+  // comment.
   const capped = decided("build", {
     kind: "budget",
     limit: "turns",

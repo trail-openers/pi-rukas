@@ -12,8 +12,10 @@
  * table does not cover. A handler that returns an unlisted kind is a bug in
  * the handler, and the table says so rather than defaulting somewhere quiet.
  *
- * The loop guards are the interesting part. `buildAttempts` caps how many
- * times build may run before a run ships a draft rather than grinding;
+ * The loop guards are the interesting part. `buildAttempts` caps how many build
+ * rounds a run may DISPATCH, billed once on entering `build` and never on leaving
+ * it (`to()` on the build→challenge / build→verify edges, `viaBuild()` only on an
+ * edge whose destination is `build`);
  * `challengeDone` makes the challenge step run at most once; `reviewDone`
  * makes review run at most once, so a CI fix round re-verifies without
  * re-rehearsing the review AND so the re-verification a review fix round earns
@@ -157,7 +159,12 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
     case "specify":
       switch (outcome.kind) {
         case "ok":
-          return to(run, "build");
+          // The contract holds, so the run earns its builder — and this edge
+          // DISPATCHES it, so this is where build's first round is billed. Every
+          // edge whose destination is `build` bills one and nothing else does:
+          // the counter then means rounds dispatched, and no edge leaving build
+          // can spend a round on the way out.
+          return viaBuild(run, "build");
         case BUDGET_KIND:
           // Out of budget before the contract was written: nothing was proved,
           // so there is nothing to build against.
@@ -173,21 +180,29 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
     case "build":
       switch (outcome.kind) {
         case "ok":
-          // At the cap the run stops building and goes to its gate, which either
-          // clears the draft by going green or ends the run: the cap is a TABLE
-          // invariant, not a handler courtesy, so a handler that never returns
-          // `exhausted` cannot walk past the budget.
+          // The run's THIRD dispatched round reported clean, so the counter now
+          // reads the cap and there is no round left to buy: the gate decides the
+          // run. The check is on this edge rather than only on the edges that buy
+          // a round because a run can ARRIVE at build with the cap already spent
+          // — a pre-fix record, or a hand-written one — and the alternative is
+          // `viaBuild` writing 4, 5, 6 and letting the fold derive a counter no
+          // drive ever saved. The round this edge is reporting was paid for on the
+          // way IN, so the move itself bills nothing.
           if (c.buildAttempts >= MAX_BUILD_ATTEMPTS) return to(run, "verify");
           // The first build ever earned a challenge round; a build that came
-          // back from one has already been challenged and goes to verify.
-          return viaBuild(run, c.challengeDone ? "verify" : "challenge");
+          // back from one has already been challenged and goes to verify. That
+          // challenge is a round the run has NOT dispatched, so the edge leaving
+          // build bills nothing — charging it there is what made two real builds
+          // read as three and handed the run back before its third builder ran.
+          return to(run, c.challengeDone ? "verify" : "challenge");
         case BUDGET_KIND:
           // The same edges as `ok`: the ceiling cut work short, it did not judge it,
-          // and the round is billed either way. `build` retries a stopped child inside
-          // the step, so the table has no self-edge — and no uncommitted bytes reach
-          // the gate, because the step folded that work in first (#2067).
+          // and the round already paid for itself on the way INTO build. `build`
+          // retries a stopped child inside the step, so the table has no self-edge —
+          // and no uncommitted bytes reach the gate, because the step folded that
+          // work in first (#2067).
           if (c.buildAttempts >= MAX_BUILD_ATTEMPTS) return to(run, "verify");
-          return viaBuild(run, c.challengeDone ? "verify" : "challenge");
+          return to(run, c.challengeDone ? "verify" : "challenge");
         case "blocked":
           // Straight to `handback`, and never through the `exhausted` route:
           // publishing a PR over tests the run's own builder proved
@@ -222,7 +237,10 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
         case "new-tests":
           // New tests mean new red. One more build, and only one: the flag is
           // charged HERE, on the branch that re-enters build, so the build it
-          // earns cannot offer a second challenge round on the way out.
+          // earns cannot offer a second challenge round on the way out. The ROUND,
+          // by contrast, is billed by `viaBuild` as it always is — the counter
+          // already counts the rounds dispatched, so at the cap the adversary's
+          // new tests have nothing left to buy and the run goes to its gate.
           if (!c.challengeDone && c.buildAttempts < MAX_BUILD_ATTEMPTS)
             return viaBuild(run, "build", undefined, { challengeDone: true });
           return to(run, "verify", { challengeDone: true });

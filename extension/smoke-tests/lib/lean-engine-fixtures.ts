@@ -14,6 +14,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { LeanHandlers } from "../../src/lean/engine.ts";
+import { MAX_BUILD_ATTEMPTS } from "../../src/lean/machine.ts";
 import { next } from "../../src/lean/machine.ts";
 import {
   INITIAL_COUNTERS,
@@ -299,11 +300,19 @@ function deriveSeedPosition(walk: [LeanState, number, string?, boolean?][]): {
   return { state, counters };
 }
 
-/** The outcomes that carry a run straight to `landed`. */
+/**
+ * The outcomes that carry a run straight to `landed`.
+ *
+ * The queues are priced by the table, not by guesswork: a build round is billed
+ * on the edge that ENTERS `build` (`machine.ts`), so a run that reaches its
+ * gate has dispatched `MAX_BUILD_ATTEMPTS` builders and the queue has to hold
+ * one `ok` for each. A queue one short runs out on the round the billing now
+ * earns, and the step throws instead of answering.
+ */
 export const HAPPY: Partial<Record<LeanState, Outcome[]>> = {
   ready: [{ kind: "ok" }],
   specify: [{ kind: "ok" }],
-  build: [{ kind: "ok" }, { kind: "ok" }],
+  build: Array.from({ length: MAX_BUILD_ATTEMPTS }, () => ({ kind: "ok" }) as Outcome),
   challenge: [{ kind: "none" }],
   verify: [{ kind: "green" }],
   publish: [{ kind: "ok" }],

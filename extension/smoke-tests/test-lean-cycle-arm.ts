@@ -30,7 +30,8 @@
 import { leanIssueResult } from "../src/headless/work-lean-result.ts";
 import { MINUTE_MS, leanDeadline } from "../src/lean/deadline.ts";
 import { type LeanHandlers, runLean } from "../src/lean/engine.ts";
-import { INITIAL_COUNTERS, type LeanRun, loadRun } from "../src/lean/state.ts";
+import { MAX_BUILD_ATTEMPTS } from "../src/lean/machine.ts";
+import { INITIAL_COUNTERS, type LeanRun, type Outcome, loadRun } from "../src/lean/state.ts";
 import { flagBudgetMs } from "../src/work-driver-deadline.ts";
 import { handoffDispatchTimeoutMs } from "../src/work-driver-handoff.ts";
 import { makeAssert } from "./headless-verb-harness.ts";
@@ -256,19 +257,28 @@ await withEnv({ PI_ENSEMBLE_CYCLE_BUDGET_MS: String(240 * MINUTE_MS) }, async ()
   // `past` — which is the boundary the exemption exists for. Crossing at
   // `handback` itself would put the first `past` read AFTER that stop test, where
   // the case passes identically with or without the rule it advertises.
-  const clock = crossing({ at: "verify", repoRoot: repo0, issue: 403, times: 1 });
-  // The run's gate already said red twice, so the table's own rule hands the
-  // third verdict to the step that tells the operator. The clock must not take
-  // that one away.
+  //
+  // `times: 2`, because the gate now answers the run's LAST round, not its
+  // second-to-last. A build round is billed on the edge that ENTERS `build`
+  // (`machine.ts`), so the gate is reached with the cap already spent and the
+  // third red is the verdict that hands the run to the reporter. Crossing at the
+  // first gate boundary would stop the run AT `build` — the step the verdict
+  // after that gate dispatches — and there is no exemption for a working step to
+  // survive, so the case would be testing a stopped build instead of a report
+  // that outran the clock.
+  const clock = crossing({ at: "verify", repoRoot: repo0, issue: 403, times: 2 });
+  // The run's gate says red on EVERY round it gets, so the table has nothing
+  // left to buy and hands the run to the step that tells the operator. The queue
+  // is priced off the cap — `MAX_BUILD_ATTEMPTS` dispatches enter `build` and
+  // the gate answers each one — so the case keeps its premise when the cap moves
+  // instead of running out on the round the billing now earns.
+  const redVerdict = () => ({ kind: "red", reason: "acceptance test x is red" }) as Outcome;
   const r = await runLean({
     repoRoot: repo0,
     issue: 403,
     handlers: recording(calls, {
       ...WALK,
-      verify: [
-        { kind: "red", reason: "acceptance test x is red" },
-        { kind: "red", reason: "acceptance test x is red" },
-      ],
+      verify: Array.from({ length: MAX_BUILD_ATTEMPTS }, redVerdict),
     }),
     seed: { version: "0.0.0-test", baseSha: "" },
     now: clock.now,

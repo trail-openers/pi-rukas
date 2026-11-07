@@ -27,8 +27,9 @@ import { leanIssueResult } from "../src/headless/work-lean-result.ts";
 import { phase1Handlers } from "../src/lean/command.ts";
 import { MINUTE_MS } from "../src/lean/deadline.ts";
 import { runLean } from "../src/lean/engine.ts";
+import { MAX_BUILD_ATTEMPTS } from "../src/lean/machine.ts";
 import { setLeanCommentPoster } from "../src/lean/io.ts";
-import { INITIAL_COUNTERS, type LeanRun, type Step, loadRun } from "../src/lean/state.ts";
+import { INITIAL_COUNTERS, type LeanRun, type Outcome, type Step, loadRun } from "../src/lean/state.ts";
 import { handoffChannel } from "../src/work-driver-handoff-channel.ts";
 import { handoffDispatchTimeoutMs } from "../src/work-driver-handoff.ts";
 import { makeAssert } from "./headless-verb-harness.ts";
@@ -72,7 +73,13 @@ for (const channel of ["host", "forge"] as const) {
       // seam and all. The states before it are answered from the log rather than
       // run, so no case here depends on a forge, a worktree or a model.
       const wired = phase1Handlers(repo, 410);
-      const clock = crossing({ at: "verify", repoRoot: repo, issue: 410, times: 1 });
+      // The crossing sits on the gate's SECOND boundary, not its first: a build
+      // round is billed entering `build` (`machine.ts`), so the run reaches the
+      // gate with the cap spent and its LAST red is the one that routes to
+      // `handback`. Crossing on the first gate boundary stops the loop at the
+      // `build` the next red dispatches — a stopped working step, where the case
+      // is about a report that outran the clock.
+      const clock = crossing({ at: "verify", repoRoot: repo, issue: 410, times: 2 });
       const driven = await runLean({
         repoRoot: repo,
         issue: 410,
@@ -84,13 +91,14 @@ for (const channel of ["host", "forge"] as const) {
           ...recording([], {
             ready: [{ kind: "ok" }],
             specify: [{ kind: "ok" }],
-            build: [{ kind: "ok" }, { kind: "ok" }],
+            build: Array.from({ length: MAX_BUILD_ATTEMPTS }, () => ({ kind: "ok" }) as Outcome),
             challenge: [{ kind: "none" }],
-            verify: [
-              { kind: "red", reason: "acceptance test x is red" },
-              { kind: "red", reason: "acceptance test x is red" },
-              { kind: "red", reason: "acceptance test x is red" },
-            ],
+            // Red on every round the run gets: the cap is what makes the table
+            // hand the run to the reporting step, so the queue is priced off it.
+            verify: Array.from({ length: MAX_BUILD_ATTEMPTS }, () => ({
+              kind: "red",
+              reason: "acceptance test x is red",
+            })),
           }),
         },
         seed: { version: "0.0.0-test", baseSha: "" },
@@ -227,13 +235,12 @@ for (const [channel, want] of [
           ...recording([], {
             ready: [{ kind: "ok" }],
             specify: [{ kind: "ok" }],
-            build: [{ kind: "ok" }, { kind: "ok" }],
+            build: Array.from({ length: MAX_BUILD_ATTEMPTS }, () => ({ kind: "ok" }) as Outcome),
             challenge: [{ kind: "none" }],
-            verify: [
-              { kind: "red", reason: "acceptance test x is red" },
-              { kind: "red", reason: "acceptance test x is red" },
-              { kind: "red", reason: "acceptance test x is red" },
-            ],
+            verify: Array.from({ length: MAX_BUILD_ATTEMPTS }, () => ({
+              kind: "red",
+              reason: "acceptance test x is red",
+            })),
           }),
         },
         seed: { version: "0.0.0-test", baseSha: "" },
