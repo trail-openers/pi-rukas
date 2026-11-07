@@ -65,7 +65,15 @@ import { classifyFailureLine } from "../work-driver-verify-failures.ts";
  *
  * The words are a fixed set, matched case-insensitively and WORD-BOUNDED (`fail\w*` reaches `failed`,
  * `failing`, `failures`; it does not reach `focus` or `definitely`), plus the five failure glyph
- * runners actually print (`✗ ✘ × ✕ ✖`), which have no letters to bound. The set is wide on purpose —
+ * runners actually print (`✗ ✘ × ✕ ✖`), which have no letters to bound, plus the two verdict
+ * SPELLINGS a runner prints for a failed check — TAP's `not ok` and go's `--- FAIL:` / jest's
+ * `=== FAIL:`. Those two are here because the exemption invariant asks this predicate of EVERY
+ * line, and a runner's own verdict must count as declaring failure wherever that question is asked:
+ * neither is reached by the word set — `not ok` is a phrase with no `fail` in it at all, and
+ * `--- FAIL` is caught by `fail\w*` only when a letter or digit sits before the dashes, so the run of
+ * dashes is its own arm. `not\s+ok` is bounded on both sides (`book ok`, `notoka`, `xnot ok y` are
+ * not verdicts) and the dash run on its right only, so an indented `----- FAIL:` still reads as one.
+ * The set is wide on purpose —
  * it reaches further than the classifier's anchored shapes, on purpose — and it is asked only of the
  * lines this seam is asked about, never of a stream: being wide costs a hand-back for a passing test
  * whose name happens to read like a failure (`ok 7 - login timeout retried` printed head-only) and for
@@ -74,8 +82,12 @@ import { classifyFailureLine } from "../work-driver-verify-failures.ts";
  * is not safe for counters: this predicate can only ever REFUSE a permission, never grant one, so a
  * failure word the list lacks costs a hand-back and no more.
  */
+// The `not ok` / `= FAIL` / `- FAIL` arms sit OUTSIDE the `\b(?:…)\b` group above them: a word
+// boundary before a branch opening with a punctuation class (`=` or `-`) matches nothing at all,
+// since neither side of that position is a word character. Each therefore carries its own right-hand
+// `\b` and no left-hand one — its run of `=`/`-` is what makes it a verdict rather than prose.
 const FAILURE_VETO =
-  /\b(?:fail\w*|error\w*|crash\w*|abort\w*|panic\w*|timed?\s*out|timeout|segfault|broken|exception\w*|fatal|critical|killed|leak\w*)\b|[✗✘×✕✖]/i;
+  /\b(?:fail\w*|error\w*|crash\w*|abort\w*|panic\w*|timed?\s*out|timeout|segfault|broken|exception\w*|fatal|critical|killed|leak\w*)\b|\bnot\s+ok\b|={3,}\s*FAIL\b|-{3,}\s*FAIL\b|[✗✘×✕✖]/i;
 
 /**
  * Does this line's own text declare a failure, anywhere in it?

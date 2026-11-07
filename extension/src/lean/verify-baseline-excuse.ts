@@ -72,13 +72,13 @@ import {
   preexistingFailuresProblem,
 } from "./state-outcome-maps.ts";
 import {
-  isHarnessEchoOf,
   isKnownCleanLine,
   judgeableLines,
   normaliseRaw,
   streamLines,
 } from "./verify-baseline-allow-list.ts";
 import { failureLineFold } from "./verify-baseline-counters.ts";
+import { isHarnessEchoOf } from "./verify-baseline-harness.ts";
 import type { BaseProbe } from "./verify-baseline.ts";
 
 /** Why the base red cannot excuse this tier's red. */

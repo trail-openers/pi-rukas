@@ -43,10 +43,8 @@
 import { classifyFailureLine } from "../src/work-driver-verify-failures.ts";
 import { failureLineFold } from "../src/lean/verify-baseline-counters.ts";
 import { baselineExcuse } from "../src/lean/verify-baseline-excuse.ts";
-import {
-  isHarnessEchoOf,
-  isKnownCleanLine,
-} from "../src/lean/verify-baseline-allow-list.ts";
+import { isKnownCleanLine } from "../src/lean/verify-baseline-allow-list.ts";
+import { isHarnessEchoOf } from "../src/lean/verify-baseline-harness.ts";
 import type { BaseProbe } from "../src/lean/verify-baseline.ts";
 
 const SELF = "test-AC16-baseline-excuse-whole-line.ts";

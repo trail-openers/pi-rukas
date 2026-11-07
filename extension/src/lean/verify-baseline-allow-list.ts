@@ -62,6 +62,7 @@ import {
   scrubInvisible,
 } from "./verify-baseline-counters.ts";
 import { stripRoot } from "./verify-baseline-excuse.ts";
+import { harnessWordsRemoved, isHarnessEchoOf, isHarnessLine } from "./verify-baseline-harness.ts";
 
 /**
  * A line that reports a check as PASSING, in the dialects the allow-list has to read.
@@ -310,32 +311,14 @@ export function isKnownCleanLine(line: string): boolean {
  */
 
 /**
- * Did the HARNESS write this line, rather than the gate?
+ * Every raw line of a stream, scrubbed of invisible characters, trimmed, blanks dropped.
  *
- * The streams the excuse reads are BUILT by the executor, which adds its own writing to what
- * the gate printed: a `tier-said-<name>` marker, a `boom from the <tier>`, a bare `Exit code:
- * N`, a bare `killed`, an echoed `$ command`. None of it is evidence about the project, so the
- * default-refuse rule must not read it as a gate line — and it must not read it on EITHER
- * side, because the head stream carries executor noise the base stream need not carry
- * identically, and counting that as head-only would refuse every real tier in the suite.
- *
- * The arms are anchored to the harness's OWN full-line forms, exactly as `isHarnessEchoLine`
- * anchors the shared table's: a bare `Exit code: 1` is the harness, while `Exit code: 1 - brand
- * new check` is a gate line that merely OPENS that way and is judged on what it says. An
- * exemption that reached the second form would hand the whole rule back to whoever controls the
- * first word of a line.
+ * Exported because the two rules that read a whole stream live on either side of the module
+ * seam and must ask the SAME question of it — anything else is two definitions of "a line",
+ * and with {@link scrubInvisible} in the seam, two definitions of "the text of a line". Every
+ * single-line arm in this file scrubs its own argument too, so a caller holding a raw line gets
+ * the same answer as a line that came through a stream.
  */
-export function isHarnessLine(line: string): boolean {
-  const t = scrubInvisible(line).trim();
-  return (
-    /^tier-said-[A-Za-z0-9_-]+(?:-\d+)?$/.test(t) ||
-    /^boom from the [A-Za-z0-9_ -]+$/.test(t) ||
-    /^Exit code:\s*\d*$/.test(t) ||
-    /^killed(?:\s+by\s+signal\s*\S*)?$/i.test(t) ||
-    /^\$\s/.test(t)
-  );
-}
-
 /**
  * Does the shared classifier read this line as a check that PASSED?
  *
@@ -377,64 +360,21 @@ export function isHarnessLine(line: string): boolean {
 function isPassingLine(line: string): boolean {
   const t = scrubInvisible(line);
   const tally = t.trim().replace(PADDING, "");
-  if (RUN_SUMMARY.test(tally)) return !UNKNOWN_COUNTED_WORD.test(tally);
-  if (declaresFailure(t)) return false;
+  // The tally arm keeps its OWN gate ({@link UNKNOWN_COUNTED_WORD}) rather than the word veto, and
+  // the ordering is load-bearing: a runner's summary of a red run — `===== 1 failed, 5 passed in
+  // 0.34s =====` — legitimately names failures, is read as success by the classifier's unanchored
+  // `\d+ passed` arm, and is THE line the added-passing-tests case moves. A word veto asked of the
+  // whole line refuses it, and an exempted summary is compared by nothing, so the tier whose summary
+  // moved had no key and no exemption: the veto in front of this arm refused the one case the excuse
+  // exists to grant. What the arm still may not vouch for is a counted word on no list, which is
+  // exactly what the counter veto below asks, and a TAP verdict wearing a pass count (`not ok 5 -
+  // brand new check 9 passed`) has a tally's shape and a `not ok` its own.
+  if (RUN_SUMMARY.test(tally))
+    return !UNKNOWN_COUNTED_WORD.test(tally) && !declaresFailure(harnessWordsRemoved(tally));
+  if (declaresFailure(harnessWordsRemoved(t))) return false;
   return classifyFailureLine(t) === undefined && isSuccessLine(t);
 }
 
-/**
- * Is this head line the harness ECHOING a command, and did the base echo the same command?
- *
- * `Command failed: <cmd>` is the executor quoting back what it ran. It is not gate output, and
- * the same tier at the base is echoed the same way, so an echo is not a failure this run
- * authored — PROVIDED the base really printed that command, or it is the tier's own command
- * (which the caller passes, because the base stream of a single-tier probe need not repeat it).
- * That proviso is what keeps the exemption honest: an echo of a command NEITHER run was asked to
- * run is a head-only line like any other, and a head carrying only such an echo has nothing
- * recognised left to compare, which is what refuses it.
- *
- * The command is NEVER read back out of the stream being judged. It is the tier's real command,
- * which only the CALLER knows — the thing `verify`/`ci` asked the executor to run — and a rule
- * that mined the expected command out of the head stream would let a head-only `Command failed:
- * touch /tmp/pwned` quote itself into being the command the tier ran.
- *
- * The base's copy vouches only when the base printed the IDENTICAL RAW LINE — `l.trim() ===
- * headLine.trim()`, the whole echo including its own `Command failed:` marker. Comparing the
- * STRIPPED command against the base's raw lines inverted the arm: a base carrying the bare command
- * as gate output (`touch /tmp/pwned`) vouched for a head echo nothing asked to run, while the base's
- * own identical echo line did not vouch at all. A base that ran the tier echoes the tier, so the
- * identical echo is exactly the evidence the arm may read, and a line that only MENTIONS the command
- * — a `make check` that quoted the pnpm invocation in its own output, a bare command the runner
- * printed itself — records that the base named it, not that the harness echoed it. With no
- * caller-supplied command that identical echo is the ONLY vouchsafe, and an echo the base did not
- * print is a head-only line like any other — including an empty echo, which names no command at all
- * and so proves nothing.
- */
-export function isHarnessEchoOf(
-  headLine: string,
-  baseRawLines: readonly string[],
-  tierCommand: string | undefined,
-): boolean {
-  const t = scrubInvisible(headLine).trim();
-  if (!/^Command failed:\s/.test(t)) return false;
-  const echoed = t.slice("Command failed:".length).trim();
-  if (echoed.length === 0) return false;
-  const asked = tierCommand?.trim();
-  if (asked !== undefined && asked.length > 0 && echoed === asked) return true;
-  // The WHOLE head line, marker included, compared to the whole base line. Stripping the marker
-  // before this comparison is what inverted the arm (see the jsdoc).
-  return baseRawLines.some((line) => line.trim() === t);
-}
-
-/**
- * Every raw line of a stream, scrubbed of invisible characters, trimmed, blanks dropped.
- *
- * Exported because the two rules that read a whole stream live on either side of the module
- * seam and must ask the SAME question of it — anything else is two definitions of "a line",
- * and with {@link scrubInvisible} in the seam, two definitions of "the text of a line". Every
- * single-line arm in this file scrubs its own argument too, so a caller holding a raw line gets
- * the same answer as a line that came through a stream.
- */
 export function streamLines(stream: string): string[] {
   return stream
     .split(/\r\n|\r|\n/)
@@ -450,9 +390,50 @@ export function streamLines(stream: string): string[] {
  * passing side. What is left is every failure line the classifier read plus everything it did
  * not, and the second group is exactly the group that must be vouched for by {@link
  * isKnownCleanLine} or refuse.
+ *
+ * THE INVARIANT, asked before both exclusions and the ONLY place it is enforced: a line whose own
+ * text declares a failure ({@link declaresFailure}) stays judgeable, whatever it opens like. Every
+ * arm that removes a line from judgement — the harness's `tier-said-` / `Exit code:` / `$ ` shapes,
+ * and the classifier's pass arms — vouches for a line by its OWN shape and stops reading there,
+ * which is exactly where a runner's verdict lives: `$ not ok 1 - t/brand_new.t - boom` is the
+ * executor's trace prefix glued to a TAP failure, and `not ok 5 - brand new check 9 passed` is a
+ * TAP failure the classifier reads as SUCCESS on its unanchored `\d+ passed` arm. Neither is gate
+ * output in the sense the exemption is about, and neither may walk out through a door built for
+ * harness writing and passing checks.
+ *
+ * One span is exempt from the invariant, and it is the harness's own writing rather than a line's:
+ * the `Command failed:` / `$ ` / `+ ` prefixes and the other harness arms' words (`killed`, `Exit
+ * code`) are the executor's sentences, printed on every failed command, and a runner declaring a
+ * failure is not what they are. That is why the invariant is asked of {@link harnessWordsRemoved}
+ * here and of the echoed command in {@link isHarnessEchoOf} — the same reading {@link isHarnessLine}
+ * already takes — and not of the raw line. A gate line that merely QUOTES a harness sentence
+ * (`Command failed: touch /tmp/pwned` printed by the project's own script) still carries its words
+ * as content, and the echo arm's own shape test requires the prefix to sit at the head of the line,
+ * so quoting it does not buy an exemption.
+ *
+ * The order is what makes this one rule rather than an arm per door. Each exemption is a separate
+ * predicate that a future round will add another shape to, and an invariant asked inside them is
+ * an invariant the next shape can be written around — which is how pass 6 left these two doors
+ * open while closing the other two. Asked here, first, no arm can reach a line that declares a
+ * failure at all: the exemptions are consulted only for lines this test has already released.
+ * {@link isHarnessEchoOf} asks the same predicate for the same reason, being the one exemption
+ * applied outside this filter (it vouches for a line by a fact about the OTHER stream).
+ *
+ * THE COST, in the safe direction and the same one {@link declaresFailure} already pays: the
+ * harness's own writing about a failure — a `killed by signal` beside nothing else, a command echo
+ * whose command contains the word `fail` — now stays in the stream and is compared, so it must
+ * match the base's copy or the tier hands back. A hand-back costs a human a look; the alternative
+ * is excusing a line that said something broke.
  */
 export function judgeableLines(stream: string): string[] {
-  return streamLines(stream).filter((line) => !isHarnessLine(line) && !isPassingLine(line));
+  return streamLines(stream).filter(
+    (line) =>
+      // THE INVARIANT, asked before both exclusions: a line whose own text declares a failure
+      // ({@link declaresFailure}, on the line with the harness's own prefix discounted) is not an
+      // exemption's to remove, whatever it opens like. See the jsdoc for why this is the one place
+      // the rule can live, and for the one span the harness is allowed out of it.
+      declaresFailure(harnessWordsRemoved(line)) || (!isHarnessLine(line) && !isPassingLine(line)),
+  );
 }
 
 /**
