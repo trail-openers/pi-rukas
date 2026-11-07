@@ -298,7 +298,7 @@ async function releaseWhenBoth(
   assert(
     (contexts[1] ?? "").includes("re-review of the fix") &&
       (contexts[1] ?? "").includes(GATE_TEXT),
-    `(d) and the gate's non-blocking findings still reach the re-review, exactly as a blocking gate's do today (${JSON.stringify((contexts[1] ?? "").slice(-110))})`,
+    `(d) and the gate's non-blocking findings still reach the re-review, exactly as a blocking gate's do today (${JSON.stringify((contexts[1] ?? "").match(/OUTSTANDING[\s\S]{0,90}/)?.[0] ?? "")})`,
   );
   assert(
     fixBriefs.length === 1 && (fixBriefs[0] ?? "").includes(lensFindings),
