@@ -1,6 +1,6 @@
 /**
  * lean/deadline — the caller's whole-cycle deadline, read the way `work` reads
- * it (#1920 item 2).
+ * it.
  *
  * `work` stops STARTING steps once its deadline is inside the handoff allowance
  * (`work-driver-deadline.ts`'s step boundary) and hands off. A lean run had no

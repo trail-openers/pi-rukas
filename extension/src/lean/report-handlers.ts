@@ -1,5 +1,5 @@
 /**
- * lean/report-handlers — the two steps that REPORT how a run ended (#1920 item 3).
+ * lean/report-handlers — the two steps that REPORT how a run ended.
  *
  * Split from `command.ts` along the seam those steps already had: every other
  * entry of the handler table answers a state by DOING work and returning a

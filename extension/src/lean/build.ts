@@ -254,8 +254,8 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
   // resumed record, and that is honest: the label counts rows, the cap below
   // counts dispatches.
   const label = ctx.steps.filter((s) => s.state === "build" && s.outcome !== undefined).length + 1;
-  // 4. The builder, under the state's budget (#1883). A child that died THROWS, so
-  //    the rows ride on the error to the outcome the engine writes (#1920 A). A
+  // 4. The builder, under the state's budget. A child that died THROWS, so
+  //    the rows ride on the error to the outcome the engine writes. A
   //    child its OWN ceiling stopped is retried HERE — the table has no `build`
   //    self-edge — and its work rides forward on the commit its fold made.
   // The tree, head and contract every fold of this attempt is judged against.
@@ -290,10 +290,10 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
   // itself, which no dispatch bought), and its ceiling-stopped child must run once,
   // fold, and leave — never retry in-step. Below the cap a budget stop DOES buy
   // another child, which is what lets a run spend its third build on work rather
-  // than on a ceiling. (R3)
+  // than on a ceiling.
   const retriesAllowed = Math.max(0, MAX_BUILD_ATTEMPTS - dispatchedBefore - 1);
-  // A child that did no work gets its one free re-dispatch of this visit (#2104
-  // R2): it bought nothing, so it bills no round and advances no `tries`.
+  // A child that did no work gets its one free re-dispatch of this visit: it
+  // bought nothing, so it bills no round and advances no `tries`.
   let noWorkRetryUsed = false;
   // Why the first no-work child died, kept for the throw the second one may make.
   let firstNoWorkWhy: string | undefined;
@@ -340,7 +340,7 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
     }
     // Its own ceiling stopped it: fold the work into this attempt's commit and
     // re-run the frozen files under ONE wall clock, so verify finds a clean tree and
-    // the retry's prompt names what is still failing (#2067). The kind stays `budget`.
+    // the retry's prompt names what is still failing. The kind stays `budget`.
     // R5: a run the cap ENDS here names the dispatches too, which `handback` prints —
     // a ceiling alone cannot say the retries were spent. The bound is read the SAME
     // way the loop reads it, so the sentence the handback prints cannot disagree with
@@ -424,7 +424,7 @@ export function buildDeps(headless: boolean): BuildDeps {
         writeFence: o.writeFence,
         extraArgs: o.extraArgs,
         // Forwarded so the ceiling binds the child; `budgetTurns` is the same
-        // ceiling the #1991 budget-progress steer counts down from.
+        // ceiling the budget-progress steer counts down from.
         childBoundMs: o.childBoundMs,
         signal: o.signal,
         onProgress: o.onProgress,

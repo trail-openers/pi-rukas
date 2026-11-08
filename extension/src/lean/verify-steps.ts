@@ -276,7 +276,7 @@ export async function runTier(
     throw new VerifyInfraError(
       `the verify.${name} tier was killed or timed out at ${timeoutMs}ms: ${cmd}`,
     );
-  // #1414 — `execp` stamps `overflow` on the maxBuffer path and deliberately
+  // `execp` stamps `overflow` on the maxBuffer path and deliberately
   // does NOT stamp `timedOutKill`, so a chatty tier is not mistaken for a hung
   // one. Nor is it a verdict: the output was truncated, so the evidence the
   // tier would have given is not in hand.

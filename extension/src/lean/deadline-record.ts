@@ -1,6 +1,6 @@
 /**
  * lean/deadline-record — the one field of a run that belongs to the caller's
- * clock, and the rule that lets it into a durable record (#1920 item 2).
+ * clock, and the rule that lets it into a durable record.
  *
  * Split from `state.ts` at AGENTS.md §12's line cap along the seam the field
  * already had: `state.ts` validates the run, this file owns what the run's

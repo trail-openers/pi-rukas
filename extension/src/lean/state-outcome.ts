@@ -135,14 +135,9 @@ export const BUDGET_STATES: readonly LeanState[] = ["specify", "build", "challen
 /**
  * The states that may record what their children cost.
  *
- * The ONE statement of that set. Two readers used to hand-derive it from
- * opposite directions — `OWNER_OF_FIELD.dispatches` below spelled it as a list
- * built from `BUDGET_STATES` plus `"review"`, and `recordsDispatches` in
- * `error-outcome.ts` re-wrote `state === "review" || BUDGET_STATES.includes(state)`
- * — and two expressions of one rule is how a widening can land on one side and
- * silently lose the step whose children cost the most: the loader would drop the
- * rows, or the throw path would refuse to copy them, and either way a run's
- * cost record just got smaller with nothing said.
+ * The ONE statement of that set. A widening that lands on one expression of it
+ * and not the other quietly shrinks a run's cost record: the loader drops the
+ * rows, or the throw path refuses to copy them, and nothing says so.
  *
  * `review` is in this set but NOT in `BUDGET_STATES`: it pays for a reviewer,
  * six lenses and a fixer per round, so it MUST record cost. A review breach is
@@ -188,7 +183,7 @@ const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>>
   // and a gate that stamped one would put a child's prose on the record as the
   // run's own closing statement.
   report: "handback",
-  // …and the only ones that may name the channel they reported on (#1920 item 3).
+  // …and the only ones that may name the channel they reported on.
   // A `verify` step claiming `channel: "host"` would make the projection publish
   // a gate verdict as a report the host still has to deliver.
   channel: REPORTING_STATES,

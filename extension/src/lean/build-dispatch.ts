@@ -79,7 +79,7 @@ interface NoWorkCrash {
 /**
  * The taxonomy's kind for a `DispatchResult`: the endpoint's own error stop is a
  * provider event, anything else is a plain crash. A killed child stays on
- * `dispatch-failed` — a self-kill is never a provider failure (#296), and that
+ * `dispatch-failed` — a self-kill is never a provider failure, and that
  * is the ONLY kind `terminalProviderClassOnKill` reads, so labelling a kill
  * provider-shaped switches off the override that makes a spend cap fatal.
  */
@@ -92,7 +92,7 @@ function failureKindFor(result: DispatchResult): string {
 /**
  * True only on POSITIVE evidence that the child did nothing: turns are a known
  * number and no turn did any work (`<= 1`), and no tool call is reported or was
- * seen live. Unknown usage is not evidence of an empty child (#2104 R1).
+ * seen live. Unknown usage is not evidence of an empty child.
  */
 function didNoWork(result: DispatchResult): boolean {
   return (

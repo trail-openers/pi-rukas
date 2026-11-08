@@ -1,5 +1,5 @@
 /**
- * lean/child-opts — the permission stamp a lean run's children carry (#1883).
+ * lean/child-opts — the permission stamp a lean run's children carry.
  *
  * The lean engine dispatches through `spawnSpecialist` directly rather than
  * through a driver cycle, so its children do not pass `cycleDispatch(ctx)`. In

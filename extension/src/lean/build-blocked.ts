@@ -198,7 +198,7 @@ function abandoned(run: { template: string; file: string }, left: number): Proof
 
 /**
  * Fold a budget-stopped builder's work into its attempt's commit, then say what is
- * still red on the tree that commit made (#2067) — one function because the probe
+ * still red on the tree that commit made — one function because the probe
  * must read the RESET tree the fold produced. Its sweep shares {@link runFrozen}.
  */
 export async function foldStoppedBuild(opts: {

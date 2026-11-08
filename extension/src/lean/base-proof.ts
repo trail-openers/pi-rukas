@@ -3,20 +3,18 @@
  *
  * `baseSha` is the ref every later read of a lean run is anchored to: the
  * config loader resolves `.pi/work.json` AT it, and `build`/`verify` diff and
- * test against it. A value that is not an object name (`main`, `HEAD`, a short
- * prefix) or an object name the clone does not hold turns the whole run into a
- * claim about a commit it never named — and the config loader cannot tell "no
- * such commit" from "no config file", because `gitType`/`gitShow` catch every
- * git failure and answer "absent", which for a loader is the correct answer
- * about a *file*. So the base has to be proven somewhere, and this module is
- * that somewhere: two rules and one second opinion, shared by the seeder (which
- * must not write a base `ready` would refuse) and by `ready` itself.
+ * test against it. A value that is not an object name, or one the clone does
+ * not hold, turns the whole run into a claim about a commit it never named —
+ * and the config loader cannot tell "no such commit" from "no config file",
+ * because `gitType`/`gitShow` catch every git failure and answer "absent". So
+ * the base has to be proven somewhere: two rules and one second opinion,
+ * shared by the seeder (which must not write a base `ready` would refuse) and
+ * by `ready` itself.
  *
  * The two rules are reported SEPARATELY because they are different mistakes:
  * `notAnOidRule` is somebody's hand on a text field, and `notACommitRule` is a
  * clone that does not contain the object. Both name the value clipped, and
- * neither is echoed anywhere else — the rule is where an operator reads it, and
- * a second unclipped copy is a second renderer that has to remember.
+ * neither is echoed anywhere else — the rule is where an operator reads it.
  */
 
 import { isFullCommitSha } from "../commit-sha.ts";
@@ -32,13 +30,9 @@ const NOT_AN_OID = " is not a full commit sha";
 const NOT_A_COMMIT = " is not a commit in this clone";
 
 /**
- * The rule for an empty base, with a tail that is never empty.
- *
- * `readyOutcome` owns the wording; this owns the guarantee that the clause
- * always says something — the seed's cause when it has one, the probe's cause
- * when it re-ran, and `NO_MAINLINE_WHY` (owned by `lean/io.ts`, beside the
- * probe list it quotes) when neither produced a reason. Clipped because the
- * cause is git's text, not ours.
+ * The rule for an empty base, with a tail that is never empty: the seed's cause
+ * when it has one, the probe's cause when it re-ran, else `NO_MAINLINE_WHY`.
+ * Clipped because the cause is git's text, not ours.
  */
 export function unresolvedMainlineRule(why: string | undefined): string {
   const reason = why === undefined || why.trim() === "" ? NO_MAINLINE_WHY : oneLine(why, 160);
@@ -46,9 +40,8 @@ export function unresolvedMainlineRule(why: string | undefined): string {
 }
 
 /**
- * The suffix for a value that DOES resolve — to something else. The commonest
- * way a hand-edited record is wrong, and the one an operator can act on
- * (`git cat-file -t <that>`) without guessing what the field meant.
+ * The suffix for a value that DOES resolve — to something else, which an
+ * operator can act on with `git cat-file -t <that>`.
  */
 function resolvesTo(resolved: string): string {
   return `${NOT_A_COMMIT} (it resolves to ${oneLine(resolved, 80)})`;
@@ -69,26 +62,19 @@ function notACommitRule(baseSha: string, suffix = NOT_A_COMMIT): string {
  *
  * Both halves are needed and neither implies the other. The shape check is what
  * makes the value an immutable object name rather than a ref: `main`, `HEAD`,
- * `@{0}` and a short prefix all fail it, and with it the git argument can never
- * be a moving ref or a revision chain — an earlier shape of this gate passed
- * `main^{commit}` to git and was satisfied with any 40-hex answer, so
- * `main^{commit}``touch x``@{0}` resolved to main's tip and the run anchored to
- * a commit it never named. The peel is what proves the clone contains it, and
- * that the answer comes BACK EQUAL to the base: a full sha is content-addressed,
- * so anything that resolves to a different spelling was never the object the run
- * was seeded with (a mixed-case or otherwise mangled value).
+ * `@{0}` and a short prefix all fail it, so the git argument can never be a
+ * moving ref or a revision chain. The peel is what proves the clone contains it,
+ * and that the answer comes BACK EQUAL to the base: a full sha is
+ * content-addressed, so anything that resolves to a different spelling was never
+ * the object the run was seeded with.
  *
  * The resolution goes through the repo's canonical resolver (`review-head-sha.ts`
  * `resolveHeadShaOutcome`), which peels with `^{commit}` (so a blob or tag object
  * answers no sha) and is bounded like every other identity git read. The OUTCOME
- * form is the one this module uses, because it is the only one that can answer
- * the question the second opinion exists to settle: the miss was either git
- * saying "no such commit" or git failing to answer at all, and the probe must be
- * told which, per call.
+ * form is the one this module uses: it is the only one that can say whether a
+ * miss was git reporting "no such commit" or git failing to answer at all.
  *
  * Throws on a git INFRASTRUCTURE fault and only there — see `probeCommitObject`.
- * A caller that wants a refusal rather than a handback must not get one for a
- * repository whose git could not be asked.
  */
 export async function proveBaseSha(
   repoRoot: string,
@@ -97,12 +83,10 @@ export async function proveBaseSha(
 ): Promise<{ ok: true } | { ok: false; rule: string }> {
   if (!isFullCommitSha(baseSha)) return { ok: false, rule: notAnOidRule(baseSha) };
   // The resolver's own verdict on its own read, carried in as an argument. There
-  // is deliberately no process-global counter to consult: an absolute reading of
-  // a monotonic counter (and even a per-call baseline of one) lets any unrelated
-  // git failure elsewhere in the process — another run's config read, a ledger
-  // write three steps ago — turn THIS call's silent refusal into a fault. The
-  // only failure this probe can be evidence about is the one THIS resolution
-  // reported, and the only place that fact can come from is the call itself.
+  // is deliberately no process-global counter to consult: an absolute reading of a
+  // monotonic counter lets any unrelated git failure elsewhere in the process turn
+  // THIS call's silent refusal into a fault. The only failure this probe can be
+  // evidence about is the one THIS resolution reported.
   const outcome = await resolveHeadShaOutcome(repoRoot, baseSha, exec);
   if (outcome.sha === undefined) {
     // A miss is not yet an answer: the resolver returns no sha for a non-commit
@@ -128,20 +112,13 @@ export async function proveBaseSha(
  * object, and whatever git exits with when the repository itself is broken.
  *
  * The classification is INVERTED from the obvious shape: "not a commit" is the
- * narrow, positively-recognised answer and everything else is a fault. The
- * earlier spelling — refuse when the exit is 1/128 and the stderr is *anything*
- * — read "empty stderr at exit 1" as a refusal, and git prints a reason for
- * every object it truly cannot find: measured against a fanout directory whose
- * mode is `000`, `cat-file -e <sha>^{commit}` answers exit 128 with
- * `unable to open loose object …: Permission denied` followed by
- * `Not a valid object name …`, and `rev-parse --verify --quiet <sha>^{commit}`
- * prints the same permission error with exit 1 and EMPTY stdout. A store git
- * cannot read therefore looks exactly like an absent object unless a non-empty
- * stderr is read as the fault it is. Everything else — "unable to open loose
- * object", "Permission denied", "Too many levels of symbolic links" — comes
- * back as a one-line CAUSE string for the caller to throw with, so a locked
- * index, an unreadable object store or a hung git is reported as an
- * infrastructure fault rather than as a defect in somebody's issue.
+ * narrow, positively-recognised answer and everything else is a fault. git
+ * prints a reason for every object it truly cannot find, and an object store it
+ * cannot read (a `000`-mode fanout directory) reports exit 128/1 with the same
+ * "Not a valid object name" wording — so a non-empty stderr is read as the fault
+ * it is. Everything else comes back as a one-line CAUSE string for the caller to
+ * throw with, so a locked index, an unreadable object store or a hung git is
+ * reported as infrastructure rather than as a defect in somebody's issue.
  */
 async function probeCommitObject(
   repoRoot: string,
@@ -153,7 +130,7 @@ async function probeCommitObject(
     const out = await exec("git", {
       cwd: repoRoot,
       argv: ["cat-file", "-e", "--end-of-options", `${baseSha}^{commit}`],
-      // The same bound `resolveHeadSha` gives its rev-parse (#1774): this probe
+      // The same bound `resolveHeadSha` gives its rev-parse: this probe
       // runs exactly where that read could not answer, so an unbounded second
       // opinion would reinstate the hang the first bound exists to prevent.
       timeout: LOCAL_GIT_TIMEOUT_MS,

@@ -104,7 +104,7 @@ function terminalCause(steps: Step[]): string | undefined {
  *
  * A breach only counts when NOTHING that did work is newer than it. A budget is a
  * step's own ceiling, and one step's ceiling says nothing about the run: since
- * #1883 a `challenge` breach that the table routes on is a CONTINUATION (the run
+ * a `challenge` breach that the table routes on is a CONTINUATION (the run
  * goes to `verify`, which still runs every frozen test), so a budget step whose
  * verdict the table carried past is not why the run ended. The one true test of
  * that is position, not prose: the breach is the newest working step in the log
@@ -123,7 +123,7 @@ function terminalCause(steps: Step[]): string | undefined {
  * step's `reason` prose: {@link budgetTrio} reads those three, the same check
  * every reader of a recorded breach makes, so a breach missing a field falls
  * through to the next cause rather than printing a half-sentence. Its one part taken
- * from prose is the step's own tail, the attempts a budget build spent (#2067 R5).
+ * from prose is the step's own tail, the attempts a budget build spent.
  */
 /** The newest step that was WORK — a report state is how a run ended, not work. */
 function newestWorkStep(steps: Step[]): Step | undefined {

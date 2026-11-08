@@ -84,7 +84,7 @@ export interface PublishBodyInput {
    * The challenge round's own ceiling, when the step log carries a `challenge`
    * `budget` outcome. The optional adversary round that strengthens the frozen
    * tests stopped at its limit and added nothing, and the run went on to verify
-   * anyway (#1883). The reader must be able to tell "the contract was never
+   * anyway. The reader must be able to tell "the contract was never
    * attacked" apart from "it was attacked and held", which is otherwise
    * indistinguishable from a PR body.
    */

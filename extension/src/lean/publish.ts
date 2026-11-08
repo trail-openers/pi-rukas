@@ -139,7 +139,7 @@ async function remoteBranchSha(
  * The ref name is checked with the driver's own `netRefProblem` BEFORE the
  * command line: `branch` is state-file data, and `assertSafeRef` only says it is
  * a legal git name — `+x`, `a:b` and `-f` all are, and git parses them as a
- * refspec, a force, or an option (see `netRefProblem`, #1095).
+ * refspec, a force, or an option (see `netRefProblem`).
  */
 async function pushHead(
   deps: PublishDeps,

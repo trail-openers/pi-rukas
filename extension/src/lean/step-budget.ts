@@ -1,14 +1,14 @@
 /**
- * lean/step-budget — make a `.pi/work.json` budget real (#1883).
+ * lean/step-budget — make a `.pi/work.json` budget real.
  *
- * `WorkConfig.budgets` carried per-state ceilings and nothing read it. One
- * becomes the three levers a dispatch has: **minutes** → `childBoundMs`, whose
- * kill arrives as `killCause: "child-bound"` and which {@link armBudget}'s
- * reader reports as the time limit, not as infrastructure; **turns / tokens** →
- * an `AbortController` armed off the child's progress stream, so a runaway stops
- * at a turn boundary. A breach is a VERDICT — the child worked and the ceiling
- * stopped it — so the step returns `{kind: "budget"}` to be routed, asking
- * {@link readDispatched} BEFORE its infra throw or the verdict becomes a throw.
+ * One per-state ceiling becomes the three levers a dispatch has: **minutes** →
+ * `childBoundMs`, whose kill arrives as `killCause: "child-bound"` and which
+ * {@link armBudget}'s reader reports as the time limit, not as infrastructure;
+ * **turns / tokens** → an `AbortController` armed off the child's progress stream,
+ * so a runaway stops at a turn boundary. A breach is a VERDICT — the child worked
+ * and the ceiling stopped it — so the step returns `{kind: "budget"}` to be routed,
+ * asking {@link readDispatched} BEFORE its infra throw or the verdict becomes a
+ * throw.
  */
 
 import type { LensRunResult } from "../lens-review-types.ts";
@@ -30,12 +30,10 @@ export interface BudgetFired {
 /**
  * The arms a dispatch accepts, a subset of `SpawnOptions`.
  *
- * `budgetTurns` is the turns ceiling in its OWN field, not just an effect of
- * the abort: `armChildBounds` reads it as the denominator of the budget-progress
- * steer, so the child is told "turn 20 of 40" and can close out — commit what it
- * has — before the `signal` below ends it. A step that armed turns only through
- * the abort killed a fixer at its ceiling with nothing committed and nothing said
- * to it.
+ * `budgetTurns` is the turns ceiling in its OWN field, not just an effect of the
+ * abort: `armChildBounds` reads it as the denominator of the budget-progress steer,
+ * so the child is told "turn 20 of 40" and can close out — commit what it has —
+ * before the `signal` below ends it.
  */
 export interface BudgetOpts {
   childBoundMs?: number;

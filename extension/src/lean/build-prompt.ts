@@ -76,7 +76,7 @@ export interface BuildPromptOpts {
   reentry?: string;
   /**
    * The previous attempt's budget verdict plus the frozen files the driver re-ran
-   * red, when this round retries a build its own ceiling stopped (#2067) — no gate
+   * red, when this round retries a build its own ceiling stopped — no gate
    * judged a killed builder, so this is not a gate's complaint.
    */
   budgetStop?: string;

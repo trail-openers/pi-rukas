@@ -6,7 +6,7 @@
  * the only place a failed step's cost can still be read: a dispatch that died
  * spent its tokens, and `state.ts` gives the four dispatching steps
  * (`specify`, `build`, `challenge`, `review`) a `dispatches` field for exactly
- * that (#1920 A). The steps therefore hand their rows back on the error itself —
+ * that. The steps therefore hand their rows back on the error itself —
  * `BuildInfraError`, `ChallengeInfraError` and `SpecifyInfraError` each carry a
  * `dispatches` array — and this module is what moves them onto the record.
  *

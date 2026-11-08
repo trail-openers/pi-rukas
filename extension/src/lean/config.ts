@@ -1,7 +1,7 @@
 /**
  * lean/config — `.pi/work.json`, read at the cycle's base commit.
  *
- * Same rule as the old driver's doctrine read (#406): configuration that
+ * Same rule as the driver's doctrine read: configuration that
  * decides what a run may do is read with `git show <baseSha>:.pi/work.json`,
  * never from the working tree. A run that edited its own config would
  * otherwise be judged by the bytes it wrote.
