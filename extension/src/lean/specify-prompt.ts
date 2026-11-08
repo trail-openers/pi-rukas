@@ -148,8 +148,8 @@ export const TEST_SCOPE_CONTRACT = `**Write the smallest test that proves the cr
  * The requirements lean's bench rejects missed were implied rather than unstated,
  * and each was findable in the repository — so the section demands a `path:line`
  * comment for what it keeps and drops anything it cannot ground. Extra CASES go
- * inside the criterion's own file: extra files would let the quota spend an
- * implied case on top of the test the criterion itself requires.
+ * inside the criterion's own file and open no new one: a file of its own would
+ * spend the quota stated in {@link TEST_SCOPE_CONTRACT} on an implied case.
  *
  * The examples are deliberately generic. This section is measured on a bench
  * whose tasks have their own named defects; an example that named one would
@@ -164,7 +164,7 @@ Before you freeze your tests, search THIS repository for requirements the issue 
 2. How the new behaviour interacts with existing state, modes and callers — a caller that already depends on the current return value, state another code path set first.
 3. Scope the issue implies but never says — which inputs, platforms or call sites the change is meant to cover, which path is the default.
 
-For each one you can point at, add an extra test CASE inside the test file of the criterion it refines (its second file too, within the ${MAX_TEST_FILES_PER_CRITERION}-file quota), with a comment naming the base-commit evidence as \`path:line\`. An implied case never replaces or displaces the criterion's own test. Skip any you cannot ground in a file that exists at the base commit — no evidence, no case.`;
+For each one you can point at, add an extra test CASE inside the test file of the criterion it refines, opening no new file for it, with a comment naming the base-commit evidence as \`path:line\`. An implied case never replaces or displaces the criterion's own test. Skip any you cannot ground in a file that exists at the base commit — no evidence, no case.`;
 
 /**
  * The one place the test-location sentence is spelled, for BOTH adversary

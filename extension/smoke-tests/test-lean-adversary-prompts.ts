@@ -168,10 +168,6 @@ assert(
     "specify interpolates the exported IMPLIED_REQUIREMENTS const verbatim; the challenge adversary already sees the implementation and is not asked again",
   );
   assert(
-    IMPLIED_REQUIREMENTS.includes(`${MAX_TEST_FILES_PER_CRITERION}-file quota`),
-    `the implied budget IS the boundary's own constant — the prompt prints ${MAX_TEST_FILES_PER_CRITERION}-file quota because it interpolates the constant, so it cannot drift from the quota the boundary enforces`,
-  );
-  assert(
     IMPLIED_REQUIREMENTS.length <= 1200,
     `the section stays short — it costs the specify child context on every dispatch (${IMPLIED_REQUIREMENTS.length} chars, cap 1200)`,
   );
@@ -189,6 +185,7 @@ assert(
     ["interacts with existing state", "interaction with existing state, modes and callers"],
     ["implies but never says", "the scope the issue implies and does not state"],
     ["extra test CASE", "an implied requirement is an extra case, never a replacement test"],
+    ["opening no new file", "an implied case lives in the criterion's own file"],
     ["`path:line`", "what it keeps must be grounded in base-commit evidence"],
     ["no evidence, no case", "what it cannot ground is skipped"],
   ] as const) {
@@ -202,9 +199,9 @@ assert(
   // and the campaign number would describe the prompt instead of the model. So
   // the assertion is on the structural phrases above plus this absence — never
   // on the example wording itself.
-  for (const leaked of ["!", "cache", "polyfill", "fallback"]) {
+  for (const leaked of ["cache", "polyfill", "fallback"]) {
     assert(
-      !IMPLIED_REQUIREMENTS.includes(leaked),
+      !IMPLIED_REQUIREMENTS.toLowerCase().includes(leaked),
       `the elicitation's examples stay generic — no ${leaked} in the const`,
     );
   }
