@@ -1,6 +1,6 @@
 /**
- * lean/engine-facts — the four readings of a run's step log the runner consults
- * but does not itself perform (#1920 split, AGENTS.md §12).
+ * lean/engine-facts — the four readings of a run's step log the runner consults but
+ * does not itself perform.
  *
  * `reasonFor` words why a run ended; `lastFailedRules` recovers the rules a
  * refusal posted; `landEarned` and `landRefusal` are the merge gate and its
@@ -86,23 +86,18 @@ export function landRefusal(run: LeanRun): string {
  * Why a stamped `result` is not the answer its own step log gives, or
  * `undefined` when it is.
  *
- * `result` is written only by `endRun`, and `endRun` writes exactly three
- * things: a terminal state, the code `exitCodeFor` gives that state, and a
- * reason. A resumed run therefore has to be able to say that the stamp it is
- * holding could not have come from there, or the durable verdict is whatever
- * the last writer of those two fields chose — and `state.ts` says plainly
- * that the snapshot fields are a cache, not the record. These three rules are
- * that claim turned back into a check:
+ * `result` is written only by `endRun`, and `endRun` writes exactly three things: a
+ * terminal state, the code `exitCodeFor` gives that state, and a reason. A resumed run
+ * therefore has to be able to say the stamp it holds could not have come from there, or
+ * the durable verdict is whatever the last writer of those fields chose — and `state.ts`
+ * says plainly that the snapshot fields are a cache, not the record. The check:
  *
- *   - the fold must actually have reached a terminal state (a stamp on a
- *     non-terminal position describes a run nobody ended);
+ *   - the fold must actually have reached a terminal state (a stamp on a non-terminal
+ *     position describes a run nobody ended);
  *   - the code must be the one that state exits with;
- *   - `landed` additionally needs `landEarned` to hold of the log, so the
- *     merge a stamp claims is the merge the record earned.
- *
- * The third rule is the one that matters: `land` is gated on the arrival in
- * `apply()` and on the derived position in `runLean`, and a stamp is read
- * BEFORE either when it is already on the file.
+ *   - `landed` additionally needs `landEarned` to hold of the log, so the merge a stamp
+ *     claims is the merge the record earned — the rule that matters, since a stamp on the
+ *     file is read before either of the two `land` gates runs.
  */
 export function stampedResultRefusal(
   file: string,
