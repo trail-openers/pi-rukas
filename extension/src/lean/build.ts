@@ -76,7 +76,7 @@ import {
   budgetVerdictWithRows,
   readDispatched,
 } from "./step-budget.ts";
-import { clipList } from "./text-fence.ts";
+import { clipList, joinNotes } from "./text-fence.ts";
 
 /** The re-entry reason the child is given, clipped so a log dump cannot bloat a prompt. */
 const REENTRY_CLIP = 4096;
@@ -128,11 +128,6 @@ export function testsFromLog(steps: Step[]): Record<string, string[]> {
     }
   }
   return tests;
-}
-
-/** The `; `-joined non-empty parts of a reason line. */
-function joinNotes(parts: string[]): string {
-  return parts.filter((p) => p !== "").join("; ");
 }
 
 /** The newest decided `state` + `kind` step's reason, clipped for a prompt. */

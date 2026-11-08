@@ -81,6 +81,7 @@ import {
 import { DISPATCHES_MAX_ROWS } from "./state-outcome.ts";
 import type { Outcome } from "./state.ts";
 import type { BudgetOpts, DispatchUsageRow } from "./step-budget.ts";
+import { joinNotes } from "./text-fence.ts";
 
 /** The dispatch seam: one child, one result. `spawnSpecialist` in production. */
 type SpecifyDispatch = (
@@ -372,10 +373,19 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
     attempts += 1;
   }
   const final = attempts > 1 ? afterRetry(attempt.outcome) : attempt.outcome;
+  // The same fold `build` makes, and the same refusal `afterRetry` makes: a budget
+  // stop keeps its canonical sentence, so a waited round does not append a wait
+  // clause to the one reason the operator is taught to read.
   const withWait =
-    waitedMs === 0
+    waitedMs === 0 || final.kind === "budget"
       ? final
-      : { ...final, reason: `${final.reason ?? ""} ${providerWaitNote(waitedMs)}` };
+      : {
+          ...final,
+          reason: joinNotes([
+            ...(final.reason === undefined ? [] : [final.reason]),
+            providerWaitNote(waitedMs),
+          ]),
+        };
   // ONE rule: the step's outcome carries the FLAT rows of EVERY attempt, in
   // order, whichever verdict survived. A retry is a second child and the step
   // is one record, so a fold that kept only the last attempt's rows would

@@ -16,7 +16,11 @@ import {
   transientRetryBackoffMs,
   transientRetryEnabled,
 } from "../work-driver-failure-taxonomy.ts";
-import { PROVIDER_CLASS_CAUSES, providerRetryWaitMs } from "../work-driver-provider-backoff.ts";
+import {
+  PROVIDER_CLASS_CAUSES,
+  providerRetryMaxWaitMs,
+  providerRetryWaitMs,
+} from "../work-driver-provider-backoff.ts";
 import { handoffAllowanceMs } from "./deadline.ts";
 
 /**
@@ -73,9 +77,10 @@ export function providerFaultOf(result: DispatchResult): ProviderWaitClass | und
 /**
  * The one length formula, so `build` and `specify` cannot disagree about how long
  * the same outage is worth. `attempt` is 1-based; a provider-stated delay is a
- * floor jittered on top, not a target. `rand` is the generator `jitteredMs` draws
- * with — injectable so a case that must bound or compare a length is not reasoning
- * about a random draw.
+ * floor jittered on top, not a target. The clamp is applied AFTER the jitter, so
+ * the bound means no single wait at all, not no wait before the noise is added.
+ * `rand` is the generator `jitteredMs` draws with — injectable so a case that must
+ * bound or compare a length is not reasoning about a random draw.
  */
 function leanProviderWaitMs(
   cls: ProviderWaitClass,
@@ -84,7 +89,8 @@ function leanProviderWaitMs(
 ): number {
   const rung = Math.max(1, attempt);
   const linear = transientRetryBackoffMs() * rung;
-  return jitteredMs(providerRetryWaitMs(cls, rung, linear), cls.waitMs ?? 0, rand);
+  const jittered = jitteredMs(providerRetryWaitMs(cls, rung, linear), cls.waitMs ?? 0, rand);
+  return Math.min(providerRetryMaxWaitMs(), jittered);
 }
 
 export interface ProviderWaitOpts {

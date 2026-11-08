@@ -20,6 +20,7 @@ import {
   providerWaitNote,
   waitOutProviderFault,
 } from "../src/lean/provider-wait.ts";
+import { providerRetryMaxWaitMs } from "../src/work-driver-provider-backoff.ts";
 import type { DispatchFailureCause } from "../src/types.ts";
 
 let exit = 0;
@@ -297,6 +298,28 @@ await withEnv({ ...BASE, PI_ENSEMBLE_TRANSIENT_RETRY: undefined }, async () => {
         rung1 > 0 &&
         slept.join() === [rung1, rung2, rung3].join(),
       `(6) the rung scales by the attempt and the seam got each one (${String(rung1)} -> ${String(rung2)} -> ${String(rung3)}; ${JSON.stringify(slept)})`,
+    );
+  } finally {
+    restore();
+  }
+});
+
+// ── (7) the clamp is applied AFTER the jitter: no wait exceeds the maximum ──
+await withEnv({ ...BASE, PI_ENSEMBLE_TRANSIENT_RETRY: undefined }, async () => {
+  const { slept, restore } = recorder();
+  try {
+    // A provider-stated delay far past the bound, drawn at the TOP of the jitter
+    // range: before the clamp moved after the jitter, that draw was added to an
+    // already-maxed rung and the wait went past the documented maximum.
+    const capped = await waitOutProviderFault({
+      cls: cls("rate-limited:burst", 10 * providerRetryMaxWaitMs()),
+      attempt: 3,
+      now: 0,
+      rand: () => 1,
+    });
+    assert(
+      slept.length === 1 && slept[0] === capped && capped === providerRetryMaxWaitMs(),
+      `(7) a stated delay past the bound waits AT MOST the maximum, jitter included (${String(capped)} vs ${String(providerRetryMaxWaitMs())})`,
     );
   } finally {
     restore();

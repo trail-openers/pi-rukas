@@ -129,8 +129,8 @@ const EDIT_FILE = (wt: string) => put(wt, "src/retry.ts", "export const retry = 
   // A rate limit the taxonomy calls FINAL — a spend cap, a dated-429 nothing
   // waits out, a quota window hours away — is no re-dispatch either, though the
   // child was never killed. Each of these has to reach the classifier as a
-  // PROVIDER event, so the fix's kind is what the case judges (see
-  // `failureKindFor`); a kill cause would be answered by the kill rule above.
+  // PROVIDER event, and `providerFaultOf` is what makes that judgement from the
+  // child's error stop; a kill cause would be answered by the kill rule above.
   const finalCases: Array<[string, { reason: string; message: string }]> = [
     ["spend cap", { reason: "error", message: "HTTP 429 status code: monthly spend cap reached, resets in 9000 seconds" }],
     ["undated 429", { reason: "error", message: "429 status code, too many requests, resets in 9000 seconds" }],
