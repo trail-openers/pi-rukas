@@ -37,15 +37,14 @@
  * operator knob: `REVIEW_CHILD_BUDGET` in `review-waves.ts` states what one step
  * may buy, and `budgets.review` in `.pi/work.json` is the money, armed on every
  * child the step dispatches through the same `armBudget` the other three
- * dispatching steps use. They are never divided into each other. Deriving a cap
- * from the turn budget (`turns / TURNS_PER_ROUND`) once shipped a default budget
- * of **one round**, and one round can fix but can never re-review — so the step
- * certified a head no gate had looked at since its own fixer moved it. The
- * budget stays fully live and stays the stop condition the operator owns: it is
- * armed on every child through `armBudget`. A child that spends it is NOT a
- * routed verdict the way `build`/`challenge`/`specify` route theirs — this step
- * has no `budget` arrow to route on, so the stop throws with the rows it paid for
- * (see below for why the two shapes differ).
+ * dispatching steps use. They are never divided into each other: a cap derived
+ * from the turn budget can silently collapse to one round, and one round can fix
+ * but can never re-review — so the step would certify a head no gate had looked at
+ * since its own fixer moved it. The budget stays fully live and stays the stop
+ * condition the operator owns: it is armed on every child through `armBudget`. A
+ * child that spends it is NOT a routed verdict the way `build`/`challenge`/`specify`
+ * route theirs — this step has no `budget` arrow to route on, so the stop throws with
+ * the rows it paid for (see below for why the two shapes differ).
  *
  * **What a gate must say to buy a fixer.** A blocking row or a CRITICAL verdict,
  * never a verdict name. The adversarial gate's doctrine calls `CRITICAL_ISSUES_FOUND`
@@ -72,12 +71,10 @@
  * lenses); if it blocks, ONE fixer given every blocking finding at once; then
  * ONE re-review whose range is the fix, which decides each blocking finding
  * ADDRESSED or NOT ADDRESSED and whether the fix itself introduced a CRITICAL.
- * There is no second wave and no round constant — the machinery that bounded a
- * repeating loop (the round cap, the stagnation tie-breaker, the per-round tree
- * naming) is deleted, not left behind as insurance. What a wave does not clear
- * ends the step with a named cause, because a gate that has said the same thing
- * twice across a fix is not a gate another paid round will satisfy. The
- * measurements behind that policy are in `review-waves.ts`.
+ * There is no second wave and no round constant: what a wave does not clear ends
+ * the step with a named cause, because a gate that has said the same thing twice
+ * across a fix is not a gate another paid round will satisfy. The measurements
+ * behind that policy are in `review-waves.ts`.
  *
  * Anything else THROWS: a gate that produced no verdict, a head that moved or
  * vanished mid-wave, a fix wave that changed nothing, a blocking finding the
@@ -273,8 +270,9 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
     //
     // R1: ONE clock read, immediately before the pair is bought. A live stop there
     // hands back — nothing reviewed, no verdict to proceed on and no head to
-    // certify — naming the whole roster plus the re-review as unjudged. There is no
-    // second pass-1 check, because there is no longer a serial point to read one at.
+    // certify — naming the whole roster plus the re-review as unjudged. The pair is
+    // bought as one unit, so there is no serial point between them to read a second
+    // stop at.
     const handback = (stop: StepStop, lanes: string[]): never => {
       throw stopped(noteStop(stop, "full", lanes));
     };
@@ -310,7 +308,7 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
     // both directions: it is not a pass to walk on, and it is not a verdict to fix
     // against. Checking the clean bar first would let `REVIEW_INCOMPLETE` fall
     // through the non-blocking branch into a `done` — a head nobody reviewed
-    // certified, on the same round that used to throw.
+    // certified.
     if (LENS_DID_NOT_RUN.includes(review.verdict))
       throw new ReviewInfraError(
         `the six-lens review did not complete (${review.verdict}${review.note === undefined ? "" : `; disclosure: ${review.note}`}) — an incomplete round is not a pass to fix against`,

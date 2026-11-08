@@ -311,9 +311,7 @@ function counterFolded(input: string): string {
     const before = line.slice(Math.max(0, at - 32), at);
     const after = line.slice(at + digits.length, at + digits.length + 32);
     out += line.slice(last, at);
-    // Each neighbour is asked of the ORIGINAL line, never of the key built so far: asking the key
-    // read `1 failed, 3 passed` at the `3` as `1 failed, # passed`, where `failed,` sat one comma
-    // from a digit that no longer printed, and held a passing count as a failure count.
+    // Each neighbour is asked of the ORIGINAL line, never of the key built so far (see above).
     //
     // The label window is the whole prefix, not a fixed slice. `pack_release_test.sh: 36 cases, 1
     // failed` puts the word that decides the `1` a whole file name away from it, and a window short
@@ -334,8 +332,8 @@ function counterFolded(input: string): string {
  * a report about one check — `pytest-failed`, `tap-not-ok`, `go-fail`, the `named-file` dialect, an
  * assertion mark — and it is compared byte-for-byte: `FAILED a.py::t - AssertionError: got 5 items`
  * and `… got 50 items` are two findings, and `not ok 1 - checkout - expected 3 items found 0` and
- * `… expected 6 items …` are two checks. Both pairs used to share a key here, because `items` is a
- * legitimate counter word for a tally and sat next to the very digit that differed: the word list
+ * `… expected 6 items …` are two checks. A word list cannot tell those apart: `items` is a
+ * legitimate counter word for a tally and sits next to the very digit that differed. The word list
  * answers WHAT MAY MOVE inside a line that counts its own run, and it cannot answer whether the
  * line is one check's verdict at all. Only the classifier can, so its answer is the gate.
  *
