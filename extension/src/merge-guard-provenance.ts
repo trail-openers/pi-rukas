@@ -38,7 +38,7 @@
  * guard had before the diagnostic existed at all: the ordinary refusal stands. A
  * fault must never turn a refusal into an allow, and must never invent a second
  * refusal path — hence `catch (err: unknown)` and `String(err)` rather than a
- * cast, the same shape `analyseRefusal` in merge-guard.ts was given for the
+ * cast, the same shape `analyseRefusal` in refusal-render.ts was given for the
  * identical reason (#955 lens round 6): `(err as Error).message` throws INSIDE
  * the catch on a thrown non-Error, which is how a diagnostic becomes a crash.
  *

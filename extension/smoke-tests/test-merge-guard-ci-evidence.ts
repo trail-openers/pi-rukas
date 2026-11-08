@@ -53,6 +53,25 @@ const row = (name: string, bucket: string) => ({ name, state: "completed", bucke
 const rows = (...rows: Array<{ name: string; state?: string; bucket?: string }>) =>
   JSON.stringify(rows);
 
+/**
+ * #2107 — green check rows with the head the guard verified. Most arms here
+ * vary the CHECKS, not the head, and the guard now pins the verdict to the
+ * verified head, so every arm states it explicitly: an arm that omitted it
+ * would be testing the pin by accident rather than the check state it names.
+ */
+const GREEN = rows(row("quality-gate", "pass"));
+
+/**
+ * The head the shared fixtures assert, spelled out rather than left to the
+ * harness default: `TARGET.headOid` is the fixture's abbreviated `abc123`, and
+ * the gatherer refuses an abbreviated `headRefOid`, so the harness pads a short
+ * head to 40 hex chars. An arm must name THAT padded value to agree with the
+ * head the guard verified (the same fixture head it fetched); naming only the
+ * 6-char fixture value, or nothing, would have the arm refuse on the #2107
+ * head pin instead of testing the check state it is about.
+ */
+const VERIFIED = "abc1230000000000000000000000000000000000";
+
 // ---------------------------------------------------------------- a red check
 {
   // The regression this issue exists for: the ledger rows pass, the check did
@@ -62,6 +81,7 @@ const rows = (...rows: Array<{ name: string; state?: string; bucket?: string }>)
   // the set is graded as nothing, so this arm uses the bucket gh really prints.
   const r = await hookDecision("gh pr merge 12", GOOD_ENTRIES, {
     prChecks: rows(row("quality-gate", "fail")),
+    evidenceHeadOid: VERIFIED,
   });
   assert(r.block === true, "#2106: a passing ledger with a FAILURE check is refused");
   assert(
@@ -82,6 +102,7 @@ const rows = (...rows: Array<{ name: string; state?: string; bucket?: string }>)
   // carries the conclusion in `state` with no `bucket` key at all.
   const r = await hookDecision("gh pr merge 12", GOOD_ENTRIES, {
     prChecks: rows({ name: "quality-gate", state: "FAILURE" }),
+    evidenceHeadOid: VERIFIED,
   });
   assert(
     r.block === true,
@@ -93,6 +114,7 @@ const rows = (...rows: Array<{ name: string; state?: string; bucket?: string }>)
 {
   const r = await hookDecision("gh pr merge 12", GOOD_ENTRIES, {
     prChecks: rows(row("quality-gate", "pending")),
+    evidenceHeadOid: VERIFIED,
   });
   assert(r.block === true, "#2106: a still-running check is refused (no merging behind a queue)");
   // R3: the type exposes no pending list, so the refusal quotes the gatherer's
@@ -107,6 +129,7 @@ const rows = (...rows: Array<{ name: string; state?: string; bucket?: string }>)
 for (const bucket of ["skipped", "skipping", "neutral"]) {
   const r = await hookDecision("gh pr merge 12", GOOD_ENTRIES, {
     prChecks: rows(row("quality-gate", bucket)),
+    evidenceHeadOid: VERIFIED,
   });
   assert(
     r.block === true,
@@ -122,6 +145,7 @@ for (const state of ["UNKNOWN", "BLOCKED"]) {
     // The rows are green here: the state alone must be enough to refuse, so
     // nothing above the state read can be doing the work.
     prChecks: rows(row("quality-gate", "pass")),
+    evidenceHeadOid: VERIFIED,
   });
   assert(r.block === true, `#2106: mergeStateStatus ${state} is refused`);
   assert(
@@ -142,12 +166,18 @@ for (const state of ["UNKNOWN", "BLOCKED"]) {
 {
   // The check rows are the other read the gate makes, and they fail on their
   // own: an exit-0 answer that is not check data, and a throw.
-  const r = await hookDecision("gh pr merge 12", GOOD_ENTRIES, { prChecks: "" });
+  const r = await hookDecision("gh pr merge 12", GOOD_ENTRIES, {
+    prChecks: "",
+    evidenceHeadOid: VERIFIED,
+  });
   assert(
     r.block === true,
     "#2106: an empty checks answer refuses — the absence of evidence is not a pass",
   );
-  const t = await hookDecision("gh pr merge 12", GOOD_ENTRIES, { failChecks: true });
+  const t = await hookDecision("gh pr merge 12", GOOD_ENTRIES, {
+    failChecks: true,
+    evidenceHeadOid: VERIFIED,
+  });
   assert(
     t.block === true && /tooling/.test(t.reason ?? ""),
     "#2106: a checks read that throws refuses as a tooling failure, not a verdict",
@@ -159,6 +189,7 @@ for (const state of ["UNKNOWN", "BLOCKED"]) {
   const r = await hookDecision("gh pr merge 12", GOOD_ENTRIES, {
     mergeStateStatus: "CLEAN",
     prChecks: rows(row("quality-gate", "pass"), row("lint", "pass")),
+    evidenceHeadOid: VERIFIED,
   });
   assert(
     r.block === false,
@@ -203,7 +234,8 @@ for (const state of ["UNKNOWN", "BLOCKED"]) {
   const wantChecks = prChecksCmd("github", 12);
   const r = await hookDecision("gh pr merge 12", GOOD_ENTRIES, {
     mergeStateStatus: "CLEAN",
-    prChecks: rows(row("quality-gate", "pass")),
+    prChecks: GREEN,
+    evidenceHeadOid: VERIFIED,
   });
   assert(
     r.calls.some((c) => c === wantState),

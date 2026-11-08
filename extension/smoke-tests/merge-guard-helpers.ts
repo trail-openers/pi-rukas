@@ -10,13 +10,22 @@
  */
 
 import { execSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { registerMergeGuard } from "../src/merge-guard.ts";
 import type { MergeTarget } from "../src/merge-target.ts";
 import { type LedgerEntry, latestEntry, ledgerPathFor } from "../src/review-ledger.ts";
 import { adversarialPassed, lensPassed } from "../src/review-ledger.ts";
+import type { MergeGateEnv } from "./merge-guard-forge-fixture.ts";
+import { evidenceHeadFor, isFullCommitSha } from "./merge-guard-forge-fixture.ts";
 import { commandOf } from "./lib/argv-shell.ts";
 
 // The hook reads the forge from PI_ENSEMBLE_FORGE (the detectForge hard
@@ -122,6 +131,8 @@ export async function makeHook(env: {
   calls: string[];
   failFetch?: boolean;
   failGh?: boolean;
+  /** #2107 — the `timeout` each exec was given, so a test can assert the bound. */
+  timeouts?: number[];
   ledgerCommonDir?: string;
   remote?: string;
   ghComments?: string;
@@ -130,26 +141,13 @@ export async function makeHook(env: {
   /** What `git merge-base` prints (default `mb0000`; "" = no merge-base). */
   mergeBase?: string;
   /**
-   * #2106 — what `gh pr checks` answers (default: one passing check). A JSON
-   * array of `{name,state,bucket}` rows, the shape `gatherMergeEvidence` reads.
-   */
-  prChecks?: string;
-  /** #2106 — what `mergeStateStatus` reports (default CLEAN). */
-  mergeStateStatus?: string;
-  /** #2106 — make the PR-state read throw (the "gh is broken" arm). */
-  failEvidence?: boolean;
-  /** #2106 — make the check-row read throw. */
-  failChecks?: boolean;
-  /** #2106 — the `headRefOid` the evidence read reports (default: a full OID). */
-  evidenceHeadOid?: string;
-  /**
    * What `gh pr view --json number` (the CURRENT-BRANCH resolution) does.
    * `"throws"` (default) is the stub's error; `"empty"` makes it return no
    * `number` field, which is the shape that leaves `resolvePrNumber` with
    * `undefined` — the case the early-refusal seam reports.
    */
   branchNumber?: "throws" | "empty";
-}): Promise<(event: unknown, ctx: unknown) => Promise<unknown>> {
+} & MergeGateEnv): Promise<(event: unknown, ctx: unknown) => Promise<unknown>> {
   let handler: ((event: unknown, ctx: unknown) => Promise<unknown>) | undefined;
   const fakePi = {
     on: (name: string, fn: (event: unknown, ctx: unknown) => Promise<unknown>) => {
@@ -166,6 +164,10 @@ export async function makeHook(env: {
       labels: t.labels.map((n) => ({ name: n })),
     }),
   };
+  // #2107 — the repo scoping: a `gh pr view`/`gh pr checks` read that drops
+  // the command's `-R <repo>` answers about a different PR than the merge
+  // acts on, so the stub refuses it.
+  const wantRepoFlag = env.targetRepo !== undefined ? ` -R ${env.targetRepo}` : "";
   /** The identity read's field list — what keeps it apart from the evidence read. */
   const IDENTITY_FIELDS = "headRefName,headRefOid,baseRefName,author,labels";
   /** The #2106 evidence read's field list, answered from the env knobs below. */
@@ -178,6 +180,10 @@ export async function makeHook(env: {
   ): Promise<{ stdout: string }> => {
     const cmd = commandOf(cmd0, opts);
     env.calls.push(cmd);
+    if (opts?.timeout !== undefined) (env.timeouts ??= []).push(opts.timeout);
+    if (wantRepoFlag && cmd.startsWith("gh pr ") && !cmd.endsWith(wantRepoFlag)) {
+      throw new Error(`forge read not scoped to the command's repo: ${cmd}`);
+    }
     if (cmd.includes("gh pr view")) {
       if (cmd.includes("--json number")) {
         if (env.branchNumber === "empty") return { stdout: "{}" };
@@ -188,14 +194,35 @@ export async function makeHook(env: {
       // the guard its identity answer and the gate would pass on nothing.
       if (cmd.includes(`--json ${EVIDENCE_FIELDS}`)) {
         if (env.failEvidence) throw new Error("gh: could not read the PR state");
+        // #2107 — the PR's own head, as the forge reports it: the fixture's
+        // `target.headOid`, which is also what the guard verifies against
+        // `fetchedHead`. An arm testing the verdict pin overrides it with
+        // `evidenceHeadOid`.
+        const prHeadOid =
+          env.evidenceHeadOid === undefined
+            ? evidenceHeadFor(env.fetchedHead)
+            : isFullCommitSha(env.evidenceHeadOid)
+              ? env.evidenceHeadOid
+              : env.evidenceHeadOid.padEnd(40, "0");
+        if (env.hangChecks) {
+          // The #2107 hang arm: the guard's bound is what answers this, so the
+          // stub itself outlives every timeout an unbounded caller would have.
+          await new Promise((res) => setTimeout(res, 60_000));
+        }
         return {
           stdout: JSON.stringify({
             mergeStateStatus: env.mergeStateStatus ?? "CLEAN",
             mergeable: "TRUE",
             state: "OPEN",
-            // A full OID: the gatherer refuses an abbreviated one, and the
-            // guard's own head check already verified the fetched head.
-            headRefOid: env.evidenceHeadOid ?? "a".repeat(40),
+            // #2107 — the head this verdict was read at. The guard compares it
+            // to the OID it fetched and checked against the PR's `headOid`, so
+            // the default is a 40-hex rendering of THAT head (the fixture's
+            // `fetchedHead`, which the guard has just verified): every matrix
+            // that is not testing the pin agrees by construction, because the
+            // value below is derived from the same field the guard compares.
+            // An arm testing the pin names `evidenceHeadOid` — a different
+            // full OID, or "" for a read that reported no head at all.
+            headRefOid: prHeadOid,
           }),
         };
       }
@@ -213,6 +240,9 @@ export async function makeHook(env: {
     }
     // #2106 — the check rows behind the CI evidence gate.
     if (cmd.includes("gh pr checks")) {
+      if (env.hangChecks) {
+        await new Promise((res) => setTimeout(res, 60_000));
+      }
       if (env.failChecks) throw new Error("gh: could not read the checks");
       return {
         stdout:
@@ -270,19 +300,9 @@ export async function hookDecision(
     mainline?: string;
     mergeBase?: string;
     branchNumber?: "throws" | "empty";
-    /** #2106 — the check rows `gh pr checks` answers (default: one pass). */
-    prChecks?: string;
-    /** #2106 — the `mergeStateStatus` the evidence read reports (default CLEAN). */
-    mergeStateStatus?: string;
-    /** #2106 — the PR-state read throws (a tooling failure, not a CI verdict). */
-    failEvidence?: boolean;
-    /** #2106 — the check-row read throws. */
-    failChecks?: boolean;
-    /** #2106 — the `headRefOid` the evidence read reports. */
-    evidenceHeadOid?: string;
-  } = {},
+  } & MergeGateEnv = {},
 ) {
-  const env = {
+  const env: Parameters<typeof makeHook>[0] = {
     target: opts.target ?? TARGET,
     currentPatchId: opts.patchId ?? "p1",
     fetchedHead: opts.fetchedHead ?? "abc123",
@@ -290,6 +310,8 @@ export async function hookDecision(
     failFetch: opts.failFetch,
     ledgerCommonDir: opts.ledgerCommonDir ?? (LEDGER_FILE ? path.dirname(LEDGER_FILE) : ""),
     calls: [] as string[],
+    /** #2107 — the `timeout` each exec was given, so a test can assert the bound. */
+    timeouts: [] as number[],
     remote: opts.remote ?? "origin",
     ghComments: opts.ghComments,
     mainline: opts.mainline,
@@ -300,6 +322,9 @@ export async function hookDecision(
     failEvidence: opts.failEvidence,
     failChecks: opts.failChecks,
     evidenceHeadOid: opts.evidenceHeadOid,
+    hangChecks: opts.hangChecks,
+    repoFlag: opts.repoFlag,
+    targetRepo: opts.targetRepo,
   };
   const handler = await makeHook(env);
   // #1417 round 2 — capture the HELD trace lines alongside the verdict. The
@@ -316,7 +341,10 @@ export async function hookDecision(
   let r: unknown;
   try {
     r = await withLedger(entries, () =>
-      handler({ toolName: "bash", input: { command } }, undefined as never),
+      handler(
+        { toolName: "bash", input: { command: command + (env.repoFlag ?? "") } },
+        undefined as never,
+      ),
     );
   } finally {
     process.stderr.write = realWrite;
@@ -325,6 +353,8 @@ export async function hookDecision(
     block: (r as { block?: boolean } | undefined)?.block === true,
     reason: (r as { reason?: string } | undefined)?.reason,
     calls: env.calls,
+    /** #2107 — every `timeout` the hook passed to an exec, in call order. */
+    timeouts: env.timeouts,
     /**
      * Every `merge-guard: HELD …` OR `merge-guard: BLOCKED …` trace line the
      * hook emitted for this command. #1479 — the filter used to match `HELD`

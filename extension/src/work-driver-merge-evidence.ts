@@ -70,6 +70,22 @@ export interface MergeEvidence {
   headOid?: string;
   /** Why `headOid` is absent, in the operator's words (names the failed read). */
   headOidError?: string;
+  /**
+   * #2107 — the check rows whose `bucket`/`state` matched NONE of the
+   * gatherer's verdict sets (optional, additive: absent means no rows were
+   * unrecognised, and the driver's merge decision never reads it).
+   *
+   * The gatherer's own answer for such a row is "no information" — it is not
+   * failing, not pending, not skipped — and for the driver that is right: the
+   * authoritative verdict there is `mergeStateStatus`, and a row gh spelled
+   * oddly should not by itself block a cycle. The `tool_call` merge guard is
+   * the caller that cannot afford the shrug, and rather than have the guard
+   * re-derive the gatherer's own verdict sets a second time (where the two
+   * would drift on what "recognised" means), the gatherer reports what it
+   * could not grade and the guard decides what that is worth. Rows named here
+   * are named as the forge named them, unbounded; the renderer clips them.
+   */
+  unrecognised?: string[];
 }
 
 interface PrCheckRow {
@@ -199,6 +215,29 @@ export async function gatherMergeEvidence(
   }
 
   const norm = (r: PrCheckRow) => (r.bucket ?? r.state ?? "").toLowerCase();
+  // #2107 — the rows that fell through every set below. `norm` of a row with
+  // neither field is "", which matches no verdict word: the row said nothing.
+  const graded = (r: PrCheckRow) =>
+    [
+      "fail",
+      "failure",
+      "cancelled",
+      "timed_out",
+      "error",
+      "pending",
+      "queued",
+      "in_progress",
+      "waiting",
+      "skipping",
+      "skipped",
+      "neutral",
+      "pass",
+      "success",
+    ].includes(norm(r));
+  const unrecognised = rows.filter((r) => !graded(r)).map((r) => r.name ?? "(unnamed)");
+  // The `pass`/`success` spelling is not in the gatherer's refusing sets — it
+  // is the verdict `mergeStateStatus` already vouches for — so it is counted
+  // here only so the set above says what the function actually recognises.
   const failing = rows
     .filter((r) => ["fail", "failure", "cancelled", "timed_out", "error"].includes(norm(r)))
     .map((r) => r.name ?? "(unnamed)");
@@ -289,6 +328,7 @@ export async function gatherMergeEvidence(
       mergeStateStatus: state.mergeStateStatus,
       failing: [],
       inconclusive: [],
+      ...(unrecognised.length > 0 ? { unrecognised } : {}),
       ...headFields(headOid, headOidError),
     };
   }
@@ -297,6 +337,9 @@ export async function gatherMergeEvidence(
     mergeStateStatus: state.mergeStateStatus,
     failing: [],
     inconclusive: [],
+    // #2107 — the rows this gate could not grade ride out with the verdict, so
+    // the caller that needs them can refuse on them (see MergeEvidence).
+    ...(unrecognised.length > 0 ? { unrecognised } : {}),
     // #1533 — the verified head rides out with the verdict it describes.
     ...headFields(headOid, headOidError),
   };
