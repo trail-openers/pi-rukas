@@ -80,7 +80,7 @@ export const NO_MAINLINE_WHY = "no mainline ref resolved (origin/HEAD, origin/ma
  * checked in one process — reported one run's cause against another's, and
  * the comment on the issue said something git never did.
  */
-export interface MainlineSha {
+interface MainlineSha {
   sha?: string;
   why?: string;
 }

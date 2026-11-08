@@ -30,7 +30,7 @@ import type { Step } from "./state.ts";
 export type { UsageTotals as LeanUsageTotals } from "../usage-fold.ts";
 
 /** The fold's answer: the run's totals, and the same sums per dispatch role. */
-export type LeanUsage = UsageFold;
+type LeanUsage = UsageFold;
 
 /**
  * Fold every dispatch the step log records into totals, in total and per role.

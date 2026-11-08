@@ -50,7 +50,7 @@ import { leanVersion } from "./version.ts";
 export { leanVersion } from "./version.ts";
 
 /** What `ready` learned: kept for the run's seed and for the not-ready comment. */
-export interface ReadyFacts {
+interface ReadyFacts {
   spec?: PiSpec;
   config?: WorkConfig;
   baseSha?: string;

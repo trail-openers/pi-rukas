@@ -69,7 +69,7 @@ export interface BuildDispatchOpts {
  * mid-flight; the caller sees only the row, which keeps no toolUses. A kill or
  * a terminal provider fault never becomes this: retryableCrash declines it.
  */
-export interface NoWorkCrash {
+interface NoWorkCrash {
   readonly noWorkCrash: true;
   /** Why the first child failed, for the throw the step still may have to make. */
   why: string;

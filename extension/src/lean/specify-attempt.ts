@@ -52,7 +52,7 @@ const SIZE_REFUSAL =
   / lines; an acceptance test is at most | bytes; an acceptance test is at most | is not a text file/;
 
 /** Everything one attempt needs, all of it decided by the caller before the first dispatch. */
-export interface SpecifyAttemptArgs {
+interface SpecifyAttemptArgs {
   deps: SpecifyDeps;
   config: WorkConfig;
   repoRoot: string;
@@ -74,7 +74,7 @@ export interface SpecifyAttemptArgs {
   resubmit?: boolean;
 }
 
-export interface SpecifyAttemptResult {
+interface SpecifyAttemptResult {
   outcome: Outcome;
   /** The attributed drop labels the boundary made in this attempt. */
   refused: string[];

@@ -17,10 +17,10 @@
  */
 
 /** How a criterion is checked. `command` criteria additionally carry a command. */
-export type VerifyKind = "test" | "command" | "manual";
+type VerifyKind = "test" | "command" | "manual";
 
 /** `L` is not a valid size for one run: `readiness` fails it and says split it. */
-export type SpecSize = "S" | "M" | "L";
+type SpecSize = "S" | "M" | "L";
 
 export interface Criterion {
   id: string;
@@ -29,7 +29,7 @@ export interface Criterion {
   command?: string;
 }
 
-export interface SpecScope {
+interface SpecScope {
   /** Paths this run may touch. */
   paths?: string[];
   /** Paths this run must not touch. */

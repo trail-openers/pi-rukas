@@ -95,7 +95,7 @@ export class CaptureBudget {
 }
 
 /** One file's bytes and executable bit, or the reason this file cannot be captured. */
-export type OneRead = { bytes: Buffer; exec: boolean } | { why: string };
+type OneRead = { bytes: Buffer; exec: boolean } | { why: string };
 
 /**
  * Read one file through a single descriptor, or say why it cannot.

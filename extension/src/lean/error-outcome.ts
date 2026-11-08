@@ -30,7 +30,7 @@ import type { LeanState, Outcome, ReviewBoundRecord } from "./state.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 
 /** What the engine records for one handler throw: a message, and what it can prove. */
-export type ErrorOutcome = Outcome & { kind: "error" };
+type ErrorOutcome = Outcome & { kind: "error" };
 
 /**
  * Which states may record what their children cost.

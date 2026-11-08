@@ -86,7 +86,7 @@ const TEST_MAX_BUFFER = 8 * 1024 * 1024;
  * and carried out REQUIRED: an `infra` proof nobody classified would otherwise be a
  * `Proof` that reads as a red to a `kind` switch and as nothing to a shape switch.
  */
-export type ProofInfraShape = "killed" | "overflowed" | "never-started" | "nothing-to-run";
+type ProofInfraShape = "killed" | "overflowed" | "never-started" | "nothing-to-run";
 
 /** What any proof carries, whatever it concluded. */
 interface ProofBase {

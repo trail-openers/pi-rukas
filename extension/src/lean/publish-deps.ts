@@ -32,7 +32,7 @@ export class PublishInfraError extends Error {
  * the push carries so a hung `git push` cannot leave an ssh grandchild holding
  * the pipe open. Same intersection `verify-types.ts` documents.
  */
-export type PublishExec = VerifyExec;
+type PublishExec = VerifyExec;
 
 /**
  * The forge in the shape the step uses: list, read, (re)draft, then create.

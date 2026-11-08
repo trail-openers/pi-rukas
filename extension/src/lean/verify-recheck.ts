@@ -26,7 +26,7 @@ import { frozenTamperReason } from "./verify-frozen.ts";
 import { type VerifyExec, VerifyInfraError } from "./verify-types.ts";
 
 /** What a post-run re-read concluded: a verdict, or nothing to report. */
-export type RecheckVerdict = { kind: "red"; reason: string } | { kind: "clean" };
+type RecheckVerdict = { kind: "red"; reason: string } | { kind: "clean" };
 
 /** A git read whose failure must not be blamed on the work. */
 function unreadable(what: string, err: unknown): VerifyInfraError {

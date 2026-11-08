@@ -69,7 +69,7 @@ import { declaredPaths } from "./specify-tree.ts";
 import type { SubmitTestsRow } from "./submit-tests-extract.ts";
 
 /** What the pipeline did, before its caller decides what the verdict means. */
-export type PipelineVerdict =
+type PipelineVerdict =
   | {
       kind: "committed";
       frozen: Record<string, string>;
@@ -96,9 +96,9 @@ export type PipelineVerdict =
  *   exists to surface SOME gap the frozen tests missed, so partial coverage is a result,
  *   not a failure — and everything proven red is kept.
  */
-export type CoverageRule = "all-criteria" | "any-red";
+type CoverageRule = "all-criteria" | "any-red";
 
-export interface RunTestsArgs {
+interface RunTestsArgs {
   exec: ExecFn;
   /** Absolute path of the worktree the child worked in. */
   wt: string;

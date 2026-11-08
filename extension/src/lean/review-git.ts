@@ -149,7 +149,7 @@ async function resolveCommitArg(
  * when the step's own ceiling stopped the fixer. `stop` is optional on both arms
  * so the caller narrows on one field rather than on a union of two shapes.
  */
-export type FixRoundOutcome = { head?: string; stop?: BudgetFired };
+type FixRoundOutcome = { head?: string; stop?: BudgetFired };
 
 /**
  * One fix wave: the child in its disposable tree, then its commits moved onto the

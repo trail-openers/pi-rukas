@@ -23,7 +23,7 @@ export interface SubmitTestsRow {
   note?: string;
 }
 
-export interface SubmitTestsExtraction {
+interface SubmitTestsExtraction {
   rows: SubmitTestsRow[];
   /** Calls that named the tool but carried something unreadable. */
   skipped: number;

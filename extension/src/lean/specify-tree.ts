@@ -204,7 +204,7 @@ function problemOf(p: { problem?: string }): { problem?: string } {
 }
 
 /** A porcelain `v1 -z` record: the status letters and the path. */
-export interface PorcelainEntry {
+interface PorcelainEntry {
   status: string;
   path: string;
 }

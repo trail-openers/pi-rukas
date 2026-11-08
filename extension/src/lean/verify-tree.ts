@@ -24,7 +24,7 @@ import { type VerifyExec, VerifyInfraError } from "./verify-types.ts";
 const BLOB_OID = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
 
 /** What one `ls-tree` line said about the entry that was asked for. */
-export type TreeEntry =
+type TreeEntry =
   | { kind: "file"; oid: string }
   | { kind: "refuse"; reason: string }
   | { kind: "unreadable" };
