@@ -152,6 +152,38 @@ const DEFECTIVE = {
   );
 }
 
+// ── (v1c) a tier the BASE already fails still owes the frozen check ─────────
+{
+  // The arm that decides a tier red at the base is the mainline's own hands the run
+  // back BEFORE the step's ordinary red, and it used to do it with a `return`. That
+  // put the red outside `tierResults`, where the attribution below reads the tiers —
+  // so a run whose frozen file is the very thing the project's gate refuses was billed
+  // a build round it could never win, for a tier whose reason says nobody can fix it.
+  // Same fixture as (v1) but the base is red too: the only difference between the two
+  // is which arm settled the tier, and neither may skip the attribution.
+  const NAMES = [
+    "FAILED tests/x_test.py::test_a - AssertionError",
+    "FAILED tests/x_test.py::test_b - AssertionError",
+  ];
+  const r = await runVerify({
+    issue: 2428,
+    config: { fast: RED, freezeCheck: gate() },
+    ...DEFECTIVE,
+    headTierRedRuns: 2,
+    headTierOutput: NAMES.join("\n"),
+    baseRedContract: true,
+    baseTierOutput: NAMES.join("\n"),
+  });
+  assert(
+    r.threw !== undefined && r.threw.message.startsWith("frozen contract defective:"),
+    `(v1c) a baseline-red tier still gets the freeze check (got ${r.threw?.name}: ${r.threw?.message ?? r.outcome?.kind})`,
+  );
+  assert(
+    (r.threw?.message ?? "").includes(FROZEN),
+    `(v1c) it blames the frozen file, not the mainline's tier (got ${r.threw?.message})`,
+  );
+}
+
 // ── (v3a) a check that never answered is not a colour ───────────────────────
 {
   const r = await runVerify({

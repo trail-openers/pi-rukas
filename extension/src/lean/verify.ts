@@ -223,6 +223,8 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
   const tierResults: Executed[] = [];
   /** The contract as the pass that ran BEFORE the tiers judged it, for the reason. */
   const frozenClauseForReason: FrozenClause = frozenClause(tests);
+  /** Why the tier loop ended on a red the caller still owes the freeze check for. */
+  let armRed: string | undefined;
   for (const [name, cmd] of tiers) {
     const one = await runTier(name, cmd, wt, deps.exec, deps.timeoutMs);
     if (one.kind === "pass") {
@@ -280,7 +282,14 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
         issue,
       });
       if (arm.throwReason !== undefined) throw new VerifyInfraError(arm.throwReason);
-      if (arm.red !== undefined) return { kind: "red", reason: clipReason(arm.red) };
+      if (arm.red !== undefined) {
+        // The hand-back the arm decided is a RED the caller still owes the freeze
+        // check for, so it is carried out of the loop rather than returned here: a
+        // tier the base already fails can fail on a frozen file this run authored,
+        // and the attribution below is what tells those two reds apart.
+        armRed = arm.red;
+        break;
+      }
       if (arm.preexisting !== undefined) {
         preexisting[name] = arm.preexisting;
         continue;
@@ -294,7 +303,7 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
     // finds the other. `firstFailure` below still picks this same `one` when there is
     // nothing to compose, so a green contract keeps today's reason byte for byte.
     const composed = composedTierRed(frozenClauseForReason, one.reason);
-    if (composed !== undefined) return { kind: "red", reason: clipReason(composed) };
+    if (composed !== undefined) armRed = composed;
     break;
   }
 
@@ -334,11 +343,14 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
   // distinguishes a contract this run authored from a gate the mainline already
   // fails. Any other outcome leaves the run exactly as it was: the check never
   // runs on the happy path, and a check that could not run never blocks.
-  if (
-    failed !== undefined &&
-    config.verify.freezeCheck !== undefined &&
-    tierResults.some((t) => t.kind === "fail")
-  ) {
+  //
+  // A tier the BASELINE ARM settled is a red tier too. It is deliberately absent
+  // from `tierResults` — that is what keeps its own reason from being overwritten
+  // below by the frozen contract's clause — so reading the tiers alone would let a
+  // run whose frozen file the project's gate refuses bill a build round that can
+  // never win it, for a tier whose reason already says nobody can fix it.
+  const tierRed = armRed !== undefined || tierResults.some((t) => t.kind === "fail");
+  if (failed !== undefined && config.verify.freezeCheck !== undefined && tierRed) {
     const defect = await defectiveFrozenContract(
       deps.exec,
       repoRoot,
@@ -350,7 +362,10 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
     );
     if (defect !== undefined) throw new VerifyInfraError(defect);
   }
-  if (failed !== undefined) return { kind: "red", reason: clipReason(failed) };
+  // The arm's decision outranks the first failure: it is the reason this loop
+  // stopped on, and the tier it settled is not in `tierResults` to be found again.
+  const red = armRed ?? failed;
+  if (red !== undefined) return { kind: "red", reason: clipReason(red) };
 
   // The tiers run as shell commands IN the worktree, and the command tier runs
   // test CODE, so between the checks above and this point a tier may have rewritten
