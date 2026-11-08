@@ -19,6 +19,7 @@
 import { BuildInfraError } from "../src/lean/build-errors.ts";
 import { MAX_BUILD_ATTEMPTS } from "../src/lean/machine.ts";
 import type { DispatchResult } from "../src/types.ts";
+import { configWithRunner } from "./lib/lean-build-asserts.ts";
 import { commitPaths } from "./lib/lean-build-asserts.ts";
 import { ROOTS, buildFixture, put, runBuild } from "./lib/lean-build-fixture.ts";
 
@@ -98,6 +99,24 @@ const EDIT_FILE = (wt: string) => put(wt, "src/retry.ts", "export const retry = 
 }
 
 {
+  // The two positive proofs of work, each on its own: a child that reported a
+  // tool call, and one the live stream saw make one. Either alone is enough to
+  // make the child not-blank, so neither may be re-dispatched.
+  const calledTool: Partial<DispatchResult> = { ...NOWORK, toolUses: [{ name: "bash", args: {} }] };
+  const tool = await runBuild({ issue: 218, child: EDIT_FILE, dispatchResults: [calledTool] });
+  assert(
+    tool.threw instanceof BuildInfraError && tool.dispatched === 1,
+    `(w) a child that reported a tool call throws on the first dispatch (got ${String(tool.dispatched)})`,
+  );
+  const seenTool: Partial<DispatchResult> = { ...NOWORK, observedToolCalls: 1 };
+  const observed = await runBuild({ issue: 219, child: EDIT_FILE, dispatchResults: [seenTool] });
+  assert(
+    observed.threw instanceof BuildInfraError && observed.dispatched === 1,
+    `(w) a child whose tool call was seen live throws on the first dispatch (got ${String(observed.dispatched)})`,
+  );
+}
+
+{
   // A cap kill is a verdict on the child's run, not a blank sheet: the no-work
   // re-dispatch must not reach for it. `killCause: "abort"` is a cap the step's
   // own budget never arms, so the dispatch's own classification is what is judged.
@@ -107,13 +126,28 @@ const EDIT_FILE = (wt: string) => put(wt, "src/retry.ts", "export const retry = 
     killed.threw instanceof BuildInfraError && killed.dispatched === 1,
     `(w) a cap kill is never re-dispatched (got ${String(killed.dispatched)})`,
   );
+  // A child-bound kill is the one kill cause the step may claim as its OWN
+  // ceiling, and `armBudget` reads it from the CAUSE rather than a clock a harness
+  // cannot fake: with a minutes lever armed, a `child-bound` child is the step's
+  // budget verdict. The free no-work re-dispatch must not answer that kill — it
+  // would spend the ceiling again on a verdict already in hand (#2104 R2).
+  // No `verify.test` runner: the budget verdict still folds its work, and a case
+  // about WHO owns this kill should not also start the driver's frozen sweep.
   const killedCeiling = await runBuild({
     issue: 217,
     child: EDIT_FILE,
-    dispatchResults: [{ ...NOWORK, killCause: "child-bound" }],
+    config: {
+      ...configWithRunner(),
+      verify: { fast: "true", test: "" },
+      budgets: { ...configWithRunner().budgets, build: { turns: 0, tokens: 0, minutes: 1 } },
+    },
+    // A rule, not a list: the shape under test is the child's, and a list would let
+    // a later child answer with different bytes. The ceiling's OWN in-step retries
+    // are `test-lean-build-budget-retry.ts`'s to pin.
+    dispatchResults: () => ({ ...NOWORK, killCause: "child-bound" as const, ms: 60_001 }),
   });
   assert(
-    killedCeiling.outcome?.kind === "budget" || killedCeiling.outcome?.kind === "ok",
+    killedCeiling.outcome?.kind === "budget",
     `(w) a child the step's own ceiling stopped still takes the budget path (got ${killedCeiling.outcome?.kind ?? killedCeiling.threw?.name})`,
   );
 }

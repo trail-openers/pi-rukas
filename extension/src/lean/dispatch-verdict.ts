@@ -21,12 +21,23 @@ type InfraErrorCtor = new (
 ) => Error & { dispatches?: DispatchUsageRow[] };
 
 /**
+ * Why the child came back bad, in the words every throw uses: kill cause, then
+ * provider message, then provider reason, then exit code — the most specific
+ * reason a child can give wins over the least. Exported because a site that
+ * re-dispatches before it throws still has to name the same cause.
+ */
+function dispatchFailureWhy(result: DispatchResult): string {
+  return (
+    result.killCause ??
+    result.errorStop?.message ??
+    result.errorStop?.reason ??
+    `exit ${String(result.exitCode)}`
+  );
+}
+
+/**
  * The tail: throws when the child did not come back clean, nothing when it did.
- *
- * `rows` is handed to the error so a child that died still has its cost on the
- * record — the outcome never lands on a throw. The cause is read as kill cause,
- * then provider error, then exit code, in that order: the most specific reason a
- * child can give wins over the least.
+ * `rows` rides on the error so a child that died still has its cost on the record.
  */
 function throwIfDispatchFailed(
   result: DispatchResult,
@@ -35,12 +46,7 @@ function throwIfDispatchFailed(
   rows: DispatchUsageRow[],
 ): void {
   if (result.ok && result.killCause === undefined && result.errorStop === undefined) return;
-  const why =
-    result.killCause ??
-    result.errorStop?.message ??
-    result.errorStop?.reason ??
-    `exit ${String(result.exitCode)}`;
-  throw new ErrorClass(`${prefix}${why}`, rows);
+  throw new ErrorClass(`${prefix}${dispatchFailureWhy(result)}`, rows);
 }
 
-export { throwIfDispatchFailed };
+export { dispatchFailureWhy, throwIfDispatchFailed };

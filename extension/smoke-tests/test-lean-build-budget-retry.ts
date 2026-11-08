@@ -16,7 +16,6 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { BuildInfraError } from "../src/lean/build-errors.ts";
 import { emptyRunningState } from "../src/progress.ts";
 import type { BudgetOpts } from "../src/lean/step-budget.ts";
 import { INITIAL_COUNTERS, type LeanRun, type LeanState, type RunCounters, type Step } from "../src/lean/state.ts";
@@ -471,7 +470,6 @@ function breachTurns(turns: number) {
     `(g) the same ceiling one round earlier DOES retry in-step (got ${oneBeforeCap.dispatched})`,
   );
 }
-
 
 for (const dir of ROOTS) {
   try {

@@ -18,7 +18,7 @@ import { BLOCKED_REPORTER_PATH } from "./build-blocked-reporter.ts";
 import { BuildInfraError } from "./build-errors.ts";
 import { buildPrompt } from "./build-prompt.ts";
 import type { BuildDispatch } from "./build-types.ts";
-import { throwIfDispatchFailed } from "./dispatch-verdict.ts";
+import { dispatchFailureWhy, throwIfDispatchFailed } from "./dispatch-verdict.ts";
 import type { PiSpec } from "./spec.ts";
 import {
   type BudgetArms,
@@ -150,13 +150,8 @@ export async function dispatchBuilder(
   // Before the shared tail: a child that provably did nothing is a re-dispatch,
   // not a verdict, so it comes back as a row rather than a throw.
   if (!result.ok || result.killCause !== undefined || result.errorStop !== undefined) {
-    const why =
-      result.killCause ??
-      result.errorStop?.message ??
-      result.errorStop?.reason ??
-      `exit ${String(result.exitCode)}`;
     if (didNoWork(result) && retryableCrash(result))
-      return [{ noWorkCrash: true as const, why, row }, row];
+      return [{ noWorkCrash: true as const, why: dispatchFailureWhy(result), row }, row];
   }
   throwIfDispatchFailed(result, BuildInfraError, "build dispatch failed: ", [row]);
   return [result, row];
