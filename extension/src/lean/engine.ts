@@ -182,26 +182,20 @@ function withOutcome(run: LeanRun, key: string, outcome: Outcome, endedAt: numbe
 }
 
 /**
- * Has this run earned the merge? Its own record must currently say so: the
- * newest DECIDED `verify` AND the newest DECIDED `ci` both green, and no
- * `draft` marker left standing. `ci`'s green is what the table routes on and
- * `verify`'s is what the run's own gate said — a recorded `ci:green` read
- * over a later red verify is the shape that used to walk into the merge.
+ * Has this run earned the merge? Its own record must currently say so: the newest
+ * DECIDED `verify` AND the newest DECIDED `ci` both green, and no `draft` marker
+ * left standing.
  *
  * Two readers call this. `apply()` asks it on the ARRIVAL, which is the
- * irreversible act; and `runLean` asks it when a resumed run's DERIVED state
- * is already `land`, because the fold reached that state through `next()` and
- * never through `apply()` — so without the second call a file that forged the
- * arrival would run the merge handler on load.
+ * irreversible act; and `runLean` asks it when a resumed run's DERIVED state is
+ * already `land`, because the fold reached that state through `next()` and never
+ * through `apply()` — so without the second call a file that forged the arrival
+ * would run the merge handler on load.
  */
-function landEarned(run: LeanRun): boolean {
-  return engineFacts.landEarned(run);
-}
+const landEarned = engineFacts.landEarned;
 
 /** The reason the record gives for refusing the merge, for the handback line. */
-function landRefusal(run: LeanRun): string {
-  return engineFacts.landRefusal(run);
-}
+const landRefusal = engineFacts.landRefusal;
 
 /**
  * Apply the table, then enforce the two arrival rules a (state, kind) pair

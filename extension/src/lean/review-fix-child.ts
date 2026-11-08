@@ -7,6 +7,7 @@
 import path from "node:path";
 import type { DispatchResult } from "../types.ts";
 import { normaliseBuild } from "./build-normalise.ts";
+import { dispatchFailureCause } from "./dispatch-verdict.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { type ReviewFixArgs, fixPrompt } from "./review-deps.ts";
 import { FIX_BOUND_MS, type FixRunId, ReviewInfraError } from "./review.ts";
@@ -68,14 +69,8 @@ export async function runFixer(
     opts.stop.fired = fired;
     return;
   }
-  if (!result.ok || result.killCause !== undefined || result.errorStop !== undefined) {
-    const why =
-      result.killCause ??
-      result.errorStop?.message ??
-      result.errorStop?.reason ??
-      `exit ${String(result.exitCode)}`;
-    throw new ReviewInfraError(`the fix child failed: ${String(why)}`, opts.rows);
-  }
+  if (!result.ok || result.killCause !== undefined || result.errorStop !== undefined)
+    throw new ReviewInfraError(`the fix child failed: ${dispatchFailureCause(result)}`, opts.rows);
 }
 
 /**

@@ -28,6 +28,7 @@
 
 import type { TestLocation } from "./config-test-location.ts";
 import { TEST_RUNNER_PLACEHOLDER } from "./config.ts";
+import { criteriaBlock } from "./spec-blocks.ts";
 import type { PiSpec } from "./spec.ts";
 import {
   RED_PROOF_CONTRACT,
@@ -50,15 +51,6 @@ export interface ChallengePromptOpts {
    * files already live there, and a new file the child writes must too.
    */
   testLocation?: TestLocation;
-}
-
-function criteriaBlock(spec: PiSpec): string {
-  return spec.criteria
-    .map((c) => {
-      const command = c.command === undefined ? "" : ` (command: ${c.command})`;
-      return `- **${c.id}** [${c.verify}] ${c.text}${command}`;
-    })
-    .join("\n");
 }
 
 /** Build the kickoff prompt for the challenge child. */
