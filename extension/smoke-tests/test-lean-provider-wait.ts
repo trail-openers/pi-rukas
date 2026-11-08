@@ -17,7 +17,6 @@
 import { handoffAllowanceMs } from "../src/lean/deadline.ts";
 import {
   __setLeanSleepFn,
-  leanProviderWaitMs,
   providerWaitNote,
   waitOutProviderFault,
 } from "../src/lean/provider-wait.ts";
@@ -265,23 +264,39 @@ await withEnv({ ...BASE, PI_ENSEMBLE_TRANSIENT_RETRY: undefined }, async () => {
   }
 });
 
-// ── (6) the length is the ladder the router uses, scaled by the attempt ─────
+// ── (6) the rung scales by the attempt — the ladder the router uses ─────────
 await withEnv({ ...BASE, PI_ENSEMBLE_TRANSIENT_RETRY: undefined }, async () => {
   const { slept, restore } = recorder();
   try {
-    // The rung scales by the attempt; with the draw fixed at the top of the range
-    // each rung is exactly twice its predecessor, the ordering full jitter can break.
+    // One rung per attempt, read through the only caller the leaf has. With the
+    // draw fixed at the top of the range each rung is exactly twice its
+    // predecessor, the ordering full jitter would otherwise break, and the seam
+    // shows the attempt-3 call really was handed the attempt-3 rung.
     const top = () => 1;
-    const rung1 = leanProviderWaitMs(cls("provider-severed"), 1, top);
-    const rung2 = leanProviderWaitMs(cls("provider-severed"), 2, top);
+    const rung1 = await waitOutProviderFault({
+      cls: cls("provider-severed"),
+      attempt: 1,
+      now: 0,
+      rand: top,
+    });
+    const rung2 = await waitOutProviderFault({
+      cls: cls("provider-severed"),
+      attempt: 2,
+      now: 0,
+      rand: top,
+    });
+    const rung3 = await waitOutProviderFault({
+      cls: cls("provider-severed"),
+      attempt: 3,
+      now: 0,
+      rand: top,
+    });
     assert(
-      rung2 === 2 * rung1,
-      `(6) attempt 2 doubles the floor rung (${String(rung1)} -> ${String(rung2)})`,
-    );
-    await waitOutProviderFault({ cls: cls("provider-severed"), attempt: 3, now: 0, rand: top });
-    assert(
-      slept.length === 1 && (slept[0] ?? 0) === 3 * rung1,
-      `(6) the seam got the attempt-3 rung (${JSON.stringify(slept)})`,
+      rung2 === 2 * rung1 &&
+        rung3 === 3 * rung1 &&
+        rung1 > 0 &&
+        slept.join() === [rung1, rung2, rung3].join(),
+      `(6) the rung scales by the attempt and the seam got each one (${String(rung1)} -> ${String(rung2)} -> ${String(rung3)}; ${JSON.stringify(slept)})`,
     );
   } finally {
     restore();

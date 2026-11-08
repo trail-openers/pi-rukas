@@ -77,7 +77,7 @@ export function providerFaultOf(result: DispatchResult): ProviderWaitClass | und
  * with — injectable so a case that must bound or compare a length is not reasoning
  * about a random draw.
  */
-export function leanProviderWaitMs(
+function leanProviderWaitMs(
   cls: ProviderWaitClass,
   attempt: number,
   rand: () => number = Math.random,
