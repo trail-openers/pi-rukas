@@ -20,6 +20,7 @@ import { LENS_REPORTER_PATH, type LensDef } from "./lens-review.ts";
 import type { LensRunResult } from "./lens-review.ts";
 import type { RosterEntry } from "./lens-roster.ts";
 import { readLensSkillBody } from "./lens-skill-inline.ts";
+import { lensTurnCeilingForDiff } from "./lens-turn-ceiling.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import { reporterPathFromArgs, statReporterPath } from "./reporter-preflight.ts";
 import type { SlowWatchInput } from "./slow-notice.ts";
@@ -172,6 +173,11 @@ export async function runLensChild(opts: {
     skill.wrapped,
   );
   const boundMs = runOpts.childBoundMs ?? lensChildBoundMs();
+  // #2127 — the advisory turn ceiling, computed HERE from the very diff string
+  // `lensPromptFor` inlines below (R1): neither caller can compute it, and a
+  // ceiling read off another string would pace the child on a diff it was never
+  // shown.
+  const budgetTurns = lensTurnCeilingForDiff(runOpts.diff);
   const tag = lens.name.toLowerCase().replaceAll("_", "-");
   // Per-lens deck key. The dispatch deck (#117) is now the single live
   // surface — there used to be a parallel onUpdate callback rendering an
@@ -252,6 +258,11 @@ export async function runLensChild(opts: {
             // that never answers is steered to wrap up, then ended, instead of
             // holding the round until the 2-h spawn backstop.
             childBoundMs: boundMs,
+            // #2127 — the diff-scaled ADVISORY turn ceiling beside the wall
+            // clock, never instead of it: it arms the 50 %/80 % progress steers
+            // and cannot end the lens, so the bound above stays the only
+            // lens-ending lever (see lens-turn-ceiling.ts).
+            budgetTurns,
             // #1827 — the re-read cap counts only reads of THIS lens's
             // SKILL.md; a read of any other skill file never counts.
             reviewSkillPath: skillPath,
