@@ -13,15 +13,11 @@
  * whose HEAD holds the frozen test commit, a worktree on the run's branch at that
  * HEAD, and a step log with the `ready` / `specify` outcomes. The frozen sha256 is
  * the one the committed blob really hashes to, so a case that must break the check
- * breaks the record on purpose, which is how the check is shown to read bytes.
-
+ * breaks the record on purpose — how the check is shown to read bytes.
  *
  * The child's acts are a callback so each case decides what its developer did:
  * edited `src/`, rewrote a frozen test, committed on its own, edited `.pi/` and
  * `.github/`, dropped a symlink and a hard link, or did nothing at all.
- *
- * `agents.json` is tracked in the base commit, so a case that edits it is the
- * tracked-protected shape: the reset has to bring it back, not merely the clean.
  */
 
 import { spawnSync } from "node:child_process";
@@ -42,14 +38,15 @@ import type { BudgetOpts } from "../../src/lean/step-budget.ts";
 import type { DispatchResult, DispatchSpec } from "../../src/types.ts";
 import { gitTestEnv } from "./git-test-env.ts";
 import { SPEC_BODY, configWithRunner } from "./lean-build-asserts.ts";
+import type { DispatchResultOverride } from "./lean-build-artifacts.ts";
+import { resultOverride } from "./lean-build-artifacts.ts";
 
 /** Temp dirs this module made; the caller removes them at the end of the run. */
 export const ROOTS: string[] = [];
 
 /**
- * A directory OUTSIDE every fixture repo, for the link cases: the target a
- * symlink or hard link points at must not live in the worktree, or "no outside
- * bytes were committed" would prove nothing.
+ * A directory OUTSIDE every fixture repo, for the link cases: a link target
+ * inside the worktree would make "no outside bytes were committed" prove nothing.
  */
 export function outsideDir(): string {
   const dir = mkdtempSync(path.join(tmpdir(), "lean-build-outside-"));
@@ -57,7 +54,7 @@ export function outsideDir(): string {
   return dir;
 }
 
-/** The identity every git child runs with — including the production commit. */
+/** The identity every git child runs with, the production commit included. */
 function gitEnv(): Record<string, string> {
   return {
     ...gitTestEnv(),
@@ -68,7 +65,7 @@ function gitEnv(): Record<string, string> {
   };
 }
 
-/** The identity every git child runs with — exported for the challenge fixture. */
+/** The same identity, for the challenge fixture's own git children. */
 export function gitEnvFor(): Record<string, string> {
   return gitEnv();
 }
@@ -115,8 +112,8 @@ export interface Built {
 }
 
 /**
- * A repo whose HEAD holds the frozen test commit, a worktree at that HEAD on
- * the run's branch, and the step log a run would carry when it reaches build.
+ * A repo at the frozen test commit, a worktree on the run's branch, and the step
+ * log a run carries when it reaches build.
  *
  * `childOwnsBranch` is how a case gets a worktree at all when its child is
  * going to `git worktree remove`, `reset --hard` or otherwise wreck the tree:
@@ -167,12 +164,9 @@ export function buildFixture(
   const dir = (rel: string) => path.join(repoRoot, rel);
   mkdirSync(dir("src"), { recursive: true });
   mkdirSync(dir("tests"), { recursive: true });
-  // `.pi/` and `.github/` exist and are tracked so a child's edit to them reads
-  // as a change git reports — the shape the protected-path rule is for.
-  // `.pi/` and `.github/` are NOT tracked: the harder shape for the protected
-  // rule, because a tracked edit would come back from the plain reset whether
-  // or not the step treated those paths as untouchable, while an untracked one
-  // only leaves if the reset really cleans.
+  // `.pi/` and `.github/` exist but are NOT tracked: the harder shape for the
+  // protected-path rule, since a tracked edit would come back from the plain
+  // reset either way, while an untracked one only leaves if the reset cleans.
   mkdirSync(dir(".pi"), { recursive: true });
   mkdirSync(dir(".github/workflows"), { recursive: true });
   writeFileSync(dir("src/retry.ts"), SRC);
@@ -276,8 +270,6 @@ export function buildFixture(
 }
 
 /** The sha256 of each value, keyed as the value is keyed. */
-
-/** The sha256 of each value, keyed as the value is keyed. */
 function shaAll(entries: Record<string, string>): Record<string, string> {
   return Object.fromEntries(Object.entries(entries).map(([k, v]) => [k, sha(v)]));
 }
@@ -328,10 +320,9 @@ export interface RunOpts {
   /** The child's acts in the worktree, at the moment it is still working. */
   child?: (wt: string) => void;
   /**
-   * Acts performed after the child's dispatch and before the step's next read of
-   * the tree: a case plants a file that is NOT part of the child's commit, at the
-   * instant the blocked gate re-runs the reported frozen files (before
-   * normalisation's `clean -fdx` would delete an untracked one).
+   * Acts after the dispatch and before the step next reads the tree: a case plants
+   * a file that is NOT part of the child's commit, at the instant the blocked gate
+   * re-runs the reported frozen files (before `clean -fdx` would delete it).
    */
   afterDispatch?: (wt: string) => void;
   /** Extra steps to append to the log (a re-entry `verify:red` for case (i)). */
@@ -353,6 +344,12 @@ export interface RunOpts {
   /** A child whose dispatch did not succeed — the infra case, as in `challenge`. */
   dispatchOk?: boolean;
   /**
+   * The whole `DispatchResult` of the nth child (0-based), verbatim, or a rule
+   * for it — see {@link resultOverride}. The shape a case needs to hand its dead
+   * child real `usage.turns` / `toolUses` / `killCause` fields.
+   */
+  dispatchResults?: DispatchResultOverride;
+  /**
    * Drive the fake child's progress feed at the moment it is still working.
    * A budget case calls `onProgress` the way `spawn.ts` does at every
    * `message_end`, which is what makes a ceiling breach observable without a
@@ -360,10 +357,9 @@ export interface RunOpts {
    */
   onProgressTick?: (onProgress: BudgetOpts["onProgress"]) => void;
   /**
-   * THE config the step reads, verbatim. A case that wants to change one field
-   * of the runner config (a budget, a tier) spreads {@link configWithRunner}
-   * into this so the rest still comes from it: a budget case that dropped the
-   * runner template would fail for the wrong reason.
+   * THE config the step reads, verbatim. A case changing one field of the runner
+   * config (a budget, a tier) spreads {@link configWithRunner} into this so the
+   * rest still comes from it.
    */
   config?: WorkConfig;
   /**
@@ -419,6 +415,9 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
   const extraArgs: (readonly string[])[] = [];
   const gitArgvs: string[][] = [];
   let dispatched = 0;
+  // The child's acts belong to the FIRST dispatch: a re-dispatched child sees the
+  // tree its dead predecessor left, as a no-work retry case asserts.
+  let childActed = false;
   /** Whether the one-shot `afterDispatch` hook has fired (see `deps` below). */
   let planted = false;
   const exec: BuildDeps["exec"] = execObserver(
@@ -431,9 +430,10 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
     prompts.push(spec.prompt);
     extraArgs.push(o.extraArgs ?? []);
     opts.onProgressTick?.(o.onProgress);
-    opts.child?.(spec.cwd as string);
+    if (!childActed) opts.child?.((childActed = true) && (spec.cwd as string));
     const declared =
       typeof opts.toolUses === "function" ? opts.toolUses() : [...(opts.toolUses ?? [])];
+    const over = resultOverride(opts.dispatchResults, dispatched - 1);
     const result: DispatchResult = {
       role: spec.role,
       ok: opts.dispatchOk !== false,
@@ -445,6 +445,7 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
       // step's dispatch row would record zeros — so the fixture reports what a
       // real child reports, and a case can assert the row carried it.
       usage: { input: 11, output: 2, cacheRead: 3, cacheWrite: 1, cost: 0.5, turns: 4 },
+      ...over,
     };
     return result;
   };

@@ -25,7 +25,9 @@
  *      work in a tree the step cannot account for: the frozen map is non-empty and
  *      every frozen blob at that head still hashes to its record.
  *   4. **One child**, role `developer`, fenced to the worktree. A child that
- *      died is infrastructure and throws; it is not a verdict about the work.
+ *      died mid-work is infrastructure and throws; a killed or quota-stopped one
+ *      is never re-dispatched, and only a child that died before its first turn
+ *      gets the one free re-dispatch (`build-dispatch.ts`).
  *   5. **Normalise and commit** (`build-normalise.ts`): CAPTURE the child's files,
  *      RESET the tree to `headBefore` — undoing its commits, its staging, every
  *      frozen and protected-path edit — then REWRITE the captured bytes and make
@@ -290,6 +292,11 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
   // another child, which is what lets a run spend its third build on work rather
   // than on a ceiling. (R3)
   const retriesAllowed = Math.max(0, MAX_BUILD_ATTEMPTS - dispatchedBefore - 1);
+  // A child that did no work gets its one free re-dispatch of this visit (#2104
+  // R2): it bought nothing, so it bills no round and advances no `tries`.
+  let noWorkRetryUsed = false;
+  // Why the first no-work child died, kept for the throw the second one may make.
+  let firstNoWorkWhy: string | undefined;
   for (let tries = 0; ; tries++) {
     const budget = armBudget(budgetFor(config, "build"));
     if (budget.warning !== undefined) traceWarn(`lean build #${String(issue)}: ${budget.warning}`);
@@ -307,6 +314,25 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
       ...(stopped === undefined ? {} : { budgetStop: stopped }),
     });
     rows.push(row);
+    if ("noWorkCrash" in dispatchedChild) {
+      if (noWorkRetryUsed)
+        throw new BuildInfraError(
+          `build dispatch failed: first: ${String(firstNoWorkWhy)}; then: ${dispatchedChild.why}`,
+          rows,
+        );
+      // A child that did no work bought nothing: its row stays billed and the SAME
+      // prompt goes out again on a freshly armed budget, without spending a round.
+      // The second one of these throws, as any dead child did. The trace names this
+      // re-dispatch and the cause the first child gave.
+      traceWarn(
+        `lean build #${String(issue)}: re-dispatching a child that did no work: ${dispatchedChild.why}`,
+      );
+      firstNoWorkWhy = dispatchedChild.why;
+      noWorkRetryUsed = true;
+      tries--;
+      continue;
+    }
+    // Past that branch only a real result or a ceiling stop is left on the pair.
     const read = readDispatched(dispatchedChild);
     if (!("stop" in read)) {
       toolUses = read.result.toolUses ?? [];

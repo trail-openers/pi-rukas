@@ -11,6 +11,8 @@
  * waiting to happen.
  */
 
+import { redactClip } from "../decision-log.ts";
+import { PROVIDER_MAX } from "../provider-text-budget.ts";
 import type { DispatchResult } from "../types.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 
@@ -21,12 +23,30 @@ type InfraErrorCtor = new (
 ) => Error & { dispatches?: DispatchUsageRow[] };
 
 /**
- * The tail: throws when the child did not come back clean, nothing when it did.
+ * Why the child came back bad, in the words every throw uses: kill cause, then
+ * provider message, then provider reason, then exit code — the most specific
+ * reason a child can give wins over the least. Exported because a site that
+ * re-dispatches before it throws still has to name the same cause.
  *
- * `rows` is handed to the error so a child that died still has its cost on the
- * record — the outcome never lands on a throw. The cause is read as kill cause,
- * then provider error, then exit code, in that order: the most specific reason a
- * child can give wins over the least.
+ * The text is the child's or the endpoint's, so it is bounded and scrubbed
+ * HERE — the one place every site composes it — before it reaches a trace line,
+ * an `*InfraError` message or a state record: `redactClip` redacts FIRST and
+ * clips second at the shared provider budget, so a cut can never leave a
+ * credential fragment, and a short cause (a kill cause, `exit 1`) comes back
+ * byte-identical.
+ */
+function dispatchFailureWhy(result: DispatchResult): string {
+  const why =
+    result.killCause ??
+    result.errorStop?.message ??
+    result.errorStop?.reason ??
+    `exit ${String(result.exitCode)}`;
+  return redactClip(why, PROVIDER_MAX);
+}
+
+/**
+ * The tail: throws when the child did not come back clean, nothing when it did.
+ * `rows` rides on the error so a child that died still has its cost on the record.
  */
 function throwIfDispatchFailed(
   result: DispatchResult,
@@ -35,12 +55,7 @@ function throwIfDispatchFailed(
   rows: DispatchUsageRow[],
 ): void {
   if (result.ok && result.killCause === undefined && result.errorStop === undefined) return;
-  const why =
-    result.killCause ??
-    result.errorStop?.message ??
-    result.errorStop?.reason ??
-    `exit ${String(result.exitCode)}`;
-  throw new ErrorClass(`${prefix}${why}`, rows);
+  throw new ErrorClass(`${prefix}${dispatchFailureWhy(result)}`, rows);
 }
 
-export { throwIfDispatchFailed };
+export { dispatchFailureWhy, throwIfDispatchFailed };
