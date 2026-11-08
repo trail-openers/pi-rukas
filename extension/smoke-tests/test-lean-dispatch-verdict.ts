@@ -28,6 +28,10 @@ const ROWS: DispatchUsageRow[] = [
 ];
 
 let exit = 0;
+/** Counters, so the assertions below are not vacuous: an arm that never reached
+ * the tail would otherwise print ✓ for a call that never happened. */
+let thrown = 0;
+let returned = 0;
 function assert(cond: boolean, msg: string): void {
   if (cond) console.log(`✓ ${msg}`);
   else {
@@ -49,8 +53,10 @@ function verdict(over: Partial<DispatchResult>): TestInfraError | null {
   } as DispatchResult;
   try {
     throwIfDispatchFailed(result, TestInfraError, "prefix: ", ROWS);
+    returned++;
     return null;
   } catch (err) {
+    thrown++;
     return err as TestInfraError;
   }
 }
@@ -96,6 +102,11 @@ function verdict(over: Partial<DispatchResult>): TestInfraError | null {
   assert(
     killed?.dispatches === ROWS,
     "the cost rows travel on the error — a child that died still spent its tokens",
+  );
+
+  assert(
+    returned === 1 && thrown === 6,
+    `every arm reached the tail: one return and six throws (got ${String(returned)} returned, ${String(thrown)} thrown)`,
   );
 }
 
