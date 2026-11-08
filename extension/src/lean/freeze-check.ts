@@ -6,7 +6,7 @@
  * base, executed by `verify.test`. That is the whole admission test — and it is
  * not the only check a repository has. A project also runs commands that read
  * test-file CONTENT (`verify.fast` here carries a scanner that refuses
- * `process.env.X = undefined` in any `.ts`). Nothing in specify or challenge ran
+ * assigning undefined to an env var in any `.ts`). Nothing in specify or challenge ran
  * those, and `build` may not edit a frozen file. So a candidate that trips a
  * content gate freezes, and the run cannot win: no build round can edit the
  * file, and the gate stays red however the code changes. In the field that cost
