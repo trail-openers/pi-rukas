@@ -2,12 +2,12 @@
  * lean/verify-baseline-excuse — a tier red at HEAD whose every failure the base
  * run ALSO printed is not this run's failure.
  *
- * `verify-baseline.ts` asks whether the base is red at all and hands the run back
- * when it is. That answer is correct but expensive: a mainline whose own suite is
- * red on this host hands back every run of a perfectly good change, and a build
- * round could not fix a gate the base authored. This module asks the narrower
- * question — WHICH lines did each run print as failing — and answers "grade it
- * green, and say so" when the head run printed nothing the base run did not print.
+ * `verify-baseline.ts` asks whether the base is red at all and hands the run back when
+ * it is. That answer is correct but expensive: a mainline whose own suite is red on this
+ * host hands back every run of a perfectly good change, and a build round could not fix
+ * a gate the base authored. This module asks the narrower question — WHICH lines did each
+ * run print as failing — and answers "grade it green, and say so" when the head run
+ * printed nothing the base run did not print.
  *
  * The unit of comparison is the WHOLE failure line, and that is what makes it
  * runner-agnostic. A parser that reads a test name out of each line and compares tokens always
@@ -26,22 +26,21 @@
  *     trimmed text — with the run's own worktree root out of it, and both sides read
  *     the SAME full text: the classifier's table, {@link failureLinesOf}'s comparison
  *     key, and the recorded set are all the whole line.
- *   - one rule decides what the excuse may not see, and it REFUSES rather than
- *     omitting, in BOTH directions of ignorance. A line past {@link FAILURE_LINE_SCAN_MAX}
- *     refuses either side, because a judge that saw only its first 8 KiB cannot tell two
- *     long lines apart. And a line that is HEAD-ONLY — one the base stream did not print —
- *     refuses unless something POSITIVE vouches for it, which is {@link
- *     hasHeadOnlyUnrefusedLine} asking {@link isKnownCleanLine}. That second half is
- *     DEFAULT-REFUSE and the direction is the whole design: `failureLines` drops every line
- *     the classifier does not recognise, so an omitted one would let a head of
- *     `[readable A, unread B]` match a base that printed only A and grade a tier green on a
- *     failure this run authored. A head-only line needs permission, not a pardon: it is
- *     excused only if it is provably not a failure (a pass marker, a progress line, a
- *     separator, a count), and a new runner's failure dialect is caught by being absent from
- *     that short list. Lines the harness itself wrote, and lines the classifier reads as
- *     PASSING checks, are excluded from both sides — neither is gate output — but no
- *     exemption is given to any prefix of a gate line: a line missing from the base refuses
- *     whatever it opens with.
+ *   - one rule decides what the excuse may not see, and it REFUSES rather than omitting,
+ *     in BOTH directions of ignorance. A line past {@link FAILURE_LINE_SCAN_MAX} refuses
+ *     either side, because a judge that saw only its first 8 KiB cannot tell two long
+ *     lines apart. And a HEAD-ONLY line — one the base stream did not print — refuses
+ *     unless something POSITIVE vouches for it ({@link hasHeadOnlyUnrefusedLine} asking
+ *     {@link isKnownCleanLine}). That is DEFAULT-REFUSE, and the direction is the whole
+ *     design: `failureLines` drops every line the classifier does not recognise, so an
+ *     omitted one would let a head of `[readable A, unread B]` match a base that printed
+ *     only A and grade a tier green on a failure this run authored. A head-only line needs
+ *     permission, not a pardon: it is excused only if it is provably not a failure (a pass
+ *     marker, a progress line, a separator, a count), and a new runner's failure dialect
+ *     is caught by being absent from that short list. Harness-written lines and lines the
+ *     classifier reads as PASSING checks are excluded from both sides — neither is gate
+ *     output — but no exemption is given to any prefix of a gate line: a line missing from
+ *     the base refuses whatever it opens with.
  *   - both sets must be non-empty and EVERY head line must equal a base line. One
  *     line the head printed and the base did not is a failure this run authored, and
  *     a changed reason is a different line;

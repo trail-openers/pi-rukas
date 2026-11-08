@@ -90,12 +90,11 @@ export type PipelineVerdict =
 /**
  * What the pipeline requires of its coverage, decided by the caller.
  *
- * - `"all-criteria"` (`specify`): every id in `wanted` must have at least one
- *   red file, or the run is refused. This is the rule the pipeline has always
- *   applied, and `specify`'s behaviour is unchanged by its presence here.
- * - `"any-red"` (`challenge`): at least one red file anywhere is enough. The
- *   round exists to surface SOME gap the frozen tests missed, so partial
- *   coverage is a result, not a failure — and everything proven red is kept.
+ * - `"all-criteria"` (`specify`): every id in `wanted` must have at least one red file,
+ *   or the run is refused.
+ * - `"any-red"` (`challenge`): at least one red file anywhere is enough. The round
+ *   exists to surface SOME gap the frozen tests missed, so partial coverage is a result,
+ *   not a failure — and everything proven red is kept.
  */
 export type CoverageRule = "all-criteria" | "any-red";
 

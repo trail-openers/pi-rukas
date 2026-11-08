@@ -8,12 +8,12 @@
  * one bar a row must reach to block, and the rendering of a row into a handback
  * line.
  *
- * **One full review, one fix wave, one re-review of the fix diff.** There is no
- * round loop, so there is no round constant, no stagnation tie-breaker and no
- * per-round tree naming. Extra rounds make things worse, not better: a second
- * review round lowered F1 with false positives rising faster than true ones, and
- * forced extra revisions dropped patch correctness — and every production reviewer
- * surveyed scopes a re-review to the new commits and caps it.
+ * **One full review, one fix wave, one re-review of the fix diff.** There is no round
+ * loop, so there is no round constant, no stagnation tie-breaker and no per-round tree
+ * naming. Extra rounds make things worse, not better: a second review round lowers F1
+ * with false positives rising faster than true ones, and forced extra revisions drop
+ * patch correctness — and every production reviewer surveyed scopes a re-review to the
+ * new commits and caps it.
  *
  * **The budget is a budget, not an aspiration.** `REVIEW_CHILD_BUDGET` is the
  * ceiling on the children THIS step dispatches, and counts lean's own children
@@ -36,9 +36,9 @@ export const LENSES_PER_PASS = 6;
  * How many review passes one `review` step may dispatch: the full review and the
  * re-review of the fix diff. Never a third.
  *
- * A pass is one adversarial gate call plus one {@link LENSES_PER_PASS}-lens round.
- * A policy statement rather than a knob: a second fix wave and a third pass is the
- * loop this policy exists to delete.
+ * A pass is one adversarial gate call plus one {@link LENSES_PER_PASS}-lens round. A
+ * policy statement rather than a knob: a second fix wave and a third pass would
+ * reintroduce the loop this policy excludes.
  */
 export const REVIEW_PASSES = 2;
 
