@@ -49,7 +49,8 @@ import { type SpecifyDeps, specifyOutcome } from "./specify.ts";
 import type { Step } from "./state.ts";
 import type { BudgetOpts } from "./step-budget.ts";
 import { oneLine } from "./text-fence.ts";
-import { verifyDeps, verifyOutcome } from "./verify.ts";
+import { verifyDeps } from "./verify-deps.ts";
+import { verifyOutcome } from "./verify.ts";
 import { leanVersion } from "./version.ts";
 
 // The version stamp lives in `lean/version.ts`, its own leaf: the seed needs it

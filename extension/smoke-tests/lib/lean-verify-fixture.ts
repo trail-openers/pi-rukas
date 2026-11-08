@@ -30,7 +30,7 @@ import type { WorkConfig } from "../../src/lean/config.ts";
 import type { HandlerCtx } from "../../src/lean/engine.ts";
 import { type Outcome, type Step, createRun } from "../../src/lean/state.ts";
 
-import type { VerifyDeps } from "../../src/lean/verify.ts";
+import type { VerifyDeps } from "../../src/lean/verify-deps.ts";
 import {
   DETACH_TIER,
   HANG_TIER,

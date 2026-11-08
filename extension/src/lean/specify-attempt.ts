@@ -243,6 +243,9 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
       prepare: () =>
         ensureSpecifyWorktreeWithProvision(deps.exec, { repoRoot, issue, fromRef: base, branch }),
       commitMessage: `test: acceptance tests for #${issue}`,
+      ...(config.verify.freezeCheck === undefined
+        ? {}
+        : { freezeCheck: config.verify.freezeCheck }),
       ...(deps.capture === undefined ? {} : { capture: deps.capture }),
       ...(deps.testLimits === undefined ? {} : { testLimits: deps.testLimits }),
     },

@@ -134,6 +134,16 @@ means defaults.** An invalid file is *not* defaulted: it raises
 - **`verify.testDir` / `verify.testGlob`** — a pair or neither: where the
   adversary's acceptance tests live and what they are called, so the frozen
   tests land where your own CI runs them.
+- **`verify.freezeCheck`** — optional shell string, run with `cwd` at the
+  worktree root. A project check over test-file **content** (a style lint, a
+  forbidden-spelling grep) that a build round can no longer satisfy once a file
+  is frozen — `build` may not edit a frozen file, so a candidate that trips it
+  makes the run unwinnable. `specify` and `challenge` run it over a candidate
+  batch before committing the freeze and drop what it names; `verify` runs it
+  when a project tier is red and hands the run back, unbilled, when its output
+  names a frozen file that the same check passes without. Absent, nothing runs.
+  It is never a verdict on the work: a check that was red at the base, or that
+  could not be run at all, blocks nothing.
 - **`autoMerge`** — boolean, default `false`. **The merge grant**: `land` reads
   it at the run's base sha and refuses the merge without it. An unreadable
   config refuses too, naming the read rather than pretending the project declined.

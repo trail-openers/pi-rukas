@@ -9,11 +9,11 @@
  * readers of `lean-build-asserts.ts`.
  */
 
-import { linkSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, linkSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { type ExecResult, execp } from "../../src/exec.ts";
 import type { BuildExec } from "../../src/lean/build-types.ts";
-import { gitEnvFor } from "./lean-build-fixture.ts";
+import { git, gitEnvFor } from "./lean-build-fixture.ts";
 
 /** Worktree-relative path of a file the child may create. */
 export function put(wt: string, rel: string, content: string, mode?: number): void {
@@ -39,6 +39,36 @@ export function hardlinkFromOutside(wt: string, rel: string, outsideAbs: string)
 }
 
 /**
+ * One file committed into a FIXTURE commit, executable, with its parent
+ * directories — the shape an acceptance test needs so the project's runner can
+ * run it. `dir` is the caller's repo-relative joiner, so a fixture never spells
+ * an absolute path and a case never chooses a mode: these are committed bytes.
+ */
+export function putCommitted(dir: (rel: string) => string, rel: string, text: string): void {
+  const target = dir(rel);
+  mkdirSync(path.dirname(target), { recursive: true });
+  writeFileSync(target, text, { mode: 0o755 });
+  chmodSync(target, 0o755);
+}
+
+/** The child committed whatever it had, itself. */
+export function childCommit(wt: string, message: string): void {
+  git(wt, "add", "-A");
+  git(wt, "commit", "-q", "-m", message);
+}
+
+/** The worktree's HEAD, or `""` when the tree is gone. */
+export function headOf(wt: string): string {
+  try {
+    return git(wt, "rev-parse", "HEAD");
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Write a file outside every repo and return its absolute path
+ * Write a file outside every repo and return its absolute path
  * Write a file outside every repo and return its absolute path, so a link case
  * can point at it. The return is the whole point: a caller that had to rebuild
  * the path would be asserting against a string it invented rather than the file

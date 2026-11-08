@@ -25,6 +25,8 @@ export interface VerifyTiers {
   fast?: string;
   full?: string;
   test?: string;
+  /** See `WorkConfig["verify"]["freezeCheck"]` — `lean/freeze-check.ts` runs it. */
+  freezeCheck?: string;
 }
 
 /** A tree, a tier or a runner this step cannot trust. The engine makes it exit 10. */

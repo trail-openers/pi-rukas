@@ -13,9 +13,9 @@ import type { WorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { neverStarted, wasKilled } from "./specify-proof.ts";
 import { oneLine } from "./text-fence.ts";
+import { clipReason } from "./verify-deps.ts";
 import { TIER_TAIL_LINES, tailLines } from "./verify-steps.ts";
 import { VerifyInfraError } from "./verify-types.ts";
-import { clipReason } from "./verify.ts";
 
 /**
  * The project config, read ONCE per step by `ciOutcome` and passed down.
