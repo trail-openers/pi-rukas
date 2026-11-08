@@ -43,6 +43,11 @@
  *      protects against). The lens `passed` boolean follows the project's
  *      review threshold (the same bar the driver's verdict used — see
  *      `lensBlockedByThreshold` / `lensPassed` in review-ledger.ts).
+ *   9. CI evidence (#2106), LAST, after the ledger rows and the round-cap
+ *      path: `gatherMergeEvidence` (the driver's own executed-evidence gate)
+ *      must report `ok` for the PR. A failing, pending, skipped or neutral
+ *      check, a `mergeStateStatus` that is not `CLEAN`, zero rows, or an
+ *      unreadable read all refuse. GitHub only — the glab path is unchanged.
  *
  * ## What this guard is — and is not
  *
@@ -95,9 +100,11 @@ import {
   lensNotEvaluatedRefusal,
   mergeIdentity,
   readPrCommentBodies,
+  refuseUnlessCiGreen,
 } from "./merge-guard-reads.ts";
 import { evaluateRoundCapMerge } from "./merge-guard-round-cap.ts";
 import { compareAdversarialIdentity } from "./merge-identity-compare.ts";
+import { analyseRefusal, clipCheckNames } from "./merge-refusal-render.ts";
 import { GLAB_AUTO_MERGE_REFUSAL, holdReasonText, renderHold } from "./merge-refusals.ts";
 import {
   type MergeExecFn,
@@ -422,6 +429,16 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
     // same rule AGENTS.md §1 and work-driver-lens-cap.ts apply to the
     // driver's own cycles. A refusal from either path names the failed
     // condition (see evaluateRoundCapMerge for the full matrix).
+    //
+    // #2107 — an ALLOW is not taken where it is made. The round-cap path used
+    // to `return` here, which skipped the CI gate entirely: a capped-but-
+    // merge-worthy PR with a red check merged without `gh` being asked a single
+    // question. So the ledger branch sets `allowNote` and falls through to the
+    // single exit point at the bottom of the handler, where the CI read runs on
+    // EVERY allow path. Refusals still return where they are decided (R1 keeps
+    // the existing diagnostics first); only the carve-out — the one return above
+    // that is not an agent merge — stays exempt.
+    let allowNote: string | undefined;
     const lens = latestEntry(entries, branch, "lens");
     if (!lens || !lens.passed) {
       const lensComments = await readPrCommentBodies(execFn, cwd, target, prNumber, repoValue);
@@ -438,41 +455,44 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
         fetchedHead,
       );
       if (capDecision.applies && capDecision.allowed) {
+        allowNote = `round-cap path: ISSUES_FOUND, no CRITICAL, round ${lens?.round}, disclosed on the PR`;
         trace(
           `merge-guard: PR #${prNumber} ${branch} — round-cap path allows the merge (ISSUES_FOUND, no CRITICAL, round ${lens?.round}, disclosed on the PR)`,
         );
-        return;
-      }
-      if (capDecision.applies) {
+        // #2107 — an ALLOW is not taken where it is made: `allowNote` falls
+        // through to the single CI exit below; a `return` here let a capped
+        // merge skip that gate, and the strict refusal below then refused a
+        // merge the guard had just allowed, `gh` never asked.
+      } else if (capDecision.applies) {
         return block(
           `merge refused: ${capDecision.failedCondition ?? "the round-cap conditions are not met"} — the merge guard refuses by default (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)`,
         );
       }
-      // The round-cap path does not apply (no entry, or a passing entry the
-      // strict rule should have allowed — unreachable here, or a legacy
-      // entry without a verdict detail): the strict rule's original refusal
-      // text, with the branch named for the operator. #1449 — when a review
-      // DID run and its row went elsewhere, the text says so and names the file.
-      return lensNotEvaluatedRefusal(branch, lens, { redirectedTo }); // #1000 — "the round-cap path was not evaluated" (see lensNotEvaluatedRefusal)
+      // The round-cap path did not apply (no entry, or a legacy entry with no
+      // verdict detail): the strict rule's refusal, branch named for the
+      // operator; #1449 — a row that went elsewhere is named, with its file.
+      if (!allowNote) return lensNotEvaluatedRefusal(branch, lens, { redirectedTo }); // #1000 — "the round-cap path was not evaluated" (see lensNotEvaluatedRefusal)
     }
 
-    trace(`merge-guard: PR #${prNumber} ${branch} — adversarial + lens both pass, merge allowed`);
+    if (!allowNote) {
+      trace(`merge-guard: PR #${prNumber} ${branch} — adversarial + lens both pass`);
+    }
+    // #2106 — the LAST gate, and now the ONLY exit: reached by the strict
+    // ledger allow and by the round-cap allow alike. The carve-out return and
+    // the head-equality check both precede it. GitHub only, and fail-closed.
+    //
+    // The head pin is the fetched OID this handler verified against the PR's
+    // `headOid` a few reads earlier: the CI verdict must be the verdict for
+    // THAT commit, or it is a green board for somebody else's work (#2107).
+    const ciBlock = await refuseUnlessCiGreen(execFn, cwd, prNumber, target.forge, {
+      expectedHeadOid: fetchedHead,
+      repoValue,
+      timeoutMs: EXEC_TIMEOUT_MS,
+    });
+    if (ciBlock) return ciBlock;
   });
 }
 
 function block(reason: string) {
   return { block: true, reason };
-}
-
-/**
- * One message builder for every throw the guard catches (#955 lens round 6).
- * The catches must not themselves throw: a thrown `null`/`undefined` value
- * makes `(err as Error).constructor.name` throw OUT of the catch, which
- * fails the guard OPEN (the command passes). `typeof` narrowing handles
- * every throwable value — no casts — and `String(err)` renders null and
- * undefined as the strings `null`/`undefined`.
- */
-export function analyseRefusal(err: unknown, limit = 100): string {
-  if (err instanceof Error) return `${err.name}: ${err.message.slice(0, limit)}`;
-  return String(err).slice(0, limit);
 }

@@ -10,13 +10,22 @@
  */
 
 import { execSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { registerMergeGuard } from "../src/merge-guard.ts";
 import type { MergeTarget } from "../src/merge-target.ts";
 import { type LedgerEntry, latestEntry, ledgerPathFor } from "../src/review-ledger.ts";
 import { adversarialPassed, lensPassed } from "../src/review-ledger.ts";
+import type { MergeGateEnv } from "./merge-guard-forge-fixture.ts";
+import { evidenceHeadFor, widenOid } from "./merge-guard-forge-fixture.ts";
 import { commandOf } from "./lib/argv-shell.ts";
 
 // The hook reads the forge from PI_ENSEMBLE_FORGE (the detectForge hard
@@ -122,6 +131,8 @@ export async function makeHook(env: {
   calls: string[];
   failFetch?: boolean;
   failGh?: boolean;
+  /** #2107 — the `timeout` each exec was given, so a test can assert the bound. */
+  timeouts?: number[];
   ledgerCommonDir?: string;
   remote?: string;
   ghComments?: string;
@@ -136,7 +147,7 @@ export async function makeHook(env: {
    * `undefined` — the case the early-refusal seam reports.
    */
   branchNumber?: "throws" | "empty";
-}): Promise<(event: unknown, ctx: unknown) => Promise<unknown>> {
+} & MergeGateEnv): Promise<(event: unknown, ctx: unknown) => Promise<unknown>> {
   let handler: ((event: unknown, ctx: unknown) => Promise<unknown>) | undefined;
   const fakePi = {
     on: (name: string, fn: (event: unknown, ctx: unknown) => Promise<unknown>) => {
@@ -144,27 +155,113 @@ export async function makeHook(env: {
     },
   } as never;
   const t = env.target;
+  // #2107 — one head for every reader. The guard verifies `git rev-parse`'s
+  // answer against the PR's `headOid` by STRING EQUALITY, then pins the CI
+  // verdict to that same fetched value, and the guard's own OID comparison
+  // (`sameOid` in merge-guard-reads.ts) demands >= 7 hex characters from BOTH
+  // sides. A fixture head shorter than that — the shared `TARGET.headOid` is
+  // `abc123` — therefore cannot satisfy the pin at all: no answer the forge
+  // stub gives is both 40 hex for the gatherer and the same commit as a 6-char
+  // verified head. So the harness widens the fixture head ONCE, here, and the
+  // identity read, the `rev-parse` stub and the evidence read all answer with
+  // that one value: an arm is never made to agree with the pin by accident,
+  // and an arm that IS testing the pin says so by naming `evidenceHeadOid`.
+  const headOid = widenOid(t.headOid);
+  const fetched = env.fetchedHead === undefined ? headOid : widenOid(env.fetchedHead);
   const ghView = {
     stdout: JSON.stringify({
       headRefName: t.headBranch,
-      headRefOid: t.headOid,
+      headRefOid: headOid,
       baseRefName: t.baseBranch,
       author: { login: t.author },
       labels: t.labels.map((n) => ({ name: n })),
     }),
   };
+  // #2107 — the repo scoping: the value every `gh` read must end with. A forge
+  // read that dropped it answers about a different PR than the one the merge
+  // acts on, so `execFn` refuses it (see below).
+  const wantRepoFlag = env.targetRepo !== undefined ? ` -R ${env.targetRepo}` : "";
+  /** The identity read's field list — what keeps it apart from the evidence read. */
+  const IDENTITY_FIELDS = "headRefName,headRefOid,baseRefName,author,labels";
+  /** The #2106 evidence read's field list, answered from the env knobs below. */
+  const EVIDENCE_FIELDS = "mergeStateStatus,mergeable,state,headRefOid";
   // The argv form (#1095) records as `cmd argv…` so the matchers below read the
   // same command text whichever form the guard used.
   const execFn = async (
     cmd0: string,
-    opts?: { argv?: string[]; cwd?: string; timeout?: number; maxBuffer?: number; shell?: string },
+    opts?: {
+      argv?: string[];
+      cwd?: string;
+      timeout?: number;
+      maxBuffer?: number;
+      shell?: string;
+      killGroup?: boolean;
+      env?: Record<string, string>;
+      stdoutEncoding?: string;
+    },
   ): Promise<{ stdout: string }> => {
     const cmd = commandOf(cmd0, opts);
     env.calls.push(cmd);
+    if (opts?.timeout !== undefined) (env.timeouts ??= []).push(opts.timeout);
+    // #2107 — the repo scoping, checked AFTER the record so an unscoped read
+    // still shows up in `calls` as the command the guard actually issued: an
+    // arm then fails on its own `-R <repo>` assertion (or on this refusal)
+    // rather than on an empty call list that hides what was asked. The matcher
+    // is the whole `gh` command, not `gh pr …` — the guard appends the flag, so
+    // a scoped read always ENDS with it — and it has to cover the argv form
+    // (#1095) that `gh pr checks` is issued in, whose joined text a `gh pr `
+    // prefix test never saw.
+    if (wantRepoFlag && cmd.startsWith("gh ") && !cmd.endsWith(wantRepoFlag)) {
+      throw new Error(`forge read not scoped to the command's repo: ${cmd}`);
+    }
     if (cmd.includes("gh pr view")) {
       if (cmd.includes("--json number")) {
         if (env.branchNumber === "empty") return { stdout: "{}" };
         return { stdout: JSON.stringify({ number: t.prNumber }) };
+      }
+      // #2106 — the CI evidence read is a `gh pr view` too, told apart ONLY by
+      // its field list. A matcher that keyed on `gh pr view` alone would hand
+      // the guard its identity answer and the gate would pass on nothing.
+      if (cmd.includes(`--json ${EVIDENCE_FIELDS}`)) {
+        if (env.failEvidence) throw new Error("gh: could not read the PR state");
+        // #2107 — the head the verdict was read at. The guard compares it to
+        // the OID it fetched and checked against the PR's `headOid`, so the
+        // default is the 40-hex rendering of THAT head, derived from the very
+        // field the guard compares (`fetchedHead`, which it has just verified
+        // equals the PR's `headOid`). A matrix whose subject is not the pin
+        // thus agrees by construction and cannot fail on it by accident; an
+        // arm that IS testing the pin names `evidenceHeadOid` and opts out of
+        // the derivation. `evidenceHeadOid: null` is the third state — the
+        // read answered and reported NO head at all, so the field is left out
+        // of the payload, which is a different fault from a head that is some
+        // other commit.
+        const prHeadOid =
+          env.evidenceHeadOid === null
+            ? undefined
+            : env.evidenceHeadOid === undefined
+              ? evidenceHeadFor(fetched)
+              : evidenceHeadFor(env.evidenceHeadOid);
+        if (env.hangChecks) {
+          // The #2107 hang arm: the guard's bound is what answers this, so the
+          // stub itself outlives every timeout an unbounded caller would have.
+          await new Promise((res) => setTimeout(res, 60_000));
+        }
+        return {
+          stdout: JSON.stringify({
+            mergeStateStatus: env.mergeStateStatus ?? "CLEAN",
+            mergeable: "TRUE",
+            state: "OPEN",
+            // #2107 — the head this verdict was read at. The guard compares it
+            // to the OID it fetched and checked against the PR's `headOid`, so
+            // the default is a 40-hex rendering of THAT head (the fixture's
+            // `fetchedHead`, which the guard has just verified): every matrix
+            // that is not testing the pin agrees by construction, because the
+            // value below is derived from the same field the guard compares.
+            // An arm testing the pin names `evidenceHeadOid` — a different
+            // full OID, or "" for a read that reported no head at all.
+            headRefOid: prHeadOid,
+          }),
+        };
       }
       if (env.failGh) throw new Error("gh: not found");
       if (cmd.includes("--json comments")) {
@@ -173,7 +270,22 @@ export async function makeHook(env: {
         }
         return { stdout: env.ghComments };
       }
+      if (!cmd.includes(`--json ${IDENTITY_FIELDS}`)) {
+        throw new Error(`unexpected gh pr view field list: ${cmd}`);
+      }
       return ghView;
+    }
+    // #2106 — the check rows behind the CI evidence gate.
+    if (cmd.includes("gh pr checks")) {
+      if (env.hangChecks) {
+        await new Promise((res) => setTimeout(res, 60_000));
+      }
+      if (env.failChecks) throw new Error("gh: could not read the checks");
+      return {
+        stdout:
+          env.prChecks ??
+          JSON.stringify([{ name: "quality-gate", state: "SUCCESS", bucket: "pass" }]),
+      };
     }
     if (cmd.includes("git fetch")) {
       if (env.failFetch) throw new Error("unable to connect");
@@ -194,7 +306,7 @@ export async function makeHook(env: {
     if (cmd.includes("git remote")) {
       return { stdout: `${env.remote}\n` };
     }
-    if (cmd.includes(`rev-parse ${env.remote}/`)) return { stdout: env.fetchedHead };
+    if (cmd.includes(`rev-parse ${env.remote}/`)) return { stdout: fetched };
     if (cmd.includes("symbolic-ref")) {
       return { stdout: `origin/${env.mainline ?? env.target.baseBranch}\n` };
     }
@@ -225,9 +337,9 @@ export async function hookDecision(
     mainline?: string;
     mergeBase?: string;
     branchNumber?: "throws" | "empty";
-  } = {},
+  } & MergeGateEnv = {},
 ) {
-  const env = {
+  const env: Parameters<typeof makeHook>[0] = {
     target: opts.target ?? TARGET,
     currentPatchId: opts.patchId ?? "p1",
     fetchedHead: opts.fetchedHead ?? "abc123",
@@ -235,13 +347,31 @@ export async function hookDecision(
     failFetch: opts.failFetch,
     ledgerCommonDir: opts.ledgerCommonDir ?? (LEDGER_FILE ? path.dirname(LEDGER_FILE) : ""),
     calls: [] as string[],
+    /** #2107 — the `timeout` each exec was given, so a test can assert the bound. */
+    timeouts: [] as number[],
     remote: opts.remote ?? "origin",
     ghComments: opts.ghComments,
     mainline: opts.mainline,
     mergeBase: opts.mergeBase,
     branchNumber: opts.branchNumber,
+    prChecks: opts.prChecks,
+    mergeStateStatus: opts.mergeStateStatus,
+    failEvidence: opts.failEvidence,
+    failChecks: opts.failChecks,
+    evidenceHeadOid: opts.evidenceHeadOid,
+    hangChecks: opts.hangChecks,
+    repoFlag: opts.repoFlag,
+    targetRepo: opts.targetRepo,
   };
   const handler = await makeHook(env);
+  // The command the hook is handed: the caller's text plus the `-R <repo>` the
+  // arm declared. A caller that is NOT testing a merge at all (the reader-threw
+  // arm hands over a non-string to make the classifier throw) gets its value
+  // untouched — stringifying it would hand the classifier a readable `"[object
+  // Object]"` and the arm would exercise the ordinary no-merge path instead of
+  // the throw it exists to pin.
+  const commandText = () =>
+    typeof command === "string" ? command + (env.repoFlag ?? "") : command;
   // #1417 round 2 — capture the HELD trace lines alongside the verdict. The
   // line is the only place a hold's CODE is recorded (the rendered refusal
   // deliberately carries no command text, and the trace carries the code and
@@ -256,7 +386,10 @@ export async function hookDecision(
   let r: unknown;
   try {
     r = await withLedger(entries, () =>
-      handler({ toolName: "bash", input: { command } }, undefined as never),
+      handler(
+        { toolName: "bash", input: { command: commandText() } },
+        undefined as never,
+      ),
     );
   } finally {
     process.stderr.write = realWrite;
@@ -265,6 +398,8 @@ export async function hookDecision(
     block: (r as { block?: boolean } | undefined)?.block === true,
     reason: (r as { reason?: string } | undefined)?.reason,
     calls: env.calls,
+    /** #2107 — every `timeout` the hook passed to an exec, in call order. */
+    timeouts: env.timeouts,
     /**
      * Every `merge-guard: HELD …` OR `merge-guard: BLOCKED …` trace line the
      * hook emitted for this command. #1479 — the filter used to match `HELD`

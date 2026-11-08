@@ -16,7 +16,7 @@
 import { readFileSync } from "node:fs";
 import type { MergeCommand } from "../src/merge-allowlist.ts";
 import { readMergeCommand } from "../src/merge-allowlist.ts";
-import { analyseRefusal } from "../src/merge-guard.ts";
+import { analyseRefusal } from "../src/merge-refusal-render.ts";
 import { FORGE_WORD } from "../src/merge-lex-views.ts";
 import { mergeFormRefusal } from "../src/merge-refusals.ts";
 import {
