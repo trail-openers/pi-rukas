@@ -149,6 +149,7 @@
     "smoke-tests/lib/lean-engine-fixtures.ts",
     "smoke-tests/lib/lean-seed-fixtures.ts",
     "smoke-tests/test-lean-machine.ts",
+    "smoke-tests/test-lean-dispatch-verdict.ts",
     "smoke-tests/test-lean-machine-review.ts",
     "smoke-tests/test-lean-machine-reachability.ts",
     "smoke-tests/test-lean-machine-refusal.ts",

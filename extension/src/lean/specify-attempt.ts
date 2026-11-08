@@ -19,6 +19,7 @@ import { traceWarn } from "../trace.ts";
 import type { DispatchResult } from "../types.ts";
 import type { TestLocation } from "./config-test-location.ts";
 import type { WorkConfig } from "./config.ts";
+import { throwIfDispatchFailed } from "./dispatch-verdict.ts";
 import type { Criterion, PiSpec } from "./spec.ts";
 import { existsInCommit, fileProblem } from "./specify-path.ts";
 import { specifyPrompt } from "./specify-prompt.ts";
@@ -150,14 +151,7 @@ async function dispatchAdversary(
   // verdict about the round, not a fault in the harness.
   const fired = opts.budget.fired(result);
   if (fired !== undefined) return [budgetStop(fired), row];
-  if (!result.ok || result.killCause !== undefined || result.errorStop !== undefined) {
-    const why =
-      result.killCause ??
-      result.errorStop?.message ??
-      result.errorStop?.reason ??
-      `exit ${String(result.exitCode)}`;
-    throw new SpecifyInfraError(`specify dispatch failed: ${String(why)}`, [row]);
-  }
+  throwIfDispatchFailed(result, SpecifyInfraError, "specify dispatch failed: ", [row]);
   return [result, row];
 }
 

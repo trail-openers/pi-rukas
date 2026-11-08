@@ -55,7 +55,7 @@ function sameStamp(a: Stamp, b: Stamp): boolean {
 export const MAX_CAPTURE_BYTES = 8 * 1024 * 1024;
 
 /** The most bytes one capture holds across all its files: each file is bounded, and this bounds the sum. */
-export const MAX_CAPTURE_TOTAL_BYTES = 64 * 1024 * 1024;
+const MAX_CAPTURE_TOTAL_BYTES = 64 * 1024 * 1024;
 
 /**
  * The aggregate ceiling a capture runs under. `admit` takes a file's size and

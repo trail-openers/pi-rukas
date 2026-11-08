@@ -90,12 +90,11 @@ export type PipelineVerdict =
 /**
  * What the pipeline requires of its coverage, decided by the caller.
  *
- * - `"all-criteria"` (`specify`): every id in `wanted` must have at least one
- *   red file, or the run is refused. This is the rule the pipeline has always
- *   applied, and `specify`'s behaviour is unchanged by its presence here.
- * - `"any-red"` (`challenge`): at least one red file anywhere is enough. The
- *   round exists to surface SOME gap the frozen tests missed, so partial
- *   coverage is a result, not a failure — and everything proven red is kept.
+ * - `"all-criteria"` (`specify`): every id in `wanted` must have at least one red file,
+ *   or the run is refused.
+ * - `"any-red"` (`challenge`): at least one red file anywhere is enough. The round
+ *   exists to surface SOME gap the frozen tests missed, so partial coverage is a result,
+ *   not a failure — and everything proven red is kept.
  */
 export type CoverageRule = "all-criteria" | "any-red";
 
@@ -223,8 +222,7 @@ function noteFor(cand: DeclaredPath, proof: Proof): string {
  * decides throwing is right. It is, here: `specify`'s whole claim is that these
  * tests are red, and a red nobody executed proves nothing. Reading an
  * unrunnable runner as "this file was not red" would hand the run a `no-red-test`
- * VERDICT about work the toolchain never got to judge, which is the mistake the
- * classifier used to make by matching on the test's own output.
+ * VERDICT about work the toolchain never got to judge.
  */
 function assertRan(proof: Proof, file: string): void {
   if (proof.kind === "infra")

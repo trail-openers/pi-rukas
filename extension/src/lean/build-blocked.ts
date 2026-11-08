@@ -58,7 +58,7 @@ const BLOCKED_CAUSE_CAP = BLOCKED_PATH_CAP + BLOCKED_REASON_CAP + 44;
  * re-sorted list would prove a file the builder never feared. Illegal frozen keys are
  * dropped here, before any `git`/runner call.
  */
-export function usableConflicts(rows: Array<{ path: string; reason: string }>): string[] {
+function usableConflicts(rows: Array<{ path: string; reason: string }>): string[] {
   const seen = new Set<string>();
   for (const row of rows) {
     if (seen.size >= BLOCKED_MAX_ENTRIES) break;

@@ -36,6 +36,7 @@
  */
 
 import { TEST_RUNNER_PLACEHOLDER } from "./config.ts";
+import { criteriaBlock, scopeBlock } from "./spec-blocks.ts";
 import type { PiSpec } from "./spec.ts";
 
 /**
@@ -79,24 +80,6 @@ export interface BuildPromptOpts {
    * judged a killed builder, so this is not a gate's complaint.
    */
   budgetStop?: string;
-}
-
-function criteriaBlock(spec: PiSpec): string {
-  return spec.criteria
-    .map((c) => {
-      const command = c.command === undefined ? "" : ` (command: ${c.command})`;
-      return `- **${c.id}** [${c.verify}] ${c.text}${command}`;
-    })
-    .join("\n");
-}
-
-function scopeBlock(spec: PiSpec): string {
-  const lines: string[] = [];
-  if (spec.scope?.paths && spec.scope.paths.length > 0)
-    lines.push(`- In scope: ${spec.scope.paths.join(", ")}`);
-  if (spec.scope?.out && spec.scope.out.length > 0)
-    lines.push(`- Out of scope: ${spec.scope.out.join(", ")}`);
-  return lines.length === 0 ? "" : `${lines.join("\n")}\n\n`;
 }
 
 /** Build the kickoff prompt for the build child. */

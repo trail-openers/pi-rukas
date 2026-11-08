@@ -100,12 +100,10 @@ const SHA1_HEX = /^[0-9a-f]{40}$/;
 /**
  * A publish step's PR URL: https text, no whitespace, bounded in length.
  *
- * Exported because `handback` applies the SAME rule when it reads the field
- * back. `state.ts` refuses to LOAD an outcome that breaks it, but the step log
- * a handler sees is only one of the ways a `Step[]` arrives — an in-memory log
- * reaches `handbackOutcome` without ever passing through the loader — so a
- * multi-line blob stuffed into `prUrl` would otherwise be printed into a
- * comment verbatim, heading and all.
+ * Exported because `handback` applies the SAME rule when it reads the field back. The
+ * step log a handler sees is only one of the ways a `Step[]` arrives — an in-memory log
+ * reaches `handbackOutcome` without ever passing through the loader — so a multi-line
+ * blob stuffed into `prUrl` would otherwise be printed into a comment verbatim.
  */
 export const PR_URL = /^https:\/\/\S+$/;
 export const PR_URL_MAX_CHARS = 500;
@@ -113,12 +111,9 @@ export const PR_URL_MAX_CHARS = 500;
 /**
  * The one reader of that rule: `url` as validated text, or `undefined`.
  *
- * Both callers of `PR_URL` ask the same question of a value that arrived as
- * `unknown` — `handback` before it prints a line into a comment, the headless
- * `work-lean` verb before it puts the field in a host's document — and the
- * three tests (string, length, shape) are easy to apply in the wrong order or
- * to skip one of. One exported reader keeps them identical: a change to what
- * "a URL we will print" means lands in one place.
+ * Both callers ask the same three tests (string, length, shape) of a value that arrived
+ * as `unknown`; one exported reader keeps them identical, so a change to what "a URL we
+ * will print" means lands in one place.
  */
 export function validPrUrl(url: unknown): string | undefined {
   if (typeof url !== "string" || url === "") return undefined;

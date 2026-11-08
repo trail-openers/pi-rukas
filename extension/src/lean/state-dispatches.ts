@@ -116,11 +116,9 @@ export const FIX_RUN_ID = /^[0-9]{13,17}(-[0-9a-z-]{1,24})?$/;
 
 /** Is this a fixer row's tree identity, in the shape `fixRunId` mints?
  *
- * Exported because the READER of the same field must ask the same question. It
- * used to carry its own `Number.isSafeInteger(Number(...))` plus a floor check,
- * which accepted what this validator refuses — so the comment in `review-log.ts`
- * claiming the validator had already checked the field was false, and three
- * reviewers called it. One predicate, owned by the module that owns the grammar.
+ * Exported because the READER of the same field must ask the same question, and a reader
+ * with its own looser check accepts what this validator refuses. One predicate, owned by
+ * the module that owns the grammar.
  */
 export function isRunId(value: unknown): boolean {
   return typeof value === "string" && FIX_RUN_ID.test(value);

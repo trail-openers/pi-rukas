@@ -5,75 +5,59 @@
  * them may be, including the honest line count that makes the second one real.
  *
  * Split out of `submit-tests-cap.ts` (the boundary that applies them) because
- * they judge the CHILDREN'S work rather than the cost of the call: what a run
- * freezes is a property of the tests, and a thousand lines of them is the
- * failure these rules exist to refuse. The boundary keeps the rule set over a
- * submitted path; the numbers, the count and the three refusal sentences live
- * here, so the prompt that quotes them (`specify-prompt.ts`) and the tests that
- * pin them have one place to import.
+ * they judge the CHILDREN'S work rather than the cost of the call: the numbers,
+ * the count and the refusal sentences live here so the prompt that quotes them
+ * (`specify-prompt.ts`) and the tests that pin them have one place to import.
  */
 
 /**
  * How many lines one kept acceptance test may have.
  *
- * A real trial froze ~1,000 lines of tests for a 15-line change, in four files
- * of ~100 lines each that re-implemented the same harness. The tests were
- * correct and the PR was unmergeable, which is what a deterministic rule is
- * for: `TEST_SCOPE_CONTRACT` already asks for the smallest test that proves the
- * criterion, and a prompt that is obeyed in spirit and not in size still ships
- * a thousand lines.
+ * A real trial froze ~1,000 lines of tests for a 15-line change in four files
+ * that re-implemented the same harness: correct tests, unmergeable PR. `TEST_SCOPE_CONTRACT`
+ * already asks for the smallest test that proves the criterion, and a prompt obeyed
+ * in spirit and not in size still ships a thousand lines.
  *
- * The number is measured, not guessed: five live adversary tests came in at
- * 125, 129, 130, 135 and 139 lines, so a cap of 120 declined real work — and
- * the 139 came AFTER the specify retry had shown the child the refusal reason,
- * which is how we know a git-heavy acceptance test is written at about 130
- * rather than being trimmed to fit. 150 is that distribution with room above
- * it; the original failure was ~1,000 lines per issue, and at 150 lines and
- * `MAX_TEST_FILES_PER_CRITERION` files the bound is still 300 lines per
- * criterion. A file past it is testing the code around the criterion.
+ * 150 is a measured distribution with room above it — live adversary tests land at
+ * about 130 lines even after the child has been shown the refusal reason, so a
+ * tighter cap declines real work. At 150 lines and `MAX_TEST_FILES_PER_CRITERION`
+ * files the bound is still 300 lines per criterion; a file past it is testing the
+ * code around the criterion.
  */
 export const MAX_TEST_LINES = 150;
 
 /**
  * How many test files ONE criterion may end up with across the WHOLE RUN.
  *
- * `MAX_TEST_FILES_PER_ROW` bounds one row; a child that spreads the same work
- * over several `submit_tests` calls for one criterion was bounded by nothing.
- * The rows are judged together here, which is the number that matters: a
- * criterion has one criterion, and one focused test per criterion is the norm.
+ * `MAX_TEST_FILES_PER_ROW` bounds one row; a child that spreads the same work over
+ * several `submit_tests` calls for one criterion was bounded by nothing. One
+ * focused test per criterion is the norm.
  *
- * The bound is per RUN, not per call: a `submit_tests` call is not the unit the
- * rule is about, and a step that validates twice — or a run whose next challenge
- * round starts from what the last one froze — would otherwise multiply the cap
- * by the number of calls. `validateSubmitRows`' `frozenByCriterion` opt seeds
- * each criterion's count from what the run already holds, so the frozen files
- * consume the quota and a criterion that is full from the record keeps nothing
- * new. A caller that omits the seed sees only what its own rows keep, which is
- * what a unit test with no run behind it has.
+ * The bound is per RUN, not per call: a step that validates twice, or a run whose
+ * next challenge round starts from what the last one froze, would otherwise
+ * multiply the cap by the number of calls. The `frozenByCriterion` opt of
+ * `validateSubmitRows` seeds each criterion's count from what the run already
+ * holds. A caller that omits the seed sees only what its own rows keep.
  */
 export const MAX_TEST_FILES_PER_CRITERION = 2;
 
 /**
  * How many BYTES one kept acceptance test may hold.
  *
- * `MAX_TEST_LINES` bounds the count, but the count is only known AFTER the
- * bytes are in memory, and the read that produces them is the one thing this
- * rule should not be paid for on a file it is going to refuse. A line count is
- * not a size: the cap bounds the size of a file that is within the line cap —
- * about 163 characters a line on average — so a file of wider lines is refused
- * on bytes first. The trial that froze a thousand lines froze them in files
- * nobody could read on one screen.
+ * `MAX_TEST_LINES` bounds the count, but the count is only known AFTER the bytes
+ * are in memory, and the read that produces them is the one thing this rule should
+ * not be paid for on a file it is going to refuse. A line count is not a size, so
+ * this bounds a file that is within the line cap at roughly normal line width — a
+ * file of wider lines is refused on bytes first.
  *
- * The bound is checked on the stat the boundary already has, BEFORE the read,
- * which is what makes it a bound on the CALL as well as on the file: at most
- * `MAX_TEST_FILES_PER_CRITERION` files per criterion are ever read, each at
- * most this many bytes, so one validation reads no more than that product in
- * total. It is a bound per VALIDATION, not per run: the child owns the window
- * between this read and the capture's, so `specify-run.ts` re-checks the bytes
- * it actually holds against this same constant before rewriting any of them.
- * The capture's own `MAX_CAPTURE_BYTES` is a different, far larger number, and
- * deliberately so: that one bounds what a run keeps, this one what a rule will
- * even look at.
+ * Checked on the stat the boundary already has, BEFORE the read, which makes it a
+ * bound on the CALL as well as the file: at most
+ * `MAX_TEST_FILES_PER_CRITERION` files per criterion are ever read, each at most
+ * this many bytes. Per VALIDATION, not per run: the child owns the window between
+ * this read and the capture's, so `specify-run.ts` re-checks the bytes it actually
+ * holds against this same constant. The capture's own `MAX_CAPTURE_BYTES` is a
+ * different, far larger number deliberately — that bounds what a run keeps, this
+ * what a rule will even look at.
  */
 export const MAX_TEST_BYTES = 24_576;
 
@@ -83,11 +67,10 @@ const NOT_TEXT = "is not a text file (NUL byte); an acceptance test is a source 
 /**
  * Why a file the size rule cannot honestly count is not a kept test.
  *
- * A NUL byte is not a line-break question the rule could answer: no acceptance
- * test the harness commits is a NUL-bearing file, so the file is refused rather
- * than counted — which is also how a UTF-16 file is refused. Its line breaks
- * (`0x0A 0x00`) would count as far too few lines, and an honest count is the
- * only thing this rule is worth.
+ * A NUL byte is not a line-break question the rule could answer: no acceptance test
+ * the harness commits is NUL-bearing, so the file is refused rather than counted —
+ * which is also how a UTF-16 file is refused, since its `0x0A 0x00` breaks would
+ * count as far too few lines.
  */
 export function testNotTextProblem(rel: string): string {
   return `${rel} ${NOT_TEXT}`;
@@ -98,25 +81,19 @@ export function testNotTextProblem(rel: string): string {
  *
  * `bytes.length` is not it: a 150-line file with no trailing newline has 149
  * `\n`, and the child would be refused for a byte it did not write. So a
- * non-empty final line counts as a line, and an empty one does not.
+ * non-empty final line counts as a line and an empty one does not.
  *
- * Every line break the platforms write is counted: `\r\n`, a lone `\r` (a
- * Classic-Mac / some-editor file) and a lone `\n` each end ONE line, so a child
- * cannot dodge the bound by choosing its separator. A file with no break at all
- * is one line (`a` — one non-empty line, and the size rule's own rule that a
- * non-empty final line without its terminator still counts), and an empty file
- * is ZERO lines: nothing to count, and a rule that reported 1 would call an
- * empty file the smallest legal test (the capture refuses an empty file on its
- * own `fstat` size check; this is not that check's job, only the count must not
- * lie about it).
+ * Every line break the platforms write ends ONE line — `\r\n`, a lone `\r`, a lone
+ * `\n` — so a child cannot dodge the bound by choosing its separator. An empty file
+ * is ZERO lines: the capture refuses one on its own size check, but this count must
+ * not lie about it.
  *
- * A NUL byte anywhere refuses the count rather than guessing at it: the file is
- * not one the rule can honestly count. It comes back as `{ notText: true }`
- * rather than a throw — the caller has to be able to tell "this file is not a
- * text file" (a verdict on the child's work, and a drop) from "this file could
- * not be read at all" (infrastructure, and a throw). A rule that reported both
- * by throwing makes the boundary guess, and the guess it would make is the one
- * that reports a broken toolchain as an adversary that wrote nothing.
+ * A NUL byte refuses the count rather than guessing at it, and comes back as
+ * `{ notText: true }` rather than a throw: the caller must tell "not a text file"
+ * (a verdict on the child's work, a drop) from "could not be read at all"
+ * (infrastructure, a throw). A rule that reported both by throwing makes the
+ * boundary guess, and the guess it would make reports a broken toolchain as an
+ * adversary that wrote nothing.
  */
 export function countTestLines(bytes: Buffer): { lines: number } | { notText: true } {
   if (bytes.includes(0)) return { notText: true };

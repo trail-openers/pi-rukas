@@ -172,7 +172,7 @@ function budgetStopFromLog(steps: Step[]): string | undefined {
  * newest decided `challenge:new-tests` step. No gate judged them — the adversary
  * only made the contract bigger — so they are named rather than quoted.
  */
-export function addedByChallengeFromLog(steps: Step[]): string | undefined {
+function addedByChallengeFromLog(steps: Step[]): string | undefined {
   for (let i = steps.length - 1; i >= 0; i--) {
     const step = steps[i];
     if (step?.state !== "challenge" || step.outcome?.kind !== "new-tests") continue;

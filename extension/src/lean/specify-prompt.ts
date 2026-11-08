@@ -15,6 +15,7 @@
 
 import type { TestLocation } from "./config-test-location.ts";
 import { TEST_RUNNER_PLACEHOLDER } from "./config.ts";
+import { criteriaBlock, scopeBlock } from "./spec-blocks.ts";
 import type { PiSpec } from "./spec.ts";
 import { MAX_TEST_BYTES, MAX_TEST_FILES_PER_CRITERION, MAX_TEST_LINES } from "./test-size.ts";
 import { oneLine } from "./text-fence.ts";
@@ -167,24 +168,6 @@ export function namingLine(testLocation?: TestLocation): string {
       ? "`tests/AC1-<slug>.test.ts`"
       : `\`${testLocation.testDir}/${exampleName(testLocation)}\``;
   return `Name each file so its path contains the criterion id it covers (e.g. ${example} for AC1) — the parent matches files to criteria by that id.`;
-}
-
-function criteriaBlock(spec: PiSpec): string {
-  return spec.criteria
-    .map((c) => {
-      const command = c.command === undefined ? "" : ` (command: ${c.command})`;
-      return `- **${c.id}** [${c.verify}] ${c.text}${command}`;
-    })
-    .join("\n");
-}
-
-function scopeBlock(spec: PiSpec): string {
-  const lines: string[] = [];
-  if (spec.scope?.paths && spec.scope.paths.length > 0)
-    lines.push(`- In scope: ${spec.scope.paths.join(", ")}`);
-  if (spec.scope?.out && spec.scope.out.length > 0)
-    lines.push(`- Out of scope: ${spec.scope.out.join(", ")}`);
-  return lines.length === 0 ? "" : `${lines.join("\n")}\n\n`;
 }
 
 /**

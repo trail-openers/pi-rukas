@@ -1,20 +1,17 @@
 /**
  * lean/verify-baseline-counters — what a runner's line may MOVE by between two runs.
  *
- * The comparison half of the baseline excuse, split out from `verify-baseline-allow-list.ts`:
- * that file answers WHAT MAY BE EXCUSED (which head-only line is provably not a failure), this one
+ * The comparison half of the baseline excuse, split out from `verify-baseline-allow-list.ts`: that
+ * file answers WHAT MAY BE EXCUSED (which head-only line is provably not a failure), this one
  * answers WHAT MAY MOVE (which fields of a line the two runs mean to be the same). The two are one
  * question seen from two sides — a runner's counters are exactly the fields a PR that adds passing
- * tests moves — so they share {@link COUNTER_WORD_LIST}, the closed set both read, and are read
- * together by {@link isKnownCleanLine} and {@link failureLineFold}.
+ * tests moves — so they share {@link COUNTER_WORD_LIST}, the closed set both read.
  *
  * The direction is the same as the allow-list's and it is the reason the list is closed: a digit is
  * folded ONLY when a counter or duration word sits immediately next to it, and a count of a word the
  * list has never heard keeps its digits. A fold that is too wide excuses a regression the base never
  * printed; a fold that is too narrow refuses the PR that only added passing tests. Enumerating
- * FAILURE words instead would fail the second way, because a failure vocabulary is unbounded —
- * `crashed`, `panicked`, `aborted`, `segfault`, and whatever the next runner adds — and every such
- * enumeration has produced a line that read as clean.
+ * FAILURE words instead would fail the second way, because a failure vocabulary is unbounded.
  *
  * The fold is confined to the looser comparison pass. The exact key in `normaliseRaw` keeps every
  * digit and is what `ci` RECORDS and replays; a fold that reached the record would turn a moved
@@ -22,34 +19,27 @@
  *
  * THE FOLD'S FIRST BOUND, and the one no closed list of COUNTERS can draw: on a line whose own text
  * carries a failure word ANYWHERE, the only digit that may fold is one IMMEDIATELY FOLLOWED by an
- * explicit PASS word — `passed`, `skipped`, `deselected`, `xfailed`, `xpassed`, `warning(s)`. Every
- * other digit on such a line keeps its digits, whatever word sits to its left. The counter list
- * answers for the word on a digit's right, and a word on its LEFT is a LABEL whose spelling no
- * vocabulary bounds — `ran: 1 failed`, `tests: 1 failed`, `1 items failed` and `Tests run: 3, Failures:
- * 1` each put a real counter word next to the count of what broke, and each kept its digits only
- * because {@link declaresFailure} is asked of the whole line first. The counter list is still the
- * direction of the design for the lines a run prints about itself, and this bound does not make the
- * fold a failure vocabulary it has to keep current: the veto it consults is the allow-list's, and it
- * can only ever make a fold REFUSE, so a new failure word is caught by being absent and needs no
- * change here to be caught.
+ * explicit PASS word (`passed`, `skipped`, `deselected`, `xfailed`, `xpassed`, `warning(s)`). A word
+ * on a digit's LEFT is a LABEL whose spelling no vocabulary bounds — `ran: 1 failed`, `Tests run: 3,
+ * Failures: 1` each put a real counter word next to the count of what broke. The counter list is still
+ * the direction of the design for the lines a run prints about itself, and the veto it consults can
+ * only ever make a fold REFUSE, so a new failure word is caught by being absent.
  *
- * THE FOLD'S OTHER BOUND, and the one the counter list cannot draw: the fold is asked of the lines
- * the shared classifier ACCEPTED as failure lines as well as of the tallies it did not, and a
- * per-check failure line is compared strictly. `FAILED a.py::t - AssertionError: got 5 items` and
- * `… got 50 items` differ by the number the assertion is ABOUT, and `items` — a legitimate counter
- * word for a tally — sits right next to it, so a fold driven only by the word list read the two as
- * one line and excused the failure this run authored. Which line is a per-check report is the
- * classifier's answer, not a word list's, so {@link foldsAsCounter} is reached only for a line the
- * classifier did NOT read as a failure: a summary, a tally, a collection count. {@link
- * failureLineFold} applies that gate and is the only fold the comparison consults.
+ * THE FOLD'S OTHER BOUND: the fold is asked of the lines the shared classifier ACCEPTED as failure
+ * lines as well as of the tallies it did not, and a per-check failure line is compared strictly.
+ * `FAILED a.py::t - AssertionError: got 5 items` and `… got 50 items` differ by the number the
+ * assertion is ABOUT, and `items` — a legitimate counter word for a tally — sits right next to it.
+ * Which line is a per-check report is the classifier's answer, not a word list's, so
+ * {@link foldsAsCounter} is reached only for a line the classifier did NOT read as a failure: a
+ * summary, a tally, a collection count. {@link failureLineFold} applies that gate and is the only
+ * fold the comparison consults.
  *
  * THE IMPORT DIRECTION. `verify-baseline-allow-list.ts` imports {@link COUNTER_WORD_LIST} and {@link
- * failureLineFold} from this file, so the vocabulary and the normalisation every arm applies live on the
- * side the other imports — the allow-list may read the fold, never the other way round. The whole-line
- * veto this fold consults now lives one level below both readers, in `verify-baseline-veto.ts`, because
- * a fold that consulted its own importer's veto would be a cycle: readers import the veto, never each
- * other through it. `isKnownCleanLine` reads the same predicate from there, so there is still exactly
- * one answer to "does this line name a failure?".
+ * failureLineFold} from this file, so the vocabulary and the normalisation every arm applies live on
+ * the side the other imports — the allow-list may read the fold, never the other way round. The
+ * whole-line veto this fold consults lives one level below both readers, in
+ * `verify-baseline-veto.ts`, because a fold that consulted its own importer's veto would be a cycle:
+ * readers import the veto, never each other through it.
  */
 
 import { classifyFailureLine } from "../work-driver-verify-failures.ts";
@@ -96,32 +86,25 @@ function digitRuns(line: string): RegExpStringIterator<RegExpExecArray> {
  * reads it — here for the fold, and in `verify-baseline-allow-list.ts` for the allow-list, which
  * imports it so the two cannot drift apart on which numbers a PR may move.
  *
- * The rule is INVERTED from the first version, which enumerated failure words and refused a count
- * attached to one of them. Failure vocabularies are unbounded — `crashed`, `panicked`, `aborted`,
- * `segfault`, and whatever the next runner adds — and every enumeration of them has produced a line
- * that read as clean: `999 crashed` folded away because a known counter word sat beside it, and a
- * run that crashed 998 times instead matched the tally the base printed as `999 crashed`. A count of
- * a word this list has never heard of keeps its digits and keeps its line off the allow-list, so a
- * new failure word is caught by being ABSENT and needs no change here to be caught — only to be
- * excused. A new legitimate counter word is the one edit either file should ever need.
+ * A count of a word this list has never heard of keeps its digits and keeps its line off the
+ * allow-list, so a new failure word is caught by being ABSENT and needs no change here to be caught
+ * — only to be excused. A new legitimate counter word is the one edit either file should ever need.
  *
  * `pass`/`total`/`items`/`cases` are here because the tallies in the wild name their count that way
  * (`Tests: 5 passed, 5 total`, `36 cases`); `tests`/`items` count checks run rather than verdicts,
  * which is what lets the added-checks case move them. `failed`, `errors`, `crashed` and every other
  * report of what broke are deliberately not here.
  *
- * `ok` is NOT here, and that is load-bearing rather than an oversight. It would read as a harmless
- * alias for `passed`, but a TAP runner prints its CHECK INDEX immediately after that very word
+ * `ok` is NOT here, and that is load-bearing rather than an oversight. It reads as a harmless alias
+ * for `passed`, but a TAP runner prints its CHECK INDEX immediately after that very word
  * (`not ok 2 - a bats check`), so `ok` in this list makes {@link COUNTER_WORD_BEFORE} — which asks
  * the word on the digit's left, precisely for a `Label: N` total — read the status word as the
- * index's label and fold it. `not ok 2` and `not ok 3` then share a counter key, and two different
- * failed checks become one line: the fold this module exists to refuse. A tally that counts in `ok`
- * (`6 ok`) reaches the allow-list's tally arm through its own shape, not through this list.
+ * index's label and fold it, and two different failed checks become one line. A tally that counts in
+ * `ok` (`6 ok`) reaches the allow-list's tally arm through its own shape, not through this list.
  *
  * What this list CANNOT do is refuse a count on its own. `ran:` and `tests:` are on it, so a fold
- * driven only by adjacency reads the `1` of `suite ran: 1 failed` as a counter and makes it equal
- * the `2` of `suite ran: 2 failed`; `items` is on it, so `tests/x_test.py: 1 items failed` equals the
- * `2` of the same row. The refusal of those folds does not come from this list at all: it comes from
+ * driven only by adjacency reads the `1` of `suite ran: 1 failed` as a counter and makes it equal the
+ * `2` of the same row. The refusal does not come from this list at all: it comes from
  * {@link declaresFailure}, asked of the WHOLE line before any digit is decided — on a line that names
  * a failure this list is not consulted at all, and only {@link PASS_WORD_AFTER} may fold.
  */
@@ -243,12 +226,7 @@ const TALLY_TOTAL = /^(?:tests\s+run|tests|run|ran)\s*:?\s*\d$/i;
  * The failure half is deliberately not a per-digit vocabulary: the digits of a line are decided by
  * whether the LINE names a failure at all, by the same wide whole-line veto the allow-list applies,
  * never by which word happens to sit next to a given digit. That is what lets `1 items failed` refuse
- * while `36 cases` folds — the first is on a line that said something broke, the second is not — and
- * it is why no enumeration here can go stale the way the per-digit {@code FAILURE_COUNT} arms did.
- * `TALLY_TOTAL` and the exemption pair that used to sit beside it (`FAILURE_WORD_AFTER` /
- * `RUN_TOTAL_REPORTED` / `LABEL_FIELD`) tried to draw that line one digit at a time; each needed a
- * shape saying which failure word counted, and each was one dialect away from excusing a moved failure
- * count.
+ * while `36 cases` folds — the first is on a line that said something broke, the second is not.
  *
  * "Adjacent" is the load-bearing word in both halves: each arm reads only its own side and only the
  * label's own separator, so a counter word merely REACHABLE from a digit — two commas away, inside
@@ -333,9 +311,7 @@ function counterFolded(input: string): string {
     const before = line.slice(Math.max(0, at - 32), at);
     const after = line.slice(at + digits.length, at + digits.length + 32);
     out += line.slice(last, at);
-    // Each neighbour is asked of the ORIGINAL line, never of the key built so far: asking the key
-    // read `1 failed, 3 passed` at the `3` as `1 failed, # passed`, where `failed,` sat one comma
-    // from a digit that no longer printed, and held a passing count as a failure count.
+    // Each neighbour is asked of the ORIGINAL line, never of the key built so far (see above).
     //
     // The label window is the whole prefix, not a fixed slice. `pack_release_test.sh: 36 cases, 1
     // failed` puts the word that decides the `1` a whole file name away from it, and a window short
@@ -356,8 +332,8 @@ function counterFolded(input: string): string {
  * a report about one check — `pytest-failed`, `tap-not-ok`, `go-fail`, the `named-file` dialect, an
  * assertion mark — and it is compared byte-for-byte: `FAILED a.py::t - AssertionError: got 5 items`
  * and `… got 50 items` are two findings, and `not ok 1 - checkout - expected 3 items found 0` and
- * `… expected 6 items …` are two checks. Both pairs used to share a key here, because `items` is a
- * legitimate counter word for a tally and sat next to the very digit that differed: the word list
+ * `… expected 6 items …` are two checks. A word list cannot tell those apart: `items` is a
+ * legitimate counter word for a tally and sits next to the very digit that differed. The word list
  * answers WHAT MAY MOVE inside a line that counts its own run, and it cannot answer whether the
  * line is one check's verdict at all. Only the classifier can, so its answer is the gate.
  *

@@ -3,38 +3,18 @@
  * one six-lens round answered back, and what the step needs from the outside
  * world to decide anything.
  *
- * Split from `review.ts` for the 500-line cap (AGENTS.md §12). The seam is
- * direction: `review.ts` is the decision procedure, and these shapes are the
- * boundary between it and the two frozen review layers its `ReviewDeps` seams
- * call. The loop's judgement and the argument shapes of the calls it makes
- * change for different reasons — a new lens-side knob touches this file and the
- * adapter, not the loop — so they are not stored in the same module. They are
- * also the shapes every sibling that participates in a round compiles against
- * (`review-gates.ts` calls the gates, `review-deps.ts` builds the deps,
- * `review-git.ts` and `review-tree.ts` take the deps to move bytes, and the
- * smoke fixtures drive the step through them), so the contract and the
- * algorithm are different things and this is the file the rest of the step
- * reads.
+ * Split from `review.ts` for the 500-line cap: the loop's judgement and the
+ * argument shapes of the calls it make change for different reasons, and every
+ * sibling that participates in a round compiles against these shapes.
  *
- * Three rules live here rather than in a comment on a call site, because they
- * are the rules a caller can break silently and the compiler cannot catch:
- *
- * **`LensRound`'s review-layer fields are a `Pick<>` of the layer's own summary
- * type rather than a hand-restated copy,** so the compiler refuses this file the
- * moment the layer renames or retypes one of them — which is exactly when a
- * hand-written copy would have quietly kept reading `undefined`.
- *
- * **The bar the round is judged against is an argument, not a default.**
- * `LensArgs.threshold` carries the severity at which a finding blocks the run.
- * A round that arrives without one is judged at the review layer's HIGH default
- * (`DEFAULT_REVIEW_THRESHOLD`), which is looser than what a project that states
- * a stricter bar in its doctrine asked for — and the difference is invisible in
- * the verdict, because both answer "APPROVED"/"ISSUES_FOUND". That is how the
- * project's own sentence went unapplied on two of the three review paths.
- *
- * **The bar is resolved once per step, never per round.** See
- * `ReviewDeps.reviewThreshold` for why a per-round read is both wasteful and
- * wrong.
+ * Three rules live here rather than on a call site, because a caller can break
+ * each silently and the compiler cannot catch it: `LensRound`'s review-layer
+ * fields are a `Pick<>` of the layer's own summary type so a rename fails the
+ * build instead of reading `undefined`; `LensArgs.threshold` carries the
+ * blocking bar as an argument, since a round judged at the layer's HIGH default
+ * is looser than what a project that states a bar in its doctrine asked for,
+ * and the verdict text does not distinguish the two; and the bar is resolved
+ * once per step, never per round (see `ReviewDeps.reviewThreshold`).
  */
 
 import type { LensReviewSummary, Severity } from "../lens-review-format.ts";
@@ -48,13 +28,8 @@ import type { BudgetArms, FixRunId } from "./step-budget.ts";
 
 /**
  * The fixer's tree identity: the epoch milliseconds its name is minted from.
- *
- * Re-exported from `step-budget.ts`, the module that owns the row it travels in:
- * a brand declared twice is two unrelated types, and the shape has to be one
- * type across the mint site, the row writer and the validator. A branded string
- * rather than an unconstrained one, because the previous shape was fed to
- * `Number()` on its way into the durable record — where anything that was not a
- * decimal integer became `NaN`.
+ * Branded, so the mint site, the row writer and the validator cannot each
+ * invent an unconstrained number that reaches `Number()` as `NaN`.
  */
 export type { FixRunId };
 
@@ -73,38 +48,21 @@ export type LensRound = Pick<
 > & {
   /** The round's findings as the text a fixer is handed — one line each. */
   findings: string;
-  /**
-   * One record per lens child that ran, for the step's cost rows (see
-   * `lensRows`). Carried rather than folded here because the fold lives with
-   * the other cost rows in `step-budget.ts`, next to `dispatchUsageRow`.
-   */
+  /** One record per lens child that ran; the fold into cost rows lives in `step-budget.ts`. */
   lenses: LensRunResult[];
   /**
-   * The blocking rows this round REPORTED, structured rather than as the one
-   * rendered string above.
-   *
-   * The step reads identities, not prose: each row's fate is already the review
-   * layer's own verdict on it — `reported` is the BLOCKING half, post-advisory-split,
-   * and a row carrying `carried: true` is one `rowFate` REFUSED to resolve, which is
-   * the layer's statement that the fix did not answer it. So this is the only row
-   * record the step reads: it states no fate of its own about any row (a second fate
-   * rule beside the layer's is a second source of truth, and each of its rules drifts
-   * separately), and it never invents a per-finding reply protocol.
+   * The blocking rows this round REPORTED, structured rather than as the rendered
+   * string above. The step reads identities, not prose, and states no fate of its
+   * own: a second fate rule beside the layer's is a second source of truth.
    */
   reported: Finding[];
   /**
-   * The rows `splitAdvisory` moved OUT of `reported` (#1140/#1125): every finding
-   * whose cited line sits outside the PR's changed lines, fresh or carried.
+   * The rows `splitAdvisory` moved OUT of `reported`: findings whose cited line
+   * sits outside the PR's changed lines, fresh or carried.
    *
-   * Carried for one reading and one only: the NOT ADDRESSED check must not be
-   * satisfiable by the discount. An advisory row is excluded from the verdict, the
-   * severity counts and the ledger's `hasCritical`, so a CARRIED HIGH that the split
-   * moved here would clear a fix wave while the layer still holds the row open and
-   * prints it under its carried heading — the step would call that round clean.
-   * The step therefore reads `isCarried && atOrAboveBar` over `reported` AND
-   * these rows. It states no rule of its own about the advisory tier otherwise:
-   * a fresh advisory row is the layer's to disclose, exactly as an advisory row is
-   * not the step's to block on.
+   * Carried for one reading only: the NOT ADDRESSED check must not be satisfiable
+   * by the discount, so the step reads `isCarried && atOrAboveBar` over `reported`
+   * AND these rows. Otherwise the advisory tier stays the layer's to disclose.
    */
   advisory: Finding[];
 };
@@ -112,10 +70,9 @@ export type LensRound = Pick<
 /**
  * Which half of the step's ONE wave a gate call belongs to.
  *
- * `full` is the whole-branch review; `fix` is the re-review whose range the step
- * bounded to the fix wave's commits. Both gates take it, and it is what the
- * briefs print: the reviewer and the lenses are told which pass they are on in
- * words, because there is no round counter left to put a number in front of.
+ * `full` is the whole-branch review; `fix` is the re-review bounded to the fix
+ * wave's commits. Both gates take it and the briefs print it, since there is no
+ * round counter left to put a number in front of.
  */
 export type ReviewWave = "full" | "fix";
 
@@ -147,12 +104,9 @@ export interface LensArgs {
   cwd: string;
   wave: ReviewWave;
   /**
-   * The run's PR number, when this run opened one. `publish` records the PR's
-   * URL and the number is the tail of it; without it the review layer has to
-   * ask the forge which PR belongs to the branch on every ISSUES_FOUND round
-   * (a `gh pr list` per round for an answer this run already holds), and the
-   * round's residual-findings disclosure is keyed on whatever that lookup
-   * picked.
+   * The run's PR number, when this run opened one. Without it the review layer
+   * pays a `gh pr list` per ISSUES_FOUND round for an answer this run already
+   * holds, and keys its disclosure on whatever that lookup picked.
    */
   pr: number | undefined;
   /** The context lines this step composes (see `lensContext` in `review-deps.ts`).
@@ -160,26 +114,18 @@ export interface LensArgs {
    * fenced block there, so the arg shape carries no separate body. */
   context: string;
   /**
-   * The base of the range this round reviews, when the round is the re-review.
-   *
-   * The head the fix wave STARTED from — read from what the fix round returned,
-   * never re-read from origin. It goes to the review layer as its explicit
-   * `since`, so the re-review's diff is `git diff <preFixHead>..<fixed head>`:
-   * the lenses read the fix and nothing else. Without it the layer resolves its
-   * own automatic delta base, which is the head of the LAST RECORDED RUN rather
-   * than the head this step's fixer moved, and a re-review whose range the layer
-   * picked is a re-review of something other than the fix.
+   * The base of the re-review's range: the head the fix wave STARTED from, read
+   * from what the fix round returned, never re-read from origin. Without it the
+   * layer resolves its own delta base — the head of the LAST RECORDED RUN, not
+   * the head this step's fixer moved — and reviews something other than the fix.
    */
   since?: string;
   /** Post-change prose and the deterministic claim scan, read from the branch ref. */
   evidence: string | undefined;
   /**
    * The severity at which a finding blocks this run, resolved ONCE per review
-   * step at the run's base commit (see `ReviewDeps.reviewThreshold`). Optional
-   * only so a test that drives the step with a stub lens need not supply one:
-   * the wiring passes it straight to `runLensReview`, and a round with no
-   * threshold is judged at the review layer's HIGH default — looser than what
-   * a project that states a bar in its doctrine asked for.
+   * step at the run's base commit. Optional only so a stub-lens test need not
+   * supply one; a round with no threshold falls to the layer's HIGH default.
    */
   threshold?: Severity;
   extraFindings: Finding[];
@@ -222,18 +168,10 @@ export interface ReviewDeps {
   loadConfig: (repoRoot: string, baseSha: string) => Promise<WorkConfig>;
   /**
    * The project's blocking severity, read at the run's base commit — one call
-   * per review step, never per round.
-   *
-   * The bar is a property of the project, so asking it once per round would pay a
-   * judge child per round to return the same answer, and — worse — let two rounds
-   * of one step be judged against two different bars if doctrine changed between
-   * them. The step resolves it once and threads it to every lens round, which is
-   * also what makes the ledger's `passed` agree with the verdict: both are
-   * computed under the value this returned.
-   *
-   * Injected rather than called inside the wiring for the same reason every other
-   * outside world here is: a test of THE THRESHOLD has to observe the value the
-   * lens call received, and the step has to be drivable without a judge child.
+   * per review step, never per round: a per-round read pays a judge child for
+   * the same answer and lets two rounds of one step be judged against different
+   * bars. Resolving once is also what makes the ledger's `passed` agree with the
+   * verdict. Injected so a test can observe the value the lens call received.
    */
   reviewThreshold: (repoRoot: string, baseSha: string) => Promise<Severity>;
   /** Post one comment on the run's PR: the disclosure of lanes the step never
@@ -243,21 +181,16 @@ export interface ReviewDeps {
    * forge. Absent means no disclosure surface; the step still logs and records. */
   prComment?: (repoRoot: string, prNumber: number, body: string) => Promise<void>;
   /**
-   * The six-lens engine, defaulting to `runLensReview` in the wiring.
-   *
-   * One reason only, and it is a test reason: the clamp that keeps
-   * `PI_ENSEMBLE_LENS_BOUND_MS` from being overwritten by the budget arms can only
-   * be asserted on the options the lens call ACTUALLY received. An assertion on the
-   * input passed the bug — the input was correct in that bug, and only what reached
-   * `runLensReview` was wrong. Production never sets this.
+   * The six-lens engine, defaulting to `runLensReview` in the wiring. Test-only:
+   * the clamp on `PI_ENSEMBLE_LENS_BOUND_MS` can only be asserted on the options
+   * the call ACTUALLY received — asserting the input passes a bug where only the
+   * forwarded options were wrong. Production never sets this.
    */
   lensEngine?: typeof runLensReview;
   /**
-   * The per-lens child runner, threaded to `runLensReview` as its `lensChildFn`
-   * (lens-review.ts). Test-only, for the same reason as `lensEngine` and with the
-   * opposite grain: this one lets a test drive the REAL engine — the real diff
-   * resolution, delta decision and summary — with only the six model children
-   * stubbed. Production never sets it and gets the layer's own `runLensChild`.
+   * The per-lens child runner, threaded to `runLensReview` as its `lensChildFn`.
+   * Test-only, opposite grain to `lensEngine`: drives the REAL engine with only
+   * the six model children stubbed. Production gets the layer's own `runLensChild`.
    */
   lensChildFn?: typeof import("../lens-review-child.ts").runLensChild;
 }

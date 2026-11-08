@@ -1,12 +1,10 @@
 /**
  * lean/state-outcome-record — what a step's handler returned.
  *
- * Split from `state.ts` for the 500-line gate (AGENTS.md §12), along the seam
- * the file already draws: `state.ts` owns the on-disk run record and its load
- * rules, this owns the verdict SHAPE the handlers write into it. `state.ts`
- * re-exports the type, so every importer keeps spelling `Outcome` from
- * `state.ts` — the field set is the contract, its file is an implementation
- * detail of where the record is documented.
+ * Split from `state.ts` for the 500-line gate, along the seam the file already
+ * draws: `state.ts` owns the on-disk run record and its load rules, this owns the
+ * verdict SHAPE the handlers write into it. `state.ts` re-exports the type, so
+ * every importer keeps spelling `Outcome` from `state.ts`.
  */
 
 import type { HandoffChannel } from "../work-driver-handoff-channel.ts";
@@ -15,11 +13,10 @@ import type { PreexistingTierRecord } from "./state-outcome-maps.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 
 /**
- * What a step's handler returned. The engine routes on `kind` and reads the
- * four fields below for a reason line or a report, so they are named rather
- * than left to an index signature — a handler that adds a scratch field is a
- * compile error, which is what keeps the durable log a record of verdicts an
- * operator reads rather than of whatever a closure happened to hold.
+ * What a step's handler returned. The engine routes on `kind` and reads the rest
+ * for a reason line or a report, so the fields are named rather than left to an
+ * index signature: a handler that adds a scratch field is a compile error, which
+ * is what keeps the durable log a record of verdicts an operator reads.
  */
 export interface Outcome {
   kind: string;
@@ -56,21 +53,18 @@ export interface Outcome {
   commandCriteria?: Record<string, string>;
   /**
    * `verify` only: why the gate did NOT run each `command` criterion, keyed by
-   * criterion id — verbatim from the gate's own tree and on-disk checks, and each
+   * criterion id — verbatim from the gate's own tree and on-disk checks, each
    * bounded. Per criterion rather than one slot because the reasons differ and so
-   * do the fixes: `x does not exist at base` is an issue to rewrite, `x is a
-   * symlink` is a tree to repair and `x changed since base` means the criterion
-   * stopped describing preservation. Carried so the PR body explains each blank
-   * instead of leaving the operator to guess.
+   * do the fixes: a missing file is an issue to rewrite, a symlink is a tree to
+   * repair, a changed file means the criterion stopped describing preservation.
    */
   commandNotRunnable?: Record<string, string>;
   /**
    * `build` only (kind `blocked`): the frozen test files the builder could not
-   * satisfy together, path -> the contradiction it stated. The driver re-ran
-   * them and at least one came back red before this was written, so it is
-   * evidence, not the child's word; `handback` prints it because exit 10 alone
-   * never names a cause. Shape as for `commandNotRunnable`, keys to the
-   * frozen-path rule.
+   * satisfy together, path -> the contradiction it stated. The driver re-ran them
+   * and at least one came back red before this was written, so it is evidence, not
+   * the child's word; `handback` prints it because exit 10 alone never names a
+   * cause. Same shape as `commandNotRunnable`.
    */
   blockedBy?: Record<string, string>;
   /**
@@ -112,15 +106,10 @@ export interface Outcome {
    */
   posted?: boolean;
   /**
-   * `handback` only: the comment the step built, in full, on the record.
-   *
-   * What the step is FOR, not a description of it. Before this field the only
-   * account of a handback was `posted` plus the prose `handbackOutcome` wrote
-   * about its own post ("handback comment posted"), so on the host channel —
-   * where the result document IS the delivery and a host has to print the comment
-   * itself — the host was handed a sentence about the harness instead of the
-   * report: what the run still needs, the frozen acceptance tests, the branch and
-   * the PR. Those live in the body the step assembled and then threw away.
+   * `handback` only: the comment the step built, in full, on the record — what the
+   * step is FOR, not a description of it. On the host channel the result document
+   * IS the delivery, so without the body the host is handed a sentence about the
+   * harness instead of the report.
    *
    * The same string the forge is handed, recorded BEFORE the post is attempted, so
    * a run that could not post still reports what it tried to say. Untrusted child
@@ -128,37 +117,31 @@ export interface Outcome {
    */
   report?: string;
   /**
-   * `handback` and `decline` only (#1920 item 3): the CHANNEL this reporting step
-   * acted on. `"host"` means the run addressed its report to the host that drives
-   * it and posted nothing to the forge, by contract; `"forge"` means the step
-   * tried to post and `posted` says whether the forge took it.
+   * `handback` and `decline` only: the CHANNEL this reporting step acted on.
+   * `"host"` means the run addressed its report to the host and posted nothing to
+   * the forge, by contract; `"forge"` means it tried to post and `posted` says
+   * whether the forge took it.
    *
    * Typed beside `posted` because the two are ONE fact written once — "who owns
    * the channel" and "did anything reach them" — and the projection that tells a
    * host which half of the contract it owes reads the record, never
-   * `PI_ENSEMBLE_HANDOFF_CHANNEL`. A projection that re-read the env could
-   * contradict what the step did (a host that clears the var before reading the
-   * document would be told to post a comment the forge already took, or left with
-   * no body at all), which is the double-post this field exists to prevent.
-   * Absent means the step recorded no channel, which every reader treats as
-   * `"forge"` — the channel with a forge to post to.
+   * `PI_ENSEMBLE_HANDOFF_CHANNEL`: a projection that re-read the env could
+   * contradict what the step did, which is the double-post this field prevents.
+   * Absent is read as `"forge"`.
    */
   channel?: HandoffChannel;
-  /// `review` only: the step's OWN wall clock stopped it, not one child's budget, so
-  /// not the budget trio (which belongs to a `budget` kind, and `review` has none).
-
+  /// `review` only: the step's OWN wall clock stopped it, not one child's budget.
   reviewBound?: ReviewBoundRecord;
   /**
-   * `specify`, `build` and `challenge` only: one row per dispatch the step
-   * paid for, including the ones that died or were stopped by their budget.
-   * #1920 slice A groundwork for the lean result's per-role usage: a row is
+   * `specify`, `build` and `challenge` only: one row per dispatch the step paid
+   * for, including the ones that died or were stopped by their budget. A row is
    * written for every child so the totals a host reads cannot quietly omit the
    * expensive failures.
    */
   dispatches?: DispatchUsageRow[];
   /**
-   * `budget` only (#1883): ceiling crossed, its value, what the child used. Data
-   * rather than reason prose, so "out of turns" reads apart from "out of minutes".
+   * `budget` only: ceiling crossed, its value, what the child used. Data rather
+   * than reason prose, so "out of turns" reads apart from "out of minutes".
    */
   limit?: "minutes" | "turns" | "tokens";
   value?: number;

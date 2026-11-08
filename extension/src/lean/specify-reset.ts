@@ -3,31 +3,26 @@
  * verification of the COMMIT that follows it.
  *
  * Both halves exist because the step's claims are git claims, and a git claim
- * nobody checked is a claim. The old shape restored each undeclared path from
- * `HEAD`, which is whatever the child's own `git commit` had made HEAD: a child
- * that committed its test plus a stray source edit turned the revert into a
- * silent no-op that still reported ok, because the stray edit was in the
- * commit the revert restored from. This module does not consult HEAD at all —
- * it names the base sha, discards everything else, and then proves the tree
- * actually got there.
+ * nobody checked is a claim. Restoring each undeclared path from `HEAD` was the
+ * defect this closes: a child that committed its test plus a stray source edit
+ * turned the revert into a silent no-op, because the stray edit was in the commit
+ * the revert restored from. This module does not consult HEAD at all — it names the
+ * base sha, discards everything else, and then proves the tree actually got there.
  *
- * `clean -fdx` (not `-fd`) is deliberate: `-x` also removes ignored files, and
- * a child that wrote a `.gitignore` hiding a stray file would otherwise keep
- * that file through the reset, outside what `git status` reports. There is no
- * exemption list: the provisioned dependency links are removed with everything
- * else and `provisionWorktree` builds them again, so the tree after a reset is
- * built by one code path rather than by whatever survived the last one.
+ * `clean -fdx` (not `-fd`) is deliberate: `-x` also removes ignored files, and a
+ * child that wrote a `.gitignore` hiding a stray file would otherwise keep that file
+ * through the reset, outside what `git status` reports. There is no exemption list:
+ * the provisioned dependency links go with everything else and are rebuilt, so the
+ * tree after a reset is built by one code path.
  *
  * `commitTestFiles` takes the pathspec on the COMMIT as well as the add, and
- * afterwards asserts four things about the result: HEAD moved, HEAD's tree
- * differs from the base by exactly the committed paths, nothing was skipped by
- * a pre-commit hook, and the tree is clean. A mismatch throws rather than
- * handing the rest of the run a commit nobody verified.
+ * afterwards asserts four things: HEAD moved, HEAD's tree differs from the base by
+ * exactly the committed paths, nothing was skipped by a hook, and the tree is clean.
+ * A mismatch throws rather than handing the run a commit nobody verified.
  *
- * `writeCaptured` follows no link either way: every ancestor of a target must
- * be a real directory (never a symlink the child left behind, which would
- * carry a test's bytes outside the worktree), and each file lands through a
- * `wx` temp write plus a rename, so an existing name is never written through.
+ * `writeCaptured` follows no link either way: every ancestor of a target must be a
+ * real directory, and each file lands through a `wx` temp write plus a rename, so an
+ * existing name is never written through.
  */
 
 import { existsSync, lstatSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -47,34 +42,29 @@ export class SpecifyCommitError extends Error {
 }
 
 /**
- * The git flags every lean step's git calls carry. The hooks a repository has
- * are somebody else's policy, and a repo-supplied fsmonitor is a program git
- * runs on every status: either could write into a commit the step never
- * captured. The only git in this family without it is a read the step does
- * not need to trust.
+ * The git flags every lean step's git calls carry. The hooks a repository has are
+ * somebody else's policy, and a repo-supplied fsmonitor is a program git runs on
+ * every status: either could write into a commit the step never captured.
  */
 export const NO_HOOKS = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"] as const;
 
 /** The wall clock on a local git write (`checkout`, `reset`, `worktree add`). */
-export const LOCAL_GIT_MS = 120_000;
+const LOCAL_GIT_MS = 120_000;
 /** The wall clock on a short local read (`rev-parse`). */
-export const QUICK_GIT_MS = 30_000;
+const QUICK_GIT_MS = 30_000;
 /** The largest git stdout a step will hold. */
 export const GIT_MAX_BUFFER = 16 * 1024 * 1024;
 
 /**
  * One local git call as argv, or `undefined` when git refused rather than said no.
  *
- * The fourth copy of this wrapper is what put it here: the same six lines — the
- * `NO_HOOKS` prefix, the 120s bound, the buffer cap, the swallow-to-`undefined`
- * — existed twice in the review step and once in `build-git.ts`, each free to
- * drift on any one of the four. `build` keeps its own because it needs a
- * per-call timeout and an 8 MiB cap; this one is the shape every other lean step
- * wants and nothing else enforces.
+ * The shared shape — the `NO_HOOKS` prefix, the 120s bound, the buffer cap, the
+ * swallow-to-`undefined` — that every lean step except `build` wants; `build` keeps
+ * its own because it needs a per-call timeout and a different cap.
  *
  * A refusal is `undefined` rather than a throw by design: callers decide what a
- * failed read means (the review step's reads distinguish "git could not run"
- * from "git found nothing" themselves, through the outcome-returning resolver).
+ * failed read means, and the review step's reads distinguish "git could not run"
+ * from "git found nothing" through the outcome-returning resolver.
  */
 export async function gitQuiet(
   exec: ExecFn,
@@ -101,10 +91,9 @@ let writeSeq = 0;
 /**
  * Why writing `abs` would follow a link, or undefined when it would not.
  *
- * Every EXISTING ancestor from `wt` down to `abs`'s parent is `lstat`'d: a
- * directory is fine, anything else is refused. A symlinked directory anywhere
- * on that path turns "write the test back into the worktree" into "write it
- * wherever the link points", and the clean-tree assertion afterwards would
+ * Every EXISTING ancestor from `wt` down to `abs`'s parent is `lstat`'d. A symlinked
+ * directory anywhere on that path turns "write the test back into the worktree" into
+ * "write it wherever the link points", and the clean-tree assertion afterwards would
  * still pass — the outside file is not in `git status`.
  */
 function ancestorProblem(wt: string, abs: string): string | undefined {
@@ -131,13 +120,12 @@ function ancestorProblem(wt: string, abs: string): string | undefined {
 }
 
 /**
- * Create the missing ancestors of `abs`, ONE LEVEL AT A TIME, `lstat`ing each
- * new directory to prove it is a directory and not a link.
+ * Create the missing ancestors of `abs`, ONE LEVEL AT A TIME, `lstat`ing each new
+ * directory to prove it is a directory and not a link.
  *
- * `mkdirSync(recursive: true)` is not used because it creates every component
- * in one call and reports nothing about them: a component that already existed
- * as a symlink would be accepted silently. Stepping down means every name the
- * write depends on is looked at after it exists.
+ * `mkdirSync(recursive: true)` is not used: it creates every component in one call
+ * and reports nothing about them, so a component that already existed as a symlink
+ * would be accepted silently.
  */
 function ensureRealDirs(wt: string, abs: string): void {
   const segments = path.relative(wt, abs).split(path.sep).slice(0, -1);
@@ -180,12 +168,11 @@ export class SpecifyInfraError extends Error {
 /**
  * Write captured bytes back to their paths, creating parent directories.
  *
- * Three rules, each one against a way the rewrite could land somewhere other
- * than the path it names: no symlinked ancestor (`ancestorProblem` before the
- * write, `ensureRealDirs` after each creation), and a `wx` write to a temp
- * name in the FINAL directory followed by a `renameSync` into place — so a
- * path the child left as a link or a device is never opened for writing, and
- * the bytes appear at their name atomically.
+ * Three rules, each against a way the rewrite could land somewhere other than the
+ * path it names: no symlinked ancestor (`ancestorProblem` before the write,
+ * `ensureRealDirs` after each creation), and a `wx` write to a temp name in the FINAL
+ * directory followed by `renameSync` into place — so a path the child left as a link
+ * or a device is never opened for writing, and the bytes appear atomically.
  */
 export function writeCaptured(wt: string, captured: Map<string, Buffer>): void {
   for (const [rel, bytes] of captured) {
@@ -194,9 +181,8 @@ export function writeCaptured(wt: string, captured: Map<string, Buffer>): void {
     if (problem !== undefined) throw new SpecifyInfraError(`could not write ${rel}: ${problem}`);
     ensureRealDirs(wt, abs);
     const dir = path.dirname(abs);
-    // `wx` — fail if the name exists. A name that is already there means the
-    // tree is not the tree the reset made, and the caller resets again rather
-    // than writing through it.
+    // `wx` — fail if the name exists. A name already there means the tree is not the
+    // tree the reset made, and the caller resets again rather than writing through it.
     let tmp = `${dir}/.lean-capture-${process.pid}-${writeSeq++}`;
     for (let n = 0; ; n++) {
       try {
@@ -213,8 +199,7 @@ export function writeCaptured(wt: string, captured: Map<string, Buffer>): void {
       renameSync(tmp, abs);
     } catch (err) {
       try {
-        // Never leave the temp file behind for the clean-tree assertion to
-        // trip on — and a renamed-aside copy is still residue, so delete it.
+        // Never leave the temp file behind for the clean-tree assertion to trip on.
         rmSync(tmp, { force: true });
       } catch {
         /* nothing else to do */
@@ -226,24 +211,21 @@ export function writeCaptured(wt: string, captured: Map<string, Buffer>): void {
 
 /**
  * Reset `wt` completely to `baseSha`: child commits, staged changes, untracked
- * files, ignore tricks AND the provisioned dependency links all go, and the
- * run's branch is pointed at the base. A caller whose tree owns no branch — the
- * review fixer's, `--detach`'d while the run's tree holds it — passes `""` for
- * `branch` and is checked out detached, since git refuses to `-B` a name onto a
- * tree whose branch somebody else holds.
+ * files, ignore tricks AND the provisioned dependency links all go, and the run's
+ * branch is pointed at the base. A caller whose tree owns no branch passes `""` for
+ * `branch` and is checked out detached, since git refuses to `-B` a name onto a tree
+ * whose branch somebody else holds.
  *
- * The clean carries no `-e` exemptions. Exempting the links by name meant a
- * leftover tree kept whatever links its first provisioning made, with nothing
- * checking they still pointed anywhere; now the tree is emptied and
- * `ensureSpecifyWorktreeWithProvision` re-provisions it, so a link is always
- * the one provisioning built at this reset. The clean-tree assertion runs
- * BEFORE that re-provisioning, while the tree genuinely holds nothing but the
- * base checkout.
+ * The clean carries no `-e` exemptions. Exempting the links by name meant a leftover
+ * tree kept whatever links its first provisioning made, with nothing checking they
+ * still pointed anywhere; now the tree is emptied and re-provisioned, so a link is
+ * always the one built at this reset. The clean-tree assertion runs BEFORE that
+ * re-provisioning, while the tree genuinely holds nothing but the base checkout.
  *
- * Throws `SpecifyResetError` unless `git rev-parse HEAD` equals `baseSha` and
- * `git status --porcelain` reports nothing — that confirmation is the function:
- * the commands are routine, and the only failure that matters is the one where
- * they did not do what they say.
+ * Throws `SpecifyResetError` unless `rev-parse HEAD` equals `baseSha` and
+ * `status --porcelain` reports nothing — that confirmation is the function: the
+ * commands are routine, and the only failure that matters is the one where they did
+ * not do what they say.
  */
 export async function resetWorktreeToBase(
   exec: ExecFn,
@@ -251,10 +233,9 @@ export async function resetWorktreeToBase(
   baseSha: string,
   branch: string,
 ): Promise<void> {
-  // `-B` first so the branch — not a detached HEAD — is what `reset --hard`
-  // moves: the frozen commit has to land on the run's branch, and a leftover
-  // branch from a previous attempt of the same run must move to the base rather
-  // than keep its commits.
+  // `-B` first so the branch — not a detached HEAD — is what `reset --hard` moves:
+  // the frozen commit has to land on the run's branch, and a leftover branch from a
+  // previous attempt must move to the base rather than keep its commits.
   const steps: string[][] = [
     branch === ""
       ? [...NO_HOOKS, "checkout", "--detach", baseSha]
@@ -301,18 +282,16 @@ export async function resetWorktreeToBase(
  * staged for itself. `git add` is bounded to the kept paths too, so the index
  * cannot be loaded with anything else in the first place.
  *
- * Both git calls run with `core.hooksPath=/dev/null` and `core.fsmonitor=false`:
- * the hooks a repository carries are somebody else's policy, and a pre-commit
- * hook that rewrites the index would put bytes in the frozen commit the step
- * never captured. With hooks off, the commit holds exactly what was added.
+ * Both git calls run with `core.hooksPath=/dev/null` and `core.fsmonitor=false`: the
+ * hooks a repository carries are somebody else's policy, and a pre-commit hook that
+ * rewrites the index would put bytes in the frozen commit the step never captured.
  *
- * `--literal-pathspecs` is a TOP-LEVEL git option and rides on all three calls
- * that name paths — the add, the commit and the verification diff — the same
- * way `build-normalise.ts` puts it ahead of the subcommand. It is load-bearing
- * for the diff as much as the writes: a submitted test named `tests/[a]x.test.sh`
- * is one file to this step, but a glob to git, and without the flag the add and
- * the commit could sweep in a tracked `tests/ax.test.sh` while the un-literal
- * diff still reported the pair as "exactly the paths we meant".
+ * `--literal-pathspecs` is a TOP-LEVEL git option and rides on all three calls that
+ * name paths, the same way `build-normalise.ts` puts it ahead of the subcommand. It
+ * is load-bearing for the diff as much as the writes: a submitted test named
+ * `tests/[a]x.test.sh` is one file to this step but a glob to git, and without the
+ * flag the add and commit could sweep in a tracked `tests/ax.test.sh` while the
+ * un-literal diff still reported the pair as "exactly the paths we meant".
  */
 export async function commitTestFiles(
   exec: ExecFn,
@@ -346,10 +325,9 @@ export async function commitTestFiles(
     throw new SpecifyCommitError(
       `HEAD did not move from the base ${baseSha} — the acceptance-test commit was never made`,
     );
-  // `-z` gives the raw paths NUL-separated: without it git C-quotes any name
-  // with non-ASCII bytes, and a test named `AC1-café` would never equal itself.
-  // `core.quotePath=off` is set too, so the quoting rule cannot return if `-z`
-  // is ever dropped from this call.
+  // `-z` gives the raw paths NUL-separated: without it git C-quotes any name with
+  // non-ASCII bytes and a test named `AC1-café` would never equal itself. `core.
+  // quotePath=off` is set too, so the quoting rule cannot return if `-z` is dropped.
   const diff = await exec("git", {
     argv: [
       LITERAL,
@@ -385,10 +363,10 @@ export async function commitTestFiles(
 }
 
 /**
- * `git show HEAD:<path>` — the committed bytes, which are what the freeze
- * hashes. Hashing the blob rather than the file on disk is what makes the
- * recorded hash a fact about the commit rather than a race with whatever the
- * tree looked like a moment earlier.
+ * `git show HEAD:<path>` — the committed bytes, which are what the freeze hashes.
+ * Hashing the blob rather than the file on disk is what makes the recorded hash a
+ * fact about the commit rather than a race with whatever the tree looked like a
+ * moment earlier.
  */
 export async function committedBlob(exec: ExecFn, wt: string, rel: string): Promise<Buffer> {
   // `latin1` keeps every byte (see ExecOpts.stdoutEncoding): the hash is over the
@@ -402,10 +380,9 @@ export async function committedBlob(exec: ExecFn, wt: string, rel: string): Prom
   }).catch(() => undefined);
   if (r === undefined) throw new SpecifyCommitError(`could not read the committed blob ${rel}`);
   const bytes = Buffer.from(r.stdout ?? "", "latin1");
-  // An empty blob is not a test. `git show` of a path that is not in the tree
-  // fails rather than returning "", so an empty read here means the commit
-  // holds an empty file — and a hash of nothing would let a zero-byte file
-  // pass as a frozen test for the rest of the run.
+  // An empty blob is not a test. `git show` of a path not in the tree fails rather
+  // than returning "", so an empty read here means the commit holds an empty file —
+  // and a hash of nothing would let a zero-byte file pass as a frozen test.
   if (bytes.length === 0)
     throw new SpecifyCommitError(`the committed blob ${rel} is empty — not a test`);
   return bytes;

@@ -28,8 +28,8 @@ import { NO_MAINLINE_WHY } from "./io.ts";
 import { oneLine } from "./text-fence.ts";
 
 /** The two refusals a base can earn, worded so an operator sees WHICH half failed. */
-export const NOT_AN_OID = " is not a full commit sha";
-export const NOT_A_COMMIT = " is not a commit in this clone";
+const NOT_AN_OID = " is not a full commit sha";
+const NOT_A_COMMIT = " is not a commit in this clone";
 
 /**
  * The rule for an empty base, with a tail that is never empty.
@@ -50,17 +50,17 @@ export function unresolvedMainlineRule(why: string | undefined): string {
  * way a hand-edited record is wrong, and the one an operator can act on
  * (`git cat-file -t <that>`) without guessing what the field meant.
  */
-export function resolvesTo(resolved: string): string {
+function resolvesTo(resolved: string): string {
   return `${NOT_A_COMMIT} (it resolves to ${oneLine(resolved, 80)})`;
 }
 
 /** `base <value>` is not an object name at all: not 40 lowercase hex. */
-export function notAnOidRule(baseSha: string): string {
+function notAnOidRule(baseSha: string): string {
   return `base sha ${oneLine(baseSha, 80)}${NOT_AN_OID}`;
 }
 
 /** `base <value>` is an oid-shaped string this clone holds no commit for. */
-export function notACommitRule(baseSha: string, suffix = NOT_A_COMMIT): string {
+function notACommitRule(baseSha: string, suffix = NOT_A_COMMIT): string {
   return `base sha ${oneLine(baseSha, 80)}${suffix}`;
 }
 
@@ -183,52 +183,31 @@ async function probeCommitObject(
     const refusedExit = exit === 1 || exit === 128;
     if (refusedExit && trimmed !== "") {
       // An INFRASTRUCTURE fault is decided FIRST and takes precedence over every
-      // missing-object wording, because git prints both at once. Measured against
-      // a `chmod 000` fanout dir, `cat-file -e <sha>^{commit}` answers exit 128
-      // with:
-      //
-      //   error: unable to open loose object <sha>: Permission denied
-      //   error: unable to open loose object <sha>: Permission denied
-      //   fatal: Not a valid object name <sha>^{commit}
-      //
-      // The last line is git's OWN "no such object" wording, so a classifier that
-      // asked "does this name a missing object?" first would read an unreadable
-      // object store as a base that simply is not there and post "your base is
-      // not a commit" on an issue whose clone cannot be read. The fault lines are
-      // the positive evidence and the refusal wording here is a lie about it —
-      // which is why the rule is inverted and the fault is checked first. A
-      // genuine absence prints only `fatal: Not a valid object name …` (measured,
-      // exit 128 with nothing else), so no fault line is present and the refusal
-      // still answers.
+      // missing-object wording, because git prints both at once: against an
+      // unreadable fanout dir it answers exit 128 with repeated
+      // `unable to open loose object …: Permission denied` lines followed by its
+      // own `Not a valid object name …` refusal. A classifier that asked "does this
+      // name a missing object?" first would post "your base is not a commit" on an
+      // issue whose clone cannot be read. A genuine absence prints only the
+      // `Not a valid object name` line, so the refusal still answers.
       if (OBJECT_STORE_FAULT.test(trimmed))
         return `git object store unreadable (exit ${String(exit)}): ${oneLine(firstLine(trimmed), 120)}`;
-      // git's wordings for "this name has no object" — see NAMES_MISSING_OBJECT
-      // for the set and why it is matched anywhere in the blob rather than at a
-      // prefix.
+      // git's wordings for "this name has no object" — see NAMES_MISSING_OBJECT.
       if (NAMES_MISSING_OBJECT.test(trimmed)) return true;
-      // Any other non-empty stderr at a refusing exit — text that names neither
-      // absence nor a fault line above — is still not a recognised refusal.
+      // Non-empty stderr that names neither absence nor a fault line is still not a
+      // recognised refusal.
       return `git object store unreadable (exit ${String(exit)}): ${oneLine(firstLine(trimmed), 120)}`;
     }
     if (refusedExit) {
       // Empty stderr at a refusing exit. git prints a reason for every object it
-      // genuinely cannot find (measured: the three wordings above, each with a
-      // non-empty stderr), so silence is not evidence of absence — but it is not
-      // evidence of a broken store either, and nothing downstream can tell the
-      // two apart. The rule this module documents is that a refusal must be
-      // POSITIVELY recognised, and silence is not that; the exception, written
-      // down here as the brief required, is that silence stays a refusal while
-      // the resolution stayed silent too. That resolver reports a caught git
-      // error on its own outcome (`resolveHeadShaOutcome`'s `failed`, ungated
-      // because the trace write is gated on `PI_ENSEMBLE_DEBUG`), and THIS call's
-      // resolution is the only one whose failure can be evidence about THIS base
-      // — so the flag arrives as an argument from the caller that made the read,
-      // and a `failed: true` means the object store is suspect. Under an
-      // INJECTED executor (every fake-git case in the base-proof suite) nothing
-      // reaches a global, so those cases keep answering "refusal", which is what
-      // they pin; the production shape — real git, real failing rev-parse — is
-      // the one the flag refuses, and the `chmod 000` case in
-      // test-lean-base-proof.ts drives it.
+      // genuinely cannot find, so silence is not evidence of absence — but it is not
+      // evidence of a broken store either. The rule is that a refusal must be
+      // POSITIVELY recognised; the written-down exception is that silence stays a
+      // refusal while the resolution stayed silent too. That resolver reports a
+      // caught git error on its own outcome (`failed`), and THIS call's resolution
+      // is the only one whose failure can be evidence about THIS base — so the flag
+      // arrives as an argument from the caller that made the read rather than from a
+      // global, which also keeps injected-executor cases answering "refusal".
       if (resolutionFailed)
         return `git refused with no reason while a resolution failure was traced (exit ${String(exit)})`;
       return true;

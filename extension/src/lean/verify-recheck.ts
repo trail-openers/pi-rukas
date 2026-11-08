@@ -107,9 +107,9 @@ export async function assertTreeClean(exec: VerifyExec, wt: string, who: string)
  *
  * `who` names the party a handback should blame, and the gate calls this TWICE —
  * once after the project's own tiers with `who: "a verify tier"`, once after the
- * spec's preservation runs with `who: "a command criterion"` — because these
- * failures used to read as a generic verify error and send a developer to fix code
- * nobody had touched. The subject of the message is whichever party ran immediately
+ * spec's preservation runs with `who: "a command criterion"` — because a generic verify
+ * error here would send a developer to fix code nobody had touched. The subject of the
+ * message is whichever party ran immediately
  * before the pass that raised it, which is the honest attribution and not a guess:
  * a criterion's script can rewrite a frozen test or dirty the tree, and the pass
  * that runs before the criteria cannot know that, so it names the tiers and stops

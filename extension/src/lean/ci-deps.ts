@@ -67,7 +67,7 @@ export interface CiDeps {
 }
 
 /** The real timer: the poll's default sleep, never a zero-delay loop. */
-export function realSleep(ms: number): Promise<void> {
+function realSleep(ms: number): Promise<void> {
   return new Promise<void>((resolve) => {
     setTimeout(resolve, ms);
   });

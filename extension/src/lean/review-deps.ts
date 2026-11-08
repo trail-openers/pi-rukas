@@ -13,13 +13,12 @@
  * Two choices here are load-bearing rather than mechanical, and both are the
  * review layer's own rules restated rather than lean's invention:
  *
- * - **The adversarial loop runs report-only.** It reviews and fixes nothing; the
- *   fix round is this step's, in its own disposable tree. `reportVerdict:
- *   "routed"` is what says so — with `"terminal"` the loop would judge its own
- *   round against its own round cap, and the step would inherit a verdict it had
- *   no part in producing. `reportRound` is threaded so the reviewer's prompt and
- *   ledger row carry the round of THIS step's loop, whose bound is the run's
- *   budget, not the loop's constant.
+ * - **The adversarial loop runs report-only.** It reviews and fixes nothing; the fix
+ *   round is this step's, in its own disposable tree. `reportVerdict: "routed"` is
+ *   what says so — with `"terminal"` the loop would judge its own round against its
+ *   own round cap, and the step would inherit a verdict it had no part in producing.
+ *   `reportRound` is threaded so the reviewer's prompt and ledger row carry the round
+ *   of THIS step's loop, whose bound is the run's budget, not the loop's constant.
  * - **Both gates get refs, not a pasted diff.** `runLensReview` computes
  *   `git diff <base>...<head>` itself, so the diff is one the lenses can re-read
  *   and the ledger can bind to a commit rather than to a string this step handed
@@ -64,12 +63,12 @@ export function reviewDeps(headless: boolean): ReviewDeps {
   const deps: ReviewDeps = {
     headless,
     // The push inside `fixRound` is the one git call in this step that leaves the
-    // clone, so it is the one the executor gives the driver's non-interactive env
-    // to — the same `netGitEnv` `publish-deps.ts` applies (#1095: `GIT_TERMINAL_PROMPT=0`
-    // plus `-o BatchMode=yes`, so ssh fails instead of reading a passphrase from
-    // /dev/tty). Without it a lean review round could hang the step on a
-    // credential prompt no other step in lean can hang on. `o?.cwd` is passed
-    // through so `netGitEnv` still reads the repo's own `core.sshCommand`.
+    // clone, so it is the one the executor gives the driver's non-interactive env to —
+    // the same `netGitEnv` `publish-deps.ts` applies (`GIT_TERMINAL_PROMPT=0` plus
+    // `-o BatchMode=yes`, so ssh fails instead of reading a passphrase from /dev/tty).
+    // Without it a lean review round could hang the step on a credential prompt no
+    // other step in lean can hang on. `o?.cwd` is passed through so `netGitEnv` still
+    // reads the repo's own `core.sshCommand`.
     exec: (cmd, o) =>
       execp(cmd, {
         ...(o ?? {}),
@@ -174,9 +173,9 @@ export function reviewDeps(headless: boolean): ReviewDeps {
         // summary carries, so the step reads the same list the verdict, the
         // severity counts and the ledger's `hasCritical` were computed from — a
         // second reading here would be a second definition of "blocking". The
-        // layer's per-row `resolved` notices are NOT threaded: the step no longer
-        // states a fate for any row, so nothing reads them (a field carried for a
-        // reader that does not exist is a liability, not a saving).
+        // layer's per-row `resolved` notices are NOT threaded: the step states no fate
+        // for any row, so nothing reads them (a field carried for a reader that does not
+        // exist is a liability, not a saving).
         reported: summary.findings,
         // The rows the advisory split moved out of `reported`, carried so the
         // NOT ADDRESSED check cannot be discounted into a pass (see
@@ -210,11 +209,11 @@ export function reviewDeps(headless: boolean): ReviewDeps {
     },
     dispatch: (spec, o) =>
       // The arms are forwarded KEY BY KEY, not spread, because this is the one
-      // lean dispatch that also adds its own options: an object spread here would
-      // let a future arm collide silently with `processGroup`/`leanChildOpts`
-      // rather than being named. `budgetTurns` is the #1991 steer's denominator
-      // (#1988 follow-up 4) — drop this line and a lean fixer is killed at its
-      // turns ceiling with nothing committed and nothing said to it.
+      // lean dispatch that also adds its own options: an object spread here would let
+      // a future arm collide silently with `processGroup`/`leanChildOpts` rather than
+      // being named. `budgetTurns` is the turn-budget denominator for a fixer — drop
+      // this line and a lean fixer is killed at its turns ceiling with nothing
+      // committed and nothing said to it.
       spawnSpecialist(spec, {
         processGroup: true,
         writeFence: o.writeFence,

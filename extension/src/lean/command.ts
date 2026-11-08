@@ -1,21 +1,11 @@
 /**
  * lean/command — `/work-lean <issue>`, the phase-1 entry point.
  *
- * Every state the machine routes has a real handler here. That used to be a
- * promise about a later phase: the table shipped with a placeholder per
- * unbuilt state, and the honesty of the shape was that the placeholder threw
- * rather than inventing an outcome kind the table could not route. No state is
- * unbuilt now, so the placeholder and its `work-lean stage <state> is not built
- * yet` sentence went with it — the wiring tests that used to assert a step was
- * not answered by the stub (`test-lean-challenge.ts` (n),
- * `test-lean-specify-bytes.ts`, `test-lean-ci-land-wiring.ts` (p)) assert the
- * positive instead: each step answers with its OWN refusal.
- *
- * What the placeholder taught stays: a handler may return only the kinds
- * `machine.ts` lists for its state, and `test-lean-machine.ts` fails on any pair
- * the table does not cover. A handler that invented a kind would end the run on
- * the misleading line `no transition for <state> + "…"`, which blames the machine
- * for a bug in the handler.
+ * Every state the machine routes has a real handler here, and a handler may return only
+ * the kinds `machine.ts` lists for its state — `test-lean-machine.ts` fails on any pair
+ * the table does not cover. A handler that invented a kind would end the run on the
+ * misleading line `no transition for <state> + "…"`, which blames the machine for a bug
+ * in the handler.
  *
  * `ready` does three deterministic things:
  *   1. fetch the issue body (the forge adapter, falling back to raw `gh`);
@@ -91,7 +81,7 @@ import { type LeanSeed, leanSeed } from "./seed.ts";
  * opinion. The config loader cannot make that distinction: `gitType`/`gitShow`
  * catch every git failure and report "absent", which for a loader means "no
  * config, use the defaults" — so a base that names no object at all (a stale or
- * hand-edited resumed record, a seeder that passed a literal) used to read as a
+ * hand-edited resumed record, a seeder that passed a literal) would otherwise read as a
  * perfectly ordinary repo with no `.pi/work.json` and go green.
  *
  * Throws on a git INFRASTRUCTURE fault, and only there. A spec that is not
@@ -221,9 +211,9 @@ export function specifyDeps(headless: boolean): SpecifyDeps {
         writeFence: o.writeFence,
         extraArgs: o.extraArgs,
         // Forwarded so the ceiling binds the child, `budgetTurns` included: it is
-        // the turns ceiling read as the denominator of the #1991 budget-progress
-        // steer, and a seam that forwards the arms key by key must forward that
-        // one too or the child is killed at its ceiling never told where it stood.
+        // the turns ceiling read as the denominator of the budget-progress steer, and
+        // a seam that forwards the arms key by key must forward that one too or the
+        // child is killed at its ceiling never told where it stood.
         childBoundMs: o.childBoundMs,
         signal: o.signal,
         onProgress: o.onProgress,
@@ -264,9 +254,8 @@ export function specifyDeps(headless: boolean): SpecifyDeps {
  * `LeanSeed.infra`. Both are read from the seed the run was given, so a resumed
  * run (which never ran this process's seed) keeps the refusal path.
  *
- * On `PI_ENSEMBLE_HANDOFF_CHANNEL=host` neither reporting step posts (#1920 item
- * 3): the host owns that channel, exactly as `work`'s handoff step declines to
- * post there. The body each step would have sent stays on the step's record, and
+ * On `PI_ENSEMBLE_HANDOFF_CHANNEL=host` neither reporting step posts: the host owns
+ * that channel, exactly as `work`'s handoff step declines to post there. The body each step would have sent stays on the step's record, and
  * `headless/work-lean-result.ts` publishes it in the result's `handoff` with
  * `channel: "host"`. The claim `posted` is false because nothing reached the
  * forge — a host must be able to tell a report it still has to deliver from one
@@ -317,7 +306,7 @@ export function phase1Handlers(
 }
 
 /** The one-line summary the command prints. */
-export function summarize(result: RunLeanResult, issue: number): string {
+function summarize(result: RunLeanResult, issue: number): string {
   const reason = result.run.result?.reason ?? "no result recorded";
   return `work-lean #${issue}: ${result.state} (exit ${result.code}) — ${reason}`;
 }
@@ -337,7 +326,7 @@ export function summarize(result: RunLeanResult, issue: number): string {
  * commit its first round pinned.
  *
  * `timeoutMs` (the headless verb's `--timeout <minutes>`) is the THIRD input to
- * the SAME deadline contract `work` reads (#1920 item 2): the shared reader
+ * the SAME deadline contract `work` reads: the shared reader
  * (`resolveCycleDeadline`) weighs it as a duration BELOW an exported
  * `PI_ENSEMBLE_CYCLE_BUDGET_MS` and below an exported `PI_ENSEMBLE_CYCLE_DEADLINE`,
  * resolves it to an absolute epoch once, and the engine persists that arm on the
