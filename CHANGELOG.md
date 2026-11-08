@@ -8,6 +8,18 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.64](https://github.com/trail-openers/pi-rukas/compare/v0.14.63...v0.14.64) (2026-11-08)
+
+
+### Features
+
+* **lean:** specify elicits implied requirements grounded in the repository ([#2120](https://github.com/trail-openers/pi-rukas/issues/2120)) ([86eaebf](https://github.com/trail-openers/pi-rukas/commit/86eaebfcb36180ea168c924d36d034092bc14183))
+
+
+### Bug Fixes
+
+* **lean:** force the fold's reset checkout so a dirty tree cannot crash the run ([#2122](https://github.com/trail-openers/pi-rukas/issues/2122)) ([d2b4de1](https://github.com/trail-openers/pi-rukas/commit/d2b4de138d99f5f200ec12a5bc8cf71b1258e7f4))
+
 ## [0.14.63](https://github.com/trail-openers/pi-rukas/compare/v0.14.62...v0.14.63) (2026-11-08)
 
 
