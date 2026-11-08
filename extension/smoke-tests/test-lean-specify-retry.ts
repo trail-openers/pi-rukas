@@ -21,13 +21,16 @@
  *   (e) `refusalFeedback` names at most 20 reasons, each clipped to 300 chars,
  *       dedupes identical lines, says `(+N more)` past the cap, and is `""` for
  *       an empty list;
- *   (f) attempt 2 hits its budget -> the outcome is `budget` with no retry note.
+ *   (f) attempt 2 hits its budget -> the outcome is `budget` with no retry note;
+ *   (g) BOTH prompts the step built — the kickoff and the refusal retry — carry
+ *        the implied-requirement elicitation, so a retry cannot quietly un-tell
+ *        the child a rule the first attempt was given.
  */
 
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { DEFAULT_BUDGETS } from "../src/lean/config.ts";
-import { refusalFeedback } from "../src/lean/specify-prompt.ts";
+import { IMPLIED_REQUIREMENTS, refusalFeedback } from "../src/lean/specify-prompt.ts";
 import { MAX_TEST_LINES } from "../src/lean/test-size.ts";
 import {
   ROOTS,
@@ -297,6 +300,43 @@ function scripted(bodies: [string, ...string[]]) {
     `(e) two reasons sharing a 300-char prefix are both named (got ${twinLines.length})`,
   );
   assert(!twins.includes("(+"), "(e) nothing is left out of two reasons");
+}
+
+// ── (g) the elicitation survives the retry ───────────────────────────────────
+// The unit pin in test-lean-adversary-prompts.ts proves the builder emits the
+// section; this proves the prompts the STEP actually dispatched do, on both
+// attempts — a reordering that pushed the section past the appended retry note,
+// or a retry built from a different prompt, would drop the child's only
+// instruction to elicit implied requirements.
+{
+  const { repoRoot, baseSha } = makeRepo({ "src/retry.ts": "export const retry = () => {};\n" });
+  const prompts: string[] = [];
+  const r = await runSpecify({
+    repoRoot,
+    baseSha,
+    issue: 7,
+    config: CONFIG,
+    prompts,
+    ...scripted([oversize(), redScript()]),
+  });
+  assert(r.threw === undefined, `(g) no throw: ${r.threw?.message ?? "clean"}`);
+  assert(
+    r.dispatched === 2 && prompts.length === 2,
+    `(g) the refusal retry ran (dispatched ${r.dispatched})`,
+  );
+  assert(
+    prompts[0]?.includes(IMPLIED_REQUIREMENTS) === true,
+    "(g) the kickoff prompt the step built carries the implied-requirement section",
+  );
+  const retry = prompts[1] ?? "";
+  assert(
+    retry.includes(REFUSED) && retry.includes(IMPLIED_REQUIREMENTS),
+    "(g) the refusal retry prompt still carries the section — a retry does not un-tell the rule",
+  );
+  assert(
+    retry.indexOf(IMPLIED_REQUIREMENTS) < retry.indexOf("## What you report"),
+    "(g) on the retry too the section precedes the report protocol",
+  );
 }
 
 for (const dir of ROOTS) {
