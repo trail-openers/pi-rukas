@@ -26,8 +26,6 @@ import { type Transition, to, viaBuild } from "./transitions.ts";
 /** Outcome kinds per state. The handler for a state may return only these; the
  * pair enumeration in `test-lean-machine.ts` asserts each entry equals the set of
  * `kind`s the registry gives that state arrows. */
-
-/** Outcome kinds per state. The handler for a state may return only these. */
 export const OUTCOME_KINDS = {
   ready: ["ok", "fail"],
   specify: ["ok", "no-red-test", "budget"],
