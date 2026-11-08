@@ -19,12 +19,24 @@ import {
 import { PROVIDER_CLASS_CAUSES, providerRetryWaitMs } from "../work-driver-provider-backoff.ts";
 import { handoffAllowanceMs } from "./deadline.ts";
 
-/** Injectable so the offline suite RECORDS waits instead of taking them. */
-let sleepFn: (ms: number, signal?: AbortSignal) => Promise<void> = abortableSleep;
+/**
+ * Whether the sleep ran to its full length: `abortableSleep` resolves early on abort
+ * and never says so, so a cut-short wait would otherwise be recorded as the rung.
+ */
+async function sleptToCompletion(ms: number, signal?: AbortSignal): Promise<boolean> {
+  await abortableSleep(ms, signal);
+  return signal?.aborted !== true;
+}
+
+/**
+ * Injectable so the offline suite RECORDS waits instead of taking them. It answers
+ * whether the sleep ran to completion (see {@link sleptToCompletion}).
+ */
+let sleepFn: (ms: number, signal?: AbortSignal) => Promise<boolean> = sleptToCompletion;
 
 /** Test seam; returns the restore function. */
 export function __setLeanSleepFn(
-  fn: (ms: number, signal?: AbortSignal) => Promise<void>,
+  fn: (ms: number, signal?: AbortSignal) => Promise<boolean>,
 ): () => void {
   const prev = sleepFn;
   sleepFn = fn;
@@ -105,8 +117,11 @@ export async function waitOutProviderFault(opts: ProviderWaitOpts): Promise<numb
   if (opts.deadlineMs !== undefined && opts.deadlineMs - opts.now - handoffAllowanceMs() < wait) {
     return 0;
   }
-  await sleepFn(wait, opts.signal);
-  return wait;
+  const completed = await sleepFn(wait, opts.signal);
+  // What the caller reports is what this call SLEPT. A wait the signal ended is
+  // not a wait of the rung's length, and the reason the step records would
+  // otherwise state a duration the run never spent.
+  return completed && opts.signal?.aborted !== true ? wait : 0;
 }
 
 /** The sentence a step appends to its recorded reason, in seconds. */

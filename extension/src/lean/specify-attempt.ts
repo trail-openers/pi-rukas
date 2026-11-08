@@ -21,7 +21,7 @@ import { didNoWork } from "./build-dispatch.ts";
 import type { TestLocation } from "./config-test-location.ts";
 import type { WorkConfig } from "./config.ts";
 import { throwIfDispatchFailed } from "./dispatch-verdict.ts";
-import { type ProviderWaitClass, providerFaultOf, waitOutProviderFault } from "./provider-wait.ts";
+import { type ProviderWaitClass, providerFaultOf } from "./provider-wait.ts";
 import type { Criterion, PiSpec } from "./spec.ts";
 import { existsInCommit, fileProblem } from "./specify-path.ts";
 import { specifyPrompt } from "./specify-prompt.ts";

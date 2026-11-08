@@ -91,6 +91,7 @@ async function withWaits<T>(run: () => Promise<T>): Promise<{ waits: number[]; v
   const waits: number[] = [];
   const restore = __setLeanSleepFn(async (ms) => {
     waits.push(ms);
+    return true;
   });
   try {
     return { waits, value: await run() };

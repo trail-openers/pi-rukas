@@ -18,6 +18,7 @@ import { handoffAllowanceMs } from "../src/lean/deadline.ts";
 import {
   __setLeanSleepFn,
   leanProviderWaitMs,
+  providerWaitNote,
   waitOutProviderFault,
 } from "../src/lean/provider-wait.ts";
 import type { DispatchFailureCause } from "../src/types.ts";
@@ -40,6 +41,7 @@ function recorder() {
   const slept: number[] = [];
   const restore = __setLeanSleepFn(async (ms) => {
     slept.push(ms);
+    return true;
   });
   return { slept, restore };
 }
@@ -199,10 +201,11 @@ await withEnv({ ...BASE, PI_ENSEMBLE_TRANSIENT_RETRY: undefined }, async () => {
     slept.push(ms);
     signals.push(signal);
     // The production default resolves early on abort; a seam that ignored the
-    // signal would prove nothing here, so the seam honours it the same way.
-    if (signal?.aborted) return;
+    // signal would prove nothing here, so the seam honours it the same way and
+    // reports the early return the way the leaf's own default does.
+    if (signal?.aborted) return false;
     await new Promise((r) => setTimeout(r, 0));
-    if (signal?.aborted) return;
+    return signal?.aborted !== true;
   });
   try {
     const aborted = new AbortController();
@@ -214,13 +217,48 @@ await withEnv({ ...BASE, PI_ENSEMBLE_TRANSIENT_RETRY: undefined }, async () => {
       signal: aborted.signal,
     });
     assert(
-      slept.length === 1 && signals[0] === aborted.signal,
-      `(5) the wait is handed the caller's signal and the abort ends it (${JSON.stringify(slept)}, ${String(waited)})`,
+      slept.length === 1 &&
+        signals[0] === aborted.signal &&
+        waited === 0 &&
+        providerWaitNote(waited) === "waited 0s for a transient provider fault",
+      `(5) the wait is handed the caller's signal, and an abort reports NO wait (${JSON.stringify(slept)}, ${String(waited)})`,
     );
     const plain = await waitOutProviderFault({ cls: cls("provider-severed"), attempt: 1, now: 0 });
     assert(
       plain > 0 && signals[1] === undefined,
       "(5) a caller with no signal still gets its wait",
+    );
+    // The measured defect: the signal fires while the wait is in flight (a SIGTERM
+    // landing mid-sleep), which is the shape `abortableSleep` resolves early for. A
+    // cut-short wait must not be reported as the rung it asked for, because that
+    // number is what the step's reason records and what the handback repeats. The seam
+    // honours the abort only after a tick, so the signal is not yet raised at entry.
+    const rung = await waitOutProviderFault({
+      cls: cls("provider-severed"),
+      attempt: 1,
+      now: 0,
+      rand: () => 0.5,
+    });
+    const mid = new AbortController();
+    const late = await waitOutProviderFault({
+      cls: cls("provider-severed"),
+      attempt: 1,
+      now: 0,
+      signal: mid.signal,
+      // Same draw as the un-aborted call just above, so the rung is identical and the
+      // ONLY difference between the two is that the signal fires before it ends.
+      rand: () => {
+        setTimeout(() => mid.abort(), 0);
+        return 0.5;
+      },
+    });
+    assert(
+      slept.length === 4 &&
+        slept[3] === rung &&
+        rung > 0 &&
+        late === 0 &&
+        providerWaitNote(late) === "waited 0s for a transient provider fault",
+      `(5) a wait the signal ends halfway reports NO wait, not the rung (${JSON.stringify(slept)}, ${String(late)})`,
     );
   } finally {
     restore();
