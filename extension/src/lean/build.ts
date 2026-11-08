@@ -321,8 +321,10 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
       // A child that did no work bought nothing: its row stays billed and the SAME
       // prompt goes out again on a freshly armed budget, without spending a round.
       // The second one of these throws, as any dead child did. The trace names this
-      // re-dispatch and the cause the child gave.
-      traceWarn(`lean build #${String(issue)}: re-dispatch, no work done: ${dispatchedChild.why}`);
+      // re-dispatch and the cause the first child gave.
+      traceWarn(
+        `lean build #${String(issue)}: re-dispatching a child that did no work: ${dispatchedChild.why}`,
+      );
       firstNoWorkWhy = dispatchedChild.why;
       noWorkRetryUsed = true;
       tries--;
