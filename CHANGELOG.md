@@ -8,6 +8,16 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.63](https://github.com/trail-openers/pi-rukas/compare/v0.14.62...v0.14.63) (2026-11-08)
+
+
+### Bug Fixes
+
+* **guard:** refuse an agent merge whose PR checks are not green ([#2107](https://github.com/trail-openers/pi-rukas/issues/2107)) ([7d7c0b2](https://github.com/trail-openers/pi-rukas/commit/7d7c0b2efe0614966dfe204e23ce18804351d668))
+* **lean:** re-dispatch a build child that died before doing any work ([#2111](https://github.com/trail-openers/pi-rukas/issues/2111)) ([b5a1814](https://github.com/trail-openers/pi-rukas/commit/b5a18147e5ccd743f1c7569b16031ca10daa3878))
+* **lean:** re-prompt a specify child that ends without submitting its tests ([#2105](https://github.com/trail-openers/pi-rukas/issues/2105)) ([6511e8a](https://github.com/trail-openers/pi-rukas/commit/6511e8a1d1897a99003eb1e8835001addd4bd091))
+* **lean:** re-review a carried CRITICAL with a full round and retry an incomplete re-review once ([#2112](https://github.com/trail-openers/pi-rukas/issues/2112)) ([7d785cc](https://github.com/trail-openers/pi-rukas/commit/7d785ccd3068950f7f8e3d6a266132f00e9d8c74))
+
 ## [0.14.62](https://github.com/trail-openers/pi-rukas/compare/v0.14.61...v0.14.62) (2026-11-08)
 
 
