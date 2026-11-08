@@ -8,6 +8,18 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.65](https://github.com/trail-openers/pi-rukas/compare/v0.14.64...v0.14.65) (2026-11-08)
+
+
+### Features
+
+* **review:** give each lens an advisory turn ceiling scaled to the diff ([#2131](https://github.com/trail-openers/pi-rukas/issues/2131)) ([8366b59](https://github.com/trail-openers/pi-rukas/commit/8366b598ade4c76a2736d72352d230a78c4bcada))
+
+
+### Bug Fixes
+
+* **lean:** wait out a transient provider fault before the single retry ([#2126](https://github.com/trail-openers/pi-rukas/issues/2126)) ([200999e](https://github.com/trail-openers/pi-rukas/commit/200999e11187e81f30021a02864cd4b209121457))
+
 ## [0.14.64](https://github.com/trail-openers/pi-rukas/compare/v0.14.63...v0.14.64) (2026-11-08)
 
 
