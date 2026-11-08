@@ -50,10 +50,10 @@ export interface HandlerCtx {
   issue: number;
   /**
    * The log as of BEFORE this step ran, so a handler can read what earlier
-   * steps decided. `steps` is the run's append-only record, and the snapshot
-   * fields beside it are a cache — which is why the log is what handlers are
-   * given: it is the thing the resume checks are derived from, and it survives
-   * a crash. Handlers must not mutate it.
+   * steps decided. `steps` is the run's append-only record and the snapshot
+   * fields beside it are a cache, so the log is what handlers are given: it is
+   * what the resume checks derive from and it survives a crash. Handlers must
+   * not mutate it.
    */
   run: LeanRun;
   /**
@@ -92,12 +92,10 @@ export interface RunLeanOpts {
   /**
    * The caller's whole-cycle arm, as a DURATION the shared reader resolves to an
    * epoch once (`flagBudgetMs`): the lean verb's `--timeout <minutes>`, threaded
-   * as a value rather than written to `process.env`. One run's budget therefore
-   * never becomes the next dispatch's deadline, and the environment stays the
-   * host's input rather than something this process writes.
-   *
-   * `PI_ENSEMBLE_CYCLE_DEADLINE` and `PI_ENSEMBLE_CYCLE_BUDGET_MS` both outrank
-   * it, and a resumed run keeps the arm its first round persisted on the record.
+   * as a value rather than written to `process.env`, so one run's budget never
+   * becomes the next dispatch's deadline. `PI_ENSEMBLE_CYCLE_DEADLINE` and
+   * `PI_ENSEMBLE_CYCLE_BUDGET_MS` both outrank it, and a resumed run keeps the arm
+   * its first round persisted on the record.
    */
   budgetMs?: CycleBudgetMs;
 }
@@ -125,12 +123,9 @@ const DEFAULT_MAX_STEPS = 100;
  *
  * The seed's base is validated on the same principle: `createRun` does not
  * consult `assertRun` for a run it just built, so the ONLY place a hand-built
- * seed is judged is here. A caller that passed `"main"` — or a typo'd oid —
- * would otherwise write a record that loads green, because `assertRun` accepts
- * `""` (a seed that found no mainline is legitimate) and would have accepted
- * anything else too. `""` is therefore the one value that passes without the
- * shape check; any other value must be a full lowercase oid, which is the same
- * rule the loader enforces on the read path.
+ * seed is judged is here. `""` (a seed that found no mainline) is legitimate and
+ * the one value that passes without the shape check; any other value must be a
+ * full lowercase oid, the same rule the loader enforces on the read path.
  *
  * Split out of `engine.ts` at AGENTS.md §12's line cap: a run's START facts (its
  * issue number and its seed) are validated here while the runner stays the runner.
@@ -184,13 +179,10 @@ function withOutcome(run: LeanRun, key: string, outcome: Outcome, endedAt: numbe
 /**
  * Has this run earned the merge? Its own record must currently say so: the newest
  * DECIDED `verify` AND the newest DECIDED `ci` both green, and no `draft` marker
- * left standing.
- *
- * Two readers call this. `apply()` asks it on the ARRIVAL, which is the
- * irreversible act; and `runLean` asks it when a resumed run's DERIVED state is
- * already `land`, because the fold reached that state through `next()` and never
- * through `apply()` — so without the second call a file that forged the arrival
- * would run the merge handler on load.
+ * left standing. Two readers call it: `apply()` on the ARRIVAL (the irreversible
+ * act), and `runLean` when a resumed run's DERIVED state is already `land` — the
+ * fold reached that state through `next()` and never through `apply()`, so without
+ * the second call a file that forged the arrival would run the merge handler.
  */
 const landEarned = engineFacts.landEarned;
 
@@ -205,13 +197,12 @@ const landRefusal = engineFacts.landRefusal;
  *    future edit that opens a second edge.
  * 2. `land` is entered only by a run whose OWN record currently says green.
  *    The pair check cannot say this: `ci` + `green` is a legal arrival for a
- *    run whose last `verify` said red, because the outcomes arrive through
- *    the step log, and the replay path re-applies a recorded `ci:green`
- *    without asking what the log before it recorded. The merge is the
- *    irreversible act, so the gate sits on the arrival rather than on the
- *    edge: the newest DECIDED `verify` step and the newest DECIDED `ci`
- *    step must both carry green, and the run must not still carry the draft
- *    marker its gate raised.
+ *    run whose last `verify` said red, because the outcomes arrive through the
+ *    step log, and the replay path re-applies a recorded `ci:green` without
+ *    asking what the log before it recorded. The merge is the irreversible act,
+ *    so the gate sits on the arrival rather than on the edge: the newest DECIDED
+ *    `verify` and `ci` steps must both carry green, and the run must not still
+ *    carry the draft marker its gate raised.
  *
  * The exhaustive pair enumeration and the reachability walk in
  * `test-lean-machine.ts` are the offline halves of the same guarantee.
@@ -322,9 +313,8 @@ async function settle(
  * Drive a run to a terminal state.
  *
  * A handler that throws does NOT retry: the step records
- * `{kind: "error", message}` and the run ends `handed-back`. Retrying a
- * handler that threw would loop a run whose handler is broken, which is the
- * failure mode this engine exists to make impossible.
+ * `{kind: "error", message}` and the run ends `handed-back`. Retrying a handler
+ * that threw would loop a run whose handler is broken.
  */
 export async function runLean(opts: RunLeanOpts): Promise<RunLeanResult> {
   const now = opts.now ?? Date.now;
@@ -335,10 +325,9 @@ export async function runLean(opts: RunLeanOpts): Promise<RunLeanResult> {
     const loaded = loadRun(opts.repoRoot, opts.issue);
     // The drive carries the deadline once, so every boundary reads the same
     // value the first one resolved (a budget resolved twice would restart the
-    // clock and never park — `readCycleDeadline`'s own reason for persisting).
-    // The record is the only caller-side source: a second entry point would be
-    // a second clock for one run, and a resume must keep the arm its first round
-    // wrote there, not whatever a fresh caller passes.
+    // clock and never park). The record is the only caller-side source: a resume
+    // must keep the arm its first round wrote there, not whatever a fresh caller
+    // passes.
     const drive: Drive = {
       repoRoot: opts.repoRoot,
       save: (run) => saveRun(opts.repoRoot, run),
@@ -363,14 +352,11 @@ export async function runLean(opts: RunLeanOpts): Promise<RunLeanResult> {
         // shape, and `driveLoop` ends it below, which is what stamps it.)
         //
         // The verbatim return is only for a record whose result its OWN log
-        // earned. `result` is a cache like `state` and `counters`, and before
-        // this check a file whose log folded to `landed` while its counters
-        // still carried `draft` and whose hand-written `result.code` was 0
-        // reported success: the fold had refused the merge, the stamp had
-        // granted it, and the stamp won because it was read first. So the
-        // stamp is judged against the derived position on the same three
-        // rules `endRun` writes: terminal, code matches the state, and a
-        // `landed` state whose land gate actually holds.
+        // earned. `result` is a cache like `state` and `counters`: a stamp that
+        // grants a merge the fold refused must not win by being read first, so it is
+        // judged against the derived position on the same three rules `endRun`
+        // writes — terminal, code matches the state, and a `landed` state whose land
+        // gate actually holds.
         const refusal = engineFacts.stampedResultRefusal(file, derivedState, run, landEarned);
         if (refusal !== undefined) throw new LeanStateError(refusal);
         return { run, code: run.result.code, state: run.state };
