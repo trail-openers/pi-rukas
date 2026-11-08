@@ -1,18 +1,9 @@
 /**
- * lean/engine-facts — the four readings of a run's step log the runner consults but
- * does not itself perform.
- *
- * `reasonFor` words why a run ended; `lastFailedRules` recovers the rules a
- * refusal posted; `landEarned` and `landRefusal` are the merge gate and its
- * explanation; `stampedResultRefusal` checks a resumed run's stamped `result`
- * against the log that is supposed to have earned it. All four are pure reads of
- * the record — they share `newestDecided` and the report-state exclusion, and
- * one of them (`stampedResultRefusal`) has to ask `landEarned` the same question
- * the arrival gate asks, which is exactly why they live together.
- *
- * `landEarned` is a parameter of `stampedResultRefusal` rather than an import of
- * this module's own: the runner passes the one it gates arrivals with, so a
- * stamp can never be judged by a different rule than the merge is.
+ * lean/engine-facts — the readings of a run's step log the runner consults but
+ * does not itself perform: `reasonFor` words why a run ended, and the merge gate
+ * (`landEarned`, its refusal wording, and the stamp check that re-asks the gate).
+ * All are pure reads of the record, sharing `newestDecided` and the report-state
+ * exclusion, which is why they live together.
  */
 
 import { REPORT_FAILED_KIND, exitCodeFor } from "./machine.ts";
@@ -59,13 +50,12 @@ export function reasonFor(
 }
 
 /**
- * Has this run earned the merge? Its own record must currently say so: the
- * newest DECIDED `verify` AND the newest DECIDED `ci` both green, and no
- * `draft` marker left standing. `ci`'s green is what the table routes on and
- * `verify`'s is what the run's own gate said — a recorded `ci:green` read
- * over a later red verify is the shape that used to walk into the merge.
+ * Has this run earned the merge? Its own record must currently say so: the newest
+ * DECIDED `verify` AND the newest DECIDED `ci` both green, and no `draft` marker
+ * left standing. `ci`'s green is what the table routes on and `verify`'s is what
+ * the run's own gate said.
  */
-export function landEarned(run: LeanRun): boolean {
+function landEarned(run: LeanRun): boolean {
   if (run.counters.draft) return false;
   return (
     newestDecided(run.steps, "verify")?.outcome?.kind === "green" &&
@@ -74,7 +64,7 @@ export function landEarned(run: LeanRun): boolean {
 }
 
 /** The reason the record gives for refusing the merge, for the handback line. */
-export function landRefusal(run: LeanRun): string {
+function landRefusal(run: LeanRun): string {
   const lastVerify = newestDecided(run.steps, "verify");
   const lastCi = newestDecided(run.steps, "ci");
   return `land refused: verify not green (draft=${run.counters.draft}, last verify=${
@@ -95,15 +85,14 @@ export function landRefusal(run: LeanRun): string {
  *   - the fold must actually have reached a terminal state (a stamp on a non-terminal
  *     position describes a run nobody ended);
  *   - the code must be the one that state exits with;
- *   - `landed` additionally needs `landEarned` to hold of the log, so the merge a stamp
- *     claims is the merge the record earned — the rule that matters, since a stamp on the
- *     file is read before either of the two `land` gates runs.
+ *   - `landed` additionally needs the merge gate to hold of the log, so the merge a
+ *     stamp claims is the merge the record earned — the rule that matters, since a
+ *     stamp on the file is read before either `land` gate runs.
  */
-export function stampedResultRefusal(
+function stampedResultRefusal(
   file: string,
   derivedState: LeanState,
   run: LeanRun,
-  earned: (run: LeanRun) => boolean = landEarned,
 ): string | undefined {
   const result = run.result;
   if (result === undefined) return undefined;
@@ -111,7 +100,7 @@ export function stampedResultRefusal(
     return `${file}: stamped result disagrees with the step log (the log replays to ${derivedState}, which is not terminal, but the record carries ${JSON.stringify(result)})`;
   if (result.code !== exitCodeFor(derivedState))
     return `${file}: stamped result disagrees with the step log (${derivedState} exits ${exitCodeFor(derivedState)}, the record says ${result.code})`;
-  if (derivedState === "landed" && !earned(run))
+  if (derivedState === "landed" && !landEarned(run))
     return `${file}: stamped result disagrees with the step log (${landRefusal(run)}, yet the record claims ${result.code})`;
   return undefined;
 }

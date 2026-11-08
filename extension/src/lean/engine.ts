@@ -190,6 +190,13 @@ const landEarned = engineFacts.landEarned;
 const landRefusal = engineFacts.landRefusal;
 
 /**
+ * Why a stamped `result` is not the answer its own step log gives, or
+ * `undefined` when it is. The rules are `engine-facts.ts`'s, so the stamp is
+ * judged by the same gate the arrival is.
+ */
+const stampedResultRefusal = engineFacts.stampedResultRefusal;
+
+/**
  * Apply the table, then enforce the two arrival rules a (state, kind) pair
  * cannot express.
  *
@@ -241,20 +248,6 @@ function apply(drive: Drive, run: LeanRun, outcome: Outcome): LeanRun {
   }
   drive.save(advanced);
   return advanced;
-}
-
-/**
- * Why a stamped `result` is not the answer its own step log gives, or
- * `undefined` when it is. The rules are `engine-facts.ts`'s; this is the call
- * that feeds it the engine's own `landEarned`, so the stamp is judged by the
- * same gate the arrival is.
- */
-function stampedResultRefusal(
-  file: string,
-  derivedState: LeanState,
-  run: LeanRun,
-): string | undefined {
-  return engineFacts.stampedResultRefusal(file, derivedState, run, landEarned);
 }
 
 /**
@@ -357,7 +350,7 @@ export async function runLean(opts: RunLeanOpts): Promise<RunLeanResult> {
         // judged against the derived position on the same three rules `endRun`
         // writes — terminal, code matches the state, and a `landed` state whose land
         // gate actually holds.
-        const refusal = engineFacts.stampedResultRefusal(file, derivedState, run, landEarned);
+        const refusal = stampedResultRefusal(file, derivedState, run);
         if (refusal !== undefined) throw new LeanStateError(refusal);
         return { run, code: run.result.code, state: run.state };
       }
