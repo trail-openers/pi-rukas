@@ -31,7 +31,9 @@
  *       missed because the issue never stated them. One exported const, its
  *       file quota interpolated from the boundary's own constant, and bounded
  *       in length, since the section costs the specify child context on every
- *       dispatch.
+ *       dispatch. Its EXAMPLES are pinned only by ABSENCE: the defects of the
+ *       tasks this lever is measured on must not appear in the prompt, or the
+ *       campaign score measures the prompt rather than the model.
  */
 
 import { BUILD_SCOPE_CONTRACT } from "../src/lean/build-prompt.ts";
@@ -184,7 +186,7 @@ assert(
   );
   for (const [needle, why] of [
     ["ALREADY supports", "input forms the touched code already supports must keep working"],
-    ["another mode has already cached", "interaction with existing state, modes and callers"],
+    ["interacts with existing state", "interaction with existing state, modes and callers"],
     ["implies but never says", "the scope the issue implies and does not state"],
     ["extra test CASE", "an implied requirement is an extra case, never a replacement test"],
     ["`path:line`", "what it keeps must be grounded in base-commit evidence"],
@@ -193,6 +195,17 @@ assert(
     assert(
       specify.includes(needle),
       `specify's elicitation names ${why} (${needle})`,
+    );
+  }
+  // The examples are generic on purpose: naming a defect the measured bench
+  // tasks actually have would hand the child the answer it is scored on finding,
+  // and the campaign number would describe the prompt instead of the model. So
+  // the assertion is on the structural phrases above plus this absence — never
+  // on the example wording itself.
+  for (const leaked of ["!", "cache", "polyfill", "fallback"]) {
+    assert(
+      !IMPLIED_REQUIREMENTS.includes(leaked),
+      `the elicitation's examples stay generic — no ${leaked} in the const`,
     );
   }
   const noTests = specifyPrompt({

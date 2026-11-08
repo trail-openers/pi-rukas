@@ -150,14 +150,19 @@ export const TEST_SCOPE_CONTRACT = `**Write the smallest test that proves the cr
  * comment for what it keeps and drops anything it cannot ground. Extra CASES go
  * inside the criterion's own file: extra files would let the quota spend an
  * implied case on top of the test the criterion itself requires.
+ *
+ * The examples are deliberately generic. This section is measured on a bench
+ * whose tasks have their own named defects; an example that named one would
+ * hand the child the answer it is supposed to go and find, and the campaign
+ * score would describe the prompt rather than the model.
  */
 export const IMPLIED_REQUIREMENTS = `## Implied requirements
 
 Before you freeze your tests, search THIS repository for requirements the issue does not state:
 
-1. Input forms and behaviours the code you touch ALREADY supports and the change must keep working with — a sibling option that accepts a leading \`!\` for negation, an argument form the new code must still honour.
-2. How the new behaviour interacts with existing state, modes and callers — an entry another mode has already cached, a caller that passes the value you change.
-3. Scope the issue implies but never says — what a polyfill or fallback covers, which path is the default.
+1. Input forms and behaviours the code you touch ALREADY supports and the change must keep working with — an optional argument's existing default, a value form older callers still pass.
+2. How the new behaviour interacts with existing state, modes and callers — a caller that already depends on the current return value, state another code path set first.
+3. Scope the issue implies but never says — which inputs, platforms or call sites the change is meant to cover, which path is the default.
 
 For each one you can point at, add an extra test CASE inside the test file of the criterion it refines (its second file too, within the ${MAX_TEST_FILES_PER_CRITERION}-file quota), with a comment naming the base-commit evidence as \`path:line\`. An implied case never replaces or displaces the criterion's own test. Skip any you cannot ground in a file that exists at the base commit — no evidence, no case.`;
 
