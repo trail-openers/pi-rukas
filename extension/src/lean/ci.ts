@@ -25,23 +25,17 @@
  * rather than a build round, because a result nobody observed is not evidence
  * that the code is wrong.
  *
- * **The architectural bound, stated plainly.** Between `build`/`verify` and this
- * handler nothing is pushed, so the code the run produced exists ONLY in this
- * worktree, and `ci` necessarily executes its full tier FROM DISK. "The full
- * tier ran at the frozen head" is therefore NOT achievable by this shape — no
- * frozen checkout ever happens here, and this step does not pretend otherwise
- * (it never calls `checkout`, `switch`, `reset`, `clean` or `stash`). What IS
- * achievable, and is what the green below actually claims, is that **the disk
- * still matches the head the record says was built**: before the tier runs, the
- * worktree's HEAD is re-read against the newest decided `verify`'s
- * `verifiedHead`, HEAD must still sit on the run's branch, and the tree must
- * pass lean's single clean-tree gate (`assertTreeClean` in `verify-recheck.ts`,
- * the same porcelain the build/verify gate used). Anything else throws. So a
- * `git checkout` of another commit, a detached HEAD, or bytes written into the
- * tree between the build gate and this handler cannot produce a green — the
- * step refuses, rather than reporting a green for code it never ran. Proving
- * the disk matches the head it claims is the deliverable; a frozen checkout is
- * not something this shape can do.
+ * **The architectural bound.** Between `build`/`verify` and this handler nothing is
+ * pushed, so the code the run produced exists ONLY in this worktree, and `ci`
+ * necessarily executes its full tier FROM DISK. "The full tier ran at the frozen
+ * head" is therefore NOT achievable by this shape — no frozen checkout happens here
+ * (it never calls `checkout`, `switch`, `reset`, `clean` or `stash`). What the green
+ * actually claims is that **the disk still matches the head the record says was
+ * built**: before the tier runs, the worktree's HEAD is re-read against the newest
+ * decided `verify`'s `verifiedHead`, HEAD must still sit on the run's branch, and the
+ * tree must pass lean's single clean-tree gate (`assertTreeClean` in
+ * `verify-recheck.ts`). Anything else throws. Proving the disk matches the head it
+ * claims is the deliverable.
  */
 
 import { isFullCommitSha } from "../commit-sha.ts";
@@ -85,17 +79,15 @@ const RED_ROWS = ["fail", "failure", "cancelled", "cancel", "timed_out", "error"
 const NOT_PASSING_ROWS = ["skipped", "skipping", "neutral"];
 
 /**
- * The `ci` budget's minutes for one loaded config. One number feeds BOTH bounds
- * of the step — the forge wait and the full tier — so neither can drift from the
- * other or from what `.pi/work.json` says; `DEFAULT_BUDGETS` is the fallback
- * only where the config carries no `ci` row at all.
+ * The `ci` budget's minutes for one loaded config. One number feeds BOTH bounds of
+ * the step — the forge wait and the full tier — so neither can drift from the other
+ * or from what `.pi/work.json` says; `DEFAULT_BUDGETS` is the fallback only where
+ * the config carries no `ci` row at all.
  *
- * A `0` here is the shipped default, not a bound of zero: elsewhere in a budget
- * `0` means "no bound", and for the other states `armBudget` turns it into
- * exactly that (no wall clock at all). Here the same number is a timeout handed
- * to the forge wait and to the tier, so `0` would read as "expire immediately"
- * and every run would hand back at once — the opposite of what a generous
- * setting means everywhere else. So `<= 0` takes the shipped number.
+ * A `0` here is the shipped default, not a bound of zero: elsewhere in a budget `0`
+ * means "no bound", but here the same number is a timeout handed to the forge wait
+ * and to the tier, so `0` would read as "expire immediately" and every run would
+ * hand back at once. So `<= 0` takes the shipped number.
  */
 function ciMinutes(cfg: WorkConfig): number {
   const configured = budgetFor(cfg, "ci")?.minutes ?? 0;
@@ -248,22 +240,18 @@ async function readForge(deps: CiDeps, repoRoot: string, prNumber: number): Prom
  * The forge's required-check verdict for this PR, POLLED until the checks are
  * terminal, the bound expires, or the run's cycle deadline arrives.
  *
- * A still-running CI makes `mergeStateStatus` UNSTABLE, and a step that reads
- * once right after publish grades that as red and spends a build round on code
- * that is not broken. So a pending (or unrecognised) row is WAITED, and red is
- * reserved for a row that actually failed. Every iteration re-issues BOTH reads
- * — including the head — so a PR that moves off the verified head mid-wait is
- * caught on the iteration that sees it, with no further poll. An empty rows list
- * stays an immediate red: "no checks reported" is the absence of evidence, not
- * evidence of green, and a loop that waited for it would poll a forge that said
- * nothing for the whole budget.
+ * A still-running CI makes `mergeStateStatus` UNSTABLE, and a step that reads once
+ * right after publish grades that as red and spends a build round on code that is not
+ * broken. So a pending (or unrecognised) row is WAITED, and red is reserved for a row
+ * that actually failed. Every iteration re-issues BOTH reads — including the head — so
+ * a PR that moves off the verified head mid-wait is caught on the iteration that sees
+ * it. An empty rows list stays an immediate red: "no checks reported" is the absence of
+ * evidence, not evidence of green.
  *
- * The two bounds are SEQUENTIAL and separate: this wait gets the `ci` budget's
- * minutes (the caller's one `ciMinutes` read), and the full tier keeps its own
- * bound of the same size afterwards — clamped to the time the cycle's deadline
- * still leaves, which is what {@link ciTierBudgetMs} does. Still pending when the
- * wait expires is a handback (`VerifyInfraError`), never a red, because nobody
- * observed the code being wrong.
+ * The two bounds are SEQUENTIAL and separate: this wait gets the `ci` budget's minutes,
+ * and the full tier keeps its own bound of the same size afterwards — clamped to the
+ * time the cycle's deadline still leaves, which is what {@link ciTierBudgetMs} does.
+ * Still pending when the wait expires is a handback (`VerifyInfraError`), never a red.
  */
 async function checksRedReason(
   deps: CiDeps,
@@ -323,25 +311,21 @@ async function checksRedReason(
 /**
  * Is the disk still the head this run was certified at?
  *
- * `ci` runs its full tier as a shell command IN the worktree, so the tree it
- * judges is whatever is on disk when the handler starts. Nothing is pushed
- * between the build/verify gate and here, so the only way to make "the full
- * tier ran at the verified head" honest is to PROVE the disk still holds that
- * head — which is what this does, with the same reads `verify-recheck.ts` makes
- * after every tier:
+ * `ci` runs its full tier as a shell command IN the worktree, so the tree it judges is
+ * whatever is on disk when the handler starts. Nothing is pushed between the
+ * build/verify gate and here, so the only way to make "the full tier ran at the
+ * verified head" honest is to PROVE the disk still holds that head — with the same
+ * reads `verify-recheck.ts` makes after every tier:
  *
- *   - HEAD is re-read and must equal `verified` — a `git checkout` of anything
- *     else (or a commit made since the gate) is refused here rather than graded;
- *   - HEAD must still sit on the run's own branch — `git checkout --detach`
- *     leaves the same sha on no branch, and everything after this step pushes
- *     the branch, not the sha;
+ *   - HEAD is re-read and must equal `verified` — a `git checkout` of anything else
+ *     (or a commit made since the gate) is refused here rather than graded;
+ *   - HEAD must still sit on the run's own branch — `git checkout --detach` leaves
+ *     the same sha on no branch, and everything after this step pushes the branch;
  *   - the tree must be clean, through lean's single clean-tree gate
- *     ({@link assertTreeClean}) — a rewritten or untracked file means the tier
- *     would run over bytes no commit holds.
+ *     ({@link assertTreeClean}) — a rewritten or untracked file means the tier would
+ *     run over bytes no commit holds.
  *
- * Every refusal throws. This is the machine having moved, not the code being
- * wrong, so the engine hands the run back rather than spending a fix round on
- * bytes nobody committed.
+ * Every refusal throws: this is the machine having moved, not the code being wrong.
  */
 async function assertDiskAtVerifiedHead(
   deps: CiDeps,

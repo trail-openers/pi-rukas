@@ -1,27 +1,23 @@
 /**
  * lean/review-gates — the two gates as the `review` step calls them.
  *
- * `review.ts` is the decision procedure: which verdict ends the loop, what a fix
- * round is told, when the budget says stop. What lives here is the pair of
- * adapters between that loop and the two frozen review layers — one report-only
- * adversarial pass, one six-lens round — plus the judgement each one's *shape*
- * carries before any verdict is read: an adversarial pass with no verdict, a lens
- * round that ran no lens, a round that reported no usage from any child.
+ * `review.ts` is the decision procedure; what lives here is the pair of adapters
+ * between that loop and the two frozen review layers — one report-only adversarial
+ * pass, one six-lens round — plus the judgement each one's *shape* carries before any
+ * verdict is read: an adversarial pass with no verdict, a lens round that ran no lens,
+ * a round that reported no usage from any child.
  *
  * Three rules both halves obey, and none is visible from the caller's side:
  *
  * - **The row each child cost is APPENDED to the caller's running total, never
- *   returned.** A copy handed back and re-assigned per round is how a handback
- *   ends up reporting the cost of one round as the cost of the step, and a total
- *   rebuilt each round reports a two-round run to the operator as a one-round one.
- * - **Absence is never a pass.** Each throws with the rows it paid for attached,
- *   because a gate that did not run is not a gate that approved and the run must
- *   hand back rather than carry an unreviewed head forward.
- * - **"Could not read" is never "clean".** `buildEvidence` and `runClaimScan`
- *   answer `undefined` / `[]` both for "found nothing" and for "the branch would
- *   not open" — so the precondition is established BEFORE them, by a read that
- *   does distinguish the two. This is the same invariant `reviewedHead` enforces
- *   by refusing to return `""`.
+ *   returned.** A total rebuilt each round reports a two-round run to the operator as
+ *   a one-round one.
+ * - **Absence is never a pass.** Each throws with the rows it paid for attached: a
+ *   gate that did not run is not a gate that approved.
+ * - **"Could not read" is never "clean".** `buildEvidence` and `runClaimScan` answer
+ *   `undefined` / `[]` both for "found nothing" and for "the branch would not open" —
+ *   so the precondition is established BEFORE them, by a read that does distinguish
+ *   the two.
  */
 
 import { lensFixDelta } from "../fix-delta.ts";
@@ -81,24 +77,20 @@ function blockingRecord(result: DispatchResult): boolean {
  * What one report-only adversarial pass left open, and whether the step may buy
  * a fix wave with it.
  *
- * `loopOutcome: "approved"` alone is NOT a clean pass: the loop reaches it from
- * either a clean `APPROVED` or a non-blocking verdict whose findings travel to the
- * PR body and the lens review. Lean has no PR body and no `commit-pr` step to hand
- * them to, so the pass is read here and handed to the lens round by `lensContext`'s
- * `carried` block — the only reason that parameter exists.
+ * `loopOutcome: "approved"` alone is NOT a clean pass: the loop reaches it from either
+ * a clean `APPROVED` or a non-blocking verdict whose findings travel to the lens review.
+ * Lean has no PR body to hand them to, so the pass is read here and handed to the lens
+ * round by `lensContext`'s `carried` block — the only reason that parameter exists.
  *
- * `open` and `blocking` are two answers, not one question. `open` — findings the
- * lenses must judge and the disclosure must carry — is true for any reported row;
- * `blocking` — the wave's price of admission — only for the status doctrine calls
- * blocking. A pass open and not blocking is a reviewer that reported findings it
- * declined to stop the run for, and paying for a fixer, a re-review and a second
- * gate pass against those is the deviation this split closes.
+ * `open` and `blocking` are two answers, not one question. `open` — findings the lenses
+ * must judge and the disclosure must carry — is true for any reported row; `blocking` —
+ * the wave's price of admission — only for the status doctrine calls blocking. Paying
+ * for a fixer, a re-review and a second gate pass against findings a reviewer declined
+ * to stop for is the deviation this split closes.
  *
- * Both are read off `adversarialRounds` — the loop's own per-round records, threaded
- * as data rather than recovered from prose — falling back to the
- * `PASSED WITH FINDINGS` marker only when a result carries no records. A record
- * whose status is anything but `APPROVED` is findings, whatever `loopOutcome` was
- * bucketed as: the records are what the loop judged round by round.
+ * Both are read off `adversarialRounds` — the loop's own per-round records, threaded as
+ * data rather than recovered from prose — falling back to the `PASSED WITH FINDINGS`
+ * marker only when a result carries no records.
  */
 function openFromPass(result: DispatchResult): { findings: string; open: boolean } {
   const last = lastRound(result);
@@ -117,12 +109,10 @@ function openFromPass(result: DispatchResult): { findings: string; open: boolean
 
 /**
  * The role the adversarial gate's row carries: the role the loop itself reports
- * under, not the inner reviewer's role. Billing the step's most expensive child
- * under the reviewer's role made lean's `byRole` cost comparison against the
- * frozen driver wrong, since the driver records these as `adversarial-loop`.
- * Asserted here and in `test-lean-review-wiring.ts` against the real synthesised
- * role — a fixture and an assertion that both spell the wrong role agree with each
- * other and prove nothing.
+ * under, not the inner reviewer's role — lean's `byRole` cost comparison against the
+ * frozen driver is only honest if both record these the same way. Asserted here and in
+ * `test-lean-review-wiring.ts` against the real synthesised role, since a fixture and
+ * an assertion that both spell the wrong role agree with each other and prove nothing.
  */
 export const ADVERSARIAL_GATE_ROLE = "adversarial-loop";
 
@@ -145,10 +135,8 @@ export type AdversarialGate =
  * blame. The row this pass cost is APPENDED to the caller's running total, not
  * returned (see this file's header).
  *
- * `wave` names which half of the step's one wave this pass is, and puts the number
- * in the reviewer's brief: the full review, or the re-review of the fix diff. The
- * wave says what the reviewer is looking at in words rather than as a position in a
- * loop that no longer exists.
+ * `wave` names which half of the step's one wave this pass is, and puts the number in
+ * the reviewer's brief: the full review, or the re-review of the fix diff.
  */
 export async function adversarialGate(
   deps: ReviewDeps,
@@ -249,20 +237,19 @@ export async function adversarialGate(
 /**
  * The six-lens gate: one round at the commit the adversarial gate just cleared.
  *
- * Its own read of origin, deliberately, rather than the value the caller still
- * holds: if the pass before left origin somewhere else, that is the fact the
- * next verdict should be stated against. Two gates reviewing two different
- * commits have reviewed neither.
+ * Its own read of origin, deliberately, rather than the value the caller still holds:
+ * if the pass before left origin somewhere else, that is the fact the next verdict
+ * should be stated against. Two gates reviewing two different commits have reviewed
+ * neither.
  *
- * **The re-review's range is the caller's, not the layer's.** With `since` set,
- * the round reviews `git diff <since>..<head>` — the fix wave's own commits, and
- * nothing else. Without it the layer derives its own delta base from the lens
- * ledger, so the step would be certifying a range it did not choose. The step
- * always names `since` on the fix pass and never on the full one.
+ * **The re-review's range is the caller's, not the layer's.** With `since` set, the
+ * round reviews `git diff <since>..<head>` — the fix wave's own commits, and nothing
+ * else. Without it the layer derives its own delta base from the lens ledger, so the
+ * step would be certifying a range it did not choose. The step always names `since` on
+ * the fix pass and never on the full one.
  *
- * The diff is read ONCE and handed to the evidence builders as a parameter; what
- * they need from the caller is the guarantee that the branch opened at all, which a
- * successful diff read establishes.
+ * The diff is read ONCE and handed to the evidence builders as a parameter; what they
+ * need from the caller is the guarantee that the branch opened at all.
  */
 export async function lensGate(
   deps: ReviewDeps,
@@ -302,14 +289,11 @@ export async function lensGate(
   // "NOT ADDRESSED". `since` is a commit, so the range is two-dot on purpose —
   // the fix's commits are the delta, not a merge-base story.
   const rangeBase = opts.since ?? opts.base;
-  // Throws on a range it could not read, so everything below runs only on a
-  // branch this step has positively opened.
-  // The diff is read from the REPO ROOT, not the round's worktree: `rangeDiff`
-  // needs only the object database and the two commits, and the repo root is the
-  // one directory this step knows is present for the whole step — the run's own
-  // worktree may be gone by the re-review, and a diff read whose cwd has been
-  // deleted reports "could not read" for a range git resolves fine. The evidence
-  // builders below still read the BRANCH.
+  // Throws on a range it could not read, so everything below runs only on a branch
+  // this step has positively opened. The diff is read from the REPO ROOT, not the
+  // round's worktree: `rangeDiff` needs only the object database and the two commits,
+  // and the repo root is the one directory this step knows is present for the whole
+  // step. The evidence builders below still read the BRANCH.
   const diff = await rangeDiff(deps, ctx.repoRoot, rangeBase, head, opts.rows);
   // `rangeDiff` throws rather than returning empty, so a missing diff never gets
   // here — but the type says `string | undefined` because the read itself can
