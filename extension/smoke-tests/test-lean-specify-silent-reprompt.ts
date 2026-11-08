@@ -21,7 +21,7 @@
 
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { refusalFeedback } from "../src/lean/specify-prompt.ts";
+import { IMPLIED_REQUIREMENTS, refusalFeedback } from "../src/lean/specify-prompt.ts";
 import { MAX_TEST_LINES } from "../src/lean/test-size.ts";
 import {
   ROOTS,
@@ -114,6 +114,23 @@ function report(r: RunResult, label: string): void {
     "(1) the first prompt carries no nudge",
   );
   assert(prompts[1]?.includes(NUDGE) === true, "(1) the re-prompt carries the nudge");
+  // Same pin as case (g) of test-lean-specify-retry.ts, for the OTHER retry arm:
+  // the resubmit prompt is built by the same builder, and a reordering that
+  // pushed the section past the appended nudge would un-tell this child the one
+  // rule that makes its implied cases worth writing.
+  assert(
+    prompts[0]?.includes(IMPLIED_REQUIREMENTS) === true,
+    "(1) the kickoff prompt the step built carries the implied-requirement section",
+  );
+  assert(
+    prompts[1]?.includes(IMPLIED_REQUIREMENTS) === true,
+    "(1) the nudge-carrying resubmit prompt still carries the section — a re-prompt does not un-tell the rule",
+  );
+  assert(
+    prompts[1] !== undefined &&
+      prompts[1].indexOf(IMPLIED_REQUIREMENTS) < prompts[1].indexOf("## What you report"),
+    "(1) on the resubmit too the section precedes the report protocol",
+  );
   assert(
     prompts[1]?.includes(REFUSED) !== true,
     "(1) the nudge is not the refusal section: nothing was refused",
