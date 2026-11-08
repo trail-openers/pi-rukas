@@ -190,7 +190,11 @@ const rows = (...rows: Array<{ name: string; state?: string; bucket?: string }>)
   );
 }
 {
-  const r = await hookDecision("gh pr merge 12", GOOD_ENTRIES, { evidenceHeadOid: "" });
+  // `null` is the harness's "the read answered, no head" shape: the field is
+  // left out of the payload entirely, which is what a gh that had nothing to
+  // report gives. (`""` would be a different fault — a present-but-unusable
+  // value — and the gatherer names the two distinctly.)
+  const r = await hookDecision("gh pr merge 12", GOOD_ENTRIES, { evidenceHeadOid: null });
   assert(r.block === true, "#2107: a CI verdict with no head OID at all is refused");
   assert(/head/i.test(r.reason ?? ""), "…naming the absent head");
 }
@@ -201,11 +205,17 @@ const rows = (...rows: Array<{ name: string; state?: string; bucket?: string }>)
 // read carries the command's `-R <repo>`. The guard bounds the call itself;
 // this pins the bound and the repo scoping on the argv the guard issued.
 {
-  const r = await hookDecision("gh -R o/r pr merge 12", GOOD_ENTRIES, {
+  // The command text carries the `-R` ONCE: `gh` takes one repo selector and
+  // the guard's own classifier holds `repo-repeated` (merge-allowlist.ts), so
+  // a literal that spelled it twice would be a HOLD, not a merge. `repoFlag`
+  // appends the flag to the command the hook is handed, and the stub refuses
+  // any `gh` read that dropped it — which is the whole assertion.
+  const r = await hookDecision("gh pr merge 12", GOOD_ENTRIES, {
     repoFlag: " -R o/r",
     targetRepo: "o/r",
     prChecks: rows(row("quality-gate", "pass")),
-  });  assert(r.block === false, `#2107: a -R merge with green checks is allowed (${r.reason ?? ""})`);
+  });
+  assert(r.block === false, `#2107: a -R merge with green checks is allowed (${r.reason ?? ""})`);
   const evidence = r.calls.filter((c) => c.includes("mergeStateStatus,"));
   const checks = r.calls.filter((c) => c.includes("gh pr checks"));
   assert(

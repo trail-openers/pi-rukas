@@ -25,7 +25,7 @@ import type { MergeTarget } from "../src/merge-target.ts";
 import { type LedgerEntry, latestEntry, ledgerPathFor } from "../src/review-ledger.ts";
 import { adversarialPassed, lensPassed } from "../src/review-ledger.ts";
 import type { MergeGateEnv } from "./merge-guard-forge-fixture.ts";
-import { evidenceHeadFor, isFullCommitSha } from "./merge-guard-forge-fixture.ts";
+import { evidenceHeadFor, widenOid } from "./merge-guard-forge-fixture.ts";
 import { commandOf } from "./lib/argv-shell.ts";
 
 // The hook reads the forge from PI_ENSEMBLE_FORGE (the detectForge hard
@@ -155,10 +155,23 @@ export async function makeHook(env: {
     },
   } as never;
   const t = env.target;
+  // #2107 — one head for every reader. The guard verifies `git rev-parse`'s
+  // answer against the PR's `headOid` by STRING EQUALITY, then pins the CI
+  // verdict to that same fetched value, and the guard's own OID comparison
+  // (`sameOid` in merge-guard-reads.ts) demands >= 7 hex characters from BOTH
+  // sides. A fixture head shorter than that — the shared `TARGET.headOid` is
+  // `abc123` — therefore cannot satisfy the pin at all: no answer the forge
+  // stub gives is both 40 hex for the gatherer and the same commit as a 6-char
+  // verified head. So the harness widens the fixture head ONCE, here, and the
+  // identity read, the `rev-parse` stub and the evidence read all answer with
+  // that one value: an arm is never made to agree with the pin by accident,
+  // and an arm that IS testing the pin says so by naming `evidenceHeadOid`.
+  const headOid = widenOid(t.headOid);
+  const fetched = env.fetchedHead === undefined ? headOid : widenOid(env.fetchedHead);
   const ghView = {
     stdout: JSON.stringify({
       headRefName: t.headBranch,
-      headRefOid: t.headOid,
+      headRefOid: headOid,
       baseRefName: t.baseBranch,
       author: { login: t.author },
       labels: t.labels.map((n) => ({ name: n })),
@@ -211,16 +224,23 @@ export async function makeHook(env: {
       // the guard its identity answer and the gate would pass on nothing.
       if (cmd.includes(`--json ${EVIDENCE_FIELDS}`)) {
         if (env.failEvidence) throw new Error("gh: could not read the PR state");
-        // #2107 — the PR's own head, as the forge reports it: the fixture's
-        // `target.headOid`, which is also what the guard verifies against
-        // `fetchedHead`. An arm testing the verdict pin overrides it with
-        // `evidenceHeadOid`.
+        // #2107 — the head the verdict was read at. The guard compares it to
+        // the OID it fetched and checked against the PR's `headOid`, so the
+        // default is the 40-hex rendering of THAT head, derived from the very
+        // field the guard compares (`fetchedHead`, which it has just verified
+        // equals the PR's `headOid`). A matrix whose subject is not the pin
+        // thus agrees by construction and cannot fail on it by accident; an
+        // arm that IS testing the pin names `evidenceHeadOid` and opts out of
+        // the derivation. `evidenceHeadOid: null` is the third state — the
+        // read answered and reported NO head at all, so the field is left out
+        // of the payload, which is a different fault from a head that is some
+        // other commit.
         const prHeadOid =
-          env.evidenceHeadOid === undefined
-            ? evidenceHeadFor(env.fetchedHead)
-            : isFullCommitSha(env.evidenceHeadOid)
-              ? env.evidenceHeadOid
-              : env.evidenceHeadOid.padEnd(40, "0");
+          env.evidenceHeadOid === null
+            ? undefined
+            : env.evidenceHeadOid === undefined
+              ? evidenceHeadFor(fetched)
+              : evidenceHeadFor(env.evidenceHeadOid);
         if (env.hangChecks) {
           // The #2107 hang arm: the guard's bound is what answers this, so the
           // stub itself outlives every timeout an unbounded caller would have.
@@ -286,7 +306,7 @@ export async function makeHook(env: {
     if (cmd.includes("git remote")) {
       return { stdout: `${env.remote}\n` };
     }
-    if (cmd.includes(`rev-parse ${env.remote}/`)) return { stdout: env.fetchedHead };
+    if (cmd.includes(`rev-parse ${env.remote}/`)) return { stdout: fetched };
     if (cmd.includes("symbolic-ref")) {
       return { stdout: `origin/${env.mainline ?? env.target.baseBranch}\n` };
     }
@@ -344,6 +364,14 @@ export async function hookDecision(
     targetRepo: opts.targetRepo,
   };
   const handler = await makeHook(env);
+  // The command the hook is handed: the caller's text plus the `-R <repo>` the
+  // arm declared. A caller that is NOT testing a merge at all (the reader-threw
+  // arm hands over a non-string to make the classifier throw) gets its value
+  // untouched — stringifying it would hand the classifier a readable `"[object
+  // Object]"` and the arm would exercise the ordinary no-merge path instead of
+  // the throw it exists to pin.
+  const commandText = () =>
+    typeof command === "string" ? command + (env.repoFlag ?? "") : command;
   // #1417 round 2 — capture the HELD trace lines alongside the verdict. The
   // line is the only place a hold's CODE is recorded (the rendered refusal
   // deliberately carries no command text, and the trace carries the code and
@@ -359,7 +387,7 @@ export async function hookDecision(
   try {
     r = await withLedger(entries, () =>
       handler(
-        { toolName: "bash", input: { command: command + (env.repoFlag ?? "") } },
+        { toolName: "bash", input: { command: commandText() } },
         undefined as never,
       ),
     );

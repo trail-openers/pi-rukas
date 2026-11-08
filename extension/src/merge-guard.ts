@@ -459,17 +459,19 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
         trace(
           `merge-guard: PR #${prNumber} ${branch} — round-cap path allows the merge (ISSUES_FOUND, no CRITICAL, round ${lens?.round}, disclosed on the PR)`,
         );
+        // #2107 — an ALLOW is not taken where it is made: `allowNote` falls
+        // through to the single CI exit below; a `return` here let a capped
+        // merge skip that gate, and the strict refusal below then refused a
+        // merge the guard had just allowed, `gh` never asked.
       } else if (capDecision.applies) {
         return block(
           `merge refused: ${capDecision.failedCondition ?? "the round-cap conditions are not met"} — the merge guard refuses by default (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)`,
         );
       }
-      // The round-cap path does not apply (no entry, or a passing entry the
-      // strict rule should have allowed — unreachable here, or a legacy
-      // entry without a verdict detail): the strict rule's original refusal
-      // text, with the branch named for the operator. #1449 — when a review
-      // DID run and its row went elsewhere, the text says so and names the file.
-      return lensNotEvaluatedRefusal(branch, lens, { redirectedTo }); // #1000 — "the round-cap path was not evaluated" (see lensNotEvaluatedRefusal)
+      // The round-cap path did not apply (no entry, or a legacy entry with no
+      // verdict detail): the strict rule's refusal, branch named for the
+      // operator; #1449 — a row that went elsewhere is named, with its file.
+      if (!allowNote) return lensNotEvaluatedRefusal(branch, lens, { redirectedTo }); // #1000 — "the round-cap path was not evaluated" (see lensNotEvaluatedRefusal)
     }
 
     if (!allowNote) {

@@ -45,6 +45,7 @@ import {
   setupLedgerPath,
   teardownLedger,
 } from "./merge-guard-helpers.ts";
+import { widenOid } from "./merge-guard-forge-fixture.ts";
 
 await setupLedgerPath();
 
@@ -64,13 +65,14 @@ const GREEN = rows(row("quality-gate", "pass"));
 /**
  * The head the shared fixtures assert, spelled out rather than left to the
  * harness default: `TARGET.headOid` is the fixture's abbreviated `abc123`, and
- * the gatherer refuses an abbreviated `headRefOid`, so the harness pads a short
- * head to 40 hex chars. An arm must name THAT padded value to agree with the
- * head the guard verified (the same fixture head it fetched); naming only the
- * 6-char fixture value, or nothing, would have the arm refuse on the #2107
- * head pin instead of testing the check state it is about.
+ * the gatherer refuses an abbreviated `headRefOid` while the guard's own OID
+ * comparison demands >= 7 hex from both sides — so the harness widens the
+ * fixture head to 40 hex with the same rule this file uses. An arm names THAT
+ * value to agree with the head the guard verified (the same fixture head it
+ * fetched); naming only the 6-char fixture value, or nothing, would have the
+ * arm refuse on the #2107 head pin instead of the check state it is about.
  */
-const VERIFIED = "abc1230000000000000000000000000000000000";
+const VERIFIED = widenOid("abc123");
 
 // ---------------------------------------------------------------- a red check
 {

@@ -32,11 +32,11 @@ import { prCommentsCmd } from "./forge-commands.ts";
 import { extractCommentRows } from "./forge-comments.ts";
 import { isValidRepoValue } from "./merge-allowlist.ts";
 import {
-  analyseRefusal,
-  clipCheckNames,
   CONTROL_CHARS,
   MAX_NAMED_CHECKS,
   REASON_NAME_RUN,
+  analyseRefusal,
+  clipCheckNames,
 } from "./merge-refusal-render.ts";
 import type { MergeExecFn, MergeTarget } from "./merge-target.ts";
 import { identityBase } from "./review-ledger-path.ts";
@@ -445,7 +445,9 @@ export function ciEvidenceRefusal(prNumber: number, evidence: MergeEvidence): st
     // Bounded like the verdict arms: `reason` here is the message of a failed
     // exec, and an error text with a newline would break the one line this
     // refusal is contracted to be.
-    const detail = (evidence.reason ?? "the check read failed").replace(CONTROL_CHARS, " ").trimEnd();
+    const detail = (evidence.reason ?? "the check read failed")
+      .replace(CONTROL_CHARS, " ")
+      .trimEnd();
     return `merge refused: CI evidence is not available for PR #${prNumber} (failureKind: tooling) — ${detail}. This is a tooling failure, not a CI verdict, and the guard refuses rather than merge on an unreadable check state${override}`;
   }
   const named: string[] = [];
