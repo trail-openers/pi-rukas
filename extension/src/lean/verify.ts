@@ -67,15 +67,9 @@ import { NO_HOOKS } from "./specify-reset.ts";
 import { assertSpecifyWorktreeOwned, specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
 import type { PreexistingTierRecord } from "./state-outcome-maps.ts";
 import type { Outcome, Step } from "./state.ts";
-import { baselineExcuse as excuseOverBase, preexistingReason } from "./verify-baseline-excuse.ts";
-import { baselineProbeWorktreePath } from "./verify-baseline.ts";
-import {
-  baselineRedReason,
-  baselineUnusableError,
-  flakeReason,
-  probeTierAtBase,
-  tierObserved,
-} from "./verify-baseline.ts";
+import { baselineRedArm } from "./verify-baseline-arm.ts";
+import { preexistingReason } from "./verify-baseline-excuse.ts";
+import { baselineUnusableError, flakeReason, probeTierAtBase } from "./verify-baseline.ts";
 import { confirmTierRedFrom } from "./verify-baseline.ts";
 import { type CommandCriteriaOutcome, commandCriteriaOutcome } from "./verify-commands.ts";
 import { frozenTamperReason } from "./verify-frozen.ts";
@@ -86,9 +80,9 @@ import {
   verifyCmdAtHead,
 } from "./verify-reads.ts";
 import { recheckAfterRuns } from "./verify-recheck.ts";
+import { type FrozenClause, composedTierRed, frozenClause } from "./verify-red-reason.ts";
 import {
   type Executed,
-  FROZEN_TIMEOUT_HEAD,
   TIER_TIMEOUT_MS,
   canaryFailure,
   frozenTestFailure,
@@ -250,7 +244,9 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
   // carries, and never over one this run invented.
   const tests = await frozenTestFailure(frozen, config.verify.test, wt, deps.exec, deps.timeoutMs);
 
-  // 5. The project's own tiers, fast before full, first failure wins — with one
+  // 5. The project's own tiers, fast before full — the first red tier ends the loop,
+  // and its clause is reported BESIDE a red frozen contract rather than behind it,
+  // with one
   // re-run and one base probe behind a red, so a tier that was never green in this
   // run's history cannot bill a build round. These run BEFORE the command criteria
   // on purpose: a preservation criterion states that behaviour held before this run
@@ -262,6 +258,8 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
   /** A tier excused over a base that already failed the very tests it names. */
   const preexisting: Record<string, PreexistingTierRecord> = {};
   const tierResults: Executed[] = [];
+  /** The contract as the pass that ran BEFORE the tiers judged it, for the reason. */
+  const frozenClauseForReason: FrozenClause = frozenClause(tests);
   for (const [name, cmd] of tiers) {
     const one = await runTier(name, cmd, wt, deps.exec, deps.timeoutMs);
     if (one.kind === "pass") {
@@ -299,73 +297,41 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
     });
     if (probe.status === "unusable") throw baselineUnusableError(probe.reason);
     if (probe.status === "red") {
-      // The base is red. Before handing the run back, ask the narrower question:
-      // does the base fail the SAME tests, and does the run's own contract pass
-      // here? A tier whose every head failure the base also printed — with the
-      // frozen acceptance tests green — is a gate the mainline authored, and this
-      // run is graded green with the failures disclosed rather than handed back.
-      // Any other answer is exactly the hand-back this path produced before the
-      // excuse existed, and no build round is billed for either.
-      //
-      // The frozen verdict is asked FIRST, on purpose: `firstFailure` below never
-      // sees it when this arm returns, so a run whose own acceptance tests are red
-      // must not be graded green on the strength of a tier the base also fails.
-      // A RED the main path already observed is reused rather than re-run: this arm is
-      // only reached with `tests` in hand, and re-running the contract here would pay
-      // the per-file wall clock a second time in one verify — for a hang that is a
-      // whole extra bound spent on a verdict already in the variable. A GREEN `tests`
-      // is no evidence about the contract here (the tier may have touched the tree
-      // since, and this arm asks what the contract says NOW), so that case re-runs.
-      const frozenRan =
-        tests.kind === "fail"
-          ? tests
-          : await frozenTestFailure(frozen, config.verify.test, wt, deps.exec, deps.timeoutMs);
-      // A run whose own acceptance tests are RED here is red whatever the base did, and
-      // it keeps the arm's own `baseline red:` wording — the sentence this branch has
-      // always produced, and other cases pin it. A timed-out frozen file is the one
-      // answer that must say so: the next build child reads this line as its brief, and
-      // `firstFailure` below never sees it once the arm returns, so the hang hint lives
-      // or dies here. The tier's own clause is kept beside it because it names which
-      // gate the base already fails.
-      if (frozenRan.kind === "fail") {
-        const base = baselineRedReason(name, cmd, ctx.run.baseSha);
-        return {
-          kind: "red",
-          reason: clipReason(
-            frozenRan.reason.startsWith(FROZEN_TIMEOUT_HEAD)
-              ? `${frozenRan.reason} — and ${base}`
-              : base,
-          ),
-        };
-      }
-      if (frozenRan.kind === "infra") throw new VerifyInfraError(frozenRan.reason);
-      // The excuse reads the re-run's OUTPUT, so the re-run must have OBSERVED the
-      // work. `confirmTierRedFrom` above already refuses to call an unobserved re-run
-      // a flake, but a kill, an overflow or an un-startable command still arrives with
-      // a `stdout` — the text the tier printed before the signal — and that text can
-      // name the very tests the base printed. An excuse built from it would grade a
-      // green over a tier nobody saw fail twice, which is the outcome this arm exists
-      // to refuse, so the first red stands exactly as it did before the excuse.
-      if (!tierObserved(rerun.ran)) {
-        tierResults.push(one);
-        break;
-      }
-      const excuse = excuseOverBase({
-        tierName: name,
+      // The base is red. The narrower question the arm asks next — are the tier's
+      // failures the mainline's OWN, line for line — lives in `verify-baseline-excuse.ts`
+      // with the rule it applies; what stays here is the ordering this step owns.
+      const arm = await baselineRedArm({
+        frozen,
+        frozenClause: frozenClauseForReason,
+        tests,
+        name,
         cmd,
-        baseSha: ctx.run.baseSha,
+        rerun,
         probe,
-        headStream: rerun.stream,
-        baseStream: probe.stream,
-        headRoot: wt,
-        probeRoot: baselineProbeWorktreePath(repoRoot, issue),
+        verifyTest: config.verify.test,
+        wt,
+        repoRoot,
+        baseSha: ctx.run.baseSha,
+        exec: deps.exec,
+        timeoutMs,
+        issue,
       });
-      if (excuse.kind === "refused")
-        return { kind: "red", reason: clipReason(baselineRedReason(name, cmd, ctx.run.baseSha)) };
-      preexisting[name] = excuse.record;
-      continue;
+      if (arm.throwReason !== undefined) throw new VerifyInfraError(arm.throwReason);
+      if (arm.red !== undefined) return { kind: "red", reason: clipReason(arm.red) };
+      if (arm.preexisting !== undefined) {
+        preexisting[name] = arm.preexisting;
+        continue;
+      }
+      tierResults.push(one);
+      break;
     }
     tierResults.push(one);
+    // A tier the base did not excuse is a defect the builder can fix, and so is a red
+    // contract: both are reported, because a reason that names one buys a round that
+    // finds the other. `firstFailure` below still picks this same `one` when there is
+    // nothing to compose, so a green contract keeps today's reason byte for byte.
+    const composed = composedTierRed(frozenClauseForReason, one.reason);
+    if (composed !== undefined) return { kind: "red", reason: clipReason(composed) };
     break;
   }
 
