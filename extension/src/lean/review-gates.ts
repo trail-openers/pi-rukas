@@ -281,6 +281,9 @@ export async function lensGate(
     carried: string | undefined;
     /** The lower bound of this round's range — set only on the re-review. */
     since?: string;
+    /** Buy the layer's whole-branch round on the fix wave (see `LensArgs.full`), and
+     * reach the lenses' brief so its range wording names the arm they judge. */
+    full?: boolean;
     rows: DispatchUsageRow[];
     /** The step's armed budget, threaded to the six lens children. */
     budget: BudgetArms;
@@ -346,9 +349,13 @@ export async function lensGate(
       context: lensContext(ctx.issue, opts.wave, {
         carried: opts.carried,
         fixDelta: delta.section,
+        // The arm's own range claim, so the brief's wording follows what the step bought
+        // rather than the delta section, which `lensFixDelta` reads on both arms.
+        full: opts.full,
         issueBody: opts.issueBody,
       }),
       ...(opts.since === undefined ? {} : { since: opts.since }),
+      ...(opts.full === true ? { full: true } : {}),
       evidence,
       extraFindings,
       headless: deps.headless,

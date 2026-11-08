@@ -228,6 +228,7 @@
     "smoke-tests/test-lean-land.ts",
     "smoke-tests/test-lean-ci-land-wiring.ts",
     "smoke-tests/test-lean-review-wiring.ts",
+    "smoke-tests/test-lean-review-reprove.ts",
     "smoke-tests/test-lean-review-bound.ts",
     "smoke-tests/test-lean-review-bound-record.ts",
     "smoke-tests/test-lean-review-step-bound.ts",

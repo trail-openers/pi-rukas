@@ -138,6 +138,8 @@ export function reviewDeps(headless: boolean): ReviewDeps {
         // `LensArgs.since`). Absent on the full round, which stays the layer's
         // ordinary whole-branch review.
         ...(a.since === undefined ? {} : { since: a.since }),
+        // The whole-branch arm of the re-review (`LensArgs.full`).
+        ...(a.full === true ? { full: true } : {}),
         // The worktree is detached, so the ledger write and the residual
         // disclosure can only be keyed on a branch this step names.
         branch: a.branch,
@@ -316,17 +318,27 @@ function adversarialContext(
  * `issueBody` is the run's issue, printed as the block every lens judges the
  * diff against. It arrives through the step rather than being fetched here
  * because the step reads it once (`lean/review.ts`) and both of its passes —
- * and the fixer — must see the same text. */
+ * and the fixer — must see the same text.
+ *
+ * `full` is the layer's whole-branch opt-out, threaded through so the range wording
+ * names the arm the step bought rather than the delta section it also prints. */
 export function lensContext(
   issue: number,
   wave: ReviewWave,
-  extra: { carried?: string; fixDelta?: string; issueBody?: string } = {},
+  extra: { carried?: string; fixDelta?: string; issueBody?: string; full?: boolean } = {},
 ): string {
-  const parts = [
-    `/work-lean issue #${String(issue)}, lens-review ${
-      wave === "full" ? "full review of the branch" : "re-review of the fix wave's commits"
-    }`,
-  ];
+  // The range wording FOLLOWS THE ARM the step bought, not the delta section printed
+  // beside it: `lensGate` hands the layer `since` on the delta arm and that arm's own
+  // `full` opt-out on the other, while `lensFixDelta` reads the pushed branch and
+  // returns a section on BOTH. So `fixDelta` cannot say which arm this is — and a
+  // whole-branch re-review told it reads the fix's commits wants a delta verdict from
+  // the one round that must judge the branch to retire a carried CRITICAL. The section
+  // stays: on that arm it is orientation, which is what it says of itself.
+  const scope =
+    wave === "full" || extra.full === true
+      ? "full review of the branch"
+      : "re-review of the fix wave's commits";
+  const parts = [`/work-lean issue #${String(issue)}, lens-review ${scope}`];
   // The issue block rides the same channel as the carried findings, so it obeys
   // the same rule: disarmed at the print site. An issue body is author text —
   // one `### heading` or a ``` fence inside it would otherwise open a section

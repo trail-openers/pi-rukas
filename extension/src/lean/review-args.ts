@@ -120,6 +120,10 @@ export interface LensArgs {
    * the head this step's fixer moved — and reviews something other than the fix.
    */
   since?: string;
+  /** The re-review of a carried CRITICAL is bought whole-branch: the layer's own
+   * opt-out from its automatic delta base, which a missing `since` alone would not
+   * suppress. Never set on the delta arm. */
+  full?: boolean;
   /** Post-change prose and the deterministic claim scan, read from the branch ref. */
   evidence: string | undefined;
   /**

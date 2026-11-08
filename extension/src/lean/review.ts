@@ -16,12 +16,10 @@
  * **Both gates read a resolved commit, never a working copy.** A gate approves
  * the bytes at a commit, and the only value that cannot be dirtied underneath
  * the step between two passes is a commit sha resolved from a ref. This step
- * resolves origin's branch and hands the same value to both gates, to the
- * fixer, and to the integration — five uses of one commit cannot disagree, and
- * a working copy would give each of them a different tree. Both gates therefore
- * get a ref range they compute their own diff from rather than a string this
- * step pasted: a pasted diff is a value the reviewer cannot re-read, and a
- * range is one it can.
+ * resolves origin's branch and hands the same value to both gates, to the fixer,
+ * and to the integration. Both gates therefore get a ref range they compute their
+ * own diff from rather than a string this step pasted: a pasted diff is a value
+ * the reviewer cannot re-read, and a range is one it can.
  *
  * **The fix runs in a disposable tree of its own** (the tree lifecycle is in
  * `review-tree.ts`, the wave in `review-git.ts`), detached at the reviewed
@@ -52,13 +50,10 @@
  * the six-lens layer reserves its CRITICAL verdict the same way and reaches
  * `ISSUES_FOUND` for anything at or above the project's bar (`computeVerdict`), so the
  * lens arm is judged on its rows (`lensBlocks`) rather than on that name. The step
- * therefore ENDS clean only when neither gate produced a blocking row or record — no
- * fixer, no re-review, no second gate pass — and its findings are disclosed on the
- * pass reason: the six-lens layer posts its own below-bar rows with the residual
- * comment, but that post fires only on an `ISSUES_FOUND` round, so a non-blocking
- * adversarial verdict on a clean-lenses pass has no other surface and the step
- * states it itself (`disclosureNote`, beside the reason). The step pays for a fix
- * only where the reviewing layer itself said the branch must not proceed.
+ * therefore ENDS clean only when neither gate produced a blocking row or record —
+ * no fixer, no re-review, no second gate pass — and its findings are disclosed on the
+ * pass reason (`disclosureNote`, beside the reason). The step pays for a fix only
+ * where the reviewing layer itself said the branch must not proceed.
  *
  * **What ends the step.** Both gates clean ends it, on one of two kinds that
  * differ only in what the step did to the branch: `done` when no fix wave ran
@@ -69,12 +64,14 @@
  *
  * **One wave, not a loop.** One full review (the adversarial pass and the six
  * lenses); if it blocks, ONE fixer given every blocking finding at once; then
- * ONE re-review whose range is the fix, which decides each blocking finding
- * ADDRESSED or NOT ADDRESSED and whether the fix itself introduced a CRITICAL.
- * There is no second wave and no round constant: what a wave does not clear ends
- * the step with a named cause, because a gate that has said the same thing twice
- * across a fix is not a gate another paid round will satisfy. The measurements
- * behind that policy are in `review-waves.ts`.
+ * ONE re-review whose range is the fix — or the whole branch, when pass 1 carried a
+ * CRITICAL: `rowFate` retires that class on a complete full round only, and a delta
+ * can never clear it. That upgrade REPLACES the delta round, and an
+ * `REVIEW_INCOMPLETE` round is re-bought once behind a fresh clock read. There is no
+ * second wave and no round constant: what a wave does not clear ends the step with a
+ * named cause, because a gate that has said the same thing twice across a fix is not
+ * a gate another paid round will satisfy. The measurements behind that policy are in
+ * `review-waves.ts`.
  *
  * Anything else THROWS: a gate that produced no verdict, a head that moved or
  * vanished mid-wave, a fix wave that changed nothing, a blocking finding the
@@ -126,10 +123,20 @@ import {
 import { buyFullReview } from "./review-pair.ts";
 import { cleanPass, disclosureNote } from "./review-pass.ts";
 import { assertFixAdvanced } from "./review-progress.ts";
-import { assertRan, assertRangedOverTheFix } from "./review-round-guards.ts";
+import {
+  assertJudgedWholeBranch,
+  assertRan,
+  assertRangedOverTheFix,
+} from "./review-round-guards.ts";
 import { budgetStopped, reviewedPass } from "./review-step.ts";
 import { closeFixTrees } from "./review-tree.ts";
-import { CAUSE_NO_CHANGE, LENS_DID_NOT_RUN, atOrAboveBar, lensBlocks } from "./review-waves.ts";
+import {
+  CAUSE_NO_CHANGE,
+  LENS_DID_NOT_RUN,
+  atOrAboveBar,
+  carriedCriticalIn,
+  lensBlocks,
+} from "./review-waves.ts";
 import { specifyBranch } from "./specify-tree.ts";
 // The error lives in a leaf module so the extracted predicates can throw it without
 // importing this handler back. Re-exported so every existing `import { ... }
@@ -215,26 +222,16 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
   // so one name serves; the value still comes from the log rather than a
   // closure because the attempt that pushed may be the one that crashed.
   const runId = fixRunIdFromLog(ctx.steps) ?? fixRunId(ctx.now);
-  // The step's budget, armed the way `build`, `challenge` and `specify` arm
-  // theirs. `armBudget` turns `budgets.review` into the three levers a child
-  // actually gets — `minutes`→`childBoundMs`, `turns`/`tokens`→ an abort off the
-  // progress stream — and `fired` reads back which one ended a child. Before
-  // this the step read `budgets.review.turns` for one division and armed
-  // NOTHING, so a review ran its reviewer, its six lenses and its fixer under
-  // the generic child bound while the operator's ceilings sat unread: the pilot
-  // that reported "minutes budget 20 exceeded (used 31)" beside a child that ran
-  // 1,800,180 ms is that gap. The other steps honour this budget; deleting the
-  // fields instead would have deleted the operator's only lever over what a
-  // review costs.
+  // The step's budget, armed the way `build`, `challenge` and `specify` arm theirs.
+  // A child that spends it is NOT a routed verdict the way those steps route theirs —
+  // this step has no `budget` arrow to route on, so the stop throws with the rows it
+  // paid for.
   const budget = armBudget(budgetFor(config, "review"));
   if (budget.warning !== undefined) traceWarn(`lean review #${String(issue)}: ${budget.warning}`);
   // **The step's OWN clock, beside the per-child arms and for a different job** — it
-  // bounds the whole wave, and its spend comes
-  // off the durable review entry so a resumed attempt counts what its crashed self
-  // spent. A stop is `traceWarn`, not the debug-gated `trace`: a bound visible only
-  // under `PI_ENSEMBLE_DEBUG` is visible in exactly the runs that do not need it. A
-  // stop with no pass to carry it rides the throw; on a returned pass it is absent
-  // entirely, which is what keeps every existing case green.
+  // bounds the whole wave, and its spend comes off the durable review entry so a
+  // resumed attempt counts what its crashed self spent. A stop is `traceWarn`, not
+  // the debug-gated `trace`. On a returned pass a stop is absent entirely.
   const reviewMinutes = budgetFor(config, "review")?.minutes ?? 0;
   let boundRecord: ReviewBoundRecord | undefined;
   const clock = (): StepStop => stepBound(ctx, reviewMinutes, ctx.now());
@@ -405,30 +402,51 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
       return withBound(cleanPass(review, rows, true));
     }
 
-    // ── pass 2: the re-review, scoped to the fix range and nothing else ───────
-    const reReview = await lensGate(deps, ctx, {
+    // ── pass 2: the re-review. A delta over the fix, or whole-branch when pass 1
+    // carried a CRITICAL; bought once, re-bought once if it did not complete. ────
+    // The rows pass 1 just judged, both tiers — see `carriedCriticalIn`.
+    const full = carriedCriticalIn([...review.reported, ...review.advisory]);
+    const reReviewOpts = {
       base,
       branch,
-      wave: "fix",
+      wave: "fix" as const,
       issueBody,
       pr,
       carried,
-      since: preFixHead,
+      // `full` names the layer's own opt-out from its automatic delta base, which no
+      // missing `since` alone would suppress.
+      ...(full ? { full: true } : { since: preFixHead }),
       rows,
       budget,
       threshold,
-    });
-    assertRan(reReview, rows);
-    if (LENS_DID_NOT_RUN.includes(reReview.verdict))
-      throw new ReviewInfraError(
-        `the re-review of the fix did not complete (${reReview.verdict}${reReview.note === undefined ? "" : `; disclosure: ${reReview.note}`}) — an incomplete round is not evidence that the fix answered anything`,
+    };
+    let reReview = await lensGate(deps, ctx, reReviewOpts);
+    const refused = (round: LensRound): ReviewInfraError =>
+      new ReviewInfraError(
+        `the re-review of the fix did not complete (${round.verdict}${round.note === undefined ? "" : `; disclosure: ${round.note}`}) — an incomplete round is not evidence that the fix answered anything`,
         rows,
       );
-    // THE RE-REVIEW MUST PROVE WHICH RANGE IT JUDGED — the stamp's presence and both
-    // of its bounds are preconditions on the round's evidence, asked BEFORE the second
-    // gate pass is bought (see `assertRangedOverTheFix`).
-    await assertRangedOverTheFix(deps, repoRoot, reReview, { since: preFixHead, head }, rows);
-    // The adversarial gate's second pass runs AFTER the delta round it judges:
+    assertRan(reReview, rows);
+    if (LENS_DID_NOT_RUN.includes(reReview.verdict)) {
+      // The clock is read FRESH before spending on a retry: a stop with a pushed fix
+      // routes `fixed`, disclosed, and never throws (the #2066 rule).
+      const beforeRetry = clock();
+      if (beforeRetry.live) {
+        noteStop(beforeRetry, "fix", unjudgedLenses(review, true));
+        return withBound(cleanPass(reReview, rows, true));
+      }
+      // Only an INCOMPLETE round is re-bought, and once — a cap or a streak is another
+      // component's budget, which no child this step pays can answer for.
+      if (reReview.verdict !== "REVIEW_INCOMPLETE") throw refused(reReview);
+      reReview = await lensGate(deps, ctx, reReviewOpts);
+      assertRan(reReview, rows);
+      if (LENS_DID_NOT_RUN.includes(reReview.verdict)) throw refused(reReview);
+    }
+    // THE RE-REVIEW MUST PROVE WHICH RANGE IT JUDGED, asked of the arm the step
+    // bought, BEFORE the second gate pass is bought (see the two guards).
+    if (full) await assertJudgedWholeBranch(deps, repoRoot, reReview, { head }, rows);
+    else await assertRangedOverTheFix(deps, repoRoot, reReview, { since: preFixHead, head }, rows);
+    // The adversarial gate's second pass runs AFTER the round it judges:
     // its range is the fix's own `since..head`, the same range the lenses were
     // handed. Running it before the round would have it judge a head whose
     // verdict the step has not yet read, and a re-review the step already knows
