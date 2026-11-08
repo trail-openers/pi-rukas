@@ -106,27 +106,6 @@ export async function runFreezeCheck(
   return { kind: "red", output: out };
 }
 
-/**
- * How many times a freeze check ran, per command string.
- *
- * The reason strings say "a base run of the same command showed it green at
- * base", so that sentence may only be printed when a base run actually
- * happened. A counter kept by the caller makes the sentence a claim about what
- * this step observed rather than about what a test configured.
- */
-export function freezeCheckCounter(): {
-  note: (cmd: string) => void;
-  ran: (cmd: string) => boolean;
-} {
-  const seen = new Set<string>();
-  return {
-    note: (cmd: string) => {
-      seen.add(cmd);
-    },
-    ran: (cmd: string) => seen.has(cmd),
-  };
-}
-
 /** A path in a check's output must look like a path, not a word in a sentence. */
 function looksLikePath(token: string): boolean {
   return (
