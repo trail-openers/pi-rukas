@@ -10,8 +10,7 @@
  * module of their own because the facts they state — which tree, which commit,
  * which files are frozen, which budget — are the facts this seam already holds.
  *
- * Two choices here are load-bearing rather than mechanical, and both are the
- * review layer's own rules restated rather than lean's invention:
+ * Two choices here are load-bearing rather than mechanical:
  *
  * - **The adversarial loop runs report-only.** It reviews and fixes nothing; the fix
  *   round is this step's, in its own disposable tree. `reportVerdict: "routed"` is
@@ -57,18 +56,16 @@ export function reviewDeps(headless: boolean): ReviewDeps {
   // Declared as a `let` read at CALL time (not at literal-build time) so a test can
   // install an observer on the object it gets back: the lens engine is the one
   // outside-world call a test of THE CLAMP has to observe, and a clamp asserted on
-  // its input cannot fail — the input was correct in the bug, and only what reached
-  // `runLensReview` was wrong. Production never sets the field and gets
-  // `runLensReview`.
+  // its input cannot fail — only what reached `runLensReview` can be wrong.
+  // Production never sets the field and gets `runLensReview`.
   const deps: ReviewDeps = {
     headless,
     // The push inside `fixRound` is the one git call in this step that leaves the
     // clone, so it is the one the executor gives the driver's non-interactive env to —
     // the same `netGitEnv` `publish-deps.ts` applies (`GIT_TERMINAL_PROMPT=0` plus
     // `-o BatchMode=yes`, so ssh fails instead of reading a passphrase from /dev/tty).
-    // Without it a lean review round could hang the step on a credential prompt no
-    // other step in lean can hang on. `o?.cwd` is passed through so `netGitEnv` still
-    // reads the repo's own `core.sshCommand`.
+    // Without it a lean review round could hang the step on a credential prompt.
+    // `o?.cwd` is passed through so `netGitEnv` still reads the repo's own `core.sshCommand`.
     exec: (cmd, o) =>
       execp(cmd, {
         ...(o ?? {}),
@@ -79,12 +76,11 @@ export function reviewDeps(headless: boolean): ReviewDeps {
       // seam below does: `arms` is what the reviewer may inherit (the abort signal
       // the turns / tokens levers fire and the progress hook that measures them),
       // with `childBoundMs` taken out of the object AND out of the type so the
-      // clamp below cannot be re-supplied by a spread and win — the lens leg lost
-      // its operator knob that way. `loopChildBoundMs()` is the reviewer's own
-      // knob (`PI_ENSEMBLE_ADVERSARIAL_BOUND_MS`, read there) and the step's armed
-      // bound can only TIGHTEN it: the smaller of the two is the bound, which is
-      // what a budget must mean. Asserted on the value the reviewer dispatch
-      // actually received in `test-adversarial-reviewer-bound.ts`, never here.
+      // clamp below cannot be re-supplied by a spread and win. `loopChildBoundMs()`
+      // is the reviewer's own knob (`PI_ENSEMBLE_ADVERSARIAL_BOUND_MS`, read there)
+      // and the step's armed bound can only TIGHTEN it: the smaller of the two is
+      // the bound, which is what a budget must mean. Asserted on the value the
+      // reviewer dispatch actually received in `test-adversarial-reviewer-bound.ts`.
       const { childBoundMs: budgetBoundMs, ...arms } = a.budget.opts;
       return runAdversarialLoop(
         {
@@ -116,15 +112,12 @@ export function reviewDeps(headless: boolean): ReviewDeps {
     lens: async (a) => {
       // The budget arms are DESTRUCTURED rather than spread, so the clamp below
       // cannot be re-supplied: spreading `a.budget.opts` after
-      // `childBoundMs: Math.min(...)` handed back the budget's own `childBoundMs`
-      // and it WON, which made `PI_ENSEMBLE_LENS_BOUND_MS` silently inert — a hung
-      // lens child ran to the generic bound and the operator's tuning knob was
-      // decoration. `arms` is what the lens is allowed to inherit (the abort signal
-      // and the progress hook) with the one key it must not own taken out of the
-      // object AND out of the type, so a future spread that could carry a
-      // `childBoundMs` is a compile error rather than a bug waiting for someone to
-      // reorder the lines. Asserted on the delivered value in
-      // `test-lean-review-deps-bound.ts`, never on the input.
+      // `childBoundMs: Math.min(...)` hands back the budget's own `childBoundMs` and
+      // it wins, making `PI_ENSEMBLE_LENS_BOUND_MS` inert. `arms` is what the lens is
+      // allowed to inherit (the abort signal and the progress hook) with the one key
+      // it must not own taken out of the object AND out of the type, so a future
+      // spread that could carry a `childBoundMs` is a compile error. Asserted on the
+      // delivered value in `test-lean-review-deps-bound.ts`, never on the input.
       const { childBoundMs: budgetBoundMs, ...arms } = a.budget.opts;
       const summary = await (deps.lensEngine ?? runLensReview)({
         base: a.base,
@@ -151,9 +144,8 @@ export function reviewDeps(headless: boolean): ReviewDeps {
         // The operator's own lever, read here rather than a number copied into
         // this file: `lensChildBoundMs()` is the single source for a lens child's
         // wall clock (`PI_ENSEMBLE_LENS_BOUND_MS`), and a literal here would make
-        // that knob silently inert for every lean run. The step's armed `childBoundMs`
-        // can only ever tighten it, never lengthen it — the smaller of the two is
-        // the bound, which is what a budget must mean.
+        // that knob inert for every lean run. The step's armed `childBoundMs` can
+        // only ever tighten it, never lengthen it.
         childBoundMs: Math.min(budgetBoundMs ?? Number.POSITIVE_INFINITY, lensChildBoundMs()),
         // The project's blocking bar, threaded from the step (see
         // `LensArgs.threshold`). Without it the review layer falls to
@@ -279,9 +271,8 @@ export function renderFindings(summary: LensReviewSummary): string {
 // roster already say what to do with them.
 //
 // The fix brief is the more important one. A fixer handed findings without a
-// diff, an issue or a tree re-derives a solution from scratch — the frozen
-// driver's fix-developer got the reviewer's entire reply as "findings" and no
-// diff at all (#664), which is how a fix round undid a fix. So the finding text
+// diff, an issue or a tree re-derives a solution from scratch, and a fix round
+// that undid the previous fix is the failure that produces. So the finding text
 // arrives fenced and bounded (the `text-fence.ts` rule, one implementation), the
 // diff arrives as the command the step actually ran, and the frozen acceptance
 // tests are named as untouchable — the same claim `build-prompt` makes, because

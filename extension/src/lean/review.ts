@@ -13,22 +13,20 @@
  * full review buys, bought together, are `review-pair.ts`; this file is the
  * decision procedure.
  *
- * **Both gates read a resolved commit, never a working copy.** A gate approves
- * the bytes at a commit, and the only value that cannot be dirtied underneath
- * the step between two passes is a commit sha resolved from a ref. This step
- * resolves origin's branch and hands the same value to both gates, to the fixer,
- * and to the integration. Both gates therefore get a ref range they compute their
- * own diff from rather than a string this step pasted: a pasted diff is a value
- * the reviewer cannot re-read, and a range is one it can.
+ * **Both gates read a resolved commit, never a working copy.** A commit sha
+ * resolved from a ref is the only value that cannot be dirtied underneath the
+ * step between two passes, so this step resolves origin's branch once and hands
+ * the same value to both gates, the fixer, and the integration. Both gates get a
+ * ref range they compute their own diff from rather than a pasted string: a
+ * pasted diff is a value the reviewer cannot re-read, and a range is one it can.
  *
  * **The fix runs in a disposable tree of its own** (the tree lifecycle is in
  * `review-tree.ts`, the wave in `review-git.ts`), detached at the reviewed
  * commit and destroyed at the end of the step — because the fixer must not
  * touch the tree `verify` and `publish` read. A child loose in the run's
  * worktree between two gates would leave the green verdict describing one
- * commit and the PR holding another. Detached on
- * purpose: a fixer that commits there moves no branch, so a child that committed
- * twice, amended, or reset could not corrupt what the run merges. Only the
+ * commit and the PR holding another. Detached on purpose: a fixer that commits
+ * there moves no branch, so it cannot corrupt what the run merges. Only the
  * integration moves anything, and only after its claims hold.
  *
  * **Two bounds, two jobs.** The shape of the wave is a module fact, not an
@@ -38,11 +36,9 @@
  * dispatching steps use. They are never divided into each other: a cap derived
  * from the turn budget can silently collapse to one round, and one round can fix
  * but can never re-review — so the step would certify a head no gate had looked at
- * since its own fixer moved it. The budget stays fully live and stays the stop
- * condition the operator owns: it is armed on every child through `armBudget`. A
- * child that spends it is NOT a routed verdict the way `build`/`challenge`/`specify`
- * route theirs — this step has no `budget` arrow to route on, so the stop throws with
- * the rows it paid for (see below for why the two shapes differ).
+ * since its own fixer moved it. A child that spends the budget is NOT a routed
+ * verdict the way `build`/`challenge`/`specify` route theirs — this step has no
+ * `budget` arrow to route on, so the stop throws with the rows it paid for.
  *
  * **What a gate must say to buy a fixer.** A blocking row or a CRITICAL verdict,
  * never a verdict name. The adversarial gate's doctrine calls `CRITICAL_ISSUES_FOUND`
@@ -52,8 +48,8 @@
  * lens arm is judged on its rows (`lensBlocks`) rather than on that name. The step
  * therefore ENDS clean only when neither gate produced a blocking row or record —
  * no fixer, no re-review, no second gate pass — and its findings are disclosed on the
- * pass reason (`disclosureNote`, beside the reason). The step pays for a fix only
- * where the reviewing layer itself said the branch must not proceed.
+ * pass reason (`disclosureNote`). The step pays for a fix only where the reviewing
+ * layer itself said the branch must not proceed.
  *
  * **What ends the step.** Both gates clean ends it, on one of two kinds that
  * differ only in what the step did to the branch: `done` when no fix wave ran
@@ -70,7 +66,7 @@
  * `REVIEW_INCOMPLETE` round is re-bought once behind a fresh clock read. There is no
  * second wave and no round constant: what a wave does not clear ends the step with a
  * named cause, because a gate that has said the same thing twice across a fix is not
- * a gate another paid round will satisfy. The measurements behind that policy are in
+ * a gate another paid round will satisfy. The policy numbers live in
  * `review-waves.ts`.
  *
  * Anything else THROWS: a gate that produced no verdict, a head that moved or
@@ -85,7 +81,7 @@
  * **A budget stop is a throw here, not a routed kind — which is the opposite of
  * `specify`, `build` and `challenge`.** Those three have a table arrow for
  * `budget` and decide with it: `specify`/`build` hand back, `challenge` continues
- * to `verify` (#1883). `review` has two kinds and neither is a stop: anything that
+ * to `verify`. `review` has two kinds and neither is a stop: anything that
  * is not both gates clearing must not route onward. So all three reads of a
  * stopped child — the adversarial reviewer, and the fixer on each of the two fix
  * arms — throw {@link ReviewInfraError} whose message is the shared
@@ -327,10 +323,7 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
       // residual post is the LENS layer's, which posts nothing on an APPROVED round.
       // So the gate's own words ride the reason, neutralised and bounded by
       // `disclosureNote` — the same note `reviewedPass` puts on a cleared wave.
-      // #2082 made this load-bearing rather than merely tidy: before the overlap
-      // these findings also reached the six lens briefs, and the overlap took that
-      // route away, so an unposted non-blocking verdict was reaching no durable
-      // surface at all.
+      // Without them an unposted non-blocking verdict reaches no durable surface.
       return withBound(
         cleanPass(
           review,
@@ -344,7 +337,7 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
       );
     }
 
-    // The wave has not started, so this is still a pass-1 stop (R1): handback.
+    // The wave has not started, so this is still a pass-1 stop: handback.
     const preFix = clock();
     if (preFix.live) handback(preFix, unjudgedLenses(review));
 
@@ -353,15 +346,12 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
     // the adversarial record `blockingRecord` called blocking. Both gates'
     // outstanding findings then go in one brief — a fixer handed half the findings
     // would be re-run by a second wave to be told the rest, and there is no second
-    // wave: the wave is what the step buys, once.
+    // wave.
     //
     // `fromGate` is the ONE value that says which gate produced the findings, and
     // every derived part of the fixer's brief comes off it: the finding text, the
     // gate name the brief prints, and the tree's arm. Three independent readings
-    // of "did the adversarial pass contribute?" is how they start disagreeing —
-    // the arm and the brief then describe different gates, and `fixTreeName`'s doc
-    // ('a' is a pass the six-lens round approved and only the adversarial gate left
-    // findings on) stops matching what the step actually does.
+    // of "did the adversarial pass contribute?" is how they start disagreeing.
     const blocking = review.findings;
     const findings = fromGate ? [carried, blocking].join("\n\n") : blocking;
     const gateName = fromGate
@@ -392,10 +382,10 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
     head = await assertFixAdvanced(review.head, fix.head, rows);
 
     // R2: the fixer pushed, so the head origin holds is one nobody has re-judged.
-    // A stop here is neither a handback (the fix is already on the branch, and
-    // throwing would strand it with the run handing back over a moved head) nor a
-    // `done` (`ci` would certify a head its gate never read after a fix). It is
-    // `fixed`: back through `verify`, with the unjudged lanes disclosed.
+    // A stop here is `fixed` — neither a handback (the fix is already on the branch,
+    // and throwing would strand it with the run handing back over a moved head) nor
+    // a `done` (`ci` would certify a head its gate never read after a fix): back
+    // through `verify`, with the unjudged lanes disclosed.
     const preReReview = clock();
     if (preReReview.live) {
       noteStop(preReReview, "fix", unjudgedLenses(review, true));
@@ -429,7 +419,7 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
     assertRan(reReview, rows);
     if (LENS_DID_NOT_RUN.includes(reReview.verdict)) {
       // The clock is read FRESH before spending on a retry: a stop with a pushed fix
-      // routes `fixed`, disclosed, and never throws (the #2066 rule).
+      // routes `fixed`, disclosed, and never throws.
       const beforeRetry = clock();
       if (beforeRetry.live) {
         noteStop(beforeRetry, "fix", unjudgedLenses(review, true));
@@ -466,7 +456,7 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
     });
     if (reGate.stop !== undefined) throw budgetStopped(reGate.stop, rows);
     // Both the re-review round and the second adversarial pass have run: the wave is
-    // complete, every lane judged once, so a stop here can only be a disclosure (R7).
+    // complete, every lane judged once, so a stop here can only be a disclosure.
     // What the pass says it disclosed, and each refusal it can still raise, are read
     // by `reviewedPass` off the two rounds' own records.
     return withBound(reviewedPass(reReview, reGate, { threshold, preFixHead, head, rows }));
