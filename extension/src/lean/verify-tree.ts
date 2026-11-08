@@ -80,8 +80,8 @@ export async function treeEntry(
  * BEFORE the TAB and the path from after it — splitting the whole line on `/\s+/`
  * would read `"…\tmy script.sh"` as several fields and call a legal entry "not an
  * exact path". The MODE is what decides what the entry is: git prints `blob` for a
- * symlink too, so reading the type alone lets a mode-120000 link through, which is
- * exactly the shape a plain existence probe used to execute. A line this cannot
+ * symlink too, so reading the type alone lets a mode-120000 link through, which an
+ * existence-only probe would execute. A line this cannot
  * read at all is `unreadable` — a machine to re-run, never a verdict about
  * somebody's test.
  */

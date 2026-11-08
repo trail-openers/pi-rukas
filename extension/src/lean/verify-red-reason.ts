@@ -6,9 +6,9 @@
  * is one red — but a reason is not only a verdict: `build`'s re-entry reads it back
  * out of the step log and pastes it into the next developer's prompt under "Why this
  * round exists". A run whose frozen tests were red AND whose `verify.full` was red at
- * head used to name only the contract, so the builder fixed the frozen files, the
- * next verify found the tier, and a whole build round went to learn one fact the
- * first pass had already observed.
+ * head names only the contract, the builder fixes the frozen files, the next verify
+ * finds the tier, and a whole build round goes to learn one fact the first pass had
+ * already observed. So every red at head is named.
  *
  * So the composition rule here is one sentence of prose with three arms:
  *

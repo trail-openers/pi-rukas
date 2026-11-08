@@ -230,9 +230,8 @@ export function parsePorcelainZ(out: string): PorcelainEntry[] {
     const p = rec.slice(3);
     if (xy[0] === " " && xy[1] === " ") continue;
     if (xy[0] === "R" || xy[0] === "C") {
-      // Both sides are named: the source is where a byte the step is about to
-      // discard used to live, and a reason that omitted it reads as though
-      // nothing was touched there.
+      // Both sides are named: the source is where a byte the step is about to discard
+      // lived, and a reason that omitted it reads as though nothing was touched there.
       const src = fields[i + 1];
       if (src !== undefined && src !== "") entries.push({ status: xy, path: src });
       i++;

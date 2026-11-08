@@ -253,13 +253,11 @@ async function integrate(
   const branch = specifyBranch(ctx.run.branch, issue);
   // The run's OWN worktree — never the fixer's, which no longer exists here.
   const wt = specifyWorktreePath(repoRoot, issue);
-  // Awaited BEFORE the throw, and its outcome folded into the cause. A fire-and-
-  // forget restore here (the `void` this had) races the throw on the next line,
-  // so the handback was emitted while the tree was mid-move and a restore that
-  // failed printed a warning to a trace no operator reads — leaving a branch
-  // checked out at the fixer's head with nothing in the cause saying so. Same
-  // class as #1449/#984, where the equivalent fire-and-forget was given a
-  // reporter rather than silence.
+  // Awaited BEFORE the throw, and its outcome folded into the cause. A fire-and-forget
+  // restore would race the throw on the next line, so the handback would be emitted while
+  // the tree was mid-move and a failed restore would print only to a trace no operator
+  // reads — leaving a branch checked out at the fixer's head with nothing in the cause
+  // saying so.
   const fail = async (why: string): Promise<never> => {
     const undone = await restore(deps, wt, branch, opts.gateRead);
     throw new ReviewInfraError(`${why}${restoredSentence(undone, wt, opts.gateRead)}`, opts.rows);
@@ -279,8 +277,7 @@ async function integrate(
   // Bring the run's own branch to the fixer's head. This is NOT
   // `ensureSpecifyWorktreeWithProvision`: that path resets the branch with `-B`
   // back at the base it was given, which would point the branch straight back at
-  // the reviewed commit and throw the fixer's work away before the push ever saw
-  // it (a previous commit on this branch had to be reverted for exactly that).
+  // the reviewed commit and throw the fixer's work away before the push ever saw it.
   // The tree is only the vehicle for a ref update here, so the ownership claim
   // runs first (it is what refuses a tree another run owns) and the move happens
   // by reset, which also drops any uncommitted sloppiness the child left behind.
@@ -292,10 +289,9 @@ async function integrate(
       baseSha: opts.gateRead,
       branch,
     });
-    // The one primitive `specify` and `build` use for this, called directly: the
-    // five-line `ensureFixTree` wrapper that used to sit here added a name for
-    // nothing. `resetWorktreeToBase` does the `-B`, the `--hard`, the `clean` and
-    // the proof the tree really got there, pointed at the fixer's head.
+    // The one primitive `specify` and `build` use for this, called directly.
+    // `resetWorktreeToBase` does the `-B`, the `--hard`, the `clean` and the proof the
+    // tree really got there, pointed at the fixer's head.
     await resetWorktreeToBase(deps.exec, wt, opts.fixHead, branch);
   } catch (err) {
     return await fail(
@@ -352,7 +348,7 @@ async function integrate(
   //
   // It is also the only git call in this step that leaves the clone, so it is the
   // one the seam gives the driver's non-interactive env to — the same `netGitEnv`
-  // `publish`'s executor applies (#1095: `GIT_TERMINAL_PROMPT=0` plus
+  // `publish`'s executor applies (`GIT_TERMINAL_PROMPT=0` plus
   // `-o BatchMode=yes`, so ssh fails instead of reading a passphrase from
   // /dev/tty and hanging the step). Every other call here is local.
   //

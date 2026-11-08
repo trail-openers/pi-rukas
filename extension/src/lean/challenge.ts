@@ -121,11 +121,11 @@ async function specOf(deps: ChallengeDeps, repoRoot: string, issue: number): Pro
   }
   const parsed = parsePiSpec(body);
   if (!parsed.ok) throw new ChallengeInfraError(`the issue's spec is unusable: ${parsed.reason}`);
-  // The SAME readiness judgement `specify` gates the run on, applied on re-read.
-  // The issue is editable while the run is going, so a spec that was ready at
-  // `ready` need not be ready now — and the round's whole claim is stated
-  // against these criteria. One that is no longer well-formed cannot be
-  // adjudicated, so it is infrastructure, not a verdict.
+  // The SAME readiness judgement `specify` gates the run on, applied on re-read. The
+  // issue is editable while the run is going, so a spec that was ready at `ready` need
+  // not be ready now — and the round's whole claim is stated against these criteria. A
+  // spec that stops being well-formed cannot be adjudicated, so that is infrastructure,
+  // not a verdict.
   const rules = readiness(parsed.spec);
   if (rules.length > 0)
     throw new ChallengeInfraError(`the issue's spec is not ready: ${rules.join("; ")}`);
@@ -240,10 +240,10 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
   const branch = specifyBranch(ctx.run.branch, issue);
   const wt = specifyWorktreePath(repoRoot, issue);
   const base = ctx.run.baseSha;
-  // Everything below — ownership, the frozen check, the reset and the red proof
-  // — is stated against the CURRENT head, not the base: the base no longer has
-  // the implementation, and a test that is red there proves nothing about code
-  // that does not exist there.
+  // Everything below — ownership, the frozen check, the reset and the red proof — is
+  // stated against the CURRENT head, not the base: the base does not have the
+  // implementation, and a test that is red there proves nothing about code that does
+  // not exist there.
   const headBefore = await assertTreeAndContract(deps, {
     repoRoot,
     wt,
@@ -272,7 +272,7 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
       "no test runner configured (.pi/work.json verify.test) for a spec with test criteria",
     );
 
-  // 3. The adversary, under the state's budget (#1883).
+  // 3. The adversary, under the state's budget.
   const budget = armBudget(budgetFor(config, "challenge"));
   if (budget.warning !== undefined)
     traceWarn(`lean challenge #${String(issue)}: ${budget.warning}`);
@@ -430,11 +430,10 @@ export function challengeDeps(headless: boolean): ChallengeDeps {
       spawnSpecialist(spec, {
         writeFence: o.writeFence,
         extraArgs: o.extraArgs,
-        // Forwarded so the ceiling binds the child, `budgetTurns` included: it is
-        // the turns ceiling read as the denominator of the #1991 budget-progress
-        // steer, and a seam that forwards the arms key by key must forward that
-        // one too or the adversary is killed at its ceiling never told where it
-        // stood.
+        // Forwarded so the ceiling binds the child, `budgetTurns` included: it is the
+        // turns ceiling read as the denominator of the budget-progress steer, and a seam
+        // that forwards the arms key by key must forward that one too or the adversary
+        // is killed at its ceiling never told where it stood.
         childBoundMs: o.childBoundMs,
         signal: o.signal,
         onProgress: o.onProgress,

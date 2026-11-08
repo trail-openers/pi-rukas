@@ -116,12 +116,12 @@ const DEFAULT_MAX_STEPS = 100;
  * A first run: `ready`, plus whatever the caller already knows.
  *
  * The issue number is validated here rather than left to `loadRun`. A run is
- * addressed by `<repoRoot>/.pi/lean-state/<issue>.json`, so a number the file
- * system cannot round-trip — `NaN`, `1.5`, `-5` — writes a file whose `issue`
- * no longer parses back to the value passed in, and the run that completed
- * successfully then refuses to load. `assertRun` already refuses exactly that
- * shape on the read path; this is the same rule on the write path, so a caller
- * cannot bypass its own validator simply by starting a run.
+ * addressed by `<repoRoot>/.pi/lean-state/<issue>.json`, so a number the file system
+ * cannot round-trip — `NaN`, `1.5`, `-5` — writes a file whose `issue` does not parse
+ * back to the value passed in, and the run that completed successfully then refuses to
+ * load. `assertRun` already refuses exactly that shape on the read path; this is the
+ * same rule on the write path, so a caller cannot bypass its own validator simply by
+ * starting a run.
  *
  * The seed's base is validated on the same principle: `createRun` does not
  * consult `assertRun` for a run it just built, so the ONLY place a hand-built
@@ -411,10 +411,10 @@ async function driveLoop(
       break;
     }
     const state = run.state;
-    // The caller's deadline, resolved once and carried on the drive (#1920
-    // item 2). Resolved BEFORE the handler test below so a run that the clock
-    // stops says so in its own words rather than in `no handler for state …`,
-    // which blames a missing step for what a clock decided.
+    // The caller's deadline, resolved once and carried on the drive. Resolved BEFORE
+    // the handler test below so a run that the clock stops says so in its own words
+    // rather than in `no handler for state …`, which blames a missing step for what a
+    // clock decided.
     //
     // `flagBudgetMs` re-derives the value rather than taking a cast at the call
     // site: `RunLeanOpts.budgetMs` is branded, and `runWorkLean` — the only
@@ -449,13 +449,10 @@ async function driveLoop(
     }
 
     // There is deliberately no "this entry already decided something, apply it
-    // instead of running" branch here. The position the loop drives from is
-    // DERIVED by folding the log (`verifiedPosition`), and that fold consumes one
-    // entry per visit, so the state the loop stands in is always one whose entry
-    // it has not yet consumed: there is never a decided step of the current state
-    // to re-apply. The branch that used to do this is what made "log entry
-    // missing" a shape a real drive could produce, and with it the exemptions the
-    // fold needed to tolerate that shape.
+    // instead of running" branch here. The position the loop drives from is DERIVED by
+    // folding the log (`verifiedPosition`), and that fold consumes one entry per visit,
+    // so the state the loop stands in is always one whose entry it has not yet
+    // consumed: there is never a decided step of the current state to re-apply.
     run = await startStep(drive, opts, run, state, now);
   }
 

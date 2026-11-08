@@ -21,12 +21,11 @@
  *                `code` and no exit status — `ENOENT`, `EACCES`), or the template
  *                named nothing to run — refused before any spawn.
  *
- * There is deliberately no third `infra` shape any more. The classifier that
- * used to live here threw the whole run on any output containing
- * `node_modules` or `Cannot find module`, which is precisely what the
- * canonical TDD red prints when a test imports a module the implementation
- * has not written yet — so the step punished the one test shape it exists to
- * collect. A missing module in a test's own output is a legitimate red.
+ * There is deliberately no third `infra` shape: a classifier that threw the run on any
+ * output containing `node_modules` or `Cannot find module` would punish the canonical
+ * TDD red, which is precisely what a test prints when it imports a module the
+ * implementation has not written yet. A missing module in a test's own output is a
+ * legitimate red.
  * Whether the TOOLCHAIN works at all is answered once, before the child is
  * dispatched, by the base-health check in specify.ts; a red never has to
  * answer that question for itself.

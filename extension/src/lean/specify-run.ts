@@ -223,8 +223,7 @@ function noteFor(cand: DeclaredPath, proof: Proof): string {
  * decides throwing is right. It is, here: `specify`'s whole claim is that these
  * tests are red, and a red nobody executed proves nothing. Reading an
  * unrunnable runner as "this file was not red" would hand the run a `no-red-test`
- * VERDICT about work the toolchain never got to judge, which is the mistake the
- * classifier used to make by matching on the test's own output.
+ * VERDICT about work the toolchain never got to judge.
  */
 function assertRan(proof: Proof, file: string): void {
   if (proof.kind === "infra")
