@@ -216,6 +216,14 @@ export function writeCaptured(wt: string, captured: Map<string, Buffer>): void {
  * `branch` and is checked out detached, since git refuses to `-B` a name onto a tree
  * whose branch somebody else holds.
  *
+ * Both checkout forms carry `-f`. Without it git refuses to move a tree whose
+ * tracked files are dirty — "Your local changes ... would be overwritten by
+ * checkout", exit 1 — which is exactly what a build child leaves behind when it
+ * committed a file and then kept editing it, so a routine budget stop would hand
+ * the run back as a reset failure. Nothing here is worth protecting: the bytes a
+ * caller keeps were read into memory before this ran, and the `reset --hard` and
+ * `clean -fdx` below discard everything the forced checkout walked past anyway.
+ *
  * The clean carries no `-e` exemptions. Exempting the links by name meant a leftover
  * tree kept whatever links its first provisioning made, with nothing checking they
  * still pointed anywhere; now the tree is emptied and re-provisioned, so a link is
@@ -238,8 +246,8 @@ export async function resetWorktreeToBase(
   // previous attempt must move to the base rather than keep its commits.
   const steps: string[][] = [
     branch === ""
-      ? [...NO_HOOKS, "checkout", "--detach", baseSha]
-      : [...NO_HOOKS, "checkout", "-B", branch, baseSha],
+      ? [...NO_HOOKS, "checkout", "-f", "--detach", baseSha]
+      : [...NO_HOOKS, "checkout", "-f", "-B", branch, baseSha],
     [...NO_HOOKS, "reset", "--hard", baseSha],
     [...NO_HOOKS, "clean", "-fdx"],
   ];
