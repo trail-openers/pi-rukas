@@ -96,14 +96,13 @@ export interface SpecifyDeps {
   /** Preflight for the reporter companion; `statReporterPath` in production. */
   statReporter?: (p: string) => Promise<unknown>;
   /**
-   * Reads the kept test files into memory; `captureTestBytes` in production.
-   * A seam for the same reason every other filesystem fact here is one: the
-   * smoke test proves the step commits the bytes it captured rather than
-   * whatever the child leaves on disk afterwards, and that needs a read the
-   * test can place against the child's own last write. The `owners` map tells
-   * the capture which criterion claimed each path so a file it cannot read
-   * through one descriptor drops as that criterion's row, not as an
-   * unattributed line in the reason.
+   * Reads the kept test files into memory; `captureTestBytes` in production. A
+   * seam because every other filesystem fact here is one: the smoke test proves
+   * the step commits the bytes it captured rather than whatever the child leaves
+   * on disk, and that needs a read the test can place against the child's own
+   * last write. The `owners` map tells the capture which criterion claimed each
+   * path, so a file it cannot read through one descriptor drops as that
+   * criterion's row, not as an unattributed line in the reason.
    */
   capture?: (wt: string, paths: string[], owners: Map<string, string>) => CaptureResult;
   /** Per-run runner limits; a test injects a short timeout to prove a hang is infra. */
@@ -116,8 +115,7 @@ export interface SpecifyDeps {
  * Re-exported from `specify-run.ts`, where the shared pipeline raises it, so
  * that module owns the throw without importing this step back: the class is
  * `instanceof`-tested by the specify and challenge smoke suites, and two copies
- * of it would make `err instanceof SpecifyInfraError` quietly false for whoever
- * imported the wrong one.
+ * would make `err instanceof SpecifyInfraError` quietly false.
  */
 export { SpecifyInfraError } from "./specify-run.ts";
 
@@ -138,11 +136,9 @@ function specRules(body: string): { spec?: PiSpec; rules: string[] } {
  * it is the only place: a failure throws rather than dropping rows.
  *
  * The canary runs in the directory the tier runs the pinned compiler in
- * (`packageDirFor`, because the tier gets there with `cd extension && …`), and
- * the tier itself runs with the driver's knobs scrubbed, exactly as every
- * other verify child does. When provisioning could not give the tree its
- * dependencies, that is said in the message — a bare worktree failing a
- * dependency-hungry command is otherwise indistinguishable from a broken base.
+ * (`packageDirFor`), and the tier itself runs with the driver's knobs scrubbed,
+ * exactly as every other verify child does. When provisioning could not give
+ * the tree its dependencies, that is said in the message.
  */
 async function assertBaseHealthy(
   exec: ExecFn,
@@ -209,8 +205,11 @@ async function prepareTree(
 }
 
 /**
- * Attempts at the adversary, first one included. The bound is one retry: the
- * second attempt is the last, however it ends.
+ * Attempts at the adversary, first one included. The bound is one retry, and
+ * the second attempt is the last however it ends. Two refusals earn that retry:
+ * a submission the boundary dropped (the child is told what it dropped), or an
+ * attempt that ended without calling `submit_tests` once while the spec wanted
+ * tests (the child is told to submit).
  */
 const SPECIFY_MAX_ATTEMPTS = 2;
 
@@ -270,11 +269,9 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
       ? undefined
       : (config.verify.test as string);
 
-  // 2. The preconditions, all of them BEFORE the dispatch. Each one is a fact
-  //    the step can establish for itself, and an adversary spends tokens
-  //    proving none of them: a run with no runner configured could only ever
-  //    return the same verdict, an unhealthy base makes every red meaningless,
-  //    and a tree the step does not own is not the step's to reset.
+  // 2. The preconditions, all of them BEFORE the dispatch: each is a fact the
+  //    step can establish for itself, and an adversary spends tokens proving
+  //    none of them.
   if (wanted.length > 0 && runnerTemplate === undefined) {
     return {
       kind: "no-red-test",
@@ -296,9 +293,8 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
   // 4. Base health BEFORE any red is trusted.
   await assertBaseHealthy(deps.exec, wt, config, provisioning);
 
-  // `runnerTemplate` is narrowed to a string by the refusal above (a spec WITH
-  // test criteria cannot reach here without one). Checked here, once, so every
-  // attempt below is typed against the narrowed binding.
+  // `runnerTemplate` is narrowed to a string by the refusal above. Checked
+  // here, once, so every attempt below is typed against the narrowed binding.
   if (runnerTemplate === undefined)
     throw new SpecifyInfraError("no test runner configured for a spec with test criteria");
   // The run's frozen test record, read ONCE. The quota seed does not change
@@ -307,9 +303,7 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
   const frozenByCriterion = testsFromLog(ctx.steps);
 
   // 5-13. The attempts, each one the adversary plus the shared pipeline (see
-  //       `specify-attempt.ts`). The pipeline is shared with `challenge`: the two
-  //       steps differ in whose tests the child is shown and what the tree is
-  //       reset to, so there is one copy of how a submitted file is proved.
+  //       `specify-attempt.ts`), which `challenge` shares.
   const attemptArgs = {
     deps,
     config,
@@ -324,11 +318,11 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
     wanted,
     frozenByCriterion,
   };
-  // The first attempt is final unless its refusal dropped a submitted row: that
-  // is the one the child can fix by reading why, so the adversary is dispatched
-  // again with the reasons in its prompt. A budget stop, a clean `ok`, or a
-  // refusal that dropped nothing is final wherever it lands. The last attempt's
-  // outcome is the step's result whatever it is.
+  // The first attempt is final unless it dropped a submitted row or ended
+  // without submitting at all: both are things the child can fix by being told,
+  // so the adversary is dispatched again with the reasons (or the submit nudge)
+  // in its prompt. The last attempt's outcome is the step's result whatever it
+  // is.
   let attempt = await runSpecifyAttempt(attemptArgs);
   // What each attempt's dispatch cost, collected as they happen: the step's
   // outcome is ONE record, so the rows are kept outside it rather than read back
@@ -338,7 +332,7 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
   while (
     attempts < SPECIFY_MAX_ATTEMPTS &&
     attempt.outcome.kind === "no-red-test" &&
-    attempt.refused.length > 0
+    (attempt.refused.length > 0 || (attempt.silent && wanted.length > 0))
   ) {
     // The previous attempt's pipeline may have left red files in the tree, and
     // the retry must start from the base exactly as the first did. It is needed:
@@ -349,7 +343,10 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
       traceWarn(
         `lean specify #${String(issue)}: provisioning before the retry: ${prepared.problem}`,
       );
-    attempt = await runSpecifyAttempt({ ...attemptArgs, refusal: attempt.refused });
+    attempt = await runSpecifyAttempt({
+      ...attemptArgs,
+      ...(attempt.refused.length > 0 ? { refusal: attempt.refused } : { resubmit: true }),
+    });
     allRows.push(attempt.dispatched);
     attempts += 1;
   }
@@ -371,9 +368,6 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
  * to the validator's bound for ONE outcome ({@link DISPATCHES_MAX_ROWS}) by
  * keeping the TAIL: rows are appended in dispatch order, so the clip keeps the
  * child that actually decided the verdict and drops the earliest ones.
- *
- * `specify` folds up to two children into one record, so it is the one step
- * that can exceed what `outcomeProblem` will load.
  */
 function mergedRows(all: DispatchUsageRow[][]): DispatchUsageRow[] | undefined {
   const rows = all.flat().slice(-DISPATCHES_MAX_ROWS);

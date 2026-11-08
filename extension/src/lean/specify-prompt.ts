@@ -36,6 +36,12 @@ export interface SpecifyPromptOpts {
    * the one retry (`specify.ts`). Undefined or empty on a first attempt.
    */
   refusal?: string[];
+  /**
+   * Ask for a submission rather than relist the criteria: the previous attempt
+   * ended having called `submit_tests` not once, so its fault is not that a
+   * file was wrong but that the step never saw any.
+   */
+  resubmit?: boolean;
 }
 
 /** The most drop reasons {@link refusalFeedback} names; the rest are not repeated. */
@@ -46,25 +52,23 @@ const REFUSAL_LINE_MAX = 300;
 /**
  * Why a dropped file is a SIZE refusal, as opposed to a misplaced, duplicated
  * or already-green one: only these sentences describe a file the child can fix
- * by making it smaller. The line sentence is the one the lean runs that die at
- * specify meet; the byte and NUL sentences are its siblings. An `lstat` count is
- * deliberately NOT matched — `fileProblem` states a link's hard-link count, which
- * no amount of splitting fixes, and a remedy that fires there teaches the child
- * that the rules are arbitrary.
+ * by making it smaller. An `lstat` count is deliberately NOT matched —
+ * `fileProblem` states a link's hard-link count, which no amount of splitting
+ * fixes, and a remedy that fires there teaches the child that the rules are
+ * arbitrary.
  */
 const SIZE_REFUSAL =
   / lines; an acceptance test is at most | bytes; an acceptance test is at most | is not a text file/;
 
 /**
  * The one remedy the retry states that the bullets do not: HOW to fix an
- * over-cap test. A bullet says "154 lines, cap 150" and stops there, and the
- * contract above pushes the other way ("Prefer one focused file per
- * criterion"), so a child that obeyed it had no legal way down and overshot
+ * over-cap test. A bullet says "154 lines, cap 150" and stops there, and
+ * {@link TEST_SCOPE_CONTRACT} pushes the other way ("Prefer one focused file
+ * per criterion"), so a child that obeyed it had no legal way down and overshot
  * again. `MAX_TEST_FILES_PER_CRITERION` already allows a split, so the remedy
- * names both numbers and says plainly which two sentences it overrides for
- * this attempt. It sits OUTSIDE the per-reason clip, like the closing line
- * below, because a remedy inside a bullet is destroyed by the same 300
- * characters that hid the reason it explains.
+ * names both numbers and says plainly which two sentences it overrides for this
+ * attempt. It sits OUTSIDE the per-reason clip, because a remedy inside a bullet
+ * is destroyed by the same 300 characters that hid the reason it explains.
  */
 function splitInstruction(reasons: string[]): string {
   if (!reasons.some((reason) => SIZE_REFUSAL.test(reason))) return "";
@@ -110,11 +114,10 @@ export function testCriteria(spec: PiSpec) {
  * `specify-proof.ts` classifies a run red only when it exited non-zero **and**
  * its output named the file (the path or the basename); anything else is
  * `unclear` and the file is dropped. A project's own runner is not required to
- * echo the path — this repo's smoke tests print `✗ <message>` and exit 1, and
- * every one of their reds would have read as unclear — so the child is told to
- * print it itself. The proof rule is NOT relaxed for this: the sentence tells
- * the child how to satisfy the rule, it does not change what the rule accepts.
- * One const, so the two prompts cannot drift in the wording a test pins.
+ * echo the path, so the child is told to print it itself. The proof rule is NOT
+ * relaxed for this: the sentence tells the child how to satisfy the rule, it
+ * does not change what the rule accepts. One const, so the two prompts cannot
+ * drift in the wording a test pins.
  */
 export const RED_PROOF_CONTRACT =
   "**Every test file must print its own file basename when it fails**, e.g. `FAIL AC1-retry.test.ts: expected 3 retries, got 1`, and exit non-zero. The parent counts a file as a real red only when its failure output names that file; a failing file whose output never names it is dropped as unclear and its criterion is left uncovered.";
@@ -128,13 +131,10 @@ export const RED_PROOF_CONTRACT =
  * had been removed — tests for hypothetical misuse and for the shape of the
  * implementation rather than the behaviour the criterion named. The contract
  * bounds the size by asking for the smallest thing that proves the criterion,
- * and deliberately did not name a line count on its own — a number alone is met
- * by padding. It now states the three numbers the boundary enforces
- * (`MAX_TEST_LINES`, `MAX_TEST_BYTES` and `MAX_TEST_FILES_PER_CRITERION`, all
- * in `test-size.ts`) and where the bytes
- * are supposed to come from: the project's own test helpers. The rule is still
- * the property, and the numbers are what a 15-line change froze a thousand lines
- * of tests needed — a prompt plea had already been tried on that trial.
+ * and states the three numbers the boundary enforces (`MAX_TEST_LINES`,
+ * `MAX_TEST_BYTES` and `MAX_TEST_FILES_PER_CRITERION`, all in `test-size.ts`)
+ * and where the bytes come from: the project's own test helpers. A number alone
+ * is met by padding, so the rule is still the property.
  */
 export const TEST_SCOPE_CONTRACT = `**Write the smallest test that proves the criterion fails today and will pass when it is met.** Assert observable behaviour — what the entry point returns, throws, or writes — not the shape of the implementation. Do not test hypothetical misuse, or implementation details the criterion does not name: a criterion that says one parameter was removed is proved by one call and one assertion, not by a file of variants. Prefer one focused file per criterion. A kept test file is at most ${MAX_TEST_LINES} lines and ${MAX_TEST_BYTES} bytes, and a criterion gets at most ${MAX_TEST_FILES_PER_CRITERION} files, so reuse the project's existing test helpers in the test folder rather than rebuilding a harness — the parent drops a longer or larger file and the extra files it cannot use.`;
 
@@ -142,12 +142,10 @@ export const TEST_SCOPE_CONTRACT = `**Write the smallest test that proves the cr
  * The one place the test-location sentence is spelled, for BOTH adversary
  * prompts — same reasoning as {@link RED_PROOF_CONTRACT}: a rewrite to one
  * prompt must not quietly un-tell the other step's adversary where its files
- * have to go.
- *
- * It is a builder rather than a const because the folder comes from the
- * project's config. Everything the boundary later refuses is stated here first
- * (wrong folder, nested folder, wrong name), so a child that obeyed the prompt
- * never meets a drop it was not warned about.
+ * have to go. It is a builder rather than a const because the folder comes from
+ * the project's config. Everything the boundary later refuses is stated here
+ * first (wrong folder, nested folder, wrong name), so a child that obeyed the
+ * prompt never meets a drop it was not warned about.
  */
 export function testLocationInstruction(loc: TestLocation): string {
   return `**Write every test file directly inside \`${loc.testDir}/\`, named to match \`${loc.testGlob}\` (for example \`${loc.testDir}/${exampleName(loc)}\`), importing the project's code with paths relative to that folder.** The parent refuses a submitted test anywhere else — a different directory, a subdirectory of it, or a file name that does not match the pattern — and a refused test leaves its criterion uncovered.`;
@@ -188,6 +186,14 @@ function scopeBlock(spec: PiSpec): string {
     lines.push(`- Out of scope: ${spec.scope.out.join(", ")}`);
   return lines.length === 0 ? "" : `${lines.join("\n")}\n\n`;
 }
+
+/**
+ * The note a re-prompted adversary reads when its previous turn never called
+ * `submit_tests`. Fixed text: the step does not inspect what the child wrote,
+ * so no child-authored string — a path, a file name — enters the prompt.
+ */
+const RESUBMIT_NOTE =
+  "## Your previous turn ended without calling submit_tests\n\nYour tests are not the step's until you declare them. Write your red test files again if the tree no longer holds them, and call `submit_tests` for every criterion listed above. Do not end the turn without it.";
 
 /** Build the kickoff prompt for the specify child. */
 export function specifyPrompt(opts: SpecifyPromptOpts): string {
@@ -250,6 +256,7 @@ export function specifyPrompt(opts: SpecifyPromptOpts): string {
         "Do not run the implementation. Do not try to make the tests pass.",
       ].join("\n"),
   ].join("\n");
+  if (opts.resubmit === true) return `${prompt}\n\n${RESUBMIT_NOTE}`;
   return opts.refusal === undefined || opts.refusal.length === 0
     ? prompt
     : `${prompt}\n\n${refusalFeedback(opts.refusal)}`;

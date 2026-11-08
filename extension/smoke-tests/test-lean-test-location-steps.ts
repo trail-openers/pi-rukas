@@ -289,8 +289,11 @@ function emptyWt(label: string): string {
     toolUses: [],
     prompts,
   });
+  // The child here is silent (`toolUses: []`) and the spec has a test criterion,
+  // so the step re-prompts it once; the assertion reads the FIRST prompt, which
+  // is the kickoff the configured folder is meant to shape.
   assert(
-    prompts.length === 1 &&
+    prompts.length >= 1 &&
       prompts[0]?.includes("directly inside `extension/smoke-tests/`") === true,
     "(specify) the dispatched prompt carried the configured folder",
   );
