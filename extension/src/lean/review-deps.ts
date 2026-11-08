@@ -138,6 +138,8 @@ export function reviewDeps(headless: boolean): ReviewDeps {
         // `LensArgs.since`). Absent on the full round, which stays the layer's
         // ordinary whole-branch review.
         ...(a.since === undefined ? {} : { since: a.since }),
+        // The whole-branch arm of the re-review (`LensArgs.full`).
+        ...(a.full === true ? { full: true } : {}),
         // The worktree is detached, so the ledger write and the residual
         // disclosure can only be keyed on a branch this step names.
         branch: a.branch,

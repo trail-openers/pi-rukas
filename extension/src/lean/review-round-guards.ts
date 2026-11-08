@@ -10,10 +10,11 @@
  * step is what makes each one readable on its own — the step decides; these say when
  * a round is not entitled to a decision.
  *
- * Both are called on BOTH passes. That symmetry is load-bearing rather than
- * tidiness: `review` has only clean passes as exits, so a guard applied to the first
- * round alone lets the second one's silence be read as "the fixer answered
- * everything" — which is a pass, arrived at by nobody.
+ * Both are called on BOTH passes, and the two range guards are the two arms of ONE
+ * question — which range did this re-review judge? — asked of the arm the step bought.
+ * That symmetry is load-bearing: `review` has only clean passes as exits, so a guard
+ * on the first round alone lets the second one's silence read as "the fixer answered
+ * everything" — a pass, arrived at by nobody.
  */
 
 import type { LensRound, ReviewDeps } from "./review-args.ts";
@@ -116,6 +117,33 @@ export async function assertRangedOverTheFix(
   )
     throw new ReviewInfraError(
       `the re-review did not range over the fix: it reviewed \`${stamp.since.slice(0, 12)}..${stamp.head.slice(0, 12)}\` when the step named ${opts.since.slice(0, 12)}..${opts.head.slice(0, 12)} — a verdict on some other range cannot answer for the fix`,
+      rows,
+    );
+}
+
+/**
+ * The whole-branch re-review's range claim: it judged the fixed head, and proved it
+ * by stamping NO delta — the mirror of `assertRangedOverTheFix`. The layer stamps
+ * only a resolved `since..head` delta, so the one round shape that can retire a
+ * carried CRITICAL has no stamp to show and the delta guard would refuse it for
+ * that. An ABSENT stamp is therefore required (what stops the arms being
+ * interchanged) and `round.head` must resolve to the post-fix head.
+ */
+export async function assertJudgedWholeBranch(
+  deps: ReviewDeps,
+  repoRoot: string,
+  round: LensRound & { head: string },
+  opts: { head: string },
+  rows: DispatchUsageRow[],
+): Promise<void> {
+  if (round.deltaReview !== undefined)
+    throw new ReviewInfraError(
+      `the re-review of ${opts.head.slice(0, 12)} was bought whole-branch but stamped a delta over ${round.deltaReview.since.slice(0, 12)}..${round.deltaReview.head.slice(0, 12)} — a round that judged only a sub-range cannot retire a carried CRITICAL`,
+      rows,
+    );
+  if (!(await sameCommit(deps, repoRoot, opts.head, round.head, rows)))
+    throw new ReviewInfraError(
+      `the whole-branch re-review reported head ${round.head.slice(0, 12)} when the step holds ${opts.head.slice(0, 12)} — a verdict on some other commit cannot answer for the fix`,
       rows,
     );
 }

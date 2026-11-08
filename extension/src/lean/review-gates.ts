@@ -281,6 +281,8 @@ export async function lensGate(
     carried: string | undefined;
     /** The lower bound of this round's range — set only on the re-review. */
     since?: string;
+    /** Buy the whole-branch round on the fix wave (see `LensArgs.full`). */
+    full?: boolean;
     rows: DispatchUsageRow[];
     /** The step's armed budget, threaded to the six lens children. */
     budget: BudgetArms;
@@ -349,6 +351,7 @@ export async function lensGate(
         issueBody: opts.issueBody,
       }),
       ...(opts.since === undefined ? {} : { since: opts.since }),
+      ...(opts.full === true ? { full: true } : {}),
       evidence,
       extraFindings,
       headless: deps.headless,

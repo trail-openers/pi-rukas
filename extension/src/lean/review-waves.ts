@@ -27,7 +27,7 @@ import { neutraliseEvidence } from "../comment-evidence.ts";
 import type { Severity, Verdict } from "../lens-review-format.ts";
 import { SEVERITY_RANK, findingDescription } from "../lens-review-format.ts";
 import { cappedSuffix } from "../lens-review-render.ts";
-import type { Finding } from "../lens-review-types.ts";
+import { type Finding, isCarried } from "../lens-review-types.ts";
 
 /** How many lenses one review pass dispatches — the roster the step buys. */
 export const LENSES_PER_PASS = 6;
@@ -42,11 +42,14 @@ export const LENSES_PER_PASS = 6;
  */
 export const REVIEW_PASSES = 2;
 
-/** The child ceiling that follows from {@link REVIEW_PASSES} and {@link LENSES_PER_PASS}. */
+/** The children two passes imply. `retryLensChildren` is the ONE extra roster a
+ * re-review retry can buy, and is deliberately not part of the billed ceiling — a
+ * run that never retries bills exactly what it billed before. */
 export const REVIEW_CHILD_BUDGET = {
   adversarialPasses: REVIEW_PASSES,
   lensChildren: REVIEW_PASSES * LENSES_PER_PASS,
   fixerWaves: 1,
+  retryLensChildren: LENSES_PER_PASS,
 } as const;
 
 /** The row count of a full review pass: one gate row plus one row per lens child. */
@@ -150,6 +153,12 @@ export function atOrAboveBar(f: { severity: Finding["severity"] }, threshold: Se
   // rather than `undefined`, which read as a rank would clear the bar.
   const rank = Object.hasOwn(SEVERITY_RANK, f.severity) ? SEVERITY_RANK[f.severity] : undefined;
   return rank === undefined || rank <= SEVERITY_RANK[threshold];
+}
+
+/** Some row still open against the judged head is a CRITICAL — the trigger for a
+ * full re-review, since `rowFate` retires that class on a full round only. */
+export function carriedCriticalIn(rows: readonly Finding[]): boolean {
+  return rows.some((f) => isCarried(f) && f.severity === "CRITICAL");
 }
 
 /**
