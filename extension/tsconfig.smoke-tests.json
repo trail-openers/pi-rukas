@@ -300,6 +300,12 @@
     "smoke-tests/lib/lean-verify-bytes.ts",
     "smoke-tests/lib/lean-verify-git.ts",
     "smoke-tests/test-lean-verify-frozen-timeout.ts",
-    "smoke-tests/test-lean-verify-frozen-flood.ts"
+    "smoke-tests/test-lean-verify-frozen-flood.ts",
+    "smoke-tests/lib/lean-verify-fixture.ts",
+    "smoke-tests/lib/lean-verify-tiers.ts",
+    "smoke-tests/lib/lean-verify-types.ts",
+    "smoke-tests/lib/lean-verify-exec.ts",
+    "smoke-tests/test-lean-verify-frozen-and-tier.ts",
+    "smoke-tests/test-lean-verify-red-reason.ts"
   ]
 }

@@ -68,8 +68,12 @@ function record(r: Ran): { names: string[]; total: number } | undefined {
     frozenText: RED_ACCEPTANCE_TEST,
   } as never);
   assert(
-    r.outcome?.kind === "red" && (r.outcome?.reason ?? "").startsWith("baseline red:"),
+    r.outcome?.kind === "red" && (r.outcome?.reason ?? "").includes("baseline red:"),
     `(acceptance-red) today's hand-back, not a green with a disclosure (got ${r.outcome?.kind ?? `threw: ${r.threw?.message}`}; ${(r.outcome?.reason ?? "").slice(0, 120)})`,
+  );
+  assert(
+    (r.outcome?.reason ?? "").startsWith("frozen tests failing:"),
+    `(acceptance-red) and the red contract is told beside the baseline verdict, not behind it (${(r.outcome?.reason ?? "").slice(0, 90)})`,
   );
   assert(record(r) === undefined, `(acceptance-red) nothing is disclosed (${JSON.stringify(record(r))})`);
   assert(r.outcome?.verifiedHead === undefined, "(acceptance-red) and no head is certified");

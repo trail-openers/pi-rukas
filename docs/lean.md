@@ -124,7 +124,8 @@ means defaults.** An invalid file is *not* defaulted: it raises
 - **`version`** — must be exactly `1`; anything else, including absent, is
   invalid.
 - **`verify.fast` / `verify.full`** — shell strings run with `cwd` at the
-  worktree root, fast before full, first failure wins, each under its own
+  worktree root, fast before full — the first red tier ends the loop, and it is
+  reported beside a red frozen contract rather than behind it, each under its own
   30-minute bound. A committed `.pi/verify-cmd` is the fallback for the full
   tier **only when `work.json` is absent**.
 - **`verify.test`** — the per-file runner template `specify` uses to prove a
