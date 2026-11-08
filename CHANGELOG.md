@@ -8,6 +8,15 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.62](https://github.com/trail-openers/pi-rukas/compare/v0.14.61...v0.14.62) (2026-11-08)
+
+
+### Bug Fixes
+
+* **lean:** check a candidate test against the project's freeze check before freezing it ([#2099](https://github.com/trail-openers/pi-rukas/issues/2099)) ([0d6d190](https://github.com/trail-openers/pi-rukas/commit/0d6d190b1027622d98708fbad9daee8e1a7d5acb))
+* **lean:** keep the env-clear pattern out of the freeze-check comment ([#2108](https://github.com/trail-openers/pi-rukas/issues/2108)) ([eb6b6b6](https://github.com/trail-openers/pi-rukas/commit/eb6b6b63fbf29916a5489b5dcfee51f788959c9e))
+* **lean:** verify reports a red tier beside red frozen tests ([#2096](https://github.com/trail-openers/pi-rukas/issues/2096)) ([d0c892e](https://github.com/trail-openers/pi-rukas/commit/d0c892ee4d6aec395467c3a317e52ec3731ed72a))
+
 ## [0.14.61](https://github.com/trail-openers/pi-rukas/compare/v0.14.60...v0.14.61) (2026-11-07)
 
 
