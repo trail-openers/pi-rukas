@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.61](https://github.com/trail-openers/pi-rukas/compare/v0.14.60...v0.14.61) (2026-11-07)
+
+
+### Bug Fixes
+
+* **test:** pass the smoke tests inside the devcontainer ([29c19d3](https://github.com/trail-openers/pi-rukas/commit/29c19d377cd6745f2cd1324d1b5f9d78a56c6243))
+
 ## [0.14.60](https://github.com/trail-openers/pi-rukas/compare/v0.14.59...v0.14.60) (2026-11-07)
 
 
