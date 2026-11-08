@@ -105,15 +105,14 @@ export type BaseProbe =
 /**
  * The exit code a tier run ended with, or `undefined` when it exited 0.
  *
- * The one place this step decides pass-from-fail, and it decides on the child's
- * status rather than on which side of a promise a value landed: the production
- * executor rejects a non-zero exit with `code` set, and a stand-in executor is free to
- * resolve with no result object at all. Reading absence as the verdict made the gate
- * agree with whatever its injected executor happened to return.
+ * The one place this step decides pass-from-fail, and it decides on the child's status
+ * rather than on which side of a promise a value landed: the production executor rejects a
+ * non-zero exit with `code` set, and an injected executor is free to resolve with no result
+ * object at all — so the verdict must be a value, never an absence.
  *
- * A run that was killed, timed out, overflowed its buffer or never started has no
- * exit code and no verdict either — the caller asks {@link tierObserved} first, and
- * nothing may be concluded from a run that judged nothing.
+ * A run that was killed, timed out, overflowed its buffer or never started has no exit code
+ * and no verdict either — the caller asks {@link tierObserved} first, and nothing may be
+ * concluded from a run that judged nothing.
  */
 export function tierExitCode(ran: unknown): number | undefined {
   const code = (ran as { code?: unknown } | undefined)?.code;
@@ -159,16 +158,14 @@ async function tierCode(
  * work, so those leave the first red standing exactly as if there had been no re-run.
  *
  * So "exited 0" is the ONLY answer that excuses, and it is asked for positively, in two
- * parts: the re-run must have OBSERVED the work, and it must have ended with exit code 0.
- * Inferring the excuse from the ABSENCE of a numeric exit code is the opposite bug — the
- * executor's kill, timeout, overflow and `ENOENT` shapes all reject with a non-numeric
- * `code` (`null`, or a string), and so does a rejection that stamped nothing at all, so
- * an absence test would read every one of them as the clean exit and report a green on a
- * tier nobody saw pass. The base probe's sibling {@link classifyBaseRun} asks the same
- * question through {@link tierObserved} first; a re-run is held to the same standard.
+ * parts: the re-run must have OBSERVED the work, and it must have ended with exit code 0. An
+ * absence test would read the executor's kill, timeout, overflow and `ENOENT` rejections — all
+ * of which carry a non-numeric `code` (`null`, or a string) — as the clean exit and report a
+ * green on a tier nobody saw pass. The base probe's sibling {@link classifyBaseRun} asks the
+ * same question through {@link tierObserved} first; a re-run is held to the same standard.
  *
- * The return is the fact, not a colour — the tier's own `Executed` from the first run
- * stays the evidence, and only this tells the caller whether to believe it.
+ * The return is the fact, not a colour — the tier's own `Executed` from the first run stays
+ * the evidence, and only this tells the caller whether to believe it.
  */
 export async function confirmTierRed(opts: {
   name: string;

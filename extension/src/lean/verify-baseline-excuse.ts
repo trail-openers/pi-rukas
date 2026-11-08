@@ -10,12 +10,10 @@
  * green, and say so" when the head run printed nothing the base run did not print.
  *
  * The unit of comparison is the WHOLE failure line, and that is what makes it
- * runner-agnostic. The parser this module replaced read pytest's `path::name` out
- * of each line and compared tokens; every parser tried for a TAP description or a
- * go test name found a new way to fold two different checks onto one token, and a
- * folded name excuses a failure only this run authored — the one thing this feature
- * must never do. Whole lines cannot fold: two checks are two lines, and two runs of
- * ONE check print the SAME line.
+ * runner-agnostic. A parser that reads a test name out of each line and compares tokens always
+ * finds a way to fold two different checks onto one token, and a folded name excuses a failure
+ * only this run authored — the one thing this feature must never do. Whole lines cannot fold: two
+ * checks are two lines, and two runs of ONE check print the SAME line.
  *
  * It is deliberately stricter than "the base was red too":
  *
@@ -35,11 +33,9 @@
  *     refuses unless something POSITIVE vouches for it, which is {@link
  *     hasHeadOnlyUnrefusedLine} asking {@link isKnownCleanLine}. That second half is
  *     DEFAULT-REFUSE and the direction is the whole design: `failureLines` drops every line
- *     the classifier does not recognise, so an omitted one let a head of `[readable A,
- *     unread B]` match a base that printed only A and grade a tier green on a failure this
- *     run authored. The first answer kept a list of failure TOKENS and refused on a head-only
- *     token the table did not read; runners are unbounded and every review round produced a
- *     token the list lacked. Now a head-only line needs permission, not a pardon: it is
+ *     the classifier does not recognise, so an omitted one would let a head of
+ *     `[readable A, unread B]` match a base that printed only A and grade a tier green on a
+ *     failure this run authored. A head-only line needs permission, not a pardon: it is
  *     excused only if it is provably not a failure (a pass marker, a progress line, a
  *     separator, a count), and a new runner's failure dialect is caught by being absent from
  *     that short list. Lines the harness itself wrote, and lines the classifier reads as
@@ -113,14 +109,12 @@ export type BaselineExcuse =
  *     the finding and a counter word beside it does not make it a tally. Two lines that differ only
  *     by such a number are two failures, and the run that printed the one the base did not is refused.
  *
- * There used to be a second looser key, which folded a TAP runner's CHECK INDEX so that a head's
- * `not ok 3 - x` sat where the base printed `not ok 1 - x`. It is deleted, and the reason is the
- * whole-line rule this seam obeys everywhere else: a renumbering cannot vouch for a line. The index
- * is assigned by the order checks ran, so a NEW failing check printed third folds onto the base's
- * first failing check and the run that authored it is excused. The accepted cost — stated in
- * `docs/lean.md` and the troubleshooting entry, and in the safe direction — is that a TAP or bats run
- * whose failing checks were RENUMBERED because a passing test was added before them now refuses: a
- * hand-back, never a green.
+ * A TAP runner's CHECK INDEX is never folded: a head's `not ok 3 - x` must not sit where the base
+ * printed `not ok 1 - x`. The index is assigned by the order checks ran, so it cannot vouch for a
+ * line — a NEW failing check printed third would fold onto the base's first failing check and the
+ * run that authored it would be excused. The accepted cost, in the safe direction, is that a TAP or
+ * bats run whose failing checks were renumbered because a passing test was added before them now
+ * refuses: a hand-back, never a green.
  *
  * A line the strict key cannot place is otherwise excused only by the allow-list, never by
  * looser text — which is what makes the direction safe.
@@ -376,12 +370,10 @@ export function baselineExcuse(opts: {
   //     assertion compared is the finding, and a counter word sitting beside it does not turn a
   //     per-check report into a tally.
   //
-  // A third pass used to fold a TAP runner's CHECK INDEX, and it is deleted: `not ok 3 - x` shared a
-  // key with a base's `not ok 1 - x`, so a NEW failing check that happened to be printed third was
-  // excused as the base's first. A runner numbers its checks in the order it ran them, so the number
-  // says nothing about which check it is, and a fold that cannot vouch for the whole line is the fold
-  // this module refuses everywhere else. The cost is a renumbered TAP/bats failure handing the run
-  // back — never a green.
+  // A TAP runner's CHECK INDEX is never folded: `not ok 3 - x` must not share a key with a base's
+  // `not ok 1 - x`, because a runner numbers its checks in the order it ran them and the number says
+  // nothing about which check it is. The cost is a renumbered TAP/bats failure handing the run back —
+  // never a green.
   //
   // The order is load-bearing. A looser pass is reached only when the passes above it failed
   // for EVERY line, so an assertion whose numbers genuinely changed is settled by the strict
