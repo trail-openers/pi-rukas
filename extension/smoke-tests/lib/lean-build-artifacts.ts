@@ -13,7 +13,27 @@ import { chmodSync, linkSync, mkdirSync, symlinkSync, writeFileSync } from "node
 import path from "node:path";
 import { type ExecResult, execp } from "../../src/exec.ts";
 import type { BuildExec } from "../../src/lean/build-types.ts";
+import type { DispatchResult } from "../../src/types.ts";
 import { git, gitEnvFor } from "./lean-build-fixture.ts";
+
+/**
+ * What one dispatch of the fake child returns, per dispatch index: a list read
+ * by index, or a rule called with it. `lib/lean-build-fixture.ts` puts it on
+ * `RunOpts`; the override lives here so the fixture stays inside the size cap
+ * while a case can still hand its dead child real fields.
+ */
+export type DispatchResultOverride =
+  | Partial<DispatchResult>[]
+  | ((n: number) => Partial<DispatchResult> | undefined);
+
+/** The override for the nth child, or `undefined` when the case gave none. */
+export function resultOverride(
+  over: DispatchResultOverride | undefined,
+  n: number,
+): Partial<DispatchResult> | undefined {
+  if (over === undefined) return undefined;
+  return typeof over === "function" ? over(n) : over[n];
+}
 
 /** Worktree-relative path of a file the child may create. */
 export function put(wt: string, rel: string, content: string, mode?: number): void {

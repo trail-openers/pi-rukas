@@ -44,7 +44,7 @@ import { existsSync } from "node:fs";
 import { execp } from "../exec.ts";
 import { spawnSpecialist } from "../spawn.ts";
 import { trace, traceWarn } from "../trace.ts";
-import type { DispatchSpec } from "../types.ts";
+import type { DispatchResult, DispatchSpec } from "../types.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import type { ExecFn } from "../worktree.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
@@ -67,6 +67,7 @@ import type { Outcome, Step } from "./state.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 import {
   type BudgetOpts,
+  type BudgetStop,
   armBudget,
   budgetFor,
   budgetSentence,
@@ -290,6 +291,9 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
   // another child, which is what lets a run spend its third build on work rather
   // than on a ceiling. (R3)
   const retriesAllowed = Math.max(0, MAX_BUILD_ATTEMPTS - dispatchedBefore - 1);
+  // A child that did no work gets its one free re-dispatch of this visit (#2104
+  // R2): it bought nothing, so it bills no round and advances no `tries`.
+  let noWorkRetryUsed = false;
   for (let tries = 0; ; tries++) {
     const budget = armBudget(budgetFor(config, "build"));
     if (budget.warning !== undefined) traceWarn(`lean build #${String(issue)}: ${budget.warning}`);
@@ -307,7 +311,18 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
       ...(stopped === undefined ? {} : { budgetStop: stopped }),
     });
     rows.push(row);
-    const read = readDispatched(dispatchedChild);
+    if ("noWorkCrash" in dispatchedChild) {
+      if (noWorkRetryUsed)
+        throw new BuildInfraError(`build dispatch failed: ${dispatchedChild.why}`, rows);
+      // A child that did no work bought nothing: its row stays billed and the SAME
+      // prompt goes out again on a freshly armed budget, without spending a round.
+      // The second one of these throws, as any dead child did.
+      noWorkRetryUsed = true;
+      tries--;
+      continue;
+    }
+    // Past that branch only a real result or a ceiling stop is left on the pair.
+    const read = readDispatched(dispatchedChild as DispatchResult | BudgetStop);
     if (!("stop" in read)) {
       toolUses = read.result.toolUses ?? [];
       break;

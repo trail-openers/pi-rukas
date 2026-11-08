@@ -13,6 +13,7 @@ import { stat } from "node:fs/promises";
 import path from "node:path";
 import { statReporterPath } from "../reporter-preflight.ts";
 import type { DispatchResult } from "../types.ts";
+import { classifyFailureCause } from "../work-driver-failure-taxonomy.ts";
 import { BLOCKED_REPORTER_PATH } from "./build-blocked-reporter.ts";
 import { BuildInfraError } from "./build-errors.ts";
 import { buildPrompt } from "./build-prompt.ts";
@@ -58,21 +59,60 @@ export interface BuildDispatchOpts {
 }
 
 /**
- * Dispatch one developer. A budget breach comes back as {@link BudgetStop}, not a
- * throw; any other dead child is still infrastructure.
+ * A builder that died before doing any work, which the step may re-dispatch.
+ *
+ * `dispatchBuilder` is the only site holding the child's `DispatchResult`, so it
+ * is the only site that can tell a child that did nothing from one that died
+ * mid-flight; the caller sees only the row, which keeps no `toolUses`. A cap
+ * kill never becomes this: the shared taxonomy is what declines it.
+ */
+export interface NoWorkCrash {
+  readonly noWorkCrash: true;
+  /** Why the first child failed, for the throw the step still may have to make. */
+  why: string;
+  row: DispatchUsageRow;
+}
+
+/**
+ * True only on POSITIVE evidence that the child did nothing: turns are a known
+ * number and no turn did any work (`<= 1`), and no tool call is reported or was
+ * seen live. Unknown usage is not evidence of an empty child (#2104 R1).
+ */
+function didNoWork(result: DispatchResult): boolean {
+  return (
+    result.usage !== undefined &&
+    result.usage.turns <= 1 &&
+    result.toolUses.length === 0 &&
+    (result.observedToolCalls ?? 0) === 0
+  );
+}
+
+/** The child's failure in the shared taxonomy's words: caps there stay fatal. */
+function retryableCrash(result: DispatchResult): boolean {
+  const cls = classifyFailureCause({
+    kind: result.errorStop ? "dispatch-failed-provider" : "dispatch-failed",
+    killCause: result.killCause,
+    providerMessage: result.errorStop?.message,
+  });
+  return cls.shouldRetry && cls.maxRetries > 0;
+}
+
+/**
+ * Dispatch one developer. A budget breach comes back as {@link BudgetStop}, a
+ * dead-but-idle child as {@link NoWorkCrash}; any other dead child is still
+ * infrastructure and throws.
  *
  * The second element of the pair is the row this dispatch cost, and it is
  * returned on every path that RECEIVED a `DispatchResult` — the ok path, the
  * budget stop, and the infra throw built from that result. A throw from before
  * the result arrived (the dispatch seam rejecting, for instance) saw no child
  * and carries no row. A child that died mid-stream spent its tokens before
- * anybody knew, and the caller has no way to build the row after a throw, so a
- * row dropped here is a cost the run's total silently forgets.
+ * anybody knew, and the caller has no way to build the row after a throw.
  */
 export async function dispatchBuilder(
   dispatch: BuildDispatch,
   opts: BuildDispatchOpts,
-): Promise<[DispatchResult | BudgetStop, DispatchUsageRow]> {
+): Promise<[DispatchResult | BudgetStop | NoWorkCrash, DispatchUsageRow]> {
   await statReporterPath(BLOCKED_REPORTER_PATH, opts.statReporter ?? stat);
   const prompt = buildPrompt({
     issue: opts.issue,
@@ -107,6 +147,17 @@ export async function dispatchBuilder(
   // Before the throw below: the step's own ceiling ending the child is a verdict.
   const fired = opts.budget.fired(result);
   if (fired !== undefined) return [budgetStop(fired), row];
+  // Before the shared tail: a child that provably did nothing is a re-dispatch,
+  // not a verdict, so it comes back as a row rather than a throw.
+  if (!result.ok || result.killCause !== undefined || result.errorStop !== undefined) {
+    const why =
+      result.killCause ??
+      result.errorStop?.message ??
+      result.errorStop?.reason ??
+      `exit ${String(result.exitCode)}`;
+    if (didNoWork(result) && retryableCrash(result))
+      return [{ noWorkCrash: true as const, why, row }, row];
+  }
   throwIfDispatchFailed(result, BuildInfraError, "build dispatch failed: ", [row]);
   return [result, row];
 }
