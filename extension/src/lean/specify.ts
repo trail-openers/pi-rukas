@@ -62,6 +62,7 @@ import type { WorkConfig } from "./config.ts";
 import { loadWorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { fetchIssueBody } from "./io.ts";
+import { providerWaitNote, waitOutProviderFault } from "./provider-wait.ts";
 import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
 import { runSpecifyAttempt } from "./specify-attempt.ts";
 import type { CaptureResult } from "./specify-capture.ts";
@@ -329,11 +330,29 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
   // from whichever outcome survived.
   const allRows: DispatchUsageRow[][] = [attempt.dispatched];
   let attempts = 1;
+  // The provider wait this step sat out before its re-prompt, folded into the
+  // reason of the outcome it finally records.
+  let waitedMs = 0;
+  // The third re-prompt reason is the provider fault, and it is its OWN field —
+  // never `silent`, which would let a provider death borrow a refusal the prompt
+  // has nothing to say about. It costs no extra attempt: same bound.
   while (
     attempts < SPECIFY_MAX_ATTEMPTS &&
     attempt.outcome.kind === "no-red-test" &&
-    (attempt.refused.length > 0 || (attempt.silent && wanted.length > 0))
+    (attempt.providerFault !== undefined ||
+      attempt.refused.length > 0 ||
+      (attempt.silent && wanted.length > 0))
   ) {
+    // The wait goes BEFORE the prompt goes out again — re-dispatching at once is
+    // what spent the run's only retry inside the same burst.
+    if (attempt.providerFault !== undefined) {
+      waitedMs += await waitOutProviderFault({
+        cls: attempt.providerFault,
+        attempt: 1,
+        now: ctx.now(),
+        ...(ctx.run.deadlineMs === undefined ? {} : { deadlineMs: ctx.run.deadlineMs }),
+      });
+    }
     // The previous attempt's pipeline may have left red files in the tree, and
     // the retry must start from the base exactly as the first did. It is needed:
     // `runTestPipeline` resets only once it has a kept file, so an attempt that
@@ -345,12 +364,18 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
       );
     attempt = await runSpecifyAttempt({
       ...attemptArgs,
-      ...(attempt.refused.length > 0 ? { refusal: attempt.refused } : { resubmit: true }),
+      ...(attempt.refused.length > 0 && attempt.providerFault === undefined
+        ? { refusal: attempt.refused }
+        : { resubmit: true }),
     });
     allRows.push(attempt.dispatched);
     attempts += 1;
   }
   const final = attempts > 1 ? afterRetry(attempt.outcome) : attempt.outcome;
+  const withWait =
+    waitedMs === 0
+      ? final
+      : { ...final, reason: `${final.reason ?? ""} ${providerWaitNote(waitedMs)}` };
   // ONE rule: the step's outcome carries the FLAT rows of EVERY attempt, in
   // order, whichever verdict survived. A retry is a second child and the step
   // is one record, so a fold that kept only the last attempt's rows would
@@ -360,7 +385,7 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
   // dispatch, so the merge is its rows plus any earlier attempt's. `undefined`
   // when no attempt dispatched, so a step that paid for nothing records no key.
   const dispatches = mergedRows(allRows);
-  return dispatches === undefined ? final : { ...final, dispatches };
+  return dispatches === undefined ? withWait : { ...withWait, dispatches };
 }
 
 /**

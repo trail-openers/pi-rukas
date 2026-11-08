@@ -36,10 +36,13 @@ import { type CaptureResult, captureTestBytes } from "../../src/lean/specify-cap
 import { parsePorcelainZ } from "../../src/lean/specify-tree.ts";
 import { type SpecifyDeps, SpecifyInfraError } from "../../src/lean/specify.ts";
 import type { Outcome } from "../../src/lean/state.ts";
-import type { DispatchUsageRow } from "../../src/lean/step-budget.ts";
 import { createRun } from "../../src/lean/state.ts";
+import type { DispatchUsageRow } from "../../src/lean/step-budget.ts";
 import type { DispatchResult, DispatchSpec } from "../../src/types.ts";
 import { gitTestEnv } from "./git-test-env.ts";
+import type { DispatchResultOverride } from "./lean-build-artifacts.ts";
+import { deadlineOf, resultOverride } from "./lean-build-artifacts.ts";
+import type { ClockOpts } from "./lean-build-artifacts.ts";
 export { put } from "./lean-build-fixture.ts";
 import { put } from "./lean-build-fixture.ts";
 
@@ -139,9 +142,22 @@ export function configWith(verify: WorkConfig["verify"]): WorkConfig {
   return { ...defaultConfig(), verify };
 }
 
-function ctxFor(repoRoot: string, baseSha: string, issue: number): HandlerCtx {
+function ctxFor(
+  repoRoot: string,
+  baseSha: string,
+  issue: number,
+  now: () => number,
+  deadlineMs: number | undefined,
+): HandlerCtx {
   const run = createRun({ issue, version: "test", models: {}, baseSha, branch: "" });
-  return { repoRoot, issue, run, steps: run.steps, stepKey: `${issue}:specify:0`, now: () => 1 };
+  return {
+    repoRoot,
+    issue,
+    run: deadlineMs === undefined ? run : { ...run, deadlineMs },
+    steps: run.steps,
+    stepKey: `${issue}:specify:0`,
+    now,
+  };
 }
 
 function okResult(toolUses: unknown[]): DispatchResult {
@@ -230,11 +246,21 @@ export interface RunOpts {
    * is a child the budget ends.
    */
   progressTurns?: number | ((dispatch: number) => number);
+  /**
+   * The whole `DispatchResult` of the nth child (0-based) — the shape a case
+   * needs to hand its dead child a real `errorStop` / `usage` / `killCause`.
+   * `dispatchOk: false` stays the ordinary dead-child shorthand.
+   */
+  dispatchResults?: DispatchResultOverride;
+  /** The run's whole-cycle deadline and the step's clock; both absent by default. */
+  clock?: ClockOpts;
 }
 
 /** Run the step; a throw comes back as the error, so each case asserts on it. */
 export async function runSpecify(opts: RunOpts): Promise<RunResult> {
   const issue = opts.issue;
+  const now = opts.clock?.now ?? (() => 1);
+  const deadline = deadlineOf(opts.clock, now);
   let sawBaseHealthy = false;
   let dispatched = 0;
   const exec: SpecifyDeps["exec"] = async (cmd, o) => {
@@ -252,7 +278,9 @@ export async function runSpecify(opts: RunOpts): Promise<RunResult> {
     const wt = spec.cwd as string;
     opts.writes(wt, dispatched);
     const turns =
-      typeof opts.progressTurns === "function" ? opts.progressTurns(dispatched) : opts.progressTurns;
+      typeof opts.progressTurns === "function"
+        ? opts.progressTurns(dispatched)
+        : opts.progressTurns;
     if (turns !== undefined)
       dopts.onProgress?.({
         role: "developer",
@@ -269,9 +297,10 @@ export async function runSpecify(opts: RunOpts): Promise<RunResult> {
     const declared =
       typeof opts.toolUses === "function" ? opts.toolUses(dispatched) : [...opts.toolUses];
     opts.afterSubmit?.(wt);
+    const over = resultOverride(opts.dispatchResults, dispatched - 1);
     return opts.dispatchOk === false
-      ? { ...okResult(declared), ok: false, exitCode: 1 }
-      : okResult(declared);
+      ? { ...okResult(declared), ok: false, exitCode: 1, ...over }
+      : { ...okResult(declared), ...over };
   };
   const deps: SpecifyDeps = {
     exec,
@@ -295,7 +324,10 @@ export async function runSpecify(opts: RunOpts): Promise<RunResult> {
   const worktree = path.join(opts.repoRoot, ".worktrees", `lean-${issue}`);
   try {
     const specify = await import("../../src/lean/specify.ts");
-    const outcome = await specify.specifyOutcome(ctxFor(opts.repoRoot, opts.baseSha, issue), deps);
+    const outcome = await specify.specifyOutcome(
+      ctxFor(opts.repoRoot, opts.baseSha, issue, now, deadline),
+      deps,
+    );
     return { outcome, sawBaseHealthy, dispatched, worktree };
   } catch (err) {
     return {

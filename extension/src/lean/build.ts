@@ -62,6 +62,7 @@ import { loadWorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { fetchIssueBody } from "./io.ts";
 import { MAX_BUILD_ATTEMPTS } from "./machine.ts";
+import { providerWaitNote, waitOutProviderFault } from "./provider-wait.ts";
 import { type PiSpec, parsePiSpec } from "./spec.ts";
 import { CaptureBudget } from "./specify-capture.ts";
 import { assertSpecifyWorktreeOwned, specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
@@ -273,6 +274,10 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
   const reentry = reentryFromLog(ctx.steps);
   const added = addedByChallengeFromLog(ctx.steps);
   let stopped = budgetStopFromLog(ctx.steps);
+  // The wait note of a provider fault this visit sat out, folded into the reason
+  // of whichever verdict this visit records (empty joins to nothing).
+  let waitedMs = 0;
+  const waitNote = () => (waitedMs > 0 ? providerWaitNote(waitedMs) : "");
   const rows: DispatchUsageRow[] = [];
   let toolUses: unknown[] = [];
   // Children this visit has put on the wire. `buildAttempts` counts rounds the
@@ -329,6 +334,16 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
       );
       firstNoWorkWhy = dispatchedChild.why;
       noWorkRetryUsed = true;
+      // The wait sits INSIDE the one free re-dispatch the child already earned —
+      // it adds no counter and bills no round. A non-provider or hatch-off case
+      // takes zero and re-dispatches exactly as before.
+      waitedMs += await waitOutProviderFault({
+        cls: dispatchedChild.cls,
+        attempt: 1,
+        now: ctx.now(),
+        ...(ctx.run.deadlineMs === undefined ? {} : { deadlineMs: ctx.run.deadlineMs }),
+        ...(budget.opts.signal === undefined ? {} : { signal: budget.opts.signal }),
+      });
       tries--;
       continue;
     }
@@ -362,6 +377,7 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
         ...(atCap ? [`after ${String(dispatchedBefore + tries + 1)} build attempts`] : []),
         failing.length === 0 ? "" : `still failing: ${clipList(failing, LIST_CLIP)}`,
         kept.files.length === 0 ? "" : `kept ${String(kept.files.length)} file(s)`,
+        waitNote(),
       ]),
     };
     stopped = verdict.reason;
@@ -396,7 +412,11 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
     budget: new CaptureBudget(deps.captureCeiling),
   });
   if (report.files.length === 0)
-    return { kind: "exhausted", reason: "the developer produced no change", dispatches: rows };
+    return {
+      kind: "exhausted",
+      reason: joinNotes(["the developer produced no change", waitNote()]),
+      dispatches: rows,
+    };
   return {
     kind: "ok",
     reason: joinNotes([
@@ -407,6 +427,7 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
         ? `removed: ${report.removed.map((r) => `${r.path} (${r.why})`).join(", ")}`
         : "",
       report.deleted.length > 0 ? `deleted: ${report.deleted.join(", ")}` : "",
+      waitNote(),
     ]),
     dispatches: rows,
   };

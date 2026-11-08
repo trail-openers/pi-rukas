@@ -16,12 +16,12 @@ import { stat } from "node:fs/promises";
 import path from "node:path";
 import { statReporterPath } from "../reporter-preflight.ts";
 import type { DispatchResult } from "../types.ts";
-import { classifyFailureCause, isFinalProviderFault } from "../work-driver-failure-taxonomy.ts";
 import { BLOCKED_REPORTER_PATH } from "./build-blocked-reporter.ts";
 import { BuildInfraError } from "./build-errors.ts";
 import { buildPrompt } from "./build-prompt.ts";
 import type { BuildDispatch } from "./build-types.ts";
 import { dispatchFailureWhy, throwIfDispatchFailed } from "./dispatch-verdict.ts";
+import { type ProviderWaitClass, providerFaultOf } from "./provider-wait.ts";
 import type { PiSpec } from "./spec.ts";
 import {
   type BudgetArms,
@@ -67,13 +67,17 @@ export interface BuildDispatchOpts {
  * dispatchBuilder is the only site holding the child's DispatchResult, so it
  * is the only site that can tell a child that did nothing from one that died
  * mid-flight; the caller sees only the row, which keeps no toolUses. A kill or
- * a terminal provider fault never becomes this: retryableCrash declines it.
+ * a terminal provider fault never becomes this: `providerFaultOf` declines it.
+ * The classification it took to say so rides along, so the wait site never
+ * classifies the same death twice.
  */
 interface NoWorkCrash {
   readonly noWorkCrash: true;
   /** Why the first child failed, for the throw the step still may have to make. */
   why: string;
   row: DispatchUsageRow;
+  /** The classifier's verdict on this death, carried out of the one call. */
+  cls: ProviderWaitClass;
 }
 
 /**
@@ -83,7 +87,7 @@ interface NoWorkCrash {
  * is the ONLY kind `terminalProviderClassOnKill` reads, so labelling a kill
  * provider-shaped switches off the override that makes a spend cap fatal.
  */
-function failureKindFor(result: DispatchResult): string {
+export function failureKindFor(result: DispatchResult): string {
   return result.killCause === undefined && result.errorStop !== undefined
     ? "dispatch-failed-provider"
     : "dispatch-failed";
@@ -94,33 +98,13 @@ function failureKindFor(result: DispatchResult): string {
  * number and no turn did any work (`<= 1`), and no tool call is reported or was
  * seen live. Unknown usage is not evidence of an empty child.
  */
-function didNoWork(result: DispatchResult): boolean {
+export function didNoWork(result: DispatchResult): boolean {
   return (
     result.usage !== undefined &&
     result.usage.turns <= 1 &&
     result.toolUses.length === 0 &&
     (result.observedToolCalls ?? 0) === 0
   );
-}
-
-/**
- * The child's failure in the shared taxonomy's words, which is the only answer
- * that declines a cap: `inactivity` / `tool-inactivity` are retryable THERE
- * because the driver's router may re-run a hanged step, so a kill is refused
- * first — re-spawning a child pi-rukas itself ended is a spawn loop. A terminal
- * provider fault (spend cap, quota window, undated 429, missing model) is final
- * too, which the classifier's own predicate states.
- */
-function retryableCrash(result: DispatchResult): boolean {
-  if (result.killCause !== undefined) return false;
-  const cls = classifyFailureCause({
-    kind: failureKindFor(result),
-    killCause: result.killCause,
-    // `reason` too, the way `dispatchFailureWhy` reads it: an error stop whose
-    // only text is the stop reason must not read as a plain crash.
-    providerMessage: result.errorStop?.message ?? result.errorStop?.reason,
-  });
-  return cls.shouldRetry && cls.maxRetries > 0 && !isFinalProviderFault(cls);
 }
 
 /**
@@ -175,10 +159,13 @@ export async function dispatchBuilder(
   const fired = opts.budget.fired(result);
   if (fired !== undefined) return [budgetStop(fired), row];
   // Before the shared tail: a child that provably did nothing is a re-dispatch,
-  // not a verdict, so it comes back as a row rather than a throw.
+  // not a verdict, so it comes back as a row rather than a throw. `providerFaultOf`
+  // is the only answer that declines a cap — a kill and a terminal provider fault
+  // (spend cap, quota window, undated 429, missing model) both come back undefined.
   if (!result.ok || result.killCause !== undefined || result.errorStop !== undefined) {
-    if (didNoWork(result) && retryableCrash(result))
-      return [{ noWorkCrash: true as const, why: dispatchFailureWhy(result), row }, row];
+    const cls = didNoWork(result) ? providerFaultOf(result) : undefined;
+    if (cls !== undefined)
+      return [{ noWorkCrash: true as const, why: dispatchFailureWhy(result), row, cls }, row];
   }
   throwIfDispatchFailed(result, BuildInfraError, "build dispatch failed: ", [row]);
   return [result, row];

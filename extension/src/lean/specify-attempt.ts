@@ -17,9 +17,11 @@ import path from "node:path";
 import { statReporterPath } from "../reporter-preflight.ts";
 import { traceWarn } from "../trace.ts";
 import type { DispatchResult } from "../types.ts";
+import { didNoWork } from "./build-dispatch.ts";
 import type { TestLocation } from "./config-test-location.ts";
 import type { WorkConfig } from "./config.ts";
 import { throwIfDispatchFailed } from "./dispatch-verdict.ts";
+import { type ProviderWaitClass, providerFaultOf, waitOutProviderFault } from "./provider-wait.ts";
 import type { Criterion, PiSpec } from "./spec.ts";
 import { existsInCommit, fileProblem } from "./specify-path.ts";
 import { specifyPrompt } from "./specify-prompt.ts";
@@ -95,15 +97,29 @@ interface SpecifyAttemptResult {
    * reader of the log alone sees the same truth as the fold.
    */
   dispatched: DispatchUsageRow[];
+  /**
+   * The endpoint killed this child BEFORE it did any work and the taxonomy calls
+   * that fault transient, so the caller may wait it out and re-prompt. Only on
+   * positive `didNoWork` evidence; every other dead child still throws.
+   */
+  providerFault?: ProviderWaitClass;
+}
+
+/** A dead specify child the caller may re-prompt, discriminated by field presence. */
+interface NoWorkProviderFault {
+  readonly providerFault: ProviderWaitClass;
+  readonly row: DispatchUsageRow;
 }
 
 /**
- * The dispatch, with a non-OK child turned into the throw it deserves.
+ * The dispatch, with a non-OK child turned into the throw it deserves — except a
+ * child the ENDPOINT killed before it did any work, which is a retry the run
+ * already owns and comes back as a row carrying the classification.
  *
  * The row this dispatch cost comes back on every path that RECEIVED a
- * `DispatchResult`: the ok path, the budget stop, and the `SpecifyInfraError`
- * (which carries it on the error, because a throw records no outcome and the
- * child still spent tokens).
+ * `DispatchResult`: the ok path, the budget stop, the retryable provider fault,
+ * and the `SpecifyInfraError` (which carries it on the error, because a throw
+ * records no outcome and the child still spent tokens).
  */
 async function dispatchAdversary(
   deps: SpecifyDeps,
@@ -120,7 +136,7 @@ async function dispatchAdversary(
     /** See {@link SpecifyAttemptArgs.resubmit}. */
     resubmit?: boolean;
   },
-): Promise<[DispatchResult | BudgetStop, DispatchUsageRow]> {
+): Promise<[DispatchResult | BudgetStop | NoWorkProviderFault, DispatchUsageRow]> {
   await (deps.statReporter ?? statReporterPath)(SUBMIT_TESTS_REPORTER_PATH);
   const prompt = specifyPrompt({
     issue: opts.issue,
@@ -151,6 +167,15 @@ async function dispatchAdversary(
   // verdict about the round, not a fault in the harness.
   const fired = opts.budget.fired(result);
   if (fired !== undefined) return [budgetStop(fired), row];
+  // An endpoint-killed child that did nothing is a re-prompt, not a handed-back
+  // run; the shared ladder decides which deaths qualify.
+  if (
+    (result.ok === false || result.killCause !== undefined || result.errorStop !== undefined) &&
+    didNoWork(result)
+  ) {
+    const cls = providerFaultOf(result);
+    if (cls !== undefined) return [{ providerFault: cls, row }, row];
+  }
   throwIfDispatchFailed(result, SpecifyInfraError, "specify dispatch failed: ", [row]);
   return [result, row];
 }
@@ -193,6 +218,21 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
   // Every outcome this attempt returns carries the row: a dispatch that ended
   // the attempt is still a dispatch the run paid for.
   const rows = [row];
+  // The provider-faulted child never reaches the pipeline below: it left nothing
+  // to capture, validate, or prove red. The caller waits the fault out and re-prompts.
+  if ("providerFault" in dispatchedChild)
+    return {
+      outcome: {
+        kind: "no-red-test",
+        failedRules: ["the provider faulted before the child did any work"],
+        reason: "the provider faulted before the child did any work",
+        dispatches: rows,
+      },
+      refused: [],
+      silent: false,
+      dispatched: rows,
+      providerFault: dispatchedChild.providerFault,
+    };
   const dispatchedRead = readDispatched(dispatchedChild);
   if ("stop" in dispatchedRead)
     return {

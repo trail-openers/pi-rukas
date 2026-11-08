@@ -35,6 +35,29 @@ export function resultOverride(
   return typeof over === "function" ? over(n) : over[n];
 }
 
+/**
+ * The clock a case puts on the run record: the whole-cycle deadline (a fixed
+ * epoch, or one read off the case's own clock) and the `now` the step is told to
+ * use. Both absent is today's shape — no deadline, a fixed clock — which is what
+ * every case that says nothing about the deadline expects.
+ *
+ * A bounded-wait case needs both: the wait-take and the wait-skip branch differ
+ * only in what `deadline − now` leaves, and a fixture frozen at one reading can
+ * drive neither. Such a case pins `PI_ENSEMBLE_HANDOFF_TIMEOUT_MS` so the
+ * allowance it compares against is its own, not the shipped one.
+ */
+export interface ClockOpts {
+  deadlineMs?: number | ((now: number) => number | undefined);
+  now?: () => number;
+}
+
+/** The absolute deadline to stamp on the run, or `undefined` for none. */
+export function deadlineOf(clock: ClockOpts | undefined, now: () => number): number | undefined {
+  const d = clock?.deadlineMs;
+  if (d === undefined) return undefined;
+  return typeof d === "number" ? d : d(now());
+}
+
 /** Worktree-relative path of a file the child may create. */
 export function put(wt: string, rel: string, content: string, mode?: number): void {
   const target = path.join(wt, rel);
