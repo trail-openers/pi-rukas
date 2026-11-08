@@ -17,6 +17,10 @@
  * title must stay ONE line, so every control character goes, including the
  * newlines a fence would keep; and a value that goes inside backticks must stay
  * one line without the markdown escaping a cell needs.
+ *
+ * The fourth export is the other direction: `joinNotes` composes a step's own
+ * reason from the clauses it happened to have, so no step writes its own
+ * separator-joining rule and a clause it lacked leaves no bare `; ` behind.
  */
 
 /** Control characters that still read as text inside a fence: newline and tab. */
@@ -127,4 +131,13 @@ export function clipList(items: string[], cap: number): string {
   return items.length > cap
     ? `${items.slice(0, cap).join(", ")} (+${String(items.length - cap)} more)`
     : items.join(", ");
+}
+
+/**
+ * The `; `-joined non-empty parts of one reason line. A step composes its reason
+ * from clauses it may or may not have, and an empty clause must not leave a bare
+ * separator or a leading space in the record the operator reads.
+ */
+export function joinNotes(parts: string[]): string {
+  return parts.filter((p) => p !== "").join("; ");
 }

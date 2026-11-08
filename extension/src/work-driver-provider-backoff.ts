@@ -58,10 +58,8 @@ export function providerRetryMaxWaitMs(): number {
  * scaled by this ladder, because no amount of waiting inside the cycle clears
  * it — and the taxonomy already declines to retry either.
  */
-const PROVIDER_CLASS_CAUSES: ReadonlySet<DispatchFailureCause> = new Set<DispatchFailureCause>([
-  "provider-severed",
-  "rate-limited:burst",
-]);
+export const PROVIDER_CLASS_CAUSES: ReadonlySet<DispatchFailureCause> =
+  new Set<DispatchFailureCause>(["provider-severed", "rate-limited:burst"]);
 
 /**
  * How long to sit out a provider-class failure before re-dispatching.

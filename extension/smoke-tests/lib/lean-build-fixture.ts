@@ -37,9 +37,13 @@ import type { DispatchUsageRow } from "../../src/lean/step-budget.ts";
 import type { BudgetOpts } from "../../src/lean/step-budget.ts";
 import type { DispatchResult, DispatchSpec } from "../../src/types.ts";
 import { gitTestEnv } from "./git-test-env.ts";
+import {
+  type ClockOpts,
+  type DispatchResultOverride,
+  deadlineOf,
+  resultOverride,
+} from "./lean-build-artifacts.ts";
 import { SPEC_BODY, configWithRunner } from "./lean-build-asserts.ts";
-import type { DispatchResultOverride } from "./lean-build-artifacts.ts";
-import { resultOverride } from "./lean-build-artifacts.ts";
 
 /** Temp dirs this module made; the caller removes them at the end of the run. */
 export const ROOTS: string[] = [];
@@ -315,15 +319,16 @@ export interface RunResult {
   built: Built;
 }
 
+/**
+ * What one case asks the harness to do: the child's acts, the tree it plants, the
+ * artifacts the fake dispatch hands back, and the clock the step reads. Most knobs
+ * are single-line; the four multi-sentence ones are documented where they are read.
+ */
 export interface RunOpts {
   issue: number;
   /** The child's acts in the worktree, at the moment it is still working. */
   child?: (wt: string) => void;
-  /**
-   * Acts after the dispatch and before the step next reads the tree: a case plants
-   * a file that is NOT part of the child's commit, at the instant the blocked gate
-   * re-runs the reported frozen files (before `clean -fdx` would delete it).
-   */
+  /** A non-child commit planted at the instant the blocked gate re-runs its files. */
   afterDispatch?: (wt: string) => void;
   /** Extra steps to append to the log (a re-entry `verify:red` for case (i)). */
   extraSteps?: Step[];
@@ -349,55 +354,24 @@ export interface RunOpts {
    * child real `usage.turns` / `toolUses` / `killCause` fields.
    */
   dispatchResults?: DispatchResultOverride;
-  /**
-   * Drive the fake child's progress feed at the moment it is still working.
-   * A budget case calls `onProgress` the way `spawn.ts` does at every
-   * `message_end`, which is what makes a ceiling breach observable without a
-   * real child.
-   */
+  /** Drives the child's progress feed, the way `spawn.ts` does at `message_end`. */
   onProgressTick?: (onProgress: BudgetOpts["onProgress"]) => void;
-  /**
-   * THE config the step reads, verbatim. A case changing one field of the runner
-   * config (a budget, a tier) spreads {@link configWithRunner} into this so the
-   * rest still comes from it.
-   */
+  /** THE config the step reads; spread {@link configWithRunner} to keep the rest. */
   config?: WorkConfig;
-  /**
-   * The child's tool calls, verbatim on the `DispatchResult` the stub returns.
-   * A function is called at the instant of dispatch, so a case can build its
-   * call from the tree the child's own `child` callback just wrote.
-   */
+  /** The child's tool calls; a function is called at the instant of dispatch. */
   toolUses?: unknown[] | (() => unknown[]);
   /** Bounds the driver's re-run of a reported frozen test (a case observes a hang). */
   blockedTimeoutMs?: number;
-  /**
-   * A stand-in runner for the driver's re-run of a reported test — see
-   * {@link reRunStub}. A case uses it to make a runner misbehave in a way a shell
-   * script cannot: never rejecting, never resolving inside its own ceiling.
-   */
+  /** A stand-in runner that misbehaves the way a shell script cannot — see {@link reRunStub}. */
   hungExec?: (cmd: string, o?: unknown) => Promise<unknown>;
-  /**
-   * Watches every non-git exec the step makes WITHOUT replacing it, so a case can
-   * read what the driver handed the runner while its verdict stays the real one.
-   */
+  /** Watches every non-git exec WITHOUT replacing it, so the verdict stays the real one. */
   execSpy?: (cmd: string, o?: unknown) => void;
+  /** The clock knobs of {@link deadlineOf}: the run's deadline and its `now`. */
+  clock?: ClockOpts;
 }
 
 /** Run the step against a fresh fixture; a throw comes back as the error. */
 export async function runBuild(opts: RunOpts): Promise<RunResult> {
-  // Everything a run observed, from the fixture it ran on — the one shape both
-  // the returned result and the thrown one carry.
-  const finish = () => ({
-    dispatched,
-    prompts,
-    specs,
-    extraArgs,
-    worktree: built.worktree,
-    headBefore: built.headBefore,
-    headAfter: headOf(built.worktree),
-    gitArgvs,
-    built,
-  });
   const built =
     opts.built ??
     buildFixture(opts.issue, {
@@ -410,6 +384,11 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
     built.ctx.run.steps = [...built.ctx.run.steps, ...opts.extraSteps];
     built.ctx.steps = built.ctx.run.steps;
   }
+  // A case's own clock wins: the deadline arithmetic reads `ctx.now()`.
+  const clock = opts.clock?.now ?? (() => 4);
+  built.ctx.now = clock;
+  const deadline = deadlineOf(opts.clock, clock);
+  if (deadline !== undefined) built.ctx.run.deadlineMs = deadline;
   const prompts: string[] = [];
   const specs: DispatchSpec[] = [];
   const extraArgs: (readonly string[])[] = [];
@@ -481,6 +460,19 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
           },
         }),
   };
+  // Everything a run observed, from the fixture it ran on — the one shape both
+  // the returned result and the thrown one carry.
+  const finish = () => ({
+    dispatched,
+    prompts,
+    specs,
+    extraArgs,
+    worktree: built.worktree,
+    headBefore: built.headBefore,
+    headAfter: headOf(built.worktree),
+    gitArgvs,
+    built,
+  });
   try {
     const { buildOutcome } = await import("../../src/lean/build.ts");
     const outcome = await buildOutcome(built.ctx, deps);
