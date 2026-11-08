@@ -404,6 +404,7 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
 
     // ── pass 2: the re-review. A delta over the fix, or whole-branch when pass 1
     // carried a CRITICAL; bought once, re-bought once if it did not complete. ────
+    // The rows pass 1 just judged, both tiers — see `carriedCriticalIn`.
     const full = carriedCriticalIn([...review.reported, ...review.advisory]);
     const reReviewOpts = {
       base,

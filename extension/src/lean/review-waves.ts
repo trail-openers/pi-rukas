@@ -42,14 +42,11 @@ export const LENSES_PER_PASS = 6;
  */
 export const REVIEW_PASSES = 2;
 
-/** The children two passes imply. `retryLensChildren` is the ONE extra roster a
- * re-review retry can buy, and is deliberately not part of the billed ceiling — a
- * run that never retries bills exactly what it billed before. */
+/** The children two passes imply. */
 export const REVIEW_CHILD_BUDGET = {
   adversarialPasses: REVIEW_PASSES,
   lensChildren: REVIEW_PASSES * LENSES_PER_PASS,
   fixerWaves: 1,
-  retryLensChildren: LENSES_PER_PASS,
 } as const;
 
 /** The row count of a full review pass: one gate row plus one row per lens child. */
@@ -155,8 +152,9 @@ export function atOrAboveBar(f: { severity: Finding["severity"] }, threshold: Se
   return rank === undefined || rank <= SEVERITY_RANK[threshold];
 }
 
-/** Some row still open against the judged head is a CRITICAL — the trigger for a
- * full re-review, since `rowFate` retires that class on a full round only. */
+/** Some row still open on the round that just judged the pre-fix head is a CRITICAL —
+ * the trigger for a full re-review, since `rowFate` retires that class on a full round
+ * only. The rows are pass 1's: the head the fix produced has not been judged yet. */
 export function carriedCriticalIn(rows: readonly Finding[]): boolean {
   return rows.some((f) => isCarried(f) && f.severity === "CRITICAL");
 }
