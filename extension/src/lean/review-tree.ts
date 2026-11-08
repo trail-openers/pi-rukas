@@ -34,34 +34,24 @@ import type { DispatchUsageRow } from "./step-budget.ts";
  *
  * Every component is read out of the durable run, never out of anything the
  * process remembers, and that is the property the name has to have: the engine
- * re-runs exactly the undecided `review` step, so a discriminator the step
- * counted in memory (`let visit = 0`) restarts at zero on a resume and derives a
- * DIFFERENT name for the same fix — the resumed run then cannot find the tree it
- * already made, mints a second path, orphans the first, and pays to provision it
- * twice. That is the defect the row's `runId` field exists to prevent, so a
- * counter would have reintroduced it while looking like the fix.
+ * re-runs exactly the undecided `review` step, so a discriminator the step counted
+ * in memory restarts at zero on a resume and derives a DIFFERENT name for the same
+ * fix — the resumed run then cannot find the tree it already made. That is the
+ * defect the row's `runId` field exists to prevent.
  *
  * Four values, three jobs:
  *
- * - `arm` ("a" for a pass the six-lens round approved and only the adversarial
- *   gate left findings on, "l" for findings the six-lens round itself raised) and
- *   `wave` together make one run's fix trees distinct from each other. The name
- *   is a per-visit discriminator and nothing else; there is one wave, and it is
- *   named rather than counted for the same reason every other component is.
- * - `attempt` is the step key's own `:N`, the engine's per-attempt counter. It is
- *   what keeps two CONCURRENT attempts on one issue from naming the same tree:
- *   both read the same epoch (the log's, so a resume re-enters its own tree) and
- *   the same wave, and only the attempt number they were each appended with
- *   separates them. With no prior attempt recorded both resolve to 0 and
- *   `worktree add` — not `--force`'s adoption, which needs a registration this
- *   step owns — is the one that refuses.
- * - `epoch` is `fixRunId`'s: the same value for the whole attempt, read back off
- *   the step log so a resumed attempt re-enters the paths its killed self left.
+ * - `arm` ("a" for findings only the adversarial gate left, "l" for findings the
+ *   six-lens round itself raised) and `wave` make one run's fix trees distinct from
+ *   each other. The name is a per-visit discriminator and nothing else.
+ * - `attempt` is the step key's own `:N`, the engine's per-attempt counter. It keeps
+ *   two CONCURRENT attempts on one issue from naming the same tree: both read the
+ *   same epoch and the same wave, and only the attempt number separates them.
+ * - `epoch` is `fixRunId`'s: the same value for the whole attempt, read back off the
+ *   step log so a resumed attempt re-enters the paths its killed self left.
  *
- * The layout is `worktreePath`'s — the repo's single expression of where
- * worktrees live, which `specify-tree.ts` already uses. Re-spelling
- * `.worktrees/<name>` here meant two definitions of one path, and only one of
- * them moved if the layout ever did.
+ * The layout is `worktreePath`'s — the repo's single expression of where worktrees
+ * live — so the layout has one definition.
  */
 export function fixTreeName(
   repoRoot: string,
@@ -97,21 +87,17 @@ export type FixArm = "a" | "l";
  * `provisionWorktree`, which creates parent directories and links into the tree,
  * and the `status` itself. Anything written into that window was adopted:
  * dispatched to the fixer, `git add -A`'d by it, and integrated onto the branch.
- * `add` still refuses a path it has just created for a round that never completed,
- * which is the only collision a per-run name can still meet, and it is a refusal
- * rather than an adoption. The dirty read is then a genuine claim: there is no
- * directory at this path that this round did not create.
+ * With a per-round name, `add` refusing a path it created for a round that never
+ * completed is the only collision left, and it is a refusal rather than an
+ * adoption, which makes the dirty read a genuine claim.
  *
- * The clean proof is read WITHOUT `-uall`, and that is deliberate rather than
- * loose: `provisionWorktree` has just linked the project's dependency trees into
- * this directory, and `git status --porcelain -uall` expands a directory of links
- * into every file inside it (measured: `?? node_modules/pkg/j.js` for a tree the
- * provisioner made, with nothing in `git status`'s default view). A proof that
- * read it that way would report every provisioned tree as dirty and refuse every
- * fix round on the very step that prepares it. What the default form still
- * reports is enough for the claim being made: any untracked path — a whole
- * directory included — is listed, so a leftover from a killed round cannot pass,
- * and a child's edits to tracked files are listed too.
+ * The clean proof is read WITHOUT `-uall`, deliberately: `provisionWorktree` has
+ * just linked the project's dependency trees into this directory, and
+ * `git status --porcelain -uall` expands a directory of links into every file inside
+ * it, so a proof read that way would report every provisioned tree as dirty and
+ * refuse every fix round on the very step that prepares it. The default form still
+ * lists any untracked path — a whole directory included — so a leftover from a
+ * killed round cannot pass.
  */
 export async function fixTree(
   deps: ReviewDeps,
@@ -125,15 +111,12 @@ export async function fixTree(
 ): Promise<string> {
   const { repoRoot, issue } = ctx;
   const wt = fixTreeName(repoRoot, issue, arm, wave, attempt, runId);
-  // `add --force` is for THIS step's own path only — `worktree remove` refuses a
-  // path it does not own, so no tree at any other location is ever touched here.
-  // That is also why the name has to be unique per VISIT: `--force` makes
-  // collision with a path this step made itself a silent ADOPTION rather than a
-  // refusal, and git happily reuses a live registration while the tree it points
-  // at keeps whatever the earlier visit left in it (measured: a second visit to a
-  // colliding name inherited the first visit's commit, so the second fixer
-  // committed nothing, its head equalled the head the step had just integrated,
-  // and the step reported "fixed nothing" — then billed the whole run to it).
+  // `add --force` is for THIS step's own path only. That is also why the name has
+  // to be unique per VISIT: `--force` makes collision with a path this step made
+  // itself a silent ADOPTION rather than a refusal — git reuses a live registration
+  // while the tree keeps whatever the earlier visit left in it, so a second fixer
+  // would commit nothing and the step would report "fixed nothing" and bill the run
+  // to it.
   const created = await gitQuiet(deps.exec, repoRoot, [
     "worktree",
     "add",
@@ -151,11 +134,10 @@ export async function fixTree(
   // already made a directory, and the only thing that removes it is
   // `closeFixTrees`, which the step's `finally` runs whatever happens.
   // No catch: `provisionWorktree` resolves whatever happens — every probe and git
-  // call inside it turns a fault into a `problem` field rather than a rejection
-  // (#1394, because a rejected provision used to fail the branch step) — so a
-  // rejection-handling arm here would be code for a failure that cannot occur.
-  // The `problem` it does report is traced and carried on: a bare or partly
-  // linked tree costs the fixer a failed typecheck, not the run.
+  // call inside it turns a fault into a `problem` field rather than a rejection — so
+  // a rejection-handling arm here would be code for a failure that cannot occur. The
+  // `problem` it does report is traced and carried on: a bare or partly linked tree
+  // costs the fixer a failed typecheck, not the run.
   const provision = await provisionWorktree(deps.exec, repoRoot, wt);
   if (provision.problem !== undefined)
     traceWarn(`lean review #${String(issue)}: fix worktree ${provision.problem}`);
@@ -205,22 +187,6 @@ export async function removeWorktree(
 }
 
 /**
- * Destroy every disposable tree this attempt opened, whatever ended the step.
- *
- * The step's `finally` calls this. A round that threw between `worktree add` and
- * the child would otherwise leave a registered tree under a path this step owns
- * exclusively, and the next attempt for the same issue and round could not create
- * it again.
- *
- * The registry is a `git` question, not a memory one: it lists every attached
- * worktree under this clone's own `.git` (which `worktreePath` is), so it finds a
- * tree this process never made — including the one a killed attempt left behind,
- * which a Set in memory could only ever find after a restart that had already
- * lost it. A fix tree that survived a crash is exactly the tree a resume must not
- * adopt: it holds the dead attempt's commits, and `--force` would have it adopted
- * rather than refused. A tree that is absent from the list costs one `prune`.
- */
-/**
  * Destroy the disposable trees THIS ATTEMPT opened, whatever ended the step.
  *
  * The step's `finally` calls this. A round that threw between `worktree add` and
@@ -229,22 +195,19 @@ export async function removeWorktree(
  * it again.
  *
  * **Scoped to what this attempt could have created, and that is the whole point.**
- * The selector used to be `-fix-` anywhere in the path, which matched every fix
- * tree of EVERY attempt: two attempts in flight — a resumed run, or a second cycle
- * on the same issue — and one step's `finally` deleted the other's LIVE tree out
+ * A selector that matched `-fix-` anywhere matched every fix tree of EVERY attempt:
+ * two attempts in flight and one step's `finally` deleted the other's LIVE tree out
  * from under a running fixer, so that child's `git commit` landed in a directory
  * that no longer existed. The prefix now carries the issue, the attempt and the
- * epoch this attempt read from the log (`fixTreeName`'s own shape, up to the
- * per-visit arm/round part), so a sibling attempt's tree is not even a candidate.
+ * epoch this attempt read from the log (`fixTreeName`'s own shape), so a sibling
+ * attempt's tree is not even a candidate.
  *
  * The registry is a `git` question, not a memory one: it lists every attached
- * worktree under this clone's own `.git` (which `worktreePath` is), so it finds a
- * tree this PROCESS never made — including the one a killed attempt of THE SAME
- * run left behind, which a Set in memory could only ever find after a restart that
- * had already lost it. A fix tree that survived a crash is exactly the tree a
- * resume must not adopt: it holds the dead attempt's commits, and `--force` would
- * have it adopted rather than refused. A tree that is absent from the list costs
- * one `prune`.
+ * worktree under this clone's own `.git`, so it finds a tree this PROCESS never
+ * made — including one a killed attempt of the same run left behind, which a Set in
+ * memory could only find after a restart that had already lost it. A fix tree that
+ * survived a crash is exactly the tree a resume must not adopt: it holds the dead
+ * attempt's commits, and `--force` would have it adopted rather than refused.
  */
 export async function closeFixTrees(
   deps: ReviewDeps,
@@ -260,18 +223,11 @@ export async function closeFixTrees(
     "now",
   ]);
   // An unreadable list is not a claim that nothing is attached, so this does not
-  // fall through to "no trees" — it prunes stale registrations and moves on, and
-  // a tree that was there stays registered and traced by `removeWorktree`.
-  // Built from `fixTreeName`'s own components rather than spelled out here: the
-  // layout comes from `worktreePath` (the repo's one expression of where worktrees
-  // live) and the component ORDER is the writer's —
-  // `lean-<issue>-fix-<arm>-<wave>-<attempt>-<epoch>` — so the prefix and the names
-  // it selects cannot drift apart. The head stops before `<arm>` because the tail
-  // is `<attempt>-<epoch>`, and those two components are what exclude a concurrent
-  // attempt's LIVE tree, which is the whole point of the scope. A tree of the same
-  // issue and attempt is named solely by this attempt's `fixTreeName` calls, so the
-  // pair selects exactly this attempt's fix trees and nothing a sibling or another
-  // issue owns.
+  // fall through to "no trees" — it prunes stale registrations and moves on. The
+  // selector is built from `fixTreeName`'s own components so the prefix and the
+  // names it selects cannot drift apart; the head stops before `<arm>` because the
+  // tail is `<attempt>-<epoch>`, and those two are what exclude a concurrent
+  // attempt's LIVE tree.
   const head = `${worktreePath(ctx.repoRoot, `lean-${String(ctx.issue)}-fix-`)}`;
   const tail = `-${String(attempt)}-${runId}`;
   for (const line of (listed?.stdout ?? "").split("\n")) {
@@ -320,16 +276,13 @@ export async function restore(
  * operator has to act on.
  *
  * "restored" gets one clause, because nothing follows from it; the other two get
- * the same warning, because for both of them `verify` and `publish` are about to
- * read a tree that is NOT the one the gates reviewed — a tree that is gone is not
- * "back at the reviewed commit" either. Naming which happened is the point: the
- * cause is the only surface an operator reads (this step's header says so), and a
- * trace line is not.
+ * the same warning, because for both `verify` and `publish` are about to read a
+ * tree that is NOT the one the gates reviewed. Naming which happened is the point:
+ * the cause is the only surface an operator reads.
  *
- * The `why` binding makes the union's exhaustiveness a compile-time fact: the
- * final arm is only reachable once `"restored"` and `"absent"` are ruled out, so
- * a fourth member of `Restored` fails to type here rather than being described by
- * the sentence meant for a tree that went back.
+ * The `why` binding makes the union's exhaustiveness a compile-time fact: the final
+ * arm is reachable only once `"restored"` and `"absent"` are ruled out, so a fourth
+ * member of `Restored` fails to type here.
  */
 export function restoredSentence(what: Restored, wt: string, head: string): string {
   if (what === "restored") return ` — the run's tree was put back at ${head.slice(0, 12)}`;
