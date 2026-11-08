@@ -14,7 +14,9 @@
  *       exactly twice, and the second prompt carries the refusal and the line
  *       count of the fixture;
  *   (c) attempt 1 succeeds -> one dispatch, no retry note;
- *   (c2) attempt 1 is refused with NOTHING dropped (a green test) -> no retry;
+ *   (c2) attempt 1 submits a green test, so the boundary drops NOTHING and
+ *        the RED PROOF drops the row -> the refusal retry runs, and its prompt
+ *        carries the drop reason rather than the submit nudge;
  *   (d) attempt 1 hits its budget -> no retry, the outcome is `budget`;
  *   (e) `refusalFeedback` names at most 20 reasons, each clipped to 300 chars,
  *       dedupes identical lines, says `(+N more)` past the cap, and is `""` for
@@ -48,6 +50,7 @@ function assert(cond: boolean, msg: string): void {
 }
 
 const RETRY_NOTE = "(after one retry)";
+const NUDGE = "Your previous turn ended without calling submit_tests";
 const REFUSED = "Your previous submission was refused";
 const CONFIG = configWith({ fast: "true", test: RUNNER });
 const TEST_REL = "tests/AC1-retry.test.sh";
@@ -175,21 +178,27 @@ function scripted(bodies: [string, ...string[]]) {
   );
 }
 
-// ── (c2) a refusal that dropped no row is final: nothing to tell the child ───
+// ── (c2) a green test is dropped at the RED PROOF: still one dispatch ────────
 {
+  // Nothing was DROPPED: the row reached the boundary and survived it, and the
+  // file was refused by the red proof, which judges bytes the step already
+  // holds. Neither retry can help that child — the refusal retry has no drop to
+  // quote, and asking it to submit the same bytes again proves the same green —
+  // so the attempt is final. This is the case that keeps a green test from
+  // burning a second child.
   const { repoRoot, baseSha } = makeRepo({ "src/retry.ts": "export const retry = () => {};\n" });
-  // A green test is dropped at the RED PROOF, not at the boundary, so no row
-  // was refused and there is no reason to hand back.
+  const prompts: string[] = [];
   const r = await runSpecify({
     repoRoot,
     baseSha,
     issue: 4,
     config: CONFIG,
-    prompts: [],
+    prompts,
     ...scripted([greenScript()]),
   });
   assert(r.outcome?.kind === "no-red-test", `(c2) no-red-test (got ${r.outcome?.kind})`);
   assert(r.dispatched === 1, `(c2) no retry without a dropped row (got ${r.dispatched})`);
+  assert(prompts[1] === undefined, "(c2) and there was no second prompt at all");
 }
 
 // ── (d) a budget stop on the first attempt is final ──────────────────────────

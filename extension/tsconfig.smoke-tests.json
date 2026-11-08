@@ -214,6 +214,7 @@
     "smoke-tests/test-lean-budgets.ts",
     "smoke-tests/test-lean-specify-retry.ts",
     "smoke-tests/test-lean-specify-retry-split.ts",
+    "smoke-tests/test-lean-specify-silent-reprompt.ts",
     "smoke-tests/test-lean-usage.ts",
     "smoke-tests/test-lean-build-usage.ts",
     "smoke-tests/test-lean-state-dispatches.ts",
