@@ -26,7 +26,7 @@ import type { HandlerCtx } from "../../src/lean/engine.ts";
 import type { Outcome, Step } from "../../src/lean/state.ts";
 import { createRun } from "../../src/lean/state.ts";
 import type { VerifyExec } from "../../src/lean/verify-types.ts";
-import type { VerifyDeps } from "../../src/lean/verify.ts";
+import type { VerifyDeps } from "../../src/lean/verify-deps.ts";
 import { gitTestEnv } from "./git-test-env.ts";
 
 /** Temp dirs this module made; the caller removes them at the end of the run. */

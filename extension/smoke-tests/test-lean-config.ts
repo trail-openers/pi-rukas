@@ -164,6 +164,14 @@ const invalidCases: Array<[string, string, string]> = [
     JSON.stringify({ version: 1, verify: { fast: 5 } }),
     "verify.fast must be a string",
   ],
+  // The freeze check is a shell string like every other command key, and a
+  // config that reads as a command must not survive as anything else: a step
+  // would otherwise spawn a non-string.
+  [
+    "bad verify.freezeCheck",
+    JSON.stringify({ version: 1, verify: { freezeCheck: 5 } }),
+    "verify.freezeCheck must be a string",
+  ],
   ["budgets not object", JSON.stringify({ version: 1, budgets: [] }), "budgets must be an object"],
   [
     "negative budget",

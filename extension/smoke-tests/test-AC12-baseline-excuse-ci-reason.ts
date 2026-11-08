@@ -15,7 +15,7 @@
  * alone would stop.
  */
 import { cleanUp, run } from "./lib/lean-ci-recorder.ts";
-import { RED_REASON_CLIP } from "../src/lean/verify.ts";
+import { RED_REASON_CLIP } from "../src/lean/verify-deps.ts";
 import { TIER_TAIL_LINES } from "../src/lean/verify-steps.ts";
 
 const SELF = "test-AC12-baseline-excuse-ci-reason.ts";

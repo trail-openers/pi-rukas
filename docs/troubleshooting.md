@@ -51,6 +51,33 @@ closes `— N other frozen file(s) not run`. That is a cost bound, not a verdict
 files — a contract where every file hangs would otherwise pay the full bound once per file,
 and the reason says the same thing about all of them either way.
 
+### Symptom: a lean run hands back with `frozen contract defective: <cmd> fails on frozen file <path>`
+
+**Symptom:** a lean run's `verify` step ends it as `handler error at verify: frozen
+contract defective: <cmd> fails on frozen file tests/AC1-….test.sh`, and no build
+round was billed. Or, earlier in the run, a `specify`/`challenge` reason carries
+`dropped 1 — verify.freezeCheck tests/….test.sh: fails verify.freezeCheck <cmd>`
+and that file is missing from the frozen contract.
+
+**Cause:** the project configured `verify.freezeCheck` — a check over test-file
+*content*, like a style lint or a forbidden-spelling grep — and the named file
+does not satisfy it. The check is not the bug. A frozen file is untouchable by
+contract: `build` may not edit one, so a run whose contract carries a file the
+project's own gate refuses has no round left that could make that gate green. The
+gate says so rather than spending the builders. At the freeze the same rule drops
+the candidate before it is ever committed, so the usual case never reaches `verify`.
+
+**Fix:** make the named test satisfy the project's check and let the run rewrite
+it — a file that has already been frozen cannot be repaired by that run, so the
+run is over and the next one gets the corrected contract. Two things this is
+**not**: it is not the tier the tier named (that red was real, and only a check
+whose own output names one of *this run's* frozen paths attributes the failure to
+the contract), and it is not a check that misfired — a freeze check red at the
+base, or one that could not be run at all, blocks nothing and is only disclosed in
+the step's reason. If the check itself is wrong for test files, that is a
+`.pi/work.json` change: `verify.freezeCheck` is optional and absent means nothing
+runs.
+
 ### Symptom: a lean run hands back with `baseline red: tier <name> is red at the base commit`
 
 **Cause:** the project's own verify tier fails on the run's head AND on its base commit, and

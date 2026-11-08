@@ -46,6 +46,8 @@
 import { existsSync, rmSync } from "node:fs";
 import path from "node:path";
 import type { ExecFn } from "../worktree.ts";
+import type { FreezeCheck } from "./freeze-check.ts";
+import { freezeCheckDrops, freezeCheckNote, runFreezeCheck } from "./freeze-check.ts";
 import { type CaptureResult, captureTestBytes } from "./specify-capture.ts";
 import type { Proof, TestRunLimits } from "./specify-proof.ts";
 import { runTestFile, sha256 } from "./specify-proof.ts";
@@ -59,6 +61,7 @@ import {
   writeCaptured,
 } from "./specify-reset.ts";
 import { MAX_TEST_BYTES, testBytesProblem } from "./test-size.ts";
+import type { VerifyExec } from "./verify-types.ts";
 
 export { SpecifyInfraError };
 import type { DeclaredPath, DroppedRow } from "./specify-tree.ts";
@@ -132,6 +135,17 @@ export interface RunTestsArgs {
   capture?: (wt: string, paths: string[], owners: Map<string, string>) => CaptureResult;
   /** Per-run runner limits; a test injects a short timeout to prove a hang is infra. */
   testLimits?: TestRunLimits;
+  /**
+   * The project's `verify.freezeCheck` command, when it configured one: a shell
+   * command over the whole tree that judges test-file CONTENT. The pipeline runs
+   * it twice — at the reset base with nothing in place, and again with the
+   * candidate files — and a gate green at base and red with the candidates drops
+   * the files it named rather than freezing an unwinnable contract. See
+   * `lean/freeze-check.ts`.
+   */
+  freezeCheck?: string;
+  /** The bound for one freeze-check run; a test shortens it to observe a hang. */
+  freezeCheckTimeoutMs?: number;
 }
 
 /** How many per-file notes an outcome reason carries before it says `(+N more)`. */
@@ -302,11 +316,29 @@ export async function runTestPipeline(
   //    confirmed before anything is written back. The links are then rebuilt by
   //    the caller's `prepare`, so the tree the runner executes in is provisioned
   //    the same way whether it was created fresh or left behind by a crash.
-  // 4. REWRITE the captured bytes — never through a link, never into a name that
-  //    already exists (see `writeCaptured`).
+  // The freeze check's BASE run — the comparison that turns "the gate is red"
+  // into "YOUR files made it red". It happens in the one window where the tree
+  // is known to hold none of the candidates: after the reset to `headBefore` and
+  // `prepare`, before a single captured byte is written back. Any earlier and it
+  // would judge the child's own leftover writes rather than the base, which is
+  // how a run comes to blame a candidate for a red the adversary itself caused.
+  // A gate red at base is the mainline's own red, never attributed and never
+  // blocking (`verify`'s baseline probe owns that question); one that could not
+  // run blocks nothing but is disclosed below either way.
+  let baseCheck: FreezeCheck | undefined;
+  let baseCheckRan = false;
   try {
     await resetWorktreeToBase(exec, wt, headBefore, branch);
     await args.prepare();
+    if (args.freezeCheck !== undefined && captured.size > 0) {
+      baseCheckRan = true;
+      baseCheck = await runFreezeCheck(
+        args.freezeCheck,
+        wt,
+        exec as VerifyExec,
+        ...(args.freezeCheckTimeoutMs === undefined ? [] : [args.freezeCheckTimeoutMs]),
+      );
+    }
     writeCaptured(wt, captured);
   } catch (err) {
     if (err instanceof SpecifyResetError) throw new SpecifyInfraError(err.message);
@@ -318,7 +350,7 @@ export async function runTestPipeline(
   // 5. Prove red on exactly these bytes, per file, against `headBefore`. A green
   //    or unclear file is dropped and DELETED from the tree; only a runner that
   //    could not be started (or was killed) is infrastructure.
-  const red: DeclaredPath[] = [];
+  let red: DeclaredPath[] = [];
   for (const cand of candidates) {
     if (!captured.has(cand.path)) continue; // dropped at capture — never run
     const proof = await runTestFile(exec, {
@@ -336,6 +368,47 @@ export async function runTestPipeline(
     const why = removeRejected(wt, cand.path);
     if (why !== undefined) notes.push(why);
   }
+  // 5b. THE FREEZE CHECK. A candidate that trips a gate the project runs over
+  //     test-file CONTENT must never join the contract: `build` may not edit a
+  //     frozen file, so the run would have no round left that could make the gate
+  //     green. A gate that was green at base and is red with the candidates drops
+  //     the candidates its own output named — or all of them, when it named none,
+  //     since a gate that failed over this tree failed because of what is in it.
+  //
+  //     Runs BEFORE the evidence clause is assembled: a drop is a `dropped N (…)`
+  //     row like any other, and the coverage rules below quote that clause, so a
+  //     check appended afterwards would leave the refusal it causes unattributed
+  //     in the very field the retry's prompt is built from.
+  let checkNote = "";
+  if (args.freezeCheck !== undefined && red.length > 0) {
+    const paths = [...new Set(red.map((r) => r.path))];
+    const withCandidates = await runFreezeCheck(
+      args.freezeCheck,
+      wt,
+      exec as VerifyExec,
+      ...(args.freezeCheckTimeoutMs === undefined ? [] : [args.freezeCheckTimeoutMs]),
+    );
+    const droppedByCheck = freezeCheckDrops(
+      baseCheck ?? { kind: "unknown", detail: "" },
+      withCandidates,
+      args.freezeCheck,
+      paths,
+    );
+    if (droppedByCheck !== undefined) {
+      const gone = new Set(droppedByCheck.map((d) => d.path ?? ""));
+      for (const rel of gone) {
+        const why = removeRejected(wt, rel);
+        if (why !== undefined) notes.push(why);
+      }
+      dropped.push(...droppedByCheck);
+      red = red.filter((r) => !gone.has(r.path));
+    } else {
+      // Green at base too, or a gate that could not answer: nothing is blocked
+      // either way, but a check that never answered is disclosed, not silenced.
+      checkNote = freezeCheckNote(args.freezeCheck, baseCheckRan, withCandidates);
+    }
+  }
+
   // A gap is `criterion <id> has no red test`, and under `"all-criteria"` it is
   // the FIRST clause of every rule, in both fields. `origin/main` carried that
   // rule in `failedRules` and led `reason` with it, followed by the per-file
@@ -361,9 +434,18 @@ export async function runTestPipeline(
       .join("; ");
     return {
       kind: "empty",
-      reason: `no submitted test was red against ${headBefore}${skippedNote}; ${lead === "" ? "" : `${lead}; `}${evidence}`,
+      reason: [
+        `no submitted test was red against ${headBefore}${skippedNote}`,
+        lead,
+        [evidence, checkNote].filter((s) => s !== "").join(" "),
+      ]
+        .filter((s) => s !== "")
+        .join("; "),
     };
   }
+
+  // `4. REWRITE the captured bytes` is documented above the reset; the step
+  // numbering is kept in one place rather than restated here.
 
   // 6. Coverage. ONLY `"all-criteria"` refuses a gap: `specify` requires a red
   //    for every test criterion, while `challenge` keeps whatever red it earned
@@ -408,6 +490,7 @@ export async function runTestPipeline(
     skipped > 0 ? `${skipped} submit_tests call(s) skipped or refused as malformed` : "",
     droppedNote,
     dropNote(dropped),
+    checkNote,
   ]
     .filter((s) => s !== "")
     .join("; ");

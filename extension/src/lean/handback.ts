@@ -33,7 +33,7 @@ import { BLOCKED_PATH_CAP, BLOCKED_REASON_CAP, validPrUrl } from "./state-outcom
 import { type Outcome, REPORT_STATES, type Step } from "./state.ts";
 import { budgetSentence, budgetTrio } from "./step-budget.ts";
 import { fenceText, oneLine } from "./text-fence.ts";
-import { newestRedVerifyReason } from "./verify.ts";
+import { newestRedVerifyReason } from "./verify-deps.ts";
 
 /** A reason line long enough to be a wall is not a comment a human reads. */
 const REASON_CLIP = 2000;

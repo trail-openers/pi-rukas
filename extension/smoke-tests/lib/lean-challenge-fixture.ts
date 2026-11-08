@@ -127,6 +127,10 @@ export function challengeFixture(
   opts?: {
     extraFrozen?: Record<string, string>;
     issueDir?: number;
+    /** See `RunOpts.baseMainlineMarker` — the file goes in the BASE commit. */
+    baseMainlineMarker?: boolean;
+    /** The bytes of that file; defaults to a plain marked test. */
+    baseMainlineText?: string;
   },
 ): ChallengeBuilt {
   // A second run against ONE repo is a case the step cannot see apart from the
@@ -143,7 +147,17 @@ export function challengeFixture(
   // under one issue while `ctx.run.issue` carried another is state `foldLog`
   // refuses.
   const dirIssue = opts?.issueDir ?? issue;
-  const built = buildFixture(dirIssue, { worktreeIssue: issue }) as ChallengeBuilt;
+  const built = buildFixture(dirIssue, {
+    worktreeIssue: issue,
+    ...(opts?.baseMainlineMarker === true
+      ? {
+          baseFiles: {
+            "tests/mainline-marked.test.sh":
+              opts?.baseMainlineText ?? "#!/bin/sh\nexit 0\n",
+          },
+        }
+      : {}),
+  }) as ChallengeBuilt;
   const repoRoot = built.repoRoot;
   if (dirIssue !== issue && wtOf(built) === specifyWorktreePath(repoRoot, issue))
     throw new Error(
@@ -294,6 +308,15 @@ export interface RunOpts {
    */
   extraFrozen?: Record<string, string>;
   /**
+   * Commit one marked test file into the fixture's BASE commit, so the project's
+   * freeze check is red on the tree every arm of a case starts from. A gate the
+   * mainline already fails has no standing to condemn a candidate, and the only
+   * honest way to say so is bytes in the commit the check actually reads.
+   */
+  baseMainlineMarker?: boolean;
+  /** The bytes of that file when `baseMainlineMarker` is set; a case owns the text. */
+  baseMainlineText?: string;
+  /**
    * Run this case inside ANOTHER issue's repo, keeping its own step log keys,
    * commit subject, branch AND worktree. Two runs against one repo fight over
    * the same tree, so a pair of cases that differ only in what the child did
@@ -328,6 +351,10 @@ export async function runChallenge(opts: RunOpts): Promise<RunResult> {
     challengeFixture(opts.issue, {
       ...(opts.extraFrozen === undefined ? {} : { extraFrozen: opts.extraFrozen }),
       ...(opts.issueDir === undefined ? {} : { issueDir: opts.issueDir }),
+      ...(opts.baseMainlineMarker === true ? { baseMainlineMarker: true } : {}),
+      ...(opts.baseMainlineText === undefined
+        ? {}
+        : { baseMainlineText: opts.baseMainlineText }),
     });
   // The tree this case runs in must be the one the STEP computes, from
   // `repoRoot` plus its own issue: the whole split-two-runs-across-trees

@@ -52,6 +52,16 @@ export interface WorkConfig {
     test?: string;
     testDir?: string;
     testGlob?: string;
+    /**
+     * A shell command the project runs over the whole tree to judge test-file
+     * CONTENT (a style scanner over every `.ts`, the same shape as `verify.fast`
+     * and `verify.full`). `specify`/`challenge` run it over the tree with the
+     * candidate tests in place before freezing them, and `verify` runs it when a
+     * project tier is red at HEAD — because a frozen file a build round may not
+     * edit is a contract nobody can repair. Unset: nothing runs and nothing
+     * changes. Mechanism: `lean/freeze-check.ts`.
+     */
+    freezeCheck?: string;
   };
   budgets: Partial<Record<string, Budget>>;
 }
@@ -269,7 +279,7 @@ function validate(obj: unknown): string | undefined {
     if (typeof o.verify !== "object" || o.verify === null || Array.isArray(o.verify))
       return ".pi/work.json verify must be an object";
     const v = o.verify as Record<string, unknown>;
-    for (const key of ["fast", "full", "test", "testDir", "testGlob"] as const) {
+    for (const key of ["fast", "full", "test", "testDir", "testGlob", "freezeCheck"] as const) {
       if (v[key] !== undefined && typeof v[key] !== "string")
         return `.pi/work.json verify.${key} must be a string`;
     }

@@ -54,15 +54,12 @@
  */
 
 import { existsSync } from "node:fs";
-import { execp } from "../exec.ts";
 import { trace } from "../trace.ts";
 import { verifyChildEnv } from "../work-driver-verify-cmd.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import { porcelain } from "./build-git.ts";
 import { frozenFromLog } from "./build.ts";
-import { loadWorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
-import { fetchIssueBody } from "./io.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import { assertSpecifyWorktreeOwned, specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
 import type { PreexistingTierRecord } from "./state-outcome-maps.ts";
@@ -72,6 +69,8 @@ import { preexistingReason } from "./verify-baseline-excuse.ts";
 import { baselineUnusableError, flakeReason, probeTierAtBase } from "./verify-baseline.ts";
 import { confirmTierRedFrom } from "./verify-baseline.ts";
 import { type CommandCriteriaOutcome, commandCriteriaOutcome } from "./verify-commands.ts";
+import { type VerifyDeps, clipReason, verifyDeps } from "./verify-deps.ts";
+import { defectiveFrozenContract } from "./verify-frozen-defect.ts";
 import { frozenTamperReason } from "./verify-frozen.ts";
 import {
   commandsFailedAsExecuted,
@@ -90,37 +89,7 @@ import {
   tiersOf,
 } from "./verify-steps.ts";
 import { tierRunStream } from "./verify-tier-rerun.ts";
-import { type VerifyExec, VerifyInfraError, type VerifyTiers } from "./verify-types.ts";
-
-/**
- * What `verify` reaches outside itself.
- *
- * `loadConfig` is a seam rather than a direct `loadWorkConfig` call for the
- * same reason `build` injects its own: the production form reads `.pi/work.json`
- * at the run's base sha, and a case that wants a tier to exit 1 must not have
- * to rewrite a commit the frozen records were hashed at to ask for one.
- */
-export interface VerifyDeps {
-  exec: VerifyExec;
-  loadConfig: (repoRoot: string, baseSha: string) => Promise<{ verify: VerifyTiers }>;
-  /** The committed `.pi/verify-cmd` at HEAD; `undefined` when there is none. */
-  readVerifyCmd?: (wt: string, head: string) => Promise<string | undefined>;
-  /** Bounds every tier and frozen-test run; a test shortens it to observe a hang. */
-  timeoutMs?: number;
-  /**
-   * The issue body the run's contract lives in. `verifyDeps()` supplies the
-   * forge read (`io.ts`'s `fetchIssueBody`); a test injects the text its case
-   * needs. An unreadable body is INFRASTRUCTURE, never a verdict: the gate
-   * cannot tell which `command` criteria the spec asked for, and reporting a
-   * green over criteria it never saw would be the gate claiming a check it did
-   * not make. Returning no criteria is correct only when the body parsed and
-   * simply holds none.
-   */
-  fetchIssueBody: (repoRoot: string, issue: number) => Promise<string>;
-}
-
-/** The step log's newest red reason is pasted into a prompt; that bounds it. */
-export const RED_REASON_CLIP = 4096;
+import { VerifyInfraError, type VerifyTiers } from "./verify-types.ts";
 
 /** The first failure among the executed checks; an unobservable one THROWS. */
 function firstFailure(...ran: Executed[]): string | undefined {
@@ -129,12 +98,6 @@ function firstFailure(...ran: Executed[]): string | undefined {
     if (one.kind === "fail") return one.reason;
   }
   return undefined;
-}
-
-/** Clip a red reason so `build`'s re-entry prompt stays a sane size. */
-export function clipReason(reason: string): string {
-  if (reason.length <= RED_REASON_CLIP) return reason;
-  return `${reason.slice(0, RED_REASON_CLIP)}…`;
 }
 
 /**
@@ -260,6 +223,8 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
   const tierResults: Executed[] = [];
   /** The contract as the pass that ran BEFORE the tiers judged it, for the reason. */
   const frozenClauseForReason: FrozenClause = frozenClause(tests);
+  /** Why the tier loop ended on a red the caller still owes the freeze check for. */
+  let armRed: string | undefined;
   for (const [name, cmd] of tiers) {
     const one = await runTier(name, cmd, wt, deps.exec, deps.timeoutMs);
     if (one.kind === "pass") {
@@ -317,7 +282,14 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
         issue,
       });
       if (arm.throwReason !== undefined) throw new VerifyInfraError(arm.throwReason);
-      if (arm.red !== undefined) return { kind: "red", reason: clipReason(arm.red) };
+      if (arm.red !== undefined) {
+        // The hand-back the arm decided is a RED the caller still owes the freeze
+        // check for, so it is carried out of the loop rather than returned here: a
+        // tier the base already fails can fail on a frozen file this run authored,
+        // and the attribution below is what tells those two reds apart.
+        armRed = arm.red;
+        break;
+      }
       if (arm.preexisting !== undefined) {
         preexisting[name] = arm.preexisting;
         continue;
@@ -331,7 +303,7 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
     // finds the other. `firstFailure` below still picks this same `one` when there is
     // nothing to compose, so a green contract keeps today's reason byte for byte.
     const composed = composedTierRed(frozenClauseForReason, one.reason);
-    if (composed !== undefined) return { kind: "red", reason: clipReason(composed) };
+    if (composed !== undefined) armRed = composed;
     break;
   }
 
@@ -363,7 +335,37 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
   );
 
   const failed = firstFailure(tests, ...tierResults, commandsFailedAsExecuted(commands));
-  if (failed !== undefined) return { kind: "red", reason: clipReason(failed) };
+  // A red PROJECT TIER plus a freeze check that fails ON A FROZEN FILE is not a
+  // verdict the builder can act on: the frozen contract is defective, and `build`
+  // may not edit a frozen file, so no round this run has left can make the gate
+  // green. Attribute it before any red is returned — but only on the evidence
+  // that the check was green at HEAD without those files in place, which is what
+  // distinguishes a contract this run authored from a gate the mainline already
+  // fails. Any other outcome leaves the run exactly as it was: the check never
+  // runs on the happy path, and a check that could not run never blocks.
+  //
+  // A tier the BASELINE ARM settled is a red tier too. It is deliberately absent
+  // from `tierResults` — that is what keeps its own reason from being overwritten
+  // below by the frozen contract's clause — so reading the tiers alone would let a
+  // run whose frozen file the project's gate refuses bill a build round that can
+  // never win it, for a tier whose reason already says nobody can fix it.
+  const tierRed = armRed !== undefined || tierResults.some((t) => t.kind === "fail");
+  if (failed !== undefined && config.verify.freezeCheck !== undefined && tierRed) {
+    const defect = await defectiveFrozenContract(
+      deps.exec,
+      repoRoot,
+      issue,
+      wt,
+      head,
+      config.verify.freezeCheck,
+      frozen,
+    );
+    if (defect !== undefined) throw new VerifyInfraError(defect);
+  }
+  // The arm's decision outranks the first failure: it is the reason this loop
+  // stopped on, and the tier it settled is not in `tierResults` to be found again.
+  const red = armRed ?? failed;
+  if (red !== undefined) return { kind: "red", reason: clipReason(red) };
 
   // The tiers run as shell commands IN the worktree, and the command tier runs
   // test CODE, so between the checks above and this point a tier may have rewritten
@@ -442,24 +444,3 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
 
 /** The one word a recorded `command` criterion carries — `state-outcome` checks it. */
 const COMMAND_CRITERION_PASSED = "passed";
-
-/** `verify`'s dependencies in production form: the real executor and config read. */
-export function verifyDeps(): VerifyDeps {
-  return {
-    exec: (cmd, opts) => execp(cmd, opts ?? {}),
-    loadConfig: (repoRoot, baseSha) => loadWorkConfig(execp, repoRoot, baseSha),
-    fetchIssueBody,
-  };
-}
-
-/** The newest decided `verify:red` reason on the log, clipped, for a report. */
-export function newestRedVerifyReason(steps: Step[]): string | undefined {
-  for (let i = steps.length - 1; i >= 0; i--) {
-    const step = steps[i];
-    if (step?.state !== "verify" || step.outcome?.kind !== "red") continue;
-    const reason = step.outcome.reason ?? step.outcome.message;
-    if (typeof reason !== "string" || reason.trim() === "") continue;
-    return clipReason(reason);
-  }
-  return undefined;
-}

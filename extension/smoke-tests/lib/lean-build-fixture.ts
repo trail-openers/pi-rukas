@@ -140,6 +140,13 @@ export function buildFixture(
     extraFrozen?: Record<string, string>;
     childOwnsBranch?: boolean;
     /**
+     * Files committed into the BASE commit only, as `path -> bytes`: never hashed,
+     * never in the frozen record. A case whose subject is the base tree — a project
+     * check that must find a byte there — uses this rather than `extraFrozen`,
+     * which also puts its files on the hashed head and into the record.
+     */
+    baseFiles?: Record<string, string>;
+    /**
      * Build the run's worktree under `lean-<this>` rather than `lean-<issue>`.
      * The run's `issue`, branch and step-log keys stay `issue`: only the tree
      * directory moves. It is what lets a second fixture for another issue share
@@ -175,12 +182,8 @@ export function buildFixture(
   // The adversary's files go in the BASE commit here and the run's head commit is
   // empty above it, so every frozen blob — the specify one and the challenge ones
   // — is in the commit the frozen records were hashed at.
-  for (const [rel, text] of Object.entries(extraFrozen)) {
-    const target = dir(rel);
-    mkdirSync(path.dirname(target), { recursive: true });
-    writeFileSync(target, text, { mode: 0o755 });
-    chmodSync(target, 0o755);
-  }
+  for (const [rel, text] of Object.entries(extraFrozen)) putCommitted(dir, rel, text);
+  for (const [rel, text] of Object.entries(opts?.baseFiles ?? {})) putCommitted(dir, rel, text);
   git(repoRoot, "add", "-A");
   git(repoRoot, "commit", "-q", "-m", "base");
   const baseSha = git(repoRoot, "rev-parse", "HEAD");
@@ -273,6 +276,8 @@ export function buildFixture(
 }
 
 /** The sha256 of each value, keyed as the value is keyed. */
+
+/** The sha256 of each value, keyed as the value is keyed. */
 function shaAll(entries: Record<string, string>): Record<string, string> {
   return Object.fromEntries(Object.entries(entries).map(([k, v]) => [k, sha(v)]));
 }
@@ -280,15 +285,17 @@ function shaAll(entries: Record<string, string>): Record<string, string> {
 // `reRunStub` is the fixture's executor, with the blocked gate's re-run seam
 // beside the artifact writers it drives; the four writers are re-exported for
 // every fixture and case that imported them from here before the 500-line split.
-import { execObserver, reRunStub } from "./lean-build-artifacts.ts";
+import { execObserver, headOf, putCommitted, reRunStub } from "./lean-build-artifacts.ts";
 
-export { hardlinkFromOutside, put, putOutside, symlink } from "./lean-build-artifacts.ts";
-
-/** The child committed whatever it had, itself. */
-export function childCommit(wt: string, message: string): void {
-  git(wt, "add", "-A");
-  git(wt, "commit", "-q", "-m", message);
-}
+export {
+  childCommit,
+  hardlinkFromOutside,
+  headOf,
+  put,
+  putCommitted,
+  putOutside,
+  symlink,
+} from "./lean-build-artifacts.ts";
 
 export interface RunResult {
   outcome?: Outcome;
@@ -486,14 +493,5 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
       deadDispatches: err instanceof BuildInfraError ? err.dispatches : undefined,
       ...finish(),
     };
-  }
-}
-
-/** The worktree's HEAD, or "" when the tree is gone. */
-function headOf(wt: string): string {
-  try {
-    return git(wt, "rev-parse", "HEAD");
-  } catch {
-    return "";
   }
 }

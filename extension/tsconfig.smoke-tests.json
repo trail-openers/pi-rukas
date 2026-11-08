@@ -306,6 +306,9 @@
     "smoke-tests/lib/lean-verify-types.ts",
     "smoke-tests/lib/lean-verify-exec.ts",
     "smoke-tests/test-lean-verify-frozen-and-tier.ts",
-    "smoke-tests/test-lean-verify-red-reason.ts"
+    "smoke-tests/test-lean-verify-red-reason.ts",
+    "smoke-tests/test-lean-freeze-check-specify.ts",
+    "smoke-tests/test-lean-freeze-check-challenge.ts",
+    "smoke-tests/test-lean-freeze-check-verify.ts"
   ]
 }
