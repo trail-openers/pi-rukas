@@ -164,9 +164,9 @@ export async function makeHook(env: {
       labels: t.labels.map((n) => ({ name: n })),
     }),
   };
-  // #2107 — the repo scoping: a `gh pr view`/`gh pr checks` read that drops
-  // the command's `-R <repo>` answers about a different PR than the merge
-  // acts on, so the stub refuses it.
+  // #2107 — the repo scoping: the value every `gh` read must end with. A forge
+  // read that dropped it answers about a different PR than the one the merge
+  // acts on, so `execFn` refuses it (see below).
   const wantRepoFlag = env.targetRepo !== undefined ? ` -R ${env.targetRepo}` : "";
   /** The identity read's field list — what keeps it apart from the evidence read. */
   const IDENTITY_FIELDS = "headRefName,headRefOid,baseRefName,author,labels";
@@ -176,12 +176,29 @@ export async function makeHook(env: {
   // same command text whichever form the guard used.
   const execFn = async (
     cmd0: string,
-    opts?: { argv?: string[]; cwd?: string; timeout?: number; maxBuffer?: number; shell?: string },
+    opts?: {
+      argv?: string[];
+      cwd?: string;
+      timeout?: number;
+      maxBuffer?: number;
+      shell?: string;
+      killGroup?: boolean;
+      env?: Record<string, string>;
+      stdoutEncoding?: string;
+    },
   ): Promise<{ stdout: string }> => {
     const cmd = commandOf(cmd0, opts);
     env.calls.push(cmd);
     if (opts?.timeout !== undefined) (env.timeouts ??= []).push(opts.timeout);
-    if (wantRepoFlag && cmd.startsWith("gh pr ") && !cmd.endsWith(wantRepoFlag)) {
+    // #2107 — the repo scoping, checked AFTER the record so an unscoped read
+    // still shows up in `calls` as the command the guard actually issued: an
+    // arm then fails on its own `-R <repo>` assertion (or on this refusal)
+    // rather than on an empty call list that hides what was asked. The matcher
+    // is the whole `gh` command, not `gh pr …` — the guard appends the flag, so
+    // a scoped read always ENDS with it — and it has to cover the argv form
+    // (#1095) that `gh pr checks` is issued in, whose joined text a `gh pr `
+    // prefix test never saw.
+    if (wantRepoFlag && cmd.startsWith("gh ") && !cmd.endsWith(wantRepoFlag)) {
       throw new Error(`forge read not scoped to the command's repo: ${cmd}`);
     }
     if (cmd.includes("gh pr view")) {

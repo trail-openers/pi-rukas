@@ -12,7 +12,18 @@
  */
 
 /** How many check names a refusal spells out before counting the rest. */
-const MAX_NAMED_CHECKS = 10;
+export const MAX_NAMED_CHECKS = 10;
+
+/**
+ * The name run inside a gatherer `reason` sentence — `required checks failing:
+ * a, b, c` (and the `skipped/neutral, which GitHub counts as success but this
+ * driver does not:` spelling, whose clause carries the colon the sentence
+ * begins with). The gatherer joins EVERY name verbatim, so the sentence a
+ * forge composes is bounded only by how many checks it has; `ciEvidenceRefusal`
+ * keeps the first `MAX_NAMED_CHECKS` names of the run and counts the rest, the
+ * same budget its own name lists get.
+ */
+export const REASON_NAME_RUN = /^([^:]+:[^,]*(?:, [^,]+){10,})(?:, .*)?$/;
 
 /**
  * The control characters a forge-supplied name may carry, as a class body: C0
@@ -21,7 +32,8 @@ const MAX_NAMED_CHECKS = 10;
  * (`String.fromCharCode` names exactly which characters are stripped).
  */
 const CONTROL_CLASS = `[${String.fromCharCode(0)}-${String.fromCharCode(31)}${String.fromCharCode(127)}]`;
-const CONTROL_CHARS = new RegExp(`${CONTROL_CLASS}+`, "g");
+/** Exported so the refusal renderers that embed a forge sentence share ONE rule. */
+export const CONTROL_CHARS = new RegExp(`${CONTROL_CLASS}+`, "g");
 
 /**
  * The bounded, one-line rendering of a check-name list (#2107). A PR with two

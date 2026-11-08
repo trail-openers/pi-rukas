@@ -31,7 +31,13 @@
 import { prCommentsCmd } from "./forge-commands.ts";
 import { extractCommentRows } from "./forge-comments.ts";
 import { isValidRepoValue } from "./merge-allowlist.ts";
-import { analyseRefusal, clipCheckNames } from "./merge-refusal-render.ts";
+import {
+  analyseRefusal,
+  clipCheckNames,
+  CONTROL_CHARS,
+  MAX_NAMED_CHECKS,
+  REASON_NAME_RUN,
+} from "./merge-refusal-render.ts";
 import type { MergeExecFn, MergeTarget } from "./merge-target.ts";
 import { identityBase } from "./review-ledger-path.ts";
 import type { LedgerEntry } from "./review-ledger.ts";
@@ -436,7 +442,11 @@ export function ciEvidenceRefusal(prNumber: number, evidence: MergeEvidence): st
   const override = " (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)";
   const state = evidence.mergeStateStatus ?? "unreadable";
   if (evidence.failureKind === "tooling") {
-    return `merge refused: CI evidence is not available for PR #${prNumber} (failureKind: tooling) — ${evidence.reason ?? "the check read failed"}. This is a tooling failure, not a CI verdict, and the guard refuses rather than merge on an unreadable check state${override}`;
+    // Bounded like the verdict arms: `reason` here is the message of a failed
+    // exec, and an error text with a newline would break the one line this
+    // refusal is contracted to be.
+    const detail = (evidence.reason ?? "the check read failed").replace(CONTROL_CHARS, " ").trimEnd();
+    return `merge refused: CI evidence is not available for PR #${prNumber} (failureKind: tooling) — ${detail}. This is a tooling failure, not a CI verdict, and the guard refuses rather than merge on an unreadable check state${override}`;
   }
   const named: string[] = [];
   if (evidence.failing.length > 0) named.push(`failing: ${clipCheckNames(evidence.failing)}`);
@@ -444,8 +454,25 @@ export function ciEvidenceRefusal(prNumber: number, evidence: MergeEvidence): st
     named.push(`skipped/neutral: ${clipCheckNames(evidence.inconclusive)}`);
   }
   const detail = named.length > 0 ? ` (${named.join("; ")})` : "";
-  const what = evidence.reason
-    ? `${evidence.reason}${detail}`
-    : `mergeStateStatus is ${state}${detail}`;
+  // The gatherer's sentence is CLIPPED and sanitised, not pasted. Its
+  // `reason` joins EVERY failing/pending/skipped name verbatim (and
+  // `mergeStateStatus` is only bounded at 64), so the raw sentence is the one
+  // part of this refusal a forge can grow without bound and can carry control
+  // characters into — the two things this renderer exists to prevent. The
+  // clipped lists below are the names that did not pass; the sentence says
+  // what kind of not-green it was, with the same name budget.
+  const oneLine = (evidence.reason ?? "")
+    .replace(CONTROL_CHARS, " ")
+    .replace(REASON_NAME_RUN, (whole) => {
+      const cut = whole.indexOf(": ");
+      if (cut < 0) return whole;
+      const names = whole.slice(cut + 2).split(", ");
+      const rest = names.length - MAX_NAMED_CHECKS;
+      return `${whole.slice(0, cut + 2)}${names.slice(0, MAX_NAMED_CHECKS).join(", ")}${
+        rest > 0 ? ` (+${rest} more)` : ""
+      }`;
+    })
+    .trimEnd();
+  const what = evidence.reason ? `${oneLine}${detail}` : `mergeStateStatus is ${state}${detail}`;
   return `merge refused: PR #${prNumber} does not report green CI — ${what}; mergeStateStatus is ${state}. The reviews passed but the checks did not, and the guard does not merge behind a red, pending, skipped or unreadable check${override}`;
 }
