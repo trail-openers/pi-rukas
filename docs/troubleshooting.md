@@ -305,7 +305,7 @@ Check the raw transcript under `~/.pi/agent/ensemble-runs/<date>/` before conclu
 
 ### A merge was refused: review ledger
 
-**Symptom:** An agent (PM, ops, or a subagent) runs `gh pr merge N` or `glab mr merge N` and the command is refused with a message like *"no passing adversarial review on file for branch …"* or *"no passing lens review on file for branch …"*. The same guard also holds commands that are not merges at all — see "A read-only command was refused with merge text" below.
+**Symptom:** An agent (PM, ops, or a subagent) runs `gh pr merge N` or `glab mr merge N` and the command is refused with a message like *"no passing adversarial review on file for branch …"*, *"no passing lens review on file for branch …"*, or *"PR #N does not report green CI — …"* (#2106). The same guard also holds commands that are not merges at all — see "A read-only command was refused with merge text" below.
 
 **Cause (by design):** The mode-independent merge guard (issue #912) checks the per-clone review ledger before allowing any agent-run PR/MR merge. The ledger lives under the git common dir (`git rev-parse --git-common-dir` + `review-ledger.json`) and is written by `adversarial_loop` and `dispatch_lens_review` at completion. The guard requires:
 
@@ -313,6 +313,7 @@ Check the raw transcript under `~/.pi/agent/ensemble-runs/<date>/` before conclu
 
 1. The **latest** adversarial entry for the branch to be `passed: true` **and** its `patchId` to match the branch's current merge-base patch-id (a change to the branch since the review refuses; main moving does not — see "The patchId base" below).
 2. The **latest** lens entry for the branch to be `passed: true` (any `patchId` — a passing lens entry may predate a later commit; a later **failing** lens run is what the latest-ness protects against). The lens `passed` boolean follows the project's review threshold (the same bar the driver's verdict used — see `lensBlockedByThreshold` / `lensPassed` in review-ledger.ts).
+3. **After** both ledger conditions and the round-cap path, the PR's **executed CI evidence** (#2106): `gatherMergeEvidence` (the same gate the driver's own merge consults) must report `ok` — a failing, pending, skipped or neutral check, a `mergeStateStatus` that is not `CLEAN` (`BLOCKED`, `UNKNOWN`, `DIRTY`, `DRAFT`), zero check rows, or a `gh` read that cannot be answered all refuse, and the refusal names the check and its state. Ledger rows attest that the reviews ran; only this says the checks passed. GitHub only — the `glab` path is unchanged.
 
 This is the structural floor for the incident where a PM merged two PRs on a developer's self-report plus CI, skipping both reviews. The prompt doctrine demanded both; the prompt layer is what failed. The guard cannot be bypassed by trust mode, sandbox mode, or `agents.json` overrides — it fires in every mode, for every role, before any short-circuit — and it reaches subagents too: every spawned child is loaded with the child-guards companion extension (`extension/src/child-guards.ts`), which registers the guard in trust mode (where the full pi-rukas extension is not forwarded) and no-ops in strict mode (where the full extension already registers it), so a trust-mode child's `gh pr merge` gets this refusal, never gh's not-found error.
 

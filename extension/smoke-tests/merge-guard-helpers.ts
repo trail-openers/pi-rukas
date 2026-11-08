@@ -130,6 +130,19 @@ export async function makeHook(env: {
   /** What `git merge-base` prints (default `mb0000`; "" = no merge-base). */
   mergeBase?: string;
   /**
+   * #2106 — what `gh pr checks` answers (default: one passing check). A JSON
+   * array of `{name,state,bucket}` rows, the shape `gatherMergeEvidence` reads.
+   */
+  prChecks?: string;
+  /** #2106 — what `mergeStateStatus` reports (default CLEAN). */
+  mergeStateStatus?: string;
+  /** #2106 — make the PR-state read throw (the "gh is broken" arm). */
+  failEvidence?: boolean;
+  /** #2106 — make the check-row read throw. */
+  failChecks?: boolean;
+  /** #2106 — the `headRefOid` the evidence read reports (default: a full OID). */
+  evidenceHeadOid?: string;
+  /**
    * What `gh pr view --json number` (the CURRENT-BRANCH resolution) does.
    * `"throws"` (default) is the stub's error; `"empty"` makes it return no
    * `number` field, which is the shape that leaves `resolvePrNumber` with
@@ -153,6 +166,10 @@ export async function makeHook(env: {
       labels: t.labels.map((n) => ({ name: n })),
     }),
   };
+  /** The identity read's field list — what keeps it apart from the evidence read. */
+  const IDENTITY_FIELDS = "headRefName,headRefOid,baseRefName,author,labels";
+  /** The #2106 evidence read's field list, answered from the env knobs below. */
+  const EVIDENCE_FIELDS = "mergeStateStatus,mergeable,state,headRefOid";
   // The argv form (#1095) records as `cmd argv…` so the matchers below read the
   // same command text whichever form the guard used.
   const execFn = async (
@@ -166,6 +183,22 @@ export async function makeHook(env: {
         if (env.branchNumber === "empty") return { stdout: "{}" };
         return { stdout: JSON.stringify({ number: t.prNumber }) };
       }
+      // #2106 — the CI evidence read is a `gh pr view` too, told apart ONLY by
+      // its field list. A matcher that keyed on `gh pr view` alone would hand
+      // the guard its identity answer and the gate would pass on nothing.
+      if (cmd.includes(`--json ${EVIDENCE_FIELDS}`)) {
+        if (env.failEvidence) throw new Error("gh: could not read the PR state");
+        return {
+          stdout: JSON.stringify({
+            mergeStateStatus: env.mergeStateStatus ?? "CLEAN",
+            mergeable: "TRUE",
+            state: "OPEN",
+            // A full OID: the gatherer refuses an abbreviated one, and the
+            // guard's own head check already verified the fetched head.
+            headRefOid: env.evidenceHeadOid ?? "a".repeat(40),
+          }),
+        };
+      }
       if (env.failGh) throw new Error("gh: not found");
       if (cmd.includes("--json comments")) {
         if (env.ghComments === undefined) {
@@ -173,7 +206,19 @@ export async function makeHook(env: {
         }
         return { stdout: env.ghComments };
       }
+      if (!cmd.includes(`--json ${IDENTITY_FIELDS}`)) {
+        throw new Error(`unexpected gh pr view field list: ${cmd}`);
+      }
       return ghView;
+    }
+    // #2106 — the check rows behind the CI evidence gate.
+    if (cmd.includes("gh pr checks")) {
+      if (env.failChecks) throw new Error("gh: could not read the checks");
+      return {
+        stdout:
+          env.prChecks ??
+          JSON.stringify([{ name: "quality-gate", state: "SUCCESS", bucket: "pass" }]),
+      };
     }
     if (cmd.includes("git fetch")) {
       if (env.failFetch) throw new Error("unable to connect");
@@ -225,6 +270,16 @@ export async function hookDecision(
     mainline?: string;
     mergeBase?: string;
     branchNumber?: "throws" | "empty";
+    /** #2106 — the check rows `gh pr checks` answers (default: one pass). */
+    prChecks?: string;
+    /** #2106 — the `mergeStateStatus` the evidence read reports (default CLEAN). */
+    mergeStateStatus?: string;
+    /** #2106 — the PR-state read throws (a tooling failure, not a CI verdict). */
+    failEvidence?: boolean;
+    /** #2106 — the check-row read throws. */
+    failChecks?: boolean;
+    /** #2106 — the `headRefOid` the evidence read reports. */
+    evidenceHeadOid?: string;
   } = {},
 ) {
   const env = {
@@ -240,6 +295,11 @@ export async function hookDecision(
     mainline: opts.mainline,
     mergeBase: opts.mergeBase,
     branchNumber: opts.branchNumber,
+    prChecks: opts.prChecks,
+    mergeStateStatus: opts.mergeStateStatus,
+    failEvidence: opts.failEvidence,
+    failChecks: opts.failChecks,
+    evidenceHeadOid: opts.evidenceHeadOid,
   };
   const handler = await makeHook(env);
   // #1417 round 2 — capture the HELD trace lines alongside the verdict. The

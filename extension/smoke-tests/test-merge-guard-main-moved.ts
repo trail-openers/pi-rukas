@@ -62,6 +62,19 @@ function forgeExec(repo: string, pr: { comments: string[] }) {
       return { stdout: JSON.stringify({ headRefName: BRANCH, baseRefName: "dev" }) };
     }
     if (cmd.includes("pr view 12")) {
+      // #2106 — the evidence read is a `gh pr view` too; its own field list is
+      // matched FIRST, or the general arm below swallows it and hands the
+      // gatherer a payload with no `mergeStateStatus` and no full OID.
+      if (cmd.includes("mergeStateStatus,mergeable,state")) {
+        return {
+          stdout: JSON.stringify({
+            mergeStateStatus: "CLEAN",
+            mergeable: "TRUE",
+            state: "OPEN",
+            headRefOid: sh(repo, `git rev-parse origin/${BRANCH}`),
+          }),
+        };
+      }
       return {
         stdout: JSON.stringify({
           headRefName: BRANCH,
@@ -71,6 +84,10 @@ function forgeExec(repo: string, pr: { comments: string[] }) {
           labels: [],
         }),
       };
+    }
+    if (cmd.includes("pr checks 12")) {
+      // #2106 — the check rows behind the guard's new evidence gate.
+      return { stdout: JSON.stringify([{ name: "quality-gate", state: "SUCCESS", bucket: "pass" }]) };
     }
     const bodyFile = /--body-file (\S+)/.exec(cmd)?.[1];
     if (cmd.includes("pr comment 12") && bodyFile) {

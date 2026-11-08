@@ -43,6 +43,11 @@
  *      protects against). The lens `passed` boolean follows the project's
  *      review threshold (the same bar the driver's verdict used — see
  *      `lensBlockedByThreshold` / `lensPassed` in review-ledger.ts).
+ *   9. CI evidence (#2106), LAST, after the ledger rows and the round-cap
+ *      path: `gatherMergeEvidence` (the driver's own executed-evidence gate)
+ *      must report `ok` for the PR. A failing, pending, skipped or neutral
+ *      check, a `mergeStateStatus` that is not `CLEAN`, zero rows, or an
+ *      unreadable read all refuse. GitHub only — the glab path is unchanged.
  *
  * ## What this guard is — and is not
  *
@@ -95,6 +100,7 @@ import {
   lensNotEvaluatedRefusal,
   mergeIdentity,
   readPrCommentBodies,
+  refuseUnlessCiGreen,
 } from "./merge-guard-reads.ts";
 import { evaluateRoundCapMerge } from "./merge-guard-round-cap.ts";
 import { compareAdversarialIdentity } from "./merge-identity-compare.ts";
@@ -456,7 +462,15 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
       return lensNotEvaluatedRefusal(branch, lens, { redirectedTo }); // #1000 — "the round-cap path was not evaluated" (see lensNotEvaluatedRefusal)
     }
 
-    trace(`merge-guard: PR #${prNumber} ${branch} — adversarial + lens both pass, merge allowed`);
+    trace(`merge-guard: PR #${prNumber} ${branch} — adversarial + lens both pass`);
+
+    // #2106 — the LAST gate, after every ledger refusal above on purpose (R1):
+    // the existing diagnostics stay first, so an agent cannot walk the refusals
+    // one merge at a time. Ledger rows attest the reviews ran; only this says
+    // the CHECKS passed. The carve-out return and the head-equality check both
+    // precede it. GitHub only, and fail-closed — see refuseUnlessCiGreen.
+    const ciBlock = await refuseUnlessCiGreen(execFn, cwd, prNumber, target.forge);
+    if (ciBlock) return ciBlock;
   });
 }
 

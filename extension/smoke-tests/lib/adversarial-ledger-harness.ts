@@ -202,6 +202,22 @@ export function forgeExec(repo: string, pr: { comments: string[] }, baseBranch =
       return { stdout: JSON.stringify({ comments: pr.comments.map((body) => ({ body })) }) };
     }
     if (cmd.includes("pr view 12")) {
+      // #2106 — the evidence read is a `gh pr view` too, with its own field
+      // list; answered GREEN here so the guard's new last gate is not what
+      // these arms are deciding on. The field list is matched FIRST because
+      // `pr view 12` alone would otherwise swallow it and hand the gatherer
+      // the identity payload (no `mergeStateStatus`, no full OID) — a refusal
+      // that has nothing to do with the review under test.
+      if (cmd.includes("mergeStateStatus,mergeable,state")) {
+        return {
+          stdout: JSON.stringify({
+            mergeStateStatus: "CLEAN",
+            mergeable: "TRUE",
+            state: "OPEN",
+            headRefOid: sh(repo, "rev-parse", `origin/${BRANCH}`),
+          }),
+        };
+      }
       return {
         stdout: JSON.stringify({
           headRefName: BRANCH,
@@ -211,6 +227,10 @@ export function forgeExec(repo: string, pr: { comments: string[] }, baseBranch =
           labels: [],
         }),
       };
+    }
+    if (cmd.includes("pr checks 12")) {
+      // #2106 — the check rows behind the evidence gate: one passing check.
+      return { stdout: JSON.stringify([{ name: "quality-gate", state: "SUCCESS", bucket: "pass" }]) };
     }
     throw new Error(`unexpected gh call: ${cmd}`);
   };

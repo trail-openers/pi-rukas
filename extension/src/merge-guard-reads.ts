@@ -17,6 +17,10 @@
  *   distinct from the `applies: true` path, where the rule WAS evaluated
  *   and a specific condition N failed (that refusal names the condition
  *   verbatim).
+ * - `refuseUnlessCiGreen` (#2106): the guard's LAST gate — the executed CI
+ *   verdict for the PR, read through the driver's own evidence gatherer, and
+ *   the refusal that renders it. This is a forge READ like the others here,
+ *   which is why it lives in this module and not in the guard.
  *
  * #1417 moved `renderHold` (and `HoldKind` / `HoldDetails`) out of here and
  * into merge-refusals.ts: a hold is refusal prose, not a forge read, and it
@@ -33,6 +37,8 @@ import type { LedgerEntry } from "./review-ledger.ts";
 import { committedPatchIdentity } from "./review-patch-identity.ts";
 import { trace } from "./trace.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
+import type { MergeEvidence } from "./work-driver-merge-evidence.ts";
+import { gatherMergeEvidence } from "./work-driver-merge-evidence.ts";
 
 /** Per-exec timeout for the guard's gh/git calls. */
 const EXEC_TIMEOUT_MS = 30_000;
@@ -239,4 +245,80 @@ export function lensNotEvaluatedRefusal(
     block: true,
     reason: `no passing lens review on file for branch \`${branch}\` (latest: passed=${lens.passed}, ${detail}) — the round-cap path was not evaluated (it applies only to an ISSUES_FOUND latest entry); run dispatch_lens_review and let it complete before merging${override}`,
   };
+}
+
+/**
+ * #2106 — the guard's final fail-closed condition: the PR's executed CI
+ * verdict. The incident: a plain `gh pr merge` shipped a PR whose only CI
+ * check had concluded FAILURE a quarter of an hour earlier, because this
+ * hook read only the local review ledger, and both rows had legitimately
+ * passed. Ledger rows attest that the REVIEWS ran; nothing here said the
+ * CHECKS passed. The driver's in-process merge has always consulted
+ * `gatherMergeEvidence`; the `tool_call` path never did.
+ *
+ * No new CI reader: this calls the driver's gatherer as-is, so the guard and
+ * the driver cannot drift on what "green" means — `skipped`, `neutral`,
+ * `UNKNOWN`, `BLOCKED`, `DIRTY`, `DRAFT`, zero rows and a non-CLEAN
+ * `mergeStateStatus` are all NOT passing there, and an unreadable read
+ * refuses there too. `ok: true` is the only answer that lets the merge run.
+ *
+ * GitHub only, deliberately. `gatherMergeEvidence` spells its two reads with
+ * the GitHub argv builders unconditionally (its check rows expect a `bucket`
+ * or `state` per check), and `prChecksCmd("gitlab", n)` answers with a
+ * pipelines payload whose rows carry neither, so running it for a glab merge
+ * would refuse every MR on the absence of evidence. The GitLab path keeps
+ * today's behaviour; its evidence gate is its own issue.
+ */
+export async function refuseUnlessCiGreen(
+  execFn: MergeExecFn,
+  cwd: string,
+  prNumber: number,
+  forge: MergeTarget["forge"],
+): Promise<{ block: true; reason: string } | undefined> {
+  if (forge !== "github") return undefined;
+  const evidence = await gatherMergeEvidence(execFn, cwd, prNumber);
+  if (evidence.ok) {
+    trace(`merge-guard: PR #${prNumber} — CI evidence ok (${evidence.mergeStateStatus})`);
+    return undefined;
+  }
+  trace(
+    `merge-guard: PR #${prNumber} — CI evidence refuses the merge (${evidence.failureKind ?? "ci"}): ${evidence.reason ?? "no reason given"}`,
+  );
+  return { block: true, reason: ciEvidenceRefusal(prNumber, evidence) };
+}
+
+/**
+ * The refusal for a CI verdict the guard will not merge behind. It follows the
+ * merge-refusal half of the #1417 split (see merge-refusals.ts): this command
+ * IS a merge that every review gate has already cleared, so it names the
+ * operator's override, exactly as the ledger refusals do. It is never rendered
+ * through `renderHold` — a hold is what the guard says about a command it could
+ * not read as a merge, and this one read it perfectly well.
+ *
+ * Three arms, and each says what it can prove (#2106 R3):
+ *   - a CI VERDICT names the checks (`failing` / `inconclusive` carry the
+ *     names) and the `mergeStateStatus` it read;
+ *   - the PENDING arm quotes `MergeEvidence.reason` verbatim rather than
+ *     re-deriving names from it: the type exposes no pending list, and
+ *     inventing fields on a type the driver persists is a bigger change than
+ *     quoting the sentence the gatherer already wrote for this case;
+ *   - a TOOLING failure says so in its own words, so "gh is broken" is never
+ *     mistaken for "CI is red" (#2106 R4).
+ */
+export function ciEvidenceRefusal(prNumber: number, evidence: MergeEvidence): string {
+  const override = " (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)";
+  const state = evidence.mergeStateStatus ?? "unreadable";
+  if (evidence.failureKind === "tooling") {
+    return `merge refused: CI evidence is not available for PR #${prNumber} (failureKind: tooling) — ${evidence.reason ?? "the check read failed"}. This is a tooling failure, not a CI verdict, and the guard refuses rather than merge on an unreadable check state${override}`;
+  }
+  const named: string[] = [];
+  if (evidence.failing.length > 0) named.push(`failing: ${evidence.failing.join(", ")}`);
+  if (evidence.inconclusive.length > 0) {
+    named.push(`skipped/neutral: ${evidence.inconclusive.join(", ")}`);
+  }
+  const detail = named.length > 0 ? ` (${named.join("; ")})` : "";
+  const what = evidence.reason
+    ? `${evidence.reason}${detail}`
+    : `mergeStateStatus is ${state}${detail}`;
+  return `merge refused: PR #${prNumber} does not report green CI — ${what}; mergeStateStatus is ${state}. The reviews passed but the checks did not, and the guard does not merge behind a red, pending, skipped or unreadable check${override}`;
 }
