@@ -5,15 +5,18 @@
  * `build` dispatches a single `developer` fenced to the run's worktree. A child
  * that died mid-stream is infrastructure, not a verdict about the work: it is
  * never `exhausted` (which would route the machine onward as though the
- * developer had tried and produced nothing) and never `ok`. The prompt itself
- * is assembled in `build-prompt.ts` so this module owns only the seam.
+ * developer had tried and produced nothing) and never `ok`. ONE child is not:
+ * a child that died before its first turn is handed back for a single free
+ * re-dispatch, and the taxonomy — not this module — decides which deaths
+ * qualify. The prompt itself is assembled in `build-prompt.ts` so this module
+ * owns only the seam.
  */
 
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import { statReporterPath } from "../reporter-preflight.ts";
 import type { DispatchResult } from "../types.ts";
-import { classifyFailureCause } from "../work-driver-failure-taxonomy.ts";
+import { classifyFailureCause, isFinalProviderFault } from "../work-driver-failure-taxonomy.ts";
 import { BLOCKED_REPORTER_PATH } from "./build-blocked-reporter.ts";
 import { BuildInfraError } from "./build-errors.ts";
 import { buildPrompt } from "./build-prompt.ts";
@@ -61,16 +64,29 @@ export interface BuildDispatchOpts {
 /**
  * A builder that died before doing any work, which the step may re-dispatch.
  *
- * `dispatchBuilder` is the only site holding the child's `DispatchResult`, so it
+ * dispatchBuilder is the only site holding the child's DispatchResult, so it
  * is the only site that can tell a child that did nothing from one that died
- * mid-flight; the caller sees only the row, which keeps no `toolUses`. A cap
- * kill never becomes this: the shared taxonomy is what declines it.
+ * mid-flight; the caller sees only the row, which keeps no toolUses. A kill or
+ * a terminal provider fault never becomes this: retryableCrash declines it.
  */
 export interface NoWorkCrash {
   readonly noWorkCrash: true;
   /** Why the first child failed, for the throw the step still may have to make. */
   why: string;
   row: DispatchUsageRow;
+}
+
+/**
+ * The taxonomy's kind for a `DispatchResult`: the endpoint's own error stop is a
+ * provider event, anything else is a plain crash. A killed child stays on
+ * `dispatch-failed` — a self-kill is never a provider failure (#296), and that
+ * is the ONLY kind `terminalProviderClassOnKill` reads, so labelling a kill
+ * provider-shaped switches off the override that makes a spend cap fatal.
+ */
+function failureKindFor(result: DispatchResult): string {
+  return result.killCause === undefined && result.errorStop !== undefined
+    ? "dispatch-failed-provider"
+    : "dispatch-failed";
 }
 
 /**
@@ -87,19 +103,30 @@ function didNoWork(result: DispatchResult): boolean {
   );
 }
 
-/** The child's failure in the shared taxonomy's words: caps there stay fatal. */
+/**
+ * The child's failure in the shared taxonomy's words, which is the only answer
+ * that declines a cap: `inactivity` / `tool-inactivity` are retryable THERE
+ * because the driver's router may re-run a hanged step, so a kill is refused
+ * first — re-spawning a child pi-rukas itself ended is a spawn loop. A terminal
+ * provider fault (spend cap, quota window, undated 429, missing model) is final
+ * too, which the classifier's own predicate states.
+ */
 function retryableCrash(result: DispatchResult): boolean {
+  if (result.killCause !== undefined) return false;
   const cls = classifyFailureCause({
-    kind: result.errorStop ? "dispatch-failed-provider" : "dispatch-failed",
+    kind: failureKindFor(result),
     killCause: result.killCause,
-    providerMessage: result.errorStop?.message,
+    // `reason` too, the way `dispatchFailureWhy` reads it: an error stop whose
+    // only text is the stop reason must not read as a plain crash.
+    providerMessage: result.errorStop?.message ?? result.errorStop?.reason,
   });
-  return cls.shouldRetry && cls.maxRetries > 0;
+  return cls.shouldRetry && cls.maxRetries > 0 && !isFinalProviderFault(cls);
 }
 
 /**
  * Dispatch one developer. A budget breach comes back as {@link BudgetStop}, a
- * dead-but-idle child as {@link NoWorkCrash}; any other dead child is still
+ * dead-but-idle child the taxonomy calls transient as {@link NoWorkCrash};
+ * every other dead child — killed, quota-stopped, or one that worked — is still
  * infrastructure and throws.
  *
  * The second element of the pair is the row this dispatch cost, and it is

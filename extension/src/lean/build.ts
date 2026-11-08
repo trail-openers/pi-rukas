@@ -25,7 +25,9 @@
  *      work in a tree the step cannot account for: the frozen map is non-empty and
  *      every frozen blob at that head still hashes to its record.
  *   4. **One child**, role `developer`, fenced to the worktree. A child that
- *      died is infrastructure and throws; it is not a verdict about the work.
+ *      died mid-work is infrastructure and throws; a killed or quota-stopped one
+ *      is never re-dispatched, and only a child that died before its first turn
+ *      gets the one free re-dispatch (`build-dispatch.ts`).
  *   5. **Normalise and commit** (`build-normalise.ts`): CAPTURE the child's files,
  *      RESET the tree to `headBefore` — undoing its commits, its staging, every
  *      frozen and protected-path edit — then REWRITE the captured bytes and make
