@@ -74,7 +74,7 @@ export const PASS_ROWS = 1 + LENSES_PER_PASS;
  * Typed against the layer's own `Verdict` union: a `string[]` compared against a
  * widened `verdict: string` lets a renamed verdict silently stop matching.
  */
-export const LENS_BLOCKING_VERDICTS: readonly Verdict[] = ["CRITICAL_ISSUES_FOUND"];
+const LENS_BLOCKING_VERDICTS: readonly Verdict[] = ["CRITICAL_ISSUES_FOUND"];
 
 /**
  * Did this six-lens round block the run? Its own CRITICAL verdict, or a reported

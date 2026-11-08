@@ -90,7 +90,7 @@ export interface CommandCriterionRecord {
 export const COMMAND_CRITERION_MAX = 32;
 
 /** Wall clock the whole command tier gets, shared across every run in it. */
-export const COMMAND_TIER_BUDGET_MS = 600_000;
+const COMMAND_TIER_BUDGET_MS = 600_000;
 
 /**
  * How much of a `command` a refusal may quote. The `command` is untrusted text out

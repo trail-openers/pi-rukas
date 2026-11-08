@@ -97,7 +97,7 @@ export const MAX_BUILD_ATTEMPTS = 3;
 export const REPORT_FAILED_KIND = "report-failed";
 
 /** A step's own budget ended the child: a verdict, not a crash. */
-export const BUDGET_KIND = "budget";
+const BUDGET_KIND = "budget";
 
 /**
  * Is this pair in the table? `next()` throws on a pair it does not have, so

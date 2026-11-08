@@ -46,7 +46,7 @@ export const MAX_TEST_FILES_PER_ROW = 8;
  * bounded where the work actually costs; past this many distinct paths the
  * surplus is refused without a probe, making the breach free.
  */
-export const MAX_TEST_FILES_PER_CALL = 32;
+const MAX_TEST_FILES_PER_CALL = 32;
 
 /**
  * A memoised `existsAtBase` for ONE boundary call, plus the count of distinct
@@ -61,7 +61,7 @@ export const MAX_TEST_FILES_PER_CALL = 32;
  * already asked about (free) from a new one, allowed only while `probed` sits under
  * `MAX_TEST_FILES_PER_CALL`.
  */
-export function baseProbe(existsAtBase: ((rel: string) => Promise<boolean>) | undefined): {
+function baseProbe(existsAtBase: ((rel: string) => Promise<boolean>) | undefined): {
   ask: ((rel: string) => Promise<boolean>) | undefined;
   has: (rel: string) => boolean;
   probed: () => number;

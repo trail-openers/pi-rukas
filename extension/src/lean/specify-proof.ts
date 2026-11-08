@@ -67,7 +67,7 @@ export interface TestRunLimits {
 }
 
 /** Output ceiling for one test run; overflow is an infra fault, not a red. */
-export const TEST_MAX_BUFFER = 8 * 1024 * 1024;
+const TEST_MAX_BUFFER = 8 * 1024 * 1024;
 
 /**
  * The shape of a run that produced no verdict, as `runTestFile` classified it.
@@ -131,7 +131,7 @@ export function wasKilled(err: unknown): boolean {
  * hang — the same reading `tierObserved` in `verify-baseline.ts` makes. Asked before
  * `wasKilled`, whose answer is true for both.
  */
-export function outputOverflowed(err: unknown): boolean {
+function outputOverflowed(err: unknown): boolean {
   return (err as { overflow?: unknown })?.overflow !== undefined;
 }
 

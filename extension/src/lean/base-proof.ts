@@ -28,8 +28,8 @@ import { NO_MAINLINE_WHY } from "./io.ts";
 import { oneLine } from "./text-fence.ts";
 
 /** The two refusals a base can earn, worded so an operator sees WHICH half failed. */
-export const NOT_AN_OID = " is not a full commit sha";
-export const NOT_A_COMMIT = " is not a commit in this clone";
+const NOT_AN_OID = " is not a full commit sha";
+const NOT_A_COMMIT = " is not a commit in this clone";
 
 /**
  * The rule for an empty base, with a tail that is never empty.
@@ -50,17 +50,17 @@ export function unresolvedMainlineRule(why: string | undefined): string {
  * way a hand-edited record is wrong, and the one an operator can act on
  * (`git cat-file -t <that>`) without guessing what the field meant.
  */
-export function resolvesTo(resolved: string): string {
+function resolvesTo(resolved: string): string {
   return `${NOT_A_COMMIT} (it resolves to ${oneLine(resolved, 80)})`;
 }
 
 /** `base <value>` is not an object name at all: not 40 lowercase hex. */
-export function notAnOidRule(baseSha: string): string {
+function notAnOidRule(baseSha: string): string {
   return `base sha ${oneLine(baseSha, 80)}${NOT_AN_OID}`;
 }
 
 /** `base <value>` is an oid-shaped string this clone holds no commit for. */
-export function notACommitRule(baseSha: string, suffix = NOT_A_COMMIT): string {
+function notACommitRule(baseSha: string, suffix = NOT_A_COMMIT): string {
   return `base sha ${oneLine(baseSha, 80)}${suffix}`;
 }
 

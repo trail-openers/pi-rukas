@@ -317,7 +317,7 @@ export function phase1Handlers(
 }
 
 /** The one-line summary the command prints. */
-export function summarize(result: RunLeanResult, issue: number): string {
+function summarize(result: RunLeanResult, issue: number): string {
   const reason = result.run.result?.reason ?? "no result recorded";
   return `work-lean #${issue}: ${result.state} (exit ${result.code}) — ${reason}`;
 }

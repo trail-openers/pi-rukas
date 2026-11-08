@@ -56,7 +56,7 @@ const DECLINE_BODY_MAX_CHARS = 1000;
  * shadow an earlier round's — a run whose `ready` passed after an earlier
  * refusal is not a run that posts the old rules.
  */
-export function failedRulesFromLog(steps: Step[]): string[] {
+function failedRulesFromLog(steps: Step[]): string[] {
   for (let i = steps.length - 1; i >= 0; i--) {
     const step = steps[i];
     if (step === undefined || step.outcome === undefined) continue;

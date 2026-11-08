@@ -19,7 +19,7 @@ import { REPORT_FAILED_KIND, exitCodeFor } from "./machine.ts";
 import { type LeanRun, type LeanState, type Outcome, isTerminal, newestDecided } from "./state.ts";
 
 /** The rules the most recent verdict recorded, for a report that could not deliver them. */
-export function lastFailedRules(steps: readonly { outcome?: Outcome }[]): unknown[] | undefined {
+function lastFailedRules(steps: readonly { outcome?: Outcome }[]): unknown[] | undefined {
   for (let i = steps.length - 1; i >= 0; i--) {
     const rules = steps[i]?.outcome?.failedRules;
     if (Array.isArray(rules) && rules.length > 0) return rules as unknown[];

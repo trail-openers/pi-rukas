@@ -20,7 +20,7 @@ import type { DispatchResult } from "../types.ts";
 import { challengePrompt } from "./challenge-prompt.ts";
 import type { ChallengeDispatch } from "./challenge-types.ts";
 import type { TestLocation } from "./config-test-location.ts";
-import { dispatchFailureCause } from "./dispatch-verdict.ts";
+import { throwIfDispatchFailed } from "./dispatch-verdict.ts";
 import type { PiSpec } from "./spec.ts";
 import type { BudgetArms, BudgetStop, DispatchUsageRow } from "./step-budget.ts";
 import { budgetStop, dispatchUsageRow } from "./step-budget.ts";
@@ -103,9 +103,6 @@ export async function dispatchAdversary(
   // Before the throw below: the round's own ceiling ending the child is a verdict.
   const fired = opts.budget.fired(result);
   if (fired !== undefined) return [budgetStop(fired), row];
-  if (!result.ok || result.killCause !== undefined || result.errorStop !== undefined)
-    throw new ChallengeInfraError(`challenge dispatch failed: ${dispatchFailureCause(result)}`, [
-      row,
-    ]);
+  throwIfDispatchFailed(result, ChallengeInfraError, "challenge dispatch failed: ", [row]);
   return [result, row];
 }

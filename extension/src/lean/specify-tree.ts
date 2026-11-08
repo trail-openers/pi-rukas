@@ -42,7 +42,7 @@ import { NO_HOOKS, resetWorktreeToBase } from "./specify-reset.ts";
 export { type DroppedRow, NEWNESS_REASON, validateSubmitRows } from "./submit-tests-cap.ts";
 
 /** The worktree directory name for one issue's specify step. */
-export function specifyWorktreeName(issue: number): string {
+function specifyWorktreeName(issue: number): string {
   return `lean-${issue}`;
 }
 

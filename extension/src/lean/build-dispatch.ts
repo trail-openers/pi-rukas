@@ -17,7 +17,7 @@ import { BLOCKED_REPORTER_PATH } from "./build-blocked-reporter.ts";
 import { BuildInfraError } from "./build-errors.ts";
 import { buildPrompt } from "./build-prompt.ts";
 import type { BuildDispatch } from "./build-types.ts";
-import { dispatchFailureCause } from "./dispatch-verdict.ts";
+import { throwIfDispatchFailed } from "./dispatch-verdict.ts";
 import type { PiSpec } from "./spec.ts";
 import {
   type BudgetArms,
@@ -107,7 +107,6 @@ export async function dispatchBuilder(
   // Before the throw below: the step's own ceiling ending the child is a verdict.
   const fired = opts.budget.fired(result);
   if (fired !== undefined) return [budgetStop(fired), row];
-  if (!result.ok || result.killCause !== undefined || result.errorStop !== undefined)
-    throw new BuildInfraError(`build dispatch failed: ${dispatchFailureCause(result)}`, [row]);
+  throwIfDispatchFailed(result, BuildInfraError, "build dispatch failed: ", [row]);
   return [result, row];
 }

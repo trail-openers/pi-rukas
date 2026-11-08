@@ -24,7 +24,7 @@ import { FIXER_ROLE } from "./step-budget.ts";
  * validator's shape rule (`FIX_RUN_ID` in `state-dispatches.ts`) by the shape both
  * read — a second copy here would be a second answer to "is this a timestamp".
  */
-export const FIX_EPOCH_FLOOR_MS = 1e12;
+const FIX_EPOCH_FLOOR_MS = 1e12;
 
 /**
  * The run id every fix tree of one attempt carries in its name.

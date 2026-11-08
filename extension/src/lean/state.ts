@@ -38,7 +38,7 @@ export {
   saveRun,
 } from "./state-store.ts";
 
-export const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 1;
 
 /**
  * The states a run can sit in. `decline` is the step that reports a refusal;
@@ -164,7 +164,7 @@ export function stepKey(issue: number, state: LeanState, n: number): string {
  * is the same distinction on the inside, where a caller must not fall back
  * to 0.
  */
-export function attemptOfStrict(key: string): number | undefined {
+function attemptOfStrict(key: string): number | undefined {
   const suffix = key.slice(key.lastIndexOf(":") + 1);
   return /^\d+$/.test(suffix) ? Number(suffix) : undefined;
 }

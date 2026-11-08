@@ -49,9 +49,9 @@ export class SpecifyCommitError extends Error {
 export const NO_HOOKS = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"] as const;
 
 /** The wall clock on a local git write (`checkout`, `reset`, `worktree add`). */
-export const LOCAL_GIT_MS = 120_000;
+const LOCAL_GIT_MS = 120_000;
 /** The wall clock on a short local read (`rev-parse`). */
-export const QUICK_GIT_MS = 30_000;
+const QUICK_GIT_MS = 30_000;
 /** The largest git stdout a step will hold. */
 export const GIT_MAX_BUFFER = 16 * 1024 * 1024;
 

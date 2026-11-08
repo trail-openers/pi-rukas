@@ -373,7 +373,7 @@ export function budgetSentence(state: LeanState, fired: BudgetFired): string {
  * The verdict for a step that ran out of budget, not out of ideas. Callers ask
  * {@link readDispatched} before their infra throw, or this never gets to route.
  */
-export function budgetVerdict(state: LeanState, fired: BudgetFired): Outcome {
+function budgetVerdict(state: LeanState, fired: BudgetFired): Outcome {
   return {
     kind: "budget",
     limit: fired.limit,

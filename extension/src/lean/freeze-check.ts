@@ -145,7 +145,7 @@ export function namedCandidates(output: string, candidates: string[]): string[] 
 }
 
 /** Why the drop happened, in the words a child's retry prompt and an operator read. */
-export function freezeCheckDropReason(cmd: string, confirmedAtBase: boolean): string {
+function freezeCheckDropReason(cmd: string, confirmedAtBase: boolean): string {
   return `fails verify.freezeCheck ${cmd}${confirmedAtBase ? " (a base run of the same command with no candidate files was green)" : ""}`;
 }
 
