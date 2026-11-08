@@ -1,6 +1,6 @@
 /**
  * lean/specify-attempt — one attempt of the `specify` step: one adversary
- * dispatch under the state's budget (#1883), then the shared test pipeline
+ * dispatch under the state's budget, then the shared test pipeline
  * (extract, validate, capture, reset to the base, rewrite, prove red, commit).
  *
  * `specify.ts` runs it once, and again on its one retry — with the previous
@@ -52,7 +52,7 @@ const SIZE_REFUSAL =
   / lines; an acceptance test is at most | bytes; an acceptance test is at most | is not a text file/;
 
 /** Everything one attempt needs, all of it decided by the caller before the first dispatch. */
-export interface SpecifyAttemptArgs {
+interface SpecifyAttemptArgs {
   deps: SpecifyDeps;
   config: WorkConfig;
   repoRoot: string;
@@ -74,7 +74,7 @@ export interface SpecifyAttemptArgs {
   resubmit?: boolean;
 }
 
-export interface SpecifyAttemptResult {
+interface SpecifyAttemptResult {
   outcome: Outcome;
   /** The attributed drop labels the boundary made in this attempt. */
   refused: string[];
@@ -175,7 +175,7 @@ async function dispatchAdversary(
 export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<SpecifyAttemptResult> {
   const { deps, config, repoRoot, issue, spec, wt, base, branch, runnerTemplate } = args;
   const { testLocation, wanted, frozenByCriterion, refusal, resubmit } = args;
-  // Each dispatch gets its own budget (#1883), armed the way the first was.
+  // Each dispatch gets its own budget, armed the way the first was.
   const budget = armBudget(budgetFor(config, "specify"));
   if (budget.warning !== undefined) traceWarn(`lean specify #${String(issue)}: ${budget.warning}`);
   const dispatched = await dispatchAdversary(deps, {

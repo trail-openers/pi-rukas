@@ -72,7 +72,7 @@ import {
 import { type VerifyExec, VerifyInfraError } from "./verify-types.ts";
 
 /** The outcome of one executed `command` criterion, kept for the record. */
-export interface CommandCriterionRecord {
+interface CommandCriterionRecord {
   /** `passed` — the criterion ran through the gate's own runner and exited 0. */
   kind: "passed";
   /**

@@ -50,7 +50,7 @@ import { leanVersion } from "./version.ts";
 export { leanVersion } from "./version.ts";
 
 /** What `ready` learned: kept for the run's seed and for the not-ready comment. */
-export interface ReadyFacts {
+interface ReadyFacts {
   spec?: PiSpec;
   config?: WorkConfig;
   baseSha?: string;
@@ -131,13 +131,11 @@ export async function readyOutcome(
         why = oneLine(err instanceof Error ? err.message : String(err), 160);
       }
     }
-    // A seed that FAILED rather than found nothing hands back, it does not
-    // refuse — see `LeanSeed.infra`. The run's base could not be established
-    // because git could not be asked, which is a fact about this harness and
-    // not about the issue; the not-ready comment is the wrong surface for it
-    // and the handback (exit 10, no comment) is where an operator looks. This
-    // is deliberately symmetric with the non-empty branch below, which lets
-    // `proveBaseSha` throw for exactly the same class of fault.
+    // A seed that FAILED rather than found nothing hands back, it does not refuse —
+    // see `LeanSeed.infra`. The base could not be established because git could not
+    // be asked, which is a fact about this harness and not the issue: the handback
+    // (exit 10, no comment) is where an operator looks. Deliberately symmetric with
+    // the non-empty branch below, which lets `proveBaseSha` throw for the same fault.
     if (base.infra === true) {
       // CLIPPED because `why` is git's text — a first stderr line, an exec
       // message — being put into a thrown message an operator (and a log
@@ -355,13 +353,11 @@ export async function runWorkLean(
 }
 
 /**
- * The handler set one run is driven with: the phase-1 handlers plus the seed
- * that run was given. Extracted from `runWorkLean` so the seed → handler thread
- * is testable on its own: `seedWhy` is what lets `ready` quote the git cause
- * for a missing base, and `seedInfra` is what makes `ready` hand the run back
- * instead of posting a not-ready comment for a seed that faulted (see
- * `LeanSeed.infra`). Both lines are invisible from the outside because
- * `runWorkLean` always re-seeds through `leanSeed`.
+ * The handler set one run is driven with: the phase-1 handlers plus the seed that
+ * run was given. Extracted from `runWorkLean` so the seed → handler thread is
+ * testable on its own: `seedWhy` lets `ready` quote the git cause for a missing base,
+ * and `seedInfra` makes `ready` hand the run back instead of posting a not-ready
+ * comment for a seed that faulted (see `LeanSeed.infra`).
  */
 export function handlersFor(
   repoRoot: string,
@@ -377,11 +373,8 @@ export function handlersFor(
 }
 
 /**
- * Register `/work-lean <issue>`.
- *
- * The argument is a single issue number, and nothing else: the engine is one
- * issue per run, and the phase that adds grouping adds its own argument
- * rather than widening this parser to guess at it.
+ * Register `/work-lean <issue>`. The argument is a single issue number, and nothing
+ * else: the engine is one issue per run.
  */
 export function registerWorkLeanCommand(pi: ExtensionAPI): void {
   pi.registerCommand("work-lean", {

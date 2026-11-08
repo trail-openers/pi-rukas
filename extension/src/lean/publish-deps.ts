@@ -32,7 +32,7 @@ export class PublishInfraError extends Error {
  * the push carries so a hung `git push` cannot leave an ssh grandchild holding
  * the pipe open. Same intersection `verify-types.ts` documents.
  */
-export type PublishExec = VerifyExec;
+type PublishExec = VerifyExec;
 
 /**
  * The forge in the shape the step uses: list, read, (re)draft, then create.
@@ -99,7 +99,7 @@ export async function assertPublishableBranch(repoRoot: string, branch: string):
  * directly at the executor below rather than wrapped. Every other network git
  * call in the harness already goes through that seam, so a publish push cannot
  * drift from a driver push on what makes ssh fail instead of reading a passphrase
- * from /dev/tty (`GIT_TERMINAL_PROMPT=0` + `-o BatchMode=yes`, #1095). The
+ * from /dev/tty (`GIT_TERMINAL_PROMPT=0` + `-o BatchMode=yes`). The
  * earlier argument for composing our own here was that `work-driver-net-git.ts`
  * would drag the driver graph into a lean step; the review showed this file
  * already pulls in ~390 driver modules through `command.ts`, so the reason was

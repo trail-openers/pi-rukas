@@ -149,7 +149,7 @@ async function resolveCommitArg(
  * when the step's own ceiling stopped the fixer. `stop` is optional on both arms
  * so the caller narrows on one field rather than on a union of two shapes.
  */
-export type FixRoundOutcome = { head?: string; stop?: BudgetFired };
+type FixRoundOutcome = { head?: string; stop?: BudgetFired };
 
 /**
  * One fix wave: the child in its disposable tree, then its commits moved onto the
@@ -353,7 +353,7 @@ async function integrate(
   // /dev/tty and hanging the step). Every other call here is local.
   //
   // The name is checked with the driver's own `netRefProblem` immediately before
-  // the argv is built — the placement `publish`'s `pushHead` uses (#1095). It
+  // the argv is built — the placement `publish`'s `pushHead` uses. It
   // reads the same charset the entry-point `assertPublishableBranch` applied before
   // this step paid for anything, so this is NOT the guard — deleting it alone keeps
   // every refusal in `test-lean-review-push-guards.ts` green, because the earlier

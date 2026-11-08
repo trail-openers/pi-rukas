@@ -1,17 +1,16 @@
 /**
  * lean/state-outcome — the validator and rebuilder for ONE step's `outcome`.
  *
- * Split from `state.ts` along the seam the file already had: `assertRun` walks
- * the run and delegates the whole outcome question here, so the durable record
- * keeps its field-by-field claim while the shape of what a step may report
- * lives where a step author reads it.
+ * Split from `state.ts` along the seam the file already had: `assertRun` walks the
+ * run and delegates the whole outcome question here, so the durable record keeps
+ * its field-by-field claim while the shape of what a step may report lives where a
+ * step author reads it.
  *
  * Every check guards a field a LATER reader indexes: `frozen` is the tamper
  * evidence `build` and `verify` compare, `verifiedHead` is what the land gate
- * matches against the PR head, and `prUrl` is the address `handback` prints.
- * A value that is merely present but the wrong shape would be a record that
- * reads as evidence and never matches — or, for the URL, a link to a PR that
- * does not exist.
+ * matches against the PR head, and `prUrl` is the address `handback` prints. A
+ * value that is merely present but the wrong shape is a record that reads as
+ * evidence and never matches — or, for the URL, a link to a PR that does not exist.
  */
 
 import { isFullCommitSha } from "../commit-sha.ts";
@@ -39,26 +38,21 @@ import {
   validatedPreexistingFailures,
 } from "./state-outcome-maps.ts";
 // The two print caps for a `blockedBy` entry live with the validator that enforces
-// the record's own bound, and reach their two render sites through here — the same
-// re-export shape `validatedDispatches` above uses, so a caller does not have to
-// learn which file in the pair holds the constant.
+// the record's own bound, and reach their two render sites through here so a caller
+// does not have to learn which file in the pair holds the constant.
 export { BLOCKED_PATH_CAP, BLOCKED_REASON_CAP } from "./state-outcome-maps.ts";
 import type { LeanState, Outcome, Step } from "./state.ts";
-// The row validators moved to `state-dispatches.ts` when this file passed the size
-// cap, but their callers keep importing them from here. A re-export is the
-// smallest honest change: it is one line, it does not duplicate the rule, and it
-// leaves every consumer's import site untouched — a caller should not have to
-// learn where a validator lives in order to ask it a question.
+// Re-exported so every consumer's import site stays where it was: a caller should
+// not have to learn which module in the pair holds a validator.
 export { DISPATCHES_MAX_ROWS, validatedDispatches } from "./state-dispatches.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 
 /**
  * The states that REPORT how a run ended rather than do work on it. The single
- * definition lives in `state.ts` (where every caller reads it); this copy is
- * exported so a reader of the table below can reach what the table enforces.
- * Local because `state.ts` imports this file as its validator, so a binding
- * reaching back is a cycle read before init; `test-lean-state-outcome.ts` pins
- * the two equal, which keeps the copy honest.
+ * definition lives in `state.ts`; this copy is local because `state.ts` imports
+ * this file as its validator, so a binding reaching back is a cycle read before
+ * init. `test-lean-state-outcome.ts` pins the two equal, which keeps the copy
+ * honest.
  */
 export const REPORTING_STATES: readonly LeanState[] = ["handback", "decline"];
 
@@ -71,15 +65,14 @@ const CONTROL_CHARS = /\p{Cc}/u;
 /**
  * Why a `frozen` key is not a path this run may hold tamper evidence for.
  *
- * A frozen key is looked up by exact string against the bytes at HEAD, so one
- * that is absolute, traverses, or differs from its normalised form (`./x`, a
- * doubled or trailing slash) can never match a real blob: the record reads as
- * evidence and compares unequal forever, and no reader can tell a forged path
- * from a test somebody edited. A control character is refused because the key
- * is printed into a report verbatim — a `\n### heading` inside it is an
- * injection into the comment. The rules are `specify-path`'s own — one
- * definition of "is this a git-relative path" for the whole pipeline — plus
- * the absolute and non-normalised forms that module's callers reject earlier.
+ * A frozen key is looked up by exact string against the bytes at HEAD, so one that
+ * is absolute, traverses, or differs from its normalised form (`./x`, a doubled or
+ * trailing slash) can never match a real blob: the record reads as evidence and
+ * compares unequal forever, and no reader can tell a forged path from a test
+ * somebody edited. A control character is refused because the key is printed into a
+ * report verbatim — a `\n### heading` inside it is an injection into the comment.
+ * The rules are `specify-path`'s own, plus the absolute and non-normalised forms
+ * that module's callers reject earlier.
  *
  * Exported because the build step's blocked report is judged by the same rule
  * before the driver spends a runner on it: a name that could never be a frozen
@@ -135,14 +128,9 @@ export const BUDGET_STATES: readonly LeanState[] = ["specify", "build", "challen
 /**
  * The states that may record what their children cost.
  *
- * The ONE statement of that set. Two readers used to hand-derive it from
- * opposite directions — `OWNER_OF_FIELD.dispatches` below spelled it as a list
- * built from `BUDGET_STATES` plus `"review"`, and `recordsDispatches` in
- * `error-outcome.ts` re-wrote `state === "review" || BUDGET_STATES.includes(state)`
- * — and two expressions of one rule is how a widening can land on one side and
- * silently lose the step whose children cost the most: the loader would drop the
- * rows, or the throw path would refuse to copy them, and either way a run's
- * cost record just got smaller with nothing said.
+ * The ONE statement of that set. A widening that lands on one expression of it
+ * and not the other quietly shrinks a run's cost record: the loader drops the
+ * rows, or the throw path refuses to copy them, and nothing says so.
  *
  * `review` is in this set but NOT in `BUDGET_STATES`: it pays for a reviewer,
  * six lenses and a fixer per round, so it MUST record cost. A review breach is
@@ -188,7 +176,7 @@ const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>>
   // and a gate that stamped one would put a child's prose on the record as the
   // run's own closing statement.
   report: "handback",
-  // …and the only ones that may name the channel they reported on (#1920 item 3).
+  // …and the only ones that may name the channel they reported on.
   // A `verify` step claiming `channel: "host"` would make the projection publish
   // a gate verdict as a report the host still has to deliver.
   channel: REPORTING_STATES,

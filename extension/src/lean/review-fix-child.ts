@@ -33,7 +33,7 @@ export async function runFixer(
         // only ever TIGHTEN the bound of the step's most expensive child.
         childBoundMs: Math.min(FIX_BOUND_MS, budgetBoundMs ?? Number.POSITIVE_INFINITY),
         // The fixer is a developer with a worktree and a contract, so it gets the
-        // same fence `build`'s builder gets (#1655): without one a fixer could write
+        // same fence `build`'s builder gets: without one a fixer could write
         // anywhere the process can. Same scratch shape as `BuildDispatch`.
         writeFence: {
           root: opts.worktree,
@@ -46,7 +46,7 @@ export async function runFixer(
           ),
         },
         // The budget's other arms — the abort the turns/tokens levers fire, the hook
-        // that fires it, and `budgetTurns` for the #1991 progress steer. Only
+        // that fires it, and `budgetTurns` for the progress steer. Only
         // `childBoundMs` was taken out, so the spread cannot re-supply it.
         ...arms,
       },

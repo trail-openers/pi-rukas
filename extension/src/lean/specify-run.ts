@@ -3,44 +3,37 @@
  * `specify` and `challenge` share.
  *
  * Both steps pay one adversary to write test files, and both then have to turn
- * whatever it submitted into frozen, committed, provably-red tests. What they
- * actually differ in is TWO inputs, not two algorithms:
+ * whatever it submitted into frozen, committed, provably-red tests. They differ in
+ * TWO inputs, not two algorithms:
  *
  *   - what the child is shown and asked for (`specifyPrompt` vs `challengePrompt`,
  *     assembled by the caller, which also owns the dispatch);
  *   - **`headBefore`** — the commit the tree is reset back to and the commit the
- *     red proof runs against. For `specify` that is the run's base sha: its claim
- *     is that the tests are red on code nobody has written. For `challenge` it is
- *     the current head: the code claims to pass the frozen tests, so a new test is
- *     only worth freezing if it is red against that head.
+ *     red proof runs against. For `specify` that is the run's base sha (its claim is
+ *     that the tests are red on code nobody has written); for `challenge` the current
+ *     head (a new test is only worth freezing if it is red against it).
  *
- * Everything downstream of the dispatch is identical, so it lives here once.
- * Copying it would be the worse failure: the eleven stages below are each a
- * response to a way a child can lie about what it wrote (a symlink swapped in
- * after validation, a commit of its own, a green file reported as red, a commit
- * that quietly contains a stray edit), and two copies drift — and the copy that
- * drifts is the one nobody is testing. `noteClause` is exported so `challenge`'s
- * sweep shares its cap with these.
+ * Everything downstream of the dispatch is identical, so it lives here once: each of
+ * the eleven stages below is a response to a way a child can lie about what it wrote
+ * (a symlink swapped in after validation, a commit of its own, a green file reported
+ * as red, a commit that quietly contains a stray edit), and the copy that drifts is
+ * the one nobody is testing. `noteClause` is exported so `challenge`'s sweep shares
+ * its cap with these.
  *
  * The ref is a parameter and nothing else may vary by step: `resetWorktreeToBase`
  * is named for the base but takes any commit, and it verifies the tree got there
  * and is clean, so `challenge`'s reset to a head is exactly as proven as
  * `specify`'s reset to a base.
  *
- * The return types the two callers route on are deliberately distinct
+ * The return type the two callers route on is deliberately distinct
  * (`PipelineVerdict`), and so is the COVERAGE RULE each one passes. `specify`
- * passes `"all-criteria"`: its claim is that every `verify: "test"` criterion is
- * falsifiable, so one criterion left without a red test refuses the whole run.
- * `challenge` passes `"any-red"`: its job is to add SOME edge case the frozen
- * tests missed, and an adversary that found one red edge for AC1 and nothing for
- * AC2 has done its job — refusing that run would throw away the one genuine
- * finding because the round was not exhaustive. Under `"any-red"` every proven-red
- * file is committed and the verdict is `committed` when at least one is red,
- * `empty` when none is.
- *
- * That judgement belongs to the caller, which is why the rule is an argument and
- * this module returns `committed` / `uncovered` / `empty` and lets the caller
- * name what each means.
+ * passes `"all-criteria"`: one criterion left without a red test refuses the whole
+ * run. `challenge` passes `"any-red"`: an adversary that found one red edge for AC1
+ * and nothing for AC2 has done its job, and refusing that run would throw away the
+ * one genuine finding because the round was not exhaustive. Under `"any-red"` every
+ * proven-red file is committed and the verdict is `committed` when at least one is
+ * red, `empty` when none is. That judgement belongs to the caller, which is why the
+ * rule is an argument and this module returns `committed` / `uncovered` / `empty`.
  */
 
 import { existsSync, rmSync } from "node:fs";
@@ -69,7 +62,7 @@ import { declaredPaths } from "./specify-tree.ts";
 import type { SubmitTestsRow } from "./submit-tests-extract.ts";
 
 /** What the pipeline did, before its caller decides what the verdict means. */
-export type PipelineVerdict =
+type PipelineVerdict =
   | {
       kind: "committed";
       frozen: Record<string, string>;
@@ -96,9 +89,9 @@ export type PipelineVerdict =
  *   exists to surface SOME gap the frozen tests missed, so partial coverage is a result,
  *   not a failure — and everything proven red is kept.
  */
-export type CoverageRule = "all-criteria" | "any-red";
+type CoverageRule = "all-criteria" | "any-red";
 
-export interface RunTestsArgs {
+interface RunTestsArgs {
   exec: ExecFn;
   /** Absolute path of the worktree the child worked in. */
   wt: string;

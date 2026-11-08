@@ -21,12 +21,12 @@
  */
 
 /** One reported conflict: a frozen path and the child's stated contradiction. */
-export interface BlockedRow {
+interface BlockedRow {
   path: string;
   reason: string;
 }
 
-export interface BlockedExtraction {
+interface BlockedExtraction {
   /** The entries of every readable call, in call order — at most `MAX_ENTRIES` of them. */
   rows: BlockedRow[];
   /** Readable entries this extraction could not take: malformed calls, and rows past the cap. */

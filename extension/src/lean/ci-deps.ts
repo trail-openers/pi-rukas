@@ -22,7 +22,7 @@ export interface CiDeps {
    */
   exec: VerifyExec;
   /**
-   * The project's config, read at the run's base sha — the #406 rule
+   * The project's config, read at the run's base sha — the doctrine rule
    * `config.ts` enforces. Injected so a case can name a full tier without
    * rewriting the commit the frozen tests were hashed at.
    */
@@ -98,7 +98,7 @@ export function ciDeps(): CiDeps {
  * so every row would be discarded and the `skipped`/`neutral` treatment would be
  * unreachable through production code. `prChecksCmd` requests the fields `gh`
  * supports (`name,state,bucket` — `conclusion` is not one of them, and the
- * field list is pinned by `test-gh-argv.ts` alongside the #745 rule that
+ * field list is pinned by `test-gh-argv.ts` alongside the rule that
  * `isRequired` must never come back).
  */
 export function ghReads(prNumber: number): { view: string; checks: string } {

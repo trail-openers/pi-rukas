@@ -8,7 +8,7 @@
  * the two things only this step can observe:
  *
  *   1. **May it merge at all?** `autoMerge`, read from `.pi/work.json` AT the
- *      run's `baseSha` through `loadWorkConfig` — the #406 rule `config.ts`
+ *      run's `baseSha` through `loadWorkConfig` — the rule `config.ts`
  *      already enforces, so a run that edited its own config is judged by the
  *      bytes that existed before it started. Two refusals, because the two
  *      causes need different operator actions: `autoMerge` absent or false →

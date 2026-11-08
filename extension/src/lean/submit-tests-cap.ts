@@ -1,20 +1,18 @@
 #!/usr/bin/env bun
 /**
- * lean/submit-tests-cap — the boundary a `submit_tests` row passes through, the
- * bounds the call carries, and the per-call memo the base-commit newness probe
- * runs through.
+ * lean/submit-tests-cap — the boundary a `submit_tests` row passes through, the bounds
+ * the call carries, and the per-call memo the base-commit newness probe runs through.
  *
- * Split out of `specify-tree.ts` because every half here exists for one reason:
- * the rule set over a submitted path is cheap, but the newness rule is a git
- * read, and both the number of names in a row and the number of rows in a call
- * come from an untrusted child. `specify-tree.ts` keeps the worktree primitives
- * and re-exports `validateSubmitRows` from here, so the callers never moved.
+ * Split out of `specify-tree.ts` because every half here exists for one reason: the
+ * rule set over a submitted path is cheap, but the newness rule is a git read, and
+ * both the number of names in a row and the number of rows in a call come from an
+ * untrusted child. `specify-tree.ts` keeps the worktree primitives and re-exports
+ * `validateSubmitRows` from here, so the callers never moved.
  *
  * The three size rules (`MAX_TEST_LINES`, `MAX_TEST_BYTES`,
- * `MAX_TEST_FILES_PER_CRITERION`, defined in `test-size.ts` and applied by
- * `sizeJudgement` in `submit-tests-size.ts`) judge the CHILDREN'S work rather
- * than the call's cost, and are applied here, where a submitted path is finally
- * a file.
+ * `MAX_TEST_FILES_PER_CRITERION` — defined in `test-size.ts`, applied by
+ * `sizeJudgement` in `submit-tests-size.ts`) judge the CHILDREN'S work rather than the
+ * call's cost, and are applied here, where a submitted path is finally a file.
  */
 
 import path from "node:path";
@@ -26,39 +24,32 @@ import type { SubmitTestsRow } from "./submit-tests-extract.ts";
 import { sizeJudgement, statSizeOf } from "./submit-tests-size.ts";
 import { MAX_TEST_FILES_PER_CRITERION, testFileQuotaProblem } from "./test-size.ts";
 /**
- * How many test files one submitted row may name.
- *
- * The boundary runs its whole rule set — including a git read per path — over
- * every name a row carries, and a row comes from an untrusted child: an
- * unbounded list is an unbounded number of git calls from one tool call. The cap
- * counts the files of ONE row, not the files a criterion ends up with (that is
- * `MAX_TEST_FILES_PER_CRITERION`); a child that legitimately needs more makes
- * more calls.
+ * How many test files one submitted row may name. The boundary runs its whole rule
+ * set — including a git read per path — over every name a row carries, and a row comes
+ * from an untrusted child: an unbounded list is an unbounded number of git calls from
+ * one tool call. The cap counts the files of ONE row, not the files a criterion ends
+ * up with (that is `MAX_TEST_FILES_PER_CRITERION`).
  */
 export const MAX_TEST_FILES_PER_ROW = 8;
 
 /**
- * How many DISTINCT test paths one `submit_tests` call may get probed for.
- *
- * The row cap bounds one row, not the call, and the newness rule costs one git
- * read per distinct path — 3,000 rows of 8 names would be 24,000 git reads from
- * one tool call. The memo's size is the count that matters, so the call is
- * bounded where the work actually costs; past this many distinct paths the
- * surplus is refused without a probe, making the breach free.
+ * How many DISTINCT test paths one `submit_tests` call may get probed for. The row cap
+ * bounds one row, not the call, and the newness rule costs one git read per distinct
+ * path. The memo's size is the count that matters, so the call is bounded where the
+ * work actually costs; past this many distinct paths the surplus is refused without a
+ * probe, making the breach free.
  */
 const MAX_TEST_FILES_PER_CALL = 32;
 
 /**
- * A memoised `existsAtBase` for ONE boundary call, plus the count of distinct
- * paths it has actually asked git about.
+ * A memoised `existsAtBase` for ONE boundary call, plus the count of distinct paths it
+ * has actually asked git about. One git read per distinct path per call, not per
+ * mention. The answer is a fact about (base, rel), so one call's cache is as fresh as
+ * the tree it reads — and it must not outlive the call, because between two calls the
+ * step may have committed, and a stale "new" is the fraud the rule exists to refuse.
  *
- * One git read per distinct path per call, not per mention. The answer is a fact
- * about (base, rel), so one call's cache is as fresh as the tree it reads — and it
- * must not outlive the call, because between two calls the step may have committed,
- * and a stale "new" is the fraud the rule exists to refuse.
- *
- * `probed` is what the call cap counts against: `has(rel)` distinguishes a name
- * already asked about (free) from a new one, allowed only while `probed` sits under
+ * `probed` is what the call cap counts against: `has(rel)` distinguishes a name already
+ * asked about (free) from a new one, allowed only while `probed` sits under
  * `MAX_TEST_FILES_PER_CALL`.
  */
 function baseProbe(existsAtBase: ((rel: string) => Promise<boolean>) | undefined): {
@@ -117,30 +108,27 @@ export const NEWNESS_REASON =
  *      reading, then count lines (`MAX_TEST_LINES`). The byte bound is what makes
  *      the read bounded per CALL rather than merely per kept file. A NUL byte is
  *      dropped here too, as not a text file;
- *   8. the per-criterion file quota (`MAX_TEST_FILES_PER_CRITERION`) — judged
- *      AFTER the size rule, so an over-long third file is reported as too long
- *      rather than as surplus, and NOT conditional on the size rules: a count is
- *      a count whether or not the bytes were read.
+ *   8. the per-criterion file quota (`MAX_TEST_FILES_PER_CRITERION`) — judged AFTER
+ *      the size rule, so an over-long third file is reported as too long rather than
+ *      as surplus, and NOT conditional on the size rules.
  *
- * A stat or read whose error carries `ENOENT`, `ENOTDIR` or `ELOOP` is a DROP —
- * the name does not resolve, a fact about the child's file. Any other failure is
+ * A stat or read whose error carries `ENOENT`, `ENOTDIR` or `ELOOP` is a DROP — the
+ * name does not resolve, a fact about the child's file. Any other failure is
  * infrastructure and THROWS `SpecifyInfraError`, which `specify-run.ts` maps to a
  * handback; never a drop. No raw `err.message` is ever interpolated into a reason.
  *
- * `wt` is REQUIRED: a boundary whose rules switch themselves off on a missing
- * argument is one a caller can silently opt out of. `sizeRules: false` is the one
- * deliberate exception and is test-only: it switches off the stat and the read and
- * NOTHING else — the quota is a rule about counts, so it still applies.
+ * `wt` is REQUIRED: a boundary whose rules switch themselves off on a missing argument
+ * is one a caller can silently opt out of. `sizeRules: false` is the one deliberate
+ * exception and is test-only: it switches off the stat and the read and NOTHING else.
  *
  * The boundary and the capture judge a kept file through the SAME code —
- * `readOneDescriptor`, the capture's own single-descriptor read — but the read
- * happens twice, once per consumer: a second open is the honest cost of deciding
- * before a byte is captured, and the capture's `fstat` checks are what catch a
- * file swapped in the window between the two. The quota keeps that count bounded.
+ * `readOneDescriptor`, the capture's own single-descriptor read — but the read happens
+ * twice, once per consumer: a second open is the honest cost of deciding before a byte
+ * is captured, and the capture's `fstat` checks catch a file swapped in the window.
  *
- * `exists` and `existsAtBase` are async because the second is a git read, and
- * both go through here rather than the callers: a rule the boundary can skip is a
- * rule that gets skipped.
+ * `exists` and `existsAtBase` are async because the second is a git read, and both go
+ * through here rather than the callers: a rule the boundary can skip is a rule that
+ * gets skipped.
  */
 export async function validateSubmitRows(
   rows: SubmitTestsRow[],
@@ -164,13 +152,11 @@ export async function validateSubmitRows(
      */
     testLocation?: TestLocation;
     /**
-     * A kept path must not exist at the run's BASE COMMIT (`existsInCommit`),
-     * which is what makes an acceptance test a test the child WROTE. `exists`
-     * alone does not: the child works in a checkout of that base, so an existing
-     * tracked project test the child never opened passes `exists`, gets proved red
-     * by absence of evidence, and is frozen as the run's contract. Overwriting a
-     * tracked test and submitting it does the same. Both are refused here, before
-     * a byte is captured.
+     * A kept path must not exist at the run's BASE COMMIT (`existsInCommit`), which is
+     * what makes an acceptance test a test the child WROTE: the child works in a
+     * checkout of that base, so an existing tracked project test it never opened — or
+     * one it overwrote — passes `exists`, gets proved red by absence of evidence, and
+     * is frozen as the run's contract. Both are refused here, before a byte is captured.
      */
     existsAtBase?: (rel: string) => Promise<boolean>;
     /**
@@ -195,12 +181,12 @@ export async function validateSubmitRows(
      */
     statSize?: (abs: string) => number;
     /**
-     * What the RUN has already frozen per criterion, from the step log's `tests`
-     * maps. The quota bounds what a criterion ENDS UP WITH across the run, and a
-     * fresh call sees none of what an earlier round committed, so without this seed
-     * the cap is a per-call number a second round silently doubles. Paths here are
-     * counted, not re-checked: they come from the run's own record. Omit it and the
-     * count starts at zero.
+     * What the RUN has already frozen per criterion, from the step log's `tests` maps.
+     * The quota bounds what a criterion ENDS UP WITH across the run, and a fresh call
+     * sees none of what an earlier round committed, so without this seed the cap is a
+     * per-call number a second round silently doubles. Paths here are counted, not
+     * re-checked: they come from the run's own record. Omit it and the count starts at
+     * zero.
      */
     frozenByCriterion?: Record<string, readonly string[]>;
   },
@@ -267,14 +253,11 @@ export async function validateSubmitRows(
         continue;
       }
       // Checked on the NORMALISED path, so `./tests/AC1-x.test.sh` and
-      // `tests/AC1-x.test.sh` cannot both name one frozen file; refused BEFORE
-      // the existence check, which is what makes the reason say "you may not
-      // replace a frozen test" rather than the misleading "not a regular file".
-      //
-      // FROZEN first, and deliberately before the location rule: a contract the
-      // run inherited before `verify.testDir` existed sits OUTSIDE the configured
-      // folder, and telling an operator to move a file the run must not touch is a
-      // wrong instruction. What the child must DO about a frozen path is nothing.
+      // `tests/AC1-x.test.sh` cannot both name one frozen file. FROZEN first, and
+      // deliberately before both the existence and the location rule: an inherited
+      // contract sits OUTSIDE the configured folder, and telling an operator to move a
+      // file the run must not touch is a wrong instruction. What the child must DO
+      // about a frozen path is nothing.
       if (opts.frozenPaths?.has(rel) === true) {
         dropped.push({
           criterionId: row.criterionId,

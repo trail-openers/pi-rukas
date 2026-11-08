@@ -55,7 +55,7 @@ export function statSizeOf(abs: string): number {
  * nobody consumes is a field that can only drift from the truth. The capture
  * re-measures the file when it holds the bytes.
  */
-export type SizeJudgement = { kind: "kept" } | { kind: "drop"; reason: string } | { kind: "infra" };
+type SizeJudgement = { kind: "kept" } | { kind: "drop"; reason: string } | { kind: "infra" };
 
 /**
  * The `code` of a stat or read error, when the runtime attached one.

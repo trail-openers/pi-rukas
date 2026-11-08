@@ -82,7 +82,7 @@ import type { Outcome } from "./state.ts";
 import type { BudgetOpts, DispatchUsageRow } from "./step-budget.ts";
 
 /** The dispatch seam: one child, one result. `spawnSpecialist` in production. */
-export type SpecifyDispatch = (
+type SpecifyDispatch = (
   spec: DispatchSpec,
   opts: { writeFence?: WriteFence; extraArgs?: readonly string[] } & BudgetOpts,
 ) => Promise<DispatchResult>;

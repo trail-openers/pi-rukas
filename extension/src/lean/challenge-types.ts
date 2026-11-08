@@ -13,7 +13,7 @@ import type { BudgetOpts } from "./step-budget.ts";
 
 /**
  * The dispatch seam: one adversary, one result. `spawnSpecialist` in production.
- * `BudgetOpts` carries the step's ceiling through to the child (#1883).
+ * `BudgetOpts` carries the step's ceiling through to the child.
  */
 export type ChallengeDispatch = (
   spec: DispatchSpec,

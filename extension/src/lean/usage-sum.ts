@@ -1,21 +1,20 @@
 /**
- * lean/usage-sum — what a lean run's children cost, in total and per role
- * (#1920 slice A).
+ * lean/usage-sum — what a lean run's children cost, in total and per role.
  *
- * The lean step log now records one row per dispatch on the three dispatching
- * steps (`Outcome.dispatches`, owned by `specify`/`build`/`challenge`). This
- * folds those rows: `total` and one row per `role`, the same shape the headless
- * `work` result reports as `usage`/`usage.byRole`, so a host comparing the two
- * engines reads one shape and one definition of "cost".
+ * The lean step log records one row per dispatch on the three dispatching steps
+ * (`Outcome.dispatches`, owned by `specify`/`build`/`challenge`). This folds
+ * those rows: `total` and one row per `role`, the same shape the headless `work`
+ * result reports as `usage`/`usage.byRole`, so a host comparing the two engines
+ * reads one shape and one definition of "cost".
  *
- * Since #1920 slice B the fold is not restated here: it is `foldUsage` in
- * `../usage-fold.ts`, which `usageOf` in `headless/result.ts` calls with the
- * driver's own dispatch events. **A dispatch counts whether or not the child
- * succeeded** — a child the budget stopped or the provider killed spent its
- * tokens before it died, and a sum that skipped it would report a failed run as
- * a cheap one. The rule lives there once, for both readers; the only difference
- * between the two callers is where the rows come from (the driver reads
- * `dispatch-completed`/`dispatch-failed` events, lean reads the step log).
+ * The fold is not restated here: it is `foldUsage` in `../usage-fold.ts`, which
+ * `usageOf` in `headless/result.ts` calls with the driver's own dispatch events.
+ * **A dispatch counts whether or not the child succeeded** — a child the budget
+ * stopped or the provider killed spent its tokens before it died, and a sum that
+ * skipped it would report a failed run as a cheap one. The rule lives there once,
+ * for both readers; the only difference between the two callers is where the rows
+ * come from (the driver reads `dispatch-completed`/`dispatch-failed` events, lean
+ * reads the step log).
  *
  * Leaf module: it imports types only, so anything — the schema-5 result, a
  * report, a test — can fold the log without pulling a step in.
@@ -30,7 +29,7 @@ import type { Step } from "./state.ts";
 export type { UsageTotals as LeanUsageTotals } from "../usage-fold.ts";
 
 /** The fold's answer: the run's totals, and the same sums per dispatch role. */
-export type LeanUsage = UsageFold;
+type LeanUsage = UsageFold;
 
 /**
  * Fold every dispatch the step log records into totals, in total and per role.
