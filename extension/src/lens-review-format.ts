@@ -272,6 +272,8 @@ ${evidence ? `\n${evidence}\n` : ""}${prior ? `\n${prior}\n` : ""}
 
 Read the supplied content above rather than opening files. Your filesystem is checked out at the **base commit** — the state before this PR — so a file you open yourself shows the code as it was, not as this diff leaves it. Reviewing the diff against a stale file produces contradictions that do not exist. If you need a changed file in full and it is not supplied, say so in your summary instead of guessing.
 
+The diff above is the whole change and it is ALREADY in your prompt: read each touched file at most once, and only when the fenced diff does not answer the question you are asking. Do not rebuild sandboxes or scratch trees to reproduce it — no mkdir, no cat redirect, no copy of the repo — and re-derive the diff with git or grep only to verify a specific claim you are about to file, never to rediscover what is already in front of you. Every turn spent re-deriving this diff is a turn your review does not get.
+
 ## How to report findings
 
 For every issue you identify in your lane, call the \`report_finding\` tool ONCE with these fields:

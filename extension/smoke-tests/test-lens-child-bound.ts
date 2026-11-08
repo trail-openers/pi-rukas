@@ -5,6 +5,10 @@
  *
  *   1. runLensChild passes the lens bound (PI_ENSEMBLE_LENS_BOUND_MS, 30 min)
  *      to the spawn as `childBoundMs`.
+ *   1b. #2127 — and the diff-scaled ADVISORY turn ceiling as `budgetTurns`,
+ *       computed from the very diff string the prompt inlines (R1), asserted
+ *       for a small and a large diff so the curve cannot collapse to a
+ *       constant.
  *   2. A `child-bound`-killed lens is spawned ONCE (never retried), blocked
  *      even when it reported a finding first (kept), and named not-reviewed.
  *   3. The REVIEW_INCOMPLETE cap-hit carries per-lane evidence, and its
@@ -30,11 +34,14 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-const spawnCalls: Array<{ childBoundMs?: number }> = [];
+const spawnCalls: Array<{ childBoundMs?: number; budgetTurns?: number }> = [];
 mock.module(new URL("../src/spawn.ts", import.meta.url).href, () => ({
   makeRunId: () => "run-1564",
-  spawnSpecialist: async (_spec: unknown, opts: { childBoundMs?: number }) => {
-    spawnCalls.push({ childBoundMs: opts.childBoundMs });
+  spawnSpecialist: async (
+    _spec: unknown,
+    opts: { childBoundMs?: number; budgetTurns?: number },
+  ) => {
+    spawnCalls.push({ childBoundMs: opts.childBoundMs, budgetTurns: opts.budgetTurns });
     return {
       role: "code-review-specialist",
       ok: false,
@@ -60,6 +67,8 @@ mock.module(new URL("../src/spawn.ts", import.meta.url).href, () => ({
 }));
 
 const { runLensChild } = await import("../src/lens-review-child.ts");
+const { lensTurnCeiling } = await import("../src/lens-turn-ceiling.ts");
+const { lensSyntheticDiff } = await import("./lib/lens-diff-fixtures.ts");
 const { incompleteLanes } = await import("../src/lens-review-incomplete.ts");
 const { applyLensVerdict } = await import("../src/work-driver-lens-verdicts.ts");
 const { explainCap } = await import("../src/work-driver-explain.ts");
@@ -103,6 +112,41 @@ await runLensChild({
   bumpBatch: () => {},
 });
 assert(spawnCalls[1]?.childBoundMs === 5 * 60_000, "the round's lens bound reaches the spawn");
+
+// (1b) #2127 / R1+R3 — THE TURN CEILING REACHES THE SPAWN, OFF THE PROMPT'S OWN
+// DIFF. The ceiling is computed inside `runLensChild` from `runOpts.diff`, the
+// exact string `lensPromptFor` inlines; no caller can supply it. A small and a
+// large diff are both driven so the curve cannot be a constant in disguise, and
+// the expectation is the curve's own value rather than a literal, so a cap or
+// floor drift is caught by the unit suite, not here.
+{
+  const SMALL = lensSyntheticDiff(1, 5); // 5 added + 5 removed = 10 changed lines → the floor
+  const LARGE = lensSyntheticDiff(6, 100); // 600 + 600 = 1200 changed lines → mid-curve
+  for (const [diff, changedLines] of [
+    [SMALL, 10],
+    [LARGE, 1200],
+  ] as const) {
+    await runLensChild({
+      lens: { name: "ERROR_HANDLING", skill: "code-review-error-handling", precedence: 20 },
+      runId: "run-1564",
+      skillsDir,
+      context: "",
+      roster: [],
+      opts: { diff },
+      bumpBatch: () => {},
+    });
+    const expected = lensTurnCeiling(changedLines);
+    const captured = spawnCalls[spawnCalls.length - 1]?.budgetTurns;
+    assert(
+      captured === expected,
+      `#2127: the lens over a ${changedLines}-changed-line diff carried budgetTurns ${String(expected)} (captured ${String(captured)})`,
+    );
+  }
+  assert(
+    spawnCalls[2]?.budgetTurns !== spawnCalls[3]?.budgetTurns,
+    "#2127 and the two diffs did NOT get the same ceiling — the value tracks the diff instead of being a constant",
+  );
+}
 {
   const { lensRoundChildBoundMs } = await import("../src/work-driver-lens-round-budget.ts");
   delete process.env.PI_ENSEMBLE_REVIEW_WALL_CLOCK_MS;

@@ -504,6 +504,16 @@ Every handoff carries three things it previously withheld.
 
 A lens that exits 0 without calling `report_finding` used to be indistinguishable from one that reviewed carefully and found nothing, so a silent review reported APPROVED. It now reports `REVIEW_INCOMPLETE` unless every lens produced either findings or a closing summary. If you see REVIEW_INCOMPLETE with no obvious failure, check the lens transcripts under `~/.pi/agent/ensemble-runs/<date>/` — a lens that returned only thinking content is the usual cause.
 
+### A lens lane finishes unusually fast, or its report says it ran out of turns
+
+**Symptom.** A lens row reports few findings and its transcript shows the child being steered with lines like `Budget: turn 40 of 40. Report your findings now, then end your turn.` — usually on a small diff, where the lane looks like it stopped early.
+
+**Cause (by design, [#2127](https://github.com/trail-openers/pi-rukas/issues/2127)).** Each lens child is spawned with an **advisory turn ceiling** scaled to the diff it was handed: `min(150, max(40, 10 × ceil(changedLines / 100)))`, counted as added + removed lines of the diff the prompt inlines (`lensTurnCeiling` in `extension/src/lens-turn-ceiling.ts`, computed in `runLensChild`). It exists because lens review was the largest token consumer in a cycle and the cost tracked turns, not diff size — on one measured 24-line diff a lens took 10 turns and 0.37 M tokens while another took 152 turns and 14.6 M, re-deriving a diff that was already in its prompt.
+
+**What the steer does, and what it never does.** At half the ceiling the child is told where it stands; at 80 % it is told *"Report your findings now, then end your turn."* That is all it does. It is `budgetTurns` on the spawn, so it arms the budget-progress steer only: **it never ends a lens**, sets no `killCause`, and creates no `blocked` or `REVIEW_INCOMPLETE` path. **Wall clock stays the only lens-ending bound** — `PI_ENSEMBLE_LENS_BOUND_MS` (30 min, tightened so a round never runs past the review-loop budget), then ended `PI_ENSEMBLE_CHILD_BOUND_GRACE_MS` later. Only the six lens children get it; the adversarial reviewer's spawn options are unchanged.
+
+**If a lane you expected to be thorough reported almost nothing:** the ceiling is advisory, so a lens that reported early had already decided. Check the lane's dispatch via `/runs` — a lane that was *ended* rather than steered says `killed: child-bound` and belongs to the wall-clock entry above (`PI_ENSEMBLE_LENS_BOUND_MS`), not this one.
+
 ### Adversarial review fails with no readable VERDICT on a large diff
 
 **Symptom:** `adversarial_loop` (or the `/work` adversarial step) reports an infrastructure failure saying the reviewer *"produced no readable VERDICT marker"*, and the transcript shows the child stopping after one or two output tokens with `stopReason: "length"`. Every retry fails identically, so the loop parks without ever reviewing the diff.
