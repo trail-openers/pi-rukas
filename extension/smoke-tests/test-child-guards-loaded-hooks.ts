@@ -13,53 +13,69 @@
  *
  * Env pins go through `withEnv`, which restores exactly what was there
  * (including an absent variable), so nothing leaks into the next test file.
+ * The counted cases pin `PI_ENSEMBLE_ROLE` the way `test-write-fence-hook.ts`
+ * does: a role this process happens to carry (a reviewer's, or `developer` for
+ * the push guard) registers role-scoped hooks and shifts every count.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { registerMergeGuard } from "../src/merge-guard.ts";
 import childGuards, { failClosedPi } from "../src/child-guards.ts";
-import { assert } from "./merge-guard-helpers.ts";
+import { registerMergeGuard } from "../src/merge-guard.ts";
 import { withEnv } from "./lib/env-scope.ts";
-import { dispatch, makeFakePi, type Handler } from "./test-child-guards-helpers.ts";
+import { assert } from "./merge-guard-helpers.ts";
+import { type Handler, dispatch, makeFakePi } from "./test-child-guards-helpers.ts";
+
+let exit = 0;
+function check(cond: boolean, msg: string) {
+  if (cond) console.log(`✓ ${msg}`);
+  else {
+    console.error(`✗ ${msg}`);
+    exit = 1;
+  }
+}
+
+// The hook set is role-scoped in two places (#1113 push ban, #2140 reviewer
+// bash timeout), so every count below is only stable with the role pinned.
+const NO_ROLE = { PI_ENSEMBLE_ROLE: undefined };
 
 // ============================================================
 // 1. Loading with no SUBAGENT_MODE: the mode-independent guards, no tools,
 //    no commands.
 // ============================================================
-{
+await withEnv(NO_ROLE, async () => {
   const fake = makeFakePi();
   childGuards(fake as unknown as ExtensionAPI);
   const n = fake.handlers.tool_call?.length ?? 0;
-  assert(
-    n === 7,
-    `registers exactly 7 tool_call hooks (the mode-independent guards incl. #1105 review-accept, #1113 developer-push, #1666 vipune-write and #1788 public-hygiene, oo-rewrite excluded; got ${n})`,
+  check(
+    n === 8,
+    `registers exactly 8 tool_call hooks (the mode-independent guards incl. #1105 review-accept, #1113 developer-push, #1666 vipune-write, #1788 public-hygiene and #2140 reviewer-bash-timeout, oo-rewrite excluded; got ${n})`,
   );
-  assert(fake.registeredTools.length === 0, "registers no tools (hook-only companion)");
-  assert(fake.registeredCommands.length === 0, "registers no commands");
-}
+  check(fake.registeredTools.length === 0, "registers no tools (hook-only companion)");
+  check(fake.registeredCommands.length === 0, "registers no commands");
+});
 
 // ============================================================
 // 2. The loaded hooks refuse the merge (no ledger → gh pr view fails →
 //    refused) and issue creation, and leave a read alone.
 // ============================================================
-{
+await withEnv(NO_ROLE, async () => {
   const fake = makeFakePi();
   childGuards(fake as unknown as ExtensionAPI);
   const merge = await dispatch(fake, "bash", "gh pr merge 5 --squash");
   const m = merge as { block?: boolean; reason?: string } | undefined;
-  assert(m?.block === true, "loaded hooks refuse `gh pr merge 5 --squash` (no ledger → refused)");
-  assert(
+  check(m?.block === true, "loaded hooks refuse `gh pr merge 5 --squash` (no ledger → refused)");
+  check(
     m && m.reason !== undefined && m.reason.length > 0,
     "the merge refusal carries a reason (fail-closed message)",
   );
 
   const issue = await dispatch(fake, "bash", "gh issue create -t x");
   const i = issue as { block?: boolean } | undefined;
-  assert(i?.block === true, "loaded hooks refuse `gh issue create -t x`");
+  check(i?.block === true, "loaded hooks refuse `gh issue create -t x`");
 
   const view = await dispatch(fake, "bash", "gh pr view 5");
-  assert(view === undefined, "loaded hooks ignore `gh pr view 5` (a read stays open)");
-}
+  check(view === undefined, "loaded hooks ignore `gh pr view 5` (a read stays open)");
+});
 
 // ============================================================
 // 2a. Fail-closed wrapper (#926 fix round): a guard whose tool_call handler
@@ -68,7 +84,7 @@ import { dispatch, makeFakePi, type Handler } from "./test-child-guards-helpers.
 //     failClosedPi and a thrown handler becomes a { block: true, reason }
 //     refusal, not an aborted turn.
 // ============================================================
-{
+await withEnv(NO_ROLE, async () => {
   const makeWrapped = (behaviour: "throw" | "block" | "inert") => {
     const handlers: Handler[] = [];
     const spyPi = {
@@ -87,7 +103,7 @@ import { dispatch, makeFakePi, type Handler } from "./test-child-guards-helpers.
 
   const throwing = makeWrapped("throw");
   const results = await Promise.all(throwing.map((h) => h("x", {})));
-  assert(
+  check(
     results.length === 1 &&
       (results[0] as { block?: boolean })?.block === true &&
       /boom/.test((results[0] as { reason?: string })?.reason ?? ""),
@@ -96,18 +112,18 @@ import { dispatch, makeFakePi, type Handler } from "./test-child-guards-helpers.
 
   const blocking = makeWrapped("block");
   const rBlock = await Promise.all(blocking.map((h) => h("x", {})));
-  assert(
+  check(
     rBlock.length === 1 && (rBlock[0] as { block?: boolean })?.block === true,
     "fail-closed: a well-behaved guard's refusal passes through unchanged",
   );
 
   const inert = makeWrapped("inert");
   const rInert = await Promise.all(inert.map((h) => h("x", {})));
-  assert(
+  check(
     rInert.every((res) => res === undefined),
     "fail-closed: a no-op handler still returns undefined (the wrapper only converts thrown errors)",
   );
-}
+});
 
 // ============================================================
 // 2b. The merge refusal through the GUARD'S OWN EXEC SEAM (stubbed): no
@@ -116,16 +132,15 @@ import { dispatch, makeFakePi, type Handler } from "./test-child-guards-helpers.
 // ============================================================
 {
   const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
-    if (cmd.includes("gh pr view"))
-      throw new Error("gh: no pull requests found (stub: no ledger)");
+    if (cmd.includes("gh pr view")) throw new Error("gh: no pull requests found (stub: no ledger)");
     return { stdout: "" };
   };
   const fake = makeFakePi();
   registerMergeGuard(fake as unknown as ExtensionAPI, { execFn: stubExec as never });
   const merge = await dispatch(fake, "bash", "gh pr merge 5 --squash");
   const m = merge as { block?: boolean; reason?: string } | undefined;
-  assert(m?.block === true, "merge guard (stubbed exec, no ledger) refuses a merge");
-  assert(
+  check(m?.block === true, "merge guard (stubbed exec, no ledger) refuses a merge");
+  check(
     m?.reason !== undefined && m.reason.length > 0,
     "the stubbed-exec refusal is fail-closed with a named reason",
   );
@@ -135,25 +150,28 @@ import { dispatch, makeFakePi, type Handler } from "./test-child-guards-helpers.
 // 3. Destructive git: the refused-example from the destructive guard's own
 //    test, reached through the companion's hook set.
 // ============================================================
-{
+await withEnv(NO_ROLE, async () => {
   const fake = makeFakePi();
   childGuards(fake as unknown as ExtensionAPI);
   const r = await dispatch(fake, "bash", "git reset --hard");
-  assert((r as { block?: boolean })?.block === true, "loaded hooks refuse `git reset --hard`");
+  check((r as { block?: boolean })?.block === true, "loaded hooks refuse `git reset --hard`");
   const ok = await dispatch(fake, "bash", "git status --porcelain");
-  assert(ok === undefined, "loaded hooks allow `git status --porcelain` (a read stays open)");
-}
+  check(ok === undefined, "loaded hooks allow `git status --porcelain` (a read stays open)");
+});
 
 // ============================================================
 // 4. NO-OP: PI_ENSEMBLE_SUBAGENT_MODE=1 → zero hooks registered.
 // ============================================================
-await withEnv({ PI_ENSEMBLE_SUBAGENT_MODE: "1" }, async () => {
+await withEnv({ ...NO_ROLE, PI_ENSEMBLE_SUBAGENT_MODE: "1" }, async () => {
   const fake = makeFakePi();
   childGuards(fake as unknown as ExtensionAPI);
   const n = fake.handlers.tool_call?.length ?? 0;
-  assert(n === 0, `no-op under PI_ENSEMBLE_SUBAGENT_MODE=1: zero hooks registered (got ${n})`);
-  assert(
+  check(n === 0, `no-op under PI_ENSEMBLE_SUBAGENT_MODE=1: zero hooks registered (got ${n})`);
+  check(
     fake.registeredTools.length === 0 && fake.registeredCommands.length === 0,
     "no-op registers nothing else",
   );
 });
+
+if (exit === 0) console.log("✓ all loaded-hook assertions passed");
+process.exit(exit);

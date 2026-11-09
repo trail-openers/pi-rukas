@@ -15,6 +15,7 @@ import { registerMemoryWriteGuard } from "./memory-write-guard.ts";
 import { registerMergeGuard } from "./merge-guard.ts";
 import { registerDestructiveGitGuard } from "./permission-subagent-guard.ts";
 import { registerPublicHygieneGuard } from "./public-hygiene-guard.ts";
+import { registerReviewBashTimeout } from "./review-bash-timeout.ts";
 
 /**
  * The options the hygiene guard is registered with, in every process that loads
@@ -76,4 +77,11 @@ export function registerModeIndependentGuards(pi: ExtensionAPI): void {
   // through registerPermissionGuard, so one call here is one hook per process
   // — a second one would run the push scan's git calls twice per push.
   registerPublicHygieneGuard(pi, HYGIENE_OPTS);
+  // #2140 — the one hook here that MUTATES rather than refuses: a reviewer's
+  // bash call gets Pi's own per-call timeout, so a call that never returns
+  // cannot hold the child's turn open (no steer lands while a tool call runs)
+  // until the whole-child bound kills the review. It blocks nothing, so the
+  // placement rule above does not drive it; it sits here because this is the
+  // list both child entry points load, and the bound is a child-side bound.
+  registerReviewBashTimeout(pi);
 }
