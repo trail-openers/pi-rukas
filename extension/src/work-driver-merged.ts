@@ -25,6 +25,7 @@ import {
   mergeAuthorityEnabled,
   resolveMergeAuthority,
 } from "./work-driver-merge-authority.ts";
+import { heldForDeclaredGateFiles } from "./work-driver-merged-gate-files.ts";
 import { verifyMergeHead } from "./work-driver-merged-head.ts";
 import { heldForMissingApproval, mergeProtectedHold } from "./work-driver-merged-hold.ts";
 import { type MergeMethod, mechanizedMerge } from "./work-driver-merged-mechanized.ts";
@@ -146,6 +147,33 @@ export async function runMerged(
   // paths below take `string | undefined` and refuse the absence.
   let verifiedHead: string | undefined;
   const headNotes: string[] = [];
+  const mergeExec = ctx.verifyExecFn ?? execp;
+  const judgeForGate = mergeAuthorityJudge(ctx, () =>
+    judgePolicy(ctx.repoRoot, {
+      processGroup: ctx.processGroup === true,
+      signal: ctx.signal,
+      ...cycleChildOpts(ctx),
+    }),
+  );
+  // The base-commit doctrine, read once by whichever branch needs it: the authority
+  // judge and the declared gate-file judge are handed the same documents.
+  let mergeDocs: DoctrineDoc[] | undefined;
+  const readMergeDocs = async (): Promise<DoctrineDoc[]> => {
+    if (mergeDocs) return mergeDocs;
+    const docs: DoctrineDoc[] = [];
+    for (const file of DOCTRINE_FILES) {
+      const read = await readDoctrineAtBase(
+        mergeExec,
+        ctx.repoRoot,
+        state.pipelineState.baseSha,
+        file,
+      );
+      if (read.text !== undefined) docs.push({ file, text: read.text });
+      else if (read.reason) trace(`work-driver: merge authority — ${read.reason}`);
+    }
+    mergeDocs = docs;
+    return docs;
+  };
 
   // The merge-time protected-path gate runs once a verified head exists, so the
   // diff it inspects is the very commit the merge would land (it takes the OID
@@ -154,27 +182,31 @@ export async function runMerged(
   // work-driver-merged-protected.ts; it sits outside the authority switch, so a
   // cycle with the permission gate off is still held off a protected diff.
   const protectedGate = (verifiedHead: string | undefined) =>
-    heldForProtectedPaths(ctx, state, ctx.verifyExecFn ?? execp, verifiedHead);
+    heldForProtectedPaths(ctx, state, mergeExec, verifiedHead);
+
+  // The repository's own gate-file list, judged on the same base-commit documents
+  // and honoured only against a verified quote (work-driver-merged-gate-files.ts).
+  // Outside the authority switch, so `--merge` reaches neither gate.
+  const gateFileGate = (docs: readonly DoctrineDoc[], oid: string | undefined) =>
+    heldForDeclaredGateFiles(
+      ctx.repoRoot,
+      state,
+      mergeExec,
+      judgeForGate,
+      docs,
+      { repoRoot: ctx.repoRoot, issues: ctx.issues ?? [ctx.issue] },
+      oid,
+    );
 
   // #380 — two independent gates, both defaulting to "no". Merging is the
   // one irreversible act in the cycle and had neither; a green PR ≠ permission.
   if (mergeAuthorityEnabled()) {
-    const execFnAuth = ctx.verifyExecFn ?? execp; // #406 — doctrine is read at the BASE commit, never from the working tree.
+    // #406 — doctrine is read at the BASE commit, never from the working tree.
     // This step runs after commit-pr integrated the developer's patches, so an
     // AGENTS.md read from disk here would include any grant a subagent just
     // wrote for itself. Reading at base makes such a patch inert without
     // forbidding it: honest AGENTS.md changes still ship in the PR.
-    const docs: DoctrineDoc[] = [];
-    for (const file of DOCTRINE_FILES) {
-      const read = await readDoctrineAtBase(
-        execFnAuth,
-        ctx.repoRoot,
-        state.pipelineState.baseSha,
-        file,
-      );
-      if (read.text !== undefined) docs.push({ file, text: read.text });
-      else if (read.reason) trace(`work-driver: merge authority — ${read.reason}`);
-    }
+    const docs = await readMergeDocs();
     // #407 — the documents are read by a judge and its answer is
     // citation-verified, not matched against English regexes.
     const authority = await resolveMergeAuthority(
@@ -194,7 +226,7 @@ export async function runMerged(
       { repoRoot: ctx.repoRoot, issues: ctx.issues ?? [ctx.issue] },
     );
     const evidence = authority.granted
-      ? await gatherMergeEvidence(execFnAuth, ctx.repoRoot, prNumber)
+      ? await gatherMergeEvidence(mergeExec, ctx.repoRoot, prNumber)
       : undefined;
     const routedRoundCap = heldByUnresolvedReview(state.eventLog);
     // The head the merge is pinned to, and why the step refuses to merge without
@@ -203,7 +235,7 @@ export async function runMerged(
     const headCheck =
       authority.granted && evidence?.ok && !routedRoundCap
         ? await verifyMergeHead(
-            execFnAuth,
+            mergeExec,
             ctx.repoRoot,
             state.pipelineState.branchName,
             evidence,
@@ -239,6 +271,10 @@ export async function runMerged(
     // attempted and after every read that could have refused it.
     const protectedHold = await protectedGate(verifiedHead);
     if (protectedHold) return protectedHold;
+    // The declared gate files are judged on the same documents, after the same
+    // reads — and a doctrine grant (`--merge`) is not an answer to them.
+    const gateFileHold = await gateFileGate(docs, verifiedHead);
+    if (gateFileHold) return gateFileHold;
   }
 
   // A cycle that reaches this point WITHOUT a verified head has not passed the
@@ -251,6 +287,8 @@ export async function runMerged(
     // ask with a head in hand; a protected diff parks the same way as above.
     const protectedHold = await protectedGate(undefined);
     if (protectedHold) return protectedHold;
+    const gateFileHold = await gateFileGate(await readMergeDocs(), undefined);
+    if (gateFileHold) return gateFileHold;
     trace("work-driver: merge held — no verified head OID to pin the merge to");
     // The same hold shape as the protected-path park: this gate asked neither the
     // grant nor the forge, so it claims no authority verdict.
