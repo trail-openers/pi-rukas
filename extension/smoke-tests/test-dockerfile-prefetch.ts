@@ -4,28 +4,26 @@
  *
  * The image pre-fetches vipune's embedding model (BAAI/bge-small-en-v1.5) at
  * build time and the entrypoint seeds the named cache volume from that seed on
- * start. Both halves used to mask their own failure: the download ran
- * `huggingface-cli download … || echo WARNING`, the seed copy ran behind
- * `if [ -d … ]`, and the entrypoint copy ran `cp -rn … 2>/dev/null || true`.
- * huggingface_hub 2.x renamed `huggingface-cli` to `hf`, so the download
- * exited 127, every layer after it "succeeded", and the published image
- * shipped without the model — the exact failure docs/troubleshooting.md tells
- * users to fix by rebuilding.
+ * start. Both halves used to mask their own failure — `… download || echo
+ * WARNING`, an `if [ -d … ]` guard, `cp -rn … 2>/dev/null || true` — so the
+ * published image shipped without the model and every offline `vipune search`
+ * died with the 404 docs/troubleshooting.md tells users to fix by rebuilding.
  *
- * This gate keeps the pre-fetch honest on the REAL files:
+ * The gate reads the REAL files and keeps four things true:
  *   1. the pre-fetch runs `hf download` (not the renamed `huggingface-cli`),
- *      pinned to a released huggingface_hub that ships the `hf` CLI, with no
- *      masking suffix and no `if [ -d ]` guard on the pre-fetch or the seed
- *      copy;
- *   2. the same RUN that downloads asserts the snapshot's config.json and a
- *      non-empty model blob, and asserts the seed directory is non-empty;
- *   3. the pre-fetch, the seed copy and the seed creation all sit ABOVE the
- *      repo COPY (they read no checkout — below it they re-ran on every merge);
- *   4. the entrypoint copies the seed with `cp -a`, keeps the
- *      don't-overwrite-an-existing-cache check, and asserts after the copy;
- *   5. the seed path in the Dockerfile, SEED_DIR in the entrypoint and the
- *      path in the troubleshooting entry are the same path, and that entry's
- *      verification command names the FULL `ghcr.io/` image reference.
+ *      pinned to a huggingface_hub that still ships that CLI, as the cache
+ *      owner, with xet off, no masking suffix and no `if [ -d ]` guard;
+ *   2. the pre-fetch, the seed copy and the entrypoint all assert the files
+ *      vipune actually opens — `refs/<revision>` (as `-f` AND `-s`: a directory
+ *      satisfies `-s` alone), `snapshots/<revision>/onnx/model.onnx` and
+ *      `snapshots/<revision>/tokenizer.json` (`src/embedding/engine.rs` opens
+ *      exactly those three, and `test -s` follows the snapshot symlink, so a
+ *      dangling link fails). A generic "some blob is big" check passes on an
+ *      image whose model file is the one vipune never asked for;
+ *   3. the pre-fetch and seed copy sit ABOVE the repo COPY, and the Dockerfile's
+ *      `--revision` is the entrypoint's REVISION — two literals that may drift;
+ *   4. the seed path is one path across Dockerfile, entrypoint and docs, and the
+ *      docs entry names the full `ghcr.io/` image reference.
  *
  * Proven in both directions (AGENTS.md §12 canary discipline): each detector
  * fires on an inline fixture carrying the shipped defect shape and stays quiet
@@ -36,16 +34,40 @@
  * at all — a test the build can switch off is a test that never fails.
  */
 
+import {
+  DOCKERFILE,
+  ENTRYPOINT,
+  MODEL,
+  MODEL_LABELS,
+  MODEL_NEEDLES,
+  MODEL_ONNX,
+  MODEL_TOKENIZER,
+  SHA,
+  TROUBLESHOOTING,
+  assertsModelFile,
+  canonicalSeed,
+  copiesWithoutPreserve,
+  entrypointRevision,
+  entrypointSeedBlock,
+  entrypointSeedDir,
+  hasDirGuard,
+  hubPin,
+  hubPinIsExact,
+  maskingSuffix,
+  namesFailedPath,
+  prefetchInstruction,
+  prefetchTroubleshootingSection,
+  repoCopyLine,
+  runInstructions,
+  seedCopyInstruction,
+  seedPathsIn,
+  silencesStderr,
+  testsDirExistence,
+} from "./lib/dockerfile-prefetch-detectors.ts";
 import { readFileSync } from "node:fs";
-import path from "node:path";
-
-const REPO_ROOT = path.resolve(import.meta.dirname, "..", "..");
-const DOCKERFILE = path.join(REPO_ROOT, ".devcontainer", "Dockerfile");
-const ENTRYPOINT = path.join(REPO_ROOT, ".devcontainer", "entrypoint.sh");
-const TROUBLESHOOTING = path.join(REPO_ROOT, "docs", "troubleshooting.md");
-const MODEL = "BAAI/bge-small-en-v1.5";
 
 let exit = 0;
+
 function assert(cond: boolean, msg: string) {
   if (cond) console.log(`✓ ${msg}`);
   else {
@@ -54,164 +76,6 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-// ---------------------------------------------------------------- parsing
-
-/**
- * Executable RUN instructions with their shell text, each joined across
- * backslash continuations and joined to the `USER` directive that was in
- * force at its first line. Comment lines are dropped so prose that quotes the
- * defective command to explain the fix can never trip a detector.
- */
-export type RunInstruction = { startLine: number; user: string; text: string };
-
-export function runInstructions(text: string): RunInstruction[] {
-  const raw = text.split("\n");
-  const out: RunInstruction[] = [];
-  let user = "";
-  let current: RunInstruction | null = null;
-  for (let i = 0; i < raw.length; i++) {
-    const t = raw[i]!.trim();
-    if (t === "" || t.startsWith("#")) continue;
-    const continued = t.endsWith("\\");
-    const body = continued ? t.slice(0, -1).trim() : t;
-    if (/^RUN\b/.test(body)) {
-      if (current !== null) out.push(current);
-      current = { startLine: i + 1, user, text: body };
-    } else if (current === null) {
-      const u = body.match(/^USER\s+(\S+)/);
-      if (u) user = u[1]!;
-      continue;
-    }
-    current.text += " " + body;
-    if (!continued) {
-      out.push(current);
-      current = null;
-    }
-  }
-  if (current !== null) out.push(current);
-  return out;
-}
-
-/** One-sentence summary: an instruction is the pre-fetch when it downloads the model. */
-export function prefetchInstruction(runs: RunInstruction[]): RunInstruction | undefined {
-  return runs.find((r) => /\b(?:hf|huggingface-cli)\s+download\b/.test(r.text) && r.text.includes(MODEL));
-}
-
-/** The instruction that creates the image's model seed directory. */
-export function seedCopyInstruction(runs: RunInstruction[], seed: string): RunInstruction | undefined {
-  return runs.find((r) => /\bcp\b/.test(r.text) && r.text.includes(seed));
-}
-
-/** The instruction that copies the checkout into the image. */
-export function repoCopyLine(text: string): number {
-  const lines = text.split("\n");
-  for (let i = 0; i < lines.length; i++) {
-    const t = lines[i]!.trim();
-    if (/^COPY\b/.test(t) && /\s\.\s|\s\.\t/.test(t)) return i + 1;
-  }
-  return -1;
-}
-
-// ---------------------------------------------------------------- detectors
-
-/**
- * A masking suffix on a shell command: a fallback that lets a failing command
- * report success. `|| echo …`, `|| true`, `|| :`, and the stderr-silencing
- * form `2>/dev/null || …`.
- */
-export function maskingSuffix(command: string): string {
-  const lines = command.split("\n").map((l) => l.trim()).filter((l) => l !== "" && !l.startsWith("#"));
-  for (const line of lines) {
-    const m = line.match(/\|\|\s*(?:echo\b|true\b|:\s*$|:\s)/) ?? line.match(/\|\|\s*:/);
-    if (m) return m[0].trim();
-  }
-  return "";
-}
-
-/** Whether a command redirects a command's stderr into /dev/null (comment lines excluded). */
-export function silencesStderr(command: string): boolean {
-  return command
-    .split("\n")
-    .map((l) => l.trim())
-    .some((l) => !l.startsWith("#") && l.includes("2>/dev/null"));
-}
-
-/** Whether a command's run is wrapped in an `if [ -d … ]` existence guard. */
-export function hasDirGuard(command: string): boolean {
-  return /\bif\s+\[\s+-d\s/.test(command);
-}
-
-/** Whether a command tests for a directory's existence at all (`[ -d … ]` or `[ ! -d … ]`). */
-export function testsDirExistence(command: string): boolean {
-  return /\[\s+!?\s*-d\s/.test(command);
-}
-
-/** Whether a command copies recursively without preserving (`cp -r`/`-rn`/`-r…` but not `-a`). */
-export function copiesWithoutPreserve(command: string): string {
-  const m = command.match(/\bcp\s+(-[A-Za-z]+)\b/);
-  if (!m) return "";
-  const flags = m[1]!;
-  if (flags.includes("a")) return "";
-  return m[0];
-}
-
-/** A blob-size assertion (`-size +1M`-style) that also rejects a symlink (`! -L`). */
-export function assertsRealBlob(command: string): boolean {
-  return /-size\s+\+?\d+[MK]\b/.test(command) && (/-xtype\s+f\b/.test(command) || /!\s*-L\b/.test(command));
-}
-
-/** The huggingface_hub pin in the image (`"huggingface_hub==X"` on a pip install). "" when absent or unpinned. */
-export function hubPin(text: string): string {
-  const m = text.match(/pip3?\s+install[^\n]*?huggingface_hub\s*(?:==|>=|~=|<=)\s*([0-9][0-9a-z.+-]*)/);
-  return m ? m[1]! : "";
-}
-
-/** Whether the huggingface_hub pin is an exact `==` pin (a range lets the CLI rename back in). */
-export function hubPinIsExact(text: string): boolean {
-  return /pip3?\s+install[^\n]*?huggingface_hub\s*==\s*[0-9]/.test(text);
-}
-
-/** Whether a command asserts the resolver ref file vipune needs to resolve the pinned revision. */
-export function assertsResolverRef(command: string): boolean {
-  // The literal SHA (the build RUNs) or the entrypoint's $REVISION variable —
-  // both name the ref file vipune's resolver opens to resolve the pinned revision.
-  return /test\s+-s\b[^\n]*\/refs\/([0-9a-f]{40}|\$\{?REVISION}?)/.test(command);
-}
-
-/** The `SEED_DIR="…"` value in the entrypoint, or "". */
-export function entrypointSeedDir(entrypoint: string): string {
-  const m = entrypoint.match(/^\s*SEED_DIR="([^"]+)"/m);
-  return m ? m[1]! : "";
-}
-
-/** The entrypoint block that seeds the cache: from the SEED_DIR assignment to `exec "$@"`. */
-export function entrypointSeedBlock(entrypoint: string): string {
-  const start = entrypoint.search(/^\s*CACHE_DIR=/m);
-  const end = entrypoint.lastIndexOf('exec "$@"');
-  if (start === -1 || end === -1 || end < start) return "";
-  return entrypoint.slice(start, end);
-}
-
-/** The troubleshooting entry for the vipune model failure: heading to the next `###`. */
-export function prefetchTroubleshootingSection(md: string): string {
-  const lines = md.split("\n");
-  const start = lines.findIndex((l) => /^###\s/.test(l) && /embedding model/.test(l));
-  if (start === -1) return "";
-  const end = lines.findIndex((l, i) => i > start && /^###\s/.test(l));
-  return lines.slice(start, end === -1 ? undefined : end).join("\n");
-}
-
-/** Every `/opt/…` path that appears to be the model seed (contains `hf-cache-seed`). */
-export function seedPathsIn(text: string): string[] {
-  return [...new Set([...text.matchAll(/\/opt\/[A-Za-z0-9._/-]*hf-cache-seed/g)].map((m) => m[0]))];
-}
-
-/** A single canonical seed path: `/opt/hf-cache-seed` with no trailing slash. */
-function canonicalSeed(p: string): string {
-  return p.replace(/\/+$/, "");
-}
-
-// ---------------------------------------------------------------- the gate
 
 const dockerfile = readFileSync(DOCKERFILE, "utf8");
 const entrypoint = readFileSync(ENTRYPOINT, "utf8");
@@ -237,26 +101,13 @@ if (prefetch) {
     prefetch.text.includes("--cache-dir") && prefetch.text.includes("/home/vscode/.cache/huggingface"),
     "the pre-fetch downloads into the vscode user's HF cache",
   );
-  assert(
-    /--revision\s+[0-9a-f]{40}/.test(prefetch.text),
-    "the pre-fetch pins the model revision to a commit SHA",
-  );
-  assert(
-    /test\s+(?:-s|-f|-d)\b[^\n]*snapshots[^\n]*config\.json/.test(prefetch.text),
-    "the same RUN asserts the snapshot's config.json exists and is non-empty",
-  );
-  assert(
-    assertsRealBlob(prefetch.text),
-    "the same RUN asserts a non-empty, non-symlink model blob (a xet symlink is not a seed)",
-  );
-  assert(
-    /HF_HUB_DISABLE_XET=1/.test(prefetch.text),
-    "the pre-fetch disables the xet transport (xet blobs are symlinks outside hub/, invisible to the seed)",
-  );
-  assert(
-    /refs\/[0-9a-f]{40}/.test(prefetch.text),
-    "the pre-fetch writes refs/<revision>, which vipune's resolver reads to resolve the pinned revision",
-  );
+  assert(/HF_HUB_DISABLE_XET=1/.test(prefetch.text), "the pre-fetch disables the xet transport (xet blobs are links outside hub/, invisible to the seed)");
+  for (const [i, pattern] of MODEL_NEEDLES.entries()) {
+    assert(
+      assertsModelFile(prefetch.text, pattern),
+      `the pre-fetch RUN asserts the model file vipune loads: ${MODEL_LABELS[i]}`,
+    );
+  }
 }
 
 console.log("— the huggingface_hub pin ships the `hf` CLI");
@@ -272,7 +123,7 @@ assert(hubPinIsExact(dockerfile), `huggingface_hub is an exact \`==\` pin, not a
   );
 }
 
-console.log("— the seed copy fails the build when the seed is missing");
+console.log("— the seed copy, the entrypoint and the revision are consistent");
 
 assert(seedCopy !== undefined, `Dockerfile has a RUN that creates ${canonicalSeed(seed)}`);
 if (seedCopy) {
@@ -281,15 +132,29 @@ if (seedCopy) {
   assert(!hasDirGuard(seedCopy.text), "the seed copy is not wrapped in an `if [ -d ]` guard");
   assert(copiesWithoutPreserve(seedCopy.text) === "", `the seed copy preserves metadata (cp flag: ${copiesWithoutPreserve(seedCopy.text) || "-a"})`);
   assert(
-    /test\s+-s\s+[^\n]*config\.json/.test(seedCopy.text),
-    "the seed copy asserts the snapshot's config.json survived the copy",
+    /test\s+-f\b[^\n]*refs\/[0-9a-f]{40}/.test(seedCopy.text),
+    "the seed copy asserts refs/<revision> is a FILE (`-s` alone passes on a directory)",
   );
-  assert(assertsResolverRef(seedCopy.text), "the seed copy asserts refs/<revision> survived the copy");
+  for (const [i, pattern] of MODEL_NEEDLES.entries()) {
+    assert(
+      assertsModelFile(seedCopy.text, pattern),
+      `the seed copy asserts the seeded model file: ${MODEL_LABELS[i]}`,
+    );
+  }
 }
 assert(copyLine !== -1, "Dockerfile has a `COPY . <dir>` of the checkout");
 if (prefetch && seedCopy && copyLine !== -1) {
   assert(prefetch.startLine < copyLine, `the pre-fetch (line ${prefetch.startLine}) sits above the repo COPY (line ${copyLine})`);
   assert(seedCopy.startLine < copyLine, `the seed copy (line ${seedCopy.startLine}) sits above the repo COPY (line ${copyLine})`);
+}
+{
+  const revision = entrypointRevision(entrypoint);
+  assert(/^[0-9a-f]{40}$/.test(revision), `entrypoint declares REVISION as a commit SHA (found: ${revision || "absent"})`);
+  const dockerRevision = prefetch?.text.match(/--revision\s+([0-9a-f]{40})/)?.[1] ?? "";
+  assert(
+    revision !== "" && dockerRevision === revision,
+    `the Dockerfile's --revision equals the entrypoint's REVISION (Dockerfile ${dockerRevision.slice(0, 8) || "none"} vs entrypoint ${revision.slice(0, 8) || "none"})`,
+  );
 }
 
 console.log("— the entrypoint seeds the cache and asserts it");
@@ -305,15 +170,13 @@ assert(
 assert(copiesWithoutPreserve(block) === "", `the entrypoint's cp preserves metadata (flag: ${copiesWithoutPreserve(block) || "-a"})`);
 assert(maskingSuffix(block) === "", `the entrypoint seed copy has no masking suffix (found: ${maskingSuffix(block) || "none"})`);
 assert(!silencesStderr(block), "the entrypoint seed copy does not silence its stderr");
-assert(
-  /test\s+-s\b[^\n]*config\.json/.test(block),
-  "the entrypoint asserts the seeded model after the copy",
-);
-assert(assertsRealBlob(block), "the entrypoint's post-copy assertion rejects a symlink blob");
-assert(
-  assertsResolverRef(block),
-  "the entrypoint asserts the refs/<revision> file vipune's resolver needs (its absence is the offline 404)",
-);
+for (const [i, pattern] of MODEL_NEEDLES.entries()) {
+  assert(
+    assertsModelFile(block, pattern),
+    `the entrypoint asserts the seeded model file vipune loads: ${MODEL_LABELS[i]}`,
+  );
+}
+assert(namesFailedPath(block), "the entrypoint's failed post-copy assertion prints the missing path before exiting non-zero");
 
 console.log("— the seed path is one path across the Dockerfile, entrypoint and docs");
 
@@ -349,26 +212,95 @@ assert(
 
 console.log("— canaries: every detector fires on the defect and stays quiet on the fix");
 
-const PREFETCH_DEFECT = [
+const M = "models--BAAI--bge-small-en-v1.5";
+
+/** A pre-fetch RUN carrying `-f`/`-s` pairs for the named snapshot files, so a
+ * canary can omit exactly one of them. Lines are concatenated rather than
+ * templated: the continuation backslash before a closing delimiter breaks the
+ * parser inside a template literal. */
+function prefetchFixture(needles: string[]): string {
+  const tests = needles
+    .flatMap((n) => [
+      "    && test -f /home/vscode/.cache/huggingface/hub/" +
+        M +
+        "/snapshots/" +
+        SHA +
+        "/" +
+        n +
+        " \\",
+      "    && test -s /home/vscode/.cache/huggingface/hub/" +
+        M +
+        "/snapshots/" +
+        SHA +
+        "/" +
+        n +
+        " \\",
+    ])
+    .join("\n");
+  return [
+    "USER vscode",
+    "RUN set -e; HF_HUB_DISABLE_XET=1 hf download \\",
+    "      " + MODEL + " \\",
+    "      --revision " + SHA + " \\",
+    "      --cache-dir /home/vscode/.cache/huggingface/hub \\",
+    "    && printf '%s' " + SHA + " > /home/vscode/.cache/huggingface/hub/" + M + "/refs/" + SHA + " \\",
+    "    && test -f /home/vscode/.cache/huggingface/hub/" + M + "/refs/" + SHA + " \\",
+    "    && test -s /home/vscode/.cache/huggingface/hub/" + M + "/refs/" + SHA + " \\",
+    tests.replace(/ \\$/, ""),
+  ].join("\n");
+}
+
+const ALL_NEEDLES = ["onnx/model.onnx", "tokenizer.json"];
+const PREFETCH_FIX = prefetchFixture(ALL_NEEDLES);
+const PREFETCH_DEFECT = [  "USER vscode",
   "RUN huggingface-cli download \\",
-  "      BAAI/bge-small-en-v1.5 \\",
-  "      --revision 5c38ec7c405ec4b44b94cc5a9bb96e735b38267a \\",
+  `      ${MODEL} \\`,
+  `      --revision ${SHA} \\`,
   "      --cache-dir /home/vscode/.cache/huggingface/hub \\",
   '    || echo "WARNING: pre-fetch failed"',
 ].join("\n");
-const PREFETCH_FIX = [
-  "RUN set -e; HF_HUB_DISABLE_XET=1 hf download \\",
-  "      BAAI/bge-small-en-v1.5 \\",
-  "      --revision 5c38ec7c405ec4b44b94cc5a9bb96e735b38267a \\",
-  "      --cache-dir /home/vscode/.cache/huggingface/hub \\",
-  "    && test -s /home/vscode/.cache/huggingface/hub/models--BAAI--bge-small-en-v1.5/snapshots/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a/config.json \\",
-  "    && test -n \"$(find /home/vscode/.cache/huggingface/hub/models--BAAI--bge-small-en-v1.5/blobs -maxdepth 1 -xtype f -size +1M -print -quit)\"",
+// The shape this gate was written against: a generic find over blobs/sha256
+// instead of the files vipune opens. It must read as asserting NONE of them.
+const PREFETCH_GENERIC_BLOB = prefetchFixture(["config.json"]).replace(
+  /config\.json$/,
+  `"$(find /home/vscode/.cache/huggingface/hub/${M}/blobs -maxdepth 1 -xtype f -size +1M -print -quit)"`,
+);
+// Written line by line, the way the Dockerfile itself is written: the seed copy
+// is one continued RUN, so `runInstructions` joins these lines into the single
+// command string the detectors read.
+const SEED_DEFECT = [
+  "RUN if [ -d /home/vscode/.cache/huggingface ]; then \\",
+  "      cp -r /home/vscode/.cache/huggingface /opt/hf-cache-seed; \\",
+  "    fi",
 ].join("\n");
-const SEED_DEFECT = "RUN if [ -d /home/vscode/.cache/huggingface ]; then \\\n      cp -r /home/vscode/.cache/huggingface /opt/hf-cache-seed; \\\n    fi";
-const SEED_FIX = "RUN set -e; cp -a /home/vscode/.cache/huggingface /opt/hf-cache-seed \\\n    && chown -R vscode:vscode /opt/hf-cache-seed \\\n    && test -s /opt/hf-cache-seed/hub/models--BAAI--bge-small-en-v1.5/snapshots/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a/config.json \\\n    && test -n \"$(find /opt/hf-cache-seed/hub/models--BAAI--bge-small-en-v1.5/blobs -maxdepth 1 -xtype f -size +1M -print -quit)\"";
+const SEED_FIX_LINES = [
+  "RUN set -e; cp -a /home/vscode/.cache/huggingface /opt/hf-cache-seed \\",
+  "    && chown -R vscode:vscode /opt/hf-cache-seed \\",
+  "    && test -f /opt/hf-cache-seed/hub/" + M + "/refs/" + SHA + " \\",
+  "    && test -s /opt/hf-cache-seed/hub/" + M + "/refs/" + SHA + " \\",
+  "    && test -f /opt/hf-cache-seed/hub/" + M + "/snapshots/" + SHA + "/onnx/model.onnx \\",
+  "    && test -s /opt/hf-cache-seed/hub/" + M + "/snapshots/" + SHA + "/onnx/model.onnx \\",
+  "    && test -f /opt/hf-cache-seed/hub/" + M + "/snapshots/" + SHA + "/tokenizer.json \\",
+  "    && test -s /opt/hf-cache-seed/hub/" + M + "/snapshots/" + SHA + "/tokenizer.json",
+];
+const SEED_FIX = SEED_FIX_LINES.join("\n");
+/** The assertion flag (`f` or `s`) a fixture line opens with, after its `&&`. */
+const seedFlag = (line: string): string =>
+  line
+    .trim()
+    .replace(/^&&\s*/u, "")
+    .replace(/^test\s+-/u, "")
+    .slice(0, 1);
+const SEED_F_LINES = SEED_FIX_LINES.filter((l) => seedFlag(l) === "f");
+// Entries 2 and 3 are the refs `-f`/`-s` pair; dropping the `-f` leaves `-s`
+// alone, the form a directory passes. The assertions below pin the indices and
+// the flags, so a fixture edit that moves them reddens the gate rather than
+// quietly leaving the `-f` in place.
+const SEED_S_ONLY = SEED_FIX_LINES.filter((_, i) => i !== 2).join("\n");
 const ENTRYPOINT_DEFECT = [
   'CACHE_DIR="${HOME}/.cache/huggingface"',
   'SEED_DIR="/opt/hf-cache-seed"',
+  'REVISION="' + SHA + '"',
   'if [ -d "$SEED_DIR" ] && [ ! -d "$MODEL_DIR" ]; then',
   '  cp -rn "$SEED_DIR"/. "$CACHE_DIR"/ 2>/dev/null || true',
   "fi",
@@ -377,27 +309,91 @@ const ENTRYPOINT_DEFECT = [
 const ENTRYPOINT_FIX = [
   'CACHE_DIR="${HOME}/.cache/huggingface"',
   'SEED_DIR="/opt/hf-cache-seed"',
+  'REVISION="' + SHA + '"',
   'if [ -d "$SEED_DIR" ] && [ ! -d "$MODEL_DIR" ]; then',
   '  cp -a "$SEED_DIR"/. "$CACHE_DIR"/',
-  '  test -s "$MODEL_DIR/snapshots/$REVISION/config.json"',
-  '  test -n "$(find "$MODEL_DIR/blobs" -maxdepth 1 -xtype f -size +1M -print -quit)"',
+  '  for _f in "refs/$REVISION" "snapshots/$REVISION/onnx/model.onnx" "snapshots/$REVISION/tokenizer.json"; do',
+  '    if [ ! -f "$MODEL_DIR/$_f" ] || [ ! -s "$MODEL_DIR/$_f" ]; then',
+  '      echo "pi-rukas: model seed is missing or empty: $MODEL_DIR/$_f" >&2',
+  "      exit 1",
+  "    fi",
+  "  done",
   "fi",
   'exec "$@"',
 ].join("\n");
+// The same block with the message removed: it still exits non-zero, but names
+// nothing — the shape the naming assertion exists to catch.
+const ENTRYPOINT_SILENT = ENTRYPOINT_FIX.replace(
+  '      echo "pi-rukas: model seed is missing or empty: $MODEL_DIR/$_f" >&2',
+  "      : # fail",
+);
 
-// The defect shapes the shipped files carried: each detector must catch them.
+// Defect shapes the shipped files carried: each detector must catch them.
 assert(maskingSuffix(PREFETCH_DEFECT) !== "", "canary: `|| echo WARNING` on the pre-fetch IS detected");
 assert(maskingSuffix('RUN cp -rn "$S"/. "$C"/ 2>/dev/null || true') !== "", "canary: `|| true` IS detected");
 assert(maskingSuffix("RUN hf download X || :") !== "", "canary: `|| :` IS detected");
 assert(silencesStderr(ENTRYPOINT_DEFECT), "canary: `2>/dev/null` IS detected");
-assert(hasDirGuard(SEED_DEFECT), "canary: `if [ -d … ]` on the seed copy IS detected");
+assert(hasDirGuard(SEED_DEFECT) && testsDirExistence(ENTRYPOINT_DEFECT), "canary: `if [ -d … ]` guards ARE detected");
 assert(copiesWithoutPreserve(SEED_DEFECT) === "cp -r", "canary: `cp -r` IS detected as non-preserving");
 assert(copiesWithoutPreserve('cp -rn "$S"/. "$C"/') === "cp -rn", "canary: `cp -rn` IS detected as non-preserving");
-assert(hasDirGuard(ENTRYPOINT_DEFECT) && testsDirExistence(ENTRYPOINT_DEFECT), "canary: the entrypoint guard shape IS detected");
-assert(!/hf\s+download/.test(PREFETCH_DEFECT) && /huggingface-cli/.test(PREFETCH_DEFECT), "canary: the renamed CLI in the pre-fetch IS detectable");
 assert(hubPin('RUN pip3 install --no-cache-dir "huggingface_hub>=0.20"') === "0.20" && !hubPinIsExact('RUN pip3 install "huggingface_hub>=0.20"'), "canary: a `>=` huggingface_hub pin IS detected as unpinned");
 assert(hubPin("RUN apt-get install curl") === "", "canary: a file with no pip install reports no pin");
 assert(entrypointSeedBlock(ENTRYPOINT_DEFECT).includes("cp -rn"), "canary: the entrypoint seed block is captured on the defect fixture");
+assert(entrypointRevision(ENTRYPOINT_FIX) === SHA, "canary: REVISION is read from the entrypoint fixture");
+assert(entrypointRevision("CACHE_DIR=x\nexec \"$@\"\n") === "", "canary: an entrypoint with no REVISION reports none");
+
+// The model-file detector, both directions — the heart of this gate.
+{
+  const all = runInstructions(PREFETCH_FIX)[0]!;
+  for (const [i, pattern] of MODEL_NEEDLES.entries()) {
+    assert(assertsModelFile(all.text, pattern), `canary: a ${MODEL_LABELS[i]} assertion IS detected when present`);
+  }
+  const noOnnx = runInstructions(prefetchFixture(["tokenizer.json"]))[0]!;
+  assert(
+    !assertsModelFile(noOnnx.text, MODEL_NEEDLES[0]!) && assertsModelFile(noOnnx.text, MODEL_NEEDLES[1]!),
+    "canary: a pre-fetch MISSING the onnx/model.onnx assertion IS detected (the tokenizer one still detected)",
+  );
+  const noTokenizer = runInstructions(prefetchFixture(["onnx/model.onnx"]))[0]!;
+  assert(
+    !assertsModelFile(noTokenizer.text, MODEL_NEEDLES[1]!),
+    "canary: a pre-fetch MISSING the tokenizer.json assertion IS detected",
+  );
+  {
+    // The refs assertion is inherited from the pre-fetch fixture; only the
+    // snapshot assertions are the generic `find blobs -size +1M` form, and
+    // that is the part which must assert NONE of the files vipune opens.
+    const generic = runInstructions(PREFETCH_GENERIC_BLOB)[0]!;
+    assert(
+      !assertsModelFile(generic.text, MODEL_ONNX) && !assertsModelFile(generic.text, MODEL_TOKENIZER),
+      "canary: the generic `find blobs -size +1M` assertion asserts NONE of the files vipune loads",
+    );
+  }
+  assert(
+    !assertsModelFile(`test -s /opt/hf-cache-seed/hub/${M}/snapshots/${SHA}/config.json`, MODEL_NEEDLES[0]!),
+    "canary: a config.json assertion is NOT mistaken for the onnx model",
+  );
+  assert(
+    !assertsModelFile(SEED_S_ONLY, MODEL_NEEDLES[2]!),
+    "canary: a refs assertion written as `-s` only does not satisfy the `-f` requirement",
+  );
+  assert(
+    SEED_FIX_LINES.length === 8 &&
+      SEED_F_LINES.length === 3 &&
+      seedFlag(SEED_FIX_LINES[2]!) === "f" &&
+      seedFlag(SEED_FIX_LINES[3]!) === "s" &&
+      SEED_S_ONLY !== SEED_FIX &&
+      assertsModelFile(SEED_FIX, MODEL_NEEDLES[2]!) &&
+      !assertsModelFile(SEED_S_ONLY, MODEL_NEEDLES[2]!),
+    "canary: dropping the refs `-f` assertion is a real change and the detector sees it",
+  );
+  assert(
+    assertsModelFile(SEED_FIX, MODEL_NEEDLES[2]!),
+    "canary: the `test -f` refs assertion IS detected",
+  );
+}
+assert(!namesFailedPath(ENTRYPOINT_SILENT), "canary: an entrypoint that exits without naming the path IS detected");
+assert(namesFailedPath(entrypointSeedBlock(ENTRYPOINT_FIX)), "canary: an entrypoint that names the missing path IS detected");
+assert(!namesFailedPath(entrypointSeedBlock(ENTRYPOINT_DEFECT)), "canary: the old silent `cp -rn || true` block names no path");
 
 // The fix shapes: the same detectors must go quiet, or the real-file passes above are meaningless.
 assert(maskingSuffix(PREFETCH_FIX) === "", "canary: the fixed pre-fetch reports no masking suffix");
@@ -406,58 +402,29 @@ assert(!hasDirGuard(PREFETCH_FIX) && !hasDirGuard(SEED_FIX), "canary: the fixed 
 assert(copiesWithoutPreserve(SEED_FIX) === "" && copiesWithoutPreserve(ENTRYPOINT_FIX) === "", "canary: `cp -a` reports no non-preserving flag");
 assert(testsDirExistence(ENTRYPOINT_FIX), "canary: the fixed entrypoint still keeps the existence check");
 assert(maskingSuffix(ENTRYPOINT_FIX) === "", "canary: the fixed entrypoint reports no masking suffix");
-assert(/\bcp\s+-a\b/.test(ENTRYPOINT_FIX) && /test\s+-s\b/.test(ENTRYPOINT_FIX), "canary: the fixed entrypoint shape parses as cp -a + assert");
 {
-  const fixRuns = runInstructions(
-    ["USER vscode", PREFETCH_FIX, "USER root", SEED_FIX, "COPY --chown=vscode:vscode . /opt/pi-rukas"].join("\n"),
-  );
-  const fp = prefetchInstruction(fixRuns);
-  const fs_ = seedCopyInstruction(fixRuns, "/opt/hf-cache-seed");
+  const fp = runInstructions(PREFETCH_FIX)[0]!;
+  const fs_ = seedCopyInstruction(runInstructions(SEED_FIX), "/opt/hf-cache-seed");
   assert(fp !== undefined && fp.user === "vscode", "canary: the fixed pre-fetch parses as a vscode USER RUN");
   assert(fs_ !== undefined, "canary: the fixed seed copy parses as a RUN");
-  assert(fp !== undefined && /test\s+-s\b[^\n]*config\.json/.test(fp.text), "canary: the config.json assertion is detected when present");
-  assert(fp !== undefined && !/test\s+-s\b[^\n]*config\.json/.test(runInstructions(PREFETCH_DEFECT)[0]!.text), "canary: the config.json assertion is detected when absent");
-  assert(fs_ !== undefined && runInstructions("COPY --chown=vscode:vscode . /opt/pi-rukas").length === 0, "canary: COPY is not treated as a RUN");
+  assert(runInstructions("COPY --chown=vscode:vscode . /opt/pi-rukas").length === 0, "canary: COPY is not treated as a RUN");
 }
 {
-  const seeds = seedPathsIn("RUN cp -a /home/vscode/.cache/huggingface /opt/hf-cache-seed && ls /opt/hf-cache-seed/");
+  const seeds = seedPathsIn(`RUN cp -a /home/vscode/.cache/huggingface /opt/hf-cache-seed && ls /opt/hf-cache-seed/`);
   assert(seeds.length === 1 && canonicalSeed(seeds[0]!) === "/opt/hf-cache-seed", "canary: a trailing-slash seed canonicalises to one path");
   assert(seedPathsIn("RUN echo nothing").length === 0, "canary: a file with no seed path reports none");
 }
-assert(prefetchTroubleshootingSection("### `vipune search` returns \"Failed to download embedding model\"\nbody\n### next\n") !== "", "canary: the troubleshooting entry is captured");
+assert(prefetchTroubleshootingSection('### `vipune search` returns "Failed to download embedding model"\nbody\n### next\n') !== "", "canary: the troubleshooting entry is captured");
 assert(prefetchTroubleshootingSection("### unrelated\n### next\n") === "", "canary: an unrelated heading is not the entry");
 assert(
-  assertsRealBlob(SEED_FIX) && assertsRealBlob(ENTRYPOINT_FIX),
-  "canary: a `-size +1M ! -L` blob assertion IS detected as a real-blob assertion",
-);
-assert(
-  !assertsRealBlob('test -n "$(find "$B" -maxdepth 1 -type f -size +1M -print -quit)"'),
-  "canary: a blob assertion WITHOUT `! -L` IS detected as not rejecting a symlink",
-);
-assert(
-  !assertsRealBlob('test -n "$(find "$B" -maxdepth 1 -type f ! -L -print -quit)"'),
-  "canary: a `! -L` find with no size floor IS detected as not asserting a real blob",
-);
-assert(
-  assertsResolverRef("&& test -s /opt/hf-cache-seed/hub/models--BAAI--bge-small-en-v1.5/refs/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"),
-  "canary: a refs/<sha> assertion IS detected",
-);
-assert(
-  !assertsResolverRef("&& test -s /opt/hf-cache-seed/hub/models--BAAI--bge-small-en-v1.5/snapshots/5c38ec/config.json"),
-  "canary: a config.json assertion is NOT mistaken for the refs assertion",
-);
-assert(
-  /docker run[^\n]*ghcr\.io\/trail-openers\/pi-rukas:/.test(
-    "docker run --rm ghcr.io/trail-openers/pi-rukas:latest ls /opt/hf-cache-seed",
-  ),
+  /docker run[^\n]*ghcr\.io\/trail-openers\/pi-rukas:/.test("docker run --rm ghcr.io/trail-openers/pi-rukas:latest ls /opt/hf-cache-seed"),
   "canary: the full image reference form is detected",
 );
 assert(
-  !/docker run[^\n]*(?<!ghcr\.io\/)trail-openers\/pi-rukas:/.test(
-    "docker run --rm ghcr.io/trail-openers/pi-rukas:latest ls",
-  ),
+  !/docker run[^\n]*(?<!ghcr\.io\/)trail-openers\/pi-rukas:/.test("docker run --rm ghcr.io/trail-openers/pi-rukas:latest ls"),
   "canary: the ghcr-prefixed form is not reported as the un-prefixed form",
 );
 
 if (exit === 0) console.log("dockerfile-prefetch gate: PASS");
 process.exit(exit);
+

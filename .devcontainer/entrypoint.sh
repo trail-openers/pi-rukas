@@ -17,13 +17,12 @@
 # file so future maintainers see the boot sequence top-to-bottom without
 # chasing through helper scripts.
 #
-# Cache-seed history: when the wrapper or devcontainer.json mounts a named
-# volume on /home/vscode/.cache, that volume MASKS the image's pre-fetched
-# HF cache (Docker volume init only fires on first attach — existing volumes
-# from prior image builds stay empty). Without this script, vipune would try
-# to download BAAI/bge-small-en-v1.5 on every fresh container start and fail
-# with "Failed to download embedding model" (vipune's HTTP client 404s on
-# the pinned revision). Seed the cache from /opt/hf-cache-seed/ if missing.
+# Cache seed: a named volume mounted on /home/vscode/.cache MASKS the image's
+# pre-fetched HF cache (Docker populates a volume only on first attach, so
+# volumes from earlier builds stay empty). The entrypoint copies
+# /opt/hf-cache-seed/ into place when the cache has no model, then asserts the
+# files vipune opens — without them the first offline `vipune search` fails with
+# "Failed to download embedding model".
 
 set -eu
 
@@ -112,23 +111,24 @@ REVISION="5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
 
 if [ -d "$SEED_DIR" ] && [ ! -d "$MODEL_DIR" ]; then
   mkdir -p "$CACHE_DIR"
-  # cp -a (not cp -r): preserves the seed's modes and ownership, which is what
-  # the build's assertion checked. No 2>/dev/null and no `|| true`: a seed that
-  # cannot be copied means vipune has no model and the offline first search
-  # will fail with "Failed to download embedding model", so booting on silently
-  # is how the image shipped without a model once before. `set -e` fails the
-  # container here and names the reason instead.
+  # cp -a (not cp -r): preserves the seed's modes, which is what the build's
+  # assertion checked. No `|| true` and no stderr redirect: a seed that cannot be
+  # copied means vipune has no model, so `set -e` fails the container here.
   cp -a "$SEED_DIR"/. "$CACHE_DIR"/
-  # The don't-overwrite-an-existing-cache check above stays: a populated
-  # $MODEL_DIR from a prior run is never touched, and this assertion only ever
-  # runs on the copy path. `-xtype f`: a self-contained seed holds real blobs
-  # under hub/blobs, and a symlink there means the image was built with the xet
-  # transport, whose blobs live outside hub/ and resolve to nothing offline.
-  # refs/<revision> is what vipune's resolver reads to resolve the pinned
-  # revision without going to the network, so its absence is the 404.
-  test -s "$MODEL_DIR/refs/$REVISION"
-  test -s "$MODEL_DIR/snapshots/$REVISION/config.json"
-  test -n "$(find "$MODEL_DIR/blobs" -maxdepth 1 -xtype f -size +1M -print -quit)"
+  # Assert the files vipune opens, after the copy. Each names the path it could
+  # not find before `set -e` exits, so a boot failure says which part of the
+  # seed is broken. `-f` as well as `-s`: a directory satisfies `-s`, and
+  # refs/<revision> is what vipune's resolver opens to resolve the pinned
+  # revision — its absence is the offline 404. `-s` on the snapshot entries
+  # follows the symlink to the blob, so a link into the xet staging tree (which a
+  # copy of hub/ cannot contain) fails rather than passing as a non-empty name.
+  for _f in "refs/$REVISION" "snapshots/$REVISION/onnx/model.onnx" "snapshots/$REVISION/tokenizer.json"; do
+    if [ ! -f "$MODEL_DIR/$_f" ] || [ ! -s "$MODEL_DIR/$_f" ]; then
+      echo "pi-rukas: model seed is missing or empty: $MODEL_DIR/$_f" >&2
+      exit 1
+    fi
+  done
+  unset _f
 fi
 
 exec "$@"

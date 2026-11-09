@@ -315,6 +315,8 @@
     "smoke-tests/test-lean-verify-red-reason.ts",
     "smoke-tests/test-lean-freeze-check-specify.ts",
     "smoke-tests/test-lean-freeze-check-challenge.ts",
-    "smoke-tests/test-lean-freeze-check-verify.ts"
+    "smoke-tests/test-lean-freeze-check-verify.ts",
+    "smoke-tests/lib/dockerfile-prefetch-detectors.ts",
+    "smoke-tests/test-dockerfile-prefetch.ts"
   ]
 }
