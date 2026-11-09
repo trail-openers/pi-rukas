@@ -17,8 +17,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import childGuards from "../src/child-guards.ts";
 import { reviewBashBoundSeconds } from "../src/review-bash-timeout.ts";
-import { assert, exit as failureExit } from "./merge-guard-helpers.ts";
 import { withEnv } from "./lib/env-scope.ts";
+import { assert, exit as failureExit } from "./merge-guard-helpers.ts";
 import { makeFakePi } from "./test-child-guards-helpers.ts";
 
 /** The default bound, in the SECONDS Pi's bash schema takes. */
@@ -55,7 +55,10 @@ const reviewer = (
 // 1. The bound is applied: nothing to clamp, and a too-large value clamped.
 // ============================================================
 {
-  const bare = await reviewer({ PI_ENSEMBLE_ROLE: "adversarial-developer" }, { command: "sleep 99999" });
+  const bare = await reviewer(
+    { PI_ENSEMBLE_ROLE: "adversarial-developer" },
+    { command: "sleep 99999" },
+  );
   assert(
     bare.timeout === BOUND,
     `reviewer bash call with no timeout gets the bound (${BOUND}s; got ${String(bare.timeout)})`,
@@ -99,11 +102,9 @@ for (const role of ["developer", "ops", undefined]) {
   );
 }
 
-const readUntouched = await call(
-  { PI_ENSEMBLE_ROLE: "code-review-specialist" },
-  "read",
-  { file_path: "docs/configuration.md" },
-);
+const readUntouched = await call({ PI_ENSEMBLE_ROLE: "code-review-specialist" }, "read", {
+  file_path: "docs/configuration.md",
+});
 assert(
   !("timeout" in readUntouched),
   `a non-bash tool call is untouched (read input ${JSON.stringify(readUntouched)})`,
@@ -130,14 +131,20 @@ assert(
 // direction (an unbounded call) beats an invented one (0 or NaN, which Pi's
 // schema rejects and the child loses the call over).
 {
-  const empty = await reviewer({ PI_ENSEMBLE_REVIEW_BASH_TIMEOUT_MS: "" }, { command: "sleep 99999" });
+  const empty = await reviewer(
+    { PI_ENSEMBLE_REVIEW_BASH_TIMEOUT_MS: "" },
+    { command: "sleep 99999" },
+  );
   assert(
     empty.timeout === BOUND,
     `an empty knob is the default, not garbage (got ${String(empty.timeout)})`,
   );
 }
 for (const garbage of ["0", "-1", "abc", "NaN", "Infinity"]) {
-  const out = await reviewer({ PI_ENSEMBLE_REVIEW_BASH_TIMEOUT_MS: garbage }, { command: "sleep 99999" });
+  const out = await reviewer(
+    { PI_ENSEMBLE_REVIEW_BASH_TIMEOUT_MS: garbage },
+    { command: "sleep 99999" },
+  );
   assert(
     !("timeout" in out),
     `PI_ENSEMBLE_REVIEW_BASH_TIMEOUT_MS="${garbage}" means no bound (got ${String(out.timeout)})`,
@@ -145,30 +152,55 @@ for (const garbage of ["0", "-1", "abc", "NaN", "Infinity"]) {
 }
 
 // `Number()` alone was too generous a reader: an exponent is a bound no one can
-// honour, a hex literal is a bound no one typed, and a value past Pi's own
-// ceiling is one the bash schema would reject — all three mean no bound.
-for (const unparseable of ["1e308", "0x10", "2147484000", "2147483647000"]) {
+// honour, a hex literal is a bound no one typed, a fraction of a millisecond is
+// a bound no one means, and a value past Pi's own ceiling is one the bash schema
+// would reject — all of them mean no bound. A sub-second bound ("999") is refused
+// outright: the hook's unit is Pi's whole second, so 999 ms would round up to a
+// 1 s bound the operator never typed.
+for (const unparseable of [
+  "1e308",
+  "0x10",
+  "2147484000",
+  "2147483647000",
+  "1.5",
+  "0.4",
+  "999",
+  "2147482999.9",
+]) {
   const out = await reviewer(
     { PI_ENSEMBLE_REVIEW_BASH_TIMEOUT_MS: unparseable },
     { command: "sleep 99999" },
   );
   assert(
     !("timeout" in out),
-    `PI_ENSEMBLE_REVIEW_BASH_TIMEOUT_MS="${unparseable}" is not a plain ms value in range — no bound (got ${String(out.timeout)})`,
+    `PI_ENSEMBLE_REVIEW_BASH_TIMEOUT_MS="${unparseable}" is not a whole ms count in range — no bound (got ${String(out.timeout)})`,
   );
 }
 
-const raised = await reviewer({ PI_ENSEMBLE_REVIEW_BASH_TIMEOUT_MS: "90000" }, { command: "sleep 99999" });
+const raised = await reviewer(
+  { PI_ENSEMBLE_REVIEW_BASH_TIMEOUT_MS: "90000" },
+  { command: "sleep 99999" },
+);
 assert(
   raised.timeout === 90,
   `PI_ENSEMBLE_REVIEW_BASH_TIMEOUT_MS=90000 bounds to 90s (got ${String(raised.timeout)})`,
 );
 
-const rounded = await reviewer({ PI_ENSEMBLE_REVIEW_BASH_TIMEOUT_MS: "1500" }, { command: "sleep 99999" });
+const rounded = await reviewer(
+  { PI_ENSEMBLE_REVIEW_BASH_TIMEOUT_MS: "1500" },
+  { command: "sleep 99999" },
+);
 assert(
   rounded.timeout === 2,
-  `a sub-second knob value rounds UP to a whole second, never to 0 (got ${String(rounded.timeout)})`,
+  `a 1500 ms knob rounds UP to a whole second, never to 0 (got ${String(rounded.timeout)})`,
 );
+
+// The floor of the accepted range: exactly one second, in the knob's own unit.
+const floor = await reviewer(
+  { PI_ENSEMBLE_REVIEW_BASH_TIMEOUT_MS: "1000" },
+  { command: "sleep 99999" },
+);
+assert(floor.timeout === 1, `the 1000 ms floor is accepted as 1s (got ${String(floor.timeout)})`);
 
 // The reader itself, so the documented default and the hook's cannot drift.
 await withEnv({ PI_ENSEMBLE_REVIEW_BASH_TIMEOUT_MS: undefined }, async () => {

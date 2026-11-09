@@ -19,11 +19,11 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { registerMergeGuard } from "../src/merge-guard.ts";
 import childGuards, { failClosedPi } from "../src/child-guards.ts";
-import { assert } from "./merge-guard-helpers.ts";
+import { registerMergeGuard } from "../src/merge-guard.ts";
 import { withEnv } from "./lib/env-scope.ts";
-import { dispatch, makeFakePi, type Handler } from "./test-child-guards-helpers.ts";
+import { assert } from "./merge-guard-helpers.ts";
+import { type Handler, dispatch, makeFakePi } from "./test-child-guards-helpers.ts";
 
 let exit = 0;
 function check(cond: boolean, msg: string) {
@@ -132,8 +132,7 @@ await withEnv(NO_ROLE, async () => {
 // ============================================================
 {
   const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
-    if (cmd.includes("gh pr view"))
-      throw new Error("gh: no pull requests found (stub: no ledger)");
+    if (cmd.includes("gh pr view")) throw new Error("gh: no pull requests found (stub: no ledger)");
     return { stdout: "" };
   };
   const fake = makeFakePi();

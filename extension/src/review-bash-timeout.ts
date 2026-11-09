@@ -17,9 +17,10 @@
  *
  * Every seam is read per call, so one environment decides for every process:
  * the harness-set role, the caps master switch that makes every other bound
- * inert, and the knob itself — a plain decimal ms value (`Number()` alone took
- * `1e308`, hex and a digit separator). An invalid non-empty value means NO bound
- * and warns, like the sibling review knobs; empty or unset means the default.
+ * inert, and the knob itself — a whole number of milliseconds of at least 1000
+ * (`Number()` alone took `1e308`, a fraction, hex and a digit separator). An
+ * invalid non-empty value means NO bound and warns, like the sibling review
+ * knobs; empty or unset means the default.
  * The hook never throws: it registers through `failClosedPi`, whose wrapper
  * turns a thrown handler into a `{ block: true }` refusal, so an operator knob
  * cannot refuse a reviewer's bash call — a write that fails warns, as written.
@@ -34,25 +35,28 @@ import { trace, traceWarn } from "./trace.ts";
 const DEFAULT_REVIEW_BASH_TIMEOUT_MS = 600_000;
 
 /** Pi's bash ceiling for `timeout` (its MAX_TIMEOUT_MS / 1000): past it the tool
- *  rejects the value, so a knob asking for it gets no bound. A plain decimal ms
- *  value is required because `Number()` also takes a sign, exponent, hex and
- *  digit separators, none of which an operator types for a bound. The return is
- *  in the SECONDS Pi's bash schema takes; undefined means no bound. */
-const MAX_BASH_TIMEOUT_SECONDS = 2_147_483;
-const PLAIN_MILLISECONDS = /^\d+(\.\d+)?$/;
+ *  rejects the value, so a knob asking for it gets no bound. A whole number of
+ *  ms is required because `Number()` also takes a sign, fraction, exponent, hex
+ *  and digit separators, none of which an operator types for a bound, and below
+ *  a second there is no bound worth setting. The ceiling is stated in MS so the
+ *  one range test reads in the knob's own unit; the return is in the SECONDS
+ *  Pi's bash schema takes; undefined means no bound. */
+const MAX_BASH_TIMEOUT_MS = 2_147_483_000;
+const MIN_MILLISECONDS = 1000;
+const PLAIN_MILLISECONDS = /^\d+$/;
 
 export function reviewBashBoundSeconds(): number | undefined {
   const text = process.env.PI_ENSEMBLE_REVIEW_BASH_TIMEOUT_MS?.trim() ?? "";
   if (text === "") return Math.ceil(DEFAULT_REVIEW_BASH_TIMEOUT_MS / 1000);
-  const seconds = PLAIN_MILLISECONDS.test(text) ? Math.ceil(Number(text) / 1000) : Number.NaN;
-  // One range test, not two: a non-plain value is NaN and NaN fails this.
-  if (!(seconds >= 1 && seconds <= MAX_BASH_TIMEOUT_SECONDS)) {
+  // One range test, not two: a value that is not a whole ms count is NaN and NaN fails this.
+  const ms = PLAIN_MILLISECONDS.test(text) ? Number(text) : Number.NaN;
+  if (!(ms >= MIN_MILLISECONDS && ms <= MAX_BASH_TIMEOUT_MS)) {
     traceWarn(
-      `PI_ENSEMBLE_REVIEW_BASH_TIMEOUT_MS=${text.slice(0, 40)} is not a bash-range second count`,
+      `PI_ENSEMBLE_REVIEW_BASH_TIMEOUT_MS=${text.slice(0, 40)} is not a whole ms count in range`,
     );
     return undefined;
   }
-  return seconds;
+  return Math.ceil(ms / 1000);
 }
 
 /** Mutate a reviewer's bash call to run within the bound; never block it. */
