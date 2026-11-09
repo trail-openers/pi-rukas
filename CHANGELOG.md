@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.68](https://github.com/trail-openers/pi-rukas/compare/v0.14.67...v0.14.68) (2026-11-09)
+
+
+### Bug Fixes
+
+* **work:** never auto-merge a diff that touches a protected path ([#2142](https://github.com/trail-openers/pi-rukas/issues/2142)) ([144d7b0](https://github.com/trail-openers/pi-rukas/commit/144d7b0295d7e2418a94113d56213becf49053a4))
+
 ## [0.14.67](https://github.com/trail-openers/pi-rukas/compare/v0.14.66...v0.14.67) (2026-11-09)
 
 
