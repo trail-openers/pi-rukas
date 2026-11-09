@@ -53,7 +53,7 @@ function landing(line: string): boolean {
   const at = (w: string, from: number) => t.findIndex((x, i) => i >= from && x.toLowerCase() === w);
   if (at(KW, 0) >= 0 && BARE_VAR.test(line)) return true;
   for (let i = 0; i < t.length; i++) {
-    const w = t[i]!.toLowerCase();
+    const w = (t[i] ?? "").toLowerCase();
     if (w === "gh" || w === "glab") {
       const kw = at(w === "gh" ? "pr" : "mr", i + 1);
       if (kw >= 0 && (at(KW, kw + 1) >= 0 || (w === "glab" && at("accept", kw + 1) >= 0)))
@@ -61,9 +61,10 @@ function landing(line: string): boolean {
     } else if (w === "git") {
       // `git <kw>`: only git's global options (and a -C/-c value) between.
       for (let j = i + 1; j < t.length; j++) {
-        if (t[j]!.toLowerCase() === KW) return true;
-        if (!t[j]!.startsWith("-")) break;
-        if (t[j] === "-C" || t[j] === "-c") j++;
+        const tj = t[j] ?? "";
+        if (tj.toLowerCase() === KW) return true;
+        if (!tj.startsWith("-")) break;
+        if (tj === "-C" || tj === "-c") j++;
       }
     } else if (w === "hub" && at(KW, i + 1) >= 0) return true;
   }
