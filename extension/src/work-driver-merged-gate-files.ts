@@ -22,7 +22,7 @@
  */
 
 import { citationPresent, normaliseForCitation } from "./decision-evidence.ts";
-import { type ProtectedMergeRead, mergeProtectedPathsForBranch } from "./merge-protected-paths.ts";
+import { type ProtectedMergeRead, mergeDeclaredGateFileChanges } from "./merge-protected-paths.ts";
 import { protectedPathsSentence } from "./protected-paths-text.ts";
 import { trace } from "./trace.ts";
 import { protectedPathKey } from "./work-driver-doctrine.ts";
@@ -71,9 +71,21 @@ function verifiedEntries(
   });
 }
 
+/**
+ * A directory declaration keeps its trailing `/`: it is the ONLY thing that tells
+ * this apart from an exact path, and `protectedPathKey` would strip it. Nothing else
+ * may compare on the raw string — an absolute or `./`-prefixed declaration still has
+ * to name the same path the diff printed.
+ */
+function declaredKey(pathValue: string): string | undefined {
+  const key = protectedPathKey(pathValue);
+  if (!key) return undefined;
+  return pathValue.endsWith("/") || pathValue.endsWith("\\") ? `${key}/` : key;
+}
+
 /** Does this declared entry cover this changed path? A trailing `/` is a prefix. */
 function entryCovers(entry: DeclaredGateFile, path: string): boolean {
-  const declared = protectedPathKey(entry.path);
+  const declared = declaredKey(entry.path);
   const changed = protectedPathKey(path);
   if (!declared || !changed) return false;
   return declared.endsWith("/") ? changed.startsWith(declared) : changed === declared;
@@ -130,7 +142,7 @@ export async function heldForDeclaredGateFiles(
       `${who} mention gate files, but no declared path could be verified against them (${decision.reason ?? "no judge answer"}), so the merge cannot be established as clearing them`,
     );
   }
-  const changes: ProtectedMergeRead = await mergeProtectedPathsForBranch(
+  const changes: ProtectedMergeRead = await mergeDeclaredGateFileChanges(
     exec,
     repoRoot,
     state.pipelineState.branchName ?? "",
