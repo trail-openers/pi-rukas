@@ -58,6 +58,7 @@
  * safety switch to unblock a read is handed the wrong remedy.
  */
 
+import { dataOnlyMergeMention } from "./merge-data-only.ts";
 import { isInertFileWrite } from "./merge-inert-write.ts";
 import { MERGE_WORD } from "./merge-lex-views.ts";
 import { lexedWhy } from "./merge-refusals.ts";
@@ -431,6 +432,13 @@ export function readMergeCommand(command: string): MergeCommand {
   if (isInertFileWrite(command)) return { kind: "none" };
   const bounded = analysisBound(command);
   if (bounded !== undefined) return bounded;
+  // #2125 — the merge trigger scans the raw command, so vocabulary that lives
+  // only in DATA (a quoted grep pattern, a commit message, a `cat` heredoc body
+  // quoting a merge) holds commands that exec no forge. When the whole command
+  // parses in the small grammar and no segment bash would EXECUTE spells a
+  // merge, the mention is data and the command is `none`. Anything outside that
+  // grammar answers `false` and is judged on its raw text exactly as before.
+  if (dataOnlyMergeMention(command)) return { kind: "none" };
   const lexed = lex(command);
   if ("words" in lexed && isReadOnlyGh(lexed.words)) return { kind: "none" };
   const trigger = triggerCode(command);

@@ -341,10 +341,10 @@ export const REFUSED: string[] = [
   'gh pr create --title x --body "merge"',
   'gh pr create --title x -b "merge the branch"',
   'gh issue create --title x --body="please merge"',
-  // Prose that names a merge next to a forge.
-  'echo "gh pr merge 12"',
-  'git commit -m "docs: explain gh pr merge 12"',
-  "grep -rn 'gh pr merge' .",
+  // Prose that names a merge next to a forge. #2125 frees the data-only ones
+  // (a quoted echo argument, a commit message, a grep pattern) — they are
+  // listed as `none` rows in EXPANSION_CANARIES. A bare `gh alias set` still
+  // defines a command that runs the merge, so it stays held.
   "gh alias set m 'pr merge'",
 ];
 
@@ -407,6 +407,12 @@ export const CODES: Array<[string, string, string?]> = [
  * at all is the deliberate over-refusal #962 chose.
  */
 export const EXPANSION_CANARIES: Array<[string, "refused" | "none", string?]> = [
+  // #2125 — merge vocabulary that lives only in DATA: a quoted argument to a
+  // text writer, a commit message, a grep pattern. No segment bash execs spells
+  // a merge, so the data-only exemption frees them (merge-data-only.ts).
+  ['echo "gh pr merge 12"', "none"],
+  ['git commit -m "docs: explain gh pr merge 12"', "none"],
+  ["grep -rn 'gh pr merge' .", "none"],
   // A. a substitution GLUED to the command word. Old: `merge` (read the PR).
   // Now: held. The old matcher could tell `$(true)gh pr merge 12` from
   // `gh pr merge 12`; the allowlist cannot read the word bash would exec, so

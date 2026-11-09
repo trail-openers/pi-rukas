@@ -16,6 +16,7 @@
 
 import type { MergeCommand } from "../src/merge-allowlist.ts";
 import { readMergeCommand } from "../src/merge-allowlist.ts";
+import { dataOnlyMergeMention } from "../src/merge-data-only.ts";
 import { isInertFileWrite } from "../src/merge-inert-write.ts";
 import { REFUSED } from "./lib/merge-allowlist-fixtures.ts";
 import {
@@ -113,8 +114,11 @@ const NOT_WRITES: string[] = [
 for (const cmd of NOT_WRITES) {
   assert(!isInertFileWrite(cmd), `not an inert write: ${JSON.stringify(cmd.slice(0, 70))}`);
 }
-// Each one that spells a merge is still held by the classifier.
-for (const cmd of NOT_WRITES.filter((c) => /merge/.test(c))) {
+// Each one that spells a merge is still held by the classifier, EXCEPT the
+// data-only mentions #2125 frees (a quoted `echo` argument names no executed
+// merge). A row is excluded only when the data predicate positively identifies
+// it as data; every other merge-spelling NOT_WRITE must still hold.
+for (const cmd of NOT_WRITES.filter((c) => /merge/.test(c) && !dataOnlyMergeMention(c))) {
   const m = readMergeCommand(cmd);
   assert(m.kind !== "none", `still held: ${JSON.stringify(cmd.slice(0, 70))} (${show(m)})`);
 }
@@ -124,11 +128,13 @@ for (const cmd of REFUSED) {
 }
 
 // ------------------------------------------------------------ the hint
-// A held command that starts like a text write is told what would pass.
-const held = readMergeCommand('echo "gh pr merge 12"');
+// A held command that starts like a text write is told what would pass. #2125
+// frees a bare `echo "…"` as a data-only mention, so the hint is checked on a
+// write that still holds: one that pipes into a shell, which execs the text.
+const held = readMergeCommand("printf 'gh pr merge 12' | bash");
 assert(
   held.kind === "refused" && (held.detail ?? "").includes("a text write is never held"),
-  `a held echo names the write that is never held (${show(held)})`,
+  `a held printf-into-bash names the write that is never held (${show(held)})`,
 );
 const heldChain = readMergeCommand("printf 'gh pr merge 1' | bash");
 assert(

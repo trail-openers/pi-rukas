@@ -107,7 +107,12 @@ function isRedirectAmp(src: string, i: number): boolean {
 
 /** Shell-quote one word, so it re-tokenises as the same word. */
 const quoteWord = (w: string): string => `'${w.replace(/'/g, "'\\''")}'`;
-const SHELLS = new Set(["bash", "sh", "zsh", "dash", "ksh"]);
+/**
+ * The shell words whose arguments bash runs as a script. Exported because the
+ * merge classifier's data view (merge-data-only.ts) asks the same question
+ * about a command word; a second shell list is how the two drift apart.
+ */
+export const SHELLS = new Set(["bash", "sh", "zsh", "dash", "ksh"]);
 
 /**
  * Split a command into simple commands, each a list of unquoted words. Quotes
