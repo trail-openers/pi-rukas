@@ -108,14 +108,27 @@ fi
 CACHE_DIR="${HOME}/.cache/huggingface"
 SEED_DIR="/opt/hf-cache-seed"
 MODEL_DIR="${CACHE_DIR}/hub/models--BAAI--bge-small-en-v1.5"
+REVISION="5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
 
 if [ -d "$SEED_DIR" ] && [ ! -d "$MODEL_DIR" ]; then
   mkdir -p "$CACHE_DIR"
-  # cp -rn: don't overwrite anything the user already has cached. Errors
-  # silenced because the cache dir may contain partial state from prior
-  # vipune runs that left a malformed download — we don't want entrypoint
-  # to fail the whole boot for a cache hiccup.
-  cp -rn "$SEED_DIR"/. "$CACHE_DIR"/ 2>/dev/null || true
+  # cp -a (not cp -r): preserves the seed's modes and ownership, which is what
+  # the build's assertion checked. No 2>/dev/null and no `|| true`: a seed that
+  # cannot be copied means vipune has no model and the offline first search
+  # will fail with "Failed to download embedding model", so booting on silently
+  # is how the image shipped without a model once before. `set -e` fails the
+  # container here and names the reason instead.
+  cp -a "$SEED_DIR"/. "$CACHE_DIR"/
+  # The don't-overwrite-an-existing-cache check above stays: a populated
+  # $MODEL_DIR from a prior run is never touched, and this assertion only ever
+  # runs on the copy path. `-xtype f`: a self-contained seed holds real blobs
+  # under hub/blobs, and a symlink there means the image was built with the xet
+  # transport, whose blobs live outside hub/ and resolve to nothing offline.
+  # refs/<revision> is what vipune's resolver reads to resolve the pinned
+  # revision without going to the network, so its absence is the 404.
+  test -s "$MODEL_DIR/refs/$REVISION"
+  test -s "$MODEL_DIR/snapshots/$REVISION/config.json"
+  test -n "$(find "$MODEL_DIR/blobs" -maxdepth 1 -xtype f -size +1M -print -quit)"
 fi
 
 exec "$@"

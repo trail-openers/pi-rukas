@@ -78,6 +78,7 @@ export const ALWAYS_RUN: readonly string[] = [
   "smoke-tests/test-dispatch-deck-list-quiet.ts",
   "smoke-tests/test-do-prompt.ts",
   "smoke-tests/test-dockerfile-pins.ts",
+  "smoke-tests/test-dockerfile-prefetch.ts",
   "smoke-tests/test-doctrine-issue-ownership.ts",
   "smoke-tests/test-doctrine-protection.ts",
   "smoke-tests/test-draft-disclosure-carries-marker-1398.ts",

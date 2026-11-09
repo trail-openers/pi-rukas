@@ -1089,15 +1089,15 @@ PR: [#228](https://github.com/trail-openers/pi-rukas/pull/228)
 
 **Symptom:** Inside `pi-rukas`, `vipune search` errors with `Configuration error: Failed to download embedding model 'BAAI/bge-small-en-v1.5': request error: http status: 404`. Suggests `huggingface-cli download …`.
 
-**Cause:** vipune downloads the embedding model on first semantic-search call. Its HTTP client 404s on the pinned revision (URLs work via `curl` — likely a redirect/User-Agent quirk).
+**Cause:** vipune downloads the embedding model on first semantic-search call. Its HTTP client 404s on the pinned revision (URLs work via `curl` — likely a redirect/User-Agent quirk), so the image pre-fetches it at build time and the entrypoint copies that seed into the cache volume. Both halves of that can go missing: a pre-fetch that fails silently ships an image with no seed, and a named volume mounted over `~/.cache` masks whatever the image did have.
 
-**Fix:** The image pre-fetches the model into `/opt/hf-cache-seed/` and the entrypoint seeds the named cache volume from there on first start. If you're seeing the 404, your image is stale: `./install.sh` to rebuild. Verify the seed is present:
+**Fix:** The image pre-fetches the model with `hf download` into `/opt/hf-cache-seed/` and asserts, in the same build step, the snapshot's `config.json`, a multi-megabyte model blob that is a real file rather than a symlink, and the `refs/<revision>` file vipune's resolver opens to resolve the pinned revision. A pre-fetch that cannot fetch — or that downloads through the xet transport, whose blobs are symlinks living outside `hub/` — fails the image build rather than shipping an image without a usable model. The entrypoint then copies the seed with `cp -a` into the named cache volume on first start and asserts the same three files, so a seed that will not satisfy an offline search fails the container's boot with a reason instead of surfacing later as this 404. If you're seeing it, your image predates that: `./install.sh` to refresh. Verify the seed is present:
 
 ```bash
-docker run --rm trail-openers/pi-rukas:latest ls /opt/hf-cache-seed/hub/models--BAAI--bge-small-en-v1.5/snapshots
+docker run --rm ghcr.io/trail-openers/pi-rukas:latest ls /opt/hf-cache-seed/hub/models--BAAI--bge-small-en-v1.5/snapshots
 ```
 
-Should list the pinned revision SHA.
+Should list the pinned revision SHA. If it lists nothing, the seed is missing from your image — the build that produced it predates the assertion, so refresh rather than rebuild the same layer.
 
 PR: [#205](https://github.com/trail-openers/pi-rukas/pull/205)
 
