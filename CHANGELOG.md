@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.67](https://github.com/trail-openers/pi-rukas/compare/v0.14.66...v0.14.67) (2026-11-09)
+
+
+### Bug Fixes
+
+* **sandbox:** fail the image build when the vipune model pre-fetch fails ([#2135](https://github.com/trail-openers/pi-rukas/issues/2135)) ([76d04e9](https://github.com/trail-openers/pi-rukas/commit/76d04e9dd69ec807c3e3dc0718dec9f7a43e5af4))
+
 ## [0.14.66](https://github.com/trail-openers/pi-rukas/compare/v0.14.65...v0.14.66) (2026-11-09)
 
 
