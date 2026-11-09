@@ -227,9 +227,16 @@ const EXPECTED: Record<string, number> = {
   // holder-branch sweep split out of `work-driver-worktree-sweep.ts` for the
   // 500-line gate; the row follows the call, not the file that used to host it.
   "work-driver-sweep-policy.ts": 1,
+  // #1529 — the merge-time protected read fetches `<remote>/<branch>` and
+  // `<remote>/<mainline>` before it trusts a diff, and the guard's own fetch now
+  // lives in merge-guard-reads-git.ts (split from merge-guard.ts for the
+  // 500-line cap; the row follows the call). Both go through the wrapper, so a
+  // wedged fetch is a bounded refusal rather than a merge step that never
+  // answers.
+  "merge-protected-paths.ts": 1,
+  "merge-guard-reads-git.ts": 1,
   "work-driver-handoff-snapshot.ts": 1,
   "work-driver-lens-fix-reposition-gate.ts": 1,
-  "merge-guard.ts": 1,
   "lens-review-residuals.ts": 1,
   "work-driver-continue-pr-branch.ts": 1,
   "work-driver-continue-pr-guard.ts": 1,

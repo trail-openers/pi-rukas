@@ -92,18 +92,19 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execp } from "./exec.ts";
 import { FORGE_EXEC_TIMEOUT_MS } from "./forge-detect.ts";
-import type { MergeCommand } from "./merge-allowlist.ts";
-import { readMergeCommand } from "./merge-allowlist.ts";
+import { type MergeCommand, readMergeCommand } from "./merge-allowlist.ts";
+import { protectedMergeRefusal } from "./merge-guard-protected.ts";
 import { misdirectedWriteOf } from "./merge-guard-provenance.ts";
+import { guardFetchAndHead, guardMainline, guardMainlineOid } from "./merge-guard-reads-git.ts";
 import {
   adversarialRefusal,
   lensNotEvaluatedRefusal,
-  mergeIdentity,
   readPrCommentBodies,
   refuseUnlessCiGreen,
 } from "./merge-guard-reads.ts";
 import { evaluateRoundCapMerge } from "./merge-guard-round-cap.ts";
 import { compareAdversarialIdentity } from "./merge-identity-compare.ts";
+import { mergeIdentityAgainstMainline } from "./merge-identity.ts";
 import { analyseRefusal, clipCheckNames } from "./merge-refusal-render.ts";
 import { GLAB_AUTO_MERGE_REFUSAL, holdReasonText, renderHold } from "./merge-refusals.ts";
 import {
@@ -312,56 +313,55 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
         "no git remote found (origin/upstream/first) — the merge guard refuses by default (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)",
       );
     }
+    // #1529 — the mainline, resolved ONCE here and handed to every git read
+    // below (the fetch, the head OID, the protected-path read, the patch
+    // identity). One resolution keeps them on the same commit; see
+    // merge-guard-reads-git.ts for the invariant and the fail-closed refusal.
+    const mainline = await guardMainline(cwd, execFn);
+    if (!mainline.ok) return mainline.block;
 
-    // Fetch the head AND the base. Fail-closed on error. The remote and
-    // branches come from the PR and the git config: validated and passed as
-    // argv, never shell text. The base is fetched so the merge-base below is
-    // taken against the same fresh refs the marker poster uses (#1305).
-    const refProblem = netRefProblem(remote, target.headBranch, target.baseBranch);
-    if (refProblem !== undefined) {
-      return block(
-        `git fetch refused: ${refProblem} — the merge guard refuses by default (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)`,
-      );
-    }
-    try {
-      await runNetGit(execFn, "git", {
-        cwd,
-        maxBuffer: 64 * 1024,
-        timeoutMs: EXEC_TIMEOUT_MS,
-        argv: ["fetch", remote, target.headBranch, target.baseBranch],
-      });
-    } catch (err) {
-      return block(
-        `git fetch failed: ${analyseRefusal(err, 120)} — the merge guard refuses by default (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)`,
-      );
-    }
+    // Fetch the head, the base and the mainline, then pin the fetched head to
+    // the PR's own headOid (#1305). Both reads and their refusals live in
+    // merge-guard-reads-git.ts, which is also where the argv form and the
+    // bounded, non-interactive network git call are kept (#1279, #1095).
+    // `fetchedHead` is the OID the round-cap head check and the CI pin below
+    // use — the one value every later read describes.
+    const fetch = await guardFetchAndHead(
+      execFn,
+      cwd,
+      remote,
+      target,
+      mainline.value,
+      EXEC_TIMEOUT_MS,
+    );
+    if (!fetch.ok) return fetch.block;
+    const fetchedHead = fetch.value;
 
-    // Check the fetched head OID against the PR's headOid.
-    let fetchedHead: string;
-    try {
-      const { stdout } = await execFn(`git rev-parse ${remote}/${target.headBranch}`, {
-        cwd,
-        maxBuffer: 8 * 1024,
-        timeout: EXEC_TIMEOUT_MS,
-      });
-      fetchedHead = stdout.trim();
-    } catch (err) {
-      return block(
-        `could not read ${remote}/${target.headBranch}: ${analyseRefusal(err, 120)} — the merge guard refuses by default`,
-      );
-    }
-    if (fetchedHead !== target.headOid) {
-      return block(
-        `stale branch: fetched head ${fetchedHead.slice(0, 8)} ≠ PR headOid ${target.headOid.slice(0, 8)} — the branch moved after the PR was opened; re-run the reviews`,
-      );
-    }
+    // The protected-path gate, immediately after the head equality and beside
+    // the patch identity below: a PR whose own commits touch `.github/`,
+    // `.pi/`, `CODEOWNERS` or `agents.json` is not merged by an agent, whatever
+    // the ledger says. Both OIDs are pinned here — the fetched head this handler
+    // verified against the PR's `headOid`, and `<remote>/<mainline>` resolved
+    // once — so the gate diffs the commit the merge would land rather than
+    // re-resolving a ref that may have moved since the fetch.
+    const baseOid = await guardMainlineOid(execFn, cwd, remote, mainline.value, EXEC_TIMEOUT_MS);
+    if (!baseOid.ok) return baseOid.block;
+    const protectedGate = await protectedMergeRefusal(execFn, cwd, fetchedHead, baseOid.value);
+    if (protectedGate) return protectedGate;
 
     // The current identity, built as the ledger writers build theirs (#1305):
     // merge-base of the head against `<remote>/<mainline>`, diffed to the
     // head. A moved main leaves it unchanged; a change to the branch's own
     // content changes it. A PR whose base is not the mainline has nothing
     // recorded to match and fails closed (see mergeIdentity).
-    const identity = await mergeIdentity(execFn, cwd, target.headBranch, target.baseBranch);
+    const identity = await mergeIdentityAgainstMainline(
+      execFn,
+      cwd,
+      target.headBranch,
+      target.baseBranch,
+      mainline.value,
+      remote,
+    );
     if (!identity.ok) {
       return block(
         `could not compute the patch-id for ${target.headBranch}: ${identity.reason} — the merge guard refuses by default (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)`,

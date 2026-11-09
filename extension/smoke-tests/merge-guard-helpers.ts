@@ -10,23 +10,17 @@
  */
 
 import { execSync } from "node:child_process";
-import {
-  existsSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { registerMergeGuard } from "../src/merge-guard.ts";
 import type { MergeTarget } from "../src/merge-target.ts";
 import { type LedgerEntry, latestEntry, ledgerPathFor } from "../src/review-ledger.ts";
 import { adversarialPassed, lensPassed } from "../src/review-ledger.ts";
+import { commandOf } from "./lib/argv-shell.ts";
+import { isNulDiffRead } from "./lib/nul-porcelain.ts";
 import type { MergeGateEnv } from "./merge-guard-forge-fixture.ts";
 import { evidenceHeadFor, widenOid } from "./merge-guard-forge-fixture.ts";
-import { commandOf } from "./lib/argv-shell.ts";
 
 // The hook reads the forge from PI_ENSEMBLE_FORGE (the detectForge hard
 // override) so the decision matrix runs offline, without a real remote.
@@ -124,30 +118,34 @@ export async function withLedger(entries: LedgerEntry[], fn: () => Promise<unkno
 }
 
 /** Register the real guard on a fake pi and drive it through `opts.execFn`. */
-export async function makeHook(env: {
-  target: MergeTarget;
-  currentPatchId: string;
-  fetchedHead: string;
-  calls: string[];
-  failFetch?: boolean;
-  failGh?: boolean;
-  /** #2107 — the `timeout` each exec was given, so a test can assert the bound. */
-  timeouts?: number[];
-  ledgerCommonDir?: string;
-  remote?: string;
-  ghComments?: string;
-  /** The mainline `git symbolic-ref` reports (default: the PR's base). */
-  mainline?: string;
-  /** What `git merge-base` prints (default `mb0000`; "" = no merge-base). */
-  mergeBase?: string;
-  /**
-   * What `gh pr view --json number` (the CURRENT-BRANCH resolution) does.
-   * `"throws"` (default) is the stub's error; `"empty"` makes it return no
-   * `number` field, which is the shape that leaves `resolvePrNumber` with
-   * `undefined` — the case the early-refusal seam reports.
-   */
-  branchNumber?: "throws" | "empty";
-} & MergeGateEnv): Promise<(event: unknown, ctx: unknown) => Promise<unknown>> {
+export async function makeHook(
+  env: {
+    target: MergeTarget;
+    currentPatchId: string;
+    fetchedHead: string;
+    calls: string[];
+    failFetch?: boolean;
+    failGh?: boolean;
+    /** #2107 — the `timeout` each exec was given, so a test can assert the bound. */
+    timeouts?: number[];
+    ledgerCommonDir?: string;
+    remote?: string;
+    ghComments?: string;
+    /** The mainline `git symbolic-ref` reports (default: the PR's base). */
+    mainline?: string;
+    /** What `git merge-base` prints (default `mb0000`; "" = no merge-base). */
+    mergeBase?: string;
+    /** The mainline OID resolve fails: throws, or answers a non-OID. */
+    failBaseOid?: "throws" | "garbage";
+    /**
+     * What `gh pr view --json number` (the CURRENT-BRANCH resolution) does.
+     * `"throws"` (default) is the stub's error; `"empty"` makes it return no
+     * `number` field, which is the shape that leaves `resolvePrNumber` with
+     * `undefined` — the case the early-refusal seam reports.
+     */
+    branchNumber?: "throws" | "empty";
+  } & MergeGateEnv,
+): Promise<(event: unknown, ctx: unknown) => Promise<unknown>> {
   let handler: ((event: unknown, ctx: unknown) => Promise<unknown>) | undefined;
   const fakePi = {
     on: (name: string, fn: (event: unknown, ctx: unknown) => Promise<unknown>) => {
@@ -306,12 +304,39 @@ export async function makeHook(env: {
     if (cmd.includes("git remote")) {
       return { stdout: `${env.remote}\n` };
     }
+    // The guard resolves `<remote>/<mainline>` to an OID for the protected read,
+    // through the SAME string form as its head check below. Matched FIRST, or the
+    // head arm's `<remote>/` prefix would answer it with the head.
+    if (cmd.includes(`rev-parse ${env.remote}/${env.mainline ?? env.target.baseBranch}`)) {
+      // Two ways that resolve can fail, and both must block: a call that throws,
+      // and one that prints something which is not an object id.
+      if (env.failBaseOid === "throws") throw new Error("git rev-parse: unknown revision");
+      if (env.failBaseOid === "garbage") return { stdout: "not-an-oid\n" };
+      return { stdout: widenOid(env.mergeBase ?? "mb0000") };
+    }
     if (cmd.includes(`rev-parse ${env.remote}/`)) return { stdout: fetched };
     if (cmd.includes("symbolic-ref")) {
       return { stdout: `origin/${env.mainline ?? env.target.baseBranch}\n` };
     }
+    // The identity arm below matches `git merge-base`; the protected read's
+    // `git merge-base --end-of-options <oid> <oid>` is that SAME command and must
+    // answer here, widened, or the earlier placeholder arm hands it `mb0000` and
+    // the read refuses a non-OID (correctly — that is the ordering bug this arm
+    // would otherwise hide).
+    if (cmd.includes("merge-base --end-of-options")) {
+      return { stdout: `${widenOid(env.mergeBase ?? "mb0000")}\n` };
+    }
     if (cmd.includes("git merge-base")) return { stdout: `${env.mergeBase ?? "mb0000"}\n` };
     if (cmd.includes("patch-id")) return { stdout: `${env.currentPatchId} 0000` };
+    // The protected-path read itself: `diff -z --name-status -M -C
+    // <merge-base>..<head>`. Matched through `isNulDiffRead`, which is derived
+    // from the production argv constant rather than a hand-written substring: a
+    // command-shape drift then fails the match loudly instead of falling through
+    // to `{stdout:""}` and letting every arm pass against an empty change set.
+    if (isNulDiffRead(cmd)) {
+      if (env.protectedDiffThrows) throw new Error("git diff: unable to read pack file");
+      return { stdout: env.protectedDiff ?? "" };
+    }
     if (cmd.includes("git-common-dir")) {
       return { stdout: env.ledgerCommonDir ?? "" };
     }
@@ -337,6 +362,11 @@ export async function hookDecision(
     mainline?: string;
     mergeBase?: string;
     branchNumber?: "throws" | "empty";
+    /** #1529 — the protected-path read's answer (see MergeGateEnv). */
+    protectedDiff?: string;
+    protectedDiffThrows?: boolean;
+    /** The mainline OID resolve answers a non-OID (fail-closed arm). */
+    failBaseOid?: "throws" | "garbage";
   } & MergeGateEnv = {},
 ) {
   const env: Parameters<typeof makeHook>[0] = {
@@ -354,6 +384,9 @@ export async function hookDecision(
     mainline: opts.mainline,
     mergeBase: opts.mergeBase,
     branchNumber: opts.branchNumber,
+    protectedDiff: opts.protectedDiff,
+    protectedDiffThrows: opts.protectedDiffThrows,
+    failBaseOid: opts.failBaseOid,
     prChecks: opts.prChecks,
     mergeStateStatus: opts.mergeStateStatus,
     failEvidence: opts.failEvidence,
@@ -386,10 +419,7 @@ export async function hookDecision(
   let r: unknown;
   try {
     r = await withLedger(entries, () =>
-      handler(
-        { toolName: "bash", input: { command: commandText() } },
-        undefined as never,
-      ),
+      handler({ toolName: "bash", input: { command: commandText() } }, undefined as never),
     );
   } finally {
     process.stderr.write = realWrite;
@@ -413,12 +443,13 @@ export async function hookDecision(
      */
     traces: traces
       .filter((l) => l.includes("merge-guard: HELD") || l.includes("merge-guard: BLOCKED"))
-      .map(
-        (l) =>
-          // #1479 lens fix — strip ANY trace level word, not just `WARN`: the
-          // prefix is harness plumbing (`[pi-rukas] LEVEL msg`), and a future
-          // level must not silently change which lines the filter sees.
-          l.trim().replace(/^\[pi-rukas\] [A-Z]+ /, ""),
+      .map((l) =>
+        // #1479 lens fix — strip ANY trace level word, not just `WARN`: the
+        // prefix is harness plumbing (`[pi-rukas] LEVEL msg`), and a future
+        // level must not silently change which lines the filter sees.
+        l
+          .trim()
+          .replace(/^\[pi-rukas\] [A-Z]+ /, ""),
       ),
   };
 }

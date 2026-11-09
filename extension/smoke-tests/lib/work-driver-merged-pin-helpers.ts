@@ -10,15 +10,16 @@
  * the other.
  */
 
-import type { DriverContext } from "../src/work-driver-context.ts";
-import type { VerifyExecFn } from "../src/work-driver-git.ts";
+import type { DriverContext } from "../../src/work-driver-context.ts";
+import type { VerifyExecFn } from "../../src/work-driver-git.ts";
+import { isNulDiffRead } from "./nul-porcelain.ts";
 
 /** #1533 — the verified head every merge in the merged-step tests pins to. */
 export const HEAD_OID = "7".repeat(39) + "e";
 
 /** A host with no UI: the merged step never sends a chat message in these tests. */
-export function mkPi(): ExtensionAPI {
-  return { sendUserMessage: () => {} } as unknown as ExtensionAPI;
+export function mkPi(): DriverContext["host"] {
+  return { sendUserMessage: () => {}, emit: () => {} } as unknown as DriverContext["host"];
 }
 
 export interface MockExec {
@@ -39,6 +40,11 @@ export function mkExec(
   const fn: VerifyExecFn = async (rawCmd, opts) => {
     const cmd = opts?.argv ? [rawCmd, ...opts.argv].join(" ") : rawCmd;
     calls.push(cmd);
+    // The protected-path committed read is matched through the lib derived from
+    // the production argv constants rather than a caller's substring key, so a
+    // command-shape drift fails the match loudly instead of answering a stale
+    // text (or nothing at all) while the assertions pass on an empty change set.
+    if (opts?.argv && isNulDiffRead(cmd)) return { stdout: "" };
     for (const [k, v] of Object.entries(o)) {
       if (cmd.includes(k)) {
         if (v.error) {

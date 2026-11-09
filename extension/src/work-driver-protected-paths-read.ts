@@ -1,35 +1,28 @@
 /**
- * work-driver-protected-paths-read — NUL-separated reads for the #406 develop
- * protected-path gate (#1378).
+ * work-driver-protected-paths-read — NUL-separated reads for the develop
+ * protected-path gate.
  *
- * The gate read the change set with `git status --porcelain --untracked-files=all`
- * and `git diff --name-only <base>..HEAD`. Neither is `-z`, and between them
- * they hid two classes of protected-path write:
- *
- *   1. **A committed rename away from a protected path.** `--name-only` collapses a
- *      rename to its destination: `git mv .github/workflows/ci.yml src/ci.yml`
- *      printed `src/ci.yml` and nothing else. The workflow the cycle removed was
- *      absent from the change set the gate inspected, so the cycle passed.
- *   2. **A protected path whose name git C-quotes.** With `core.quotePath` at its
- *      default a non-ASCII name prints as `".github/workflows/w\303\266rkflows.yml"`.
- *      `porcelainPaths` strips the outer quotes and leaves the octal bytes literal,
- *      so `isProtectedPath` still saw a `.github` path — but the operator-facing
- *      prose, the grant comparison, and `SAFE_PATH_RE` all saw escape sequences.
+ * The gate used to read the change set with `git status --porcelain
+ * --untracked-files=all` and `git diff --name-only <base>..HEAD`. Neither is
+ * `-z`, and between them they hid two classes of protected-path write: a
+ * committed **rename away from** a protected path (name-only collapses a rename
+ * to its destination, so the file the cycle deleted never appeared in the set the
+ * gate inspected), and a protected path whose name git **C-quotes** (a non-ASCII
+ * name prints octal-escaped, which the operator-facing prose, the grant
+ * comparison and the path safety check all then read wrong).
  *
  * Both reads are NUL-separated here, where git emits names verbatim and rename
- * sides arrive as their own tokens. The layouts are deliberately NOT parsed by one
- * loop: `status --porcelain -z` puts the NEW name first (`R  new\0orig\0`) while
- * `diff -z --name-status -M -C` puts the status code first (`R100\0from\0to`). The
- * `worktreeStatus` precedent in work-develop-git.ts is the uncommitted-side shape;
- * `workstreamTouchedSet` in work-driver-verify.ts is the committed-side one, but
- * without `-z`, so there was nothing to import.
+ * sides arrive as their own tokens. The layouts are deliberately NOT parsed by
+ * one loop: `status --porcelain -z` puts the NEW name first (`R  new\0orig\0`)
+ * while `diff -z --name-status -M -C` puts the status code first
+ * (`R100\0from\0to`).
  *
  * Rename SOURCES feed the protected check only. `verifyDevelopOutcome` keeps a
  * separate `touchedPaths` union for the frontend-only verify skip, the
- * falsily-green check and the #285 scope/fanout gate, and a rename source belongs
- * to none of those verdicts: letting `git mv .github/workflows/ci.yml src/ci.yml`
- * into that union could classify a source-touching cycle as CSS-only and skip the
- * derived verify chain. Hence the split return type below.
+ * falsily-green check and the scope/fanout gate, and a rename source belongs to
+ * none of those verdicts: letting a rename source into that union could classify
+ * a source-touching cycle as CSS-only and skip the derived verify chain. Hence
+ * the split return type below.
  *
  * Both readers are fail-closed and say why: git itself failing, a rename token
  * without its pair, or a malformed status record all come back `{ ok: false }`
@@ -41,8 +34,8 @@
  * two): each is pinned to one git command's documented field layout and each
  * rejects the shapes that command must not produce. One parser over three layouts
  * would need a mode per command and would accept another command's tokens, which
- * is how a rename silently becomes an empty change set — the bug this module
- * exists for. The three are deliberately not merged.
+ * is how a rename silently becomes an empty change set. The three are
+ * deliberately not merged.
  *
  * The executor is the driver's `verifyExecFn` seam, but a plain string `cmd` is
  * NOT accepted here. Every git call in the worktree paths goes through the argv
@@ -54,6 +47,8 @@
  */
 
 import { DEFAULT_GIT_TIMEOUT_MS } from "./git-range.ts";
+import { errText } from "./protected-paths-text.ts";
+
 import type { DriverContext } from "./work-driver-context.ts";
 
 /**
@@ -65,13 +60,9 @@ import type { DriverContext } from "./work-driver-context.ts";
 export const PROTECTED_READ_MAX_BUFFER = 64 * 1024 * 1024;
 
 /**
- * Byte ceiling on the committed read. A separate, smaller ceiling than the
- * status read because the two read different things: this one is NUL-separated
- * name-status records for commits ahead of the base, bounded by what a developer
- * can plausibly commit in one cycle (a few hundred changed paths — megabytes, not
- * tens of megabytes). Carrying the 64 MiB figure here would let a pathological
- * commit hold 64 MiB of stdout in the driver to no purpose, and a ceiling nobody
- * expects to reach is not a ceiling.
+ * Byte ceiling on the committed read. Separate from and smaller than the status
+ * read's: this one reads NUL-separated name-status records for commits ahead of
+ * the base, bounded by what a developer can plausibly commit in one cycle.
  */
 export const PROTECTED_DIFF_MAX_BUFFER = 8 * 1024 * 1024;
 
@@ -81,70 +72,33 @@ export type ProtectedPathExec = NonNullable<DriverContext["verifyExecFn"]>;
  * The `-c` pairs both reads carry, ahead of the subcommand.
  *
  * `core.quotePath=off` — `-z` stops git C-quoting the names it prints, but the
- * *range* argument is still echoed C-quoted inside git's own fatal message
- * (`fatal: bad revision '"w\303\266orkflows.yml"..HEAD'`), and that message is the
- * reason an operator sees when a read fails closed.
+ * *range* argument is still echoed C-quoted inside git's own fatal message, and
+ * that message is the reason an operator sees when a read fails closed.
  *
  * `core.fsmonitor=false` and `core.hooksPath=/dev/null` — the worktree these reads
  * run in is **child-writable**: a developer, a lens-fix, or a malicious dependency
  * can write `git config core.fsmonitor <script>` into it, and an unguarded read
  * would execute that script as the *driver*. Same guard `runGit` applies in
- * src/git-state.ts:38, for the same reason. A read is only as safe as the config it
+ * src/git-state.ts, for the same reason. A read is only as safe as the config it
  * honours, so the two reads share one list rather than restating it.
  *
- * **What is outside this guard's boundary — and it is a real boundary, not a
- * caveat.** The `fsmonitor`/`hooksPath` pairs and the named-`filter` entries
- * below are **defence-in-depth for common names only**. They are not the safety
- * boundary of these reads, and nothing here should be read as saying otherwise.
- * Two things this argv cannot close, each measured against git 2.50.1 rather
- * than assumed from the man page:
- *
- *   - **The shared config.** `core.hooksPath=/dev/null` redirects hooks; it does
- *     not read config. The config these runs honour is the **shared**
- *     `$GIT_COMMON_DIR/config`, one file for every worktree of the clone. A
- *     `filter.<x>.clean` entry there — or in `hooks/` — is reachable by every git
- *     invocation in the driver, this module's two and every other. This module
- *     hardens the argv of two reads; it does not fence a config it does not own.
- *
- *   - **A named filter driver cannot be blanket-blocked, and the name is the
- *     attacker's choice.** A `*.yml filter=x` binding from a committed
- *     `.gitattributes` **or** a `.git/info/attributes` (untracked, so the read can
- *     never remove it) plus a `filter.x.clean` config makes git execute that
- *     script as the driver while materialising content for `git diff` against a
- *     one-sided rev. `-c filter.x.clean=false` does stop it — but only for the
- *     name `x`. Any other name still runs: verified against a worktree-written
- *     filter called `childchose`, which executed under both guarded reads. There
- *     is no wildcard: `-c 'filter.*.clean=false'` sets one literal key, and with
- *     three paths bound to three different filter names, all three scripts still
- *     ran with it present. **The develop path currently has no owner for that
- *     case** — the same is true of the skip-ratchet's separate `-U0` content diff
- *     (`git diff <baseRef> -U0` in work-driver-verify-develop-gates.ts, plain-string
-     argv with no `SAFE_CONFIG` at all), which runs
- *     the foreign-named filter too. Transport-level isolation of executable git
- *     config is a separate concern from #1378's NUL-separated reads and is
- *     **tracked separately**; do not treat any code in this repo as closing it.
- *     The "DOCUMENTED LIMIT" case in
- *     test-work-driver-protected-paths-filter.ts is the pin on all of this.
- *
- *   - **The two obvious flags do not work, and one of them breaks the reads if
- *     you try.** `core.attributesFile=/dev/null` does not stop the binding (git
- *     keeps the index/worktree attribute stack; `check-attr` still reports the
- *     filter and the script still runs), and neither does `GIT_ATTR_NOSYSTEM=1`,
- *     which only drops the system-level file. `--no-ext-diff` and `--no-textconv`
- *     are worse than useless here: they are `git diff` options, so at the global
- *     position git rejects them outright (`unknown option`, exit 129) — putting
- *     them in a shared list would have broken **both** reads, which is what an
- *     earlier revision of this file did and what the canary now refuses. After
- *     the subcommand git accepts them but they silence an *external diff command*
- *     and a *textconv* driver, neither of which a `--name-status` read reaches:
- *     the clean filter still ran with both present.
- *
- * What that leaves, and what the flags below therefore are: a defence-in-depth
- * set that closes every route these two reads can be made to take **by name**
- * (`fsmonitor`, `hooksPath`, and the `clean` filter forced to fail for the
- * conventional driver name), plus the honest statement that a child which can
- * write the worktree can arrange a named filter the argv cannot anticipate. The
- * read is fail-closed on its output, not trusted on its environment.
+ * **These pairs are defence-in-depth for the names git is commonly driven by,
+ * not the safety boundary of these reads.** The config they honour is the
+ * **shared** `$GIT_COMMON_DIR/config`, one file for every worktree of the clone,
+ * and a `filter.<name>.clean` entry there (or a `*.yml filter=x` binding in a
+ * committed `.gitattributes` or an untracked `.git/info/attributes`) makes git
+ * run that script as the driver while materialising content. `-c
+ * filter.<name>.clean=false` stops it **for that name only** — there is no
+ * wildcard (measured against git 2.50.1: three paths bound to three filter names
+ * still ran all three scripts with `-c 'filter.*.clean=false'` present), and
+ * `core.attributesFile=/dev/null` and `GIT_ATTR_NOSYSTEM=1` do not defeat the
+ * binding. `--no-ext-diff`/`--no-textconv` are deliberately absent: they are
+ * `git diff` options, so at the global position git rejects them outright (exit
+ * 129) and both reads would fail, while after the subcommand they silence a
+ * driver a `--name-status` read never reaches. Transport-level isolation of
+ * executable git config is a separate concern and is **tracked separately**; do
+ * not treat any code in this repo as closing it. The "DOCUMENTED LIMIT" case in
+ * test-work-driver-protected-paths-filter.ts is the pin on all of this.
  */
 const SAFE_CONFIG = [
   "-c",
@@ -228,10 +182,10 @@ export type StatusRead = { ok: true; paths: string[] } | Unreadable;
  * The committed change set: the parsed `diff -z --name-status` records. The
  * rename *sources* are deliberately not a separate field — the only reader that
  * may consult them is the protected-path gate, and `renameSourcePaths(targets)`
- * derives them. A second list invited the other gates (the #285 fanout, the
- * frontend-only skip, the falsily-green check) to consume a path they must never
- * see: `git mv .github/workflows/ci.yml src/ci.yml` would otherwise read as a
- * changed file it is not.
+ * derives them. A second list invited the other gates (the fanout scope check,
+ * the frontend-only skip, the falsily-green check) to consume a path they must
+ * never see: `git mv .github/workflows/ci.yml src/ci.yml` would otherwise read as
+ * a changed file it is not.
  */
 export type DiffRead = { ok: true; targets: NameStatus[] } | Unreadable;
 
@@ -310,98 +264,13 @@ export function renameSourcePaths(records: readonly NameStatus[]): string[] {
 }
 
 /**
- * The first error message a rejection carries, bounded for the operator-facing note.
- * Narrowed rather than cast: a rejection is not guaranteed to be an `Error` (a
- * string or a plain object reaches here from a shimmed executor), and `(err as
- * Error)?.message` on those yields `undefined` and then the literal `"undefined"`
- * as the reason an operator reads.
- */
-function errText(err: unknown): string {
-  const text = err instanceof Error ? err.message : typeof err === "string" ? err : String(err);
-  // A rejection that stringifies to nothing still needs a name in the reason —
-  // an empty one reads as "git failed for no stated reason".
-  return (text.trim().length > 0 ? text : errTextFallback(err)).slice(0, 200);
-}
-
-/** A rejection that stringifies to nothing still needs a name in the reason. */
-function errTextFallback(err: unknown): string {
-  return err === null ? "null" : err === undefined ? "undefined" : "unknown rejection";
-}
-
-/** Porcelain v1 is `XY PATH`: at least four chars with a space at index 2. */
-function isMalformedStatusToken(tok: string): boolean {
-  return tok.length < 4 || tok[2] !== " ";
-}
-
-/**
- * Read the uncommitted change set with `status --porcelain -z --untracked-files=all`.
- *
- * `-z` means a name is never C-quoted and never shell-mangled: the bytes git has
- * on disk arrive verbatim, so a non-ASCII protected path is the path the gate
- * compares and the path the operator reads. `-uall` lists an untracked directory
- * file by file — a `?? .github/` collapse would leave the gate with a directory,
- * which no grant can name (#1090).
- *
- * With `-z` a rename/copy is `XY new\0orig\0`: the origin is its own token, and it
- * is the *second* one. Both sides are returned. A malformed record — or a rename
- * whose origin token is missing — is unreadable, not skipped: the paths after it
- * in the stream would be misread as status records, which is a wrong answer rather
- * than a missing one.
- */
-export async function readProtectedStatusPaths(
-  exec: ProtectedPathExec,
-  cwd: string,
-): Promise<StatusRead> {
-  let stdout: string;
-  try {
-    ({ stdout } = await exec("git", {
-      argv: [...PROTECTED_STATUS_ARGV],
-      cwd,
-      maxBuffer: PROTECTED_READ_MAX_BUFFER,
-      timeout: DEFAULT_GIT_TIMEOUT_MS,
-    }));
-  } catch (err) {
-    return { ok: false, unreadable: `git status --porcelain -z failed: ${errText(err)}` };
-  }
-  const tokens = stdout.split("\0");
-  const paths: string[] = [];
-  for (let i = 0; i < tokens.length; i++) {
-    const tok = tokens[i] ?? "";
-    // The only legitimate empty token is the one after the final NUL.
-    if (tok === "" && i === tokens.length - 1) continue;
-    if (isMalformedStatusToken(tok)) {
-      return {
-        ok: false,
-        unreadable: `malformed status entry ${JSON.stringify(tok.slice(0, 80))}`,
-      };
-    }
-    const code = tok.slice(0, 2);
-    const path = tok.slice(3);
-    if (/[RC]/.test(code)) {
-      i++;
-      const origin = tokens[i];
-      if (origin === undefined || origin === "") {
-        return {
-          ok: false,
-          unreadable: `rename/copy status entry without its origin path: ${JSON.stringify(path.slice(0, 80))}`,
-        };
-      }
-      paths.push(path, origin);
-    } else if (path.length > 0) {
-      paths.push(path);
-    }
-  }
-  return { ok: true, paths };
-}
-
-/**
- * Read the committed change set with `diff -z --name-status -M -C <base>..HEAD`.
+ * Read the committed change set with `diff -z --name-status -M -C <base>..<head>`.
  *
  * `-M` is what the bug needed: without rename detection the record for a moved
  * protected file is a bare `A src/ci.yml` and the protected side never appears.
  * With `-z` each field is its own NUL-terminated token and the order is
  * `R100\0from\0to` — status first, then the source, then the destination — which
- * is the opposite arrangement from the status read above.
+ * is the opposite arrangement from the status read.
  *
  * The range is passed as one argv element after `--end-of-options`, so a base that
  * looks like a flag cannot become one and an unreadable ref rejects rather than
@@ -411,27 +280,28 @@ export async function readProtectedStatusPaths(
  * `D` and `A` are first-class paths: a delete-plus-add pair does NOT collapse to
  * `R100` unless git's similarity heuristic pairs it, so a deleted protected file
  * must halt on the `D` record alone.
- *
- * Both reads carry the `SAFE_CONFIG` pairs above (`core.quotePath=off`,
- * `core.fsmonitor=false`, `core.hooksPath=/dev/null`, `core.attributesFile=/dev/null`
- * and the per-name `filter.<name>.clean=false` entries). `--no-ext-diff` and
- * `--no-textconv` are **deliberately absent**: they are `git diff` options, so at
- * the global position git rejects them outright (exit 129) and they would break
- * this read — see the `SAFE_CONFIG` block for the measurement, and for why the
- * per-name filter entries are defence-in-depth rather than the safety boundary.
  */
 export async function readCommittedProtectedPaths(
   exec: ProtectedPathExec,
   cwd: string,
   base: string,
+  // The range END, defaulted to `HEAD`. The develop gate passes nothing and its
+  // argv stays byte-identical; the merge-time caller passes the OID it verified,
+  // because the driver's checkout is not the PR's head and reading `HEAD` there
+  // would inspect whatever the driver's tree happens to hold.
+  head = "HEAD",
+  // The bound for this read. Absent keeps `DEFAULT_GIT_TIMEOUT_MS` (the develop
+  // gate); the merge path passes the identity reads' shorter bound so a wedged
+  // git answers with a refusal instead of holding the merge step open.
+  opts: { timeout?: number } = {},
 ): Promise<DiffRead> {
   let stdout: string;
   try {
     ({ stdout } = await exec("git", {
-      argv: [...PROTECTED_DIFF_ARGV, `${base}..HEAD`],
+      argv: [...PROTECTED_DIFF_ARGV, `${base}..${head}`],
       cwd,
       maxBuffer: PROTECTED_DIFF_MAX_BUFFER,
-      timeout: DEFAULT_GIT_TIMEOUT_MS,
+      timeout: opts.timeout ?? DEFAULT_GIT_TIMEOUT_MS,
     }));
   } catch (err) {
     return { ok: false, unreadable: `git diff -z --name-status -M -C failed: ${errText(err)}` };

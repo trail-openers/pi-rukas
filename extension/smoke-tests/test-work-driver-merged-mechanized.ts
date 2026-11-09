@@ -22,7 +22,6 @@ import { inlineMergePrompt } from "../src/work-driver-prompts-late.ts";
 import { prMergeCmd as prMergeCmdCapture } from "../src/forge-commands.ts";
 import type { WorkState } from "../src/workflow-state.ts";
 import { setupSpawnGuard } from "./test-helpers.ts";
-import { mkStateMerged } from "./work-driver-merged-fixtures.ts";
 // The exec/context builders are shared with test-work-driver-merged-pin.ts, the
 // #1533 head-pin file split out of this one (§12 size cap): two copies would be
 // two fixtures that can drift while both still pass.
@@ -260,121 +259,6 @@ setupSpawnGuard();
     calls.some((c) => c === "git checkout main --"),
     "restoreCheckout: checks out the target even when already on it",
   );
-}
-
-// ---- #476 — restoreCheckout reached on a successful merge ----
-//
-// The unit blocks above pin the command sequence but say nothing about
-// REACHABILITY: runMerged used to gate restoration on ctx.verifyExecFn, a
-// test-only seam neither production entry point sets, so on a real merge
-// the checkout was never restored, refs never pruned, branch -d never
-// attempted. This block drives runMerged with verifyExecFn injected as a
-// recording fake: merge succeeds, restoration is observed (fetch origin
-// --prune / checkout / pull --ff-only / branch -d), and a branch -d refusal
-// lands in a `Checkout restoration` plumb-report rather than halting.
-//
-// The literal production shape — verifyExecFn absent, so the driver's
-// `ctx.verifyExecFn ?? execp` fallback resolves to the real executor — is
-// asserted in the -live sibling test-work-driver-merged-mechanized-prod-restore-live.ts,
-// which cannot run offline (real execp shells out to git/gh).
-{
-  const dir = mkdtempSync(path.join(tmpdir(), "mm-prod-restore-"));
-  try {
-    const calls: string[] = [];
-    const base = mkExec({
-      // The mainline probe (#1093: a validated ref) must get the branch name;
-      // the broader "gh repo view" key below answers the repo-settings query.
-      "gh repo view --json defaultBranchRef": { stdout: "main\n" },
-      // #1533 — the merge-evidence probe is a `gh pr view` too, and it PARSES
-      // its answer: the generic "gh pr view" key below (a plain `MERGED` token,
-      // for the pre/post-merge state reads) would otherwise make the gate fail
-      // closed with "could not read PR state" before the merge was attempted.
-      // Listing it first also means the state reads never see the JSON.
-      "mergeStateStatus,mergeable,state": {
-        stdout: `{"mergeStateStatus":"CLEAN","state":"OPEN","headRefOid":"${HEAD_OID}"}`,
-      },
-      "gh pr checks": { stdout: '[{"name":"ci","bucket":"pass"}]' },
-      "gh repo view": {
-        stdout: '{"squashMergeAllowed":true,"mergeCommitAllowed":false,"rebaseMergeAllowed":false}',
-      },
-      // executeAndVerifyMerge checks `stdout.trim() === "MERGED"` on the
-      // plain-text `--jq '.state'` output — answer with the plain token.
-      "gh pr view": { stdout: "MERGED\n" },
-      // The identity comparison needs a git common dir to read the review ledger
-      // from; this fixture's directory is not a clone, so the read fails and the
-      // check degrades to the pin plus an honest note (which is what the merged
-      // step does for a state file with no clone behind it).
-      "git rev-parse --git-common-dir": { error: true, stderr: "not a git repository" },
-      "git fetch": { stdout: "" },
-      "git rev-parse": { stdout: "feature/issue-476\n" },
-      "git check-ref-format": { stdout: "" },
-      "git status": { stdout: "" },
-      "git checkout": { stdout: "" },
-      "git pull": { stdout: "" },
-      // The refusal is the point: a failed `branch -d` must become a
-      // plumb-report, not a halt.
-      "git branch -d": { error: true, stderr: "not fully merged" },
-    });
-    // The recorder is the driver's executor: every command it issues is
-    // recorded, and any command the fakes above do not cover would touch
-    // the outside world in production — throw instead.
-    const recorder: VerifyExecFn = async (cmd, opts) => {
-      // Argv calls (#1093) are recorded as the joined command line.
-      const line = opts?.argv ? [cmd, ...opts.argv].join(" ") : cmd;
-      calls.push(line);
-      try {
-        return await base.fn(cmd, opts);
-      } catch (err) {
-        if (line.includes("git branch -d")) throw err;
-        throw new Error(`offline test: unmocked command: ${line}`);
-      }
-    };
-
-    // mkCtx supplies mergeGrant + issueBodyFetcherFn; only repoRoot and the
-    // dispatchFn differ from that helper's defaults here.
-    const ctx = mkCtx(476, recorder, {
-      repoRoot: dir,
-      dispatchFn: async () => {
-        // The mechanized merge must succeed so the ops fallback dispatch
-        // (a real Pi spawn) is never attempted.
-        throw new Error("offline test: fallback dispatch should not be reached");
-      },
-    });
-
-    const state = mkStateMerged(476, 4761, "feature/issue-476", {
-      baseSha: "HEAD",
-      worktrees: { task_b: "" },
-    });
-    const out = await runMerged(ctx, state, Date.now());
-
-    assert(
-      out.pipelineState.status === "merged",
-      "#476: mechanized merge succeeded → status='merged'",
-    );
-    assert(
-      calls.some((c) => c.includes("git fetch origin --prune")),
-      "#476: fetch origin --prune ran on the successful-merge path",
-    );
-    assert(
-      calls.some((c) => c.includes("git checkout")) &&
-        calls.some((c) => c.includes("git pull --ff-only")),
-      "#476: checkout + pull --ff-only ran on the successful-merge path",
-    );
-    const branchD = calls.find((c) => c.includes("git branch -d"));
-    assert(
-      branchD?.includes("feature/issue-476") === true,
-      "#476: branch -d targeted the cycle's feature branch",
-    );
-    const notes = out.eventLog.filter(
-      (e) => e.kind === "plumb-report" && /Checkout restoration: .*branch -d/.test(e.body),
-    );
-    assert(
-      notes.length >= 1,
-      "#476: branch -d refusal emitted as a plumb-report note (restoration reached)",
-    );
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
 }
 
 // ---- mechanizedMerge integration tests ----

@@ -25,6 +25,7 @@
  */
 
 import { EVIDENCE_BASE, EVIDENCE_HEAD, FIXTURE_PATCH_ID } from "./headless-s5-forge.ts";
+import { isNulDiffRead } from "./nul-porcelain.ts";
 import type { MergeExecLog } from "./headless-s5-fixture.ts";
 
 /** The argv-form head-verification reads: which subcommand the seam answers, and with what. */
@@ -48,6 +49,17 @@ export function headGitArgvAnswer(
     // the cycle's branch at all, so the real git refused it and the merged step
     // parked. Answered as valid; the identity comparison is what the cases
     // assert on, not whether the local branch exists.
+    log.headReads.push(line);
+    return { stdout: "" };
+  }
+  // #1529 — the merge-time protected-path read (`diff -z --name-status -M -C
+  // <mb>..<head>`) arrives as a `git` argv call too, and an empty stdout is the
+  // honest answer here: these repos have no remote, so no PR commits exist to
+  // touch anything — the change set IS empty. Matched through `isNulDiffRead`,
+  // which the lib derives from the production `PROTECTED_DIFF_ARGV`, so a change
+  // to that argv stops matching and lands in `unexpected` rather than quietly
+  // answering a stale command text with "clean".
+  if (isNulDiffRead(line)) {
     log.headReads.push(line);
     return { stdout: "" };
   }

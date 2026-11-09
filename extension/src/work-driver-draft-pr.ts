@@ -50,7 +50,7 @@ import { execp } from "./exec.ts";
 import type { ForgeType } from "./forge-detect.ts";
 import type { NormalizedPullRequest } from "./forge-types.ts";
 import type { Forge } from "./forge.ts";
-import { mergeIdentity } from "./merge-guard-reads.ts";
+import { mergeIdentity } from "./merge-identity.ts";
 import { isFullCommitSha, resolveHeadSha } from "./review-head-sha.ts";
 import { remoteName } from "./review-ledger-path.ts";
 import { trace } from "./trace.ts";

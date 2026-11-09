@@ -26,9 +26,11 @@ import {
   resolveMergeAuthority,
 } from "./work-driver-merge-authority.ts";
 import { verifyMergeHead } from "./work-driver-merged-head.ts";
-import { heldForMissingApproval } from "./work-driver-merged-hold.ts";
+import { heldForMissingApproval, mergeProtectedHold } from "./work-driver-merged-hold.ts";
 import { type MergeMethod, mechanizedMerge } from "./work-driver-merged-mechanized.ts";
+import { heldForProtectedPaths } from "./work-driver-merged-protected.ts";
 import { hasGitDir } from "./work-driver-merged-repo.ts";
+import { runMergedTeardown } from "./work-driver-merged-teardown.ts";
 import { editIssueTldrs } from "./work-driver-merged-tldr.ts";
 import { clearHostParkSignals } from "./work-driver-park-memory-host.ts";
 import { clearParkRecords } from "./work-driver-park-record.ts";
@@ -65,11 +67,10 @@ export function parsePrNumber(text: string | undefined): number | undefined {
 }
 
 /**
- * PR10 — Parse a `merge-commit: <sha>` marker line from ops's merge reply.
- * Lenient: accepts surrounding markdown (`**merge-commit:**`), backticks,
- * and the 7+ hex-char SHA shape `gh pr merge` prints. Returns undefined
- * when no marker is present (the merge still succeeded; we just lost the
- * SHA for the merged event payload).
+ * Parse a `merge-commit: <sha>` marker line from ops's merge reply. Lenient:
+ * accepts surrounding markdown (`**merge-commit:**`), backticks, and the 7+
+ * hex-char SHA shape `gh pr merge` prints. Returns undefined when no marker is
+ * present (the merge still succeeded; we just lost the SHA for the merged event).
  */
 export function parseMergeCommit(text: string | undefined): string | undefined {
   if (!text) return undefined;
@@ -78,19 +79,17 @@ export function parseMergeCommit(text: string | undefined): string | undefined {
 }
 
 /**
- * Step 9 — Merge the PR. PR10: was a 0ms state mutation pre-fix; now
- * actually merges via mechanized merge (or LLM fallback) and restores
- * the local checkout to an up-to-date mainline.
+ * Step 9 — Merge the PR.
  *
- * Mechanized path (default): derive merge method from GitHub repo
- * settings, execute `gh pr merge`, verify MERGED via `gh pr view`,
- * restore checkout. Fallback to LLM ops dispatch on any mechanized
- * failure (plumb-report emitted). Escape hatch:
- * The LLM ops dispatch remains as the fallback on mechanized failure.
+ * Mechanized path (default): derive the merge method from the forge's repo
+ * settings, execute `gh pr merge`, verify MERGED via `gh pr view`, restore the
+ * local checkout to an up-to-date mainline. Any mechanized failure falls back to
+ * an LLM ops dispatch (with a plumb-report emitted), which remains the fallback
+ * path rather than a knob.
  *
- * Restoration runs INSIDE runMerged, before routeStepOutcome persists
- * state. Combined with idempotent merge (already-merged tolerance), a
- * crash mid-restoration is recoverable on resume.
+ * Restoration runs INSIDE runMerged, before routeStepOutcome persists state.
+ * Combined with idempotent merge (already-merged tolerance), a crash
+ * mid-restoration is recoverable on resume.
  *
  * On dispatch failure: STEP_FAILURE_POLICY[merged] is HALT → cap-hit
  * 'step-failed:merged' → handoff. Operator merges manually.
@@ -100,19 +99,19 @@ export async function runMerged(
   entryState: WorkState,
   now: number,
 ): Promise<WorkState> {
-  // #1292 — the final safeguard, not the usual mark point: the PR was marked
-  // ready on entering ci. A draft cannot merge (`mergeStateStatus: DRAFT` holds
-  // it), so this retries a ready that failed and no merge proceeds on a draft.
+  // The final safeguard, not the usual mark point: the PR was marked ready on
+  // entering ci. A draft cannot merge (`mergeStateStatus: DRAFT` holds it), so
+  // this retries a ready that failed and no merge proceeds on a draft.
   const state = await markDraftPrReady(ctx, entryState);
   // The merge does not rely on the forge refusing a draft: a PR that is not
   // ready halts here, naming why, before any merge is attempted.
   const draft = state.pipelineState.prDraft;
   if (draft && draft.status !== "ready") {
-    // #1398 round 3 — the pr-ready clause is for a ready that failed, not for a
-    // re-arm that did. `rearmError` is the re-arm's own field; on that path the
-    // driver never attempted a ready, and the reason it is holding is that the
-    // PR is still mergeable when it should be a draft. Printing `draft.error`
-    // there reported an attempt that never happened.
+    // The pr-ready clause is for a ready that failed, not for a re-arm that
+    // did. `rearmError` is the re-arm's own field; on that path the driver never
+    // attempted a ready, and the reason it is holding is that the PR is still
+    // mergeable when it should be a draft. Printing `draft.error` there reported
+    // an attempt that never happened.
     const rearmHold = draft.rearmError !== undefined;
     const failed = `marking PR ready failed: ${draft.error ?? "no reason recorded"}`;
     const reason = rearmHold
@@ -140,14 +139,22 @@ export async function runMerged(
   let mergeMethod: MergeMethod = "squash";
   let preDispatch = state;
   let mergeSucceeded = false;
-  // #1533 — the head this step verified, which the merge is pinned to. Set only
-  // past the head check; the LLM fallback prompt carries the same value so the
-  // fallback path cannot merge what the mechanized path refused to. `undefined`
-  // rather than `""`: an empty string is neither a value nor an absence, and the
-  // merge paths below take `string | undefined` and refuse the absence — they do
-  // not have to guess what an empty OID meant (round-1 lens HIGH).
+  // The head this step verified, which the merge is pinned to. Set only past the
+  // head check; the LLM fallback prompt carries the same value so the fallback
+  // path cannot merge what the mechanized path refused to. `undefined` rather
+  // than `""`: an empty string is neither a value nor an absence, and the merge
+  // paths below take `string | undefined` and refuse the absence.
   let verifiedHead: string | undefined;
   const headNotes: string[] = [];
+
+  // The merge-time protected-path gate runs once a verified head exists, so the
+  // diff it inspects is the very commit the merge would land (it takes the OID
+  // below rather than re-resolving a ref). The refusals, the fetch and why
+  // neither --allow-protected nor PI_ENSEMBLE_PROTECTED_PATHS clears it are in
+  // work-driver-merged-protected.ts; it sits outside the authority switch, so a
+  // cycle with the permission gate off is still held off a protected diff.
+  const protectedGate = (verifiedHead: string | undefined) =>
+    heldForProtectedPaths(ctx, state, ctx.verifyExecFn ?? execp, verifiedHead);
 
   // #380 — two independent gates, both defaulting to "no". Merging is the
   // one irreversible act in the cycle and had neither; a green PR ≠ permission.
@@ -190,9 +197,9 @@ export async function runMerged(
       ? await gatherMergeEvidence(execFnAuth, ctx.repoRoot, prNumber)
       : undefined;
     const routedRoundCap = heldByUnresolvedReview(state.eventLog);
-    // #1533 — the head the merge is pinned to, and why the step refuses to merge
-    // without one. Computed here, beside the evidence read it comes from, so the
-    // CI verdict and the pin describe the same moment on the forge.
+    // The head the merge is pinned to, and why the step refuses to merge without
+    // one. Computed here, beside the evidence read it comes from, so the CI
+    // verdict and the pin describe the same moment on the forge.
     const headCheck =
       authority.granted && evidence?.ok && !routedRoundCap
         ? await verifyMergeHead(
@@ -228,30 +235,29 @@ export async function runMerged(
     }
     verifiedHead = headCheck.headOid;
     headNotes.push(headCheck.note);
+    // The gate runs on the OID the merge is now pinned to, before any merge is
+    // attempted and after every read that could have refused it.
+    const protectedHold = await protectedGate(verifiedHead);
+    if (protectedHold) return protectedHold;
   }
 
-  // #1533 — a cycle that reaches this point WITHOUT a verified head has not
-  // passed the head check, whatever made it get here: the authority gate off
+  // A cycle that reaches this point WITHOUT a verified head has not passed the
+  // head check, whatever made it get here: the authority gate off
   // (`PI_ENSEMBLE_MERGE_AUTHORITY=0`) disables only the permission and evidence
-  // gate, so the head is still read with the same bounded read and the merge is
-  // still pinned. Unreadable head → refuse, exactly as the gated path does —
-  // disabling the authority question was never a licence to merge an
-  // unverified commit.
+  // gate, so the head is still read and the merge still pinned. An unreadable head
+  // refuses exactly as the gated path does.
   if (verifiedHead === undefined) {
+    // No authority gate ran, so this is the only place the protected-path gate can
+    // ask with a head in hand; a protected diff parks the same way as above.
+    const protectedHold = await protectedGate(undefined);
+    if (protectedHold) return protectedHold;
     trace("work-driver: merge held — no verified head OID to pin the merge to");
-    const held: WorkState = {
-      ...state,
-      pipelineState: {
-        ...state.pipelineState,
-        currentStep: "merged",
-        mergeHold: {
-          authorityGranted: true,
-          authoritySource: "none",
-          headCheckReason:
-            "no verified head OID was read for this cycle, so there is no commit to pin the merge to",
-        },
-      },
-    };
+    // The same hold shape as the protected-path park: this gate asked neither the
+    // grant nor the forge, so it claims no authority verdict.
+    const held = mergeProtectedHold(
+      state,
+      "no verified head OID was read for this cycle, so there is no commit to pin the merge to",
+    );
     return appendEvent(held, {
       kind: "cap-hit",
       at: Date.now(),
@@ -275,10 +281,10 @@ export async function runMerged(
     // Mechanized merge succeeded — build the same event shapes the
     // dispatch path produces so downstream (merged event) is identical.
     // Record it; do not dispatch it. `runSingleDispatch` really spawns, and
-    // `driver` is not a role — every successful mechanized merge used to throw
-    // `Unknown role: driver`, become dispatch-failed, and route a merged PR to
-    // handoff with teardown skipped. `work-driver-commit.ts` builds its
-    // mechanized event directly for the same reason.
+    // `driver` is not a role, so dispatching it would fail every successful
+    // mechanized merge into a handoff with teardown skipped.
+    // `work-driver-commit.ts` builds its mechanized event directly for the same
+    // reason.
     next = appendEvent(
       { ...state, pipelineState: { ...state.pipelineState, currentStep: "merged" } },
       { kind: "step-started", step: "merged", at: now },
@@ -428,52 +434,10 @@ export async function runMerged(
     }
   }
 
-  // #287 Part E — tear down this cycle's worktrees. Best-effort: a cycle that
-  // merged is done regardless, and a stuck worktree must not turn success into
-  // a handoff. `worktreeRemove` was exported and never invoked before this,
-  // so worktrees accumulated indefinitely (EPIC #326's done-when clause).
-  const wtToRemove = Object.keys(next.pipelineState.worktrees ?? {});
-  if (wtToRemove.length > 0) {
-    const execFnWt = ctx.verifyExecFn ?? execp;
-    // `git worktree prune` touches the shared worktree admin area, so a
-    // sibling's `worktree add` can collide with it. Same lock.
-    await withIntegrationLock(ctx.repoRoot, async () => {
-      for (const id of wtToRemove) {
-        await worktreeRemove(execFnWt, ctx.repoRoot, `issue-${ctx.issue}-${id}`, true).catch(
-          (err) =>
-            trace(`work-driver: worktree cleanup for '${id}' failed: ${(err as Error).message}`),
-        );
-      }
-      await worktreePrune(execFnWt, ctx.repoRoot).catch(() => undefined);
-    });
-  }
+  // Post-merge cleanup: worktrees, path claims, park records. All best-effort —
+  // none of it may turn a landed merge into a handoff (see the module header).
+  await runMergedTeardown(ctx, state, next);
 
-  // #571 — release the path claim on successful merge.
-  // #1454 — the whole group: a grouped cycle claims every issue, so releasing
-  // only the primary left a sibling entry parked over a merged cycle.
-  try {
-    await releaseClaim(ctx.repoRoot, activeIssuesOf(state));
-  } catch {
-    /* best-effort; merge must always succeed regardless */
-  }
-  // #1743 — forget this issue's park records. The work landed, so a park
-  // recorded against it describes a state of the world that no longer exists:
-  // refusing a LATER start on it would have the guard holding up work the
-  // operator can see is done. Same scope as the claim release, same
-  // best-effort discipline.
-  try {
-    await clearParkRecords(ctx.repoRoot, activeIssuesOf(state));
-  } catch {
-    /* best-effort; merge must always succeed regardless */
-  }
-  // #1696 — and the host channel's signal beside it, from the same door: a
-  // cycle that forgot one memory and kept the other would have the survivor
-  // refuse a later start over work the operator can see is done.
-  try {
-    await clearHostParkSignals(ctx.repoRoot, activeIssuesOf(state));
-  } catch {
-    /* best-effort; merge must always succeed regardless */
-  }
   return {
     ...next,
     pipelineState: { ...next.pipelineState, currentStep: "merged", status: "merged" },
