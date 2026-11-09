@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.66](https://github.com/trail-openers/pi-rukas/compare/v0.14.65...v0.14.66) (2026-11-09)
+
+
+### Features
+
+* **work:** report tool calls, tool errors and the driver in the result ([#2136](https://github.com/trail-openers/pi-rukas/issues/2136)) ([03b009d](https://github.com/trail-openers/pi-rukas/commit/03b009d916e925952ef60503f8bbe634cb381fa3))
+
 ## [0.14.65](https://github.com/trail-openers/pi-rukas/compare/v0.14.64...v0.14.65) (2026-11-08)
 
 
