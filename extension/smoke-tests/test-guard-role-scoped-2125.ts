@@ -74,10 +74,9 @@ const HELD_INDIRECT = [
   `$GH pr ${KW} 12`,
   `sh -c 'gh pr ${KW} 12'`,
   `xargs -I{} gh pr ${KW} {}`,
-  // A runner in command-word position executes its argument, so the scan
-  // cannot see what runs: `bun -e`, and `bun <file>` which runs a script.
+  // A runner whose INLINE script the scan cannot read: `-e`/`-c` text is
+  // executed, so a landing can hide in it.
   `bun -e 'console.log("${KW}")'`,
-  `bun ${PROBE_FILE}`,
 ];
 /**
  * Rows the CLASSIFIER holds for `ops` today and the pre-check releases for a
@@ -90,7 +89,13 @@ const HELD_BY_CLASSIFIER = [
   `grep -rn '${KW}' extension/smoke-tests/`,
   `cat > notes.md <<'EOF'\nthe PR was ${KW}d after the review loop\nEOF`,
 ];
-const RELEASED = [...HELD_BY_CLASSIFIER, ...HELD_PROSE];
+const RELEASED = [
+  ...HELD_BY_CLASSIFIER,
+  ...HELD_PROSE,
+  // `bun <file>` runs the file's CONTENTS, so a verb in its NAME is not an
+  // executed landing — the field's most-held shape, now free.
+  `bun ${PROBE_FILE}`,
+];
 /**
  * The subset run through the real hook as `ops`: rows the classifier reads as
  * no-merge, so a hold there can only come from the pre-check — that is what

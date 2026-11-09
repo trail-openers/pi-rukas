@@ -18,18 +18,38 @@ const REST = /(pulls|merge_requests)\/\d+\/merge\b/i;
 const SUBST = /\$[({]|`/;
 // A bare `$VAR` counts only beside the verb: `$` is ordinary in jq programs.
 const BARE_VAR = /\$[A-Za-z_]\w*/;
-// R2's runners EXECUTE their argument, so a landing hides in quoted text the
-// shell will run. Counted only beside the verb, and in command-word position:
-// `bun run build` executes nothing merge-like.
+// R2's runners EXECUTE their argument, so a landing hides in the quoted text
+// the shell will run. That is the INLINE forms — `-e`/`-c` and the bare `sh`/
+// `bash` script position — where the argument IS the program. `bun <file>`
+// executes a file's CONTENTS, not its name, so a verb in the filename is not
+// an executed landing and the row stays released. A whole COMMAND-WORD match
+// (never a path character, so `test-merge-guard.ts` is not a runner) and only
+// beside the verb, keeping `bun run build` released.
 const RUNNER =
   /(?:^|[\s;|&(`'])(?:sh|bash|zsh|dash|ksh|python3?|node|bun|deno|ruby|perl|eval|xargs)(?:[\s;|&)'"/]|$)/;
+const INLINE = /(?:^|\s)(?:-(?:e|c)|--command|--eval)(?:\s|$)/;
 const HAS_KW = new RegExp(`(?:^|[^\w])${KW}(?:[^\w]|$)`, "i");
+// The verb inside a quoted span: an argument the runner will execute.
+const QUOTED_KW = new RegExp(`['"][^'"]*(?:^|[^\\w])${KW}(?:[^\\w]|$)`, "i");
+
+/**
+ * Is the verb present as DATA the shell will execute — inside a quoted
+ * argument, or after an inline-script flag? A verb that appears only inside a
+ * bare word (a test filename like `test-guard-role-scoped-merge-2125.ts`) is
+ * not executed text: `bun <file>` runs the file's CONTENTS, so the name is not
+ * a landing. That is what separates the field's most-held shape from R2's
+ * `bash -c 'gh pr <kw> 1'`, which stays held.
+ */
+function verbIsData(line: string): boolean {
+  if (INLINE.test(line) && HAS_KW.test(line)) return true;
+  return QUOTED_KW.test(line);
+}
 
 /** S2's landing forms on one line; `api … pulls/N/<kw>` is the REST path. */
 function landing(line: string): boolean {
   if (REST.test(line) || SUBST.test(line)) return true;
   const t = line.split(/\s+/).filter(Boolean);
-  if (RUNNER.test(line) && HAS_KW.test(line)) return true;
+  if (RUNNER.test(line) && verbIsData(line)) return true;
   const at = (w: string, from: number) => t.findIndex((x, i) => i >= from && x.toLowerCase() === w);
   if (at(KW, 0) >= 0 && BARE_VAR.test(line)) return true;
   for (let i = 0; i < t.length; i++) {
