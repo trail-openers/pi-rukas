@@ -78,6 +78,34 @@ the step's reason. If the check itself is wrong for test files, that is a
 `.pi/work.json` change: `verify.freezeCheck` is optional and absent means nothing
 runs.
 
+### Symptom: a lean run hands back with `could not prepare the worktree …` / `is not a worktree of this repository`
+
+**Symptom:** a lean run ends as `handler error at specify: could not prepare the worktree
+<repoRoot>/.worktrees/lean-<issue>: the directory … is not a worktree of this repository at
+<branch> or <base sha> — refusing to reset a tree this step does not own (its HEAD is <sha>,
+expected <base sha>)`, and the run exits 10 with no tests frozen. The step touched nothing: the
+refusal happens before a single `reset --hard`.
+
+**Cause:** the ownership gate that stands in front of every reset a lean step makes. A directory at
+the `.worktrees/lean-<issue>` path is not the step's to `reset --hard` and `clean -fdx`, so it is
+first proven to belong to this run: registered in `git worktree list` of the repository, sitting on
+the run's branch, and at a commit the step may discard. `specify` discards by resetting the tree to
+the run's base, so a tree still on the run's branch whose HEAD merely DESCENDS from the base is its
+own to reset — that extra commit is normally its own previous attempt's child, which committed a
+test file in its assigned worktree (policy allows a child to commit) before that attempt ended
+retryable and the step came back to prepare the tree a second time. The gate reads HEAD before the
+reset that would restore it, so a HEAD the reset would have removed read as somebody else's tree.
+
+**Fix:** nothing to do by hand — this hand-back is the harness refusing to destroy a tree it cannot
+prove it owns, and current `specify` accepts a HEAD on the run's branch that descends from the base.
+What to check if a run still hands back here: whether the worktree is really registered
+(`git worktree list` names it), whether it is on the run's branch rather than detached or on a branch
+another tool made, and whether its HEAD is a descendant of the run's base sha
+(`git merge-base --is-ancestor <base sha> HEAD` in that tree — it must exit 0). A tree that fails any
+of those is left exactly as found, deliberately: the alternative is a `reset --hard` in somebody
+else's work. Where a foreign directory really does sit at that path, move it out from under
+`.worktrees/` and re-run.
+
 ### Symptom: a lean run hands back with `baseline red: tier <name> is red at the base commit`
 
 **Cause:** the project's own verify tier fails on the run's head AND on its base commit, and

@@ -290,7 +290,14 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
         return verdict;
       },
       prepare: () =>
-        ensureSpecifyWorktreeWithProvision(deps.exec, { repoRoot, issue, fromRef: base, branch }),
+        ensureSpecifyWorktreeWithProvision(deps.exec, {
+          repoRoot,
+          issue,
+          fromRef: base,
+          branch,
+          // The pipeline resets to the base before calling this prepare.
+          allowAheadOfBase: true,
+        }),
       commitMessage: `test: acceptance tests for #${issue}`,
       ...(config.verify.freezeCheck === undefined
         ? {}
