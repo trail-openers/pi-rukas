@@ -55,7 +55,9 @@ import { LOCAL_GIT_TIMEOUT_MS } from "./review-patch-identity.ts";
 import { protectedPathsIn } from "./work-driver-doctrine.ts";
 import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
 import {
+  type NameStatus,
   type ProtectedPathExec,
+  type Unreadable,
   changedPaths,
   readCommittedProtectedPaths,
   renameSourcePaths,
@@ -135,6 +137,23 @@ export async function committedProtectedPaths(
   headOid: string,
   baseOid: string,
 ): Promise<ProtectedMergeRead> {
+  const read = await committedDiff(exec, cwd, headOid, baseOid);
+  if (!read.ok) return read;
+  const bothSides = [...changedPaths(read.targets), ...renameSourcePaths(read.targets)];
+  return { ok: true, paths: protectedPathsIn(bothSides) };
+}
+
+/**
+ * The committed name-status read both merge gates share: the two OIDs are checked,
+ * the merge-base is taken over THEM, and the diff runs over that pair. `undefined`
+ * targets mean the read refused, and the reason names the cause.
+ */
+async function committedDiff(
+  exec: ProtectedPathExec,
+  cwd: string,
+  headOid: string,
+  baseOid: string,
+): Promise<{ ok: true; targets: NameStatus[] } | Unreadable> {
   for (const [what, oid] of [
     ["head", headOid],
     ["base", baseOid],
@@ -157,8 +176,7 @@ export async function committedProtectedPaths(
     timeout: LOCAL_GIT_TIMEOUT_MS,
   });
   if (!read.ok) return { ok: false, unreadable: read.unreadable };
-  const bothSides = [...changedPaths(read.targets), ...renameSourcePaths(read.targets)];
-  return { ok: true, paths: protectedPathsIn(bothSides) };
+  return { ok: true, targets: read.targets };
 }
 
 /** Resolved refs for one merge decision: the two OIDs to diff, or the reason none. */
@@ -203,6 +221,26 @@ async function fetchMergeRefs(
 }
 
 /**
+ * The paths one PR's own commits touch, unfiltered, for the declared gate-file
+ * gate. The same fetch-and-pin reads as `mergeProtectedPathsForBranch` — the reason
+ * the two share everything up to the last step is that a gate filtering the change
+ * set to one list before another gate reads it silently sees nothing: the built-in
+ * predicate is one project's list, and a path this repository declares for itself is
+ * by definition outside it. Name-for-name identical to the protected read, which is
+ * why it is this function and not a filter argument at the call site.
+ */
+export async function mergeDeclaredGateFileChanges(
+  exec: ProtectedPathExec,
+  cwd: string,
+  headBranch: string,
+  headOid?: string,
+): Promise<ProtectedMergeRead> {
+  const refs = await mergeRefsForBranch(exec, cwd, headBranch, headOid);
+  if (!refs.ok) return refs;
+  return committedChangedPaths(exec, cwd, refs.headOid, refs.baseOid);
+}
+
+/**
  * The protected paths one PR's own commits touch, where the PR is named by its
  * head BRANCH and the base is the mainline. The remote and mainline are resolved
  * the way every review identity resolves them (`remoteName` + `resolveMainline`):
@@ -219,13 +257,47 @@ export async function mergeProtectedPathsForBranch(
   headBranch: string,
   headOid?: string,
 ): Promise<ProtectedMergeRead> {
+  const refs = await mergeRefsForBranch(exec, cwd, headBranch, headOid);
+  if (!refs.ok) return refs;
+  return committedProtectedPaths(exec, cwd, refs.headOid, refs.baseOid);
+}
+
+/**
+ * Resolve the two OIDs one merge decision is over: remote and mainline the way every
+ * review identity resolves them, then the fetch and a single resolution of each ref.
+ * Both merge gates take their change set over these same two OIDs, so neither can
+ * inspect a commit the other did not.
+ */
+async function mergeRefsForBranch(
+  exec: ProtectedPathExec,
+  cwd: string,
+  headBranch: string,
+  headOid?: string,
+): Promise<MergeRefs> {
   const remote = await remoteName(exec, cwd);
   if (!remote) return { ok: false, unreadable: "no git remote found (origin/upstream/first)" };
   const mainline = await resolveMainline(cwd, exec);
   if (!mainline.ok) {
     return { ok: false, unreadable: `cannot resolve the mainline branch (${mainline.reason})` };
   }
-  const refs = await fetchMergeRefs(exec, cwd, remote, headBranch, mainline.branch, headOid);
-  if (!refs.ok) return refs;
-  return committedProtectedPaths(exec, cwd, refs.headOid, refs.baseOid);
+  return fetchMergeRefs(exec, cwd, remote, headBranch, mainline.branch, headOid);
+}
+
+/**
+ * Every path the committed diff from `merge-base(head, base)` to `head` touches —
+ * destinations and rename/copy sources alike, with no predicate applied. This is
+ * what the declared gate-file gate compares its repository's own list against.
+ */
+async function committedChangedPaths(
+  exec: ProtectedPathExec,
+  cwd: string,
+  headOid: string,
+  baseOid: string,
+): Promise<ProtectedMergeRead> {
+  const read = await committedDiff(exec, cwd, headOid, baseOid);
+  if (!read.ok) return read;
+  return {
+    ok: true,
+    paths: [...changedPaths(read.targets), ...renameSourcePaths(read.targets)],
+  };
 }
