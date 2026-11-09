@@ -194,6 +194,7 @@ async function prepareTree(
       issue: opts.issue,
       fromRef: opts.base,
       branch: opts.branch,
+      allowAheadOfBase: true,
     });
     return prepared.problem === undefined
       ? undefined
@@ -282,7 +283,14 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
   }
   if (worktreeExists(wt)) {
     try {
-      await assertSpecifyWorktreeOwned(deps.exec, { repoRoot, wt, baseSha: base, branch });
+      await assertSpecifyWorktreeOwned(deps.exec, {
+        repoRoot,
+        wt,
+        baseSha: base,
+        branch,
+        // This step resets the tree to the base moments later.
+        allowAheadOfBase: true,
+      });
     } catch (err) {
       throw new SpecifyInfraError((err as Error).message);
     }

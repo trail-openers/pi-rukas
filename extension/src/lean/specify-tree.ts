@@ -99,9 +99,10 @@ async function registeredWorktreePaths(
  * use. `reset --hard` and `clean -fdx` in a tree the step does not own destroys
  * somebody else's work, so ownership is PROVEN rather than inferred from the
  * directory existing: the path appears in `git worktree list --porcelain` of
- * this repo, and its HEAD is either the run's branch or detached at the base
- * sha. Anything else, including an unreadable listing, throws before a single
- * mutation, and the foreign tree is left exactly as found.
+ * this repo, and its HEAD sits at the required commit — on the run's branch or
+ * detached there — or, with `allowAheadOfBase`, on the run's branch and
+ * descending from it. Anything else, including an unreadable listing, throws
+ * before a single mutation, and the foreign tree is left exactly as found.
  *
  * `headMustBe` is what a step other than `specify` asks the tree to be sitting
  * at. `specify` requires the base, because its whole claim is that it froze the
@@ -109,6 +110,12 @@ async function registeredWorktreePaths(
  * every legitimate run if it demanded the base too, so it passes the head the
  * step log's frozen records were hashed at. The registration check and the
  * branch check are unchanged either way — only the commit HEAD must equal moves.
+ *
+ * `allowAheadOfBase` is for the caller that resets HEAD itself next: a tree on
+ * the run's branch that descends from the base is then its own to reset — ON
+ * that branch, because a HEAD the reset would move must be one the run named:
+ * detached or unreadable is refused. The probe only ADDS a refusal: one that
+ * could not answer throws.
  */
 export async function assertSpecifyWorktreeOwned(
   exec: ExecFn,
@@ -119,6 +126,8 @@ export async function assertSpecifyWorktreeOwned(
     branch: string;
     /** Default `baseSha` — what `specify` has always required. */
     headMustBe?: string;
+    /** Also own a HEAD that descends from `baseSha`. See the header. */
+    allowAheadOfBase?: boolean;
   },
 ): Promise<void> {
   const foreign = `the directory ${opts.wt} is not a worktree of this repository at ${opts.branch} or ${opts.baseSha} — refusing to reset a tree this step does not own`;
@@ -139,13 +148,18 @@ export async function assertSpecifyWorktreeOwned(
   }).catch(() => undefined);
   const actual = (head?.stdout ?? "").trim();
   const want = opts.headMustBe ?? opts.baseSha;
+  let aheadOk = false;
   // The two failure messages name what was actually found: "detached at the
   // base" and "on the run's branch but two commits ahead of it" are different
   // diagnoses for whoever reads the handback, and both were the same lie before.
-  if (actual !== want)
-    throw new Error(
-      `${foreign} (its HEAD is ${actual === "" ? "unreadable" : actual}, expected ${want})`,
-    );
+  if (actual !== want) {
+    aheadOk =
+      opts.allowAheadOfBase === true && actual !== "" && (await headDescends(exec, opts.wt, want));
+    if (!aheadOk)
+      throw new Error(
+        `${foreign} (its HEAD is ${actual === "" ? "unreadable" : actual}, expected ${want})`,
+      );
+  }
   const symbolic = await exec("git", {
     argv: [...NO_HOOKS, "symbolic-ref", "--short", "-q", "HEAD"],
     cwd: opts.wt,
@@ -153,7 +167,12 @@ export async function assertSpecifyWorktreeOwned(
     maxBuffer: 1024 * 1024,
   }).catch(() => ({ stdout: "" }));
   const on = (symbolic.stdout ?? "").trim();
-  if (on !== "" && on !== opts.branch) throw new Error(foreign);
+  // The ahead path is the reset that moves commits: those belong to the run's
+  // branch, so the tree must name it — an empty `on` (detached, or a
+  // symbolic-ref that would not answer) is refused as foreign. A tree sitting
+  // exactly AT the base is where `resetWorktreeToBase` leaves its own detached
+  // trees, so there an empty `on` stays owned.
+  if (aheadOk ? on !== opts.branch : on !== "" && on !== opts.branch) throw new Error(foreign);
 }
 
 /**
@@ -164,7 +183,13 @@ export async function assertSpecifyWorktreeOwned(
  */
 export async function ensureSpecifyWorktreeWithProvision(
   exec: ExecFn,
-  opts: { repoRoot: string; issue: number; fromRef: string; branch: string },
+  opts: {
+    repoRoot: string;
+    issue: number;
+    fromRef: string;
+    branch: string;
+    allowAheadOfBase?: boolean;
+  },
 ): Promise<{ wt: string; linked: string[]; problem?: string }> {
   const wt = specifyWorktreePath(opts.repoRoot, opts.issue);
   if (worktreeExists(wt)) {
@@ -173,6 +198,7 @@ export async function ensureSpecifyWorktreeWithProvision(
       wt,
       baseSha: opts.fromRef,
       branch: opts.branch,
+      allowAheadOfBase: opts.allowAheadOfBase,
     });
     // The reset cleans WITHOUT exemptions — `git clean -fdx` takes the
     // dependency links too — and provisioning then builds them again, which
@@ -196,6 +222,26 @@ export async function ensureSpecifyWorktreeWithProvision(
   await resetWorktreeToBase(exec, tree, opts.fromRef, opts.branch);
   const provision = await provisionWorktree(exec, opts.repoRoot, tree);
   return { wt: tree, linked: provision.linked, ...problemOf(provision) };
+}
+
+/**
+ * `git merge-base --is-ancestor sha HEAD` in `wt`: git's own exit 1 is `false`,
+ * any other outcome throws — never read as "descends". Like `headDescendsFrom`
+ * in build-git.ts, whose error type belongs to that step.
+ */
+async function headDescends(exec: ExecFn, wt: string, sha: string): Promise<boolean> {
+  const r = await exec("git", {
+    argv: [...NO_HOOKS, "merge-base", "--is-ancestor", sha, "HEAD"],
+    cwd: wt,
+    timeout: 30_000,
+    maxBuffer: 1024 * 1024,
+  }).then(
+    () => ({ ok: true as const }),
+    (err: unknown) => ({ ok: false as const, code: (err as { code?: unknown })?.code }),
+  );
+  if (r.ok) return true;
+  if (r.code === 1) return false;
+  throw new Error(`could not tell whether HEAD in ${wt} descends from ${sha}`);
 }
 
 /** The `problem` field of a provisioning result, spread only when present. */
