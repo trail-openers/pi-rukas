@@ -96,10 +96,10 @@ const quoted = (command: string): string => oneLine(command, COMMAND_QUOTE_MAX);
 
 /**
  * The longest reason either tier below may produce for one criterion. Over
- * `state-outcome`'s `COMMAND_NOT_RUNNABLE_MAX_CHARS` does not merely clip the reason — it
- * makes the whole verify outcome unloadable, so the run loses every verdict it earned.
- * Each interpolation of `rel` is already clipped and the assembled reason is clipped again,
- * because a path can be long while every segment stays short.
+ * `state-outcome-maps.ts`'s `RECORD_REASON_MAX_CHARS` — the bound the durable record enforces —
+ * does not merely clip the reason: it makes the whole verify outcome unloadable, so the run
+ * loses every verdict it earned. Each interpolation of `rel` is already clipped and the
+ * assembled reason is clipped again, because a path can be long while every segment stays short.
  */
 const REASON_MAX = 280;
 

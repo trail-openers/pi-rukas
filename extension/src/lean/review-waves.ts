@@ -58,7 +58,8 @@ const LENS_BLOCKING_VERDICTS: readonly Verdict[] = ["CRITICAL_ISSUES_FOUND"];
 /**
  * Did this six-lens round block the run? Its own CRITICAL verdict, or a reported row at the
  * project's bar. The row scan reads `reported` and nothing else, because that is the tier the layer
- * itself calls blocking: `splitAdvisory` already moved the out-of-range rows out of it.
+ * itself calls blocking — `splitAdvisory` moves the out-of-range rows out of it when it can read
+ * the PR's changed lines, and keeps every row in `reported` when it cannot.
  *
  * The asymmetry with the re-review is policy: the wave reads `reported` only, but a CARRIED advisory
  * row is still caught by the re-review's NOT ADDRESSED scan, which reads both tiers.
@@ -99,9 +100,11 @@ export const CAUSE_NEW_CRITICAL = "review: fix introduced a CRITICAL";
 
 /**
  * Does a row reach the bar the step was told to review at? THE ONE PREDICATE both bars read — the
- * wave bar in {@link lensBlocks} and the re-review's carried-row scan in `review.ts` — so the two
- * cannot disagree about the same row. The bar is the `Severity`
- * `ReviewDeps.reviewThreshold` resolved once at the run's base commit, never a constant here.
+ * wave bar in {@link lensBlocks} and the re-review's carried-row scan in `review-step.ts`
+ * (`reviewedPass`) — because two rules over the same `SEVERITY_RANK` drift apart and only show up
+ * when a round's verdict and the step's decision disagree about the same row. The bar is the
+ * `Severity` `ReviewDeps.reviewThreshold` resolved once at the run's base commit, never a constant
+ * here.
  *
  * The unknown-severity arm is why this is a function: a row is parsed model output, and one whose
  * `severity` is missing or outside the four schema values is not a row below the bar, so an

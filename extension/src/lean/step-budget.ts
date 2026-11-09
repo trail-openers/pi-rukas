@@ -62,7 +62,8 @@ export interface DispatchUsageRow {
 /**
  * A fixer row's tree identity: decimal epoch milliseconds, as data. A string of digits rather
  * than a number, because a number is what `Number()` turns a malformed id into `NaN` on the way
- * into the durable record. Validated by `isRunId` in `state-outcome.ts`.
+ * into the durable record. Validated by `isRunId` in `state-dispatches.ts`, the module that owns
+ * the `FIX_RUN_ID` grammar.
  */
 export type FixRunId = string & { readonly __fixRunId: unique symbol };
 

@@ -146,15 +146,15 @@ async function gitType(
 
 /**
  * Per-state ceilings, each bounding ONE CHILD and never a step's total. `tokens` counts all
- * usage including cache re-reads, so each row's tokens sit at or above its turns × ~150k and
- * the turn ceiling binds no later than the token ceiling. A child's own bound knob can only
- * lower `minutes`, never raise it. `ci`'s minutes is the verify tier timeout, not a child
- * bound; the review row bounds the lens and fixer children and has no wall clock of its own.
+ * usage including cache re-reads (~150k per turn measured), which is why the 400-turn rows
+ * carry 60M: each row's tokens sit at or above its turns × ~150k, so the turn ceiling binds no
+ * later than the token ceiling. A child's own bound knob can only lower `minutes`, never raise
+ * it. `ci`'s minutes is the verify tier timeout, not a child bound; the review row bounds the
+ * lens and fixer children and has no wall clock of its own.
  *
- * `0` means "no bound" for turns and tokens. For `ci` a `0` minutes would be an
- * immediately-expired wait — the opposite of the generous setting every other `0` here says —
- * so `ci` takes a non-positive minutes as the shipped default. Mechanism: `ciMinutes` in
- * `lean/ci.ts`.
+ * `0` means "no bound" for turns and tokens. An operator's `budgets.ci.minutes` of `0` would be
+ * an immediately-expired wait — the opposite of the generous setting every other `0` here says
+ * — so `ciMinutes` in `lean/ci.ts` takes a non-positive `ci` minutes as the shipped default.
  */
 export const DEFAULT_BUDGETS: Readonly<Record<string, Budget>> = Object.freeze({
   specify: Object.freeze({ turns: 400, tokens: 60_000_000, minutes: 20 }),

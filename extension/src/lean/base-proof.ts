@@ -205,8 +205,8 @@ const NAMES_MISSING_OBJECT =
  * `execp` attaches `code`/`signal`/`killed`/`stdout`/`stderr` to the Error it rejects, but
  * nothing in the type system says so, and an `as` cast would read `e.code` off a thrown
  * string or treat an object whose `code` is a string as a git exit. A value that does not
- * look like an exec rejection is reported as `undefined`, which the caller's arms already
- * treat as "no exit code", i.e. a fault.
+ * look like an exec rejection is reported as `undefined`, which `killedGitFault` reads as "not an
+ * exec rejection at all" and turns into a `git did not run (…)` cause before any exit code is read.
  */
 function execRejection(
   err: unknown,

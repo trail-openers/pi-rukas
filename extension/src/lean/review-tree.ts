@@ -103,8 +103,8 @@ export async function fixTree(
       `could not create the fix worktree at ${wt} for ${head.slice(0, 12)} — a path this step names for this visit alone already exists, and adopting it would move somebody else's bytes onto the branch`,
       rows,
     );
-  // Registered the moment the tree exists: the only thing that removes it is `closeFixTrees`, which
-  // the step's `finally` runs whatever happens.
+  // Registered the moment the tree exists: `closeFixTrees` removes it, in this step's `finally`
+  // whatever happens, and the refusal paths below remove it themselves before they throw.
   // No catch: `provisionWorktree` resolves whatever happens — every fault inside it becomes a
   // `problem` field rather than a rejection. A bare tree costs the fixer a failed typecheck, not the
   // run.
@@ -218,7 +218,8 @@ export async function restore(
 /**
  * The sentence the cause carries about the restore. "restored" gets one clause; the other two warn,
  * because for both `verify` and `publish` are about to read a tree that is NOT the one the gates
- * reviewed. The `why` binding makes the union's exhaustiveness a compile-time fact.
+ * reviewed. The `why` annotation narrows `what` to the two warning members, so a fourth `Restored`
+ * fails to type here.
  */
 export function restoredSentence(what: Restored, wt: string, head: string): string {
   if (what === "restored") return ` — the run's tree was put back at ${head.slice(0, 12)}`;
