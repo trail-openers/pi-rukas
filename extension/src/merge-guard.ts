@@ -105,6 +105,7 @@ import {
 import { evaluateRoundCapMerge } from "./merge-guard-round-cap.ts";
 import { compareAdversarialIdentity } from "./merge-identity-compare.ts";
 import { mergeIdentityAgainstMainline } from "./merge-identity.ts";
+import { roleScopedMergeVerdict } from "./merge-landing-form.ts";
 import { analyseRefusal, clipCheckNames } from "./merge-refusal-render.ts";
 import { GLAB_AUTO_MERGE_REFUSAL, holdReasonText, renderHold } from "./merge-refusals.ts";
 import {
@@ -172,6 +173,7 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
       );
       return rendered;
     };
+    if (roleScopedMergeVerdict(command) === "release") return;
     // Fail closed: a throw out of the tool_call hook would let the command
     // run, so anything the reader throws refuses.
     let analysis: MergeCommand;
