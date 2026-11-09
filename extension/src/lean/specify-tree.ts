@@ -111,8 +111,10 @@ async function registeredWorktreePaths(
  * branch check are unchanged either way — only the commit HEAD must equal moves.
  *
  * `allowAheadOfBase` is for the caller that resets HEAD itself next: a tree on
- * the run's branch that descends from the base is then its own to reset. The
- * probe only ADDS a refusal: one that could not answer throws.
+ * the run's branch that descends from the base is then its own to reset — ON
+ * that branch, because a HEAD the reset would move must be one the run named:
+ * detached or unreadable is refused. The probe only ADDS a refusal: one that
+ * could not answer throws.
  */
 export async function assertSpecifyWorktreeOwned(
   exec: ExecFn,
@@ -145,13 +147,14 @@ export async function assertSpecifyWorktreeOwned(
   }).catch(() => undefined);
   const actual = (head?.stdout ?? "").trim();
   const want = opts.headMustBe ?? opts.baseSha;
+  let aheadOk = false;
   // The two failure messages name what was actually found: "detached at the
   // base" and "on the run's branch but two commits ahead of it" are different
   // diagnoses for whoever reads the handback, and both were the same lie before.
   if (actual !== want) {
-    const ahead =
+    aheadOk =
       opts.allowAheadOfBase === true && actual !== "" && (await headDescends(exec, opts.wt, want));
-    if (!ahead)
+    if (!aheadOk)
       throw new Error(
         `${foreign} (its HEAD is ${actual === "" ? "unreadable" : actual}, expected ${want})`,
       );
@@ -163,7 +166,12 @@ export async function assertSpecifyWorktreeOwned(
     maxBuffer: 1024 * 1024,
   }).catch(() => ({ stdout: "" }));
   const on = (symbolic.stdout ?? "").trim();
-  if (on !== "" && on !== opts.branch) throw new Error(foreign);
+  // The ahead path is the reset that moves commits: those belong to the run's
+  // branch, so the tree must name it — an empty `on` (detached, or a
+  // symbolic-ref that would not answer) is refused as foreign. A tree sitting
+  // exactly AT the base is where `resetWorktreeToBase` leaves its own detached
+  // trees, so there an empty `on` stays owned.
+  if (aheadOk ? on !== opts.branch : on !== "" && on !== opts.branch) throw new Error(foreign);
 }
 
 /**
@@ -189,7 +197,7 @@ export async function ensureSpecifyWorktreeWithProvision(
       wt,
       baseSha: opts.fromRef,
       branch: opts.branch,
-      ...(opts.allowAheadOfBase === undefined ? {} : { allowAheadOfBase: opts.allowAheadOfBase }),
+      allowAheadOfBase: opts.allowAheadOfBase,
     });
     // The reset cleans WITHOUT exemptions — `git clean -fdx` takes the
     // dependency links too — and provisioning then builds them again, which

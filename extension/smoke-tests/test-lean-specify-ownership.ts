@@ -189,11 +189,12 @@ async function refusal(
     const msg = await refusal({ repoRoot, wt, baseSha, branch }, true);
     assert(OWNED.test(msg), `(c) ${name}: refused — ${why} (got ${msg || "no throw"})`);
   }
-  // Registered on NO branch — `worktree add --detach` at a commit that descends
-  // from the base. The branch check lets "no branch" through (a tree detached at
-  // the base is a shape the callers legitimately produce: see the jsdoc of
-  // `resetWorktreeToBase`), so this tree is OWNED. The case pins what the option
-  // does NOT widen: registration and the ancestry probe still have to hold.
+  // Registered on NO branch and AHEAD of the base — `worktree add --detach` at
+  // the base, then a commit. The ancestry probe says yes, so the only thing left
+  // that could refuse it is the branch check, and a detached tree names no branch
+  // to compare: AC2 refuses detached trees, so this one goes. A tree detached AT
+  // the base is still owned (the callers produce that shape themselves — see the
+  // jsdoc of `resetWorktreeToBase`), and the strict case below pins it.
   {
     const wt = path.join(repoRoot, ".worktrees", "lean-3", slug());
     git(repoRoot, "worktree", "add", "-q", "--detach", wt, baseSha);
@@ -201,17 +202,60 @@ async function refusal(
     assert(
       git(repoRoot, "worktree", "list", "--porcelain").includes(wt) &&
         !onBranch(wt) &&
+        branchOf(wt) === "" &&
+        descends(wt, baseSha) &&
         git(wt, "rev-parse", "HEAD") === detachedHead,
-      "(c) detached: registered, on no branch, still on its own commit (seed)",
+      "(c) detached ahead: registered, on no branch, ahead of the base (seed)",
     );
     const msg = await refusal({ repoRoot, wt, baseSha, branch }, true);
-    assert(msg === "", `(c) detached: a detached tree on the base's line is owned (got ${msg})`);
-    // And the strict predicate still refuses it, exactly as before the fix.
-    const strict = await refusal({ repoRoot, wt, baseSha, branch }, false);
     assert(
-      OWNED.test(strict),
-      `(c) detached: the strict predicate still refuses it (got ${strict || "no throw"})`,
+      OWNED.test(msg),
+      `(c) detached ahead: refused — AC2 requires the run's branch (got ${msg || "no throw"})`,
     );
+    assert(
+      git(wt, "rev-parse", "HEAD") === detachedHead,
+      "(c) detached ahead: nothing was reset",
+    );
+    // The same tree with the branch probe broken: `symbolic-ref` throws, and the
+    // gate's `.catch` reads it as an empty branch name — the second way ahead
+    // loses the run's branch, and it reads the same as detached.
+    const unreadable: ExecFn = async (cmd, o) => {
+      if ((o?.argv ?? []).includes("symbolic-ref")) throw new Error("cannot lock ref 'HEAD'");
+      return exec(cmd, o);
+    };
+    let brokenMsg = "";
+    try {
+      await assertSpecifyWorktreeOwned(unreadable, {
+        repoRoot,
+        wt,
+        baseSha,
+        branch,
+        allowAheadOfBase: true,
+      });
+    } catch (err) {
+      brokenMsg = (err as Error).message;
+    }
+    assert(
+      OWNED.test(brokenMsg),
+      `(c) symbolic-ref unreadable: refused too (got ${brokenMsg || "no throw"})`,
+    );
+    // A tree detached exactly AT the base stays owned — the ahead path was
+    // never taken, so today's behaviour for that shape is unchanged, and the
+    // tolerance is deliberate: `resetWorktreeToBase` leaves its own trees there
+    // detached whenever it is handed `branch === ""`.
+    const atBase = path.join(repoRoot, ".worktrees", "lean-3", slug());
+    git(repoRoot, "worktree", "add", "-q", "--detach", atBase, baseSha);
+    assert(
+      !onBranch(atBase) && git(atBase, "rev-parse", "HEAD") === baseSha,
+      "(c) detached at the base: registered and on no branch (seed)",
+    );
+    for (const ahead of [false, true]) {
+      const msg = await refusal({ repoRoot, wt: atBase, baseSha, branch }, ahead);
+      assert(
+        msg === "",
+        `(c) detached at the base: still owned ${ahead ? "with the ahead option" : "under the strict predicate"} (got ${msg || "no throw"})`,
+      );
+    }
   }
   // A path that is a git repository but not a worktree of this one — the tree a
   // `clean -fdx` would destroy.

@@ -97,8 +97,14 @@ retryable and the step came back to prepare the tree a second time. The gate rea
 reset that would restore it, so a HEAD the reset would have removed read as somebody else's tree.
 
 **Fix:** nothing to do by hand — this hand-back is the harness refusing to destroy a tree it cannot
-prove it owns, and current `specify` accepts a HEAD on the run's branch that descends from the base.
-What to check if a run still hands back here: whether the worktree is really registered
+prove it owns. What the gate enforces is exactly this: the tree is registered in `git worktree list`
+of the repository, AND either it sits at the commit the step is allowed to discard, or — with the
+ahead-of-base tolerance `specify` uses when it resets the tree itself next — it is on the run's branch
+and that branch descends from the base. The second arm is the one that insists on the branch: the
+reset is about to move commits, and a HEAD that names no branch (detached, or a `symbolic-ref` that
+would not answer) cannot be shown to belong to this run, so it is refused. A tree sitting exactly AT
+the base is the exception, detached included, because that is where the step's own reset leaves its
+trees. What to check if a run still hands back here: whether the worktree is really registered
 (`git worktree list` names it), whether it is on the run's branch rather than detached or on a branch
 another tool made, and whether its HEAD is a descendant of the run's base sha
 (`git merge-base --is-ancestor <base sha> HEAD` in that tree — it must exit 0). A tree that fails any
