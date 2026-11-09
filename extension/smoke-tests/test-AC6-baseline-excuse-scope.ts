@@ -44,7 +44,6 @@ const EXCUSED: PreexistingTierRecord = {
   names: NAMES,
   total: NAMES.length,
   baseSha: "b".repeat(40),
-  baseNames: NAMES,
 };
 
 /** A green verify record of the shape an excused run leaves behind. */

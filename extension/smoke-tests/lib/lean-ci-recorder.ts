@@ -102,13 +102,12 @@ export interface CiCase {
    *  caught by: read literally it is a wait that expired before it started. */
   ciBudget?: Budget;
   /**
-   * A `preexistingFailures` record to carry on the newest decided verify, for the
-   * #2042 reuse cases: `ci` may reuse `verify`'s proof only when the command it is
-   * about to run is byte-identical to the recorded one and that green certified the
-   * very head `ci` judges, so the case declares the record and the recorder puts it
-   * where production would have written it.
+   * A `preexistingFailures` record to carry on the newest decided verify. Nothing reuses
+   * it — `ci` always pays its own base probe — so what the cases declare with it are the
+   * PRE-#2100 step-log shapes (`cmd` plus a `baseNames` set nothing reads) that a resumed
+   * run still has to load and still has to buy a full probe.
    */
-  reuseRecord?: PreexistingTierRecord;
+  reuseRecord?: PreexistingTierRecord | Record<string, unknown>;
   /** What the base probe's full-tier run printed, for the re-probe cases. */
   baseTierOutput?: string;
   /** The run's frozen contract, committed at the base AND the run's head and recorded
@@ -196,13 +195,15 @@ export async function run(c: CiCase): Promise<Ran> {
   const ran: Ran = { cmds: [], slept: [], head: f.head, tierRuns: 0 };
   let viewReads = 0;
   let checksReads = 0;
-  // The #2042 reuse cases put `verify`'s disclosure on the newest decided verify —
-  // the one field of that record the case is allowed to own. The head it certified
-  // stays whatever `logOpts` built, because whether reuse is allowed IS that fact.
+  // The legacy-record cases put `verify`'s disclosure on the newest decided verify — the
+  // one field of that record the case is allowed to own. The head it certified stays
+  // whatever `logOpts` built, because whether a record is about this head IS that fact.
   if (c.reuseRecord !== undefined) {
     const v = f.ctx.steps.find((s) => s.state === "verify");
-    if (v?.outcome !== undefined)
-      v.outcome = { ...v.outcome, preexistingFailures: { full: c.reuseRecord } };
+    if (v?.outcome !== undefined) {
+      const carried = { full: c.reuseRecord } as Record<string, PreexistingTierRecord>;
+      v.outcome = { ...v.outcome, preexistingFailures: carried };
+    }
   }
   const marker = c.full ?? c.verifyCmd ?? "";
   const deps: CiDeps = {
@@ -217,12 +218,16 @@ export async function run(c: CiCase): Promise<Ran> {
         // declares what that run printed owns its stream, exactly as the verify
         // recorder does for `verify`'s own probe. The probe's tree is identified by
         // PATH, not by a counter: a case that reuses a record never reaches a second
-        // run, and a counter alone would grade a third HEAD run as the base.
+        // run, and a counter alone would grade a third HEAD run as the base. The stamp
+        // this stub gives the HEAD run is `boom from the <tier>`, written by THIS recorder
+        // rather than by the project — so the base run of the same command gets the SAME
+        // stamp. Two runs of one tier must print identical residue for the excuse to
+        // compare them verbatim, and a stamp the base never printed is a head-only line.
         if (c.baseTierOutput !== undefined && String(o?.cwd ?? "").includes(".baseline-lean-verify-"))
           throw Object.assign(new Error(`Command failed: ${cmd}`), {
             code: 1,
             stdout: c.baseTierOutput,
-            stderr: "",
+            stderr: "boom from the full tier\n",
           });
         if (c.tierFails !== undefined) throw c.tierFails;
         if (c.tierExit !== undefined)

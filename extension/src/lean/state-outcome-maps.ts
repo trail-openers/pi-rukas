@@ -201,18 +201,9 @@ export const PREEXISTING_NAMES_CAP = 20;
 /** How long one recorded test name may be. A longer token is not a name. */
 export const PREEXISTING_NAME_MAX_CHARS = 200;
 
-/**
- * How large a tier's persisted base-name set may be. It exists so the `ci` step
- * can reuse `verify`'s proof instead of paying for its own base probe; a set
- * larger than this is OMITTED rather than truncated, because a partial base set
- * would let `ci` compare against names it cannot claim are the whole story and
- * excuse a failure it never saw at base.
- */
-export const PREEXISTING_BASE_NAMES_CAP = 500;
-
 /** What one tier's pre-existing-failure disclosure records. */
 export interface PreexistingTierRecord {
-  /** The tier's command, verbatim: `ci` reuses the record only on a byte match. */
+  /** The tier's command, verbatim, as the disclosure names it. */
   cmd: string;
   /** The head run's failing names, in stream order, capped at {@link PREEXISTING_NAMES_CAP}. */
   names: string[];
@@ -220,8 +211,6 @@ export interface PreexistingTierRecord {
   total: number;
   /** The commit the base run ran at — the run's `baseSha`. */
   baseSha: string;
-  /** The base run's complete name set, present only when it fits the cap above. */
-  baseNames?: string[];
 }
 
 /** Is this a recorded name — bounded text with no control character? */
@@ -270,16 +259,9 @@ export function preexistingFailuresProblem(value: unknown): string | undefined {
       if (problem !== undefined)
         return `outcome preexistingFailures[${JSON.stringify(tier)}] names entry ${problem}`;
     }
-    if (entry.baseNames === undefined) continue;
-    if (!Array.isArray(entry.baseNames) || entry.baseNames.length === 0)
-      return `outcome preexistingFailures[${JSON.stringify(tier)}].baseNames must be a non-empty string[]`;
-    if (entry.baseNames.length > PREEXISTING_BASE_NAMES_CAP)
-      return `outcome preexistingFailures[${JSON.stringify(tier)}].baseNames must hold at most ${PREEXISTING_BASE_NAMES_CAP} names`;
-    for (const name of entry.baseNames) {
-      const problem = recordedNameProblem(name);
-      if (problem !== undefined)
-        return `outcome preexistingFailures[${JSON.stringify(tier)}] baseNames entry ${problem}`;
-    }
+    // A step log written before the verbatim rule may still carry a `baseNames` set,
+    // which nothing reads any more — `ci` re-probes the base. Such a field is ignored,
+    // so a resumed run loads; {@link validatedPreexistingFailures} drops it.
   }
   return undefined;
 }
@@ -307,20 +289,11 @@ export function validatedPreexistingFailures(
     if (!Array.isArray(entry.names) || entry.names.length === 0) continue;
     if (entry.names.length > PREEXISTING_NAMES_CAP) continue;
     if (entry.names.some((name) => recordedNameProblem(name) !== undefined)) continue;
-    const baseNames = Array.isArray(entry.baseNames) ? entry.baseNames : undefined;
-    if (
-      baseNames !== undefined &&
-      (baseNames.length === 0 ||
-        baseNames.length > PREEXISTING_BASE_NAMES_CAP ||
-        baseNames.some((name) => recordedNameProblem(name) !== undefined))
-    )
-      continue;
     out[tier] = {
       cmd: entry.cmd,
       names: [...entry.names] as string[],
       total: entry.total as number,
       baseSha: entry.baseSha,
-      ...(baseNames === undefined ? {} : { baseNames: [...baseNames] as string[] }),
     };
   }
   return Object.keys(out).length === 0 ? undefined : out;

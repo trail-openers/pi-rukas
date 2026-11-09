@@ -35,9 +35,9 @@ function assert(cond: boolean, msg: string): void {
   }
 }
 
-/** A recorded disclosure of the shape `verify`/`ci` write. */
+/** A recorded disclosure of the shape `verify`/`ci` write — head names, total, base sha. */
 function rec(cmd: string, names: string[]): PreexistingTierRecord {
-  return { cmd, names, total: names.length, baseSha: "b".repeat(40), baseNames: names };
+  return { cmd, names, total: names.length, baseSha: "b".repeat(40) };
 }
 
 const VERIFY_REC = { fast: rec("bun test", ["a.test.ts::t1"]) };

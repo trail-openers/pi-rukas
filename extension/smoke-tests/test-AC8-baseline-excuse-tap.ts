@@ -21,11 +21,13 @@
  *     in two trees is one line, and a different project-relative path is not
  *   (marker) a line that opens with a runner's own `FAILED `/`ERROR ` marker and that
  *     the classifier does not recognise refuses the whole excuse, on either side
- *   (ci reuse) a recorded NON-pytest set replays through `baseStreamOf` and excuses
+ *   (ci probe) a red full tier whose head set the base probe printed excuses, and the
+ *     tier's command runs at HEAD and again in the throwaway base tree — ci pays its own
+ *     probe even when `verify`'s record on the log carries a byte-identical command and
+ *     a recorded `baseNames` set
  *   (tier) a tier that really printed TAP lines excuses end to end
  */
-import type { PreexistingTierRecord } from "../src/lean/state-outcome-maps.ts";
-import { baselineExcuse } from "../src/lean/verify-baseline-excuse.ts";
+import { baselineExcuse, failureLinesOf } from "../src/lean/verify-baseline-excuse.ts";
 import type { BaseProbe } from "../src/lean/verify-baseline.ts";
 import { cleanUp, run } from "./lib/lean-ci-recorder.ts";
 import { failLinesTier } from "./lib/lean-verify-tiers.ts";
@@ -122,36 +124,47 @@ function excuseOf(headLines: string[], baseLines: string[]) {
   );
 }
 
-// --------------------------------- (unrecognised marker) a declared failure nothing reads
+// ------------------ (head-only) a failure the base never printed refuses the excuse
 {
   const A = "FAILED tests/x_test.py::test_a - AssertionError";
-  // Neither line below matches a shape in the table, so the classifier answers "not a
-  // failure line"; a runner's own marker has to be enough to refuse.
-  const COLLECTION_ERROR = "ERROR tests/test_brand_new.py";
+  // Both lines below match a shape the table carries, so a head-only one of them is a
+  // line the base never printed and the verbatim rule refuses it; and `failureLinesOf`
+  // hands it over as a comparable line, so nothing here can drop it out of the set.
+  const NEW_PYTEST = "FAILED tests/y.py::t - AssertionError";
+  const NEW_GO = "--- FAIL: TestBrandNew (0.01s)";
+  assert(
+    failureLinesOf(NEW_PYTEST).length === 1 && failureLinesOf(NEW_GO).length === 1,
+    `(marker) both new-check lines are lines the classifier reads (${JSON.stringify(failureLinesOf(NEW_GO))})`,
+  );
+  assert(
+    excuseOf([A, NEW_PYTEST], [A]).kind === "refused",
+    `(marker) a head-only new pytest failure refuses the excuse (${excuseOf([A, NEW_PYTEST], [A]).kind})`,
+  );
+  assert(
+    excuseOf([A, NEW_GO], [A]).kind === "refused",
+    `(marker) a head-only new go failure refuses it too (${excuseOf([A, NEW_GO], [A]).kind})`,
+  );
   const BARE_FAILED = "FAILED tests/y.py";
-  assert(
-    excuseOf([A, COLLECTION_ERROR], [A]).kind === "refused",
-    `(marker) an unrecognised ERROR line in head refuses the excuse (${excuseOf([A, COLLECTION_ERROR], [A]).kind})`,
-  );
-  assert(
-    excuseOf([A, BARE_FAILED], [A]).kind === "refused",
-    `(marker) a bare file verdict in head refuses it too (${excuseOf([A, BARE_FAILED], [A]).kind})`,
-  );
   assert(
     excuseOf([A], [BARE_FAILED]).kind === "refused",
     `(marker) a base that named nothing but an unreadable line is no evidence (${excuseOf([A], [BARE_FAILED]).kind})`,
   );
 }
 
-// ------------------------------------------- (ci reuse) recorded lines replay verbatim
+// ------------------------------------ (ci probe) ci re-probes, never replays a record
 {
   const LINES = ["not ok 1 - a bats check", "--- FAIL: TestSolo (0.01s)"];
   const FULL = "sh -c 'prove -r t'";
-  const record: PreexistingTierRecord = {
+  // The shape the reuse arm used to accept: a green verify whose record carries this
+  // exact command AND the base's whole name set. Nothing reads that set any more, so ci
+  // must pay its own probe — and the probe is what excuses it here, not the record.
+  const record = {
     cmd: FULL,
     names: LINES,
     total: LINES.length,
     baseSha: "b".repeat(40),
+    // A step log from before the verbatim rule still carries the base's name set; the
+    // recorder writes this object onto the verify outcome verbatim, so ci sees it too.
     baseNames: LINES,
   };
   const r = await run({
@@ -164,18 +177,22 @@ function excuseOf(headLines: string[], baseLines: string[]) {
       baseBytes: "#!/bin/sh\nexit 1\n",
     },
     reuseRecord: record,
+    // The base's own output comes ONLY from the probe, which the recorder answers at the
+    // throwaway tree. A reuse replay would grade this green off the record and never run
+    // the base tier, so the absence of that stream is what makes the probe observable.
+    baseTierOutput: LINES.join("\n"),
   });
   assert(
     r.outcome?.kind === "green",
-    `(ci reuse) a recorded NON-pytest set excuses ci's red full tier (got ${r.outcome?.kind ?? `threw: ${r.threw?.message}`}; ${(r.outcome?.reason ?? "").slice(0, 140)})`,
+    `(ci probe) a red full tier excuses on its OWN probe's output (got ${r.outcome?.kind ?? `threw: ${r.threw?.message}`}; ${(r.outcome?.reason ?? "").slice(0, 140)})`,
   );
   assert(
-    r.cmds.filter((c) => c === FULL).length === 1,
-    `(ci reuse) ONE tier run at HEAD (${String(r.cmds.filter((c) => c === FULL).length)})`,
+    r.cmds.filter((c) => c === FULL).length === 2,
+    `(ci probe) the tier ran at HEAD and once more at the base, though verify's record was reusable (${String(r.cmds.filter((c) => c === FULL).length)})`,
   );
   assert(
-    (r.tierRuns ?? 0) === 1 && !r.cmds.some((c) => c.includes(".baseline-lean-verify-")),
-    `(ci reuse) and no base probe ran (${String(r.tierRuns)})`,
+    r.tierRuns === 2,
+    `(ci probe) and the tier ran inside the throwaway base checkout too — the recorder answers the probe's tier by its cwd, so two runs IS the two-tree proof (${String(r.tierRuns)})`,
   );
 }
 
