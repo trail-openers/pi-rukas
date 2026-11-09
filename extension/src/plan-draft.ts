@@ -447,9 +447,14 @@ ${droppedSectionWithHolder(dropped)}
 ${oos}
 ${subIssues}${opDecompositionSection}${depthLimit}`;
 
+  // The placeholder line, exact. A string, never a pattern — see the splice
+  // below for why it must be located rather than replaced.
+  const OPEN_QUESTIONS_PLACEHOLDER = "- (none)\n";
+  const OPEN_QUESTIONS_HEADING = "## Open Questions\n\n";
+
   // PR #640: single splice site (the dead onCorrective splice is gone).
   // Splice → collapse → render Open Questions from marked decisions →
-  // replace placeholder. A heading that did not survive rendering
+  // insert them at the placeholder. A heading that did not survive rendering
   // renders status: open (the loss is visible, never a false resolved).
   const { body: spliced, outcomes } = applyWritebackToBody(body, writebackMap ?? new Map());
   const collapsed = spliced.replace(/\n{3,}/g, "\n\n");
@@ -458,10 +463,18 @@ ${subIssues}${opDecompositionSection}${depthLimit}`;
     [...openQuestions, ...conflicts.openQuestions],
     markedDecisions,
   );
-  const finalBody = collapsed.replace(
-    "## Open Questions\n\n- (none)\n",
-    `## Open Questions\n\n${openQ}\n`,
-  );
+  // #2141: located with indexOf and rebuilt by CONCATENATION after the last
+  // replace over the body. As a `replace()` replacement, openQ — angle and
+  // gate text — would be expanded: the dollar-backtick form re-inserts every
+  // byte before the match, the dollar-apostrophe form every byte after it, the
+  // dollar-ampersand form the matched text. One item quoting such a pattern
+  // multiplied the whole body. Concatenation has no replacement semantics, so
+  // untrusted text is inserted verbatim.
+  const oqAt = collapsed.indexOf(`${OPEN_QUESTIONS_HEADING}${OPEN_QUESTIONS_PLACEHOLDER}`);
+  const finalBody =
+    oqAt === -1
+      ? collapsed
+      : `${collapsed.slice(0, oqAt)}${OPEN_QUESTIONS_HEADING}${openQ}\n${collapsed.slice(oqAt + OPEN_QUESTIONS_HEADING.length + OPEN_QUESTIONS_PLACEHOLDER.length)}`;
 
   // #1087: truncated operator channels as data; filing paths halt on this, not the body.
   const operatorOmitted = operatorOmissions({
