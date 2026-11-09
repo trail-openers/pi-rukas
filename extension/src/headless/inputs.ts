@@ -328,6 +328,10 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("RESUME", true),
   // The ceiling the `check_review_cap` tool answers against (#1429). Separate
   // from REVIEW_WALL_CLOCK_MS: different ceiling, different consumer.
+  // #2140 — the wall-clock bound on ONE bash call of a reviewer child, lowered
+  // into the call by a child-side `tool_call` hook: Pi's bash enforces it and
+  // answers the child with its own timeout error, so nothing is killed.
+  ms("REVIEW_BASH_TIMEOUT_MS", 600_000),
   ms("REVIEW_CAP_MS", 5_400_000),
   // The 90-min review-loop budget is enforced at the fix dispatch, not just displayed.
   flag("REVIEW_ENFORCE", true),
