@@ -86,7 +86,7 @@ function assertedTwice(run: string, want: string): boolean {
   return false;
 }
 
-/** The gate. Returns one string per failed check; empty means the texts pass. */
+/** The gate. One string per failed check; empty means the texts pass. */
 function check(dockerfile: string, entrypoint: string, docs: string): string[] {
   const fails: string[] = [];
   const say = (ok: boolean, what: string) => {
@@ -95,7 +95,8 @@ function check(dockerfile: string, entrypoint: string, docs: string): string[] {
   const pre = findRun(dockerfile, "hf download");
   const seed = runs(dockerfile).filter((r) => r !== pre).find((r) => /\bcp\b/.test(r.body) && has(r.body, "/opt/hf-cache-seed"));
   const copy = copyLine(dockerfile);
-  // The two roots the asserted paths are built from, each read where it is defined.
+  // The two roots the asserted paths are built from, read where they are defined.
+  // Operands match to end-of-token: a suffix match lets a wrong-directory model pass.
   const seedRoot = /^\s*SEED_DIR="([^"]*)"/m.exec(entrypoint)?.[1] ?? "";
   const cacheRoot = /--cache-dir\s+(\S+)/.exec(pre?.body ?? "")?.[1] ?? "";
   const rev = /--revision\s+([0-9a-f]{40})/.exec(pre?.body ?? "")?.[1] ?? "";
@@ -121,7 +122,6 @@ function check(dockerfile: string, entrypoint: string, docs: string): string[] {
   }
 
   say(copy > 0, "Dockerfile has a `COPY . <dir>` of the checkout");
-
   const pin = /pip3?\s+install[^\n]*?huggingface_hub==([0-9][0-9A-Za-z.+-]*)/.exec(dockerfile)?.[1] ?? "";
   say(pin !== "", "Dockerfile pins huggingface_hub with an exact `==` version");
   // The comment's stated reason: 2.x renamed the `huggingface-cli` console
