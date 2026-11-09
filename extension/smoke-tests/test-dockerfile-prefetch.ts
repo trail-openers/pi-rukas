@@ -1,16 +1,15 @@
 #!/usr/bin/env bun
 /** vipune model pre-fetch gate — #2055. The image pre-fetches vipune's model with `hf download` and the entrypoint seeds the mounted cache volume from
  * /opt/hf-cache-seed. Both halves once masked their own failure, so the image shipped with no model and every offline `vipune search` died with the 404
- * docs/troubleshooting.md tells users to fix by refreshing. Checked is what made that failure visible: the download must not fail quietly, the files vipune
  * opens must be asserted where written and copied, and the revision one literal across files. A suffix match is not an assertion — `test -f
- * …/anything/model.onnx` passes on a tree that put the model nowhere vipune looks — so every asserted path is the whole path, from the seed or cache root,
+ * …/anything/model.onnx` passes on a tree that put the model nowhere vipune looks — so each asserted path is the whole path, built from the seed or cache root,
  * the repo id and the Dockerfile's own `--revision`. The entrypoint half is RUN, not read: `if false; then`, an `exit 0` where a non-zero is required, and a
- * `|| true` on a continuation line each fool a text check, and none fakes an exit code or a file on disk. The seed block is lifted verbatim from the
- * `CACHE_DIR=`/`SEED_DIR=` line to the `fi` closing the seed guard, prefixed with `set -eu`, and run under bash over a fake seed in a temp dir: a valid seed
- * must exit 0 with the three files non-empty in the cache; a seed without onnx/model.onnx must fail naming it; an existing cache must be left alone. The seed
- * root is retargeted by replacing the quoted literal `"/opt/hf-cache-seed"` wherever it appears — not by exporting SEED_DIR, which the block assigns itself —
- * so a mutation renaming the variable still runs on the temp tree, never /opt. argv[2] retargets the three texts to a directory, which is how the gate is
- * shown red on a mutated copy of either file. Reads no `process.env`: a gate the build can switch off never fails. */
+ * `|| true` on a continuation line each fool a text check, and none fakes an exit code or a file on disk. The seed block runs verbatim under bash, prefixed with
+ * `set -eu`, over a fake seed in a temp dir (cases A-D), its root retargeted by replacing the quoted literal `"/opt/hf-cache-seed"` wherever it appears — not
+ * by exporting SEED_DIR, which the block assigns itself — so a mutation renaming the variable still runs on the temp tree, never /opt. The block is read as text
+ * too, for what no run prices: `cp -rn` copies the seed and its own assert loop passes it, so nothing but the text can catch it; the block's prose names both
+ * `cp -a` and `|| true`, so comments are dropped first and continuations joined, else prose satisfies the check and a mask on the next physical line is missed.
+ * argv[2] retargets the texts to a directory. Reads no `process.env`: a gate the build can switch off never fails. */
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -23,10 +22,22 @@ const REPO_ID = "BAAI/bge-small-en-v1.5"; // vipune's model: the download arg an
 const REPO_DIR = `models--${REPO_ID.replace("/", "--")}`;
 /** A few files of `cp -a`; a hung child is a failure, never a pass. */
 const RUN_TIMEOUT_MS = 4000;
-/** Scratch root for every case this file builds; removed at the end of the run. */
 const SCRATCH_ROOT = mkdtempSync(path.join(tmpdir(), "hf-seed-gate-"));
 const rawLines = (text: string): string[] => text.split("\n");
-/** RUN instructions with backslash continuations joined by a space; comment lines dropped so prose never satisfies a check. */
+/** The block's executable lines, continuations joined so a mask hiding on one is seen on the logical line it belongs to; comments dropped so prose never
+ * satisfies a check. */
+const joinedLines = (block: string): string[] => {
+  const out: string[] = [];
+  let line = "";
+  for (const raw of rawLines(block)) {
+    if (raw.trim().startsWith("#")) continue;
+    line = line === "" ? raw : `${line} ${raw}`;
+    if (!line.endsWith("\\")) out.push(line), (line = "");
+    else line = line.slice(0, -1);
+  }
+  return out;
+};
+/** RUN instructions, continuations joined by a space; comment lines dropped. */
 function runs(text: string): { start: number; body: string }[] {
   const out: { start: number; body: string }[] = [];
   let body = "";
@@ -68,8 +79,8 @@ const wanted = (root: string, rev: string): [string, string][] => [
 ];
 /** Non-empty regular file, following a symlink the way `test -s` does. */
 const nonEmpty = (p: string): boolean => statSync(p, { throwIfNoEntry: false })?.isFile() === true && (statSync(p).size ?? 0) > 0;
-/** The seed block verbatim: the first `CACHE_DIR=`/`SEED_DIR=` line through the `fi` at column 0 closing the seed guard. The block re-assigns SEED_DIR itself,
- * so retargeting goes through the literal, never the environment. */
+/** The seed block: the first `CACHE_DIR=`/`SEED_DIR=` line through the `fi` closing the seed guard. The block re-assigns SEED_DIR itself, so retargeting goes
+ * through the literal, never the environment. */
 function extractSeedBlock(entrypoint: string): string {
   const lines = rawLines(entrypoint);
   const from = lines.findIndex((l) => /^\s*(?:CACHE_DIR|SEED_DIR)=/.test(l));
@@ -78,12 +89,10 @@ function extractSeedBlock(entrypoint: string): string {
   const to = lines.findIndex((l, i) => i > guard && l === "fi");
   return to < 0 ? "" : lines.slice(from, to + 1).join("\n");
 }
-/** The block with the seed root swapped: every occurrence of the literal `"/opt/hf-cache-seed"` — the assignment's value and every later quoted use — becomes
- * the temp seed dir, so a mutation renaming the variable still runs on the temp tree. */
+/** The block with the seed root swapped: every quoted `"/opt/hf-cache-seed"` becomes the temp seed dir, so a mutation renaming the variable still runs there. */
 const rewriteSeed = (block: string, seedDir: string) => block.replaceAll('"/opt/hf-cache-seed"', `"${seedDir}"`);
-/** A seed shaped like the real one. The snapshot entries are RELATIVE links into blobs/, one `..` per directory below the model dir, as `HF_HUB_DISABLE_XET=1`
- * leaves them: a dangling link is a broken seed the block must fail on, and an absolute link would survive any copy and hide a copy that copied nothing. Only
- * entries the case supplies are verified. */
+/** A seed shaped like the real one: snapshot entries are RELATIVE links into blobs/, as `HF_HUB_DISABLE_XET=1` leaves them — a dangling link is a broken seed the
+ * block must fail on, an absolute one would survive any copy and hide a copy that copied nothing. */
 function buildSeed(seedDir: string, rev: string, opts: { withoutOnnx?: boolean } = {}): void {
   const model = path.join(seedDir, "hub", REPO_DIR);
   const asserted = [`snapshots/${rev}/${TOKENIZER}`, ...(opts.withoutOnnx ? [] : [`snapshots/${rev}/${ONNX}`])];
@@ -97,9 +106,8 @@ function buildSeed(seedDir: string, rev: string, opts: { withoutOnnx?: boolean }
   symlinkSync("../../blobs/sha-tok", path.join(model, "snapshots", rev, TOKENIZER));
   for (const rel of asserted) if (!nonEmpty(path.join(model, rel))) throw new Error(`fixture seed has a dangling ${rel}`);
 }
-/** Run the seed block as bash would, in a temp HOME over a temp seed. The caller calls `clean()` once it has asserted on what the run left: the seeded cache
- * is the evidence, so the run must not tidy it away. `preexisting` plants a file in the model directory first — an existing cache is never re-seeded, so that
- * case shows only that nothing was overwritten. */
+/** Run the seed block as bash would, in a temp HOME over a temp seed; the caller calls `clean()` once it has asserted on what the run left. `preexisting` plants
+ * a file in the model dir first, and an existing cache is never re-seeded, so that case shows only that nothing was overwritten. */
 function runSeed(block: string, rev: string, opts: { withoutOnnx?: boolean; preexisting?: string } = {}) {
   const root = mkdtempSync(path.join(SCRATCH_ROOT, "case-"));
   const seedDir = path.join(root, "seed");
@@ -118,14 +126,13 @@ function runSeed(block: string, rev: string, opts: { withoutOnnx?: boolean; pree
   // `brief` quotes what the child said, so a failure names its own cause.
   return { code: r.status, out, model, brief: `exit ${r.status ?? r.error?.message}; ${out.trim().slice(0, 140) || "no output"}`, clean: () => rmSync(root, { recursive: true, force: true }) };
 }
-/** Both halves of the gate. One string per failed check; empty means the texts pass. */
+/** Both halves of the gate. One string per failed check; empty means the texts pass. Cases A-D run the seed block; each text check they replaced passed on a mutant. */
 function check(dockerfile: string, entrypoint: string, docs: string): string[] {
   const fails: string[] = [];
   const say = (ok: boolean, what: string) => void (ok || fails.push(what));
   const pre = findRun(dockerfile, "hf download");
   const seed = runs(dockerfile).find((r) => r !== pre && /\bcp\b/.test(r.body) && has(r.body, "/opt/hf-cache-seed"));
   const copy = copyLine(dockerfile);
-  // The two roots the asserted paths are built from, read where defined.
   const seedRoot = /^\s*SEED_DIR="([^"]*)"/m.exec(entrypoint)?.[1] ?? "";
   const cacheRoot = /--cache-dir\s+(\S+)/.exec(pre?.body ?? "")?.[1] ?? "";
   const rev = /--revision\s+([0-9a-f]{40})/.exec(pre?.body ?? "")?.[1] ?? "";
@@ -156,9 +163,12 @@ function check(dockerfile: string, entrypoint: string, docs: string): string[] {
   }
   const block = extractSeedBlock(entrypoint);
   say(block !== "", "entrypoint has a seed block from SEED_DIR/CACHE_DIR to the closing `fi` of the seed guard");
+  const cpLines = joinedLines(block).filter((l) => /\bcp\b/.test(l));
+  say(cpLines.length > 0 && cpLines.every((l) => /\bcp\s+-a\b/.test(l)), `entrypoint seeds with \`cp -a\` (found ${cpLines.map((l) => l.match(/\bcp\s+\S+/)?.[0] ?? "no cp").join("; ") || "no cp line"})`);
+  const seedMask = cpLines.map(masking).find((m) => m !== "") ?? "";
+  say(seedMask === "", `entrypoint seed copy has no masking suffix (found ${seedMask || "none"})`);
   const epRev = /^\s*REVISION="([0-9a-f]{40})"/m.exec(entrypoint)?.[1] ?? "";
   say(rev !== "" && rev === epRev, `entrypoint REVISION equals the Dockerfile --revision (${rev.slice(0, 8) || "none"} vs ${epRev.slice(0, 8) || "none"})`);
-  // Executed, not read: seed a real cache, fail loudly on a seed with no onnx model, leave an existing cache untouched. Each text check these replaced passed on a mutant.
   if (block !== "" && rev !== "") {
     const a = runSeed(block, rev, {}); // A: a valid seed lands all three files, non-empty.
     say(a.code === 0, `RUN seeds a valid cache (${a.brief})`);
@@ -172,8 +182,7 @@ function check(dockerfile: string, entrypoint: string, docs: string): string[] {
     say(c.code === 0, `RUN returns 0 for a pre-existing cache (${c.brief})`);
     say(nonEmpty(path.join(c.model, "SENTINEL")), "RUN leaves a pre-existing cache's SENTINEL in place");
     c.clean();
-    // D: guard inverted, so the copy runs against an existing cache — where `cp -rn` skips the subtree and a continuation-line `|| true` hides a copy that copied nothing. Cases A-C never reach that branch.
-    const d = runSeed(block.replace(/\[ ! -d "\$MODEL_DIR" \]/, '[ -d "$MODEL_DIR" ]'), rev, { withoutOnnx: true, preexisting: "SENTINEL" });
+    const d = runSeed(block.replace(/\[ ! -d "\$MODEL_DIR" \]/, '[ -d "$MODEL_DIR" ]'), rev, { withoutOnnx: true, preexisting: "SENTINEL" }); // D: guard inverted, so the copy runs against an existing cache, where `cp -rn` skips the subtree; A-C never reach it.
     say(d.code !== 0, `RUN fails on a seed without ${ONNX} with the seed guard inverted (${d.brief})`);
     say(has(d.out, ONNX), `RUN names ${ONNX} with the seed guard inverted (output ${d.out.trim() || "empty"})`);
     d.clean();
