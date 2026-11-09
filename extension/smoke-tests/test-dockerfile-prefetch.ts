@@ -158,7 +158,7 @@ function check(dockerfile: string, entrypoint: string, docs: string): string[] {
   const wanted = [`"refs/$REVISION"`, `"snapshots/$REVISION/${ONNX}"`, `"snapshots/$REVISION/${TOKENIZER}"`];
   const missing = wanted.filter((w) => !has(forLine, w));
   say(missing.length === 0, `entrypoint's \`for _f in\` line lists ${wanted.join(", ")} (missing ${missing.join(", ") || "none"}; found ${forLine.trim() || "no such line"})`);
-  const seedMask = masking(block.split("\n").find((l) => /\bcp\b/.test(l)) ?? "");
+  const seedMask = block.split("\n").filter((l) => /\bcp\b/.test(l)).map(masking).find((m) => m !== "") ?? "";
   say(seedMask === "", `entrypoint seed copy has no masking suffix (found ${seedMask || "none"})`);
   const epRev = /^\s*REVISION="([0-9a-f]{40})"/m.exec(entrypoint)?.[1] ?? "";
   say(rev !== "" && rev === epRev, `entrypoint REVISION equals the Dockerfile --revision (${rev.slice(0, 8) || "none"} vs ${epRev.slice(0, 8) || "none"})`);
