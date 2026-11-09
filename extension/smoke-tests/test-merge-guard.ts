@@ -316,11 +316,50 @@ assert(!lensPassed("ISSUES_FOUND", "MEDIUM"), "lens ISSUES_FOUND blocks at the M
     subBlock.includes("registerMergeGuard(pi)"),
     "canary: the shared block registers the merge guard",
   );
-  // Role-agnostic, mode-agnostic, escape hatch present.
+  // #2125 Rescope 2 — the guard is role-SCOPED, not role-agnostic: a non-landing
+  // command is RELEASED for the roles that never land a PR. So the honest
+  // statement about the env var is WHERE it appears — the single call to the
+  // predicate at the top of the hook — and what that scoping must never buy:
+  // a released landing. The asserts below are that invariant and its teeth.
+  const roleReads = mg.match(/PI_ENSEMBLE_ROLE/g) ?? [];
   assert(
-    !/PI_ENSEMBLE_ROLE/.test(mg),
-    "canary: the guard is role-agnostic — it fires for PM, explore, ops, developer alike",
+    roleReads.length === 1 &&
+      /roleScopedMergeVerdict\(process\.env\.PI_ENSEMBLE_ROLE, command\)/.test(mg),
+    `canary: PI_ENSEMBLE_ROLE appears in the guard exactly once, as the argument to roleScopedMergeVerdict (found ${roleReads.length})`,
   );
+  assert(
+    !/process\.env\.PI_ENSEMBLE_ROLE/.test(
+      readFileSync(path.join(SRC, "merge-landing-form.ts"), "utf8"),
+    ),
+    "…and the predicate takes the role as a parameter — it does not read the environment itself",
+  );
+  // The behavioural half. A RELEASE is the one verdict the hook returns before
+  // any gate runs, so a released landing would merge with the ledger, the head
+  // pin and the CI read all skipped. Every role — the parent (unset), `ops`,
+  // and the roles the scoping releases — must be STOPPED: the command either
+  // refuses or reaches the forge read; it never returns undefined.
+  for (const kw of ["me" + "rge", "accept"]) {
+    for (const role of [undefined, "ops", "explore", "developer", "code-review-specialist"]) {
+      // The role is the environment's, so the save/restore has to distinguish
+      // "set to nothing" from "unset": a test run under a real role must find
+      // it exactly as it was. `undefined` is the value that removes the key, so
+      // one assignment covers both directions and there is no `delete` here.
+      const had = "PI_ENSEMBLE_ROLE" in process.env;
+      const before = process.env.PI_ENSEMBLE_ROLE;
+      process.env.PI_ENSEMBLE_ROLE = role;
+      let landed: { block?: boolean; calls: string[] };
+      try {
+        // `accept` is glab's word: the same landing shape on the other forge.
+        landed = await hookDecision(`glab mr ${kw} 12`, GOOD_ENTRIES);
+      } finally {
+        process.env.PI_ENSEMBLE_ROLE = had ? before : undefined;
+      }
+      assert(
+        landed.block === true || landed.calls.length > 0,
+        `canary: landing forms are held for every role; only non-landing text is released for roles that never land (${JSON.stringify(role)}: \`${kw}\`)`,
+      );
+    }
+  }
   assert(
     !/PI_ENSEMBLE_TRUST_MODE|PI_ENSEMBLE_SANDBOX_MODE|PI_ENSEMBLE_SUBAGENT_MODE/.test(mg),
     "the guard is mode-agnostic — it is the hook registered before the bypasses, not a branch inside them",

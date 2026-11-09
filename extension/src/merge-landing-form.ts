@@ -72,13 +72,17 @@ function landing(line: string): boolean {
 
 /**
  * `release` for a child that cannot land a PR; `hold` falls through to the
- * classifier. The role is read here, not passed in, so the guard's own source
- * stays free of `PI_ENSEMBLE_ROLE`: `test-merge-guard.ts` pins the guard
- * ROLE-AGNOSTIC, and this scoping is the deliberate exception, owned here.
- * Read per call, never cached — the parent and each child differ.
+ * classifier. The role is a PARAMETER, read by the caller: the guard's source
+ * states the scoping at its own call site, and `test-merge-guard.ts` pins
+ * `PI_ENSEMBLE_ROLE` to exactly that one occurrence rather than pinning the
+ * guard role-agnostic — the guard is role-SCOPED for non-landing text and
+ * holds every landing form for every role, this predicate included.
  */
-export function roleScopedMergeVerdict(command: string): "release" | "hold" {
-  const r = process.env.PI_ENSEMBLE_ROLE?.trim().toLowerCase() ?? "";
+export function roleScopedMergeVerdict(
+  role: string | undefined,
+  command: string,
+): "release" | "hold" {
+  const r = role?.trim().toLowerCase() ?? "";
   if (r === "" || r === "ops") return "hold";
   // Anything not a plain string (`test-merge-guard-allowlist.ts` hands over a
   // non-string to drive the classifier-threw arm) is held: the pre-check may

@@ -173,7 +173,7 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
       );
       return rendered;
     };
-    if (roleScopedMergeVerdict(command) === "release") return;
+    if (roleScopedMergeVerdict(process.env.PI_ENSEMBLE_ROLE, command) === "release") return;
     // Fail closed: a throw out of the tool_call hook would let the command
     // run, so anything the reader throws refuses.
     let analysis: MergeCommand;

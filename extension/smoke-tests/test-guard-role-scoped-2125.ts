@@ -103,17 +103,9 @@ const RELEASED = [
  */
 const CLASSIFIER_RELEASES = HELD_BY_CLASSIFIER;
 
-/** The predicate reads the role from the environment, per call. */
+/** The role is a parameter — the guard's call site reads it from the environment. */
 function verdict(role: string | undefined, cmd: string): "release" | "hold" {
-  const prev = process.env.PI_ENSEMBLE_ROLE;
-  if (role === undefined) delete process.env.PI_ENSEMBLE_ROLE;
-  else process.env.PI_ENSEMBLE_ROLE = role;
-  try {
-    return roleScopedMergeVerdict(cmd);
-  } finally {
-    if (prev === undefined) delete process.env.PI_ENSEMBLE_ROLE;
-    else process.env.PI_ENSEMBLE_ROLE = prev;
-  }
+  return roleScopedMergeVerdict(role, cmd);
 }
 
 // ---------------------------------------------------------------- A. non-ops
