@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.69](https://github.com/trail-openers/pi-rukas/compare/v0.14.68...v0.14.69) (2026-11-09)
+
+
+### Bug Fixes
+
+* **work:** park a merge that touches a repository-declared gate file ([#2144](https://github.com/trail-openers/pi-rukas/issues/2144)) ([e53cdc5](https://github.com/trail-openers/pi-rukas/commit/e53cdc53c34b0b6a0ff100ca297720a0b300fd82))
+
 ## [0.14.68](https://github.com/trail-openers/pi-rukas/compare/v0.14.67...v0.14.68) (2026-11-09)
 
 
