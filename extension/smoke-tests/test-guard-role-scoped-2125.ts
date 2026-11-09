@@ -12,7 +12,7 @@
  * So the rule is scoped by who is asking (S1): a non-ops child gets the raw
  * landing-form scan and nothing else, because (S3) these roles never land a
  * PR and the guard catches mistakes for them, not adversaries. `ops` and the
- * parent keep the classifier untouched. What is pinned here:
+ * parent (role unset) keep the classifier untouched. What is pinned here:
  *   A. a non-ops role is RELEASED for reads, prose and heredocs naming the
  *      verb, and HELD for every real landing form;
  *   B. `ops` and an unset role are never released — behaviour is unchanged;
@@ -60,13 +60,6 @@ const HELD_FORMS = [
   `gh api repos/o/r/pulls/5/${KW} -X PUT`,
   `git ${KW} main`,
 ];
-/**
- * Prose that quotes the form but cannot run it: `vipune` is neither a tool
- * word nor a runner, so the scan releases it. This is the field shape the
- * issue was filed for, and the reason matching requires the tool word — a
- * plain token scan would hold `grep -rn "gh pr <kw>" .` and every note.
- */
-const HELD_PROSE = [`vipune add 'gh pr ${KW} 12 is the accepted form'`];
 /** R2's indirect shapes: text this scan cannot read but the shell can run. */
 const HELD_INDIRECT = [
   `echo "$(gh pr ${KW} 1)" > f`,
@@ -77,6 +70,38 @@ const HELD_INDIRECT = [
   // A runner whose INLINE script the scan cannot read: `-e`/`-c` text is
   // executed, so a landing can hide in it.
   `bun -e 'console.log("${KW}")'`,
+];
+/**
+ * Adversarial CRITICAL bypasses from the #2125 fix wave: the landing hid
+ * behind shell syntax the raw-text scan read literally. Every one of these
+ * must HOLD for a non-ops role — the shell strips quotes and backslashes
+ * before the token is read, so `m'er'ge` IS the landing verb, a path-qualified
+ * executable is the tool by basename, a quote-split REST path is the plain
+ * path, and a GraphQL mutation name is the landing whatever casing it carries.
+ */
+const HELD_BYPASS = [
+  // Quote and escape concatenation: the shell de-quotes before comparing.
+  `gh pr m'er'ge 12`,
+  `gh pr m\"er\"ge 12`,
+  `gh pr m\\erge 12`,
+  `'gh' pr merge 12`,
+  `"gh" pr merge 12`,
+  `g"h" pr merge 12`,
+  `glab mr ac'ce'pt 3`,
+  `git \\merge --no-ff side`,
+  // Path-qualified executables: only the basename is the tool word.
+  `/usr/bin/gh pr merge 12`,
+  `./gh pr merge 12`,
+  `bin/gh pr merge 12`,
+  // A quote-split REST path: quotes are shell syntax, not path characters.
+  `gh api -X PUT /repos/o/r/pull's'/1/'mer'ge`,
+  // GraphQL: the de-quoted line carries the mutation name.
+  `gh api graphql -f query='mutation{mergePullRequest(input:{pullRequestId:x}){ok}}'`,
+  `gh api graphql -f query='mutation{merge_mergeRequest(input:{pullRequestId:x}){ok}}'`,
+  `gh api graphql -f query='mutation{mergeMergeRequest(input:{pullRequestId:x}){ok}}'`,
+  // A note quoting the full tool-phrase (`gh pr <kw> …`) — the expected cost
+  // of the de-quoting fix: the normalised token walk holds it again.
+  `vipune add 'gh pr ${KW} 12 is the accepted form'`,
 ];
 /**
  * Rows the CLASSIFIER holds for `ops` today and the pre-check releases for a
@@ -91,7 +116,6 @@ const HELD_BY_CLASSIFIER = [
 ];
 const RELEASED = [
   ...HELD_BY_CLASSIFIER,
-  ...HELD_PROSE,
   // `bun <file>` runs the file's CONTENTS, so a verb in its NAME is not an
   // executed landing — the field's most-held shape, now free.
   `bun ${PROBE_FILE}`,
@@ -115,7 +139,7 @@ for (const role of NON_OPS) {
       verdict(role, cmd) === "release",
       `${role}: released, no landing form: ${JSON.stringify(cmd.slice(0, 58))}`,
     );
-  for (const cmd of [...HELD_FORMS, ...HELD_INDIRECT])
+  for (const cmd of [...HELD_FORMS, ...HELD_INDIRECT, ...HELD_BYPASS])
     assert(
       verdict(role, cmd) === "hold",
       `${role}: held, landing form: ${JSON.stringify(cmd.slice(0, 58))}`,
@@ -243,7 +267,7 @@ for (const cmd of [...HELD_FORMS, ...HELD_INDIRECT]) {
 // No landing form is EVER released: `release` is the one verdict that returns
 // from the hook before any gate runs, so holding these rows is what keeps a
 // reviewer's `git merge main` inside the review gate instead of outside it.
-for (const cmd of [...HELD_FORMS, ...HELD_INDIRECT])
+for (const cmd of [...HELD_FORMS, ...HELD_INDIRECT, ...HELD_BYPASS])
   for (const role of NON_OPS)
     assert(
       verdict(role, cmd) === "hold",
