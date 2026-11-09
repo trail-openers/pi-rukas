@@ -195,35 +195,64 @@ RUN set -e; tmp="$(mktemp -d)"; cd "$tmp" \
     && command -v docker && docker --version && docker compose version \
     && ! test -e /usr/bin/dockerd && ! test -e /usr/bin/containerd
 # -----------------------------------------------------------------------------
-# 6. Pre-fetch vipune's embedding model so it doesn't need network at first run
-#    Sits ABOVE the repo COPY on purpose: nothing here reads the checkout, so
-#    placed after it the pip install, the model download and the seed copy
-#    re-ran (and their layers were re-pushed, per arch) on every merge.
+# 6. Pre-fetch vipune's embedding model so it needs no network at first run
+#    Sits ABOVE the repo COPY: nothing here reads the checkout, so below it the
+#    pip install, the download and the seed copy would re-run on every merge.
 # -----------------------------------------------------------------------------
-# Vipune downloads BAAI/bge-small-en-v1.5 from HuggingFace on first
-# semantic-search call. The pinned revision currently returns 404 from
-# vipune's HTTP client (URLs work via curl — likely a redirect / User-Agent
-# handling quirk), so vipune fails with "Failed to download embedding
-# model" on every fresh container. Fix: pre-fetch at build time. Cached at
-# /opt/hf-cache-seed/ AND copied into the vscode user's standard HF cache
-# location. The entrypoint script seeds the named-volume cache from
-# /opt/hf-cache-seed/ on container start, so users with existing
-# pi-ensemble-cache volumes don't need to `pi-rukas prune` after the
-# upgrade — first launch of the new image automatically populates.
+# vipune downloads BAAI/bge-small-en-v1.5 from HuggingFace on its first
+# semantic-search call, and its HTTP client 404s on the pinned revision, so the
+# model is fetched here instead: into the vscode user's standard HF cache and
+# into /opt/hf-cache-seed/, which the entrypoint copies into a cache volume that
+# masked the image's copy.
+#
+# The huggingface_hub pin is exact because 2.x renamed the `huggingface-cli`
+# console script to `hf`: a range could move to a major that ships neither name
+# this step uses.
 USER root
-RUN pip3 install --no-cache-dir --break-system-packages "huggingface_hub>=0.20" \
+RUN pip3 install --no-cache-dir --break-system-packages "huggingface_hub==1.33.0" \
     && rm -rf /root/.cache/pip
+# `set -e` and no fallback on any step: a pre-fetch that cannot fetch fails the
+# build. The assertions are the other half — a download that exits 0 having
+# written nothing is still a failed pre-fetch.
+#
+# HF_HUB_DISABLE_XET=1 is load-bearing: with the xet transport (the default)
+# the blobs are written as links into a staging tree outside hub/, so the seed
+# — which copies hub/ — would ship links pointing at nothing. With xet off they
+# are real files under hub/blobs and the cache is self-contained.
+#
+# The refs/<sha> write covers the other half of vipune's resolver: it resolves a
+# pinned revision by reading hub/models--…--/refs/<sha>, and
+# `hf download --revision <sha>` materialises snapshots/<sha>/ without writing
+# that ref — offline, the miss is the 404. The assertions below test the files
+# vipune actually opens: onnx/model.onnx and tokenizer.json (both reached
+# through the snapshot symlink, which `test -s` follows, so a dangling link
+# fails), plus the ref.
 USER vscode
-RUN huggingface-cli download \
+RUN set -e; HF_HUB_DISABLE_XET=1 hf download \
       BAAI/bge-small-en-v1.5 \
       --revision 5c38ec7c405ec4b44b94cc5a9bb96e735b38267a \
       --cache-dir /home/vscode/.cache/huggingface/hub \
-    || echo "WARNING: pre-fetch of BAAI/bge-small-en-v1.5 failed at image build; vipune may need network at first use"
+    && mkdir -p /home/vscode/.cache/huggingface/hub/models--BAAI--bge-small-en-v1.5/refs \
+    && printf '%s' 5c38ec7c405ec4b44b94cc5a9bb96e735b38267a > /home/vscode/.cache/huggingface/hub/models--BAAI--bge-small-en-v1.5/refs/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a \
+    && test -f /home/vscode/.cache/huggingface/hub/models--BAAI--bge-small-en-v1.5/refs/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a \
+    && test -s /home/vscode/.cache/huggingface/hub/models--BAAI--bge-small-en-v1.5/refs/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a \
+    && test -f /home/vscode/.cache/huggingface/hub/models--BAAI--bge-small-en-v1.5/snapshots/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a/onnx/model.onnx \
+    && test -s /home/vscode/.cache/huggingface/hub/models--BAAI--bge-small-en-v1.5/snapshots/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a/onnx/model.onnx \
+    && test -f /home/vscode/.cache/huggingface/hub/models--BAAI--bge-small-en-v1.5/snapshots/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a/tokenizer.json \
+    && test -s /home/vscode/.cache/huggingface/hub/models--BAAI--bge-small-en-v1.5/snapshots/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a/tokenizer.json
+# No `if [ -d ]` guard: the step above guarantees the cache exists, so a missing
+# seed dir IS a broken image. `cp -a` keeps the modes the entrypoint's `cp -a`
+# later has to reproduce. The refs check is `test -f` as well as `test -s`: the
+# ref is a small text file and a directory satisfies `-s` alone.
 USER root
-RUN if [ -d /home/vscode/.cache/huggingface ]; then \
-      cp -r /home/vscode/.cache/huggingface /opt/hf-cache-seed \
-      && chown -R vscode:vscode /opt/hf-cache-seed; \
-    fi
+RUN set -e; cp -a /home/vscode/.cache/huggingface /opt/hf-cache-seed \
+    && chown -R vscode:vscode /opt/hf-cache-seed \
+    && test -f /opt/hf-cache-seed/hub/models--BAAI--bge-small-en-v1.5/refs/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a \
+    && test -s /opt/hf-cache-seed/hub/models--BAAI--bge-small-en-v1.5/refs/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a \
+    && test -f /opt/hf-cache-seed/hub/models--BAAI--bge-small-en-v1.5/snapshots/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a/onnx/model.onnx \
+    && test -s /opt/hf-cache-seed/hub/models--BAAI--bge-small-en-v1.5/snapshots/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a/onnx/model.onnx \
+    && test -f /opt/hf-cache-seed/hub/models--BAAI--bge-small-en-v1.5/snapshots/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a/tokenizer.json \
+    && test -s /opt/hf-cache-seed/hub/models--BAAI--bge-small-en-v1.5/snapshots/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a/tokenizer.json
 
 # -----------------------------------------------------------------------------
 # 7. Copy pi-rukas repo + run install.sh
