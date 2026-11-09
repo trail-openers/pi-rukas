@@ -69,6 +69,7 @@ export function validatedReviewBound(value: unknown): ReviewBoundRecord | undefi
 }
 
 const USAGE_COUNTERS = ["input", "output", "cacheRead", "cacheWrite", "turns"] as const;
+const TOOL_COUNTERS = ["toolCalls", "toolErrors"] as const;
 
 /**
  * How many dispatch rows one step may record. Exported because `specify` folds
@@ -133,6 +134,9 @@ function isUsageRow(value: unknown): boolean {
   // record that reads as evidence and compares against nothing.
   if (!["input", "output", "cacheRead", "cacheWrite", "turns"].every((k) => isCount(u[k])))
     return false;
+  // The tool counts are optional (a row written before they existed has none),
+  // but a present one is a count like the others.
+  if (!TOOL_COUNTERS.every((k) => u[k] === undefined || isCount(u[k]))) return false;
   // `cost` is the one field that is NOT an integer count: `addUsage` in
   // `pi-usage.ts` accumulates a currency total, so a real report carries
   // fractions (0.00000625 for one small child) and refusing them would refuse
@@ -206,6 +210,8 @@ export function validatedDispatches(value: unknown): DispatchUsageRow[] {
         cacheWrite: count("cacheWrite"),
         cost: count("cost"),
         turns: count("turns"),
+        ...(u.toolCalls === undefined ? {} : { toolCalls: u.toolCalls as number }),
+        ...(u.toolErrors === undefined ? {} : { toolErrors: u.toolErrors as number }),
       },
       ...(row.runId === undefined ? {} : { runId: row.runId as DispatchUsageRow["runId"] }),
     });

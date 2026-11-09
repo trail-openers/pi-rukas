@@ -284,7 +284,16 @@ export function dispatchUsageRow(result: DispatchResult): DispatchUsageRow {
 
 /** A child that reported nothing cost nothing that anybody observed. */
 function zeroDispatchUsage(): DispatchUsageRow["usage"] {
-  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
+  return {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    cost: 0,
+    turns: 0,
+    toolCalls: 0,
+    toolErrors: 0,
+  };
 }
 
 /**

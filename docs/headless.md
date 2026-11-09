@@ -135,9 +135,9 @@ With `--json`, stdout carries exactly one JSON document:
       "prNumber": 99,
       "prUrl": "https://github.com/owner/repo/pull/99",
       "usage": {
-        "input": 812000, "output": 41000, "cacheRead": 2900000, "cacheWrite": 0, "cost": 3.12, "turns": 214, "dispatches": 9,
+        "input": 812000, "output": 41000, "cacheRead": 2900000, "cacheWrite": 0, "cost": 3.12, "turns": 214, "toolCalls": 388, "toolErrors": 12, "dispatches": 9,
         "byRole": {
-          "developer": { "input": 640000, "output": 33000, "cacheRead": 2400000, "cacheWrite": 0, "cost": 2.5, "turns": 170, "dispatches": 4 },
+          "developer": { "input": 640000, "output": 33000, "cacheRead": 2400000, "cacheWrite": 0, "cost": 2.5, "turns": 170, "toolCalls": 301, "toolErrors": 9, "dispatches": 4 },
           "…": { }
         }
       },
@@ -175,7 +175,8 @@ With `--json`, stdout carries exactly one JSON document:
 | `issues[].failure` | when `cap` is set and the cycle did not merge | Why the cycle stopped on `cap`, as stable fields (#1367, added in this release). See [The `failure` object](#the-failure-object). |
 | `issues[].failedStep` | when the cycle did not merge and started a step | The step it stopped in: the step a `<template>:<step>` cap names (`verify-failed:`, `verify-timeout:`, `verify-env:`, `verify-baseline-red:`, `pr-not-open:`, `step-failed:`, `driver-crash:`), else the last step started before the cap, else the last step started. It names where the cycle stopped, not necessarily a failure: for `awaiting-human-merge` it is the last step the cycle ran (e.g. `ci`). |
 | `issues[].branch`, `prNumber`, `prUrl` | when known | `prUrl` is present only when unambiguous: the PR URL the driver recorded (its handoff comment on the PR), else one built from the project's git remote when there is exactly one remote, the forge is GitHub or GitLab, and the web address is certain (an `http(s)` remote, or ssh to github.com / gitlab.com; GitLab subgroups and explicit https ports are kept). Otherwise only `prNumber` is set. |
-| `issues[].usage` | when a state existed | Tokens, cost and turns summed over every dispatch the cycle recorded (`dispatch-completed`, `dispatch-failed` and `dispatch-failed-provider` events), and the dispatch count. It covers the current cycle only: `--restart` discards the state, so earlier cycles' cost is not included. `usage.byRole` (#1368, added in this release) holds the same seven numbers per dispatch `role` (the `role` on the `dispatch-*` events, e.g. `developer`, `adversarial`), summed over the same dispatches, failed ones included, so its rows add up to the total. |
+| `issues[].usage` | when a state existed | Tokens, cost and turns summed over every dispatch the cycle recorded (`dispatch-completed`, `dispatch-failed` and `dispatch-failed-provider` events), and the dispatch count. It covers the current cycle only: `--restart` discards the state, so earlier cycles' cost is not included. `usage.byRole` (#1368, added in this release) holds the same seven numbers per dispatch `role` (the `role` on the `dispatch-*` events, e.g. `developer`, `adversarial`), summed over the same dispatches, failed ones included, so its rows add up to the total. `toolCalls` and `toolErrors` (`features.usageTools`) count the tool calls the cycle's children started, a codemode script's nested calls included, each once, and those that ended in an error; both are summed the same way. A child with no usage report never ran and adds none. When any counted dispatch has no tool counts (a result rebuilt from disk), the field is absent in that row and in the total: unknown, never a low number. |
+| `issues[].driver` | when an engine ran (`features.usageTools`) | `classic` for `work`, `lean` for `work-lean`. Absent on `not-started` and on a refused start. |
 | `issues[].resumable` | always | `true` when running `work <issue>` again **without** `--restart` continues this cycle (it was interrupted, or stopped while running). Always `false` on a refusal (exit 40: another live process owns the cycle, so a re-run is refused again until it ends) and when `PI_ENSEMBLE_RESUME=0`. A terminal cycle needs `--restart` for a fresh one. |
 | `issues[].continuedPr` | when a `--continue-pr` cycle reached the branch step | The PR it continued (#1468): `number`, `headRefName`, `startHeadSha` (the PR head when the run started) and `mainlineSha` (the mainline commit merged into it). See [`--continue-pr` for hosts](#--continue-pr-for-hosts). |
 | `issues[].stateFile` | always | A path for a person to inspect. Not a host contract: see below. |
@@ -601,6 +602,7 @@ Any other failure in this mode stops on `step-failed:branch` or `step-failed:com
     "restartClearsAttention": true, // #1327 — --restart clears needs-human-attention
     "failureReason": true,      // #1367 — issues[].failure in the result
     "usageByRole": true,        // #1368 — issues[].usage.byRole in the result
+    "usageTools": true,         // issues[].usage(.byRole).toolCalls/toolErrors and issues[].driver
     "continuePr": true,         // #1468 — work --continue-pr and issues[].continuedPr
     "repeatParkGuard": true,    // #1743 — parks are remembered; a third identical start is refused
     "workLeanResultSchema": 5,  // #1920 — work-lean writes the schema-5 result with issues[].prState

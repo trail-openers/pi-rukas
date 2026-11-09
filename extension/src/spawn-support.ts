@@ -348,6 +348,14 @@ export function reconcileObservedCounts(
 ): void {
   if (observed.usage.turns > (result.usage?.turns ?? 0)) {
     result.usage = { ...observed.usage };
+  } else if (result.usage) {
+    // The replay has no execution events, so the counts are only ever the
+    // live ones, whichever source the tokens came from.
+    result.usage = {
+      ...result.usage,
+      toolCalls: observed.usage.toolCalls,
+      toolErrors: observed.usage.toolErrors,
+    };
   }
   // Tool calls are only ever counted live; the replay carries no equivalent.
   if (result.toolUses.length === 0 && observed.toolUses > 0) {
