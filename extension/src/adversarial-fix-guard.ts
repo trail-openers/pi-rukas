@@ -22,20 +22,37 @@
  * it): every regular file under `hooks/` and the `config` file. A change there
  * is a violation too, since a fix round could install a hook that runs later.
  *
+ * `config` is compared as keys, not bytes (#2138): the parsed list from
+ * `git config --file <commonDir>/config --list --null`, exempt keys removed —
+ * see git-config-keys.ts. Branch-tracking churn (`branch.<name>.remote/merge`,
+ * a `remote.<name>.fetch` refspec) is clean, as is a reformat that keeps the
+ * parsed list; any other key that changes is a violation naming it, a section
+ * reorder is one too (fail-closed), and so is an unreadable, truncated or empty
+ * config. The list is compared as a list, never joined on a delimiter a config
+ * value could contain.
+ *
  * Coverage limits, by design: gitignored paths are not covered (status skips
  * them); directories (nested repositories, submodules) and symlinks are
  * reported by name and kind, never by content (a symlink's target is not
  * followed); only regular files are hashed. Not covered: refs and objects of the
  * shared git dir, per-worktree `config.worktree`, and any shared-dir path
  * outside `hooks/` and `config`. Attribution is not verified: any caller-repo
- * change during a round is reported, whoever made it. Writes to paths outside
- * the caller repository and its shared git dir are not detected.
+ * change during a round is reported, whoever made it, except the exempt config
+ * keys. Writes outside the caller repository and its shared git dir are not
+ * detected.
  */
 
 import type { Dirent } from "node:fs";
 import { lstat, readdir } from "node:fs/promises";
 import path from "node:path";
 import { execp } from "./exec.ts";
+import {
+  CONFIG_MAX_BUFFER,
+  CONFIG_TIMEOUT_MS,
+  changedConfigKeys,
+  configEntryDigest,
+  parseConfigList,
+} from "./git-config-keys.ts";
 import type { DispatchResult } from "./types.ts";
 import { type ExecFn, resolvePath } from "./worktree.ts";
 
@@ -60,7 +77,7 @@ type Identity =
   | { kind: "unreadable"; reason: string };
 
 type Snapshot =
-  | { kind: "repo"; entries: string[] }
+  | { kind: "repo"; entries: string[]; config: string[] }
   | { kind: "not-repo" }
   | { kind: "unreadable"; reason: string };
 
@@ -211,6 +228,17 @@ async function snapshotCaller(cwd: string, exec: ExecFn): Promise<Snapshot> {
     const shared = await sharedGitFiles(id.commonDir);
     const sharedKinds = await Promise.all(shared.map(kindOf));
     const sharedFiles = shared.filter((_, i) => sharedKinds[i] === "file");
+    // Read before the hashes: an unreadable config throws, so the snapshot is
+    // `unreadable` rather than partial or clean.
+    const config = (
+      await exec("git", {
+        argv: ["config", "--file", path.join(id.commonDir, "config"), "--list", "--null"],
+        cwd: id.top,
+        maxBuffer: CONFIG_MAX_BUFFER,
+        timeout: CONFIG_TIMEOUT_MS,
+      })
+    ).stdout;
+    const parsed = parseConfigList(config);
     const hashed = await hashFiles([...files, ...sharedFiles], id.top, exec);
     const hashOf = new Map(
       [...files, ...sharedFiles].map((p, i): [string, string] => [p, hashed[i] ?? ""]),
@@ -224,10 +252,15 @@ async function snapshotCaller(cwd: string, exec: ExecFn): Promise<Snapshot> {
     });
     shared.forEach((p, i) => {
       const label = `shared:${path.relative(id.commonDir, p)}`;
-      const state = sharedKinds[i] === "file" ? hashOf.get(p) : sharedKinds[i];
+      const state =
+        label === "shared:config"
+          ? configEntryDigest(parsed)
+          : sharedKinds[i] === "file"
+            ? hashOf.get(p)
+            : sharedKinds[i];
       entries.push(`${label}\t${state}`);
     });
-    return { kind: "repo", entries };
+    return { kind: "repo", entries, config: parsed };
   } catch (err) {
     return { kind: "unreadable", reason: errorText(err) };
   }
@@ -301,7 +334,7 @@ async function resolveMode(
 /** Compare the caller snapshot after a round with the one before it. */
 async function checkAfter(
   m: Extract<Mode, { kind: "check" }>,
-  before: string[],
+  before: Extract<Snapshot, { kind: "repo" }>,
   round: number,
   exec: ExecFn,
 ): Promise<FenceRecord | undefined> {
@@ -313,14 +346,21 @@ async function checkAfter(
       text: `caller-repo check not completed (${describe(after)}): not checked, so the round cannot be approved`,
     };
   }
-  const b = new Set(before);
+  const b = new Set(before.entries);
   const a = new Set(after.entries);
-  const delta = [...after.entries.filter((l) => !b.has(l)), ...before.filter((l) => !a.has(l))];
+  const delta = [
+    ...after.entries.filter((l) => !b.has(l)),
+    ...before.entries.filter((l) => !a.has(l)),
+  ];
   if (delta.length === 0) return undefined;
+  // The two parsed lists ride on the snapshots rather than being re-split out of
+  // the compared entries, so the message can name the changed keys (#2138).
+  const keys = changedConfigKeys(before.config, after.config);
+  const shown = `${delta.join("; ")} | config keys: ${keys.join(", ")}`;
   return {
     kind: "violation",
     round,
-    text: `caller repository (${m.callerTop}) changed during the fix round (attribution not verified), outside workCwd (${m.workTop}): ${delta.join("; ")}`,
+    text: `caller repository (${m.callerTop}) changed during the fix round (attribution not verified), outside workCwd (${m.workTop}): ${shown}`,
   };
 }
 
@@ -364,7 +404,7 @@ export function createFixFence(
       try {
         return { ran: true, value: await fn() };
       } finally {
-        const rec = await checkAfter(m, before.entries, round, exec);
+        const rec = await checkAfter(m, before, round, exec);
         if (rec) records.push(rec);
       }
     },
