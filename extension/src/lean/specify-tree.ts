@@ -99,9 +99,10 @@ async function registeredWorktreePaths(
  * use. `reset --hard` and `clean -fdx` in a tree the step does not own destroys
  * somebody else's work, so ownership is PROVEN rather than inferred from the
  * directory existing: the path appears in `git worktree list --porcelain` of
- * this repo, and its HEAD is either the run's branch or detached at the base
- * sha. Anything else, including an unreadable listing, throws before a single
- * mutation, and the foreign tree is left exactly as found.
+ * this repo, and its HEAD sits at the required commit — on the run's branch or
+ * detached there — or, with `allowAheadOfBase`, on the run's branch and
+ * descending from it. Anything else, including an unreadable listing, throws
+ * before a single mutation, and the foreign tree is left exactly as found.
  *
  * `headMustBe` is what a step other than `specify` asks the tree to be sitting
  * at. `specify` requires the base, because its whole claim is that it froze the
@@ -234,11 +235,13 @@ async function headDescends(exec: ExecFn, wt: string, sha: string): Promise<bool
     cwd: wt,
     timeout: 30_000,
     maxBuffer: 1024 * 1024,
-  }).catch((err: unknown) => ({ code: (err as { code?: unknown }).code }));
-  if ((r as { code?: unknown }).code === 1) return false;
-  if ((r as { code?: unknown }).code !== undefined)
-    throw new Error(`could not tell whether HEAD in ${wt} descends from ${sha}`);
-  return true;
+  }).then(
+    () => ({ ok: true as const }),
+    (err: unknown) => ({ ok: false as const, code: (err as { code?: unknown })?.code }),
+  );
+  if (r.ok) return true;
+  if (r.code === 1) return false;
+  throw new Error(`could not tell whether HEAD in ${wt} descends from ${sha}`);
 }
 
 /** The `problem` field of a provisioning result, spread only when present. */

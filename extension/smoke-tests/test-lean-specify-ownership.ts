@@ -335,6 +335,44 @@ async function refusal(
   );
 }
 
+// ───── (f) an ancestry probe that rejects with NO exit code is unknown, not "descends"
+{
+  const { repoRoot, baseSha } = makeRepo({ "src/a.ts": "1\n" });
+  const branch = "lean/issue-6";
+  const wt = worktree(repoRoot, baseSha, 6, branch);
+  commitOne(wt, "child.ts");
+  // A rejection carrying no `code` at all — a spawn-level error, not a git exit.
+  // Reading it as "the probe said nothing unusual" is reading it as "descends",
+  // which is fail-OPEN in front of `reset --hard`.
+  const uncoded: ExecFn = async (cmd, o) => {
+    if ((o?.argv ?? []).includes("merge-base")) throw new Error("boom");
+    return exec(cmd, o);
+  };
+  let msg = "";
+  let threw = false;
+  try {
+    await assertSpecifyWorktreeOwned(uncoded, {
+      repoRoot,
+      wt,
+      baseSha,
+      branch,
+      allowAheadOfBase: true,
+    });
+  } catch (err) {
+    threw = true;
+    msg = (err as Error).message;
+  }
+  assert(threw, `(f) a probe that rejects with no code throws (got ${msg || "no throw"})`);
+  assert(
+    /could not tell whether HEAD/.test(msg),
+    `(f) the throw says the predicate could not be established (got ${msg})`,
+  );
+  assert(
+    !OWNED.test(msg) && !/expected/.test(msg),
+    `(f) an unknown probe is NOT accepted and not the ordinary refusal (got ${msg || "no throw"})`,
+  );
+}
+
 for (const dir of ROOTS) {
   try {
     rmSync(dir, { recursive: true, force: true });
