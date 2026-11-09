@@ -12,10 +12,23 @@
  *   T7  the snapshot covers the caller repo: nested repos and symlinks are reported by
  *       name and do not fail it; a dirty-file content rewrite is still caught; the
  *       workCwd index is never read
+ *   T9  the shared git dir: `hooks/` and `config` are part of the snapshot. #2138:
+ *       `config` is compared as the parsed key list, so branch-tracking churn
+ *       (`branch.<b>.remote/merge`, `remote.<n>.fetch`) is clean, while any other
+ *       key — `core.*`, an include, an alias, `remote.<n>.url` — is a violation
+ *       that names the key; a reformat is clean and an unreadable config is not
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -300,18 +313,6 @@ async function main() {
     assert(
       recs.some((r) => r.kind === "violation" && r.text.includes("hooks/sub/post-x")),
       "T9: a new file in a nested shared hooks/ directory is a violation, named",
-    );
-  }
-  {
-    const caller = repo("t9x");
-    const work = worktreeOf(caller, "wt-t9x");
-    const recs: FenceRecord[] = [];
-    await createFixFence({ callerCwd: caller }, recs).round(1, work, async () => {
-      git(caller, "config", "user.name", "changed-by-round");
-    });
-    assert(
-      recs.some((r) => r.kind === "violation" && r.text.includes("config")),
-      "T9: a change to the shared config is a violation",
     );
   }
   {
