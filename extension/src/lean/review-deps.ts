@@ -3,26 +3,22 @@
  * its children are dispatched with.
  *
  * `review.ts` is the decision procedure and takes every outside world through
- * `ReviewDeps`; this file is what the command hands it. Split out for the same
- * reason `publish-deps.ts` exists: the judgement and the process-spawning glue
- * change for different reasons, and a test drives the first with stubs while
- * never loading the second. The two prompt builders sit here rather than in a
- * module of their own because the facts they state — which tree, which commit,
- * which files are frozen, which budget — are the facts this seam already holds.
+ * `ReviewDeps`; this file is what the command hands it. Split out for the same reason
+ * `publish-deps.ts` exists: the judgement and the process-spawning glue change for
+ * different reasons. The two prompt builders sit here because the facts they state —
+ * which tree, which commit, which files are frozen, which budget — are the facts this
+ * seam already holds.
  *
  * Two choices here are load-bearing rather than mechanical:
  *
  * - **The adversarial loop runs report-only.** It reviews and fixes nothing; the fix
- *   round is this step's, in its own disposable tree. `reportVerdict: "routed"` is
- *   what says so — with `"terminal"` the loop would judge its own round against its
- *   own round cap, and the step would inherit a verdict it had no part in producing.
- *   `reportRound` is threaded so the reviewer's prompt and ledger row carry the round
- *   of THIS step's loop, whose bound is the run's budget, not the loop's constant.
+ *   round is this step's, in its own disposable tree. `reportVerdict: "routed"` is what
+ *   says so — with `"terminal"` the loop would judge its own round against its own round
+ *   cap. `reportRound` is threaded so the reviewer's prompt and ledger row carry the
+ *   round of THIS step's loop.
  * - **Both gates get refs, not a pasted diff.** `runLensReview` computes
- *   `git diff <base>...<head>` itself, so the diff is one the lenses can re-read
- *   and the ledger can bind to a commit rather than to a string this step handed
- *   over (the caller-supplied arm is recorded as never counting as a passing
- *   review).
+ *   `git diff <base>...<head>` itself, so the diff is one the lenses can re-read and the
+ *   ledger can bind to a commit rather than to a string this step handed over.
  */
 
 import {
@@ -53,34 +49,27 @@ import { fenceText, promptText } from "./text-fence.ts";
 
 /** Production dependencies: the real executor, both gates, the spawner, the push. */
 export function reviewDeps(headless: boolean): ReviewDeps {
-  // Declared as a `let` read at CALL time (not at literal-build time) so a test can
-  // install an observer on the object it gets back: the lens engine is the one
-  // outside-world call a test of THE CLAMP has to observe, and a clamp asserted on
-  // its input cannot fail — only what reached `runLensReview` can be wrong.
-  // Production never sets the field and gets `runLensReview`.
+  // Declared as a `let` read at CALL time so a test can install an observer on the object
+  // it gets back: a clamp asserted on its input cannot fail — only what reached
+  // `runLensReview` can be wrong. Production never sets the field and gets `runLensReview`.
   const deps: ReviewDeps = {
     headless,
-    // The push inside `fixRound` is the one git call in this step that leaves the
-    // clone, so it is the one the executor gives the driver's non-interactive env to —
-    // the same `netGitEnv` `publish-deps.ts` applies (`GIT_TERMINAL_PROMPT=0` plus
-    // `-o BatchMode=yes`, so ssh fails instead of reading a passphrase from /dev/tty).
-    // Without it a lean review round could hang the step on a credential prompt.
-    // `o?.cwd` is passed through so `netGitEnv` still reads the repo's own `core.sshCommand`.
+    // The push inside `fixRound` is the one git call in this step that leaves the clone,
+    // so it gets the driver's non-interactive `netGitEnv` (`GIT_TERMINAL_PROMPT=0` plus
+    // `-o BatchMode=yes`) — without it a lean review round could hang on a credential
+    // prompt. `o?.cwd` is passed through so `netGitEnv` still reads `core.sshCommand`.
     exec: (cmd, o) =>
       execp(cmd, {
         ...(o ?? {}),
         ...(cmd === "git" && o?.env === undefined ? { env: netGitEnv(process.env, o?.cwd) } : {}),
       }),
     adversarial: (a) => {
-      // The budget arms are DESTRUCTURED rather than spread, exactly as the lens
-      // seam below does: `arms` is what the reviewer may inherit (the abort signal
-      // the turns / tokens levers fire and the progress hook that measures them),
-      // with `childBoundMs` taken out of the object AND out of the type so the
-      // clamp below cannot be re-supplied by a spread and win. `loopChildBoundMs()`
-      // is the reviewer's own knob (`PI_ENSEMBLE_ADVERSARIAL_BOUND_MS`, read there)
-      // and the step's armed bound can only TIGHTEN it: the smaller of the two is
-      // the bound, which is what a budget must mean. Asserted on the value the
-      // reviewer dispatch actually received in `test-adversarial-reviewer-bound.ts`.
+      // The budget arms are DESTRUCTURED rather than spread, as the lens seam below does:
+      // `arms` is what the reviewer may inherit (the abort signal and the progress hook)
+      // with `childBoundMs` taken out of the object AND out of the type so the clamp below
+      // cannot be re-supplied by a spread. `loopChildBoundMs()` is the reviewer's own knob
+      // and the step's armed bound can only TIGHTEN it. Asserted on the value the reviewer
+      // dispatch received in `test-adversarial-reviewer-bound.ts`.
       const { childBoundMs: budgetBoundMs, ...arms } = a.budget.opts;
       return runAdversarialLoop(
         {
@@ -89,15 +78,14 @@ export function reviewDeps(headless: boolean): ReviewDeps {
           workCwd: a.cwd,
           context: adversarialContext(a.issue, a.wave, a.blockingFindings),
           issueBody: a.issueBody,
-          // The reviewer's lane is one verdict; the fix round is this step's, so
-          // the loop must not dispatch a fixer of its own.
+          // The reviewer's lane is one verdict; the fix round is this step's, so the loop
+          // must not dispatch a fixer of its own.
           reportOnly: true,
           reportVerdict: "routed",
-          // One reviewed round per gate call, so the loop's own `for` never gets
-          // past its first iteration and never re-dispatches a reviewer here.
+          // One reviewed round per gate call, so the loop never re-dispatches a reviewer.
           reportRound: 1,
-          // Lean's worktrees are detached, so the ledger writer cannot recover
-          // the branch from HEAD and this is the only place it can come from.
+          // Lean's worktrees are detached, so the ledger writer cannot recover the branch
+          // from HEAD and this is the only place it can come from.
           branch: a.branch,
           commentTimeoutMs: verifyTimeoutMs(),
           processGroup: true,
@@ -110,14 +98,11 @@ export function reviewDeps(headless: boolean): ReviewDeps {
       );
     },
     lens: async (a) => {
-      // The budget arms are DESTRUCTURED rather than spread, so the clamp below
-      // cannot be re-supplied: spreading `a.budget.opts` after
-      // `childBoundMs: Math.min(...)` hands back the budget's own `childBoundMs` and
-      // it wins, making `PI_ENSEMBLE_LENS_BOUND_MS` inert. `arms` is what the lens is
-      // allowed to inherit (the abort signal and the progress hook) with the one key
-      // it must not own taken out of the object AND out of the type, so a future
-      // spread that could carry a `childBoundMs` is a compile error. Asserted on the
-      // delivered value in `test-lean-review-deps-bound.ts`, never on the input.
+      // The budget arms are DESTRUCTURED rather than spread, so the clamp below cannot be
+      // re-supplied: spreading `a.budget.opts` after `childBoundMs: Math.min(...)` hands
+      // back the budget's own value and it wins, making `PI_ENSEMBLE_LENS_BOUND_MS` inert.
+      // Taking the key out of the type too makes a future spread that could carry it a
+      // compile error. Asserted on the delivered value in `test-lean-review-deps-bound.ts`.
       const { childBoundMs: budgetBoundMs, ...arms } = a.budget.opts;
       const summary = await (deps.lensEngine ?? runLensReview)({
         base: a.base,
@@ -126,35 +111,26 @@ export function reviewDeps(headless: boolean): ReviewDeps {
         context: a.context,
         evidence: a.evidence,
         extraFindings: a.extraFindings,
-        // The re-review's range is the step's, not the ledger's: the head the fix
-        // wave started from, so the round reads the fix and nothing else (see
-        // `LensArgs.since`). Absent on the full round, which stays the layer's
-        // ordinary whole-branch review.
+        // The re-review's range is the step's, not the ledger's (see `LensArgs.since`);
+        // absent on the full round, which stays the ordinary whole-branch review.
         ...(a.since === undefined ? {} : { since: a.since }),
         // The whole-branch arm of the re-review (`LensArgs.full`).
         ...(a.full === true ? { full: true } : {}),
-        // The worktree is detached, so the ledger write and the residual
-        // disclosure can only be keyed on a branch this step names.
+        // The worktree is detached, so the ledger write and the residual disclosure can
+        // only be keyed on a branch this step names.
         branch: a.branch,
-        // The run's own PR, when it has one (see `LensArgs.pr`): the number the
-        // residual disclosure posts to, so the review layer does not spend a
-        // `gh pr list` per ISSUES_FOUND round rediscovering it.
+        // The run's own PR, when it has one (see `LensArgs.pr`): the number the residual
+        // disclosure posts to, so the layer spends no `gh pr list` per round.
         ...(a.pr === undefined ? {} : { pr: a.pr }),
         processGroup: true,
-        // The operator's own lever, read here rather than a number copied into
-        // this file: `lensChildBoundMs()` is the single source for a lens child's
-        // wall clock (`PI_ENSEMBLE_LENS_BOUND_MS`), and a literal here would make
-        // that knob inert for every lean run. The step's armed `childBoundMs` can
-        // only ever tighten it, never lengthen it.
+        // The operator's own lever, read here: `lensChildBoundMs()` is the single source
+        // for a lens child's wall clock, and a literal here would make that knob inert.
         childBoundMs: Math.min(budgetBoundMs ?? Number.POSITIVE_INFINITY, lensChildBoundMs()),
-        // The project's blocking bar, threaded from the step (see
-        // `LensArgs.threshold`). Without it the review layer falls to
-        // `DEFAULT_REVIEW_THRESHOLD` — HIGH — and a round whose only findings
-        // sit at that bar reads as ISSUES_FOUND, so this step buys a fixer for
-        // findings the project said are disclosable rather than blocking.
+        // The project's blocking bar, threaded from the step (see `LensArgs.threshold`).
+        // Without it the layer falls to `DEFAULT_REVIEW_THRESHOLD` — HIGH — and this step
+        // buys a fixer for findings the project said are disclosable.
         ...(a.threshold === undefined ? {} : { threshold: a.threshold }),
-        // The test-only lens-child seam (see `ReviewDeps.lensChildFn`): set it and
-        // the real engine fans out over the test's children instead of Pi ones.
+        // The test-only lens-child seam (see `ReviewDeps.lensChildFn`).
         ...(deps.lensChildFn === undefined ? {} : { lensChildFn: deps.lensChildFn }),
         ...arms,
         ...leanChildOpts(a.headless),
@@ -163,51 +139,38 @@ export function reviewDeps(headless: boolean): ReviewDeps {
         verdict: summary.verdict,
         findings: renderFindings(summary),
         // The blocking rows, structured, for the step's re-review decision (see
-        // `LensRound.reported`). The layer's own `reported` set is what the
-        // summary carries, so the step reads the same list the verdict, the
-        // severity counts and the ledger's `hasCritical` were computed from — a
-        // second reading here would be a second definition of "blocking". The
-        // layer's per-row `resolved` notices are NOT threaded: the step states no fate
-        // for any row, so nothing reads them (a field carried for a reader that does not
-        // exist is a liability, not a saving).
+        // `LensRound.reported`). The layer's own `reported` set, so the step reads the same
+        // list the verdict and the ledger's `hasCritical` were computed from. The layer's
+        // per-row `resolved` notices are NOT threaded: the step states no fate for any row.
         reported: summary.findings,
-        // The rows the advisory split moved out of `reported`, carried so the
-        // NOT ADDRESSED check cannot be discounted into a pass (see
-        // `LensRound.advisory`). The layer's own list, restated as an empty array
-        // when it set none — `[]` means "the split discounted nothing", which is
-        // the same answer the field's absence means in the layer, and a step that
-        // read `undefined` as "skip the check" would be the hole this closes.
+        // The rows the advisory split moved out of `reported`, carried so the NOT ADDRESSED
+        // check cannot be discounted into a pass (see `LensRound.advisory`). `[]` means the
+        // split discounted nothing — a step that read `undefined` as "skip the check" would
+        // be the hole this closes.
         advisory: summary.advisory ?? [],
         usage: summary.usage,
-        // The per-lens records, so the step bills one row per child that ran
-        // rather than one row per round (see `lensRows` in `step-budget.ts`).
+        // The per-lens records, so the step bills one row per child that ran rather than
+        // one per round (see `lensRows` in `step-budget.ts`).
         lenses: summary.lenses,
-        // The one field that distinguishes "no lens ran" from "lenses ran and
-        // found nothing", and the only place it is stated — `verdict` says
-        // APPROVED for both. Dropping it here is what would let the empty-delta
-        // outcome read as a clean review.
+        // The one field that distinguishes "no lens ran" from "lenses ran and found
+        // nothing", and the only place it is stated — `verdict` says APPROVED for both.
         ...(summary.noReview === true ? { noReview: true } : {}),
-        // The range the round RANGED OVER. The step's own claim is not evidence of
-        // it: `assertRangedOverTheFix` compares the step's `since`/`head` against
-        // THIS field, so dropping it here is what makes a scoped re-review
-        // indistinguishable from a whole-branch one — the guard refuses the round
-        // and the run hands back. Carried only when the layer set it: a full review
-        // has no delta to name, and an invented stamp would be a lie about a range.
+        // The range the round RANGED OVER. `assertRangedOverTheFix` compares the step's
+        // `since`/`head` against THIS field, so dropping it makes a scoped re-review
+        // indistinguishable from a whole-branch one. Carried only when the layer set it:
+        // an invented stamp would be a lie about a range.
         ...(summary.deltaReview === undefined ? {} : { deltaReview: summary.deltaReview }),
-        // The disclosure the round owed and may not have made. `runLensReview`
-        // posts it itself for an ISSUES_FOUND round and reports a failed post
-        // here, so this step adds nothing and only carries the reason to the
-        // operator as part of the handback cause.
+        // The disclosure the round owed and may not have made: `runLensReview` posts it and
+        // reports a failed post here, so this step only carries the reason onward.
         ...(summary.note === undefined ? {} : { note: summary.note }),
       };
     },
     dispatch: (spec, o) =>
-      // The arms are forwarded KEY BY KEY, not spread, because this is the one
-      // lean dispatch that also adds its own options: an object spread here would let
-      // a future arm collide silently with `processGroup`/`leanChildOpts` rather than
-      // being named. `budgetTurns` is the turn-budget denominator for a fixer — drop
-      // this line and a lean fixer is killed at its turns ceiling with nothing
-      // committed and nothing said to it.
+      // The arms are forwarded KEY BY KEY, not spread, because this dispatch also adds its
+      // own options: a spread would let a future arm collide silently with
+      // `processGroup`/`leanChildOpts`. `budgetTurns` is the turn-budget denominator for a
+      // fixer — drop this line and a lean fixer is killed at its turns ceiling with nothing
+      // committed.
       spawnSpecialist(spec, {
         processGroup: true,
         writeFence: o.writeFence,
@@ -228,10 +191,10 @@ export function reviewDeps(headless: boolean): ReviewDeps {
       await forge.prComment(prNumber, body);
     },
     loadConfig: (repoRoot, baseSha) => loadWorkConfig(execp, repoRoot, baseSha),
-    // One doctrine read and one judge child for the whole review step: the step
-    // calls this once, before its first round (see `ReviewDeps.reviewThreshold`).
-    // The base is the run's own base commit, never the working tree, so the fixer
-    // cannot rewrite the doctrine its own findings are judged against.
+    // One doctrine read and one judge child for the whole review step (see
+    // `ReviewDeps.reviewThreshold`). The base is the run's own base commit, never the
+    // working tree, so the fixer cannot rewrite the doctrine its findings are judged
+    // against.
     reviewThreshold: (repoRoot, baseSha) =>
       resolveLensReviewThreshold({
         judge: judgePolicy(repoRoot, {
@@ -247,11 +210,9 @@ export function reviewDeps(headless: boolean): ReviewDeps {
 }
 
 /**
- * The round's findings as one line each, severity and source first.
- *
- * The shape is the fixer's brief's: a fixer handed a wall of prose re-derives a
- * solution from scratch, so one line per finding, with the lens and location the
- * fix has to land at.
+ * The round's findings as one line each, severity and source first. The shape is the
+ * fixer's brief's: a fixer handed a wall of prose re-derives a solution from scratch, so
+ * it needs the lens and the location the fix has to land at.
  */
 export function renderFindings(summary: LensReviewSummary): string {
   return summary.findings
@@ -263,30 +224,19 @@ export function renderFindings(summary: LensReviewSummary): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// The briefs. Both exist because lean has no caller to hand the step a context
-// string: the adversarial loop and the six-lens pass each take one free-text
-// `context`, and in the frozen driver the driver composed it — here the step is
-// the caller, so the framing is this module's. Short on purpose: the diff, the
-// issue body and the finding lists are the substance, and the loop and the lens
-// roster already say what to do with them.
-//
-// The fix brief is the more important one. A fixer handed findings without a
-// diff, an issue or a tree re-derives a solution from scratch, and a fix round
-// that undid the previous fix is the failure that produces. So the finding text
-// arrives fenced and bounded (the `text-fence.ts` rule, one implementation), the
-// diff arrives as the command the step actually ran, and the frozen acceptance
-// tests are named as untouchable — the same claim `build-prompt` makes, because
-// the fixer is the second model that gets a worktree with the contract's tests
-// in it.
+// The briefs. Both exist because lean has no caller to hand the step a context string:
+// the adversarial loop and the six-lens pass each take one free-text `context`, and here
+// the step is the caller. Short on purpose: the diff, the issue body and the finding
+// lists are the substance. The fix brief is the more important one — a fixer handed
+// findings without a diff, an issue or a tree re-derives a solution from scratch, which
+// is how a fix round undoes the previous fix.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** The framing the adversarial reviewer is dispatched with.
- *
- * States the one-wave policy rather than a round count: the reviewer is told
- * which pass it is on and that its findings are the last thing this step will
- * pay a fixer for, so it does not pace itself across a loop that does not exist.
- * The fix pass also gets the findings the fix range was allowed to contain, so a
- * CRITICAL it raises on untouched bytes can be told from one the fix introduced.
+/**
+ * The framing the adversarial reviewer is dispatched with. States the one-wave policy
+ * rather than a round count, so the reviewer does not pace itself across a loop that does
+ * not exist. The fix pass also gets the findings the fix range was allowed to contain, so
+ * a CRITICAL on untouched bytes can be told from one the fix introduced.
  */
 function adversarialContext(
   issue: number,
@@ -304,36 +254,26 @@ function adversarialContext(
   return `/work-lean issue #${String(issue)}: gating the run's committed head before it merges (review step, one fix wave — this pass is ${scope}). What you report here is the last the step will pay a fixer for.${known}`;
 }
 
-/** The framing every lens is dispatched with.
- *
- * `issueBody` is the run's issue, printed as the block every lens judges the
- * diff against. It arrives through the step rather than being fetched here
- * because the step reads it once (`lean/review.ts`) and both of its passes —
- * and the fixer — must see the same text.
- *
- * `full` is the layer's whole-branch opt-out, threaded through so the range wording
- * names the arm the step bought rather than the delta section it also prints. */
+/**
+ * The framing every lens is dispatched with. `issueBody` is the run's issue, printed as
+ * the block every lens judges the diff against, threaded from the step so both passes and
+ * the fixer see the same text. `full` is the layer's whole-branch opt-out, threaded so the
+ * range wording names the arm the step bought.
+ */
 export function lensContext(
   issue: number,
   wave: ReviewWave,
   extra: { carried?: string; fixDelta?: string; issueBody?: string; full?: boolean } = {},
 ): string {
   // The range wording FOLLOWS THE ARM the step bought, not the delta section printed
-  // beside it: `lensGate` hands the layer `since` on the delta arm and that arm's own
-  // `full` opt-out on the other, while `lensFixDelta` reads the pushed branch and
-  // returns a section on BOTH. So `fixDelta` cannot say which arm this is — and a
-  // whole-branch re-review told it reads the fix's commits wants a delta verdict from
-  // the one round that must judge the branch to retire a carried CRITICAL. The section
-  // stays: on that arm it is orientation, which is what it says of itself.
+  // beside it: `fixDelta` returns a section on BOTH arms, so it cannot say which this is —
+  // and a whole-branch re-review told it reads the fix's commits wants a delta verdict from
+  // the one round that must judge the branch to retire a carried CRITICAL.
   const scope =
     wave === "full" || extra.full === true
       ? "full review of the branch"
       : "re-review of the fix wave's commits";
   const parts = [`/work-lean issue #${String(issue)}, lens-review ${scope}`];
-  // The issue block rides the same channel as the carried findings, so it obeys
-  // the same rule: disarmed at the print site. An issue body is author text —
-  // one `### heading` or a ``` fence inside it would otherwise open a section
-  // of six lens prompts the step never wrote.
   const issueBlock = fencedIssuePromptBlock(
     extra.issueBody,
     ADVERSARIAL_FINDING_RULE,
@@ -343,14 +283,10 @@ export function lensContext(
   const carried = extra.carried?.trim();
   if (carried !== undefined && carried !== "")
     parts.push(
-      // The findings the adversarial gate passed on are reviewer-authored prose
-      // read back off a dispatch result, and they cross into six children's briefs
-      // through this line. The branch's rule is that a value crossing into a
-      // child's brief is DISARMED AT THE PRINT SITE — `promptText` for the
-      // fixer's `head`/`base`, `fenceText` for the fixer's findings — because one
-      // `### heading` inside a carried finding becomes a section of the lens
-      // prompt the step never wrote, and the lenses are told to weigh this block
-      // as evidence. Same seam, same rule, same bound as the fixer's findings.
+      // The carried findings are reviewer-authored prose crossing into six children's
+      // briefs, and the branch's rule is that such a value is DISARMED AT THE PRINT SITE:
+      // one `### heading` inside a finding becomes a section of the lens prompt the step
+      // never wrote, and the lenses are told to weigh this block as evidence.
       `OUTSTANDING FROM THE ADVERSARIAL GATE (non-blocking there — judge them yourself):\n${fenceText(carried, 20_000)}`,
     );
   const delta = extra.fixDelta?.trim();
@@ -361,11 +297,10 @@ export function lensContext(
 /**
  * What the fixer is told about the tree it works in.
  *
- * The child's cwd is the worktree, but a model that has to infer which directory
- * is its own will write somewhere else, so the three git facts it needs are
- * stated: where, on what branch, against what base. `head` is the commit the
- * review read — the tree the findings describe. A fixer given only the branch
- * cannot tell whether it sits at the reviewed commit or one behind it.
+ * The child's cwd is the worktree, but a model that has to infer which directory is its
+ * own will write somewhere else, so the three git facts are stated: where, on what
+ * branch, against what base. `head` is the commit the review read — the tree the findings
+ * describe.
  */
 export interface ReviewFixArgs {
   issue: number;
@@ -374,11 +309,8 @@ export interface ReviewFixArgs {
   /** Which gate produced the findings; names the list in the brief. */
   gate: string;
   findings: string;
-  /**
-   * The run's issue body, printed into the brief so the fixer cannot "fix" a
-   * finding by violating a stated requirement of the ticket. Threaded from the
-   * one `issueBody` the step read (`lean/review.ts`), never re-fetched.
-   */
+  /** The run's issue body, printed into the brief so the fixer cannot "fix" a finding by
+   * violating a stated requirement. Threaded from the one `issueBody` the step read. */
   issueBody?: string;
   /** Absolute path of the disposable tree the child works in. */
   worktree: string;
@@ -399,46 +331,35 @@ export interface ReviewFixArgs {
 const NAME_MAX_CHARS = 200;
 
 export function fixPrompt(opts: ReviewFixArgs): string {
-  // Every value below that did not originate in this file goes through
-  // `promptText`: `frozenPaths` are keys read back from the durable state file
-  // and `gate` is reviewer-influenced prose. A newline in either opened a section
-  // of this brief the step never wrote — the same spoofing `text-fence` exists
-  // for in a PR body, one line rather than one block. (`frozenKeyProblem` in
-  // `state-outcome.ts` refuses a control character in a frozen key at load, so
-  // this is defence at the print site rather than the only check.)
+  // Every value below that did not originate in this file goes through `promptText`:
+  // `frozenPaths` are keys read back from the durable state file and `gate` is
+  // reviewer-influenced prose. A newline in either opened a section of this brief the step
+  // never wrote. (`frozenKeyProblem` in `state-outcome.ts` refuses a control character in
+  // a frozen key at load, so this is defence at the print site.)
   const frozenList =
     opts.frozenPaths.length === 0
       ? "(none — this run froze no tests)"
       : opts.frozenPaths.map((p) => `- \`${promptText(p, NAME_MAX_CHARS)}\``).join("\n");
   const gate = promptText(opts.gate, 120);
-  // `head` and `base` are git reads whose bytes an earlier stage or a hostile
-  // branch can influence — a ref name, a commit subject, or a value an earlier step
-  // recorded. Every sibling value in this brief already goes through `promptText`
-  // at the print site (`worktree`, `branch`, `gate`, `frozenPaths`), and the
-  // inconsistency WAS the vulnerability: one raw `\n` in a head opened a section of
-  // the fixer's brief the step never wrote, and one `\r` rewrote the line the
-  // instructions sit on. Same call, same rule, for the two that were left out.
+  // `head` and `base` are git reads whose bytes an earlier stage or a hostile branch can
+  // influence. Every sibling value here already goes through `promptText` at the print
+  // site; one raw `\n` in a head opened a section of the fixer's brief the step never
+  // wrote. Same call, same rule, for the two that were left out.
   const head = promptText(opts.head, NAME_MAX_CHARS);
   const base = promptText(opts.base, NAME_MAX_CHARS);
-  // The issue, fenced and bounded like every other block in this brief. The
-  // fixer is the one model in this step that EDITS the tree: a finding that
-  // contradicts what the ticket asked for must be named in its reply, not
-  // implemented. Lean prints the BODY only — it has no cached title to print,
-  // and inventing one from the first line of a body would be a claim the step
-  // did not read off the forge.
+  // The issue, fenced and bounded like every other block here. The fixer is the one model
+  // in this step that EDITS the tree: a finding that contradicts the ticket must be named
+  // in its reply, not implemented. Lean prints the BODY only — no cached title exists.
   //
-  // The lead-in names the block's purpose; the FULL decline rule is printed
-  // once, in the section below, because the rule is a procedure (marker, what
-  // may be cited, what a declined row costs) and not one sentence. The same
-  // text twice in one brief is one rule the reader has to reconcile twice.
+  // The FULL decline rule is printed once, in its own section below, because it is a
+  // procedure and not one sentence; printing it twice is one rule to reconcile twice.
   const issueBlock = fencedIssuePromptBlock(
     opts.issueBody,
     "A finding you cannot apply without contradicting it is declined, not implemented — how is stated below.",
     fencedIssueBody,
   );
-  // The rule that tells the fixer HOW to refuse. Printed as its own section
-  // rather than folded into the prose below, because a brief with no issue block
-  // has no requirement to cite and the rule must then not appear at all.
+  // Printed as its own section because a brief with no issue block has no requirement to
+  // cite, and the rule must then not appear at all.
   const declineRule =
     issueBlock === ""
       ? ""

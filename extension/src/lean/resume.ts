@@ -41,16 +41,13 @@ import {
 /**
  * The position the step log implies, refusing a run whose snapshot disagrees.
  *
- * Each fold consumes the log's next entry in the ORDER IT WAS WRITTEN. A
- * step's outcome is read from that entry, which is what picks the right
- * attempt of a state the run entered twice.
+ * Each fold consumes the log's next entry in the ORDER IT WAS WRITTEN, which is what picks the
+ * right attempt of a state the run entered twice.
  *
- * `runLean` used to drive from `loadRun(...).state` alone — a CACHE by the
- * module's own contract. A file whose newest `ci` step was `red` but whose
- * snapshot still said `ci` replayed the older `ci:green` and merged, because
- * a replay path applies recorded outcomes without running their handlers.
- * So: derive the position by folding the log through the table, and refuse the
- * file rather than repair it.
+ * The position is DERIVED, never taken from the snapshot: the snapshot is a cache, and a replay path
+ * applies recorded outcomes without running their handlers, so a file whose newest `ci` step was
+ * `red` but whose snapshot still said `ci` would replay the older `ci:green` and merge. So: derive
+ * the position by folding the log through the table, and refuse the file rather than repair it.
  */
 export function verifiedPosition(file: string, run: LeanRun): Position {
   const { pos, before, decided } = foldLog(run, file);

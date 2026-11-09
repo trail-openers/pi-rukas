@@ -33,15 +33,10 @@ import type { DispatchUsageRow } from "./step-budget.ts";
 type ErrorOutcome = Outcome & { kind: "error" };
 
 /**
- * Which states may record what their children cost.
- *
- * Read from `DISPATCH_STATES` in `state-outcome.ts` — the one statement of that
- * set — rather than re-derived here. It used to be re-derived (`state ===
- * "review" || BUDGET_STATES.includes(state)`), which put a second expression of
- * the loader's own ownership rule on the throw path: a widening that landed on
- * one side and not the other dropped the run's most expensive numbers without a
- * sound, and nobody reading the state file afterwards could tell a step that cost
- * nothing from a field that was never allowed to land.
+ * Which states may record what their children cost. Read from `DISPATCH_STATES` in
+ * `state-outcome.ts` — the one statement of that set — rather than re-derived here: a second
+ * expression of the loader's ownership rule on the throw path would let a widening land on one side
+ * and silently drop the run's most expensive numbers.
  */
 function recordsDispatches(state: LeanState): boolean {
   return DISPATCH_STATES.includes(state);

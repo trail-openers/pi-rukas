@@ -400,14 +400,10 @@ export async function runTestPipeline(
     }
   }
 
-  // A gap is `criterion <id> has no red test`, and under `"all-criteria"` it is
-  // the FIRST clause of every rule, in both fields. `origin/main` carried that
-  // rule in `failedRules` and led `reason` with it, followed by the per-file
-  // drop notes; those notes are the detail and never the headline. A rule whose
-  // per-file notes were in FRONT would be a reason a caller could render without
-  // ever naming the criterion it is refusing for — so `evidence` is appended
-  // after the fixed prefix rather than prefixed, and the prefix is exactly the
-  // string main wrote, so a diff of the two shapes reads as a no-op.
+  // A gap is `criterion <id> has no red test`, and under `"all-criteria"` it is the FIRST clause of
+  // every rule, in both fields: those notes are the detail and never the headline. A rule whose
+  // per-file notes were in FRONT could be rendered without ever naming the criterion it is refusing
+  // for, so `evidence` is appended after the fixed prefix.
   const droppedNote = noteClause("dropped", notes);
   const evidence = [droppedNote, dropNote(dropped)].filter((s) => s !== "").join(" ");
   const gapFor = (ids: string[], withEvidence: boolean): string[] =>
@@ -416,10 +412,9 @@ export async function runTestPipeline(
         `criterion ${id} has no red test${skippedNote}${withEvidence && evidence !== "" ? `; ${evidence}` : ""}`,
     );
   if (red.length === 0) {
-    // Nothing survived the proof, so there is no coverage to report: the reason
-    // states the verdict itself, then every criterion the run still owes (only
-    // meaningful under `"all-criteria"` — `"any-red"` has no list to owe), then
-    // the per-file evidence. Under `"any-red"` this is `challenge`'s `none`.
+    // Nothing survived the proof, so there is no coverage to report: the reason states the verdict,
+    // then every criterion the run still owes (only meaningful under `"all-criteria"`), then the
+    // per-file evidence.
     const lead = (args.coverage === "all-criteria" ? args.wanted : [])
       .map((id) => `criterion ${id} has no red test`)
       .join("; ");
@@ -438,9 +433,8 @@ export async function runTestPipeline(
   // `4. REWRITE the captured bytes` is documented above the reset; the step
   // numbering is kept in one place rather than restated here.
 
-  // 6. Coverage. ONLY `"all-criteria"` refuses a gap: `specify` requires a red
-  //    for every test criterion, while `challenge` keeps whatever red it earned
-  //    and lets its caller record the gap it did not close.
+  // 6. Coverage. ONLY `"all-criteria"` refuses a gap: `specify` requires a red for every test
+  //    criterion, while `challenge` keeps whatever red it earned.
   if (args.coverage === "all-criteria") {
     const missing = args.wanted.filter((id) => !red.some((r) => r.criterionId === id));
     if (missing.length > 0) {
@@ -448,8 +442,8 @@ export async function runTestPipeline(
       return {
         kind: "uncovered",
         uncovered: rules,
-        // Each rule already carries the evidence clause, so the reason is those
-        // rules joined — the caller renders either field and says the same thing.
+        // Each rule already carries the evidence clause, so the caller renders either field and
+        // says the same thing.
         reason: rules.join("; "),
       };
     }
@@ -464,9 +458,8 @@ export async function runTestPipeline(
     throw new SpecifyInfraError(`could not commit the acceptance tests: ${(err as Error).message}`);
   }
 
-  // 8. HASH the COMMITTED blobs, not the working files: what the rest of the run
-  //    compares against has to describe the commit, not whatever was on disk when
-  //    the step happened to look.
+  // 8. HASH the COMMITTED blobs, not the working files: what the rest of the run compares against
+  //    has to describe the commit, not whatever was on disk when the step looked.
   const frozen: Record<string, string> = {};
   const tests: Record<string, string[]> = {};
   for (const { criterionId, path: rel } of red) {

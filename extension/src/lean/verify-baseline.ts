@@ -1,65 +1,39 @@
 /**
  * lean/verify-baseline — telling a tier the run broke from one that was already red.
  *
- * `verify` answers "does the frozen contract pass on THIS tree?" and the machine
- * routes every `red` into a build round. That answer is only about the change when
- * the tier was green before the change existed. A tier that is red at the run's
- * `baseSha` — a suite unrelated to the diff that fails on this host's mainline — is
- * red whatever the builder does next, and a run that bills a fix round for it sends a
- * developer to edit production code nobody asked them to touch. A tier that is red at
- * HEAD and green on a second run at HEAD is a flake, and costs the same round for
- * nothing.
+ * `verify` routes every tier `red` into a build round, and that is only right when the
+ * tier was green before the change existed. Two questions, both asked only AFTER a tier
+ * has gone red (a green tier pays nothing, and a probe on the happy path would double
+ * every verify):
  *
- * Two questions, both asked only AFTER a tier has gone red (a green tier pays
- * nothing, and a probe on the happy path would double every verify):
+ *   - **a re-run at HEAD** — {@link confirmTierRed}: green on the second run means the
+ *     first observed nothing stable, so the tier counts green and the flake rides in
+ *     the reason the PR body prints.
+ *   - **a probe at the run's base commit** — {@link probeTierAtBase}: the run's frozen
+ *     tests' BYTES compared against what the run froze, then the tier's command once,
+ *     both in a throwaway detached worktree at `baseSha`. A base that holds other bytes
+ *     at the frozen paths AND fails the tier has a red gate the change did not author,
+ *     so the caller hands the run back BEFORE any build round.
  *
- *   - **a re-run at HEAD** — {@link confirmTierRed}: the same command, once more, in
- *     the same worktree. Green on the second run means the first observed nothing
- *     stable, so the tier counts green and the flake rides in the reason the PR body
- *     prints. Red twice is a real failure and the caller goes on to the probe.
- *   - **a probe at the run's base commit** — {@link probeTierAtBase}: the run's
- *     frozen tests' BYTES read out of the base commit and compared against what the
- *     run froze, then the tier's command once, both in a throwaway detached worktree
- *     checked out at `baseSha`, provisioned by symlinks only and removed in a
- *     `finally`. A base that holds other bytes at the run's frozen paths AND fails the
- *     tier has a red gate the change did not author, so the caller hands the run back
- *     BEFORE any build round; a base that already holds the frozen bytes has no red to
- *     blame and the tier stays the real failure it was.
+ * The probe runs at `baseSha` and never at HEAD: probing at HEAD would let the builder's
+ * own commit decide what counts as pre-existing.
  *
- * The probe runs at `baseSha` and never at HEAD: probing at HEAD would let the
- * builder's own commit decide what counts as pre-existing.
+ * Both are settled by the child's exit code, read through {@link tierExitCode} rather
+ * than by comparing a result object against `undefined` — an injected executor is free
+ * to resolve with nothing at all, and a verdict inferred from an absence read every
+ * green as a red depending on which stand-in a case used. A kill, an overflow or an
+ * un-startable command observed nothing: that is `unknown`, never a colour, and it
+ * never excuses a tier. Only a base that cannot be checked out at all is `unusable`,
+ * which the caller turns into a throw.
  *
- * Both questions are settled by ONE piece of evidence, and it is the child's exit
- * code — read through {@link tierExitCode}, not by comparing a result object against
- * `undefined`. `verify`'s executor resolves a successful command with a
- * `{stdout, stderr}` object and rejects a failed one with the child's code; an
- * injected executor is free to resolve with nothing at all, and a gate that inferred
- * "red" from an absent value read every green as a red (and vice versa) depending on
- * which stand-in a case happened to use. An exit code is a value, so it cannot be
- * confused with its own absence: `undefined` means the command succeeded, a number
- * means it did not, and a kill or an un-startable command is neither and gets no
- * colour at all.
+ * Lean's own module on purpose: the /work develop gate's answer
+ * (`work-driver-verify-baseline.ts`) is a per-test attribution keyed on a verify-loop
+ * report lean's tiers do not produce, and lean's tiers are opaque shell strings.
  *
- * "Could not tell" is never a colour, and it never excuses a tier. A base run that
- * was killed, overflowed its buffer, never started, or printed nothing but the
- * executor's own error observed nothing, so it answers `unknown` and the tier stays
- * the ordinary red it was. The one exception is the probe tree itself: a base that
- * cannot be checked out leaves the run anchored to a commit nothing here has judged,
- * so no verdict about it — a green included — is worth recording, and that is
- * `unusable`, which the caller turns into a throw.
- *
- * Lean's own module on purpose. The /work develop gate has an older answer to the
- * same question (`work-driver-verify-baseline.ts`), but its verdict is a per-test
- * attribution keyed on a verify-loop report file lean's tiers do not produce, and it
- * can only ADD evidence to a run that parks anyway. Lean's tiers are opaque shell
- * strings, so what it can compare is a whole tier, and what it can decide is hand
- * back before a build round rather than after.
- *
- * The frozen tests inside the probe are the exemption's boundary. A run's contract is
- * frozen proved-red on purpose and must go green for the run to be worth anything, so
- * a base that still fails it is a gate the change did not author — while a base that
- * passes it has no pre-existing red anywhere, and excusing the tier over that would
- * delete the run's only contract check.
+ * The frozen tests inside the probe are the exemption's boundary: a base that still
+ * fails them is a gate the change did not author, while a base that passes them has no
+ * pre-existing red anywhere, and excusing the tier over that would delete the run's
+ * only contract check.
  */
 
 import { trace, traceWarn } from "../trace.ts";
@@ -73,22 +47,18 @@ import { type VerifyExec, VerifyInfraError } from "./verify-types.ts";
 export const BASELINE_RED_MARKER = "baseline red:";
 
 /**
- * Why `verify` hands a run back when its tier is red at the run's base commit.
- *
- * A durable record that reaches the handback comment and the PR body's Verification
- * section, so it names the tier, the base sha, and the one fact the operator needs:
- * this run's builder did not author the failure, and no build round can fix it.
+ * Why `verify` hands a run back when its tier is red at the run's base commit. Reaches
+ * the handback comment and the PR body, so it names the tier, the base sha, and that no
+ * build round can fix it.
  */
 export function baselineRedReason(name: string, cmd: string, baseSha: string): string {
   return `${BASELINE_RED_MARKER} tier ${name} is red at the base commit ${baseSha} — \`${cmd}\` fails at the base without this run's changes, so no build round can fix it`;
 }
 
 /**
- * The tail on a green whose tier passed only on its second run at HEAD.
- *
- * Carried in the outcome's `reason`, which is the channel `publish` already prints in
- * the PR body's Verification section — so a tier that was excused says so rather than
- * reporting a clean gate it did not see.
+ * The tail on a green whose tier passed only on its second run at HEAD. Carried in the
+ * outcome's `reason`, the channel `publish` prints in the PR body, so an excused tier
+ * does not report a clean gate it did not see.
  */
 export function flakeReason(name: string, cmd: string): string {
   return `verify.${name} was red on its first run and green on the re-run — recorded as a flake of \`${cmd}\`, not as a pass this build earned`;
@@ -106,13 +76,11 @@ export type BaseProbe =
  * The exit code a tier run ended with, or `undefined` when it exited 0.
  *
  * The one place this step decides pass-from-fail, and it decides on the child's status
- * rather than on which side of a promise a value landed: the production executor rejects a
- * non-zero exit with `code` set, and an injected executor is free to resolve with no result
- * object at all — so the verdict must be a value, never an absence.
+ * rather than on which side of a promise a value landed — the verdict must be a value,
+ * never an absence.
  *
- * A run that was killed, timed out, overflowed its buffer or never started has no exit code
- * and no verdict either — the caller asks {@link tierObserved} first, and nothing may be
- * concluded from a run that judged nothing.
+ * A killed, timed-out, overflowed or un-startable run has no exit code and no verdict:
+ * the caller asks {@link tierObserved} first.
  */
 export function tierExitCode(ran: unknown): number | undefined {
   const code = (ran as { code?: unknown } | undefined)?.code;
@@ -122,10 +90,8 @@ export function tierExitCode(ran: unknown): number | undefined {
 /**
  * Did a tier run observe the work at all?
  *
- * `false` for the shapes where nobody ran anything: a kill (which is also a timeout —
- * the executor stamps `timedOutKill` when the wall clock signalled), an output
- * overflow that truncated the evidence, or a command the shell could not start. Those
- * are neither green nor red anywhere in this step, at HEAD or at the base.
+ * `false` for the shapes where nobody ran anything: a kill, an output overflow, or a
+ * command the shell could not start. Those are neither green nor red, at HEAD or base.
  */
 export function tierObserved(ran: unknown): boolean {
   return (
@@ -155,17 +121,15 @@ async function tierCode(
  * `false` — the re-run exited 0 — is the flake: the caller counts the tier green and
  * records it. `true` is a second red, and also a re-run that observed nothing (a kill,
  * an overflow, a command that never started): an excuse needs two runs that saw the
- * work, so those leave the first red standing exactly as if there had been no re-run.
+ * work, so those leave the first red standing.
  *
- * So "exited 0" is the ONLY answer that excuses, and it is asked for positively, in two
- * parts: the re-run must have OBSERVED the work, and it must have ended with exit code 0. An
- * absence test would read the executor's kill, timeout, overflow and `ENOENT` rejections — all
- * of which carry a non-numeric `code` (`null`, or a string) — as the clean exit and report a
- * green on a tier nobody saw pass. The base probe's sibling {@link classifyBaseRun} asks the
- * same question through {@link tierObserved} first; a re-run is held to the same standard.
+ * "Exited 0" is the ONLY answer that excuses, and it is asked for positively: the re-run
+ * must have OBSERVED the work and ended with code 0. The executor's kill, timeout,
+ * overflow and `ENOENT` rejections all carry a non-numeric `code`, so an absence test
+ * would report a green on a tier nobody saw pass. {@link classifyBaseRun} asks the same
+ * question the same way.
  *
- * The return is the fact, not a colour — the tier's own `Executed` from the first run stays
- * the evidence, and only this tells the caller whether to believe it.
+ * The return is the fact, not a colour — the first run's `Executed` stays the evidence.
  */
 export async function confirmTierRed(opts: {
   name: string;
@@ -183,22 +147,17 @@ export type BaseProbeOutcome = BaseProbe & { stream?: string };
 /**
  * What one tier's command does at the run's base commit, in a throwaway checkout.
  *
- * The tree is a SIBLING of the repo, never under it: `verify` scans the whole repo —
- * `.worktrees/` included — with `git status --porcelain --untracked-files=all` before
- * and after every run, so a throwaway checked out inside `repoRoot` is itself
- * untracked dirt and the probe would hand the run back for its own tree. Provisioning
- * still works there, because `worktree-provision` scans the repo's parent for a
- * sibling checkout.
+ * The tree is a SIBLING of the repo, never under it: `verify` scans the whole repo with
+ * `git status --porcelain --untracked-files=all` before and after every run, so a
+ * throwaway inside `repoRoot` is itself untracked dirt and the probe would hand the run
+ * back for its own tree. `worktree-provision` still finds a sibling checkout there.
  *
- * It is removed in a `finally` — including when the base run threw — and removed
- * before the add as well, because the only thing a killed process can leave behind is
- * a tree this function is about to overwrite.
+ * It is removed in a `finally` and before the add as well: the only thing a killed
+ * process leaves behind is a tree this function is about to overwrite.
  *
- * The answer carries the base tier run's COMBINED stream (`stream`) beside its colour:
- * the caller decides whether the base NAMED the head run's failures, and it must
- * decide that from the bytes the base run printed rather than from its exit code
- * alone. The tree is gone by the time the caller reads it, so the stream is kept here
- * rather than re-read there.
+ * The answer carries the base run's COMBINED stream (`stream`) beside its colour: the
+ * caller decides from those bytes whether the base NAMED the head run's failures, and
+ * the tree is gone by the time it reads them.
  */
 export async function probeTierAtBase(opts: {
   repoRoot: string;
@@ -212,9 +171,8 @@ export async function probeTierAtBase(opts: {
 }): Promise<BaseProbeOutcome> {
   const { repoRoot, baseSha, cmd, timeoutMs, exec } = opts;
   const abs = baselineProbeWorktreePath(repoRoot, opts.issue);
-  // The probe's OWN git calls are the driver's, so they keep the one knob that
-  // decides where a host-channel cycle reports (see `verifyHostEnv`); the project
-  // command below runs scrubbed, like every other project tier.
+  // The probe's OWN git calls are the driver's, so they keep `verifyHostEnv`'s knob for
+  // where a host-channel cycle reports; the project command below runs scrubbed.
   const hostEnv = verifyHostEnv();
   const remove = () =>
     exec("git", {
@@ -224,9 +182,9 @@ export async function probeTierAtBase(opts: {
       maxBuffer: 256 * 1024,
       env: hostEnv,
     }).catch(() => undefined);
-  // Not a hygiene reflex: a registration a killed run left behind makes the very next
-  // `git worktree add` at this path refuse, and the probe would then report `unusable`
-  // for a base it could have judged.
+  // Not a hygiene reflex: a registration a killed run left behind makes the next
+  // `git worktree add` at this path refuse, so the probe would report `unusable` for a
+  // base it could have judged.
   await remove();
   try {
     await exec("git", {
@@ -243,35 +201,26 @@ export async function probeTierAtBase(opts: {
     };
   }
   try {
-    // A bare worktree holds tracked files only; a tier that needs a dependency tree
-    // would fail every command in it, which says nothing about the base commit.
+    // A bare worktree holds tracked files only, so a tier needing a dependency tree
+    // would fail every command in it — which says nothing about the base commit.
     //
-    // Symlinks only (`linkShareableDeps`, never `provisionWorktree`) for the same reason
-    // `reviewer-tree.ts` gives: the project's `.pi/worktree-setup` is arbitrary code and
-    // must never run in a throwaway directory this function created and some other
-    // process's shell can reach. The probe's tier is judged by its exit code alone, so it
-    // needs `node_modules` and nothing a hook could install for it.
+    // Symlinks only (`linkShareableDeps`, never `provisionWorktree`): the project's
+    // `.pi/worktree-setup` is arbitrary code and must never run in a throwaway directory
+    // some other process's shell can reach.
     await linkShareableDeps(exec, repoRoot, abs).catch(() => undefined);
     // The contract first: a tier is only excused over a run whose frozen tests the base
-    // ALSO fails. Their verdicts are READ, never re-decided or re-run here, and the three
-    // answers say different things to whoever reads the handback.
-    //
-    // They cannot be RUN at the base. A run's acceptance tests are written during the run
-    // by the step that froze them, so `baseSha` predates them: in this file's own cases
-    // the base holds none of the frozen paths. Executing them there would either report
-    // the runner's "no such file" as the frozen test still failing — `frozenTestFailure`
-    // reads ANY non-zero exit that way — and excuse the tier over a contract the base
-    // never carried, or find nothing to run and call the base green. So the probe asks
-    // the base the only question it can answer: did the mainline already carry these very
-    // bytes, and did it leave them failing?
+    // ALSO fails. Their verdicts are READ here, never re-decided or re-run: `baseSha`
+    // predates the run's acceptance tests, so running them there would report the
+    // runner's "no such file" as the frozen test still failing and excuse the tier over a
+    // contract the base never carried. The probe asks the base the only question it can
+    // answer: did the mainline already carry these very bytes, and did it leave them failing?
     let contractEstablished = false;
     if (Object.keys(opts.frozen).length > 0) {
       const contract = await baseCarriedFrozen(exec, repoRoot, baseSha, opts.frozen, hostEnv);
       // Whether the probe could READ the run's frozen bytes at the base. It decides
-      // nothing about the contract's colour — an unreadable path is already
-      // `carries-nothing`, which excuses nothing — but it does decide what the tier's own
-      // output may be read as below: with no bytes to compare there is no evidence that
-      // the base carries a red gate rather than merely a tier that will not start.
+      // nothing about the contract's colour, but it decides what the tier's own output may
+      // be read as below: with no bytes to compare there is no evidence of a red gate
+      // rather than merely a tier that will not start.
       contractEstablished = contract.kind !== "carries-nothing";
       if (contract.kind === "carries-nothing")
         return {
@@ -310,23 +259,17 @@ export async function probeTierAtBase(opts: {
  * Read as the base's BYTES (`git show <base>:<path>`) and compared against what the run
  * froze. Three answers, because they mean three different things:
  *
- *   - `carries-nothing` — the base has none of these files. This is the ordinary answer:
- *     a run's contract is authored during the run, so the base predates it. It is
- *     deliberately NOT a colour; a mainline that never carried the test did not author a
- *     red gate and cannot excuse a tier over it.
- *   - `red` — the base holds a path the run froze and its bytes are NOT the frozen ones.
- *     The frozen file is the run's contract in its passing shape, so a base holding other
- *     bytes at that path is a mainline whose own copy of this test does not satisfy what
- *     the run is held to: a gate the change did not author.
- *   - `green` — the base already holds the frozen bytes, so the mainline passed them and
- *     this run's red is its own.
+ *   - `carries-nothing` — the base has none of these files (the ordinary answer: the run
+ *     authors its contract during the run). NOT a colour: a mainline that never carried
+ *     the test did not author a red gate.
+ *   - `red` — the base holds a path the run froze with bytes that are NOT the frozen
+ *     ones: a mainline whose own copy does not satisfy what the run is held to.
+ *   - `green` — the base already holds the frozen bytes, so this run's red is its own.
  *
- * A read that fails outright is NOT a colour either — it is `carries-nothing`, the same
- * answer as "the base never held this path", because both leave the probe with nothing to
- * judge and the tier's own red is what must stand. The two facts stay distinguishable where
- * it matters: only git's own exit-128 "does not exist" wording reads as absent, so an
- * executor timeout or overflow is never mistaken for git's answer — it simply fails to
- * establish a red at the base, and a baseline excuse needs one.
+ * A read that fails outright is `carries-nothing` too — both leave the probe with nothing
+ * to judge. They stay distinguishable where it matters: only git's own exit-128 "does not
+ * exist" wording reads as absent, so an executor timeout or overflow never becomes git's
+ * answer.
  */
 async function baseCarriedFrozen(
   exec: VerifyExec,
@@ -343,8 +286,8 @@ async function baseCarriedFrozen(
   const differed: string[] = [];
   const absent: string[] = [];
   // A path whose bytes could not be read establishes no red, so it lands in the same
-  // no-excuse answer as an absent path — kept in its own list only so the two counts are
-  // never confused and the sentence above can name what the probe could not look at.
+  // no-excuse answer as an absent path — kept separate only so the two counts are never
+  // confused.
   const unread: string[] = [];
   for (const rel of paths) {
     const ran = await exec("git", {
@@ -355,8 +298,7 @@ async function baseCarriedFrozen(
       env: hostEnv,
     }).catch((err: unknown): Record<string, unknown> => {
       // A rejection is the executor speaking, not git's "no such path": keep the object
-      // so the absent-path test below can read its `code` and `stderr`, and never a null
-      // that would look like a result with no bytes.
+      // so the absent-path test below can read its `code` and `stderr`.
       return typeof err === "object" && err !== null
         ? (err as Record<string, unknown>)
         : { message: String(err) };
@@ -371,7 +313,7 @@ async function baseCarriedFrozen(
     }
     // No `stdout` own-property, or one that is not a string: the executor spoke and the
     // base did not. A rejection's `code` is `null` for a kill and a string for `ENOENT`,
-    // and neither is a number a real exit produced, so neither may be read as bytes.
+    // so neither may be read as bytes.
     if (!Object.hasOwn(ran, "stdout") || typeof ran.stdout !== "string") {
       unread.push(rel);
       continue;
@@ -381,9 +323,8 @@ async function baseCarriedFrozen(
   }
   if (differed.length > 0) return { kind: "red", paths: differed };
   if (absent.length + unread.length === paths.length) return { kind: "carries-nothing", paths };
-  // Some paths matched the frozen bytes and others could not be read: the base's state at
-  // the unread ones is unknown, so the base cannot be judged against this run's contract
-  // at all. Same answer as an absent path, for the same reason — no established red.
+  // Some paths matched and others could not be read: the base cannot be judged against
+  // this run's contract at all. Same answer as an absent path — no established red.
   if (unread.length > 0) return { kind: "carries-nothing", paths: unread };
   return { kind: "green" };
 }
@@ -391,9 +332,8 @@ async function baseCarriedFrozen(
 /**
  * Is a failed `git show <ref>:<path>` git's own "this commit holds no such path"?
  *
- * The same two wordings `verify-reads.ts` recognises for `.pi/verify-cmd`; re-derived
- * here rather than imported because that module's reader also decides a config default,
- * and a baseline probe must not inherit "treat it as absent" from a config question.
+ * Re-derived rather than imported from `verify-reads.ts`, whose reader also decides a
+ * config default: a baseline probe must not inherit "treat it as absent" from that.
  */
 function gitPathAbsent(err: unknown): boolean {
   const e = err as { code?: unknown; stderr?: string; message?: string };
@@ -405,30 +345,25 @@ function gitPathAbsent(err: unknown): boolean {
  * A base tier run's colour, from the same exit code the HEAD runs are judged by.
  *
  * The optional `stream` carries the base run's combined output so the caller can ask
- * WHICH tests the base failed, not merely whether it failed; the classification below
- * never reads it, so a verdict cannot drift with what a run printed.
+ * WHICH tests the base failed; the classification below never reads it, so a verdict
+ * cannot drift with what a run printed.
  *
  * Exported for the smoke test that judges this function's ORDER directly: `verify` reads
- * `unknown` and `green` identically (both leave the tier's red standing), so the difference
- * between them is invisible end-to-end and can only be judged where it is made.
+ * `unknown` and `green` identically, so the difference is invisible end-to-end.
  *
- * Observation is asked FIRST. A killed, timed-out, un-startable or overflowed run has no
- * exit code, and an exit-code test placed ahead of it handed `{status: "green"}` to every
- * one of those shapes: the probe that reads the base as green for want of a number is how
- * an unobserved run colours a tier it never judged. `confirmTierRed` asks the same
- * question in the same order, and the two must not disagree about what a kill means.
+ * Observation is asked FIRST: a killed, timed-out, un-startable or overflowed run has no
+ * exit code, and an exit-code test ahead of it handed `{status: "green"}` to every one of
+ * those shapes. `confirmTierRed` asks in the same order; the two must not disagree about
+ * what a kill means.
  *
  * A red base needs the child's OWN output: a run that exited non-zero having printed
- * nothing but the executor's message is a harness speaking instead of a gate, and no
- * commit's colour is knowable from that. The three no-colour families — a run that judged
- * nothing, a bare checkout with no dependencies, and a run that printed nothing — say
- * which, because the operator who reads them fixes different things. None of them is a
- * colour, and none excuses the tier: the caller leaves the tier's own red standing.
+ * nothing but the executor's message is a harness speaking, not a gate. The three
+ * no-colour families name which, because the operator fixes different things; none is a
+ * colour and none excuses the tier.
  *
- * `contractEstablished` says whether the probe read the run's frozen bytes at the base.
- * With none of them readable there is no comparison to make, so the tier's own output
- * cannot be read as the mainline's red gate either — it is a tier that would not start,
- * which is a machine answer and not a commit's.
+ * With no frozen bytes readable at the base (`contractEstablished` false) there is no
+ * comparison to make, so the tier's own output cannot be read as the mainline's red gate
+ * either.
  */
 export function classifyBaseRun(ran: unknown, contractEstablished: boolean): BaseProbe {
   if (!tierObserved(ran)) {
@@ -473,24 +408,19 @@ export function baselineUnusableError(reason: string): VerifyInfraError {
 /**
  * The judgement {@link confirmTierRed} makes about a re-run it did not itself spawn.
  *
- * `verify` needs the re-run's OUTPUT as well as its colour — the baseline excuse
- * reads which tests it named — so it spawns the child once through `tierRunStream`
- * in `verify-tier-rerun.ts` and asks this. One predicate for both callers is what
- * keeps "a kill is not a pass" from meaning two things.
+ * `verify` needs the re-run's OUTPUT as well as its colour, so it spawns the child once
+ * through `tierRunStream` in `verify-tier-rerun.ts` and asks this. One predicate for
+ * both callers keeps "a kill is not a pass" from meaning two things.
  */
 export function confirmTierRedFrom(ran: unknown): boolean {
   // An excuse needs a re-run that SAW the work and came back clean: two positive facts,
-  // not the absence of an exit code. The executor's kill, timeout, overflow and `ENOENT`
-  // shapes reject with a non-numeric `code` (`null`, or a string) and so does a rejection
-  // that stamped nothing at all, so reading "no numeric code" as "exited 0" would report
-  // a green on a tier nobody saw pass. The base probe's sibling `classifyBaseRun` asks
-  // the same question through `tierObserved` first; a re-run is held to the same standard.
+  // not the absence of an exit code. Reading "no numeric code" as "exited 0" would report
+  // a green on a tier nobody saw pass.
   if (!tierObserved(ran)) return true;
-  // A run that observed the work still has to have ANSWERED. `tierCode` folds a
-  // rejection into the value it returns, so a rejection that stamped no `code`, no kill
-  // and no `ENOENT` would otherwise be read as a clean exit by `tierExitCode` alone — a
-  // green handed out for a re-run that reported nothing. An executor that resolves with
-  // no result object at all is the fixture's "exited 0 with no output", and stays green.
+  // A run that observed the work still has to have ANSWERED: `tierCode` folds a rejection
+  // into the value it returns, so a rejection that stamped nothing would read as a clean
+  // exit by `tierExitCode` alone. An executor that resolves with no result object at all
+  // is the fixture's "exited 0 with no output", and stays green.
   if (ran !== undefined && typeof ran === "object" && !("stdout" in (ran as object))) return true;
   return tierExitCode(ran) !== undefined;
 }
