@@ -191,9 +191,8 @@ function excuseOf(headLines: string[], baseLines: string[]) {
     `(ci probe) the tier ran at HEAD and once more at the base, though verify's record was reusable (${String(r.cmds.filter((c) => c === FULL).length)})`,
   );
   assert(
-    r.cmds.some((c) => c.includes(".baseline-lean-verify-")) ||
-      r.tierRuns !== undefined,
-    "(ci probe) and a throwaway base checkout really was involved",
+    r.tierRuns === 2,
+    `(ci probe) and the tier ran inside the throwaway base checkout too — the recorder answers the probe's tier by its cwd, so two runs IS the two-tree proof (${String(r.tierRuns)})`,
   );
 }
 

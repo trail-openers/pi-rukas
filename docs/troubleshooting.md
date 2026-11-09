@@ -82,14 +82,16 @@ runs.
 
 **Cause:** the project's own verify tier fails on the run's head AND on its base commit, and
 the two runs did not print the same failures. A tier red at HEAD re-runs once, and a still-red
-tier is re-run at the base in a throwaway checkout. There is ONE rule for excusing that red: take
-the whole failure line — every line the shared failure-line classifier reads — from each run,
-trim it, strip that run's own tree root from the front of its path, and the tier is graded green — with its failures recorded as
-`preexistingFailures` and disclosed in the PR body — only when EVERY head line is a line the base
-printed, verbatim. Nothing is folded, normalised or discounted beyond that, and no shape of line is
-exempt: two runs of one check print the same line, and two checks print two lines. Any runner the
-classifier reads is excusable — pytest `FAILED path::name`, TAP/bats `not ok`, go `--- FAIL:`, a
-script tally, a `FAIL` header, the driver's own diagnostic dialect.
+tier is re-run at the base in a throwaway checkout. There is ONE rule for excusing that red: take EVERY
+line each run printed — the ones the shared failure-line classifier reads and the ones it cannot
+alike — trim it, strip that run's own tree root from the front of its path, and the tier is graded
+green — with its failures recorded as `preexistingFailures` and disclosed in the PR body — only when
+EVERY head line is a line the base printed, verbatim. Nothing is folded, normalised or discounted
+beyond that, and no shape of line is exempt: two runs of one check print the same line, two checks
+print two lines, and a line nothing read is a defect nothing excused: the whole failure line is the
+unit of comparison, never a token read out of it. Any runner the classifier reads is excusable — pytest
+`FAILED path::name`, TAP/bats `not ok`, go `--- FAIL:`, a script tally, a `FAIL` header, the
+driver's own diagnostic dialect.
 
 Besides the rule itself, these refuse: any line past the classifier's own scan window on either
 side (a line no judge read whole is not evidence); a re-run or base run that observed nothing (a
@@ -102,10 +104,15 @@ What hands back, and is the accepted cost of one rule rather than a defect:
 - **A PR that adds passing tests to a suite already red at base.** Its runner summary
   (`===== 1 failed, 5 passed =====` where the base printed `… 3 passed`) is a line the base never
   printed, so the tier's red stands.
-- **Renumbered TAP/bats output.** `not ok 3 - x` is not the line the base printed as `not ok 1 - x`
-  — a runner numbers checks by the order they ran, so the index is part of the line.
-- **A harness echo the base never printed** — `Command failed: <cmd>`, a `$`-traced command line, a
-  bare `Exit code: 1` or `killed`. The base's own copy of the identical line settles it.
+- **Renumbered TAP/bats output, or any timing or duration line that moved.** `not ok 3 - x` is not
+  the line the base printed as `not ok 1 - x` — a runner numbers checks by the order they ran, so the
+  index is part of the line — and a `(0.31s)` that changed by a hundredth is a different line too.
+- **A line the classifier cannot read, printed only at head** — a bare `killed`, a bare
+  `Exit code: 1`, a jest `●` block, a `# not ok 9` TAP comment, a zero-width character inside a
+  name. Each is text the head printed and the base did not, so the red stands; the base's own copy of
+  the identical bytes settles it. The one exception is the executor's `Command failed: <cmd>` echo,
+  discounted only when it is the head's lone extra line AND quotes the very command both runs ran.
+- **A `$`-traced command line or a renumbered check** the base never printed.
 - **`ci`'s extra base probe.** A red full tier is judged on `ci`'s OWN probe of the base commit, so
   a run whose verify already excused the same tier pays one more full-tier run rather than reusing
   verify's record.
@@ -117,7 +124,7 @@ the base commit and the true total are on the verify/ci step's record in the ste
 (`preexistingFailures`), which is what the PR body's `## Pre-existing test failures` section renders.
 A head-only line is the run's own regression and belongs in a build round. If you believe the two
 runs really did fail identically, compare them by hand: the tier's command, run in the run's
-worktree and again in a throwaway checkout of the base sha, and diff the lines the classifier reads.
+worktree and again in a throwaway checkout of the base sha, and diff every line either run printed.
 Anything you can only make match by ignoring part of a line is a genuine difference the rule is
 right to refuse. A tier that prints no recognised failure line cannot be excused at all — give the
 gate a runner that prints one failing-test line per test (`pytest -v`, `go test -v`, `prove`, a bats

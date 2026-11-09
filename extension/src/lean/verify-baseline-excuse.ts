@@ -9,39 +9,36 @@
  * run print as failing — and answers "grade it green, and say so" when the head run
  * printed nothing the base run did not print.
  *
- * The unit of comparison is the WHOLE failure line, and that is what makes it
- * runner-agnostic. A parser that reads a test name out of each line and compares tokens always
- * finds a way to fold two different checks onto one token, and a folded name excuses a failure
- * only this run authored — the one thing this feature must never do. Whole lines cannot fold: two
- * checks are two lines, and two runs of ONE check print the SAME line.
+ * The unit of comparison is the WHOLE failure line, which is what makes it runner-agnostic.
+ * A parser that reads a test name out of each line always finds a way to fold two different
+ * checks onto one token, and a folded name excuses a failure only this run authored — the one
+ * thing this feature must never do. Whole lines cannot fold: two checks are two lines, and
+ * two runs of ONE check print the SAME line.
  *
- * It is deliberately stricter than "the base was red too":
+ * It is deliberately stricter than "the base was red too". The unit of comparison is the
+ * whole line; the SCANE set is wider than the classifier:
  *
- *   - lines come from `failureLines` / `classifyFailureLine`, so the excusable set
- *     is exactly the shapes the shared classifier recognises — pytest, TAP/bats, go,
- *     a script tally, a `FAIL` header, the driver's own diagnostic dialect. A runner
- *     outside that table prints nothing the excuse can read, names nothing, and
- *     excuses nothing;
- *   - the compared text is the classifier's own accepted view of a line — its
- *     trimmed text — with the run's own worktree root out of it, and both sides read
- *     the SAME full text: the classifier's table, {@link failureLinesOf}'s comparison
- *     key, and the recorded set are all the whole line.
+ *   - the excuse compares EVERY line either run printed, not only the lines the shared
+ *     classifier reads. A line it recognises is a failure it can NAME, and those are the
+ *     lines the disclosure records — pytest, TAP/bats, go, a script tally, a `FAIL`
+ *     header, the driver's own diagnostic dialect. A line it does not read is still text
+ *     the head printed, and a head-only one of those is a defect nobody read: a bare
+ *     `killed`, an `Exit code: 1`, a jest `●` block, a `# not ok 9` TAP comment, a
+ *     zero-width character inside a name. All refuse. Only the executor's own writing —
+ *     {@link harnessResidue} — is discounted, and only for who wrote it;
  *   - one rule decides what the excuse may not see, and it REFUSES rather than omitting,
  *     in BOTH directions of ignorance. A line past {@link FAILURE_LINE_SCAN_MAX} refuses
  *     either side, because a judge that saw only its first 8 KiB cannot tell two long
- *     lines apart. And a HEAD-ONLY line — one the base stream did not print — refuses,
- *     full stop: there is no list of shapes that may be head-only. That is DEFAULT-REFUSE,
- *     and the direction is the whole design: `failureLines` drops every line the classifier
- *     does not recognise, so an omitted one would let a head of `[readable A, unread B]`
- *     match a base that printed only A and grade a tier green on a failure this run
- *     authored. The accepted cost of allowing nothing head-only: a PR that ADDS PASSING
- *     TESTS to a suite already red at base hands back (its `1 failed, 5 passed` summary is
- *     a head-only line), so do renumbered TAP output, a harness `Command failed:` echo the
- *     base never printed, and a bare `Exit code: 1`. Each is a hand-back, never a green.
+ *     lines apart. And a HEAD-ONLY line refuses, full stop: there is no list of shapes
+ *     that may be head-only. That is DEFAULT-REFUSE, and it is the whole design — a
+ *     classifier's table is only what its authors thought to read, so omitting everything
+ *     outside it would let a head of `[readable A, unread B]` match a base that printed
+ *     only A. The accepted cost: a PR that ADDS PASSING TESTS to a suite already red at
+ *     base hands back (its `1 failed, 5 passed` summary is head-only), so do renumbered
+ *     TAP output and any timing line whose text moved. Each is a hand-back, not a green;
  *   - both sets must be non-empty and EVERY head line must equal a base line VERBATIM —
- *     trimmed, with its own tree's prefix out of it, and nothing else folded. One line the
- *     head printed and the base did not is a failure this run authored, and a changed
- *     reason, a moved counter or a shifted check index is a different line;
+ *     trimmed, its own tree's prefix out, nothing else folded. A changed reason, a moved
+ *     counter or a shifted check index is a different line;
  *   - the two trees must still be two trees. Compared in one tree every line is its
  *     own echo and the comparison proves nothing about which run printed what;
  *   - a base run whose red looks like a missing dependency tree is not evidence
@@ -51,17 +48,15 @@
  * hand-back `verify-baseline.ts` produced before this module existed.
  *
  * What used to sit beside this rule — an allow-list of head-only shapes, a fold over a
- * runner's counters, harness and passing-check exemptions, a failure veto and the scrubbing
- * they read through — is gone: exceptions granted one adversarial pass at a time, none of
- * which ever excused a run in the field. What is left fails only toward the hand-back.
+ * runner's counters, harness and passing-check exemptions, a failure veto, the scrubbing
+ * they read through, and a comparison scoped to the classifier's own lines — is gone:
+ * exceptions granted one adversarial pass at a time, none of which ever excused a run in
+ * the field. What is left fails only toward the hand-back.
  */
 
 import { realpathSync } from "node:fs";
-import {
-  FAILURE_LINE_SCAN_MAX,
-  classifyFailureLine,
-  failureLines,
-} from "../work-driver-verify-failures.ts";
+import { FAILURE_LINE_SCAN_MAX, failureLines } from "../work-driver-verify-failures.ts";
+import { splitLines } from "../work-driver-verify-support.ts";
 import {
   PREEXISTING_NAMES_CAP,
   PREEXISTING_NAME_MAX_CHARS,
@@ -82,27 +77,30 @@ export type BaselineExcuse =
  * past the window answer the same and can fold onto one comparison key — the folding
  * this whole module exists to prevent, arriving through length instead of through a
  * token parser. A line no judge fully saw is not evidence, so it refuses on EITHER side
- * and the comparison below reads only lines the classifier saw whole.
+ * — and it asks the RAW stream lines, not `failureLines`' output: the line that carries
+ * the defect may be one the classifier never reads, and a window check over only the
+ * lines it read would stay silent for exactly that stream.
  */
 function hasOverWindowLine(stream: string): boolean {
-  return failureLines(stream).some((line) => line.length > FAILURE_LINE_SCAN_MAX);
+  return splitLines(stream).some((line) => line.trim().length > FAILURE_LINE_SCAN_MAX);
 }
 
 /**
- * Every line this stream printed as a failure, in stream order, deduplicated and
- * normalised for comparison.
+ * The lines of this stream the classifier READS as failures: stream order, trimmed,
+ * deduplicated, non-empty — the names the `## Pre-existing` disclosure records. A
+ * runner repeats a summary line, and a set that counted the repeat would report a
+ * failing count the tier did not have.
  *
- * Deduplicated because a runner repeats a summary line and a set that counted the
- * repeat would report a failing count the tier did not have. Exported because the
- * caller keeps both runs' streams and must ask the same question of each; each side's
- * tree prefix comes out separately, in {@link baselineExcuse}.
+ * NOT the set the excuse is compared on — that is {@link allLinesOf}, every non-empty
+ * line read or not, so a head line the classifier does not recognise still has to appear
+ * at the base.
  */
 export function failureLinesOf(stream: string): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const line of failureLines(stream)) {
-    const key = comparableLine(line);
-    if (key === undefined || key.length === 0 || seen.has(key)) continue;
+    const key = line.trim();
+    if (key.length === 0 || seen.has(key)) continue;
     seen.add(key);
     out.push(key);
   }
@@ -110,23 +108,55 @@ export function failureLinesOf(stream: string): string[] {
 }
 
 /**
- * The text two runs' lines are compared as: what the classifier ACCEPTED.
+ * The harness's OWN per-run residue, discounted from the comparison, and the one echo
+ * that may stand in for a base line.
  *
- * "What it accepted" is the classifier's own answer to the question "is this line a
- * failure line?", and the text is the whole trimmed line — no second cut in front of
- * it, because {@link failureLines} already returns the trimmed line it classified and
- * {@link hasOverWindowLine} has already refused any line the window could not show the
- * judge. A line the classifier accepted the first time accepts again, so a caller
- * comparing the same streams twice compares the same strings.
+ * The streams the excuse reads are BUILT by the executor, which stamps its own writing
+ * beside what the gate printed: a `tier-said-<marker>-<n>` trace line, a
+ * `boom from the <tier>` line, and a `Command failed: <cmd>` echo. None came from the
+ * project and no two runs of ONE tier print them identically — the re-run's stamp carries
+ * its run number — so requiring a line the EXECUTOR wrote to appear at the base is not a
+ * requirement about the project's failures at all: it refuses every real tier in the
+ * suite.
  *
- * `undefined` for a line the classifier does not recognise — the same veto
- * {@link failureLinesOf} applies, asked here so a caller cannot hand an unread line
- * to the comparison.
+ * The discount is by WHO WROTE the line, never by what it says, and it is anchored to the
+ * harness's whole-line forms: a gate line that merely OPENS with `killed` keeps its text,
+ * and the echo is admitted only when it quotes the command both runs were given (either
+ * tree's prefix out of it), so a failure spelled inside the quoted command does not ride
+ * in on the prefix. A bare `killed`, `Exit code: 1`, a jest `●` block, a `# not ok 9` TAP
+ * comment and a zero-width character inside a name are all refused.
  */
-function comparableLine(line: string): string | undefined {
-  if (classifyFailureLine(line) === undefined) return undefined;
-  const accepted = line.trim();
-  return accepted.length === 0 ? undefined : accepted;
+function harnessResidue(line: string, cmd: string, headRoot: string, probeRoot: string): boolean {
+  if (/^tier-said-[A-Za-z0-9_-]+(?:-\d+)?$/.test(line)) return true;
+  if (/^boom from the [A-Za-z0-9_ -]+$/.test(line)) return true;
+  if (!/^Command failed:\s/.test(line)) return false;
+  const echoed = line.slice("Command failed:".length).trim();
+  // One command is one command, whichever tree it was run from.
+  const spellings = [cmd, stripRoot(cmd, headRoot), stripRoot(cmd, probeRoot)];
+  return spellings.some(
+    (c) => c === stripRoot(echoed, headRoot) || c === stripRoot(echoed, probeRoot),
+  );
+}
+
+/**
+ * Every line a stream printed that holds text, in stream order, trimmed and deduplicated:
+ * the comparison set for both sides.
+ *
+ * Deliberately NOT `failureLines`. The classifier answers what a failure LOOKS like, and
+ * its table is a list of what its authors read, so an unread head-only line — `killed`,
+ * `Exit code: 1`, a jest `●` block, a TAP comment — dropped from the comparison is a
+ * defect the base never printed graded as one it did. A repeated line is one line.
+ */
+function allLinesOf(stream: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of splitLines(stream)) {
+    const line = raw.trim();
+    if (line.length === 0 || seen.has(line)) continue;
+    seen.add(line);
+    out.push(line);
+  }
+  return out;
 }
 
 /**
@@ -220,11 +250,14 @@ const MISSING_DEP_LINE =
  *
  * The caller has already settled the colour questions (HEAD red twice, base red,
  * the contract arm) and the frozen acceptance verdict. What is decided here is
- * whether the head run printed anything the base did not; every refusal means the
- * caller keeps the hand-back `verify-baseline.ts` produced before this module.
+ * whether the head run printed anything the base did not — over EVERY line of both
+ * streams, the classifier's own lines and the ones it cannot read alike. Every
+ * refusal means the caller keeps the hand-back `verify-baseline.ts` produced before
+ * this module.
  *
- * `cmd` is only the record's label: nothing is matched against the tier's command, so no
- * head-only line is vouched for, not even a `Command failed:` echo.
+ * `cmd` is the record's label, and it is matched against ONE thing: the command quoted
+ * in the executor's `Command failed:` echo, which {@link harnessResidue} discounts only
+ * when it names the command both runs were given. No other head-only line is vouched for.
  */
 export function baselineExcuse(opts: {
   tierName: string;
@@ -244,8 +277,11 @@ export function baselineExcuse(opts: {
   if (opts.probe.status !== "red") return { kind: "refused" };
   const baseStream = opts.baseStream ?? "";
   const headStream = opts.headStream ?? "";
-  const head = failureLinesOf(headStream);
-  const base = failureLinesOf(baseStream);
+  // EVERY line each run printed, not the lines the classifier recognises: an unread
+  // head-only line is a defect nothing read, and nothing read is nothing excused.
+  const head = allLinesOf(headStream);
+  const base = allLinesOf(baseStream);
+  // A line either stream printed past the classifier's window is judged on a clipped
   // A line either stream printed past the classifier's window is judged on a clipped
   // view, so it cannot stand as evidence on either side.
   if (hasOverWindowLine(headStream) || hasOverWindowLine(baseStream)) return { kind: "refused" };
@@ -260,17 +296,32 @@ export function baselineExcuse(opts: {
   // prints can stand as evidence the base was red.
   if (baseRedIsMissingDeps(baseStream)) return { kind: "refused" };
   // A head-only line excuses nothing: the comparison below refuses it, because no fold,
-  // allow-list or harness exemption is left to place a line the base did not print.
+  // allow-list or harness exemption is left to place a line the base did not print —
+  // except the executor's own writing, which {@link harnessResidue} answers for.
   if (head.length === 0 || base.length === 0) return { kind: "refused" };
   // The text two runs' lines are compared as: each side with ITS OWN tree's prefix out of
   // it, so head and base agree on what the check WAS, not on where each run ran. ONE key,
   // and it keeps every digit: `expected 3 to be 4` and `expected 3 to be 5` are two defects,
   // a runner summary whose pass count moved is a head-only line, and a renumbered TAP check
   // is a different line. Each of those hands the run back — never a green.
-  const headKey = head.map((line) => stripRoot(line, headRoot)).filter((line) => line.length > 0);
-  const baseKey = new Set(base.map((line) => stripRoot(line, probeRoot)));
+  // One key per side: each line with ITS OWN tree's prefix out, so head and base agree on
+  // what the check WAS, not on where each run ran. It keeps every digit — `expected 3 to be
+  // 4` and `expected 3 to be 5` are two defects, a moved pass count is a head-only line, and
+  // a renumbered TAP check is a different line. Each hands the run back, never a green.
+  const residue = (line: string): boolean => harnessResidue(line, opts.cmd, headRoot, probeRoot);
+  const headKey = head
+    .map((line) => stripRoot(line, headRoot))
+    .filter((line) => line.length > 0 && !residue(line));
+  const baseKey = new Set(
+    base.map((line) => stripRoot(line, probeRoot)).filter((line) => !residue(line)),
+  );
   if (!headKey.every((line) => baseKey.has(line))) return { kind: "refused" };
-  const matched = headKey;
+  // The disclosure names only the failures the classifier could read: a head line it
+  // cannot read was refused above, so what reaches the PR body is failing checks, never
+  // a stream's prose.
+  const matched = failureLinesOf(headStream)
+    .map((line) => stripRoot(line, headRoot))
+    .filter((line) => line.length > 0);
   // The comparison ran on the COMPLETE parsed sets; the caps below bound only what is
   // persisted and rendered. A line past the log's own bound would be refused by its reader
   // below, so nothing here truncates a set the caller compared.

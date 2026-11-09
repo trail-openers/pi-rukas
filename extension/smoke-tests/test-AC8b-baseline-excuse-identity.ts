@@ -1,30 +1,32 @@
 #!/usr/bin/env bun
 /**
- * #2064 — the lines the excuse reads, and what refuses the whole excuse.
+ * #2064 / #2100 — the lines the excuse reads, and what refuses the whole excuse.
  *
- * With the pytest identity parser gone the reader has one rule: a failure line is a
- * failure LINE. Three consequences this file pins, none of which an identity parser
- * could have satisfied:
+ * The reader has one rule: a failure is a failure LINE, and the comparison covers EVERY
+ * line the head printed — the ones the shared classifier reads and the ones it cannot.
+ * Four consequences this file pins, none of which a classifier-scoped comparison could
+ * have satisfied:
  *
  *   (lines) every recognised line of a stream reads back as its own comparable text,
  *     in stream order and deduplicated — a summary the runner repeats is one line, not
  *     two failures;
  *   (unreadable) a line carrying a runner's failure token that the classifier does not
- *     recognise is simply not a line the excuse reads — the empty recognised set is what
- *     refuses, so a base whose only line is unreadable names nothing. What the deleted
- *     allow-list added on top (a head-only unread line refusing because nothing vouched
- *     for it) is gone, and the pins below are the new boundary: a RECOGNISED line printed
- *     only at head refuses, and only an unread line the base printed identically is inert;
+ *     recognise names no check for the disclosure, and a stream whose recognised set is
+ *     empty excuses nothing. It is NOT inert: the comparison reads it, so a head-only
+ *     `# not ok 9` TAP comment or `+ not ok 7` shell trace REFUSES;
  *   (head-only) the shapes the allow-list, the counter fold and the harness exemptions
- *     used to discount — a moved pass-count summary, `PASSED x` / `--- PASS:`, a
- *     `Command failed:` echo, a `$` trace, a bare `Exit code: 1` — are each refused now
- *     unless the base printed the identical line;
+ *     used to discount — a moved pass-count summary, `PASSED x` / `--- PASS:`, a `$`
+ *     trace, a bare `Exit code: 1` or `killed`, a jest `●` block, a TAP line with a
+ *     zero-width space inside a name — are each refused unless the base printed the
+ *     identical text. The one executor line discounted is the `Command failed: <cmd>`
+ *     echo of the command both runs were given, and only as the head's lone extra line;
  *   (over-window) a raw line past the classifier's own scan window REFUSES the excuse
  *     too. The classifier judges such a line on its first 8 KiB, so two lines differing
  *     only past the window can fold onto one comparison key — the folding this module
  *     exists to prevent, arriving through length instead of through a token parser.
  *
- * The controls keep each guard from being a blanket refusal.
+ * The controls keep each guard from being a blanket refusal: the same line printed by
+ * BOTH runs excuses, so every refusal above is attributed to the line being head-only.
  */
 import {
   FAILURE_LINE_SCAN_MAX,
@@ -86,19 +88,18 @@ function excuseOf(headLines: string[], baseLines: string[], cmd = "sh -c 'pytest
   );
 }
 
-// --------------------------------------------- (unreadable) what the reader ignores
+// ---------------- (unreadable) what the classifier reads, and what still counts
 {
   const A = "FAILED tests/x_test.py::test_a - AssertionError";
   // A collection error and a bare file verdict declare a failing test in a dialect the
-  // shared table does not carry, so `failureLines` drops both. That alone is not a
-  // refusal any more — nothing is left to vouch for or against a head-only unread line —
-  // so what refuses is the EMPTY set: a base whose only line the classifier never read
-  // names nothing, and an excuse cannot be graded on nothing.
+  // shared table does not carry, so `failureLinesOf` — the disclosure's name set — drops
+  // both. They are NOT inert: the comparison reads every line, so a head-only one refuses
+  // and a stream whose recognised set is empty cannot be evidence the base was red.
   const COLLECTION_ERROR = "ERROR tests/test_brand_new.py";
   const BARE_FAILED = "FAILED tests/y.py";
   assert(
     failureLinesOf(COLLECTION_ERROR).length === 0 && failureLinesOf(BARE_FAILED).length === 0,
-    `(unreadable) neither bare line is offered as a comparable line (${JSON.stringify(failureLinesOf(BARE_FAILED))})`,
+    `(unreadable) neither bare line names a check for the disclosure (${JSON.stringify(failureLinesOf(BARE_FAILED))})`,
   );
   assert(
     excuseOf([A], [BARE_FAILED]).kind === "refused",
@@ -112,12 +113,10 @@ function excuseOf(headLines: string[], baseLines: string[], cmd = "sh -c 'pytest
     excuseOf([A], [A]).kind === "excused",
     "(unreadable) the recognised pair without such a line still excuses (not a blanket refusal)",
   );
-  // A line the classifier does not read is not evidence about which check failed, so it
-  // is INERT: it neither refuses nor excuses. The old default-refuse gate turned a
-  // head-only one of these into a refusal by asking the allow-list whether it was provably
-  // clean; with the allow-list gone there is no such question, and the recognised pair on
-  // both sides decides. What still refuses through this door is a stream whose recognised
-  // set is EMPTY — nothing the classifier read is not evidence the base was red.
+  // A line the classifier does not read is no evidence about which check failed, so a
+  // HEAD-ONLY one is the worst line in the stream: a defect nothing read. The old seam
+  // called these inert because the comparison never saw them; the all-lines rule sees
+  // them, and each refuses unless the base printed the identical text.
   const TAP_COMMENT = "# not ok 9 - /t/brand_new.t - boom";
   const SHELL_TRACE = "+ not ok 7 - a trace line the table does not carry";
   assert(
@@ -129,13 +128,22 @@ function excuseOf(headLines: string[], baseLines: string[], cmd = "sh -c 'pytest
     ["shell trace", SHELL_TRACE],
   ] as const) {
     assert(
-      excuseOf([A, line], [A]).kind === "excused" &&
-        excuseOf([A], [A, line]).kind === "excused",
-      `(unreadable) an unread ${shape} is inert on either side — the recognised pair decides (${excuseOf([A, line], [A]).kind}/${excuseOf([A], [A, line]).kind})`,
+      excuseOf([A, line], [A]).kind === "refused",
+      `(unreadable) a head-only unread ${shape} refuses — nothing read is nothing excused (${excuseOf([A, line], [A]).kind})`,
+    );
+    // The rule is one-directional on purpose: a line ONLY at the base is not a failure
+    // this run authored, and the recognised pair still decides there.
+    assert(
+      excuseOf([A], [A, line]).kind === "excused",
+      `(unreadable) the ${shape} only at the base leaves the recognised pair to decide (${excuseOf([A], [A, line]).kind})`,
+    );
+    assert(
+      excuseOf([A, line], [A, line]).kind === "excused",
+      `(unreadable) the same ${shape} printed by BOTH runs excuses, so the refusal is the head-only line (${excuseOf([A, line], [A, line]).kind})`,
     );
     assert(
       excuseOf([line], []).kind === "refused" && excuseOf([A], [line]).kind === "refused",
-      `(unreadable) and the same ${shape} as the only line of a stream refuses on the empty set (${excuseOf([line], []).kind}/${excuseOf([A], [line]).kind})`,
+      `(unreadable) and the same ${shape} as the only line of a stream refuses on the empty recognised set (${excuseOf([line], []).kind}/${excuseOf([A], [line]).kind})`,
     );
   }
 }
@@ -144,28 +152,43 @@ function excuseOf(headLines: string[], baseLines: string[], cmd = "sh -c 'pytest
 {
   // The allow-list vouched for a head-only PASS marker, the counter fold placed a runner
   // summary whose pass count moved, and the harness arms excused the executor's own
-  // writing. All three are gone. The unit of comparison is a line the classifier READS, so
-  // the shapes that carry no verdict (`PASSED x`, `--- PASS:`, `Command failed: …`, a `$`
-  // trace) are simply invisible to the rule — the pins below prove that, and would stay
-  // green for the wrong reason if read as refusals. What the rule DOES refuse now, and the
-  // old seam excused, is a recognised line that differs by anything at all: a moved runner
-  // counter, a shifted check index. Each case is paired with the identical-lines control
-  // that excuses, so a refusal is attributed to the move and not to the reader.
+  // writing. All three are gone, and so is the seam that made a line outside the
+  // classifier's table invisible to the comparison. The unit of comparison is now EVERY
+  // line the head printed, so each shape below — a new passing check, the executor's own
+  // kill stamps and echoes, a runner block the table has no shape for — refuses as a
+  // head-only line, and excuses only when the base printed the identical text. Each case
+  // carries that control, so a refusal is attributed to the line being head-only.
   const A = "FAILED tests/x_test.py::test_a - AssertionError";
-  const INVISIBLE: ReadonlyArray<readonly [string, string]> = [
+  const HEAD_ONLY: ReadonlyArray<readonly [string, string]> = [
     ["a new passing pytest check", "PASSED tests/x.py::t_new"],
     ["a new passing go check", "--- PASS: TestNew (0.11s)"],
-    ["the harness's echo of a command", "Command failed: sh -c 'pytest'"],
     ["a traced command line", "$ sh -c 'pytest'"],
+    ["a traced TAP failure", "$ not ok 1 - t/brand_new.t - boom"],
+    // The executor's kill stamps — what a run nobody judged leaves behind, which is
+    // exactly the stream an excuse must not grade a green over.
+    ["a bare kill stamp", "killed"],
+    ["a bare exit-code stamp", "Exit code: 1"],
+    // A runner whose failure block the shared table has no shape for: jest's ● block.
+    // Nothing in the stream names the check, so a head-only one is an unread defect.
+    ["a jest block line", "  \u25cf a \u203a BRAND NEW broke"],
+    // A line the classifier's shapes anchor at the start of: a leading zero-width space
+    // renders as nothing, so the eye reads an ordinary TAP failure while the anchored
+    // table reads nothing at all. Nothing names a check, and only the base's copy of the
+    // same bytes settles it.
+    ["a zero-width-obscured TAP line", "\u200bnot ok 1 - a bats check"],
   ];
-  for (const [shape, line] of INVISIBLE) {
+  for (const [shape, line] of HEAD_ONLY) {
     assert(
-      classify(line) === undefined && failureLinesOf(line).length === 0,
-      `(head-only) the ${shape} is not a line the classifier reads (${JSON.stringify(classify(line))})`,
+      failureLinesOf(line).length === 0,
+      `(head-only) the ${shape} names no check to the classifier (${JSON.stringify(failureLinesOf(line))})`,
     );
     assert(
-      excuseOf([A, line], [A]).kind === "excused",
-      `(head-only) a head-only ${shape} is invisible to the comparison, so the recognised pair decides (${excuseOf([A, line], [A]).kind})`,
+      excuseOf([A, line], [A]).kind === "refused",
+      `(head-only) a head-only ${shape} refuses the excuse (${excuseOf([A, line], [A]).kind})`,
+    );
+    assert(
+      excuseOf([A, line], [A, line]).kind === "excused",
+      `(head-only) and the same ${shape} printed by the base excuses — the rule is verbatim, not a ban (${excuseOf([A, line], [A, line]).kind})`,
     );
   }
   // A runner's summary is the case the counter fold existed to place: a suite already red

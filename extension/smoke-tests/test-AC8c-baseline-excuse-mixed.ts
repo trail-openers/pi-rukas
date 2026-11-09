@@ -1,13 +1,14 @@
 #!/usr/bin/env bun
 /**
- * #2064 — one unreadable line poisons an otherwise excusable pair, in any dialect.
+ * #2064 / #2100 — one unreadable line poisons an otherwise excusable pair, in any dialect.
  *
  * Whole-line matching is runner-agnostic across the shapes the shared classifier
  * recognises, so a pytest pair, a TAP pair and a go pair each excuse on their own —
- * those are the controls that keep this from being a blanket refusal. What still
- * refuses is a line that declares a failing test the classifier does NOT recognise:
- * one such line in either stream refuses the WHOLE excuse, because the lines it
- * printed beside it do not get to excuse the unread one.
+ * those are the controls that keep this from being a blanket refusal. What still refuses
+ * is ANY line the head printed that the base did not, INCLUDING the ones the classifier
+ * cannot read: a tally in a dialect the table does not carry, a bare file verdict, a
+ * comment line, a shell trace. One such line in either stream poisons the WHOLE excuse,
+ * because the lines printed beside it do not get to excuse a line nothing read.
  *
  * And the shape the parser-era tests pinned as a refusal is now a pass: a TAP line
  * beside a pytest line, printed identically on both sides, excuses — the field case
@@ -61,18 +62,28 @@ const GO = "--- FAIL: TestSolo (0.01s)";
   );
 }
 
-// ---------------------------- (unreadable) an unread line is inert; an empty set refuses
+// --------------------- (unreadable) an unread head-only line poisons the whole excuse
 {
-  // A tally in a dialect the table does not carry, and a bare file verdict: both declare
-  // a failing test and neither is readable. The excuse reads only recognised lines, so
-  // such a line is INERT on either side — what refuses is the EMPTY recognised set, which
-  // is what stops a base that named nothing from counting as evidence the base was red.
-  const RECORDED = ["FAILED a test.sh", "ERROR 17 tests blew up"];
-  for (const unreadable of RECORDED) {
+  // A tally in a dialect the table does not carry, a bare file verdict, a TAP comment and
+  // a shell trace: each declares something and none is readable. The excuse's comparison
+  // covers EVERY head line, so a head-only one of these refuses the whole tier — the
+  // matching recognised pair beside it does not get to excuse a line nothing read. The
+  // control inside each case is the same line printed by BOTH runs, which excuses.
+  const HEAD_ONLY_UNREAD = [
+    "FAILED a test.sh",
+    "ERROR 17 tests blew up",
+    "# not ok 9 - /t/brand_new.t - boom",
+    "+ not ok 7 - a trace line the table does not carry",
+    "killed",
+  ];
+  for (const unreadable of HEAD_ONLY_UNREAD) {
     assert(
-      excuseOf([TAP, unreadable], [TAP]).kind === "excused" &&
-        excuseOf([TAP], [TAP, unreadable]).kind === "excused",
-      `(unreadable) "${unreadable}" is inert on either side beside a matching recognised pair (${excuseOf([TAP, unreadable], [TAP]).kind}/${excuseOf([TAP], [TAP, unreadable]).kind})`,
+      excuseOf([TAP, unreadable], [TAP]).kind === "refused",
+      `(unreadable) "${unreadable}" printed only at head refuses the whole excuse (${excuseOf([TAP, unreadable], [TAP]).kind})`,
+    );
+    assert(
+      excuseOf([TAP, unreadable], [TAP, unreadable]).kind === "excused",
+      `(unreadable) "${unreadable}" printed by BOTH runs excuses, so the refusal is the head-only line (${excuseOf([TAP, unreadable], [TAP, unreadable]).kind})`,
     );
     assert(
       excuseOf([TAP], [unreadable]).kind === "refused" &&
