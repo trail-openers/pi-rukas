@@ -1,19 +1,15 @@
 /**
  * lean/review-tree — the DISPOSABLE half of the review step's git surface.
  *
- * Everything here concerns a tree that exists to be thrown away: the fixer's
- * worktree (named for one round of one run, created detached, provisioned,
- * proven clean, destroyed) and the run's own tree put back where the gates read
- * it after a refusal. The claims that decide whether a fix may reach origin —
- * ownership, ancestry, the frozen contract, the push — are `review-git.ts`, and
- * so is `reviewedHead`/`rangeDiff`, the two reads that establish what the step
- * is even allowed to have an opinion about.
- * The seam is lifetime rather than topic: one file mutates trees nobody will
- * read afterwards, the other moves the one ref everybody will.
+ * Everything here concerns a tree that exists to be thrown away: the fixer's worktree (named for one
+ * round of one run, created detached, provisioned, proven clean, destroyed) and the run's own tree
+ * put back where the gates read it after a refusal. The claims that decide whether a fix may reach
+ * origin — ownership, ancestry, the frozen contract, the push — are `review-git.ts`. The seam is
+ * lifetime rather than topic: one file mutates trees nobody will read afterwards, the other moves the
+ * one ref everybody will.
  *
- * Same rule as the rest of `lean/review*`: every git call is argv form through
- * `ReviewDeps.exec`, so a test drives the whole surface against a real temp repo
- * with no model in the loop.
+ * Same rule as the rest of `lean/review*`: every git call is argv form through `ReviewDeps.exec`, so
+ * a test drives the whole surface against a real temp repo with no model in the loop.
  */
 
 import { existsSync } from "node:fs";
@@ -29,29 +25,21 @@ import { gitQuiet } from "./specify-reset.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 
 /**
- * The fixer's tree for ONE FIX OF ONE ATTEMPT: `<repoRoot>/.worktrees/lean-
- * <issue>-fix-<arm>-<wave>-<attempt>-<epoch>`.
- *
- * Every component is read out of the durable run, never out of anything the
- * process remembers, and that is the property the name has to have: the engine
- * re-runs exactly the undecided `review` step, so a discriminator the step counted
- * in memory restarts at zero on a resume and derives a DIFFERENT name for the same
- * fix — the resumed run then cannot find the tree it already made. That is the
- * defect the row's `runId` field exists to prevent.
+ * The fixer's tree for ONE FIX OF ONE ATTEMPT: `<repoRoot>/.worktrees/lean-<issue>-fix-<arm>-<wave>-
+ * <attempt>-<epoch>`. Every component is read out of the durable run, never out of anything the
+ * process remembers: the engine re-runs exactly the undecided `review` step, so a discriminator the
+ * step counted in memory restarts at zero on a resume and derives a DIFFERENT name for the same fix.
  *
  * Four values, three jobs:
  *
- * - `arm` ("a" for findings only the adversarial gate left, "l" for findings the
- *   six-lens round itself raised) and `wave` make one run's fix trees distinct from
- *   each other. The name is a per-visit discriminator and nothing else.
- * - `attempt` is the step key's own `:N`, the engine's per-attempt counter. It keeps
- *   two CONCURRENT attempts on one issue from naming the same tree: both read the
- *   same epoch and the same wave, and only the attempt number separates them.
- * - `epoch` is `fixRunId`'s: the same value for the whole attempt, read back off the
- *   step log so a resumed attempt re-enters the paths its killed self left.
+ * - `arm` ("a" = adversarial-only findings, "l" = lens-round findings) and `wave` make one run's fix
+ *   trees distinct from each other.
+ * - `attempt` is the step key's own `:N` — it keeps two CONCURRENT attempts on one issue from naming
+ *   the same tree.
+ * - `epoch` is `fixRunId`'s: the same value for the whole attempt, read back off the step log so a
+ *   resumed attempt re-enters the paths its killed self left.
  *
- * The layout is `worktreePath`'s — the repo's single expression of where worktrees
- * live — so the layout has one definition.
+ * The layout is `worktreePath`'s — the repo's single expression of where worktrees live.
  */
 export function fixTreeName(
   repoRoot: string,
@@ -71,33 +59,21 @@ export function fixTreeName(
 export type FixArm = "a" | "l";
 
 /**
- * The fixer's tree: created fresh, detached at the reviewed commit, provisioned,
- * and proven clean before the child is paid.
+ * The fixer's tree: created fresh, detached at the reviewed commit, provisioned, and proven clean
+ * before the child is paid. The clean proof is the claim every lean step makes of a tree it is about
+ * to hand a model: anything already in it is a leftover from a killed round, and a leftover the child
+ * inherits becomes part of what the integration moves onto the branch. `--force` is for this step's
+ * own path only.
  *
- * The clean proof is the claim every lean step makes of a tree it is about to
- * hand a model: this worktree is this step's, so anything already in it is a
- * leftover from a killed round, and a leftover the child inherits becomes part of
- * what the integration moves onto the branch. `--force` is for this step's own
- * path only — `worktree remove` refuses a path it does not own, so no tree at any
- * other location is ever touched here.
+ * **The path is unique to this round, so the claim is not a race.** A fixed path made `worktree add`
+ * the only thing that could refuse a non-empty directory, and two awaits sat before the clean read.
+ * With a per-round name, `add` refusing a path it created for a round that never completed is the
+ * only collision left, and it is a refusal rather than an adoption.
  *
- * **The path is unique to this round, so the claim is not a race.** A fixed path
- * made `worktree add` the only thing that could refuse a non-empty directory, and
- * two awaits then sat before the read that says the tree is clean —
- * `provisionWorktree`, which creates parent directories and links into the tree,
- * and the `status` itself. Anything written into that window was adopted:
- * dispatched to the fixer, `git add -A`'d by it, and integrated onto the branch.
- * With a per-round name, `add` refusing a path it created for a round that never
- * completed is the only collision left, and it is a refusal rather than an
- * adoption, which makes the dirty read a genuine claim.
- *
- * The clean proof is read WITHOUT `-uall`, deliberately: `provisionWorktree` has
- * just linked the project's dependency trees into this directory, and
- * `git status --porcelain -uall` expands a directory of links into every file inside
- * it, so a proof read that way would report every provisioned tree as dirty and
- * refuse every fix round on the very step that prepares it. The default form still
- * lists any untracked path — a whole directory included — so a leftover from a
- * killed round cannot pass.
+ * The clean proof is read WITHOUT `-uall`, deliberately: `provisionWorktree` has just linked the
+ * project's dependency trees into this directory, and `-uall` expands a directory of links into every
+ * file inside it, so a proof read that way would refuse every fix round. The default form still lists
+ * any untracked path, so a leftover from a killed round cannot pass.
  */
 export async function fixTree(
   deps: ReviewDeps,
@@ -111,12 +87,9 @@ export async function fixTree(
 ): Promise<string> {
   const { repoRoot, issue } = ctx;
   const wt = fixTreeName(repoRoot, issue, arm, wave, attempt, runId);
-  // `add --force` is for THIS step's own path only. That is also why the name has
-  // to be unique per VISIT: `--force` makes collision with a path this step made
-  // itself a silent ADOPTION rather than a refusal — git reuses a live registration
-  // while the tree keeps whatever the earlier visit left in it, so a second fixer
-  // would commit nothing and the step would report "fixed nothing" and bill the run
-  // to it.
+  // `add --force` is for THIS step's own path only, which is also why the name must be unique per
+  // VISIT: `--force` makes collision with a path this step made itself a silent ADOPTION rather than
+  // a refusal.
   const created = await gitQuiet(deps.exec, repoRoot, [
     "worktree",
     "add",
@@ -130,21 +103,16 @@ export async function fixTree(
       `could not create the fix worktree at ${wt} for ${head.slice(0, 12)} — a path this step names for this visit alone already exists, and adopting it would move somebody else's bytes onto the branch`,
       rows,
     );
-  // Registered the moment the tree exists: every path that throws below has
-  // already made a directory, and the only thing that removes it is
-  // `closeFixTrees`, which the step's `finally` runs whatever happens.
-  // No catch: `provisionWorktree` resolves whatever happens — every probe and git
-  // call inside it turns a fault into a `problem` field rather than a rejection — so
-  // a rejection-handling arm here would be code for a failure that cannot occur. The
-  // `problem` it does report is traced and carried on: a bare or partly linked tree
-  // costs the fixer a failed typecheck, not the run.
+  // Registered the moment the tree exists: `closeFixTrees` removes it, in this step's `finally`
+  // whatever happens, and the refusal paths below remove it themselves before they throw.
+  // No catch: `provisionWorktree` resolves whatever happens — every fault inside it becomes a
+  // `problem` field rather than a rejection. A bare tree costs the fixer a failed typecheck, not the
+  // run.
   const provision = await provisionWorktree(deps.exec, repoRoot, wt);
   if (provision.problem !== undefined)
     traceWarn(`lean review #${String(issue)}: fix worktree ${provision.problem}`);
-  // Read AFTER provisioning and still a claim: the path is this round's alone,
-  // so anything git reports here came from `add` or from the provisioner, and
-  // the provisioner only ever creates dependency links from the repo root —
-  // which the default `status` form does not list (see the note above).
+  // Read AFTER provisioning and still a claim: the path is this round's alone, so anything git
+  // reports here came from `add` or from the provisioner (whose links the default form does not list).
   const dirty = await gitQuiet(deps.exec, wt, ["status", "--porcelain=v1"]);
   if (dirty === undefined) {
     await removeWorktree(deps, repoRoot, wt);
@@ -162,12 +130,9 @@ export async function fixTree(
 }
 
 /**
- * Drop the disposable tree, and SAY so when the removal refused.
- *
- * A refusal there is not a failure of the step, so it does not throw. It is not
- * silence either: `worktree remove` refusing leaves a registered tree under a
- * path this step named, and the round stays blocked on it until something prunes
- * it — which the operator is the one to do, and the one who has to know.
+ * Drop the disposable tree, and SAY so when the removal refused. A refusal is not a failure of the
+ * step, so it does not throw; it is not silence either — the round stays blocked on that path until
+ * the operator prunes it, and the operator is the one who has to know.
  */
 export async function removeWorktree(
   deps: ReviewDeps,
@@ -179,35 +144,24 @@ export async function removeWorktree(
     traceWarn(
       `lean review: could not remove the fix worktree ${wt} — it stays registered and this round's path is occupied until a \`git worktree prune\` clears it`,
     );
-  // Prune the registration even when `remove` refused. `add` below rejects a
-  // path whose registration is already taken and whose directory is gone — a
-  // killed round leaves exactly that — and a path this step owns exclusively,
-  // under a name no other code writes, is what makes the prune safe.
+  // Prune the registration even when `remove` refused: `add` below rejects a path whose registration
+  // is taken and whose directory is gone, and a path this step owns exclusively is what makes the
+  // prune safe.
   await gitQuiet(deps.exec, repoRoot, ["worktree", "prune"]);
 }
 
 /**
- * Destroy the disposable trees THIS ATTEMPT opened, whatever ended the step.
+ * Destroy the disposable trees THIS ATTEMPT opened, whatever ended the step. The step's `finally`
+ * calls this; a round that threw between `worktree add` and the child would otherwise leave a
+ * registered tree the next attempt could not create again.
  *
- * The step's `finally` calls this. A round that threw between `worktree add` and
- * the child would otherwise leave a registered tree under a path this step owns
- * exclusively, and the next attempt for the same issue and round could not create
- * it again.
+ * **Scoped to what this attempt could have created.** A selector that matched `-fix-` anywhere deleted
+ * a sibling attempt's LIVE tree out from under a running fixer. The prefix now carries the issue, the
+ * attempt and the epoch this attempt read from the log, so a sibling attempt's tree is not a candidate.
  *
- * **Scoped to what this attempt could have created, and that is the whole point.**
- * A selector that matched `-fix-` anywhere matched every fix tree of EVERY attempt:
- * two attempts in flight and one step's `finally` deleted the other's LIVE tree out
- * from under a running fixer, so that child's `git commit` landed in a directory
- * that no longer existed. The prefix now carries the issue, the attempt and the
- * epoch this attempt read from the log (`fixTreeName`'s own shape), so a sibling
- * attempt's tree is not even a candidate.
- *
- * The registry is a `git` question, not a memory one: it lists every attached
- * worktree under this clone's own `.git`, so it finds a tree this PROCESS never
- * made — including one a killed attempt of the same run left behind, which a Set in
- * memory could only find after a restart that had already lost it. A fix tree that
- * survived a crash is exactly the tree a resume must not adopt: it holds the dead
- * attempt's commits, and `--force` would have it adopted rather than refused.
+ * The registry is a `git` question, not a memory one: `worktree list` finds a tree this PROCESS never
+ * made, including one a killed attempt of the same run left behind, which a Set in memory could only
+ * find after a restart that had already lost it.
  */
 export async function closeFixTrees(
   deps: ReviewDeps,
@@ -222,12 +176,9 @@ export async function closeFixTrees(
     "--expire",
     "now",
   ]);
-  // An unreadable list is not a claim that nothing is attached, so this does not
-  // fall through to "no trees" — it prunes stale registrations and moves on. The
-  // selector is built from `fixTreeName`'s own components so the prefix and the
-  // names it selects cannot drift apart; the head stops before `<arm>` because the
-  // tail is `<attempt>-<epoch>`, and those two are what exclude a concurrent
-  // attempt's LIVE tree.
+  // An unreadable list is not a claim that nothing is attached, so this does not fall through to
+  // "no trees" — it prunes stale registrations and moves on. The head stops before `<arm>` because
+  // the tail is `<attempt>-<epoch>`, and those two are what exclude a concurrent attempt's LIVE tree.
   const head = `${worktreePath(ctx.repoRoot, `lean-${String(ctx.issue)}-fix-`)}`;
   const tail = `-${String(attempt)}-${runId}`;
   for (const line of (listed?.stdout ?? "").split("\n")) {
@@ -242,16 +193,9 @@ export async function closeFixTrees(
 export type Restored = "restored" | "failed" | "absent";
 
 /**
- * Put the run's tree and its branch ref back at the commit the gates read, and
- * say which of three things happened.
- *
- * Best effort by design — it never throws, because it runs on a path that is
- * already throwing and a second failure there would replace the reason the
- * operator needs with a complaint about the cleanup. What it does NOT do is stay
- * silent: the caller folds the answer into the thrown cause, so the handback
- * states whether the tree really went back. A tree that is not even there is
- * reported, never assumed fixed — the ref move the integration made would
- * otherwise be left behind with nobody saying so.
+ * Put the run's tree and its branch ref back at the commit the gates read, and say which of three
+ * things happened. Best effort by design — it never throws, because it runs on a path that is already
+ * throwing. What it does NOT do is stay silent: the caller folds the answer into the thrown cause.
  */
 export async function restore(
   deps: ReviewDeps,
@@ -272,17 +216,10 @@ export async function restore(
 }
 
 /**
- * The sentence the cause carries about the restore, for the two answers the
- * operator has to act on.
- *
- * "restored" gets one clause, because nothing follows from it; the other two get
- * the same warning, because for both `verify` and `publish` are about to read a
- * tree that is NOT the one the gates reviewed. Naming which happened is the point:
- * the cause is the only surface an operator reads.
- *
- * The `why` binding makes the union's exhaustiveness a compile-time fact: the final
- * arm is reachable only once `"restored"` and `"absent"` are ruled out, so a fourth
- * member of `Restored` fails to type here.
+ * The sentence the cause carries about the restore. "restored" gets one clause; the other two warn,
+ * because for both `verify` and `publish` are about to read a tree that is NOT the one the gates
+ * reviewed. The `why` annotation narrows `what` to the two warning members, so a fourth `Restored`
+ * fails to type here.
  */
 export function restoredSentence(what: Restored, wt: string, head: string): string {
   if (what === "restored") return ` — the run's tree was put back at ${head.slice(0, 12)}`;
