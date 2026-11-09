@@ -18,6 +18,10 @@
  * Merge commands are never spelled as literals here or in the test: the
  * mode-independent merge guard reads the bash command text of every tool call
  * (#1390 / #1417).
+ *
+ * `PI_ENSEMBLE_MERGE_AUTHORITY` is set per case, never inherited: the merged step
+ * reads it at call time, so a case asking for the authority switch off gets it and
+ * every other case gets the gate on, whatever the ambient process carried.
  */
 
 import { spawnSync } from "node:child_process";
@@ -58,10 +62,10 @@ export const MERGE_GRANT =
 /**
  * The merge grant plus the repository's own declaration of a gate file.
  *
- * The doctrine does NOT spell the phrase "gate files": the built-in protected
- * set already covers `.github/` and a document that named it would be caught by
- * the protected gate before the declared gate-file gate ran. Every path declared
- * here is outside that set.
+ * The doctrine spells the phrase "gate files" (that mention is what asks the
+ * declared-list question) but declares only paths OUTSIDE the built-in protected
+ * set: a document that named `.github/` would be caught by the protected gate
+ * before the declared gate-file gate ran, and the case would assert that gate.
  */
 export function declaredDoc(declaration: string): string {
   return `${MERGE_GRANT}\n\n${declaration}`;
@@ -261,6 +265,8 @@ export async function gateFileRun(opts: {
   mergeGrant?: boolean;
   /** `true` asks the authority judge too (no `--merge`), so a case can count both questions. */
   authorityJudge?: boolean;
+  /** `false` runs with `PI_ENSEMBLE_MERGE_AUTHORITY=0` — the permission gate off. */
+  authorityGate?: boolean;
   diff?: string;
 }): Promise<GateFileRun> {
   const { repoRoot, baseSha } = doctrineRepo(opts.agents);
@@ -283,6 +289,10 @@ export async function gateFileRun(opts: {
     : undefined;
   seedReviewLedger(repoRoot, branch);
   await writeState(repoRoot, mkState(opts.issue, pr, branch, baseSha));
+
+  const prevAuthority = process.env.PI_ENSEMBLE_MERGE_AUTHORITY;
+  if (opts.authorityGate === false) process.env.PI_ENSEMBLE_MERGE_AUTHORITY = "0";
+  else delete process.env.PI_ENSEMBLE_MERGE_AUTHORITY;
 
   const exec: VerifyExecFn = async (cmd, o) => {
     const line = o?.argv ? [cmd, ...o.argv].join(" ") : cmd;
@@ -400,6 +410,8 @@ export async function gateFileRun(opts: {
       holdReason: state?.pipelineState.mergeHold?.headCheckReason,
     };
   } finally {
+    if (prevAuthority === undefined) delete process.env.PI_ENSEMBLE_MERGE_AUTHORITY;
+    else process.env.PI_ENSEMBLE_MERGE_AUTHORITY = prevAuthority;
     rmSync(repoRoot, { recursive: true, force: true });
   }
 }
