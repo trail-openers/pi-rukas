@@ -14,6 +14,7 @@
  * `result.toolUses` — no line-splitting prose (D1-D8 fix).
  */
 import { exec } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { epicSubIssues } from "./plan-angles.ts";
 import { applyOperatorConflicts } from "./plan-draft-conflicts.ts";
@@ -409,9 +410,12 @@ export function draftSpec(
       ? oosAll.map((s) => `- ${s}`).join("\n")
       : "- everything not named in the sections above";
 
-  // Placeholder Open Questions section ("- (none)"): the real content is
-  // rendered LAST — after the splice and markWrittenDecisions — because
+  // The Open Questions slot is written as a per-draft UNGUESSABLE sentinel, not
+  // as the `- (none)` text it is later replaced with: every byte above it is
+  // untrusted and can quote that literal, which would move the splice and ship
+  // the real section as `- (none)`. The real content is rendered LAST because
   // writtenBack is produced by the write, not predicted before it.
+  const OQ_SENTINEL = `\u0000open-questions-${randomUUID()}\u0000`;
   const body = `## Context & motivation
 
 Descriptor: ${descriptor}
@@ -440,17 +444,26 @@ ${edgeCases}
 ${droppedSectionWithHolder(dropped)}
 ## Open Questions
 
-- (none)
+${OQ_SENTINEL}
 
 ## Out of scope
 
 ${oos}
 ${subIssues}${opDecompositionSection}${depthLimit}`;
 
+  // The bytes searched for, built from the same constants the template above
+  // writes so needle and template cannot drift. A string, never a pattern —
+  // see the splice below for why it must be located rather than replaced.
+  const OPEN_QUESTIONS_HEADING = "## Open Questions\n\n";
+
   // PR #640: single splice site (the dead onCorrective splice is gone).
-  // Splice → collapse → render Open Questions from marked decisions →
-  // replace placeholder. A heading that did not survive rendering
-  // renders status: open (the loss is visible, never a false resolved).
+  // Splice → collapse → render Open Questions from marked decisions → insert
+  // them at the sentinel; a heading that did not survive rendering renders
+  // status: open, so the loss is visible, never a false resolved. Nothing here
+  // inspects or alters the Open Questions section between the template and the
+  // concatenation below: `applyWritebackToBody` rewrites only the sections the
+  // writeback map names (never this one) and the collapse rewrites blank runs
+  // only, so the sentinel always reaches the splice intact.
   const { body: spliced, outcomes } = applyWritebackToBody(body, writebackMap ?? new Map());
   const collapsed = spliced.replace(/\n{3,}/g, "\n\n");
   const markedDecisions = markWrittenDecisions(resolvedDecisions, outcomes);
@@ -458,10 +471,23 @@ ${subIssues}${opDecompositionSection}${depthLimit}`;
     [...openQuestions, ...conflicts.openQuestions],
     markedDecisions,
   );
-  const finalBody = collapsed.replace(
-    "## Open Questions\n\n- (none)\n",
-    `## Open Questions\n\n${openQ}\n`,
-  );
+  // #2141: located with indexOf and rebuilt by CONCATENATION after the last
+  // replace over the body. As a `replace()` replacement, openQ — angle and
+  // gate text — would be expanded: the dollar-backtick form re-inserts every
+  // byte before the match, the dollar-apostrophe form every byte after it, the
+  // dollar-ampersand form the matched text. One item quoting such a pattern
+  // multiplied the whole body. Concatenation has no replacement semantics, so
+  // untrusted text is inserted verbatim.
+  const OQ_SLOT = `${OPEN_QUESTIONS_HEADING}${OQ_SENTINEL}`;
+  const oqAt = collapsed.indexOf(OQ_SLOT);
+  // Unreachable while template and slot share these constants: the sentinel's
+  // UUID is not predictable from the sections' text, so it occurs exactly once
+  // or not at all. Loud rather than silent: dropping the section here would
+  // ship a spec with no Open Questions and no trace of the loss.
+  if (oqAt === -1 || collapsed.indexOf(OQ_SLOT, oqAt + 1) !== -1) {
+    throw new Error(`draftSpec: the Open Questions sentinel ${OQ_SENTINEL} is not located once`);
+  }
+  const finalBody = `${collapsed.slice(0, oqAt)}${OPEN_QUESTIONS_HEADING}${openQ}\n${collapsed.slice(oqAt + OQ_SLOT.length)}`;
 
   // #1087: truncated operator channels as data; filing paths halt on this, not the body.
   const operatorOmitted = operatorOmissions({
