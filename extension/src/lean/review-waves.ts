@@ -61,8 +61,9 @@ const LENS_BLOCKING_VERDICTS: readonly Verdict[] = ["CRITICAL_ISSUES_FOUND"];
  * itself calls blocking — `splitAdvisory` moves the out-of-range rows out of it when it can read
  * the PR's changed lines, and keeps every row in `reported` when it cannot.
  *
- * The asymmetry with the re-review is policy: the wave reads `reported` only, but a CARRIED advisory
- * row is still caught by the re-review's NOT ADDRESSED scan, which reads both tiers.
+ * The asymmetry with the re-review is policy: the wave reads `reported` only; the re-review reads
+ * both tiers, so rows `splitAdvisory` moved to advisory are still caught by it — when the move
+ * happened at all (see above).
  */
 export function lensBlocks(
   round: { verdict: Verdict; reported: readonly Finding[] },

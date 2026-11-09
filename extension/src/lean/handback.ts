@@ -92,6 +92,8 @@ function terminalCause(steps: Step[]): string | undefined {
  * not prose. A `challenge` breach is a CONTINUATION the table routes on, so a budget step whose
  * verdict the table carried past is not why the run ended. `handback` and `decline` entries are
  * excluded from that scan: they are the run REPORTING how it ended, not work it went on to do.
+ * A step with no outcome that is not a report still counts as newer — undecided work after a breach
+ * means the breach did not end the run.
  *
  * Rendered from the typed fields (`limit` / `value` / `used`) through {@link budgetTrio}, the same
  * check every reader of a recorded breach makes, so a breach missing a field falls through to the
