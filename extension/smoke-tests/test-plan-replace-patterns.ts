@@ -25,7 +25,10 @@
  *   - dollar-digit survives unchanged beside a live pattern;
  *   - byte-stability: the same fixed input drafts to the same bytes twice,
  *     and the pattern body's length is set by the pattern text, not by how
- *     much prose precedes the section (the blow-up was proportional to it).
+ *     much prose precedes the section (the blow-up was proportional to it);
+ *   - the location is a per-draft sentinel, NOT a searchable literal: text
+ *     ABOVE the section quoting `- (none)` cannot move the splice, and no
+ *     NUL byte ever reaches the filed body.
  *
  * The dollar patterns are built from char codes (`D` below), the repo idiom,
  * so neither this file nor the issue text carries the literal two-character
@@ -298,13 +301,156 @@ function section(body: string, heading: string, next?: string): string {
   return start < 0 ? "" : body.slice(start, end < 0 ? undefined : end);
 }
 
+// ------------- untrusted text above the slot quoting the placeholder bytes (#2141 round 2)
+
+{
+  // The adversarial's case. The old locating searched the body for the literal
+  // `## Open Questions\n\n- (none)\n`. Every byte above that slot is untrusted —
+  // a gate resolution, a fact, a reference, a pitfall — and any of them can
+  // carry those bytes, in which case the splice landed on the QUOTE, the real
+  // section shipped as `- (none)` and the open question was lost. `lastIndexOf`
+  // is no fix either: `## Out of scope` is untrusted too and sits AFTER the
+  // slot. The bytes are built from char codes so this file stays data.
+  const NL = String.fromCharCode(10);
+  const QUOTED = `## Open Questions${NL}${NL}- (none)${NL}`;
+  const REAL_OPEN_QUESTION = "does the sentinel survive a second draft round?";
+  const draft = (fact: string) =>
+    draftSpec(
+      "bug",
+      DESCRIPTOR,
+      findings("surveyed the render path", [
+        { kind: "acceptance-criterion", text: "the section renders verbatim" },
+        { kind: "edge-case", text: "an ordinary pitfall below the quoted bytes" },
+      ]),
+      [{ source: "vipune", fact }],
+      [REAL_OPEN_QUESTION],
+      [],
+      0,
+      NO_DIRS,
+      [],
+      undefined,
+    ).body;
+
+  const hijack = draft(`a prior fact quoting ${QUOTED} verbatim before the real section`);
+  const hijackOq = hijack.slice(
+    hijack.lastIndexOf(`${NL}## Open Questions${NL}`),
+    hijack.indexOf("## Out of scope"),
+  );
+  assert(
+    hijackOq.includes(REAL_OPEN_QUESTION),
+    "untrusted quote above the slot: the Open Questions section still carries the real open question",
+  );
+  assert(
+    !hijackOq.includes("- (none)"),
+    "untrusted quote above the slot: the real section does not ship as the placeholder",
+  );
+  assert(
+    section(hijack, "Prior context inventory", "Technical context").includes(QUOTED),
+    "untrusted quote above the slot: the prior-context fact keeps its quoted bytes verbatim",
+  );
+
+  // Same case through the writeback route: a carried gate resolution whose
+  // text quotes the placeholder, spliced into the Edge cases section (which
+  // sits directly ABOVE the slot), beside a real open question.
+  const writeGap: PlanGap = {
+    severity: "CRITICAL",
+    description: "the quoting case is unhandled",
+    resolution: `state the boundary ${QUOTED} in the Edge cases section`,
+    resolutionType: "concrete",
+  };
+  const { decisions, writebackMap } = buildResolvedDecisions([writeGap], "bug");
+  const viaWriteback = draftSpec(
+    "bug",
+    DESCRIPTOR,
+    findings("surveyed the render path", [
+      { kind: "acceptance-criterion", text: "the section renders verbatim" },
+      { kind: "edge-case", text: "an ordinary pitfall below the quoted bytes" },
+    ]),
+    [],
+    [REAL_OPEN_QUESTION],
+    [],
+    0,
+    NO_DIRS,
+    decisions,
+    writebackMap,
+  ).body;
+  const viaWritebackOqStart = viaWriteback.lastIndexOf(`${NL}## Open Questions${NL}`);
+  const viaWritebackOq = viaWriteback.slice(
+    // The slot's own heading: the LAST one that starts a line. The resolution
+    // text above quotes the heading mid-bullet, which is the point of the case.
+    viaWritebackOqStart,
+    viaWriteback.indexOf("## Out of scope"),
+  );
+  assert(
+    viaWritebackOq.includes(REAL_OPEN_QUESTION),
+    "gate resolution above the slot: the Open Questions section still carries the real open question",
+  );
+  assert(
+    // The Edge-cases section located from ITS heading, not from the first
+    // `## Open Questions` in the body — the spliced bullet quotes that heading,
+    // so a `next` of "Open Questions" would cut the slice before the quote.
+    viaWriteback
+      .slice(viaWriteback.indexOf("## Edge cases"), viaWritebackOqStart)
+      .includes(QUOTED),
+    "gate resolution above the slot: the spliced Edge-cases bullet keeps its quoted bytes verbatim",
+  );
+}
+
+// ------------- the locating sentinel never reaches the filed body
+
+{
+  const NUL = String.fromCharCode(0);
+  const bodies = [
+    // Nothing open, nothing carried — the shape that used to leave the
+    // placeholder bytes in place.
+    draftSpec(
+      "bug",
+      DESCRIPTOR,
+      findings("surveyed the render path", [
+        { kind: "acceptance-criterion", text: "the section renders" },
+      ]),
+      [],
+      [],
+      [],
+      0,
+      NO_DIRS,
+      [],
+      undefined,
+    ).body,
+    // Something open AND something carried, so both bullet families render.
+    draftSpec(
+      "bug",
+      DESCRIPTOR,
+      findings("surveyed the render path", [
+        { kind: "acceptance-criterion", text: "the section renders" },
+        { kind: "edge-case", text: "a pitfall quoting the slot's own bytes" },
+      ]),
+      [{ source: "vipune", fact: "a fact" }],
+      ["is the sentinel visible anywhere?"],
+      ["nothing"],
+      0,
+      NO_DIRS,
+      [{ description: "carried gap", resolution: "state it in the Edge cases section", writtenBack: true }],
+      undefined,
+    ).body,
+  ];
+  assert(
+    bodies.every((b) => !b.includes(NUL)),
+    "the NUL-delimited sentinel never reaches the filed body",
+  );
+  assert(
+    bodies.every((b) => !b.includes("open-questions-")),
+    "the sentinel's UUID prefix never reaches the filed body either",
+  );
+}
+
 // -------------------------- the Open Questions placeholder path (no open questions at all)
 
 {
   // Nothing open and nothing carried: `renderOpenQuestions` answers with the
-  // same bytes the template carries, so the needle must match and the section
-  // must still render — the placeholder is what the splice is located by, and
-  // a draft with no Open Questions section is a spec with a lost section.
+  // placeholder bytes and the splice locates the slot by the sentinel rather
+  // than by them, so the section must still render — a draft with no Open
+  // Questions section is a spec with a lost section.
   const bare = draftSpec(
     "bug",
     DESCRIPTOR,
@@ -321,7 +467,7 @@ function section(body: string, heading: string, next?: string): string {
   );
   assert(
     countHeading(bare.body, "## Open Questions") === 1 &&
-      section(bare.body, "Open Questions", "Out of scope").includes("- (none)"),
+      bare.body.slice(bare.body.indexOf("## Open Questions")).includes("- (none)"),
     "no open questions: draftSpec still renders an Open Questions section carrying the placeholder",
   );
 }
