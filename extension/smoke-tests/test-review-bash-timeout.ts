@@ -31,9 +31,9 @@ const BOUND = 600;
 async function call(
   env: Record<string, string | undefined>,
   toolName: string,
-  input: Record<string, unknown>,
+  input: Record<string, unknown> | null,
   parentToolCallId?: string,
-): Promise<Record<string, unknown>> {
+): Promise<Record<string, unknown> | null> {
   const fake = makeFakePi();
   childGuards(fake as unknown as ExtensionAPI);
   const event: Record<string, unknown> = { toolName, input };
@@ -41,7 +41,7 @@ async function call(
   await withEnv({ PI_ENSEMBLE_ROLE: "code-review-specialist", ...env }, async () => {
     for (const h of fake.handlers.tool_call ?? []) await h(event, {});
   });
-  return event.input as Record<string, unknown>;
+  return event.input as Record<string, unknown> | null;
 }
 
 /** A reviewer's bash call (the role both reviewer roles share the hook with). */
@@ -144,6 +144,20 @@ for (const garbage of ["0", "-1", "abc", "NaN", "Infinity"]) {
   );
 }
 
+// `Number()` alone was too generous a reader: an exponent is a bound no one can
+// honour, a hex literal is a bound no one typed, and a value past Pi's own
+// ceiling is one the bash schema would reject — all three mean no bound.
+for (const unparseable of ["1e308", "0x10", "2147484000", "2147483647000"]) {
+  const out = await reviewer(
+    { PI_ENSEMBLE_REVIEW_BASH_TIMEOUT_MS: unparseable },
+    { command: "sleep 99999" },
+  );
+  assert(
+    !("timeout" in out),
+    `PI_ENSEMBLE_REVIEW_BASH_TIMEOUT_MS="${unparseable}" is not a plain ms value in range — no bound (got ${String(out.timeout)})`,
+  );
+}
+
 const raised = await reviewer({ PI_ENSEMBLE_REVIEW_BASH_TIMEOUT_MS: "90000" }, { command: "sleep 99999" });
 assert(
   raised.timeout === 90,
@@ -179,6 +193,59 @@ await withEnv({ PI_ENSEMBLE_REVIEW_BASH_TIMEOUT_MS: undefined }, async () => {
   assert(
     nestedClamped.timeout === BOUND,
     `a nested call's larger timeout is clamped (got ${String(nestedClamped.timeout)})`,
+  );
+}
+
+// ============================================================
+// 6. Values the model itself wrote that are not usable timeouts. A huge or
+//    non-numeric timeout is CLAMPED to the bound (it is the model's, not the
+//    operator's, so there is no knob to disbelieve); a missing or non-object
+//    input is left alone; a frozen input must not throw — into the companion's
+//    fail-closed wrapper a throw would read as a refusal of the call.
+// ============================================================
+{
+  const huge = await reviewer({}, { command: "sleep 99999", timeout: 9e15 });
+  assert(
+    huge.timeout === BOUND,
+    `a model timeout of 9e15 is clamped to the bound (got ${String(huge.timeout)})`,
+  );
+
+  const stringy = await reviewer({}, { command: "sleep 99999", timeout: "120" });
+  assert(
+    stringy.timeout === BOUND,
+    `a string timeout is replaced by the bound (got ${String(stringy.timeout)})`,
+  );
+
+  // A null input reaches the handler as `null` (the harness mirrors Pi's event
+  // shape), so the early return is the only thing standing between it and the
+  // write below. Removed, the assignment throws `null is not an object`.
+  const nullInput = await call({ PI_ENSEMBLE_ROLE: "code-review-specialist" }, "bash", null);
+  assert(
+    nullInput === null,
+    `a null input neither throws nor is written to (${JSON.stringify(nullInput)})`,
+  );
+
+  // A frozen object: the write neither throws nor blocks, and the call keeps
+  // the shape the model wrote (an unbounded call beats a refused one).
+  const frozen = Object.freeze({ command: "sleep 99999" }) as Record<string, unknown>;
+  const frozenFake = makeFakePi();
+  childGuards(frozenFake as unknown as ExtensionAPI);
+  let frozenResult: unknown;
+  let frozenThrew = false;
+  await withEnv({ PI_ENSEMBLE_ROLE: "code-review-specialist" }, async () => {
+    for (const h of frozenFake.handlers.tool_call ?? []) {
+      try {
+        frozenResult = await h({ toolName: "bash", input: frozen }, {});
+      } catch {
+        frozenThrew = true;
+      }
+    }
+  });
+  assert(
+    !frozenThrew &&
+      (frozenResult as { block?: boolean } | undefined)?.block !== true &&
+      !("timeout" in frozen),
+    `a frozen input neither throws nor blocks (${JSON.stringify(frozenResult)})`,
   );
 }
 
