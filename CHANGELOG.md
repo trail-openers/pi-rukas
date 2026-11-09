@@ -8,6 +8,15 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.70](https://github.com/trail-openers/pi-rukas/compare/v0.14.69...v0.14.70) (2026-11-09)
+
+
+### Bug Fixes
+
+* **plan:** insert open questions verbatim instead of through a replacement pattern ([#2150](https://github.com/trail-openers/pi-rukas/issues/2150)) ([26b55a4](https://github.com/trail-openers/pi-rukas/commit/26b55a4fd02e3044e87128a70114b62056be2da2))
+* **review:** bound each reviewer bash call with a per-call timeout ([#2148](https://github.com/trail-openers/pi-rukas/issues/2148)) ([b25d933](https://github.com/trail-openers/pi-rukas/commit/b25d93307d5dcd90979747a8bc78d0b8682aada6))
+* **review:** ignore branch-tracking config churn in the adversarial fix fence ([#2146](https://github.com/trail-openers/pi-rukas/issues/2146)) ([3a8ee39](https://github.com/trail-openers/pi-rukas/commit/3a8ee39a2195e4c385231b33f43a3ae0e4ac9048))
+
 ## [0.14.69](https://github.com/trail-openers/pi-rukas/compare/v0.14.68...v0.14.69) (2026-11-09)
 
 
