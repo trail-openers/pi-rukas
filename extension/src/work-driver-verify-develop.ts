@@ -27,9 +27,9 @@ import { ungrantedProtectedPaths } from "./work-driver-protected-grant.ts";
 import {
   changedPaths,
   readCommittedProtectedPaths,
-  readProtectedStatusPaths,
   renameSourcePaths,
 } from "./work-driver-protected-paths-read.ts";
+import { readProtectedStatusPaths } from "./work-driver-protected-paths-status.ts";
 import { runScopeFanoutGate } from "./work-driver-scope-fanout.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import { reportBaselineLeg } from "./work-driver-verify-aggregate.ts";

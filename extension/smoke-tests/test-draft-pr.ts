@@ -48,6 +48,8 @@ import {
   initialState,
 } from "../src/workflow-state.ts";
 import { addLocalRemote, fixture, git } from "./helpers-integrate-pin-realgit.ts";
+import { commandOf } from "./lib/argv-shell.ts";
+import { isNulDiffRead } from "./lib/nul-porcelain.ts";
 import { realExec } from "./lib/exec-fake.ts";
 
 process.env.PI_ENSEMBLE_FORGE = "github";
@@ -436,11 +438,28 @@ async function handoff(state: WorkState, failures = 0) {
     ...forge,
     prReady: async () => void order.push("ready"),
   } as unknown as Forge;
-  const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
+  const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, opts) => {
     if (cmd.startsWith("gh pr view")) {
       order.push("evidence");
       return { stdout: JSON.stringify({ state: "OPEN", mergeStateStatus: "BLOCKED" }) };
     }
+    // #1529 — the merge-time protected-path gate runs BEFORE the evidence read,
+    // so the ordering this case pins cannot be observed unless the gate's own
+    // reads are answered: without them it fails closed and the evidence read is
+    // never reached. The OID answer must precede the branch-name one, since a
+    // branch name where the gate expects an object id is itself a refusal.
+    const line = opts?.argv ? [cmd, ...opts.argv].join(" ") : cmd;
+    if (line.includes("git config --get remote.")) return { stdout: "https://x.invalid/r.git\n" };
+    if (line.includes("git remote")) return { stdout: "origin\n" };
+    if (line.includes("git symbolic-ref")) return { stdout: "origin/main\n" };
+    if (line.includes("git fetch")) return { stdout: "" };
+    if (line.includes("git rev-parse --end-of-options origin/"))
+      return { stdout: `${"4".repeat(39)}d\n` };
+    if (line.includes("git merge-base")) return { stdout: `${"5".repeat(39)}e\n` };
+    // The protected read is matched through the lib derived from the production
+    // argv constants, not a hand-written substring: a command-shape drift then
+    // fails the match (and the arm) rather than answering a stale command text.
+    if (isNulDiffRead(commandOf(cmd, opts))) return { stdout: "" };
     return { stdout: "" };
   };
   const ctx = {

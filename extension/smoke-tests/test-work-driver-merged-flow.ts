@@ -22,6 +22,8 @@ import type { VerifyExecFn } from "../src/work-driver-git.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { type WorkState, initialState, readState, writeState } from "../src/workflow-state.ts";
 import { setupSpawnGuard } from "./test-helpers.ts";
+import { commandOf } from "./lib/argv-shell.ts";
+import { isNulDiffRead, nulNameStatus } from "./lib/nul-porcelain.ts";
 
 setupSpawnGuard();
 
@@ -143,6 +145,8 @@ function mkExecFull(
   branch: string,
   throwFirstView: boolean,
   dir?: string,
+  /** What the merge-time protected read reports; absent is a clean PR. */
+  protectedDiff?: string,
 ): VerifyExecFn {
   let vc = 0;
   return async (cmd: string, opts?: { argv?: string[] }) => {
@@ -168,13 +172,25 @@ function mkExecFull(
     if (cmd === "gh" && opts?.argv?.[0] === "api") return { stdout: "false\n" };
     if (cmd.includes("git symbolic-ref")) return { stdout: "origin/main\n" };
     if (line.includes("git config --get remote.")) return { stdout: "https://x.invalid/r.git\n" };
+    // #1529 — the shared protected read resolves the remote through the
+    // origin/upstream/first-name chain; an unanswered `git remote` there reads
+    // as "no remote" and the gate refuses, which is what it must do.
+    if (line.includes("git remote")) return { stdout: "origin\n" };
     if (line.includes("git fetch origin")) return { stdout: "" };
     if (line.startsWith("git fetch")) return { stdout: "" };
+    // #1529 — the protected-path gate resolves `origin/<ref>` to an OID before
+    // it diffs anything, and an unparseable answer there is a refusal by design.
+    if (line.includes("git rev-parse --end-of-options origin/"))
+      return { stdout: `${VERIFIED_HEAD}\n` };
     if (line.includes("git rev-parse origin/") || /git rev-parse .*origin\//.test(line))
       return { stdout: `${VERIFIED_HEAD}\n` };
     if (line.includes("git rev-parse --git-common-dir")) return { stdout: `${dir}/.git\n` };
     if (line.includes("git merge-base")) return { stdout: `${MERGE_BASE}\n` };
     if (line.includes("git patch-id")) return { stdout: `${REVIEWED_PATCH} x\n` };
+    // The protected-path gate's committed read, matched through the lib derived
+    // from the production argv constants (see the T19 fake for the reasoning).
+    if (isNulDiffRead(commandOf(cmd, opts)))
+      return { stdout: protectedDiff ?? "" };
     if (line.includes("git rev-parse"))
       return { stdout: /refs?\/|remotes\//.test(line) ? `${VERIFIED_HEAD}\n` : `${branch}\n` };
     return { stdout: "" };
@@ -210,6 +226,52 @@ function mkExecFull(
   }
 }
 
+// T18b. A `.github/` diff parks the cycle at awaiting-human-merge with a hold.
+{
+  const dir = mkdtempSync(path.join(tmpdir(), "wd-protected-"));
+  try {
+    mkdirSync(path.join(dir, ".git", "info"), { recursive: true });
+    seedReviewLedger(dir, "feature/issue-965");
+    await writeState(dir, mkState(965, 9651, "feature/issue-965"));
+    const calls: string[] = [];
+    await runWorkDriver(
+      mkCtx(
+        965,
+        mkExecFull(calls, "feature/issue-965", false, dir, nulNameStatus("M\t.github/workflows/ci.yml")),
+        {
+          repoRoot: dir,
+          dispatchFn: async () => mkResult({ role: "driver", text: "Mechanized merge succeeded." }),
+        },
+      ),
+    );
+    const after = await readState(dir, 965);
+    const cap = (after?.eventLog ?? [])
+      .slice()
+      .reverse()
+      .find((e: any) => e.kind === "cap-hit") as any;
+    assert(
+      cap?.cap === "awaiting-human-merge",
+      `T18b: a PR whose own commits change .github/ parks at awaiting-human-merge (got ${JSON.stringify(cap?.cap)})`,
+    );
+    const hold = after?.pipelineState.mergeHold as any;
+    assert(
+      hold !== undefined && typeof hold.headCheckReason === "string",
+      "T18b: the park sets pipelineState.mergeHold, so the sweep and the handoff read why",
+    );
+    assert(
+      (hold?.headCheckReason ?? "").includes(".github/workflows/ci.yml"),
+      `T18b: …and the hold names the protected path (got ${JSON.stringify((hold?.headCheckReason ?? "").slice(0, 140))})`,
+    );
+    assert(
+      after?.pipelineState.status !== "merged" &&
+        !calls.some((c) => c.includes("gh pr merge")),
+      "T18b: nothing merged — no gh pr merge ran and the PR is left open",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 // T19. Fallback dispatch carries mergeMethod into prompt.
 {
   const dir = mkdtempSync(path.join(tmpdir(), "wd-fallback-"));
@@ -232,12 +294,27 @@ function mkExecFull(
       // #1533 — the identity check runs before the mechanized merge, so the
       // fallback case needs the same reads answered as any merging cycle.
       if (line.includes("git config --get remote.")) return { stdout: "https://x.invalid/r.git\n" };
+      if (line.includes("git remote")) return { stdout: "origin\n" };
       if (line.includes("git fetch origin")) return { stdout: "" };
+      // #1529 — the protected-path gate resolves `origin/<ref>` to an OID before
+      // it diffs anything, and a branch name where it expects an object id is a
+      // refusal; the gate's reads must therefore be answered ahead of the
+      // generic rev-parse arm below.
+      if (line.includes("git rev-parse --end-of-options origin/"))
+        return { stdout: `${VERIFIED_HEAD}\n` };
       if (line.includes("git rev-parse origin/")) return { stdout: `${VERIFIED_HEAD}\n` };
       if (line.includes("git rev-parse --git-common-dir")) return { stdout: `${dir}/.git\n` };
       if (line.includes("git symbolic-ref")) return { stdout: "origin/main\n" };
+      // #1529 — the shared protected read resolves the remote through the
+      // origin/upstream/first-name chain; an unanswered `git remote` there reads
+      // as "no remote" and the gate refuses, which is what it must do.
+      if (line.includes("git remote")) return { stdout: "origin\n" };
       if (line.includes("git merge-base")) return { stdout: `${MERGE_BASE}\n` };
       if (line.includes("git patch-id")) return { stdout: `${REVIEWED_PATCH} x\n` };
+      // The protected-path gate diffs merge-base..head and a blank is a clean
+      // answer; matched through the lib derived from the production argv so a
+      // command-shape drift cannot leave this arm answering nothing.
+      if (isNulDiffRead(commandOf(cmd, opts))) return { stdout: "" };
       if (line.includes("git rev-parse"))
         return { stdout: /refs?\/|remotes\//.test(line) ? `${VERIFIED_HEAD}\n` : "" };
       return { stdout: "" };

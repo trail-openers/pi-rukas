@@ -132,4 +132,18 @@ export interface MergeGateEnv {
    * order, so an arm can assert the CI reads were bounded at all.
    */
   timeouts?: number[];
+  /**
+   * #1529 — what the merge-time protected-path read prints: NUL-separated
+   * `diff -z --name-status` records. Absent is an EMPTY change set, i.e. a clean
+   * PR, which is what every pre-#1529 arm expects and why those matrices still
+   * pass unchanged. An arm that wants a protected diff builds the stream with
+   * `nulNameStatus` and names it here.
+   */
+  protectedDiff?: string;
+  /**
+   * #1529 — the protected-path read throws. The guard must refuse, not merge:
+   * "could not read the diff" and "nothing protected changed" are different
+   * answers to a gate that merges on the difference.
+   */
+  protectedDiffThrows?: boolean;
 }

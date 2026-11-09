@@ -227,9 +227,19 @@ const protectedFailure = (f: string[]) => f.find((x) => /protected path/.test(x)
     (f) =>
       f.endsWith(".ts") &&
       f !== "work-driver-verify-develop.ts" &&
-      // The module that DEFINES the readers names them in its own declarations —
-      // that is not a consumer.
+      // The module that DEFINES the committed reader names it in its own
+      // declarations — that is not a consumer. #1529 adds two more definers by
+      // necessity: `work-driver-protected-paths-status.ts` is the uncommitted
+      // reader split out of the first for the 500-line cap (same seam, same
+      // module contract, one file per parser), and `merge-protected-paths.ts` is
+      // the merge-time consumer the develop gate does not consult — it calls the
+      // committed reader for a merge decision, not for a develop halt. Both are
+      // pinned by their own canaries, so excluding them here is a scope note, not
+      // a hole: the assertion still refuses any OTHER module that starts
+      // consulting the develop gate's reads.
       !f.startsWith("work-driver-protected-paths-read") &&
+      !f.startsWith("work-driver-protected-paths-status") &&
+      !f.startsWith("merge-protected-paths") &&
       /readProtectedStatusPaths|readCommittedProtectedPaths/.test(
         readFileSync(path.join(srcPath, f), "utf8"),
       ),

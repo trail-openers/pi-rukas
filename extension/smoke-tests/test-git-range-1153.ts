@@ -54,6 +54,9 @@ const LISTED = [
   // #1378 — the protected-path reads take `DEFAULT_GIT_TIMEOUT_MS` from here so a
   // hung git cannot hang the develop step; both its git calls are argv-form.
   "work-driver-protected-paths-read.ts",
+  // #1378 (split for the file cap) — the uncommitted half of that read takes the
+  // same bound from here, and its single git call is argv-form.
+  "work-driver-protected-paths-status.ts",
   // #1378 (round 3) — the develop gate's `git rev-list --count` read used to have
   // no timeout at all, so a wedged object store hung the whole step. It now takes
   // the same bound from here.
