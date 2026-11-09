@@ -435,6 +435,7 @@ export function leanIssueResult(run: LeanRun, code: number): IssueResult {
     steps: stepTimings(steps),
     exitCode: code,
     resumable: false,
+    driver: "lean",
     usage: resultUsageOf(steps),
     // The same derivation every lean surface uses, so the branch the document
     // names is the branch the steps worked on (`lean/`'s own fallback).

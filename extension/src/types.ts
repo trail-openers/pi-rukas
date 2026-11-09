@@ -59,6 +59,14 @@ export interface DispatchUsage {
   cacheWrite: number;
   cost: number;
   turns: number;
+  /**
+   * Tool calls the child started, a codemode script's nested calls included,
+   * each once: one per `tool_execution_start`. Absent where nobody watched the
+   * child's events (a result rebuilt from disk), which is unknown, not zero.
+   */
+  toolCalls?: number;
+  /** Tool calls that ended with `isError: true` (`tool_execution_end`). Absent as `toolCalls` is. */
+  toolErrors?: number;
 }
 
 export interface DispatchResult {

@@ -1,5 +1,6 @@
 import type { LensRunResult } from "./lens-review.ts";
 import type { DispatchUsage } from "./types.ts";
+import { addCount } from "./usage-fold.ts";
 
 /**
  * #534 — raw sum across lenses (no dedup, matching the retry rule).
@@ -20,7 +21,18 @@ export function aggregateLensUsage(lensResults: LensRunResult[]): DispatchUsage 
       cacheWrite: acc.cacheWrite + u.cacheWrite,
       cost: acc.cost + u.cost,
       turns: acc.turns + u.turns,
+      toolCalls: addCount(acc.toolCalls, u.toolCalls),
+      toolErrors: addCount(acc.toolErrors, u.toolErrors),
     }),
-    { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+    {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: 0,
+      turns: 0,
+      toolCalls: 0,
+      toolErrors: 0,
+    },
   );
 }

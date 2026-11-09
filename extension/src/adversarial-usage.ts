@@ -12,11 +12,21 @@
  */
 
 import type { DispatchResult, DispatchUsage } from "./types.ts";
+import { addCount } from "./usage-fold.ts";
 
 /** What a result carries when nothing ran at all. Module-local: the loop reads
  * the tally's `usage`, and nothing outside this file needs a zeroed shape. */
 function emptyUsage(): DispatchUsage {
-  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
+  return {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    cost: 0,
+    turns: 0,
+    toolCalls: 0,
+    toolErrors: 0,
+  };
 }
 
 /** The loop's running tally, read at CALL time by the result builders. */
@@ -48,6 +58,8 @@ export function createUsageTally(): UsageTally {
         usage.cacheWrite += r.usage.cacheWrite;
         usage.cost += r.usage.cost;
         usage.turns += r.usage.turns;
+        usage.toolCalls = addCount(usage.toolCalls, r.usage.toolCalls);
+        usage.toolErrors = addCount(usage.toolErrors, r.usage.toolErrors);
       }
       if (r.transcriptPath) lastTranscript = r.transcriptPath;
       if (r.model && !lastModel) lastModel = r.model;

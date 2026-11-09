@@ -43,7 +43,7 @@ type LeanUsage = UsageFold;
  * The row's `usage` is COPIED out rather than handed over whole: a step row is
  * `{role, ms, ok, usage}` and `DispatchUsageRow` is not assignable to the fold's
  * `{role, usage}` (the fold accepts a missing `usage`, the validator forbids
- * one), so this module is where the log's shape meets the fold's. The six
+ * one), so this module is where the log's shape meets the fold's. The
  * numbers are read field by field so the copy is the same record the loader
  * validated, not an `as never` over the shape mismatch.
  */
@@ -61,6 +61,8 @@ export function leanUsage(steps: Step[]): LeanUsage {
               cacheWrite: row.usage.cacheWrite,
               cost: row.usage.cost,
               turns: row.usage.turns,
+              toolCalls: row.usage.toolCalls,
+              toolErrors: row.usage.toolErrors,
             };
       rows.push({ role: row.role, usage: u });
     }

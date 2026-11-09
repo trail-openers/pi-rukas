@@ -37,7 +37,8 @@ import { recordedPrUrl } from "./pr-url.ts";
  * adds the template `child-timeout:<step>`.
  * Additive, no bump: top-level `resources` (#1325); per issue `failure`
  * (#1367), `usage.byRole` (#1368), `continuedPr` (#1468) and the cause fields
- * `causeClass`, `causeReason`, `causeEvidence`, `userAction` (#1675).
+ * `causeClass`, `causeReason`, `causeEvidence`, `userAction` (#1675); `usage`
+ * `toolCalls`/`toolErrors` and per issue `driver` (`features.usageTools`).
  */
 export const RESULT_SCHEMA_VERSION = 5 as const;
 
@@ -172,6 +173,11 @@ export interface IssueResult {
    * unreviewed. `work` writes none of it; a run with no bound stop omits it, so absence
    * means "fully reviewed", never "unknown". */
   reviewBound?: string;
+  /**
+   * The engine that ran the cycle: `classic` for `work`, `lean` for `work-lean`.
+   * Absent where no engine ran (`not-started`, a refused start).
+   */
+  driver?: "classic" | "lean";
   /** Present whenever a state existed to sum. */
   usage?: ResultUsage;
   /**
@@ -363,6 +369,7 @@ export function projectIssue(state: WorkState, stateFile: string): IssueResult {
     durationMs,
     steps,
     exitCode,
+    driver: "classic",
     usage: usageOf(state),
     // An interrupted cycle re-enters as running; a running one resumes (#382).
     resumable:

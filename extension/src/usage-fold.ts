@@ -60,7 +60,26 @@ export function createTotalsMap(): Record<string, UsageTotals> {
 
 /** The zero row. Fresh per call — a shared zero would be a shared accumulator. */
 export function zeroUsage(): UsageTotals {
-  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0, dispatches: 0 };
+  return {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    cost: 0,
+    turns: 0,
+    toolCalls: 0,
+    toolErrors: 0,
+    dispatches: 0,
+  };
+}
+
+/**
+ * Add one optional count to a running one. Unknown stays unknown: a total that
+ * summed a child nobody counted as zero would report fewer tool calls than ran,
+ * so one uncounted child makes the total absent rather than low.
+ */
+export function addCount(a: number | undefined, b: number | undefined): number | undefined {
+  return a === undefined || b === undefined ? undefined : a + b;
 }
 
 /**
@@ -68,7 +87,9 @@ export function zeroUsage(): UsageTotals {
  *
  * `dispatches` increments BEFORE the usage guard and regardless of it: the
  * count is "how many children this run paid for", which a missing usage report
- * does not undo. The fields added afterwards are numbers by each caller's
+ * does not undo. A dispatch with no usage at all is a child that never ran, so
+ * it adds no tool calls; one whose usage lacks the counts makes them unknown
+ * (`addCount`). The fields added afterwards are numbers by each caller's
  * contract (lean's `outcomeProblem` refuses a row whose usage is absent,
  * infinite or negative; the driver's events carry what Pi reported), so the sum
  * is an arithmetic fact rather than a `NaN` waiting in a host's document.
@@ -82,6 +103,8 @@ export function addUsage(t: UsageTotals, u: DispatchUsage | undefined): void {
   t.cacheWrite += u.cacheWrite;
   t.cost += u.cost;
   t.turns += u.turns;
+  t.toolCalls = addCount(t.toolCalls, u.toolCalls);
+  t.toolErrors = addCount(t.toolErrors, u.toolErrors);
 }
 
 /**

@@ -75,6 +75,11 @@ export const HEADLESS_FEATURES = {
   failureReason: true,
   /** #1368 — the result's `usage.byRole` sums usage per role, failed dispatches included. */
   usageByRole: true,
+  /**
+   * The result's `usage` and each `usage.byRole` row carry `toolCalls` and
+   * `toolErrors`, and each issue names its `driver` (`classic` | `lean`).
+   */
+  usageTools: true,
   /** #1468 — `work --continue-pr` continues the issue's open PR; the result's `continuedPr`. */
   continuePr: true,
   /** #1471 — `plan --start` / `--resume`: a planning session, one turn per run, filed only on a confirm. */

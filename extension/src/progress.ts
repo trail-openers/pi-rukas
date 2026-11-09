@@ -77,7 +77,16 @@ export function emptyRunningState(role: string, tag?: string): RunningState {
     tag,
     turns: 0,
     toolUses: 0,
-    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: 0,
+      turns: 0,
+      toolCalls: 0,
+      toolErrors: 0,
+    },
     totalTokens: 0,
     elapsedMs: 0,
     done: false,
@@ -204,6 +213,8 @@ interface ProgressEvent {
     usage?: PiUsage;
     model?: string;
   };
+  /** Set on `tool_execution_end`: the call reported an error. */
+  isError?: boolean;
 }
 
 /**
@@ -336,6 +347,17 @@ export function ingestEvent(
   // 14.6-min healthy bash gaps flagged in production transcripts). Any
   // event from the child — tool results included — proves it is alive.
   state.lastEventAt = Date.now();
+  // Tool calls are counted from the flat execution events, the only place a
+  // codemode script's nested calls appear; `toolUses` below counts toolCall
+  // blocks for the deck and misses them.
+  if (event.type === "tool_execution_start") {
+    state.usage.toolCalls = (state.usage.toolCalls ?? 0) + 1;
+    return false;
+  }
+  if (event.type === "tool_execution_end") {
+    if (event.isError === true) state.usage.toolErrors = (state.usage.toolErrors ?? 0) + 1;
+    return false;
+  }
   if (event.type !== "message" && event.type !== "message_end") return false;
   const msg = event.message;
   // #772 — toolResult messages: feed the success-keyed counter. Pi emits
