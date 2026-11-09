@@ -16,7 +16,7 @@
  * two runs of ONE check print the SAME line.
  *
  * It is deliberately stricter than "the base was red too". The unit of comparison is the
- * whole line; the SCANE set is wider than the classifier:
+ * whole line; the compared set is wider than the classifier:
  *
  *   - the excuse compares EVERY line either run printed, not only the lines the shared
  *     classifier reads. A line it recognises is a failure it can NAME, and those are the
@@ -24,8 +24,9 @@
  *     header, the driver's own diagnostic dialect. A line it does not read is still text
  *     the head printed, and a head-only one of those is a defect nobody read: a bare
  *     `killed`, an `Exit code: 1`, a jest `●` block, a `# not ok 9` TAP comment, a
- *     zero-width character inside a name. All refuse. Only the executor's own writing —
- *     {@link harnessResidue} — is discounted, and only for who wrote it;
+ *     zero-width character inside a name. All refuse. The fixture's own trace line and the
+ *     harness's own per-run stamp are NOT exempt: nothing in production writes either, and
+ *     a fixture that prints one on one side only must print it on both;
  *   - one rule decides what the excuse may not see, and it REFUSES rather than omitting,
  *     in BOTH directions of ignorance. A line past {@link FAILURE_LINE_SCAN_MAX} refuses
  *     either side, because a judge that saw only its first 8 KiB cannot tell two long
@@ -36,9 +37,10 @@
  *     only A. The accepted cost: a PR that ADDS PASSING TESTS to a suite already red at
  *     base hands back (its `1 failed, 5 passed` summary is head-only), so do renumbered
  *     TAP output and any timing line whose text moved. Each is a hand-back, not a green;
- *   - both sets must be non-empty and EVERY head line must equal a base line VERBATIM —
+ *   - both sides must be non-empty and EVERY head line must equal a base line VERBATIM —
  *     trimmed, its own tree's prefix out, nothing else folded. A changed reason, a moved
- *     counter or a shifted check index is a different line;
+ *     counter or a shifted check index is a different line; a head left with nothing but
+ *     discounted residue is an empty key set, and an empty set excuses nothing;
  *   - the two trees must still be two trees. Compared in one tree every line is its
  *     own echo and the comparison proves nothing about which run printed what;
  *   - a base run whose red looks like a missing dependency tree is not evidence
@@ -108,27 +110,20 @@ export function failureLinesOf(stream: string): string[] {
 }
 
 /**
- * The harness's OWN per-run residue, discounted from the comparison, and the one echo
- * that may stand in for a base line.
+ * The harness's OWN residue, discounted from the comparison.
  *
- * The streams the excuse reads are BUILT by the executor, which stamps its own writing
- * beside what the gate printed: a `tier-said-<marker>-<n>` trace line, a
- * `boom from the <tier>` line, and a `Command failed: <cmd>` echo. None came from the
- * project and no two runs of ONE tier print them identically — the re-run's stamp carries
- * its run number — so requiring a line the EXECUTOR wrote to appear at the base is not a
- * requirement about the project's failures at all: it refuses every real tier in the
- * suite.
- *
- * The discount is by WHO WROTE the line, never by what it says, and it is anchored to the
- * harness's whole-line forms: a gate line that merely OPENS with `killed` keeps its text,
- * and the echo is admitted only when it quotes the command both runs were given (either
- * tree's prefix out of it), so a failure spelled inside the quoted command does not ride
- * in on the prefix. A bare `killed`, `Exit code: 1`, a jest `●` block, a `# not ok 9` TAP
- * comment and a zero-width character inside a name are all refused.
+ * The streams the excuse reads are BUILT by the executor, which prefixes its own
+ * `Command failed: <cmd>` echo ({@link exec.ts}'s `execShell`) to what the gate printed.
+ * That line came from nobody in the project, so requiring the EXECUTOR's writing to appear
+ * at the base is no requirement about the project's failures — a head one echo ahead of the
+ * base would refuse on text no gate printed. It is the ONLY line discounted, and the
+ * discount is by WHO WROTE the line, never by what it says: a gate line that merely OPENS
+ * with `killed` keeps its text, and the echo is admitted only when it quotes the command
+ * both runs were given (either tree's prefix out of it), so a failure spelled inside the
+ * quoted command does not ride in on the prefix. A bare `killed`, `Exit code: 1`, a jest
+ * `●` block, a TAP comment and a zero-width character inside a name are all refused.
  */
 function harnessResidue(line: string, cmd: string, headRoot: string, probeRoot: string): boolean {
-  if (/^tier-said-[A-Za-z0-9_-]+(?:-\d+)?$/.test(line)) return true;
-  if (/^boom from the [A-Za-z0-9_ -]+$/.test(line)) return true;
   if (!/^Command failed:\s/.test(line)) return false;
   const echoed = line.slice("Command failed:".length).trim();
   // One command is one command, whichever tree it was run from.
@@ -282,7 +277,6 @@ export function baselineExcuse(opts: {
   const head = allLinesOf(headStream);
   const base = allLinesOf(baseStream);
   // A line either stream printed past the classifier's window is judged on a clipped
-  // A line either stream printed past the classifier's window is judged on a clipped
   // view, so it cannot stand as evidence on either side.
   if (hasOverWindowLine(headStream) || hasOverWindowLine(baseStream)) return { kind: "refused" };
   // Both trees resolved ONCE for this comparison, and a probe tree that is the run's
@@ -299,11 +293,6 @@ export function baselineExcuse(opts: {
   // allow-list or harness exemption is left to place a line the base did not print —
   // except the executor's own writing, which {@link harnessResidue} answers for.
   if (head.length === 0 || base.length === 0) return { kind: "refused" };
-  // The text two runs' lines are compared as: each side with ITS OWN tree's prefix out of
-  // it, so head and base agree on what the check WAS, not on where each run ran. ONE key,
-  // and it keeps every digit: `expected 3 to be 4` and `expected 3 to be 5` are two defects,
-  // a runner summary whose pass count moved is a head-only line, and a renumbered TAP check
-  // is a different line. Each of those hands the run back — never a green.
   // One key per side: each line with ITS OWN tree's prefix out, so head and base agree on
   // what the check WAS, not on where each run ran. It keeps every digit — `expected 3 to be
   // 4` and `expected 3 to be 5` are two defects, a moved pass count is a head-only line, and
@@ -316,9 +305,12 @@ export function baselineExcuse(opts: {
     base.map((line) => stripRoot(line, probeRoot)).filter((line) => !residue(line)),
   );
   if (!headKey.every((line) => baseKey.has(line))) return { kind: "refused" };
-  // The disclosure names only the failures the classifier could read: a head line it
-  // cannot read was refused above, so what reaches the PR body is failing checks, never
-  // a stream's prose.
+  // The disclosure names only the failures the classifier could read. A head whose every
+  // line is unread never reaches here: `head.length === 0` above asks the RAW stream and the
+  // residue discount runs after it, so a head left with only discounted lines has an empty
+  // key set and is refused there. That refusal is what keeps the disclosure naming real
+  // checks, and it is asserted below — a `## Pre-existing test failures` section that named
+  // no check would be the one green this module must never grant.
   const matched = failureLinesOf(headStream)
     .map((line) => stripRoot(line, headRoot))
     .filter((line) => line.length > 0);

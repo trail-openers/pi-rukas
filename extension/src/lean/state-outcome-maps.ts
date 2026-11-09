@@ -203,9 +203,6 @@ export const PREEXISTING_NAME_MAX_CHARS = 200;
 
 /** What one tier's pre-existing-failure disclosure records. */
 export interface PreexistingTierRecord {
-  // A step log written before the verbatim rule may also carry a `baseNames` set, which
-  // nothing reads any more — `ci` re-probes the base. Such a field is ignored, so a
-  // resumed run loads, and {@link validatedPreexistingFailures} drops it.
   /** The tier's command, verbatim, as the disclosure names it. */
   cmd: string;
   /** The head run's failing names, in stream order, capped at {@link PREEXISTING_NAMES_CAP}. */
@@ -262,6 +259,9 @@ export function preexistingFailuresProblem(value: unknown): string | undefined {
       if (problem !== undefined)
         return `outcome preexistingFailures[${JSON.stringify(tier)}] names entry ${problem}`;
     }
+    // A step log written before the verbatim rule may still carry a `baseNames` set,
+    // which nothing reads any more — `ci` re-probes the base. Such a field is ignored,
+    // so a resumed run loads; {@link validatedPreexistingFailures} drops it.
   }
   return undefined;
 }

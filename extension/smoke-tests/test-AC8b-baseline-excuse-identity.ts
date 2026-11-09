@@ -19,7 +19,8 @@
  *     trace, a bare `Exit code: 1` or `killed`, a jest `●` block, a TAP line with a
  *     zero-width space inside a name — are each refused unless the base printed the
  *     identical text. The one executor line discounted is the `Command failed: <cmd>`
- *     echo of the command both runs were given, and only as the head's lone extra line;
+ *     echo of the command both runs were given — the executor's own writing and nothing
+ *     else, and its discount is anchored to the whole line quoting that command;
  *   (over-window) a raw line past the classifier's own scan window REFUSES the excuse
  *     too. The classifier judges such a line on its first 8 KiB, so two lines differing
  *     only past the window can fold onto one comparison key — the folding this module

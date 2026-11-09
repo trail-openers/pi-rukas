@@ -218,12 +218,16 @@ export async function run(c: CiCase): Promise<Ran> {
         // declares what that run printed owns its stream, exactly as the verify
         // recorder does for `verify`'s own probe. The probe's tree is identified by
         // PATH, not by a counter: a case that reuses a record never reaches a second
-        // run, and a counter alone would grade a third HEAD run as the base.
+        // run, and a counter alone would grade a third HEAD run as the base. The stamp
+        // this stub gives the HEAD run is `boom from the <tier>`, written by THIS recorder
+        // rather than by the project — so the base run of the same command gets the SAME
+        // stamp. Two runs of one tier must print identical residue for the excuse to
+        // compare them verbatim, and a stamp the base never printed is a head-only line.
         if (c.baseTierOutput !== undefined && String(o?.cwd ?? "").includes(".baseline-lean-verify-"))
           throw Object.assign(new Error(`Command failed: ${cmd}`), {
             code: 1,
             stdout: c.baseTierOutput,
-            stderr: "",
+            stderr: "boom from the full tier\n",
           });
         if (c.tierFails !== undefined) throw c.tierFails;
         if (c.tierExit !== undefined)

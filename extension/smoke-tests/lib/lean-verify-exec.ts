@@ -99,8 +99,9 @@ export function makeVerifyExec(opts: {
   let frozenRuns = 0;
   /** Runs of the tier the BASE PROBE has made in its throwaway checkout. */
   let baseTierRuns = 0;
-  /** The tier's own marker, so a stubbed red prints the identity of ITS tier. */
-  const markerOf = (cmd: string): string => cmd.match(/tier-said-([A-Za-z0-9_-]+)/)?.[1] ?? "red";
+  /** The tier's own marker, so a stubbed red prints the identity of ITS tier. A command
+   * with no `tier-said-` marker has no stamp at all — the stub invents none. */
+  const markerOf = (cmd: string): string | undefined => cmd.match(/tier-said-([A-Za-z0-9_-]+)/)?.[1];
   /**
    * Is this exec call the step running a project tier's shell command?
    *
@@ -141,17 +142,27 @@ export function makeVerifyExec(opts: {
         // A case that declares what the base printed: the executor's own non-zero shape
         // carrying that stream, which is the only way to ask "what did the base name"
         // about a run in a tree the case built — the same seam `baseBlobBytes` uses for
-        // the base's bytes. The harness's `Command failed: <cmd>` echo is part of that
-        // shape and is NOT withheld: the base probe really did run this tier and the
-        // executor really did prefix its failure with this line, so a base stream without
-        // it would be a stream no real run produced, and a tier whose own echo carries a
-        // failure word (`Command failed: sh -c '… FAILED tests/x.py::t …'`) could then be
-        // excused for a head-only line the base would in fact have echoed too.
+        // the base's bytes. Two facts make this a REAL run's stream rather than a declared
+        // one, and the excuse compares its lines VERBATIM, so the base must print what a
+        // run of THIS tier prints:
+        //   - the executor's `Command failed: <cmd>` echo is part of the shape and is NOT
+        //     withheld: the base probe really did run this tier and the executor really did
+        //     prefix its failure with this line, so a base stream without it would be a
+        //     stream no real run produced, and a tier whose own echo carries a failure word
+        //     (`Command failed: sh -c '… FAILED tests/x.py::t …'`) could then be excused
+        //     for a head-only line the base would in fact have echoed too;
+        //   - the tier's own `tier-said-<marker>` stamp, which a tier built by
+        //     `lean-verify-tiers` prints on EVERY red run of itself — head and base alike.
+        //     Withholding it here left the head with a line the base never printed, and the
+        //     excuse refused a pair whose failing lines were identical. Carrying it is what
+        //     makes the two runs' residue IDENTICAL, which is the only residue shape the
+        //     verbatim rule can compare.
+        const marker = markerOf(cmd);
         return Promise.reject(
           Object.assign(new Error(`Command failed: ${cmd}`), {
             code: 1,
             stdout: o.baseTierOutput,
-            stderr: "",
+            stderr: marker === undefined ? "" : `tier-said-${marker}\n`,
           }),
         );
       }
@@ -167,13 +178,16 @@ export function makeVerifyExec(opts: {
     if (o.headRerunRejects !== undefined && run === 1) return Promise.reject(o.headRerunRejects);
     // A case whose tier must NAME failing tests owns the stream both of HEAD's runs
     // print; the exit code stays the executor's own non-zero shape, so `runTier` reads
-    // a real red rather than a kill or a command that never started.
+    // a real red rather than a kill or a command that never started. The tier's own stamp
+    // carries NO run number: a per-run digit would make the head's two runs print
+    // DIFFERENT residue, and the baseline excuse compares the head's lines against the
+    // base verbatim, so a stamp that moved would read as a line only the head printed.
     if (run < redBudget - 1 || o.headTierOutput !== undefined) {
       return Promise.reject(
         Object.assign(new Error(`Command failed: ${cmd}`), {
           code: 1,
           stdout: o.headTierOutput ?? "",
-          stderr: `tier-said-${markerOf(cmd)}-${String(run + 1)}\n`,
+          stderr: markerOf(cmd) === undefined ? "" : `tier-said-${markerOf(cmd)}\n`,
         }),
       );
     }
