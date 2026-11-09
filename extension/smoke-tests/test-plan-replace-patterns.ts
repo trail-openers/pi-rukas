@@ -31,9 +31,10 @@
  * so neither this file nor the issue text carries the literal two-character
  * sequences.
  */
-import { type AngleFindings, draftSpec } from "../src/plan-draft.ts";
-import { phase3Draft } from "../src/plan-driver-phase3.ts";
+import { type AngleFindings, type PlanItemKindName, draftSpec } from "../src/plan-draft.ts";
 import { correctiveRedraft } from "../src/plan-driver-redraft.ts";
+import type { OperatorDirectives } from "../src/plan-directives.ts";
+import type { RenderBudget } from "../src/plan-render-budget.ts";
 import { type PlanGap, PlanType } from "../src/plan-types.ts";
 import {
   type ResolvedDecision,
@@ -56,7 +57,7 @@ const APOSTROPHE = D + String.fromCharCode(39); // the suffix-inserting pattern
 const AMPERSAND = D + String.fromCharCode(38); // the matched-text pattern
 const DIGIT = `${D}1${D}2`; // inert at this sink — the no-regression row
 
-const NO_DIRS = {
+const NO_DIRS: OperatorDirectives = {
   acceptanceCriteria: [],
   pitfalls: [],
   outOfScope: [],
@@ -66,7 +67,12 @@ const NO_DIRS = {
   operatorOutcomes: [],
 };
 
-function findings(text: string, items: { kind: string; text: string }[]): AngleFindings[] {
+const BUDGET: RenderBudget = { maxItemsPerSection: 20, itemClipChars: 400 };
+
+function findings(
+  text: string,
+  items: { kind: PlanItemKindName; text: string }[],
+): AngleFindings[] {
   return [
     {
       name: "affected-code",
@@ -177,7 +183,7 @@ const DESCRIPTOR = "make the plan body renderer insert untrusted text verbatim";
       outOfScope: [],
       depth: 0,
       directives: NO_DIRS,
-      chosenBudget: { maxItemsPerSection: 20, itemClipChars: 400 },
+      chosenBudget: BUDGET,
       setCarried: () => {},
       setTitleBody: (t, b) => {
         title = t;
@@ -282,6 +288,41 @@ const DESCRIPTOR = "make the plan body renderer insert untrusted text verbatim";
     countHeading(large, "## Open Questions") === 1 &&
       countHeading(large, "## Context & motivation") === 1,
     "no heading occurs twice in the pattern body with filler",
+  );
+}
+
+/** Section text from `## heading` to `## next`, or to end-of-body when `next` is omitted. */
+function section(body: string, heading: string, next?: string): string {
+  const start = body.indexOf(`## ${heading}`);
+  const end = next === undefined ? -1 : body.indexOf(`## ${next}`, start + 1);
+  return start < 0 ? "" : body.slice(start, end < 0 ? undefined : end);
+}
+
+// -------------------------- the Open Questions placeholder path (no open questions at all)
+
+{
+  // Nothing open and nothing carried: `renderOpenQuestions` answers with the
+  // same bytes the template carries, so the needle must match and the section
+  // must still render — the placeholder is what the splice is located by, and
+  // a draft with no Open Questions section is a spec with a lost section.
+  const bare = draftSpec(
+    "bug",
+    DESCRIPTOR,
+    findings("surveyed the render path", [
+      { kind: "acceptance-criterion", text: "the section renders" },
+    ]),
+    [],
+    [],
+    [],
+    0,
+    NO_DIRS,
+    [],
+    undefined,
+  );
+  assert(
+    countHeading(bare.body, "## Open Questions") === 1 &&
+      section(bare.body, "Open Questions", "Out of scope").includes("- (none)"),
+    "no open questions: draftSpec still renders an Open Questions section carrying the placeholder",
   );
 }
 

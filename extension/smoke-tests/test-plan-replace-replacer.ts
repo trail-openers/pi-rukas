@@ -25,7 +25,10 @@
  *     test-plan-research-signal-canary.ts, so a `//` inside a string or regex
  *     literal truncates the real code that follows it on that line;
  *   - the scan is per line, so a call whose argument list spans lines is
- *     unclassified (and therefore a ✗) unless its opening line closes the call.
+ *     unclassified (and therefore a ✗) unless its opening line closes the call;
+ *   - the PATTERN argument is never judged, and needs no judgement here: dollar
+ *     patterns expand only in the REPLACEMENT, so a dynamic pattern cannot
+ *     re-render text the way a dynamic replacement did.
  * Closing these needs a tokenizer, which costs more than the rule protects
  * (AGENTS.md §6). test-plan-replace-patterns.ts is what actually pins the render.
  */
@@ -39,6 +42,14 @@ const B = String.fromCharCode(92);
 // this file never holds the literal sequence: "\ <backslash> $ &".
 const ESCAPER = `"${B}${B}${D}&"`;
 
+function assert(cond: boolean, msg: string) {
+  if (cond) console.log(`✓ ${msg}`);
+  else {
+    console.error(`✗ ${msg}`);
+    exit = 1;
+  }
+}
+
 const SRC = path.resolve(import.meta.dirname, "..", "src");
 const FILES = [
   "plan-draft.ts",
@@ -50,12 +61,13 @@ const FILES = [
   "plan-types.ts",
 ];
 
-/**
- * The source text of a regex literal starting at `from`, or null when it does
- * not terminate on this line. `/` is not quoted, so its character classes have
- * to be tracked: `/[.,;:!?)]+$/` and `/[,;:)]+[)\]]*$/g` both hold the `)` and
- * `]` that a quote-only scan would treat as the end of the call.
- */
+// How many `.replace(`/`.replaceAll(` call sites the seven files hold today
+// (15). The floor is HALF that count: enough headroom that ordinary edits to
+// those files do not fail it, low enough to stay clear of the real failure it
+// catches — a pin that silently judged almost nothing (a method rename, a scan
+// that stopped reading arguments) would otherwise report a clean sweep on zero.
+const MIN_SITES = 8;
+
 /**
  * The source text of a regex literal starting at `from`, or null when it does
  * not terminate on this line. A pattern is a PATTERN, never a replacement, so it
@@ -133,6 +145,9 @@ function safeReplacement(arg: string): boolean {
   const quote = a[0] as string;
   if (quote === '"' || quote === "'" || quote === "`") {
     if (a === ESCAPER) return true; // the escapeRe escaper idiom, exact source text
+    // One literal token and nothing after it: a quote that closes early before
+    // `+`, `?` or `:` is concatenation or a ternary over untrusted text.
+    if (!a.endsWith(quote) || a.slice(1, -1).includes(quote)) return false;
     const rest = a.slice(1, -1);
     if (rest.includes(D)) return false; // untrusted bytes in the replacement
     return quote !== "`" || !rest.includes(`${D}{`);
@@ -142,6 +157,25 @@ function safeReplacement(arg: string): boolean {
   // no parameter, so there is nothing in scope it could denote a function. A
   // bare identifier therefore carries text of unknown origin and must fail.
   return false; // a variable, interpolation, concatenation, or member expression
+}
+
+// Classifier unit rows: the arguments the rule must reject, as inline source
+// text. The rows the previous version accepted (a quoted literal followed by
+// anything) are what this closes.
+const CLASSIFIER_ROWS: { arg: string; safe: boolean }[] = [
+  { arg: `"a" + openQ`, safe: false },
+  { arg: `"a" + "b"`, safe: false },
+  { arg: `"x" ? a : b`, safe: false },
+  { arg: `"a"`, safe: true },
+  { arg: `m => m[0]`, safe: true },
+  { arg: ESCAPER, safe: true },
+];
+for (const row of CLASSIFIER_ROWS) {
+  const verdict = safeReplacement(row.arg);
+  assert(
+    verdict === row.safe,
+    `classifier: ${(row.arg ?? "").trim()} classified ${verdict ? "safe" : "unsafe"}, expected ${row.safe ? "safe" : "unsafe"}`,
+  );
 }
 
 const bad: string[] = [];
@@ -177,8 +211,8 @@ console.log(
 for (const b of bad) console.error(`✗ ${b}`);
 if (bad.length > 0) exit = 1;
 console.log(
-  `${sites >= 15 ? "✓" : "✗"} the pin judged ${sites} sites (a scan that found nothing judged nothing)`,
+  `${sites >= MIN_SITES ? "✓" : "✗"} the pin judged ${sites} sites, expected at least ${MIN_SITES} (a scan that found nothing judged nothing)`,
 );
-if (sites < 15) exit = 1;
+if (sites < MIN_SITES) exit = 1;
 
 process.exit(exit);

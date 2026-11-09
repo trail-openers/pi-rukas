@@ -451,6 +451,10 @@ ${subIssues}${opDecompositionSection}${depthLimit}`;
   // below for why it must be located rather than replaced.
   const OPEN_QUESTIONS_PLACEHOLDER = "- (none)\n";
   const OPEN_QUESTIONS_HEADING = "## Open Questions\n\n";
+  // ONE const holds the bytes searched for, and it is BUILT from the two
+  // constants the template above writes, so needle and template cannot drift:
+  // a change to either constant moves both sites together.
+  const OQ_NEEDLE = `${OPEN_QUESTIONS_HEADING}${OPEN_QUESTIONS_PLACEHOLDER}`;
 
   // PR #640: single splice site (the dead onCorrective splice is gone).
   // Splice → collapse → render Open Questions from marked decisions →
@@ -470,11 +474,14 @@ ${subIssues}${opDecompositionSection}${depthLimit}`;
   // dollar-ampersand form the matched text. One item quoting such a pattern
   // multiplied the whole body. Concatenation has no replacement semantics, so
   // untrusted text is inserted verbatim.
-  const oqAt = collapsed.indexOf(`${OPEN_QUESTIONS_HEADING}${OPEN_QUESTIONS_PLACEHOLDER}`);
-  const finalBody =
-    oqAt === -1
-      ? collapsed
-      : `${collapsed.slice(0, oqAt)}${OPEN_QUESTIONS_HEADING}${openQ}\n${collapsed.slice(oqAt + OPEN_QUESTIONS_HEADING.length + OPEN_QUESTIONS_PLACEHOLDER.length)}`;
+  const oqAt = collapsed.indexOf(OQ_NEEDLE);
+  if (oqAt === -1) {
+    // Unreachable while the template and the needle share these constants.
+    // Loud rather than silent: dropping the section here would ship a spec
+    // with no Open Questions and no trace of the loss.
+    throw new Error(`draftSpec: the Open Questions placeholder ${OQ_NEEDLE} is missing`);
+  }
+  const finalBody = `${collapsed.slice(0, oqAt)}${OPEN_QUESTIONS_HEADING}${openQ}\n${collapsed.slice(oqAt + OQ_NEEDLE.length)}`;
 
   // #1087: truncated operator channels as data; filing paths halt on this, not the body.
   const operatorOmitted = operatorOmissions({
