@@ -41,12 +41,10 @@ const RECORD: PreexistingTierRecord = {
   ],
   total: 7,
   baseSha: "c".repeat(40),
-  baseNames: [
-    "FAILED tests/a.spec.ts::t1 - Assert",
-    "FAILED tests/b.spec.ts::t2 - Assert",
-    "FAILED tests/c.spec.ts::t3 - Assert",
-  ],
 };
+
+/** The same record as a PRE-#2100 step log wrote it, base set and all. */
+const LEGACY_RECORD = { ...RECORD, baseNames: [...RECORD.names, "FAILED tests/c.spec.ts::t3 - Assert"] };
 
 /** Write a run whose newest step is `step`, then load it back. */
 function roundTrip(issue: number, step: Record<string, unknown>): ReturnType<typeof loadRun> {
@@ -100,6 +98,15 @@ const verifyStep = (outcome: Record<string, unknown>): Record<string, unknown> =
   check(
     JSON.stringify(oc?.preexistingFailures?.["fast"]) === JSON.stringify(RECORD),
     `(round-trip) the record survives save and load unchanged (${JSON.stringify(oc?.preexistingFailures?.["fast"])})`,
+  );
+  // R3: a resumed run whose step log still carries the field the writer no longer
+  // produces must LOAD, with the rest of the record intact and no base set to replay.
+  const legacy = roundTrip(74, { ...verifyStep({}), key: "74:verify:0", outcome: { kind: "green", verifiedHead: "b".repeat(40), preexistingFailures: { fast: LEGACY_RECORD } } });
+  const legacyOc = legacy?.steps[legacy.steps.length - 1]?.outcome;
+  check(
+    legacyOc?.preexistingFailures?.["fast"] !== undefined &&
+      JSON.stringify(legacyOc.preexistingFailures["fast"]) === JSON.stringify(RECORD),
+    `(round-trip) a log whose record carries baseNames loads, minus that field (${JSON.stringify(legacyOc?.preexistingFailures?.["fast"])})`,
   );
   check(
     oc?.verifiedHead === "b".repeat(40),

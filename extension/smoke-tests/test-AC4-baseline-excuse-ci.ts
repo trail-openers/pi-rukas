@@ -8,13 +8,14 @@
  * for its own tiers, so `ci` may reuse `verify`'s record — but the record is a
  * claim that licenses a GREEN, and reuse is narrow (see `lean/ci-excuse.ts`):
  *
- *   (reuse) byte-identical command, newest DECIDED verify, green, and
- *     `verifiedHead` equal to the head `ci` judges -> green, ONE tier run at HEAD,
- *     and no base probe of `ci`'s own
- *   (moved-head) the certified head is not the head `ci` judges -> no reuse
- *   (different-command) the tier `ci` runs differs by a flag -> no reuse
- *   (no-record) no record at all -> `ci` probes the base itself and pays the extra
- *     tier run, excusing only when the base really printed the same names
+ *   (record-not-reused) the newest DECIDED verify is green, certified this head, and
+ *     carries a byte-identical command with a `baseNames` set — and `ci` STILL runs its
+ *     OWN probe: TWO tier runs, one of them in the throwaway base checkout, and the
+ *     excuse granted only on what THAT probe printed. A recorded base set is no longer
+ *     evidence `ci` may compare against.
+ *   (probe-refuses) the same reusable record, with the probe's tier red on OTHER tests
+ *     -> the run stays red, because the record buys `ci` nothing
+ *   (no-record) no record at all -> the same probe path, and the same verdict
  *
  * The probe path is exercised here rather than in `test-AC5` because it shares this
  * recorder; `test-AC5` covers the probe's own edge shapes.
@@ -49,8 +50,11 @@ const FROZEN_BYTES = "#!/bin/sh\nexit 0\n";
  *  of this contract does not satisfy what the run is held to. */
 const BASE_BYTES = "#!/bin/sh\nexit 1\n";
 
-/** A verify record of the shape `verify` writes for an excused tier. */
-function recordFor(over: Partial<PreexistingTierRecord> = {}): PreexistingTierRecord {
+/**
+ * A verify record of the shape a PRE-#2100 step log carries — the current writer never
+ * persists `baseNames`, and nothing reads it, so this fixture is the resumed-run case.
+ */
+function recordFor(over: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
   return {
     cmd: FULL,
     names: NAMES,
@@ -79,28 +83,58 @@ const PROBE = {
   frozenBytes: { path: FROZEN_FILE, bytes: FROZEN_BYTES, baseBytes: BASE_BYTES },
 } as const;
 
-// ------------------------------------------------------------------ (reuse)
+// ------------------------------------------------------- (record-not-reused)
 {
-  const r = await run({ full: FULL, ...tierRed, ...PROBE, reuseRecord: recordFor() });
+  const r = await run({
+    full: FULL,
+    ...tierRed,
+    ...PROBE,
+    reuseRecord: recordFor(),
+    // The base's output is supplied ONLY through the probe, so a reuse replay would
+    // grade this green off the record and never run the tier at the base.
+    baseTierOutput: TIER_STREAM,
+  });
   assert(
     r.outcome?.kind === "green",
-    `(reuse) a red full tier whose names the recorded base has -> green (got ${r.outcome?.kind ?? `threw: ${r.threw?.message}`}; ${(r.outcome?.reason ?? "").slice(0, 140)})`,
+    `(record-not-reused) ci excuses on its own probe's output (got ${r.outcome?.kind ?? `threw: ${r.threw?.message}`}; ${(r.outcome?.reason ?? "").slice(0, 140)})`,
   );
   assert(
     (r.outcome?.reason ?? "").includes("pre-existing"),
-    `(reuse) the green discloses the excuse rather than claiming a clean tier (${(r.outcome?.reason ?? "").slice(0, 160)})`,
+    `(record-not-reused) the green discloses the excuse rather than claiming a clean tier (${(r.outcome?.reason ?? "").slice(0, 160)})`,
   );
   assert(
     rec(r)?.["full"]?.names.join(",") === NAMES.join(","),
-    `(reuse) the record carries the tier's names (${JSON.stringify(rec(r)?.["full"])})`,
+    `(record-not-reused) the record carries the tier's names (${JSON.stringify(rec(r)?.["full"])})`,
   );
   assert(
-    r.cmds.filter((c) => c === FULL).length === 1,
-    `(reuse) the full tier ran once at HEAD and never at the base (${String(r.cmds.filter((c) => c === FULL).length)})`,
+    r.cmds.filter((c) => c === FULL).length === 2,
+    `(record-not-reused) a reusable record buys no tier run: HEAD and the base probe both ran (${String(r.cmds.filter((c) => c === FULL).length)})`,
   );
   assert(
-    !r.cmds.some((c) => c.includes(".baseline-lean-verify-")),
-    "(reuse) and ci paid for no throwaway base checkout of its own",
+    (r.tierRuns ?? 0) === 2,
+    `(record-not-reused) the tier ran again inside the throwaway checkout (${String(r.tierRuns)})`,
+  );
+}
+
+// --------------------------------------------------------- (probe-refuses)
+{
+  const r = await run({
+    full: FULL,
+    ...tierRed,
+    ...PROBE,
+    reuseRecord: recordFor(),
+    // The base is red on OTHER tests: a colour, not an excuse — and the record that
+    // names the head's own failures may not stand in for what the probe printed.
+    baseTierOutput: "FAILED tests/z.py::other - Assert",
+  });
+  assert(
+    r.outcome?.kind === "red",
+    `(probe-refuses) a byte-identical, head-matching, baseNames-bearing record still hands the run back (got ${r.outcome?.kind ?? `threw: ${r.threw?.message}`})`,
+  );
+  assert(rec(r) === undefined, "(probe-refuses) no excuse recorded");
+  assert(
+    r.cmds.filter((c) => c === FULL).length === 2,
+    `(probe-refuses) and it paid the probe to find out (${String(r.cmds.filter((c) => c === FULL).length)})`,
   );
 }
 
@@ -111,8 +145,8 @@ const PROBE = {
     ...tierRed,
     ...PROBE,
     reuseRecord: recordFor(),
-    // The verify step certified a head the PR does not carry: nothing about that
-    // verdict may be reused for the head ci is judging.
+    // Nothing about a verify verdict may be reused for a head ci is not judging; the
+    // case keeps the shape so the probe path is exercised from a stale-certified log too.
     verifiedHead: "d".repeat(40),
     worktreeHead: "other",
   });
@@ -142,23 +176,6 @@ const PROBE = {
     `(different-command) a record for another command excuses nothing (got ${r.outcome?.kind ?? `threw: ${r.threw?.message}`})`,
   );
   assert(rec(r) === undefined, "(different-command) no excuse recorded");
-}
-
-// ------------------------------------------------- (base-names-nothing-record)
-{
-  const r = await run({
-    full: FULL,
-    ...tierRed,
-    // A record whose base set was too large to persist is no evidence: comparing
-    // against a partial set would excuse a failure ci never saw at base.
-    reuseRecord: recordFor({ baseNames: undefined }),
-    baseTierOutput: "FAILED tests/z.py::other - Assert",
-  });
-  assert(
-    r.outcome?.kind === "red",
-    `(base-names-nothing-record) an omitted base set is treated as no record (got ${r.outcome?.kind ?? `threw: ${r.threw?.message}`})`,
-  );
-  assert(rec(r) === undefined, "(base-names-nothing-record) no excuse recorded");
 }
 
 // ----------------------------------------------------------------- (no-record)

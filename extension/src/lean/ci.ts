@@ -432,14 +432,12 @@ export async function ciOutcome(ctx: HandlerCtx, deps: CiDeps): Promise<Outcome>
       reason: `required checks CLEAN and the full verify tier passed at ${verified}`,
     };
   // The full tier is red. Before red-ding the run, ask whether every test it named
-  // was already red at the run's base commit — the same rule `verify` applies to its
-  // own tiers, with the recorded proof reused when ci's command is the tier verify
-  // already proved and re-probed otherwise.
+  // was already red at the run's base commit — the same verbatim rule `verify` applies
+  // to its own tiers, which `ci` pays for with its own probe of that base.
   const excuse = await fullTierExcuse({
     deps,
     ctx,
     full,
-    verified,
     wt,
     stream: tier.stream,
     ran: tier.ran,

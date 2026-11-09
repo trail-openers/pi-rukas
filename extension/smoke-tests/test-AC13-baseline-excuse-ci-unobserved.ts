@@ -35,16 +35,29 @@ const NAMES = [
 const STREAM = NAMES.join("\n");
 const FULL = "sh -c 'pytest'";
 
-/** The record `verify` writes for an excused tier, so the reuse arm is the one asked. */
+/**
+ * A `verify` disclosure of the shape a PRE-#2100 step log carries. `ci` no longer has a
+ * reuse arm to be reached through it, so these cases drive the observation guard through
+ * the probe path: with the base printing the head's own lines, an unobserved tier is the
+ * only thing left standing between the run and an excused green.
+ */
 function record(): PreexistingTierRecord {
   return {
     cmd: FULL,
     names: NAMES,
     total: NAMES.length,
     baseSha: "b".repeat(40),
-    baseNames: NAMES,
   };
 }
+
+/** The run's frozen contract, its base copy red so the probe answers `red` and runs the tier. */
+const PROBE = {
+  frozenBytes: {
+    path: "tests/AC1-retry.test.sh",
+    bytes: "#!/bin/sh\nexit 0\n",
+    baseBytes: "#!/bin/sh\nexit 1\n",
+  },
+} as const;
 
 /** Every shape `ciTierObserved` must say `false` for, while the stream names the base's tests.
  *  A kill or an un-startable command is `tierFailure`'s own infrastructure throw, so the
@@ -81,9 +94,9 @@ for (const unstamped of [new Error("boom"), {}, null, undefined]) {
 for (const [shape, reject] of Object.entries(UNOBSERVED)) {
   const r = await run({
     full: FULL,
-    // The reuse arm is what the guard governs: with a record on the log the tier
-    // would otherwise be graded green off this very stream.
-    reuseRecord: record(),
+    // The base printed the head's own lines, so the tier would be graded green off this
+    // very stream were it observed: the guard is the only thing that keeps the red.
+    baseTierOutput: STREAM,
     tierFails: reject,
   });
   const rec = (r.outcome as { preexistingFailures?: Record<string, unknown> } | undefined)
@@ -110,9 +123,17 @@ for (const [shape, reject] of Object.entries(UNOBSERVED)) {
   );
 }
 
-// The positive control: the same streams, on a run that really exited 1, still excuse.
+// The positive control: the same streams, on a run that really exited 1 and a base probe
+// that printed them, still excuse.
 {
-  const r = await run({ full: FULL, tierExit: 1, tierStdout: STREAM, reuseRecord: record() });
+  const r = await run({
+    full: FULL,
+    tierExit: 1,
+    tierStdout: STREAM,
+    baseTierOutput: STREAM,
+    ...PROBE,
+    reuseRecord: record(),
+  });
   assert(
     r.outcome?.kind === "green",
     `(observed) a full tier that really ran red still excuses (${r.outcome?.kind ?? `threw: ${r.threw?.message}`}; ${(r.outcome?.reason ?? "").slice(0, 120)})`,

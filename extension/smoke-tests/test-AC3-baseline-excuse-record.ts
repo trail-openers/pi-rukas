@@ -8,24 +8,27 @@
  * may claim, and what the reader may see.
  *
  *   (shape) the recorded tier carries the command VERBATIM, the head run's names in
- *     stream order, its TRUE total, the base sha, and the base's complete name set —
- *     the set `ci` needs to reuse the proof instead of paying for a second probe
+ *     stream order, its TRUE total, and the base sha — and NO base name set: `ci`
+ *     re-probes the base, so replaying one would be evidence nobody can re-derive
  *   (cap) more failures than the name cap are bounded in what is PRINTED while the
- *     total keeps telling the truth, and a base set too large to persist is omitted
- *     rather than truncated (a partial base set would let `ci` excuse a failure it
- *     never saw at base)
+ *     total keeps telling the truth
+ *   (legacy) a step log written while the record still carried `baseNames` loads, and the
+ *     field drops out of the rebuilt record rather than rejecting the run
  *   (validator) a record that could not have been written by the gate is refused by
  *     `state-outcome`'s validator, which forfeits the excuse rather than throwing
  *   (body) `publish` renders `## Pre-existing test failures` from the RECORD — tier,
  *     command, base commit, total, names — and prints nothing when no tier was excused
  */
-import { rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
-  PREEXISTING_BASE_NAMES_CAP,
   PREEXISTING_NAMES_CAP,
   preexistingFailuresProblem,
   validatedPreexistingFailures,
 } from "../src/lean/state-outcome-maps.ts";
+import { INITIAL_COUNTERS, leanStateFile, loadRun, saveRun } from "../src/lean/state.ts";
 import { leanPreexistingFailuresSection, publishBody } from "../src/lean/publish-body.ts";
 import type { PreexistingTierRecord } from "../src/lean/state-outcome-maps.ts";
 import { ROOTS, runVerify } from "./lib/lean-verify-fixture.ts";
@@ -81,8 +84,8 @@ function recordOf(r: Ran): PreexistingTierRecord | undefined {
     `(shape) the base sha is the probe's commit (${String(rec?.baseSha)})`,
   );
   assert(
-    rec?.baseNames?.join(",") === NAMES.join(","),
-    `(shape) the base's complete name set is recorded for ci to reuse (${JSON.stringify(rec?.baseNames)})`,
+    rec !== undefined && !("baseNames" in rec),
+    `(shape) the record carries no base name set for ci to replay (${JSON.stringify(Object.keys(rec ?? {}))})`,
   );
   assert(
     preexistingFailuresProblem({ fast: rec }) === undefined,
@@ -104,7 +107,6 @@ function recordOf(r: Ran): PreexistingTierRecord | undefined {
     names: many.slice(0, PREEXISTING_NAMES_CAP),
     total: many.length,
     baseSha: "b".repeat(40),
-    baseNames: many,
   };
   assert(
     preexistingFailuresProblem({ fast: rec }) === undefined,
@@ -119,24 +121,80 @@ function recordOf(r: Ran): PreexistingTierRecord | undefined {
     preexistingFailuresProblem({ fast: over }) !== undefined,
     `(cap) more names than the cap is refused rather than silently clipped`,
   );
-  const oversizedBase: PreexistingTierRecord = {
-    cmd: "pytest",
-    names: ["FAILED tests/x.py::t0 - Assert"],
-    total: 1,
-    baseSha: "b".repeat(40),
-    baseNames: Array.from(
-      { length: PREEXISTING_BASE_NAMES_CAP + 1 },
-      (_, i) => `FAILED tests/x.py::t${String(i)} - Assert`,
-    ),
-  };
-  assert(
-    preexistingFailuresProblem({ fast: oversizedBase }) !== undefined,
-    `(cap) a base set too large to persist is refused, never truncated in place`,
-  );
-  assert(
-    validatedPreexistingFailures({ fast: oversizedBase })?.["fast"] === undefined,
-    `(cap) and the rebuilt record drops the tier rather than storing a partial base set`,
-  );
+}
+
+// ------------------------------------------------------------------ (legacy)
+{
+  // R3: a run resumed from a step log written while the record still persisted the
+  // base's name set must still LOAD, and the field must not survive into the rebuilt
+  // record — that is what keeps a resumed `ci` from ever reading one.
+  const dir = mkdtempSync(join(tmpdir(), "pi-ens-ac3-legacy-"));
+  try {
+    const issue = 2100;
+    mkdirSync(dirname(leanStateFile(dir, issue)), { recursive: true });
+    writeFileSync(
+      leanStateFile(dir, issue),
+      JSON.stringify(
+        {
+          schema: 1,
+          issue,
+          version: "test",
+          models: {},
+          baseSha: "b".repeat(40),
+          branch: `feature/issue-${issue}`,
+          state: "ci",
+          counters: INITIAL_COUNTERS,
+          steps: [
+            {
+              key: `${issue}:verify:0`,
+              state: "verify",
+              startedAt: 1,
+              endedAt: 2,
+              outcome: {
+                kind: "green",
+                reason: "frozen tests and project tiers passed",
+                verifiedHead: "a".repeat(40),
+                preexistingFailures: {
+                  fast: {
+                    cmd: "pytest",
+                    names: NAMES,
+                    total: 2,
+                    baseSha: "b".repeat(40),
+                    baseNames: NAMES,
+                  },
+                },
+              },
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    const resumed = loadRun(dir, issue);
+    const rebuilt = resumed?.steps[0]?.outcome as
+      | { preexistingFailures?: Record<string, PreexistingTierRecord> }
+      | undefined;
+    assert(
+      resumed?.issue === issue && rebuilt?.preexistingFailures?.fast !== undefined,
+      "(legacy) a step log whose record carries baseNames still loads",
+    );
+    assert(
+      rebuilt?.preexistingFailures?.fast !== undefined &&
+        !("baseNames" in rebuilt.preexistingFailures.fast),
+      `(legacy) and the replayable base set drops out of the resumed record (${JSON.stringify(Object.keys(rebuilt?.preexistingFailures?.fast ?? {}))})`,
+    );
+    saveRun(dir, resumed as never);
+    const again = loadRun(dir, issue);
+    assert(
+      (again?.steps[0]?.outcome as { preexistingFailures?: Record<string, PreexistingTierRecord> })
+        ?.preexistingFailures?.fast?.names.join(",") === NAMES.join(","),
+      "(legacy) and the record survives a save/load round trip with its names intact",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 // --------------------------------------------------------------- (validator)
@@ -155,7 +213,6 @@ function recordOf(r: Ran): PreexistingTierRecord | undefined {
     ["an empty command", { fast: { ...good, cmd: "  " } }],
     ["a name with a control character", { fast: { ...good, names: ["FAILED t\u0000x - Assert"] } }],
     ["a name that is not a string", { fast: { ...good, names: [1] } }],
-    ["an empty base-name set", { fast: { ...good, baseNames: [] } }],
     ["not an object at all", { fast: "pytest said so" }],
   ];
   for (const [what, value] of refusals) {

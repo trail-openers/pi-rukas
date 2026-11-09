@@ -108,7 +108,7 @@ export interface CiCase {
    * very head `ci` judges, so the case declares the record and the recorder puts it
    * where production would have written it.
    */
-  reuseRecord?: PreexistingTierRecord;
+  reuseRecord?: PreexistingTierRecord | Record<string, unknown>;
   /** What the base probe's full-tier run printed, for the re-probe cases. */
   baseTierOutput?: string;
   /** The run's frozen contract, committed at the base AND the run's head and recorded
@@ -202,7 +202,7 @@ export async function run(c: CiCase): Promise<Ran> {
   if (c.reuseRecord !== undefined) {
     const v = f.ctx.steps.find((s) => s.state === "verify");
     if (v?.outcome !== undefined)
-      v.outcome = { ...v.outcome, preexistingFailures: { full: c.reuseRecord } };
+      v.outcome = { ...v.outcome, preexistingFailures: { full: c.reuseRecord } as never };
   }
   const marker = c.full ?? c.verifyCmd ?? "";
   const deps: CiDeps = {

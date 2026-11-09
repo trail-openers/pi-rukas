@@ -61,27 +61,23 @@ const GO = "--- FAIL: TestSolo (0.01s)";
   );
 }
 
-// ------------------------------------ (unreadable) one line refuses the whole excuse
+// ---------------------------- (unreadable) an unread line is inert; an empty set refuses
 {
-  // A tally in a dialect the table does not carry, and a bare file verdict: both
-  // declare a failing test and neither is readable, so neither may go uncounted.
-  // A bare file verdict and a count the table does not carry: both declare a failing
-  // test and neither is readable, so neither may go uncounted.
+  // A tally in a dialect the table does not carry, and a bare file verdict: both declare
+  // a failing test and neither is readable. The excuse reads only recognised lines, so
+  // such a line is INERT on either side — what refuses is the EMPTY recognised set, which
+  // is what stops a base that named nothing from counting as evidence the base was red.
   const RECORDED = ["FAILED a test.sh", "ERROR 17 tests blew up"];
   for (const unreadable of RECORDED) {
     assert(
-      excuseOf([TAP, unreadable], [TAP]).kind === "refused",
-      `(unreadable) "${unreadable}" in the HEAD stream refuses the whole excuse (${excuseOf([TAP, unreadable], [TAP]).kind})`,
-    );
-    // The base's copy of an unread line is not a NEW failure, so it does not refuse; what
-    // refuses is a base whose RECOGNISED set is empty — nothing to compare against.
-    assert(
-      excuseOf([TAP], [TAP, unreadable]).kind === "excused",
-      `(unreadable) "${unreadable}" sitting on a base that named the same line too excuses (${excuseOf([TAP], [TAP, unreadable]).kind})`,
+      excuseOf([TAP, unreadable], [TAP]).kind === "excused" &&
+        excuseOf([TAP], [TAP, unreadable]).kind === "excused",
+      `(unreadable) "${unreadable}" is inert on either side beside a matching recognised pair (${excuseOf([TAP, unreadable], [TAP]).kind}/${excuseOf([TAP], [TAP, unreadable]).kind})`,
     );
     assert(
-      excuseOf([TAP], [unreadable]).kind === "refused",
-      `(unreadable) "${unreadable}" as the base's ONLY line is no evidence (${excuseOf([TAP], [unreadable]).kind})`,
+      excuseOf([TAP], [unreadable]).kind === "refused" &&
+        excuseOf([unreadable], [TAP]).kind === "refused",
+      `(unreadable) "${unreadable}" as a stream's ONLY line leaves it naming nothing, and refuses (${excuseOf([TAP], [unreadable]).kind}/${excuseOf([unreadable], [TAP]).kind})`,
     );
   }
   assert(
