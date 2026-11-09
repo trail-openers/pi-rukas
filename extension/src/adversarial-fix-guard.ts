@@ -25,8 +25,11 @@
  * `config` is compared as keys, not bytes (#2138): the parsed list from
  * `git config --file <commonDir>/config --list --null`, exempt keys removed —
  * see git-config-keys.ts. Branch-tracking churn (`branch.<name>.remote/merge`,
- * a `remote.<name>.fetch` refspec) and a pure reorder are clean; any other key
- * that changes is a violation naming it, and an unreadable config is one too.
+ * a `remote.<name>.fetch` refspec) is clean, as is a reformat that keeps the
+ * parsed list; any other key that changes is a violation naming it, a section
+ * reorder is one too (fail-closed), and so is an unreadable, truncated or empty
+ * config. The list is compared as a list, never joined on a delimiter a config
+ * value could contain.
  *
  * Coverage limits, by design: gitignored paths are not covered (status skips
  * them); directories (nested repositories, submodules) and symlinks are
@@ -43,7 +46,13 @@ import type { Dirent } from "node:fs";
 import { lstat, readdir } from "node:fs/promises";
 import path from "node:path";
 import { execp } from "./exec.ts";
-import { CONFIG_MAX_BUFFER, changedConfigKeys, parseConfigList } from "./git-config-keys.ts";
+import {
+  CONFIG_MAX_BUFFER,
+  CONFIG_TIMEOUT_MS,
+  changedConfigKeys,
+  configEntryDigest,
+  parseConfigList,
+} from "./git-config-keys.ts";
 import type { DispatchResult } from "./types.ts";
 import { type ExecFn, resolvePath } from "./worktree.ts";
 
@@ -68,7 +77,7 @@ type Identity =
   | { kind: "unreadable"; reason: string };
 
 type Snapshot =
-  | { kind: "repo"; entries: string[] }
+  | { kind: "repo"; entries: string[]; config: string[] }
   | { kind: "not-repo" }
   | { kind: "unreadable"; reason: string };
 
@@ -88,9 +97,6 @@ const HASH_BATCH = 200;
  * large dirty caller would overflow exec's 1 MiB default and refuse every round.
  */
 const STATUS_MAX_BUFFER = 64 * 1024 * 1024;
-
-const entriesValue = (entries: string[], label: string): string =>
-  entries.find((e) => e.startsWith(`${label}\t`))?.slice(label.length + 1) ?? "";
 
 const errorText = (err: unknown): string =>
   (err instanceof Error ? err.message : String(err)).trim().split("\n").at(-1) ?? "unknown error";
@@ -229,8 +235,10 @@ async function snapshotCaller(cwd: string, exec: ExecFn): Promise<Snapshot> {
         argv: ["config", "--file", path.join(id.commonDir, "config"), "--list", "--null"],
         cwd: id.top,
         maxBuffer: CONFIG_MAX_BUFFER,
+        timeout: CONFIG_TIMEOUT_MS,
       })
     ).stdout;
+    const parsed = parseConfigList(config);
     const hashed = await hashFiles([...files, ...sharedFiles], id.top, exec);
     const hashOf = new Map(
       [...files, ...sharedFiles].map((p, i): [string, string] => [p, hashed[i] ?? ""]),
@@ -246,13 +254,13 @@ async function snapshotCaller(cwd: string, exec: ExecFn): Promise<Snapshot> {
       const label = `shared:${path.relative(id.commonDir, p)}`;
       const state =
         label === "shared:config"
-          ? parseConfigList(config).join("\x1f")
+          ? configEntryDigest(parsed)
           : sharedKinds[i] === "file"
             ? hashOf.get(p)
             : sharedKinds[i];
       entries.push(`${label}\t${state}`);
     });
-    return { kind: "repo", entries };
+    return { kind: "repo", entries, config: parsed };
   } catch (err) {
     return { kind: "unreadable", reason: errorText(err) };
   }
@@ -326,7 +334,7 @@ async function resolveMode(
 /** Compare the caller snapshot after a round with the one before it. */
 async function checkAfter(
   m: Extract<Mode, { kind: "check" }>,
-  before: string[],
+  before: Extract<Snapshot, { kind: "repo" }>,
   round: number,
   exec: ExecFn,
 ): Promise<FenceRecord | undefined> {
@@ -338,18 +346,17 @@ async function checkAfter(
       text: `caller-repo check not completed (${describe(after)}): not checked, so the round cannot be approved`,
     };
   }
-  const b = new Set(before);
+  const b = new Set(before.entries);
   const a = new Set(after.entries);
-  const delta = [...after.entries.filter((l) => !b.has(l)), ...before.filter((l) => !a.has(l))];
+  const delta = [
+    ...after.entries.filter((l) => !b.has(l)),
+    ...before.entries.filter((l) => !a.has(l)),
+  ];
   if (delta.length === 0) return undefined;
-  // Only the config entry's compared VALUE differs from the others: the parsed
-  // key list, so the message can name the changed keys (#2138).
-  const keys = changedConfigKeys(
-    entriesValue(before, "shared:config").split("\x1f"),
-    entriesValue(after.entries, "shared:config").split("\x1f"),
-  );
-  const shown =
-    keys.length > 0 ? `${delta.join("; ")} | config keys: ${keys.join(", ")}` : delta.join("; ");
+  // The two parsed lists ride on the snapshots rather than being re-split out of
+  // the compared entries, so the message can name the changed keys (#2138).
+  const keys = changedConfigKeys(before.config, after.config);
+  const shown = `${delta.join("; ")} | config keys: ${keys.join(", ")}`;
   return {
     kind: "violation",
     round,
@@ -397,7 +404,7 @@ export function createFixFence(
       try {
         return { ran: true, value: await fn() };
       } finally {
-        const rec = await checkAfter(m, before.entries, round, exec);
+        const rec = await checkAfter(m, before, round, exec);
         if (rec) records.push(rec);
       }
     },
