@@ -145,6 +145,19 @@ console.log("# a rollback that cannot finish says so, and names where to recover
       /fix-pass-strays-1846-default-2\.patch/.test(res.reason),
     "naming the preserved ref and the patch as the way to get the content back",
   );
+  // #2156 R5 — when the tree could NOT be put back, the preservation is NOT
+  // deleted: it is the only record of what the revert destroyed, and the park
+  // reason above tells the operator to recover from it. Only a rollback that
+  // SUCCEEDED makes the record an orphan worth deleting.
+  assert(
+    res.preserved !== undefined &&
+      res.preserved.preservedRef === "refs/pi-rukas/fix-pass-strays/1846-default-2",
+    `so the refusal still carries the surviving record (${JSON.stringify(res.preserved)})`,
+  );
+  assert(
+    git(t.worktree, "show-ref").includes("refs/pi-rukas/fix-pass-strays/1846-default-2"),
+    "and the ref the reason points at is STILL there — deleting it would destroy the only recovery path",
+  );
 }
 
 if (exit !== 0) console.log(`\n${exit} assertion(s) FAILED`);

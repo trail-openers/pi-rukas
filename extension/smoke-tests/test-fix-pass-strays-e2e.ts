@@ -18,22 +18,25 @@
  *     every file of it to `plan.headBefore`, so no half-applied tree can reach
  *     the next reviewer;
  *   - the rewind records itself and is counted, so a re-run of the same pass
- *     does not rewind twice (the budget R5).
+ *     does not rewind twice (the budget R5) — asserted in
+ *     `test-fix-pass-whole-pass-budget.ts`, which reads the event log rather than
+ *     the tree.
  *
- * Both cases drive the REAL `revertStraysOnce` in a real `.worktrees/` tree with
- * the state's recorded worktree pointing at it (#1849 item 7's gate), and read
- * the result back from git rather than from the returned object.
+ * Every case here drives the REAL `revertStraysOnce` in a real `.worktrees/` tree
+ * with the state's recorded worktree pointing at it (#1849 item 7's gate), and
+ * reads the result back from git rather than from the returned object.
  */
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import type { PostPass } from "../src/work-driver-adversarial-fix-scope.ts";
+import { postPassFault } from "../src/work-driver-adversarial-fix-scope.ts";
+import { defaultExec } from "../src/work-driver-adversarial-fix-git.ts";
 import { revertStraysOnce } from "../src/work-driver-fix-pass-revert-step.ts";
 import { pendingFixes, runAdversarialFixPass } from "../src/work-driver-adversarial-fix.ts";
 import type { CycleContext } from "../src/work-driver-context.ts";
 import type { WorkEvent, WorkState } from "../src/workflow-state.ts";
 import {
   devCommit,
-  devWrite,
   fixCtx,
   fixState,
   git,
@@ -210,129 +213,91 @@ console.log("# a pass whose pass delta is empty has nothing to rewind and is ref
   }
 }
 
-console.log("# the whole-pass rewind is counted, so a re-run does not rewind twice (R5)");
+console.log("# the WHOLE rewind wired through the REAL fence: postPassFault -> revertStraysOnce");
 {
-  // The budget is read from the `fix-pass-strays-reverted` EVENT the rewind
-  // stamps — not from the park prose (AGENTS.md §7 principle 1: a gate reads
-  // executed evidence, not a claim). Four readings of ONE counter, each on a
-  // tree of its own (a rewind consumes its tree's diff, so the four cannot share
-  // one fixture):
-  //   - nothing on the log: the pass rewinds;
-  //   - the rewind's own record on the log: the budget reads as spent, and the
-  //     tree is NOT rewound a second time;
-  //   - a `cap-hit` that merely CLAIMS a rewind, with no rewind event: unspent;
-  //   - a LENS round's record (`source: "lens-fix"`): it belongs to that round's
-  //     budget and must not refuse a rewind this pass is entitled to.
-  const base0 = passTreeAt("2156-budget-fresh");
-  const base1 = passTreeAt("2156-budget-spent");
-  const base2 = passTreeAt("2156-budget-claimed");
-  const base3 = passTreeAt("2156-budget-lens");
+  // The seam the two other groups each cover only one half of. The cases above
+  // hand `revertStraysOnce` a HAND-BUILT `PostPass`, so `paths`, `untracked` and
+  // `wholePass` there never come from the fence; the fence's own output is asserted
+  // in `test-fix-pass-strays-revertible.ts`, which never calls the revert. A
+  // regression that dropped `post.paths` — falling back to `strays.map(s => s.file)`
+  // at the revert step — keeps BOTH of those suites green while production ships the
+  // partial revert AC2 forbids. This case drives the real fence's object into the
+  // real revert in one flow, and reads the result off git rather than off the
+  // returned record.
+  const dir = repoWithFile("2156-fence-to-revert");
+  git(dir, "worktree add -q --detach .worktrees/issue-2156 HEAD");
+  const wt = `${dir}/.worktrees/issue-2156`;
+  const findings = "a.txt: change one to two";
+  const st = fixState(dir, ["a.txt"], findings);
   try {
-    const stateFor = (t: typeof base0): WorkState => {
-      const base = fixState(t.repoRoot, ["a.txt"], "a.txt: change one to two");
-      return {
-        ...base,
-        pipelineState: { ...base.pipelineState, worktrees: { default: t.worktree } },
-      };
+    // The pass's work: the admitted fix committed, the out-of-fence helper
+    // committed in a directory no route admits, and `b.txt` edited uncommitted.
+    // The helper's content is what `a.txt` imports, so a stray-only revert — the
+    // shape this pins against — would leave a file importing what no longer exists.
+    devCommit(wt, "a.txt", "two\nimport { helper } from './helper.ts';\n");
+    devCommitIn(wt, "helper.ts", "export const helper = () => 1;\n");
+    writeFileSync(`${wt}/b.txt`, "hijacked\n");
+    // The plans come from the real planner so `headBefore` is the real pre-pass
+    // tip, and the recorded tree is the real one (#1849 item 7's gate).
+    const planned = await typedPassPlans(dir, wt, ["a.txt"], findings);
+    const headBefore = planned[0]?.headBefore ?? "";
+    const state: WorkState = {
+      ...st,
+      pipelineState: { ...st.pipelineState, worktrees: { default: wt } },
     };
-    // A tree the pass actually changed, so the rewind has bytes to preserve — the
-    // `preserve` step refuses an empty delta, and a refusal would be read here as
-    // "the counter refused" rather than the counter itself.
-    const prepare = (t: typeof base0): void => {
-      devCommitIn(t.worktree, "a.txt", "two\n");
-      devWriteIn(t.worktree, "helper.ts", "export const helper = () => 1;\n");
-    };
-    prepare(base0);
-    prepare(base1);
-    prepare(base2);
-    prepare(base3);
-    const post = wholePassPost(["helper.ts"], ["helper.ts"], ["a.txt", "helper.ts"]);
-    const mkPlans = async (t: typeof base0) =>
-      await typedPassPlans(t.repoRoot, t.worktree, ["a.txt"], "a.txt: fix it");
-    const rewindEvent: WorkEvent = {
-      kind: "fix-pass-strays-reverted",
-      at: 3,
-      workstreamId: "default",
-      paths: ["a.txt", "helper.ts"],
-      preservedRef: "refs/pi-rukas/fix-pass-strays/2156-default-1",
-      patchPath: "/tmp/does-not-matter.patch",
-    };
-    const first = await revertStraysOnce(
-      typedCycleCtx(base0.repoRoot, 2156),
-      stateFor(base0),
-      await mkPlans(base0),
+    // ONE read of the tree, two decisions from it: the fence's verdict and the
+    // revert's target must be the same tree, so the post-pass read here uses the
+    // same `baseSha` the driver passes it (`ps.baseSha`).
+    const post = await postPassFault(defaultExec, planned, st.pipelineState.baseSha ?? "");
+    assert(
+      post.reason !== undefined && post.wholePass === true,
+      `the real fence reports a whole-pass rewind (${JSON.stringify(post).slice(0, 160)})`,
+    );
+    assert(
+      (post.paths ?? []).includes("a.txt") &&
+        (post.paths ?? []).includes("helper.ts") &&
+        (post.paths ?? []).includes("b.txt"),
+      `the fence's own rewind set names the admitted fix too, not only the strays (${JSON.stringify(post.paths)})`,
+    );
+    const outcome = await revertStraysOnce(
+      typedCycleCtx(dir, 2156),
+      state,
+      planned,
       post,
-      1,
+      Date.now(),
     );
+    assert(outcome?.ok === true, `the real rewind runs (${JSON.stringify(outcome)})`);
     assert(
-      first?.ok === true,
-      `with no rewind record on the log the pass rewinds (${JSON.stringify(first)})`,
+      git(wt, "status --porcelain").trim() === "",
+      `the tree is CLEAN afterwards — nothing of the pass is left half-applied (${git(wt, "status --porcelain")})`,
     );
-    const spent: WorkState = { ...stateFor(base1), eventLog: [...stateFor(base1).eventLog, rewindEvent] };
-    const second = await revertStraysOnce(
-      typedCycleCtx(base1.repoRoot, 2156),
-      spent,
-      await mkPlans(base1),
-      post,
-      2,
-    );
+    for (const path of post.paths ?? []) {
+      // `show` on a path the pass CREATED fails at `headBefore` (no such file),
+      // and an empty stdout is therefore "absent there", not "empty file": a
+      // pass-created file that came back with EMPTY content has to fail this, so
+      // absence is read from `existsSync` and never inferred from the string.
+      const presentAt = (() => {
+        try {
+          return git(wt, `show ${headBefore}:${path}`);
+        } catch {
+          return null;
+        }
+      })();
+      const actual = existsSync(`${wt}/${path}`)
+        ? readFileSync(`${wt}/${path}`, "utf8").replace(/\n$/, "")
+        : null;
+      const expected = presentAt === null ? null : presentAt.replace(/\n$/, "");
+      assert(
+        actual === expected,
+        `${path} is back at its headBefore content through the real fence (${JSON.stringify((actual ?? "<absent>") + " vs " + (expected ?? "<absent>")).slice(0, 60)})`,
+      );
+    }
     assert(
-      second?.ok === false && second.secondSet,
-      `once the rewind's own record is on the log, the budget reads as spent (${JSON.stringify(second)})`,
-    );
-    assert(
-      existsSync(`${base1.worktree}/helper.ts`) &&
-        readFileSync(`${base1.worktree}/a.txt`, "utf8") === "two\n",
-      "and the refused rewind touched nothing — the tree still holds the pass's work",
-    );
-    // A `cap-hit` that merely SAYS the driver rewound is not a rewind record: no
-    // rewind happened here, so the budget must still be unspent. This is the
-    // forge the prose-matching reader accepted.
-    const s2 = stateFor(base2);
-    const claimed: WorkState = {
-      ...s2,
-      eventLog: [
-        ...s2.eventLog,
-        {
-          kind: "cap-hit",
-          at: 4,
-          cap: "fix-pass-park",
-          reviewRound: 1,
-          nextStep: "handoff",
-          evidence:
-            "fix pass: default changed helper.ts — outside its declared paths; the driver rewound this pass's whole delta — 2 file(s) back to the head the pass started at",
-        },
-      ],
-    };
-    const third = await revertStraysOnce(
-      typedCycleCtx(base2.repoRoot, 2156),
-      claimed,
-      await mkPlans(base2),
-      post,
-      3,
-    );
-    assert(
-      third?.ok === true,
-      `a cap-hit that only CLAIMS a rewind does not spend the budget — the rewind runs (${JSON.stringify(third)})`,
-    );
-    const s3 = stateFor(base3);
-    const withLens: WorkState = {
-      ...s3,
-      eventLog: [...s3.eventLog, { ...rewindEvent, source: "lens-fix" as const, round: 1 }],
-    };
-    const fourth = await revertStraysOnce(
-      typedCycleCtx(base3.repoRoot, 2156),
-      withLens,
-      await mkPlans(base3),
-      post,
-      4,
-    );
-    assert(
-      fourth?.ok === true,
-      `a lens round's revert record does not charge this pass's budget (${JSON.stringify(fourth)})`,
+      !existsSync(`${wt}/helper.ts`),
+      "and the file the pass created is removed, not left holding its own comment",
     );
   } finally {
-    for (const t of [base0, base1, base2, base3]) rmSync(t.repoRoot, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
   }
 }
 

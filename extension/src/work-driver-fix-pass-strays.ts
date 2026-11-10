@@ -31,8 +31,8 @@
  * component) before the first `git` runs.
  */
 
-import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { isPlainRepoRelativePath, plannedPathProblem } from "./plan-path-shape.ts";
 import { trace } from "./trace.ts";
 import {
@@ -47,6 +47,7 @@ import {
   commitRevert,
   rollbackRevert,
 } from "./work-driver-fix-pass-strays-commit.ts";
+import { copyUntracked } from "./work-driver-fix-pass-strays-copies.ts";
 import { type StrayState, readStrayState } from "./work-driver-fix-pass-strays-state.ts";
 import {
   assertInsideRecordedWorktree,
@@ -89,9 +90,21 @@ export interface FixPassReverted {
   untrackedCopies: string[];
 }
 
-/** Why the revert refused. `reason` is the park text; the tree is untouched. */
+/**
+ * Why the revert refused. `reason` is the park text.
+ *
+ * `preserved` is the half-record this revert left behind when it refused AFTER
+ * writing its preservation: the ref and the patch are both durable before the
+ * first destructive call, so a failure past that point means the tree was put
+ * back from them (`commitRevert`'s failure path rolls back) while the record of
+ * what the revert would have deleted still names a revert that did not happen.
+ * Absent means nothing was written — every refusal the gates and `preserve`
+ * itself make leaves neither a ref nor a patch (see `preserve`, which deletes a
+ * ref it created when a later step of the same half fails).
+ */
 export interface FixPassRevertRefusal {
   reason: string;
+  preserved?: { preservedRef: string; patchPath: string };
 }
 
 export interface FixPassStraysRequest {
@@ -251,7 +264,7 @@ export async function revertFixPassStrays(
   // created. Untracked ones are unlinked (no git command can stage what git has
   // never been told about).
   const failed = await revertPaths(req, git, state, headBefore);
-  if (failed !== undefined) return { reason: failed };
+  if (failed !== undefined) return { reason: failed, preserved: { preservedRef, patchPath } };
 
   // 3 — ONE driver commit for the whole revert, built from a temporary index so
   // it can only ever name the revert's own paths. See `work-driver-fix-pass-strays-commit.ts`.
@@ -268,6 +281,7 @@ export async function revertFixPassStrays(
     const restored = await rollbackRevert(req, state, headBefore, preservedRef, patchPath);
     return {
       reason: `${commit}${restored === undefined ? ` — the strays were restored from ${preservedRef}, so the worktree is as it arrived` : ` — RESTORING the strays from ${preservedRef} also failed (${restored}); the preserved ref, the patch${state.untracked.size > 0 ? " and the untracked copies" : ""} are the record of what is in the tree`}`,
+      preserved: { preservedRef, patchPath },
     };
   }
 
@@ -381,53 +395,6 @@ async function readStraysPatch(
     },
   );
   return stdout;
-}
-
-/**
- * Copy each untracked stray beside the patch, keeping its path relative to the
- * worktree, and VERIFY each copy before the caller is allowed to remove the
- * source. An untracked file exists in no commit, so a copy that silently came
- * out short is the revert destroying the only copy that ever held it; the
- * reason names WHICH file failed and how, because a refusal that cannot be
- * acted on is a park the operator cannot diagnose.
- */
-function copyUntracked(
-  req: FixPassStraysRequest,
-  state: StrayState,
-): { ok: true; paths: string[] } | { ok: false; reason: string } {
-  const copied: string[] = [];
-  for (const file of state.strays) {
-    if (!state.untracked.has(file) || !state.present.has(file)) continue;
-    const source = join(req.worktree, file);
-    const dest = join(fixPassStraysUntrackedDir(req.scratchDir), relative(req.worktree, source));
-    try {
-      mkdirSync(dirname(dest), { recursive: true });
-      copyFileSync(source, dest);
-    } catch (err) {
-      return {
-        ok: false,
-        reason: `${JSON.stringify(file)} could not be copied to ${dest}: ${errText(err)}`,
-      };
-    }
-    // The copy is the only record an untracked file has, so it is confirmed
-    // against the source rather than trusted: same size, then same bytes.
-    try {
-      const src = readFileSync(source);
-      const dst = readFileSync(dest);
-      if (src.length !== dst.length || !src.equals(dst))
-        return {
-          ok: false,
-          reason: `${JSON.stringify(file)} copied to ${dest} does not match the source (${dst.length} byte(s) against ${src.length})`,
-        };
-    } catch (err) {
-      return {
-        ok: false,
-        reason: `${JSON.stringify(file)} could not be read back from ${dest} to confirm the copy: ${errText(err)}`,
-      };
-    }
-    copied.push(file);
-  }
-  return { ok: true, paths: copied };
 }
 
 /**

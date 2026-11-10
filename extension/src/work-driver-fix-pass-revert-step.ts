@@ -23,6 +23,7 @@
  * each attempt writes before it touches the tree.
  */
 
+import { rmSync } from "node:fs";
 import { neutraliseMarkdownField } from "./comment-evidence.ts";
 import { tickSafe } from "./plan-fence-render.ts";
 import { trace } from "./trace.ts";
@@ -45,6 +46,12 @@ import { runGit } from "./work-develop-git.ts";
 // the gate instead of killing the feature in the field.
 import type { PassPlan, PostPass } from "./work-driver-adversarial-fix-scope.ts";
 import type { CycleContext } from "./work-driver-context.ts";
+import { fixPassStraysIndexPath } from "./work-driver-fix-pass-strays-commit.ts";
+import {
+  gitWriteTimeoutMs,
+  hardenedGitArgv,
+  revertGitEnv,
+} from "./work-driver-fix-pass-strays-target.ts";
 import { nextStrayAttempt, revertFixPassStrays } from "./work-driver-fix-pass-strays.ts";
 // #1849 — the ARGV executor. `runGit` always calls with `opts.argv`, so the
 // fallback decides what PRODUCTION runs (`verifyExecFn` is a test-only injection
@@ -63,14 +70,40 @@ import { scratchDir } from "./work-driver-workspace.ts";
 import type { FixPassStraysRevertedEvent } from "./workflow-state-events-fix-pass-strays.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
-/** What the caller does with the outcome: continue and re-check, park on the
- *  reason, or (when `secondSet`) park on the reason *with* the second-set wording
- *  so the handoff does not tell the operator to revert by hand what the driver
- *  already reverted. `undefined` means a revert is not the right answer at all —
- *  the workstream had no recorded worktree, so there is no tree to revert. */
+/**
+ * What the caller does with the outcome. Three readings, each with one meaning:
+ *
+ *   - `ok: true` — the rewind happened, and `event` is the record of it;
+ *   - `ok: false, secondSet: true` — the pass asked for a SECOND rewind when its
+ *     one allowance was already spent (a lens-fix caller answers that question
+ *     itself, via `alreadyReverted`; for the fix pass only a rewind that landed
+ *     can spend it, since a rewind the driver performed fails its round);
+ *   - `ok: false, secondSet: false` — the rewind is DECLINED: `rewound: false`
+ *     says the tree is exactly as the pass left it. `preserveWritten` names the
+ *     preservation record a refusal that came AFTER the preserve step wrote and
+ *     then DELETED again, because its rollback succeeded — with the tree put back,
+ *     a surviving ref would be somebody's record of a revert that never happened.
+ *     A rollback that failed keeps its record on disk and reports no `preserveWritten`
+ *     (the reason itself names the ref to recover from). That third fact is what
+ *     the pass's budget reads: see {@link RevertStraysOutcome}.
+ *
+ * `undefined` means a revert is not the right answer at all — the workstream had
+ * no recorded worktree, or the operator's kill switch is off — so there is no
+ * tree to revert and no record written.
+ */
 export type RevertStraysOutcome =
   | { ok: true; event: FixPassStraysRevertedEvent }
-  | { ok: false; secondSet: boolean; reason: string };
+  /** A rewind the driver ROLLED BACK. `preserveWritten` is never absent here:
+   *  every refusal that leaves the tree as it arrived but has already written its
+   *  preservation reports through this arm, and the record it names is deleted
+   *  again before the refusal is returned (see the call site). */
+  | {
+      ok: false;
+      secondSet: boolean;
+      reason: string;
+      rewound: false;
+      preserveWritten?: { preservedRef: string; patchPath: string };
+    };
 
 /**
  * An optional hook, called by `revertStraysOnce` at the instant the revert's
@@ -203,6 +236,7 @@ export async function revertStraysOnce(
       ok: false,
       secondSet: true,
       reason: `${id} produced a SECOND set of out-of-fence files after the driver reverted the first (${strays.map((s) => s.file).join(", ")}) — the pass is not staying inside its fence`,
+      rewound: false,
     };
   }
   // One record pair per revert, ever: the number comes from the scratch dir, so
@@ -254,7 +288,60 @@ export async function revertStraysOnce(
   // observed the success path could not tell "nothing was persisted" from "nothing
   // was reverted".
   onReverted?.();
-  if ("reason" in result) return { ok: false, secondSet: false, reason: result.reason };
+  if ("reason" in result) {
+    // A refusal that came AFTER `preserve` — a part-way `revertPaths`, or the
+    // commit whose failure path restored the tree — leaves a ref and a patch
+    // naming a revert that did not happen, and stamps NO event for it. Two
+    // consequences, both fixed here rather than downstream:
+    //
+    //   - the budget. `wholePassRevertUsed` reads the event alone, so an
+    //     un-recorded rewind reads as unspent and a retry re-attempts the whole
+    //     rewind against the same tree, writing a SECOND ref/patch pair while the
+    //     first survives as a record nobody can check against a commit;
+    //   - the record itself. An orphan ref is one somebody later trusts as "what
+    //     the driver reverted", which is the shape `preserve`'s own rollback (it
+    //     deletes a ref it created when a later step of the same half fails) and
+    //     `test-fix-pass-strays-preservation.ts` exist to prevent.
+    //
+    // So the half-record is deleted — best effort, since a failed delete is not
+    // worth failing the park over — and `preserveWritten` is cleared so no reader
+    // can be told a record exists that this call removed.
+    const written = result.preserved;
+    // Only a rollback that SUCCEEDED makes the record an orphan: when the tree
+    // could not be put back (`rollbackRevert` returned a failure), the ref, the
+    // patch and the copies are the sole record of what this call destroyed, and
+    // the reason tells the operator to recover from them — so they stay.
+    const rolledBack = /tree NOT restored/.test(result.reason) === false;
+    if (written !== undefined && rolledBack) {
+      const call = (args: string[]) =>
+        git(hardenedGitArgv(args), {
+          cwd: plan.worktree,
+          timeout: gitWriteTimeoutMs(),
+          env: revertGitEnv(),
+        });
+      await call(["update-ref", "-d", written.preservedRef]).catch(() => undefined);
+      try {
+        rmSync(written.patchPath, { force: true });
+      } catch {
+        // A patch that cannot be deleted is disclosed by `preserveWritten` below;
+        // a park is not worth failing over a stale file in the scratch dir.
+      }
+      // The temp index the failed commit built belongs to the same attempt, so it
+      // is cleared by the same rollback rather than left beside the patch.
+      try {
+        rmSync(fixPassStraysIndexPath(scratch, ctx.issue, id, attempt), { force: true });
+      } catch {
+        // As above.
+      }
+    }
+    return {
+      ok: false,
+      secondSet: false,
+      rewound: false,
+      reason: result.reason,
+      ...(written === undefined || !rolledBack ? {} : { preserveWritten: written }),
+    };
+  }
   return {
     ok: true,
     event: {

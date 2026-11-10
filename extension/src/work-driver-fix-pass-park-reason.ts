@@ -75,18 +75,17 @@ export const listed = (xs: readonly string[]): string => (xs.length > 0 ? xs.joi
  * the findings said about each stray, where the change sits and how to clear
  * it. The bare clause left the operator to rebuild all of that from the state.
  *
- * #1846 — `driverReverted` changes the closing instruction. The text used to be
- * one unconditional "revert <files> in that worktree and land the rest by hand",
- * which after the driver has already reverted one stray set tells the operator to
- * do something that is already done and hides the fact that the pass produced a
- * SECOND set — a different diagnosis, and the one that should read as "the fence
- * is wrong", not "go tidy the worktree".
+ * #2156 R3 — the closing instruction is chosen by `wholePassFiles`. A pass whose
+ * whole delta the driver rewinds must NOT be told to "revert <files> in that
+ * worktree and land the rest by hand": there is no rest — the rewind took the
+ * pass back to where it started, and the operator's decision is the fence, not
+ * the worktree. Absent keeps the file-scoped wording the lens-fix fence still
+ * uses, whose round's earlier commits are legitimately not strays (#2156 R6).
  */
 export function strayReason(
   plan: PassPlan,
   strays: readonly Stray[],
   basis: string,
-  driverReverted = false,
   /**
    * #2156 R3 — the whole pass is being rewound, not just these files. The path
    * count the rewind will remove, when the driver rewinds the pass's own edits
@@ -152,21 +151,21 @@ export function strayReason(
     })
     .join("; ");
   const files = strays.map((s) => s.file).join(", ");
-  // #2156 R3 — the closing instruction has three readings now. A pass whose whole
-  // delta is being rewound must not be told to "revert <files> in that worktree
-  // and land the rest by hand": there IS no rest — the driver took the pass back
-  // to where it started, and the operator's decision is the fence, not the
-  // worktree.
+  // #2156 R3 — two readings. A pass whose whole delta is being rewound must not
+  // be told to "revert <files> in that worktree and land the rest by hand": there
+  // IS no rest — the driver took the pass back to where it started, and the
+  // operator's decision is the fence, not the worktree. The rewind sentence is
+  // composed BEFORE the rewind is attempted, so the record it points at is what
+  // proves it: `fix-pass-strays-reverted` is stamped only by a rewind the driver
+  // performed, and a refusal that rolled its tree back has no such record (AGENTS.md
+  // §7 principle 1). `docs/troubleshooting.md` puts that discriminator in front of
+  // the operator.
   const closing =
     wholePassFiles !== undefined
       ? `the driver rewound this pass's whole delta — ${wholePassFiles} file(s) back to the head the pass started at — preserved at the \`refs/pi-rukas/fix-pass-strays/...\` ref and patch the \`fix-pass-strays-reverted\` record names, so nothing is kept of a fix that cannot stand on its own. Re-run \`/work <issue> --restart\` with ${files} named in the issue's scope, or let the pass work inside the fence`
-      : clearing(files, driverReverted);
+      : // the file-scoped reading the lens-fix fence still gets, and the fix-pass
+        // reading when the driver declined to rewind at all (kill switch off, or a
+        // stray the fence forbids it to touch): the tree is the operator's to tidy.
+        `otherwise the pass overreached — revert ${files} in that worktree and land the rest by hand, or re-run \`/work <issue> --restart\``;
   return `${plan.id} changed ${files} — outside ${basis} (${fence}; ${spec}; finding-named files it admits: ${listed(plan.named)}). ${naming}. The change is still in ${plan.worktree}. To clear it: if a finding's fix needs ${files}, the declared scope is what is wrong — name ${files} in the issue's scope and re-run \`/work <issue> --restart\`; ${closing}`;
-}
-
-/** The closing clause of {@link strayReason}; see the `driverReverted` note. */
-function clearing(files: string, driverReverted: boolean): string {
-  return driverReverted
-    ? `the driver already reverted this pass's first out-of-fence set — the \`fix-pass-strays-reverted\` record names the preserved ref and the patch that hold those files — and a SECOND set means the pass will not stay inside its fence. Re-run \`/work <issue> --restart\` with ${files} named in the issue's scope, or let the pass work inside the fence`
-    : `otherwise the pass overreached — revert ${files} in that worktree and land the rest by hand, or re-run \`/work <issue> --restart\``;
 }

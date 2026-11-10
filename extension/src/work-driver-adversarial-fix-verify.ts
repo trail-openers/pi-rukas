@@ -354,7 +354,7 @@ export async function postPassFault(
       // and `untracked` are the union of their pass deltas, and each workstream's
       // revert is targeted at its own `plan.headBefore` by `revertStraysOnce`.
       return {
-        reason: strayReason(first.plan, first.strays, basis(first.plan), false, paths.length),
+        reason: strayReason(first.plan, first.strays, basis(first.plan), paths.length),
         diffs,
         admissions,
         straysFor: first.plan.id,
