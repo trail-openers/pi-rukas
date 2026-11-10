@@ -67,6 +67,32 @@ const HELD_FORMS = [
  * plain token scan would hold `grep -rn "gh pr <kw>" .` and every note.
  */
 const HELD_PROSE = [`vipune add 'gh pr ${KW} 12 is the accepted form'`];
+/**
+ * The shapes a raw-text scan reads as no-landing but `exec` runs as a landing:
+ * a verb or tool word split by quotes or an escape, a path-qualified tool word,
+ * a quote-split REST path, and a GraphQL mutation name. Each was EXECUTED
+ * against a stub forge by the adversarial review and released, so each is a
+ * held row here — the quote and path rows were observed red against the
+ * pre-fix scan. A word is normalised the way the shell normalises it (quotes
+ * and backslashes out, basename) but ONLY as a command word: a quoted span
+ * stays data, which is why the prose row above still releases.
+ */
+const HELD_BYPASS = [
+  `gh pr m'${"er"}'${"ge"} 12`,
+  `gh pr m"${"er"}"${"ge"} 12`,
+  `gh pr m\\${KW.slice(1)} 12`,
+  `'gh' pr ${KW} 12`,
+  `"gh" pr ${KW} 12`,
+  `g'h' pr ${KW} 12`,
+  `glab mr ac'${"ce"}'${"pt"} 3`,
+  `git \\${KW} --no-ff side`,
+  `/usr/bin/gh pr ${KW} 12`,
+  `./gh pr ${KW} 12`,
+  `bin/gh pr ${KW} 12`,
+  `gh api -X PUT /repos/o/r/pull's'/1/'mer'ge`,
+  `gh api graphql -f query='mutation { merge${"PullRequest"}(input:{pullRequestId:"1"}) { ok } }'`,
+  `glab api graphql -f query='mutation { merge${"_merge_request"}(input:{iid:3}) { ok } }'`,
+];
 /** R2's indirect shapes: text this scan cannot read but the shell can run. */
 const HELD_INDIRECT = [
   `echo "$(gh pr ${KW} 1)" > f`,
@@ -115,7 +141,7 @@ for (const role of NON_OPS) {
       verdict(role, cmd) === "release",
       `${role}: released, no landing form: ${JSON.stringify(cmd.slice(0, 58))}`,
     );
-  for (const cmd of [...HELD_FORMS, ...HELD_INDIRECT])
+  for (const cmd of [...HELD_FORMS, ...HELD_INDIRECT, ...HELD_BYPASS])
     assert(
       verdict(role, cmd) === "hold",
       `${role}: held, landing form: ${JSON.stringify(cmd.slice(0, 58))}`,
@@ -243,7 +269,7 @@ for (const cmd of [...HELD_FORMS, ...HELD_INDIRECT]) {
 // No landing form is EVER released: `release` is the one verdict that returns
 // from the hook before any gate runs, so holding these rows is what keeps a
 // reviewer's `git merge main` inside the review gate instead of outside it.
-for (const cmd of [...HELD_FORMS, ...HELD_INDIRECT])
+for (const cmd of [...HELD_FORMS, ...HELD_INDIRECT, ...HELD_BYPASS])
   for (const role of NON_OPS)
     assert(
       verdict(role, cmd) === "hold",
