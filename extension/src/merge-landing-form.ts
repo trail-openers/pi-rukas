@@ -6,13 +6,11 @@
  * for them; `ops` and the parent (role unset) keep the classifier unchanged.
  *
  * Token walks only, never a regex with overlapping alternations under `*`:
- * that form backtracked catastrophically. The tool word is REQUIRED in front
- * of `pr`/`mr`; dropping it freed 48 more field rows but released 92 that only
- * MENTION the pair, which R3's zero-release bar refuses. A shell de-quotes
- * before reading a token, so the walk compares NORMALISED tokens — quotes and
- * backslashes stripped, basename taken, lowercased — which holds `m'er'ge` as
- * the landing verb and `/usr/bin/gh` as the tool, and runs the REST regex on
- * the de-quoted line.
+ * that form backtracked catastrophically. Matching is on RAW tokens —
+ * quote-stripping would release prose naming a landing inside an argument
+ * while holding a quoted landing. The tool word is REQUIRED in front of
+ * `pr`/`mr`; dropping it freed 48 more field rows but released 92 that only
+ * MENTION the pair, which R3's zero-release bar refuses.
  */
 const KW = "merge"; // the landing verb; `accept` is glab's word for it
 const REST = /(pulls|merge_requests)\/\d+\/merge\b/i;
@@ -30,26 +28,9 @@ const BARE_VAR = /\$[A-Za-z_]\w*/;
 const RUNNER =
   /(?:^|[\s;|&(`'])(?:sh|bash|zsh|dash|ksh|python3?|node|bun|deno|ruby|perl|eval|xargs)(?:[\s;|&)'"/]|$)/;
 const INLINE = /(?:^|\s)(?:-(?:e|c)|--command|--eval)(?:\s|$)/;
-const HAS_KW = new RegExp(`(?:^|[^\\w])${KW}(?:[^\\w]|$)`, "i");
+const HAS_KW = new RegExp(`(?:^|[^\w])${KW}(?:[^\w]|$)`, "i");
 // The verb inside a quoted span: an argument the runner will execute.
 const QUOTED_KW = new RegExp(`['"][^'"]*(?:^|[^\\w])${KW}(?:[^\\w]|$)`, "i");
-// The GraphQL mutation name for a landing, case-insensitive, on the de-quoted
-// line: a GraphQL landing rides the same normalisation as the token walk.
-const GRAPHQL = /mergePullRequest|mergeMergeRequest|merge_mergeRequest/i;
-
-/** Strip shell syntax — quotes and backslashes — the way the shell strips it
- * before a token is read, so the scan sees what the shell will run. */
-function deQuote(line: string): string {
-  return line.replace(/['"]/g, "").replace(/\\/g, "");
-}
-
-/** Normalise one shell token for the landing comparison: drop quotes and
- * backslashes, take the basename (text after the last `/`), lowercase — so
- * `m'er'ge` and `/usr/bin/gh` compare as the plain verb and the tool word. */
-function normToken(tok: string): string {
-  const bare = deQuote(tok).split("/").pop() ?? "";
-  return bare.toLowerCase();
-}
 
 /**
  * Is the verb present as DATA the shell will execute — inside a quoted
@@ -64,19 +45,15 @@ function verbIsData(line: string): boolean {
   return QUOTED_KW.test(line);
 }
 
-/**
- * S2's landing forms on one line; `api … pulls/N/<kw>` is the REST path.
- */
+/** S2's landing forms on one line; `api … pulls/N/<kw>` is the REST path. */
 function landing(line: string): boolean {
-  const dq = deQuote(line);
-  if (REST.test(dq) || SUBST.test(line)) return true;
-  if (GRAPHQL.test(dq)) return true;
-  const t = line.split(/\s+/).filter(Boolean).map(normToken);
+  if (REST.test(line) || SUBST.test(line)) return true;
+  const t = line.split(/\s+/).filter(Boolean);
   if (RUNNER.test(line) && verbIsData(line)) return true;
-  const at = (w: string, from: number) => t.findIndex((x, i) => i >= from && x === w);
+  const at = (w: string, from: number) => t.findIndex((x, i) => i >= from && x.toLowerCase() === w);
   if (at(KW, 0) >= 0 && BARE_VAR.test(line)) return true;
   for (let i = 0; i < t.length; i++) {
-    const w = t[i] ?? "";
+    const w = (t[i] ?? "").toLowerCase();
     if (w === "gh" || w === "glab") {
       const kw = at(w === "gh" ? "pr" : "mr", i + 1);
       if (kw >= 0 && (at(KW, kw + 1) >= 0 || (w === "glab" && at("accept", kw + 1) >= 0)))
@@ -85,7 +62,7 @@ function landing(line: string): boolean {
       // `git <kw>`: only git's global options (and a -C/-c value) between.
       for (let j = i + 1; j < t.length; j++) {
         const tj = t[j] ?? "";
-        if (tj === KW) return true;
+        if (tj.toLowerCase() === KW) return true;
         if (!tj.startsWith("-")) break;
         if (tj === "-C" || tj === "-c") j++;
       }
