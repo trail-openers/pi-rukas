@@ -40,7 +40,8 @@
  * fail is worthless.
  */
 
-import { readFileSync, readdirSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 
 import {
@@ -220,7 +221,23 @@ const SITES: readonly Site[] = [
   },
 ];
 
-/** Every repository file that names the paper — derived, never hand-listed. */
+/**
+ * Every repository file that names the paper — derived, never hand-listed, and
+ * enumerated from GIT, never from the filesystem.
+ *
+ * The gate means "every file of the repository", and a filesystem walk reaches
+ * content that is not part of the repository: a private notes directory, a
+ * nested separate git repo, or anything else a developer left in the checkout.
+ * Consolidated /work verify runs in the main checkout, where such files are
+ * normal, so a walk made this gate fail on content no reviewer will ever see and
+ * no PR can fix. `git ls-files --cached --others --exclude-standard` is the
+ * repository's file set plus the developer's own new work: untracked files still
+ * count as citing sites, so a file added but not yet `git add`ed cannot slip
+ * past the registry, while anything .gitignore'd is out by definition.
+ *
+ * The skip-list is kept because it still matters for tracked paths: a directory
+ * committed by accident stays out of the roster exactly as it did under the walk.
+ */
 function discoverCitingFiles(): string[] {
   const skip = new Set([
     ".git",
@@ -231,35 +248,46 @@ function discoverCitingFiles(): string[] {
     "outputs",
     "coverage",
   ]);
+  // No shell: argv array to execFileSync, so the repo path is never parsed.
+  // A failed `ls-files` throws out of execFileSync; an empty listing is treated
+  // as a failure too, because an empty discovery would pass the registry checks
+  // vacuously — silence is never a pass.
+  const listed = execFileSync(
+    "git",
+    [
+      "-c",
+      "core.quotepath=false",
+      "-C",
+      REPO_ROOT,
+      "ls-files",
+      "-z",
+      "--cached",
+      "--others",
+      "--exclude-standard",
+    ],
+    {
+      encoding: "utf8",
+    },
+  );
+  if (listed.trim() === "") {
+    throw new Error(
+      `git ls-files at ${REPO_ROOT} returned no paths — refusing to judge an empty roster`,
+    );
+  }
   const out: string[] = [];
-  const walk = (dir: string, rel: string): void => {
-    let entries: import("node:fs").Dirent<string>[];
+  for (const relative of listed.split("\u0000")) {
+    if (relative === "") continue;
+    const segments = relative.split("/");
+    if (segments.some((segment) => skip.has(segment))) continue;
+    if (!(relative.endsWith(".ts") || relative.endsWith(".md"))) continue;
+    // The detector's own exclusion: `.d.ts` declarations are not sites.
+    if (relative.endsWith(".d.ts")) continue;
     try {
-      // Without an explicit encoding `withFileTypes` resolves to the
-      // buffer-typed overload, so the element type is named here: `entry.name`
-      // has to be a string before it reaches path.join and the .endsWith tests.
-      entries = readdirSync(dir, { withFileTypes: true, encoding: "utf8" });
+      if (readFileSync(path.join(REPO_ROOT, relative), "utf8").includes(ARXIV)) out.push(relative);
     } catch {
-      return;
+      /* unreadable — not a site, and not this gate's problem */
     }
-    for (const entry of entries) {
-      const name: string = entry.name;
-      if (skip.has(name)) continue;
-      const full = path.join(dir, name);
-      const relative = rel === "" ? name : `${rel}/${name}`;
-      if (entry.isDirectory()) walk(full, relative);
-      else if (entry.isFile() && (relative.endsWith(".ts") || relative.endsWith(".md"))) {
-        // The detector's own exclusion: `.d.ts` declarations are not sites.
-        if (relative.endsWith(".d.ts")) continue;
-        try {
-          if (readFileSync(full, "utf8").includes(ARXIV)) out.push(relative);
-        } catch {
-          /* unreadable — not a site, and not this gate's problem */
-        }
-      }
-    }
-  };
-  walk(REPO_ROOT, "");
+  }
   return out.sort();
 }
 
