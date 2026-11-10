@@ -178,6 +178,25 @@ export function submit(criterionId: string, testFiles: string[]): unknown {
   return { name: "submit_tests", arguments: { criterionId, testFiles } };
 }
 
+/**
+ * A `submit_requirements` call carrying the given items — the shape the child
+ * produces for the requirement lever, and the one the parent extracts.
+ */
+export function submitRequirements(items: unknown[]): unknown {
+  return { name: "submit_requirements", arguments: { requirements: items } };
+}
+
+/** One requirement item, in the form the reporter's schema accepts. */
+export function requirement(
+  id: string,
+  kind: "behaviour" | "edge" | "preserved",
+  text: string,
+  testFiles: string[],
+  note?: string,
+): unknown {
+  return { id, kind, text, testFiles, ...(note === undefined ? {} : { note }) };
+}
+
 /** Every path the worktree reports against its base. */
 export async function worktreePaths(wt: string): Promise<string[]> {
   const { stdout } = await execp("git", {
@@ -231,6 +250,12 @@ export interface RunOpts {
   testLimits?: { timeoutMs?: number };
   /** The issue body the step re-reads; defaults to the single-test-criterion spec. */
   specBody?: string;
+  /**
+   * The requirement-coverage lever. `true` runs the step as though
+   * `PI_ENSEMBLE_LEAN_REQUIREMENTS=1` were set, without touching the process
+   * environment under a run in flight.
+   */
+  requirementsOn?: boolean;
   /**
    * Where the fake child records the kickoff prompt the STEP built. The prompt
    * is production text, so this is the only way a case asserts what the
@@ -317,6 +342,7 @@ export async function runSpecify(opts: RunOpts): Promise<RunResult> {
         return got;
       }),
     ...(opts.testLimits === undefined ? {} : { testLimits: opts.testLimits }),
+    ...(opts.requirementsOn === true ? { requirementsOn: true } : {}),
     fetchIssueBody: async () => opts.specBody ?? BODY,
     loadConfig: async () => opts.config,
     statReporter: async () => ({}),

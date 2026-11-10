@@ -36,6 +36,8 @@
  */
 
 import { TEST_RUNNER_PLACEHOLDER } from "./config.ts";
+import type { RequirementsRecord } from "./requirements.ts";
+import { requirementPromptSection } from "./requirements.ts";
 import { criteriaBlock, scopeBlock } from "./spec-blocks.ts";
 import type { PiSpec } from "./spec.ts";
 
@@ -70,6 +72,13 @@ export interface BuildPromptOpts {
    * NEW to it rather than scanning the frozen list for what it remembers.
    */
   added?: string;
+  /**
+   * The requirement list the adversary submitted and `specify` proved, when the
+   * requirement lever was on. Rendered as its own section so the builder
+   * implements the list the tests were written against, not only the criteria.
+   * Absent — the off state — and the prompt is byte-identical to today's.
+   */
+  requirements?: RequirementsRecord;
   /** The project's `verify.test` runner template (e.g. `bun run {file}`), if configured. */
   testRunner?: string;
   /** Why this round exists: the `verify:red` or `ci:red` reason, clipped by the caller. */
@@ -121,6 +130,14 @@ export function buildPrompt(opts: BuildPromptOpts): string {
           `A challenge round ran between rounds and ${opts.added.trim()}. They are part of the contract now — make them pass too.`,
           "",
         ].join("\n");
+  // From the step's RECORD rather than the child's tool call: a resumed round reads
+  // what the step proved, and a later child cannot re-author the list. The leading
+  // blank line is what makes the off state byte-identical: with no record the block
+  // is "" and the join reproduces the control's separators exactly.
+  const requirements =
+    opts.requirements === undefined || opts.requirements.items.length === 0
+      ? ""
+      : `\n${requirementPromptSection(opts.requirements)}`;
   const runner =
     opts.testRunner === undefined || opts.testRunner.trim() === ""
       ? "No project test runner is configured, so run each frozen file with whatever command runs this repository's tests."
@@ -169,5 +186,8 @@ export function buildPrompt(opts: BuildPromptOpts): string {
     "",
     reentry,
     added,
+    // The lever's section is APPENDED at the tail, so with the lever off (no
+    // record on the step log) the prompt is byte-identical to the control's.
+    requirements,
   ].join("\n");
 }

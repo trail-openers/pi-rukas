@@ -22,9 +22,11 @@ import type { TestLocation } from "./config-test-location.ts";
 import type { WorkConfig } from "./config.ts";
 import { throwIfDispatchFailed } from "./dispatch-verdict.ts";
 import { type ProviderWaitClass, providerFaultOf } from "./provider-wait.ts";
+import { type RequirementsRecord, extractRequirements } from "./requirements.ts";
 import type { Criterion, PiSpec } from "./spec.ts";
 import { existsInCommit, fileProblem } from "./specify-path.ts";
 import { specifyPrompt } from "./specify-prompt.ts";
+import { checkRequirements, gapNote, withCoverageReason } from "./specify-requirements.ts";
 import { SpecifyInfraError, droppedLabel, runTestPipeline } from "./specify-run.ts";
 import { ensureSpecifyWorktreeWithProvision, validateSubmitRows } from "./specify-tree.ts";
 import type { SpecifyDeps } from "./specify.ts";
@@ -42,8 +44,7 @@ import {
 } from "./step-budget.ts";
 import { extractSubmitTests } from "./submit-tests-extract.ts";
 import { SUBMIT_TESTS_REPORTER_PATH } from "./submit-tests-reporter.ts";
-
-/**
+import { joinNotes } from "./text-fence.ts"; /**
  * The size refusals — the sentences in `test-size.ts` that say a file is too
  * long, too big, or not a text file. A drop carrying one of these is the one
  * the child can fix by making the file smaller, so it is the one whose detail
@@ -74,18 +75,29 @@ interface SpecifyAttemptArgs {
   /** See {@link SpecifyPromptOpts.resubmit}: retry with the fixed "you never
    * submitted" note instead of the drop reasons. */
   resubmit?: boolean;
+  /**
+   * The requirement-coverage lever is on: the prompt asks for the numbered list,
+   * and a list with an unmapped behaviour or edge item is refused. Decided by
+   * the caller from the switch, never read from the environment here.
+   */
+  requirements?: boolean;
+  /**
+   * The test files present at the run's base commit, which is the only set a
+   * `preserved` requirement may point at. Supplied only when {@link requirements}
+   * is on: the read is one git call the off state never pays for.
+   */
+  existingTests?: ReadonlySet<string>;
 }
 
 interface SpecifyAttemptResult {
   outcome: Outcome;
   /** The attributed drop labels the boundary made in this attempt. */
-  refused: string[];
-  /**
+  refused: string[] /**
    * Nothing reached the boundary at all: the child made no `submit_tests` call
    * the step could read, and no row it did declare was dropped there. Only the
    * no-candidate verdict can be silent; `ok`, `uncovered` and a budget stop all
    * report `false`.
-   */
+   */;
   silent: boolean;
   /**
    * What this attempt's dispatch cost, reported SEPARATELY from the outcome.
@@ -105,8 +117,7 @@ interface SpecifyAttemptResult {
   providerFault?: ProviderWaitClass;
 }
 
-/** A dead specify child the caller may re-prompt, discriminated by field presence. */
-interface NoWorkProviderFault {
+/** A dead specify child the caller may re-prompt, discriminated by field presence. */ interface NoWorkProviderFault {
   readonly providerFault: ProviderWaitClass;
   readonly row: DispatchUsageRow;
 }
@@ -135,6 +146,8 @@ async function dispatchAdversary(
     refusal?: string[];
     /** See {@link SpecifyAttemptArgs.resubmit}. */
     resubmit?: boolean;
+    /** See {@link SpecifyAttemptArgs.requirements}. */
+    requirements?: boolean;
   },
 ): Promise<[DispatchResult | BudgetStop | NoWorkProviderFault, DispatchUsageRow]> {
   await (deps.statReporter ?? statReporterPath)(SUBMIT_TESTS_REPORTER_PATH);
@@ -146,6 +159,7 @@ async function dispatchAdversary(
     worktree: opts.wt,
     ...(opts.refusal === undefined ? {} : { refusal: opts.refusal }),
     ...(opts.resubmit === true ? { resubmit: true } : {}),
+    ...(opts.requirements === true ? { requirements: true } : {}),
   });
   const result = await deps.dispatch(
     { role: "developer", prompt, cwd: opts.wt },
@@ -199,7 +213,15 @@ async function dispatchAdversary(
  */
 export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<SpecifyAttemptResult> {
   const { deps, config, repoRoot, issue, spec, wt, base, branch, runnerTemplate } = args;
-  const { testLocation, wanted, frozenByCriterion, refusal, resubmit } = args;
+  const {
+    testLocation,
+    wanted,
+    frozenByCriterion,
+    refusal,
+    resubmit,
+    requirements,
+    existingTests,
+  } = args;
   // Each dispatch gets its own budget, armed the way the first was.
   const budget = armBudget(budgetFor(config, "specify"));
   if (budget.warning !== undefined) traceWarn(`lean specify #${String(issue)}: ${budget.warning}`);
@@ -213,6 +235,12 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
     ...(refusal === undefined ? {} : { refusal }),
     ...(resubmit === true ? { resubmit: true } : {}),
     ...(testLocation === undefined ? {} : { testLocation }),
+    // Forwarded, and the reason it must be said plainly: `requirements` arrives
+    // here as a DESTRUCTURED name from `args`, and an omission at this call site
+    // is silent — the step still judges the list and still refuses on a gap, so
+    // the child simply never read the rule it was refused under. The prompt and
+    // the judge are one contract; both read the same flag.
+    ...(requirements === true ? { requirements: true } : {}),
   });
   const [dispatchedChild, row] = dispatched;
   // Every outcome this attempt returns carries the row: a dispatch that ended
@@ -246,6 +274,12 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
   // Read once: what this attempt's child declared, and how many of its calls
   // were unreadable. Both feed the silence test below and the pipeline above.
   const { rows: declaredRows, skipped } = extractSubmitTests(toolUses);
+  /**
+   * The requirement list the child submitted, when the lever is on. Read from
+   * the SAME toolUses the pipeline reads, so the list and the tests are the one
+   * child's own account of one round.
+   */
+  const requirementList = requirements === true ? extractRequirements(toolUses).items : undefined;
   /** The attributed drops whose reason is a size refusal — see `SIZE_REFUSAL`. */
   const sizeRefused: string[] = [];
   const pipeline = await runTestPipeline(
@@ -307,31 +341,61 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
     },
     { toolUses },
   );
-  if (pipeline.kind === "committed")
-    return {
-      outcome: {
-        kind: "ok",
-        frozen: pipeline.frozen,
-        tests: pipeline.tests,
-        reason: pipeline.reason,
-        dispatches: rows,
+  if (pipeline.kind === "committed") {
+    const outcome: Outcome = {
+      kind: "ok",
+      frozen: pipeline.frozen,
+      tests: pipeline.tests,
+      reason: pipeline.reason,
+      dispatches: rows,
+    };
+    if (requirementList === undefined) return { outcome, refused, silent: false, dispatched: rows };
+    const check = await checkRequirements(
+      {
+        exec: deps.exec,
+        wt,
+        template: runnerTemplate,
+        existingTests,
+        ...(deps.testLimits === undefined ? {} : { limits: deps.testLimits }),
+        frozenTests: pipeline.tests,
       },
+      requirementList,
+    );
+    if (check.record === undefined) return { outcome, refused, silent: false, dispatched: rows };
+    // A charged gap is the one coverage outcome the child can still fix, so it
+    // joins the channel `specify.ts` gates its bounded retry on.
+    if (check.charged.length > 0) {
+      refused.push(...check.charged);
+      return {
+        outcome: { ...outcome, requirements: check.record },
+        refused,
+        silent: false,
+        dispatched: rows,
+      };
+    }
+    // Nothing charged: every gap is one the child declared in its own list, so it
+    // is recorded — with the child's reasons folded into the verdict's — and the
+    // step commits.
+    return {
+      outcome: { ...withCoverageReason(outcome, check.gaps), requirements: check.record },
       refused,
       silent: false,
       dispatched: rows,
     };
+  }
   if (pipeline.kind === "uncovered")
-    return {
-      outcome: {
-        kind: "no-red-test",
-        failedRules: pipeline.uncovered,
-        reason: pipeline.reason,
-        dispatches: rows,
-      },
-      refused,
-      silent: false,
-      dispatched: rows,
-    };
+    if (pipeline.kind === "uncovered")
+      return {
+        outcome: {
+          kind: "no-red-test",
+          failedRules: pipeline.uncovered,
+          reason: pipeline.reason,
+          dispatches: rows,
+        },
+        refused,
+        silent: false,
+        dispatched: rows,
+      };
   // No kept candidate at all: every criterion is uncovered, and the reason
   // LEADS with the rules rather than opening on the drop notes, so the two
   // fields a caller might render say the same thing first. The size drops
@@ -340,26 +404,55 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
   // against a cap of 150.
   const generic = wanted.map((c) => `criterion ${c.id} has no red test`);
   const rules = [...generic, ...sizeRefused];
+  const outcome: Outcome = {
+    kind: "no-red-test",
+    failedRules: rules,
+    // `reason` opens with the GENERIC rules only, then the pipeline's own
+    // drop notes: `rules` is what `failedRules` carries, and a reason that
+    // repeated every size drop the notes already spell would say it twice.
+    reason: [generic.join("; "), pipeline.reason].filter((s) => s !== "").join("; "),
+    dispatches: rows,
+  };
+  if (requirementList === undefined)
+    return {
+      outcome,
+      refused,
+      // Silence is one specific state, not any empty submission: the child made
+      // no `submit_tests` call the step could read — no row, no malformed call —
+      // and the boundary dropped none of its rows. A child whose calls were all
+      // malformed, or whose rows the boundary dropped, has something the retry can
+      // already name, so its prompt quotes those reasons rather than this nudge.
+      // A file the RED PROOF refused is not counted here: the proof judges bytes
+      // the step already holds, so being asked to submit again could not change
+      // its verdict, and the refusal retry already prints what it found.
+      silent: declaredRows.length === 0 && skipped === 0 && refused.length === 0,
+      dispatched: rows,
+    };
+  // Nothing froze, so no behaviour or edge item can be covered: every one of them
+  // is a gap. The step's `no-red-test` verdict already refuses the run here, so
+  // the gaps are named in the verdict's reason rather than pushed into `refused`
+  // a second time — the retry's prompt is built from the criteria it already
+  // carries, and a requirement line would not change what the child can do.
+  const check = await checkRequirements(
+    {
+      exec: deps.exec,
+      wt,
+      template: runnerTemplate,
+      existingTests,
+      ...(deps.testLimits === undefined ? {} : { limits: deps.testLimits }),
+      frozenTests: {},
+    },
+    requirementList,
+  );
+  if (check.record === undefined) return { outcome, refused, silent: false, dispatched: rows };
   return {
     outcome: {
-      kind: "no-red-test",
-      failedRules: rules,
-      // `reason` opens with the GENERIC rules only, then the pipeline's own
-      // drop notes: `rules` is what `failedRules` carries, and a reason that
-      // repeated every size drop the notes already spell would say it twice.
-      reason: [generic.join("; "), pipeline.reason].filter((s) => s !== "").join("; "),
-      dispatches: rows,
+      ...outcome,
+      requirements: check.record,
+      reason: joinNotes([outcome.reason ?? "", gapNote(check.gaps)]),
     },
     refused,
-    // Silence is one specific state, not any empty submission: the child made
-    // no `submit_tests` call the step could read — no row, no malformed call —
-    // and the boundary dropped none of its rows. A child whose calls were all
-    // malformed, or whose rows the boundary dropped, has something the retry can
-    // already name, so its prompt quotes those reasons rather than this nudge.
-    // A file the RED PROOF refused is not counted here: the proof judges bytes
-    // the step already holds, so being asked to submit again could not change
-    // its verdict, and the refusal retry already prints what it found.
-    silent: declaredRows.length === 0 && skipped === 0 && refused.length === 0,
+    silent: false,
     dispatched: rows,
   };
 }

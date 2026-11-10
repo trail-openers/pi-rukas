@@ -8,6 +8,7 @@
  */
 
 import type { HandoffChannel } from "../work-driver-handoff-channel.ts";
+import type { RequirementsRecord } from "./requirements.ts";
 import type { ReviewBoundRecord } from "./review-bound.ts";
 import type { PreexistingTierRecord } from "./state-outcome-maps.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
@@ -132,6 +133,15 @@ export interface Outcome {
   channel?: HandoffChannel;
   /// `review` only: the step's OWN wall clock stopped it, not one child's budget.
   reviewBound?: ReviewBoundRecord;
+  /**
+   * `specify` only, and only while the requirement-coverage lever is on: the
+   * numbered list the adversary submitted, with what the step PROVED about each
+   * item's mapped tests — counts and ids, not the child's prose alone. The bench
+   * attributes a rejected run by reading this off the durable state file, so it
+   * is the record of coverage rather than a note in the reason. Written by the
+   * step that authored it; `challenge` reads it from the step log.
+   */
+  requirements?: RequirementsRecord;
   /**
    * `specify`, `build` and `challenge` only: one row per dispatch the step paid
    * for, including the ones that died or were stopped by their budget. A row is

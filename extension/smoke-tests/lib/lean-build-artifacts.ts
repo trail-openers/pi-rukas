@@ -13,7 +13,12 @@ import { chmodSync, linkSync, mkdirSync, symlinkSync, writeFileSync } from "node
 import path from "node:path";
 import { type ExecResult, execp } from "../../src/exec.ts";
 import type { BuildExec } from "../../src/lean/build-types.ts";
+import type { WorkConfig } from "../../src/lean/config.ts";
+import type { RequirementsRecord } from "../../src/lean/requirements.ts";
+import type { Step } from "../../src/lean/state.ts";
+import type { BudgetOpts } from "../../src/step-budget.ts";
 import type { DispatchResult } from "../../src/types.ts";
+import type { Built } from "./lean-build-fixture.ts";
 import { git, gitEnvFor } from "./lean-build-fixture.ts";
 
 /**
@@ -158,4 +163,62 @@ export function execObserver(
     if (cmd !== "git") spy?.(cmd, o);
     return inner(cmd, o);
   };
+}
+
+/**
+ * What one case asks the build harness to do. Lives beside {@link DispatchResultOverride}
+ * rather than in `lean-build-fixture.ts` for the same reason the artifacts do: the
+ * fixture drives the step and this only describes the case, and the seam is what
+ * keeps the fixture inside the 500-line gate (AGENTS.md §12).
+ */
+export interface RunOpts {
+  issue: number;
+  /** The child's acts in the worktree, at the moment it is still working. */
+  child?: (wt: string) => void;
+  /** A non-child commit planted at the instant the blocked gate re-runs its files. */
+  afterDispatch?: (wt: string) => void;
+  /** Extra steps to append to the log (a re-entry `verify:red` for case (i)). */
+  extraSteps?: Step[];
+  /** A build fixture whose frozen record is deliberately wrong (case (g)). */
+  frozenSha?: string;
+  /**
+   * The `requirements` record to write on the fixture's `specify:ok` step. The
+   * build step reads the list from the step log and nowhere else, so this is how
+   * a case puts it in front of the builder.
+   */
+  requirements?: RequirementsRecord;
+  /** The frozen test's committed bytes, when a case needs something other than TEST. */
+  frozenText?: string | Buffer;
+  /** Extra frozen files (path -> bytes) committed and frozen as challenge added them. */
+  extraFrozen?: Record<string, string>;
+  /** The aggregate capture ceiling in bytes, when a case needs a small one. */
+  captureCeiling?: number;
+  /** Skip the fixture's own worktree setup to test the "no worktree" throw. */
+  built?: Built;
+  /** Leave the run's branch to the worktree so a case can dismantle that tree. */
+  childOwnsBranch?: boolean;
+  /** A config load that refuses (case o); the step must treat it as infrastructure. */
+  loadConfigError?: string;
+  /** A child whose dispatch did not succeed — the infra case, as in `challenge`. */
+  dispatchOk?: boolean;
+  /**
+   * The whole `DispatchResult` of the nth child (0-based), verbatim, or a rule
+   * for it — see {@link resultOverride}. The shape a case needs to hand its dead
+   * child real `usage.turns` / `toolUses` / `killCause` fields.
+   */
+  dispatchResults?: DispatchResultOverride;
+  /** Drives the child's progress feed, the way `spawn.ts` does at `message_end`. */
+  onProgressTick?: (onProgress: BudgetOpts["onProgress"]) => void;
+  /** THE config the step reads; spread {@link configWithRunner} to keep the rest. */
+  config?: WorkConfig;
+  /** The child's tool calls; a function is called at the instant of dispatch. */
+  toolUses?: unknown[] | (() => unknown[]);
+  /** Bounds the driver's re-run of a reported frozen test (a case observes a hang). */
+  blockedTimeoutMs?: number;
+  /** A stand-in runner that misbehaves the way a shell script cannot — see {@link reRunStub}. */
+  hungExec?: (cmd: string, o?: unknown) => Promise<unknown>;
+  /** Watches every non-git exec WITHOUT replacing it, so the verdict stays the real one. */
+  execSpy?: (cmd: string, o?: unknown) => void;
+  /** The clock knobs of {@link deadlineOf}: the run's deadline and its `now`. */
+  clock?: ClockOpts;
 }

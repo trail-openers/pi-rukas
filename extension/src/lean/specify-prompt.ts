@@ -43,6 +43,13 @@ export interface SpecifyPromptOpts {
    * file was wrong but that the step never saw any.
    */
   resubmit?: boolean;
+  /**
+   * The requirement-coverage lever is on: ask for the numbered requirement list
+   * and the `submit_requirements` call that carries it. Undefined or false is
+   * today's prompt, byte for byte — the section is appended, never rewritten,
+   * so the off state cannot drift with an edit to the sentences above.
+   */
+  requirements?: boolean;
 }
 
 /** The most drop reasons {@link refusalFeedback} names; the rest are not repeated. */
@@ -167,6 +174,33 @@ Before you freeze your tests, search THIS repository for requirements the issue 
 For each one you can point at, add an extra test CASE inside the test file of the criterion it refines, opening no new file for it, with a comment naming the base-commit evidence as \`path:line\`. An implied case never replaces or displaces the criterion's own test. Skip any you cannot ground in a file that exists at the base commit — no evidence, no case.`;
 
 /**
+ * The requirement-list section, rendered after {@link IMPLIED_REQUIREMENTS}
+ * when the requirement-coverage lever is on (`PI_ENSEMBLE_LEAN_REQUIREMENTS`).
+ *
+ * `IMPLIED_REQUIREMENTS` already asks the child to go and find the implied
+ * requirements; this makes the finding REPORTABLE, so the parent can judge it in
+ * code rather than hope the child's extra cases happened to land. The three
+ * kinds are named by the coverage rule that reads them (`requirements.ts`), and
+ * the rule for a `preserved` item is stated as a question the child answers with
+ * a repository file it did NOT write — the one item kind that is not new.
+ *
+ * Like the consts above, ONE const: the kickoff, the refusal retry and the
+ * resubmit retry must not tell the child different rules about the list its
+ * refusal quotes.
+ */
+export const REQUIREMENT_LIST_CONTRACT = `## The requirement list
+
+List EVERY requirement the issue implies as a numbered item and call \`submit_requirements\` ONCE with all of them. Each item states its kind:
+
+- **behaviour** — what the change must do.
+- **edge** — an input form, state or caller interaction it must also handle.
+- **preserved** — a behaviour this code already has that the change must keep working.
+
+Each item names the test file(s) that cover it. For **behaviour** and **edge** items those are files you wrote for a criterion and reported with \`submit_tests\` — the parent runs each one and REFUSES the submission if any such item has no failing test of its own. For a **preserved** item, name an EXISTING test file of this repository that already passes; if none exists, still list the item and say why in \`note\` — an uncovered preserved item is recorded, not refused.
+
+Call \`submit_requirements\` exactly ONCE, with every item.`;
+
+/**
  * The one place the test-location sentence is spelled, for BOTH adversary
  * prompts — same reasoning as {@link RED_PROOF_CONTRACT}: a rewrite to one
  * prompt must not quietly un-tell the other step's adversary where its files
@@ -251,7 +285,6 @@ export function specifyPrompt(opts: SpecifyPromptOpts): string {
         tests.length === 0 ? "" : TEST_SCOPE_CONTRACT,
         "",
         tests.length === 0 ? "" : IMPLIED_REQUIREMENTS,
-        "",
         "**Do not edit, create or delete any non-test file.** No source changes, no config, no fixtures outside your test files, no package-manifest edits. The parent reverts anything you touch that you did not submit as a test.",
         "",
         "## How the parent runs your tests",
@@ -265,7 +298,13 @@ export function specifyPrompt(opts: SpecifyPromptOpts): string {
         tests.length === 0
           ? "Nothing."
           : `Call \`submit_tests\` exactly ONCE per criterion listed above, with that criterion's id and the path(s) of the file(s) you wrote for it, relative to the worktree. One call per criterion — a criterion you do not report is treated as having no tests and fails the step.`,
-        "Do not run the implementation. Do not try to make the tests pass.",
+        // The list section is APPENDED at the tail rather than woven in, and it
+        // carries its own leading blank line: with the lever off this entry is ""
+        // and the control's bytes are a byte-exact prefix of the lever's — which is
+        // what lets one commit be measured with and without it. It rides the same
+        // conditional as the elicitation it makes reportable: a spec with no test
+        // criteria has nothing to map.
+        tests.length === 0 || opts.requirements !== true ? "" : `\n${REQUIREMENT_LIST_CONTRACT}`,
       ].join("\n"),
   ].join("\n");
   if (opts.resubmit === true) return `${prompt}\n\n${RESUBMIT_NOTE}`;

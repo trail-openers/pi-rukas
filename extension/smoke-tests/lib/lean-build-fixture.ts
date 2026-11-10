@@ -31,6 +31,7 @@ import type { BuildDeps } from "../../src/lean/build.ts";
 import type { WorkConfig } from "../../src/lean/config.ts";
 import { defaultConfig } from "../../src/lean/config.ts";
 import type { HandlerCtx } from "../../src/lean/engine.ts";
+import type { RequirementsRecord } from "../../src/lean/requirements.ts";
 import type { Outcome, Step } from "../../src/lean/state.ts";
 import { createRun } from "../../src/lean/state.ts";
 import type { DispatchUsageRow } from "../../src/lean/step-budget.ts";
@@ -156,6 +157,14 @@ export function buildFixture(
      * their own issue number, so a shared repo otherwise means a shared tree.
      */
     worktreeIssue?: number;
+    /**
+     * The `requirements` record to write on the fixture's `specify:ok` step, so a
+     * build case can pin what the builder is shown. A step log is the only place
+     * the build step reads the list from, so a case that wants the section in the
+     * prompt has to put the record in the log — which is the same path production
+     * takes after a resumed run.
+     */
+    requirements?: RequirementsRecord;
   },
 ): Built {
   const frozenText = opts?.frozenText ?? TEST;
@@ -228,6 +237,7 @@ export function buildFixture(
         kind: "ok",
         frozen: { "tests/AC1-retry.test.sh": frozenSha },
         tests: { AC1: ["tests/AC1-retry.test.sh"] },
+        ...(opts?.requirements === undefined ? {} : { requirements: opts.requirements }),
       },
     },
     // The adversary's round, when the case asked for one: the frozen map it
@@ -319,57 +329,6 @@ export interface RunResult {
   built: Built;
 }
 
-/**
- * What one case asks the harness to do: the child's acts, the tree it plants, the
- * artifacts the fake dispatch hands back, and the clock the step reads. Most knobs
- * are single-line; the four multi-sentence ones are documented where they are read.
- */
-export interface RunOpts {
-  issue: number;
-  /** The child's acts in the worktree, at the moment it is still working. */
-  child?: (wt: string) => void;
-  /** A non-child commit planted at the instant the blocked gate re-runs its files. */
-  afterDispatch?: (wt: string) => void;
-  /** Extra steps to append to the log (a re-entry `verify:red` for case (i)). */
-  extraSteps?: Step[];
-  /** A build fixture whose frozen record is deliberately wrong (case (g)). */
-  frozenSha?: string;
-  /** The frozen test's committed bytes, when a case needs something other than TEST. */
-  frozenText?: string | Buffer;
-  /** Extra frozen files (path -> bytes) committed and frozen as challenge added them. */
-  extraFrozen?: Record<string, string>;
-  /** The aggregate capture ceiling in bytes, when a case needs a small one. */
-  captureCeiling?: number;
-  /** Skip the fixture's own worktree setup to test the "no worktree" throw. */
-  built?: Built;
-  /** Leave the run's branch to the worktree so a case can dismantle that tree. */
-  childOwnsBranch?: boolean;
-  /** A config load that refuses (case o); the step must treat it as infrastructure. */
-  loadConfigError?: string;
-  /** A child whose dispatch did not succeed — the infra case, as in `challenge`. */
-  dispatchOk?: boolean;
-  /**
-   * The whole `DispatchResult` of the nth child (0-based), verbatim, or a rule
-   * for it — see {@link resultOverride}. The shape a case needs to hand its dead
-   * child real `usage.turns` / `toolUses` / `killCause` fields.
-   */
-  dispatchResults?: DispatchResultOverride;
-  /** Drives the child's progress feed, the way `spawn.ts` does at `message_end`. */
-  onProgressTick?: (onProgress: BudgetOpts["onProgress"]) => void;
-  /** THE config the step reads; spread {@link configWithRunner} to keep the rest. */
-  config?: WorkConfig;
-  /** The child's tool calls; a function is called at the instant of dispatch. */
-  toolUses?: unknown[] | (() => unknown[]);
-  /** Bounds the driver's re-run of a reported frozen test (a case observes a hang). */
-  blockedTimeoutMs?: number;
-  /** A stand-in runner that misbehaves the way a shell script cannot — see {@link reRunStub}. */
-  hungExec?: (cmd: string, o?: unknown) => Promise<unknown>;
-  /** Watches every non-git exec WITHOUT replacing it, so the verdict stays the real one. */
-  execSpy?: (cmd: string, o?: unknown) => void;
-  /** The clock knobs of {@link deadlineOf}: the run's deadline and its `now`. */
-  clock?: ClockOpts;
-}
-
 /** Run the step against a fresh fixture; a throw comes back as the error. */
 export async function runBuild(opts: RunOpts): Promise<RunResult> {
   const built =
@@ -379,6 +338,7 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
       ...(opts.frozenText === undefined ? {} : { frozenText: opts.frozenText }),
       ...(opts.extraFrozen === undefined ? {} : { extraFrozen: opts.extraFrozen }),
       ...(opts.childOwnsBranch === undefined ? {} : { childOwnsBranch: opts.childOwnsBranch }),
+      ...(opts.requirements === undefined ? {} : { requirements: opts.requirements }),
     });
   if (opts.extraSteps !== undefined) {
     built.ctx.run.steps = [...built.ctx.run.steps, ...opts.extraSteps];

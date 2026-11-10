@@ -35,6 +35,7 @@ import {
   validatedCommandNotRunnable,
   validatedPreexistingFailures,
 } from "./state-outcome-maps.ts";
+import { requirementsProblem, validatedRequirements } from "./state-requirements.ts";
 // The two print caps for a `blockedBy` entry live with the validator that enforces the
 // record's own bound; re-exported so a caller need not know which file holds them.
 export { BLOCKED_PATH_CAP, BLOCKED_REASON_CAP } from "./state-outcome-maps.ts";
@@ -163,6 +164,9 @@ const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>>
   // The review step's own clock. On any other step it claims a review stopped short of
   // judging its lanes when no review of this run stopped at all.
   reviewBound: "review",
+  // The requirement list is the adversary's own submission, proved by `specify`:
+  // a handback or a build carrying one claims a list this run never produced.
+  requirements: "specify",
 };
 
 /** The ceilings a budget verdict may name; the only reader of the field's type. */
@@ -297,6 +301,12 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
     const problem = reviewBoundProblem(oc.reviewBound);
     if (problem !== undefined) return problem;
   }
+  // The requirement list the bench tallies: counts that disagree with the items are
+  // refused rather than carried, so an attribution never rests on a self-contradiction.
+  if (oc.requirements !== undefined) {
+    const problem = requirementsProblem(oc.requirements);
+    if (problem !== undefined) return problem;
+  }
   // `prUrl` is the address `handback` prints, so it is refused when it is not https url
   // text; the length bound keeps a blob out of the record.
   if (oc.prUrl !== undefined) {
@@ -358,6 +368,9 @@ export function buildOutcome(oc: Record<string, unknown>): Outcome {
     ...(typeof oc.report === "string" ? { report: oc.report } : {}),
     ...rowsField(validatedDispatches(oc.dispatches)),
     ...(oc.reviewBound === undefined ? {} : { reviewBound: validatedReviewBound(oc.reviewBound) }),
+    ...(oc.requirements === undefined
+      ? {}
+      : { requirements: validatedRequirements(oc.requirements) }),
     ...(isBudgetLimit(oc.limit) ? { limit: oc.limit } : {}),
     ...(isCount(oc.value) ? { value: oc.value as number } : {}),
     ...(isCount(oc.used) ? { used: oc.used as number } : {}),

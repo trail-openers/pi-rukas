@@ -232,6 +232,13 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("INTENT_CRITICALITY", true),
   flag("INVARIANT_MEMORY", true),
   input("ISSUE_IMAGES", "boolean", true, "cycle", { manifestVersion: 1 }),
+  // The lean requirement-coverage lever: `1` makes `specify` collect a numbered
+  // requirement list from its adversary, refuse a submission whose behaviour or
+  // edge items have no red test of their own, and put the list in the builder's
+  // prompt. Default OFF so a bench campaign can run lean with and without it on
+  // one commit: with any other value the prompts and verdicts are byte-identical
+  // to the release without the lever. Reader: `lean/requirements-switch.ts`.
+  flag("LEAN_REQUIREMENTS", false),
   // Unset: derived from the host budget (CPUs, memory, pids.max); 0 = unbounded.
   // #1564 — a lens child's run bound (spawn-child-bound.ts).
   ms("LENS_BOUND_MS", 1_800_000),

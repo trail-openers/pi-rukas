@@ -22,6 +22,7 @@ import { buildPrompt } from "./build-prompt.ts";
 import type { BuildDispatch } from "./build-types.ts";
 import { dispatchFailureWhy, throwIfDispatchFailed } from "./dispatch-verdict.ts";
 import { type ProviderWaitClass, providerFaultOf } from "./provider-wait.ts";
+import type { RequirementsRecord } from "./requirements.ts";
 import type { PiSpec } from "./spec.ts";
 import {
   type BudgetArms,
@@ -50,6 +51,11 @@ export interface BuildDispatchOpts {
    * paths it froze, named so this round knows which files are new to it.
    */
   added?: string;
+  /**
+   * The requirement list the `specify` step recorded, when the requirement lever
+   * was on. Passed through to the prompt verbatim from the step log.
+   */
+  requirements?: RequirementsRecord;
   /** The step's budget arms, armed before the child and read back after. */
   budget: BudgetArms;
   /**
@@ -122,6 +128,7 @@ export async function dispatchBuilder(
     ...(opts.reentry === undefined ? {} : { reentry: opts.reentry }),
     ...(opts.budgetStop === undefined ? {} : { budgetStop: opts.budgetStop }),
     ...(opts.added === undefined ? {} : { added: opts.added }),
+    ...(opts.requirements === undefined ? {} : { requirements: opts.requirements }),
   });
   const result = await dispatch(
     { role: "developer", prompt, cwd: opts.wt },

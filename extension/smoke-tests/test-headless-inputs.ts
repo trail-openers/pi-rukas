@@ -36,15 +36,15 @@ import { COMMENT_RETENTION_PATHS } from "../src/comment-retention.ts";
 import { buildCapabilities } from "../src/headless/capabilities.ts";
 import { HEADLESS_FILES, HEADLESS_INPUTS, type HostInput } from "../src/headless/inputs.ts";
 import { hostSpawnCap, hostSpawnWaitMs } from "../src/host-spawn-slots.ts";
+import { requirementsEnabled } from "../src/lean/requirements-switch.ts";
 import { claimScanEnabled, evidenceSupplyEnabled } from "../src/lens-evidence.ts";
 import { lensRoundCap } from "../src/lens-round-cap.ts";
 import { loopDetectorEnabled } from "../src/loop-detector.ts";
 import { roundCapMergeEnabled } from "../src/merge-guard-round-cap.ts";
 import { pendingShutdownBoundMs } from "../src/pending-jobs-signal.ts";
 import { planCacheTtlMs } from "../src/plan-investigation-cache.ts";
+import { adversarialChildBoundMs, reviewSkillReadCap } from "../src/review-bounds.ts";
 import { lensFixBoundMs, reviewCapMs, reviewWallClockMs } from "../src/review-budget.ts";
-import { readSites } from "./lib/pi-read-sites.ts";
-import { lensFixLandAheadEnabled } from "../src/work-driver-lens-fix-bound-land.ts";
 import { transcriptRetentionDays } from "../src/runs-retention.ts";
 import { autoSteerEnabled } from "../src/slow-notice.ts";
 import { slowThresholds } from "../src/slow-notice.ts";
@@ -55,7 +55,6 @@ import {
   lensChildBoundMs,
   settledReapMs,
 } from "../src/spawn-child-bound.ts";
-import { adversarialChildBoundMs, reviewSkillReadCap } from "../src/review-bounds.ts";
 import { spawnCap } from "../src/spawn-semaphore.ts";
 import {
   inactivityTimeoutMs,
@@ -82,6 +81,7 @@ import { handoffDispatchTimeoutMs } from "../src/work-driver-handoff.ts";
 import { intentCriticalityEnabled } from "../src/work-driver-intent-criticality.ts";
 import { intentResolutionEnabled } from "../src/work-driver-intent.ts";
 import { issueImagesEnabled } from "../src/work-driver-issue-images.ts";
+import { lensFixLandAheadEnabled } from "../src/work-driver-lens-fix-bound-land.ts";
 import { mergeAuthorityEnabled } from "../src/work-driver-merge-authority.ts";
 import { NET_GIT_TIMEOUT_DEFAULT_MS } from "../src/work-driver-net-git.ts";
 import { crossGroupConflictsEnabled } from "../src/work-driver-path-claims.ts";
@@ -97,6 +97,7 @@ import { verifyTimeoutMs } from "../src/work-driver-verify-budget.ts";
 import { testDeleteTolerance, verifyTimeoutMs } from "../src/work-driver-verify-develop-helpers.ts";
 import { queueOrderingEnabled } from "../src/work-queue-scheduler.ts";
 import { queueDeferCapMs, queueHaltOnFailure } from "../src/work-queue.ts";
+import { readSites } from "./lib/pi-read-sites.ts";
 import { tierDefaultReader } from "./lib/verify-tier-pin.ts";
 import { wrapperEnvReads } from "./lib/wrapper-env-reads.ts";
 
@@ -379,6 +380,10 @@ const LIVE: [string, () => unknown][] = [
   ["PI_ENSEMBLE_CROSS_GROUP_CONFLICTS", crossGroupConflictsEnabled],
   ["PI_ENSEMBLE_HANDOFF_POST_RETRY", handoffPostRetryEnabled],
   ["PI_ENSEMBLE_INTENT", intentResolutionEnabled],
+  // The lean requirement-coverage lever. Its default is the OFF state the
+  // byte-identity test pins, so a drift here would be a silent change to the
+  // bench's comparison baseline.
+  ["PI_ENSEMBLE_LEAN_REQUIREMENTS", requirementsEnabled],
   ["PI_ENSEMBLE_INTENT_CRITICALITY", intentCriticalityEnabled],
   ["PI_ENSEMBLE_ISSUE_IMAGES", () => issueImagesEnabled()],
   ["PI_ENSEMBLE_LENS_EVIDENCE", evidenceSupplyEnabled],

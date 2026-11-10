@@ -63,6 +63,7 @@ import type { HandlerCtx } from "./engine.ts";
 import { fetchIssueBody } from "./io.ts";
 import { MAX_BUILD_ATTEMPTS } from "./machine.ts";
 import { providerWaitNote, waitOutProviderFault } from "./provider-wait.ts";
+import type { RequirementsRecord } from "./requirements.ts";
 import { type PiSpec, parsePiSpec } from "./spec.ts";
 import { CaptureBudget } from "./specify-capture.ts";
 import { assertSpecifyWorktreeOwned, specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
@@ -128,6 +129,21 @@ export function testsFromLog(steps: Step[]): Record<string, string[]> {
     }
   }
   return tests;
+}
+
+/**
+ * The requirement list the run holds, from the newest decided `specify` step that
+ * recorded one. Read out of the log rather than a closure so a resumed run's
+ * builder is shown the list the adversary actually submitted, and no later child
+ * can rewrite it. `undefined` when the lever was off — the ordinary case.
+ */
+export function requirementsFromLog(steps: Step[]): RequirementsRecord | undefined {
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const step = steps[i];
+    if (step?.state !== "specify" || step.outcome?.kind !== "ok") continue;
+    if (step.outcome.requirements !== undefined) return step.outcome.requirements;
+  }
+  return undefined;
 }
 
 /** The newest decided `state` + `kind` step's reason, clipped for a prompt. */
@@ -268,6 +284,8 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
   });
   const reentry = reentryFromLog(ctx.steps);
   const added = addedByChallengeFromLog(ctx.steps);
+  // The requirement list this run's adversary produced, if the lever was on.
+  const requirements = requirementsFromLog(ctx.steps);
   let stopped = budgetStopFromLog(ctx.steps);
   // The wait note of a provider fault this visit sat out, folded into the reason
   // of whichever verdict this visit records (empty joins to nothing).
@@ -311,6 +329,7 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
       budget,
       ...(reentry === undefined ? {} : { reentry }),
       ...(added === undefined ? {} : { added }),
+      ...(requirements === undefined ? {} : { requirements }),
       ...(stopped === undefined ? {} : { budgetStop: stopped }),
     });
     rows.push(row);

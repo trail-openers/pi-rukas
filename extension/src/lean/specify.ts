@@ -63,6 +63,8 @@ import { loadWorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { fetchIssueBody } from "./io.ts";
 import { providerWaitNote, waitOutProviderFault } from "./provider-wait.ts";
+import { listBaseTestFiles } from "./requirements-existing.ts";
+import { requirementsEnabled } from "./requirements-switch.ts";
 import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
 import { runSpecifyAttempt } from "./specify-attempt.ts";
 import type { CaptureResult } from "./specify-capture.ts";
@@ -109,6 +111,13 @@ export interface SpecifyDeps {
   capture?: (wt: string, paths: string[], owners: Map<string, string>) => CaptureResult;
   /** Per-run runner limits; a test injects a short timeout to prove a hang is infra. */
   testLimits?: TestRunLimits;
+  /**
+   * The requirement-coverage switch, read ONCE per run by the caller of the step
+   * and threaded here. Injectable because the whole step is: a case drives the
+   * lever without exporting a process variable under a run in flight. Production
+   * leaves it alone and {@link requirementsEnabled} reads `PI_ENSEMBLE_LEAN_REQUIREMENTS`.
+   */
+  requirementsOn?: boolean;
 }
 
 /**
@@ -311,6 +320,18 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
   // while the boundary runs (nothing commits in between), so reading it per
   // `validate` invocation would just re-fold the step log for the same answer.
   const frozenByCriterion = testsFromLog(ctx.steps);
+  // The requirement lever, decided ONCE for the run — before the first dispatch,
+  // so the prompt the first child read and the check its submission meets cannot
+  // disagree because the environment changed mid-step. Off, `existingTests` is
+  // never read: the base-tree listing is a git call the shipped behaviour does not pay.
+  const requirementsOn = deps.requirementsOn ?? requirementsEnabled();
+  const existingTests = requirementsOn
+    ? await listBaseTestFiles(deps.exec, repoRoot, base)
+    : undefined;
+  if (requirementsOn && existingTests === undefined)
+    traceWarn(
+      `lean specify #${String(issue)}: the base commit's file list could not be read — preserved requirements will be recorded uncovered`,
+    );
 
   // 5-13. The attempts, each one the adversary plus the shared pipeline (see
   //       `specify-attempt.ts`), which `challenge` shares.
@@ -327,6 +348,8 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
     ...(testLocation === undefined ? {} : { testLocation }),
     wanted,
     frozenByCriterion,
+    ...(requirementsOn ? { requirements: true } : {}),
+    ...(existingTests === undefined ? {} : { existingTests }),
   };
   // The first attempt is final unless it dropped a submitted row or ended
   // without submitting at all: both are things the child can fix by being told,
@@ -347,7 +370,11 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
   // has nothing to say about. It costs no extra attempt: same bound.
   while (
     attempts < SPECIFY_MAX_ATTEMPTS &&
-    attempt.outcome.kind === "no-red-test" &&
+    // A requirement gap refuses on its own: the pipeline committed, so the
+    // outcome is `ok`, yet the child claimed a behaviour or edge item it had no
+    // red test for. That is the one coverage outcome the child can still fix by
+    // writing the test it skipped, and the gate the step already owns is here.
+    (attempt.outcome.kind === "no-red-test" || attempt.refused.length > 0) &&
     (attempt.providerFault !== undefined ||
       attempt.refused.length > 0 ||
       (attempt.silent && wanted.length > 0))
