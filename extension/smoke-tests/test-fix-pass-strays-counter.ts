@@ -133,7 +133,11 @@ console.log("# a rewind that fails AFTER preserving reports itself as rolled bac
   // its rollback are what is under test, not the revert module's.
   const t = strayPassTree();
   const real: GitExec = runGit(execp);
-  const commitFails: NonNullable<Parameters<typeof typedCycleCtx>[2]["verifyExecFn"]> = async (
+  // The parameter type is read from the fixture's own signature (the shape
+  // `typedCycleCtx` forwards to `fixCtx`), not indexed off `Parameters<…>[2]`
+  // — the optional third parameter makes that index `| undefined` and the
+  // property lookup fails.
+  const commitFails: NonNullable<Parameters<typeof typedCycleCtx>[2]>["verifyExecFn"] = async (
     cmd,
     opts,
   ) => {
