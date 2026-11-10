@@ -16,7 +16,7 @@ import type { BuildExec } from "../../src/lean/build-types.ts";
 import type { WorkConfig } from "../../src/lean/config.ts";
 import type { RequirementsRecord } from "../../src/lean/requirements.ts";
 import type { Step } from "../../src/lean/state.ts";
-import type { BudgetOpts } from "../../src/step-budget.ts";
+import type { BudgetOpts } from "../../src/lean/step-budget.ts";
 import type { DispatchResult } from "../../src/types.ts";
 import type { Built } from "./lean-build-fixture.ts";
 import { git, gitEnvFor } from "./lean-build-fixture.ts";

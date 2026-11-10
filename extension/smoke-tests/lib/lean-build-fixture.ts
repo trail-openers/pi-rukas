@@ -41,6 +41,7 @@ import { gitTestEnv } from "./git-test-env.ts";
 import {
   type ClockOpts,
   type DispatchResultOverride,
+  type RunOpts,
   deadlineOf,
   resultOverride,
 } from "./lean-build-artifacts.ts";
