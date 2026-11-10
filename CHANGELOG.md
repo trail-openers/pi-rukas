@@ -8,6 +8,14 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.72](https://github.com/trail-openers/pi-rukas/compare/v0.14.71...v0.14.72) (2026-11-10)
+
+
+### Bug Fixes
+
+* **git:** rev-parse reads break on git older than 2.43 (--end-of-options is echoed) ([#2170](https://github.com/trail-openers/pi-rukas/issues/2170)) ([245532c](https://github.com/trail-openers/pi-rukas/commit/245532c32b5c1977e376276b58b249ed8b6f6480))
+* **work:** fix pass fails the round instead of shipping a partial revert ([#2164](https://github.com/trail-openers/pi-rukas/issues/2164)) ([9dcdcec](https://github.com/trail-openers/pi-rukas/commit/9dcdceca8c639dfbf23c693f99b6d4e905d9d400))
+
 ## [0.14.71](https://github.com/trail-openers/pi-rukas/compare/v0.14.70...v0.14.71) (2026-11-09)
 
 
