@@ -181,19 +181,21 @@ export async function revertStraysOnce(
   // rather than two counters that can disagree.
   //
   // #2156 R5 — the marker is asked HERE, beside the counter it replaces, so no
-  // caller reaches the rewind without asking. A whole-pass rewind records no
-  // `fix-pass-strays-reverted` event that this counter could read (the fix pass
-  // appends that event only on a path that no longer exists — the pass now fails
-  // its round either way), so its own budget is read from the park it caused.
-  // Without this, a re-run of the same pass — a resume, or an operator re-entry
-  // on state that kept the rewind commit — would rewind a second time.
+  // caller reaches the rewind without asking. BOTH callers' events carry the same
+  // kind, so each counter filters on `source`: the fix pass counts the events
+  // written WITHOUT a source (a lens round's revert — `source: "lens-fix"` — belongs
+  // to that round's budget and must not charge this pass with a rewind it never
+  // performed), and the lens counter filters on its own source and round
+  // (`lensFixRevertAlreadyUsed`). The record it reads is the one the rewind stamps
+  // and `runAdversarialFixPass` persists BEFORE it parks, so a resumed cycle — or
+  // an operator re-entry on state that kept the rewind commit — reads the budget as
+  // spent and does not rewind a second time. A whole-pass rewind reaches this
+  // counter whatever it then parks on, because the pass fails its round either way.
   const already =
     alreadyReverted ??
     (post.wholePass === true
       ? wholePassRevertUsed(state, id)
-      : passWindow(state).some(
-          (e) => e.kind === "fix-pass-strays-reverted" && e.workstreamId === id,
-        ));
+      : passWindow(state).some((e) => sourcelessFixPassRevert(e, id)));
   if (already) {
     // One stray set per pass is the driver's job; a second is a pass that will
     // not stay inside its fence, and reverting again would be looping on it.
@@ -308,34 +310,40 @@ export function passWindow(state: WorkState): WorkEvent[] {
   return events;
 }
 
+/** A revert record this workstream's fix pass performed: the event kind, the
+ *  workstream, and NO `source` — a lens round's revert carries `source:
+ *  "lens-fix"` and belongs to that round's own budget. */
+function sourcelessFixPassRevert(e: WorkEvent, workstreamId: string): boolean {
+  return (
+    e.kind === "fix-pass-strays-reverted" &&
+    e.source === undefined &&
+    e.workstreamId === workstreamId
+  );
+}
+
 /**
  * #2156 R5 — has this workstream's fix pass already rewound its WHOLE delta?
  * Answered from the pass's own event window, so a resumed cycle counts the
  * rewind it already performed and a sibling workstream's rewind does not charge
  * this one's budget.
  *
- * The marker is the `cap-hit` the pass parked on, read back out of the same
- * window. It needs no new event kind and no new cap literal (the issue forbids
- * both): the rewind already fails the round, and the round's park record states
- * which paths it rewound, so the park IS the durable record of the rewind. The
- * test is against two clauses this module and `strayReason` themselves print —
- * not against prose the fixer influenced — and a pass that never rewound has no
- * such `cap-hit` in its window, because its park happens before any rewind runs.
+ * The record is the `fix-pass-strays-reverted` EVENT the rewind stamps — the one
+ * record with one meaning, keyed on `workstreamId` and on the ABSENCE of
+ * `source` (a lens-fix revert carries `source: "lens-fix"` and belongs to that
+ * round's own budget, answered by `lensFixRevertAlreadyUsed`). Reading the budget
+ * out of the `cap-hit` prose instead — as an earlier shape of this did — is a
+ * gate reading a claim: those cap records are also appended for reasons that have
+ * nothing to do with a rewind, and their evidence interpolates fixer-authored
+ * strings (stray paths, admission notes, verify tails), so a rewind could be read
+ * as spent without ever having run (AGENTS.md §7 principle 1).
+ *
+ * The event is stamped and PERSISTED before the pass parks on the rewind, in
+ * `runAdversarialFixPass`; a rewind that never happened has no such record, and a
+ * crash between the rewind commit and the park still leaves it durable on disk.
  */
 function wholePassRevertUsed(state: WorkState, workstreamId: string): boolean {
-  return passWindow(state).some(
-    (e) =>
-      e.kind === "cap-hit" &&
-      e.cap === "fix-pass-park" &&
-      e.evidence?.includes(WHOLE_PASS_REVERT_EVIDENCE) === true &&
-      e.evidence.includes(`${workstreamId} changed `) === true,
-  );
+  return passWindow(state).some((e) => sourcelessFixPassRevert(e, workstreamId));
 }
-
-/** The clause `strayReason` prints when it renders a whole-pass rewind; the
- *  budget above reads it back out of the park evidence. ONE spelling, here,
- *  so the two cannot be edited apart. */
-export const WHOLE_PASS_REVERT_EVIDENCE = "the driver rewound this pass's whole delta";
 
 /** A recorded head is usable only as a full SHA — the same rule the develop paths
  *  apply (`isValidBaseSha`), so a truncated or empty field never becomes a rev. */

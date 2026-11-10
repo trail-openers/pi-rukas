@@ -200,15 +200,17 @@ export async function planFixPass(
           declared,
           named,
           alreadyChanged: before.value.names,
-          // #2156 — the cycle's own file set, from the two reads above: what the
-          // cycle committed since the base, and what its worktree changes against
-          // the base. An edit to one of these is the cycle working on its own
-          // output, not a stray.
           // #2156 — EXACTLY the paths this cycle brought into being: what it
-          // committed since the base, plus its working-tree additions and
-          // edits against the base. Base-tracked files are NOT here — they
-          // belong to the repository, not to this cycle, and listing them
-          // would admit any stray as "the cycle's own work".
+          // committed since the base, plus what its worktree ADDED against the
+          // base (`untracked`). Base-tracked files are NOT here — they belong to
+          // the repository, not to this cycle. The working-tree half is kept to
+          // additions deliberately: `before.untracked` is every untracked file in
+          // the tree, so it also carries build output, an operator's scratch file
+          // and another workstream's leftovers, and `admitsEntry` admits an entry
+          // that names itself — a raw list there hands the fence a set it never
+          // checked. The `names` half of the same read is tracked edits against
+          // the base, i.e. repository files, so it is not the cycle's own work
+          // either. A file the cycle never committed is not the cycle's own work.
           cycleOwned: [...new Set([...cycle.value, ...before.value.untracked])],
           outOfScope: ps.workstreams?.[p.workstreamId]?.outOfScope ?? [],
           admittingSlots: 0,

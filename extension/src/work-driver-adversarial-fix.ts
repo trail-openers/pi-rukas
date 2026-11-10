@@ -403,11 +403,15 @@ export async function runAdversarialFixPass(
       afterRevert,
       pending,
       // #2156 R3 — there is no second path-scoped revert any more, so this branch
-      // is reached only when the driver DECLINED to rewind at all (the operator's
-      // kill switch is off, or the workstream has no recorded tree). The wording
-      // that told the operator the driver had already reverted a first set is
-      // gone with the partial revert it described: a pass that rewound everything
-      // parks above, on the fence's own refusal.
+      // is reached when `revertStraysOnce` returned no refusal of its own: the
+      // driver DECLINED to rewind (the operator's kill switch is off, or the
+      // workstream has no recorded tree — the step answers `undefined`), or it
+      // ATTEMPTED the rewind and refused (an empty pass delta, an untracked copy
+      // that did not verify, a failed `revertPaths`/commit after rollback). In the
+      // second case this is the step's own reason, not a silent pass. The wording
+      // that told the operator the driver had already reverted a first set is gone
+      // with the partial revert it described: a pass that rewound everything parks
+      // below, on the fence's own refusal.
       cleared.reason,
       now,
       cleared.admissions,
@@ -430,9 +434,11 @@ export async function runAdversarialFixPass(
   // its reason here was a condition that cannot hold for the case it gated, and
   // the pass sailed past the park to `adversarial-fix-applied` with the whole
   // fix reverted: an applied round that fixed nothing, which is the exact shape
-  // the no-op check exists to refuse.
-  if (reverted?.ok === true && post.reason !== undefined)
-    return parkFixPass(afterRevert, pending, post.reason, now, [
+  // the no-op check exists to refuse. `post.reason` is not re-tested here: a
+  // rewind is only ever attempted on a refusal (`reverted` is undefined unless
+  // `post.reason` was already set above).
+  if (reverted?.ok === true)
+    return parkFixPass(afterRevert, pending, post.reason ?? "", now, [
       ...cleared.admissions,
       fixPassRevertNote(reverted.event),
     ]);

@@ -30,7 +30,7 @@ import type { PostPass } from "../src/work-driver-adversarial-fix-scope.ts";
 import { revertStraysOnce } from "../src/work-driver-fix-pass-revert-step.ts";
 import { pendingFixes, runAdversarialFixPass } from "../src/work-driver-adversarial-fix.ts";
 import type { CycleContext } from "../src/work-driver-context.ts";
-import type { WorkState } from "../src/workflow-state.ts";
+import type { WorkEvent, WorkState } from "../src/workflow-state.ts";
 import {
   devCommit,
   devWrite,
@@ -105,6 +105,8 @@ console.log("# the rewind takes the WHOLE pass back — no paired edit is kept b
       ...fixState(t.repoRoot, ["a.txt"], "a.txt: change one to two"),
       pipelineState: { ...fixState(t.repoRoot, ["a.txt"]).pipelineState, worktrees: { default: t.worktree } },
     };
+    // The tip the pass starts at, captured BEFORE the pass's own commits.
+    const headBeforeAt = git(t.worktree, "rev-parse HEAD").trim();
     const plans = await typedPassPlans(t.repoRoot, t.worktree, ["a.txt"], "a.txt: fix it");
     const outcome = await revertStraysOnce(
       typedCycleCtx(t.repoRoot, 2156),
@@ -137,9 +139,16 @@ console.log("# the rewind takes the WHOLE pass back — no paired edit is kept b
       !existsSync(`${t.worktree}/scratch-notes.md`),
       "the untracked stray is gone",
     );
+    // The branch still STANDS: the rewind is a commit on top of the pass's own
+    // tip, not a reset. A tautology (`rev-parse HEAD` compared with itself) proved
+    // nothing, so the load-bearing readings are asserted instead: the pre-pass head
+    // is still an ANCESTOR of HEAD, and HEAD has GROWN past it — a `reset --hard`.
+    // to `headBefore` would drop the rewind commit and fail both.
     assert(
-      git(t.worktree, "rev-parse HEAD").trim() === git(t.worktree, "rev-parse HEAD").trim(),
-      "the branch still stands (the rewind is a commit, not a reset of the cycle's history)",
+      git(t.worktree, `merge-base --is-ancestor ${headBeforeAt} HEAD`) === "" &&
+        git(t.worktree, "rev-list --count HEAD").trim() >
+          git(t.worktree, `rev-list --count ${headBeforeAt}`).trim(),
+      "the branch still stands and has GROWN past the pre-pass head (the rewind is a commit, not a reset of the cycle's history)",
     );
     assert(
       git(t.worktree, "show-ref").includes("refs/pi-rukas/fix-pass-strays/"),
@@ -203,27 +212,90 @@ console.log("# a pass whose pass delta is empty has nothing to rewind and is ref
 
 console.log("# the whole-pass rewind is counted, so a re-run does not rewind twice (R5)");
 {
-  // The fix pass no longer continues after a rewind — it fails the round — so
-  // the rewind stamps no `fix-pass-strays-reverted` event for the counter to
-  // read. Its budget is therefore read from the park the rewind caused. A caller
-  // that re-enters with that park on the log must get "already spent", the same
-  // answer the old event counter gave for a second stray set.
-  const t = passTreeAt("2156-budget");
+  // The budget is read from the `fix-pass-strays-reverted` EVENT the rewind
+  // stamps — not from the park prose (AGENTS.md §7 principle 1: a gate reads
+  // executed evidence, not a claim). Four readings of ONE counter, each on a
+  // tree of its own (a rewind consumes its tree's diff, so the four cannot share
+  // one fixture):
+  //   - nothing on the log: the pass rewinds;
+  //   - the rewind's own record on the log: the budget reads as spent, and the
+  //     tree is NOT rewound a second time;
+  //   - a `cap-hit` that merely CLAIMS a rewind, with no rewind event: unspent;
+  //   - a LENS round's record (`source: "lens-fix"`): it belongs to that round's
+  //     budget and must not refuse a rewind this pass is entitled to.
+  const base0 = passTreeAt("2156-budget-fresh");
+  const base1 = passTreeAt("2156-budget-spent");
+  const base2 = passTreeAt("2156-budget-claimed");
+  const base3 = passTreeAt("2156-budget-lens");
   try {
-    const base = fixState(t.repoRoot, ["a.txt"], "a.txt: change one to two");
-    const st: WorkState = {
-      ...base,
-      pipelineState: { ...base.pipelineState, worktrees: { default: t.worktree } },
+    const stateFor = (t: typeof base0): WorkState => {
+      const base = fixState(t.repoRoot, ["a.txt"], "a.txt: change one to two");
+      return {
+        ...base,
+        pipelineState: { ...base.pipelineState, worktrees: { default: t.worktree } },
+      };
     };
-    const plans = await typedPassPlans(t.repoRoot, t.worktree, ["a.txt"], "a.txt: fix it");
-    const post = wholePassPost(["helper.ts"], [], ["a.txt", "helper.ts"]);
-    const park: WorkState = {
-      ...st,
+    // A tree the pass actually changed, so the rewind has bytes to preserve — the
+    // `preserve` step refuses an empty delta, and a refusal would be read here as
+    // "the counter refused" rather than the counter itself.
+    const prepare = (t: typeof base0): void => {
+      devCommitIn(t.worktree, "a.txt", "two\n");
+      devWriteIn(t.worktree, "helper.ts", "export const helper = () => 1;\n");
+    };
+    prepare(base0);
+    prepare(base1);
+    prepare(base2);
+    prepare(base3);
+    const post = wholePassPost(["helper.ts"], ["helper.ts"], ["a.txt", "helper.ts"]);
+    const mkPlans = async (t: typeof base0) =>
+      await typedPassPlans(t.repoRoot, t.worktree, ["a.txt"], "a.txt: fix it");
+    const rewindEvent: WorkEvent = {
+      kind: "fix-pass-strays-reverted",
+      at: 3,
+      workstreamId: "default",
+      paths: ["a.txt", "helper.ts"],
+      preservedRef: "refs/pi-rukas/fix-pass-strays/2156-default-1",
+      patchPath: "/tmp/does-not-matter.patch",
+    };
+    const first = await revertStraysOnce(
+      typedCycleCtx(base0.repoRoot, 2156),
+      stateFor(base0),
+      await mkPlans(base0),
+      post,
+      1,
+    );
+    assert(
+      first?.ok === true,
+      `with no rewind record on the log the pass rewinds (${JSON.stringify(first)})`,
+    );
+    const spent: WorkState = { ...stateFor(base1), eventLog: [...stateFor(base1).eventLog, rewindEvent] };
+    const second = await revertStraysOnce(
+      typedCycleCtx(base1.repoRoot, 2156),
+      spent,
+      await mkPlans(base1),
+      post,
+      2,
+    );
+    assert(
+      second?.ok === false && second.secondSet,
+      `once the rewind's own record is on the log, the budget reads as spent (${JSON.stringify(second)})`,
+    );
+    assert(
+      existsSync(`${base1.worktree}/helper.ts`) &&
+        readFileSync(`${base1.worktree}/a.txt`, "utf8") === "two\n",
+      "and the refused rewind touched nothing — the tree still holds the pass's work",
+    );
+    // A `cap-hit` that merely SAYS the driver rewound is not a rewind record: no
+    // rewind happened here, so the budget must still be unspent. This is the
+    // forge the prose-matching reader accepted.
+    const s2 = stateFor(base2);
+    const claimed: WorkState = {
+      ...s2,
       eventLog: [
-        ...st.eventLog,
+        ...s2.eventLog,
         {
           kind: "cap-hit",
-          at: 3,
+          at: 4,
           cap: "fix-pass-park",
           reviewRound: 1,
           nextStep: "handoff",
@@ -232,15 +304,35 @@ console.log("# the whole-pass rewind is counted, so a re-run does not rewind twi
         },
       ],
     };
-    const first = await revertStraysOnce(typedCycleCtx(t.repoRoot, 2156), st, plans, post, 1);
-    assert(first?.ok === true, `with no rewind on the log the pass rewinds (${JSON.stringify(first)})`);
-    const second = await revertStraysOnce(typedCycleCtx(t.repoRoot, 2156), park, plans, post, 2);
+    const third = await revertStraysOnce(
+      typedCycleCtx(base2.repoRoot, 2156),
+      claimed,
+      await mkPlans(base2),
+      post,
+      3,
+    );
     assert(
-      second?.ok === false && second.secondSet,
-      `once the pass has parked on a rewind, the budget reads as spent (${JSON.stringify(second)})`,
+      third?.ok === true,
+      `a cap-hit that only CLAIMS a rewind does not spend the budget — the rewind runs (${JSON.stringify(third)})`,
+    );
+    const s3 = stateFor(base3);
+    const withLens: WorkState = {
+      ...s3,
+      eventLog: [...s3.eventLog, { ...rewindEvent, source: "lens-fix" as const, round: 1 }],
+    };
+    const fourth = await revertStraysOnce(
+      typedCycleCtx(base3.repoRoot, 2156),
+      withLens,
+      await mkPlans(base3),
+      post,
+      4,
+    );
+    assert(
+      fourth?.ok === true,
+      `a lens round's revert record does not charge this pass's budget (${JSON.stringify(fourth)})`,
     );
   } finally {
-    rmSync(t.repoRoot, { recursive: true, force: true });
+    for (const t of [base0, base1, base2, base3]) rmSync(t.repoRoot, { recursive: true, force: true });
   }
 }
 
@@ -340,15 +432,31 @@ console.log("# the pass FAILS its round on a rewind and never keeps part of the 
       readFileSync(`${wt}/a.txt`, "utf8") === "one\n",
       "the KEPT half went back with it — the tree is whole again, not half a fix",
     );
+    // The record must be REACHABLE, in the two senses that matter: the event
+    // names a ref that really exists and a patch file that really exists, AND a
+    // note carrying that ref rides the state to the handoff / PR body (a revert
+    // whose ref the operator cannot find is a driver commit that quietly deleted
+    // their fixer's work). The old `||` hid behind an identity transform that
+    // asserted a ref-shaped string is not a file on disk.
     assert(
-      out.pipelineState.plumbReports.some((r) =>
-        r.body.includes("refs/pi-rukas/fix-pass-strays/"),
-      ) ||
-        (reverted?.kind === "fix-pass-strays-reverted" &&
-          existsSync(reverted.patchPath) &&
-          existsSync(reverted.preservedRef.replace(/\//g, "/")) === false &&
-          git(wt, "show-ref").includes("refs/pi-rukas/fix-pass-strays/")),
-      "the record of what the rewind took is reachable — the preserved ref exists and a record names it",
+      reverted?.kind === "fix-pass-strays-reverted" &&
+        existsSync(reverted.patchPath) &&
+        git(wt, "show-ref").includes(reverted.preservedRef),
+      `the event names a patch that exists and a ref that exists (${JSON.stringify((reverted as { patchPath?: string; preservedRef?: string }) ?? {}).slice(0, 160)})`,
+    );
+    // A disclosure note carrying the ref rides `plumbReports` — `noteFixPass` is
+    // the only note channel the fix pass has — so an operator reading the handoff
+    // or the PR body can find where the rewound bytes live. A revert whose ref the
+    // operator cannot find is a driver commit that quietly deleted their fixer's
+    // work. The old `||` hid behind an identity transform that asserted a
+    // ref-shaped string is not a file on disk.
+    assert(
+      out.pipelineState.plumbReports.some(
+        (r) =>
+          r.body.includes("refs/pi-rukas/fix-pass-strays/") &&
+          r.body.includes(reverted?.preservedRef ?? "\u0000"),
+      ),
+      "a disclosure note on the state carries THIS rewind's ref to the handoff",
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });

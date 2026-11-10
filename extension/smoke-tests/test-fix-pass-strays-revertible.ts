@@ -190,7 +190,12 @@ async function verdictAfterCycleWork(opts: {
         declared: p.declared,
         named: p.named,
         alreadyChanged: before.names,
-        cycleOwned: [...new Set([...cycle, ...before.names])],
+        // ONE WITH THE PRODUCTION READING (`planFixPass`): the cycle's commits
+        // since the base plus its untracked ADDITIONS. The tracked-edit half of
+        // `treeChanges` is repository files, not the cycle's own work, and
+        // `admitsEntry` admits an entry that names itself — so folding `names`
+        // in here would have this fence admit more than the driver's does.
+        cycleOwned: [...new Set([...cycle, ...before.untracked])],
         outOfScope: opts.outOfScope,
         admittingSlots: 0,
       },
