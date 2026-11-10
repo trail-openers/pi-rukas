@@ -46,6 +46,15 @@ function row(role: string, n: number, ok = true): DispatchUsageRow {
   return { role, ms: n * 1000, ok, usage: usage(n) };
 }
 
+/**
+ * `byRole` is a `Record<string, UsageTotals>`, so under `noUncheckedIndexedAccess`
+ * every read of it is `UsageTotals | undefined`. The sums below want numbers, so
+ * the undefined arm is resolved here rather than at each read site.
+ */
+function fieldSum(byRole: Record<string, LeanUsageTotals>, field: keyof LeanUsageTotals): number {
+  return Object.values(byRole).reduce((a, r) => a + (r?.[field] ?? 0), 0);
+}
+
 // ------------------------------------------------------- (1) the empty log
 {
   const u = leanUsage([]);
@@ -80,8 +89,7 @@ function row(role: string, n: number, ok = true): DispatchUsageRow {
   ];
   const u = leanUsage(steps);
   assert(u.total.dispatches === 4, `(3) every dispatch is counted (got ${u.total.dispatches})`);
-  const summed = (field: keyof LeanUsageTotals): number =>
-    Object.values(u.byRole).reduce((a, r) => a + r[field], 0);
+  const summed = (field: keyof LeanUsageTotals): number => fieldSum(u.byRole, field);
   for (const field of ["input", "output", "cacheRead", "cacheWrite", "cost", "turns"] as const) {
     assert(
       summed(field) === u.total[field],
@@ -89,7 +97,7 @@ function row(role: string, n: number, ok = true): DispatchUsageRow {
     );
   }
   assert(
-    Object.values(u.byRole).reduce((a, r) => a + r.dispatches, 0) === u.total.dispatches,
+    fieldSum(u.byRole, "dispatches") === u.total.dispatches,
     "(3) the per-role dispatch counts sum to the total count too",
   );
   assert(
