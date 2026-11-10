@@ -180,9 +180,10 @@ function mkExecFull(
     if (line.startsWith("git fetch")) return { stdout: "" };
     // #1529 — the protected-path gate resolves `origin/<ref>` to an OID before
     // it diffs anything, and an unparseable answer there is a refusal by design.
-    if (line.includes("git rev-parse --end-of-options origin/"))
-      return { stdout: `${VERIFIED_HEAD}\n` };
-    if (line.includes("git rev-parse origin/") || /git rev-parse .*origin\//.test(line))
+    // Keyed on the argv the shared OID read actually issues, so a shape drift
+    // lands on no arm and falls through to the refusal below rather than
+    // answering an OID to a command nobody asked for.
+    if (line === `git rev-parse --verify origin/${branch}` || line === "git rev-parse --verify origin/main")
       return { stdout: `${VERIFIED_HEAD}\n` };
     if (line.includes("git rev-parse --git-common-dir")) return { stdout: `${dir}/.git\n` };
     if (line.includes("git merge-base")) return { stdout: `${MERGE_BASE}\n` };
@@ -299,10 +300,10 @@ function mkExecFull(
       // #1529 — the protected-path gate resolves `origin/<ref>` to an OID before
       // it diffs anything, and a branch name where it expects an object id is a
       // refusal; the gate's reads must therefore be answered ahead of the
-      // generic rev-parse arm below.
-      if (line.includes("git rev-parse --end-of-options origin/"))
+      // generic rev-parse arm below, and keyed on the argv the shared OID read
+      // issues so a drift stops answering rather than answering a stale shape.
+      if (line === "git rev-parse --verify origin/feature/issue-961" || line === "git rev-parse --verify origin/main")
         return { stdout: `${VERIFIED_HEAD}\n` };
-      if (line.includes("git rev-parse origin/")) return { stdout: `${VERIFIED_HEAD}\n` };
       if (line.includes("git rev-parse --git-common-dir")) return { stdout: `${dir}/.git\n` };
       if (line.includes("git symbolic-ref")) return { stdout: "origin/main\n" };
       // #1529 — the shared protected read resolves the remote through the

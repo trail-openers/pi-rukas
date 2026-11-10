@@ -356,9 +356,13 @@ export async function gateFileRun(opts: {
       return { stdout: `${repoRoot}/.git\n` };
     if (line.includes("git merge-base")) return { stdout: `${MERGE_BASE}\n` };
     if (line.includes("git patch-id")) return { stdout: `${PATCH_ID} x\n` };
-    if (line.includes("git rev-parse --end-of-options origin/"))
+    // The protected-path gate resolves `origin/<ref>` to an OID before it diffs
+    // anything. Keyed on the exact argv the shared OID read issues: the generic
+    // catch-all below answers an OID to ANY `rev-parse …origin/`, which is how a
+    // drift off the real command shape would keep passing. It is gone, so a
+    // rev-parse nobody scripted lands in `log.unexpected`.
+    if (/^git rev-parse --verify origin\/(main|feature\/issue-\d+)$/.test(line))
       return { stdout: `${HEAD_OID}\n` };
-    if (/git rev-parse .*origin\//.test(line)) return { stdout: `${HEAD_OID}\n` };
     if (isNulDiffRead(commandOf(cmd, o))) {
       log.diffReads.push(line);
       return { stdout: opts.diff ?? "" };

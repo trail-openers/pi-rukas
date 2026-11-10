@@ -77,8 +77,8 @@ export function readRoutes(
     [/^git config --get remote/, () => ({ stdout: "https://x.invalid/r.git\n" })],
     [/^git symbolic-ref/, () => ({ stdout: "origin/main\n" })],
     [/^git fetch/, () => ({ stdout: "" })],
-    [/^git rev-parse --end-of-options origin\/feature/, () => ({ stdout: `${HEAD_SHA}\n` })],
-    [/^git rev-parse --end-of-options origin\/main/, () => ({ stdout: `${MAIN_SHA}\n` })],
+    [/^git rev-parse --verify origin\/feature/, () => ({ stdout: `${HEAD_SHA}\n` })],
+    [/^git rev-parse --verify origin\/main/, () => ({ stdout: `${MAIN_SHA}\n` })],
     [/^git merge-base/, () => ({ stdout: `${opts.mergeBase ?? BASE_SHA}\n` })],
     [/^git -c .*diff -z/, () => ({ stdout: diff })],
   ];
@@ -102,14 +102,14 @@ export function movingRefFixture(opts: { clean: boolean }): {
     if (/^git config --get remote/.test(line)) return { stdout: "https://x.invalid/r.git\n" };
     if (/^git symbolic-ref/.test(line)) return { stdout: "origin/main\n" };
     if (/^git fetch/.test(line)) return { stdout: "" };
-    if (/^git rev-parse --end-of-options origin\/feature/.test(line)) {
+    if (/^git rev-parse --verify origin\/feature/.test(line)) {
       headReads++;
       // Only a read that should not have happened sees the moved value: the
       // first resolve is the fetch's own, which legitimately sees what the
       // remote holds now.
       return { stdout: `${headReads === 1 ? HEAD_SHA : LATE_SHA}\n` };
     }
-    if (/^git rev-parse --end-of-options origin\/main/.test(line))
+    if (/^git rev-parse --verify origin\/main/.test(line))
       return { stdout: `${MAIN_SHA}\n` };
     if (/^git merge-base/.test(line)) {
       // The range's ends are the evidence: the first argument is whatever the

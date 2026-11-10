@@ -48,6 +48,7 @@
  * the merge path.
  */
 
+import { readCommitOid } from "./git-oid-read.ts";
 import { resolveMainline } from "./mainline.ts";
 import { errText } from "./protected-paths-text.ts";
 import { remoteName } from "./review-ledger-path.ts";
@@ -72,21 +73,22 @@ export type ProtectedMergeRead = { ok: true; paths: string[] } | { ok: false; un
  */
 const OID = /^[0-9a-f]{7,64}$/;
 
-/** `git rev-parse --end-of-options <ref>` → the OID; throws naming the odd answer. */
+/**
+ * `git rev-parse <ref>` → the OID; throws naming the odd answer. The leading-dash
+ * refusal and the object-id judgement are the shared read's; this site's
+ * predicate stays `{7,64}` because the merge-base and the diff below accept an
+ * abbreviated id, where the two other OID reads insist on a full one.
+ */
 async function revParse(exec: ProtectedPathExec, cwd: string, ref: string): Promise<string> {
-  const { stdout } = await exec("git", {
-    argv: ["rev-parse", "--end-of-options", ref],
-    cwd,
+  const read = await readCommitOid(exec, cwd, ref, {
+    accept: (oid) => OID.test(oid),
+    timeoutMs: LOCAL_GIT_TIMEOUT_MS,
     maxBuffer: 8 * 1024,
-    timeout: LOCAL_GIT_TIMEOUT_MS,
   });
-  const oid = stdout.trim();
-  if (!OID.test(oid)) {
-    throw new Error(
-      `git rev-parse ${ref.slice(0, 60)} printed ${JSON.stringify(oid.slice(0, 40))}, not an object id`,
-    );
+  if (!read.ok) {
+    throw new Error(`git rev-parse ${ref.slice(0, 60)} ${read.problem}`);
   }
-  return oid;
+  return read.oid;
 }
 
 /** `git merge-base <a> <b>`, or the named reason there is no base to diff from. */

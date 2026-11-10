@@ -37,8 +37,10 @@
  * inferring the range from HEAD instead of from the command.
  */
 
+import { readCommitOid } from "./git-oid-read.ts";
 import type { PushScanDeps } from "./public-hygiene-push.ts";
 import { looksLikeRemoteUrl, pushOptionGluedValue } from "./public-hygiene-remote.ts";
+import { PUSH_SCAN_MAX_BUFFER, PUSH_SCAN_TIMEOUT_MS } from "./public-hygiene-scan.ts";
 
 /** How a push names "every local branch" / "every tag". */
 const ALL_BRANCHES_FLAGS = new Set(["--all", "--branches", "--mirror"]);
@@ -182,6 +184,8 @@ export async function resolveSrcs(
   git: (args: string[]) => Promise<string>,
   names: string[],
 ): Promise<ResolvedSrcs> {
+  const timeout = deps.timeoutMs ?? PUSH_SCAN_TIMEOUT_MS;
+  const maxBuffer = deps.maxBuffer ?? PUSH_SCAN_MAX_BUFFER;
   const words = splitPushWords(deps.command ?? "");
   const pushVerb = deps.pushVerb ?? "";
   const parsed = pushRefspecs(words, pushVerb, new Set(names));
@@ -206,7 +210,13 @@ export async function resolveSrcs(
     // scan commits this push does not publish, which is a range nobody is
     // sending read as if it were. Bare push and `push <remote>` are the cases
     // that publish HEAD because the command names no range at all.
-    return resolveOne(git, "HEAD", "the commits to be pushed could not be resolved");
+    return resolveOne(
+      deps,
+      timeout,
+      maxBuffer,
+      "HEAD",
+      "the commits to be pushed could not be resolved",
+    );
   }
   // With `--delete` AND a selector this is a command git itself refuses (it will
   // not delete every branch), so the push cannot happen — but the scan still
@@ -245,7 +255,13 @@ export async function resolveSrcs(
   for (const src of sources) {
     // A delete (`:refs/heads/x` or `x:`) publishes nothing; ask no question.
     if (src === "") continue;
-    const resolved = await resolveOne(git, src, "a push source could not be resolved to a commit");
+    const resolved = await resolveOne(
+      deps,
+      timeout,
+      maxBuffer,
+      src,
+      "a push source could not be resolved to a commit",
+    );
     if (resolved.problem !== undefined) return { commits: [], problem: resolved.problem };
     commits.push(...resolved.commits);
   }
@@ -281,27 +297,25 @@ export function refspecSource(refspec: string): string {
 /**
  * Resolve one source to a commit sha, or the generic refusal to print. The
  * refusal never quotes the source: it is agent-authored text and a bad source
- * name can itself carry a private term.
+ * name can itself carry a private term. The shared read appends the peel suffix
+ * and refuses a leading dash, so a source cannot grow a `--` into the git argv.
  */
 async function resolveOne(
-  git: (args: string[]) => Promise<string>,
+  deps: PushScanDeps,
+  timeout: number,
+  maxBuffer: number,
   src: string,
   problem: string,
 ): Promise<ResolvedSrcs> {
-  try {
-    const out = await git([
-      "rev-parse",
-      "--verify",
-      "--quiet",
-      "--end-of-options",
-      `${src}^{commit}`,
-    ]);
-    const sha = out.trim();
-    if (!/^[0-9a-f]{40,64}$/.test(sha)) return { commits: [], problem };
-    return { commits: [sha] };
-  } catch {
-    return { commits: [], problem };
-  }
+  const read = await readCommitOid(deps.exec, deps.cwd, src, {
+    peel: "commit",
+    quiet: true,
+    accept: (sha) => /^[0-9a-f]{40,64}$/.test(sha),
+    timeoutMs: timeout,
+    maxBuffer,
+  });
+  if (!read.ok) return { commits: [], problem };
+  return { commits: [read.oid] };
 }
 
 /**

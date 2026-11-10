@@ -113,7 +113,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
             if (opts?.cwd?.endsWith("/a")) throw new Error("not a git repository");
             return { stdout: "" };
           }
-          if (cmd.includes("rev-parse --verify --end-of-options origin/"))
+          if (cmd.includes("rev-parse --verify origin/"))
             return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) {
             if (opts?.cwd?.endsWith("/a")) throw new Error("bad revision");
@@ -146,7 +146,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
           const diffErr: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
             const line = commandOf(cmd, o);
             if (isNulStatusRead(line)) return { stdout: "" };
-            if (line.includes("rev-parse --verify --end-of-options origin/"))
+            if (line.includes("rev-parse --verify origin/"))
               return { stdout: "a".repeat(40) + "\n" };
             // A 40-hex base is the only form the committed read accepts (isValidSha).
             if (line.startsWith("git rev-list --count")) return { stdout: "1\n" };
@@ -189,7 +189,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         const allErr: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, stubOpts) => {
           cmd = commandOf(cmd, stubOpts);
           if (isNulStatusRead(cmd)) throw new Error("not a git repository");
-          if (cmd.includes("rev-parse --verify --end-of-options origin/"))
+          if (cmd.includes("rev-parse --verify origin/"))
             return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) throw new Error("bad revision");
           return { stdout: "" };
@@ -256,7 +256,7 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         if (isNulStatusRead(cmd)) {
           return { stdout: nulStatus(...files.map((file) => ` M ${file}`)) };
         }
-        if (cmd.includes("rev-parse --verify --end-of-options origin/"))
+        if (cmd.includes("rev-parse --verify origin/"))
           return { stdout: "a".repeat(40) + "\n" };
         if (cmd.startsWith("git rev-list --count")) {
           return { stdout: files.length > 0 || committedFiles.length > 0 ? "1\n" : "0\n" };

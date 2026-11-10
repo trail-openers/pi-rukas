@@ -111,6 +111,7 @@ export const ALWAYS_RUN: readonly string[] = [
   "smoke-tests/test-gate-hang-wiring.ts",
   "smoke-tests/test-git-host-isolation-1145.ts",
   "smoke-tests/test-git-range-1153.ts",
+  "smoke-tests/test-git-rev-parse-no-end-of-options-canary.ts",
   "smoke-tests/test-grouping-real-issues.ts",
   "smoke-tests/test-handoff-body-normalised.ts",
   "smoke-tests/test-handoff-idempotency-e2e.ts",

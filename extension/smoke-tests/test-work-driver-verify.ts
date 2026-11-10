@@ -189,7 +189,7 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
           // #1378 — the gate's uncommitted read is NUL-separated; matching the old
           // plain string would return an empty change set and pass vacuously.
           if (isNulStatusRead(cmd)) return { stdout: "" };
-          if (cmd.includes("rev-parse --verify --end-of-options origin/"))
+          if (cmd.includes("rev-parse --verify origin/"))
             return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" };
           return { stdout: "" };
@@ -223,7 +223,7 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
         const failExec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
           if (isNulStatusRead(cmd)) return { stdout: nulStatus(" M src/foo.ts") };
           if (cmd.startsWith("git rev-parse HEAD")) return { stdout: "b".repeat(40) + "\n" };
-          if (cmd.includes("rev-parse --verify --end-of-options origin/"))
+          if (cmd.includes("rev-parse --verify origin/"))
             return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) return { stdout: "1\n" };
           if (cmd === "run-verify") {
@@ -273,7 +273,7 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
         // Zero commits ahead → failure even though PR resolves.
         const zeroCommits: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
           if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
-          if (cmd.includes("rev-parse --verify --end-of-options origin/"))
+          if (cmd.includes("rev-parse --verify origin/"))
             return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" };
           if (cmd.startsWith("gh pr view"))
@@ -290,7 +290,7 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
         // Commits ahead + PR resolves → ok.
         const happy: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
           if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
-          if (cmd.includes("rev-parse --verify --end-of-options origin/"))
+          if (cmd.includes("rev-parse --verify origin/"))
             return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) return { stdout: "2\n" };
           if (cmd.startsWith("gh pr view"))
@@ -308,7 +308,7 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
         };
         const adopt: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
           if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
-          if (cmd.includes("rev-parse --verify --end-of-options origin/"))
+          if (cmd.includes("rev-parse --verify origin/"))
             return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) return { stdout: "2\n" };
           if (cmd.startsWith("gh pr list")) return { stdout: "789\n" };
@@ -325,7 +325,7 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
         // prNumber missing + NO PR for branch → failure.
         const noPr: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
           if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
-          if (cmd.includes("rev-parse --verify --end-of-options origin/"))
+          if (cmd.includes("rev-parse --verify origin/"))
             return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) return { stdout: "2\n" };
           if (cmd.startsWith("gh pr list")) return { stdout: "\n" };
@@ -348,7 +348,7 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
         // prNumber set but gh pr view errors → failure.
         const ghosted: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
           if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
-          if (cmd.includes("rev-parse --verify --end-of-options origin/"))
+          if (cmd.includes("rev-parse --verify origin/"))
             return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) return { stdout: "2\n" };
           if (cmd.startsWith("gh pr view")) {
