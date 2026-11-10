@@ -24,7 +24,7 @@
  *      actually takes, on the same fence, for a coupled test and a helper.
  */
 
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import {
   type FixPassFence,
   admitFixPassFile,
@@ -35,10 +35,14 @@ import {
   overlayWorkstreams,
   planFixPass,
 } from "../src/work-driver-adversarial-fix-scope.ts";
+import {
+  type FixPassFileGate,
+  admitFixPassEntry,
+} from "../src/work-driver-fix-pass-admit-file.ts";
 import { defaultExec } from "../src/work-driver-adversarial-fix-git.ts";
 import { fanoutLimitFor } from "../src/work-driver-scope-fanout.ts";
 import { inlineDevelopPrompt } from "../src/work-driver-prompts-early.ts";
-import { devCommit, fixState, repoWithFile } from "./lib/adversarial-fix-fixtures.ts";
+import { devCommit, fixState, git, repoWithFile } from "./lib/adversarial-fix-fixtures.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -112,6 +116,97 @@ const printedPaths = (block: string): string[] =>
           plan.fence.admits.every((p) => linePaths.includes(p)),
         `1: the admitted-directly line equals fence.admits exactly (line ${JSON.stringify(linePaths)}, fence ${JSON.stringify(plan.fence.admits)})`,
       );
+
+      // 4b: the cycle-owned route is PRINTED, not just enforced (#2156, #1846-5).
+      // The gate admits a file through `fence.cycleOwned`; a route the fixer was
+      // never told about is a fence that widened invisibly. Equality is asserted
+      // against the same value the ladder's step 1b reads, ON A TREE WHERE THE
+      // ROUTE IS POPULATED — the fixture above has no develop commits, so its
+      // `cycleOwned` is empty and an assertion over it would be vacuous.
+      const ownedTree = repoWithFile("prompt-fence-cycle-owned");
+      try {
+        // The cycle's own develop work has to be AHEAD of the base the state
+        // records: `fixState` stamps `baseSha` as HEAD at the moment it is built,
+        // so committing after it would make base and pass-head the same commit and
+        // leave the committed read empty — a fixture that silently tests nothing.
+        // The cycle's develop work is committed on its own ref BEFORE the state is
+        // built: `fixState` stamps `baseSha` as HEAD at the moment it is built, so
+        // the base is taken first and the tip is moved to afterwards — base and
+        // `headBefore` must be two different commits or the committed read sees no
+        // cycle work at all.
+        mkdirSync(`${ownedTree}/lib`, { recursive: true });
+        writeFileSync(`${ownedTree}/lib/created.ts`, "export const created = 1;\n");
+        git(ownedTree, "add -A");
+        git(ownedTree, 'commit -q -m "the cycle develop work"');
+        const ownedTip = git(ownedTree, "rev-parse HEAD").trim();
+        const ownedBase = git(ownedTree, "rev-parse HEAD~1").trim();
+        const ownedState = fixState(ownedTree, ["a.txt"], "a.txt: change one to two");
+        git(ownedTree, `update-ref HEAD ${ownedBase}`);
+        const ownedPlan = await planFixPass(defaultExec, ownedTree, ownedState.pipelineState, [
+          { workstreamId: "default", findings: "a.txt: change one to two" },
+        ]);
+        if (!ownedPlan.ok) {
+          assert(false, `4b: the plan read failed (${ownedPlan.reason})`);
+        } else {
+          const op = ownedPlan.value[0] as NonNullable<(typeof ownedPlan.value)[number]>;          assert(
+            op.fence.cycleOwned.includes("lib/created.ts"),
+            // The bare `repoWithFile` fixture has no second commit to compare to,
+            // so an empty set here is the fixture not having built the cycle's
+            // develop work, not the route being empty.
+            `4b: the cycle's own commit is in the route's set (${JSON.stringify(op.fence.cycleOwned)}, base ${ownedState.pipelineState.baseSha})`,
+          );
+          assert(
+            op.fence.admits.includes("lib/created.ts") === false,
+            "4b: and it is NOT in the direct set the other routes admit — so this is a route of its own",
+          );
+          const ownedLines =
+            overlayWorkstreams(ownedState.pipelineState.workstreams, ownedPlan.value).default
+              ?.fixFenceLines ?? [];
+          const cycleLine =
+            ownedLines.find((l) => l.includes("**admitted as the cycle's own work**")) ?? "";
+          const cyclePaths = [...cycleLine.matchAll(/`([^`\n]+)`/g)].map((m) => m[1] ?? "");
+          assert(
+            cyclePaths.length === op.fence.cycleOwned.length &&
+              op.fence.cycleOwned.every((p) => cyclePaths.includes(p)),
+            `4b: the cycle-owned line equals fence.cycleOwned exactly (line ${JSON.stringify(cyclePaths)}, fence ${JSON.stringify(op.fence.cycleOwned)})`,
+          );
+          // And the printed set IS the enforced set, both directions: the file is
+          // admitted by this route, and refused once the route is emptied.
+          const ladder = (fence: FixPassFence): FixPassFence => ({
+            ...fence,
+            passChanged: ["lib/created.ts"],
+          });
+          // A slot admitter that admits nothing and fences nothing: the only route
+          // left for the file is the one this assertion is about.
+          const noSlots = {
+            admit: () => ({ admitted: false, refused: "no-slot" as const }),
+            admittedSlotCount: () => 0,
+            admittedFiles: () => [],
+          };
+          const gateFor = (fence: FixPassFence): FixPassFileGate => ({
+            id: op.id,
+            declared: op.declared,
+            fence,
+            admitter: noSlots,
+          });
+          const byCycle = await admitFixPassEntry(
+            "lib/created.ts",
+            gateFor(ladder(op.fence)),
+            true,
+          );
+          const withoutCycle = await admitFixPassEntry(
+            "lib/created.ts",
+            gateFor({ ...ladder(op.fence), cycleOwned: [] }),
+            true,
+          );
+          assert(
+            byCycle.admitted === true && withoutCycle.admitted === false,
+            `4b: the cycle-owned file is admitted by that route and by no other (got ${JSON.stringify(byCycle)} / ${JSON.stringify(withoutCycle)})`,
+          );
+        }
+      } finally {
+        rmSync(ownedTree, { recursive: true, force: true });
+      }
 
       // 2: the printed ceiling is the value the fan-out check computes.
       const limit = fanoutLimitFor(plan.declared.length + 0);

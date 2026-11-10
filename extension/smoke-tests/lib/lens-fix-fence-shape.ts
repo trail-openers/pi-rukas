@@ -47,6 +47,7 @@ export type LiveFence = FixPassFence;
 export function fenceToSnapshot(fence: LiveFence): {
   id: string;
   admits: string[];
+  cycleOwned: string[];
   declared: string[];
   helperDirs: string[];
   passChanged: string[];
@@ -58,6 +59,7 @@ export function fenceToSnapshot(fence: LiveFence): {
   return {
     id: fence.id,
     admits: [...fence.admits],
+    cycleOwned: [...fence.cycleOwned],
     declared: [...fence.declared],
     helperDirs: [...fence.helperDirs],
     passChanged: [...fence.passChanged],
@@ -82,6 +84,7 @@ export function fenceFromSnapshot(fence: PersistedFence): LiveFence {
   const {
     id,
     admits,
+    cycleOwned,
     declared,
     helperDirs,
     passChanged,
@@ -93,6 +96,7 @@ export function fenceFromSnapshot(fence: PersistedFence): LiveFence {
   return {
     id,
     admits: [...admits],
+    cycleOwned: [...cycleOwned],
     declared: [...declared],
     // The record's array is what `lensFixPlanFromSnapshot` turns back into a
     // Set; the two spellings differ ONLY here.

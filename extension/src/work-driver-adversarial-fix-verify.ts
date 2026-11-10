@@ -59,12 +59,41 @@ export interface PostPass {
    * are the ones an admission rule may not lift, or the whole pass is the
    * problem). `untracked` is the same read's untracked set, which decides
    * removal vs checkout for each path.
+   *
+   * #2156 R3/R4 — there is exactly ONE workstream here, never a partial set:
+   * every plan is judged before this returns, and a refusal is offered only
+   * when NO plan of the pass has a stray that the driver may rewind. A pass
+   * that has to rewind anything rewinds ALL of its edits, so the pair of
+   * fields describes the whole pass (`straysFor` is the first workstream whose
+   * strays get named, because that is what the park leads with).
    */
   straysFor?: string;
   /** See {@link PostPass.straysFor}. */
   strays?: Stray[];
+  /**
+   * The paths to rewind, as a list — for the fix pass this is EVERY file the
+   * pass changed relative to its own `headBefore` (strays included, committed
+   * and untracked alike), so a revert can never again be path-scoped to the
+   * strays alone and leave the paired edits behind (#2156 R3).
+   *
+   * #2156 R6 — a LENS-FIX plan never fills it: the lens round's own delta is
+   * measured from its round tip (its earlier commits are not strays), so
+   * filling it there would widen the lens revert from its strays to its whole
+   * round. Absent there means the revert falls back to `strays.map(s => s.file)`
+   * exactly as it did before this change.
+   */
+  paths?: string[];
   /** See {@link PostPass.straysFor} — the untracked paths of that workstream. */
   untracked?: string[];
+  /**
+   * #2156 R3 — this refusal rewinds the WHOLE pass, not the strays alone. The
+   * fix pass's fence sets it; the lens-fix fence never reaches it because that
+   * caller passes `noOp` and measures its own delta, so its per-file revert and
+   * its verdict are byte-identical to before this change (#2156 R6). It is also
+   * what tells `revertStraysOnce` which budget to read: a whole-pass rewind
+   * records itself on the log and charges its own one-shot allowance.
+   */
+  wholePass?: boolean;
 }
 
 /**
@@ -143,6 +172,14 @@ export async function postPassFault(
   // widened invisibly.
   const admissions: string[] = [];
   const after: TreeChanges[] = [];
+  // #2156 R4 — every plan is judged before ANY refusal is returned. The earlier
+  // shape returned from inside the loop on the first workstream with strays, so
+  // a multi-workstream pass that failed on ws-A never judged ws-B, and the
+  // pass-level ceiling of every later plan went unenforced. Two reads now: judge
+  // all of them, then decide. A non-stray refusal (an unreadable tree, a no-op
+  // pass, a breached ceiling) still short-circuits — it is a statement about the
+  // whole pass, not an offer to rewind.
+  const judged: { plan: PassPlan; strays: Stray[]; files: string[]; untracked: string[] }[] = [];
   for (const plan of plans) {
     const r = await treeChanges(execFn, plan.worktree, baseSha);
     if (!r.ok) return { reason: fenced(r.reason).reason, diffs, admissions };
@@ -267,24 +304,8 @@ export async function postPassFault(
       strays.push(verdict.stray);
     }
     if (strays.length > 0) {
-      const basis =
-        plan.declared.length > 0
-          ? "its declared paths and the files the findings name"
-          : "the files it already changed and the files the findings name";
-      // #1846 — the revert path acts on this refusal, so the record carries what
-      // it needs: WHICH workstream, WHICH files, and WHICH of them are untracked
-      // (a file in no commit is removed by unlink, not by `git rm`). A stray
-      // refused as `fenced` or `protected`, or any protected path in the set, is
-      // deliberately NOT offered: those are the files no admission rule may lift,
-      // and silently reverting one would take the protected-path gate's decision
-      // away from it.
-      const revertible = strays.every((x) => x.revertible);
-      return {
-        reason: strayReason(plan, strays, basis),
-        diffs,
-        admissions,
-        ...(revertible ? { straysFor: plan.id, strays, untracked: s.value.untracked } : {}),
-      };
+      judged.push({ plan, strays, files: passFiles, untracked: s.value.untracked });
+      continue;
     }
     // One ceiling over every route; its two easy-to-get-wrong rules (per-slot
     // denominator, coupled tests out of the numerator) are stated in
@@ -301,6 +322,57 @@ export async function postPassFault(
       admit.admittedFiles(plan.id),
     );
     if (refusal !== undefined) return { reason: refusal, diffs, admissions };
+  }
+  // #2156 R3 — all or nothing. If ANY workstream of this pass has a stray, the
+  // whole pass is rewound to its own pre-pass head: the strays AND every file the
+  // pass changed. The path-scoped revert this replaces was the half-applied fix
+  // the issue reports — the fence reverted the file the cycle's own develop step
+  // had created and kept the edit that depended on it, and the next reviewer saw
+  // an incoherent tree. A stray the driver may NOT rewind (this workstream's
+  // `outOfScope` fence entry or a protected path) is never touched, so a pass
+  // containing one is not rewound at all: it parks with nothing offered, exactly
+  // as before. Same rule across workstreams (#2156 R4): one non-revertible stray
+  // anywhere withholds the whole pass, because rewinding the workstreams that
+  // were clean to rewind and parking on the others is the same half-applied tree
+  // one level up.
+  if (judged.length > 0) {
+    const first = judged[0];
+    if (first === undefined) return { diffs, admissions };
+    const basis = (plan: PassPlan): string =>
+      plan.declared.length > 0
+        ? "its declared paths and the files the findings name"
+        : "the files it already changed and the files the findings name";
+    // #2156 — the paths below are the whole delta of every workstream that has
+    // strays: exactly what the rewind removes (or, in the refusal branch, would
+    // have removed). The count is stated for the same reason the park always
+    // states the fences it checked (#1522): an operator reading the refusal can
+    // otherwise not tell a file-scoped revert from a whole-pass one.
+    const paths = [...new Set(judged.flatMap((j) => j.files))];
+    if (judged.every((j) => j.strays.every((x) => x.revertible))) {
+      // One plan's refusal is the park text (it is the workstream the park leads
+      // with), but the rewind covers every workstream that has strays: `paths`
+      // and `untracked` are the union of their pass deltas, and each workstream's
+      // revert is targeted at its own `plan.headBefore` by `revertStraysOnce`.
+      return {
+        reason: strayReason(first.plan, first.strays, basis(first.plan), paths.length),
+        diffs,
+        admissions,
+        straysFor: first.plan.id,
+        strays: judged.flatMap((j) => j.strays),
+        paths,
+        untracked: [...new Set(judged.flatMap((j) => j.untracked))],
+        wholePass: true,
+      };
+    }
+    // A non-revertible stray anywhere in the pass withholds the rewind entirely:
+    // those files belong to the plan's `outOfScope` fence or the protected-path
+    // gate, and a partial rewind is the half-applied tree this fence exists to
+    // refuse.
+    return {
+      reason: `${strayReason(first.plan, first.strays, basis(first.plan))} — nothing is reverted here: ${paths.length} file(s) of this pass would have been rewound to the head it started at, and a partial rewind is the half-applied tree this fence exists to refuse`,
+      diffs,
+      admissions,
+    };
   }
   return { diffs, admissions };
 }

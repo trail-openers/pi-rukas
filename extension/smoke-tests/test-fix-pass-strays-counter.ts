@@ -18,9 +18,13 @@ import {
 import type { PostPass } from "../src/work-driver-adversarial-fix-scope.ts";
 import type { FixPassStraysRevertedEvent } from "../src/workflow-state-events-fix-pass-strays.ts";
 import type { WorkState } from "../src/workflow-state.ts";
+import { execp } from "../src/exec.ts";
+import { runGit, type GitExec } from "../src/work-develop-git.ts";
+import { existsSync } from "node:fs";
 import {
   devCommit,
   events,
+  git,
   singleState,
   strayPassTree,
   typedCycleCtx,
@@ -111,6 +115,86 @@ console.log("# the revert counter is per pass and per workstream, not per cycle"
       `a revert from an EARLIER pass does not spend this pass's attempt (${JSON.stringify(again)})`,
     );
   }
+}
+
+
+console.log("# a rewind that fails AFTER preserving reports itself as rolled back, and leaves no orphan record (#2156 R5)");
+{
+  // The shape the counter could not see. `preserve` writes the patch and creates
+  // the ref BEFORE the first destructive call; when a later call fails, the tree
+  // is rolled back and NO `fix-pass-strays-reverted` event is stamped. Reusing
+  // `{ok: false, secondSet: false}` for that made the budget read as unspent, so a
+  // retry re-attempted the whole rewind and wrote a SECOND ref/patch pair while the
+  // first survived as the record of a revert that never happened — the exact shape
+  // `preserve`'s own `update-ref -d` rollback exists to prevent, one step later.
+  //
+  // The failure is injected at the driver's own transport (`verifyExecFn`), which
+  // is the one `revertStraysOnce` builds its `GitExec` from, so the step seam and
+  // its rollback are what is under test, not the revert module's.
+  const t = strayPassTree();
+  const real: GitExec = runGit(execp);
+  const commitFails: NonNullable<Parameters<typeof typedCycleCtx>[2]["verifyExecFn"]> = async (
+    cmd,
+    opts,
+  ) => {
+    if ((opts?.argv ?? []).includes("commit-tree")) throw new Error("simulated commit failure");
+    return execp(cmd, opts);
+  };
+  const post: PostPass = {
+    diffs: {},
+    admissions: [],
+    straysFor: "default",
+    strays: [{ file: "helper.ts", refused: "no-slot", revertible: true }],
+    untracked: [],
+    paths: ["helper.ts"],
+    wholePass: true,
+  };
+  const state = singleState(t.worktree, []);
+  const plans = await typedPassPlans(t.repoRoot, t.worktree, ["a.txt"], "a.txt: fix it");
+  const first = await revertStraysOnce(
+    typedCycleCtx(t.repoRoot, 1846, { verifyExecFn: commitFails }),
+    state,
+    plans,
+    post,
+    1,
+  );
+  assert(
+    first?.ok === false && first.secondSet === false && first.rewound === false,
+    `the failed rewind is its own discriminated outcome, not the generic refusal (${JSON.stringify(first)})`,
+  );
+  assert(
+    first?.ok === false && first.preserveWritten !== undefined,
+    `and it names the preservation it wrote before failing (${JSON.stringify((first as { preserveWritten?: unknown } | undefined)?.preserveWritten)})`,
+  );
+  const written = first?.ok === false ? first.preserveWritten : undefined;
+  assert(
+    written !== undefined && !git(t.worktree, "show-ref").includes(written.preservedRef),
+    `the orphan ref is deleted again — nothing later reads it as a revert's record (${written?.preservedRef})`,
+  );
+  assert(
+    written !== undefined && !existsSync(written.patchPath),
+    `and so is the orphan patch (${written?.patchPath})`,
+  );
+  // The budget must read the rollback honestly: the rewind did NOT happen, so the
+  // pass is still entitled to one — but a retry now writes a FRESH pair rather
+  // than stacking a second record beside an orphan, which is what the delete above
+  // guarantees. Prove it with a working transport on the same tree.
+  const retry = await revertStraysOnce(
+    typedCycleCtx(t.repoRoot, 1846),
+    state,
+    plans,
+    post,
+    2,
+  );
+  assert(
+    retry?.ok === true,
+    `the rolled-back rewind did not spend the budget, so the retry rewinds for real (${JSON.stringify(retry)})`,
+  );
+  assert(
+    git(t.worktree, "show-ref").split("\n").filter((l) => l.includes("fix-pass-strays")).length ===
+      1,
+    `and exactly ONE preservation ref exists for this workstream — no orphan beside it (${git(t.worktree, "show-ref")})`,
+  );
 }
 
 

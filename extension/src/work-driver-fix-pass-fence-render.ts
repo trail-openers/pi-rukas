@@ -90,6 +90,10 @@ export function fixPassFenceLines(
     "",
     `The post-pass scope fence refuses ${passNoun} (cap \`${capName}\`) unless every file you change sits in one of these:`,
     `- **admitted directly** (${basis}): ${shown(fence.admits)}`,
+    // #2156 — the cycle's own output is inside the fence. Printed because the
+    // prompt and the gate are one value (#1846-5): a route the gate applies and
+    // the fixer was never told about is a fence that widened invisibly.
+    `- **admitted as the cycle's own work**: a file this cycle already created or changed (its commits since the base, and its working tree against the base) — fixing what the earlier steps of this issue produced is inside the fence, unless it sits behind the out-of-scope fence below or is a protected path${fence.cycleOwned.length > 0 ? ` (${shown(fence.cycleOwned)})` : " (none so far)"}`,
     "- **admitted as a coupled test**: any test file whose name couples to one of those files — its stem contains the file's whole basename (so `tests/foo.test.ts` is coupled to `pkg/foo.ts`). Always allowed; never refused for the file count.",
     `- **admitted as an anchored helper**: an undeclared file in the same directory as one of the files you are allowed to change, while the pass's total stays within ${fence.ceiling} file(s) for its ${fence.ceilingBasis}`,
   ];
@@ -100,7 +104,7 @@ export function fixPassFenceLines(
   );
   lines.push(
     "",
-    `Anything outside those routes is a stray: the driver preserves it under a ref and a patch, reverts it and continues — one stray set does not park ${passNoun}, a second one does.`,
+    `Anything outside those routes is a stray: the driver preserves the whole ${passNoun} under a ref and a patch, rewinds every file it changed, and fails the round — no part of a fix that cannot stand on its own is kept.`,
   );
   return lines;
 }

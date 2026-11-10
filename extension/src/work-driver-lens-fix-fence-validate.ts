@@ -74,6 +74,7 @@ export function lensFixFenceFindings(snapshot: unknown): string[] {
     }
     for (const field of [
       "admits",
+      "cycleOwned",
       "declared",
       "helperDirs",
       "passChanged",

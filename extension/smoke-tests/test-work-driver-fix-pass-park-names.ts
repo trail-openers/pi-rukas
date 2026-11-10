@@ -61,8 +61,10 @@ const strayPass = (d: string) => {
     assert(parked.includes("No finding names b.txt"), "A: says no finding names the stray");
     assert(parked.includes(dir), "A: names the worktree that holds the change");
     assert(
-      parked.includes("--restart") && parked.includes("revert b.txt"),
-      "A: names both ways to clear it (declare the file and restart, or revert it)",
+      parked.includes("--restart") &&
+        parked.includes("rewound this pass's whole delta") &&
+        parked.includes("fix-pass-strays-reverted"),
+      "A: names the way to clear it, and says the driver rewound the WHOLE pass (#2156: there is no 'revert just the stray' instruction any more — a whole-pass rewind leaves nothing to land by hand)",
     );
     const cap = explainCap("fix-pass-park", out);
     assert(cap.includes("No finding names b.txt"), "A: the handoff cap text carries the reason");

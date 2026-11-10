@@ -33,7 +33,12 @@ import type { WorkState } from "../src/workflow-state.ts";
 import { planFixPass, postPassFault } from "../src/work-driver-adversarial-fix-scope.ts";
 import { fixPassFence, gateFenceView } from "../src/work-driver-fix-pass-admission.ts";
 import { fanoutLimitFor } from "../src/work-driver-scope-fanout.ts";
-import { defaultExec } from "../src/work-driver-adversarial-fix-git.ts";
+import {
+  type GitRead,
+  committedChanges,
+  defaultExec,
+  treeChanges,
+} from "../src/work-driver-adversarial-fix-git.ts";
 import {
   devCommit,
   git,
@@ -95,12 +100,25 @@ function workstreamState(dir: string, paths: string[], outOfScope: string[]): Wo
 async function verdictFor(opts: {
   paths: string[];
   outOfScope: string[];
+  /** What the CYCLE's develop step left in the tree, committed, at the moment
+   *  the pass is planned (i.e. `planFixPass`'s `headBefore`). */
+  cycleWork?: (worktree: string) => void;
+  /** What the FIX PASS itself then changed. */
   write: (worktree: string) => void;
 }) {
   const dir = repoWithFile("1846-revertible");
   git(dir, "worktree add -q --detach .worktrees/issue-1846 HEAD");
   const wt = `${dir}/.worktrees/issue-1846`;
   const st = workstreamState(dir, opts.paths, opts.outOfScope);
+  // The driver plans a pass against the tree the develop step left, so the
+  // cycle's own commits go in BEFORE the plan and the pass's own edits after it.
+  // That ordering is what the fence reads: `planFixPass` records `headBefore` as
+  // the worktree's HEAD at plan time and builds the cycle-owned set from
+  // `committedChanges(base..headBefore)` — a pass planned before the develop work
+  // holds a `headBefore` equal to the base, and every file the cycle created then
+  // looks like the pass's own work, which is a different question from the one
+  // the #2156 cases below ask.
+  opts.cycleWork?.(wt);
   const planned = mustRead(
     await planFixPass(defaultExec, dir, st.pipelineState, [
       { workstreamId: "default", findings: "a.txt: change one to two" },
@@ -115,200 +133,218 @@ async function verdictFor(opts: {
 }
 
 /**
- * The same tree judged a second time under a different fence, so one case can
- * show WHAT the offer decision reads instead of only what it returned. The tree
- * must not change between the two reads — that is what makes the comparison a
- * control rather than a different question.
+ * One planned pass whose `headBefore` is the tip `cycleWork` committed.
+ *
+ * `verdictFor` above reads the cycle's base BEFORE any work lands, which is right
+ * for a file that existed at the base; a file the CYCLE created has to be created
+ * first, so its base has to be read afterwards. That ordering costs the pass its
+ * own head: `baseSha` then already contains the pass's edits, and a fence reading
+ * `committedChanges(base..headBefore)` sees an empty cycle. This variant keeps the
+ * base as the base (the pre-work read) and moves only `headBefore`, which is the
+ * one field the pass delta, the committed read and the revert target are all
+ * derived from. `plans` is what a driver's plan looks like after its develop step
+ * committed and before its fixer was dispatched.
  */
-async function verdictOnTree(opts: {
+async function verdictAfterCycleWork(opts: {
+  paths: string[];
   outOfScope: string[];
-  plans: PassPlan[];
-  /** The base the post-pass diff is read against — the same value the first read
-   *  used, since the tree has not changed. */
-  baseSha: string;
-  declared: string[];
-}): Promise<PostPass> {
-  // The plans carry the tree and the pre-pass head the fence judges against; the
-  // ONLY half varied here is the fence's own `outOfScope` entries, which is the
-  // difference between the two reads.
-  const plans = opts.plans.map((p) => ({
+  /** The cycle's develop work, committed BEFORE the base SHA is read. */
+  cycleWork: (worktree: string) => void;
+  /** What the fix pass itself then changed. */
+  write: (worktree: string) => void;
+}) {
+  const dir = repoWithFile("1846-revertible");
+  git(dir, "worktree add -q --detach .worktrees/issue-1846 HEAD");
+  const wt = `${dir}/.worktrees/issue-1846`;
+  // The base is read BEFORE the develop work lands, because the base is where the
+  // cycle started; `headBefore` is read after it, because that is the tip the
+  // driver plans a pass against. `verdictFor` above reads the base after the tree
+  // was built, which is right for a file that existed at the base and wrong for a
+  // file the cycle CREATED: its base then already contains it, so no committed read
+  // can call it the cycle's own. Only `headBefore` moves here — the one field the
+  // pass delta, the committed read and the revert target are all derived from.
+  const baseSha = git(dir, "rev-parse HEAD").trim();
+  opts.cycleWork(wt);
+  const headBefore = git(wt, "rev-parse HEAD").trim();
+  const before = mustRead(await treeChanges(defaultExec, wt, baseSha), "treeChanges");
+  const cycle = mustRead(
+    await committedChanges(defaultExec, wt, baseSha, headBefore),
+    "committedChanges",
+  );
+  const st = workstreamState(dir, opts.paths, opts.outOfScope);
+  const planned = mustRead(
+    await planFixPass(defaultExec, dir, st.pipelineState, [
+      { workstreamId: "default", findings: "a.txt: change one to two" },
+    ]),
+    "planFixPass",
+  );
+  const plans = planned.map((p) => ({
     ...p,
-    outOfScope: opts.outOfScope,
-    declared: opts.declared,
-    fence: { ...p.fence, outOfScope: opts.outOfScope },
+    worktree: wt,
+    headBefore,
+    before,
+    outOfScope: [...opts.outOfScope],
+    fence: fixPassFence(
+      {
+        id: p.id,
+        declared: p.declared,
+        named: p.named,
+        alreadyChanged: before.names,
+        // ONE WITH THE PRODUCTION READING (`planFixPass`): the cycle's commits
+        // since the base plus its untracked ADDITIONS. The tracked-edit half of
+        // `treeChanges` is repository files, not the cycle's own work, and
+        // `admitsEntry` admits an entry that names itself — so folding `names`
+        // in here would have this fence admit more than the driver's does.
+        cycleOwned: [...new Set([...cycle, ...before.untracked])],
+        outOfScope: opts.outOfScope,
+        admittingSlots: 0,
+      },
+      fanoutLimitFor,
+    ),
   }));
-  return postPassFault(defaultExec, plans, opts.baseSha);
+  opts.write(wt);
+  const post = await postPassFault(defaultExec, plans, baseSha);
+  return { dir, wt, plans, post, baseSha };
 }
 
-console.log("# a protected stray is never offered a revert");
+console.log("# a fix-pass edit to a file this cycle created is inside the fence (AC1)");
 {
-  // `agents.json` is a protected path: the protected-path gate owns it, and a
-  // driver commit that deleted it would have taken that decision away.
+  const t = await verdictAfterCycleWork({
+    // Declared scope names only the pre-existing module — the created file is
+    // nowhere in it, which is what made the pre-#2156 fence refuse it.
+    paths: ["a.txt"],
+    outOfScope: [],
+    cycleWork: (wt) => devCommitIn(wt, "lib/created.ts", "export const created = 1;\n"),
+    write: (wt) => {
+      devCommit(wt, "lib/created.ts", "export const created = 2;\n");
+      devCommit(wt, "a.txt", "two\n");
+    },
+  });
+  try {
+    const files = (t.post.strays ?? []).map((s) => s.file);
+    assert(
+      t.post.reason === undefined,
+      `the pass is cleared — the cycle-created edit and its paired edit are BOTH kept (reason: ${t.post.reason})`,
+    );
+    assert(
+      !files.includes("lib/created.ts"),
+      `and the created file is never in the stray set (${JSON.stringify(files)})`,
+    );
+    assert(
+      readFileSync(`${t.wt}/lib/created.ts`, "utf8") === "export const created = 2;\n",
+      "the fixer's edit of the cycle's own file stands in the tree",
+    );
+  } finally {
+    rmSync(t.dir, { recursive: true, force: true });
+  }
+}
+
+console.log("# an absolute refusal still outranks the cycle-owned route");
+{
+  // The other half of AC1: the new route must not become a way around the plan's
+  // own fence. The same created file, now declared out of scope by the plan.
+  const t = await verdictAfterCycleWork({
+    paths: ["a.txt"],
+    outOfScope: ["lib/**"],
+    cycleWork: (wt) => devCommitIn(wt, "lib/created.ts", "export const created = 1;\n"),
+    write: (wt) => {
+      devCommit(wt, "lib/created.ts", "export const created = 2;\n");
+      devCommit(wt, "a.txt", "two\n");
+    },
+  });
+  try {
+    // A stray the plan's own fence refused is the driver's hands off: the refusal
+    // is park-only — no `straysFor`, no strays, no rewind set — and its wording
+    // says which rule stopped the file, so an operator can see it was the fence
+    // and not the absence of an admission route.
+    assert(t.post.reason !== undefined, "the fenced cycle-created file is still refused");
+    assert(
+      (t.post.reason ?? "").includes("lib/created.ts"),
+      `and the refusal names it (${(t.post.reason ?? "").slice(0, 60)})`,
+    );
+    assert(
+      (t.post.reason ?? "").includes("outOfScope fence"),
+      `naming the gate that refused it, not the admission ladder (${(t.post.reason ?? "").match(/refused it:[^.]*/)?.[0]})`,
+    );
+    assert(
+      t.post.straysFor === undefined &&
+        t.post.strays === undefined &&
+        t.post.paths === undefined &&
+        t.post.wholePass === undefined,
+      "and nothing in this pass is offered to the revert — an absolute refusal is park-only",
+    );
+  } finally {
+    rmSync(t.dir, { recursive: true, force: true });
+  }
+}
+
+console.log("# the rewind set is the pass's WHOLE delta, never the strays alone (AC2)");
+{
+  // The half-applied shape: one file outside every route (`lib/helper.ts`, the
+  // stray) plus the pass's admitted fix in `a.txt`. Pre-#2156 the offer carried
+  // the stray alone and the revert kept `a.txt` — the exact tree the issue
+  // reports. Now the offer names the whole pass delta and says the pass is being
+  // rewound, so the caller can never keep half of it.
   const t = await verdictFor({
     paths: ["a.txt"],
     outOfScope: [],
     write: (wt) => {
       devCommit(wt, "a.txt", "two\n");
-      devCommit(wt, "agents.json", '{"roles":{}}\n');
+      devCommitIn(wt, "lib/helper.ts", "export const helper = () => 1;\n");
     },
   });
   try {
-    assert(t.post.reason !== undefined, "the pass is refused");
+    assert(t.post.wholePass === true, "the refusal says this is a whole-pass rewind");
     assert(
-      t.post.straysFor === undefined && t.post.strays === undefined,
-      `and NOTHING is offered to the revert (${JSON.stringify(t.post).slice(0, 140)})`,
+      (t.post.paths ?? []).includes("a.txt") && (t.post.paths ?? []).includes("lib/helper.ts"),
+      `the rewind set covers the admitted fix AND the stray (${JSON.stringify(t.post.paths)})`,
     );
-    const bad = (t.post.strays ?? []).filter((s) => s.revertible);
-    assert(bad.length === 0, "and no stray in the set claims to be revertible");
     assert(
-      existsSync(`${t.wt}/agents.json`) === true,
-      "the protected file is still in the tree — the fence refused, it did not delete",
+      (t.post.strays ?? []).some((s) => s.file === "lib/helper.ts"),
+      "the stray is still named for the park",
+    );
+    assert(
+      (t.post.reason ?? "").includes("rewound this pass's whole delta"),
+      `and the park says the WHOLE delta goes back, not one file (${(t.post.reason ?? "").slice(0, 40)})`,
     );
   } finally {
     rmSync(t.dir, { recursive: true, force: true });
   }
 }
 
-console.log("# an outOfScope stray is never offered a revert");
+console.log("# a ceiling breach is a refusal of the whole pass, never a rewind offer");
 {
-  const t = await verdictFor({
-    paths: ["a.txt"],
-    // `notes/` is fenced by the plan itself: the driver may not touch what the
-    // planner put out of scope, whatever the fixer wrote there.
-    outOfScope: ["notes/**"],
-    write: (wt) => {
-      devCommit(wt, "a.txt", "two\n");
-      devCommitIn(wt, "notes/secret.md", "not the plan's to change\n");
-    },
-  });
-  try {
-    assert(t.post.reason !== undefined, "the pass is refused");
-    assert(
-      t.post.straysFor === undefined && t.post.strays === undefined,
-      `and nothing is offered to the revert (${JSON.stringify(t.post).slice(0, 140)})`,
-    );
-    assert(
-      existsSync(`${t.wt}/notes/secret.md`) === true,
-      "and the fenced file stands in the tree",
-    );
-  } finally {
-    rmSync(t.dir, { recursive: true, force: true });
-  }
-}
-
-console.log("# ONE non-revertible stray withholds the WHOLE set");
-{
-  // The shape the per-set scan got wrong: a pass that wrote one ordinary stray
-  // AND one protected file. Reporting all three as reverted while one of them
-  // belongs to the protected-path gate is the lie the field prevents — and it is
-  // why `revertible` is per stray, not one boolean on the refusal.
-  const t = await verdictFor({
-    paths: ["a.txt"],
-    outOfScope: ["notes/**"],
-    write: (wt) => {
-      devCommit(wt, "a.txt", "two\n");
-      devCommit(wt, "helper.ts", "export const helper = () => 1;\n");
-      devCommitIn(wt, "notes/secret.md", "not the plan's to change\n");
-    },
-  });
-  try {
-    // `PostPass.strays` is the OFFER channel, so a withheld set is simply absent
-    // — and absence alone cannot tell "withheld because one file belongs to the
-    // protected-path gate" from "the set was never built". The control is the
-    // SAME workstream judged with the plan's own fence entry REMOVED: the tree is
-    // untouched (so the second read refuses the same files), and there the
-    // ordinary stray comes back marked revertible while the protected one says
-    // false. That is the per-stray fact the set-level rule reads, observed rather
-    // than inferred from an absent field.
-    const control = await verdictOnTree({
-      // Nothing the fixer wrote is fenced here, so only the protected-path gate
-      // refuses anything, and its refusal is the one that must say `false`.
-      outOfScope: ["never-written-by-this-test/**"],
-      plans: t.plans,
-      baseSha: t.baseSha,
-      declared: t.plans[0]?.declared ?? [],
-    });
-    try {
-      const files = (control.strays ?? []).map((s) => s.file);
-      assert(
-        files.includes("helper.ts") && files.includes("notes/secret.md"),
-        `the fence does name BOTH strays when its own entry is removed (${JSON.stringify(files)})`,
-      );
-      const helper = (control.strays ?? []).find((s) => s.file === "helper.ts");
-      const fenced = (control.strays ?? []).find((s) => s.file === "notes/secret.md");
-      assert(
-        helper?.revertible === true,
-        `the ordinary stray is marked revertible on its own (got ${JSON.stringify(helper)})`,
-      );
-      assert(
-        fenced?.revertible === true,
-        `and a stray the plan no longer fences becomes revertible — the flag tracks the gate that refused it (got ${JSON.stringify(fenced)})`,
-      );
-      assert(
-        control.straysFor === "default",
-        "so with every stray revertible the set IS offered — the withholding above was the flag, not an absent field",
-      );
-      assert(
-        t.post.straysFor === undefined && t.post.strays === undefined,
-        "while with the plan's fence entry in place the WHOLE set is withheld",
-      );
-      assert(
-        /notes\/secret\.md/.test(t.post.reason ?? "") &&
-          /helper\.ts/.test(t.post.reason ?? ""),
-        "and the park reason still names BOTH files, so nothing is hidden from the operator",
-      );
-      assert(
-        existsSync(`${t.wt}/helper.ts`) === true &&
-          existsSync(`${t.wt}/notes/secret.md`) === true,
-        "so both files stand: the driver deleted nothing in either read",
-      );
-    } finally {
-      // The control read the same tree, so `t.dir` (removed by the outer finally)
-      // is the only directory here — nothing to clean separately.
-    }
-  } finally {
-    rmSync(t.dir, { recursive: true, force: true });
-  }
-}
-
-console.log("# an ordinary stray is still offered — the flag is not a ban");
-{
-  const t = await verdictFor({
+  // The cycle-owned route is an admission, not a skeleton key: eight files on one
+  // declared path is bounded by the pass's fan-out ceiling whatever admitted them,
+  // and a ceiling breach refuses the pass rather than offering a rewind of it.
+  process.env.PI_ENSEMBLE_SCOPE_FANOUT_FACTOR = "3";
+  process.env.PI_ENSEMBLE_SCOPE_FANOUT_MIN = "1";
+  const t = await verdictAfterCycleWork({
     paths: ["a.txt"],
     outOfScope: [],
+    cycleWork: (wt) => {
+      for (let i = 0; i < 8; i++) devCommitIn(wt, `lib/own${i}.ts`, `export const own${i} = 1;\n`);
+    },
     write: (wt) => {
-      devCommit(wt, "a.txt", "two\n");
-      devCommit(wt, "helper.ts", "export const helper = () => 1;\n");
+      for (let i = 0; i < 8; i++) devCommit(wt, `lib/own${i}.ts`, `export const own${i} = 2;\n`);
     },
   });
   try {
     assert(
-      t.post.straysFor === "default" && (t.post.strays?.length ?? 0) > 0,
-      `the stray set is offered to the revert (${JSON.stringify(t.post.strays)})`,
+      t.post.reason !== undefined && /fan-out limit/.test(t.post.reason),
+      `editing eight of the cycle's own files on one declared path breaches the ceiling, not the admission ladder (${(t.post.reason ?? "").slice(0, 120)})`,
     );
     assert(
-      (t.post.strays ?? []).every((s) => s.revertible),
-      "and every stray in it says so, which is the condition the offer reads",
-    );
-    assert(
-      readFileSync(`${t.wt}/a.txt`, "utf8") === "two\n",
-      "the pass's own fix is untouched by the fence's decision",
+      t.post.straysFor === undefined && t.post.wholePass === undefined,
+      "and a ceiling breach is a refusal of the whole pass, never a rewind offer",
     );
   } finally {
+    delete process.env.PI_ENSEMBLE_SCOPE_FANOUT_FACTOR;
+    delete process.env.PI_ENSEMBLE_SCOPE_FANOUT_MIN;
     rmSync(t.dir, { recursive: true, force: true });
   }
 }
-// ── #1849 item 9 — the ceiling a helper is judged against ───────────────────
-//
-// `postPassFault` asks the anchored-helper route with `admit.admittedSlotCount()`
-// as the denominator's slot term, but the fence OBJECT it hands the same call
-// carries the `ceiling` `planFixPass` built at PLAN time, when the slot count was
-// necessarily zero (a slot admits a file only once the pass runs). Those are two
-// readings of one rule, and they are not equal: `fanoutLimitFor(1 + 5)` is 18,
-// while the object the gate holds says 6. The one ceiling PM decision #1846-3
-// asked for is the one the refusal must have been computed from, so the gate's
-// view now carries the slot count that was actually used — and this asserts it
-// with the real functions rather than an assertion about prose.
+
 console.log("# the helper route's ceiling is computed from the slots it counted");
 {
   // The ceiling rule is `max(declared × factor, minimum)`, so a test that wants

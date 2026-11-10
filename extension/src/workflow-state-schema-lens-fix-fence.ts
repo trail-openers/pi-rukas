@@ -51,6 +51,13 @@ export interface LensFixFenceSnapshot {
   fence: {
     id: string;
     admits: string[];
+    /**
+     * #2156 — the cycle's own file set, the second admission route's input. Part
+     * of the fence rather than of the snapshot's own `candidates` because the
+     * two are read by different rules: `candidates` is the widening route's
+     * provenance, this is the ladder's step 1b.
+     */
+    cycleOwned: string[];
     declared: string[];
     helperDirs: string[];
     passChanged: string[];

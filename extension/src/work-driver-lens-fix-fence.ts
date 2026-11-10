@@ -263,7 +263,7 @@ export async function lensFixPassPlan(
       reason: cycle.reason,
       refusal: { kind: "unavailable", reason: cycle.reason },
     };
-  const before = await treeChanges(execFn, input.worktree, ps.baseSha);
+  const before = await treeChanges(execFn, input.worktree, input.roundTip);
   if (!before.ok)
     return {
       ok: false,

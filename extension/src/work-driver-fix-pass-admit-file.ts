@@ -35,6 +35,15 @@
  * change is judged by the pre-#1846 rules only, so a pre-existing file is never
  * "an anchored helper" and the fan-out numerator cannot be widened by it.
  *
+ * Step 1b (#2156) is the cycle's own file set. The bug it closes: a fix pass that
+ * edited a file an earlier step of the SAME cycle created (and no finding named)
+ * had that file reverted as "out-of-fence" while its paired edit in another file
+ * was kept — an incoherent tree for the next reviewer. A file the cycle itself
+ * created or modified is the cycle's own work, so editing it is inside the fence;
+ * the step sits BELOW the absolute refusals, so a plan fence or a protected path
+ * still outranks it, and ABOVE the spec-slot and corrective routes, so a file the
+ * cycle owns spends no slot budget and none of the round's.
+ *
  * Split from work-driver-adversarial-fix-scope.ts for the AGENTS.md §12 limit.
  */
 
@@ -133,6 +142,12 @@ export async function admitFixPassEntry(
     };
   // 1 — the pass's own scope, asked first so no route below spends its budget.
   if (fence.admits.some((a) => admitsEntry(a, file))) return { admitted: true };
+  // 1b — #2156: a file the CYCLE itself owns. The field's own jsdoc states why
+  // this is a step of its own rather than more entries in `fence.admits`. The
+  // absolute refusals above have already been asked and answered, so a path the
+  // plan fenced or the protected-path gate owns stays refused here — an absolute
+  // refusal still outranks this admission and stays `revertible: false`.
+  if (fence.cycleOwned.some((a) => admitsEntry(a, file))) return { admitted: true };
   // 2 — the spec slot; its `fenced` / `protected` refusals are final.
   const decision: Admission = gate.admitter.admit(gate.id, file, [...gate.declared]);
   if (decision.admitted) return { admitted: true };
