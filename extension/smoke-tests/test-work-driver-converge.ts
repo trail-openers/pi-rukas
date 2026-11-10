@@ -135,7 +135,7 @@ function makeConvergeExec(
       diffRead += 1;
       return { stdout: nulNameStatus(...filesForDiff()) };
     }
-    if (cmd.includes("rev-parse --verify --end-of-options origin/"))
+    if (cmd.includes("rev-parse --verify origin/"))
       return { stdout: `${"a".repeat(40)}\n` };
     if (cmd.startsWith("git rev-list --count")) return { stdout: "1\n" };
     if (cmd === "git rev-parse HEAD") return { stdout: BASE_SHA + "\n" };

@@ -15,6 +15,7 @@
  * prevents — see each function's docstring.
  */
 
+import { readCommitOid } from "./git-oid-read.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /** Per-git-call timeout when the caller does not pass one (a hung git must not hang the cycle). */
@@ -85,9 +86,8 @@ const OBJECT_ID = /^[0-9a-f]{40,64}$/;
  * the object id. Anything else — empty, a name, a warning — did not come from
  * a resolver that resolved, so the probe has no answer.
  */
-function printedObjectId(stdout: string): boolean {
-  const t = stdout.trim();
-  return !t.includes("\n") && OBJECT_ID.test(t);
+function printedObjectId(trimmed: string): boolean {
+  return !trimmed.includes("\n") && OBJECT_ID.test(trimmed);
 }
 
 export async function refResolves(
@@ -98,35 +98,45 @@ export async function refResolves(
 ): Promise<RefState> {
   try {
     // `rev-parse --verify` prints the object id it resolved; the id IS the
-    // answer, so this reads the exec payload rather than `execGit`'s string
-    // view. No `--quiet`, deliberately (#1153 fix round): `--quiet` suppresses
+    // answer, so this read returns the payload rather than a stdout string.
+    // No `--quiet`, deliberately (#1153 fix round): `--quiet` suppresses
     // the stderr that is the only real evidence for `absent`, AND it changes
     // the exit code — measured on git 2.53, a missing ref exits 1 with an empty
     // stderr under `--quiet` and 128 with `fatal: Needed a single revision`
     // without it. Probing without the flag is what lets `gitSaysAbsent` read
     // git's wording instead of guessing from a bare code.
-    const { stdout } = await execGitRaw(
-      exec,
-      cwd,
-      ["rev-parse", "--verify", "--end-of-options", ref],
-      { timeout, maxBuffer: 64 * 1024 },
-    );
-    // #1153 round 3 — the exit code alone is not the answer. A shim, a
-    // wrapper, or a git that prints a warning instead of an id exits 0 while
-    // telling us nothing about the ref; reading that as `resolves` would tell
-    // a caller "the branch is pushed" on the word of a process that said
-    // nothing. The object id IS the evidence, so its absence is `unknown`.
-    if (!printedObjectId(stdout)) {
+    const read = await readCommitOid(exec, cwd, ref, {
+      accept: printedObjectId,
+      timeoutMs: timeout ?? DEFAULT_GIT_TIMEOUT_MS,
+      maxBuffer: 64 * 1024,
+    });
+    if (read.ok) return { state: "resolves" };
+    // A ref that begins with `-` is refused before git is asked, and a refusal
+    // says nothing about whether the ref exists — `unknown`, never `absent`.
+    if (read.kind === "refused") {
+      return { state: "unknown", error: read.problem };
+    }
+    // #1153 round 3 — the exit code alone is not the answer. A shim, a wrapper,
+    // or a git that prints a warning instead of an id exits 0 while telling us
+    // nothing about the ref; reading that as `resolves` would tell a caller
+    // "the branch is pushed" on the word of a process that said nothing.
+    // `accept` already rejected a stdout that is not one line of hex, so an
+    // exit-0 answer with no cause on it is exactly that case.
+    if (read.cause === undefined) {
       return { state: "unknown", error: "git exited 0 without an object id" };
     }
-    return { state: "resolves" };
-  } catch (err) {
     // #1153 — only git's OWN "this ref is not there" answer is `absent`. A
     // probe the harness killed (a timeout, a signal) carries a numeric exit
     // code as well — node's child process reports `code: 1` alongside
     // `killed: true` — and says nothing about whether the ref exists. Reading
     // that as absent would tell the operator "the branch was not pushed from
-    // here" about a ref nobody read.
+    // here" about a ref nobody read. `cause` is the executor's own rejection,
+    // so the wording and exit code are git's exactly as the raw probe left them.
+    if (gitSaysAbsent(read.cause)) return { state: "absent" };
+    return { state: "unknown", error: errorText(read.cause) };
+  } catch (err) {
+    // A rejection that did not come from the read itself — a fake executor that
+    // returned no payload, a discriminator thrown on by an unexpected shape.
     if (gitSaysAbsent(err)) return { state: "absent" };
     return { state: "unknown", error: errorText(err) };
   }

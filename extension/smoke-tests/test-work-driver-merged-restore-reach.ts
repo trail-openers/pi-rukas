@@ -77,7 +77,7 @@ setupSpawnGuard();
       "git config --get remote.": { stdout: "https://x.invalid/r.git\n" },
       "git remote": { stdout: "origin\n" },
       "git symbolic-ref": { stdout: "origin/main\n" },
-      "git rev-parse --end-of-options origin/": { stdout: `${HEAD_OID}\n` },
+      "git rev-parse --verify origin/": { stdout: `${HEAD_OID}\n` },
       "git merge-base": { stdout: `${"9".repeat(39)}f\n` },
       "git fetch": { stdout: "" },
       "git rev-parse": { stdout: "feature/issue-476\n" },

@@ -101,7 +101,7 @@ process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
           if (cmd === "git rev-parse HEAD")
             return { stdout: "1111111111111111111111111111111111111111\n" };
           if (isNulStatusRead(cmd)) return { stdout: "" };
-          if (cmd.includes("rev-parse --verify --end-of-options origin/"))
+          if (cmd.includes("rev-parse --verify origin/"))
             return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" };
           if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
@@ -183,7 +183,7 @@ process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
           if (cmd === "git rev-parse HEAD")
             return { stdout: "1111111111111111111111111111111111111111\n" };
           if (isNulStatusRead(cmd)) return { stdout: nulStatus(" M src/lib.rs") };
-          if (cmd.includes("rev-parse --verify --end-of-options origin/"))
+          if (cmd.includes("rev-parse --verify origin/"))
             return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) return { stdout: "0\n" };
           if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
@@ -285,7 +285,7 @@ process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
           if (cmd === "git rev-parse HEAD")
             return { stdout: "1111111111111111111111111111111111111111\n" };
           if (isNulStatusRead(cmd)) return { stdout: nulStatus(" M src/lib.rs") };
-          if (cmd.includes("rev-parse --verify --end-of-options origin/"))
+          if (cmd.includes("rev-parse --verify origin/"))
             return { stdout: "a".repeat(40) + "\n" };
           if (cmd.startsWith("git rev-list --count")) return { stdout: "2\n" };
           if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };

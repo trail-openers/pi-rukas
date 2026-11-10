@@ -81,7 +81,7 @@ function read(
   const range = diffCall?.argv[diffCall.argv.length - 1] ?? "";
   assert(
     range === `${BASE_SHA}..${HEAD_SHA}`,
-    `the range is <merge-base>..<head>, spelled as ONE commit range after --end-of-options (got ${JSON.stringify(range)})`,
+    `the range is <merge-base>..<head>, spelled as ONE commit range (got ${JSON.stringify(range)})`,
   );
 }
 
@@ -171,8 +171,8 @@ function read(
     [/^git config --get remote/, () => ({ stdout: "https://x.invalid/r.git\n" })],
     [/^git symbolic-ref/, () => ({ stdout: "origin/main\n" })],
     [/^git fetch/, () => ({ stdout: "" })],
-    [/^git rev-parse --end-of-options origin\/feature/, () => ({ stdout: `${HEAD_SHA}\n` })],
-    [/^git rev-parse --end-of-options origin\/main/, () => ({ stdout: `${MAIN_SHA}\n` })],
+    [/^git rev-parse --verify origin\/feature/, () => ({ stdout: `${HEAD_SHA}\n` })],
+    [/^git rev-parse --verify origin\/main/, () => ({ stdout: `${MAIN_SHA}\n` })],
     [/^git merge-base/, () => ({ stdout: "\n" })],
   ]);
   const r = await read(exec);
@@ -188,8 +188,8 @@ function read(
     [/^git config --get remote/, () => ({ stdout: "https://x.invalid/r.git\n" })],
     [/^git symbolic-ref/, () => ({ stdout: "origin/main\n" })],
     [/^git fetch/, () => ({ stdout: "" })],
-    [/^git rev-parse --end-of-options origin\/feature/, () => ({ stdout: `${HEAD_SHA}\n` })],
-    [/^git rev-parse --end-of-options origin\/main/, () => ({ stdout: `${MAIN_SHA}\n` })],
+    [/^git rev-parse --verify origin\/feature/, () => ({ stdout: `${HEAD_SHA}\n` })],
+    [/^git rev-parse --verify origin\/main/, () => ({ stdout: `${MAIN_SHA}\n` })],
     [/^git merge-base/, () => Promise.reject(new Error("no merge base"))],
   ]);
   const r = await read(exec);
@@ -237,8 +237,8 @@ function read(
     [/^git config --get remote/, () => ({ stdout: "https://x.invalid/r.git\n" })],
     [/^git symbolic-ref/, () => ({ stdout: "origin/main\n" })],
     [/^git fetch/, () => ({ stdout: "" })],
-    [/^git rev-parse --end-of-options origin\/feature/, () => ({ stdout: `${HEAD_SHA}\n` })],
-    [/^git rev-parse --end-of-options origin\/main/, () => ({ stdout: `${BASE_SHA}\n` })],
+    [/^git rev-parse --verify origin\/feature/, () => ({ stdout: `${HEAD_SHA}\n` })],
+    [/^git rev-parse --verify origin\/main/, () => ({ stdout: `${BASE_SHA}\n` })],
     [/^git merge-base/, () => ({ stdout: `${BASE_SHA}\n` })],
     [/^git -c .*diff -z/, () => Promise.reject(new Error("fatal: bad revision"))],
   ]);

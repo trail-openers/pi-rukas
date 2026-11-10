@@ -2741,6 +2741,43 @@ With `PI_ENSEMBLE_DRAFT_PR=1` — the default for a headless `/work` — commit-
 
 A draft cannot be merged by `gh pr merge` (`mergeStateStatus: DRAFT`), so a ready that keeps failing also shows up as an `awaiting-human-merge` park. Set `PI_ENSEMBLE_DRAFT_PR=0` to open PRs ready, as before. If your CI skips draft PRs (`if: github.event.pull_request.draft == false`), add `ready_for_review` to the workflow's `pull_request` types, or the head commit's checks stay skipped after the PR is marked ready — and the merge gate does not count skipped as passing.
 
+### Three unrelated failures on one host, and the cause is your git version (`--end-of-options` echoed)
+
+**Symptom.** Several gates fail at once on one host, none of them about the change:
+
+- the `merged` step holds the landing — `awaiting-human-merge` with a hold reading *"the protected-path read for <branch> at <sha> failed (git rev-parse origin/main printed "--end-of-options", not an object id) — a diff that could not be inspected is not a diff that is cleared"*
+- verify or diff says *"could not check origin/<branch>: git exited 0 without an object id"*, so the driver cannot tell whether the branch was pushed
+- an ordinary `git push` is refused by the public-repository scan with *"a push source could not be resolved to a commit"*, on commits that resolve fine by hand
+
+**Cause: git older than 2.43.** `--end-of-options` tells git "options end here, the rest is a
+ref". `rev-parse` only learned to treat it as a terminator later than `diff`, `log`, `grep`,
+`fetch`, `merge-base` and `cat-file` did, and an older `rev-parse` does not reject an unknown
+dashed argument — it **echoes it to stdout** ahead of the object id. Every one of the three
+readers above decides from what `rev-parse` printed, so the echoed literal is read as "not an
+object id" and each gate fails closed on a ref that exists.
+
+The three surfaces are the same defect with different consequences, and none of them is a bug
+in the change under review: the merge hold refuses to clear a diff nobody could inspect, the
+verify read reports `unknown` rather than guessing the branch is pushed, and the push scan
+refuses rather than publishing an unscanned range.
+
+**Fix: get a git that resolves the ref, or upgrade.** Check what your host actually runs:
+
+```bash
+git --version
+git rev-parse --end-of-options HEAD
+```
+
+If the second command prints the flag on its own line, that is the cause. Upgrade git to 2.43
+or newer. The code fix is to stop passing the flag to `rev-parse` at all — the ref-name
+validation refuses a leading `-` before any git runs, which is the protection the flag was
+giving — so once you are on a build carrying that fix, these reads work on an older git too.
+
+**What is NOT the cause**, and do not go looking for it: no `--allow-protected` grant, no merge
+authority setting, and no flag of any kind lifts any of the three. A protected-path hold is
+still a hold you resolve by reading the diff, and `PI_ENSEMBLE_MERGE_AUTHORITY=0` or
+`PI_ENSEMBLE_PROTECTED_PATHS=0` would only silence a gate that was correctly refusing to guess.
+
 ### Memory searches return the wrong thing (or nothing)
 
 **vipune blends recency into every score by default.** Its config sets `recency_weight = 0.3`, and it returns `(1-w)*raw + w*exp(-1e-6*age)` unless you pass `--recency 0`. The recency term spans 0.3; a whole hybrid top-5 spans about 0.044. So at the default, the ranking is age, not relevance.

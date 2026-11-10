@@ -453,7 +453,10 @@ async function handoff(state: WorkState, failures = 0) {
     if (line.includes("git remote")) return { stdout: "origin\n" };
     if (line.includes("git symbolic-ref")) return { stdout: "origin/main\n" };
     if (line.includes("git fetch")) return { stdout: "" };
-    if (line.includes("git rev-parse --end-of-options origin/"))
+    // Keyed on the argv the shared OID read actually issues, so a drift off that
+    // shape lands on no arm and the protected read refuses rather than being
+    // handed an OID nobody asked for.
+    if (line === `git rev-parse --verify origin/${BRANCH}`)
       return { stdout: `${"4".repeat(39)}d\n` };
     if (line.includes("git merge-base")) return { stdout: `${"5".repeat(39)}e\n` };
     // The protected read is matched through the lib derived from the production
