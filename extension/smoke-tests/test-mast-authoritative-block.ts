@@ -40,7 +40,7 @@
  * fail is worthless.
  */
 
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 
 import {
@@ -58,6 +58,7 @@ import {
   nonCommentText,
   stepBackParagraph,
 } from "./lib/mast-canary-fixtures.ts";
+import { discoverCitingFiles } from "./lib/mast-citing-files.ts";
 
 const failures: string[] = [];
 function assert(cond: boolean, msg: string): void {
@@ -220,50 +221,9 @@ const SITES: readonly Site[] = [
   },
 ];
 
-/** Every repository file that names the paper — derived, never hand-listed. */
-function discoverCitingFiles(): string[] {
-  const skip = new Set([
-    ".git",
-    "node_modules",
-    "dist",
-    "tmp",
-    ".worktrees",
-    "outputs",
-    "coverage",
-  ]);
-  const out: string[] = [];
-  const walk = (dir: string, rel: string): void => {
-    let entries: import("node:fs").Dirent<string>[];
-    try {
-      // Without an explicit encoding `withFileTypes` resolves to the
-      // buffer-typed overload, so the element type is named here: `entry.name`
-      // has to be a string before it reaches path.join and the .endsWith tests.
-      entries = readdirSync(dir, { withFileTypes: true, encoding: "utf8" });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      const name: string = entry.name;
-      if (skip.has(name)) continue;
-      const full = path.join(dir, name);
-      const relative = rel === "" ? name : `${rel}/${name}`;
-      if (entry.isDirectory()) walk(full, relative);
-      else if (entry.isFile() && (relative.endsWith(".ts") || relative.endsWith(".md"))) {
-        // The detector's own exclusion: `.d.ts` declarations are not sites.
-        if (relative.endsWith(".d.ts")) continue;
-        try {
-          if (readFileSync(full, "utf8").includes(ARXIV)) out.push(relative);
-        } catch {
-          /* unreadable — not a site, and not this gate's problem */
-        }
-      }
-    }
-  };
-  walk(REPO_ROOT, "");
-  return out.sort();
-}
-
-const discovered = discoverCitingFiles().filter((f) => f !== SELF && f !== FIXTURES);
+const discovered = discoverCitingFiles(REPO_ROOT, ARXIV, SITES.length).filter(
+  (f) => f !== SELF && f !== FIXTURES,
+);
 const registered = new Set(SITES.map((s) => s.file));
 
 for (const file of discovered) {
