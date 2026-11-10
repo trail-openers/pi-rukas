@@ -223,20 +223,14 @@ const SITES: readonly Site[] = [
 
 /**
  * Every repository file that names the paper — derived, never hand-listed, and
- * enumerated from GIT, never from the filesystem.
- *
- * The gate means "every file of the repository", and a filesystem walk reaches
- * content that is not part of the repository: a private notes directory, a
- * nested separate git repo, or anything else a developer left in the checkout.
- * Consolidated /work verify runs in the main checkout, where such files are
- * normal, so a walk made this gate fail on content no reviewer will ever see and
- * no PR can fix. `git ls-files --cached --others --exclude-standard` is the
- * repository's file set plus the developer's own new work: untracked files still
- * count as citing sites, so a file added but not yet `git add`ed cannot slip
- * past the registry, while anything .gitignore'd is out by definition.
- *
- * The skip-list is kept because it still matters for tracked paths: a directory
- * committed by accident stays out of the roster exactly as it did under the walk.
+ * enumerated by git, never by a filesystem walk. The gate means "every file of
+ * the repository", and a walk reaches content that is not part of it — a private
+ * notes directory, a nested separate repo, a checkout leftover — so consolidated
+ * /work verify in the main checkout failed on files no reviewer sees and no PR can
+ * fix. Git enumeration still counts untracked work (a citing file not yet added is
+ * a site) while anything .gitignore'd is out by definition; the skip-list stays
+ * because git enumerates tracked paths too, so an accidentally committed vendor
+ * directory is listed content rather than a stray local one.
  */
 function discoverCitingFiles(): string[] {
   const skip = new Set([
@@ -248,10 +242,8 @@ function discoverCitingFiles(): string[] {
     "outputs",
     "coverage",
   ]);
-  // No shell: argv array to execFileSync, so the repo path is never parsed.
-  // A failed `ls-files` throws out of execFileSync; an empty listing is treated
-  // as a failure too, because an empty discovery would pass the registry checks
-  // vacuously — silence is never a pass.
+  // No shell: argv array to execFileSync, so the repo path is never parsed; a
+  // failed `ls-files` throws out of it rather than passing.
   const listed = execFileSync(
     "git",
     [
@@ -265,9 +257,7 @@ function discoverCitingFiles(): string[] {
       "--others",
       "--exclude-standard",
     ],
-    {
-      encoding: "utf8",
-    },
+    { encoding: "utf8" },
   );
   if (listed.trim() === "") {
     throw new Error(
@@ -287,6 +277,13 @@ function discoverCitingFiles(): string[] {
     } catch {
       /* unreadable — not a site, and not this gate's problem */
     }
+  }
+  // Silence is never a pass, and what the registry checks consume is this roster,
+  // not the listing: the filters above can empty it while git still reports paths.
+  if (out.length < SITES.length) {
+    throw new Error(
+      `discovery found ${out.length} citing files among the git-listed paths at ${REPO_ROOT}, below the ${SITES.length} registered sites — refusing to judge an incomplete roster`,
+    );
   }
   return out.sort();
 }
