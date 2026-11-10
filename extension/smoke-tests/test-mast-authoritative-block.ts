@@ -40,7 +40,6 @@
  * fail is worthless.
  */
 
-import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
@@ -59,6 +58,7 @@ import {
   nonCommentText,
   stepBackParagraph,
 } from "./lib/mast-canary-fixtures.ts";
+import { discoverCitingFiles } from "./lib/mast-citing-files.ts";
 
 const failures: string[] = [];
 function assert(cond: boolean, msg: string): void {
@@ -221,74 +221,9 @@ const SITES: readonly Site[] = [
   },
 ];
 
-/**
- * Every repository file that names the paper — derived, never hand-listed, and
- * enumerated by git, never by a filesystem walk. The gate means "every file of
- * the repository", and a walk reaches content that is not part of it — a private
- * notes directory, a nested separate repo, a checkout leftover — so consolidated
- * /work verify in the main checkout failed on files no reviewer sees and no PR can
- * fix. Git enumeration still counts untracked work (a citing file not yet added is
- * a site) while anything .gitignore'd is out by definition; the skip-list stays
- * because git enumerates tracked paths too, so an accidentally committed vendor
- * directory is listed content rather than a stray local one.
- */
-function discoverCitingFiles(): string[] {
-  const skip = new Set([
-    ".git",
-    "node_modules",
-    "dist",
-    "tmp",
-    ".worktrees",
-    "outputs",
-    "coverage",
-  ]);
-  // No shell: argv array to execFileSync, so the repo path is never parsed; a
-  // failed `ls-files` throws out of it rather than passing.
-  const listed = execFileSync(
-    "git",
-    [
-      "-c",
-      "core.quotepath=false",
-      "-C",
-      REPO_ROOT,
-      "ls-files",
-      "-z",
-      "--cached",
-      "--others",
-      "--exclude-standard",
-    ],
-    { encoding: "utf8" },
-  );
-  if (listed.trim() === "") {
-    throw new Error(
-      `git ls-files at ${REPO_ROOT} returned no paths — refusing to judge an empty roster`,
-    );
-  }
-  const out: string[] = [];
-  for (const relative of listed.split("\u0000")) {
-    if (relative === "") continue;
-    const segments = relative.split("/");
-    if (segments.some((segment) => skip.has(segment))) continue;
-    if (!(relative.endsWith(".ts") || relative.endsWith(".md"))) continue;
-    // The detector's own exclusion: `.d.ts` declarations are not sites.
-    if (relative.endsWith(".d.ts")) continue;
-    try {
-      if (readFileSync(path.join(REPO_ROOT, relative), "utf8").includes(ARXIV)) out.push(relative);
-    } catch {
-      /* unreadable — not a site, and not this gate's problem */
-    }
-  }
-  // Silence is never a pass, and what the registry checks consume is this roster,
-  // not the listing: the filters above can empty it while git still reports paths.
-  if (out.length < SITES.length) {
-    throw new Error(
-      `discovery found ${out.length} citing files among the git-listed paths at ${REPO_ROOT}, below the ${SITES.length} registered sites — refusing to judge an incomplete roster`,
-    );
-  }
-  return out.sort();
-}
-
-const discovered = discoverCitingFiles().filter((f) => f !== SELF && f !== FIXTURES);
+const discovered = discoverCitingFiles(REPO_ROOT, ARXIV, SITES.length).filter(
+  (f) => f !== SELF && f !== FIXTURES,
+);
 const registered = new Set(SITES.map((s) => s.file));
 
 for (const file of discovered) {
