@@ -161,11 +161,21 @@ console.log("# the RE-DISPATCH prompt prints the same fence");
       // = 0 ahead, `rev-parse HEAD` = the round tip the fence was built from.
       // A stub returning "" for all three would make the committed-count
       // unreadable, which is NOT the resend shape (#749).
-      verifyExecFn: async (_cmd: string, opts?: { argv?: string[] }) => {
-        const a = (opts?.argv ?? []).join(" ");
+      //
+      // The three answers are matched on the WHOLE call — argv or command string
+      // — not on `argv` alone. The fence the prompt prints reads its tree with
+      // STRING-form git (`git diff --name-only <sha>`, `git ls-files --others`),
+      // which has no `argv` at all: reading `argv ?? ""` made every fence read
+      // answer `""`, so the driver rendered a fence whose cycle-owned set was
+      // empty while this case's own `lensFixPassPlan` call — real git, the same
+      // tree — rendered the populated one, and the two blocks could never be
+      // equal.
+      verifyExecFn: async (cmd: string, opts?: { argv?: string[] }) => {
+        const a = (opts?.argv ?? []).join(" ") || cmd;
         if (a.includes("rev-parse HEAD")) return { stdout: `${t.roundTip}\n` };
         if (a.includes("rev-list")) return { stdout: "0\n" };
-        return { stdout: "" };
+        if (a.includes("status --porcelain")) return { stdout: "" };
+        return defaultExec(cmd, opts);
       },
       dispatchFn: async (_h: unknown, spec: { role: string; prompt: string }) => {
         prompts.push(spec.prompt);

@@ -87,6 +87,13 @@ export function strayReason(
   strays: readonly Stray[],
   basis: string,
   driverReverted = false,
+  /**
+   * #2156 R3 — the whole pass is being rewound, not just these files. The path
+   * count the rewind will remove, when the driver rewinds the pass's own edits
+   * too; `undefined` keeps the older, file-scoped wording the lens-fix fence
+   * still uses (its round's earlier commits are legitimately not strays).
+   */
+  wholePassFiles?: number,
 ): string {
   const fence =
     plan.declared.length > 0
@@ -145,7 +152,16 @@ export function strayReason(
     })
     .join("; ");
   const files = strays.map((s) => s.file).join(", ");
-  return `${plan.id} changed ${files} — outside ${basis} (${fence}; ${spec}; finding-named files it admits: ${listed(plan.named)}). ${naming}. The change is still in ${plan.worktree}. To clear it: if a finding's fix needs ${files}, the declared scope is what is wrong — name ${files} in the issue's scope and re-run \`/work <issue> --restart\`; ${clearing(files, driverReverted)}`;
+  // #2156 R3 — the closing instruction has three readings now. A pass whose whole
+  // delta is being rewound must not be told to "revert <files> in that worktree
+  // and land the rest by hand": there IS no rest — the driver took the pass back
+  // to where it started, and the operator's decision is the fence, not the
+  // worktree.
+  const closing =
+    wholePassFiles !== undefined
+      ? `the driver rewound this pass's whole delta — ${wholePassFiles} file(s) back to the head the pass started at — preserved at the \`refs/pi-rukas/fix-pass-strays/...\` ref and patch the \`fix-pass-strays-reverted\` record names, so nothing is kept of a fix that cannot stand on its own. Re-run \`/work <issue> --restart\` with ${files} named in the issue's scope, or let the pass work inside the fence`
+      : clearing(files, driverReverted);
+  return `${plan.id} changed ${files} — outside ${basis} (${fence}; ${spec}; finding-named files it admits: ${listed(plan.named)}). ${naming}. The change is still in ${plan.worktree}. To clear it: if a finding's fix needs ${files}, the declared scope is what is wrong — name ${files} in the issue's scope and re-run \`/work <issue> --restart\`; ${closing}`;
 }
 
 /** The closing clause of {@link strayReason}; see the `driverReverted` note. */

@@ -73,6 +73,23 @@ export interface FixPassFence {
    */
   admits: string[];
   /**
+   * #2156 — the files this CYCLE already owns: `committedChanges(baseSha..headBefore)`
+   * ∪ `treeChanges(worktree, baseSha).names`. A fix pass editing one of them is
+   * inside the fence whatever else the pass declared, unless an absolute refusal
+   * applies — which is the defect this field exists for: with any declared path,
+   * `fixPassSubjects` deliberately leaves `admits` at declared ∪ finding-named,
+   * so a file an EARLIER step of the same cycle created and no finding named was
+   * refused as a stray, and its paired edit was kept — a half-applied fix.
+   *
+   * It is a field of its own and NOT folded into `admits` because the two are
+   * printed to different audiences: `fixPassFenceLines` shows the fixer the set
+   * it was ASKED to change, and this set is the cycle's history, which the fixer
+   * cannot act on. `admits` keeps its meaning exactly; this is an additional
+   * admission route, asked after it, and it counts against `ceiling` like every
+   * other file the pass changes (PM decision #2156 R2 — no new exemption).
+   */
+  cycleOwned: string[];
+  /**
    * The directories rule 2 admits a helper in (`helperDirs`) are derived from the
    * subjects the HELPER route is anchored in: the planner's declared paths plus
    * the finding-named widening, NEVER an already-changed path.
@@ -152,6 +169,14 @@ export interface FixPassFenceInput {
   named: readonly string[];
   /** The workstream's changes against the cycle base (the N=1 baseline). */
   alreadyChanged: readonly string[];
+  /**
+   * #2156 — what the CYCLE owns at plan time: its own commits from the base to
+   * the pass's head, plus whatever the worktree changes against the base. The
+   * caller builds it from the two reads `planFixPass` already makes; an absent
+   * value (a caller that has no cycle, e.g. a prompt-time view) means the route
+   * admits nothing, which is the pre-#2156 behaviour rather than a widening.
+   */
+  cycleOwned?: readonly string[];
   outOfScope: readonly string[];
   /** Distinct spec pattern slots that admitted a file for this workstream. */
   admittingSlots: number;
@@ -188,6 +213,10 @@ export function fixPassFence(
   return {
     id: input.id,
     admits: subjects,
+    // #2156 — a SEPARATE set, never folded into `admits`: the prompt prints
+    // `admits` as what the fixer was asked to work on, and the cycle's own
+    // history is not an instruction to the fixer. See the field's jsdoc.
+    cycleOwned: [...new Set((input.cycleOwned ?? []).map(entryPath))],
     declared,
     helperDirs: anchorDirs(helperAnchors),
     passChanged: [],

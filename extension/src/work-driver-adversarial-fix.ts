@@ -20,8 +20,6 @@
 
 import { type LoopAction, decideLoopAction } from "./adversarial-verdict.ts";
 import { MAX_ROUNDS } from "./adversarial.ts";
-import { neutraliseEvidence, roundComments } from "./comment-evidence.ts";
-import { commentRetentionEnabled } from "./comment-retention.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import { runDevelopTopological } from "./work-develop-topological.ts";
@@ -40,7 +38,6 @@ import {
   capWithMarker,
   freshPlumbQuestion,
   noChangeProven,
-  noteFixPass,
   parkFixPass,
   withDeveloperPlumbReplies,
   withFixPassReport,
@@ -49,16 +46,15 @@ import type { AdversarialOutcome, PendingFix } from "./work-driver-adversarial-t
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { correctiveRoundsOf } from "./work-driver-corrective-admission.ts";
 import { cycleDispatch } from "./work-driver-cycle-entry.ts";
+import { runFixPassRetention } from "./work-driver-fix-pass-retention.ts";
 import {
   type RevertBoundary,
   fixPassRevertNote,
   revertStraysOnce,
 } from "./work-driver-fix-pass-revert-step.ts";
 import { beginDispatch } from "./work-driver-resume.ts";
-import { verifyTimeoutMs } from "./work-driver-verify-develop-helpers.ts";
 import { execp as argvExecp } from "./work-driver-verify.ts";
 import { activeIssuesOf } from "./work-driver-workspace.ts";
-import { FIX_PASS_EVIDENCE_PREFIX } from "./workflow-state-cap.ts";
 import type { PipelineState } from "./workflow-state-schema.ts";
 import { type WorkEvent, type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
 
@@ -340,10 +336,22 @@ export async function runAdversarialFixPass(
   // admission rule was refused for. #1849 item 9 — the operator's kill switch is
   // no longer a conjunct here: `revertStraysOnce` checks it itself, so the switch
   // cannot be bypassed by a caller and reads beside the rule it governs.
+  // #2156 — the revert's outcome is not a verdict on the pass: ANY refusal to
+  // rewind fails the round, so the pass never continues with files still outside
+  // its fence. The earlier shape continued when a rewind succeeded and re-ran the
+  // no-op check on the post-revert tree, which is how a pass ended up judged on
+  // half its own edits.
   const reverted =
     post.reason !== undefined && post.straysFor !== undefined && post.strays !== undefined
       ? await revertStraysOnce(ctx, restored, plans, post, now, onRevertBoundary)
       : undefined;
+  // A rewind the driver PERFORMED leaves the tree byte-identical to what the pass
+  // found, so the no-op check — which exists to catch a fixer that fixed nothing —
+  // must not re-judge that tree: it would answer "nothing was fixed" about a pass
+  // the driver just deliberately took back. The existing `noOp` seam says exactly
+  // that, and it is asked HERE, at the one call site that knows why; the lens
+  // caller has passed it for the same reason since #1852. The scope judgement is
+  // unchanged, so a pass that somehow still holds a stray parks on it.
   const cleared =
     reverted?.ok === true
       ? await postPassFault(
@@ -351,6 +359,7 @@ export async function runAdversarialFixPass(
           plans,
           ps.baseSha ?? "",
           correctiveRoundsOf(restored.eventLog.slice(startLen)),
+          { noOp: true },
         )
       : post;
   // #1846 — a revert the driver PERFORMED is recorded whatever happens next. The
@@ -393,86 +402,49 @@ export async function runAdversarialFixPass(
     return parkFixPass(
       afterRevert,
       pending,
-      // #1846 — when the driver already reverted one stray set and this is the
-      // second, the park text must not repeat "revert them by hand": the driver
-      // did that, and the remaining decision is the fence, not the worktree.
-      reverted?.ok === false && reverted.secondSet
-        ? `${cleared.reason} (the driver reverted this pass's first out-of-fence set; the \`fix-pass-strays-reverted\` record names the preserved ref and patch)`
-        : cleared.reason,
+      // #2156 R3 — there is no second path-scoped revert any more, so this branch
+      // is reached only when the driver DECLINED to rewind at all (the operator's
+      // kill switch is off, or the workstream has no recorded tree). The wording
+      // that told the operator the driver had already reverted a first set is
+      // gone with the partial revert it described: a pass that rewound everything
+      // parks above, on the fence's own refusal.
+      cleared.reason,
       now,
       cleared.admissions,
     );
   }
+  // #2156 R3 — the round FAILS on any rewind, and it fails here, on the fence's
+  // own refusal, with the stray(s), the preserved ref and the patch path named.
+  // The path that rewound the pass leaves the tree byte-identical to what the
+  // pass found, so the comment-retention reads in the pass tail would judge the
+  // pass on origin/main comments its own rewind removed: a pass would park for a
+  // deletion the driver made. Every other park here re-persists `afterRevert`
+  // (each `parkFixPass` here and in the tail reads it), so appending the rewind
+  // record here covers them all — and the rewind is already durable on disk from
+  // the `persistCycle` above, which is what makes it discoverable after a crash.
+  // The rewind is itself the failure, so the park names the refusal the rewind
+  // was made for (`post.reason`) rather than asking the post-revert re-judge:
+  // that read compares the tree to `plan.headBefore`, and a rewind the driver
+  // completed leaves it byte-identical there, so it answers "nothing was fixed"
+  // about a tree the driver took back deliberately — i.e. it CLEARS. Requiring
+  // its reason here was a condition that cannot hold for the case it gated, and
+  // the pass sailed past the park to `adversarial-fix-applied` with the whole
+  // fix reverted: an applied round that fixed nothing, which is the exact shape
+  // the no-op check exists to refuse.
+  if (reverted?.ok === true && post.reason !== undefined)
+    return parkFixPass(afterRevert, pending, post.reason, now, [
+      ...cleared.admissions,
+      fixPassRevertNote(reverted.event),
+    ]);
+  if (reverted?.ok === false)
+    return parkFixPass(afterRevert, pending, reverted.reason, now, cleared.admissions);
   // The operator's kill switch is NOT a failed check: a disabled check reads
   // NOT CHECKED (as every other reader renders it) and the pass proceeds with
   // that disclosed on the handoff, never parked. Only a check that was asked
   // for and could not run parks.
-  let kept = afterRevert;
-  // #1846 — the revert's EVENT is already on `afterRevert` (see above, so a park
-  // carries it too); what is added here is the prose NOTE that puts the reverted
-  // paths, the preserved ref and the patch path in front of the operator on the
-  // PR body and the handoff. A revert the operator cannot find is a driver
-  // commit that quietly deleted their fixer's work.
-  if (reverted?.ok === true) kept = noteFixPass(kept, fixPassRevertNote(reverted.event), now);
-  // #1725 round 3 — one disclosure note per spec-slot admission made during
-  // this pass. An authorisation that only reached PI_ENSEMBLE_DEBUG is a
-  // fence that widened invisibly; these notes ride the state to the PR body,
-  // where the develop gate's own admission notes already surface.
-  for (const admission of cleared.admissions) kept = noteFixPass(kept, admission, now);
-  if (!commentRetentionEnabled()) {
-    const note =
-      "comment retention NOT CHECKED (PI_ENSEMBLE_COMMENT_RETENTION=0) — the pass proceeded without the origin/main comment check";
-    trace(`work-driver: ${note}`);
-    kept = noteFixPass(kept, note, now);
-  } else {
-    for (const p of plans) {
-      const read = (diff: string) =>
-        roundComments(diff, undefined, p.worktree, verifyTimeoutMs(), ctx.verifyExecFn);
-      // #1846 PM decision 6 — the retention read is the POST-REVERT diff: a
-      // comment line inside a reverted stray is no longer part of the pass, and
-      // judging the pass on content it no longer contains would park it for a
-      // removal the driver itself just reverted.
-      const lost = await read(cleared.diffs[p.id] ?? "");
-      // A lost line whose hunk adds a comment was reworded or replaced. That is
-      // the reviewers' call (#1056) and the next review round lists it; only a
-      // comment dropped with nothing written in its place can park.
-      const dropped = lost.ok ? lost.lost.filter((l) => l.addedNearby.length === 0) : [];
-      // The diff is against the base, so it also carries what earlier passes
-      // removed: the pre-pass diff, read at the same head, tells those apart.
-      const prior = dropped.length > 0 ? await read(p.before.diff) : lost;
-      // A check that could not run reads NOT CHECKED, never silence (AGENTS.md §7 principle 2).
-      if (!lost.ok || !prior.ok) {
-        // #1760 — the admissions this pass made are disclosed on this park too,
-        // not only on the green path: a park that shows the refusals and hides
-        // the authorisations reads as a fence that never widened.
-        return parkFixPass(
-          afterRevert,
-          pending,
-          `comment retention could not be checked for ${p.id} (NOT CHECKED) — the fix pass is not cleared`,
-          now,
-          post.admissions,
-        );
-      }
-      const before = new Set(prior.lost.map((l) => `${l.file}\n${l.text}`));
-      const fresh = dropped.filter((l) => !before.has(`${l.file}\n${l.text}`));
-      if (fresh.length > 0) {
-        const named = fresh.slice(0, 3).map((l) => neutraliseEvidence(`${l.file}: ${l.text}`));
-        return parkFixPass(
-          afterRevert,
-          pending,
-          `the fix pass removed ${fresh.length} origin/main comment line(s) in ${p.id} and wrote no comment in their place (${named.join(" | ")})`,
-          now,
-          post.admissions,
-        );
-      }
-    }
-  }
-  const applied: WorkEvent[] = pending.map((p) => ({
-    kind: "adversarial-fix-applied" as const,
-    at: Date.now(),
-    workstreamId: p.workstreamId,
-    round: p.round,
-    headBefore: plans.find((x) => x.id === p.workstreamId)?.headBefore,
-  }));
-  return appendEvent(kept, ...applied);
+  // #1725 round 3 (admission disclosures) and the origin/main comment-retention
+  // check live in `runFixPassRetention`, which owns the pass tail: it reads only
+  // what the develop gates and the stray handling above produced, and parks on
+  // `afterRevert` so the rewind record rides every handoff it can produce.
+  return runFixPassRetention(ctx, afterRevert, pending, plans, post, cleared, now);
 }

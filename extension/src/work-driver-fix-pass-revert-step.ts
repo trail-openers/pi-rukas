@@ -179,9 +179,21 @@ export async function revertStraysOnce(
   // therefore passes its own round-keyed answer (`lensFixRevertAlreadyUsed`) and
   // this counter is not consulted: one decision, made by whoever owns the budget,
   // rather than two counters that can disagree.
+  //
+  // #2156 R5 — the marker is asked HERE, beside the counter it replaces, so no
+  // caller reaches the rewind without asking. A whole-pass rewind records no
+  // `fix-pass-strays-reverted` event that this counter could read (the fix pass
+  // appends that event only on a path that no longer exists — the pass now fails
+  // its round either way), so its own budget is read from the park it caused.
+  // Without this, a re-run of the same pass — a resume, or an operator re-entry
+  // on state that kept the rewind commit — would rewind a second time.
   const already =
     alreadyReverted ??
-    passWindow(state).some((e) => e.kind === "fix-pass-strays-reverted" && e.workstreamId === id);
+    (post.wholePass === true
+      ? wholePassRevertUsed(state, id)
+      : passWindow(state).some(
+          (e) => e.kind === "fix-pass-strays-reverted" && e.workstreamId === id,
+        ));
   if (already) {
     // One stray set per pass is the driver's job; a second is a pass that will
     // not stay inside its fence, and reverting again would be looping on it.
@@ -223,11 +235,15 @@ export async function revertStraysOnce(
     // delta from `headBefore` (`treeChanges(worktree, plan.headBefore)`), while
     // `headAtRound` is recorded AFTER the round's commits landed: restoring a
     // stray to its `headAtRound` content would keep the very lines the fence just
-    // refused. A per-path revert touches ONLY the stray paths, so it cannot undo
-    // the pass's fix or a corrective round's admitted files — those are not in
-    // the path list. See `revertTarget`.
+    // refused.
+    //
+    // #2156 R3 — the path list is `post.paths` when the fence filled it, which is
+    // EVERY file the pass changed, not the strays alone: a partial revert is what
+    // produced the half-applied tree the issue reports. The fallback is the
+    // pre-#2156 shape (`post.strays`), which the lens-fix fence still produces —
+    // its round's earlier commits are legitimately not strays (#2156 R6).
     headBefore: revertTarget(state, id, plans),
-    strays: strays.map((s) => s.file),
+    strays: post.paths ?? strays.map((s) => s.file),
     untracked: new Set(post.untracked ?? []),
     scratchDir: scratch,
   });
@@ -264,13 +280,14 @@ export async function revertStraysOnce(
  * else and a fence that judges by it are two different trees — which is exactly
  * the drift #1846 PM decision 2 forbids.
  *
- * And a per-path revert cannot undo the pass's legitimate work: the only paths it
- * touches are the strays, so the fix and a corrective round's admitted files are
- * never in the path list, whichever head a round later committed them on top of.
- *
- * Never a guess. `HEAD~1`, `base` or the current HEAD are each a way to delete
- * the pass's real work, so when the recorded head is not a usable SHA this
- * returns `undefined` and `revertFixPassStrays` refuses rather than picking one.
+ * #2156 R3 — and, now that the path list is the whole pass delta rather than the
+ * strays alone, this is also what makes the rewind safe: every commit the pass
+ * made since `headBefore` is undone by restoring those paths to their
+ * `headBefore` content (a file the pass created has nothing there, so it is
+ * removed), and nothing the pass found before it can be touched — those paths are
+ * not in the list. A rewind to anything else (base, HEAD~1) would delete the
+ * cycle's own develop work, which is why this returns `undefined` and the revert
+ * refuses rather than picking one.
  */
 function revertTarget(
   _state: WorkState,
@@ -290,6 +307,35 @@ export function passWindow(state: WorkState): WorkEvent[] {
   }
   return events;
 }
+
+/**
+ * #2156 R5 — has this workstream's fix pass already rewound its WHOLE delta?
+ * Answered from the pass's own event window, so a resumed cycle counts the
+ * rewind it already performed and a sibling workstream's rewind does not charge
+ * this one's budget.
+ *
+ * The marker is the `cap-hit` the pass parked on, read back out of the same
+ * window. It needs no new event kind and no new cap literal (the issue forbids
+ * both): the rewind already fails the round, and the round's park record states
+ * which paths it rewound, so the park IS the durable record of the rewind. The
+ * test is against two clauses this module and `strayReason` themselves print —
+ * not against prose the fixer influenced — and a pass that never rewound has no
+ * such `cap-hit` in its window, because its park happens before any rewind runs.
+ */
+function wholePassRevertUsed(state: WorkState, workstreamId: string): boolean {
+  return passWindow(state).some(
+    (e) =>
+      e.kind === "cap-hit" &&
+      e.cap === "fix-pass-park" &&
+      e.evidence?.includes(WHOLE_PASS_REVERT_EVIDENCE) === true &&
+      e.evidence.includes(`${workstreamId} changed `) === true,
+  );
+}
+
+/** The clause `strayReason` prints when it renders a whole-pass rewind; the
+ *  budget above reads it back out of the park evidence. ONE spelling, here,
+ *  so the two cannot be edited apart. */
+export const WHOLE_PASS_REVERT_EVIDENCE = "the driver rewound this pass's whole delta";
 
 /** A recorded head is usable only as a full SHA — the same rule the develop paths
  *  apply (`isValidBaseSha`), so a truncated or empty field never becomes a rev. */
