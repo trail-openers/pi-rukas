@@ -152,6 +152,77 @@ function assertParksConsistently(
   }
 }
 
+// ---- 3. #2173 AC1 — an exempt derived / append-only path does NOT park
+//
+// Driven through the REAL gate with a REAL registered claim (no `conflictsOverride`
+// seam): the regression was a plan-time park, and a case that injected the
+// conflict list would have passed while the gate still parked on the file. The
+// companion case right below registers the same shape on a source file and must
+// still park, so the pair pins both halves of "exempt means exactly these paths".
+{
+  const dir = tmpDir("claims-gate-exempt-");
+  try {
+    await registerClaimForTest(dir, 803, [
+      "extension/src/work-driver-verify-always-run.ts",
+      "docs/troubleshooting.md",
+    ]);
+    const outcome = await checkAndRegisterClaims(makeCtx(dir, 804), makeState(804, dir), {
+      "task-b": {
+        paths: ["extension/src/work-driver-verify-always-run.ts", "docs/troubleshooting.md"],
+        outOfScope: [],
+      },
+    });
+    assert(
+      outcome.parked === false,
+      "#2173 AC1 two cycles overlapping only on the exempt paths are NOT parked at plan",
+    );
+    assert(
+      lastCapHit(outcome.state) === undefined,
+      "#2173 AC1 and no cap-hit was appended (the cycle proceeds past plan)",
+    );
+    // Our own claim is still registered — the exemption drops the paths from the
+    // CONFLICT comparison, it does not stop a cycle reserving what it edits.
+    const mine = rawClaims(dir).find((c) => c.issue === 804);
+    assert(
+      mine !== undefined && mine.paths.includes("docs/troubleshooting.md"),
+      "#2173 the cycle still registers its own claim (the exemption is not a silent release)",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// ---- 4. #2173 AC2 — a real source overlap still parks, exemption alongside it
+{
+  const dir = tmpDir("claims-gate-source-");
+  try {
+    await registerClaimForTest(dir, 805, [
+      "extension/src/work-driver-verify-always-run.ts",
+      "src/shared.ts",
+    ]);
+    const outcome = await checkAndRegisterClaims(makeCtx(dir, 806), makeState(806, dir), {
+      "task-b": {
+        paths: ["extension/src/work-driver-verify-always-run.ts", "src/shared.ts"],
+        outOfScope: [],
+      },
+    });
+    assertParksConsistently(
+      "#2173 AC2 a shared source file beside an exempt path",
+      outcome,
+      "cross-group-conflict",
+      "claimant805",
+    );
+    assert(
+      (lastCapHit(outcome.state)?.evidence ?? "")
+        .replace(/^claimant\d+ issue #\d+ claims: [^;]+; /, "")
+        .startsWith("overlapping: src/shared.ts"),
+      "#2173 AC2 the OVERLAPPING set names the source file and never the exempt path",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 console.log(
   exit === 0 ? "\nAll claim-gate park-consistency checks passed." : "\nFAILED — see above.",
 );

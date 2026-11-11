@@ -43,6 +43,8 @@ import {
 } from "./work-driver-merge-authority.ts";
 import { HOST_EXHAUSTION_SUFFIX } from "./work-queue-park-reason.ts";
 import { crossGroupAction } from "./work-queue-parks-claims.ts";
+import { lastCapHit } from "./workflow-state-cap-helpers.ts";
+import type { WorkState } from "./workflow-state.ts";
 import { deferredLeftoverAction } from "./work-queue-parks.ts";
 import type { BlockReason } from "./work-queue-scheduler.ts";
 
@@ -129,6 +131,16 @@ export function humanActionFor(
    * rather than re-deriving them here; `undefined` (a queue summary written
    * before #1533, or a caller with no state) keeps the CI-flavoured action. */
   hold?: MergeHeadHold,
+  /** #2173 — the parked cycle's cap evidence, when the caller has the state.
+   * The cross-group action reads the CLAIMANT's holder identity out of it to
+   * say whether that cycle is a sibling on this host or a holder beyond this
+   * machine's pid table; absent (a queue summary written before #2173, or a
+   * group the queue never dispatched) the action keeps the neutral wording. */
+  evidence?: string,
+  /** #2173 — the parked cycle's state, when the caller has it and the evidence
+   * was not handed over directly: the last `cross-group-conflict` cap-hit's own
+   * evidence field is read from it, the same reader `explainCap` uses. */
+  state?: WorkState,
 ): string {
   // #1101 — a group the queue never dispatched, because a dependency settled
   // non-merged, an ordering cycle has no valid order, or a wait outlasted its
@@ -163,7 +175,12 @@ export function humanActionFor(
   if (/^cap cross-group-conflict\b.*in-flight sibling\(s\)/.test(reason)) {
     return queueWaitAction(primary, "cross-group-conflict");
   }
-  if (/cross-group-conflict/.test(reason)) return crossGroupAction(reason, primary);
+  if (/cross-group-conflict/.test(reason))
+    return crossGroupAction(
+      reason,
+      primary,
+      evidence ?? (state ? lastCapHit(state, "cross-group-conflict")?.evidence : undefined),
+    );
   const waitCap = reason.match(new RegExp(`^cap (${QUEUE_WAIT_CAPS.join("|")})\\b`));
   if (waitCap) return queueWaitAction(primary, waitCap[1] as QueueWaitCap);
   // #753 — a dirty-leftover park (deferred worktree creation refused):

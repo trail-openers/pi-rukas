@@ -159,6 +159,8 @@ function mkFakeForge(opts: {
 
 {
   const ev = makeHandoffEmittedEvent({
+   // #2173 (C4) — required by the builder; an empty pipelineState carries no closed-issue marker, so no decline.
+   state: { pipelineState: {} } as never,
     at: 1,
     commentUrl: "https://github.com/acme/widget/issues/626#issuecomment-1",
     labelApplied: true,
@@ -170,6 +172,8 @@ function mkFakeForge(opts: {
   assert(ev.labelApplied === true, "labelApplied: true is carried through verbatim");
 
   const evNoDelivery = makeHandoffEmittedEvent({
+   // #2173 (C4) — required by the builder; an empty pipelineState carries no closed-issue marker, so no decline.
+   state: { pipelineState: {} } as never,
     at: 1,
     commentUrl: undefined,
     labelApplied: false,
@@ -186,6 +190,8 @@ function mkFakeForge(opts: {
   );
 
   const evFallback = makeHandoffEmittedEvent({
+   // #2173 (C4) — required by the builder; an empty pipelineState carries no closed-issue marker, so no decline.
+   state: { pipelineState: {} } as never,
     at: 1,
     commentUrl: "https://github.com/acme/widget/issues/626#issuecomment-2",
     labelApplied: true,

@@ -21,8 +21,9 @@
  * evidence, the same shape the conflict park two lines above already used.
  */
 
-import { formatIdentity, selfIdentity } from "./process-liveness.ts";
+import { formatIdentity, judgeOwner, selfIdentity } from "./process-liveness.ts";
 import { trace } from "./trace.ts";
+import { claimantOnThisHost } from "./work-driver-explain-claims.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import { claimsFilePath, readRawClaims, writeClaims } from "./work-driver-path-claims-file.ts";
 import {
@@ -32,6 +33,7 @@ import {
   withClaimsLockBestEffort,
 } from "./work-driver-path-claims-lock.ts";
 import { type PathClaimEntry, claimDeletionReason } from "./work-driver-path-claims-staleness.ts";
+import { withoutSharedNonExclusivePaths } from "./work-driver-shared-paths.ts";
 import { checkCrossGroupClaimsSync, readClaims } from "./work-driver-path-claims.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
@@ -55,6 +57,40 @@ function describeClaimHolder(entry: PathClaimEntry): string {
         pid: entry.pid,
         startTime: entry.startTime,
       });
+}
+
+/**
+ * #2173 — where the holder lives, in the one clause every claimant-naming
+ * operator surface repeats.
+ *
+ * The raw identity above is machine-readable but says nothing to a human, and
+ * the sentence that read it used to assert "another pid namespace or another
+ * host" whenever four fields were present — including for the common case, a
+ * sibling cycle of this same clone on this same host. The verdict is
+ * `judgeOwner`'s, the same one `claimStaleReason` uses to decide whether the
+ * claim counts, so the evidence and the liveness rule cannot disagree: a
+ * holder it can call `alive` or `dead` is on this host and its pid is checkable
+ * here; only `foreign` is beyond this machine's pid table.
+ *
+ * Returns the empty string for a legacy entry (no identity to judge), which is
+ * how the pre-#1871 evidence stays byte-for-byte what it was.
+ */
+function describeClaimantLocation(entry: PathClaimEntry): string {
+  if (entry.host === undefined || entry.pidns === undefined || entry.startTime === undefined) {
+    return "";
+  }
+  const verdict = judgeOwner(
+    {
+      host: entry.host,
+      pidns: entry.pidns,
+      pid: entry.pid,
+      startTime: entry.startTime,
+    },
+    selfIdentity(),
+  );
+  return verdict === "foreign"
+    ? "; holder lives in another pid namespace or on another host — nothing to check on this host"
+    : `; holder is a sibling cycle on this host (issue #${entry.issue}, still running) — its pid is checkable here`;
 }
 
 /**
@@ -139,7 +175,15 @@ export async function checkAndRegisterClaims(
           "a conflicting path claim could not be read (the conflict list's first entry was absent), so no claim could be checked or registered — the cycle cannot develop paths it cannot reserve",
       });
     }
-    const overlap = allPaths.map(normaliseDeclaredPath).filter((p) => sibling.paths.includes(p));
+    // The overlapping set is what the operator reads as the reason, so it is
+    // computed from the SAME comparison that produced the conflict: our declared
+    // paths minus the exempt ones, intersected with the sibling's claim minus
+    // its exempt ones. Reading it off the raw lists would name an exempt path as
+    // the collision in a park that was actually caused by a source file — the
+    // operator clears the wrong thing and re-runs into the same park.
+    const overlap = withoutSharedNonExclusivePaths(allPaths)
+      .map(normaliseDeclaredPath)
+      .filter((p) => withoutSharedNonExclusivePaths(sibling.paths).includes(p));
     return parkClaimsGate(state, {
       // `claimant<N>` is the machine-readable carrier humanActionFor and
       // explainCap read — prose is not a stable interface.
@@ -151,7 +195,8 @@ export async function checkAndRegisterClaims(
       evidence:
         `claimant${sibling.issue} issue #${sibling.issue} claims: ${sibling.paths.join(", ")}; ` +
         `overlapping: ${overlap.join(", ")}; ` +
-        `holder: ${describeClaimHolder(sibling)}; claim file: ${claimsFilePath(ctx.repoRoot)}`,
+        `holder: ${describeClaimHolder(sibling)}${describeClaimantLocation(sibling)}; ` +
+        `claim file: ${claimsFilePath(ctx.repoRoot)}`,
     });
   }
   // No conflicts — register so siblings see our claim.

@@ -15,7 +15,7 @@
  * the directory.
  */
 
-import { NO_ID_FIELD, type OwnerIdentity, selfIdentity } from "./process-liveness.ts";
+import { NO_ID_FIELD, type OwnerIdentity, judgeOwner, selfIdentity } from "./process-liveness.ts";
 import { lastCapHit } from "./workflow-state-cap.ts";
 import type { WorkState } from "./workflow-state.ts";
 
@@ -60,18 +60,67 @@ function hasFullIdentity(ev: string, self: OwnerIdentity): boolean {
   return true;
 }
 
+/**
+ * Is the holder this evidence names a cycle on THIS machine — the same host and
+ * the same pid namespace as us, by the registry's own liveness verdict?
+ *
+ * `judgeOwner` is the predicate `claimStaleReason` uses to decide whether the
+ * claim counts at all, so reusing it here is what keeps the WORDING and the
+ * staleness rule answering the same question: a holder it calls `alive` or
+ * `dead` is one this host can look at, and only `foreign` (another host, or a
+ * pid namespace we cannot probe) lives beyond this machine's pid table.
+ */
+export function claimantOnThisHost(ev: string, self: OwnerIdentity = selfIdentity()): boolean {
+  const m = /holder: (\S+) (\d+|-) (\d+) (\d+|-)/.exec(ev);
+  if (!m) return false;
+  const holder: OwnerIdentity = {
+    host: m[1] ?? "",
+    pidns: m[2] ?? NO_ID_FIELD,
+    pid: Number(m[3]),
+    startTime: m[4] ?? NO_ID_FIELD,
+  };
+  return judgeOwner(holder, self) !== "foreign";
+}
+
+/**
+ * The operator sentence for a claimant whose identity is complete enough to
+ * judge, whichever way the judgement goes (#2173).
+ *
+ * Two shapes, split by `judgeOwner` rather than by how many fields the evidence
+ * carried: a same-host sibling is named as a sibling on this host (with its
+ * issue number, so `/work-status` and `.pi/work-state/<N>.json` are the next
+ * thing the operator opens), and a holder in another namespace or on another
+ * host keeps the "nothing to check on this host" sentence with its two age
+ * bounds. The other-namespace wording stays for the case it describes: on a
+ * host with no `/proc` the sentinels make two namespaces MATCH, so a genuine
+ * foreign container is still told apart by its host name.
+ */
+function sameHostClaimant(ev: string, self: OwnerIdentity, siblingIssue: string): string {
+  if (claimantOnThisHost(ev, self)) {
+    return `this cycle's declared paths overlap with issue #${siblingIssue}'s path claim — two cycles cannot edit the same files in parallel. The overlapping paths are in the event log evidence field. The holder is a sibling cycle on this host (issue #${siblingIssue}, still running): same hostname, same pid namespace, so its pid is checkable here — look at .pi/work-state/${siblingIssue}.json and /work-status #${siblingIssue} before anything else. A claim is honoured only while that cycle is still running: if its pid has exited, or its state file reads merged/handoff/aborted, the claim is stale and the next /work prunes it. Only when #${siblingIssue} is genuinely still running is this a real conflict; then re-plan with disjoint file sets.`;
+  }
+  return `this cycle's declared paths overlap with issue #${siblingIssue}'s path claim — two cycles cannot edit the same files in parallel. The overlapping paths are in the event log evidence field. The holder's identity is a full one (host, pid namespace, pid, start time), so its process lives in ANOTHER pid namespace or on another host: this machine's pid table cannot confirm or clear it, and there is nothing to check on this host. The claim stops counting for a cycle on this host once it is older than the claim stale bound (PI_ENSEMBLE_CLAIM_STALE_MS, 1 h by default) and the next writer deletes it after 24 × that. To clear it now, follow "A slot or a path claim is held by another container" in docs/troubleshooting.md and remove that one entry from the claims file the evidence names. Only when #${siblingIssue} is genuinely still running on its own host is this a real conflict; then re-plan with disjoint file sets.`;
+}
+
 /** Why two cycles' declared paths collided, and when the claim is stale. */
 export function explainCrossGroupConflict(state: WorkState): string {
   const hit = lastCapHit(state, "cross-group-conflict");
   const ev = hit?.evidence ?? "";
   const siblingMatch = ev.match(/claimant(\d+)/) ?? ev.match(/issue #(\d+)/);
-  const siblingIssue = siblingMatch ? siblingMatch[1] : "(see evidence)";
+  const siblingIssue = siblingMatch?.[1] ?? "(see evidence)";
   // #1871 F8 — a full identity means the holder is in another pid namespace (or
   // another host), so the operator CANNOT check its pid here and the age rules
   // are the only thing that will clear it. The sentence says so, names both
   // bounds, and points at the troubleshooting entry instead.
   if (hasFullIdentity(ev, selfIdentity())) {
-    return `this cycle's declared paths overlap with issue #${siblingIssue}'s path claim — two cycles cannot edit the same files in parallel. The overlapping paths are in the event log evidence field. The holder's identity is a full one (host, pid namespace, pid, start time), so its process lives in ANOTHER pid namespace or on another host: this machine's pid table cannot confirm or clear it, and there is nothing to check on this host. The claim stops counting for a cycle on this host once it is older than the claim stale bound (PI_ENSEMBLE_CLAIM_STALE_MS, 1 h by default) and the next writer deletes it after 24 × that. To clear it now, follow "A slot or a path claim is held by another container" in docs/troubleshooting.md and remove that one entry from the claims file the evidence names. Only when #${siblingIssue} is genuinely still running on its own host is this a real conflict; then re-plan with disjoint file sets.`;
+    // #2173 — "another pid namespace or another host" is only true when it is.
+    // `hasFullIdentity` asks whether the evidence CARRIES four fields; this
+    // asks whether they are OURS, and `judgeOwner` is the verdict the registry
+    // itself is judged by, so the sentence and the park cannot disagree. A
+    // sibling cycle on this host was being reported as living beyond this
+    // machine, which sent the operator looking in a namespace that did not
+    // exist instead of at the sibling `/work-status` already names.
+    return sameHostClaimant(ev, selfIdentity(), siblingIssue);
   }
   // #1454 — the old sentence said "active claim" and told the operator to
   // "coordinate with the other cycle's owner". In every park we measured

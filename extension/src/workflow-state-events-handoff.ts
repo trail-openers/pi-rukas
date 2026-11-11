@@ -43,8 +43,17 @@ export type HandoffEmittedEvent = {
    * reads only `labelApplied` cannot tell the two apart. Set on a host handoff
    * and on nothing else; the covered caps' `delivery: "host"` remains the
    * channel marker.
+   *
+   * #2173 (C4) — `"issue-closed"` is the other decline: a person CLOSED the
+   * issue (#1472), so applying the attention label would be noise. Written by
+   * `makeHandoffEmittedEvent` from the cycle's `handoffLabelSkipped` marker, so
+   * the decline is recorded by the producer rather than inferred by each
+   * renderer from `labelApplied: true` alongside no apply. Every label line is
+   * derived from this field and the per-target fields together, never from the
+   * aggregate alone — which is what let one handoff print both "label applied:
+   * NOT applied" and "the label was applied".
    */
-  labelSkipped?: "host-channel";
+  labelSkipped?: "host-channel" | "issue-closed";
   /**
    * Set when a freshly re-resolved park matched the one a previous cycle
    * already reported (same cap, same reason, same issue text): no new comment

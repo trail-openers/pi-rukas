@@ -305,6 +305,8 @@ function untracked(n: number): string[] {
       pipelineState: { ...base.pipelineState, status: "handoff", currentStep: "develop" },
       eventLog: [
         makeHandoffEmittedEvent({
+          // #2173 (C4) — required by the builder; an empty pipelineState carries no closed-issue marker, so no decline.
+  state: { pipelineState: {} } as never,
           at: 1,
           commentUrl: "https://x/c/1",
           labelApplied: true,

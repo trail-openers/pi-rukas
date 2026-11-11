@@ -34,6 +34,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { groupIssues } from "../src/work-driver-grouping.ts";
+import { predictedPathsCollide } from "../src/work-queue-overlap.ts";
 import {
   type IssueGroup,
   groupPathsOverlap,
@@ -478,6 +479,74 @@ function mkState(issue: number): WorkState {
 // claimed and then sits running for the whole of its cycle, so every "started
 // after the claim" assertion in the pre-#1101 suite was satisfied by two cycles
 // editing the same files at the same time — an ordering with no safety content.
+
+// ============ 11. #2173 — derived / append-only paths do not serialise the queue
+//
+// Nearly every cycle declares the generated ALWAYS_RUN list and many append an
+// entry to `docs/troubleshooting.md`. The reactive claims gate stopped parking on
+// them in the same change that exempted them HERE: these two predicates are the
+// other half of what serialises a cycle, and an exemption that lived only on the
+// claims side would leave the queue holding a group back for a collision the
+// plan-time gate no longer sees. Basename matching made that worse than a literal
+// overlap — `troubleshooting.md` in one body matched the full path in another.
+{
+  const ALWAYS_RUN_PATH = "extension/src/work-driver-verify-always-run.ts";
+  const TROUBLESHOOTING = "docs/troubleshooting.md";
+  assert(
+    groupPathsOverlap(g("a", 1, [ALWAYS_RUN_PATH]), g("b", 2, [ALWAYS_RUN_PATH])) === false,
+    "#2173 two groups whose only shared path is the generated ALWAYS_RUN list do NOT overlap",
+  );
+  assert(
+    groupPathsOverlap(g("a", 1, [TROUBLESHOOTING]), g("b", 2, [TROUBLESHOOTING])) === false,
+    "#2173 two groups whose only shared path is docs/troubleshooting.md do NOT overlap",
+  );
+  assert(
+    groupPathsOverlap(g("a", 1, [ALWAYS_RUN_PATH, TROUBLESHOOTING]), g("b", 2, [TROUBLESHOOTING])) ===
+      false,
+    "#2173 a pair overlapping only on exempt paths stays parallel however many of them they share",
+  );
+  // The basename arm was the sharper half of the defect: a prose mention of the
+  // file name collided with the full path in the sibling group.
+  assert(
+    groupPathsOverlap(g("a", 1, ["troubleshooting.md"]), g("b", 2, [TROUBLESHOOTING])) === false,
+    "#2173 a bare basename mention of an exempt file does not collide with its full path",
+  );
+  assert(
+    predictedPathsCollide(["verify-always-run.ts"], [ALWAYS_RUN_PATH]) === false,
+    "#2173 predictedPathsCollide exempts the generated list by basename too",
+  );
+  // A group whose only prediction is an exempt path predicts NOTHING, which is
+  // the empty-vs-anything contract rather than a serialisation of the queue.
+  assert(
+    predictedPathsCollide([TROUBLESHOOTING], ["src/foo.ts"]) === false,
+    "#2173 an exempt-only prediction is 'no prediction', not a hold on the sibling",
+  );
+  // AC2 — the exemption must not weaken a real overlap in any direction.
+  assert(
+    groupPathsOverlap(g("a", 1, [ALWAYS_RUN_PATH, "src/foo.ts"]), g("b", 2, ["src/foo.ts"])) ===
+      true,
+    "#2173 AC2 a shared SOURCE file still overlaps when the exempt list rides along",
+  );
+  assert(
+    predictedPathsCollide([ALWAYS_RUN_PATH, TROUBLESHOOTING, "src/foo.ts"], ["src/foo.ts"]) ===
+      true,
+    "#2173 AC2 the predicted predicate still collides on the source path it shares",
+  );
+  assert(
+    groupPathsOverlap(
+      g("a", 1, ["src/troubleshooting.md"]),
+      g("b", 2, ["src/troubleshooting.md"]),
+    ) === true,
+    "#2173 an unrelated file that merely shares the name is NOT exempt (the exemption is the exact repo path)",
+  );
+  assert(
+    overlappingSiblingIds(
+      g("a", 1, [ALWAYS_RUN_PATH]),
+      [g("a", 1, [ALWAYS_RUN_PATH]), g("b", 2, [ALWAYS_RUN_PATH])],
+    ).join(",") === "",
+    "#2173 overlappingSiblingIds reports no sibling for the exempt pair alone",
+  );
+}
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);

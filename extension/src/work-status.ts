@@ -9,6 +9,7 @@ import { MAX_CI_RETRIES, MAX_REVIEW_ROUNDS, STEP_ORDINAL } from "./work-driver-c
 import { formatCycleTotal } from "./work-driver-cycle-total.ts";
 import { explainCap } from "./work-driver-explain.ts";
 import { terminalPathOf } from "./work-driver-handoff-message.ts";
+import { handoffLabelVerdict } from "./work-driver-handoff-post.ts";
 import { genericRecoveryLines } from "./work-driver-handoff-recovery-tree.ts";
 import { unreadableSnapshotLines } from "./work-driver-handoff-snapshot.ts";
 import { describeBranchState } from "./work-driver-handoff-view.ts";
@@ -223,10 +224,20 @@ export function renderTerminalStatus(state: WorkState, repoRoot: string): string
     const te = handoffEvt;
     // #798 — per-target fields present → label landed on (both) issue+PR;
     // the single-boolean pre-#798 shape renders as before.
+    //
+    // #2173 (C4) — the verdict is the shared projection the in-chat handoff
+    // reads, not a re-derivation from `te.labelApplied` and the per-target
+    // fields with this surface's own precedence. The `(partial failure)` tag
+    // used to hang off the aggregate while the per-target words hung off the
+    // fields, so one handoff could call the same label both applied and a
+    // partial failure across the two surfaces. One projection, one verdict.
+    const verdict = handoffLabelVerdict(te);
     const dual = te.issueLabelApplied !== undefined || te.prLabelApplied !== undefined;
-    const labelLine = dual
-      ? `  label:   needs-human-attention${te.issueLabelApplied ? ` on issue #${issue}` : ` NOT verified on issue #${issue}`}${te.prLabelApplied !== undefined ? ` / ${te.prLabelApplied ? "on PR" : " NOT verified on PR"} #${ps.prNumber ?? "?"}` : ""}${te.labelApplied ? "" : " (partial failure)"}`
-      : `  label:   ${te.labelApplied ? "needs-human-attention applied" : "WARNING: NOT applied"}`;
+    const labelLine = verdict.declined
+      ? `  label:   not applied by design — ${verdict.decline === "host-channel" ? "the host channel owns the attention label" : `issue #${issue} was closed`}`
+      : dual
+        ? `  label:   needs-human-attention${verdict.issue ? ` on issue #${issue}` : ` NOT verified on issue #${issue}`}${verdict.pr !== undefined ? ` / ${verdict.pr ? "on PR" : " NOT verified on PR"} #${ps.prNumber ?? "?"}` : ""}${verdict.all ? "" : " (partial failure)"}`
+        : `  label:   ${verdict.issue ? "needs-human-attention applied" : "WARNING: NOT applied"}`;
     lines.push(
       "",
       "GitHub handoff:",

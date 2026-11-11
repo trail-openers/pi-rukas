@@ -23,6 +23,7 @@ import type { Forge } from "./forge.ts";
 import { trace } from "./trace.ts";
 import { parseHandoffCommentUrl } from "./work-driver-handoff-deliver.ts";
 import { readError } from "./work-driver-handoff-snapshot.ts";
+import type { HandoffEmittedEvent } from "./workflow-state-events-handoff.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
 
@@ -193,6 +194,17 @@ export function makeHandoffEmittedEvent(opts: {
    * posted nothing, and the event must say so without carrying the term.
    */
   bodyRefusal?: string;
+  /**
+   * #1472 / #2173 (C4) — the cycle's state, REQUIRED. This handoff DECLINES
+   * `needs-human-attention` when a person closed the issue, and every producer
+   * states its verdict — the closed-issue decline included — rather than leaving
+   * the label truth to be inferred from `labelApplied`, the one field that must
+   * stay a boolean for the pre-#798 readers. `runHandoff` passes the state it
+   * already holds; this builder reads the marker off it, so there is one
+   * spelling of "declined" in the producer and one in the reader
+   * (`handoffLabelVerdict`), and no renderer re-derives it.
+   */
+  state: Pick<WorkState, "pipelineState">;
   consolidated: boolean;
   consolidatedBranch?: string;
   consolidatedWorkstreams?: string[];
@@ -213,8 +225,10 @@ export function makeHandoffEmittedEvent(opts: {
   /**
    * #1696 — the label was DECLINED by the host channel's contract rather than
    * failing to apply. Set only on a host handoff (see HandoffEmittedEvent).
+   * #2173 also accepts `"issue-closed"`, which this builder derives from the
+   * state it is handed rather than from a caller's memory of why it called.
    */
-  labelSkipped?: "host-channel";
+  labelSkipped?: "host-channel" | "issue-closed";
   /** #798 — explicit target object type (where the comment was posted). */
   targetType?: "issue" | "pr";
   /** #798 — the number of the target object. */
@@ -233,7 +247,7 @@ export function makeHandoffEmittedEvent(opts: {
   repeat?: { count: number; firstAt: number; marker: string };
 }): Extract<WorkEvent, { kind: "handoff-emitted" }> {
   const { at, commentUrl, labelApplied, handoffBodyPath, delivery } = opts;
-  const ev: Extract<WorkEvent, { kind: "handoff-emitted" }> = {
+  const ev: HandoffEmittedEvent = {
     kind: "handoff-emitted",
     at,
     commentUrl,
@@ -244,6 +258,12 @@ export function makeHandoffEmittedEvent(opts: {
     // is this string, so it is not one of the fields that may be conditionally
     // absent.
     body: opts.body,
+    // #2173 (C4) — the closed-issue decline is recorded on the event itself, so
+    // a reader never has to guess it from `labelApplied` being true when no
+    // label was deliberately applied.
+    ...(declinesAttentionLabel(opts.state.pipelineState)
+      ? { labelSkipped: "issue-closed" as const }
+      : {}),
   };
   if (opts.bodyRefusal !== undefined) ev.bodyRefusal = opts.bodyRefusal;
   if (delivery) ev.delivery = delivery;
@@ -300,6 +320,74 @@ export function declinedLabelSeed(
     labelApplied: true,
     issueLabelApplied: true,
     prLabelApplied: prNumber ? true : undefined,
+  };
+}
+
+/**
+ * #2173 (C4) — the ONE reader of a handoff-emitted event's label verdict.
+ *
+ * Three surfaces print the label — the in-chat banner, the in-chat label block,
+ * and `/work-status` — and each used to consult `labelApplied` plus the
+ * per-target fields with its own precedence. That is how one handoff printed
+ * `label applied: [FAILED] NOT applied` and, further down, `the label was
+ * applied`: the banner asked the aggregate, the comment line asked nothing at
+ * all, and the aggregate is the field a DELIBERATE decline writes `true` into
+ * (`declinedLabelSeed`) while a partial verify writes `false`.
+ *
+ * The rule the projection encodes is the one every producer already follows:
+ * the per-target fields are the evidence, and `labelApplied` is their
+ * conjunction — so per-target knowledge wins, and the aggregate is read only
+ * for an event that has no per-target fields at all (the pre-#798 shape, and
+ * every lean path, which applies no label). A decline therefore reads as a
+ * decline on all three surfaces, a partial verify as a partial verify, and no
+ * renderer can print both an "applied" and a "NOT applied" claim for one target.
+ */
+export interface HandoffLabelVerdict {
+  /** The label is DECLINED by contract rather than unapplied: the host channel
+   * (#1696) or an issue a human closed (#1472). Nothing asks the operator to
+   * apply it, and nothing calls it a failure. */
+  declined: boolean;
+  /** Why it was declined, for the surface that names the reason. */
+  decline: "host-channel" | "issue-closed" | undefined;
+  /** The issue is the entry-gate target: it always has a verdict. */
+  issue: boolean;
+  /** The PR's verdict, or absent when the cycle opened no PR. */
+  pr: boolean | undefined;
+  /** Everything the handoff was owed landed. */
+  all: boolean;
+  /** A comment exists at `commentUrl`. */
+  commentPosted: boolean;
+}
+
+export function handoffLabelVerdict(ev: HandoffEmittedEvent): HandoffLabelVerdict {
+  const hostDeclined = ev.delivery === "host" || ev.labelSkipped === "host-channel";
+  // #1472's closed-issue decline arrives as the marker the producer wrote
+  // (#2173). A pre-#2173 event on disk carries no marker, so the fallback keeps
+  // the old reading: `declinedLabelSeed` settles EVERY target at once, and that
+  // conjunction is what distinguishes a decline from a genuine partial verify,
+  // which always leaves at least one target false. A dual-ok event that also
+  // carries the marker renders as the dual ok it is rather than as a decline.
+  const closedDeclined =
+    ev.labelSkipped === "issue-closed" ||
+    (ev.labelApplied === true &&
+      ev.issueLabelApplied === true &&
+      (ev.prLabelApplied === undefined || ev.prLabelApplied === true));
+  const declined = hostDeclined || closedDeclined;
+  const decline: HandoffLabelVerdict["decline"] = hostDeclined
+    ? "host-channel"
+    : closedDeclined
+      ? "issue-closed"
+      : undefined;
+  const perTarget = ev.issueLabelApplied !== undefined || ev.prLabelApplied !== undefined;
+  const issue = perTarget ? ev.issueLabelApplied === true : ev.labelApplied;
+  const pr = perTarget ? ev.prLabelApplied : undefined;
+  return {
+    declined,
+    decline,
+    issue,
+    pr,
+    all: pr === undefined ? issue : issue && pr,
+    commentPosted: ev.commentUrl !== undefined,
   };
 }
 

@@ -399,6 +399,9 @@ async function handoff(ctx: CycleContext, stateIn: WorkState, now: number): Prom
   }
   const emitted = makeHandoffEmittedEvent({
     at: Date.now(),
+    // #2173 (C4) — the state this handoff is recorded against: the builder
+    // reads the #1472 closed-issue decline marker off it onto the event.
+    state: next,
     commentUrl,
     labelApplied,
     handoffBodyPath,

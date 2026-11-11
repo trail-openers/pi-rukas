@@ -19,6 +19,7 @@ import { commitPrRootFactLines } from "./work-driver-commit-inspect.ts";
 import { MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
 import { explainCap } from "./work-driver-explain.ts";
 import { fanoutVerdictLines } from "./work-driver-handoff-fanout.ts";
+import { handoffLabelVerdict } from "./work-driver-handoff-post.ts";
 import { openPointsChat } from "./work-driver-handoff-open-points.ts";
 import { recoveryCommandsChat } from "./work-driver-handoff-recovery.chat.ts";
 import { unreadableSnapshotLines } from "./work-driver-handoff-snapshot.ts";
@@ -116,17 +117,26 @@ export function renderHandoffUserMessage(
   const verdict = causeForCycle(state);
   const snap = ps.handoffSnapshot;
   const commentUrl = handoffEvt?.kind === "handoff-emitted" ? handoffEvt.commentUrl : undefined;
-  const labelApplied = handoffEvt?.kind === "handoff-emitted" ? handoffEvt.labelApplied : false;
+  // #2173 (C4) — every label and comment line below is derived from ONE
+  // projection of the handoff-emitted event, not from `labelApplied` read
+  // directly. The aggregate is the field a deliberate decline writes `true`
+  // into and a partial verify writes `false`, so a banner that asked it while a
+  // lower section asked the per-target fields could — and did — print both
+  // "label applied: [FAILED] NOT applied" and "the label was applied" in one
+  // message. One reader, so the surfaces cannot disagree.
+  const label =
+    handoffEvt?.kind === "handoff-emitted"
+      ? handoffLabelVerdict(handoffEvt)
+      : { declined: false, decline: undefined, issue: false, pr: undefined, all: false };
+  const labelApplied = label.all;
   // #1327 — the host owns the channel: an unposted comment is by design, not a failure.
   const hostOwned = handoffEvt?.kind === "handoff-emitted" && handoffEvt.delivery === "host";
   // #798 — per-target label state (option a: the label lands on both the
   // issue and the PR when a PR exists). Pre-#798 events carry the single
   // `labelApplied` only; `targetType`/`targetNumber` name where the comment
   // (and the label, pre-#798) landed without a URL parse.
-  const issueLabelApplied =
-    handoffEvt?.kind === "handoff-emitted" ? handoffEvt.issueLabelApplied : undefined;
-  const prLabelApplied =
-    handoffEvt?.kind === "handoff-emitted" ? handoffEvt.prLabelApplied : undefined;
+  const issueLabelApplied = label.issue;
+  const prLabelApplied = label.pr;
   const targetType = handoffEvt?.kind === "handoff-emitted" ? handoffEvt.targetType : undefined;
   const targetNumber = handoffEvt?.kind === "handoff-emitted" ? handoffEvt.targetNumber : undefined;
   const handoffBodyPath =
@@ -172,7 +182,10 @@ export function renderHandoffUserMessage(
   // field. The banner fires only when BOTH fields are missing (true total
   // failure); a partial delivery (one field ok, one lost) does NOT fire the
   // banner — the operator can see which field failed from the section below.
-  const totalFailure = !commentUrl && !labelApplied && !hostOwned;
+  // #2173 (C4) — the label the banner asks is the projection's conjunction, so a
+  // declined handoff (host channel, or a closed issue) can never fire it: there
+  // is nothing owed, and nothing to call a failure.
+  const totalFailure = !commentUrl && !labelApplied && !hostOwned && !label.declined;
   if (totalFailure) {
     lines.push(
       `⚠ pi-rukas /work for issue #${issue} — HANDOFF DISPATCH INCOMPLETE`,
@@ -297,10 +310,25 @@ export function renderHandoffUserMessage(
     // Label landed, comment did not: not the banner's total failure, but the
     // comment is what tells the human WHY — say it is missing rather than
     // print nothing (#1219).
+    //
+    // #2173 (C4) — the parenthetical used to assert "the label was applied"
+    // unconditionally. It is reached whenever no comment posted and the banner
+    // did not fire, which includes a handoff whose label did NOT land, and that
+    // is the half of the contradiction the field-derived banner disagreed with.
+    // It now states the label's actual verdict, from the same projection.
     lines.push(
       "",
-      "GitHub handoff comment NOT posted (the label was applied). Post it manually:",
+      label.declined
+        ? `GitHub handoff comment NOT posted; no attention label is owed here (${label.decline === "host-channel" ? "the host channel owns the label" : "this issue was closed"}). Post the comment manually:`
+        : labelApplied
+          ? `GitHub handoff comment NOT posted (the label was applied). Post it manually:`
+          : `GitHub handoff comment NOT posted and the attention label is NOT applied either. Post both manually:`,
       `  gh ${ps.prNumber ? "pr" : "issue"} comment ${ps.prNumber ?? issue} --body-file ${handoffBodyPath}`,
+      ...(labelApplied
+        ? []
+        : [
+            `  gh ${ps.prNumber ? "pr" : "issue"} edit ${ps.prNumber ?? issue} --add-label needs-human-attention`,
+          ]),
     );
   }
   if (hostOwned) {
@@ -313,8 +341,20 @@ export function renderHandoffUserMessage(
     // #798 — state WHERE the artefacts landed explicitly. The label is on
     // both objects (issue + PR) when a PR exists; the issue label is what the
     // entry gate reads, so name it when the state is known.
-    const labelPart =
-      prLabelApplied !== undefined || issueLabelApplied !== undefined
+    //
+    // #2173 (C4) — every line here comes from the per-target verdicts, and the
+    // aggregate word above them is their conjunction rather than the event's
+    // `labelApplied` field, so a dual-ok, an issue-only and a PR-only handoff
+    // each print ONE verdict and never both branches.
+    //
+    // #2173 (C4) — `prLabelApplied` is undefined for a cycle that opened no PR,
+    // so the per-target block is used exactly when the event carries per-target
+    // knowledge; a legacy event (or a lean one) keeps the single-target line.
+    const labelPart = label.declined
+      ? [
+          `  label: not applied by design — ${label.decline === "host-channel" ? "the host channel owns the attention label (PI_ENSEMBLE_HANDOFF_CHANNEL=host)" : `issue #${issue} was closed, so no attention label is owed`}`,
+        ]
+      : prLabelApplied !== undefined || issueLabelApplied !== undefined
         ? [
             `  label ${labelApplied ? "applied" : "NOT fully applied"}:`,
             `    issue #${issue}: ${issueLabelApplied === true ? "applied" : "NOT verified"}`,
