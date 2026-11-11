@@ -47,7 +47,11 @@ import {
   resolveMergeAuthority,
 } from "./work-driver-merge-authority.ts";
 import { verifyMergeHead } from "./work-driver-merged-head.ts";
-import { heldForMissingApproval, mergeAuthorHold } from "./work-driver-merged-hold.ts";
+import {
+  askAuthorGate,
+  heldForMissingApproval,
+  mergeAuthorHold,
+} from "./work-driver-merged-hold.ts";
 import { hasGitDir } from "./work-driver-merged-repo.ts";
 import { judgePolicy } from "./work-driver-policy.ts";
 import type { DoctrineDoc } from "./work-driver-policy.ts";
@@ -150,9 +154,9 @@ export async function runAuthorityGate(args: AuthorityGateArgs): Promise<Authori
   // so the login judged and the commit pinned come from one read of the forge. Ahead
   // of the protected and gate-file reads: a PR this cycle may not land at all should
   // not spend a fetch and a diff to be told so.
-  const authorDecision = await args.authorGate(evidence);
+  const authorDecision = await askAuthorGate(args.authorGate, evidence);
   if (!authorDecision.ok) {
-    const reason = authorDecision.reason ?? "the author gate refused";
+    const reason = authorDecision.reason;
     trace(`work-driver: merge held — merge-author gate: ${reason.slice(0, 200)}`);
     return {
       ok: false,

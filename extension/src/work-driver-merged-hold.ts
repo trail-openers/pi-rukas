@@ -15,6 +15,7 @@
  * refactor into plain keys would turn silent absences into asserted ones.
  */
 
+import { errText } from "./protected-paths-text.ts";
 import type { MergeAuthority } from "./work-driver-merge-authority.ts";
 import type { MergeEvidence } from "./work-driver-merge-evidence.ts";
 import type { HeadCheck } from "./work-driver-merged-head.ts";
@@ -110,4 +111,37 @@ export function mergeAuthorHold(state: WorkState, reason: string): WorkState {
       },
     },
   };
+}
+
+/** What the author gate answers: a pass, or a refusal carrying its own words. */
+export type AuthorGateDecision = { ok: true } | { ok: false; reason?: string };
+
+/**
+ * Ask the author gate, and turn an executor rejection into the same park as a
+ * refusal.
+ *
+ * The gate reads git and the forge through the caller's executor, and a read that
+ * rejects (a wedged `gh`, an executor that throws rather than answering) is not a
+ * signal to let the merge run — the one act it guards is irreversible. It is also
+ * not a refusal the gate rendered, so it parks with the executor's own error text
+ * as the reason and reaches the caller through the same `mergeAuthorHold` a refusal
+ * uses. Without the catch the rejection escaped `runMerged` and the cycle parked
+ * with no `mergeHold` behind it, the shape neither the sweep nor the handoff can
+ * explain. A refusal that carried no reason of its own gets a generic one, so a
+ * hold is never rendered with an empty explanation.
+ */
+export async function askAuthorGate(
+  authorGate: (
+    evidence: { author?: string; authorError?: string } | undefined,
+  ) => Promise<AuthorGateDecision>,
+  evidence: { author?: string; authorError?: string } | undefined,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  try {
+    const decision = await authorGate(evidence);
+    return decision.ok
+      ? { ok: true }
+      : { ok: false, reason: decision.reason ?? "the author gate refused" };
+  } catch (err) {
+    return { ok: false, reason: `the author gate could not run: ${errText(err)}` };
+  }
 }
