@@ -20,8 +20,11 @@
  *      renders a truncation notice INSIDE the code span, where it is content, not
  *      a marker the model could read as closing the section;
  *   3. the fence itself is rendered by `fencedIssueBody`, the reviewer path's
- *      renderer — backslash escapes so a fence run inside the issue cannot close
- *      the block early and speak as the prompt.
+ *      renderer — every backtick or tilde run of 3+ in the body is replaced by a
+ *      same-width look-alike (`fenceText`), so no run inside the issue can close
+ *      the block the prompt opened and speak as the prompt's own prose. Tildes are
+ *      not an extra: the fence is a backtick one, and CommonMark also closes a code
+ *      block on a run of tildes.
  *
  * `PI_ENSEMBLE_LEAN_ISSUE_PROSE=0` removes the section entirely and restores the
  * pre-feature prompt byte for byte, so a run that behaves differently with the
