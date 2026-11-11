@@ -36,16 +36,20 @@ export interface Child {
   /** The parentKey the DECK row carried, read off the deck at the moment the
    *  row was sighted (not off the stub's opts record) — see rowSeen. */
   rowParentKey?: string | null;
-  /** True when the deck row carried no batchKey — asserted per child because a
-   *  parent link must not drag a batch grouping along with it. */
-  rowBatchKeyAbsent: boolean;
-  /** Resolves the instant this child's own deck row is sighted in a snapshot.
-   *  The row is created synchronously by the real startJob and erased when the
-   *  child's work settles (the settle path's clearEntry), so under the spawn
-   *  guard the window is short and its timing is not the contract — the gate
-   *  waits for ONE sighting rather than mistaking "already cleared" for "never
+  /** True when the sighted deck row carried no batchKey; `undefined` until the
+   *  row is sighted. Asserted per child because a parent link must not drag a
+   *  batch grouping along with it — and it stays `undefined` for a leg whose
+   *  row was never read, so "never read" cannot answer "no batchKey". */
+  rowBatchKeyAbsent?: boolean;
+  /** True once this child's own deck row has been sighted in a snapshot; false
+   *  when the polling window closed without one. `settleRows()` writes it, so
+   *  no assertion can be handed a bare, always-truthy Promise. The row is
+   *  created synchronously by the real startJob and erased when the child's
+   *  work settles (the settle path's clearEntry), so under the spawn guard the
+   *  window is short and its timing is not the contract — the gate waits for
+   *  ONE sighting rather than mistaking "already cleared" for "never
    *  registered". */
-  rowSeen: Promise<boolean>;
+  rowSeen: boolean;
 }
 
 /** One schema-valid `report_research_claim` toolUse. The pipeline's fail-closed
@@ -70,6 +74,10 @@ export function claimToolUse(angle: string, n: number): unknown {
 /** Settle messages (guard rejections) of the children seen so far. */
 const pendingRows: Promise<string>[] = [];
 
+/** The row-sighting promises of the children seen so far, kept in the SAME
+ *  order as `observed` (so `settleRows` can stamp each child by index). */
+const rowSightings: Promise<boolean>[] = [];
+
 /** The child population the installed stub has been asked to dispatch.
  *
  *  A re-dispatch is a FULL second child (`research-driver.ts` re-runs
@@ -84,7 +92,8 @@ const observed: Child[] = [];
 
 /** The row a leg owns: the fields the gate reads off the deck, captured at the
  *  moment the row was sighted — not off the stub's recollection of what it was
- *  handed. `undefined` means the window closed without a sighting. */
+ *  handed. The whole object is `undefined` when the window closed without a
+ *  sighting, so "never read" stays distinguishable from "read, no link". */
 interface RowEvidence {
   parentKey: string | null;
   batchKeyAbsent: boolean;
@@ -100,16 +109,12 @@ const ROW_POLL_TRIES = 200;
  * sighted. The returned `key` is this leg's row, decided SYNCHRONOUSLY.
  *
  * `startJob` registers the deck row synchronously, before any of its own awaits,
- * and a synchronous call cannot interleave — so the row that exists immediately
- * after `call()` returns and did not exist before it is the caller's own row,
- * and no sibling of a `Promise.all` fan-out can answer for it. Both alternatives
- * are unsound: "the last row with my role" is identification BY POSITION, which
- * the fan-out shares (two legs see the same last row, one row is never claimed,
- * and the gate reports a deck that "never held the row" for a link that was
- * there); and subtracting the PRE-DRIVE population fails because a sibling's job
- * settles — the guard rejects it synchronously — while this leg is still in
- * flight, so its id has already left the live set and the one leftover of a set
- * difference goes to whoever asks first.
+ * and a synchronous call cannot interleave — so the row that appears between the
+ * snapshot before `call()` and the one after it is this leg's own, and no
+ * sibling of a `Promise.all` fan-out can answer for it. Identification by
+ * position ("the last row with my role") or against the PRE-DRIVE population is
+ * not: a sibling's row settles on a later macrotask, so either can credit one
+ * leg with another's evidence.
  *
  * The row is then POLLED, not read once: `startJob`'s settle path clears it on
  * the guard rejection, so a single read after an await would mistake "already
@@ -162,6 +167,7 @@ function claimOwnRow(call: () => void): {
 export function installResearchDispatchStub(failAngles: readonly string[] = []): void {
   observed.length = 0;
   pendingRows.length = 0;
+  rowSightings.length = 0;
   // Typed as the seam's own function type (not `as never`): an untyped stub
   // would make a mis-named or missing parentKey invisible to the type-checker,
   // the exact hole this ticket's own tsconfig entry exists to close.
@@ -169,11 +175,11 @@ export function installResearchDispatchStub(failAngles: readonly string[] = []):
     const seen: Record<string, unknown> = { ...opts };
     const requested = opts.label ?? spec.label ?? "";
     const angle = /^research-(.+)$/.exec(requested)?.[1] ?? "web-current";
-    // A clipped label still identifies its angle: `research-adoption-altern`
-    // is the `adoption-alternatives` angle, so match either direction.
-    const legFails = failAngles.some(
-      (f) => angle === f || f.startsWith(angle) || angle.startsWith(f),
-    );
+    // The clipped label still identifies its angle: `research-adoption-altern`
+    // is the `adoption-alternatives` angle, so the injected name may be longer
+    // than what the label kept — the one direction clipping produces. A
+    // match the other way would let a short entry fail angles nobody named.
+    const legFails = failAngles.some((f) => f.startsWith(angle));
     const mine: Child = {
       requested,
       rowLabel: spec.label,
@@ -181,8 +187,8 @@ export function installResearchDispatchStub(failAngles: readonly string[] = []):
       parentKey: opts.parentKey,
       optsSeen: seen,
       rowParentKey: undefined,
-      rowBatchKeyAbsent: false,
-      rowSeen: Promise.resolve(false),
+      rowBatchKeyAbsent: undefined,
+      rowSeen: false,
     };
     observed.push(mine);
     // The REAL dispatchCore under the spawn guard (the test-dispatch-deck-driver.ts
@@ -197,12 +203,16 @@ export function installResearchDispatchStub(failAngles: readonly string[] = []):
       );
     });
     mine.jobId = row.key;
-    mine.rowSeen = row.evidence.then((evidence) => {
-      if (evidence === undefined) return false;
-      mine.rowParentKey = evidence.parentKey;
-      mine.rowBatchKeyAbsent = evidence.batchKeyAbsent;
-      return true;
-    });
+    // The row is read from the deck by its OWN key, so one row can never
+    // answer for two legs; the gate still checks the sighted keys are distinct.
+    rowSightings.push(
+      row.evidence.then((evidence) => {
+        if (evidence === undefined) return false;
+        mine.rowParentKey = evidence.parentKey;
+        mine.rowBatchKeyAbsent = evidence.batchKeyAbsent;
+        return true;
+      }),
+    );
     if (childRow) pendingRows.push(childRow);
     return {
       role: spec.role,
@@ -240,6 +250,18 @@ import { setResearchDispatch } from "../../src/research-driver.ts";
  *  asserts on. */
 export function observedChildren(): Child[] {
   return observed;
+}
+
+/** Await every dispatch's row sighting for the population `observedChildren()`
+ *  returns, then stamp each child's `rowSeen`. A drive calls this before
+ *  reading any per-child row field: an unsighted leg then reads as
+ *  `rowSeen: false` with its row fields still `undefined`, which is a red under
+ *  the gate's assertions rather than a value that satisfies them by default. */
+export async function settleRows(): Promise<void> {
+  const sighted = await Promise.all(rowSightings);
+  observed.forEach((c, i) => {
+    c.rowSeen = sighted[i] ?? false;
+  });
 }
 
 /** Each child's settle message, in dispatch order: every one of them must name

@@ -11,28 +11,11 @@
  * must project byte-for-byte identically. That is asserted here rather than
  * argued, because the acceptance criterion IS byte-identity.
  *
- * How each check is falsified by a deliberate mutant — the deck rows here are
- * REAL `startEntry` rows, so every mutation below is observed red, not argued
- * green:
- *   - `startEntry` stops copying `opts.parentKey`      → the `startEntry copies`
- *     assertions, and every linked row loses the link
- *   - `startEntry` copies it CONDITIONALLY — a gate on the row's key length,
- *     its role, or whether it/any row carries a batchKey, so long as it keeps
- *     copying on a short-key `explore` batch-free row → the planted rows below
- *     that are NOT that shape: the real-shaped-id twin, the `developer` twin
- *     and the batch-member twin each fail such a copy and are read back off the
- *     deck
- *   - `agent-list.ts` renders `e.parentKey`            → `buildAgentListLines`
- *     twin equality AND the "never prints" assertion
- *   - `dispatch-peek.ts` reads `e.parentKey` anywhere
- *     in its header projection                         → the tool-driven peek
- *     text comparisons below
- *   - `dispatch-peek.ts`'s `serialise()` spreads the
- *     row instead of picking fields                    → the peek `details`
- *     JSON comparison below (the interface alone does NOT fence a spread: a
- *     `{ ...e }` satisfies it structurally, so `tsc` stays silent)
- *   - any projection that DROPS a row instead of leaking it → the row COUNTS
- *     asserted on each surface, and the "every planted row is projected" check
+ * Every check here is observed red on a deliberate mutant rather than argued
+ * green — the deck rows are REAL `startEntry` rows, so a mutant can hide behind
+ * neither a hand-rolled fixture nor a projection it controls. Which surface each
+ * check reads, and what the population below spans, is stated where each one is
+ * written; the mutation evidence itself lives in the PR.
  *
  * The population matters as much as the mechanism. A check over rows that all
  * share one key shape, one label and one role is falsified only by a leak that
@@ -41,8 +24,9 @@
  * fixture of short-key `explore` rows while leaking every REAL row, since real
  * job ids are `<base36 ms>-<6 chars>` (`newJobId`) and real children run as
  * `developer`, `ops` and friends. So the planted twins below span two key
- * shapes, two roles and both batch states, and the parent-link sentinel appears
- * in no field the projection is allowed to print — see `parentSentinel()`.
+ * shapes, two roles, both batch states and the clipped-`research-<angle>` label
+ * shape this ticket actually populates, and the parent-link sentinel appears
+ * in no field the projection is allowed to print.
  *
  * The peek assertions are driven through the REGISTERED `dispatch_peek` tool,
  * not through `renderPeek` directly: `renderPeek`/`renderHeader` destructure
@@ -102,14 +86,6 @@ function twin(
   };
 }
 
-/** The parent link the twins carry — deliberately NOT derivable from any field
- *  the projection is allowed to print. If it were ("twin" + "-parent"), the
- *  "never renders the link" assertions would be satisfied by the row's own
- *  label and would be asserting nothing. */
-function parentSentinel(): string {
-  return "the-parent";
-}
-
 /** A real-shaped job id, as `async-jobs-registry.ts`'s `newJobId()` mints one:
  *  `<Date.now() base36>-<6 chars>` — ≥14 chars. The short key below keeps the
  *  ≤10-char branch of the #835 key fragment live; this one is the branch every
@@ -139,7 +115,11 @@ export async function checkParentLinkStaysUnrendered(): Promise<string[]> {
     if (!cond) failures.push(msg);
   };
 
-  const sentinel = parentSentinel();
+  // The parent link the twins carry — deliberately NOT derivable from any field
+  // the projection is allowed to print. If it were ("twin" + "-parent"), the
+  // "never renders the link" assertions would be satisfied by the row's own
+  // label and would be asserting nothing.
+  const sentinel = "the-parent";
   dispatchDeck.reset();
   // A batch is registered and one linked row is a batch MEMBER, so the deck
   // holds a batch while every assertion below runs and one row carries a
@@ -173,6 +153,22 @@ export async function checkParentLinkStaysUnrendered(): Promise<string[]> {
     snap.find((e) => e.key === "row-plain")?.parentKey === undefined,
     "a row started without the option keeps parentKey undefined (an absent link, not a stale one)",
   );
+  // The invariant every field of this contract declares — "never an empty
+  // string, never the child's own key" — is enforced at `startEntry`, the
+  // row's one copy site, so a caller cannot record a degenerate link. Asserted
+  // here because nothing shipped can detect it later: `dispatch_peek` reads
+  // `snapshot()`, which holds only LIVE rows, so once a child settles its link
+  // can be matched against nothing.
+  dispatchDeck.startEntry("row-self", { label: "plain", role: "explore", parentKey: "row-self" });
+  dispatchDeck.startEntry("row-empty", { label: "plain", role: "explore", parentKey: "" });
+  const degenerate = dispatchDeck.snapshot();
+  check(
+    degenerate.find((e) => e.key === "row-self")?.parentKey === undefined &&
+      degenerate.find((e) => e.key === "row-empty")?.parentKey === undefined,
+    "startEntry drops a degenerate link — a row whose parentKey is its OWN key, and one whose parentKey is the empty string, both keep no link at all",
+  );
+  dispatchDeck.clearEntry("row-self");
+  dispatchDeck.clearEntry("row-empty");
 
   const NOW = 1_000;
 
@@ -198,6 +194,19 @@ export async function checkParentLinkStaysUnrendered(): Promise<string[]> {
     { key: REAL_SHAPED_TWIN_KEY, label: "twin-b" },
     { key: `${SHORT_TWIN_KEY}-c`, label: "twin-c", role: "developer" },
     { key: `${REAL_SHAPED_TWIN_KEY}-d`, label: "twin-d", role: "developer", batched: true },
+    // The shape every child THIS ticket populates actually has: an `explore`
+    // role, a real-shaped id, and the clipped label a research child reaches
+    // the deck with — `research-${a.name}`.slice(0,24) (`research-angle.ts`),
+    // so `research-adoption-alternatives` arrives as
+    // `research-adoption-altern`. A nesting leak written
+    // `if (e.parentKey && e.label.startsWith("research-"))` — the shape ticket
+    // B's projection would plausibly take — must not survive this gate by
+    // hiding in a fixture with no research-shaped row.
+    {
+      key: `${REAL_SHAPED_TWIN_KEY}-e`,
+      label: "research-adoption-altern",
+      role: "explore",
+    },
   ];
   const roleOf = (t: { role?: string }): string => t.role ?? "explore";
 
@@ -253,7 +262,8 @@ export async function checkParentLinkStaysUnrendered(): Promise<string[]> {
   // otherwise satisfy "no line contains the link" by not rendering the row.
   const standalonePlanted = planted.filter((p) => p.batchKey === undefined).length;
   check(
-    deckLines.length === 3 + standalonePlanted && deckLines.every((l) => !l.includes(sentinel)),
+    deckLines.length === 3 + standalonePlanted &&
+      deckLines.every((l) => !l.includes(sentinel) && !l.includes("parentKey")),
     `the parent link is not rendered into any deck row (${JSON.stringify(deckLines)})`,
   );
 
@@ -296,19 +306,16 @@ export async function checkParentLinkStaysUnrendered(): Promise<string[]> {
   // serialise)` into `details`; the jobId path is the one an operator actually
   // calls.
   const tool = peekTool();
-  // ONE execute for the pairwise comparison below: `serialise()` stamps
-  // elapsedMs/quietMs from the wall clock, so separate calls move those fields
-  // between twins and a byte comparison of their `details` would be comparing
-  // timings as well as projections.
+  // ONE execute feeds the pairwise comparison below, so the twins are read out
+  // of a single projection of the deck rather than two.
   const peekAll = await tool.execute("peek-all", {});
   // The all-rows projection must cover the WHOLE live deck — the three fixture
   // rows and every planted twin. Without this, the pairwise comparison below
   // could be satisfied by two ABSENT rows
   // (`strip` on a miss yields an empty string on both sides) and the leak checks
   // by a projection that rendered nothing at all — silence would read as a pass.
-  const projectedKeys = new Set(
-    ((peekAll.details as PeekDetails).entries ?? []).map((e) => e?.key ?? ""),
-  );
+  const peekEntries = (peekAll.details as PeekDetails).entries ?? [];
+  const projectedKeys = new Set(peekEntries.map((e) => e?.key ?? ""));
   const liveKeys = dispatchDeck.snapshot().map((e) => e.key);
   const missing = liveKeys.filter((k) => !projectedKeys.has(k));
   check(
@@ -329,24 +336,33 @@ export async function checkParentLinkStaysUnrendered(): Promise<string[]> {
     !peekText.includes(sentinel),
     `dispatch_peek's operator-facing text never carries the parent link, for any row (${peekText})`,
   );
-  // The twins serialised by the SAME call: their `details` differ only by the
-  // key the `strip` below normalises, which is the executed form of
-  // "serialise() picks its fields explicitly" — every other member of the
-  // projection is byte-equal across the twins. The interface alone does NOT
-  // fence a spread: a `{ ...e }` body satisfies SerialisedEntry structurally, so
-  // tsc stays silent — hence an executed comparison.
-  const strip = (details: PeekDetails, key: string): string =>
-    JSON.stringify(details.entries?.find((e) => e?.key === key) ?? "").replaceAll(key, "«key»");
+  // The twins serialised by the SAME call. `serialise()` stamps `elapsedMs`/
+  // `quietMs` from `peekTiming(e, Date.now())` PER ROW, so even inside one
+  // `execute` two siblings can straddle a millisecond tick — the projection
+  // claim is about WHICH fields are present, never their wall-clock values, so
+  // both timings and the key (the field the twins must differ in) are
+  // normalised away. The executed form of "serialise() picks its fields
+  // explicitly": every remaining member is byte-equal across the twins. The
+  // interface alone does NOT fence a spread: a `{ ...e }` body satisfies
+  // SerialisedEntry structurally, so tsc stays silent — hence an executed
+  // comparison.
+  const strip = (key: string): string => {
+    const e = peekEntries.find((x) => x?.key === key) as Record<string, unknown> | undefined;
+    if (!e || e.key !== key) return "";
+    const o = { ...e };
+    delete o.elapsedMs;
+    delete o.quietMs;
+    // The key is normalised by name — the one field the twins must differ in,
+    // and the one whose value also appears in no other member of the row.
+    return JSON.stringify(o).replace(`"key":"${key}"`, '"key":"«key»"');
+  };
   const pairFailures: string[] = [];
   for (const t of twinCases) {
-    const plain = strip(peekAll.details as PeekDetails, `${t.key}-p`);
-    const linked = strip(peekAll.details as PeekDetails, `${t.key}-l`);
-    // Each side must start with its OWN normalised key: a projection that
-    // dropped `key` would make the find miss and compare two absent-row
-    // placeholders, which is a pass about nothing.
+    const plain = strip(`${t.key}-p`);
+    const linked = strip(`${t.key}-l`);
     if (
-      !plain.startsWith('{"key":"«key»"') ||
-      !linked.startsWith('{"key":"«key»"') ||
+      plain === "" ||
+      linked === "" ||
       plain !== linked ||
       linked.includes(sentinel) ||
       linked.includes("parentKey")

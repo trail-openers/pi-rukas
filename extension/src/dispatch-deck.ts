@@ -246,7 +246,14 @@ export function startEntry(key: string, opts: StartEntryOpts): void {
     seq: nextSeq(),
     startedAt: Date.now(),
     batchKey: opts.batchKey,
-    parentKey: opts.parentKey,
+    // The documented invariant is enforced HERE, at the row's one copy site,
+    // rather than left to each caller: a row must never record itself, or an
+    // empty string, as its own parent. `snapshot()` holds only LIVE rows, so
+    // once a child settles there is nothing shipped to check the link against
+    // — a wrong value is undetectable at the moment an operator could look.
+    // The caller passes the PARENT's id; nothing is passed on a top-level
+    // dispatch, so this drops a degenerate value rather than inventing one.
+    ...(opts.parentKey && opts.parentKey !== key ? { parentKey: opts.parentKey } : {}),
   });
   startTickerIfNeeded();
   scheduleRender();

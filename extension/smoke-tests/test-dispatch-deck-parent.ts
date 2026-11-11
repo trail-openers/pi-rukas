@@ -60,11 +60,13 @@ import {
 } from "../src/research-driver.ts";
 import { runResearchPipeline } from "../src/research-driver.ts";
 import type { ExecFn } from "../src/worktree.ts";
+import { withEnv } from "./lib/env-scope.ts";
 import { checkParentLinkStaysUnrendered } from "./lib/deck-parent-projection.ts";
 import {
   installResearchDispatchStub,
   observedChildren,
   settleMessages,
+  settleRows,
   type Child,
 } from "./lib/deck-parent-stub.ts";
 import { setupSpawnGuard } from "./test-helpers.ts";
@@ -192,14 +194,18 @@ async function freshRepo(): Promise<string> {
   // lives only while the child's work is outstanding, so "the deck was empty"
   // is only meaningful once each registration has been sighted (or the
   // polling window provably closed without one).
-  const sighted = await Promise.all(children.map((c) => c.rowSeen));
-  const rowsObserved = sighted.filter(Boolean).length;
+  await settleRows();
+  const sighted = children.filter((c) => c.rowSeen);
+  const rowsObserved = sighted.length;
 
   // The vacuity guard: a quiet-leaked env or a preflight failure would empty
-  // the deck and make every parentKey assertion below pass on nothing.
+  // the deck and make every parentKey assertion below pass on nothing. And a
+  // leg whose row was never sighted is a RED here, not a pass: the per-child
+  // claims below run over the sighted subset only, so an unsighted leg cannot
+  // satisfy them with its initial `undefined`/`false` fields.
   assert(
-    rowsObserved >= 2,
-    `each standard-tier angle child's OWN row was sighted in the deck (${rowsObserved} of ${children.length} registrations — a row the deck never held is no evidence at all)`,
+    rowsObserved === children.length && rowsObserved >= 2,
+    `EVERY standard-tier angle child had its OWN row sighted in the deck (${rowsObserved} of ${children.length} registrations — a row the deck never held is no evidence at all)`,
   );
   assert(
     children.length >= 2,
@@ -207,12 +213,15 @@ async function freshRepo(): Promise<string> {
   );
 
   assert(
-    children.every((c) => c.rowSeen !== undefined) &&
-      children.every((c) => !c.rowSeen || c.rowParentKey === handle.jobId),
-    `EVERY sighted child row carried the parent job's jobId as its parentKey — got ${JSON.stringify(children.map((c) => `${c.requested}→${String(c.rowParentKey)}`))}`,
+    // Rows must be DISTINCT objects: a rig that credited both legs of a fan-out
+    // with the same deck row would otherwise satisfy "each leg's OWN row" twice
+    // over with one piece of evidence.
+    new Set(sighted.map((c) => c.jobId)).size === sighted.length &&
+      sighted.every((c) => c.jobId !== "" && c.rowParentKey === handle.jobId),
+    `EVERY sighted child row carried the parent job's jobId as its parentKey, each read off its OWN row (${sighted.length} distinct row keys) — got ${JSON.stringify(children.map((c) => `${c.requested}→${String(c.rowParentKey)}`))}`,
   );
   assert(
-    children.every((c) => c.rowParentKey === undefined || c.rowParentKey !== c.rowLabel),
+    sighted.every((c) => c.rowParentKey !== c.rowLabel && c.rowParentKey !== c.jobId),
     "no child row's parentKey is its own key (the link names the parent, never the row itself)",
   );
   assert(
@@ -220,12 +229,12 @@ async function freshRepo(): Promise<string> {
     `executed evidence: the REAL dispatchCore ran for every child — the spawn guard rejected each one (${childSettles.length} guard rejections observed, not a stub-fabricated row)`,
   );
   assert(
-    children.every((c) => c.rowParentKey === undefined || c.rowParentKey === handle.jobId),
+    sighted.every((c) => c.rowParentKey === handle.jobId),
     `each sighted row's parentKey is the parent job's id: ${children.map((c) => `${c.requested}→${String(c.rowParentKey)}`).join(", ")}`,
   );
   assert(
-    children.every((c) => c.rowSeen === undefined || c.rowBatchKeyAbsent),
-    `research children carry NO batchKey — no batch grouping followed the parent link (${children.map((c) => `${c.requested}:${c.rowBatchKeyAbsent}`).join(", ")})`,
+    sighted.every((c) => c.rowBatchKeyAbsent === true),
+    `research children carry NO batchKey — no batch grouping followed the parent link (${children.map((c) => `${c.requested}:${String(c.rowBatchKeyAbsent)}`).join(", ")})`,
   );
   assert(
     snapshotSize >= 1 && parentRowCount === 1 && parentRowParentKey === "absent",
@@ -367,15 +376,17 @@ async function drive(tier: "standard" | "deep" | "adoption"): Promise<Child[]> {
 // ---------------------------------------------------------------------------
 {
   // Not "0": with the flag exactly "0" the selector refuses the re-dispatch
-  // and this block would assert on a leg that was never dispatched.
-  delete process.env.PI_ENSEMBLE_RESEARCH_FALLBACK;
-  dispatchDeck.reset();
-  clearJobsForTesting();
-  const failing = "docs-depth";
-  installResearchDispatchStub([failing]);
-  const children = observedChildren();
-  const repo = await freshRepo();
-  try {
+  // and this block would assert on a leg that was never dispatched. `withEnv`
+  // puts back whatever the file-level vacuity guard had pinned, so the unset
+  // cannot outlive this block into a sibling test in the same process.
+  await withEnv({ PI_ENSEMBLE_RESEARCH_FALLBACK: undefined }, async () => {
+    dispatchDeck.reset();
+    clearJobsForTesting();
+    const failing = "docs-depth";
+    installResearchDispatchStub([failing]);
+    const children = observedChildren();
+    const repo = await freshRepo();
+    try {
     const r = await runResearchPipeline(
       FAKE_PI,
       { topic: "does the fallback leg inherit the parent link?", tier: "standard" },
@@ -384,11 +395,12 @@ async function drive(tier: "standard" | "deep" | "adoption"): Promise<Child[]> {
       { parentKey: PARENT_KEY },
     );
     const settles = await settleMessages();
-    // Awaited BEFORE the assertions: `rowSeen` is a Promise, so a condition on
-    // it directly would be true by construction (tsc flags exactly that).
-    const sighted = await Promise.all(children.map((c) => c.rowSeen));
-    const sightedByLabel = (c: Child): boolean => sighted[children.indexOf(c)] ?? false;
+    // Awaited BEFORE the assertions, which then run over the SIGHTED subset: an
+    // unsighted leg must not satisfy a row claim by carrying its initial
+    // `undefined`/`false` fields.
+    await settleRows();
     const legs = children.filter((c) => c.requested.startsWith(`research-${failing}`.slice(0, 24)));
+    const sightedLegs = legs.filter((c) => c.rowSeen);
     assert(
       legs.length === 2,
       `the fallback leg fired: the ${failing} angle dispatched TWICE, primary + wigolo re-dispatch (${legs.length}; all labels: ${children.map((c) => c.requested).join(",")})`,
@@ -402,15 +414,19 @@ async function drive(tier: "standard" | "deep" | "adoption"): Promise<Child[]> {
       `fallback: the REAL dispatchCore ran for all ${children.length} legs incl. the re-dispatch (guard rejections, not stub-fabricated rows)`,
     );
     assert(
-      legs.every((c) => sightedByLabel(c) && c.rowParentKey === PARENT_KEY),
-      `the fallback leg's OWN deck row carried the parent link — got ${JSON.stringify(legs.map((c) => `${c.requested}→${String(c.rowParentKey)}→sighted:${sightedByLabel(c)}`))}`,
+      legs.length === 2 &&
+        sightedLegs.length === legs.length &&
+        sightedLegs.every((c) => c.rowParentKey === PARENT_KEY),
+      `the fallback leg's OWN deck row carried the parent link — got ${JSON.stringify(legs.map((c) => `${c.requested}→${String(c.rowParentKey)}→sighted:${c.rowSeen}`))}`,
     );
     assert(
-      legs.filter(sightedByLabel).length === 2,
-      `both legs of the ${failing} angle had their OWN deck row sighted (${legs.filter(sightedByLabel).length} of ${legs.length}) — the re-dispatch registers a row of its own, it does not reuse the primary's`,
+      sightedLegs.length === legs.length &&
+        new Set(sightedLegs.map((c) => c.jobId)).size === sightedLegs.length,
+      `both legs of the ${failing} angle had their OWN deck row sighted, under two DISTINCT keys (${sightedLegs.length} of ${legs.length}) — the re-dispatch registers a row of its own, it does not reuse the primary's`,
     );
     assert(
-      legs.every((c) => c.parentKey === PARENT_KEY && c.rowBatchKeyAbsent),
+      sightedLegs.length === legs.length &&
+        sightedLegs.every((c) => c.parentKey === PARENT_KEY && c.rowBatchKeyAbsent === true),
       "fallback: the re-dispatched child carried parentKey and no batchKey, like the primary leg",
     );
     assert(
@@ -418,11 +434,11 @@ async function drive(tier: "standard" | "deep" | "adoption"): Promise<Child[]> {
       "fallback drive: no child of the run — primary or re-dispatched — was left without the link",
     );
   } finally {
-    process.env.PI_ENSEMBLE_RESEARCH_FALLBACK = "0";
-    dispatchDeck.reset();
-    clearJobsForTesting();
-    await rm(repo, { recursive: true, force: true });
-  }
+      dispatchDeck.reset();
+      clearJobsForTesting();
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
