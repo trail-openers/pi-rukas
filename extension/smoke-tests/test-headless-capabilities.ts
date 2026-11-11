@@ -149,10 +149,11 @@ assert(
     bad.length === 0,
     `every input has name, type, default and scope${bad.length ? ` — ${bad.map((i) => i.name).join(", ")}` : ""}`,
   );
-  const images = caps.inputs.filter((i) => i.manifestVersion !== undefined);
+  const versioned = caps.inputs.filter((i) => i.manifestVersion !== undefined);
   assert(
-    images.map((i) => i.name).join(",") === "PI_ENSEMBLE_EXTRA_IMAGE_DIRS,PI_ENSEMBLE_ISSUE_IMAGES",
-    "the issue-image inputs keep their manifestVersion",
+    versioned.map((i) => i.name).join(",") ===
+      "PI_ENSEMBLE_EXTRA_IMAGE_DIRS,PI_ENSEMBLE_ISSUE_IMAGES,PI_ENSEMBLE_PLAN_TARGET_DIRS",
+    "the manifest-versioned inputs keep their manifestVersion",
   );
 }
 

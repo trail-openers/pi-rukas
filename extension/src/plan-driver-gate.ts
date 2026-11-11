@@ -1,3 +1,5 @@
+import { cancelledResult } from "./plan-driver-cancel.ts";
+import { correctiveRedraftHalt } from "./plan-driver-phases.ts";
 import type { CorrectiveRedraftCtx } from "./plan-driver-redraft.ts";
 import type { PlanDispatchFn } from "./plan-driver-seams.ts";
 import { getPlanRedraftOverride } from "./plan-driver-seams.ts";
@@ -18,7 +20,13 @@ import { runGapGateLoop } from "./plan-gaps.ts";
 import { gapGatePrompt, gapGateVerifyPrompt } from "./plan-gate-prompt.ts";
 import type { CarriedCritical } from "./plan-gate-prompt.ts";
 import { PLAN_DISPATCH_TIMEOUT_MS, PLAN_MARKER_CHILD_ARGS } from "./plan-investigate.ts";
-import type { PlanGap, PlanType } from "./plan-types.ts";
+import type {
+  PlanDriverInput,
+  PlanGap,
+  PlanPhaseTiming,
+  PlanResult,
+  PlanType,
+} from "./plan-types.ts";
 import type { DriverHost } from "./work-driver-host.ts";
 
 /** The bound runGapGateLoop iterates to. */
@@ -183,4 +191,80 @@ export async function runGate(args: GateRunArgs): Promise<GateRunResult> {
   );
   if (redraftThrow) return { halted: true, error: redraftThrow.error };
   return { halted: false, loopResult };
+}
+
+/**
+ * What the driver reads back from Phase 4: the loop's accumulators, or the halt
+ * the loop produced (a kill mid-gate, or a corrective re-draft that threw).
+ */
+export type Phase4Outcome =
+  | {
+      halt?: undefined;
+      gaps: PlanGap[];
+      capHit: boolean;
+      capReason: GapGateLoopResult["capReason"];
+      residualForDisclosure: PlanGap[];
+      openPoints: PlanGap[];
+      rawUnparsedHead: string | undefined;
+    }
+  | { halt: PlanResult };
+
+/**
+ * Phase 4 as the driver calls it: run the gate, then decide what the run does.
+ *
+ * #1541 review (LOW) — the abort check runs BEFORE `gate.halted`. A kill that
+ * lands while the gate is settling makes the re-draft's dispatch refuse, and
+ * `correctiveRedraft` rethrows that refusal as a redraft failure — so a cancelled
+ * run would report PLAN HALTED / gate-unavailable and send the operator after a
+ * gate that was never the problem. The run was cancelled; that is the more
+ * specific, more true fact, and it is the one the operator acts on (re-run vs fix
+ * the gate).
+ *
+ * A corrective re-draft that threw is a PLAN halt, not an exception. Routed
+ * through the same halt shape as the sibling gate failure modes: `startJob`'s
+ * generic fail report would drop the plan-specific rendering and the
+ * carried-decision disclosure the throw message built.
+ */
+export async function phase4GapGate(
+  args: GateRunArgs & {
+    /** The run's input, for the cancellation halt's shape. */
+    input: PlanDriverInput;
+    finishTimings: () => PlanPhaseTiming[];
+    /** Angles that failed — disclosed on the re-draft halt, as the driver computes them. */
+    failedAngles: { name: string; detail: string }[];
+  },
+): Promise<Phase4Outcome> {
+  const gate = await runGate(args);
+  if (args.signal?.aborted) {
+    return {
+      halt: cancelledResult(
+        args.signal,
+        args.input,
+        "gap-gate",
+        args.priorContext,
+        args.finishTimings(),
+      ),
+    };
+  }
+  if (gate.halted) {
+    return {
+      halt: correctiveRedraftHalt({
+        type: args.type,
+        descriptor: args.descriptor,
+        priorContext: args.priorContext,
+        failedAngles: args.failedAngles,
+        error: gate.error,
+        timings: args.finishTimings,
+      }),
+    };
+  }
+  const loopResult = gate.loopResult;
+  return {
+    gaps: loopResult.gaps,
+    capHit: loopResult.capHit,
+    capReason: loopResult.capReason,
+    residualForDisclosure: loopResult.residualForDisclosure,
+    openPoints: loopResult.openPoints,
+    rawUnparsedHead: loopResult.rawUnparsedHead,
+  };
 }

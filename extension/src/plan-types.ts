@@ -179,6 +179,13 @@ export interface PlanResult {
   /** #1043: on a fileable dry run, the digest of its title + body (see plan-filing-claim.ts). */
   reviewedDigest?: string;
   /**
+   * #1854: the repository this run filed (or would have filed) into, as a
+   * canonical `host/owner/repo`. Surfaced in the launch notice and the rendered
+   * report only when the caller supplied a target: an omitted input keeps every
+   * byte of the existing text, which is what the existing plan tests pin.
+   */
+  targetRepository?: string;
+  /**
    * #1224: a confirm carried a reviewedDigest, the reviewed spec could not be
    * filed verbatim (`reason`), and the re-run pipeline drafted a different spec.
    * Nothing was filed; the new spec is cached as a dry run and must be shown again.
@@ -223,6 +230,17 @@ export interface PlanDriverInput {
    * filing (see plan-labels.ts). Empty or absent → today's behaviour exactly.
    */
   labels?: string[];
+  /**
+   * #1854: the repository this plan FILES INTO, as a canonical identity
+   * (`host/owner/repo`, or `owner/repo` for the default host). Absent → the
+   * session repository, exactly as before. The identity is not a directory: a
+   * caller that could name a path could redirect a filing into any checkout on
+   * the machine while the label check certified a different one (plan-target.ts
+   * owns the resolution and every refusal rule). Threaded through the forge
+   * adapter, the label gate, the cache lineage, the digest and the children's
+   * cwd — one resolution, so no consumer can disagree about the destination.
+   */
+  targetRepository?: string;
   /**
    * #1377: the caller's provenance — an italic line as the body's FIRST line and
    * an HTML-comment marker as its LAST line. Appended by code after drafting

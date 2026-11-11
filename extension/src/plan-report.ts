@@ -162,9 +162,8 @@ export function renderPlanResult(r: PlanResult, dryRun: boolean): string {
   const reusedNote = r.investigationReused
     ? `\n\n=== INVESTIGATION REUSED ===\nThe duplicate-risk and angle investigation (and the inventory) was reused from the confirmed dry run ${fmtMs(r.investigationReused.ageMs)} ago — the descriptor, context, type and origin/<default> commit are unchanged. The working tree was NOT compared: uncommitted edits made after the dry run are not reflected in the reused investigation. Drafting, validation and the gap gate re-ran.`
     : "";
-  const baseNote = r.baseFallback
-    ? `\n\n=== BASE FALLBACK ===\nInvestigators read the local checkout, not origin/<default>: ${r.baseFallback}. The investigation cache was not used for this run.`
-    : "";
+  const baseNote = baseFallbackNote(r);
+  const targetNote = targetRepositoryNote(r);
   const compactedNote = r.compacted
     ? `\n\nCOMPACTED: the body was deterministically compacted to fit the forge's ${FORGE_BODY_MAX}-char limit (a disclosure line inside the body says how; full findings live in ${r.droppedListFile ?? DROPPED_ARTIFACT}).`
     : "";
@@ -184,5 +183,29 @@ ${r.spec}
 ${gaps}
 
 === PRIOR CONTEXT ATTRIBUTION ===
-${prior}${reusedNote}${investigation}${baseNote}${cap}${filingStatus}${compactedNote}${timingsLine}`;
+${prior}${reusedNote}${investigation}${baseNote}${targetNote}${cap}${filingStatus}${compactedNote}${timingsLine}`;
+}
+
+/**
+ * The target-repository section (#1854): the destination, named so a
+ * mis-targeted filing is visible in the steer rather than only after an issue
+ * appears in the wrong tracker. Rendered ONLY when the run carries a target: an
+ * omitted input leaves this empty, so every existing report byte (and the plan
+ * tests that pin them) is untouched.
+ */
+function targetRepositoryNote(r: PlanResult): string {
+  return r.targetRepository
+    ? `\n\n=== TARGET REPOSITORY ===\nThis ${r.filed ? "issue was filed into" : "plan targets"} ${r.targetRepository} — not the session repository. A filing that lands anywhere else is the defect, not the fallback.`
+    : "";
+}
+
+/**
+ * The base-fallback section (#1132). Lifted out of the renderer at the AGENTS.md
+ * §12 size cap, the sentence verbatim — these are the two sections a caller's
+ * inputs add to a report, and both now live beside the data they describe.
+ */
+function baseFallbackNote(r: PlanResult): string {
+  return r.baseFallback
+    ? `\n\n=== BASE FALLBACK ===\nInvestigators read the local checkout, not origin/<default>: ${r.baseFallback}. The investigation cache was not used for this run.`
+    : "";
 }

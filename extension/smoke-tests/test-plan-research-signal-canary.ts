@@ -54,7 +54,8 @@ interface Site {
   work: RegExp;
   /** The pipeline call that must receive the threaded signal. */
   pipeline: RegExp;
-  /** `runXPipeline(..., { signal })` — the object position it must land in. */
+  /** `runXPipeline(..., { signal })` — the object position it must land in. The
+   *  object is written multi-line by the formatter, so whitespace is optional. */
   signalArg: RegExp;
   /** Human name for the failure messages. */
   label: string;
@@ -65,7 +66,10 @@ const SITES: Site[] = [
     file: "plan-tool.ts",
     work: /work:\s*\(signal\)\s*=>\s*runPlanJob\(signal\)/,
     pipeline: /const runPlanJob = async \(signal: AbortSignal\) =>[\s\S]{0,200}?runPlanPipeline\(/,
-    signalArg: /runPlanPipeline\([\s\S]{0,200}?\{\s*signal\s*\}\s*\)/,
+    // The options object may carry `target` alongside the signal (#1854), so the
+    // assertion is that the shorthand is the object's FIRST property and the object
+    // still closes right after it — not that the object has exactly one property.
+    signalArg: /runPlanPipeline\([\s\S]{0,200}?\{\s*signal\s*,\s*target\s*,?\s*\}\s*\)/,
     label: "/plan → runPlanPipeline",
   },
   {

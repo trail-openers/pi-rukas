@@ -281,6 +281,14 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   int("PLAN_ISSUE", null),
   flag("PLAN_QUALITY", true),
   dir("PLAN_SESSION_DIR", null, "cycle"),
+  // #1854 — the ONLY channel by which `start_plan_driver`'s `targetRepository` may
+  // be satisfied by a checkout outside the session's own clone and its registered
+  // worktrees. Each listed directory still has to prove (by its `origin` URL) that it
+  // clones the requested `host/owner/repo`, so an agent cannot aim a filing at an
+  // arbitrary path by writing one. Unset: resolution consults the session's clones
+  // only, exactly as before the parameter existed. Reader: `overrideClone` in
+  // plan-target.ts.
+  input("PLAN_TARGET_DIRS", "list", null, "cycle", { separator: ",", manifestVersion: 1 }),
   ms("PLAN_TIMEOUT_MS", 1_800_000),
   // #1167 — 0 leaves the planner's out-of-scope fences exactly as written
   // (the pre-#1167 shape, develop gate included) and traces that it was off.

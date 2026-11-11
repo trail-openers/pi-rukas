@@ -60,6 +60,7 @@ import {
   validateProvenance,
 } from "./plan-provenance.ts";
 import { DRY_RUN_HEAD, renderPlanResult } from "./plan-report.ts";
+import { planTargetFacts, resolvePlanTarget } from "./plan-target.ts";
 import type { PlanDriverInput, PlanResult } from "./plan-types.ts";
 import { trace } from "./trace.ts";
 import { piSessionHost } from "./work-driver-host.ts";
@@ -79,6 +80,16 @@ export function launchNotice(o: {
   descriptor: string;
   dryRun: boolean;
   repoRoot: string;
+  /**
+   * #1854: the repository the run files INTO, when the caller supplied a target.
+   * Absent → the notice is the byte-identical text every run printed before, so
+   * the omitted-input contract (and the tests that pin it) hold; the destination
+   * is a fact about the run either way, and a mis-targeted filing has to be
+   * visible at launch, not only after an issue appears in the wrong tracker.
+   */
+  targetLabel?: string;
+  /** The session's own repository, named on the cross-repo branch only. */
+  sessionLabel?: string;
 }): string {
   // #1541 review (MEDIUM) — two corrections to what this may promise.
   // (a) Conditional outcome. The dry-run branch used to assert the report
@@ -94,7 +105,10 @@ export function launchNotice(o: {
   const next = o.dryRun
     ? `When the report arrives it says ONE of two things: "${DRY_RUN_HEAD} <digest>" with the spec and the gap dispositions — if the gate passed; or a NOT FILEABLE / PLAN COMPLETED block naming the reason, with NO digest to echo. Show whichever arrived to the operator. Only after that steer has arrived can you re-call with dryRun omitted — and to file the reviewed spec verbatim you must echo the reviewedDigest that steer carried, because that steer is the only place the digest exists; a confirm without it runs the whole pipeline again.`
     : "When the report arrives it says whether the issue was filed and carries the issue URL — or it says the run FAILED / was CANCELLED and names the cause. Until it arrives you have neither verdict nor URL: quote neither.";
-  return `pi-rukas: /plan driver started for "${noticeSubject(o.descriptor)}" (jobId: ${o.jobId}, dryRun: ${o.dryRun}, repo: ${o.repoRoot}). ${next} The run takes minutes; end your turn — the [ensemble:async] steer carrying the jobId is the result, not this notice. Do not poll, and do not re-call to check progress.`;
+  const repo = o.targetLabel
+    ? `repo: ${o.repoRoot}, target repository: ${o.targetLabel}${o.sessionLabel ? ` (the session is in ${o.sessionLabel})` : ""}`
+    : `repo: ${o.repoRoot}`;
+  return `pi-rukas: /plan driver started for "${noticeSubject(o.descriptor)}" (jobId: ${o.jobId}, dryRun: ${o.dryRun}, ${repo}). ${next} The run takes minutes; end your turn — the [ensemble:async] steer carrying the jobId is the result, not this notice. Do not poll, and do not re-call to check progress.`;
 }
 
 /**
@@ -179,6 +193,16 @@ export function registerPlanTool(pi: ExtensionAPI) {
           description: `Labels to create the filed issue with, in the same single forge call — so they are on the issue from its first moment (a follow-up edit leaves a window where an auto-filed ticket reads as manual work to everything watching the tracker). At most ${MAX_LABELS}; each 1-50 chars matching ^[A-Za-z0-9][A-Za-z0-9:._ /-]*$ (spaces and ':' allowed, no comma). Invalid input is refused BEFORE any dispatch with an invalid-input error naming what is wrong. Every label must already exist on the target repo: a missing one halts filing with filingFailure.reason "label-missing" and NOTHING is filed — the driver never creates a label as a side effect of filing. When the repo's label list cannot be read in full (a CLI failure, or more labels than either CLI reads in one page) the halt reason is "label-list-unreadable" instead, and nothing is filed either — the driver never guesses that a label exists. The result gains issueNumber alongside issueUrl. Omit for today's behaviour exactly.`,
         }),
       ),
+      // #1854: the repository this plan files INTO, declared after `provenance` so
+      // the pre-#1854 parameter order stays a prefix of the schema — the exact-schema
+      // pin in test-plan-tool.ts is what keeps it a prefix, which is how a new
+      // parameter cannot silently reorder the tool.
+      targetRepository: Type.Optional(
+        Type.String({
+          description:
+            '#1854: the repository this plan FILES INTO, as a canonical identity — "owner/repo" (the default host) or "host/owner/repo" for a self-hosted forge, with any namespace path GitLab-style. Use it when the spec is about a repository other than the session\'s: without it the plan files into the SESSION repo, which is how a spec for one tracker silently landed in another. Resolved against the clones this session already owns (the session repository and its worktrees) by their origin URL; it is NOT a filesystem path, and a path is refused. A target that has no local clone, or that names the session\'s own repository, is refused BEFORE any dispatch — the driver never falls back to filing into the session repo. Omit to plan the session repository exactly as before. It is part of the reviewedDigest: a dry run reviewed for repository A cannot file into repository B.',
+        }),
+      ),
       provenance: Type.Optional(
         Type.Object(
           {
@@ -260,9 +284,29 @@ export function registerPlanTool(pi: ExtensionAPI) {
       }
       const labels = labelCheck.labels;
       const provenance = provenanceCheck.provenance;
-      const repoRoot = await resolveRepoRoot(ctx.cwd);
+      const sessionRepoRoot = await resolveRepoRoot(ctx.cwd);
+      // #1854: the target repository, resolved HERE — before the job is launched,
+      // so before any child is dispatched, any forge is built, and any label list
+      // is read. A supplied target the driver cannot use is a refusal that files
+      // nothing anywhere; the pre-#1854 defect was a run that resolved to the
+      // session repo, passed every internal check, and minted a real issue number
+      // in the wrong tracker.
+      const targetRepository =
+        typeof params.targetRepository === "string" ? params.targetRepository : undefined;
+      const resolution = await resolvePlanTarget(params.targetRepository, sessionRepoRoot);
+      if (!resolution.ok) return invalidTarget(params.targetRepository, resolution.problem);
+      const target = resolution.target;
+      // #1854: the two facts the run reports about its destination — computed once
+      // here and passed down, so the launch notice, the tool details and the
+      // rendered steer cannot disagree about where the issue is going.
+      const targetFacts = planTargetFacts(targetRepository, target);
+      // One resolution threads the whole run: the session root is the target when
+      // the caller named none, so every consumer below — forge detection, the
+      // create call, the label gate, the children's cwd, the cache — agrees about
+      // the destination by construction rather than by agreement.
+      const repoRoot = target.repoRoot;
       trace(
-        `start_plan_driver → descriptor="${descriptor.slice(0, 60)}" type=${String(params.type ?? "inferred")} dryRun=${dryRun} labels=${labels.length} provenance=${provenance ? "yes" : "no"} repoRoot=${repoRoot}`,
+        `start_plan_driver → descriptor="${descriptor.slice(0, 60)}" type=${String(params.type ?? "inferred")} dryRun=${dryRun} labels=${labels.length} provenance=${provenance ? "yes" : "no"} repoRoot=${repoRoot}${targetFacts.label ? ` target=${targetFacts.label}` : ""}`,
       );
       // #1044 — launch, don't wait. The whole pipeline runs inside the job, so
       // a throw anywhere in it reaches the job's rejection path and is
@@ -286,12 +330,13 @@ export function registerPlanTool(pi: ExtensionAPI) {
       const driverInput: PlanDriverInput = {
         ...(params as Omit<
           PlanDriverInput,
-          "labels" | "provenance" | "descriptor" | "sourceIssue"
+          "labels" | "provenance" | "descriptor" | "sourceIssue" | "targetRepository"
         >),
         descriptor,
         labels,
         provenance,
         ...(sourceIssue !== undefined ? { sourceIssue } : {}),
+        ...(targetRepository !== undefined ? { targetRepository } : {}),
       };
       // #1541 review (MEDIUM) — the job's OWN AbortSignal, not the tool's exec
       // signal. `killJob(jobId)` / `killAllJobs()` (dispatch_kill and
@@ -301,7 +346,16 @@ export function registerPlanTool(pi: ExtensionAPI) {
       // `_signal` is deliberately NOT threaded: Pi drops it the moment
       // execute() returns, and the job outlives the call by minutes.
       const runPlanJob = async (signal: AbortSignal) => {
-        const result = await runPlanPipeline(piSessionHost(pi), driverInput, repoRoot, { signal });
+        // #1854's `target` rides INSIDE the options object, and the options stay
+        // the call's LAST argument: the canary that guards the kill path
+        // (test-plan-research-signal-canary.ts) matches the `{ signal }` shorthand
+        // close after the pipeline's name, so neither an argument inserted after the
+        // options nor a long property list may push it out of that span — the kill
+        // path would keep working and silently lose its detector.
+        const result = await runPlanPipeline(piSessionHost(pi), driverInput, sessionRepoRoot, {
+          signal,
+          target,
+        });
         return {
           role: "plan-driver",
           ok: !result.cancelled,
@@ -340,7 +394,14 @@ export function registerPlanTool(pi: ExtensionAPI) {
         content: [
           {
             type: "text",
-            text: launchNotice({ jobId, descriptor, dryRun, repoRoot }),
+            text: launchNotice({
+              jobId,
+              descriptor,
+              dryRun,
+              repoRoot,
+              ...(targetFacts.label ? { targetLabel: targetFacts.label } : {}),
+              ...(targetFacts.sessionLabel ? { sessionLabel: targetFacts.sessionLabel } : {}),
+            }),
           },
         ],
         // #1295 — the async-result contract every report-delivering tool keeps:
@@ -356,6 +417,10 @@ export function registerPlanTool(pi: ExtensionAPI) {
           jobId,
           dryRun,
           descriptor: noticeSubject(descriptor),
+          // #1854: the destination, on the launch details too — the field a caller
+          // reads to confirm where the issue is going before it spends minutes
+          // waiting for the steer. Only present for a supplied target.
+          ...(targetFacts.label ? { targetRepository: targetFacts.label } : {}),
         },
       };
     },
@@ -379,6 +444,28 @@ function parseSourceIssueParam(
     };
   }
   return { ok: true, value: v };
+}
+
+/**
+ * #1854: the pre-dispatch refusal of an unusable target repository. Shaped like
+ * the `invalid-input` refusal above — `started: false`, an `error` naming the
+ * cause — because the caller's remedy is the same in both cases: fix the
+ * parameter and re-call. It differs in carrying BOTH identities in the text, and
+ * in being reached after resolution rather than from a syntax check: the value
+ * can be well-formed and still not be a repository this machine can file into.
+ */
+function invalidTarget(requested: unknown, problem: string) {
+  const text = `start_plan_driver refused: targetRepository ${JSON.stringify(requested)} cannot be used. ${problem}`;
+  trace(`start_plan_driver refused targetRepository=${JSON.stringify(requested)}: ${problem}`);
+  return {
+    content: [{ type: "text" as const, text }],
+    details: {
+      started: false,
+      error: "invalid-target-repository",
+      requested: typeof requested === "string" ? requested : String(requested),
+      problems: [problem],
+    },
+  };
 }
 
 /**

@@ -59,6 +59,8 @@ export interface PlanResultFields {
   investigationReused?: { ageMs: number };
   filedFromDryRun?: { ageMs: number };
   reviewedSpecChanged?: { reason: string };
+  /** #1854: the repository the run filed (or would have filed) into. */
+  targetRepository?: string;
 }
 
 /**
@@ -104,6 +106,9 @@ export function buildPlanResult(f: PlanResultFields): PlanResult {
     investigationReused: f.investigationReused,
     filedFromDryRun: f.filedFromDryRun,
     reviewedSpecChanged: f.reviewedSpecChanged,
+    // #1854: forwarded by name, like every other field — a builder that omits it
+    // reports a run with no destination rather than guessing one.
+    targetRepository: f.targetRepository,
     timings: f.timings,
   };
 }
