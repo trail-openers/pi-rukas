@@ -37,11 +37,12 @@
  * inferring the range from HEAD instead of from the command.
  */
 
-import { simpleCommands } from "./bash-destructive-write.ts";
 import { readCommitOid } from "./git-oid-read.ts";
+import { publishCommandLines } from "./public-hygiene-command.ts";
 import type { PushScanDeps } from "./public-hygiene-push.ts";
 import { looksLikeRemoteUrl, pushOptionGluedValue } from "./public-hygiene-remote.ts";
 import { PUSH_SCAN_MAX_BUFFER, PUSH_SCAN_TIMEOUT_MS } from "./public-hygiene-scan.ts";
+import { isGitProgramWord, walkGitGlobals } from "./public-hygiene-target.ts";
 
 /** How a push names "every local branch" / "every tag". */
 const ALL_BRANCHES_FLAGS = new Set(["--all", "--branches", "--mirror"]);
@@ -187,10 +188,18 @@ export async function resolveSrcs(
 ): Promise<ResolvedSrcs> {
   const timeout = deps.timeoutMs ?? PUSH_SCAN_TIMEOUT_MS;
   const maxBuffer = deps.maxBuffer ?? PUSH_SCAN_MAX_BUFFER;
-  const words = splitPushWords(deps.command ?? "");
   const pushVerb = deps.pushVerb ?? "";
+  const words = splitPushWords(deps.command ?? "", pushVerb);
   const parsed = pushRefspecs(words, pushVerb, new Set(names));
-  if (words.indexOf(pushVerb) < 0) {
+  // THE RANGE IS UNLOCATABLE, NOT EMPTY. No verb word in the words this reader read
+  // means nothing anchored the refspec list, so the branches below would take the
+  // no-refspec shape and resolve HEAD — the clone's checked-out branch, in a tree
+  // another reader picked, read out as "clean" for a command that publishes
+  // something else. The scan refuses instead; the caller (`scanPushRange`) raises the
+  // same sentence earlier for a command with no locatable push segment at all, and
+  // this is the arm that still catches a command whose segment exists but whose verb
+  // some git global made unknowable (#2168).
+  if (pushVerb === "" || words.indexOf(pushVerb) < 0) {
     return { commits: [], problem: "the push command could not be parsed" };
   }
   const selector = parsed.branches || parsed.tags;
@@ -328,17 +337,55 @@ async function resolveOne(
  * raw string on whitespace made that command name two, and the scan then resolved
  * `feat/two` as a revision and refused a push whose actual source it had never
  * read (H8). So the words come from the same segmenter every other reader of this
- * guard uses, which strips quotes the way bash does; the segment boundaries are
- * then dropped, because the question this reader asks is "what words follow the
- * push verb", and it is asked of the whole command the way `pushRemoteName` and
- * `pushRefspecs` have always asked it.
+ * guard uses, which strips quotes the way bash does.
+ *
+ * They are then concatenated, which is what the FIRST version of this reader did
+ * and what the second must not: the question this reader asks is "what words follow
+ * the push verb", and a word that follows the verb only because another segment
+ * began is not one of them. `git push origin b && git log --oneline -1` concatenated
+ * to `… origin b git log --oneline -1`, `pushRefspecs` took `git` and `log` as
+ * refspecs, the scan tried to resolve them as revisions, and a routine push
+ * followed by a read was REFUSED (and a chain whose tail happened to name a real
+ * ref would have scanned the wrong commits). So the concatenation is stopped at the
+ * segment that carries git's push verb — the same one `ownPushSegment` answers for
+ * and {@link pushSegmentCount} counts.
+ *
+ * The lines come from {@link publishCommandLines}, the wrapper-stripped reading
+ * every other reader of this scan shares, not from the raw segmenter. Reading the
+ * raw one was the fail-OPEN: for `xargs git push` the wrapper word sat in front of
+ * the git words, so the word at git's verb position was `xargs`, the refspec reader
+ * found no push, `resolveSrcs` got no refspecs and resolved HEAD — a range the
+ * command never named — while `xargs git push origin <branch>`, whose refspec
+ * survived the wrapper word, was correctly refused. One family, two answers
+ * (#2168).
  */
-export function splitPushWords(command: string): string[] {
+export function splitPushWords(command: string, pushVerb = ""): string[] {
+  const lines = publishCommandLines(command);
+  const at = pushVerb === "" ? -1 : lines.findIndex((argv) => pushVerbAt(argv, pushVerb) >= 0);
   const words: string[] = [];
-  for (const argv of simpleCommands(command)) {
+  // Without a verb to anchor on there is no segment to stop at, and the whole
+  // command is the only answer this reader can give — the shape `directPushTarget`
+  // asks of it when it wants the destination of a command whose verb position some
+  // git global made unknowable.
+  for (const argv of at < 0 ? lines : [lines[at] as string[]]) {
     for (const w of argv) {
       if (w !== "") words.push(w);
     }
   }
   return words;
+}
+
+/**
+ * Where this segment's git takes the push verb, or -1 when it is not a git push
+ * segment. The verb must sit past the end of git's pre-verb globals (the one
+ * walker in `public-hygiene-target.ts`), so a branch or remote NAMED `push` is not
+ * the verb.
+ */
+function pushVerbAt(argv: readonly string[], pushVerb: string): number {
+  if (pushVerb === "") return -1;
+  const prog = argv[0] ?? "";
+  if (prog.includes(" ") || !isGitProgramWord(prog)) return -1;
+  const walk = walkGitGlobals(argv);
+  if (walk.refused) return -1;
+  return argv[walk.end] === pushVerb ? walk.end : -1;
 }

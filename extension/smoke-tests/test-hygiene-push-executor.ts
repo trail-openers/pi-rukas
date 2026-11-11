@@ -179,20 +179,19 @@ await withEnv({ ...gitEnv, PI_ENSEMBLE_PUBLIC_DENYLIST: list }, async () => {
         (wtBad.reason ?? "").includes("nope"),
       "a `-C` target that is no repository is refused with a sentence naming the directory",
     );
-    // The other direction, which is the fail-OPEN the scan's own segment reader
-    // closes: from the SESSION tree the last segment resolves to the tree of the
-    // push that never got to run (`&&` short-circuits), so the scan locates the
-    // FIRST push segment and the refusal is the directory sentence for the
-    // unreadable target that git would actually have run in — never the chain's
-    // last tree.
+    // The other direction, which the scan's own segment reader used to close on its
+    // own: from the SESSION tree the last segment resolves to the tree of the push
+    // that never got to run (`&&` short-circuits), so the scan located the FIRST push
+    // segment and refused for the unreadable target. A chain that pushes twice is now
+    // refused BEFORE the directory is asked about — one scan cannot answer for two
+    // pushes — so the sentence is the one-push rule, and the second tree is never read
+    // at all. The single-push row above still pins the directory sentence itself.
     const chainBad2 = await prodHook()(
       `git -C ${wt}nope ${PUSH} && cd ${work} && git -C ${wt} ${PUSH} origin wt-branch`,
     );
     assert(
-      chainBad2?.block === true &&
-        (chainBad2.reason ?? "").includes("could not be read") &&
-        (chainBad2.reason ?? "").includes("nope"),
-      "in a chain, the refusal names the `-C` target whose read failed",
+      chainBad2?.block === true && (chainBad2.reason ?? "").includes("one push per command"),
+      "in a chain that pushes twice, the refusal is the one-push-per-command sentence — the tree git would have run in is never judged",
     );
     assert(
       !/\bwt-exec\b(?!nope)/.test(chainBad2?.reason ?? ""),

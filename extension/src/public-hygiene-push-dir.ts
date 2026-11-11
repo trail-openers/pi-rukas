@@ -86,6 +86,88 @@ export function pushCommandWords(deps: PushScanDeps): string[][] {
 }
 
 /**
+ * How many `git` segments of the command take the push verb as their VERB.
+ *
+ * Asked of the SAME stripped lines the segment is located from, so the count
+ * cannot disagree with the segment the scan reads: a command the segmenter reduces
+ * to no git argv counts zero, which is the fact that makes a range unlocatable.
+ *
+ * The count, rather than a boolean, is what the scan needs. `commandPushes` is
+ * deliberately an over-approximation (a regex over the raw text, a shell body, a
+ * runner payload), so "the trigger called this a push" and "a git segment takes
+ * the verb" are different facts: the first is the reason to scan, the second is
+ * the only thing that makes a range locatable. Two of the second in one command is
+ * the shape that fails open — the scan answers for ONE segment, so the second push
+ * goes out unread, and `a && b` DOES reach `b` once `a` succeeds.
+ *
+ * The verb is sought from the END of git's globals, not anywhere in the argv: a
+ * branch or remote named `push` is not the verb. A refused global (`--git-dir`,
+ * `--work-tree`) consumes an operand this walker cannot resolve, so its verb
+ * position is unknowable — such a segment counts once, and the existing flag
+ * refusal owns the command. A quoted run is not a program word (bash runs no
+ * program from a word with a space in it), so prose that merely mentions the verb
+ * never counts.
+ */
+export function pushSegmentCount(command: string, pushVerb: string): number {
+  if (pushVerb === "") return 0;
+  let count = 0;
+  for (const argv of publishCommandLines(command)) {
+    const prog = argv[0] ?? "";
+    if (prog.includes(" ") || !isGitProgramWord(prog)) continue;
+    const walk = walkGitGlobals(argv);
+    if (walk.refused) {
+      count++;
+      continue;
+    }
+    if (argv[walk.end] === pushVerb) count++;
+  }
+  return count;
+}
+
+/**
+ * The two refusals a push scan raises from the command's WORDS, before a single git
+ * read, because both are statements about what the scan could LOCATE rather than
+ * about what git would print.
+ *
+ * Every other refusal of this scan is produced by a read below it. These two are
+ * not: they refuse a scan that CANNOT be built, and a scan that cannot be built
+ * answers for a range nobody located — HEAD, in a directory somebody else resolved
+ * — which is the confident wrong answer this module exists to refuse. Both read the
+ * one segmenter answer the segment itself comes from, never the raw segmenter: two
+ * readings of one command is what let `xargs git push` be answered for HEAD while
+ * the same family with a refspec was refused (#2168).
+ */
+
+/**
+ * The trigger called this command a push, but no `git` segment of it takes the verb
+ * where git reads its verb.
+ *
+ * `eval "git push"`, `bash -c '…'`, `busybox git push`, `docker run … git push`, a
+ * heredoc fed to a shell: each reaches the trigger through a body or payload the
+ * segmenter never reduces to a git argv, so the refspec reader has no verb word and
+ * no refspecs, falls into its no-refspec branch, and resolves HEAD — the clone's
+ * checked-out branch, which is not what the command publishes. Refusing is the same
+ * rule `unseenPublishReason` applies to a publish the scan could not see, and the
+ * sentence names the fix rather than the mystery.
+ */
+export const UNPARSABLE_PUSH_REASON =
+  "the push command could not be parsed: run git push directly, not through a wrapper " +
+  "or an interpreter";
+
+/**
+ * More than one push in one command.
+ *
+ * The scan is the scan of ONE segment (the first push's tree), so every push after
+ * it is published unread — and `a && b` reaches `b` once `a` succeeds, which is what
+ * makes the unread half a fail-OPEN rather than a hypothetical: a chain whose first
+ * tree is clean and whose second carries the term was scanned clean and published
+ * dirty. One scan per push is the rule, so the second push gets refused instead of
+ * inheriting the first one's verdict.
+ */
+export const ONE_PUSH_REASON =
+  "the push command pushes more than once, so run each push on its own: one push per command";
+
+/**
  * The `--git-dir`/`--work-tree` the scan's own command types, or `undefined`.
  *
  * This is the question "does this push name its repository in a way this guard

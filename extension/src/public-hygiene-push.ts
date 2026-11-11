@@ -81,7 +81,14 @@ import { parseRemoteUrl } from "./forge-detect.ts";
 import { execGit } from "./git-range.ts";
 import type { DenylistRead } from "./public-denylist.ts";
 import { codeOf } from "./public-hygiene-files.ts";
-import { ownPushSegment, pushCommandWords } from "./public-hygiene-push-dir.ts";
+import {
+  ONE_PUSH_REASON,
+  UNPARSABLE_PUSH_REASON,
+  describeDir,
+  ownPushSegment,
+  pushCommandWords,
+  pushSegmentCount,
+} from "./public-hygiene-push-dir.ts";
 import { scanDirectoryProblem } from "./public-hygiene-push-probe.ts";
 import { bounded, directPushTarget, pushRemoteNames } from "./public-hygiene-push-reads.ts";
 import { resolveSrcs } from "./public-hygiene-refspecs.ts";
@@ -158,6 +165,22 @@ export async function scanPushRange(deps: PushScanDeps): Promise<PushScanResult>
   // reader's directory got scanned (#2168 H1).
   const segment = ownPushSegment(deps);
   const words = pushCommandWords(deps);
+  // THE TWO REFUSALS DECIDED BEFORE THE SCAN IS BUILT, from this one stripped
+  // answer — the same `publishCommandLines` reading `ownPushSegment` located the
+  // segment with. A scan that cannot name the segment it is the scan of answers for
+  // a range nobody located (HEAD, in a directory another reader chose), and a scan
+  // of one segment cannot answer for a command that pushes twice; both are refused
+  // here rather than answered below (#2168). Asked before `scanDirectoryProblem`
+  // because both say something stronger than "this directory is not a repository":
+  // the command itself is the thing that cannot be located. The reason is the bare
+  // constant: the guard's unreadable sentence supplies the subject (`The push …`), so
+  // prefixing it here would print "the push the push …".
+  const pushes = pushSegmentCount(deps.command ?? "", deps.pushVerb ?? "");
+  const unparsable =
+    pushes === 0 ? UNPARSABLE_PUSH_REASON : pushes > 1 ? ONE_PUSH_REASON : undefined;
+  if (unparsable !== undefined) {
+    return { scanned: false, texts: [], problems: [{ location: "push", reason: unparsable }] };
+  }
   const read = { ...deps, cwd: segment === "self" || segment === "refused" ? deps.cwd : segment };
   const git = (args: string[]) => execGit(read.exec, read.cwd, args, { timeout, maxBuffer });
   // Is there a repository at all to read here, and is the command's own way of
