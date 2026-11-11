@@ -146,6 +146,7 @@
     "smoke-tests/test-plan-pi-spec.ts",
     "smoke-tests/test-plan-pi-spec-filing.ts",
     "smoke-tests/test-plan-pi-spec-problem.ts",
+    "smoke-tests/test-plan-pi-spec-statement-guard.ts",
     "smoke-tests/test-plan-pi-spec-fence-closer.ts",
     "smoke-tests/test-plan-pi-spec-ceiling.ts",
     "smoke-tests/test-plan-pi-spec-example.ts",

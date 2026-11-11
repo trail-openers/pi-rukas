@@ -18,7 +18,7 @@
  * zero-criteria draft is a legitimate shape and the title fallback sits behind
  * the zero-criteria return, so nothing says why the block vanished.
  */
-import { closesFenceRun } from "./lean/spec.ts";
+import { closesFenceLine } from "./lean/spec.ts";
 import { AC_FALLBACK } from "./plan-validate.ts";
 
 /** The line `plan-draft.ts` renders the caller's descriptor as, in `## Context & motivation`. */
@@ -68,41 +68,36 @@ const TYPE_LINE = /^Type\s*:/i;
 const FENCE_OPENER = /^(?: {0,3})(?<run>`{3,}|~{3,})/;
 
 /**
- * A line that COULD close a sample: up to 3 spaces, then the run with nothing but
- * WHITESPACE after it, carrying no info string. CommonMark strips a closing fence's
- * trailing whitespace, so a tab tail is as much a closer as a space tail, and this
- * class is `\s` and not `[ ]` because `lean/spec.ts` TRIMS that tail — a pattern
- * that accepted spaces only called a tab-closed sample still open, and the two
- * readers of one body then disagreed about the same line: the strip removed the
- * block the walker was still inside, and the walker carried a quoted `## ` heading
- * as a section boundary that ended the section early (zero bullets, which is a
- * legitimate shape, so the draft filed no machine block at all). Whether a match
- * DOES close the open one is `closesFence`'s predicate, not this pattern's —
- * a run shorter than its opener is content, like any other line.
+ * Whether `line` closes a sample opened by `char`/`len`.
  *
- * The 0–3 indent is stated here as well as on the opener: a sample written under a
- * list item closes on a run indented as deeply as that item's content, and a reader
- * that recognised openers at 0–3 but closers only at column 0 never closes that
- * sample — so its lines are read as section text and a bullet inside the sample is
- * filed as a criterion, which `placePiSpecSection` then embeds in the contract.
- */
-const FENCE_CLOSER = /^(?: {0,3})(?<run>`{3,}|~{3,})\s*$/;
-
-/**
- * Whether `run` closes a sample opened by `char`/`len`.
+ * `lean/spec.ts`'s {@link closesFenceLine}, imported rather than restated — there
+ * is deliberately NO local closer pattern in this file. This reader and that
+ * module's strips judge the SAME bytes, and a closer one accepted and the other
+ * refused is the drift that makes one body read two ways: a sample the strip
+ * called closed (and so removed from the oracle seat) while this walk was still
+ * inside it carries the sample's quoted `## Acceptance criteria` line as a
+ * boundary that ends the section early — zero bullets, a legitimate shape, so
+ * `piSpecFromDraft` returns before its title fallback and the draft files NO
+ * machine block at all, silently.
  *
- * `lean/spec.ts`'s {@link closesFenceRun}, imported rather than restated: this
- * reader and that module's strips judge the SAME bytes, and a closer one accepted
- * and the other refused is the drift that makes a body read two ways — a strip
- * that keeps what the parser dropped, or a section that ends where a strip kept
- * going. The third condition the grammar states (a closer carries no info string)
- * is enforced by the caller, which only asks about a line whose run stands alone.
- * The shape that separates a reader that honours the length rule from one that
- * merely looks for a fence line — a four-run opener with a three-run "closer" —
- * is pinned for both readers, here in `test-plan-pi-spec-problem.ts` and there in
- * `test-lean-spec.ts`.
+ * That is why the "nothing but whitespace after the run" half is not restated
+ * here either, neither as a `[ \t]*$` nor as a `\s*$` anchor: each reader that
+ * supplied that half for itself got a different tail class, and the classes differ
+ * on real characters (JS treats U+2028/U+2029 as line terminators, so `.` in the
+ * shared pattern does not match them, while `\s` does). The shape that separates a
+ * reader that honours the length rule from one that merely looks for a fence line —
+ * a four-run opener with a three-run "closer" — is pinned for both readers, here in
+ * `test-plan-pi-spec-problem.ts`, there in `test-lean-spec.ts`, and the tail class
+ * in `test-plan-pi-spec-fence-closer.ts`.
+ *
+ * The 0–3 indent is carried by the shared predicate, as it is by `FENCE_OPENER`
+ * above: a sample written under a list item closes on a run indented as deeply as
+ * that item's content, and a reader that recognised openers at 0–3 but closers only
+ * at column 0 never closes that sample — so its lines are read as section text and a
+ * bullet inside the sample is filed as a criterion, which `placePiSpecSection` then
+ * embeds in the contract.
  */
-const closesFence = closesFenceRun;
+const closesFence = closesFenceLine;
 
 /** The heading line that opens a named section. */
 const sectionHead = (heading: string): RegExp =>
@@ -174,8 +169,7 @@ export function sectionLines(body: string, heading: string): [string, boolean][]
       // the next iteration reads the line after it.
       let end = -1;
       for (let j = i + 1; j < lines.length; j++) {
-        const run = FENCE_CLOSER.exec(lines[j] as string)?.groups?.run;
-        if (run !== undefined && closesFence(run, char, len)) {
+        if (closesFence(lines[j] as string, char, len)) {
           end = j;
           break;
         }

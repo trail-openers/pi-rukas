@@ -290,5 +290,4 @@ assert(
   "specify's write instruction names only the test criterion, never AC2 or AC3",
 );
 
-
 process.exit(exit);
