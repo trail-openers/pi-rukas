@@ -25,6 +25,11 @@
  *   4. `resetWorktreeToBase` — discard child commits, staged changes,
  *      untracked files and ignore tricks, then PROVE the tree is at base and
  *      clean, or throw. A reset nobody confirmed is a claim, not a fact.
+ *      Its `clean -fdx` de-populates every submodule, so this module
+ *      re-initialises them after every reset it makes (`initSubmodules`,
+ *      `specify-preflight.ts`) — a test that imports from a submodule
+ *      directory left empty cannot be collected, and the step would blame the
+ *      adversary for what the clean did.
  *
  * The worktree itself is created through `worktreeCreate` from ../worktree.ts
  * — so it gets the driver's pre-add guards and its dependency provisioning,
@@ -38,6 +43,7 @@
 import { existsSync, realpathSync } from "node:fs";
 import { provisionWorktree } from "../worktree-provision.ts";
 import { type ExecFn, worktreeCreate, worktreePath } from "../worktree.ts";
+import { initSubmodules } from "./specify-preflight.ts";
 import { NO_HOOKS, resetWorktreeToBase } from "./specify-reset.ts";
 export { type DroppedRow, NEWNESS_REASON, validateSubmitRows } from "./submit-tests-cap.ts";
 
@@ -203,8 +209,11 @@ export async function ensureSpecifyWorktreeWithProvision(
     // The reset cleans WITHOUT exemptions — `git clean -fdx` takes the
     // dependency links too — and provisioning then builds them again, which
     // also re-writes the `info/exclude` entries. One code path for a created
-    // tree and a leftover one, so neither can keep a link the other did not.
+    // tree and a leftover one, so neither can keep a link the other did not —
+    // and the same single path re-initialises the submodules the clean emptied,
+    // whether or not this reset moved anything.
     await resetWorktreeToBase(exec, wt, opts.fromRef, opts.branch);
+    await initSubmodules(exec, wt);
     const provision = await provisionWorktree(exec, opts.repoRoot, wt);
     return { wt, linked: provision.linked, ...problemOf(provision) };
   }
@@ -220,6 +229,7 @@ export async function ensureSpecifyWorktreeWithProvision(
   // freezes the tests is then a commit ON the run's branch. `resetWorktreeToBase`
   // does the `-B` and the `--hard` together and then proves the tree got there.
   await resetWorktreeToBase(exec, tree, opts.fromRef, opts.branch);
+  await initSubmodules(exec, tree);
   const provision = await provisionWorktree(exec, opts.repoRoot, tree);
   return { wt: tree, linked: provision.linked, ...problemOf(provision) };
 }

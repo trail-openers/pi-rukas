@@ -66,6 +66,7 @@ import { providerWaitNote, waitOutProviderFault } from "./provider-wait.ts";
 import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
 import { runSpecifyAttempt } from "./specify-attempt.ts";
 import type { CaptureResult } from "./specify-capture.ts";
+import { assertRunnerCanRunTests } from "./specify-preflight.ts";
 import { RED_PROOF_CONTRACT, namingLine, testCriteria } from "./specify-prompt.ts";
 import type { TestRunLimits } from "./specify-proof.ts";
 import { SpecifyResetError } from "./specify-reset.ts";
@@ -109,6 +110,14 @@ export interface SpecifyDeps {
   capture?: (wt: string, paths: string[], owners: Map<string, string>) => CaptureResult;
   /** Per-run runner limits; a test injects a short timeout to prove a hang is infra. */
   testLimits?: TestRunLimits;
+  /**
+   * The runner preflight's own limits, so a case can shrink the bound and watch
+   * a hanging probe end as an infrastructure handback. Its own field rather than
+   * a second use of {@link testLimits}: the probe bounds ONE runner call made
+   * before the child exists, and a case that shortens the red proof's bound to
+   * prove a hung frozen test is infra must not thereby shorten the probe's.
+   */
+  preflightLimits?: TestRunLimits;
 }
 
 /**
@@ -311,6 +320,19 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
   // here, once, so every attempt below is typed against the narrowed binding.
   if (runnerTemplate === undefined)
     throw new SpecifyInfraError("no test runner configured for a spec with test criteria");
+  // 4b. The runner's own health, once, before the adversary is paid. `fast`
+  //     cannot answer it (a project's fast tier is a typecheck and a lint, and
+  //     the runner may not even be part of it), and the red proof answers it too
+  //     late and in the wrong vocabulary: a runner that dies before collection
+  //     prints nothing naming the file, and the step would decline on the work
+  //     it never judged. A configured runner that cannot run an EMPTY test file
+  //     throws here — no dispatch, no model call, no rows.
+  await assertRunnerCanRunTests(deps.exec, {
+    wt,
+    template: runnerTemplate,
+    ...(testLocation === undefined ? {} : { testLocation }),
+    ...(deps.preflightLimits === undefined ? {} : { limits: deps.preflightLimits }),
+  });
   // The run's frozen test record, read ONCE. The quota seed does not change
   // while the boundary runs (nothing commits in between), so reading it per
   // `validate` invocation would just re-fold the step log for the same answer.
