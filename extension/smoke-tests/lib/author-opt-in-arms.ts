@@ -21,6 +21,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { mergeAuthorTreeLine } from "../../src/merge-author-allowlist.ts";
 import { gitTestEnv } from "./git-test-env.ts";
 
 /** The gate file's path, assembled. */
@@ -36,6 +37,14 @@ export const ARMS_ALLOWED = "alice\nBob\n";
 export type OptInArm = {
   /** `cat-file -t` answers this instead of `blob` (a directory, a symlink). */
   type?: string;
+  /**
+   * The tree entry's MODE, which is what `git ls-tree` reports and what actually
+   * distinguishes a committed symlink (`120000`) from a regular file (`100644`). The
+   * default `"100644"` is the regular file every happy-path arm wants. `type` is the
+   * OLD knob and no longer decides a symlink on its own — a committed link is a `blob`
+   * to `cat-file -t`, so an arm that means a link names `mode: "120000"`.
+   */
+  mode?: string;
   /** The path is not in the commit at all — git's own failure for that shape. */
   absent?: boolean;
   /** The blob exists but the bytes cannot be read. */
@@ -65,6 +74,15 @@ export function optInExec(arm: OptInArm, calls: string[] = []) {
   const exec = async (_cmd: string, opts?: { argv?: string[] }): Promise<{ stdout: string }> => {
     const argv = opts?.argv ?? [];
     calls.push(argv.join(" "));
+    // The tree read first: it carries the path as its own argv entry (git's argv
+    // contract for `ls-tree <rev> -- <path>`), so it is recognised by its verb and not
+    // by a spec this call does not contain. It answers a MODE line, never a type or the
+    // bytes — and for an absent path it answers them EMPTY, which is git's honest "no
+    // such entry" rather than a failure.
+    if (argv.includes("ls-tree")) {
+      if (arm.absent === true) return { stdout: "" };
+      return { stdout: mergeAuthorTreeLine(arm.mode ?? "100644", GATE_FILE) };
+    }
     if (argv.includes("cat-file")) {
       if (arm.absent === true)
         throw gitFailure("fatal: path does not exist in '<base>:<gate file>'", 128);

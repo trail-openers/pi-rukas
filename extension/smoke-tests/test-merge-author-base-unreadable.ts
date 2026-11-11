@@ -90,12 +90,17 @@ function reason(read: Awaited<ReturnType<typeof readMergeAuthorAllowlist>>): str
   // one answer that means "no rule here", and the classifier keeps it.
   const exec = async (_cmd: string, opts?: { argv?: string[] }) => {
     const argv = opts?.argv ?? [];
+    // The tree read answers git's own "no such entry" — an empty result, not a
+    // failure. Absence needs both reads to say the path is not in the commit; a seam
+    // that left the third read unscripted would be a hole, not an answer.
+    if (argv.includes("ls-tree")) return { stdout: "" };
     if (argv.includes("cat-file"))
       throw gitFailure(
         `Command failed: git ${argv.join(" ")}`,
         128,
         `fatal: path '${GATE_FILE}' does not exist in '${BASE}'\n`,
-      );    throw new Error("no bytes are read for a path that is not there");
+      );
+    throw new Error("no bytes are read for a path that is not there");
   };
   const read = await readMergeAuthorAllowlist(exec, "/r", BASE);
   assert(

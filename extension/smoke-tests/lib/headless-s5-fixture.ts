@@ -353,6 +353,21 @@ export function mergeExec(
 		// are `git show <sha>:<path>` and only this one names the gate file.
 		if (line.includes(MERGE_AUTHORS_PATH)) {
 			log.allowlistReads.push(line);
+			// The tree read comes first and carries no `<sha>:<path>` spec, so it cannot
+			// reach the blob branch below. For an absent path git answers it EMPTY — the
+			// tree holds no such entry — which is a different fact from a failed read, and
+			// the reader needs both probes to say "not there" before it calls the file
+			// absent. Otherwise it is answered from the fixture's own clone, so the mode is
+			// git's rather than one this table invented.
+			if (line.includes("ls-tree")) {
+				if (opts.noAllowlist === true) return { stdout: "" };
+				const at = line.indexOf("ls-tree ");
+				const rest = at < 0 ? "" : line.slice(at + "ls-tree ".length);
+				const [sha, , file] = rest.split(/\s+/);
+				if (!/^[0-9a-f]{7,40}$/.test(sha ?? "") || file !== MERGE_AUTHORS_PATH)
+					throw new Error(`not a tree spec: ${line}`);
+				return runGit(["ls-tree", sha, "--", file]);
+			}
 			if (opts.noAllowlist === true)
 				throw new Error("fatal: path does not exist");
 			if (line.includes("cat-file")) return { stdout: "blob\n" };

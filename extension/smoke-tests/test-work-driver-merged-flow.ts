@@ -17,6 +17,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { mergeAuthorTreeLine } from "../src/merge-author-allowlist.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import type { VerifyExecFn } from "../src/work-driver-git.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
@@ -170,7 +171,11 @@ function mergeGateGreen(cmd: string): { stdout: string } | undefined {
 	// text names `FIXTURE_AUTHOR`, the same login the evidence read above reports.
 	if (cmd.includes([".pi", "merge-authors"].join("/"))) {
 		return {
-			stdout: cmd.includes("cat-file") ? "blob\n" : `${FIXTURE_AUTHOR}\n`,
+			stdout: cmd.includes("ls-tree")
+				? mergeAuthorTreeLine("100644", [".pi", "merge-authors"].join("/"))
+				: cmd.includes("cat-file")
+					? "blob\n"
+					: `${FIXTURE_AUTHOR}\n`,
 		};
 	}
 	if (cmd.includes("rev-parse") && cmd.includes("^{commit}")) {

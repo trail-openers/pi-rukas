@@ -30,7 +30,7 @@
  * fixture gap, and silence here is how a matrix starts asserting nothing.
  */
 
-import { MERGE_AUTHORS_FILE } from "../src/merge-author-allowlist.ts";
+import { MERGE_AUTHORS_FILE, mergeAuthorTreeLine } from "../src/merge-author-allowlist.ts";
 import type { MergeTarget } from "../src/merge-target.ts";
 import { commandOf } from "./lib/argv-shell.ts";
 import { isNulDiffRead } from "./lib/nul-porcelain.ts";
@@ -74,6 +74,13 @@ export type MergeGuardEnv = {
 	noAllowlist?: boolean;
 	/** `true` — the git read of the gate file throws (the unreadable-file arm). */
 	allowlistReadThrows?: boolean;
+	/**
+	 * The tree entry's MODE the `ls-tree` read answers with. `undefined` is the regular
+	 * file (`100644`) every arm that is not about the entry's shape wants; an arm about
+	 * that shape names `"120000"` (a committed symlink — a `blob` to `cat-file -t`, so
+	 * the type probe cannot catch it) or `"040000"` (a directory).
+	 */
+	allowlistTreeMode?: string;
 	/**
 	 * #2181 — the `author` field of the CI evidence read. `undefined` answers the
 	 * target's own author (which the default allowlist lists); a string names a
@@ -219,9 +226,10 @@ export function mergeGuardExec(env: MergeGuardEnv) {
 			if (env.failFetch) throw new Error("unable to connect");
 			return { stdout: "" };
 		}
-		// #2181 — the merge-author gate's two reads of the gate file at the base
-		// commit: `git cat-file -t <ref>:.pi/merge-authors` then `git show` of the same
-		// spec. Matched on the gate file's PATH rather than on a `git show` prefix, so
+		// #2181 — the merge-author gate's THREE reads of the gate file at the base
+		// commit: `git ls-tree <sha> -- <path>` for the entry's MODE, `git cat-file -t
+		// <ref>:.pi/merge-authors` for the TYPE, and `git show` of the same spec for the
+		// BYTES. Matched on the gate file's PATH rather than on a `git show` prefix, so
 		// neither form can be missed: the guard issues them in argv form, whose joined
 		// text `commandOf` renders without the leading `git`.
 		if (cmd.includes(MERGE_AUTHORS_FILE)) return allowlistAnswer(env, cmd);
@@ -327,12 +335,14 @@ async function evidenceAnswer(
 }
 
 /**
- * #2181 — the author gate's two reads of the gate file at the base commit.
+ * #2181 — the author gate's three reads of the gate file at the base commit.
  *
- * The two probes stay apart: `cat-file -t` answers the TYPE (handing it the file's
- * contents would make every path a blob) and `show` answers the BYTES. `noAllowlist`
- * makes the probe fail the way git does for a path that is not in the commit, which
- * is the shape the reader must refuse on.
+ * The three stay apart: `ls-tree` answers the entry's MODE (the only thing that tells a
+ * committed symlink — a `blob` to `cat-file` — from a regular file), `cat-file -t` the
+ * TYPE, and `show` the BYTES. Handing any of them another's answer makes every path a
+ * regular file or every file a blob. `noAllowlist` makes the two probes answer the way
+ * git does for a path that is not in the commit (an empty tree result plus the probe's
+ * rejection), which is the shape the reader must treat as the repository opting out.
  */
 function allowlistAnswer(env: MergeGuardEnv, cmd: string): { stdout: string } {
 	if (env.allowlistReadThrows === true)
@@ -340,6 +350,17 @@ function allowlistAnswer(env: MergeGuardEnv, cmd: string): { stdout: string } {
 			code: 128,
 			stderr: "git: unable to read pack file\n",
 		});
+	if (cmd.includes("ls-tree")) {
+		// The tree question is asked with the path as its own argument, so it arrives
+		// here too (the matcher above keys on the path, and this call carries it).
+		if (env.noAllowlist === true) return { stdout: "" };
+		return {
+			stdout:
+				env.allowlistTreeMode === undefined
+					? mergeAuthorTreeLine("100644", MERGE_AUTHORS_FILE)
+					: mergeAuthorTreeLine(env.allowlistTreeMode, MERGE_AUTHORS_FILE),
+		};
+	}
 	if (env.noAllowlist === true) {
 		// git's own wording for a path that is not in the commit, on the fields git
 		// (and `execFile`) carry it on: the reader's absence classifier reads

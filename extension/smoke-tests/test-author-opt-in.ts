@@ -57,8 +57,8 @@ const ABSENT: OptInArm = { absent: true };
     "…and its detail names the gate file so the operator can see what was not there",
   );
   assert(
-    calls.length > 0 && calls.every((c) => c.includes("cat-file")),
-    `absence is decided by the type probe alone — no bytes are read for a file that is not there (${JSON.stringify(calls)})`,
+    calls.length > 0 && !calls.some((c) => c.includes("show")),
+    `absence is decided by the two cheap probes — no bytes are read for a file that is not there (${JSON.stringify(calls)})`,
   );
 }
 {
@@ -99,8 +99,8 @@ const ABSENT: OptInArm = { absent: true };
     "A7: an unreadable author refuses only where the file is present — with no allowlist there is nothing to check it against",
   );
   assert(
-    calls.every((c) => c.includes("cat-file")),
-    "…and the absent file still costs only the type probe, never a blob read",
+    calls.length > 0 && !calls.some((c) => c.includes("show")),
+    "…and the absent file still costs only the probes, never a blob read",
   );
 }
 {
@@ -139,7 +139,16 @@ const ABSENT: OptInArm = { absent: true };
   );
   assert(
     realGit.length > 0 &&
-      realGit.every((c) => /[0-9a-f]{7,40}:|\^\{commit\}$/.test(c.split(/\s+/).pop() ?? "")),
+      realGit.every(
+        // Three reads, three commit-naming shapes: `<sha>:<path>` for the type probe and
+        // the blob, `<ref>^{commit}` for the base resolve, and `ls-tree <sha> -- <path>`
+        // for the mode — whose revision is an argument of its own, not a suffixed last
+        // token. What none of them may be is a bare working-tree path.
+        (c) =>
+          /[0-9a-f]{7,40}:/.test(c) ||
+          /\^\{commit\}$/.test(c) ||
+          / ls-tree [0-9a-f]{7,40} -- /.test(c),
+      ),
     `…and every read named a commit, never a working-tree path (${JSON.stringify(realGit)})`,
   );
 }
@@ -166,8 +175,15 @@ const ABSENT: OptInArm = { absent: true };
 // ------------------------------------- A7: present but unreadable / a tree / a symlink -> refuses
 {
   const arms: Array<[string, OptInArm, string]> = [
-    ["a directory at the path", { type: "tree" }, "directory"],
-    ["a symlink at the path", { type: "symlink" }, "symlink"],
+    ["a directory at the path", { type: "tree", mode: "040000" }, "directory"],
+    [
+      // The arm that real git makes the old probe useless against: a committed symlink
+      // is a `blob` to `cat-file -t`, so only the tree MODE catches it.
+      "a symlink at the path",
+      { type: "blob", mode: "120000" },
+      "symlink",
+    ],
+    ["a submodule at the path", { type: "blob", mode: "160000" }, "submodule"],
     ["an unreadable blob", { showThrows: true }, ""],
   ];
   for (const [name, arm, expect] of arms) {

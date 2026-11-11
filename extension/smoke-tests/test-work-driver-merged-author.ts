@@ -105,8 +105,8 @@ const runFor = (issue: number, extra: Parameters<typeof gateFileRun>[0] = {}) =>
 		"#2181 …and the gate still PROBED for the file — absence is a read's answer, never a skipped check",
 	);
 	assert(
-		r.log.allowlistReads.every((c) => c.includes("cat-file")),
-		"#2181 …and absence costs only the type probe, never a blob read",
+		r.log.allowlistReads.every((c) => !c.includes("show")),
+		"#2181 …and absence costs only the two probes (the tree mode and the type), never a blob read",
 	);
 	assert(
 		!(r.log.unexpected ?? []).some((c) => c.includes("rev-parse")),
@@ -161,12 +161,17 @@ const runFor = (issue: number, extra: Parameters<typeof gateFileRun>[0] = {}) =>
 	// with a sha base there is no resolve to fail, and inventing one would test the
 	// fixture rather than the gate.)
 	const r = await runFor(7125);
-	const specs = r.log.allowlistReads.map(
-		(c) => c.trim().split(/\s+/).pop() ?? "",
-	);
+	const specs = r.log.allowlistReads.map((c) => {
+		const at = c.indexOf("ls-tree ");
+		if (at < 0) return c.trim().split(/\s+/).pop() ?? "";
+		// The tree read carries no `<sha>:<path>` spec: its revision is its own argument,
+			// so that argument is what has to name the base commit.
+			return c.slice(at + "ls-tree ".length).split(/\s+/)[0] ?? "";
+	});
 	assert(
-		specs.length >= 2 && specs.every((s) => s.startsWith(`${r.baseSha}:`)),
-		`#2181: every allowlist read is of the form <baseSha>:<gate file>, never a bare path (${JSON.stringify(specs)})`,
+		specs.length >= 3 &&
+			specs.every((s) => s.startsWith(`${r.baseSha}:`) || s === r.baseSha),
+		`#2181: every allowlist read names the base commit — as a <baseSha>:<gate file> spec or ls-tree's own revision, never a bare path (${JSON.stringify(specs)})`,
 	);
 	assert(
 		specs.every((s) => !s.startsWith("./") && !s.startsWith("/")),

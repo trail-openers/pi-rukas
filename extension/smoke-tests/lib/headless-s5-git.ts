@@ -22,6 +22,10 @@ import { gitTestEnv } from "./git-test-env.ts";
  */
 const KNOWN_GIT_SUBCOMMANDS = new Set([
   "show",
+  // The merge-author gate's tree read (`git ls-tree <sha> -- <path>`): the mode that
+  // tells a committed symlink from a regular file. Answered from the fixture's own
+  // clone below, so it is git's real mode rather than an invented one.
+  "ls-tree",
   "rev-parse",
   "rev-parse --verify",
   "remote",

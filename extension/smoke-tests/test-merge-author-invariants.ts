@@ -26,7 +26,9 @@
 
 import {
 	MERGE_AUTHORS_FILE,
+	isMergeAuthorTreeRead,
 	mergeAuthorGate,
+	mergeAuthorTreeLine,
 	readMergeAuthorAllowlist,
 } from "../src/merge-author-allowlist.ts";
 
@@ -93,14 +95,21 @@ function stripComments(text: string): string {
 		opts?: { argv?: string[] },
 	): Promise<{ stdout: string }> => {
 		const argv = opts?.argv ?? [];
+		if (isMergeAuthorTreeRead(argv)) {
+			// The tree read names the revision as its own argument, not a `<sha>:<path>`
+			// spec, so it is recorded as that argument — which still has to be the commit.
+			specs.push(argv[argv.indexOf("ls-tree") + 1] ?? "");
+			return { stdout: mergeAuthorTreeLine("100644", MERGE_AUTHORS_FILE) };
+		}
 		specs.push(argv[argv.length - 1] ?? "");
 		if (argv.includes("cat-file")) return { stdout: "blob\n" };
 		return { stdout: DEFAULT_BODY };
 	};
 	await readMergeAuthorAllowlist(exec, "/r", SHA);
 	assert(
-		specs.length > 0 && specs.every((s) => s.startsWith(`${SHA}:`)),
-		`every read is of the form <sha>:${MERGE_AUTHORS_FILE}, never a bare path (${specs.join(" | ")})`,
+		specs.length >= 3 &&
+			specs.every((s) => s.startsWith(`${SHA}:`) || s === SHA),
+		`every read names the base commit — as a <sha>:${MERGE_AUTHORS_FILE} spec or as ls-tree's own revision, never a bare path (${specs.join(" | ")})`,
 	);
 	assert(
 		!specs.some((s) => s.startsWith("./") || s.startsWith("/")),

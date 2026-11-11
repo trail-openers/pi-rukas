@@ -18,6 +18,7 @@ import { parseMergeCommit } from "../src/work-driver-merged.ts";
 import { parsePerIssueVerdicts } from "../src/work-driver-plan.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { initialState, readState, writeState } from "../src/workflow-state.ts";
+import { mergeAuthorTreeLine } from "../src/merge-author-allowlist.ts";
 import { FIXTURE_AUTHOR } from "./lib/work-driver-merged-gate-files-fixture.ts";
 
 let exit = 0;
@@ -129,8 +130,15 @@ function mergeGateExec(
 		// reading is covered by test-merge-author-allowlist.ts and by the driver arms in
 		// test-work-driver-merged-gate-files.ts, both of which run against real git.
 		if (line.includes([".pi", "merge-authors"].join("/"))) {
+			// Three reads, three answers: `ls-tree` a MODE line, `cat-file -t` a TYPE, and
+			// `show` the bytes. Handing the mode or type probe the blob would make every
+			// path a regular file and let a committed symlink through.
 			return {
-				stdout: line.includes("cat-file") ? "blob\n" : `${FIXTURE_AUTHOR}\n`,
+				stdout: line.includes("ls-tree")
+					? mergeAuthorTreeLine("100644", [".pi", "merge-authors"].join("/"))
+					: line.includes("cat-file")
+						? "blob\n"
+						: `${FIXTURE_AUTHOR}\n`,
 			};
 		}
 		if (line.includes("rev-parse") && line.includes("^{commit}")) {

@@ -25,6 +25,7 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { mergeAuthorTreeLine } from "../src/merge-author-allowlist.ts";
 import { runMerged } from "../src/work-driver-merged.ts";
 import type { VerifyExecFn } from "../src/work-driver-git.ts";
 import { setupSpawnGuard } from "./test-helpers.ts";
@@ -70,8 +71,12 @@ setupSpawnGuard();
 			// #2181 — the merge-author gate's reads. The allowlist names the same login the
 			// evidence read reports, so a case written before the gate keeps reaching the
 			// restoration path its assertions are about. Matched on the gate file's path
-			// with the probe answered separately, because `cat-file -t` must NOT receive
-			// the blob (it answers a type) — the probe key has to come first.
+			// with the two probes answered separately, because neither may receive the blob:
+			// `ls-tree` answers the entry's MODE and `cat-file -t` a TYPE — the probe keys
+			// have to come first.
+			"ls-tree": {
+				stdout: mergeAuthorTreeLine("100644", ".pi/merge-authors"),
+			},
 			"cat-file": { stdout: "blob\n" },
 			".pi/merge-authors": { stdout: `${FIXTURE_AUTHOR}\n` },
 			"^{commit}": { stdout: `${HEAD_OID}\n` },
