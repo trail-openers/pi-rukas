@@ -129,9 +129,14 @@ export async function runResearchPipeline(
   // #1541 review (MEDIUM) — the tool path passes the async job's own signal so
   // dispatch_kill / session shutdown stop the run at a phase boundary. Optional
   // so the direct-pipeline tests keep their four-argument calls.
-  opts: { signal?: AbortSignal } = {},
+  // The same optional-opts route carries `parentKey` (the launching job's own
+  // jobId): a caller with no async job — headless/research.ts — passes neither
+  // and its children's deck rows carry no parent link at all, rather than an
+  // empty string or the child's own key.
+  opts: { signal?: AbortSignal; parentKey?: string } = {},
 ): Promise<ResearchResult> {
   const signal = opts.signal;
+  const parentKey = opts.parentKey;
   const dispatch: ResearchDispatchFn = _dispatchOverride ?? dispatchCore;
   const execFn = deps.execFn ?? defaultExec;
   const statFn = deps.statFn ?? (stat as (p: string) => Promise<unknown>);
@@ -242,7 +247,7 @@ export async function runResearchPipeline(
         // Built once: both legs (the primary and the wigolo re-dispatch) take the
         // same prior block, fallback line, cwd and signal — a second literal copy
         // is a second chance for the two to drift.
-        const ctx = { priorBlock, fallbackLine, repoRoot, signal };
+        const ctx = { priorBlock, fallbackLine, repoRoot, signal, parentKey };
         let run = await runResearchAngle(dispatch, pi, a, "parallel", undefined, ctx);
         // #1541 review (MEDIUM) — one re-dispatch per angle, and each is a full
         // child. A kill mid-barrier must not spend the second one.
@@ -345,6 +350,7 @@ export async function runResearchPipeline(
           {
             label: "research-entailment",
             timeoutMs: RESEARCH_DISPATCH_TIMEOUT_MS,
+            ...(parentKey ? { parentKey } : {}),
             ...(signal ? { signal } : {}),
             extraArgs: PLAN_MARKER_CHILD_ARGS,
           },
@@ -380,6 +386,7 @@ export async function runResearchPipeline(
         {
           label: "research-memo-synthesis",
           timeoutMs: RESEARCH_DISPATCH_TIMEOUT_MS,
+          ...(parentKey ? { parentKey } : {}),
           ...(signal ? { signal } : {}),
           extraArgs: PLAN_MARKER_CHILD_ARGS,
         },

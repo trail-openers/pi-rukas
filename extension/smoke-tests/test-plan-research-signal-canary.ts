@@ -70,10 +70,22 @@ const SITES: Site[] = [
   },
   {
     file: "research-tool.ts",
-    work: /work:\s*\(signal\)\s*=>\s*runResearchJob\(signal\)/,
+    // #2188 ticket A: the callback also takes the job's hooks, whose `jobId`
+    // is the deck's parent link. Both patterns accept the extra parameter and
+    // still require the SIGNAL to be the first thing forwarded — dropping it
+    // reddens these three assertions as before, and dropping the hooks
+    // parameter reddens the hooks.jobId block below. The signal intent is
+    // unchanged.
+    work: /work:\s*\(signal(?:,\s*hooks)?\)\s*=>\s*runResearchJob\(signal(?:,\s*hooks\.jobId)?\)/,
     pipeline:
-      /const runResearchJob = async \(signal: AbortSignal\) =>[\s\S]{0,200}?runResearchPipeline\(/,
-    signalArg: /runResearchPipeline\([\s\S]{0,400}?\{\s*signal\s*[,]?\s*\}\s*,?\s*\)/,
+      /const runResearchJob = async \(signal: AbortSignal(?:,\s*parentKey: string)?\) =>[\s\S]{0,200}?runResearchPipeline\(/,
+    // `{ signal }` — the shorthand, which can only resolve to the wrapper's
+    // own `signal` parameter. UNCHANGED by #2188: the optional separator is
+    // there because the object now has a second entry, and without it a
+    // `{ signal, parentKey }` object would fail this check — which would mean
+    // the ticket's own change had loosened the #1541 signal assertion. The
+    // parentKey demand lives in the hooks block below, never here.
+    signalArg: /runResearchPipeline\([\s\S]{0,400}?\{\s*signal\s*[,:]?[^{}]*\}\s*,?\s*\)/,
     label: "/research → runResearchPipeline",
   },
 ];
@@ -119,6 +131,49 @@ for (const site of SITES) {
   assert(
     pipelineCalls === 1,
     `${site.file}: exactly one ${site.label} call site, inside the job wrapper (found ${pipelineCalls})`,
+  );
+}
+
+// ------------------------------------------------------------------ deck parent link
+// #2188 ticket A — the research tool must also hand the job's OWN id to the
+// pipeline, so every child the pipeline dispatches records which job spawned
+// it (DeckEntry.parentKey). Same route as the signal above: `startJob` mints
+// the id and passes it to the work callback as `hooks.jobId` (the
+// adversarial_tool precedent). Without the hooks parameter the deck has no
+// parent link at all and the agent list stays flat — and, like a dead signal,
+// a dropped hooks argument is invisible at runtime: the run completes and its
+// report reads the same. So this too is asserted at the source.
+{
+  const src = read("research-tool.ts");
+  assert(
+    /work:\s*\(signal,\s*hooks\)\s*=>\s*runResearchJob\(signal,\s*hooks\.jobId\)/.test(src),
+    "research-tool.ts: startJob's work callback TAKES the hooks and forwards hooks.jobId to the wrapper — the deck's only route to a parent link",
+  );
+  assert(
+    /const runResearchJob = async \(signal: AbortSignal,\s*parentKey: string\)\s*=>[\s\S]{0,200}?runResearchPipeline\(/.test(
+      src,
+    ),
+    "research-tool.ts: the wrapper that carries the parent id is the one that calls runResearchPipeline",
+  );
+  // The value must be the WRAPPER'S OWN `parentKey` parameter, not merely a
+  // member named parentKey: `{ parentKey: undefined }` — or any other literal
+  // — satisfies a name-only match while putting no link on any child row, so
+  // the shorthand form is demanded here as it is for `signal` above. Deleting
+  // the thread-out reddens this assertion, which is AC7's named mutant for the
+  // canary.
+  assert(
+    /runResearchPipeline\([\s\S]{0,400}?\{[\s\S]{0,80}?parentKey(?!\s*:)[\s\S]{0,80}?\}\s*,?\s*\)/.test(
+      src,
+    ),
+    "research-tool.ts: runResearchPipeline receives parentKey in its opts — the route to every research child's deck row",
+  );
+  // The parent id must arrive from the caller's hooks and reach the pipeline
+  // in ONE hop: a re-mint or a rename inside the tool would put an id on the
+  // child rows that matches no job, which is worse than no link at all — a
+  // nesting projection would group children under a parent that does not exist.
+  assert(
+    !/newJobId|randomUUID|makeRunId/.test(src),
+    "research-tool.ts: the parent id is the job's own (hooks.jobId), never a locally minted or invented one",
   );
 }
 

@@ -138,6 +138,7 @@ export function startJob(pi: DispatchHost, input: StartJobInput): StartJobHandle
       label: input.deckLabel ?? input.label,
       role: input.role,
       batchKey: input.batchKey,
+      parentKey: input.parentKey,
     });
   }
   lifecycle.emitDispatched(jobId, input.label, input.role);

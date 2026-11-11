@@ -152,6 +152,13 @@ export function dispatchCore(
      *  gated on ownerKind "driver" — a deck row is display/steer only,
      *  never a report steer-back to the PM. */
     deck?: DriverDeckOpts;
+    /** The jobId of the job making this dispatch — the deck row's parent link
+     *  (see DeckEntry.parentKey). Deck-only: unlike every other option here
+     *  it is NOT passed to `spawnSpecialist`, so the child process never
+     *  receives it. Deliberately NOT part of `DriverDeckOpts`: that option
+     *  forces `skipDeck: false` and derives `batchKey` from its `cycleKey`
+     *  below, and a parent link must not drag a batch grouping with it. */
+    parentKey?: string;
     timeoutMs?: number;
     /** #1560 — the per-child run bound (SpawnOptions.childBoundMs). */
     childBoundMs?: number;
@@ -215,6 +222,7 @@ export function dispatchCore(
     // registered exactly like a PM job (the deck row is display/steer-only).
     skipDeck: opts.deck ? false : opts.skipDeck,
     batchKey: opts.deck?.cycleKey,
+    parentKey: opts.parentKey,
     deckLabel: opts.deck?.deckLabel ?? opts.deck?.label ?? label,
     onSlow,
     work: (signal, hooks) =>

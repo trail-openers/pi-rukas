@@ -119,14 +119,19 @@ export function registerResearchTool(pi: ExtensionAPI) {
       trace(
         `start_research_driver → topic="${params.topic.slice(0, 60)}" tier=${tier} repoRoot=${repoRoot}`,
       );
-      const runResearchJob = async (signal: AbortSignal) => {
+      const runResearchJob = async (signal: AbortSignal, parentKey: string) => {
         const result = await runResearchPipeline(
           piSessionHost(pi),
           params,
           repoRoot,
           {},
           {
+            // #1541: the job's own signal, so killJob stops the run at a phase
+            // boundary. #2188 ticket A: the job's OWN id (WorkHooks.jobId —
+            // the route adversarial-tool.ts already uses) beside it, so every
+            // child this pipeline dispatches records its deck parent link.
             signal,
+            parentKey,
           },
         );
         return {
@@ -172,7 +177,7 @@ export function registerResearchTool(pi: ExtensionAPI) {
           // the pipeline, so dispatch_kill and session shutdown stop a run at
           // its phase boundaries instead of waiting out the 30-minute child
           // bound. A cancelled run is still delivered — see runResearchJob.
-          work: (signal) => runResearchJob(signal),
+          work: (signal, hooks) => runResearchJob(signal, hooks.jobId),
         }).jobId;
       } catch (err) {
         // #1541 review (LOW) — startJob throws at its MAX_JOBS cap; hand the
