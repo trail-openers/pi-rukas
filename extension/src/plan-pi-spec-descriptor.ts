@@ -28,10 +28,17 @@ const DESCRIPTOR_PREFIX = "Descriptor:";
 const FENCE_OPENER = /^(?: {0,3})(?<run>`{3,}|~{3,})/;
 
 /**
- * A line that COULD close a sample: up to 3 spaces, then the run alone (trailing
- * spaces are allowed, CommonMark strips them), carrying no info string. Whether a
- * match DOES close the open one is `closesFence`'s predicate, not this pattern's
- * — a run shorter than its opener is content, like any other line.
+ * A line that COULD close a sample: up to 3 spaces, then the run with nothing but
+ * WHITESPACE after it, carrying no info string. CommonMark strips a closing fence's
+ * trailing whitespace, so a tab tail is as much a closer as a space tail, and this
+ * class is `\s` and not `[ ]` because `lean/spec.ts` TRIMS that tail — a pattern
+ * that accepted spaces only called a tab-closed sample still open, and the two
+ * readers of one body then disagreed about the same line: the strip removed the
+ * block the walker was still inside, and the walker carried a quoted `## ` heading
+ * as a section boundary that ended the section early (zero bullets, which is a
+ * legitimate shape, so the draft filed no machine block at all). Whether a match
+ * DOES close the open one is `closesFence`'s predicate, not this pattern's —
+ * a run shorter than its opener is content, like any other line.
  *
  * The 0–3 indent is stated here as well as on the opener: a sample written under a
  * list item closes on a run indented as deeply as that item's content, and a reader
@@ -39,7 +46,7 @@ const FENCE_OPENER = /^(?: {0,3})(?<run>`{3,}|~{3,})/;
  * sample — so its lines are read as section text and a bullet inside the sample is
  * filed as a criterion, which `placePiSpecSection` then embeds in the contract.
  */
-const FENCE_CLOSER = /^(?: {0,3})(?<run>`{3,}|~{3,})[ ]*$/;
+const FENCE_CLOSER = /^(?: {0,3})(?<run>`{3,}|~{3,})\s*$/;
 
 /**
  * Whether `run` closes a sample opened by `char`/`len`.
