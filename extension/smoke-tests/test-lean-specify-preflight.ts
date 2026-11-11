@@ -29,7 +29,7 @@
  *       still dispatches nobody.
  */
 
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
   ROOTS,
@@ -37,7 +37,9 @@ import {
   type RunResult,
   SpecifyInfraError,
   configWith,
+  git,
   makeRepo,
+  outsideDir,
   redScript,
   runSpecify,
   submit,
@@ -202,6 +204,44 @@ for (const status of [0, 5] as const) {
   assert(r.dispatched === 1, `(b/exit ${status}) one dispatch (got ${r.dispatched})`);
 }
 
+// ── (b2) a runner that exits 5 UNCONDITIONALLY: the arm that accepts it is exercised
+{
+  // The (b) loop reaches pytest's `collected 0 items` through a runner that chooses its
+  // own exit code — `[ -s "$1" ] || exit 0` — so the probe never sees a 5 unless the
+  // script says so. A runner that exits 5 whatever it is handed is the only shape that
+  // walks `probeHealthy`'s `|| code === PYTEST_NO_TESTS` arm: the proof it produces is
+  // a `red` (non-zero, and the output names the file), which is exactly the
+  // classification an implementation reading the KIND rather than the status would
+  // refuse. Delete that arm and this run hands back instead of dispatching.
+  const { repoRoot, baseSha } = makeRepo({
+    "src/retry.ts": "export const retry = () => {};\n",
+    "runner.sh": '#!/bin/sh\necho "collected 0 items - $1" 1>&2\nexit 5\n',
+  });
+  const r = await runSpecify({
+    repoRoot,
+    baseSha,
+    issue: 39,
+    config: configWith({ fast: "true", test: "sh runner.sh {file}" }),
+    writes: (wt) => {
+      writeRed(wt);
+    },
+    toolUses: [submit("AC1", [TEST_REL])],
+  });
+  assert(
+    r.threw === undefined,
+    `(b2) an exit-5 runner is healthy, not a hand-back (${r.threw?.message ?? "clean"})`,
+  );
+  assert(
+    r.outcome?.kind === "ok",
+    `(b2) and the run proceeds to dispatch and freeze (got ${r.outcome?.kind})`,
+  );
+  assert(
+    Object.keys(r.outcome?.frozen ?? {}).join() === TEST_REL,
+    `(b2) the child's red test is what froze (got ${Object.keys(r.outcome?.frozen ?? {}).join()})`,
+  );
+  assert(r.dispatched === 1, `(b2) one dispatch (got ${r.dispatched})`);
+}
+
 // ── (c) the probe leaves no byte behind, on the pass path and on the throw path
 {
   const ok = await runWithProbe(40, "runner.sh", runnerScript());
@@ -345,6 +385,68 @@ for (const status of [0, 5] as const) {
     existsSync(path.join(r.worktree, TEST_REL)) === false,
     "(f) the run wrote no test bytes into the tree",
   );
+}
+
+// ── (g) a probe path the base carries as a SYMLINK is never written through
+{
+  // The step owns the worktree's bytes, and a name it did not create is not a place
+  // to put a probe. `writeFileSync(abs, …, { flag: "wx" })` opens through a symlink —
+  // the `x` flag refuses an existing SYMLINK only when it is the final component, and
+  // even that is a write to the target's inode on some platforms — so a base-carried
+  // link at the probe path is the one shape where the preflight could be made to write
+  // outside the worktree. `isPlainProbe` asks `lstat`, which sees a link AS a link, so
+  // the probe refuses rather than following. The target lives OUTSIDE the worktree, so
+  // a pass here means nothing outside was touched; a follow would have put the empty
+  // probe's bytes there and reported a healthy runner.
+  const outside = outsideDir();
+  const victim = path.join(outside, "victim.txt");
+  writeFileSync(victim, "bytes the step must never write through\n");
+  const { repoRoot, baseSha } = makeRepo({
+    "src/retry.ts": "export const retry = () => {};\n",
+    "runner.sh": runnerScript(),
+  });
+  // The link is committed AT THE PROBE PATH, so it arrives with the checkout — the
+  // base-carried shape, not one the step made moments earlier.
+  const { repoRoot: linkedRoot, baseSha: linkedBase } = (() => {
+    const { repoRoot: dir, baseSha } = makeRepo({
+      "src/retry.ts": "export const retry = () => {};\n",
+      "runner.sh": runnerScript(),
+    });
+    void baseSha;
+    rmSync(path.join(dir, PROBE), { force: true });
+    symlinkSync(victim, path.join(dir, PROBE));
+    git(dir, "add", "-A");
+    git(dir, "commit", "-q", "-m", "base carrying the probe path as a symlink");
+    return { repoRoot: dir, baseSha: git(dir, "rev-parse", "HEAD") };
+  })();
+  void repoRoot;
+  void baseSha;
+  const r = await runSpecify({
+    repoRoot: linkedRoot,
+    baseSha: linkedBase,
+    issue: 46,
+    config: configWith({ fast: "true", test: "sh runner.sh {file}" }),
+    writes: (wt) => {
+      writeRed(wt);
+    },
+    toolUses: [submit("AC1", [TEST_REL])],
+  });
+  assert(
+    r.threw instanceof SpecifyInfraError,
+    `(g) a symlink at the probe path is infrastructure, not a probe (got ${
+      r.threw?.constructor.name ?? r.outcome?.kind
+    })`,
+  );
+  assert(
+    r.threw === undefined ||
+      /could not write its probe file|not a plain file/.test(r.threw.message),
+    `(g) the handback names the probe it refused to write (got ${r.threw?.message})`,
+  );
+  assert(
+    readFileSync(victim, "utf8") === "bytes the step must never write through\n",
+    "(g) and nothing was written through the link to its target outside the worktree",
+  );
+  assert(r.dispatched === 0, `(g) and no adversary was paid (got ${r.dispatched})`);
 }
 
 for (const dir of ROOTS) {

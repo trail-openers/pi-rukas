@@ -370,6 +370,59 @@ function writeSubmoduleTest(wt: string): void {
   );
 }
 
+// ── (e3) the product's own submodule argv carries no transport licence of its own
+{
+  // `protocol.file.allow=always` sat on the PRODUCTION `submodule update --init
+  // --recursive` for a while, and it was a real exposure rather than a convenience:
+  // with `--recursive`, a `file:` URL in a SUBMODULE's own `.gitmodules` — content of
+  // a repository fetched from wherever the first one points, not content this project
+  // reviewed — could clone any repository already on the host into the tree the run
+  // then tests and commits. git's own default (`user`) is the policy; the operator can
+  // widen it in their own config, which git still reads. The fixture needs the
+  // allowance for its LOCAL-PATH remotes and gets it through its own git environment
+  // (`GIT_CONFIG_COUNT`/`KEY`/`VALUE` in the exec env), never through product code.
+  const remote = makeRepo({ lib: "the submodule's own content\n" });
+  const { repoRoot, baseSha } = repoWithSubmodule(undefined, remote.repoRoot);
+  const gitArgvs: string[][] = [];
+  const r = await runSpecify({
+    repoRoot,
+    baseSha,
+    issue: 57,
+    config: configWith({ fast: "true", test: RUNNER }),
+    gitArgvs,
+    writes: (wt) => writeSubmoduleTest(wt),
+    toolUses: [submit("AC1", ["tests/AC1-submodule.test.sh"])],
+  });
+  assert(
+    r.threw === undefined && r.outcome?.kind === "ok",
+    `(e3) the run populates its submodule under git's own policy (${r.threw?.message ?? r.outcome?.kind})`,
+  );
+  const submoduleCalls = gitArgvs.filter((argv) => argv.includes("submodule"));
+  assert(
+    submoduleCalls.length > 0,
+    `(e3) the step did issue its submodule command (got ${String(submoduleCalls.length)})`,
+  );
+  const offenders = submoduleCalls.filter((argv) =>
+    argv.some((a) => a.includes("protocol.file.allow") || a.includes("protocol.allow")),
+  );
+  assert(
+    offenders.length === 0,
+    `(e3) no submodule command of the step's carries a transport allowance (got ${JSON.stringify(offenders)})`,
+  );
+  assert(
+    gitArgvs.every((argv) => !argv.some((a) => a.includes("protocol.file.allow"))) === true,
+    `(e3) and no git command of the step's carries one anywhere (got ${JSON.stringify(gitArgvs.filter((a) => a.some((x) => x.includes("-c"))))})`,
+  );
+  // The allowance has to be the FIXTURE's, or the assertion above proves nothing:
+  // with no config anywhere, git refuses these local-path remotes and the run would
+  // be about a hand-back rather than about the argv. See the (e) case for the failure
+  // shape that refusal takes.
+  assert(
+    existsSync(path.join(r.worktree, INSIDE)) === true,
+    "(e3) the submodule really was populated, so the fixture's env is what allowed it",
+  );
+}
+
 for (const dir of [...ROOTS, ...CHALLENGE_ROOTS]) {
   try {
     rmSync(dir, { recursive: true, force: true });

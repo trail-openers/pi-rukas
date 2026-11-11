@@ -142,22 +142,28 @@ the run's own worktree. The usual four:
   submodule is a network or a remote problem: the URL in the base commit's own `.gitmodules`, the
   remote's availability, or an offline host. Fix the remote or the checkout; there is no flag that
   makes an un-populated submodule testable.
-- **A missing environment variable the suite needs.** The probe runs with the driver's knobs scrubbed
-  and the rest of the environment, exactly as the red proof does, so a variable the suite requires is
-  missing here as it will be at prove time. Export it for the run, or give the project a tier that does
-  not need it.
-- **A runner that reports "no tests" as an error.** Exit 5 (pytest's `collected 0 items`) is accepted;
-  a runner that exits 4 for an empty file is refused, correctly, because the same exit is what a
-  collection failure produces and the step cannot tell them apart — and being wrong in that direction
-  costs a hand-back rather than a frozen contract nobody ran. Give the probe-shaped file what the
-  runner wants (a collectable test in the configured folder is the project's own convention).
-- **A runner that is not runnable at all** — wrong path, not executable, dependencies never linked.
-  The hand-back says `the runner could not be started`, which is the toolchain question `verify.fast`
-  was never asked.
+- **A missing environment variable the suite needs.** The probe runs in the run's own
+  ambient environment — the same environment the red proof runs the frozen tests in —
+  so a variable the suite requires is missing here exactly as it will be at prove time.
+  Export it for the run, or give the project a tier that does not need it.
+- **A runner that reports "no tests" as an error.** Exit 5 (pytest's `collected 0 items`)
+  is accepted; a runner that exits 4 for an empty file is refused, correctly, because the
+  same exit is what a collection failure produces and the step cannot tell them apart —
+  and being wrong in that direction costs a hand-back rather than a frozen contract
+  nobody ran. Give the probe-shaped file what the runner wants (a collectable test in the
+  configured folder is the project's own convention).
+- **A runner that is not runnable at all** — wrong path, not executable, dependencies
+  never linked. The hand-back quotes what the runner reported (`exited <n> …`, or the
+  runner's own first lines), which is the toolchain question `verify.fast` was never asked
+  when the project has no fast tier: a configured `verify.fast` runs FIRST, and a base
+  that fails it hands back before the probe is ever attempted.
 
 A missing `verify.test` is NOT this hand-back: it stays the verdict it has always been
-(`no test runner configured (.pi/work.json verify.test)`, nothing dispatched), because a project that
-declines to configure a runner is not a project with a broken one.
+(`no test runner configured (.pi/work.json verify.test)`, nothing dispatched), because a
+project that declines to configure a runner is not a project with a broken one. Note also
+that the probe is not the only place this step can hand back on the environment: a base
+whose submodules cannot be populated fails earlier, in the worktree preparation that runs
+before it.
 
 ### Symptom: a lean run hands back with `baseline red: tier <name> is red at the base commit`
 

@@ -209,6 +209,7 @@ async function dispatchAdversary(
 export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<SpecifyAttemptResult> {
   const { deps, config, repoRoot, issue, spec, wt, base, branch, runnerTemplate } = args;
   const { testLocation, wanted, frozenByCriterion, refusal, resubmit } = args;
+  const observeVerdict = deps.observeVerdict;
   // The body the step already fetched to parse `spec` — threaded, never re-read.
   const { issueBody } = args;
   // Each dispatch gets its own budget, armed the way the first was.
@@ -363,6 +364,9 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
   // ever says the generic line leaves the operator to work out that the child
   // wrote 154 lines against a cap of 150.
   const silent = declaredRows.length === 0 && skipped === 0 && refused.length === 0;
+  // The verdict's two gating values, reported before either is folded into the
+  // outcome — see `SpecifyDeps.observeVerdict`.
+  observeVerdict?.({ refused: [...refused], silent });
   const generic = silent
     ? ["the child never submitted a test: it ended without calling submit_tests"]
     : wanted.map((c) => `criterion ${c.id} has no red test`);

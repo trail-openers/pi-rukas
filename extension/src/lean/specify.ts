@@ -126,6 +126,17 @@ export interface SpecifyDeps {
    * git actually failing that command instead of asserting what it would do.
    */
   beforeSubmoduleInit?: (wt: string) => void | Promise<void>;
+  /**
+   * Called with what one attempt's no-candidate verdict turned on: the boundary's
+   * attributed drop labels, and the silence decision. Supplied only by smoke tests.
+   *
+   * It exists because neither value reaches the run's outcome, and the outcome is
+   * all a case can otherwise read. The drop labels make the decline's WORDING
+   * non-silent independently of the silence predicate, so an outcome-level assertion
+   * passes with the predicate's `refused.length === 0` conjunct deleted: this is the
+   * one seam through which a case can tell the predicate from its mutant.
+   */
+  observeVerdict?: (v: { refused: string[]; silent: boolean }) => void;
 }
 
 /**

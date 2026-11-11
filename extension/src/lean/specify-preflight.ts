@@ -84,18 +84,21 @@ const SUBMODULE_TIMEOUT_MS = 5 * 60_000;
 /**
  * The submodule calls' own `-c` flags, added to {@link NO_HOOKS} at the call.
  *
- * `protocol.file.allow=always` is what lets a clone from a LOCAL path through.
- * git refuses the `file` transport for submodules by default (the CVE fix that
- * made it `user`-only), and a step that could not populate a submodule whose
- * remote is another directory on this machine would hand back on a perfectly
- * good base. It is not a licence for anything a stranger supplies: `submodule
- * update --init` clones only URLs the base commit's own `.gitmodules` names, that
- * file is tracked content reviewed as code, and `file` is the narrowest transport
- * there is — the step never clones an arbitrary URL, only what this repository
- * already committed. Hooks stay refused, whatever the repository carries.
+ * There are none, and that is the point: the step asks git to populate submodules
+ * with git's OWN transport policy. `protocol.file.allow` is `user` by default — the
+ * CVE fix that made git refuse the `file` transport for submodules — and widening it
+ * here would let a `file`-protocol URL in the base's `.gitmodules`, at any depth of
+ * `--recursive`, clone an arbitrary repository that already exists on this host into
+ * the worktree the run then tests and commits. A tracked `.gitmodules` is reviewed as
+ * code, but a submodule's own `.gitmodules` is content of ANOTHER repository, fetched
+ * from wherever the first one points — so "the URL is tracked content" does not hold
+ * past the first level. A base whose submodule genuinely lives on a local path is
+ * served by the operator's own `protocol.allow`/`protocol.file.allow` configuration,
+ * which git reads as usual: the step adds no licence of its own. Hooks stay refused,
+ * whatever the repository carries.
  */
 function submoduleArgv(...argv: string[]): string[] {
-  return [...NO_HOOKS, "-c", "protocol.file.allow=always", ...argv];
+  return [...NO_HOOKS, ...argv];
 }
 
 /** How much of the runner's output the handback quotes. */
@@ -133,10 +136,20 @@ function probeRelative(wt: string, testLocation?: TestLocation): string | undefi
   return existsSync(path.join(wt, parent)) ? `${parent}/${PROBE_BASENAME}` : PROBE_BASENAME;
 }
 
-/** Is `abs` an ordinary file this probe may claim (rather than a link, dir or fifo)? */
+/**
+ * Is `abs` an ordinary file this probe may claim (rather than a link, dir or fifo)?
+ *
+ * `lstat`, never `stat`: the question is what sits AT the name, not what the name
+ * resolves to, and a `stat` of a link to a regular file answers "a file" for a byte
+ * the step does not own. The link is then refused by name rather than by inference —
+ * `isSymbolicLink()` before `isFile()` — because this is the step's own rule and not
+ * the platform's: a base-carried symlink at the probe path is never written through,
+ * whatever `open(2)` with `wx` would have happened to do with it.
+ */
 function isPlainProbe(abs: string): boolean {
   try {
-    return lstatSync(abs).isFile();
+    const st = lstatSync(abs);
+    return !st.isSymbolicLink() && st.isFile();
   } catch {
     return false;
   }
