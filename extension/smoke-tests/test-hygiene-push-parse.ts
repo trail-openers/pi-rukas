@@ -48,6 +48,23 @@
  * single-push-per-segment rows (`git status && git push …`) are what keep it from
  * becoming a ban on chains that also run git.
  *
+ * ## 3. A push behind a program the count could not read as git
+ *
+ * Counting only the segments whose stripped `argv[0]` is git counted ONE push for
+ * `git push origin a && flock /tmp/l git push origin b`: the second segment's
+ * program word is `flock`, `bash`, `docker` or `busybox`, and git's words sit
+ * behind it. The scan then answered for the FIRST push alone, `a && b` reached
+ * `b`, and the second push published unread — the same fail-open as two plain
+ * pushes, hidden behind a program word. So a segment counts when its git argv
+ * carries the verb (as before) OR when the trigger, asked of that segment's own
+ * words, calls it a push; more than one such segment is refused with the one-push
+ * sentence.
+ *
+ * The trigger is asked of ONE segment at a time, never of the joined command:
+ * asked of the whole text it fires once per push-bearing chain and every chain
+ * with any push in it would be refused, `git push origin b && git log -1`
+ * included. The per-segment answers are what the row tests distinguish.
+ *
  * Same fixture, same synthetic term, same pinned seams as the sibling push tests
  * (see lib/push-fixture.ts for why each seam is pinned).
  */
@@ -295,6 +312,46 @@ const scanOf = (command: string, exec: ExecFn) =>
     );
   }
 
+  // ── 3. A push hidden behind a program word ─────────────────────────────────
+  //
+  // Each chain carries a plain `git push` and a second push whose program word is
+  // NOT git — `flock`, `bash -c`, `docker run`, `busybox`, `eval`. The count that
+  // looked only at git segments saw one push, scanned the first tree, allowed, and
+  // the second push published unscanned. Each row is therefore refused with the
+  // one-push sentence and makes no `git log` read: the second push is never judged,
+  // which is the reason for refusing rather than the reason for a verdict.
+  for (const chain of [
+    `git -C ${wtA} ${PUSH} origin twice-a && flock /tmp/l git -C ${wtB} ${PUSH} origin twice-b`,
+    `git -C ${wtA} ${PUSH} origin twice-a && bash -c "git -C ${wtB} ${PUSH} origin twice-b"`,
+    `git -C ${wtA} ${PUSH} origin twice-a && docker run img git -C ${wtB} ${PUSH} origin twice-b`,
+    `git -C ${wtA} ${PUSH} origin twice-a && busybox git -C ${wtB} ${PUSH} origin twice-b`,
+    `git -C ${wtA} ${PUSH} origin twice-a && eval "git -C ${wtB} ${PUSH} origin twice-b"`,
+  ]) {
+    assert(
+      commandPushes(chain) === true,
+      `the chain whose second push hides behind a program is recognised as a push: ${chain}`,
+    );
+    const rec = recorder();
+    rec.reads.length = 0;
+    const hiddenPush = await inspectAt(repo, chain, { executor: rec.exec });
+    assert(
+      hiddenPush !== undefined,
+      `a second push behind a non-git program is REFUSED rather than published unread: ${chain}`,
+    );
+    assert(
+      flat(hiddenPush?.reason).includes("one push per command"),
+      `…with the one-push-per-command sentence (got: ${head(hiddenPush)})`,
+    );
+    assert(
+      !(hiddenPush?.reason ?? "").includes(TERM),
+      `…and the refusal names no term, because nothing was read: ${chain}`,
+    );
+    assert(
+      !rec.reads.some((r) => r.argv[0] === "log"),
+      `and no \`git log\` read ran for \`${chain}\`: the second push was refused, not judged`,
+    );
+  }
+
   // The single-push controls. Each is a chain — some of them chains that run git
   // twice — and each carries exactly one push, so the new refusal must not touch
   // them. `cd x && git push origin b` is the row the brief names; the rest are the
@@ -308,6 +365,10 @@ const scanOf = (command: string, exec: ExecFn) =>
     [`git status && git ${PUSH} origin single-ok`, "a push after another git command"],
     [`git ${PUSH} origin single-ok && git log --oneline -1`, "a push followed by another git command"],
     [`true; git ${PUSH} origin single-ok`, "a push after a non-git segment"],
+    // The row the trigger's per-segment reading is most likely to over-refuse: the
+    // tail is git but runs no push, so only ONE segment's own words call it a push.
+    [`git ${PUSH} origin single-ok && git log -1`, "a push followed by a git read"],
+    [`git -C ${wtA} ${PUSH} -u origin twice-a:refs/heads/twice-a`, "a -C push with a refspec"],
   ] as const) {
     assert((await inspectAt(repo, command)) === undefined, `${why} is allowed (${command})`);
   }

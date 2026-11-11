@@ -39,7 +39,36 @@ import path from "node:path";
 import { type DenylistRead, matchDenylist } from "./public-denylist.ts";
 import { publishCommandLines } from "./public-hygiene-command.ts";
 import type { PushScanDeps } from "./public-hygiene-push.ts";
+import { commandPushes } from "./public-hygiene-scan.ts";
 import { isGitProgramWord, walkGitGlobals } from "./public-hygiene-target.ts";
+
+/**
+ * Does this stripped argv name a git whose VERB is `pushVerb`?
+ *
+ * The ONE predicate for the locatable push segment, shared by the three readers that
+ * have to agree about it: `ownPushSegment` (which directory this scan is the scan
+ * of), `splitPushWords` (which words carry the refspecs) and {@link pushSegmentCount}
+ * (how many pushes one command runs). They must be the same question asked the same
+ * way, because a non-git push shape — `busybox git push`, `eval "git push"` — is a
+ * push the COUNT sees and the LOCATOR cannot: when the count alone widened, such a
+ * command stopped counting zero, the parse refusal went unasked, and the scan
+ * resolved HEAD — the confident wrong answer this module exists to refuse.
+ *
+ * The verb is sought from the END of git's globals, not anywhere in the argv: a
+ * branch or remote named `push` is not the verb. A refused global (`--git-dir`,
+ * `--work-tree`) consumes an operand this walker cannot resolve, so its verb
+ * position is unknowable and the segment counts as a push on the flag; the flag
+ * refusal owns the command. A quoted run is not a program word (bash runs no program
+ * from a word with a space in it), so prose that merely mentions the verb is never a
+ * push segment.
+ */
+export function gitPushArgv(argv: readonly string[], pushVerb: string): boolean {
+  if (pushVerb === "") return false;
+  const prog = argv[0] ?? "";
+  if (prog.includes(" ") || !isGitProgramWord(prog)) return false;
+  const walk = walkGitGlobals(argv);
+  return walk.refused || argv[walk.end] === pushVerb;
+}
 
 /** The segment a scan represents: a directory, the command's own, or a refused flag. */
 export type PushSegment = string | "self" | "refused";
@@ -56,14 +85,13 @@ export function ownPushSegment(deps: PushScanDeps): PushSegment {
   const base = deps.toolCwd ?? deps.cwd;
   let refused = false;
   for (const argv of publishCommandLines(command)) {
-    if (!isGitProgramWord(argv[0])) continue;
+    if (!isGitProgramWord(argv[0] ?? "")) continue;
     const walk = walkGitGlobals(argv);
     if (walk.refused) refused = true;
     // The segment represents this scan only if git would take the push verb as its
     // verb there (or carries a refused global, whose verb position is unknowable
-    // and is refused on the flag anyway).
-    const isPush = walk.refused || argv.some((word, at) => at >= walk.end && word === pushVerb);
-    if (!isPush) continue;
+    // and is refused on the flag anyway) — the one predicate in {@link gitPushArgv}.
+    if (!gitPushArgv(argv, pushVerb)) continue;
     if (walk.dir !== undefined && walk.dir !== "") return path.resolve(base, walk.dir);
     return deps.cwd;
   }
@@ -100,28 +128,154 @@ export function pushCommandWords(deps: PushScanDeps): string[][] {
  * the shape that fails open — the scan answers for ONE segment, so the second push
  * goes out unread, and `a && b` DOES reach `b` once `a` succeeds.
  *
+ * ## A second push whose program word is not git
+ *
+ * Counting only the segments whose stripped program word is git counted ONE for
+ * `git push origin a && flock /tmp/l git push origin b`: the second segment runs
+ * `flock`, `bash -c`, `docker run`, `busybox` or `eval`, and the trigger fires on
+ * its payload, so git's own words never reach the verb reader. One scan ran, the
+ * chain reached the second push, and it published unread — the same fail-open as two
+ * plain pushes, with a program word in front of it. So a segment counts when the
+ * trigger fires on ITS OWN words too. The words of one segment, never of the joined
+ * command: joined, the regex fires once for any chain that pushes anywhere and
+ * every `git push && git log` — one push, one read — would be refused for two.
+ *
+ * The trigger is an over-approximation, so `echo "git push" && git push origin b`
+ * would ride the same reading into a refusal of a routine push. The over-match is
+ * the trigger's own documented cost — a publish scan that reads prose is a scan of
+ * a little extra text — and a one-push refusal is not: so the trigger's answer is
+ * accepted only where its payload is executable text, {@link executablePayload}
+ * below, and the two refusals that come of the count stay the two sentences this
+ * module owns.
+ *
  * The verb is sought from the END of git's globals, not anywhere in the argv: a
  * branch or remote named `push` is not the verb. A refused global (`--git-dir`,
  * `--work-tree`) consumes an operand this walker cannot resolve, so its verb
  * position is unknowable — such a segment counts once, and the existing flag
  * refusal owns the command. A quoted run is not a program word (bash runs no
  * program from a word with a space in it), so prose that merely mentions the verb
- * never counts.
+ * never counts through the verb reading.
+ *
+ * A non-git segment counts only WHERE THE COMMAND ALSO CARRIES A PUSH THE SCAN CAN
+ * READ (`git push origin a && busybox git push origin b`). A command of non-git
+ * segments alone counts zero whatever the trigger reads in it — `busybox git push`,
+ * `eval "git push"`, `docker run img git push` — because a scan that locates no
+ * git verb has no range to answer for, and it is the ZERO that raises the parse
+ * refusal. Letting such a segment count on its own removed the parse refusal and
+ * sent the scan back to resolving HEAD, the confident wrong answer this module
+ * exists to refuse. The one-push rule is about the pushes a scan cannot cover; a
+ * command that is nothing but uncoverable pushes is the parse case, not the count
+ * case.
  */
 export function pushSegmentCount(command: string, pushVerb: string): number {
   if (pushVerb === "") return 0;
-  let count = 0;
-  for (const argv of publishCommandLines(command)) {
-    const prog = argv[0] ?? "";
-    if (prog.includes(" ") || !isGitProgramWord(prog)) continue;
-    const walk = walkGitGlobals(argv);
-    if (walk.refused) {
-      count++;
-      continue;
-    }
-    if (argv[walk.end] === pushVerb) count++;
+  const lines = publishCommandLines(command);
+  // Locatable first: a command with no readable push has NO range to scan, whatever
+  // else its words say, and the zero is the fact the parse refusal is built on.
+  let locatable = 0;
+  for (const argv of lines) if (gitPushArgv(argv, pushVerb)) locatable++;
+  if (locatable === 0) return 0;
+  let count = locatable;
+  for (const argv of lines) {
+    if (argv.length === 0 || gitPushArgv(argv, pushVerb)) continue;
+    // The non-git half: a program whose words the shell will RUN, whose own text the
+    // trigger calls a push. Asked of this segment's words ALONE — see the header for
+    // what asking the whole chain does.
+    if (executablePayload(argv) !== undefined && commandPushes(argv.join(" "))) count++;
   }
   return count;
+}
+
+/**
+ * The text this segment's program hands to a shell to RUN, or `undefined`.
+ *
+ * `git push` reached through a program the wrapper table does not know is written
+ * in an operand bash will execute, not in an operand it treats as data. Three
+ * shapes: `eval`'s and `script -c`/`--command`'s payload, a shell's `-c` BODY, and
+ * the argv of any other program, which carries git's own words as its arguments
+ * (`busybox git push`, `docker run img git push`, `flock /tmp/l git push`).
+ *
+ * A `cat`/`grep`/`sed`-style operand whose text is DATA — the trigger's own
+ * documented over-match — is excluded by what the program does with its words, not
+ * by which program was named. `runnerPayloads` in `public-hygiene-scan.ts` is the
+ * narrower sibling of this question: it answers only for the three runners it
+ * names, and only when its content test fires. This one answers for every shape the
+ * count has to see, and answers by what the words ARE — the executable tail of a
+ * command — rather than by a content match that prose satisfies too.
+ */
+export function executablePayload(argv: readonly string[]): string | undefined {
+  const prog = argv[0] ?? "";
+  if (prog === "" || prog.includes(" ")) return undefined;
+  const base = path.basename(prog);
+  if (SCRIPT_RUNNERS.has(base)) {
+    // `eval` was already handed its payload as words by the segmenter, which also
+    // UNQUOTED it (`eval "git push"` arrives as `eval git push`); `script -c` keeps
+    // its payload as one operand. Either way the words after the runner are the
+    // text the shell runs, and joining them is the shape the trigger reads — the
+    // same reading `commandPushes` gives an `eval` segment, whose payload test
+    // joins these words rather than asking them of an empty string.
+    const body = base === "script" ? (scriptBody(argv) ?? "") : argv.slice(1).join(" ");
+    return body === "" ? undefined : body;
+  }
+  if (SHELL_RUNNERS.has(base)) {
+    const body = shellDashCBody(argv) ?? "";
+    return body === "" ? undefined : body;
+  }
+  if (DATA_PROGRAMS.has(base)) return undefined;
+  const tail = argv.slice(1).join(" ");
+  return tail === "" ? undefined : tail;
+}
+
+/** Programs whose only operand is a script the shell will run (`eval`, `script -c`). */
+const SCRIPT_RUNNERS = new Set(["eval", "script"]);
+/** Programs whose `-c` operand is a script the shell will run. */
+const SHELL_RUNNERS = new Set(["bash", "sh", "zsh", "dash", "ksh", "fish"]);
+/**
+ * Programs whose operands are DATA: printed, matched, or copied, never executed.
+ * A command that runs none of these and no runner takes its git words as argv, and
+ * argv is what the shell execs.
+ */
+const DATA_PROGRAMS = new Set([
+  "echo",
+  "printf",
+  "cat",
+  "grep",
+  "egrep",
+  "fgrep",
+  "rg",
+  "sed",
+  "awk",
+  "perl",
+  "python",
+  "python3",
+  "ruby",
+  "node",
+  "less",
+  "more",
+  "tail",
+  "head",
+  "tee",
+  "sort",
+  "uniq",
+  "cut",
+]);
+
+/** The payload `script` is told to run (`-c BODY`, `--command BODY`, `--command=BODY`). */
+function scriptBody(argv: readonly string[]): string | undefined {
+  const flagAt = argv.findIndex(
+    (w, i) =>
+      i > 0 &&
+      (/^-[a-zA-Z]*c[a-zA-Z]*$/.test(w) || w === "--command" || w.startsWith("--command=")),
+  );
+  if (flagAt < 0) return undefined;
+  const flag = argv[flagAt] ?? "";
+  return flag.startsWith("--command=") ? flag.slice("--command=".length) : (argv[flagAt + 1] ?? "");
+}
+
+/** The body a shell's `-c` flag carries (`bash -c BODY`); no `-c`, no body. */
+function shellDashCBody(argv: readonly string[]): string | undefined {
+  const flagAt = argv.findIndex((w, i) => i > 0 && /^-[a-zA-Z]*c[a-zA-Z]*$/.test(w));
+  return flagAt < 0 ? undefined : (argv[flagAt + 1] ?? "");
 }
 
 /**
