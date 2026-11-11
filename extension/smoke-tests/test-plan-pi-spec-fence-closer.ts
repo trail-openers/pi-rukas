@@ -63,9 +63,12 @@ for (const [name, closer] of [
 // rule accepts and a spaces-only pattern refuses is a swallowed sample, and a run
 // shorter than its opener that this reader accepted and the rule refuses is a
 // sample ended early, leaking its quoted `## ` heading as a section boundary. The
-// sentinel sits BELOW the closer, so the walk reached it exactly when it treated
-// that run as the closer — the verdict comes from the walk's own output and not
-// from `closesFenceRun`, which is what keeps this a cross-reader pin and not a
+// sentinel sits BELOW the closer, and the verdict is taken from the sentinel's OWN
+// tag rather than from its mere presence: when a sample is closed the walker jumps
+// it and the sentinel comes back as the author's markdown (`false`); when it is not
+// closed the walk keeps the sample's lines and reports them as kept sample text
+// (`true`). Asking "did the sentinel appear at all" would be true under both readings
+// and could not fail, which is what keeps this a cross-reader pin and not a
 // tautology.
 const SENTINEL = "sentinel below the sample";
 for (const [name, opener, closer, run, openChar, openLen] of [
@@ -93,10 +96,12 @@ for (const [name, opener, closer, run, openChar, openLen] of [
     "- a",
   ].join("\n");
   const closes = closesFenceRun(run, openChar, openLen);
-  const reached = sectionLines(body, "Context & motivation").some((l) => l.includes(SENTINEL));
+  const lines = sectionLines(body, "Context & motivation");
+  const sentinel = lines.find(([l]) => l === SENTINEL);
+  const closed = sentinel !== undefined && !sentinel[1];
   assert(
-    reached === closes,
-    `cross-reader: the ${name} closer — this reader ${reached ? "jumped" : "swallowed"} the sample, lean/spec.ts's rule says it ${closes ? "closes" : "stays open"} (${JSON.stringify({ closer, closes, lines: sectionLines(body, "Context & motivation") })})`,
+    closed === closes,
+    `cross-reader: the ${name} closer — this reader ${closed ? "closed" : "kept open"} the sample, lean/spec.ts's rule says it ${closes ? "closes" : "stays open"} (${JSON.stringify({ closer, closes, lines })})`,
   );
 }
 

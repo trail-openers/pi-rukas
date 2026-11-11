@@ -89,18 +89,26 @@ function soften(s: string): string {
  * why the tilde half is not optional.
  *
  * The truncation marker is emitted INSIDE the fence (so it is part of what the
- * reader sees) and AFTER the neutralisation (so it can never be a payload's own
+ * reader sees) and is the last thing written (so it can never be a payload's own
  * text that happens to look like the marker, and can never itself be mangled). A
  * payload at or under `max` gains nothing — the marker's absence is what makes its
- * presence meaningful.
+ * presence meaningful. The neutralisation runs BEFORE the cut for the same reason
+ * the marker goes last: see `fenceText`.
  */
 export function fenceText(s: string, max: number): string {
   let body = soften(s);
   const clipped = body.length > max;
-  if (clipped) body = `${body.slice(0, max)}${HORIZONTAL_ELLIPSIS}`;
+  // Neutralise FIRST, then cut. The order is the invariant, not a nicety: a fence
+  // run that straddles the cut reaches the reader as the surviving fragment of
+  // itself, so a payload that ends `…\n```x` and is clipped two characters early
+  // renders `…\n``…` — inert only because the fragment happens to be one unit
+  // short of a closer. Neutralising first makes every run of 3+ go through the
+  // look-alike swap whole, whatever the cut does to it, and the marker is still
+  // appended last, so it is never itself mangled.
   body = body.replace(FENCE_RUN, (run) =>
     (run[0] === "`" ? "\u02cb" : "\u02dc").repeat(run.length),
   );
+  if (clipped) body = `${body.slice(0, max)}${HORIZONTAL_ELLIPSIS}`;
   return `\`\`\`text\n${body}${clipped ? TRUNCATION_MARKER(max) : ""}\n\`\`\``;
 }
 

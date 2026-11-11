@@ -24,6 +24,46 @@ import { AC_FALLBACK } from "./plan-validate.ts";
 /** The line `plan-draft.ts` renders the caller's descriptor as, in `## Context & motivation`. */
 const DESCRIPTOR_PREFIX = "Descriptor:";
 
+/**
+ * A first line that is a markdown block construct rather than a sentence: a
+ * heading, a thematic break, a list or blockquote marker, a table row, a raw-HTML
+ * block, or a fence opener. `plan-draft.ts` writes a `Descriptor:` line here, and
+ * the drafter's own output is prose; what does arrive instead is a hand-edited or
+ * angle-populated section whose first line is a rule, a table row or a heading.
+ *
+ * Such a line is refused rather than carried, for two reasons. The machine field
+ * is printed UNFENCED by `lean/specify-prompt.ts` and `lean/challenge-prompt.ts`
+ * between `## The problem` and the next heading, so `### Notes` in that slot is a
+ * section of the oracle's brief the step never wrote — `neutraliseFenceRuns` in
+ * `plan-pi-spec.ts` refuses fence RUNS in a field, never `#`, `-` or `|`. And a rule or a table row says nothing about what
+ * is wrong: the issue's V2 licenses the TITLE as the fallback, not the first
+ * decoration the section happens to hold. So a refusal falls through to the next
+ * line, and if none survives, to the title.
+ *
+ * The class is deliberately narrow, and it is asked ONLY of a line the walker saw
+ * OUTSIDE a code sample (see `sectionLines`' second return). A line is refused only
+ * when a construct marker sits at its START and what follows is blank, a space, or
+ * — for a pipe — another pipe, which is what a table row's leading cell boundary
+ * looks like: `---` is a rule, `# heading` is a heading, `- item` is a bullet,
+ * `> ` is a blockquote, `| a | b |` is a table row. A bullet or quote marker
+ * followed directly by a WORD is kept, because an issue body that begins its section
+ * with `-3 degrees is wrong` or `> the helper is wrong` is saying something, and the
+ * guard's job is to refuse decoration, not to throw away the sentence that happened
+ * to start with a punctuation mark. The one ordinary line this does refuse is the
+ * `**bold**` opener of a section that began with an emphasis run instead of a
+ * sentence — a drafter never writes one, and the fallback is the title, not a wrong
+ * statement.
+ */
+const NOT_A_STATEMENT =
+  /^(?:#{1,6}(?:\s|$)|-+|_+|=+|\*+|`{3,}|~{3,}|\[[ \/xX]?\]|<[a-zA-Z/!]|-(?=\s|$)|>(?=\s|$)|\|[^|]*\|)/;
+
+/**
+ * The classification line `plan-draft.ts` renders under the descriptor. The colon
+ * may be flanked by spaces or tabs — `Type\t:` or `Type:` are both the label — and
+ * a bare `Type` with no colon is a word of prose, not the classification.
+ */
+const TYPE_LINE = /^Type\s*:/i;
+
 /** A line that OPENS a fenced code sample: up to 3 spaces, then 3+ of one char. */
 const FENCE_OPENER = /^(?: {0,3})(?<run>`{3,}|~{3,})/;
 
@@ -83,19 +123,48 @@ const sectionHead = (heading: string): RegExp =>
  * reader and an eat-to-end reader both get wrong, in opposite directions. The
  * scan looks ahead for the closer before it decides: a fence with one is a
  * sample and is skipped whole, a fence without one is a truncated body and every
- * line from its opener onward is ordinary text that the section keeps. That is
- * the contract `lean/spec.ts`'s strips honour for the same bytes, and it is what
- * keeps "a draft lost its closing fence" a cosmetic difference rather than a
- * draft that files no machine block at all.
+ * line from its opener onward is ordinary text that the section keeps — and is
+ * reported as such on the line's own tag, so a later reader can tell kept sample
+ * text apart from a heading the author wrote. That is the contract `lean/spec.ts`'s
+ * strips honour for the same bytes, and it is what keeps "a draft lost its closing
+ * fence" a cosmetic difference rather than a draft that files no machine block at
+ * all.
+ *
+ * The second element of each pair says whether the line is KEPT SAMPLE TEXT: the
+ * body's own markdown, written where a code sample was opened and never closed, so
+ * CommonMark reads every line from its opener to the end as text. Nothing else in
+ * this module needs the distinction — criteria bullets are filtered by their marker
+ * either way — and `descriptorProblem` is exactly where it matters: a section whose
+ * first line is `### Notes` is decoration to fall through, but a sample that opens
+ * with `### Notes` and lost its closer is kept content the reader may not silently
+ * drop. The flag is carried out of the one walk that made the judgement, rather than
+ * guessed again downstream. `criteriaBullets` reads the pairs and ignores it.
+ *
+ * The return is tuples so the fence verdict travels with the line; a caller that
+ * wants the plain lines takes `.map(([l]) => l)`.
  */
-export function sectionLines(body: string, heading: string): string[] {
+export function sectionLines(body: string, heading: string): [string, boolean][] {
   const lines = body.split(/\r?\n/);
   const head = sectionHead(heading);
-  const out: string[] = [];
+  const out: [string, boolean][] = [];
   let inSection = false;
+  // Whether the line about to be pushed is text kept from a sample that has no
+  // closer. It is a property of the LINE, not of the body, and the walk already
+  // knows it: a sample with a closer is jumped whole (its lines never reach `out`
+  // at all), so the only way a line gets here from inside a fence is the `continue`
+  // below — the look-ahead found no closer and the lines are kept. Latching this
+  // instead (one sample lost its closer, so everything below is text) is wrong in
+  // the other direction: a draft whose `## Context & motivation` quotes an
+  // unterminated sample then has its `## Acceptance criteria` read as sample text,
+  // and the bullets of every LATER section — References, Test surface, Out of scope
+  // — are filed as criteria. It is also the one fact `descriptorProblem` needs, so
+  // that a heading-shaped line the AUTHOR wrote is refused as decoration while the
+  // same shape kept out of an unclosed sample is carried as content.
+  let keptSampleText = false;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] as string;
     const opener = FENCE_OPENER.exec(line)?.groups?.run;
+    keptSampleText = false;
     if (opener !== undefined) {
       const char = opener[0] as string;
       const len = opener.length;
@@ -121,13 +190,22 @@ export function sectionLines(body: string, heading: string): string[] {
         i = end;
         continue;
       }
+      // …and here it found none: this line is kept sample text, and the walk falls
+      // through to read it and the lines under it as prose.
+      keptSampleText = true;
     }
     if (!inSection) {
       if (head.test(line)) inSection = true;
       continue;
     }
-    if (/^## /.test(line)) break;
-    out.push(line);
+    // A `## ` line ends the section only when it is a HEADING, and it is one only
+    // where no sample is open — `keptSampleText` says a sample opened above and
+    // never closed, so everything from there on is text, heading-shaped or not.
+    if (/^## /.test(line) && !keptSampleText) break;
+    // What is pushed here is either the author's own markdown or a line kept from
+    // an unclosed sample — the distinction the tag carries and `descriptorProblem`
+    // acts on. A line before the heading can never reach here.
+    out.push([line, keptSampleText]);
   }
   return out;
 }
@@ -143,17 +221,27 @@ export function sectionLines(body: string, heading: string): string[] {
  * as bare prose yield a problem rather than the literal word `Type:`. `Type:` is
  * skipped rather than accepted: `Type: feature` is a classification, and
  * `parsePiSpec` refuses an empty `problem` but cannot tell a useless one from a
- * real one.
+ * real one. A line that is markdown structure rather than a sentence is skipped
+ * for the same reason — see `NOT_A_STATEMENT` — but only when the walker read it as
+ * the author's own markdown: text kept from an UNTERMINATED sample is content, and
+ * refusing it would be the eat-to-end strip this module's other tests refuse. A
+ * `Descriptor:` line is read for its text FIRST, so the guard never refuses the one
+ * line the drafter writes; an empty prefixed line contributes nothing and the walk
+ * simply continues.
  *
  * Returns "" when the section holds none, which is the title-fallback case.
  */
 export function descriptorProblem(body: string): string {
-  for (const raw of sectionLines(body, "Context & motivation")) {
+  for (const [raw, keptSampleText] of sectionLines(body, "Context & motivation")) {
     const trimmed = raw.trim();
-    if (trimmed === "" || /^Type\s*:/.test(trimmed)) continue;
-    return trimmed.startsWith(DESCRIPTOR_PREFIX)
-      ? trimmed.slice(DESCRIPTOR_PREFIX.length).trim()
-      : trimmed;
+    if (trimmed === "" || TYPE_LINE.test(trimmed)) continue;
+    if (trimmed.startsWith(DESCRIPTOR_PREFIX)) {
+      const text = trimmed.slice(DESCRIPTOR_PREFIX.length).trim();
+      if (text !== "") return text;
+      continue;
+    }
+    if (!keptSampleText && NOT_A_STATEMENT.test(trimmed)) continue;
+    return trimmed;
   }
   return "";
 }
@@ -175,7 +263,7 @@ export function descriptorProblem(body: string): string {
  */
 export function criteriaBullets(body: string): string[] {
   return sectionLines(body, "Acceptance criteria")
-    .map((l) => l.trim())
+    .map(([l]) => l.trim())
     .filter((l) => l.startsWith("- ") || l.startsWith("* "))
     .map((l) => l.replace(/^[-*]\s+/, "").trim())
     .filter(
