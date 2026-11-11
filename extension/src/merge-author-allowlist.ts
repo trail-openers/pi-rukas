@@ -199,7 +199,12 @@ export async function readMergeAuthorAllowlist(
     // so the wording is kept and classified below rather than guessed at by a
     // second read that would answer a broken repository the same way.
     type = "";
-    probeError = errText(err);
+    // `errText` reads `message`, which is where `execp` puts the command line but
+    // NOT where git's diagnosis lands: a non-zero exit carries the words on
+    // `stderr`. Reading only the message made a genuine "that path is not in that
+    // commit" indistinguishable from a wedged repository, which is exactly the
+    // distinction A7 turns on — so both places are consulted.
+    probeError = `${errText(err)} ${errTextStderr(err)}`;
     if (ABSENT_PROBE.test(probeError)) {
       return {
         ok: false,
@@ -255,6 +260,18 @@ export async function readMergeAuthorAllowlist(
     };
   }
   return { ok: true, logins, set: new Set(logins.map((l) => l.toLowerCase())) };
+}
+
+/**
+ * git's `stderr` off a rejection, when the executor attached one.
+ *
+ * `execp` and `execFile` disagree about where the failing child's words go, and the
+ * reader must not inherit that disagreement: the absence test needs git's own
+ * sentence whichever shape the caller's executor has.
+ */
+function errTextStderr(err: unknown): string {
+  const stderr = (err as { stderr?: unknown })?.stderr;
+  return typeof stderr === "string" ? stderr : "";
 }
 
 /**

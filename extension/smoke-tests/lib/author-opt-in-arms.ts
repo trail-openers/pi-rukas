@@ -34,71 +34,64 @@ export const ARMS_ALLOWED = "alice\nBob\n";
  * the happy path, so an arm says only what it changes.
  */
 export type OptInArm = {
-	/** `cat-file -t` answers this instead of `blob` (a directory, a symlink). */
-	type?: string;
-	/** The path is not in the commit at all — git's own failure for that shape. */
-	absent?: boolean;
-	/** The blob exists but the bytes cannot be read. */
-	showThrows?: boolean;
-	/** The bytes the blob answers with (default: the two logins above). */
-	body?: string;
+  /** `cat-file -t` answers this instead of `blob` (a directory, a symlink). */
+  type?: string;
+  /** The path is not in the commit at all — git's own failure for that shape. */
+  absent?: boolean;
+  /** The blob exists but the bytes cannot be read. */
+  showThrows?: boolean;
+  /** The bytes the blob answers with (default: the two logins above). */
+  body?: string;
 };
 
 /** A git executor answering like git, from an {@link OptInArm} table. */
 export function optInExec(arm: OptInArm, calls: string[] = []) {
-	const exec = async (
-		_cmd: string,
-		opts?: { argv?: string[] },
-	): Promise<{ stdout: string }> => {
-		const argv = opts?.argv ?? [];
-		calls.push(argv.join(" "));
-		if (argv.includes("cat-file")) {
-			if (arm.absent === true)
-				throw new Error(
-					"fatal: path does not exist in '<base>:<gate file>'",
-				);
-			return { stdout: `${arm.type ?? "blob"}\n` };
-		}
-		if (arm.showThrows === true) throw new Error("fatal: bad object");
-		return { stdout: arm.body ?? ARMS_ALLOWED };
-	};
-	return { exec, calls };
+  const exec = async (_cmd: string, opts?: { argv?: string[] }): Promise<{ stdout: string }> => {
+    const argv = opts?.argv ?? [];
+    calls.push(argv.join(" "));
+    if (argv.includes("cat-file")) {
+      if (arm.absent === true)
+        throw new Error("fatal: path does not exist in '<base>:<gate file>'");
+      return { stdout: `${arm.type ?? "blob"}\n` };
+    }
+    if (arm.showThrows === true) throw new Error("fatal: bad object");
+    return { stdout: arm.body ?? ARMS_ALLOWED };
+  };
+  return { exec, calls };
 }
 
 /** A real throwaway clone, with or without the gate file at its base commit. */
 export function repoWithOptionalGateFile(opts: {
-	/** `undefined` — the repository never opted in; a string is the file's bytes. */
-	allowlist?: string;
-	/** Write the file as a symlink instead of a blob (the A7 symlink arm). */
-	symlinkTo?: string;
+  /** `undefined` — the repository never opted in; a string is the file's bytes. */
+  allowlist?: string;
+  /** Write the file as a symlink instead of a blob (the A7 symlink arm). */
+  symlinkTo?: string;
 }): { repoRoot: string; dispose: () => void } {
-	const repoRoot = mkdtempSync(join(tmpdir(), "author-optin-"));
-	const git = (...args: string[]) => {
-		const child = spawnSync("git", args, { cwd: repoRoot, env: gitTestEnv() });
-		if (child.status !== 0) {
-			throw new Error(
-				`git ${args.join(" ")}: ${child.stderr?.toString().slice(0, 200)}`,
-			);
-		}
-		return child.stdout.toString().trim();
-	};
-	git("init", "-b", "main");
-	git("config", "user.email", "opt-in@test.invalid");
-	git("config", "user.name", "Author opt-in test");
-	git("config", "commit.gpgsign", "false");
-	mkdirSync(join(repoRoot, ".pi"), { recursive: true });
-	writeFileSync(join(repoRoot, "README.md"), "# opt-in fixture repo\n");
-	if (opts.symlinkTo !== undefined) {
-		symlinkSync(opts.symlinkTo, join(repoRoot, GATE_FILE));
-	} else if (opts.allowlist !== undefined) {
-		writeFileSync(join(repoRoot, GATE_FILE), opts.allowlist);
-	}
-	git("add", "-A");
-	git("commit", "-m", "chore: base");
-	return {
-		repoRoot,
-		/** The commit the file is (or is not) in — what a cycle records as its base. */
-		baseSha: git("rev-parse", "HEAD"),
-		dispose: () => rmSync(repoRoot, { recursive: true, force: true }),
-	};
+  const repoRoot = mkdtempSync(join(tmpdir(), "author-optin-"));
+  const git = (...args: string[]) => {
+    const child = spawnSync("git", args, { cwd: repoRoot, env: gitTestEnv() });
+    if (child.status !== 0) {
+      throw new Error(`git ${args.join(" ")}: ${child.stderr?.toString().slice(0, 200)}`);
+    }
+    return child.stdout.toString().trim();
+  };
+  git("init", "-b", "main");
+  git("config", "user.email", "opt-in@test.invalid");
+  git("config", "user.name", "Author opt-in test");
+  git("config", "commit.gpgsign", "false");
+  mkdirSync(join(repoRoot, ".pi"), { recursive: true });
+  writeFileSync(join(repoRoot, "README.md"), "# opt-in fixture repo\n");
+  if (opts.symlinkTo !== undefined) {
+    symlinkSync(opts.symlinkTo, join(repoRoot, GATE_FILE));
+  } else if (opts.allowlist !== undefined) {
+    writeFileSync(join(repoRoot, GATE_FILE), opts.allowlist);
+  }
+  git("add", "-A");
+  git("commit", "-m", "chore: base");
+  return {
+    repoRoot,
+    /** The commit the file is (or is not) in — what a cycle records as its base. */
+    baseSha: git("rev-parse", "HEAD"),
+    dispose: () => rmSync(repoRoot, { recursive: true, force: true }),
+  };
 }

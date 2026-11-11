@@ -438,9 +438,19 @@ PR: [#912](https://github.com/trail-openers/pi-rukas/issues/912) · PR: [#1360](
 
 **Symptom:** `gh pr merge N` (or `glab mr merge N`) is refused with a message that the PR's author is not listed in `.pi/merge-authors`, or that the allowlist is absent, unreadable or empty. The PR's ledger rows and CI may both be green.
 
-**Cause (by design):** The merge-author gate (#2181) runs beside the head-equality check in the mode-independent merge guard. Before any merge can land, the PR's author must be listed in `.pi/merge-authors` at the cycle's base commit — one login per line, matched case-insensitively. An author the forge did not report, an allowlist file that is missing, unreadable or empty, and a login that is not on it all refuse. No override reaches it: `PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE`, `PI_ENSEMBLE_MERGE_AUTHORITY` and `--merge` are all statements about permission and reviews, never about who opened the PR, so none of them clears this gate.
+**Cause (by design):** The merge-author gate (#2181) runs beside the head-equality check in the mode-independent merge guard. It is **opt-in per repository**: a repository lands any author it likes until it commits `.pi/merge-authors`, and once that file exists at the cycle's base commit the PR's author must be listed in it — one login per line, matched case-insensitively. A file that exists and is unreadable, a symlink, a directory, or empty after comments; a login that is not on it; and an author the forge did not report all refuse. No override reaches it: `PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE`, `PI_ENSEMBLE_MERGE_AUTHORITY` and `--merge` are all statements about permission and reviews, never about who opened the PR, so none of them clears this gate. A cycle with no recorded base commit is refused too — it cannot show the file was absent at its own base.
 
-**Fix:** Add the PR's author to `.pi/merge-authors` (one login per line; the match is case-insensitive) and re-run the merge. The file is read at the base commit, so the entry must exist before the cycle's merge step — editing it mid-cycle does not retroactively clear a parked cycle; re-run the cycle once the file is on disk.
+**Fix:** Two different fixes, and the refusal tells you which. If the message says the author is not listed, add the PR's author to `.pi/merge-authors` (one login per line; the match is case-insensitive) and re-run the merge — or land the PR yourself. If it says the file could not be read, the file is present and broken: fix or remove it, and note that removing it opts the repository out entirely (see "A repository with no `.pi/merge-authors`"). The file is read at the base commit, so the entry must exist before the cycle's merge step — editing it mid-cycle does not retroactively clear a parked cycle; re-run the cycle once the file is on disk.
+
+### A repository with no `.pi/merge-authors` lands any author
+
+**Symptom:** a `/work` cycle or a lean run merges a pull request whose author nobody chose, and no refusal mentioning an allowlist appears anywhere.
+
+**Cause (by design):** the gate is opt-in. Absence of `.pi/merge-authors` at the base commit is read as "this repository has never named the maintainers whose pull requests an agent may land", so the author gate is not applied and every other gate — authority, evidence, the head check, protected paths, declared gate files — keeps its meaning. `/work` and lean run in repositories that are not this one, including seeded trial repositories that commit only `.pi/work.json`, and an allowlist that opted out by default would refuse every landing there.
+
+**Fix:** commit `.pi/merge-authors` (one login per line) to make the repository opt in. It is a gate file under `.pi/`, so a cycle may not add or widen it itself — an operator commits it, or the cycle runs with `--allow-protected .pi/merge-authors`. Once it exists, it fails closed: an unreadable, symlinked, directory or empty file refuses every merge.
+
+PR: [#2181](https://github.com/trail-openers/pi-rukas/issues/2181)
 
 PR: [#2181](https://github.com/trail-openers/pi-rukas/issues/2181)
 
