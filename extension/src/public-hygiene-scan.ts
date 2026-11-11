@@ -82,7 +82,6 @@ import { codeOf } from "./public-hygiene-files.ts";
 import { isAssignment } from "./public-hygiene-operands.ts";
 import { commandPrefixLength } from "./public-hygiene-prefix.ts";
 import { containsShellExpansion, shellExpansionProblem } from "./public-hygiene-substitution.ts";
-import { isGitProgramWord } from "./public-hygiene-target.ts";
 import type { PublishScan, PublishText, ScanProblem } from "./public-hygiene-types.ts";
 import { unreadableOperands } from "./public-hygiene-unreadable.ts";
 import { scanGhApi, scanGhPublish, scanGitCommit } from "./public-hygiene-verbs.ts";
@@ -268,27 +267,32 @@ const SHELLS = new Set(["bash", "sh", "zsh", "dash", "ksh"]);
 
 /**
  * The programs outside `WRAPPERS` whose operands the SHELL WILL EXECUTE or
- * compile, rather than treat as data: `eval` runs its operands, `script -c` runs
- * its `-c` payload, and `make` compiles `VAR=value` overrides (the recipe later
- * expands them). None is in `WRAPPERS`, so the segmenter leaves the payload as
- * ONE opaque word and no git argv is ever produced for the word reader; and none
- * is a shell runner, so `executedBodies` never opens the quote either. The
- * payload is the only place the push is written.
- *
- * Narrow on purpose. `echo`, `grep` and a commit message are NOT here, which is
- * what keeps prose that names the verb off the push path; and an interpreter
- * (`python3 -c`) is not here either, because reading its payload as a shell
- * command line is the backstop refusal's job, not this predicate's.
+ * compile, rather than treat as data: `eval` runs its operands, `script -c` /
+ * `script --command` runs its payload, and `make` compiles `VAR=value` overrides
+ * (the recipe later expands them). None is in `WRAPPERS`, so the segmenter leaves
+ * the payload as ONE opaque word and no git argv is ever produced for the word
+ * reader; and none is a shell runner, so `executedBodies` never opens the quote
+ * either. The payload is the only place the push is written.
  */
 const PAYLOAD_RUNNERS = new Set(["eval", "script", "make"]);
 
 /** A `NAME=value` operand (`make run CMD="git push"`), which may be quoted. */
 const ASSIGNMENT_WORD = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
-/** The first word bash would exec as this argv's program, after options and assignments. */
-function programWord(argv: readonly string[]): string | undefined {
-  const head = argv.find((w) => !w.startsWith("-") && !w.includes(" ") && !ASSIGNMENT_WORD.test(w));
-  return head === undefined ? undefined : path.basename(head);
+/** The payload-runner program of this argv, and where its operands begin. */
+function runnerProgram(argv: readonly string[]): { base: string; from: number } | undefined {
+  // A program outside the wrapper table keeps its operands in front of the runner
+  // (`flock /tmp/l eval "git push …"`), and a wrapper inside the table is already
+  // stripped (`env A=1 eval …`), so the runner is sought wherever it sits. Words
+  // before it belong to the outer program, not to this payload. A quoted run is
+  // never a program bash would exec, so a word with a space cannot name a runner.
+  for (let i = 0; i < argv.length; i++) {
+    const word = argv[i] ?? "";
+    if (word.includes(" ") || word.startsWith("-") || ASSIGNMENT_WORD.test(word)) continue;
+    const base = path.basename(word);
+    if (PAYLOAD_RUNNERS.has(base)) return { base, from: i + 1 };
+  }
+  return undefined;
 }
 
 /**
@@ -297,91 +301,66 @@ function programWord(argv: readonly string[]): string | undefined {
  * nothing to the question this predicate asks.
  */
 function runnerPayloads(argv: readonly string[]): string[] {
-  const base = programWord(argv);
-  if (base === undefined || !PAYLOAD_RUNNERS.has(base)) return [];
+  const runner = runnerProgram(argv);
+  if (runner === undefined) return [];
+  const { base, from } = runner;
   if (base === "script") {
-    const c = argv.findIndex((w, i) => i > 0 && /^-[a-zA-Z]*c[a-zA-Z]*$/.test(w));
-    const body = c >= 0 ? argv[c + 1] : undefined;
-    return body === undefined ? [] : [body];
+    const flagAt = argv.findIndex(
+      (w, i) =>
+        i >= from &&
+        (/^-[a-zA-Z]*c[a-zA-Z]*$/.test(w) || w === "--command" || w.startsWith("--command=")),
+    );
+    const flag = flagAt < 0 ? undefined : argv[flagAt];
+    if (flag === undefined) return [];
+    // `--command=BODY` carries its payload attached; every other spelling takes
+    // the next word.
+    const body = flag.startsWith("--command=") ? flag.slice("--command=".length) : argv[flagAt + 1];
+    return body === undefined || body === "" ? [] : [body];
   }
-  const operands = argv.slice(1).filter((w) => !w.startsWith("-"));
+  const operands = argv.slice(from).filter((w) => !w.startsWith("-") && !ASSIGNMENT_WORD.test(w));
   if (base === "make") {
-    return operands.filter((w) => ASSIGNMENT_WORD.test(w)).map((w) => w.slice(w.indexOf("=") + 1));
+    return argv
+      .slice(from)
+      .filter((w) => ASSIGNMENT_WORD.test(w))
+      .map((w) => w.slice(w.indexOf("=") + 1));
   }
   return operands.length === 0 ? [] : [operands.join(" ")];
 }
 
 /**
- * Does this command run `git push` at all (including inside a shell body)?
+ * Does this command run `git push` at all — visibly, in a shell body, or in
+ * payload text a runner hands to a shell?
  *
- * Two readers, one question, and the WORD READER'S VERDICT DECIDES only when it
- * actually read git. The word reader ({@link commandCarriesPushVerb}) walks the
- * command through the same segmenter every other publish reader uses, and requires
- * the verb at the position git would read it as its verb. The regex
- * (`pushesRemote`) is scan-not-anchor over the raw text: it sees a push inside a
- * `bash -c` body or past an `oo` prefix, and it also sees the verb ANYWHERE —
- * including inside text the command merely MENTIONS.
+ * Three readers, ORed, and none of them vetoes another: the regex
+ * ({@link pushesRemote}), scan-not-anchor over the raw text and over the bodies a
+ * shell runner executes; the word reader ({@link commandCarriesPushVerb}), which
+ * walks every segment through the one segmenter and requires the verb where git
+ * reads its verb; and the payload reader ({@link runnerPayloads}), asked of EVERY
+ * segment and passed through the regex, which reads what `eval`, `script -c` /
+ * `--command` and `make VAR=` hand on — programs outside the wrapper table, whose
+ * payload survives the segmenter as one opaque word no git argv is made from.
  *
- * The union of the two was the first defect this ordering replaces. `commandPushes`
- * used to answer yes when EITHER said so, so `echo "git push origin x"` — a line
- * that publishes nothing — went down the push path, and from a non-repository cwd
- * came back refused with the push directory sentence for a command that pushes
- * nothing. A commit message or a comment that names the verb paid the same refusal.
- *
- * Silencing the regex for every command that merely PARSED was the second defect,
- * and it fails in the expensive direction. The gate is not "the segmenter produced
- * words": it is "some segment's PROGRAM WORD is git", which is exactly the test the
- * word reader itself applies ({@link isGitProgramWord} on the basename after the
- * last `/`, plus no space). A program the wrapper table does not strip — `eval`,
- * `script -c`, `make VAR=` — leaves its payload as ONE opaque word, so no git argv
- * was ever produced to read; a reader that decided anyway answered `no` for
- * `eval "git push origin main"`, a real push. `no` from a reader that never saw git
- * is not an answer, it is the absence of one, and silence is never a pass.
- *
- * So the regex half decides every case where no segment ran git, and those are
- * exactly the shapes that over-matching buys cheaply:
- *
- * - no segment ran git at all (`busybox git push`, an `eval`/`script`/`make` payload
- *   that runs one) — the word reader refuses to strip a word it was not told to
- *   strip, so it saw no git and gave no verdict, and the regex catches the push;
- * - a push a shell body will execute (`bash -c 'git push'`) — the segmenter hands the
- *   payload back as ONE opaque word, so no git argv was ever produced to read;
- * - the command could not be parsed into words at all (an unbalanced quote, a
- *   heredoc body, an `env -S` payload the stripper emptied) — no words, no verdict.
- *
- * Where a git segment really did run, its own words are the evidence and the word
- * reader's `no` stands: `echo "git push x" && git status` is judged by the git
- * segment that produced no verb, so it is not a push.
- *
- * And the fail-closed rule is intact: absent a git segment the regex is asked, and
- * it is asked of the payloads the segmenter kept opaque — an `eval`/`script -c`/
- * `make VAR=` operand the shell will execute — as well as the raw text. So an
- * unparsable command, or a push whose only spelling is such a payload, is treated
- * as a push. "I could not read it" is never "it is not a push".
+ * **The regex's over-match is deliberate.** It sees the verb anywhere, so an
+ * `echo`, a `grep` or a commit message that merely NAMES `git push` is scanned as
+ * though it pushed. The cost is a couple of bounded git reads and, at worst, a
+ * refusal the agent re-issues — the cheap direction, and the one this predicate
+ * takes. The expensive direction is a push nobody scanned: every attempt to gate
+ * the regex on another reader's verdict leaked one, because a reader that never
+ * saw a segment still answers "not a push" for it. A `runsGit` gate let a single
+ * `git status` silence the regex for the whole chain, and `git status && busybox
+ * git push origin main` was allowed unscanned. So this predicate never answers
+ * "not a push" for anything any reader calls a push; narrowing the matcher belongs
+ * in `git-push-command.ts`, whose other caller is `developer-push-guard.ts` and
+ * where both callers get one verdict, not in a gate here that can only lose
+ * evidence.
  */
 export function commandPushes(command: string): boolean {
-  const words = publishCommandLines(command);
-  // Did any segment actually RUN git? Both halves of this test are the word
-  // reader's own definition of a git argv: a quoted run survives the segmenter as
-  // ONE word (`echo "git push"` → the single word `git push`), which ENDS in the
-  // program name without being it, and bash never execs a word carrying an unquoted
-  // space as a program. Requiring the basename match plus no space is what keeps
-  // prose that mentions `git` from counting as "git was read"; requiring it of the
-  // PROGRAM word (not any word) is what keeps `eval "git push …"` from counting
-  // either — that push has no git argv to read, so the regex stays in charge.
-  const runsGit =
-    words.length > 0 &&
-    words.every((argv) => argv.length > 0) &&
-    words.some((argv) => isGitProgramWord(argv[0]) && !(argv[0] ?? "").includes(" "));
-  if (runsGit) return commandCarriesPushVerb(command, PUSH_VERB);
-  // The fallback reads the payloads the opaque words were hiding, as well as the
-  // raw text: `eval "git push origin main"` is a push that BOTH readers used to
-  // deny — the word reader saw no git, and the regex saw only `eval …` after the
-  // quoted runs were stripped.
-  const payloads = words.flatMap(runnerPayloads);
-  return (
-    pushesRemote(command) !== undefined ||
-    payloads.some((payload) => pushesRemote(payload) !== undefined) ||
-    commandCarriesPushVerb(command, PUSH_VERB)
+  if (pushesRemote(command) !== undefined) return true;
+  if (commandCarriesPushVerb(command, PUSH_VERB)) return true;
+  // Per segment, so a push in one segment's payload counts however the others
+  // read. The segmenter already stripped the wrappers, so the runner is sought
+  // past them (`flock /tmp/l eval "git push …"` reaches the payload).
+  return publishCommandLines(command).some((argv) =>
+    runnerPayloads(argv).some((payload) => pushesRemote(payload) !== undefined),
   );
 }

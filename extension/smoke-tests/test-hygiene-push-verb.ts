@@ -85,7 +85,6 @@ const notPushCases: [string, string][] = [
   [`git status`, "a status"],
   [`git log --oneline`, "a log"],
   [`echo ${P} origin main`, "an echo of the word"],
-  [`git commit -m "fix the ${P} script"`, "the word inside a commit message"],
   [`git ${P}origin main`, "a glued verb is not git's verb"],
   [`git checkout ${P}`, "the verb as an operand of another verb"],
   [`git config remote.${P}.url https://x/y`, "the word inside a key"],
@@ -123,60 +122,62 @@ assert(
   "the union alone catches a push whose only spelling is an `env -S` payload",
 );
 
-// ── the union: the WORD READER decides when the command parsed (#2168 H2) ───
+// ── the union is never narrowed by a gate (#2168 H2/H3) ────────────────────
 //
-// `commandPushes` used to be `regex || word`, so any text that merely MENTIONED
-// the verb went down the push path — `echo "git push origin x"` included — and a
-// mention from a non-repository cwd was refused with the push directory sentence
-// for a publish that publishes nothing. The union is now ordered by EVIDENCE: a
-// command the segmenter can read is judged by the word reader, and the regex half
-// is the fallback for text it cannot read (an unbalanced quote, an `oo` prefix the
-// word reader does not know, a shell body it does not open). Fail-closed for the
-// unparsable case is unchanged — a command nothing can read is still a push.
-const wordDecidesCases: [string, string][] = [
-  [`echo "git ${P} origin x"`, "a double-quoted mention of the verb"],
-  [`echo 'git ${P} origin x'`, "a single-quoted mention of the verb"],
-  [`echo "git ${P} origin x" && true`, "a quoted mention as the first segment of a chain"],
-  [`git commit -m "fix the ${P} script"`, "a commit message that names the verb"],
-  [`grep -r "git ${P}" .`, "a grep for the verb"],
-  // A chain whose git segment never gets the verb is judged by the git words it
-  // did produce: `false` here is the word reader's ANSWER, not a gap, and the
-  // regex half stays silent because the segmenter read the command fine. Same
-  // evidence class as the bare `git status` above, reached through `&&`.
-  [`echo "git ${P} x" && git status`, "a quoted mention followed by a real git segment with no verb"],
+// `commandPushes` is `pushesRemote(command) || commandCarriesPushVerb(…) || the
+// payload reader`, and NOTHING else — no gate may let one reader veto the others.
+// The last such gate asked "did some segment run git?" and, when it did, took the
+// word reader's verdict as the answer about the WHOLE command: one `git status`
+// silenced the regex for every OTHER segment, and a push sitting behind a program
+// the wrapper table does not strip went unscanned. The rows below are that class;
+// each was allowed by `inspectCommand` at the commit this test was written against.
+//
+// Prose that merely NAMES the verb is deliberately scanned too. The cost of the
+// regex's over-match is a couple of bounded git reads plus a refusal; the cost of a
+// missed push is a publish. Narrowing therefore belongs in `git-push-command.ts`,
+// which the developer push guard shares, not in a gate in front of the union.
+const leakCases: [string, string][] = [
+  [
+    `git status && flock /tmp/l git ${P} origin main`,
+    "a push behind flock in a chain that also runs git status",
+  ],
+  [`git status && busybox git ${P} origin main`, "a busybox push behind a git segment"],
+  [
+    `git status && bash -c "git ${P} origin main"`,
+    "a shell-body push behind a git segment",
+  ],
+  [
+    `git status && docker run img git ${P} origin main`,
+    "a push run by a container behind a git segment",
+  ],
+  [`git status && parallel git ${P} origin main`, "a push run by GNU parallel behind a git segment"],
+  [`git log -1 && flock /tmp/l git ${P} origin main`, "a push behind flock after a git log"],
+  [
+    `date && git status && busybox git ${P} origin main`,
+    "a busybox push as the third segment of a chain",
+  ],
+  [
+    `if git status; then flock /tmp/l git ${P} origin main; fi`,
+    "a push behind flock inside an if whose condition runs git",
+  ],
 ];
-for (const [command, why] of wordDecidesCases) {
-  assert(
-    commandPushes(command) === false,
-    `${why} is prose the word reader read, so it is NOT scanned as a push (H2)`,
-  );
+for (const [command, why] of leakCases) {
+  assert(commandPushes(command) === true, `${why} is scanned as a push (H3 leak)`);
 }
 
-// ── the word reader decides ONLY for a segment that really runs git ─────────
-//
-// The H2 ordering asked the wrong question: it let the word reader decide when ANY
-// segment's program word merely ENDED in `git`, and `isGitProgramWord` does not
-// reject a non-git program in that position. So `eval "git push origin main"` — a
-// push that publishes — had its verdict taken by a reader that never saw git at
-// all: the segmenter hands the quoted payload back as ONE word, the program word is
-// `eval`, and the reader answered `no` for a command that pushed. Before the H2
-// ordering the regex caught it. A push the word reader silently denies is the
-// direction that costs a publish, so the fallback now triggers unless some segment's
-// program word IS git: its basename after the last `/` equals the program name and
-// it carries no space (a quoted run is never a program bash would exec).
-// `script -c`, `make VAR=` and a bare `eval` are all shapes the wrapper table does
-// not strip, so nothing in the words was ever git's argv.
-const regexDecidesCases: [string, string][] = [
+// The payload pins, kept: a push whose only spelling is what a runner hands to a
+// shell or to make is a push, and the payload reader is what sees it — including
+// behind a wrapper the segmenter strips (`flock` is not a wrapper, `env` is).
+const payloadCases: [string, string][] = [
   [`eval "git ${P} origin main"`, "a push in a double-quoted eval payload"],
   [`eval 'git ${P} origin main'`, "a push in a single-quoted eval payload"],
   [`script -q -c "git ${P} origin main" /dev/null`, "a push in a `script -c` payload"],
+  [`script --command="git ${P} origin main" /dev/null`, "a push in a `script --command` payload"],
   [`make run CMD="git ${P} origin main"`, "a push inside a make variable operand"],
+  [`flock /tmp/l eval "git ${P} origin main"`, "an eval payload behind a wrapper strip"],
 ];
-for (const [command, why] of regexDecidesCases) {
-  assert(
-    commandPushes(command) === true,
-    `${why} is a push the regex half still catches — no segment ran git, so the word reader gives no verdict`,
-  );
+for (const [command, why] of payloadCases) {
+  assert(commandPushes(command) === true, `${why} is a push the payload reader catches`);
 }
 
 // The regex half still carries the load where the word reader cannot reach: a
