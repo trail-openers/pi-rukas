@@ -298,6 +298,14 @@ export interface PlanLaunchReturn {
 export async function invokePlanToolFull(
   tools: RegisteredDriverTool[],
   params: Record<string, unknown>,
+  /**
+   * #1854: the SESSION directory the tool resolves its own repository from — the
+   * field the harness used to hardcode to `process.cwd()`. A cross-repo test needs
+   * to say "the session is in clone A, the target is clone B", and `ctx.cwd` is the
+   * only input that decides the session side of that pair. Omitted → `process.cwd()`,
+   * which is what every existing caller gets and what the pre-#1854 harness passed.
+   */
+  cwd?: string,
 ): Promise<{
   text: string;
   details: Record<string, unknown>;
@@ -319,7 +327,7 @@ export async function invokePlanToolFull(
   // deliverReport, so the harness hands the tool a context that also answers
   // sendUserMessage into the inbox `waitForJobReport` reads.
   const launch = (await t.execute("id", params, undefined, undefined, {
-    cwd: process.cwd(),
+    cwd: cwd ?? process.cwd(),
     ...makeJobDeliverer(),
   })) as unknown as PlanLaunchReturn;
   const jobId = String(launch.details?.jobId ?? "");

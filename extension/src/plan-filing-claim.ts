@@ -35,6 +35,13 @@ import { trace } from "./trace.ts";
  * What a digest binds: the exact bytes a filing would send, PLUS the two things
  * the forge call carries that are NOT in the body.
  *
+ * #1854 bumps the version tag to v3 and adds the target repository. A digest is
+ * the operator's authorisation to file bytes they saw, and the destination is
+ * part of what they authorised — so it is a digest term, and pre-#1854 dry runs
+ * stop matching. The consequence is stated where it will be hit: a confirm whose
+ * dry run was filed before the bump reports "the reviewedDigest does not match
+ * the cached dry run", and the remedy is to re-run the dry run and confirm that
+ * one. Nothing files under a digest the current code cannot reproduce.
  * `reviewedDigestOf` is the authorisation for a verbatim filing — the operator
  * was shown this digest in the dry run, and the confirm must echo it. Labels are
  * arguments to the create call, never body text, so a digest that covered only
@@ -49,6 +56,15 @@ export interface DigestInputs {
   /** Sorted, deduped label list — the caller's order is not a digest input. */
   labels?: string[];
   provenance?: PlanProvenance;
+  /**
+   * #1854: the canonical identity of the repository this filing targets
+   * (`host/owner/repo`), or absent for the session repository. Without this term
+   * a reviewed dry run for repository A could be replayed against repository B:
+   * the bytes are identical, so every hash agrees, and the issue lands in the
+   * tracker the operator never saw. `undefined` and a real identity are distinct
+   * terms, so "the session repo" is never confused with "some repo".
+   */
+  target?: string;
 }
 
 /**
@@ -75,13 +91,17 @@ export type DigestExtra = Omit<DigestInputs, "title" | "spec">;
  */
 function digestTuple(i: DigestInputs): string[] {
   return [
-    "plan-reviewed-v2",
+    "plan-reviewed-v3",
     i.title,
     i.spec,
     // Sorted AND deduped: a repeated label files the same issue, so it must not
     // be a digest input (the dry run and the confirm must agree on one ticket).
     JSON.stringify([...new Set(i.labels ?? [])].sort()),
     JSON.stringify(renderProvenance(i.provenance)),
+    // #1854: the destination. Absent → "" — one spelling of "the session repo"
+    // rather than the two (`undefined` and `""`) `JSON.stringify` would render
+    // differently depending on which caller held the field.
+    i.target ?? "",
   ];
 }
 
@@ -137,6 +157,9 @@ function fileableEntry(
     reviewedDigestOf(entry.reviewed.title, entry.reviewed.spec, {
       labels: entry.reviewed.labels,
       provenance: entry.reviewed.provenance,
+      // #1854: the target the ENTRY recorded — the repository its author saw —
+      // never the one this call happens to be running against.
+      target: entry.reviewed.target,
     }) === digest
   );
 }

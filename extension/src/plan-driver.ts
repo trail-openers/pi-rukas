@@ -21,42 +21,38 @@
  * verbatim (plan-confirm.ts — no phase below runs).
  * #1541: the run is cancellable — the async job's AbortSignal reaches every
  * phase boundary (plan-driver-cancel.ts), every child dispatch, and each round
- * of the gap gate.
+ * of the gap gate. Per-phase seams live in their own `plan-driver-*.ts` module.
  */
 
 import { dispatchCore } from "./dispatch.ts";
 import { type PlanBase, withPlanBase } from "./plan-base-tree.ts";
 import { confirmVerbatim, heldForReview, settlePlanCache } from "./plan-confirm.ts";
 import { codeIdentifiersIn, mechanicalInventory } from "./plan-draft.ts";
+import { cacheLineage, openRunCache } from "./plan-driver-cache.ts";
 import { cancelledResult } from "./plan-driver-cancel.ts";
 import { assembleFinalBody } from "./plan-driver-final-body.ts";
-import { gapGateApplies, runGate } from "./plan-driver-gate.ts";
-import {
-  allAnglesFailedHalt,
-  buildPlanResult,
-  haltResult,
-  phaseTimer,
-} from "./plan-driver-halt.ts";
+import { gapGateApplies, phase4GapGate } from "./plan-driver-gate.ts";
+import { allAnglesFailedHalt, haltResult, phaseTimer } from "./plan-driver-halt.ts";
 import { phase3Draft } from "./plan-driver-phase3.ts";
 import {
   correctiveRedraftHalt,
-  draftInvalidHalt,
   duplicateRiskHalt,
   needsClarificationHalt,
 } from "./plan-driver-phases.ts";
 import { correctiveRedraft } from "./plan-driver-redraft.ts";
+import { buildFinalPlanResult } from "./plan-driver-result.ts";
 import {
   type PlanDispatchFn,
   getPlanDispatchOverride,
   getPlanStatFnOverride,
 } from "./plan-driver-seams.ts";
+import { validatePhase3Draft } from "./plan-driver-validate.ts";
 import {
   compactedDisclosure,
   finalizeDroppedDisclosure,
   neverClaimDisclosureSection,
   tracePlanRun,
 } from "./plan-dropped-artifact.ts";
-import { reviewedDigestOf } from "./plan-filing-claim.ts";
 import { loadPlanImages, planImageLinksSection, withPlanImages } from "./plan-images.ts";
 import {
   type InvestigationResult,
@@ -64,16 +60,12 @@ import {
   PLAN_MARKER_CHILD_ARGS,
   runInvestigation,
 } from "./plan-investigate.ts";
-import {
-  dropInvestigationCache,
-  readInvestigationCache,
-  readSettledGaps,
-  resolvePlanGitState,
-} from "./plan-investigation-cache.ts";
+import { readInvestigationCache } from "./plan-investigation-cache.ts";
 import { phase5FilingFailure } from "./plan-phase5.ts";
 import { precheckDescriptor } from "./plan-precheck.ts";
 import { assemblePriorContext } from "./plan-prior-context-assembly.ts";
 import { withProvenance } from "./plan-provenance.ts";
+import { type PlanTarget, planTargetFacts } from "./plan-target.ts";
 import {
   type PlanDriverInput,
   type PlanGap,
@@ -81,7 +73,7 @@ import {
   classifyPlanType,
   planTitle,
 } from "./plan-types.ts";
-import { FORGE_BODY_MAX, parsePinnedSubIssueCount, validateDraft } from "./plan-validate.ts";
+import { FORGE_BODY_MAX, parsePinnedSubIssueCount } from "./plan-validate.ts";
 import { trace } from "./trace.ts";
 import type { DriverHost } from "./work-driver-host.ts";
 
@@ -93,18 +85,35 @@ export { gapGatePrompt } from "./plan-gate-prompt.ts";
 // runPlanPipeline
 // ---------------------------------------------------------------------------
 
+/** Options of {@link runPlanPipeline}. */
+export interface PlanPipelineOptions {
+  /**
+   * #1541 review (MEDIUM) — the tool path passes the async-job's own signal, so
+   * dispatch_kill / session shutdown stop the run. Omitted: the run cannot be killed.
+   */
+  signal?: AbortSignal;
+  /**
+   * #1854: the repository this run files into, resolved by the tool BEFORE it
+   * launched the job (`plan-target.ts`). Absent → the `repoRoot` argument, the
+   * session repository (the pre-#1854 behaviour). Supplied, every consumer keys off
+   * the TARGET: the base tree the children read, the cache lineage, the inventory's
+   * forge, the label gate, the create call and the dropped artifact. A property of
+   * the options rather than a fifth positional argument, so the signal stays in the
+   * call's object position where the kill-path canary reads it.
+   */
+  target?: PlanTarget;
+}
+
 export async function runPlanPipeline(
   pi: DriverHost,
   input: PlanDriverInput,
   repoRoot: string,
-  // #1541 review (MEDIUM) — the tool path passes the async-job's own signal, so
-  // dispatch_kill / session shutdown stop the run. Optional: the direct-pipeline
-  // tests keep the two-argument shape.
-  opts: { signal?: AbortSignal } = {},
+  opts: PlanPipelineOptions = {},
 ): Promise<PlanResult> {
+  const root = opts.target?.repoRoot ?? repoRoot;
   // #1132: one origin fetch per run; the base tree is removed when the run ends.
-  return withPlanBase(repoRoot, async (base) => {
-    const result = await runPipelineOn(pi, input, repoRoot, base, opts.signal);
+  return withPlanBase(root, async (base) => {
+    const result = await runPipelineOn(pi, input, root, base, opts);
     return base.baseFallback ? { ...result, baseFallback: base.baseFallback } : result;
   });
 }
@@ -118,32 +127,33 @@ async function runPipelineOn(
   input: PlanDriverInput,
   repoRoot: string,
   base: PlanBase,
-  signal?: AbortSignal,
+  opts: PlanPipelineOptions,
 ): Promise<PlanResult> {
+  const signal = opts.signal;
   // The source issue's images (plan-images.ts): with every child, links in the body.
   const images = await loadPlanImages();
   const dispatch = withPlanImages(images, getPlanDispatchOverride() ?? dispatchCore);
   const { descriptor, context, dryRun } = input;
   const type = classifyPlanType(descriptor, input.type);
   const depth = input.depth ?? 0;
-
+  // #1854: the digest/lineage term for the destination, derived once by the
+  // resolver's own companion (plan-target.ts).
+  const targetIdentity = planTargetFacts(input.targetRepository, opts.target).targetIdentity;
   // Per-phase wall-clock record (research next-step #1: measure, then cut).
   const { timed, finishTimings } = phaseTimer();
 
-  // #1043 — the cache lineage at git HEAD. A dry run never READS the investigation
-  // cache (it is the thing confirmed); it DROPS the lineage first, so a halting dry
-  // run leaves no fileable verdict. Its settled gaps are read before the drop.
-  // #1132: "HEAD" here is origin/<default> (the run's base SHA), not the local HEAD.
-  const gitState = await resolvePlanGitState(repoRoot, base);
-  const cacheInputs = gitState
-    ? { descriptor, context, type, keySha: gitState.keySha, depth, sourceIssue: input.sourceIssue }
-    : undefined;
-  const settled: PlanGap[] =
-    gitState && cacheInputs ? await readSettledGaps(gitState.cacheDir, cacheInputs) : [];
-  if (dryRun && gitState && cacheInputs) {
-    await dropInvestigationCache(gitState.cacheDir, cacheInputs);
-  }
-
+  // #1043 — the cache lineage at the run's base (the whole protocol lives in
+  // plan-driver-cache.ts). A dry run never READS the investigation cache (it is the
+  // thing confirmed); it DROPS the lineage first, so a halting dry run leaves no
+  // fileable verdict, and its settled gaps are read before the drop. #1132: "HEAD"
+  // here is origin/<default>, not local HEAD; #1854: the target repository is part of
+  // the lineage, so two repositories cannot read each other's cached barrier.
+  const lineage = cacheLineage(input, descriptor, context, type, depth, targetIdentity);
+  const {
+    git: gitState,
+    inputs: cacheInputs,
+    settled,
+  } = await openRunCache(repoRoot, base, lineage, dryRun === true);
   // Phase 0b — deterministic under-specification triage (plan-precheck.ts)
   // BEFORE any dispatch; fires only on the strongest signal.
   const pre = precheckDescriptor(type, descriptor, context);
@@ -169,8 +179,16 @@ async function runPipelineOn(
   // A dry run never reads the cache: it is the thing being confirmed. The gap
   // gate is ALWAYS re-run, seeded with the prior dry run's gaps as settled.
   // #1043 — an identical confirm of a fileable dry run files its reviewed spec.
-  const confirmed = await confirmVerbatim(gitState, cacheInputs, input, repoRoot, finishTimings);
+  const confirmed = await confirmVerbatim(
+    gitState,
+    cacheInputs,
+    input,
+    repoRoot,
+    finishTimings,
+    targetIdentity,
+  );
   if (confirmed.result) return confirmed.result;
+  // A filing run reuses a confirmed dry run's inventory + barrier in the expiry.
   const reused =
     !dryRun && gitState && cacheInputs
       ? await readInvestigationCache(gitState.cacheDir, cacheInputs)
@@ -226,18 +244,17 @@ async function runPipelineOn(
           ...(signal ? { signal } : {}),
         }),
       );
-
   const { duplicateRisk, findings, neverClaimDisclosure } = barrier;
   if (signal?.aborted)
     return cancelledResult(signal, input, "investigate", priorContext, finishTimings());
 
-  // Disclosed downstream (result text, details, drafted body) — a killed
-  // child must never vanish silently (vipune fixture run, C3).
+  // Disclosed downstream (result text, details, drafted body) — a killed child
+  // must never vanish silently (vipune fixture run, C3).
   const failedAngles = findings
     .filter((f) => !f.ok)
     .map((f) => ({ name: f.name, detail: f.failure ?? "failed" }));
 
-  if (duplicateRisk && duplicateRisk.level === "high") {
+  if (duplicateRisk?.level === "high") {
     return duplicateRiskHalt({
       type,
       descriptor,
@@ -287,38 +304,36 @@ async function runPipelineOn(
     trace(`plan-driver: body compacted to fit the forge limit (${body.length} chars)`);
     body += compactedDisclosure(chosenBudget);
   }
-  // #677 — the NEVER CLAIM post-filter disclosure, appended to the drafted
-  // body BEFORE validation (so the filed spec names what was dropped and why)
-  // and BEFORE the gate (so the reviewer sees the disclosure, not a silent
-  // absence). Empty when nothing was dropped — the body is unchanged.
+  // #677 — the NEVER CLAIM post-filter disclosure is appended to the drafted body
+  // BEFORE validation (so the filed spec names what was dropped and why) and BEFORE
+  // the gate (so the reviewer sees it, not a silent absence). Empty when nothing was
+  // dropped — the body is unchanged.
   body += neverClaimDisclosureSection(neverClaimDisclosure);
 
-  // Phase 3b — deterministic body validation (plan-validate.ts), BEFORE the
-  // gate: a draft whose load-bearing sections fell back to placeholders
-  // never pays a reviewer dispatch and never reaches the forge.
-  const draftCheck = validateDraft(type, body, depth, {
-    operatorSupplied: !!context?.trim(),
+  // Phase 3b — deterministic body validation (plan-validate.ts), BEFORE the gate:
+  // a draft whose load-bearing sections fell back to placeholders never pays a
+  // reviewer dispatch and never reaches the forge. The builder and its halt live in
+  // plan-driver-validate.ts (the §12 size seam); the driver keeps the decision.
+  const phase3b = await validatePhase3Draft({
+    type,
+    body,
+    depth,
+    context,
     pinnedSubIssues,
-    forbiddenPhrases: directives.neverClaim,
+    directives,
     operatorOmitted: phase3.operatorOmitted,
+    title,
+    priorContext,
+    failedAngles,
+    finishTimings,
   });
-  if (!draftCheck.ok) {
-    trace(`plan-driver: draft validation failed — ${draftCheck.problems.join("; ")}`);
-    return draftInvalidHalt({
-      type,
-      title,
-      spec: body,
-      priorContext,
-      problems: draftCheck.problems,
-      failedAngles,
-      timings: finishTimings(),
-    });
-  }
+  if (phase3b.halt) return phase3b.halt;
 
   // Phase 4 — gap gate: bug/feature/epic only (chore/spike are exempt — see
-  // gapGateApplies). The loop, its prompts and its corrective re-draft are
-  // assembled in plan-driver-gate.ts; the boundary check after it covers a kill
-  // that lands while the loop's own work is settling.
+  // gapGateApplies). The loop, its prompts, its abort checks and its halt routing
+  // are assembled in plan-driver-gate.ts (`phase4GapGate`); the driver keeps only
+  // the decision the loop returns. The boundary check after it covers a kill that
+  // lands while the loop's own work is settling.
   let gaps: PlanGap[] = [];
   let capHit = false;
   let capReason: PlanResult["capReason"];
@@ -329,7 +344,7 @@ async function runPipelineOn(
   let gateRan = false;
   if (gapGateApplies(type)) {
     gateRan = true;
-    const gate = await runGate({
+    const phase4 = await phase4GapGate({
       dispatch,
       pi,
       repoRoot,
@@ -352,37 +367,17 @@ async function runPipelineOn(
       chosenBudget,
       timed,
       correctiveRedraft,
+      input,
+      failedAngles,
+      finishTimings,
     });
-    // #1541 review (LOW) — the abort check runs BEFORE `gate.halted`. A kill
-    // that lands while the gate is settling makes the re-draft's dispatch
-    // refuse, and `correctiveRedraft` rethrows that refusal as a redraft
-    // failure — so a cancelled run would report PLAN HALTED / gate-unavailable
-    // and send the operator after a gate that was never the problem. The run
-    // was cancelled; that is the more specific, more true fact, and it is the
-    // one the operator acts on (re-run vs fix the gate).
-    if (signal?.aborted)
-      return cancelledResult(signal, input, "gap-gate", priorContext, finishTimings());
-    // A corrective re-draft that threw is a PLAN halt, not an exception. Routed
-    // through the same halt shape as the sibling gate failure modes: `startJob`'s
-    // generic fail report would drop the plan-specific rendering and the
-    // carried-decision disclosure the throw message built.
-    if (gate.halted) {
-      return correctiveRedraftHalt({
-        type,
-        descriptor,
-        priorContext,
-        failedAngles,
-        error: gate.error,
-        timings: finishTimings,
-      });
-    }
-    const loopResult = gate.loopResult;
-    gaps = loopResult.gaps;
-    capHit = loopResult.capHit;
-    capReason = loopResult.capReason;
-    residualForDisclosure = loopResult.residualForDisclosure;
-    openPoints = loopResult.openPoints;
-    rawUnparsedHead = loopResult.rawUnparsedHead;
+    if (phase4.halt) return phase4.halt;
+    gaps = phase4.gaps;
+    capHit = phase4.capHit;
+    capReason = phase4.capReason;
+    residualForDisclosure = phase4.residualForDisclosure;
+    openPoints = phase4.openPoints;
+    rawUnparsedHead = phase4.rawUnparsedHead;
   }
   if (signal?.aborted)
     return cancelledResult(signal, input, "gap-gate", priorContext, finishTimings());
@@ -406,16 +401,16 @@ async function runPipelineOn(
   });
 
   const resolvedGaps = gateRan ? gaps : [];
-  const held = heldForReview(input, confirmed.missReason, title, finalBody);
+  const held = heldForReview(input, confirmed.missReason, title, finalBody, targetIdentity);
   const asDryRun = dryRun || !!held;
 
-  // Phase 5 — file (unless dryRun OR the cap routed to surface). D2: when
-  // the cap routed to "surface" (CRITICAL remaining — the CRITICAL-only
-  // terminal rule, #664 transposed), do NOT file — surface to the operator. D7: the filing failure is DISCRIMINATED and
-  // carried on the result; the operator-visible text (plan-tool.ts) surfaces
-  // the reason including the forge stderr, without requiring PI_ENSEMBLE_DEBUG.
-  // The cap-skip routing + the single filing pass (moved to plan-phase5.ts
-  // along the 500-line seam) keep the driver's orchestration visible here.
+  // Phase 5 — file (unless dryRun OR the cap routed to surface). D2: the
+  // cap-routing to "surface" (a CRITICAL remains — the CRITICAL-only terminal rule,
+  // #664 transposed) does NOT file. D7: the filing failure is DISCRIMINATED and
+  // carried on the result, and the operator-visible text (plan-tool.ts) surfaces the
+  // reason including the forge stderr without requiring PI_ENSEMBLE_DEBUG. The
+  // cap-skip routing and the single filing pass live in plan-phase5.ts (the seam the
+  // 500-line cap asked for), keeping the driver's orchestration visible here.
   const { issueUrl, issueNumber, filingFailure } = await phase5FilingFailure({
     capReason,
     dryRun: asDryRun,
@@ -430,7 +425,9 @@ async function runPipelineOn(
 
   // #1043: every dry run that reached the end is cached with its reviewed spec
   // (the earlier "successful dry run only" rule was superseded); a filed run
-  // consumes the entry (plan-confirm.ts settlePlanCache).
+  // consumes the entry (plan-confirm.ts settlePlanCache). #1854: the entry also
+  // records the repository it was reviewed FOR, so a confirm aimed at another one
+  // is named as such instead of surfacing as an opaque digest mismatch.
   await settlePlanCache(gitState, cacheInputs, {
     dryRun: asDryRun,
     issueUrl,
@@ -446,13 +443,14 @@ async function runPipelineOn(
     // body, so the verbatim confirm files the same labels and provenance.
     labels: input.labels,
     provenance: input.provenance,
+    target: targetIdentity,
   });
 
   // #633: angles AND how many produced structured items (the line lives in
   // plan-dropped-artifact.ts, which is where the driver's size seam sits).
   tracePlanRun({ type, findings, gaps, issueUrl, dryRun: !!dryRun, capReason });
 
-  return buildPlanResult({
+  return buildFinalPlanResult({
     type,
     title,
     spec: finalBody,
@@ -466,20 +464,14 @@ async function runPipelineOn(
     failedAngles,
     compacted,
     issueNumber,
+    // #1854: the run's destination, plus the digest inputs the builder folds into
+    // the reviewedDigest (plan-driver-result.ts).
+    targetIdentity,
+    labels: input.labels,
+    provenance: input.provenance,
+    asDryRun,
     // #1383: the durable full dropped list, so plan-tool.ts names real bytes.
     droppedListFile: dl.file,
-    // #1043: a fileable dry run reports the digest a verbatim filing must echo.
-    // #1377: labels and provenance are digest inputs — labels are arguments to
-    // the create call (never body text), and the provenance lines are appended
-    // after the reviewed body by code, so neither is covered by the body hash
-    // alone. Filing the reviewed bytes under different labels is a mismatch.
-    reviewedDigest:
-      asDryRun && !filingFailure
-        ? reviewedDigestOf(title, finalBody, {
-            labels: input.labels,
-            provenance: input.provenance,
-          })
-        : undefined,
     investigationReused: reused ? { ageMs: reused.ageMs } : undefined,
     reviewedSpecChanged: held,
     timings: finishTimings(),

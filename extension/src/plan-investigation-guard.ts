@@ -208,6 +208,12 @@ const isReviewed = (x: unknown): boolean => {
     // entry would send a malformed argv / hash a tuple nothing produced.
     (labels === undefined ||
       (Array.isArray(labels) && labels.every((l) => isStr(l) && l.trim().length > 0))) &&
+    // #1854: the targeted repository — the canonical identity text, or absent.
+    // A hand-edited entry naming another repo here cannot redirect a filing
+    // (the run's own resolution decides the destination, and the lineage makes
+    // a disagreement miss), but a byte this module hands to the digest is a byte
+    // the guard reads rather than trusts.
+    (x.target === undefined || (isStr(x.target) && x.target.length <= 200)) &&
     (provenance === undefined || isProvenance(provenance)) &&
     // A fileable entry must carry something to file.
     (!fileable || (title.trim().length > 0 && spec.trim().length > 0))

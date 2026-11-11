@@ -77,9 +77,11 @@ registerPlanTool(fakePi);
   // #1377: labels and provenance join the schema (both optional).
   // #1856: `sourceIssue` joins the schema (optional) after reviewedDigest, so the
   // pre-#1856 order stays a prefix of it.
+  // #1854: `targetRepository` joins AFTER provenance — provenance was last, so the
+  // whole pre-#1854 order (and every prefix of it) still holds.
   assert(
     props.join(",") ===
-      "descriptor,type,context,dryRun,reviewedDigest,sourceIssue,labels,provenance",
+      "descriptor,type,context,dryRun,reviewedDigest,sourceIssue,labels,targetRepository,provenance",
     `exact TypeBox schema: ${props.join(", ")}`,
   );
   const typeUnion = (t?.parameters.properties?.type as { anyOf?: Array<{ const?: string }> })

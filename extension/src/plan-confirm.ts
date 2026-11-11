@@ -86,6 +86,14 @@ export interface SettleRun {
    */
   labels?: string[];
   provenance?: PlanProvenance;
+  /**
+   * #1854: the repository the run targets. Recorded with the reviewed bytes for
+   * the same reason `labels` is: it is part of what the operator approved, and a
+   * confirm aimed elsewhere has to be NAMEABLE rather than surface as an opaque
+   * digest mismatch. A digest input, so it reaches the hash through
+   * `DigestInputs.target`.
+   */
+  target?: string;
 }
 
 /**
@@ -115,6 +123,9 @@ export async function settlePlanCache(
         // no labels/provenance writes the byte-identical entry it wrote before.
         labels: run.labels?.length ? run.labels : undefined,
         provenance: run.provenance,
+        // #1854: likewise absent for a session-repo run, so the entries an
+        // omitted target writes keep the shape they had before this parameter.
+        target: run.target,
       },
     });
   } else if (run.issueUrl) {
@@ -135,6 +146,8 @@ export async function confirmVerbatim(
   input: PlanDriverInput,
   repoRoot: string,
   finishTimings: () => PlanPhaseTiming[],
+  /** #1854: this call's canonical target identity (absent → the session repo). */
+  targetIdentity?: string,
 ): Promise<{ result?: PlanResult; missReason?: string }> {
   if (input.dryRun) return {};
   const digest = input.reviewedDigest;
@@ -146,9 +159,19 @@ export async function confirmVerbatim(
             "the plan cache is unavailable (no origin/<default> commit to key on, or caching disabled)",
         };
   }
-  const result = await fileReviewedDryRun(git.cacheDir, inputs, repoRoot, finishTimings, digest);
+  const result = await fileReviewedDryRun(
+    git.cacheDir,
+    inputs,
+    repoRoot,
+    finishTimings,
+    digest,
+    // #1854: the repository THIS call targets — what the miss reason compares
+    // with the target the entry recorded, and what the filed report names as the
+    // destination.
+    targetIdentity,
+  );
   if (result || digest === undefined) return { result };
-  return { missReason: await verbatimMissReason(git.cacheDir, inputs, digest) };
+  return { missReason: await verbatimMissReason(git.cacheDir, inputs, digest, targetIdentity) };
 }
 
 /**
@@ -159,10 +182,22 @@ async function verbatimMissReason(
   cacheDir: string,
   inputs: CacheInputs,
   digest: string,
+  currentTarget?: string,
 ): Promise<string> {
   const entry = await readEntryAt(entryFile(cacheDir, inputs));
   if (!entry) {
-    return `no reviewed dry run is cached for these inputs in ${cacheDir} (a fresh clone, a removed cache, or a changed descriptor, context, type or source issue)`;
+    return `no reviewed dry run is cached for these inputs in ${cacheDir} (a fresh clone, a removed cache, or a changed descriptor, context, type, source issue or target repository)`;
+  }
+  // #1854: the entry is read here under the CURRENT target's lineage, so a
+  // different target normally lands on the "no reviewed dry run" arm above. If
+  // the recorded target still disagrees (an entry written before the term
+  // existed, or a hand-edited file) say so: the operator is holding a spec whose
+  // destination changed, not a spec whose text did, and "THE REVIEWED SPEC
+  // CHANGED" would send them to re-read bytes that are identical.
+  if ((entry.reviewed.target ?? "") !== (currentTarget ?? "")) {
+    return `the reviewed dry run targeted ${
+      entry.reviewed.target ?? "the session repository"
+    }, not ${currentTarget ?? "the session repository"} — the spec did not change, the destination did`;
   }
   if (entry.key !== investigationCacheKey(inputs))
     return "origin/<default> moved since the dry run";
@@ -178,6 +213,10 @@ async function verbatimMissReason(
     reviewedDigestOf(entry.reviewed.title, entry.reviewed.spec, {
       labels: entry.reviewed.labels,
       provenance: entry.reviewed.provenance,
+      // #1854: the digest the entry was written with included its target; the
+      // comparison must use the same tuple or every confirm mismatches on a
+      // cross-repo dry run.
+      target: entry.reviewed.target,
     }) !== digest
   ) {
     return "the reviewedDigest does not match the cached dry run (title, body, labels or provenance changed)";
@@ -197,6 +236,16 @@ export function heldForReview(
   missReason: string | undefined,
   title: string,
   spec: string,
+  /**
+   * #1854: the run's CANONICAL target identity — the term the dry run's digest
+   * was built from (plan-driver.ts derives it once, plan-driver-result.ts hashes
+   * it). REQUIRED and non-optional so no call site can quietly hash the caller's
+   * raw `targetRepository` instead: that is a different string whenever the caller
+   * spelled the destination non-canonically, and a comparison of two hashers that
+   * disagree on one term holds a run whose bytes the operator did review. A
+   * session-repo run passes `undefined` — the same term its dry run hashed.
+   */
+  targetIdentity: string | undefined,
 ): { reason: string } | undefined {
   if (input.dryRun || input.reviewedDigest === undefined) return undefined;
   // #1377: the same inputs the dry run hashed — labels and provenance are part
@@ -205,6 +254,9 @@ export function heldForReview(
     reviewedDigestOf(title, spec, {
       labels: input.labels,
       provenance: input.provenance,
+      // #1854: the destination is part of what was reviewed, so a re-draft is
+      // compared on it too — the same rule #1377 applies to labels.
+      target: targetIdentity,
     }) === input.reviewedDigest
   ) {
     return undefined;
@@ -259,10 +311,15 @@ export async function fileReviewedDryRun(
   repoRoot: string,
   finishTimings: () => PlanPhaseTiming[],
   reviewedDigest?: string,
+  /**
+   * #1854: this call's resolved target identity — for the miss reason, and for
+   * the filed report's target section.
+   */
+  currentTarget?: string,
 ): Promise<PlanResult | undefined> {
   if (reviewedDigest !== undefined) {
     const claimed = await claimVerbatim(cacheDir, inputs, reviewedDigest);
-    if (claimed) return fileClaimed(claimed, inputs, repoRoot, finishTimings);
+    if (claimed) return fileClaimed(claimed, inputs, repoRoot, finishTimings, currentTarget);
   }
   // A miss runs the pipeline. An identical confirm that is already filing (or
   // just filed) must NOT: the pipeline would re-investigate and could file a
@@ -288,6 +345,14 @@ async function fileClaimed(
   inputs: CacheInputs,
   repoRoot: string,
   finishTimings: () => PlanPhaseTiming[],
+  /**
+   * #1854: this call's canonical target identity, so the steer for the one run
+   * that mints the issue names the destination. Verbatim filing builds its result
+   * directly (no re-draft to report on), so without this the field is absent and
+   * `renderPlanResult` emits no `TARGET REPOSITORY` section — the dry run for the
+   * same spec showed one, and the run that actually filed does not.
+   */
+  currentTarget?: string,
 ): Promise<PlanResult> {
   const { title, spec, priorContext, failedAngles } = claimed.reviewed;
   // #1377: the reviewed entry's OWN labels and provenance — the bytes the
@@ -319,6 +384,9 @@ async function fileClaimed(
     type: inputs.type,
     title,
     spec,
+    // Absent for a session-repo run, exactly as in the final result: an omitted
+    // input keeps the pre-#1854 report bytes.
+    ...(currentTarget ? { targetRepository: currentTarget } : {}),
     gaps: claimed.gaps,
     priorContext,
     issueUrl: url,

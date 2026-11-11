@@ -116,6 +116,18 @@ export interface CacheInputs {
    * one whose cached HIGH has not been through the #1856 post-filter.
    */
   sourceIssue?: number;
+  /**
+   * #1854: the canonical identity of the repository the run files into
+   * (`host/owner/repo`), absent for the session repository. Part of the lineage
+   * because the repository changes everything about the plan: which code the
+   * angles read, which tracker the issue lands in, and which repo's labels exist.
+   * Without it, a same-descriptor plan for two repositories reads each other's
+   * cached barrier — and a dry run reviewed against repository A could satisfy a
+   * confirm aimed at B, whose label gate has never seen B's label set. The
+   * `reviewedDigest` alone does not cover this: it guards the bytes, not the
+   * destination of the run that produced them.
+   */
+  target?: string;
 }
 
 export interface CachedInvestigation {
@@ -150,6 +162,15 @@ export interface ReviewedDryRun {
    */
   labels?: string[];
   provenance?: PlanProvenance;
+  /**
+   * #1854: the repository the dry run targeted, recorded so a confirm aimed at a
+   * DIFFERENT repository can be diagnosed. The lineage already makes that pair
+   * miss the cache rather than file the wrong repo's spec, but a miss with a
+   * digest is reported as "THE REVIEWED SPEC CHANGED" — which sends the operator
+   * to re-read a spec that did not change, when what changed is the destination.
+   * This is the fact the miss reason quotes. Absent = the session repository.
+   */
+  target?: string;
 }
 
 export interface InvestigationCacheEntry extends CachedInvestigation {
@@ -267,12 +288,16 @@ function lineageOf(i: Omit<CacheInputs, "keySha">): string {
   // `?? null` keeps an absent context (undefined) distinct from "" and " ", and
   // an absent source issue (#1856) distinct from any number.
   return digest([
-    "plan-lineage-v1",
+    "plan-lineage-v2",
     i.descriptor.trim(),
     i.context ?? null,
     i.type,
     i.depth ?? 0,
     lineageSourceIssue(i.sourceIssue),
+    // #1854: the target repository, so two repositories never share a lineage.
+    // Bumped with it: an entry written under v1 predates the term, so it cannot
+    // answer for a run that has one.
+    i.target ?? "",
   ]);
 }
 
