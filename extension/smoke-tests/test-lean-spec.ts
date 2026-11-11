@@ -175,23 +175,44 @@ assert(
     "strip: a body with no fence is returned byte-identical",
   );
 
-  // The shapes that are NOT the block: an unterminated one, an info string that
-  // merely starts with the spec info, a fence too deeply indented to open one,
-  // and a closer too short to close it. Each keeps a sentinel line a strip that
-  // ate too much would lose.
+  // The shapes that are NOT the block: unterminated fences of every flavour, an
+  // info string that merely starts with the spec info, a fence too deeply indented
+  // to open one, and a closer too short to close it. Each keeps a sentinel line a
+  // strip that ate too much would lose — and the unterminated ones are the cases an
+  // eat-to-end strip fails, cutting the body at its opener instead of keeping the
+  // prose a truncated draft still has.
   const sentinel = "SENTINEL-line";
   const notBlocks: [string, string][] = [
     ["unterminated", `\`\`\`pi-spec v1\n${JSON.stringify(SPEC)}\n${sentinel}`],
+    // An unterminated fence whose info is NOT the spec info: still not a block, so
+    // still whole — the same claim as the case above, on the shape whose `## `
+    // heading is a quoted sample rather than a real section.
+    [
+      "unterminated non-spec fence",
+      "prose\n```md\n## Acceptance criteria\n" + sentinel,
+    ],
+    ["body ends mid-fence", "line one\n```md\n" + sentinel],
+    ["two openers, neither closed", "```a\nfirst\n```b\n" + sentinel],
     ["info with extra text", `\`\`\`pi-spec v1 extra\n${sentinel}\n\`\`\``],
     // Four spaces of indent is outside CommonMark's 0–3: not a fence, so the
     // "closer" is prose and the body is untouched.
     ["indented 4 spaces", `    \`\`\`pi-spec v1\n${sentinel}\n    \`\`\``],
     // A run shorter than the opener never closes it, so the block is unterminated
-    // and — like any unterminated fence — stays whole.
+    // and — like any unterminated fence — stays whole. The shape that separates a
+    // reader that tracks the run's LENGTH from one that only looks for a fence line,
+    // and `plan-pi-spec-descriptor.ts`'s section walker judges the same bytes.
     ["closer too short", `\`\`\`\`pi-spec v1\n${sentinel}\n\`\`\``],
+    ["closer too short, non-spec", "````md\n" + sentinel + "\n````"],
     // A fence that opened for another info string and closed clean: the pi-spec
     // text inside it is content of THAT block, not a spec of its own.
     ["other info string", `\`\`\`json\npi-spec v1\n${sentinel}\n\`\`\``],
+    // A quoted heading inside a non-spec sample survives exactly where it was
+    // found: the strip never rescues a body whose other reader mis-reads a fence,
+    // which is why that reader has to get the rule right on its own.
+    [
+      "quoted heading in a sample",
+      "## Context & motivation\n\n```md\n## Acceptance criteria\n```\n\n" + sentinel,
+    ],
   ];
   for (const [name, body] of notBlocks) {
     assert(
@@ -226,43 +247,31 @@ assert(
     parsePiSpec(stripPiSpecBlocks(valid())).ok === false,
     "strip: a stripped body has no block left to parse — the section is not a second contract",
   );
-}
 
-// ── the prose scan's view of a quoted `## ` line (#2171) ────────────────────
-//
-// A drafted body QUOTES markdown: an angle item that shows what an issue looks
-// like puts a real `## Acceptance criteria` line inside a code sample. That one
-// shape is what turns a defect in either reader into a whole dropped spec rather
-// than a misread field — the slice stops at the quoted heading, `sectionBullets`
-// answers "zero criteria", and `piSpecFromDraft` files no machine block at all,
-// silently, with its title fallback sitting behind that zero-criteria return.
-// The oracle seat's strip has to keep the body's shape whatever it removes, so
-// the assertion is not "the prose reads X" but "the criteria were filed", which
-// is the fact an operator notices.
-{
-  const sentinel = "SENTINEL-tail-line";
-  // An unterminated fence is not a block, so none of these is removed: the
-  // strip's whole contract for a truncated body is that it keeps its text.
-  for (const [name, body] of [
-    ["unterminated, prose after", "prose\n```md\n## Acceptance criteria\n" + sentinel],
-    ["body ends mid-fence", "line one\n```md\n" + sentinel],
-    ["two openers, neither closed", "```a\nfirst\n```b\n" + sentinel],
-    ["closer too short to close", "````md\n" + sentinel + "\n```"],
+  // A removed block takes ONE of its flanking blanks with it. A block is flanked by
+  // blanks to be a block at all, so removing its three lines and nothing else left
+  // the oracle seat a double blank inside the fence — a gap the issue never had, on
+  // every body that carries a spec. Exactly one goes, and only when a blank still
+  // survives on both sides of the removal, so `valid()`'s own trailing blank is the
+  // one that goes. The three shapes below say what the rule is NOT — a general
+  // whitespace trim that took a body's own blank run.
+  const around = (before: string, after: string): string =>
+    `${before}\n\n\`\`\`pi-spec v1\n${JSON.stringify(SPEC, null, 2)}\n\`\`\`\n${after}`;
+  assert(
+    stripPiSpecBlocks(around("prose before", "\nprose after")) ===
+      "prose before\n\nprose after",
+    "strip: a block flanked by blanks on both sides leaves one blank, not a double",
+  );
+  for (const [name, body, want] of [
+    ["no blank before it", around("", "prose after"), "\n\nprose after"],
+    ["no blank after it", around("prose before", "prose after"), "prose before\n\nprose after"],
+    ["nothing after it", around("prose before", ""), "prose before\n"],
   ] as const) {
     assert(
-      stripPiSpecBlocks(body) === body,
-      `strip-fences: an unterminated ${name} fence keeps every line (a strip that stopped at the opener would cut the body here) (got ${JSON.stringify(stripPiSpecBlocks(body))})`,
+      stripPiSpecBlocks(body) === want,
+      `strip: with ${name} no blank is taken from the body (got ${JSON.stringify(stripPiSpecBlocks(body))})`,
     );
   }
-
-  // The strip leaves a quoted heading exactly where it found it, which is what
-  // makes the criteria slice's fence-awareness the thing that has to get this
-  // right — the strip is not the reader that can rescue a body from it.
-  const quoted = "## Context & motivation\n\n```md\n## Acceptance criteria\n```\n\n" + sentinel;
-  assert(
-    stripPiSpecBlocks(quoted) === quoted,
-    "strip-fences: a non-spec code sample is left byte-identical, quoted heading and all",
-  );
 }
 
 // ── readiness: one case per rule ───────────────────────────────────────────

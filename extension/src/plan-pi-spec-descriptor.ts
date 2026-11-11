@@ -18,6 +18,7 @@
  * zero-criteria draft is a legitimate shape and the title fallback sits behind
  * the zero-criteria return, so nothing says why the block vanished.
  */
+import { closesFenceRun } from "./lean/spec.ts";
 import { AC_FALLBACK } from "./plan-validate.ts";
 
 /** The line `plan-draft.ts` renders the caller's descriptor as, in `## Context & motivation`. */
@@ -26,27 +27,35 @@ const DESCRIPTOR_PREFIX = "Descriptor:";
 /** A line that OPENS a fenced code sample: up to 3 spaces, then 3+ of one char. */
 const FENCE_OPENER = /^(?: {0,3})(?<run>`{3,}|~{3,})/;
 
-/** A line that COULD close a sample: that run alone on the line, carrying no info
- * string. Whether it DOES close the open one is `closesFence`'s predicate, not this
- * pattern's — a run shorter than its opener is content, like any other line. */
-const FENCE_CLOSER = /^(?: {0,3})(?<run>`{3,}|~{3,})$/;
+/**
+ * A line that COULD close a sample: up to 3 spaces, then the run alone (trailing
+ * spaces are allowed, CommonMark strips them), carrying no info string. Whether a
+ * match DOES close the open one is `closesFence`'s predicate, not this pattern's
+ * — a run shorter than its opener is content, like any other line.
+ *
+ * The 0–3 indent is stated here as well as on the opener: a sample written under a
+ * list item closes on a run indented as deeply as that item's content, and a reader
+ * that recognised openers at 0–3 but closers only at column 0 never closes that
+ * sample — so its lines are read as section text and a bullet inside the sample is
+ * filed as a criterion, which `placePiSpecSection` then embeds in the contract.
+ */
+const FENCE_CLOSER = /^(?: {0,3})(?<run>`{3,}|~{3,})[ ]*$/;
 
 /**
- * Whether `run` closes a sample opened by `char`/`len`: the same character, a run
- * at least as long, and — enforced by the caller, which only matches a line whose
- * run stands alone — no info string.
+ * Whether `run` closes a sample opened by `char`/`len`.
  *
- * The three conditions are `lean/spec.ts`'s `fencedBlocks`, restated rather than
- * imported because that module keeps its walker private and exporting a range
- * variant of it for this one predicate would widen a module whose contract is the
- * pi-spec block. A closer that failed here and passed there is the drift that
- * makes a body read two ways, so the shape separating the readers — a four-run
- * opener with a three-run "closer" — is pinned for both readers in
- * `test-plan-pi-spec-problem.ts` and `test-lean-spec.ts`.
+ * `lean/spec.ts`'s {@link closesFenceRun}, imported rather than restated: this
+ * reader and that module's strips judge the SAME bytes, and a closer one accepted
+ * and the other refused is the drift that makes a body read two ways — a strip
+ * that keeps what the parser dropped, or a section that ends where a strip kept
+ * going. The third condition the grammar states (a closer carries no info string)
+ * is enforced by the caller, which only asks about a line whose run stands alone.
+ * The shape that separates a reader that honours the length rule from one that
+ * merely looks for a fence line — a four-run opener with a three-run "closer" —
+ * is pinned for both readers, here in `test-plan-pi-spec-problem.ts` and there in
+ * `test-lean-spec.ts`.
  */
-function closesFence(run: string, char: string, len: number): boolean {
-  return run[0] === char && run.length >= len;
-}
+const closesFence = closesFenceRun;
 
 /** The heading line that opens a named section. */
 const sectionHead = (heading: string): RegExp =>

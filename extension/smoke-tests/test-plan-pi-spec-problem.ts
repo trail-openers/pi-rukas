@@ -291,27 +291,42 @@ ${["```ts", "Descriptor: not this line at all", "", "the real statement"].join("
     );
   }
 
-  // …and the two LENGTH cases, each pinned on the reader that fails it alone.
-  // CommonMark reads the two in opposite directions: a run SHORTER than its opener
-  // is content, so the four-run sample is STILL OPEN when the three-run "closer"
-  // arrives and everything below it survives; a run LONGER than its opener DOES
-  // close it. The shapes are split across the two readers so neither case can be
-  // satisfied by the other's rule. Shorter: the `## ` heading sits UNDER the
-  // "closer" too, so a walk that jumped to that short run erased the real criteria
-  // along with the sample — which is the shape that filed NO machine block, since a
-  // zero-criteria draft is legitimate and the title fallback sits behind that
-  // return. Longer: the sample is deliberately not a heading, so only a walk that
-  // stopped ON the closer — rather than treating it as a new opener — reaches the
-  // statement below it.
+  // …and the closer-LENGTH rule, which is the difference between a body that reads
+  // and one that files nothing. A run SHORTER than its opener is CONTENT, so the
+  // four-run sample is still open at the three-run "closer": under CommonMark the
+  // second `## Acceptance criteria` is sample text, not a section, and only the
+  // bullets ABOVE the sample are read. A scan that accepted that short run as the
+  // closer read it the other way round — it stopped the section at the "closer", so
+  // `- one` is never reached: zero bullets come back, a legitimate shape, so
+  // `piSpecFromDraft` returns undefined BEFORE its title fallback and the draft
+  // files no machine block at all, silently — the whole-spec loss this pins, and
+  // the reason the assertion is "the block was filed" rather than "the criteria
+  // read X". The sample line is deliberately not a heading: a `## ` line here would
+  // end the section under BOTH readings and the case would prove nothing. Pinned
+  // beside `stripPiSpecBlocks`' own shorter-than-opener case in `test-lean-spec.ts`:
+  // two readers of the same bytes, one rule.
   const shorterRun = piSpecFromDraft({
     type: "feature",
     title: "a title",
-    body: drafted("````md\n## Acceptance criteria\n```\n\n") + criteriaBlock,
+    body: [
+      "## Acceptance criteria",
+      "",
+      "- one",
+      "````md",
+      "Sentinel sample line",
+      "```",
+    ].join("\n"),
   });
   assert(
-    shorterRun !== undefined && shorterRun.criteria.length === 2,
-    `problem: a closer SHORTER than its opener is sample content, not a boundary (got ${shorterRun === undefined ? "NO BLOCK — the whole spec was dropped" : `${shorterRun.criteria.length} criteria`})`,
+    shorterRun !== undefined && shorterRun.criteria.map((c) => c.text).join(",") === "one",
+    `problem: a closer SHORTER than its opener is sample content, so the section still holds its bullet (a lenient closer reached none and filed NO block) (got ${shorterRun === undefined ? "NO BLOCK — the whole spec was dropped" : JSON.stringify(shorterRun.criteria.map((c) => c.text))})`,
   );
+
+  // …and the opposite length: a run LONGER than its opener DOES close the sample,
+  // so a scan that only looked for "a line starting with a fence run" would call
+  // that closer a NEW opener and read everything after it as sample — including the
+  // statement. The sample is deliberately not a heading, so only the walk that
+  // stopped ON the closer reaches the statement below it.
   assert(
     descriptorProblem(drafted("```md\nSentinel sample line\n````\n\n") + criteriaBlock) ===
       "the retry helper loses its message",
@@ -330,6 +345,34 @@ ${["```ts", "Descriptor: not this line at all", "", "the real statement"].join("
   assert(
     notAFence === undefined,
     `problem: a \`## \` line under a \`'''\` block is a real heading and does end the section — three apostrophes are not a fence (got ${notAFence === undefined ? "NO BLOCK, as they should be" : notAFence.criteria.length + " criteria"})`,
+  );
+
+  // …and the OTHER way a sample escapes this reader: where its closing fence sits.
+  // A sample opened under a list item closes on a run indented as deeply as that
+  // item's content — the same 0–3 bound an opener carries — so its lines are sample
+  // text and its bullets are NOT criteria. A reader that applied the indent rule to
+  // openers alone, recognising a closer at column 0, never closes that sample: it
+  // reads the lines as section text and files a bullet written inside the code
+  // sample as a real criterion, which `placePiSpecSection` then embeds in the filed
+  // `pi-spec v1` block — the oracle's contract claiming a check the task statement
+  // never asked for, the class this issue exists to close.
+  const indentedCloser = piSpecFromDraft({
+    type: "feature",
+    title: "a title",
+    body: [
+      "## Acceptance criteria",
+      "",
+      "- one",
+      "  ```md",
+      "- the check runs before the draw",
+      "  ```",
+      "- two",
+    ].join("\n"),
+  });
+  assert(
+    indentedCloser !== undefined &&
+      indentedCloser.criteria.map((c) => c.text).join(",") === "one,two",
+    `problem: a sample whose closer is indented with its list item keeps that bullet out of the criteria (got ${indentedCloser === undefined ? "NO BLOCK" : JSON.stringify(indentedCloser.criteria.map((c) => c.text))})`,
   );
 }
 
