@@ -6,13 +6,14 @@
  * module selects the tests that reach it through static imports, re-exports,
  * literal dynamic imports and path literals; a changed test selects itself;
  * anything the graph cannot judge falls back to the full suite with the reason
- * recorded. ALWAYS_RUN is present in every selection.
+ * recorded. The always-run set, computed from the tree's own smoke tests, is
+ * present in every selection.
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { CycleContext } from "../src/work-driver-context.ts";
-import { ALWAYS_RUN } from "../src/work-driver-verify-always-run.ts";
+import { textReadingTests } from "../src/work-driver-verify-always-run.ts";
 import { planDevelopVerify } from "../src/work-driver-verify-select-develop.ts";
 import {
   edgesOf,
@@ -66,6 +67,13 @@ write("smoke-tests/test-unrelated.ts", "export {};\n");
 write(
   "smoke-tests/test-generated.ts",
   'import { c } from "../src/c.ts";\nconst child = `const m = await import(${JSON.stringify(x)});`;\nvoid [c, child];\n',
+);
+
+// A repository text reader: the computed always-run set of this fixture tree is
+// exactly this file (every other fixture test reaches src only through an import).
+write(
+  "smoke-tests/test-reader.ts",
+  'import { readFileSync } from "node:fs";\nvoid readFileSync("src/a.ts", "utf8");\n',
 );
 
 // A top-level module reached by a test only through a nested module (#1647 review).
@@ -195,15 +203,26 @@ assert(
   "a test with a non-literal dynamic import runs on every selection (its target is unknowable)",
 );
 
-// --- ALWAYS_RUN is in every selection --------------------------------------
+// --- the computed always-run set is in every selection ----------------------
+// The set is computed from the tree, so a fixture tree's set is its own reader,
+// not the shipped repository's ~330 readers carried along.
+const computed = textReadingTests(ext);
 assert(
-  a.alwaysRun.length === ALWAYS_RUN.length && a.alwaysRun.every((t) => ALWAYS_RUN.includes(t)),
-  "every selection carries the full ALWAYS_RUN list",
+  computed.length === 1 && computed[0] === "smoke-tests/test-reader.ts",
+  "a selection's always-run set is computed from its own tree, not the shipped one",
 );
-const command = selectedVerifyCommand(a.tests);
 assert(
-  ALWAYS_RUN.every((t) => command.includes(`"$PWD/${t}"`)),
-  "the selected command runs every ALWAYS_RUN test",
+  a.mode === "selected" &&
+    a.alwaysRun.length === computed.length &&
+    computed.every((t) => a.alwaysRun.includes(t)),
+  "every selection carries the always-run set computed for its own tree",
+);
+// The develop plan merges both halves before building the command, so the command
+// can only name tests the tree has (the merge is in work-driver-verify-select-develop).
+const command = selectedVerifyCommand([...a.tests, ...a.alwaysRun]);
+assert(
+  computed.every((t) => command.includes(`"$PWD/${t}"`)),
+  "the selected command runs every always-run test of its tree",
 );
 assert(
   command.includes('"$PWD/smoke-tests/test-a.ts"') &&
