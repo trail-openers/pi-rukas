@@ -139,11 +139,43 @@ const wordDecidesCases: [string, string][] = [
   [`echo "git ${P} origin x" && true`, "a quoted mention as the first segment of a chain"],
   [`git commit -m "fix the ${P} script"`, "a commit message that names the verb"],
   [`grep -r "git ${P}" .`, "a grep for the verb"],
+  // A chain whose git segment never gets the verb is judged by the git words it
+  // did produce: `false` here is the word reader's ANSWER, not a gap, and the
+  // regex half stays silent because the segmenter read the command fine. Same
+  // evidence class as the bare `git status` above, reached through `&&`.
+  [`echo "git ${P} x" && git status`, "a quoted mention followed by a real git segment with no verb"],
 ];
 for (const [command, why] of wordDecidesCases) {
   assert(
     commandPushes(command) === false,
     `${why} is prose the word reader read, so it is NOT scanned as a push (H2)`,
+  );
+}
+
+// ── the word reader decides ONLY for a segment that really runs git ─────────
+//
+// The H2 ordering asked the wrong question: it let the word reader decide when ANY
+// segment's program word merely ENDED in `git`, and `isGitProgramWord` does not
+// reject a non-git program in that position. So `eval "git push origin main"` — a
+// push that publishes — had its verdict taken by a reader that never saw git at
+// all: the segmenter hands the quoted payload back as ONE word, the program word is
+// `eval`, and the reader answered `no` for a command that pushed. Before the H2
+// ordering the regex caught it. A push the word reader silently denies is the
+// direction that costs a publish, so the fallback now triggers unless some segment's
+// program word IS git: its basename after the last `/` equals the program name and
+// it carries no space (a quoted run is never a program bash would exec).
+// `script -c`, `make VAR=` and a bare `eval` are all shapes the wrapper table does
+// not strip, so nothing in the words was ever git's argv.
+const regexDecidesCases: [string, string][] = [
+  [`eval "git ${P} origin main"`, "a push in a double-quoted eval payload"],
+  [`eval 'git ${P} origin main'`, "a push in a single-quoted eval payload"],
+  [`script -q -c "git ${P} origin main" /dev/null`, "a push in a `script -c` payload"],
+  [`make run CMD="git ${P} origin main"`, "a push inside a make variable operand"],
+];
+for (const [command, why] of regexDecidesCases) {
+  assert(
+    commandPushes(command) === true,
+    `${why} is a push the regex half still catches — no segment ran git, so the word reader gives no verdict`,
   );
 }
 
