@@ -34,6 +34,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { groupIssues } from "../src/work-driver-grouping.ts";
+import { predictedPathsCollide } from "../src/work-queue-overlap.ts";
 import {
   type IssueGroup,
   groupPathsOverlap,

@@ -19,8 +19,18 @@
  * declared, and a pair invisible here can still collide there. `predictedPathsCollide`
  * below is the sibling predicate for that case — same shape, non-empty on
  * either side is enough to hold a group back rather than park it.
+ *
+ * #2173 — the derived/append-only paths (`work-driver-shared-paths.ts`) are
+ * dropped from both sides of BOTH predicates here, not just the claims side.
+ * These two are the other half of what serialises a cycle: exempting the
+ * generated list in `checkCrossGroupClaimsSync` alone would leave the queue
+ * holding a group back for a collision the plan-time gate no longer sees — and
+ * the basename arm below makes that worse than a literal overlap, because a
+ * body that names `troubleshooting.md` collides with a full path in the other
+ * group.
  */
 
+import { withoutSharedNonExclusivePaths } from "./work-driver-shared-paths.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 import type { IssueGroup } from "./work-queue.ts";
 
@@ -41,12 +51,19 @@ import type { IssueGroup } from "./work-queue.ts";
  * and still waits on a sibling it can observe. Non-empty on both sides uses the
  * same full-token + basename comparison as `groupPathsOverlap`, so a bare
  * `commands.ts` collides with `extension/src/commands.ts`.
+ *
+ * #2173 — the empty-vs-anything rule is judged AFTER the exempt paths are
+ * dropped, so a group whose only prediction is the generated ALWAYS_RUN list
+ * really is "no prediction" rather than a group that serialises the queue
+ * against every sibling that mentions the same generated file.
  */
 export function predictedPathsCollide(a: string[], b: string[]): boolean {
-  if (a.length === 0 || b.length === 0) return false;
+  const aKept = withoutSharedNonExclusivePaths(a);
+  const bKept = withoutSharedNonExclusivePaths(b);
+  if (aKept.length === 0 || bKept.length === 0) return false;
   return groupPathsOverlap(
-    { id: "a", scope: "", paths: a, outOfScope: [], issues: [] },
-    { id: "b", scope: "", paths: b, outOfScope: [], issues: [] },
+    { id: "a", scope: "", paths: aKept, outOfScope: [], issues: [] },
+    { id: "b", scope: "", paths: bKept, outOfScope: [], issues: [] },
   );
 }
 
@@ -76,13 +93,17 @@ export function predictedPathsCollide(a: string[], b: string[]): boolean {
  * `extension/src/commands.ts`).
  *
  * Empty-vs-anything is NO overlap by contract: an empty `paths` array means
- * groupIssues() extracted nothing predictable (fetch failed, or the body has
+ * `groupIssues()` extracted nothing predictable (fetch failed, or the body has
  * no anchored path tokens), and serialising those against every sibling would
  * force full sequential execution for unrelated issues. The reactive
- * plan-time claim check remains the safety net for that case.
+ * plan-time claim check remains the safety net for that case. The same rule is
+ * judged after the #2173 exempt paths are dropped: a group whose extracted
+ * paths are ONLY derived or append-only predicts nothing.
  */
 export function groupPathsOverlap(a: IssueGroup, b: IssueGroup): boolean {
-  if (a.paths.length === 0 || b.paths.length === 0) return false;
+  const aPaths = withoutSharedNonExclusivePaths(a.paths);
+  const bPaths = withoutSharedNonExclusivePaths(b.paths);
+  if (aPaths.length === 0 || bPaths.length === 0) return false;
   const norm = (p: string) => {
     const n = normaliseDeclaredPath(p);
     return n ? n.toLowerCase() : "";
@@ -91,8 +112,8 @@ export function groupPathsOverlap(a: IssueGroup, b: IssueGroup): boolean {
     const tail = p.split("/").pop() ?? p;
     return tail.includes(".") ? tail : "";
   };
-  const aFull = new Set(a.paths.map(norm).filter(Boolean));
-  const bFull = new Set(b.paths.map(norm).filter(Boolean));
+  const aFull = new Set(aPaths.map(norm).filter(Boolean));
+  const bFull = new Set(bPaths.map(norm).filter(Boolean));
   const aBases = new Set([...aFull].map(base).filter(Boolean));
   const bBases = new Set([...bFull].map(base).filter(Boolean));
   // #676 lens-findings — symmetric on all four comparisons; the previous

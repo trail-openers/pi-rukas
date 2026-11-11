@@ -3,7 +3,7 @@
  * #1557 — the adversarial smoke arms identify THEIR OWN ledger row by an
  * identity carried in the row, never by a `Date.now()` floor or a positional
  * index. This file is the CANARY half: pure text scans, no git, no fixture —
- * it is an ALWAYS_RUN member of the #1647 develop-verify selection, so every
+ * it is a member of the always-run set of the #1647 develop-verify selection, so every
  * develop round pays for what it does. The fixture half (the real writers on a
  * real clone: nonce persistence, the decoy data shape, the guard readers
  * staying unmoved) lives in `test-adversarial-ledger-nonce-roundtrip.ts`,
@@ -70,7 +70,7 @@ function assert(cond: boolean, msg: string) {
 // reads the source directly — a comment-stripping pass would silently
 // under-read (any `//` inside a string literal hides the rest of the line).
 // Read relative to this file's parent (extension/) so the read is
-// cwd-independent; the literal names the repo path so the ALWAYS_RUN
+// cwd-independent; the literal names the repo path so the always-run set
 // detector sees this file as a reader of it.
 const ARMS_REL = "smoke-tests/lib/arms/loop-behaviour.ts";
 // A missing file is a hard canary failure, not a silent pass on empty text.

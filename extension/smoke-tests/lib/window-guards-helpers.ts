@@ -39,7 +39,7 @@ export function neverArm(status: never): StoredFinding {
 
 /** Read the ledger file's bytes. A named helper so the file that OWNS the
  * witness (`test-review-findings-window-guards.ts`) keeps a repository-path text
- * read of its own: the #1647 ALWAYS_RUN detector classifies a test as a reader
+ * read of its own: the #1647 always-run predicate classifies a test as a reader
  * from its own lexed source, and a read that lives only in a helper would let a
  * documentation or fixture change select this witness file out of the develop
  * gate. `window-guards-helpers.ts` is in `smoke-tests/lib/`, which the selector

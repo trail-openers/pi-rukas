@@ -3,7 +3,7 @@
  * modules share, in a leaf with no imports of its own.
  *
  * The selector, the attribution wrapper, the ci tier, the develop plan and the
- * ALWAYS_RUN detector each need the same three things: which file names are
+ * always-run predicate each need the same three things: which file names are
  * safe to spell in a shell command, which smoke tests run offline (`-live.ts`
  * spawns real Pi children and never does), and the shape of the attribution a
  * cycle records. Each had its own copy and they drifted; they live here.

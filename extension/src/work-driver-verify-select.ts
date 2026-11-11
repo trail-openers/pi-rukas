@@ -24,9 +24,11 @@
  * relative specifier on the walk path; and a name that is not safe to spell in
  * a shell argument. A test with a non-literal dynamic import, or one that
  * transitively imports such a module, is selected on every selection, because
- * it can load anything. The ALWAYS_RUN list is the other half of the bargain:
+ * it can load anything. The always-run set is the other half of the bargain:
  * a test that reads repository source or config AS TEXT depends on files no
- * import graph can show, so it runs on every develop round.
+ * import graph can show, so it runs on every develop round. It is computed from
+ * the worktree's own smoke tests (`work-driver-verify-always-run`), not read from
+ * a committed list, so no cycle ever has to regenerate — or claim — such a file.
  *
  * Paths here are relative to `extension/`, the directory the smoke tests run
  * from. Callers holding repo-relative paths strip the `extension/` prefix first.
@@ -34,18 +36,16 @@
 
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
-import { ALWAYS_RUN } from "./work-driver-verify-always-run.ts";
+import { textReadingTests } from "./work-driver-verify-always-run.ts";
 import { type LexedSource, lexSource } from "./work-driver-verify-select-lex.ts";
 import { SMOKE_TEST_NAME_RE, isOfflineTest } from "./work-driver-verify-shared.ts";
-
-export { ALWAYS_RUN };
 
 export interface VerifySelection {
   /** `selected`: run `tests` (plus `alwaysRun`). `full`: run the whole suite. */
   mode: "selected" | "full";
   /** Test files that transitively import a changed module, sorted. */
   tests: string[];
-  /** The ALWAYS_RUN list, always present in a selection. */
+  /** The always-run set computed for this worktree, always present in a selection. */
   alwaysRun: string[];
   /** Why the selection fell back to the full suite. Absent on `selected`. */
   fallbackReason?: string;
@@ -244,10 +244,15 @@ export function selectVerifyTests(
   extensionDir: string,
   changed: readonly string[],
 ): VerifySelection {
+  // Computed from the tree being verified, so the set matches the tests the
+  // command is about to run. A `smoke-tests/` directory that is not there at all
+  // is not a silent empty set: `textReadingTests` throws and the caller's
+  // try/catch turns that into a full-suite fallback, which is the safe direction.
+  const alwaysRun = textReadingTests(extensionDir);
   const full = (fallbackReason: string): VerifySelection => ({
     mode: "full",
     tests: [],
-    alwaysRun: [...ALWAYS_RUN],
+    alwaysRun: [...alwaysRun],
     fallbackReason,
   });
   if (changed.length === 0) return full("no-changed-files");
@@ -273,21 +278,25 @@ export function selectVerifyTests(
   for (const d of graph.dynamic) {
     for (const t of importersClosure(graph, d)) if (isOfflineTest(t)) selected.add(t);
   }
-  const names = [...selected, ...ALWAYS_RUN];
+  const names = [...selected, ...alwaysRun];
   if (names.some((n) => !SMOKE_TEST_NAME_RE.test(n))) return full("unsafe-test-name");
   return {
     mode: "selected",
     tests: [...selected].sort(),
-    alwaysRun: [...ALWAYS_RUN],
+    alwaysRun: [...alwaysRun],
   };
 }
 
 /**
- * The develop command for a selection: the selected tests (and ALWAYS_RUN)
- * through verify-loop, after the typecheck of the smoke-test tree. The fast
- * tier (`.pi/verify-cmd-fast`: tsc of src, biome) is NOT repeated here — the
- * caller's `withFastTier` runs it ahead of this string, exactly as it runs ahead
- * of `.pi/verify-cmd`.
+ * The develop command for a selection: `tests` through verify-loop, after the
+ * typecheck of the smoke-test tree. The caller passes the selection's `tests`
+ * already merged with its `alwaysRun` — both computed from the tree the command
+ * will run in, never from the tree this module was loaded from, so a worktree's
+ * command can only name tests that tree has.
+ *
+ * The fast tier (`.pi/verify-cmd-fast`: tsc of src, biome) is NOT repeated here —
+ * the caller's `withFastTier` runs it ahead of this string, exactly as it runs
+ * ahead of `.pi/verify-cmd`.
  *
  * Each test is spelled `"$PWD/…"`, evaluated in the tree the command runs in.
  * The loop prints the path it was given, so a failure names the test by an
@@ -296,6 +305,6 @@ export function selectVerifyTests(
  * (which includes the command) does not change between them.
  */
 export function selectedVerifyCommand(tests: readonly string[]): string {
-  const args = [...new Set([...ALWAYS_RUN, ...tests])].sort().map((t) => `"$PWD/${t}"`);
+  const args = [...new Set(tests)].sort().map((t) => `"$PWD/${t}"`);
   return `cd extension && node node_modules/typescript/bin/tsc --noEmit -p tsconfig.smoke-tests.json && bash smoke-tests/lib/verify-loop.sh --jobs-from-host ${args.join(" ")}`;
 }

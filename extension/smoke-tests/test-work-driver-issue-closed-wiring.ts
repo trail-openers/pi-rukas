@@ -33,8 +33,18 @@ assert(
 );
 assert(
   /declinedLabelSeed\(\s*next\.pipelineState/.test(read("work-driver-handoff.ts")) &&
-    /if \(!declinesAttentionLabel\(ps\)\)/.test(read("work-driver-handoff-post.ts")),
+    /if \(!declinesAttentionLabel\(ps\)\)/.test(read("work-driver-handoff-label-state.ts")),
   "handoff seeds labelApplied from the decline, so all four writers honour it",
+);
+// #2173 (C4) — the seed and the verdict projection have ONE home. A renderer that
+// re-derived the label verdict from `labelApplied` is how one handoff printed both
+// "[FAILED] NOT applied" and "the label was applied", so the import is asserted
+// rather than trusted.
+assert(
+  /from "\.\/work-driver-handoff-label-state\.ts"/.test(read("work-driver-handoff.ts")) &&
+    /from "\.\/work-driver-handoff-label-state\.ts"/.test(read("work-driver-handoff-message.ts")) &&
+    /from "\.\/work-driver-handoff-label-state\.ts"/.test(read("work-status.ts")),
+  "the decline seed and handoffLabelVerdict live in one module every surface imports",
 );
 assert(
   /handoffOpsPromptWithoutLabel/.test(read("work-driver-prompts-late.ts")),

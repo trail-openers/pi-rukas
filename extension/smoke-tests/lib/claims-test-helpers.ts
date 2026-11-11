@@ -8,7 +8,14 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DriverContext } from "../../src/work-driver-context.ts";
@@ -21,12 +28,21 @@ export function tmpDir(): string {
   return mkdtempSync(path.join(tmpdir(), "pi-claims-test-"));
 }
 
-/** Minimal workstate in the shape the claim gate reads at the plan step. */
-export function makeState(issue: number, repoRoot: string): WorkState {
+/**
+ * Minimal workstate in the shape the claim gate reads at the plan step.
+ *
+ * `repoRoot` is where the state file WOULD live, not part of the state: every
+ * caller builds it from a fresh `tmpDir()` and passes the same dir to `makeCtx`
+ * and the gate, so the state's clock is anchored to that dir's creation. A
+ * `startedAt` in the future is what `validClaimEntry` rejects under an injected
+ * clock (#1871 F2), which would silently drop the very claim a case planted.
+ */
+export function makeState(issue: number, repoRoot?: string): WorkState {
+  const base = initialState(issue, repoRoot ? statSync(repoRoot).mtimeMs : Date.now());
   return {
-    ...initialState(issue, repoRoot),
+    ...base,
     pipelineState: {
-      ...initialState(issue, repoRoot).pipelineState,
+      ...base.pipelineState,
       workstreams: {},
     },
   };

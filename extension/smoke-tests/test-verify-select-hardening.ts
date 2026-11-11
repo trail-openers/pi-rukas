@@ -24,7 +24,7 @@ import { promisify } from "node:util";
 import { discloseInPrBody } from "../src/work-driver-ci-verify.ts";
 import type { CycleContext } from "../src/work-driver-context.ts";
 import { createVerifyChannel } from "../src/work-driver-integrate-verify-flake.ts";
-import { ALWAYS_RUN } from "../src/work-driver-verify-always-run.ts";
+import { textReadingTests } from "../src/work-driver-verify-always-run.ts";
 import { foldVerifyAttribution } from "../src/work-driver-verify-events.ts";
 import {
   type SelectedVerifyRecord,
@@ -114,13 +114,21 @@ assert(
   "a selected test name with a space falls back with unsafe-test-name",
 );
 
-// Live tests never run offline: they are not selected and not in the list.
+// Live tests never run offline: they are not selected and never a reader.
 const live = sel(["src/livemod.ts"]);
 assert(
   live.mode === "full" && live.fallbackReason === "no-selected-tests:src/livemod.ts",
   "a module reached only by a live test selects no offline test (full suite, reason named)",
 );
-assert(!ALWAYS_RUN.some((t) => /-live\.ts$/.test(t)), "no -live.ts test is in ALWAYS_RUN");
+const fixtureReaders = textReadingTests(ext);
+assert(
+  fixtureReaders.length === 0,
+  "no fixture test reads repository text, so the fixture tree's always-run set is empty",
+);
+assert(
+  !textReadingTests(extensionDir).some((t) => /-live\.ts$/.test(t)),
+  "no -live.ts test of the real tree is in the computed always-run set",
+);
 const unrelatedLive = sel(["src/unrelated.ts"]);
 assert(
   unrelatedLive.tests.every((t) => !/-live\.ts$/.test(t)),
@@ -474,7 +482,8 @@ async function attempt(
 }
 rmSync(attrRoot, { recursive: true, force: true });
 
-// The always-run list is generated and the gate that uses it never names a -live test.
-assert(ALWAYS_RUN.length > 0, "ALWAYS_RUN is populated");
+// The always-run set is computed from the tree, and the real tree's set is
+// non-empty: an empty one would mean the predicate stopped classifying anything.
+assert(textReadingTests(extensionDir).length > 0, "the computed always-run set is populated");
 
 process.exit(exit);

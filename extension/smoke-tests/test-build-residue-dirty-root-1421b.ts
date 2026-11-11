@@ -68,6 +68,8 @@ try {
       { worktreeId: "a", path: a, headSha: head, ahead: 1 },
     ];
     const ev = makeHandoffEmittedEvent({
+   // #2173 (C4) — required by the builder; an empty pipelineState carries no closed-issue marker, so no decline.
+   state: { pipelineState: {} } as never,
       at: Date.now(),
       commentUrl: undefined,
       labelApplied: false,

@@ -121,6 +121,84 @@ function assert(cond: boolean, msg: string) {
   );
 }
 
+// ============================================ 3b. #2173 — derived/append-only paths
+//
+// AC1 / AC2, the pure core. Nearly every cycle regenerates the ALWAYS_RUN list
+// and many append a `docs/troubleshooting.md` entry, so two unrelated cycles
+// handed back at plan with "another cycle in this clone holds claims on the same
+// paths" — over a file neither of them owns. The exemption is the same set the
+// queue's predicates consult, and it is dropped from BOTH sides: a sibling whose
+// claim consists entirely of the generated list reserves nothing, and our own
+// declaration of it is not an overlap either.
+{
+  const ALWAYS_RUN_PATH = "extension/src/work-driver-verify-always-run.ts";
+  const TROUBLESHOOTING = "docs/troubleshooting.md";
+  const claimOf = (issue: number, paths: string[]) => ({
+    issue,
+    pid: process.pid,
+    paths,
+    startedAt: Date.now(),
+  });
+  assert(
+    checkCrossGroupClaimsSync(
+      210,
+      { "task-a": { paths: [ALWAYS_RUN_PATH] } },
+      [claimOf(211, [ALWAYS_RUN_PATH])],
+    ).length === 0,
+    "#2173 AC1 two cycles whose only overlap is the generated ALWAYS_RUN list do NOT conflict",
+  );
+  assert(
+    checkCrossGroupClaimsSync(
+      212,
+      { "task-a": { paths: [TROUBLESHOOTING] } },
+      [claimOf(213, [TROUBLESHOOTING])],
+    ).length === 0,
+    "#2173 AC1 two cycles whose only overlap is docs/troubleshooting.md do NOT conflict",
+  );
+  assert(
+    checkCrossGroupClaimsSync(
+      214,
+      { "task-a": { paths: [TROUBLESHOOTING, ALWAYS_RUN_PATH] } },
+      [claimOf(215, [TROUBLESHOOTING, ALWAYS_RUN_PATH])],
+    ).length === 0,
+    "#2173 AC1 overlapping on BOTH exempt paths still proceeds",
+  );
+  // The exemption has to hold on the sibling's side too: a claim that is nothing
+  // but the generated file must reserve nothing, so a cycle that declares it
+  // alongside a real file conflicts only on the real file.
+  assert(
+    checkCrossGroupClaimsSync(
+      216,
+      { "task-a": { paths: [ALWAYS_RUN_PATH, "src/held.ts"] } },
+      [claimOf(217, [ALWAYS_RUN_PATH])],
+    ).length === 0,
+    "#2173 a sibling whose whole claim is the exempt path reserves nothing",
+  );
+  // Markup and annotation survive: a planner writes `**docs/troubleshooting.md (new)**`.
+  assert(
+    checkCrossGroupClaimsSync(
+      218,
+      { "task-a": { paths: ["`docs/troubleshooting.md` (new)"] } },
+      [claimOf(219, [TROUBLESHOOTING])],
+    ).length === 0,
+    "#2173 an annotated / backticked declaration of an exempt path is still exempt",
+  );
+  // AC2 — a real overlap still serialises, exemption or no exemption.
+  const ac2 = checkCrossGroupClaimsSync(
+    220,
+    { "task-a": { paths: [ALWAYS_RUN_PATH, TROUBLESHOOTING, "src/shared.ts"] } },
+    [claimOf(221, [ALWAYS_RUN_PATH, "src/shared.ts"])],
+  );
+  assert(
+    ac2.length === 1 && ac2[0]?.issue === 221,
+    "#2173 AC2 a shared source file still conflicts even with both exempt paths present",
+  );
+  assert(
+    (ac2[0]?.paths ?? []).includes("src/shared.ts"),
+    "#2173 AC2 the conflict names the sibling whose SOURCE claim we collided with",
+  );
+}
+
 // ================================================================ 4. normaliseDeclaredPath
 {
   const claims = [{ issue: 301, pid: process.pid, paths: ["src/foo.ts"], startedAt: Date.now() }];

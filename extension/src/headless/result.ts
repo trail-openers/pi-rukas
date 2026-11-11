@@ -115,8 +115,13 @@ export interface HandoffResult {
    * no `needs-human-attention` label there BY CONTRACT (the host owns that
    * channel, docs/headless.md), so `labelApplied: false` is a decline, not an
    * outage. A host that wants re-runs refused applies the label itself.
+   *
+   * #2173 (C4) — `"issue-closed"` is the other decline: a person closed the
+   * issue (#1472), so no attention label is owed and `labelApplied: true` on
+   * such an event is the seed for a deliberate decline, never a verified apply.
+   * A consumer must treat either value as "nothing was asked of the forge".
    */
-  labelSkipped?: "host-channel";
+  labelSkipped?: "host-channel" | "issue-closed";
   /**
    * #1743 — present when this park repeats one already recorded: how many
    * cycles have parked this (cap, reason, issue text), when the first did, and

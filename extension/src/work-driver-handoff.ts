@@ -23,10 +23,10 @@ import {
   labelCommentTargetAfterRefusal,
   labelIssueTarget,
 } from "./work-driver-handoff-label-legs.ts";
+import { declinedLabelSeed } from "./work-driver-handoff-label-state.ts";
 import { runHandoffOpsDispatch } from "./work-driver-handoff-ops.ts";
 import {
   captureCommittedWork,
-  declinedLabelSeed,
   makeHandoffEmittedEvent,
   parseHandoffOpsReply,
   verifyHandoffLabel,
@@ -399,6 +399,9 @@ async function handoff(ctx: CycleContext, stateIn: WorkState, now: number): Prom
   }
   const emitted = makeHandoffEmittedEvent({
     at: Date.now(),
+    // #2173 (C4) — the state this handoff is recorded against: the builder
+    // reads the #1472 closed-issue decline marker off it onto the event.
+    state: next,
     commentUrl,
     labelApplied,
     handoffBodyPath,

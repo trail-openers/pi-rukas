@@ -3,8 +3,8 @@
  * selected verify.
  *
  * One call per develop verify pass decides between two commands. The selected
- * command runs the smoke tests the cycle's changed files can affect (plus
- * ALWAYS_RUN) through verify-loop, with its failures attributed by
+ * command runs the smoke tests the cycle's changed files can affect (plus the
+ * always-run set) through verify-loop, with its failures attributed by
  * `withSelectedAttribution`. The full `.pi/verify-cmd` runs when selection is
  * switched off (`PI_ENSEMBLE_VERIFY_SELECT=0`) or the selector cannot be sure;
  * every fallback reason is written to the gate's notes. Selection only replaces
@@ -19,7 +19,6 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { CycleContext } from "./work-driver-context.ts";
 import { type VerifyChannel, createVerifyChannel } from "./work-driver-integrate-verify-flake.ts";
-import { ALWAYS_RUN } from "./work-driver-verify-always-run.ts";
 import { developTierTimeouts } from "./work-driver-verify-budget.ts";
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import { fastVerifyCmdFor, withFastTier } from "./work-driver-verify-fast.ts";
@@ -139,12 +138,15 @@ export async function planDevelopVerify(
       `verify selection fell back to the full suite (${selection.fallbackReason ?? "unknown"})`,
     );
   }
-  const cmd = selectedVerifyCommand(selection.tests);
+  // Both halves come from the tree the gate runs in: the graph selection and the
+  // computed always-run set. Merging here (and not inside `selectedVerifyCommand`)
+  // is what keeps a worktree's command naming only tests that worktree has.
+  const cmd = selectedVerifyCommand([...selection.tests, ...selection.alwaysRun]);
   const record: SelectedVerifyRecord = { flaky: [], baselineRed: [] };
   const changedTests = touchedPaths.map(extensionRelativeOf).filter(isOfflineTest);
   const timeoutMs = (await developTierTimeouts(repoRoot)).suite;
   notes.push(
-    `verify selection ran ${selection.tests.length} test(s) plus ${ALWAYS_RUN.length} always-run, not the full suite (PI_ENSEMBLE_VERIFY_SELECT=0 restores it)`,
+    `verify selection ran ${selection.tests.length} test(s) plus ${selection.alwaysRun.length} always-run, not the full suite (PI_ENSEMBLE_VERIFY_SELECT=0 restores it)`,
   );
   // The report channel is made when the gate is about to run the command, not
   // here: a cycle whose gate is skipped must not leave a directory behind.

@@ -26,8 +26,10 @@ import {
   setClaimsConflictsForTests,
 } from "../src/work-driver-path-claims-gate.ts";
 import type { PathClaimEntry } from "../src/work-driver-path-claims-staleness.ts";
+import { humanActionFor } from "../src/work-queue.ts";
 import { initialState } from "../src/workflow-state.ts";
 import type { WorkEvent } from "../src/workflow-state.ts";
+import { spawnLivePid } from "./lib/claims-test-helpers.ts";
 import { FOREIGN_HOST, NOW, claim, makeAssert } from "./lib/owner-identity-fixtures.ts";
 
 const { assert, status } = makeAssert();
@@ -153,6 +155,99 @@ try {
       /another pid namespace|other pid namespace|another host/i.test(sentinelForeignProse),
     "on ANOTHER host a '-' pidns gets the full-identity wording — there is nothing on this host to check",
   );
+
+  // ── #2173 AC3: a claimant on THIS host is named as a sibling on this host ---
+  // The misreport this case exists for: three cycles handed back with the
+  // claimant's identity rendered as living "in ANOTHER pid namespace or on
+  // another host" when the claimant was a sibling cycle of the SAME clone on
+  // the SAME host. The old branch keyed on how many identity fields the
+  // evidence carried, not on whether they were ours, so a full identity always
+  // won. The wording now follows `judgeOwner` — the same verdict the registry
+  // uses to decide whether the claim counts — so the sentence and the staleness
+  // rule cannot call one claimant a sibling and a foreigner at once.
+  //
+  // A live foreign pid is used deliberately: `claim()` defaults to THIS pid with
+  // no host/pidns, which is a legacy row rather than a same-host sibling, and a
+  // fixture built that way would assert the legacy sentence while looking like
+  // the new case.
+  const live = await spawnLivePid();
+  try {
+    const sibling = await parkOn(
+      claim({
+        issue: 706,
+        host: SELF_HOST,
+        pidns: SELF_NS,
+        startTime: "1",
+        pid: live.pid,
+      }),
+    );
+    assert(
+      sibling.includes(`holder: ${SELF_HOST} ${SELF_NS} ${live.pid} 1`),
+      "a same-host holder renders its full identity in the evidence, unchanged",
+    );
+    assert(
+      /sibling cycle on this host/i.test(sibling) &&
+        sibling.includes(`issue #706, still running`),
+      "and the evidence names it as a sibling cycle on this host, with its issue number",
+    );
+    assert(
+      !/another pid namespace|another host/i.test(sibling),
+      "the gate evidence never calls a same-host holder a foreign container",
+    );
+
+    const siblingProse = explain(sibling);
+    assert(
+      /sibling cycle on this host/i.test(siblingProse) &&
+        siblingProse.includes("#706"),
+      "explainCrossGroupConflict names it as a sibling on this host and names its issue",
+    );
+    assert(
+      !/another pid namespace|another host/i.test(siblingProse),
+      "AC3: a same-host park contains no 'another pid namespace or another host' claim",
+    );
+    assert(
+      /\.pi\/work-state\/706\.json/.test(siblingProse),
+      "and points at the sibling's state file, the thing the operator can actually open",
+    );
+    assert(
+      /liveness|still running|exited|prunes/i.test(siblingProse),
+      "it still states the liveness rule the operator can act on",
+    );
+
+    // The same sentence on the queue's operator surface, which reads the park
+    // reason and the cap evidence rather than the explain path — the residual
+    // finding was that this one had no owner for the wording rule.
+    const action = humanActionFor(
+      "cap cross-group-conflict:claimant706",
+      707,
+      [707],
+      undefined,
+      sibling,
+    );
+    assert(
+      /sibling cycle on this host/i.test(action) && action.includes("#706"),
+      "crossGroupAction names the same-host claimant as a sibling on this host too",
+    );
+    assert(
+      !/another pid namespace|another host/i.test(action),
+      "and the queue action makes no foreign-container claim about it",
+    );
+    // A park whose evidence names a FOREIGN holder keeps the neutral wording:
+    // the rule is the verdict, not the presence of the token.
+    const foreignAction = humanActionFor(
+      "cap cross-group-conflict:claimant702",
+      708,
+      [708],
+      undefined,
+      foreign,
+    );
+    assert(
+      foreignAction.includes("#702") && !/sibling cycle on this host/i.test(foreignAction),
+      "a foreign claimant's action names it without calling it a sibling on this host",
+    );
+  } finally {
+    await live.stop();
+  }
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }

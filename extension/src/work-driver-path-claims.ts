@@ -74,6 +74,7 @@ import {
   claimStaleReason,
   validClaimEntry,
 } from "./work-driver-path-claims-staleness.ts";
+import { withoutSharedNonExclusivePaths } from "./work-driver-shared-paths.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 
 // Re-exported so every existing caller (`work-queue.ts`, the driver's plan step,
@@ -319,6 +320,14 @@ async function pruneClaims(repoRoot: string, stale: PathClaimEntry[]): Promise<v
  * `checkAndRegisterClaims`) and it silently skipped the staleness pass the
  * reader owns, so keeping it around was a way to get the old always-park
  * behaviour back by accident. It is gone; the sync core is the one entry.
+ *
+ * #2173 — derived and append-only paths reserve nothing, so they are dropped
+ * from BOTH sides of the comparison here (our declarations and the sibling's
+ * registered paths) by the one filter the queue predicates apply too, from
+ * `work-driver-shared-paths.ts`. Dropping only our own would let a sibling
+ * whose claim consists entirely of the generated list still park us on any
+ * declaration that mentions it, and the exemption would read differently on
+ * the two sides — which is how a half-fix leaves half the park in place.
  */
 export function checkCrossGroupClaimsSync(
   ourIssue: number,
@@ -334,8 +343,7 @@ export function checkCrossGroupClaimsSync(
   // so it is deliberately one function and not two that could drift.
   const ourPaths = new Set<string>();
   for (const ws of Object.values(workstreams)) {
-    if (!ws.paths) continue;
-    for (const p of ws.paths) {
+    for (const p of withoutSharedNonExclusivePaths(ws.paths)) {
       const normalised = normaliseDeclaredPath(p);
       if (normalised) ourPaths.add(normalised);
     }
@@ -345,8 +353,8 @@ export function checkCrossGroupClaimsSync(
   const conflicts: PathClaimEntry[] = [];
   for (const claim of claims) {
     if (claim.issue === ourIssue) continue; // same cycle, not cross-group
-    for (const claimedPath of claim.paths) {
-      if (ourPaths.has(claimedPath)) {
+    for (const claimedPath of withoutSharedNonExclusivePaths(claim.paths)) {
+      if (ourPaths.has(normaliseDeclaredPath(claimedPath))) {
         if (!conflicts.some((c) => c.issue === claim.issue)) {
           conflicts.push(claim);
         }

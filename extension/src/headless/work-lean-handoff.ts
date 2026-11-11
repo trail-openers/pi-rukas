@@ -143,6 +143,10 @@ export function leanHandoff(run: LeanRun, cap: HeadlessCap | undefined): Handoff
   }
   const event = makeHandoffEmittedEvent({
     at,
+    // #2173 (C4) — a lean run has no closed-issue gate, so the marker is absent
+    // and the builder records no decline; the field is required so a producer
+    // cannot leave the label truth unstated.
+    state: initialState(run.issue),
     // Lean posts through no driver seam that returns a URL, so there is no
     // comment address to record — only whether the post happened.
     commentUrl: undefined,

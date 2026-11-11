@@ -22,7 +22,9 @@ import { execp } from "./exec.ts";
 import type { Forge } from "./forge.ts";
 import { trace } from "./trace.ts";
 import { parseHandoffCommentUrl } from "./work-driver-handoff-deliver.ts";
+import { declinesAttentionLabel } from "./work-driver-handoff-label-state.ts";
 import { readError } from "./work-driver-handoff-snapshot.ts";
+import type { HandoffEmittedEvent } from "./workflow-state-events-handoff.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
 
@@ -193,6 +195,17 @@ export function makeHandoffEmittedEvent(opts: {
    * posted nothing, and the event must say so without carrying the term.
    */
   bodyRefusal?: string;
+  /**
+   * #1472 / #2173 (C4) — the cycle's state, REQUIRED. This handoff DECLINES
+   * `needs-human-attention` when a person closed the issue, and every producer
+   * states its verdict — the closed-issue decline included — rather than leaving
+   * the label truth to be inferred from `labelApplied`, the one field that must
+   * stay a boolean for the pre-#798 readers. `runHandoff` passes the state it
+   * already holds; this builder reads the marker off it, so there is one
+   * spelling of "declined" in the producer and one in the reader
+   * (`handoffLabelVerdict`), and no renderer re-derives it.
+   */
+  state: Pick<WorkState, "pipelineState">;
   consolidated: boolean;
   consolidatedBranch?: string;
   consolidatedWorkstreams?: string[];
@@ -213,8 +226,10 @@ export function makeHandoffEmittedEvent(opts: {
   /**
    * #1696 — the label was DECLINED by the host channel's contract rather than
    * failing to apply. Set only on a host handoff (see HandoffEmittedEvent).
+   * #2173 also accepts `"issue-closed"`, which this builder derives from the
+   * state it is handed rather than from a caller's memory of why it called.
    */
-  labelSkipped?: "host-channel";
+  labelSkipped?: "host-channel" | "issue-closed";
   /** #798 — explicit target object type (where the comment was posted). */
   targetType?: "issue" | "pr";
   /** #798 — the number of the target object. */
@@ -233,7 +248,7 @@ export function makeHandoffEmittedEvent(opts: {
   repeat?: { count: number; firstAt: number; marker: string };
 }): Extract<WorkEvent, { kind: "handoff-emitted" }> {
   const { at, commentUrl, labelApplied, handoffBodyPath, delivery } = opts;
-  const ev: Extract<WorkEvent, { kind: "handoff-emitted" }> = {
+  const ev: HandoffEmittedEvent = {
     kind: "handoff-emitted",
     at,
     commentUrl,
@@ -244,6 +259,12 @@ export function makeHandoffEmittedEvent(opts: {
     // is this string, so it is not one of the fields that may be conditionally
     // absent.
     body: opts.body,
+    // #2173 (C4) — the closed-issue decline is recorded on the event itself, so
+    // a reader never has to guess it from `labelApplied` being true when no
+    // label was deliberately applied.
+    ...(declinesAttentionLabel(opts.state.pipelineState)
+      ? { labelSkipped: "issue-closed" as const }
+      : {}),
   };
   if (opts.bodyRefusal !== undefined) ev.bodyRefusal = opts.bodyRefusal;
   if (delivery) ev.delivery = delivery;
@@ -274,35 +295,6 @@ export function makeHandoffEmittedEvent(opts: {
  * verified independently via `verifyHandoffLabel`. Returns `true` when the
  * label was successfully applied AND verified on the issue.
  */
-/**
- * #1472 — does this handoff deliberately decline `needs-human-attention`?
- * A person CLOSED the issue, so telling them to look at it is noise; every
- * label writer consults this so the decline holds on all four paths, including
- * the @ops prompt. Returns false for any cycle not parked by the closed-issue
- * gate, so normal handoffs are unaffected.
- */
-export function declinesAttentionLabel(ps: { handoffLabelSkipped?: boolean }): boolean {
-  return ps.handoffLabelSkipped === true;
-}
-
-/**
- * #1472 — the initial label state for `runHandoff`. A closed-issue park starts
- * with every target settled, so all four label writers see it; it is a
- * deliberate decline, NOT a failure, so the HANDOFF DISPATCH INCOMPLETE banner
- * stays quiet. Any other handoff starts with nothing applied.
- */
-export function declinedLabelSeed(
-  ps: { handoffLabelSkipped?: boolean },
-  prNumber: number | undefined,
-): { labelApplied: boolean; issueLabelApplied?: boolean; prLabelApplied?: boolean } {
-  if (!declinesAttentionLabel(ps)) return { labelApplied: false };
-  return {
-    labelApplied: true,
-    issueLabelApplied: true,
-    prLabelApplied: prNumber ? true : undefined,
-  };
-}
-
 export async function applyIssueLabelDualTarget(forge: Forge, issue: number): Promise<boolean> {
   return applyAttentionLabel(
     forge,
