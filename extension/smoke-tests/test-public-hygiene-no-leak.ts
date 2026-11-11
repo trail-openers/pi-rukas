@@ -193,12 +193,17 @@ if (true) {
       }
       return undefined;
     };
-    // A directory name that IS a denylist term, and one that is not.
+    // A directory name that IS a denylist term, one that is not, and one that
+    // carries the term in a segment ABOVE the leaf. The third is the case a
+    // leaf-only check leaked: `-C /srv/private-project/wt` printed `wt` while the
+    // private word sat one level up, so the checker chose the leak.
     const secret = path.join(dir, TERMS[0]);
     const harmless = path.join(dir, "public-tree");
+    const buried = path.join(dir, TERMS[0], "wt");
     for (const [target, why] of [
       [secret, "a directory whose name is itself a denylist term"],
       [harmless, "an ordinary directory name"],
+      [buried, "a directory whose PRIVATE word sits in an intermediate segment"],
     ] as const) {
       // A push to a github.com URL, so the trigger fires without any remote read;
       // the scan then asks git in `target`, which is no repository, and the
@@ -218,6 +223,16 @@ if (true) {
         `${why}: and the refusal never prints the path itself`,
       );
     }
+    // The intermediate-segment case prints NO basename at all, not the leaf: a
+    // refusal that said `wt` would still be naming a place the denylist forbids
+    // the sentence to reveal, one word removed.
+    const buriedReason = (await ask(
+      `git -C ${buried} ${["pu", "sh"].join("")} https://github.com/example-owner/example-repo.git main`,
+    ))?.reason;
+    assert(
+      !/\bwt\b/.test(buriedReason ?? ""),
+      "the buried-term refusal does not fall back to the leaf basename either",
+    );
   });
 }
 

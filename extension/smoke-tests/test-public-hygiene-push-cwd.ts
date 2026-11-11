@@ -207,10 +207,133 @@ import { assert, exit } from "./merge-guard-helpers.ts";
     "and the whole quoted ref, space included, was the revision git was asked for (H8)",
   );
 
-  // `--git-dir`/`--work-tree` name a repository without `-C`, and a scan that
-  // ignored them would resolve HEAD in the session tree and publish a worktree
-  // push it never read. They are REFUSED (H7), never resolved in the session cwd.
+  // ── The FIRST push of a two-push chain, not the last (#2168).
+  //
+  // `pushGitCwd` answers the LAST segment of a chain — right for the directory a
+  // shell leaves behind, wrong for a scan, because `a && b` never reaches `b`
+  // once `a` is refused. `ownPushSegment` answers the FIRST push segment, and the
+  // only evidence that separates the two readers is which tree the git reads
+  // actually ran in when the two pushes name two different `-C`s. `pushGitCwd`
+  // answers the SECOND directory for both commands below, so a scan built on it
+  // fails these assertions red — that is what makes them evidence rather than a
+  // re-assertion of the same answer twice.
+  //
+  // What is pinned is the DIRECTORY, never the verdict. A chain that names two
+  // trees is refused either way (see the note under direction 2 for the
+  // refspec reader's reason), and a refuse-everything scan would "refuse" too,
+  // so the verdict carries no information here. The recorded argv does: it shows
+  // which clone git was asked in, and that is the thing H4 was about.
+  const wtA = path.join(fixtureRoot, "wt-first");
+  const wtB = path.join(fixtureRoot, "wt-second");
+  await git("worktree", "add", "-q", "-b", "first-branch", wtA);
+  await git("worktree", "add", "-q", "-b", "second-branch", wtB);
+  const twoPushes = `git -C ${wtA} ${PUSH} origin first-branch && git -C ${wtB} ${PUSH} origin second-branch`;
+  // The chain's last segment resolves elsewhere, so the assertions below can tell
+  // a first-segment reader from a last-segment one at all.
+  assert(
+    pushGitCwd(repo, twoPushes) === wtB,
+    "the chain's LAST -C is a different directory from its first (so the blocks below are a real distinction)",
+  );
+  // Direction 1: FIRST tree dirty, second clean — the field report's shape.
+  const firstDirty = await commitIn(
+    wtA,
+    "f.txt",
+    `host = ${TERM}\n`,
+    `chore: ${TERM} in the first tree`,
+  );
+  await gitIn(wtB)("reset", "-q", "--hard", baseSha);
+  await reset();
+  reads.length = 0;
+  const firstPush = await inspectAt(repo, twoPushes, { executor: recordingExec });
+  assert(
+    firstPush !== undefined,
+    "a chain whose FIRST push is dirty is refused — fail closed, never a pass (#2168)",
+  );
+  assert(
+    reads.length > 0 && reads.every((r) => r.cwd === wtA),
+    "and EVERY git read of that scan ran in the FIRST push's `-C` directory — the last segment's tree was never asked (H4)",
+  );
+  assert(
+    readsOf((a) => a[0] === "rev-parse" && a[1] === "--show-toplevel").length > 0 &&
+      readsOf((a) => a[0] === "rev-parse" && a[1] === "--show-toplevel").every(
+        (r) => r.cwd === wtA,
+      ),
+    "including the repository probe that decides whether to read this tree at all",
+  );
+  assert(
+    readsOf((a) => a[0] === "rev-parse" && a[1] === "--verify").every((r) => r.cwd === wtA),
+    "and every source resolution asked git in the first tree, where the pushed branch lives",
+  );
+  assert(
+    !reads.some((r) => r.cwd === wtB),
+    "and the second tree was never opened — a last-segment reader would have asked git there",
+  );
+  // The control that makes the above more than "the scan read nothing": the
+  // first tree's push on its own is read and refused FOR THE TERM, so the reads
+  // recorded above are the same reads a working scan makes.
+  reads.length = 0;
+  const soloDirty = await inspectAt(repo, `git -C ${wtA} ${PUSH} origin first-branch`, {
+    executor: recordingExec,
+  });
+  assert(
+    soloDirty?.verdict.kind === "denylist",
+    "the same first tree pushed on its own is refused FOR THE TERM — so the first-tree reads above are a working scan, not an early bail-out",
+  );
+  assert(
+    reads.length > 0 &&
+      readsOf((a) => a[0] === "log").length > 0 &&
+      readsOf((a) => a[0] === "log").every((r) => r.cwd === wtA),
+    "and that scan's `git log` commit reads — the reads that decide the verdict — ran in the first tree too (H4)",
+  );
+  // Direction 2: FIRST tree clean, SECOND tree dirty. Same evidence, other side:
+  // the scan must still answer in the tree git would have run in, not chase the
+  // chain to the dirty one.
+  await gitIn(wtA)("reset", "-q", "--hard", baseSha);
+  await commitIn(wtB, "s.txt", `host = ${TERM}\n`, `chore: ${TERM} in the second tree`);
+  await reset();
+  reads.length = 0;
+  const secondDirty = await inspectAt(repo, twoPushes, { executor: recordingExec });
+  assert(
+    secondDirty !== undefined,
+    "a chain whose FIRST push is clean is still refused while the SECOND tree carries the term — fail closed, never a pass (#2168, mirror)",
+  );
+  assert(
+    reads.length > 0 && reads.every((r) => r.cwd === wtA),
+    "and the scan stayed in the FIRST push's tree rather than following the chain to the dirty one (#2168, mirror)",
+  );
+  assert(
+    !reads.some((r) => r.cwd === wtB),
+    "and the second tree was never read at all — the tree git would not have reached",
+  );
+  // Why the verdict is a refusal and not an allow, stated so nobody reads this
+  // block as a pass: `splitPushWords` concatenates the words of every segment, so
+  // the SECOND push's refspec is resolved as a source of the FIRST push and does
+  // not exist in the first tree. That is the pre-existing over-refusal the
+  // whitespace split had too — unchanged by this diff, and it errs toward
+  // refusing. Pinned so a later narrowing of that reader cannot quietly turn a
+  // fail-closed chain into a scan of a tree the push never ran in.
+  assert(
+    (secondDirty?.reason ?? "").includes("could not be resolved") ||
+      (secondDirty?.reason ?? "").includes("could not be read"),
+    "and the chain's refusal is the unreadable-source sentence, which is the over-refusal of the concatenated refspecs — recorded, because it is the shape a future narrowing must not silently flip",
+  );
+  // The single-push control for the mirror: the same clean first tree, pushed on
+  // its own, is allowed. So the refusals above are the chain, not the trees.
+  reads.length = 0;
+  assert(
+    (await inspectAt(repo, `git -C ${wtA} ${PUSH} origin first-branch`, {
+      executor: recordingExec,
+    })) === undefined,
+    "the FIRST tree's push on its own is allowed — so the chain refusals above are the chain, and the first-tree reads above were real reads",
+  );
+  await git("worktree", "remove", "--force", wtA).catch(() => {});
+  await git("worktree", "remove", "--force", wtB).catch(() => {});
+  await git("branch", "-D", "first-branch").catch(() => {});
+  await git("branch", "-D", "second-branch").catch(() => {});
+  await gitIn(wtA)("reset", "-q", "--hard", firstDirty).catch(() => {});
   await gitIn(wtDir)("reset", "-q", "--hard", wtDirty);
+  await reset();
+
   for (const pair of [
     `--git-dir=${path.join(wtDir, ".git")} --work-tree=${wtDir}`,
     `--git-dir ${path.join(wtDir, ".git")} --work-tree ${wtDir}`,

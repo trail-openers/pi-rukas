@@ -17,17 +17,32 @@
  * the other — the regex keeps the string table's guarantees, this keeps the
  * verb-position guarantee.
  *
- * ## The one walker
+ * ## The one walker and the one segmenter
  *
- * Which word is the verb depends on knowing which globals consume their value as
- * a SEPARATE word. The walker that knows it is `walkGitGlobals`, exported by
- * `public-hygiene-target.ts`; this is the only place the verb question is asked of
- * it, so `-C`, `-c k=v` and a refused `--git-dir` cannot be reasoned about
- * differently in two files.
+ * Which word is the verb depends on two things: knowing the segments of a
+ * command, and knowing which of git's globals consume their value as a SEPARATE
+ * word. Both are borrowed rather than re-implemented. The segments come from
+ * `publishCommandLines` (`public-hygiene-command.ts`) — the same segmenter
+ * `ownPushSegment` in `public-hygiene-push-dir.ts` asks the identical question
+ * of — and the walker that knows the globals is `walkGitGlobals`, exported by
+ * `public-hygiene-target.ts`. So `-C`, `-c k=v` and a refused `--git-dir` cannot
+ * be reasoned about differently in two files, and no wrapper whose payload is
+ * itself a command line is dropped here while being read there.
+ *
+ * The segmenter is load-bearing, not an aesthetic choice, and the mistake it
+ * prevents is specific. `publishArgv` (the per-segment stripping) is NOT the
+ * segmenter: `unwrap` answers an `env -S '…'` payload with `{ argv: [], split:
+ * […] }`, so a reader of `publishArgv` output sees no words at all and never
+ * asks about the push inside the payload — while the directory reader, which
+ * used `publishCommandLines`, resolved that payload's `-C` without trouble. One
+ * reader saw the push and the other did not, and the push nobody read is the one
+ * that gets away with it. The same split covers any program outside the wrapper
+ * table: `publishArgv` leaves it as the program word, `isGitProgramWord` rejects
+ * the argv before the walker runs, and only the recursive segmenter asks the
+ * question of what the wrapper was hiding.
  */
 
-import { simpleCommands } from "./bash-destructive-write.ts";
-import { publishArgv } from "./public-hygiene-command.ts";
+import { publishCommandLines } from "./public-hygiene-command.ts";
 import { isGitProgramWord, walkGitGlobals } from "./public-hygiene-target.ts";
 
 /**
@@ -48,7 +63,7 @@ import { isGitProgramWord, walkGitGlobals } from "./public-hygiene-target.ts";
  * command shape.
  */
 export function commandCarriesPushVerb(command: string, pushVerb: string): boolean {
-  for (const words of simpleCommands(command).map(publishArgv)) {
+  for (const words of publishCommandLines(command)) {
     if (!isGitProgramWord(words[0])) continue;
     const walk = walkGitGlobals(words);
     if (walk.refused) return words.some((word, i) => i >= walk.end && word === pushVerb);

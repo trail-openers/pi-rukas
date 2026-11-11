@@ -313,10 +313,21 @@ async function resolveScanDirectory(
       if (walk.refused) return `the push ${gitDirRefusal(walk.refusedFlag ?? "--git-dir")}`;
     }
   }
+  // An expansion anywhere in the command makes the directory unknowable, because
+  // the scan reads the command's TEXT and bash expands it only when it runs: the
+  // `-C` operand is the one the scan needs to be literal, but a `-C "${WT}/wt"` is
+  // no more readable than an `--repo $(remote)` that later resolves to a
+  // github.com URL the trigger never saw. So the test is the whole command, not
+  // the `-C` operand — the conservative side, and the same rule
+  // `containsShellExpansion` applies to publish text. The sentence therefore
+  // claims only that the repository could not be read and says what to do: a
+  // single-quoted `$` (which never expands) is refused with it, and being told to
+  // go rewrite a `-C` that was never the problem wastes the agent's next step.
   if (command.includes("$")) {
     return (
-      "the push names its directory with a shell expansion, so the repository it runs in could not " +
-      "be read; run the push with a literal path, or `git -C <dir>` with no expansion"
+      "the command contains a shell expansion, so the repository the push runs in could not be " +
+      "read; run the push with literal paths (a `-C <dir>` with no expansion) rather than text the " +
+      "shell builds"
     );
   }
   // The directory the refusal names: the one this scan reads, which for

@@ -79,17 +79,29 @@ export function scanCwd(deps: PushScanDeps): string {
 /**
  * A directory in a refusal: the basename, or nothing at all.
  *
- * The basename is checked against the operator's own entries first, and a basename
- * that matches one is replaced by "a directory named in the command": the refusal
- * still says which KIND of problem stopped the scan, which is what an agent acts
- * on, and no private name reaches the transcript.
+ * Only a basename, and only one whose every component cleared the operator's
+ * entries. A `-C` operand is agent-authored text, and a private project name is
+ * exactly what a directory name carries — the same reason the source-resolution
+ * refusal never quotes a refspec and the body-file refusal never names a path.
+ * Checking the LEAF alone was the first reading and it is not enough: `-C
+ * /srv/private-project/wt` prints `wt` while the private word sat in the segment
+ * above it, and the sentence would then be a leak chosen by the checker. Every
+ * component is judged because a path's privacy does not live only in its last
+ * segment. What an agent acts on is the KIND of problem, and the command it just
+ * wrote already carries the whole path back to it, so a refusal that gives the
+ * kind and no place at all loses nothing.
  */
 export function describeDir(dir: string, deny: DenylistRead): string {
+  const hidden = "a directory named in the command";
+  if (deny.state !== "ok") return hidden;
   const trimmed = dir.replace(/\/+$/, "");
   const base = trimmed.slice(trimmed.lastIndexOf("/") + 1);
-  if (base === "") return "a directory named in the command";
-  if (deny.state === "ok" && matchDenylist(deny.entries, base)) {
-    return "a directory named in the command";
+  if (base === "") return hidden;
+  for (const segment of trimmed.split("/").filter((s) => s !== "")) {
+    // A single-character segment (`/srv/x`) is a path separator's noise, not a
+    // name a denylist carries, and refusing on it would hide the ordinary case.
+    if (segment.length < 2) continue;
+    if (matchDenylist(deny.entries, segment)) return hidden;
   }
   return base;
 }

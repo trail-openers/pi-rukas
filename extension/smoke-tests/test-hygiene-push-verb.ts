@@ -46,6 +46,34 @@ const pushCases: [string, string][] = [
     `git --git-dir /w/.git --work-tree /w echo ${P}`,
     "a refused global makes the verb position unknowable",
   ],
+  // The payload forms, which is where a reader that hand-walked the segments
+  // instead of asking the segmenter lost the push altogether: `env -S '…'` hands
+  // back `{ argv: [], split: [payload] }`, so the per-segment stripper answers NO
+  // WORDS and the verb inside the payload is never asked about — while the
+  // directory reader, walking the segmenter, resolved that payload's `-C` and
+  // pointed the scan at the worktree. One reader seeing the push and the other
+  // not is how a real push reaches a github.com remote unscanned, so the two
+  // readers are pinned to the SAME segmenter by pinning this form here.
+  [`env -S 'git ${P} origin b'`, "an `env -S` payload that is itself a command line"],
+  [
+    `env -S 'git -C /w/wt ${P} origin b'`,
+    "an `env -S` payload that carries the -C (the wrapper-hides-the-directory family)",
+  ],
+  [
+    `true; env -S 'git ${P} origin b'`,
+    "an `env -S` payload behind a chain prefix that supplies the publish word the backstop needs",
+  ],
+  [
+    `git status && env -S 'git ${P} origin b'`,
+    "an `env -S` payload as the second segment of a chain",
+  ],
+  // A program the wrapper table does not know is NOT stripped (that is what the
+  // table means), so `busybox git push` has the table as its boundary and the
+  // regex half — scan-not-anchor over the raw text — is what catches it. What the
+  // word reader must never do is strip a word it was not told to strip: a reader
+  // that skipped any non-git program looking for git would read the words after
+  // `push` as git's own and make a hundred harmless commands into pushes. Pinned
+  // both halves: the word reader says no, the union still says yes.
 ];
 for (const [command, why] of pushCases) {
   assert(commandCarriesPushVerb(command, P) === true, `${why} is a push`);
@@ -82,6 +110,32 @@ assert(
 assert(
   commandCarriesPushVerb(`cd /w/wt && git ${P} origin main`, P) === true,
   "the push segment of a chain is seen",
+);
+
+// The backstop's blind spot, stated plainly. `looksLikePublish` fires on a
+// `git commit -m` / `gh … --body` shape only — there is no push shape in it — so
+// a bare `env -S 'git push …'` has no publish word in the raw text and the
+// backstop is silent about it. The ONLY thing standing between that command and
+// an unscanned publish is the word reader, which is why the payload cases above
+// are pinned as pushes rather than left to the backstop.
+assert(
+  commandPushes(`env -S 'git ${P} origin main'`) === true,
+  "the union alone catches a push whose only spelling is an `env -S` payload",
+);
+
+// The wrapper table's boundary, in the over-refusal direction. `busybox` is not
+// in WRAPPERS, so the segmenter leaves it as the program word and the word
+// reader — which asks its question of the PROGRAM word — says no. The regex half
+// catches it, so the union sees the push; what is pinned here is that the word
+// reader did not reach it by stripping a word it was not told to strip, which is
+// how `git <program> push` would otherwise become a push for any <program>.
+assert(
+  commandCarriesPushVerb(`busybox git ${P} origin b`, P) === false,
+  "a git behind a program outside the wrapper table is not read as a push BY THE WORD READER",
+);
+assert(
+  commandPushes(`busybox git ${P} origin b`) === true,
+  "…and the union still sees it, through the regex half",
 );
 
 process.exit(exit);
