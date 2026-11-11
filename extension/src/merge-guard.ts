@@ -429,10 +429,14 @@ function block(reason: string): { block: true; reason: string } {
  *
  * It mirrors the hook's own reads exactly (same classifier, same PR resolution, same
  * forge check, same remote and mainline resolution) so the login compared here belongs
- * to the PR the merge would actually land. It stops where the hook stops: a command the
- * classifier will not read as a merge is not refused here (that hold, and its telemetry,
- * belong to the hook the hatch waives), but a PR whose author could not be established
- * IS refused — that is this gate failing closed, not a review gate.
+ * to the PR the merge would actually land, and it mirrors the hook's FAIL-CLOSED reads
+ * too: a classifier that throws and a PR number that will not resolve both refuse, so
+ * a merge is never landed on a command or a target this gate could not read. It stops
+ * where the hook stops: a command the classifier will not read as a merge is not refused
+ * here (that hold, and its telemetry, belong to the hook the hatch waives), but a PR
+ * whose author could not be established IS refused — that is this gate failing closed,
+ * not a review gate. The release-please / dependabot carve-out applies at the position
+ * the hook applies it, so this path is never stricter than the hook on a bot PR.
  */
 async function authorGateOnly(
   event: { toolName?: string; input?: unknown },
@@ -442,8 +446,13 @@ async function authorGateOnly(
   let analysis: MergeCommand;
   try {
     analysis = readMergeCommand(command);
-  } catch {
-    return undefined;
+  } catch (err) {
+    // Fail closed: a merge is the irreversible act, so a command this gate could not
+    // read is not merged. The text names the classifier as the suspect (the hook's
+    // own classifier-threw hold) — the reader threw, which says nothing about reviews.
+    return block(
+      `merge refused: the merge-author gate is not waived by PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE, and the command could not be read to identify the PR it merges — the classifier threw (${analyseRefusal(err)}). If this is not a merge, report it as a false hold: the guard's classifier is the thing to fix.`,
+    );
   }
   if (analysis.kind !== "merge") return undefined;
   const cwd = process.cwd();
@@ -452,13 +461,22 @@ async function authorGateOnly(
   if (prNumber === undefined) {
     prNumber = await resolvePrNumber(execFn, cwd, undefined, undefined, analysis.repo);
   }
-  if (prNumber === undefined) return undefined;
+  if (prNumber === undefined) {
+    // Fail closed for the same reason: with no PR identified there is no author to
+    // check, and an uncheckable author is not an approved one.
+    return block(
+      `merge refused: the merge-author gate is not waived by PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE, and the PR/MR to be merged could not be identified from the command or the current branch (repo: ${analysis.repo ?? "none"}), so its author could not be checked. Name the number in the merge command.`,
+    );
+  }
   const targetResult = await readMergeTarget(execFn, cwd, prNumber, undefined, analysis.repo);
   if (!targetResult.ok) {
     return block(
       `merge refused: the merge-author gate is not waived by PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE, and the pull request to be merged could not be read to check its author (${targetResult.reason})`,
     );
   }
+  // Carve-out: release-please / dependabot are not agent merges, and the hook lets them
+  // through at this same position — ahead of the remote/mainline reads the gate needs.
+  if (isCarveOut(targetResult.target)) return undefined;
   // The gate must certify the PR the command actually merges, or the hatch becomes a
   // route for landing an unchecked author on the other forge.
   if (targetResult.target.forge !== analysis.forge) {

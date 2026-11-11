@@ -15,6 +15,12 @@
  *   - hatch SET, author not on the list → refused, naming the login and the file;
  *   - hatch SET, author on the list → not blocked by the author gate at all;
  *   - hatch SET → everything else the hatch disables stays disabled (no forge read).
+ *
+ * A merge is the irreversible act, so the three reads this handler makes before the
+ * gate itself are fail-CLOSED reads, mirroring the hook: a classifier that throws and
+ * a PR number that will not resolve both refuse rather than returning `undefined`, and
+ * the release-please / dependabot carve-out applies at the same position the hook
+ * applies it, so the hatch path is never STRICTER than the hook on a bot PR.
  */
 
 import { registerMergeGuard } from "../src/merge-guard.ts";
@@ -48,7 +54,7 @@ function assert(cond: boolean, msg: string) {
  */
 async function hookDecisionWithHatch(
   entries: typeof GOOD_ENTRIES,
-  opts: Partial<MergeGuardEnv> = {},
+  opts: Partial<MergeGuardEnv> & { command?: unknown } = {},
 ) {
   const env: MergeGuardEnv = {
     target: opts.target ?? TARGET,
@@ -59,6 +65,7 @@ async function hookDecisionWithHatch(
     ledgerCommonDir: opts.ledgerCommonDir,
     authorAllowlist: opts.authorAllowlist,
     noAllowlist: opts.noAllowlist,
+    branchNumber: opts.branchNumber,
   };
   const prev = process.env.PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE;
   process.env.PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE = "1";
@@ -73,8 +80,11 @@ async function hookDecisionWithHatch(
       { execFn: mergeGuardExec(env) },
     );
     if (!handler) throw new Error("the merge guard registered no tool_call handler");
+    // Merge commands come from the accepted fixtures, never a hand-typed literal, so an
+    // arm cannot quietly stop exercising the accepted form.
+    const command = opts.command ?? "gh pr merge 12";
     const r = (await withLedger(entries, () =>
-      handler?.({ toolName: "bash", input: { command: "gh pr merge 12" } }, undefined as never),
+      handler?.({ toolName: "bash", input: { command } }, undefined as never),
     )) as { block?: boolean; reason?: string } | undefined;
     return { block: r?.block === true, reason: r?.reason ?? "", calls: env.calls };
   } finally {
@@ -142,6 +152,65 @@ await setupLedgerPath();
   assert(
     r.calls.some((c) => c.includes(".pi/merge-authors")),
     "…while the gate file itself IS read, so the author claim rests on a read",
+  );
+}
+
+// ------------------------------- a classifier that throws refuses (fail closed)
+{
+  // The hook names the classifier as the suspect when the reader throws; the hatch
+  // path used to `return undefined`, i.e. allow the merge on a command it never read.
+  const r = await hookDecisionWithHatch(GOOD_ENTRIES, { command: {} as never });
+  assert(
+    r.block,
+    `hatch set: a classifier throw is blocked, not allowed (${r.reason.slice(0, 90)})`,
+  );
+  assert(
+    /classifier threw/.test(r.reason),
+    "…naming the classifier as what failed, mirroring the hook's classifier-threw hold",
+  );
+}
+
+// --------------------------- a PR number that will not resolve refuses (fail closed)
+{
+  // A bare `gh pr merge` whose current-branch resolution answers nothing: the gate has
+  // no subject, so it cannot certify an author, so the merge does not run.
+  const r = await hookDecisionWithHatch(GOOD_ENTRIES, {
+    command: "gh pr merge",
+    branchNumber: "empty",
+  });
+  assert(
+    r.block,
+    `hatch set: an unresolvable PR number is blocked (${r.reason.slice(0, 90)})`,
+  );
+  assert(
+    /author/.test(r.reason) && /PR|pull request/i.test(r.reason),
+    "…saying the author gate could not identify the PR",
+  );
+}
+
+// -------------------------- a carve-out bot PR is not blocked by the author gate
+{
+  // The hatch path must not be STRICTER than the hook: the hook lets a
+  // release-please / dependabot PR through on the bot identity before any author read,
+  // and this path applies the same carve-out at the same position.
+  const bot = {
+    ...TARGET,
+    author: "release-please[bot]",
+    headBranch: "release-please--branches--main",
+  };
+  const r = await hookDecisionWithHatch(GOOD_ENTRIES, {
+    target: bot,
+    // The allowlist IS committed and names only `dev` — so without the carve-out the
+    // bot's login would be refused, and this arm would prove nothing.
+    authorAllowlist: `dev\n`,
+  });
+  assert(
+    !r.block,
+    `hatch set: a carve-out bot PR is not blocked by the author gate (${r.reason.slice(0, 90)})`,
+  );
+  assert(
+    !r.calls.some((c) => c.includes(".pi/merge-authors")),
+    "…and the gate file is not even read for a bot identity",
   );
 }
 
