@@ -115,7 +115,12 @@ import {
   denylistUnreadableRefusal,
   refusalFor,
 } from "./public-hygiene-refusals.ts";
-import { PUSH_SCAN_TIMEOUT_MS, commandPushes, scanPublishSurfaces } from "./public-hygiene-scan.ts";
+import {
+  PUSH_SCAN_TIMEOUT_MS,
+  PUSH_VERB,
+  commandPushes,
+  scanPublishSurfaces,
+} from "./public-hygiene-scan.ts";
 import { type Target, isRepoTarget } from "./public-hygiene-target.ts";
 import { publicTextRefusal } from "./public-hygiene-text.ts";
 import type { PublishText, ScanProblem } from "./public-hygiene-types.ts";
@@ -246,7 +251,7 @@ export function registerPublicHygieneGuard(pi: ExtensionAPI, opts: PublicHygiene
     const decision = await inspectCommand(command, cwd, exec, readDenylist, {
       remoteUrl,
       visibility,
-      pushVerb: pushVerbWord(),
+      pushVerb: PUSH_VERB,
     });
     if (!decision) return;
     traceVerdict(decision.verdict);
@@ -423,7 +428,7 @@ export async function inspectCommand(
             cwd,
             remoteUrl: opts.remoteUrl,
             command,
-            pushVerb: pushVerbWord(),
+            pushVerb: PUSH_VERB,
           }),
         );
         if (pushed === undefined) {
@@ -458,19 +463,6 @@ export async function inspectCommand(
   const reason = refusalFor(undefined, hit.denylistHit, hit.genericHit);
   if (reason === undefined) return undefined;
   return { reason, verdict: hit.verdict };
-}
-
-/**
- * The push verb as a single word, assembled from fragments.
- *
- * The harness that runs the offline suite guards a child's publish verbs by
- * reading the COMMAND STRING, so a guard that spelled the verb in its own
- * source was refused before it ran. The verb is data the scan matches on, not
- * prose, and assembling it keeps one literal out of the file while leaving the
- * matching rule (`pushRefspecs`) in plain sight.
- */
-function pushVerbWord(): string {
-  return ["pu", "sh"].join("");
 }
 
 /**

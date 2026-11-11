@@ -23,6 +23,7 @@
  * decision hides.
  */
 
+import path from "node:path";
 import { simpleCommands, unwrap } from "./bash-destructive-write.ts";
 import { parseRemoteUrl } from "./forge-detect.ts";
 import { commandPrefixLength } from "./public-hygiene-prefix.ts";
@@ -187,6 +188,81 @@ export function gitVerbAt(words: readonly string[]): { verb: string; index: numb
 }
 
 /**
+ * What {@link walkGitGlobals} learned from one `git` argv.
+ */
+export interface GitGlobalWalk {
+  /** The `-C <dir>` the command carries, exactly as written (relative or not), or undefined. */
+  dir?: string;
+  /** Did the command name its repository with a bare `--git-dir`/`--work-tree`? */
+  refused: boolean;
+  /** The flag that refused, so a refusal can name it; only set when `refused`. */
+  refusedFlag?: string;
+  /**
+   * The index the globals END at: the first word that is neither a global nor a
+   * global's consumed operand. Everything from here on belongs to the verb, so a
+   * reader that must tell `git -C <dir> push` from `git -C push <dir>` asks the
+   * word at `end` rather than scanning for the verb anywhere in the argv.
+   */
+  end: number;
+}
+
+/**
+ * The repository a `git` argv names, and whether it names it in a way this guard
+ * refuses to resolve.
+ *
+ * The ONE walker of git's pre-verb globals ({@link gitVerbAt} uses the same
+ * table), so a reader that wants the `-C` directory cannot disagree with the
+ * reader that wants the verb about which globals consume a follower — which is
+ * exactly how `git -c k=v -C <wt> push` came to move the git and not the scan.
+ *
+ * `--git-dir`/`--work-tree` are reported rather than resolved: `--git-dir` names
+ * the admin directory rather than a checkout, and `--work-tree` alone names a
+ * tree with no object database, so either resolved as "the directory to run git
+ * in" gives the scan a repository git itself would not answer in. The caller
+ * refuses on `refused`; resolving it in the session directory is the one answer
+ * that would be confident and wrong.
+ *
+ * The argv must begin at the PROGRAM word (see {@link isGitProgramWord}) — the
+ * same shape {@link gitVerbAt} expects.
+ */
+export function walkGitGlobals(words: readonly string[]): GitGlobalWalk {
+  let dir: string | undefined;
+  let refused = false;
+  let refusedFlag: string | undefined;
+  let i = 1;
+  for (; i < words.length; i++) {
+    const w = words[i] ?? "";
+    if (w === "") continue;
+    if (!w.startsWith("-")) break;
+    const eq = w.indexOf("=");
+    const flag = eq < 0 ? w : w.slice(0, eq);
+    // `--git-dir`/`--work-tree` are reported rather than resolved, in either
+    // spelling. `refusedFlag` names only a BARE flag: the `=`-attached form
+    // carries a path inside the word, and a path is agent-authored text that can
+    // itself be the private term this guard keeps out of a transcript — a refusal
+    // that echoed the word would echo the path with it.
+    if (flag === "--git-dir" || flag === "--work-tree") {
+      refused = true;
+      if (eq < 0) {
+        refusedFlag = w;
+        // The bare form must consume its operand so the operand is not read as the
+        // verb (the same rule `gitVerbAt` follows); the attached form carries its
+        // own value and consumes nothing.
+        i += 1;
+      }
+      continue;
+    }
+    if (flag === "-C" && eq < 0) {
+      if (dir === undefined) dir = words[i + 1];
+      i += 1;
+      continue;
+    }
+    if (gitGlobalTakesSeparateValue(w)) i += 1;
+  }
+  return { dir, refused, refusedFlag, end: i };
+}
+
+/**
  * git's global options that read their value as a SEPARATE word before the verb.
  *
  * The short pair is the one that collides with `git commit`'s reuse letters
@@ -228,19 +304,18 @@ export function isGitProgramWord(word: string | undefined): boolean {
 
 /**
  * The directory one git command runs in: `git -C <dir>` when it carries one,
- * else the caller's directory. The same per-segment reading
- * `public-hygiene-cwd.ts` takes, kept local because that module owns the CHAIN
- * question and this one owns the repository question.
+ * else the caller's directory — resolved by {@link walkGitGlobals}, the one
+ * walker that knows which of git's globals consume a follower, so a `-C` behind
+ * a `-c k=v` moves the target resolution just as it moves the scan.
+ *
+ * A `--git-dir`/`--work-tree` shape answers `cwd`: this resolver's job is the
+ * visibility question, and reading the session clone's `origin` for it is the
+ * conservative answer — the push scan is what refuses that shape, and it refuses
+ * rather than publishing.
  */
 function segmentCwd(words: readonly string[], cwd: string): string {
-  for (let i = 1; i < words.length - 1; i++) {
-    if (words[i] === "-C") {
-      const dir = words[i + 1];
-      if (dir !== undefined && dir !== "") return dir;
-      break;
-    }
-  }
-  return cwd;
+  const { dir } = walkGitGlobals(words);
+  return dir === undefined || dir === "" ? cwd : path.resolve(cwd, dir);
 }
 
 /** This clone's remote names, or an empty set when git cannot say. */

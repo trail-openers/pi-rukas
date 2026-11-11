@@ -37,6 +37,7 @@
  * inferring the range from HEAD instead of from the command.
  */
 
+import { simpleCommands } from "./bash-destructive-write.ts";
 import { readCommitOid } from "./git-oid-read.ts";
 import type { PushScanDeps } from "./public-hygiene-push.ts";
 import { looksLikeRemoteUrl, pushOptionGluedValue } from "./public-hygiene-remote.ts";
@@ -319,20 +320,25 @@ async function resolveOne(
 }
 
 /**
- * The push command split into words, with the shell's quote delimiters removed
- * so `git push origin "my branch"` names one refspec rather than two.
+ * Every word of the push command, with the shell's quote delimiters removed and
+ * WITHOUT the separators between simple commands.
+ *
+ * A branch name may legitimately contain a space, and the shell protects it with
+ * quotes — `git push origin 'feat/two words'` names ONE refspec. Splitting the
+ * raw string on whitespace made that command name two, and the scan then resolved
+ * `feat/two` as a revision and refused a push whose actual source it had never
+ * read (H8). So the words come from the same segmenter every other reader of this
+ * guard uses, which strips quotes the way bash does; the segment boundaries are
+ * then dropped, because the question this reader asks is "what words follow the
+ * push verb", and it is asked of the whole command the way `pushRemoteName` and
+ * `pushRefspecs` have always asked it.
  */
 export function splitPushWords(command: string): string[] {
-  return command
-    .split(/\s+/)
-    .filter((w) => w !== "")
-    .map(stripQuotes);
-}
-
-/** Drop the delimiters of a balanced quoted word, keeping its contents. */
-function stripQuotes(word: string): string {
-  const open = word[0];
-  if (open !== '"' && open !== "'") return word;
-  const closed = word.length > 1 && word.endsWith(open);
-  return closed ? word.slice(1, -1) : word.slice(1);
+  const words: string[] = [];
+  for (const argv of simpleCommands(command)) {
+    for (const w of argv) {
+      if (w !== "") words.push(w);
+    }
+  }
+  return words;
 }

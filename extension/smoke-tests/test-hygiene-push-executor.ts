@@ -136,6 +136,58 @@ await withEnv({ ...gitEnv, PI_ENSEMBLE_PUBLIC_DENYLIST: list }, async () => {
     pushGitCwd(work, `git -C ../other ${PUSH} origin main`) === path.join(root, "other"),
     "git -C moves it too",
   );
+  // #2168, end to end through the hook production registers: the field report was
+  // a worktree push refused for a source that could not be resolved, because the
+  // scan asked git in the session clone. The worktree below is the only place
+  // `wt-branch` exists, so a scan that read the session directory could not have
+  // found the term it refuses — and the clean worktree is allowed while the
+  // session tree's own HEAD is dirty, which is the same read from the other side.
+  {
+    const wt = path.join(root, "wt-exec");
+    await gitRun("worktree", "add", "-q", "-b", "wt-branch", wt);
+    writeFileSync(path.join(wt, "w.txt"), `host = ${TERM}\n`, "utf8");
+    const wtRun = (...args: string[]): Promise<string> =>
+      execp("git", {
+        argv: args,
+        cwd: wt,
+        env: { ...gitEnv, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.invalid" },
+        timeout: 30_000,
+      } as never).then((r) => r.stdout);
+    await wtRun("add", "w.txt");
+    await wtRun("commit", "-q", "-m", `chore: ${TERM} note`);
+    const fromWorktree = await prodHook()(`git -C ${wt} ${PUSH} -u origin wt-branch`);
+    assert(
+      fromWorktree?.block === true,
+      "a `-C <worktree>` push is scanned IN the worktree by the production hook (#2168)",
+    );
+    assert(
+      (fromWorktree?.reason ?? "").includes("commit message"),
+      "and it is refused for the term in the worktree's commit, not for an unresolvable source",
+    );
+    assert(!(fromWorktree?.reason ?? "").includes(TERM), "and the refusal still carries no term");
+    const wtBad = await prodHook()(`git -C ${wt}nope ${PUSH} origin wt-branch`);
+    assert(
+      wtBad?.block === true &&
+        (wtBad.reason ?? "").includes("could not be read") &&
+        (wtBad.reason ?? "").includes("nope"),
+      "a `-C` target that is no repository is refused with a sentence naming the directory",
+    );
+    assert(
+      !(wtBad?.reason ?? "").includes("remotes could not be read"),
+      "and it is not reported as the timed-out remote read it used to look like",
+    );
+    const wtGitDir = await prodHook()(`git --git-dir ${wt}/.git ${PUSH} origin wt-branch`);
+    assert(
+      wtGitDir?.block === true && (wtGitDir.reason ?? "").includes("--git-dir"),
+      "a push that names its repository with --git-dir is refused by name, not scanned in the session cwd",
+    );
+    await wtRun("reset", "-q", "--hard", "HEAD~1");
+    assert(
+      (await prodHook()(`git -C ${wt} ${PUSH} -u origin wt-branch`)) === undefined,
+      "and a clean worktree push is allowed while the session tree's HEAD is dirty (#2168, inverse)",
+    );
+    execp("git", { argv: ["worktree", "remove", "--force", wt], cwd: work, env: gitEnv } as never);
+  }
   assert(
     pushGitCwd(work, "gh pr comment 1 --body 'see git push elsewhere'") === work,
     "a command that merely mentions the verb does not move it",

@@ -21,8 +21,8 @@ import {
   inspectCommand,
   resetPublicHygieneRegistrationForTests,
 } from "../src/public-hygiene-guard.ts";
-import { pushRefspecs, refspecSource } from "../src/public-hygiene-refspecs.ts";
 import { scanPushRange } from "../src/public-hygiene-push.ts";
+import { pushRefspecs, refspecSource, splitPushWords } from "../src/public-hygiene-refspecs.ts";
 import { PUSH_SCAN_MAX_BUFFER, PUSH_SCAN_TIMEOUT_MS } from "../src/public-hygiene-scan.ts";
 import type { ExecFn } from "../src/worktree.ts";
 import { gitTestEnv } from "./lib/git-test-env.ts";
@@ -176,6 +176,29 @@ async function reset(): Promise<void> {
     h.refspecs.join() === "main,topic",
     "--force-with-lease takes a value only with `=`, so its follower stays a refspec",
   );
+  // #2168: the words come from the SHELL segmenter, not a whitespace split, so a
+  // ref the agent quoted is still one word. A split on spaces would turn
+  // `'feat/two words'` into two sources, refuse the push for a revision git was
+  // never asked about, and leave the real one unscanned.
+  const quotedWords = splitPushWords(`git -C /w/wt ${PUSH} origin 'feat/two words'`);
+  const quoted = pushRefspecs(quotedWords, PUSH, remotes);
+  assert(
+    quoted.refspecs.join() === "feat/two words",
+    "a quoted branch with a space is ONE source, not two (#2168)",
+  );
+  assert(
+    !quotedWords.includes("words"),
+    "and the second half of that ref is not a refspec of its own",
+  );
+  // git's globals are the other reason a naive reader miscounts: `-C` consumes
+  // its operand, so the operand is not the remote slot and `wt-branch` is not a
+  // stray refspec produced by a reader that treated `-C` as a bare flag.
+  const viaC = pushRefspecs(
+    splitPushWords(`git -C /w/wt-branch ${PUSH} origin wt-branch`),
+    PUSH,
+    remotes,
+  );
+  assert(viaC.refspecs.join() === "wt-branch", "a -C operand is git's, not a positional refspec");
   // The deletion switches are the other way to ask for a deletion, and a
   // parser must not read the branch they name as a revision: `git push origin
   // --delete gone` reads `gone` as a ref name in a position git itself reads

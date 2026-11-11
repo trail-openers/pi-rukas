@@ -76,6 +76,9 @@
 import path from "node:path";
 import { simpleCommands } from "./bash-destructive-write.ts";
 import { pushesRemote } from "./git-push-command.ts";
+import { commandCarriesPushVerb } from "./git-push-words.ts";
+import { PUSH_VERB } from "./public-hygiene-verbs.ts";
+export { PUSH_VERB } from "./public-hygiene-verbs.ts";
 import { publishArgv, publishCommandLines } from "./public-hygiene-command.ts";
 import { codeOf } from "./public-hygiene-files.ts";
 import { isAssignment } from "./public-hygiene-operands.ts";
@@ -266,7 +269,18 @@ const SHELLS = new Set(["bash", "sh", "zsh", "dash", "ksh"]);
 
 /**
  * Does this command run `git push` at all (including inside a shell body)?
+ *
+ * Two readers, one question, and the union is what the guard acts on. The regex
+ * (`pushesRemote`) is scan-not-anchor over the raw text and is the only one that
+ * sees a push inside a `bash -c` body or past an `oo` prefix. The word reader
+ * ({@link commandCarriesPushVerb}) is the only one that sees a push git's
+ * flag-only walk cannot reach — `git --git-dir X --work-tree Y push`, where every
+ * global takes its value as a SEPARATE word and the regex must not consume one
+ * (that over-refusal is recorded in `git-push-command.ts`). Each misses what the
+ * other catches, so a command is a push when EITHER says so: the shapes both
+ * agree on are scanned, and a shape neither recognises is the backstop refusal's
+ * job, not a pass.
  */
 export function commandPushes(command: string): boolean {
-  return pushesRemote(command) !== undefined;
+  return pushesRemote(command) !== undefined || commandCarriesPushVerb(command, PUSH_VERB);
 }

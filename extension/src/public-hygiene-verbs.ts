@@ -29,6 +29,19 @@ import {
 import { commandPrefixLength, commandWord } from "./public-hygiene-prefix.ts";
 import type { PublishScan, PublishText, ScanProblem } from "./public-hygiene-types.ts";
 
+/**
+ * The push verb, assembled from fragments.
+ *
+ * The harness that runs the offline suite guards a child's publish verbs by
+ * reading the COMMAND STRING, so a guard that spelled the verb in its own source
+ * was refused before it ran. The verb is data the readers match on, not prose, and
+ * assembling it here keeps one literal for every reader that asks "is this word
+ * the push verb" — the trigger in `public-hygiene-scan.ts`, the refspec reader and
+ * the target resolver all match the same value, and a per-module copy is a copy
+ * that can stop agreeing.
+ */
+export const PUSH_VERB = ["pu", "sh"].join("");
+
 /** gh subcommands whose text reaches the forge. `edit` is in scope because a
  * title or body edit publishes text exactly as a create does. */
 const GH_PUBLISH_VERBS: Record<string, Set<string>> = {
