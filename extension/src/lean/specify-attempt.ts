@@ -60,6 +60,12 @@ interface SpecifyAttemptArgs {
   repoRoot: string;
   issue: number;
   spec: PiSpec;
+  /**
+   * The issue body the step re-read before parsing `spec` — the SAME bytes,
+   * never a second fetch. Shown to the adversary as the task statement; absent
+   * renders no section (`lean/issue-prose.ts`).
+   */
+  issueBody?: string;
   /** The worktree the attempt writes in, and the base sha and branch it resets to. */
   wt: string;
   base: string;
@@ -126,6 +132,8 @@ async function dispatchAdversary(
   opts: {
     issue: number;
     spec: PiSpec;
+    /** See {@link SpecifyAttemptArgs.issueBody} — the same bytes, not a re-fetch. */
+    issueBody?: string;
     wt: string;
     repoRoot: string;
     testRunner?: string;
@@ -141,6 +149,7 @@ async function dispatchAdversary(
   const prompt = specifyPrompt({
     issue: opts.issue,
     spec: opts.spec,
+    ...(opts.issueBody === undefined ? {} : { issueBody: opts.issueBody }),
     testRunner: opts.testRunner,
     ...(opts.testLocation === undefined ? {} : { testLocation: opts.testLocation }),
     worktree: opts.wt,
@@ -200,12 +209,15 @@ async function dispatchAdversary(
 export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<SpecifyAttemptResult> {
   const { deps, config, repoRoot, issue, spec, wt, base, branch, runnerTemplate } = args;
   const { testLocation, wanted, frozenByCriterion, refusal, resubmit } = args;
+  // The body the step already fetched to parse `spec` — threaded, never re-read.
+  const { issueBody } = args;
   // Each dispatch gets its own budget, armed the way the first was.
   const budget = armBudget(budgetFor(config, "specify"));
   if (budget.warning !== undefined) traceWarn(`lean specify #${String(issue)}: ${budget.warning}`);
   const dispatched = await dispatchAdversary(deps, {
     issue,
     spec,
+    ...(issueBody === undefined ? {} : { issueBody }),
     wt,
     repoRoot,
     testRunner: runnerTemplate,

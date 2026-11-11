@@ -13,9 +13,13 @@
  *
  * Env pins go through `withEnv`, which restores exactly what was there
  * (including an absent variable), so nothing leaks into the next test file.
- * The counted cases pin `PI_ENSEMBLE_ROLE` the way `test-write-fence-hook.ts`
- * does: a role this process happens to carry (a reviewer's, or `developer` for
- * the push guard) registers role-scoped hooks and shifts every count.
+ * The counted cases pin `PIN_CHILD` the way `test-write-fence-hook.ts` does:
+ * the companion's hook set is scoped two ways over and above the guards —
+ * `PI_ENSEMBLE_ROLE` (the #1113 push ban and the #2140 reviewer bash bound)
+ * and `PI_ENSEMBLE_WRITE_ROOT` (the #1655 fence registers its own `tool_call`
+ * hook whenever the dispatch set a root) — and a process this test happens to
+ * run inside carries all three, which shifts every count and leaves a hook
+ * behind under `PI_ENSEMBLE_SUBAGENT_MODE=1`.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -34,15 +38,23 @@ function check(cond: boolean, msg: string) {
   }
 }
 
-// The hook set is role-scoped in two places (#1113 push ban, #2140 reviewer
-// bash timeout), so every count below is only stable with the role pinned.
-const NO_ROLE = { PI_ENSEMBLE_ROLE: undefined };
+// Every count below is only stable with the whole role- and fence-scoped set
+// cleared: the guards are role-scoped in two places and the fence registers on
+// the write root alone, so an ambient developer dispatch environment (role and
+// root both set, as a /work child's shell has them) adds two hooks to each.
+const PIN_CHILD = {
+  PI_ENSEMBLE_ROLE: undefined,
+  PI_ENSEMBLE_WRITE_ROOT: undefined,
+  PI_ENSEMBLE_WRITE_REPO: undefined,
+  PI_ENSEMBLE_WRITE_SCRATCH: undefined,
+  PI_ENSEMBLE_WRITE_FENCE: undefined,
+};
 
 // ============================================================
 // 1. Loading with no SUBAGENT_MODE: the mode-independent guards, no tools,
 //    no commands.
 // ============================================================
-await withEnv(NO_ROLE, async () => {
+await withEnv(PIN_CHILD, async () => {
   const fake = makeFakePi();
   childGuards(fake as unknown as ExtensionAPI);
   const n = fake.handlers.tool_call?.length ?? 0;
@@ -58,7 +70,7 @@ await withEnv(NO_ROLE, async () => {
 // 2. The loaded hooks refuse the merge (no ledger → gh pr view fails →
 //    refused) and issue creation, and leave a read alone.
 // ============================================================
-await withEnv(NO_ROLE, async () => {
+await withEnv(PIN_CHILD, async () => {
   const fake = makeFakePi();
   childGuards(fake as unknown as ExtensionAPI);
   const merge = await dispatch(fake, "bash", "gh pr merge 5 --squash");
@@ -84,7 +96,7 @@ await withEnv(NO_ROLE, async () => {
 //     failClosedPi and a thrown handler becomes a { block: true, reason }
 //     refusal, not an aborted turn.
 // ============================================================
-await withEnv(NO_ROLE, async () => {
+await withEnv(PIN_CHILD, async () => {
   const makeWrapped = (behaviour: "throw" | "block" | "inert") => {
     const handlers: Handler[] = [];
     const spyPi = {
@@ -150,7 +162,7 @@ await withEnv(NO_ROLE, async () => {
 // 3. Destructive git: the refused-example from the destructive guard's own
 //    test, reached through the companion's hook set.
 // ============================================================
-await withEnv(NO_ROLE, async () => {
+await withEnv(PIN_CHILD, async () => {
   const fake = makeFakePi();
   childGuards(fake as unknown as ExtensionAPI);
   const r = await dispatch(fake, "bash", "git reset --hard");
@@ -162,7 +174,7 @@ await withEnv(NO_ROLE, async () => {
 // ============================================================
 // 4. NO-OP: PI_ENSEMBLE_SUBAGENT_MODE=1 → zero hooks registered.
 // ============================================================
-await withEnv({ ...NO_ROLE, PI_ENSEMBLE_SUBAGENT_MODE: "1" }, async () => {
+await withEnv({ ...PIN_CHILD, PI_ENSEMBLE_SUBAGENT_MODE: "1" }, async () => {
   const fake = makeFakePi();
   childGuards(fake as unknown as ExtensionAPI);
   const n = fake.handlers.tool_call?.length ?? 0;

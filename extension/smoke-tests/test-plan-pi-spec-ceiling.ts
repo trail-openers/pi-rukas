@@ -23,7 +23,7 @@ import {
   placePiSpecSection,
   renderPiSpecSection,
 } from "../src/plan-pi-spec.ts";
-import { assert, draftBody, mustSpec, specExit } from "./lib/plan-pi-spec-fixture.ts";
+import { assert, draftBody, draftBodyWithDescriptor, mustSpec, specExit } from "./lib/plan-pi-spec-fixture.ts";
 
 // ------------------------------------------- the ceiling holds for ANY input
 
@@ -33,12 +33,15 @@ import { assert, draftBody, mustSpec, specExit } from "./lib/plan-pi-spec-fixtur
   const astral = mustSpec(
     piSpecFromDraft({
       type: "feature",
-      title: "🧪".repeat(500),
-      body: draftBody(
+      title: "t",
+      // The problem field's source is the descriptor (#2171), so the astral run
+      // that stresses the clip is passed there.
+      body: draftBodyWithDescriptor(
         Array.from(
           { length: 14 },
           () => `${"🚀".repeat(300)} \`bun run ${"𝕌nicode".repeat(100)}-verify.sh\``,
         ),
+        "🧪".repeat(500),
       ),
     }),
     "ceiling: astral",
@@ -82,10 +85,17 @@ import { assert, draftBody, mustSpec, specExit } from "./lib/plan-pi-spec-fixtur
   // ceiling promises for: a control character or a lone surrogate is replaced
   // before the clip, so it can never reach JSON as a six-character escape. A quote
   // or a backslash does take two, which is the factor the ceiling pays for.
-  const problemOf = (title: string): string =>
+  const problemOf = (text: string): string =>
     renderPiSpecSection(
       mustSpec(
-        piSpecFromDraft({ type: "feature", title, body: draftBody(["a"]) }),
+        piSpecFromDraft({
+          type: "feature",
+          title: "t",
+          // #2171: the problem's source is the draft's descriptor line, so the text
+          // under test goes there — the title is only the fallback, and rendering
+          // it would silently exercise that path instead of the one under test.
+          body: draftBodyWithDescriptor(["a"], text),
+        }),
         "escape: problem",
       ),
     );
@@ -121,8 +131,15 @@ import { assert, draftBody, mustSpec, specExit } from "./lib/plan-pi-spec-fixtur
   const worst = mustSpec(
     piSpecFromDraft({
       type: "feature",
-      title: bs.repeat(500),
-      body: draftBody(Array.from({ length: 14 }, () => bs.repeat(200))),
+      title: "t",
+      // The widest clipped field the ceiling pays for is the problem, and the
+      // problem's source is the descriptor (#2171) — so the all-backslash run of
+      // 500 units goes there, not in the title, which the mapper no longer reads
+      // when the draft states a statement.
+      body: draftBodyWithDescriptor(
+        Array.from({ length: 14 }, () => bs.repeat(200)),
+        bs.repeat(500),
+      ),
     }),
     "ceiling: worst",
   );

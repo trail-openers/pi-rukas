@@ -38,11 +38,22 @@ export function mustSpec(spec: PiSpec | undefined, label: string): PiSpec {
 
 /** A drafted body carrying exactly these acceptance-criteria bullets. */
 export function draftBody(criteria: string[]): string {
+  return draftBodyWithDescriptor(criteria, "d");
+}
+
+/**
+ * The same body with the `Descriptor:` line the mapper reads its `problem` from
+ * (#2171). `plan-draft.ts` renders `## Context & motivation` as this line plus a
+ * `Type:` line, so a test that wants the problem to come from the section — or to
+ * fall back to the title, by passing "" — sets it here rather than hand-rolling
+ * a body no drafter writes.
+ */
+export function draftBodyWithDescriptor(criteria: string[], descriptor: string): string {
   const bullets = criteria.map((s) => `- ${s}`).join("\n");
   return [
     "## Context & motivation",
     "",
-    "Descriptor: d",
+    descriptor === "" ? "" : `Descriptor: ${descriptor}`,
     "Type: feature",
     "",
     "## Acceptance criteria",

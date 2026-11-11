@@ -28,6 +28,7 @@
 
 import type { TestLocation } from "./config-test-location.ts";
 import { TEST_RUNNER_PLACEHOLDER } from "./config.ts";
+import { leanIssueSection } from "./issue-prose.ts";
 import { criteriaBlock } from "./spec-blocks.ts";
 import type { PiSpec } from "./spec.ts";
 import {
@@ -51,6 +52,14 @@ export interface ChallengePromptOpts {
    * files already live there, and a new file the child writes must too.
    */
   testLocation?: TestLocation;
+  /**
+   * The issue body the step re-read from the forge. The frozen tests were
+   * written from this text, so an edge case the issue never asked for is not a
+   * finding — this is the sentence that says so in the only form the adversary
+   * can check. Absent, blank, or with `PI_ENSEMBLE_LEAN_ISSUE_PROSE=0`, the
+   * section is not rendered and the prompt is the pre-section shape byte for byte.
+   */
+  issueBody?: string;
 }
 
 /** Build the kickoff prompt for the challenge child. */
@@ -60,6 +69,7 @@ export function challengePrompt(opts: ChallengePromptOpts): string {
     opts.testRunner === undefined || opts.testRunner.trim() === ""
       ? "No project test runner is configured, so run each file with whatever command runs this repository's tests."
       : `The parent runs each file with the project template \`${opts.testRunner}\` — the literal \`${TEST_RUNNER_PLACEHOLDER}\` is replaced by the file's path, so the file must be executable by that command alone.`;
+  const issueSection = leanIssueSection(opts.issueBody);
   return [
     `You are the adversary for issue #${opts.issue}. The implementation has been written and the author claims it works. Your job is to prove that claim wrong with tests.`,
     "",
@@ -67,6 +77,9 @@ export function challengePrompt(opts: ChallengePromptOpts): string {
     "",
     opts.spec.problem,
     "",
+    // Same seam as `specifyPrompt`: the task statement before the criteria, and
+    // no line at all when there is nothing to show.
+    ...(issueSection === "" ? [] : [issueSection, ""]),
     "## The acceptance criteria",
     "",
     criteriaBlock(opts.spec),

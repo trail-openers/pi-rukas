@@ -232,6 +232,10 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("INTENT_CRITICALITY", true),
   flag("INVARIANT_MEMORY", true),
   input("ISSUE_IMAGES", "boolean", true, "cycle", { manifestVersion: 1 }),
+  // #2171 — show the specify/challenge adversary the issue prose its frozen
+  // tests were written from. 0 takes the section back out of both prompts.
+  // The reader is `leanIssueProseEnabled` in lean/issue-prose.ts.
+  flag("LEAN_ISSUE_PROSE", true),
   // Unset: derived from the host budget (CPUs, memory, pids.max); 0 = unbounded.
   // #1564 — a lens child's run bound (spawn-child-bound.ts).
   ms("LENS_BOUND_MS", 1_800_000),
