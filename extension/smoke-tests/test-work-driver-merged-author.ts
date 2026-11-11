@@ -190,5 +190,23 @@ const runFor = (issue: number, extra: Parameters<typeof gateFileRun>[0] = {}) =>
 	);
 }
 
+{
+	// The gate's own executor rejects (a wedged `gh`, an arm that throws rather than
+	// answering). The rejection must not escape `runMerged`: an uncaught throw there
+	// leaves the cycle parked with NO mergeHold behind it, which is the shape the
+	// sweep and the handoff cannot explain — and the one act the gate guards is
+	// irreversible, so a read that could not be made is a refusal, never a pass.
+	const r = await runFor(7128, { allowlistThrows: true });
+	assert(
+		r.cap === "awaiting-human-merge" && r.log.mergeCmds.length === 0,
+		`#2181: an author gate whose git read rejects parks and nothing merges (cap ${JSON.stringify(r.cap)}, ${r.log.mergeCmds.length} merge call(s))`,
+	);
+	assert(
+		r.state?.pipelineState.mergeHold?.authorGateReason !== undefined &&
+			r.state.pipelineState.mergeHold.authorGateReason.length > 0,
+		`#2181 …and the park carries the author gate's own reason, not a bare cap-hit (${JSON.stringify(r.state?.pipelineState.mergeHold?.authorGateReason ?? null).slice(0, 160)})`,
+	);
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

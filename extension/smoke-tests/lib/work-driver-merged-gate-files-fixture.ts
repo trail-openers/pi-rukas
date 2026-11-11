@@ -344,12 +344,25 @@ export async function gateFileRun(opts: {
 			// absence (and therefore as no author rule), so the fixture fails the way
 			// git fails — an invented message would test the fixture, not the gate.
 			if (opts.noAllowlist === true)
-				throw new Error(
-					`fatal: path '${allowlistSpec.file}' does not exist in '${allowlistSpec.sha}'`,
+				// git's own wording for a path that is not in the commit, on the fields
+				// git itself (and `execFile`) put them on: the reader's absence classifier
+				// reads `stderr` and the exit `code`, never the message, which carries the
+				// command line. A message-only rejection reads as a wedge, not as absence.
+				throw Object.assign(
+					new Error(
+						`fatal: path '${allowlistSpec.file}' does not exist in '${allowlistSpec.sha}'`,
+					),
+					{
+						code: 128,
+						stderr: `fatal: path '${allowlistSpec.file}' does not exist in '${allowlistSpec.sha}'\n`,
+					},
 				);
 			const isProbe = line.includes("cat-file");
 			if (opts.allowlistThrows === true)
-				throw new Error("fatal: unable to read pack file");
+				throw Object.assign(new Error("fatal: unable to read pack file"), {
+					code: 128,
+					stderr: "fatal: unable to read pack file\n",
+				});
 			if (isProbe) return { stdout: "blob\n" };
 			return { stdout: opts.authorAllowlist ?? `${FIXTURE_AUTHOR}\n` };
 		}

@@ -223,6 +223,36 @@ export async function runMerged(
       author: authorFromRead(evidenceAuthorRead(evidence)),
     });
 
+  /**
+   * Ask the author gate, and turn an executor rejection into the same park as a
+   * refusal.
+   *
+   * The gate reads git and the forge through the caller's executor, and a read
+   * that rejects (a wedged `gh`, an executor that throws rather than answering)
+   * is not a signal to let the merge run — the one act it guards is irreversible.
+   * It is also not a rejection the gate rendered, so it parks with the executor's
+   * own error text as the reason, and the hold is written through the same
+   * `mergeAuthorHold` the refusals use. Without the catch the rejection escaped
+   * `runMerged` and the cycle parked with no `mergeHold` behind it, which is the
+   * shape neither the sweep nor the handoff can explain.
+   */
+  const askAuthorGate = async (
+    evidence: { author?: string; authorError?: string } | undefined,
+  ): Promise<{ ok: true } | { ok: false; reason: string }> => {
+    let decision: { ok: true } | { ok: false; reason?: string };
+    try {
+      decision = await authorGate(evidence);
+    } catch (err) {
+      return {
+        ok: false,
+        reason: `the author gate could not run: ${errText(err)}`,
+      };
+    }
+    return decision.ok
+      ? { ok: true }
+      : { ok: false, reason: decision.reason ?? "the author gate refused" };
+  };
+
   /** Park the cycle on an author-gate refusal: the hold, the cap, and a trace. */
   const authorHold = (reason: string) => {
     trace(`work-driver: merge held — merge-author gate: ${reason.slice(0, 200)}`);
@@ -251,7 +281,7 @@ export async function runMerged(
       readMergeDocs,
       protectedGate,
       gateFileGate,
-      authorGate,
+      authorGate: askAuthorGate,
     });
     if (!gate.ok) return gate.state;
     verifiedHead = gate.verifiedHead;
@@ -270,8 +300,8 @@ export async function runMerged(
     // `merge-target` already fills from the forge. Refusing here on "no evidence" would
     // report an unreadable author for a PR whose author the step is holding, and would
     // make the switch a way to park every cycle.
-    const authorDecision = await authorGate(await authorFromForgePr(ctx, mergeExec, prNumber));
-    if (!authorDecision.ok) return authorHold(authorDecision.reason ?? "the author gate refused");
+    const authorDecision = await askAuthorGate(await authorFromForgePr(ctx, mergeExec, prNumber));
+    if (!authorDecision.ok) return authorHold(authorDecision.reason);
     // No authority gate ran, so this is the only place the protected-path gate can
     // ask with a head in hand; a protected diff parks the same way as above.
     const protectedHold = await protectedGate(undefined);

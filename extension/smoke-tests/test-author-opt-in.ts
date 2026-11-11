@@ -114,7 +114,16 @@ const ABSENT: OptInArm = { absent: true };
     realGit.push(argv.join(" "));
     const { spawnSync } = await import("node:child_process");
     const child = spawnSync("git", argv, { cwd: repoRoot });
-    if (child.status !== 0) throw new Error(child.stderr.toString().slice(0, 200));
+    if (child.status !== 0) {
+      const words = child.stderr.toString();
+      // The same shape as `gitFailure`: a real git child reports its verdict on
+      // `stderr` with its exit `code`, and the absence classifier reads those
+      // two fields rather than the message.
+      throw Object.assign(new Error(words.slice(0, 200)), {
+        code: child.status,
+        stderr: words,
+      });
+    }
     return { stdout: child.stdout.toString() };
   };
   const decision = await heldForMergeAuthor({

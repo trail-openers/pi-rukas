@@ -188,6 +188,7 @@ export async function authorFromForgePr(
   try {
     const { stdout } = await exec(`gh pr view ${prNumber} --json author`, {
       cwd: ctx.repoRoot,
+      timeout: 15_000,
       maxBuffer: 64 * 1024,
     });
     const login = (JSON.parse(stdout) as { author?: { login?: unknown } }).author?.login;

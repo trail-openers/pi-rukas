@@ -452,8 +452,6 @@ PR: [#912](https://github.com/trail-openers/pi-rukas/issues/912) · PR: [#1360](
 
 PR: [#2181](https://github.com/trail-openers/pi-rukas/issues/2181)
 
-PR: [#2181](https://github.com/trail-openers/pi-rukas/issues/2181)
-
 ### A read-only command was refused with merge text
 
 **Symptom:** An agent reading an issue's labels, timeline or comment history — to work out, say, why a cycle was parked — is refused. The command contains no merge, and the refusal talks only about merging and offers the merge override as the remedy:

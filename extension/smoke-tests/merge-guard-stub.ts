@@ -336,14 +336,18 @@ async function evidenceAnswer(
  */
 function allowlistAnswer(env: MergeGuardEnv, cmd: string): { stdout: string } {
 	if (env.allowlistReadThrows === true)
-		throw new Error("git: unable to read pack file");
+		throw Object.assign(new Error("git: unable to read pack file"), {
+			code: 128,
+			stderr: "git: unable to read pack file\n",
+		});
 	if (env.noAllowlist === true) {
-		// git's own wording for a path that is not in the commit — the reader keys
-		// "the repository never opted in" off this phrase set, so the stub has to
-		// fail the way git fails rather than with an invented message.
-		throw new Error(
-			`fatal: path '${MERGE_AUTHORS_FILE}' does not exist in the base commit`,
-		);
+		// git's own wording for a path that is not in the commit, on the fields git
+		// (and `execFile`) carry it on: the reader's absence classifier reads
+		// `stderr` and the exit `code`, never the message — the message is where the
+		// executor puts the COMMAND LINE, and a classifier that read it could be
+		// handed an unresolvable base and call it an opt-out.
+		const words = `fatal: path '${MERGE_AUTHORS_FILE}' does not exist in the base commit\n`;
+		throw Object.assign(new Error(words), { code: 128, stderr: words });
 	}
 	if (cmd.includes("cat-file")) return { stdout: "blob\n" };
 	if (cmd.includes("show")) {

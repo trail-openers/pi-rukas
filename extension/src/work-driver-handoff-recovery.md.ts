@@ -26,7 +26,11 @@ import {
   recoveryStepsForCap,
 } from "./work-driver-handoff-recovery.ts";
 import { type ParkReason, parkAction } from "./work-driver-intent.ts";
-import { mergeHeadHoldNote, mergeHoldToolingNote } from "./work-driver-merge-authority.ts";
+import {
+  mergeAuthorHoldNote,
+  mergeHeadHoldNote,
+  mergeHoldToolingNote,
+} from "./work-driver-merge-authority.ts";
 import {
   type WorkState,
   filesPresentFromConsolidation,
@@ -154,6 +158,12 @@ export function recoveryCommandsMarkdown(
     const headNote = mergeHeadHoldNote(hold);
     if (headNote) {
       lines.push(`# ${headNote}`);
+    }
+    // #2181 — the author gate's refusal instead of the evidence sentence: this park
+    // is not about the checks, and `--merge` is not the answer to it.
+    const authorNote = mergeAuthorHoldNote(hold?.authorGateReason);
+    if (authorNote) {
+      lines.push(`# ${authorNote}`);
     }
   } else if (cap === "existing-pr-detected") {
     const pr = ps.existingPr;

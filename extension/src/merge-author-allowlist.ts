@@ -59,6 +59,7 @@
  * list, and the refusal is rendered into agent transcripts.
  */
 
+import { errorText, gitCatFileSaysAbsent } from "./git-range.ts";
 import { errText } from "./protected-paths-text.ts";
 
 /** The gate file that names the maintainers whose PRs may be landed. */
@@ -182,7 +183,7 @@ export async function readMergeAuthorAllowlist(
   }
   const spec = `${baseSha}:${file}`;
   let type = "";
-  /** Git's own words for the probe's failure, kept for the absent/git-failed split. */
+  /** What the probe answered when it failed, for the refusal's detail. */
   let probeError = "";
   try {
     const { stdout } = await exec("git", {
@@ -195,23 +196,25 @@ export async function readMergeAuthorAllowlist(
   } catch (err) {
     // A missing path and a broken repository both arrive here, and they must not
     // collapse: one is "this repository has no author rule" (A7), the other is
-    // "the gate file could not be read". Git tells them apart in its own wording,
-    // so the wording is kept and classified below rather than guessed at by a
-    // second read that would answer a broken repository the same way.
+    // "the gate file could not be read". The shared `cat-file` classifier — the
+    // one rule for git's "not there" wording, with the tree probe in
+    // `lens-evidence.ts` — decides, and it reads git's `stderr` and nothing else.
+    // It must not consult `message`: that is where the executor puts the
+    // COMMAND LINE, which carries the base sha — so a base git cannot resolve
+    // (`fatal: not a valid object name <base>`) would print its own command into
+    // the text an absence test matched on and be read as "the repository never
+    // opted in", opening a gate that is present. Anything the classifier does
+    // not call absence is `git-failed` below and REFUSES; absence means exactly
+    // "that path is not in that commit".
     type = "";
-    // `errText` reads `message`, which is where `execp` puts the command line but
-    // NOT where git's diagnosis lands: a non-zero exit carries the words on
-    // `stderr`. Reading only the message made a genuine "that path is not in that
-    // commit" indistinguishable from a wedged repository, which is exactly the
-    // distinction A7 turns on — so both places are consulted.
-    probeError = `${errText(err)} ${errTextStderr(err)}`;
-    if (ABSENT_PROBE.test(probeError)) {
+    if (gitCatFileSaysAbsent(err)) {
       return {
         ok: false,
         reason: "absent",
         detail: `${file} does not exist at the base commit`,
       };
     }
+    probeError = errorText(err);
   }
   if (type === "tree")
     return {
@@ -227,10 +230,21 @@ export async function readMergeAuthorAllowlist(
     };
   }
   if (type !== "blob") {
+    // The probe never answered (it rejected), so git's own verdict leads — but the
+    // classification stays `not-a-blob`, the reason the reader already uses for "the
+    // type probe gave me nothing", so every path's refusal wording is unchanged.
+    // The verdict is what the operator acts on: a wedged repository, a corrupt
+    // pack, or a base that never resolved are each a different repair.
+    const cause =
+      probeError.length > 0
+        ? ` (the type probe failed: ${probeError})`
+        : type.length > 0
+          ? ` (git reported it as “${type}”)`
+          : "";
     return {
       ok: false,
       reason: "not-a-blob",
-      detail: `${file} is not a file at the base commit${type.length > 0 ? ` (git reported it as “${type}”)` : ""}`,
+      detail: `${file} is not a file at the base commit${cause}`,
     };
   }
   let stdout = "";
@@ -249,7 +263,11 @@ export async function readMergeAuthorAllowlist(
         detail: `${file} is over the ${ALLOWLIST_MAX_BUFFER} byte read bound`,
       };
     }
-    return { ok: false, reason: "git-failed", detail: errText(err) };
+    return {
+      ok: false,
+      reason: "git-failed",
+      detail: probeError.length > 0 ? probeError : errorText(err),
+    };
   }
   const logins = parseMergeAuthorAllowlist(stdout);
   if (logins.length === 0) {
@@ -261,30 +279,6 @@ export async function readMergeAuthorAllowlist(
   }
   return { ok: true, logins, set: new Set(logins.map((l) => l.toLowerCase())) };
 }
-
-/**
- * git's `stderr` off a rejection, when the executor attached one.
- *
- * `execp` and `execFile` disagree about where the failing child's words go, and the
- * reader must not inherit that disagreement: the absence test needs git's own
- * sentence whichever shape the caller's executor has.
- */
-function errTextStderr(err: unknown): string {
-  const stderr = (err as { stderr?: unknown })?.stderr;
-  return typeof stderr === "string" ? stderr : "";
-}
-
-/**
- * Git's own wording for "that path is not in that commit", from `cat-file -t`.
- *
- * Matched on the phrase set rather than on an exit code, because the exit code for
- * a missing path (128) is the code for a broken repository, a dubious ownership and
- * a missing pack file alike — those are `git-failed`, and treating them as absence
- * would turn a wedged repository into an open gate. `does not exist in` is the
- * phrase git prints for the path; `not a valid object name` is what a partial
- * clone adds beside it; both say the SAME thing about the path.
- */
-const ABSENT_PROBE = /does not exist in|path .* does not exist|not a valid object name/i;
 
 /** The refusal shared by every path, minus the path's own framing. */
 function notAllowlisted(login: string, file: string): string {

@@ -211,6 +211,12 @@ export interface MergeHeadHold {
   reviewedHead?: string;
   /** The head found at merge time. */
   headAtMerge?: string;
+  /**
+   * #2181 — why the merge-author gate refused, in the step's own words. Present
+   * only when THAT gate held the merge, and it outranks the head and evidence
+   * notes below: the operator's action is a different one entirely.
+   */
+  authorGateReason?: string;
 }
 
 /** The head-check sentence, or "" when the hold was not about the head.
@@ -230,6 +236,20 @@ export function mergeHeadHoldNote(head: MergeHeadHold | undefined): string {
     `The head check refused: ${head.headCheckReason} ` +
     `(reviewed head ${reviewed}, head at merge ${atMerge}).`
   );
+}
+
+/** The merge-author gate's sentence, or "" when the hold was not about the author.
+ *
+ * Same one-sentence-one-owner rule as `mergeHeadHoldNote`: the queue's action and
+ * every handoff surface render this so an operator is never told to chase failing
+ * checks on a PR whose only fault is WHO opened it. The sentence names what the
+ * gate actually is — the operator's own allowlist at the base commit — and says
+ * plainly that `--merge` does not reach it, because the operator's first move on
+ * any merge park is to re-run with that flag.
+ */
+export function mergeAuthorHoldNote(authorGateReason?: string): string {
+  if (!authorGateReason) return "";
+  return `The merge-author gate refused: ${authorGateReason} The PR's author is not listed in the operator's allowlist at the cycle's base commit, or the allowlist and the author could not be read there. A person lands this PR, or the operator adds that login to the file; --merge does not override this gate.`;
 }
 
 /** Operator-facing explanation for a cycle that stopped at the merge step. */
@@ -257,6 +277,11 @@ export function explainMergeHold(
   }
   const why = evidence?.reason ?? "no evidence gathered";
   const tooling = mergeHoldToolingNote(true, evidence?.failureKind);
+  // #2181 — the author gate's own refusal, ahead of the evidence sentence: a
+  // green board is not what this park is about, and a reader who saw only
+  // "the evidence gate refused: no evidence" would go debug `gh`.
+  const authorNote = mergeAuthorHoldNote(head?.authorGateReason);
+  if (authorNote) return `${pr} is open and merging is permitted, but ${authorNote}`;
   const headNote = mergeHeadHoldNote(head);
   return `${pr} is open and merging is permitted, but the evidence gate refused: ${why}. ${tooling ? `${tooling} ` : ""}${headNote ? `${headNote} ` : ""}The driver merges on what \`gh\` reports, never on a subagent's claim.`;
 }
@@ -292,6 +317,9 @@ export function mergeHoldAction(
   prNumber?: number,
   failureKind?: EvidenceFailureKind,
   head?: MergeHeadHold,
+  /** #2181 — the author gate's own record. Passed apart from `head` so the queue
+   * can ask for the author action without also claiming a head refusal. */
+  authorHold?: MergeHeadHold,
 ): string {
   // `prNumber` comes from the state file's `prNumber?: number` at every call
   // site, so the optional marker (rather than `number | undefined`) is the
@@ -300,9 +328,14 @@ export function mergeHoldAction(
   if (!authority.granted) {
     return mergeHoldGrantAction(pr);
   }
-  // The head check first: an operator told to go chase failing checks on a PR
-  // whose CI is green — and whose real fault is an unreviewed commit — goes
-  // looking in the wrong place. Same reason #745 tags a tooling refusal.
+  // The author gate ahead of everything below: neither `--merge` nor a doctrine
+  // grant reaches it, so the last thing this operator needs is "check the failing
+  // checks" on a PR whose CI is green and whose only fault is WHO opened it.
+  const authorNote = mergeAuthorHoldNote(authorHold?.authorGateReason);
+  if (authorNote) return `${authorNote} Nothing may land a PR the operator did not open.`;
+  // The head check next: an operator told to go chase failing checks on a PR whose
+  // CI is green — and whose real fault is an unreviewed commit — goes looking in
+  // the wrong place. Same reason #745 tags a tooling refusal.
   const headNote = mergeHeadHoldNote(head);
   if (headNote) return `${headNote} Nothing may merge what the review did not cover.`;
   const tooling = mergeHoldToolingNote(true, failureKind);

@@ -44,6 +44,22 @@ export type OptInArm = {
   body?: string;
 };
 
+/**
+ * The rejection a failing git child leaves behind, in the shape the classifiers read.
+ *
+ * `gitCatFileSaysAbsent` needs git's `stderr` and a real exit code, and a shim that
+ * "fails the way git fails" by throwing a bare `Error` with the words in `message`
+ * leaves it without either — so the arm that means an ABSENT path would read as a
+ * wedge, and a repository that never opted in would be refused rather than opted
+ * out. Both executors this gate runs under, `execp`'s argv form and lean's, are
+ * `execFile`-backed and attach exactly these two fields, so a fixture that omits
+ * them is testing a shape no production caller produces.
+ */
+export function gitFailure(message: string, code: number, stderr?: string): Error {
+  const words = stderr ?? (message.endsWith("\n") ? message : `${message}\n`);
+  return Object.assign(new Error(message), { code, stderr: words });
+}
+
 /** A git executor answering like git, from an {@link OptInArm} table. */
 export function optInExec(arm: OptInArm, calls: string[] = []) {
   const exec = async (_cmd: string, opts?: { argv?: string[] }): Promise<{ stdout: string }> => {
@@ -51,10 +67,10 @@ export function optInExec(arm: OptInArm, calls: string[] = []) {
     calls.push(argv.join(" "));
     if (argv.includes("cat-file")) {
       if (arm.absent === true)
-        throw new Error("fatal: path does not exist in '<base>:<gate file>'");
+        throw gitFailure("fatal: path does not exist in '<base>:<gate file>'", 128);
       return { stdout: `${arm.type ?? "blob"}\n` };
     }
-    if (arm.showThrows === true) throw new Error("fatal: bad object");
+    if (arm.showThrows === true) throw gitFailure("fatal: bad object", 128);
     return { stdout: arm.body ?? ARMS_ALLOWED };
   };
   return { exec, calls };
@@ -71,7 +87,12 @@ export function repoWithOptionalGateFile(opts: {
   const git = (...args: string[]) => {
     const child = spawnSync("git", args, { cwd: repoRoot, env: gitTestEnv() });
     if (child.status !== 0) {
-      throw new Error(`git ${args.join(" ")}: ${child.stderr?.toString().slice(0, 200)}`);
+      const words = child.stderr?.toString() ?? "";
+      // Same shape as `gitFailure`: git's verdict on `stderr` with its exit code.
+      throw Object.assign(new Error(`git ${args.join(" ")}: ${words.slice(0, 200)}`), {
+        code: child.status,
+        stderr: words,
+      });
     }
     return child.stdout.toString().trim();
   };
