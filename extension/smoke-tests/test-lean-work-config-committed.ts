@@ -35,15 +35,15 @@ import { LOCAL_TSC_CMD } from "../src/work-driver-cap-checkpoint-typecheck.ts";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..", "..");
 /**
- * The path literal the ALWAYS_RUN detector reads this file by.
+ * The path literal the always-run predicate reads this file by.
  *
- * `always-run-detector.ts` is a READER test: it belongs to the selected set
- * only when a lexed string literal (or a `path.join`/`resolve` argument) names
- * a repository path. Everything else here reached the file through an imported
+ * `textReadingTests` classifies a test as a READER — a member of the always-run
+ * set — only when a lexed string literal (or a `path.join`/`resolve` argument)
+ * names a repository path. Everything else here reached the file through an imported
  * constant, and the only `.pi/work.json` in it was the prose of this header —
- * which the detector's lexer correctly ignores, and which therefore made the
- * file look like it reads no repository text at all. It was dropped from
- * `ALWAYS_RUN` and stopped running on a develop round that changed the config.
+ * which the predicate's lexer correctly ignores, and which therefore made the
+ * file look like it reads no repository text at all. It was dropped from the set
+ * and stopped running on a develop round that changed the config.
  *
  * So the name is spelled here, in a literal, and it is the string the `git show`
  * below passes: not a decorative copy that can rot away from what is read.
@@ -52,7 +52,7 @@ const COMMITTED = ".pi/work.json";
 /**
  * The same bytes through the other read a repository file can be read by.
  *
- * The detector above requires a READ as well as a path literal: `spawnSync` is
+ * The predicate above requires a READ as well as a path literal: `spawnSync` is
  * not one of the calls it counts (`git show` is not a file read it can see the
  * target of), so the literal alone still left this file out. The working tree
  * is NOT what this gate judges — the `git show` below is, and remains the only

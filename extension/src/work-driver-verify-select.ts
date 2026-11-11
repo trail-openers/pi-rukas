@@ -244,9 +244,10 @@ export function selectVerifyTests(
   extensionDir: string,
   changed: readonly string[],
 ): VerifySelection {
-  // Read from the worktree being verified, so the set matches the tests the
-  // command is about to run. A directory that is not there at all is not a
-  // silent empty set: the caller's try/catch turns it into a full-suite fallback.
+  // Computed from the tree being verified, so the set matches the tests the
+  // command is about to run. A `smoke-tests/` directory that is not there at all
+  // is not a silent empty set: `textReadingTests` throws and the caller's
+  // try/catch turns that into a full-suite fallback, which is the safe direction.
   const alwaysRun = textReadingTests(extensionDir);
   const full = (fallbackReason: string): VerifySelection => ({
     mode: "full",

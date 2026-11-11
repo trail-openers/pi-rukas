@@ -3,7 +3,7 @@
  * #1557 (fixture half) — the row-nonce identity, exercised on real rows.
  *
  * Split out of `test-adversarial-ledger-row-identity.ts` (which is an
- * ALWAYS_RUN member of the #1647 develop-verify selection and must therefore
+ * member of the always-run set of the #1647 develop-verify selection and must therefore
  * stay git-free): this file pays the git cost — a real clone fixture, the
  * REAL `writeAdversarialLedgerEntry`, and three `appendLedgerEntry` writes —
  * and it is selected by the import graph instead of running on every develop

@@ -47,17 +47,17 @@ assert(
   readers.includes("smoke-tests/test-lean-work-config-committed.ts"),
   "a test that spells a repository path literal and reads it is a member",
 );
-// The detector re-export the smoke tests import is a repository path this gate
-// reads for itself: a membership gate that is not a reader of the tree cannot be
-// selected for a change to the files it judges, so the read is done, not asserted
-// about. `readsRepositoryText` counts a test as a reader only when it makes a read
-// call AND names a repository path, and this file does both.
-const HELPER = "smoke-tests/lib/always-run-detector.ts";
+// This gate reads repository text for itself, below and in the fixture writes it
+// makes: `readsRepositoryText` counts a test as a reader only when it makes a read
+// call AND names a repository path, so a gate that were not a reader of its own
+// tree would not be selected for a change to the code it judges. Asserted, not
+// assumed — the membership of the set over membership is what this file pins.
+const SRC = "src/work-driver-verify-always-run.ts";
 assert(
-  readFileSync(path.join(extensionDir, HELPER), "utf8").includes(
-    "work-driver-verify-always-run.ts",
+  readFileSync(path.join(extensionDir, SRC), "utf8").includes(
+    "export function textReadingTests",
   ),
-  `the detector re-export (${HELPER}) forwards to the src module that computes the set`,
+  `the module that computes the set (${SRC}) is read by this gate, which makes it a reader itself`,
 );
 assert(
   readers.includes("smoke-tests/test-verify-select-computed-always-run.ts"),
