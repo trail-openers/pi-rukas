@@ -32,6 +32,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { DispatchResult } from "../src/types.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { renderHandoffUserMessage } from "../src/work-driver-handoff-message.ts";
+import { renderStatus } from "../src/work-status.ts";
 import { postHandoffWithRetry } from "../src/work-driver-handoff-post-retry.ts";
 import { runHandoff } from "../src/work-driver-handoff.ts";
 import { appendEvent, initialState } from "../src/workflow-state.ts";
@@ -356,6 +357,78 @@ const fastOpts = { sleep: async () => {}, rand: () => 0 };
     out.labelApplied === false,
     "H: the run recorded no delivery of any kind (this case asks for no label either)",
   );
+}
+
+// I. #2173 AC4 / C7 — the dual-target leg where the label lands on the ISSUE but
+//    not the PR, driven through the real `runHandoff` (not a forged event), and
+//    asserted on BOTH the emitted event and the rendered message.
+//
+//    The two Open Questions from the plan are settled as one case: a PR-target
+//    leg belongs in the banner matrix (it is a delivery-path shape, so it must
+//    be driven through `runHandoff` with the scripted forge), and its RENDERED
+//    text is asserted here too, because the contradiction the issue reported was
+//    between two lines of the same rendered message. No earlier script could
+//    build this shape: the shared forge kept ONE boolean for both targets, so the
+//    per-target fields the renderers read were never exercised by a producer.
+{
+  const dir = mkdtempSync(path.join(tmpdir(), "hb-I-"));
+  try {
+    process.env.PI_ENSEMBLE_HANDOFF_POST_RETRY = "0";
+    // The issue is labelled; every PR-target label write throws, so the PR's
+    // read-back comes back without the label.
+    const { forge } = mkScriptedForge({ label: true, prLabel: false, prLabelAddFailures: 99 });
+    const ctx: DriverContext = {
+      host: fakePi,
+      repoRoot: dir,
+      issue: 2173,
+      dispatchFn: failingDispatch(),
+      forge,
+    };
+    const state = cappedState(2173);
+    // A cycle that parked after opening a PR is the dual-target shape.
+    state.pipelineState.prNumber = 4242;
+    const next = await runHandoff(ctx, state, Date.now());
+    const emitted = next.eventLog.find((e) => e.kind === "handoff-emitted");
+    assert(
+      emitted?.kind === "handoff-emitted" && emitted.issueLabelApplied === true,
+      "I: the issue's verified label is recorded per-target as applied",
+    );
+    assert(
+      emitted?.kind === "handoff-emitted" && emitted.prLabelApplied === false,
+      "I: the PR's missing label is recorded per-target as NOT applied — never inferred",
+    );
+    assert(
+      emitted?.kind === "handoff-emitted" && emitted.labelApplied === false,
+      "I: the aggregate is the conjunction, so a PR failure makes it false (#1219 both-or-nothing)",
+    );
+    const msg = renderHandoffUserMessage(next, dir, `${dir}/tmp/issue-2173`);
+    assert(
+      /issue #2173: applied/.test(msg) && /PR #4242: NOT verified/.test(msg),
+      "I: the rendered message states the two targets' verdicts separately",
+    );
+    assert(
+      !/the label was applied/.test(msg),
+      "I: no line anywhere claims the label was applied while the PR's is missing",
+    );
+    assert(
+      !/label applied:\s+\[FAILED\] NOT applied[\s\S]*the label was applied/.test(msg),
+      "I: the reported contradiction — the banner's NOT-applied and an applied claim cannot coexist",
+    );
+    const statusOut = renderStatus(next, dir);
+    assert(
+      /on issue #2173/.test(statusOut) && /NOT verified on PR #4242/.test(statusOut),
+      "I: /work-status agrees with the chat surface on both targets",
+    );
+    assert(
+      !(/needs-human-attention on issue/.test(statusOut) &&
+        !/partial failure/.test(statusOut) &&
+        /NOT verified on PR/.test(statusOut)),
+      "I: a partial verify is called a partial failure on the status surface too",
+    );
+  } finally {
+    delete process.env.PI_ENSEMBLE_HANDOFF_POST_RETRY;
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 console.log(`\nexit ${exit}`);

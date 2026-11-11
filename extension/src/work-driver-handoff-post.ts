@@ -22,6 +22,7 @@ import { execp } from "./exec.ts";
 import type { Forge } from "./forge.ts";
 import { trace } from "./trace.ts";
 import { parseHandoffCommentUrl } from "./work-driver-handoff-deliver.ts";
+import { declinesAttentionLabel } from "./work-driver-handoff-label-state.ts";
 import { readError } from "./work-driver-handoff-snapshot.ts";
 import type { HandoffEmittedEvent } from "./workflow-state-events-handoff.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
@@ -294,103 +295,6 @@ export function makeHandoffEmittedEvent(opts: {
  * verified independently via `verifyHandoffLabel`. Returns `true` when the
  * label was successfully applied AND verified on the issue.
  */
-/**
- * #1472 — does this handoff deliberately decline `needs-human-attention`?
- * A person CLOSED the issue, so telling them to look at it is noise; every
- * label writer consults this so the decline holds on all four paths, including
- * the @ops prompt. Returns false for any cycle not parked by the closed-issue
- * gate, so normal handoffs are unaffected.
- */
-export function declinesAttentionLabel(ps: { handoffLabelSkipped?: boolean }): boolean {
-  return ps.handoffLabelSkipped === true;
-}
-
-/**
- * #1472 — the initial label state for `runHandoff`. A closed-issue park starts
- * with every target settled, so all four label writers see it; it is a
- * deliberate decline, NOT a failure, so the HANDOFF DISPATCH INCOMPLETE banner
- * stays quiet. Any other handoff starts with nothing applied.
- */
-export function declinedLabelSeed(
-  ps: { handoffLabelSkipped?: boolean },
-  prNumber: number | undefined,
-): { labelApplied: boolean; issueLabelApplied?: boolean; prLabelApplied?: boolean } {
-  if (!declinesAttentionLabel(ps)) return { labelApplied: false };
-  return {
-    labelApplied: true,
-    issueLabelApplied: true,
-    prLabelApplied: prNumber ? true : undefined,
-  };
-}
-
-/**
- * #2173 (C4) — the ONE reader of a handoff-emitted event's label verdict.
- *
- * Three surfaces print the label — the in-chat banner, the in-chat label block,
- * and `/work-status` — and each used to consult `labelApplied` plus the
- * per-target fields with its own precedence. That is how one handoff printed
- * `label applied: [FAILED] NOT applied` and, further down, `the label was
- * applied`: the banner asked the aggregate, the comment line asked nothing at
- * all, and the aggregate is the field a DELIBERATE decline writes `true` into
- * (`declinedLabelSeed`) while a partial verify writes `false`.
- *
- * The rule the projection encodes is the one every producer already follows:
- * the per-target fields are the evidence, and `labelApplied` is their
- * conjunction — so per-target knowledge wins, and the aggregate is read only
- * for an event that has no per-target fields at all (the pre-#798 shape, and
- * every lean path, which applies no label). A decline therefore reads as a
- * decline on all three surfaces, a partial verify as a partial verify, and no
- * renderer can print both an "applied" and a "NOT applied" claim for one target.
- */
-export interface HandoffLabelVerdict {
-  /** The label is DECLINED by contract rather than unapplied: the host channel
-   * (#1696) or an issue a human closed (#1472). Nothing asks the operator to
-   * apply it, and nothing calls it a failure. */
-  declined: boolean;
-  /** Why it was declined, for the surface that names the reason. */
-  decline: "host-channel" | "issue-closed" | undefined;
-  /** The issue is the entry-gate target: it always has a verdict. */
-  issue: boolean;
-  /** The PR's verdict, or absent when the cycle opened no PR. */
-  pr: boolean | undefined;
-  /** Everything the handoff was owed landed. */
-  all: boolean;
-  /** A comment exists at `commentUrl`. */
-  commentPosted: boolean;
-}
-
-export function handoffLabelVerdict(ev: HandoffEmittedEvent): HandoffLabelVerdict {
-  const hostDeclined = ev.delivery === "host" || ev.labelSkipped === "host-channel";
-  // #1472's closed-issue decline arrives as the marker the producer wrote
-  // (#2173). A pre-#2173 event on disk carries no marker, so the fallback keeps
-  // the old reading: `declinedLabelSeed` settles EVERY target at once, and that
-  // conjunction is what distinguishes a decline from a genuine partial verify,
-  // which always leaves at least one target false. A dual-ok event that also
-  // carries the marker renders as the dual ok it is rather than as a decline.
-  const closedDeclined =
-    ev.labelSkipped === "issue-closed" ||
-    (ev.labelApplied === true &&
-      ev.issueLabelApplied === true &&
-      (ev.prLabelApplied === undefined || ev.prLabelApplied === true));
-  const declined = hostDeclined || closedDeclined;
-  const decline: HandoffLabelVerdict["decline"] = hostDeclined
-    ? "host-channel"
-    : closedDeclined
-      ? "issue-closed"
-      : undefined;
-  const perTarget = ev.issueLabelApplied !== undefined || ev.prLabelApplied !== undefined;
-  const issue = perTarget ? ev.issueLabelApplied === true : ev.labelApplied;
-  const pr = perTarget ? ev.prLabelApplied : undefined;
-  return {
-    declined,
-    decline,
-    issue,
-    pr,
-    all: pr === undefined ? issue : issue && pr,
-    commentPosted: ev.commentUrl !== undefined,
-  };
-}
-
 export async function applyIssueLabelDualTarget(forge: Forge, issue: number): Promise<boolean> {
   return applyAttentionLabel(
     forge,

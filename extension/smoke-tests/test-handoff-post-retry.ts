@@ -100,6 +100,17 @@ interface LabelState {
 function mkFlakyForge(script: {
   issueCommentFailures?: number[];
   labelAddFailures?: number[];
+  /**
+   * #2173 — script the ISSUE target separately. `labelAddFailures` alone leaves
+   * the issue's own label leg scripted as "succeeds", which is the pre-per-target
+   * reading: the driver verifies the issue's label by a real read, so a script
+   * that does not fail that leg honestly produces a PARTIAL delivery (comment
+   * lost, issue labelled), and the #1820 rule is that the INCOMPLETE banner
+   * stays quiet on a partial. A case that means total failure says so here.
+   * Keyed on the target so the comment leg's budget cannot be spent by the
+   * issue-target leg in an issue-only cycle.
+   */
+  issueLabelAddFailures?: number[];
   labelCreateFailures?: number[];
 }) {
   const calls: Call[] = [];
@@ -107,6 +118,9 @@ function mkFlakyForge(script: {
   // Shared by labelAdd and the label-verification read, so the fake answers the
   // driver's read like a forge whose add worked rather than like a broken API.
   const labelState: LabelState = { labeled: false };
+  // #2173 — the PR's label state is its own, so a script can hold "issue
+  // labelled, PR not" and the driver's read-back answers per target.
+  const prLabelState: LabelState = { labeled: false };
   const failNext = (method: string, scriptArr: number[]) => {
     const n = (counters[method] ?? 0) + 1;
     counters[method] = n;
@@ -134,13 +148,31 @@ function mkFlakyForge(script: {
     },
     labelAdd: async (target: "issue" | "mr", n: number, name: string) => {
       calls.push({ method: "labelAdd", args: [target, n, name] });
-      if (failNext("labelAdd", script.labelAddFailures ?? [])) {
+      // #2173 — the failure script is keyed PER TARGET, on the target the driver
+      // actually addressed (`issue` / `mr`), because both label legs address the
+      // same object in an issue-only cycle and a single shared counter let the
+      // comment leg's budget be spent by the issue-target leg.
+      const budget =
+        target === "issue"
+          ? script.issueLabelAddFailures ?? script.labelAddFailures ?? []
+          : script.labelAddFailures ?? [];
+      if (failNext(`labelAdd:${target}`, budget)) {
         throw new Error("simulated transient labelAdd hiccup");
       }
       // A successful add is a successful add, however many times the driver asks
       // — `gh --add-label` is idempotent server-side, and the comment-target leg
       // and the issue-target leg may each legitimately request the same label.
-      labelState.labeled = true;
+      //
+      // #2173 — an add's side effect is recorded PER TARGET. One shared flag made
+      // the fake answer the label-verification read as labelled for BOTH targets
+      // after either add succeeded, so the fake could not represent the shape
+      // this suite's exhaustion case actually produces: the comment never posted
+      // while the issue's own label did land. That is a PARTIAL delivery, and the
+      // #1820 rule is that the INCOMPLETE banner stays quiet on a partial — so a
+      // fake that conflates the two targets silently turns a correct render into
+      // an assertion failure.
+      if (target === "mr") prLabelState.labeled = true;
+      else labelState.labeled = true;
     },
     labelRemove: async () => {},
     issueView: async () => {
@@ -312,6 +344,11 @@ const fastOpts = { sleep: async () => {}, rand: () => 0 };
     const { forge, calls } = mkFlakyForge({
       issueCommentFailures: [1, 2, 3],
       labelAddFailures: [1, 2, 3],
+      // #2173 — TOTAL failure means the issue's own label leg fails too. Left at
+      // its default the driver would land and verify the issue label, the comment
+      // would stay unposted, and the render would correctly be a partial delivery
+      // with no banner — so this line is the case's premise, not decoration.
+      issueLabelAddFailures: [1, 2, 3],
     });
     const ctx: DriverContext = {
       host: fakePi,

@@ -23,8 +23,8 @@
 
 import { formatIdentity, judgeOwner, selfIdentity } from "./process-liveness.ts";
 import { trace } from "./trace.ts";
-import { claimantOnThisHost } from "./work-driver-explain-claims.ts";
 import type { CycleContext } from "./work-driver-context.ts";
+import { claimantOnThisHost } from "./work-driver-explain-claims.ts";
 import { claimsFilePath, readRawClaims, writeClaims } from "./work-driver-path-claims-file.ts";
 import {
   CLAIMS_LOCK_REFUSAL,
@@ -33,8 +33,8 @@ import {
   withClaimsLockBestEffort,
 } from "./work-driver-path-claims-lock.ts";
 import { type PathClaimEntry, claimDeletionReason } from "./work-driver-path-claims-staleness.ts";
-import { withoutSharedNonExclusivePaths } from "./work-driver-shared-paths.ts";
 import { checkCrossGroupClaimsSync, readClaims } from "./work-driver-path-claims.ts";
+import { withoutSharedNonExclusivePaths } from "./work-driver-shared-paths.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
 

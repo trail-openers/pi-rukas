@@ -19,12 +19,13 @@
  *     predicate, not a re-derived status string.
  */
 
+import { selfIdentity } from "../src/process-liveness.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
 import { parkReason } from "../src/work-queue-park-reason.ts";
 import { humanActionFor } from "../src/work-queue.ts";
 import { initialState } from "../src/workflow-state-update.ts";
 import { TERMINAL_STATUSES, isTerminalState } from "../src/workflow-state.ts";
-import type { WorkState } from "../src/workflow-state.ts";
+import type { WorkEvent, WorkState } from "../src/workflow-state.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -116,6 +117,74 @@ function parkedAgainst1421(): WorkState {
   assert(
     prose.includes(".pi/work-state/1421.json"),
     "explainCap names the claimant's state file to check",
+  );
+}
+
+// ------------------------------------- #2173 AC3 — the claimant's LOCATION is stated
+//
+// The same park, judged for the sentence the operator reads about WHERE the
+// claimant lives. A sibling cycle of this clone on this host was being rendered
+// as living "in ANOTHER pid namespace or on another host", which sent operators
+// to inspect a namespace that did not exist. The wording now follows
+// `judgeOwner`'s verdict, the registry's own liveness answer, on every
+// claimant-naming surface: the gate evidence, `explainCrossGroupConflict`, and
+// `crossGroupAction` reached here through `humanActionFor`.
+{
+  const self = selfIdentity();
+  /** Re-render the park's evidence with a different holder identity, keeping the
+   * claim list, the overlapping set and the claim file the reader depends on. */
+  const evidenceFor = (identity: string): string => {
+    const base = parkedAgainst1421().eventLog[0];
+    const template =
+      base?.kind === "cap-hit" ? (base.evidence ?? "") : "";
+    return `${template.split("holder:")[0]}holder: ${identity}; claim file: .pi/work-state/path-claims.json`;
+  };
+
+  const sameHost = evidenceFor(`${self.host} ${self.pidns} 3716067 1`);
+  const foreign = evidenceFor("not-this-container 4026532999 3716067 1");
+
+  const parkWith = (evidence: string): WorkState => {
+    const s = parkedAgainst1421();
+    const hit = s.eventLog[0];
+    return {
+      ...s,
+      eventLog: [
+        hit?.kind === "cap-hit" ? { ...hit, evidence } : (hit as WorkEvent),
+        ...s.eventLog.slice(1),
+      ],
+    };
+  };
+
+  const sameHostProse = explainCap("cross-group-conflict", parkWith(sameHost));
+  assert(
+    /sibling cycle on this host/i.test(sameHostProse) && sameHostProse.includes("#1421"),
+    "#2173 AC3 a same-host claimant is described as a sibling on this host, naming its issue",
+  );
+  assert(
+    !/another pid namespace|another host/i.test(sameHostProse),
+    "#2173 AC3 and the sentence makes no other-namespace claim about it",
+  );
+  const sameHostAction = humanActionFor(
+    "cap cross-group-conflict:claimant1421",
+    1427,
+    [1427],
+    undefined,
+    sameHost,
+  );
+  assert(
+    /sibling cycle on this host/i.test(sameHostAction),
+    "#2173 AC3 the queue action says the same thing about the same claimant",
+  );
+  // The machine-readable carrier survives every wording change.
+  assert(
+    parkReason(parkWith(sameHost)).reason.includes(":claimant1421"),
+    "#2173 the :claimant<N> token is intact under the new wording",
+  );
+  const foreignProse = explainCap("cross-group-conflict", parkWith(foreign));
+  assert(
+    /another pid namespace|another host/i.test(foreignProse) &&
+      !/sibling cycle on this host/i.test(foreignProse),
+    "#2173 a holder on another host keeps the other-namespace sentence",
   );
 }
 

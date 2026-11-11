@@ -30,8 +30,8 @@
  * group.
  */
 
-import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 import { withoutSharedNonExclusivePaths } from "./work-driver-shared-paths.ts";
+import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 import type { IssueGroup } from "./work-queue.ts";
 
 /**

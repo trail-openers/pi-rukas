@@ -77,8 +77,6 @@ export function isSharedNonExclusivePath(declared: string | undefined): boolean 
  * filter both sides apply, so "exempt on one side, claimed on the other" is
  * not reachable by a caller that forgot to ask.
  */
-export function withoutSharedNonExclusivePaths(
-  paths: readonly string[] | undefined,
-): string[] {
+export function withoutSharedNonExclusivePaths(paths: readonly string[] | undefined): string[] {
   return (paths ?? []).filter((p) => !isSharedNonExclusivePath(p));
 }

@@ -43,10 +43,10 @@ import {
 } from "./work-driver-merge-authority.ts";
 import { HOST_EXHAUSTION_SUFFIX } from "./work-queue-park-reason.ts";
 import { crossGroupAction } from "./work-queue-parks-claims.ts";
-import { lastCapHit } from "./workflow-state-cap-helpers.ts";
-import type { WorkState } from "./workflow-state.ts";
 import { deferredLeftoverAction } from "./work-queue-parks.ts";
 import type { BlockReason } from "./work-queue-scheduler.ts";
+import { lastCapHit } from "./workflow-state-cap-helpers.ts";
+import type { WorkState } from "./workflow-state.ts";
 
 /** The caps a waiting group can end on. */
 export type QueueWaitCap = "dependency-timeout" | "cross-group-conflict";

@@ -19,7 +19,7 @@ import { commitPrRootFactLines } from "./work-driver-commit-inspect.ts";
 import { MAX_REVIEW_ROUNDS } from "./work-driver-context.ts";
 import { explainCap } from "./work-driver-explain.ts";
 import { fanoutVerdictLines } from "./work-driver-handoff-fanout.ts";
-import { handoffLabelVerdict } from "./work-driver-handoff-post.ts";
+import { handoffLabelVerdict } from "./work-driver-handoff-label-state.ts";
 import { openPointsChat } from "./work-driver-handoff-open-points.ts";
 import { recoveryCommandsChat } from "./work-driver-handoff-recovery.chat.ts";
 import { unreadableSnapshotLines } from "./work-driver-handoff-snapshot.ts";
@@ -127,7 +127,14 @@ export function renderHandoffUserMessage(
   const label =
     handoffEvt?.kind === "handoff-emitted"
       ? handoffLabelVerdict(handoffEvt)
-      : { declined: false, decline: undefined, issue: false, pr: undefined, all: false };
+      : {
+          declined: false,
+          decline: undefined,
+          issue: false,
+          pr: undefined,
+          perTarget: false,
+          all: false,
+        };
   const labelApplied = label.all;
   // #1327 — the host owns the channel: an unposted comment is by design, not a failure.
   const hostOwned = handoffEvt?.kind === "handoff-emitted" && handoffEvt.delivery === "host";
@@ -321,8 +328,8 @@ export function renderHandoffUserMessage(
       label.declined
         ? `GitHub handoff comment NOT posted; no attention label is owed here (${label.decline === "host-channel" ? "the host channel owns the label" : "this issue was closed"}). Post the comment manually:`
         : labelApplied
-          ? `GitHub handoff comment NOT posted (the label was applied). Post it manually:`
-          : `GitHub handoff comment NOT posted and the attention label is NOT applied either. Post both manually:`,
+          ? "GitHub handoff comment NOT posted (the label was applied). Post it manually:"
+          : "GitHub handoff comment NOT posted and the attention label is NOT applied either. Post both manually:",
       `  gh ${ps.prNumber ? "pr" : "issue"} comment ${ps.prNumber ?? issue} --body-file ${handoffBodyPath}`,
       ...(labelApplied
         ? []
@@ -354,7 +361,7 @@ export function renderHandoffUserMessage(
       ? [
           `  label: not applied by design — ${label.decline === "host-channel" ? "the host channel owns the attention label (PI_ENSEMBLE_HANDOFF_CHANNEL=host)" : `issue #${issue} was closed, so no attention label is owed`}`,
         ]
-      : prLabelApplied !== undefined || issueLabelApplied !== undefined
+      : label.perTarget
         ? [
             `  label ${labelApplied ? "applied" : "NOT fully applied"}:`,
             `    issue #${issue}: ${issueLabelApplied === true ? "applied" : "NOT verified"}`,

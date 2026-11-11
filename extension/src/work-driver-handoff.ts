@@ -23,10 +23,10 @@ import {
   labelCommentTargetAfterRefusal,
   labelIssueTarget,
 } from "./work-driver-handoff-label-legs.ts";
+import { declinedLabelSeed } from "./work-driver-handoff-label-state.ts";
 import { runHandoffOpsDispatch } from "./work-driver-handoff-ops.ts";
 import {
   captureCommittedWork,
-  declinedLabelSeed,
   makeHandoffEmittedEvent,
   parseHandoffOpsReply,
   verifyHandoffLabel,
