@@ -71,17 +71,7 @@ function assert(cond: boolean, msg: string): void {
  * populates one the base already carries.
  */
 function addSubmodule(dir: string, url: string, at: string): void {
-  git(
-    dir,
-    "-c",
-    "protocol.file.allow=always",
-    "submodule",
-    "add",
-    "-q",
-    "--force",
-    url,
-    at,
-  );
+  git(dir, "-c", "protocol.file.allow=always", "submodule", "add", "-q", "--force", url, at);
 }
 
 /** The submodule's mount point, and the file committed inside it. */
@@ -105,32 +95,30 @@ function remoteRepo(): { repoRoot: string; head: string } {
  * without that commit the worktree would hold an untracked directory, which is a
  * different problem than the one being pinned here.
  */
-function repoWithSubmodule(
-  issue: number,
-  url?: string,
-): { repoRoot: string; baseSha: string } {
-  const remote = remoteRepo();
+function repoWithSubmodule(url?: string, from?: string): { repoRoot: string; baseSha: string } {
+  const remote = from ?? makeRepo({ lib: "the submodule's own content\n" }).repoRoot;
   const { repoRoot } = makeRepo({ "src/retry.ts": "export const retry = () => {};\n" });
-  addSubmodule(repoRoot, remote.repoRoot, SUB);
+  addSubmodule(repoRoot, remote, SUB);
   if (url !== undefined) {
     // Point the recorded source somewhere that is not there, then un-populate
     // what `submodule add` checked out: the base now describes a submodule that
     // can only be obtained by a clone that will fail.
     const gitmodules = path.join(repoRoot, ".gitmodules");
-    writeFileSync(
-      gitmodules,
-      readFileSync(gitmodules, "utf8").replace(/url = .*/, `url = ${url}`),
-    );
+    writeFileSync(gitmodules, readFileSync(gitmodules, "utf8").replace(/url = .*/, `url = ${url}`));
     rmSync(path.join(repoRoot, SUB), { recursive: true, force: true });
   }
   git(repoRoot, "add", "-A");
-  git(repoRoot, "commit", "-q", "-m", url === undefined ? "add the vendored submodule" : "point the submodule at a source that is not there");
-  // `issue` labels the case's own mount point for its scratch paths; the mount
-  // itself is the shared `SUB` constant every assertion below reads.
-  void issue;
+  git(
+    repoRoot,
+    "commit",
+    "-q",
+    "-m",
+    url === undefined
+      ? "add the vendored submodule"
+      : "point the submodule at a source that is not there",
+  );
   return { repoRoot, baseSha: git(repoRoot, "rev-parse", "HEAD") };
 }
-
 /** The child writes a test that reads the submodule's file, and declares it. */
 function writeSubmoduleTest(wt: string): void {
   mkdirSync(path.join(wt, "tests"), { recursive: true });
@@ -156,7 +144,7 @@ function writeSubmoduleTest(wt: string): void {
 
 // ── (a) + (b) specify on a submodule base: populated before the probe, and it survives
 {
-  const { repoRoot, baseSha } = repoWithSubmodule(51);
+  const { repoRoot, baseSha } = repoWithSubmodule();
   // What the CHILD saw (dispatch time, before any pipeline reset) and what the
   // tree held AFTER the step's own reset to the base — the moment `clean -fdx`
   // has just emptied the submodule and only the shared prepare can have restored
@@ -209,7 +197,7 @@ function writeSubmoduleTest(wt: string): void {
 
 // ── (b2) a leftover worktree reset by a re-run: the submodule comes back
 {
-  const { repoRoot, baseSha } = repoWithSubmodule(52);
+  const { repoRoot, baseSha } = repoWithSubmodule();
   // First run establishes the worktree; then the tree is emptied the way a
   // `clean -fdx` empties it, and the second run must repair it rather than
   // decline on a child whose import cannot resolve.
@@ -248,7 +236,7 @@ function writeSubmoduleTest(wt: string): void {
 {
   const { repoRoot, baseSha } = makeRepo({
     "src/retry.ts": "export const retry = () => {};\n",
-    "runner.sh": ['#!/bin/sh', 'echo "runner: $1" 1>&2', "exit 0", ""].join("\n"),
+    "runner.sh": ["#!/bin/sh", 'echo "runner: $1" 1>&2', "exit 0", ""].join("\n"),
   });
   const r = await runSpecify({
     repoRoot,
@@ -300,10 +288,7 @@ function writeSubmoduleTest(wt: string): void {
     },
     toolUses: [submit("AC1", ["tests/AC1-submodule.test.sh"])],
   });
-  assert(
-    r.threw === undefined,
-    `(d) the round ran rather than handing back (${r.threw?.message})`,
-  );
+  assert(r.threw === undefined, `(d) the round ran rather than handing back (${r.threw?.message})`);
   assert(
     existsSync(path.join(r.worktree, INSIDE)) === true,
     `(d) and the round left the submodule populated (got ${
@@ -312,23 +297,37 @@ function writeSubmoduleTest(wt: string): void {
   );
 }
 
-// ── (e) a submodule that cannot be initialised is infrastructure, not a verdict
+// ── (e) a submodule that cannot be fetched is infrastructure, not a verdict
 {
-  // A base whose `.gitmodules` names a source that is not there. Nothing has
-  // ever populated this submodule, so `--init` must clone, and the clone fails:
-  // the same shape as an unreachable remote or a laptop with no network.
-  const { repoRoot, baseSha } = repoWithSubmodule(55, "/nonexistent/submodule/source");
+  // The offline-laptop shape, built from three parts that are each load-bearing:
+  // a recorded source that is a local path, a submodule never fetched into the
+  // repository (so `--init` has no cached module and must clone), and that source
+  // gone by the time the step asks git to populate the tree. The sabotage lands
+  // at the step's own initialisation — the fixture runs it between the reset's
+  // `clean -fdx` and the `submodule update --init` that follows it — so what the
+  // assertion sees is git failing the command the step issued, not a fixture's
+  // opinion about what git would have done.
+  //
+  // Any part missing and that command exits 0, and a step that reported
+  // infrastructure then would be reporting a failure that did not happen: leave
+  // the source present and the clone succeeds.
+  const remote = makeRepo({ lib: "the submodule's own content\n" });
+  const { repoRoot } = repoWithSubmodule(undefined, remote.repoRoot);
+  const baseSha = git(repoRoot, "rev-parse", "HEAD");
   const r = await runSpecify({
     repoRoot,
-    baseSha: brokenBase,
+    baseSha,
     issue: 55,
     config: configWith({ fast: "true", test: RUNNER }),
+    afterProvision: () => {
+      rmSync(remote.repoRoot, { recursive: true, force: true });
+    },
     writes: (wt) => writeSubmoduleTest(wt),
     toolUses: [submit("AC1", ["tests/AC1-submodule.test.sh"])],
   });
   assert(
     r.threw instanceof SpecifyInfraError,
-    `(e) an un-initialisable submodule is infrastructure (got ${
+    `(e) an un-fetchable submodule is infrastructure (got ${
       r.threw?.constructor.name ?? r.outcome?.kind
     })`,
   );
@@ -336,10 +335,38 @@ function writeSubmoduleTest(wt: string): void {
     r.threw === undefined || /submodule/i.test(r.threw.message),
     `(e) the handback names the submodule step (got ${r.threw?.message})`,
   );
+  assert(
+    r.threw === undefined || /does not exist/.test(r.threw.message),
+    `(e) and carries git's own reason (got ${r.threw?.message})`,
+  );
   assert(r.dispatched === 0, `(e) and no adversary was paid (got ${r.dispatched})`);
   assert(
     r.deadDispatches === undefined,
     `(e) with no dispatch rows on the throw (got ${JSON.stringify(r.deadDispatches)})`,
+  );
+}
+
+// ── (e2) the healthy side of the same seam: a submodule the step populates itself
+{
+  // The control for (e): nothing is sabotaged, and the step's own initialisation
+  // — with no test ever having touched the submodule — is what puts the file
+  // there. The child's own read of it is asserted in (a); this asserts the
+  // preflight never mistakes a freshly initialised submodule for a broken one.
+  const remote = makeRepo({ lib: "the submodule's own content\n" });
+  const { repoRoot, baseSha } = repoWithSubmodule(undefined, remote.repoRoot);
+  const r = await runSpecify({
+    repoRoot,
+    baseSha,
+    issue: 56,
+    config: configWith({ fast: "true", test: RUNNER }),
+    writes: (wt) => writeSubmoduleTest(wt),
+    toolUses: [submit("AC1", ["tests/AC1-submodule.test.sh"])],
+  });
+  assert(
+    r.threw === undefined && r.outcome?.kind === "ok",
+    `(e2) the step's own initialisation is not mistaken for infrastructure (${
+      r.threw?.message ?? r.outcome?.kind
+    })`,
   );
 }
 

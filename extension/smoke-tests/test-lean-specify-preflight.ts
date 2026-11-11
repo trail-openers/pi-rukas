@@ -75,13 +75,7 @@ function runnerScript(): string {
   // exit is the other one the case below feeds by hand), and the file's own status
   // for everything else — which is how the child's red stays red under a runner
   // that reports rather than decides.
-  return [
-    "#!/bin/sh",
-    'echo "runner: $1" 1>&2',
-    '[ -s "$1" ] || exit 0',
-    "exit 1",
-    "",
-  ].join("\n");
+  return ["#!/bin/sh", 'echo "runner: $1" 1>&2', '[ -s "$1" ] || exit 0', "exit 1", ""].join("\n");
 }
 
 /** A runner that dies before collection the way pytest does: names nothing, exits 4. */

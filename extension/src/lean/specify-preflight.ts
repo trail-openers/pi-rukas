@@ -226,7 +226,20 @@ export async function assertRunnerCanRunTests(
  * gone, is the same infrastructure handback as a runner that cannot collect:
  * nothing downstream can judge the work without those files.
  */
-export async function initSubmodules(exec: ExecFn, wt: string): Promise<void> {
+export async function initSubmodules(
+  exec: ExecFn,
+  wt: string,
+  /**
+   * Called with the tree in the state the reset left it — a submodule the base
+   * carries present as a gitlink, nothing fetched — before the step asks git to
+   * populate it. Product code never supplies it; it is how a smoke test sabotage
+   * a submodule between the reset and the command that has to recover it, which
+   * is the only way to watch git fail that command rather than assert what it
+   * would have done.
+   */
+  beforeInit?: (wt: string) => void | Promise<void>,
+): Promise<void> {
+  await beforeInit?.(wt);
   const listed = await exec("git", {
     argv: submoduleArgv("config", "--file", ".gitmodules", "--get-regexp", "path"),
     cwd: wt,

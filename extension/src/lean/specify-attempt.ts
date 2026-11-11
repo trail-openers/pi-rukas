@@ -309,6 +309,9 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
           branch,
           // The pipeline resets to the base before calling this prepare.
           allowAheadOfBase: true,
+          ...(deps.beforeSubmoduleInit === undefined
+            ? {}
+            : { beforeSubmoduleInit: deps.beforeSubmoduleInit }),
         }),
       commitMessage: `test: acceptance tests for #${issue}`,
       ...(config.verify.freezeCheck === undefined

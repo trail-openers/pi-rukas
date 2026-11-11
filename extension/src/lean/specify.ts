@@ -118,6 +118,14 @@ export interface SpecifyDeps {
    * prove a hung frozen test is infra must not thereby shorten the probe's.
    */
   preflightLimits?: TestRunLimits;
+  /**
+   * Called with a worktree the step has just reset to the base, immediately
+   * before it asks git to populate that tree's submodules. Supplied only by
+   * smoke tests, which use it to break a submodule between the reset and the
+   * `submodule update --init` that has to recover it — the only way to observe
+   * git actually failing that command instead of asserting what it would do.
+   */
+  beforeSubmoduleInit?: (wt: string) => void | Promise<void>;
 }
 
 /**
@@ -204,6 +212,9 @@ async function prepareTree(
       fromRef: opts.base,
       branch: opts.branch,
       allowAheadOfBase: true,
+      ...(deps.beforeSubmoduleInit === undefined
+        ? {}
+        : { beforeSubmoduleInit: deps.beforeSubmoduleInit }),
     });
     return prepared.problem === undefined
       ? undefined

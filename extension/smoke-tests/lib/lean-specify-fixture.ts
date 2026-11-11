@@ -240,6 +240,17 @@ export interface RunOpts {
    * probe end as an infrastructure handback without paying the real two minutes.
    */
   preflightLimits?: { timeoutMs?: number };
+  /**
+   * A moment INSIDE the step's own worktree preparation — after the tree has
+   * been reset to the base and its submodules populated, before the dependency
+   * links are built and before anything is dispatched. The one place a case can
+   * observe (or sabotage) the tree the child is about to be handed, as opposed
+   * to the tree the child wrote into: `writes` runs with the child already
+   * running, and `afterCapture` runs after the red proofs, so neither sees the
+   * state the step's own `initSubmodules` produced. Throwing from here ends the
+   * run, which is how a case makes the preparation itself fail.
+   */
+  afterProvision?: (wt: string) => void;
   /** The issue body the step re-reads; defaults to the single-test-criterion spec. */
   specBody?: string;
   /**
@@ -330,6 +341,7 @@ export async function runSpecify(opts: RunOpts): Promise<RunResult> {
       }),
     ...(opts.testLimits === undefined ? {} : { testLimits: opts.testLimits }),
     ...(opts.preflightLimits === undefined ? {} : { preflightLimits: opts.preflightLimits }),
+    ...(opts.afterProvision === undefined ? {} : { beforeSubmoduleInit: opts.afterProvision }),
     fetchIssueBody: async () => {
       fetched++;
       return opts.specBody ?? BODY;

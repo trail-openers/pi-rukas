@@ -195,6 +195,8 @@ export async function ensureSpecifyWorktreeWithProvision(
     fromRef: string;
     branch: string;
     allowAheadOfBase?: boolean;
+    /** Threaded to {@link initSubmodules}; observation only, never a product call. */
+    beforeSubmoduleInit?: (wt: string) => void | Promise<void>;
   },
 ): Promise<{ wt: string; linked: string[]; problem?: string }> {
   const wt = specifyWorktreePath(opts.repoRoot, opts.issue);
@@ -213,7 +215,7 @@ export async function ensureSpecifyWorktreeWithProvision(
     // and the same single path re-initialises the submodules the clean emptied,
     // whether or not this reset moved anything.
     await resetWorktreeToBase(exec, wt, opts.fromRef, opts.branch);
-    await initSubmodules(exec, wt);
+    await initSubmodules(exec, wt, opts.beforeSubmoduleInit);
     const provision = await provisionWorktree(exec, opts.repoRoot, wt);
     return { wt, linked: provision.linked, ...problemOf(provision) };
   }
@@ -229,7 +231,7 @@ export async function ensureSpecifyWorktreeWithProvision(
   // freezes the tests is then a commit ON the run's branch. `resetWorktreeToBase`
   // does the `-B` and the `--hard` together and then proves the tree got there.
   await resetWorktreeToBase(exec, tree, opts.fromRef, opts.branch);
-  await initSubmodules(exec, tree);
+  await initSubmodules(exec, tree, opts.beforeSubmoduleInit);
   const provision = await provisionWorktree(exec, opts.repoRoot, tree);
   return { wt: tree, linked: provision.linked, ...problemOf(provision) };
 }
