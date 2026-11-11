@@ -393,6 +393,11 @@ export async function gatherMergeEvidence(
     ...(unrecognised.length > 0 ? { unrecognised } : {}),
     // #1533 — the verified head rides out with the verdict it describes.
     ...headFields(headOid, headOidError),
+    // #2181 — and so does the author the allowlist is checked against. Omitting it
+    // here (as the head's fields were NOT omitted) would make every GREEN PR look
+    // like its author could not be read, and the merge-author gate would refuse the
+    // very case it is meant to allow.
+    ...authorFields(author, authorError),
   };
 }
 

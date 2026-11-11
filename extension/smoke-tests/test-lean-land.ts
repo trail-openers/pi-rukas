@@ -37,6 +37,7 @@ import type { LandDeps, MergeCall } from "../src/lean/land-deps.ts";
 import type { MergeEvidence } from "../src/work-driver-merge-evidence.ts";
 import type { Outcome } from "../src/lean/state.ts";
 import { ROOTS, ciLandLog } from "./lib/lean-ci-land-fixture.ts";
+import { LEAN_FIXTURE_AUTHOR } from "./lib/lean-gh-payloads.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -48,7 +49,10 @@ function assert(cond: boolean, msg: string): void {
 }
 
 function evidence(over: Partial<MergeEvidence> = {}): MergeEvidence {
-  return { ok: true, failing: [], inconclusive: [], ...over };
+  // #2181 — the default carries an allowlisted author, so an arm written before the
+  // gate keeps reaching the checks it was written for instead of dying at the new
+  // one. `author: undefined` is how an arm says "the forge reported no login".
+  return { ok: true, failing: [], inconclusive: [], author: LEAN_FIXTURE_AUTHOR, ...over };
 }
 
 interface LandCase {
@@ -65,6 +69,11 @@ interface LandCase {
   mergeThrows?: boolean;
   noVerifiedHead?: boolean;
   verifiedHead?: string;
+  /** #2181 — the author gate refuses, with an optional reason of its own. */
+  authorBlocked?: boolean;
+  authorBlockedReason?: string;
+  /** #2181 — the author gate's read itself fails (an unreadable gate file). */
+  allowlistThrows?: boolean;
 }
 
 /** Run `land` on a real verified log with the forge replaced by a recorder. */
@@ -87,6 +96,16 @@ async function run(c: LandCase): Promise<{ outcome?: Outcome; calls: MergeCall[]
     loadConfig: async () => {
       if (c.configFails === true) throw new Error("git show .pi/work.json: unable to read");
       return { autoMerge: c.autoMerge !== false };
+    },
+    // #2181 — the merge-author gate, injected rather than reached: production wires
+    // this to the shared `heldForMergeAuthor`, and the arms below supply their own
+    // allowlist text or their own verdict. The default lists the author the default
+    // evidence read carries, so every pre-#2181 arm still lands.
+    checkAuthor: async (_repo, _base, author) => {
+      if (c.allowlistThrows === true) throw new Error("git show: unable to read");
+      if (c.authorBlocked === true)
+        return { ok: false, reason: c.authorBlockedReason ?? "the author gate refused it", kind: "not-allowlisted" };
+      return author.ok === true ? { ok: true } : { ok: false, reason: "the author could not be read" };
     },
   };
   return { outcome: await landOutcome(f.ctx as HandlerCtx, deps), calls, head };
@@ -186,6 +205,91 @@ async function run(c: LandCase): Promise<{ outcome?: Outcome; calls: MergeCall[]
   const r = await run({ noVerifiedHead: true });
   assert(r.outcome?.kind === "refused", `(k) no verified head -> refused (${JSON.stringify(r.outcome)})`);
   assert(r.calls.length === 0, "(k) no merge was attempted");
+}
+
+// ── (l) #2181 — the merge-author gate ──────────────────────────
+// The land step is the path an agent reaches with the least ceremony, so the
+// author rule is pinned here in the same shape as every other refusal: no merge
+// call, and the reason says why.
+{
+  const r = await run({ authorBlocked: true });
+  assert(r.outcome?.kind === "refused", `(l) an author off the list -> refused (${JSON.stringify(r.outcome)})`);
+  assert(
+    (r.outcome?.reason ?? "").includes("author"),
+    `(l) the refusal names the author gate, not CI or the head (${r.outcome?.reason})`,
+  );
+  assert(r.calls.length === 0, "(l) no merge was attempted — the refusal is before the irreversible call");
+}
+{
+  // The gate sits after the head equality, so a PR whose head is not the verified
+  // one is refused for the HEAD and never reaches the author — the two refusals must
+  // not be able to substitute for each other, or a broken pin could hide behind a
+  // stranger's login. `openPr` throws to make the order observable: reaching the
+  // author gate means passing the pin and asking the forge who opened the PR.
+  let reachedForge = false;
+  const f = ciLandLog(9, {});
+  const deps = {
+    evidence: async () => {
+      reachedForge = true;
+      return evidence({ headOid: "f".repeat(40), author: LEAN_FIXTURE_AUTHOR });
+    },
+    openPr: async () => {
+      reachedForge = true;
+      return 42;
+    },
+    merge: async () => {},
+    stateAfter: async () => "MERGED",
+    loadConfig: async () => ({ autoMerge: true }),
+    checkAuthor: async () => ({ ok: false, reason: "the author gate refused it" }),
+  } as unknown as LandDeps;
+  const outcome = await landOutcome(f.ctx as HandlerCtx, deps);
+  assert(
+    outcome.kind === "refused" && (outcome.reason ?? "").includes("not the verified head"),
+    `(l2) a head that is not the verified one is refused for the head (${JSON.stringify(outcome)})`,
+  );
+  assert(
+    reachedForge && !(outcome.reason ?? "").includes("author gate"),
+    "(l2) and the author gate is never reached, so a stranger's login cannot mask a broken pin",
+  );
+}
+{
+  // R3 — an author the forge never reported is NOT "somebody who is not allowlisted".
+  // The gate is told the read, so the refusal has to say the author was unreadable.
+  const r = await run({ ev: evidence({ headOid: undefined, author: undefined }) });
+  assert(r.outcome?.kind === "refused", `(l3) a PR state with no author -> refused (${JSON.stringify(r.outcome)})`);
+  assert(
+    r.calls.length === 0,
+    "(l3) and no merge was attempted on a PR whose author was never read",
+  );
+}
+{
+  // The gate reads the allowlist at the run's base sha, so the arm that names the
+  // base proves the wiring reaches deps with it rather than with the working tree.
+  let seenBase: string | undefined;
+  let seenAuthor: string | undefined;
+  const f = ciLandLog(9, {});
+  const deps = {
+    evidence: async () => evidence({ headOid: f.head }),
+    openPr: async () => 42,
+    merge: async () => {},
+    stateAfter: async () => "MERGED",
+    loadConfig: async () => ({ autoMerge: true }),
+    checkAuthor: async (_repo: string, base: string, author: { ok: boolean }) => {
+      seenBase = base;
+      seenAuthor = author.ok === true ? (author as { login: string }).login : undefined;
+      return { ok: true };
+    },
+  } as unknown as LandDeps;
+  const outcome = await landOutcome(f.ctx as HandlerCtx, deps);
+  assert(outcome.kind === "merged", `(l4) the gate is asked once on a green run (${JSON.stringify(outcome)})`);
+  assert(
+    seenBase === f.ctx.run.baseSha && (seenBase ?? "").length > 0,
+    `(l4) the allowlist is read at the run's recorded base sha, not the working tree (base=${seenBase})`,
+  );
+  assert(
+    seenAuthor === LEAN_FIXTURE_AUTHOR,
+    `(l4) and the login judged is the one the evidence read reported (${seenAuthor})`,
+  );
 }
 
 for (const dir of ROOTS) rmSync(dir, { recursive: true, force: true });

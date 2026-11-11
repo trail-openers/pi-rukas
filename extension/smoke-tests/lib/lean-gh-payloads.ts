@@ -33,8 +33,18 @@
 export const REAL_PR_NUMBER = 1930;
 
 /**
- * `gh pr view <n> --json mergeStateStatus,mergeable,state,headRefOid` — verbatim
- * key set and value domains from gh 2.102.0. `headRefOid` is a full 40-hex oid.
+ * The login a fixture PR carries, and the one the lean land fixtures' allowlist names
+ * (#2181). Placeholder logins only — this repository is public and the real
+ * allowlist is the operator's private list.
+ */
+export const LEAN_FIXTURE_AUTHOR = "maintainer-1";
+
+/**
+ * `gh pr view <n> --json mergeStateStatus,mergeable,state,headRefOid,author` —
+ * verbatim key set and value domains from gh 2.102.0, plus #2181's `author`: the
+ * land step reads the login out of THIS reply, so an arm that never names one is
+ * exercising the gate's unreadable-author path rather than its verdict. `over` can
+ * replace or delete it, which is how an arm drives a stranger or an absent author.
  */
 export function realPrViewReply(headOid: string, over: Record<string, unknown> = {}): string {
   return JSON.stringify({
@@ -42,6 +52,7 @@ export function realPrViewReply(headOid: string, over: Record<string, unknown> =
     mergeStateStatus: "CLEAN",
     mergeable: "MERGEABLE",
     state: "OPEN",
+    author: { login: LEAN_FIXTURE_AUTHOR },
     ...over,
   });
 }

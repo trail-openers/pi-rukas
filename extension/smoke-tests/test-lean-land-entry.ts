@@ -92,6 +92,12 @@ async function drive(
       d.statesRead++;
       return opts.after === undefined ? "MERGED" : opts.after;
     },
+    // #2181 — the author gate, answered the way the production seam answers it for a
+    // forge that reports an allowlisted login: these cases are about the seams AFTER
+    // it (the merge call, the state read-back, the grant). The refusals themselves are
+    // the gate's own suite, test-merge-author-allowlist.ts, and the driver arms in
+    // test-work-driver-merged-gate-files.ts.
+    checkAuthor: async () => ({ ok: true }),
     loadConfig: async () => {
       d.grantsRead++;
       if (opts.configThrows === true)

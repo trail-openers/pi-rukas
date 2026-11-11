@@ -22,7 +22,7 @@
  * offline (real execp shells out to git/gh).
  */
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { runMerged } from "../src/work-driver-merged.ts";
@@ -30,6 +30,7 @@ import type { VerifyExecFn } from "../src/work-driver-git.ts";
 import { setupSpawnGuard } from "./test-helpers.ts";
 import { mkStateMerged } from "./work-driver-merged-fixtures.ts";
 import { HEAD_OID, mkCtx, mkExec } from "./lib/work-driver-merged-pin-helpers.ts";
+import { FIXTURE_AUTHOR } from "./lib/work-driver-merged-gate-files-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -56,8 +57,20 @@ setupSpawnGuard();
       // closed with "could not read PR state" before the merge was attempted.
       // Listing it first also means the state reads never see the JSON.
       "mergeStateStatus,mergeable,state": {
-        stdout: `{"mergeStateStatus":"CLEAN","state":"OPEN","headRefOid":"${HEAD_OID}"}`,
+        // #2181 — the author rides the same evidence read as the head pin; without
+        // it the merge-author gate refuses below as an unreadable author. Answered as
+        // an OBJECT (`author.login`), which is the shape gh reports and the shape the
+        // gatherer reads — a bare string here is a missing author, not a login.
+        stdout: `{"mergeStateStatus":"CLEAN","state":"OPEN","headRefOid":"${HEAD_OID}","author":{"login":"${FIXTURE_AUTHOR}"}}`,
       },
+      // #2181 — the merge-author gate's reads. The allowlist names the same login the
+      // evidence read reports, so a case written before the gate keeps reaching the
+      // restoration path its assertions are about. Matched on the gate file's path
+      // with the probe answered separately, because `cat-file -t` must NOT receive
+      // the blob (it answers a type) — the probe key has to come first.
+      "cat-file": { stdout: "blob\n" },
+      ".pi/merge-authors": { stdout: `${FIXTURE_AUTHOR}\n` },
+      "^{commit}": { stdout: `${HEAD_OID}\n` },
       "gh pr checks": { stdout: '[{"name":"ci","bucket":"pass"}]' },
       "gh repo view": {
         stdout: '{"squashMergeAllowed":true,"mergeCommitAllowed":false,"rebaseMergeAllowed":false}',

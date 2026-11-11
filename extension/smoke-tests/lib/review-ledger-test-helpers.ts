@@ -43,6 +43,7 @@
  */
 
 import { execSync } from "node:child_process";
+import { REAL_ALLOWED_AUTHOR } from "../merge-guard-helpers.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -218,6 +219,19 @@ export function setupRepo(): { repo: string; origin: string; branch: string } {
   git("echo base > base.txt");
   git("git add base.txt");
   git('git commit -qm "base"');
+  // #2181 — the merge-author gate reads `.pi/merge-authors` at the base commit and
+  // fails closed, so a real-git fixture whose guard is expected to REACH the ledger
+  // must carry the gate file: without it every merge refuses before the ledger is
+  // read, and a matrix that asserts a merge is allowed can never pass. The login is
+  // a placeholder — this repository is public and the real allowlist is the
+  // operator's private list — and it is the same value the stubbed harness uses
+  // (`ALLOWED_AUTHOR` in merge-guard-helpers.ts), so both fixtures agree on who the
+  // author of a fixture PR is. An arm that wants the gate to refuse deletes the file
+  // or rewrites it; it does not get to assume a different login.
+  git("mkdir -p .pi");
+  git(`printf '%s\n' '${REAL_ALLOWED_AUTHOR}' > .pi/merge-authors`);
+  git("git add .pi/merge-authors");
+  git('git commit -qm "allowlist"');
   // The clone's default branch is whatever the empty origin has (HEAD →
   // refs/heads/main on modern git); rename to a non-default name so the
   // `git checkout -qb feature/x` + `git push origin feature/x` below works

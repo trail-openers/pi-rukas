@@ -18,6 +18,7 @@ import { parseMergeCommit } from "../src/work-driver-merged.ts";
 import { parsePerIssueVerdicts } from "../src/work-driver-plan.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { initialState, readState, writeState } from "../src/workflow-state.ts";
+import { FIXTURE_AUTHOR } from "./lib/work-driver-merged-gate-files-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -112,8 +113,22 @@ function mergeGateExec(dir: string): NonNullable<DriverContext["verifyExecFn"]> 
           mergeStateStatus: "CLEAN",
           state: "OPEN",
           headRefOid: VERIFIED_HEAD,
+          // #2181 — the author rides the same read as the head pin; these cases are
+          // about the merge MECHANISM, so the login is one the allowlist below lists.
+          author: { login: FIXTURE_AUTHOR },
         }),
       };
+    }
+    // #2181 — the merge-author gate's reads. Answered from this table rather than from
+    // `dir` because this fixture seeds a `.git/info` ledger and no commits: there is
+    // no base commit here to read a real `.pi/merge-authors` from. The gate's own
+    // reading is covered by test-merge-author-allowlist.ts and by the driver arms in
+    // test-work-driver-merged-gate-files.ts, both of which run against real git.
+    if (line.includes([".pi", "merge-authors"].join("/"))) {
+      return { stdout: line.includes("cat-file") ? "blob\n" : `${FIXTURE_AUTHOR}\n` };
+    }
+    if (line.includes("rev-parse") && line.includes("^{commit}")) {
+      return { stdout: `${VERIFIED_HEAD}\n` };
     }
     if (line.includes("gh pr checks")) {
       return { stdout: JSON.stringify([{ name: "ci", bucket: "pass" }]) };

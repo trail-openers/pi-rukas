@@ -23,6 +23,7 @@ import { runWorkDriver } from "../src/work-driver.ts";
 import { type WorkState, initialState, readState, writeState } from "../src/workflow-state.ts";
 import { setupSpawnGuard } from "./test-helpers.ts";
 import { commandOf } from "./lib/argv-shell.ts";
+import { FIXTURE_AUTHOR } from "./lib/work-driver-merged-gate-files-fixture.ts";
 import { isNulDiffRead, nulNameStatus } from "./lib/nul-porcelain.ts";
 
 setupSpawnGuard();
@@ -79,12 +80,21 @@ function mkState(issue: number, pr: number, branch: string): WorkState {
       lastCompletedStep: "ci",
       branchName: branch,
       prNumber: pr,
+      baseSha: BASE_SHA,
     },
   } as WorkState;
 }
 
 /** #1533 — the head these fixtures review and pin. */
 const VERIFIED_HEAD = "1".repeat(39) + "a";
+/**
+ * #2181 — the base the merge-author gate reads `.pi/merge-authors` at. These fixtures
+ * have no repository behind them, so the state carries the base as a sha rather than
+ * leaving it absent: an absent base sends the gate to `origin/HEAD`, which nothing in
+ * these tables answers, and the cycle would park on a base the fixture never set out
+ * to omit. A real cycle's branch step records the same shape.
+ */
+const BASE_SHA = "4".repeat(39) + "d";
 /** #1533 — the reviewed patch identity the adversarial ledger row carries. */
 const REVIEWED_PATCH = "2".repeat(39) + "b";
 
@@ -133,10 +143,31 @@ function seedReviewLedger(dir: string, branch: string): void {
  * a much wider field list that also happens to include `mergeStateStatus`.
  */
 function mergeGateGreen(cmd: string): { stdout: string } | undefined {
-  if (cmd.includes("mergeStateStatus,mergeable,state"))
-    return { stdout: '{"mergeStateStatus":"CLEAN","state":"OPEN","headRefOid":"' + VERIFIED_HEAD + '"}' };
-  if (cmd.includes("gh pr checks"))
-    return { stdout: '[{"name":"ci","bucket":"pass"}]' };
+  // #2181 — the author rides the same evidence read as the head pin. Without it the
+  // merge-author gate refuses every merge below as an unreadable author, which is
+  // correct behaviour but not what any of these assertions is about.
+  if (
+    cmd.includes("mergeStateStatus,mergeable,state,headRefOid,author")
+  ) {
+    return {
+      stdout:
+        '{"mergeStateStatus":"CLEAN","state":"OPEN","headRefOid":"' +
+        VERIFIED_HEAD +
+        '","author":{"login":"' +
+        FIXTURE_AUTHOR +
+        '"}}',
+    };
+  }
+  if (cmd.includes("gh pr checks")) return { stdout: '[{"name":"ci","bucket":"pass"}]' };
+  // #2181 — the merge-author gate's reads. The allowlist is answered here rather than
+  // read from the fixture's repo because this fake is a table, not a repository; the
+  // text names `FIXTURE_AUTHOR`, the same login the evidence read above reports.
+  if (cmd.includes([".pi", "merge-authors"].join("/"))) {
+    return { stdout: cmd.includes("cat-file") ? "blob\n" : `${FIXTURE_AUTHOR}\n` };
+  }
+  if (cmd.includes("rev-parse") && cmd.includes("^{commit}")) {
+    return { stdout: `${VERIFIED_HEAD}\n` };
+  }
   return undefined;
 }
 

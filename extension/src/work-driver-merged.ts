@@ -7,6 +7,7 @@
  * `parseMergeCommit` + `runMerged` are the Step 9 pair.
  */
 
+import { errText } from "./protected-paths-text.ts";
 import { execp } from "./exec.ts";
 import { trace, traceWarn } from "./trace.ts";
 import { cycleChildOpts } from "./work-cycle-trust.ts";
@@ -20,14 +21,17 @@ import { detectMainline, restoreCheckout } from "./work-driver-git.ts";
 import { mergeAuthorityJudge } from "./work-driver-judge-seam.ts";
 import { withIntegrationLock } from "./work-driver-lock.ts";
 import {
-  type MergeEvidence,
   gatherMergeEvidence,
   heldByUnresolvedReview,
   mergeAuthorityEnabled,
   resolveMergeAuthority,
 } from "./work-driver-merge-authority.ts";
 import { heldForDeclaredGateFiles } from "./work-driver-merged-gate-files.ts";
-import { authorFromEvidence, heldForMergeAuthor } from "./merge-guard-author.ts";
+import {
+  authorFromRead,
+  evidenceAuthorRead,
+  heldForMergeAuthor,
+} from "./merge-guard-author.ts";
 import { verifyMergeHead } from "./work-driver-merged-head.ts";
 import { heldForMissingApproval, mergeAuthorHold, mergeProtectedHold } from "./work-driver-merged-hold.ts";
 import { type MergeMethod, mechanizedMerge } from "./work-driver-merged-mechanized.ts";
@@ -207,13 +211,73 @@ export async function runMerged(
   // a non-allowlisted author parks with the PR left open. The author rides the
   // evidence read the gate already makes (`mergeEvidenceViewCmd` carries `author`),
   // so the allowlist decision and the CI verdict describe one moment on the forge.
-  const authorGate = (evidence: MergeEvidence | undefined) =>
+  //
+  // `state.baseSha` is the commit, but it is OPTIONAL — a resumed or hand-written
+  // state may not carry one — and every other base consumer in this driver falls back
+  // to `origin/<default>` when it is absent. The gate takes the same fallback, and
+  // still reads through git at a resolved OID: falling back to the mainline tip is the
+  // documented meaning of an absent base, whereas reading the WORKING TREE would let a
+  // PR widen its own allowlist by committing one. Nothing here silently allows: an
+  // unresolvable fallback is the same refusal as a missing file.
+  const authorBase = async (): Promise<string | undefined> => {
+    const recorded = state.pipelineState.baseSha?.trim();
+    if (recorded !== undefined && recorded.length > 0) return recorded;
+    // The same origin/upstream chain the protected-path read walks; the default
+    // branch is resolved rather than assumed, so a repo whose mainline is not named
+    // `main` is judged at its own mainline.
+    const { stdout } = await mergeExec("git", {
+      argv: ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+      cwd: ctx.repoRoot,
+      timeout: 15_000,
+      maxBuffer: 8 * 1024,
+    });
+    return stdout.trim() || undefined;
+  };
+
+  const authorGate = async (
+    evidence: { author?: string; authorError?: string } | undefined,
+  ) =>
     heldForMergeAuthor({
       exec: mergeExec,
       cwd: ctx.repoRoot,
-      baseSha: state.pipelineState.baseSha,
-      author: authorFromEvidence(evidence),
+      // A base the step cannot name is passed through as absent, and the gate refuses
+      // it as "no base" rather than merging on an allowlist it never located.
+      baseSha: await authorBase().catch(() => undefined),
+      author: authorFromRead(evidenceAuthorRead(evidence)),
     });
+
+  /**
+   * The author read for the branch where no evidence read ran.
+   *
+   * The `PI_ENSEMBLE_MERGE_AUTHORITY=0` branch never calls `gatherMergeEvidence`, so
+   * the login cannot ride that read there. It comes from the same forge question the
+   * step asks anyway (`gh pr view <n> --json author`), not from `readMergeTarget`:
+   * that reader refuses an unrecognisable forge, and a cycle whose forge it cannot
+   * name is a different fault from an author the forge did not report — conflating
+   * them would park every cycle on the switch off. An unreadable login is still a
+   * refusal; this only stops the branch from refusing a PR whose author it holds.
+   */
+  const authorFromTarget = async (
+    ctx: CycleContext,
+    exec: NonNullable<CycleContext["verifyExecFn"]>,
+    prNumber: number,
+  ): Promise<{ author?: string; authorError?: string }> => {
+    try {
+      const { stdout } = await exec(`gh pr view ${prNumber} --json author`, {
+        cwd: ctx.repoRoot,
+        maxBuffer: 64 * 1024,
+      });
+      const login = (JSON.parse(stdout) as { author?: { login?: unknown } }).author?.login;
+      if (typeof login !== "string" || login.trim().length === 0) {
+        return {
+          authorError: `the PR read reported no author login for PR #${prNumber}`,
+        };
+      }
+      return { author: login.trim() };
+    } catch (err) {
+      return { authorError: `the PR read failed (${errText(err)})` };
+    }
+  };
 
   /** Park the cycle on an author-gate refusal: the hold, the cap, and a trace. */
   const authorHold = (reason: string) => {
@@ -318,12 +382,14 @@ export async function runMerged(
   // gate, so the head is still read and the merge still pinned. An unreadable head
   // refuses exactly as the gated path does.
   if (verifiedHead === undefined) {
-    // The author gate is asked here too, and with no evidence in hand: this branch
-    // is the one the authority switch took (`PI_ENSEMBLE_MERGE_AUTHORITY=0`), which
-    // skipped the permission and evidence reads but not this gate. A missing
-    // evidence read makes the author unreadable, which is a refusal — the cycle
-    // parks on who opened the PR, not on the head it is about to report.
-    const authorDecision = await authorGate(undefined);
+    // The author gate is asked here too. The evidence read did not run — this is the
+    // branch the permission switch took (`PI_ENSEMBLE_MERGE_AUTHORITY=0`), which
+    // turns off the permission and evidence gate, not this one — so the login comes
+    // from the one read the step always makes, the PR target, whose `author` field
+    // `merge-target` already fills from the forge. Refusing here on "no evidence" would
+    // report an unreadable author for a PR whose author the step is holding, and would
+    // make the switch a way to park every cycle.
+    const authorDecision = await authorGate(await authorFromTarget(ctx, mergeExec, prNumber));
     if (!authorDecision.ok) return authorHold(authorDecision.reason ?? "the author gate refused");
     // No authority gate ran, so this is the only place the protected-path gate can
     // ask with a head in hand; a protected diff parks the same way as above.

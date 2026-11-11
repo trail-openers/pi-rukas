@@ -45,6 +45,15 @@ export function mkExec(
     // command-shape drift fails the match loudly instead of answering a stale
     // text (or nothing at all) while the assertions pass on an empty change set.
     if (opts?.argv && isNulDiffRead(cmd)) return { stdout: "" };
+    // #2181 — the merge-author gate resolves the cycle's recorded base to a commit
+    // before reading the allowlist, and answers only when the peel is `^{commit}` —
+    // the shape nothing else in the merged step issues. Keyed before the caller's own
+    // table so a case cannot accidentally answer it with the head or with a branch
+    // name, either of which would make the gate read a list at the wrong commit; a
+    // case overrides it with its own `"^{commit}"` key.
+    if (cmd.includes("rev-parse") && cmd.includes("^{commit}")) {
+      return { stdout: `${HEAD_OID}\n` };
+    }
     for (const [k, v] of Object.entries(o)) {
       if (cmd.includes(k)) {
         if (v.error) {

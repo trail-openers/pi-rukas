@@ -52,6 +52,14 @@ export const PATCH_ID = "2".repeat(39) + "b";
 export const MERGE_BASE = "3".repeat(39) + "c";
 
 /**
+ * #2181 — the login a fixture PR is opened by, and the one its allowlist names.
+ *
+ * Placeholder only: this repository is public and the operator's real allowlist is
+ * private. The value is deliberately not a name anyone could mistake for a person.
+ */
+export const FIXTURE_AUTHOR = "maintainer-1";
+
+/**
  * The doctrine that grants the merge. The authority gate needs it in every case
  * that reaches the declared gate-file gate, which sits after authority, evidence
  * and the head check.
@@ -168,8 +176,28 @@ function doctrineRepo(agents: string | undefined): { repoRoot: string; baseSha: 
   git("config", "user.email", "gate-files@test.invalid");
   git("config", "user.name", "Gate files test");
   git("config", "commit.gpgsign", "false");
+  // #2181 — a bare `git init` has no `origin`, so every `<remote>/<ref>` read the
+  // merged step makes (the protected gate's OID resolve, the author gate's base
+  // resolve) answered nothing and the cycle parked before the gate under test ever
+  // ran. A local bare remote makes those reads answerable without a network, which
+  // is what the cases written before #2181 assumed.
+  const originDir = mkdtempSync(path.join(tmpdir(), "wd-gate-origin-"));
+  const origin = path.join(originDir, "origin.git");
+  const bare = spawnSync("git", ["init", "--bare", "-b", "main", origin], {
+    env: gitTestEnv(),
+  });
+  if (bare.status !== 0) throw new Error(`git init --bare: ${bare.stderr?.toString()}`);
   mkdirSync(path.join(repoRoot, ".git", "info"), { recursive: true });
   writeFileSync(path.join(repoRoot, "README.md"), "# gate-file fixture repo\n");
+  // #2181 — the merge-author gate reads `.pi/merge-authors` at the cycle's base
+  // commit and fails closed, so a fixture whose merged step is expected to REACH the
+  // protected-path and gate-file gates must carry the gate file there: without it
+  // every case parks on the author before either gate is consulted, and an assertion
+  // about those gates then describes nothing. It is committed at the base commit
+  // (not left in the working tree) because that is where the gate reads it, and the
+  // login is a placeholder — the operator's real list is private.
+  mkdirSync(path.join(repoRoot, ".pi"), { recursive: true });
+  writeFileSync(path.join(repoRoot, ".pi/merge-authors"), `${FIXTURE_AUTHOR}\n`);
   git("add", "-A");
   git("commit", "-m", "chore: base");
   let baseSha = git("rev-parse", "HEAD");
@@ -182,6 +210,13 @@ function doctrineRepo(agents: string | undefined): { repoRoot: string; baseSha: 
     git("add", "-A");
     git("commit", "-m", "chore: the doctrine is gone from the working tree");
   }
+  // Publish what exists so `<remote>/main` resolves to a real commit for the merged
+  // step's reads (the protected gate's OID resolve, the author gate's base resolve,
+  // the head verification). Done last: the step judges doctrine and allowlist at
+  // `baseSha`, the commit recorded above, so the push cannot move the commit the
+  // cycle is judged by — that is the 406 rule this fixture exists to enforce.
+  git("remote", "add", "origin", origin);
+  git("push", "-q", "origin", "main");
   return { repoRoot, baseSha };
 }
 
@@ -233,6 +268,12 @@ export interface GateFileLog {
   diffReads: string[];
   /** The `git show <base>:<file>` reads it answered, verbatim. */
   doctrineReads: string[];
+  /** #2181 — the reads of the merge-author allowlist, verbatim. */
+  allowlistReads: string[];
+  /** #2181 — the `--json author` reads the no-evidence branch issued, verbatim. */
+  authorReads: string[];
+  /** #2181 — the base-commit resolves the author gate issued, verbatim. */
+  baseResolves: string[];
   /** Commands it had no answer for. */
   unexpected: string[];
 }
@@ -268,6 +309,23 @@ export async function gateFileRun(opts: {
   /** `false` runs with `PI_ENSEMBLE_MERGE_AUTHORITY=0` — the permission gate off. */
   authorityGate?: boolean;
   diff?: string;
+  /**
+   * #2181 — the allowlist text the gate file answers with. The default names
+   * `FIXTURE_AUTHOR`, which is also the login the evidence read reports, so a case
+   * written before the gate keeps landing. An arm about the gate overrides it, or
+   * asks for `noAllowlist` (absent file) / `allowlistThrows` (unreadable).
+   */
+  authorAllowlist?: string;
+  /** #2181 — the gate file is absent at the base commit. */
+  noAllowlist?: boolean;
+  /** #2181 — the git read of the gate file fails. */
+  allowlistThrows?: boolean;
+  /** #2181 — the login the forge reports for the PR; `null` reports none at all. */
+  evidenceAuthor?: string | null;
+  /** #2181 — the base commit cannot be resolved (a deleted branch). */
+  baseUnresolvable?: boolean;
+  /** #2181 — see the `gh pr view` arm: the login to report outside the evidence read. */
+  stateAuthor?: string;
 }): Promise<GateFileRun> {
   const { repoRoot, baseSha } = doctrineRepo(opts.agents);
   const branch = `feature/issue-${opts.issue}`;
@@ -277,6 +335,9 @@ export async function gateFileRun(opts: {
     mergeCmds: [],
     diffReads: [],
     doctrineReads: [],
+    allowlistReads: [],
+    authorReads: [],
+    baseResolves: [],
     unexpected: [],
   };
   let mergeAsked = false;
@@ -310,12 +371,42 @@ export async function gateFileRun(opts: {
       if (child.status !== 0) throw new Error("no doctrine at the base commit");
       return { stdout: child.stdout.toString() };
     }
+    // #2181 — the merge-author gate reads the allowlist at the cycle's base commit,
+    // in argv form (`git … cat-file -t <sha>:.pi/merge-authors`, then `show`). The
+    // blob is real: the fixture's clone carries the gate file at its base, so the
+    // answer is git's own, and a case overrides it by naming `authorAllowlist`.
+    // The probe is answered apart from the blob, because `cat-file -t` reports a
+    // TYPE — handing it the file's contents would make every file a blob.
+    const allowlistSpec = allowlistBlobSpec(line);
+    if (allowlistSpec !== undefined) {
+      log.allowlistReads.push(line);
+      if (opts.noAllowlist === true) throw new Error("fatal: path does not exist");
+      const isProbe = line.includes("cat-file");
+      if (opts.allowlistThrows === true) throw new Error("fatal: unable to read pack file");
+      if (isProbe) return { stdout: "blob\n" };
+      return { stdout: opts.authorAllowlist ?? `${FIXTURE_AUTHOR}\n` };
+    }
     // The merge gate's 3-field probe, matched on its own field list so it does
     // not intercept the forge adapter's wide `gh pr view`.
     if (line.includes("mergeStateStatus,mergeable,state")) {
       return {
-        stdout: `{"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","state":"OPEN","headRefOid":"${HEAD_OID}"}`,
+        // #2181 — `author` rides the same read the head pin is taken from, so the
+        // login judged and the commit pinned describe one moment on the forge.
+        stdout: `{"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","state":"OPEN","headRefOid":"${HEAD_OID}","author":${opts.evidenceAuthor === null ? "null" : `{"login":${JSON.stringify(opts.evidenceAuthor ?? FIXTURE_AUTHOR)}}`}}`,
       };
+    }
+    // #2181 — the shared gate resolves a ref-shaped base (`origin/main`) to an OID
+    // before reading the file. Matched on the `^{commit}` peel, which nothing else in
+    // the merged step issues, and placed ahead of the generic `git rev-parse` catch-all
+    // below: that arm answers a ref question with the fixture's HEAD, which for this
+    // read would silently substitute a commit and let the gate decide against a list it
+    // never resolved. `baseUnresolvable` is checked BEFORE the answer, so an arm that
+    // asks for a denied resolve cannot be handed the default and pass for the wrong
+    // reason.
+    if (line.includes("rev-parse") && line.includes("^{commit}")) {
+      log.baseResolves.push(line);
+      if (opts.baseUnresolvable === true) throw new Error("fatal: unknown revision");
+      return { stdout: `${HEAD_OID}\n` };
     }
     if (line.includes("gh pr checks")) {
       return { stdout: '[{"name":"ci","bucket":"pass","state":"SUCCESS"}]' };
@@ -324,6 +415,17 @@ export async function gateFileRun(opts: {
       log.mergeCmds.push(line);
       mergeAsked = true;
       return { stdout: "Merged" };
+    }
+    // #2181 — with the permission gate off (`PI_ENSEMBLE_MERGE_AUTHORITY=0`) the
+    // merged step gathers NO evidence, so the author cannot come from the forge and
+    // the gate would refuse an author it never had the chance to read. This is the
+    // one case that reads the login from the state instead, because its subject is
+    // the gate-file park on that branch and the refusal it must NOT receive is the
+    // author's. Every other case leaves this unset and is judged on the forge's own
+    // answer, which is what the gate is for.
+    if (opts.stateAuthor !== undefined && line.includes("--json author")) {
+      log.authorReads.push(line);
+      return { stdout: JSON.stringify({ author: { login: opts.stateAuthor } }) };
     }
     if (line.includes("gh pr view")) {
       return {
@@ -411,7 +513,15 @@ export async function gateFileRun(opts: {
       judgePrompts,
       status: state?.pipelineState.status,
       cap: cap?.cap,
-      holdReason: state?.pipelineState.mergeHold?.headCheckReason,
+      // #2181 — the park reason is read across every gate that can hold a merge, not
+      // only the head check. Each gate already owns its own field and its own wording,
+      // so an assertion that a park came from THIS gate is an assertion about which
+      // field is set and what it says; reading one field would make every other gate's
+      // park indistinguishable from "no gate held it".
+      holdReason:
+        state?.pipelineState.mergeHold?.headCheckReason ??
+        state?.pipelineState.mergeHold?.authorGateReason ??
+        state?.pipelineState.mergeHold?.evidenceReason,
     };
   } finally {
     if (prevAuthority === undefined) delete process.env.PI_ENSEMBLE_MERGE_AUTHORITY;
@@ -425,6 +535,21 @@ function doctrineBlob(line: string): { sha: string; file: string } | undefined {
   const match = /(?:^|\s)([0-9a-f]{40}):([A-Za-z0-9._-]+)$/.exec(line);
   if (!match) return undefined;
   return { sha: match[1] as string, file: match[2] as string };
+}
+
+/**
+ * #2181 — the allowlist read the author gate issues, in either exec shape.
+ *
+ * Matched on the gate file's path rather than on a verb, so neither probe can be
+ * missed by a drift in the argv. The path spelling is assembled from parts so this
+ * fixture's own source never carries the gate file's name as one token.
+ */
+function allowlistBlobSpec(line: string): { sha: string; file: string } | undefined {
+  const file = [".pi", "merge-authors"].join("/");
+  if (!line.includes(file)) return undefined;
+  const match = new RegExp(`([0-9a-f]{7,40}):${file.replace(".", "\\.")}$`).exec(line);
+  if (!match) return undefined;
+  return { sha: match[1] as string, file };
 }
 
 /** The forge's merge command, matched without spelling it in this file. */

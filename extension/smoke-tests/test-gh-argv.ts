@@ -65,12 +65,18 @@ const GH_PR_CHECKS_FIELDS = new Set([
  * `headRefOid` (#1533) is the commit OID the driver pins its merge to: the
  * evidence read is the single moment the forge is observed, so the CI verdict
  * and the pin cannot come from two reads that disagree.
+ *
+ * `author` (#2181) is the login the merge-author allowlist is checked against,
+ * requested by the SAME read for the same reason: who opened the PR is judged at
+ * the moment its CI verdict was read, and a second `gh pr view` would be a second
+ * moment in which the PR could have been reassigned.
  */
 const GH_PR_VIEW_EVIDENCE_FIELDS = new Set([
   "mergeStateStatus",
   "mergeable",
   "state",
   "headRefOid",
+  "author",
 ]);
 
 function requestedFields(cmd: string, flag: string): string[] {
@@ -104,12 +110,16 @@ function requestedFields(cmd: string, flag: string): string[] {
   const cmd = mergeEvidenceViewCmd(17);
   const fields = requestedFields(cmd, "--json");
   assert(
-    cmd === "gh pr view 17 --json mergeStateStatus,mergeable,state,headRefOid",
+    cmd === "gh pr view 17 --json mergeStateStatus,mergeable,state,headRefOid,author",
     `exact argv: ${cmd}`,
   );
   assert(
     fields.length > 0 && fields.every((f) => GH_PR_VIEW_EVIDENCE_FIELDS.has(f)),
     `every requested field (${fields.join(",")}) is one the gate knows how to read`,
+  );
+  assert(
+    fields.includes("author"),
+    "#2181: the author is requested by the evidence read itself — a gate that must ask gh a second time for the login can be handed a different PR state than the one it pinned",
   );
 }
 

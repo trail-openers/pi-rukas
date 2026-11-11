@@ -44,7 +44,11 @@
  */
 
 import { isFullCommitSha } from "../commit-sha.ts";
-import { authorFromEvidence, heldForMergeAuthor } from "./../merge-guard-author.ts";
+import {
+  authorFromRead,
+  evidenceAuthorRead,
+  heldForMergeAuthor,
+} from "./../merge-guard-author.ts";
 import type { HandlerCtx } from "./engine.ts";
 import type { LandDeps } from "./land-deps.ts";
 import { specifyBranch } from "./specify-tree.ts";
@@ -117,7 +121,7 @@ export async function landOutcome(ctx: HandlerCtx, deps: LandDeps): Promise<Outc
     const authorGate = await deps.checkAuthor(
       ctx.repoRoot,
       ctx.run.baseSha,
-      authorFromEvidence(ev),
+      authorFromRead(evidenceAuthorRead(ev)),
     );
     if (authorGate.ok !== true)
       return refuse(`the merge-author gate refused it — ${authorGate.reason ?? "no reason given"}`);

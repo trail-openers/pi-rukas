@@ -147,7 +147,7 @@ export async function readMergeAuthorAllowlist(
   let type = "";
   try {
     const { stdout } = await exec("git", {
-      argv: [...GIT_HARDENING, "cat-file", "-t", spec],
+      argv: [...GIT_HARDENING, "cat-file", "-t", "--end-of-options", spec],
       cwd,
       timeout: ALLOWLIST_TIMEOUT_MS,
       maxBuffer: 8 * 1024,
@@ -166,11 +166,17 @@ export async function readMergeAuthorAllowlist(
   if (type === "symlink" || type === "link") {
     return { ok: false, reason: "not-a-blob", detail: `${file} is a symlink at the base commit` };
   }
-  if (type !== "blob") return { ok: false, reason: "not-a-blob", detail: `git reported no blob at ${file}` };
+  if (type !== "blob") {
+    return {
+      ok: false,
+      reason: "not-a-blob",
+      detail: `${file} is not a file at the base commit${type.length > 0 ? ` (git reported it as “${type}”)` : ""}`,
+    };
+  }
   let stdout = "";
   try {
     ({ stdout } = await exec("git", {
-      argv: [...GIT_HARDENING, "show", spec],
+      argv: [...GIT_HARDENING, "show", "--end-of-options", spec],
       cwd,
       timeout: ALLOWLIST_TIMEOUT_MS,
       maxBuffer: ALLOWLIST_MAX_BUFFER,
@@ -235,8 +241,13 @@ export function mergeAuthorGate(args: {
   file?: string;
 }): AuthorGate {
   const file = args.file ?? MERGE_AUTHORS_FILE;
-  if (!args.allowlist.ok) return { ok: false, reason: allowlistRefusal(args.allowlist, file) };
+  // The author is classified FIRST. Both refusals block the merge, but they send the
+  // operator to different places — the allowlist file, or their `gh` setup — and when
+  // both are missing the author is the one fact the gate was asked about. Reporting
+  // "no base commit is recorded" for a cycle that also never read an author names the
+  // allowlist as the thing to fix when no allowlist could have answered anyway.
   if (!args.author.ok) return { ok: false, reason: authorUnreadable(args.author.detail, file) };
+  if (!args.allowlist.ok) return { ok: false, reason: allowlistRefusal(args.allowlist, file) };
   const login = args.author.login.trim();
   if (login.length === 0) {
     return { ok: false, reason: authorUnreadable("the forge answered with an empty author", file) };
@@ -260,6 +271,13 @@ export function mergeGuardAuthorRead(author: string | undefined): AuthorRead {
   // logins may not contain it, so it can only ever be the stand-in.
   if (login.toLowerCase() === "unknown") {
     return { ok: false, detail: "the forge's author field was absent, and the target reader substituted a placeholder" };
+  }
+  // The same reasoning catches `merge-target`'s other stand-ins: a git author name
+  // or email is what the reader writes when the forge answered neither, and neither
+  // is a GitHub login — `@` is illegal in one. Labeling them "not allowlisted" sent
+  // the operator to the allowlist for a PR whose author was never read.
+  if (login.toLowerCase() === "local" || login.includes("@")) {
+    return { ok: false, detail: "the forge's author field carried a local git identity, not a forge login" };
   }
   return { ok: true, login };
 }

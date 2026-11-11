@@ -14,6 +14,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSyn
 import os from "node:os";
 import path from "node:path";
 import { registerMergeGuard } from "../src/merge-guard.ts";
+import { MERGE_AUTHORS_FILE } from "../src/merge-author-allowlist.ts";
 import type { MergeTarget } from "../src/merge-target.ts";
 import { type LedgerEntry, latestEntry, ledgerPathFor } from "../src/review-ledger.ts";
 import { adversarialPassed, lensPassed } from "../src/review-ledger.ts";
@@ -78,6 +79,27 @@ export const TARGET: MergeTarget = {
   labels: [],
 };
 
+/**
+ * #2181 — the logins the harness's default allowlist names.
+ *
+ * Placeholder logins only: this repository is public and the allowlist is the
+ * operator's private list, so no fixture may carry a real one. `dev` — the author
+ * the default `TARGET` carries — is on the list, which is what lets every arm
+ * written before #2181 keep reaching the gates it was written to exercise. An arm
+ * about the author gate names its own `target.author` or replaces the list.
+ */
+export const ALLOWED_AUTHOR = "dev";
+/**
+ * The login the real-git fixture commits into `.pi/merge-authors` (its forge stub
+ * reports that same author for the fixture PR). Kept separate from `ALLOWED_AUTHOR`
+ * because the two fixtures are separate worlds — the stub answers whatever an arm
+ * asks, the real repository answers what its own base commit contains — and both
+ * must agree with the author their own PR carries.
+ */
+export const REAL_ALLOWED_AUTHOR = "dev-user";
+export const NOT_ALLOWED_AUTHOR = "stranger";
+export const DEFAULT_AUTHOR_ALLOWLIST = `# The maintainers whose pull requests an agent may land.\n${ALLOWED_AUTHOR}\n`;
+
 export const GOOD_ENTRIES: LedgerEntry[] = [
   { branch: "feature/x", kind: "adversarial", patchId: "p1", passed: true, at: 1 },
   { branch: "feature/x", kind: "lens", patchId: "p1", passed: true, at: 2 },
@@ -135,6 +157,41 @@ export async function makeHook(
     mainline?: string;
     /** What `git merge-base` prints (default `mb0000`; "" = no merge-base). */
     mergeBase?: string;
+    /**
+     * #2181 — the allowlist text the base-commit read of the gate file answers
+     * with. The default is `DEFAULT_AUTHOR_ALLOWLIST` (which lists `ALLOWED_AUTHOR`,
+     * i.e. `TARGET.author`), so every arm written before #2181 keeps reaching the
+     * gates it was written to exercise rather than dying at the new one. An arm
+     * about the author gate overrides this, or asks for `noAllowlist` / 
+     * `allowlistReadThrows`.
+     */
+    authorAllowlist?: string;
+    /** `true` — the gate file is absent at the base commit (the fail-closed arm). */
+    noAllowlist?: boolean;
+    /** `true` — the git read of the gate file throws (the unreadable-file arm). */
+    allowlistReadThrows?: boolean;
+    /**
+     * #2181 — the `author` field of the CI evidence read. `undefined` answers the
+     * target's own author (which the default allowlist lists); a string names a
+     * different login; `null` omits the field, so the gate sees an author the forge
+     * never reported rather than a person named `unknown`.
+     */
+    evidenceAuthor?: string | null;
+    /**
+     * #2181 — what the cycle recorded as its base commit, which is what the
+     * allowlist is read at. The guard asks for `<remote>/<mainline>`; the `/work`
+     * driver records `baseSha`, which `work-driver-branch-ops.ts` writes as a REF
+     * (`origin/main`), not a sha — so the driver's own shape is what makes the
+     * reader's `bad-base-sha` arm reachable. An arm names its own value.
+     */
+    baseRef?: string;
+    /** #2181 — the base-commit resolve fails: an unresolvable ref (fail-closed arm). */
+    unresolvableBase?: boolean;
+    /**
+     * #2181 — what the base resolve answers when it is the arm's subject:
+     * `"garbage"` = a non-OID, `"moved"` = a commit other than the run's base.
+     */
+    baseResolve?: "garbage" | "moved";
     /** The mainline OID resolve fails: throws, or answers a non-OID. */
     failBaseOid?: "throws" | "garbage";
     /**
@@ -289,6 +346,46 @@ export async function makeHook(
       if (env.failFetch) throw new Error("unable to connect");
       return { stdout: "" };
     }
+    // #2181 — the merge-author gate's two reads of the gate file at the base
+    // commit: `git cat-file -t <ref>:.pi/merge-authors` then `git show` of the same
+    // spec. Matched on the gate file's PATH rather than on a `git show` prefix, so
+    // neither form can be missed: the guard issues them in argv form, whose joined
+    // text `commandOf` renders without the leading `git`. Matched ahead of the
+    // generic arms so no other read can satisfy it, and the two probes stay apart —
+    // `cat-file` answers the type, `show` answers the bytes.
+    if (cmd.includes(MERGE_AUTHORS_FILE)) {
+      if (env.allowlistReadThrows === true) throw new Error("git: unable to read pack file");
+      if (env.noAllowlist === true) {
+        // The absent shape: `cat-file -t` fails for a path that is not in the
+        // commit, which is what the reader must refuse on.
+        throw new Error("git cat-file: path does not exist in the base commit");
+      }
+      if (cmd.includes("cat-file")) return { stdout: "blob\n" };
+      if (cmd.includes("show")) {
+        return { stdout: env.authorAllowlist ?? DEFAULT_AUTHOR_ALLOWLIST };
+      }
+      throw new Error(`unexpected allowlist read: ${cmd}`);
+    }
+    // #2181 — resolving the cycle's recorded base to a commit, which is what the
+    // allowlist is then read at. Answered from the SAME fixture head as every other
+    // OID reader, so a ref-shaped base resolves to the commit the rest of the run
+    // is judged at. Matched on `^{commit}` — the only such read is this one — and
+    // deliberately ahead of the generic `rev-parse <remote>/…` arms below, which
+    // would otherwise answer this resolve with a short fixture OID that is not a
+    // 40-hex sha and make the gate refuse every merge for the wrong reason.
+    if (cmd.includes("^{commit}")) {
+      if (env.unresolvableBase === true) throw new Error("git rev-parse: unknown revision");
+      // An arm whose subject is the base resolve names the answer it wants: a
+      // non-OID (`garbage`) or a commit other than the run's own base (`moved`) —
+      // both shapes the gate must refuse rather than read a list at an unproven
+      // commit. The default answers the SAME fixture head every other OID reader
+      // answers with, so a ref-shaped base resolves to the commit the run is judged
+      // at instead of refusing for the wrong reason.
+      if (env.baseResolve === "garbage") return { stdout: "not-an-oid\n" };
+      if (env.baseResolve === "moved") return { stdout: `${widenOid("deadbeef")}\n` };
+      const oid = evidenceHeadFor(fetched);
+      return { stdout: `${oid}\n` };
+    }
     // Remote resolution: origin → upstream → first remote.
     if (cmd.includes("git config --get remote.origin.url")) {
       if (env.remote === "origin") return { stdout: "git@github.com:o/r.git\n" };
@@ -362,11 +459,30 @@ export async function hookDecision(
     mainline?: string;
     mergeBase?: string;
     branchNumber?: "throws" | "empty";
+    /** #2181 — the allowlist text, or the fail-closed shapes (see makeHook). */
+    authorAllowlist?: string;
+    noAllowlist?: boolean;
+    allowlistReadThrows?: boolean;
+    evidenceAuthor?: string | null;
+    /**
+     * #2181 — what the cycle recorded as its base commit, which is what the
+     * allowlist is read at. The guard asks for `<remote>/<mainline>`; the `/work`
+     * driver records `baseSha`, which `work-driver-branch-ops.ts` writes as a REF
+     * (`origin/main`), not a sha — so the driver's own shape is what makes the
+     * reader's `bad-base-sha` arm reachable. An arm names its own value.
+     */
+    baseRef?: string;
+    /** #2181 — the base-commit resolve fails: an unresolvable ref (fail-closed arm). */
+    unresolvableBase?: boolean;
+    /**
+     * #2181 — what the base resolve answers when it is the arm's subject:
+     * `"garbage"` = a non-OID, `"moved"` = a commit other than the run's base.
+     */
+    baseResolve?: "garbage" | "moved";
     /** #1529 — the protected-path read's answer (see MergeGateEnv). */
     protectedDiff?: string;
     protectedDiffThrows?: boolean;
-    /** The mainline OID resolve answers a non-OID (fail-closed arm). */
-    failBaseOid?: "throws" | "garbage";
+    /** The mainline OID resolve answers a non-OID (fail-closed arm). */    failBaseOid?: "throws" | "garbage";
   } & MergeGateEnv = {},
 ) {
   const env: Parameters<typeof makeHook>[0] = {
@@ -384,6 +500,13 @@ export async function hookDecision(
     mainline: opts.mainline,
     mergeBase: opts.mergeBase,
     branchNumber: opts.branchNumber,
+    authorAllowlist: opts.authorAllowlist,
+    noAllowlist: opts.noAllowlist,
+    allowlistReadThrows: opts.allowlistReadThrows,
+    evidenceAuthor: opts.evidenceAuthor,
+    baseRef: opts.baseRef,
+    unresolvableBase: opts.unresolvableBase,
+    baseResolve: opts.baseResolve,
     protectedDiff: opts.protectedDiff,
     protectedDiffThrows: opts.protectedDiffThrows,
     failBaseOid: opts.failBaseOid,

@@ -21,6 +21,7 @@
  * opened the PR. See merge-author-allowlist.ts for the fail-closed rule.
  */
 
+import { errText } from "./protected-paths-text.ts";
 import {
   type AuthorGate,
   type AuthorRead,
@@ -30,7 +31,6 @@ import {
   mergeGuardAuthorRead,
   readMergeAuthorAllowlist,
 } from "./merge-author-allowlist.ts";
-import type { MergeEvidence } from "./work-driver-merge-evidence.ts";
 import type { MergeExecFn, MergeTarget } from "./merge-target.ts";
 
 /** The executor seam every merge path already holds. */
@@ -70,22 +70,61 @@ export async function guardMergeAuthorRefusal(
   baseRef: string,
   target: MergeTarget,
 ): Promise<{ block: true; reason: string } | undefined> {
-  const allowlist = await readMergeAuthorAllowlist(execFn, cwd, baseRef, MERGE_AUTHORS_FILE);
-  const decision = decideMergeAuthor(allowlist, mergeGuardAuthorRead(target.author));
+  // One path through `heldForMergeAuthor` for all three callers: the base the guard
+  // holds is `<remote>/<mainline>`, a REF, and the reader underneath accepts only a
+  // hex sha, so calling it directly here would refuse every merge for the wrong
+  // reason. Resolving first is the shared behaviour, not this path's exception.
+  const decision = await heldForMergeAuthor({
+    exec: execFn,
+    cwd,
+    baseSha: baseRef,
+    author: mergeGuardAuthorRead(target.author),
+  });
   if (decision.ok) return undefined;
   return { block: true, reason: `merge refused: ${decision.reason}` };
 }
 
-/** The author of a PR, as its evidence read reported it (#2181). */
-export function authorFromEvidence(evidence: MergeEvidence | undefined): AuthorRead {
-  if (evidence === undefined) {
-    return { ok: false, detail: "the merge evidence was never read, so no author was read with it" };
-  }
-  const login = evidence.author?.trim();
+/**
+ * The author of a PR, as its evidence read reported it (#2181).
+ *
+ * Takes the fields, not the whole `MergeEvidence`, for a reason that is not style:
+ * the driver and lean each reach this with a value typed against their OWN import
+ * of the evidence type (`work-driver-merge-authority.ts` re-exports it from
+ * `work-driver-merge-evidence.ts`), and an `undefined` argument to a structurally
+ * typed parameter silently skips the "the read never happened" case. `undefined`
+ * here is a compile error, and the two absence cases are named separately instead:
+ * a read that never ran, and a read that answered without an author.
+ */
+export function authorFromRead(read: { author?: string; authorError?: string }): AuthorRead {
+  const login = read.author?.trim();
   if (login === undefined || login.length === 0) {
-    return { ok: false, detail: evidence.authorError ?? "the forge's PR read reported no author login" };
+    return { ok: false, detail: read.authorError ?? "the forge's PR read reported no author login" };
   }
   return { ok: true, login };
+}
+
+/**
+ * The author fields lifted off an evidence result that may never have been produced.
+ *
+ * `undefined` is the read-that-never-ran shape, and it is named — never folded into
+ * an empty author, which is a different fault with different operator action.
+ */
+export function evidenceAuthorRead(
+  evidence: { author?: string; authorError?: string } | undefined,
+): { author?: string; authorError?: string } {
+  if (evidence === undefined) {
+    return {
+      authorError: "the merge evidence was never read, so no author was read with it",
+    };
+  }
+  return { author: evidence.author, authorError: evidence.authorError };
+}
+
+/** The author of a PR from its evidence read, or the reason none was read (#2181). */
+export function authorFromEvidence(
+  evidence: { author?: string; authorError?: string } | undefined,
+): AuthorRead {
+  return authorFromRead(evidenceAuthorRead(evidence));
 }
 
 /** The decision, rendered by each caller in its own frame (block vs park). */
@@ -108,10 +147,61 @@ export function decideMergeAuthor(
 }
 
 /**
+ * Resolve the commit the allowlist is read at.
+ *
+ * Both driver paths record their base as a REF, not a sha: `work-driver-branch-ops.ts`
+ * writes `baseSha` as `origin/main` (its own comment says so) and lean persists the
+ * same shape. `git show <ref>:.pi/merge-authors` reads the same commit either way,
+ * so a ref is resolved here to its OID and the strict sha check still runs — which
+ * keeps the sha discipline in `readMergeAuthorAllowlist` (it refuses any base that is
+ * not hex) while letting the paths that record a ref be judged at their own base.
+ */
+async function resolveAllowlistBase(
+  exec: AuthorExec,
+  cwd: string,
+  baseSha: string,
+): Promise<{ oid: string } | { failure: Extract<AllowlistRead, { ok: false }> }> {
+  if (/^[0-9a-f]{7,40}$/.test(baseSha.trim())) return { oid: baseSha.trim() };
+  try {
+    // No `--end-of-options` here: `git rev-parse` has no such option (unlike
+    // `cat-file` and `show`, which do), and it would print the token instead of
+    // resolving it. The guard against an option-looking base is instead that the
+    // ANSWER must be a 40-hex OID — a base that resolves to nothing, or to text,
+    // is refused below rather than passed on as a commit.
+    const { stdout } = await exec("git", {
+      argv: ["rev-parse", "--verify", "--quiet", `${baseSha.trim()}^{commit}`],
+      cwd,
+      timeout: 15_000,
+      maxBuffer: 8 * 1024,
+    });
+    const oid = stdout.trim();
+    if (!/^[0-9a-f]{40}$/.test(oid)) {
+      return {
+        failure: {
+          ok: false,
+          reason: "bad-base-sha",
+          detail: `${JSON.stringify(baseSha.slice(0, 40))} did not resolve to a commit`,
+        },
+      };
+    }
+    return { oid };
+  } catch (err) {
+    return {
+      failure: {
+        ok: false,
+        reason: "git-failed",
+        detail: `the recorded base commit ${JSON.stringify(baseSha.slice(0, 40))} could not be resolved (${errText(err)})`,
+      },
+    };
+  }
+}
+
+/**
  * Read the allowlist at a commit and decide one PR's author against it.
  *
  * `baseSha` is the cycle's or the run's base commit — the file is read there,
  * never from the working tree, so a patch in the PR cannot widen its own allowlist.
+ * A ref-shaped base is resolved to its OID first (see `resolveAllowlistBase`).
  */
 export async function heldForMergeAuthor(args: {
   exec: AuthorExec;
@@ -120,11 +210,13 @@ export async function heldForMergeAuthor(args: {
   author: AuthorRead;
   file?: string;
 }): Promise<MergeAuthorDecision> {
-  const allowlist = await readMergeAuthorAllowlist(
-    args.exec,
-    args.cwd,
-    args.baseSha,
-    args.file ?? MERGE_AUTHORS_FILE,
-  );
+  const file = args.file ?? MERGE_AUTHORS_FILE;
+  const base = args.baseSha?.trim() ?? "";
+  if (base.length === 0) {
+    return decideMergeAuthor({ ok: false, reason: "no-base" }, args.author);
+  }
+  const resolved = await resolveAllowlistBase(args.exec, args.cwd, base);
+  if ("failure" in resolved) return decideMergeAuthor(resolved.failure, args.author);
+  const allowlist = await readMergeAuthorAllowlist(args.exec, args.cwd, resolved.oid, file);
   return decideMergeAuthor(allowlist, args.author);
 }
