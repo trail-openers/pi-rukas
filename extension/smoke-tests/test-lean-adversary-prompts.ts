@@ -58,6 +58,7 @@ import {
   MAX_TEST_FILES_PER_CRITERION,
   MAX_TEST_LINES,
 } from "../src/lean/test-size.ts";
+import { withEnv } from "./lib/env-scope.ts";
 import { CONSTRAINT, INJECT_BODY, ISSUE_BODY, OVER_BODY } from "./lib/ticket-issue-fixture.ts";
 
 let exit = 0;
@@ -306,7 +307,13 @@ assert(
 // are made at the PROMPT-FUNCTION boundary for the same `spec` object, which is
 // the only place "equal the pre-change prompt" can mean anything: the /plan
 // `problem` change is separate and is not switch-gated.
-{
+//
+// The switch is PINED absent rather than trusted to the ambient environment:
+// `leanIssueProseEnabled()` reads `process.env` at call time, so a driver or
+// operator shell that exported `PI_ENSEMBLE_LEAN_ISSUE_PROSE=0` would make the
+// ON-case assertions below fail red on an unrelated change. `withEnv` restores
+// exactly what was there, an absent variable included.
+await withEnv({ PI_ENSEMBLE_LEAN_ISSUE_PROSE: undefined }, async () => {
   const withBody = (issueBody: string) => ({
     specify: specifyPrompt({
       issue: 1908,
@@ -372,9 +379,7 @@ assert(
   // The switch off is the pre-change render byte for byte: the same spec, the
   // same options, no body — that is what the prompts looked like before the body
   // was threaded in.
-  const saved = process.env.PI_ENSEMBLE_LEAN_ISSUE_PROSE;
-  process.env.PI_ENSEMBLE_LEAN_ISSUE_PROSE = "0";
-  try {
+  await withEnv({ PI_ENSEMBLE_LEAN_ISSUE_PROSE: "0" }, async () => {
     const off = withBody(ISSUE_BODY);
     assert(
       off.specify === bare,
@@ -392,10 +397,9 @@ assert(
       leanIssueProseEnabled() === false,
       "the exported reader reports the switch off",
     );
-  } finally {
-    if (saved === undefined) delete process.env.PI_ENSEMBLE_LEAN_ISSUE_PROSE;
-    else process.env.PI_ENSEMBLE_LEAN_ISSUE_PROSE = saved;
-  }
+  });
+  // Restored by `withEnv`, so this is the ambient state the file started with —
+  // an absent variable — which is the ON case this block exists to pin.
   assert(
     leanIssueProseEnabled() === true,
     "unset (restored) means the section is ON — only the literal 0 turns it off",
@@ -469,6 +473,6 @@ assert(
     );
     assert(leanIssueSection(empty) === "", `the renderer returns "" for ${JSON.stringify(empty)}`);
   }
-}
+});
 
 process.exit(exit);
