@@ -434,6 +434,16 @@ The cleanest shape, and the one the `/work` driver uses: run the reviews **after
 
 PR: [#912](https://github.com/trail-openers/pi-rukas/issues/912) · PR: [#1360](https://github.com/trail-openers/pi-rukas/issues/1360)
 
+### A merge was refused: the author is not on the allowlist
+
+**Symptom:** `gh pr merge N` (or `glab mr merge N`) is refused with a message that the PR's author is not listed in `.pi/merge-authors`, or that the allowlist is absent, unreadable or empty. The PR's ledger rows and CI may both be green.
+
+**Cause (by design):** The merge-author gate (#2181) runs beside the head-equality check in the mode-independent merge guard. Before any merge can land, the PR's author must be listed in `.pi/merge-authors` at the cycle's base commit — one login per line, matched case-insensitively. An author the forge did not report, an allowlist file that is missing, unreadable or empty, and a login that is not on it all refuse. No override reaches it: `PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE`, `PI_ENSEMBLE_MERGE_AUTHORITY` and `--merge` are all statements about permission and reviews, never about who opened the PR, so none of them clears this gate.
+
+**Fix:** Add the PR's author to `.pi/merge-authors` (one login per line; the match is case-insensitive) and re-run the merge. The file is read at the base commit, so the entry must exist before the cycle's merge step — editing it mid-cycle does not retroactively clear a parked cycle; re-run the cycle once the file is on disk.
+
+PR: [#2181](https://github.com/trail-openers/pi-rukas/issues/2181)
+
 ### A read-only command was refused with merge text
 
 **Symptom:** An agent reading an issue's labels, timeline or comment history — to work out, say, why a cycle was parked — is refused. The command contains no merge, and the refusal talks only about merging and offers the merge override as the remedy:
