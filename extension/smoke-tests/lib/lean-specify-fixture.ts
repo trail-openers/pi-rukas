@@ -235,6 +235,11 @@ export interface RunOpts {
   capture?: (wt: string, paths: string[], owners: Map<string, string>) => CaptureResult;
   /** Per-run runner limits, e.g. a short timeout to prove a hang is infra. */
   testLimits?: { timeoutMs?: number };
+  /**
+   * The runner preflight's own bounds. A case shrinks them to watch a hanging
+   * probe end as an infrastructure handback without paying the real two minutes.
+   */
+  preflightLimits?: { timeoutMs?: number };
   /** The issue body the step re-reads; defaults to the single-test-criterion spec. */
   specBody?: string;
   /**
@@ -324,6 +329,7 @@ export async function runSpecify(opts: RunOpts): Promise<RunResult> {
         return got;
       }),
     ...(opts.testLimits === undefined ? {} : { testLimits: opts.testLimits }),
+    ...(opts.preflightLimits === undefined ? {} : { preflightLimits: opts.preflightLimits }),
     fetchIssueBody: async () => {
       fetched++;
       return opts.specBody ?? BODY;

@@ -112,6 +112,53 @@ of those is left exactly as found, deliberately: the alternative is a `reset --h
 else's work. Where a foreign directory really does sit at that path, move it out from under
 `.worktrees/` and re-run.
 
+### Symptom: a lean run hands back with `the test runner could not run a test file: <command>`
+
+**Symptom:** a lean run ends as an infrastructure hand-back (exit 10) whose message is
+`the test runner could not run a test file: <the rendered verify.test command> — <the runner's first
+lines>`, with no adversary dispatched and no test frozen. The sibling shape of the same hand-back is
+`the worktree's submodules could not be initialised in <worktree>: git submodule update --init
+--recursive — …`.
+
+**Cause:** the step asked the project's own runner one question before paying an adversary — *can you
+run a test file at all?* — and the runner could not. It is handed an EMPTY test file (hidden, at the
+worktree root or just outside the configured `verify.testDir`, and removed again on every path), and
+the answer is read from one exit status: **0 or 5 is healthy**, anything else is not. So this hand-back
+is what a runner that dies *before* collection looks like from the outside: a `pytest` that exits 4 on
+an import error, a suite that needs an environment variable the run's environment does not carry, an
+empty directory where a git submodule should have been populated, or a runner that could not be
+started at all. Before this check existed, none of those printed anything naming the file, so the red
+proof graded the run "unclear", `specify` declined with `criterion ACn has no red test`, and the issue
+was refused for an environment nothing had tested. The preflight costs one runner invocation and no
+model call, and it never guesses at a runner's flavour: no per-runner exception table, no
+`pytest`-specific case.
+
+**Fix:** read the command and the excerpt in the hand-back — they are the runner's own words, run in
+the run's own worktree. The usual four:
+
+- **A submodule directory that is empty.** The step initialises submodules after every reset it makes
+  (`git submodule update --init --recursive`; a `clean -fdx` de-populates them, which is why the
+  initialisation is on the reset path and not only the create path), so a hand-back naming the
+  submodule is a network or a remote problem: the URL in the base commit's own `.gitmodules`, the
+  remote's availability, or an offline host. Fix the remote or the checkout; there is no flag that
+  makes an un-populated submodule testable.
+- **A missing environment variable the suite needs.** The probe runs with the driver's knobs scrubbed
+  and the rest of the environment, exactly as the red proof does, so a variable the suite requires is
+  missing here as it will be at prove time. Export it for the run, or give the project a tier that does
+  not need it.
+- **A runner that reports "no tests" as an error.** Exit 5 (pytest's `collected 0 items`) is accepted;
+  a runner that exits 4 for an empty file is refused, correctly, because the same exit is what a
+  collection failure produces and the step cannot tell them apart — and being wrong in that direction
+  costs a hand-back rather than a frozen contract nobody ran. Give the probe-shaped file what the
+  runner wants (a collectable test in the configured folder is the project's own convention).
+- **A runner that is not runnable at all** — wrong path, not executable, dependencies never linked.
+  The hand-back says `the runner could not be started`, which is the toolchain question `verify.fast`
+  was never asked.
+
+A missing `verify.test` is NOT this hand-back: it stays the verdict it has always been
+(`no test runner configured (.pi/work.json verify.test)`, nothing dispatched), because a project that
+declines to configure a runner is not a project with a broken one.
+
 ### Symptom: a lean run hands back with `baseline red: tier <name> is red at the base commit`
 
 **Cause:** the project's own verify tier fails on the run's head AND on its base commit, and

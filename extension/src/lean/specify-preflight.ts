@@ -81,6 +81,23 @@ const PROBE_TIMEOUT_MS = 120_000;
 /** The wall clock on `git submodule update --init --recursive`, which may reach the network. */
 const SUBMODULE_TIMEOUT_MS = 5 * 60_000;
 
+/**
+ * The submodule calls' own `-c` flags, added to {@link NO_HOOKS} at the call.
+ *
+ * `protocol.file.allow=always` is what lets a clone from a LOCAL path through.
+ * git refuses the `file` transport for submodules by default (the CVE fix that
+ * made it `user`-only), and a step that could not populate a submodule whose
+ * remote is another directory on this machine would hand back on a perfectly
+ * good base. It is not a licence for anything a stranger supplies: `submodule
+ * update --init` clones only URLs the base commit's own `.gitmodules` names, that
+ * file is tracked content reviewed as code, and `file` is the narrowest transport
+ * there is — the step never clones an arbitrary URL, only what this repository
+ * already committed. Hooks stay refused, whatever the repository carries.
+ */
+function submoduleArgv(...argv: string[]): string[] {
+  return [...NO_HOOKS, "-c", "protocol.file.allow=always", ...argv];
+}
+
 /** How much of the runner's output the handback quotes. */
 const EXCERPT_MAX = 400;
 
@@ -91,18 +108,29 @@ const PROBE_BASENAME = ".lean-runner-probe.test";
 const PROBE_CONTENT = "";
 
 /**
- * The probe's worktree-relative path: the worktree root when the project named
- * no test folder, and the configured folder's PARENT otherwise. One level up is
- * the closest location guaranteed to be outside `testDir` whose existence the
- * config already vouches for (`verify.testDir` must be a real project folder, or
- * every acceptance test would be refused for sitting in it) — so the probe needs
- * no directory created for it, and cannot be mistaken for an acceptance test by
- * the boundary's location rule or by a `testGlob` (none may start with `.`).
+ * The probe's worktree-relative path, and why it sits there.
+ *
+ * Two facts have to hold at once: the probe must not be mistaken for an
+ * acceptance test (so it is hidden, and no `testGlob` may start with `.`), and
+ * writing it must not change the tree — no directory created, nothing left
+ * behind for the reset's clean-tree assertion or the acceptance-test commit to
+ * explain. The worktree root satisfies both whatever the config says: it always
+ * exists, and a probe inside a configured `verify.testDir` is exactly the byte
+ * the boundary's location rule is built to refuse.
+ *
+ * A project that keeps its tests in a SUBDIRECTORY (`testDir` deeper than the
+ * root) has a directory free of that constraint already — `testDir`'s parent —
+ * and the config vouches that it exists, since every acceptance test the run
+ * freezes has to sit under it. That is where the probe goes, and the preflight
+ * confirms it on the tree rather than trusting the config: no `mkdir`, because
+ * an uncreated directory would be an untracked byte the step then has to
+ * account for.
  */
-function probeRelative(testLocation?: TestLocation): string {
+function probeRelative(wt: string, testLocation?: TestLocation): string | undefined {
   if (testLocation === undefined) return PROBE_BASENAME;
   const parent = path.posix.dirname(testLocation.testDir);
-  return parent === "." ? PROBE_BASENAME : `${parent}/${PROBE_BASENAME}`;
+  if (parent === ".") return PROBE_BASENAME;
+  return existsSync(path.join(wt, parent)) ? `${parent}/${PROBE_BASENAME}` : PROBE_BASENAME;
 }
 
 /** Is `abs` an ordinary file this probe may claim (rather than a link, dir or fifo)? */
@@ -131,7 +159,12 @@ export async function assertRunnerCanRunTests(
     limits?: TestRunLimits;
   },
 ): Promise<void> {
-  const rel = probeRelative(opts.testLocation);
+  const rel = probeRelative(opts.wt, opts.testLocation);
+  if (rel === undefined) {
+    throw new SpecifyInfraError(
+      `the runner preflight could not place its probe file: the configured test directory's parent does not exist in ${opts.wt}`,
+    );
+  }
   const abs = path.join(opts.wt, rel);
   // Written and read by name, never followed: the step owns the worktree's
   // bytes, and a name the base already carries as a link or a directory is not
@@ -195,7 +228,7 @@ export async function assertRunnerCanRunTests(
  */
 export async function initSubmodules(exec: ExecFn, wt: string): Promise<void> {
   const listed = await exec("git", {
-    argv: [...NO_HOOKS, "config", "--file", ".gitmodules", "--get-regexp", "path"],
+    argv: submoduleArgv("config", "--file", ".gitmodules", "--get-regexp", "path"),
     cwd: wt,
     timeout: 30_000,
     maxBuffer: 1024 * 1024,
@@ -209,7 +242,7 @@ export async function initSubmodules(exec: ExecFn, wt: string): Promise<void> {
     );
   }
   const ran = await exec("git", {
-    argv: [...NO_HOOKS, "submodule", "update", "--init", "--recursive"],
+    argv: submoduleArgv("submodule", "update", "--init", "--recursive"),
     cwd: wt,
     timeout: SUBMODULE_TIMEOUT_MS,
     maxBuffer: 8 * 1024 * 1024,
