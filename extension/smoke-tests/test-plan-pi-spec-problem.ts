@@ -207,9 +207,15 @@ ${["```ts", "Descriptor: not this line at all", "", "the real statement"].join("
   // the surviving opener reads as U+02CB MODIFIER LETTER GRAVE ACCENT, not as a
   // backtick — and that is the form the block will actually carry.
   const NEUTRALISED_OPEN = String.fromCharCode(0x2cb, 0x2cb, 0x2cb);
+  // Both halves of this claim are needed, and the second is what makes the first
+  // mean something. The look-alike spelling is what keeps the field safe to print
+  // unfenced (see the loop below), so the expected string is the look-alikes
+  // themselves: an assertion that only demanded "no backtick run" would also pass
+  // with the opener line dropped altogether, which is different — and wrong —
+  // behaviour.
   assert(
     unterminated.problem === `${NEUTRALISED_OPEN}ts`,
-    `problem: an unclosed fence keeps its own lines (a strip that ate to the end would have reached the statement below, and lost this one) (got ${JSON.stringify(unterminated.problem)})`,
+    `problem: an unclosed fence keeps its own lines, neutralised — a strip that ate to the end would have reached the statement below and lost this one (got ${JSON.stringify(unterminated.problem)})`,
   );
   assert(
     !unterminated.problem.includes("Descriptor") && !unterminated.problem.includes("statement"),
@@ -332,6 +338,45 @@ ${["```ts", "Descriptor: not this line at all", "", "the real statement"].join("
       "the retry helper loses its message",
     "problem: a closer LONGER than its opener closes the sample, so the statement below it is read (not the sample's own text)",
   );
+
+  // …and what an UNCLOSED sample can and cannot contribute to the field. It can:
+  // its lines stay, and the mapper neutralises every fence run in a field, so a
+  // surviving opener is carried as U+02CB look-alikes (`NEUTRALISED_OPEN` above) —
+  // a cosmetic cost, not a breach, and the assertion below is what says so. It
+  // cannot: open a block in the prompt. The two prompts print `spec.problem` as bare
+  // prose between `## The problem` and the next heading, so a line that opened a
+  // fence there would begin a block the step never wrote — and that shape never
+  // arrives, because a line that OPENS a sample is not a heading, so the walker
+  // cannot take one as the section's first line and cannot carry `#` structure from
+  // it either. The three spellings are the openers a fence-blind reader would leak.
+  for (const [name, opener] of [
+    ["backtick", "```ts"],
+    ["tilde", "~~~sh"],
+    ["indented 3", "   ```"],
+  ] as const) {
+    const mapped = mustSpec(
+      piSpecFromDraft({
+        type: "feature",
+        title: "the title",
+        body: [
+          "## Context & motivation",
+          "",
+          opener,
+          "## INJECTED HEADING",
+          "instructions that are not the statement",
+          "",
+          "## Acceptance criteria",
+          "",
+          "- a",
+        ].join("\n"),
+      }),
+      `problem: unclosed ${name}`,
+    );
+    assert(
+      !/^#/m.test(mapped.problem) && !mapped.problem.includes("INJECTED"),
+      `problem: an unclosed ${name} sample contributes no heading to the field the prompts print unfenced (got ${JSON.stringify(mapped.problem)})`,
+    );
+  }
 
   // …and a `'''` block is NOT a sample: its `## ` line is a real heading, so the
   // section legitimately ends there and the criteria really are absent. Pinning
