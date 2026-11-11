@@ -46,6 +46,12 @@ import {
 	isForgeMerge,
 } from "./work-driver-merged-gate-files-arms.ts";
 import { doctrineRepo } from "./work-driver-merged-gate-files-doctrine.ts";
+import {
+	allowlistBlobSpec,
+	allowlistTreeSpec,
+	answerAllowlistRead,
+	doctrineBlob,
+} from "./work-driver-merged-gate-files-allowlist.ts";
 
 /** The head the forge reports and the lens row reviewed — nothing moved since the review. */
 export const HEAD_OID = "1".repeat(39) + "a";
@@ -339,53 +345,15 @@ export async function gateFileRun(opts: {
 		const allowlistSpec = allowlistBlobSpec(line) ?? allowlistTreeSpec(line);
 		if (allowlistSpec !== undefined) {
 			log.allowlistReads.push(line);
-			// A7: the repository never committed the gate file. git's own wording for
-			// a path that is not in the commit is what the reader classifies as
-			// absence (and therefore as no author rule), so the fixture fails the way
-			// git fails — an invented message would test the fixture, not the gate.
-			if (opts.noAllowlist === true) {
-				// The tree read for an absent path is git's honest EMPTY result — the tree
-				// holds no such entry — while the type probe fails with git's own wording.
-				// Both are needed: the reader calls the file absent only when neither read
-				// saw it, so a seam that left one unscripted is a hole, not an answer. The
-				// probe's rejection carries `stderr` and the exit `code` (what the absence
-				// classifier reads), never the message alone, which carries the command line.
-				if (line.includes("ls-tree")) return { stdout: "" };
-				throw Object.assign(
-					new Error(
-						`fatal: path '${allowlistSpec.file}' does not exist in '${allowlistSpec.sha}'`,
-					),
-					{
-						code: 128,
-						stderr: `fatal: path '${allowlistSpec.file}' does not exist in '${allowlistSpec.sha}'\n`,
-					},
-				);
-			}
-			const isProbe = line.includes("cat-file");
-			if (opts.allowlistThrows === true)
-				throw Object.assign(new Error("fatal: unable to read pack file"), {
-					code: 128,
-					stderr: "fatal: unable to read pack file\n",
-				});
-			// The tree read is answered from the clone itself: it is what distinguishes a
-			// committed symlink (a `blob` to `cat-file -t`, mode 120000) from the regular
-			// file the operator wrote, so a fixture that invented the mode would let the
-			// defect this read exists to catch pass against the table.
-			if (line.includes("ls-tree")) {
-				const child = spawnSync(
-					"git",
-					["ls-tree", allowlistSpec.sha, "--", allowlistSpec.file],
-					{ cwd: repoRoot, env: gitTestEnv() },
-				);
-				if (child.status !== 0)
-					throw Object.assign(
-						new Error(`fatal: not a tree object: ${child.stderr?.toString() ?? ""}`),
-						{ code: child.status, stderr: child.stderr?.toString() ?? "" },
-					);
-				return { stdout: child.stdout.toString() };
-			}
-			if (isProbe) return { stdout: "blob\n" };
-			return { stdout: opts.authorAllowlist ?? `${FIXTURE_AUTHOR}\n` };
+			return answerAllowlistRead({
+				line,
+				spec: allowlistSpec,
+				repoRoot,
+				noAllowlist: opts.noAllowlist,
+				allowlistThrows: opts.allowlistThrows,
+				authorAllowlist: opts.authorAllowlist,
+				fixtureAuthor: FIXTURE_AUTHOR,
+			});
 		}
 		// The forge and the identity reads are answered by the arm module: its order is
 		// the contract (the 3-field probe before the wide `gh pr view`, the `^{commit}`
@@ -480,48 +448,6 @@ export async function gateFileRun(opts: {
 }
 
 /** The `<sha>:<file>` blob spec of a doctrine read, in either exec shape. */
-function doctrineBlob(line: string): { sha: string; file: string } | undefined {
-	const match = /(?:^|\s)([0-9a-f]{40}):([A-Za-z0-9._-]+)$/.exec(line);
-	if (!match) return undefined;
-	return { sha: match[1] as string, file: match[2] as string };
-}
-
-/**
- * #2181 — the allowlist read the author gate issues, in either exec shape.
- *
- * Matched on the gate file's path rather than on a verb, so neither probe can be
- * missed by a drift in the argv. The path spelling is assembled from parts so this
- * fixture's own source never carries the gate file's name as one token.
- */
-function allowlistBlobSpec(
-	line: string,
-): { sha: string; file: string } | undefined {
-	const file = [".pi", "merge-authors"].join("/");
-	if (!line.includes(file)) return undefined;
-	const match = new RegExp(
-		`([0-9a-f]{7,40}):${file.replace(".", "\\.")}$`,
-	).exec(line);
-	if (!match) return undefined;
-	return { sha: match[1] as string, file };
-}
-
-/**
- * Whether one joined exec line is the gate file's TREE read, and which commit/path it
- * asks for. `git ls-tree <sha> -- <path>` carries no `<sha>:<path>` spec, so the blob
- * matcher above cannot see it; the path still names the gate file, which is what routes
- * it here rather than to some other git read.
- */
-function allowlistTreeSpec(
-	line: string,
-): { sha: string; file: string } | undefined {
-	const file = [".pi", "merge-authors"].join("/");
-	if (!line.includes("ls-tree") || !line.includes(file)) return undefined;
-	const match = new RegExp(`ls-tree ([0-9a-f]{7,40}) -- ${file.replace(".", "\\.")}$`).exec(
-		line,
-	);
-	if (!match) return undefined;
-	return { sha: match[1] as string, file };
-}
 
 /** The forge's merge command, re-exported so a case can assert on it without a second copy. */
 export { isForgeMerge } from "./work-driver-merged-gate-files-arms.ts";
