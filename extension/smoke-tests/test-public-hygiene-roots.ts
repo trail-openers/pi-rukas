@@ -247,6 +247,42 @@ async function inspectWith(
     );
     const leak = segmentCwds(work, `git -C one ${PUSH} origin main && git ${PUSH} origin main`);
     assert(leak[1] === work, "a git -C does not move the segment that did not write it");
+    // #2168: the `-C` has to be read through the same stripping every publish
+    // reader uses, or a wrapper hides it and the scan runs in the session clone
+    // while git runs elsewhere — the reported field shape was
+    // `git -C <repo>/.worktrees/<wt> push` reached through a wrapper prefix.
+    for (const [spelling, why] of [
+      [`env FOO=1 git -C wt ${PUSH} -u origin b`, "an env wrapper prefix"],
+      [`FOO=1 git -C wt ${PUSH} origin b`, "an assignment prefix"],
+      [`git -c user.name=t -C wt ${PUSH} origin b`, "an earlier global that consumes a word"],
+    ] as const) {
+      assert(
+        pushGitCwd(work, spelling) === path.join(work, "wt"),
+        `the scan follows -C behind ${why} (#2168)`,
+      );
+    }
+    // `--git-dir`/`--work-tree` are refused rather than resolved: `--git-dir`
+    // names the ADMIN directory, not a worktree, so a scan that guessed the
+    // worktree from it could read commits nobody is publishing. The refusal
+    // string is what the guard later turns into a message; here it is enough that
+    // the segment does NOT silently resolve to the session directory. The glued
+    // spellings are pinned on their own, because their operand rides inside the
+    // flag word: a reader that stopped at the first `=`-bearing flag would let
+    // `--work-tree=<dir>` through as an ordinary global, and one that echoed the
+    // word would echo a path.
+    for (const spelling of [
+      `git --git-dir wt/.git ${PUSH} origin b`,
+      `git --work-tree wt ${PUSH} origin b`,
+      `git --work-tree=wt ${PUSH} origin b`,
+      `git --git-dir=wt/.git ${PUSH} origin b`,
+      `git --git-dir=wt/.git --work-tree=wt ${PUSH} origin b`,
+    ]) {
+      const seg = segmentCwds(work, spelling);
+      assert(
+        seg.length === 1 && seg[0] !== work,
+        `a push with ${spelling.split(" ")[1]} is refused, not scanned in the session cwd`,
+      );
+    }
     // And the scan really runs where it says: an unresolvable directory is an
     // unreadable range, which the guard refuses rather than passes.
     const scannedIn = await inspectWith(

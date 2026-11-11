@@ -1001,8 +1001,21 @@ URL — a refspec may legitimately look like that — and the range still comes 
 refspecs after it, never from HEAD.
 
 The scan runs git in the push's own directory: the tool call's cwd, adjusted for
-the two shapes that move the git (`git -C <dir>`, a `cd <dir> &&` prefix), so a
-detached-worktree push is not judged against the repo root's commits.
+the shapes that move the git (`git -C <dir>` — wherever it sits, including behind
+an `env`/`NAME=value` prefix or an earlier global such as `-c k=v` — and a
+`cd <dir> &&` prefix), so a detached-worktree push is not judged against the repo
+root's commits. That matters for more than the range: a branch that exists only in
+the worktree resolved in neither tree and the push was refused for a source that
+could not be resolved, while a scan of the wrong clone could report a clean range
+nobody was publishing. `--git-dir`/`--work-tree` are the exception and are refused
+by name rather than resolved: `--git-dir` names the git admin directory (or a bare
+repository), not a checkout, so the worktree the scan should read cannot be
+inferred from it, and guessing the session directory instead would read commits
+this push does not publish. Run the push from the repository itself or with `git
+-C <dir>`. A `-C` target that is not inside a repository is likewise refused, with
+a sentence naming that directory's basename (never its path, and not the basename
+at all when the operator's denylist matches it) — never as the timed-out remote
+read it used to look like.
 
 **Fix:** `git log --format=%B <srcs> --not --remotes` and read the messages; the
 refusal names the short sha and the path, so `git show <sha>` finds the line.

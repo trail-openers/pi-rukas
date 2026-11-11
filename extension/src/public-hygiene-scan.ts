@@ -20,8 +20,6 @@
  * - `git push` to a remote whose host is github.com: the outgoing commits'
  *   messages and ADDED diff lines, against the PRIVATE denylist only.
  *
- * ## Reuse over new parsers
- *
  * ## What the scan actually follows
  *
  * A publish is found whenever the command's OWN words name it, after the runner
@@ -76,6 +74,9 @@
 import path from "node:path";
 import { simpleCommands } from "./bash-destructive-write.ts";
 import { pushesRemote } from "./git-push-command.ts";
+import { commandCarriesPushVerb } from "./git-push-words.ts";
+import { PUSH_VERB } from "./public-hygiene-verbs.ts";
+export { PUSH_VERB } from "./public-hygiene-verbs.ts";
 import { publishArgv, publishCommandLines } from "./public-hygiene-command.ts";
 import { codeOf } from "./public-hygiene-files.ts";
 import { isAssignment } from "./public-hygiene-operands.ts";
@@ -265,8 +266,101 @@ function shellBody(argv: string[]): string | undefined {
 const SHELLS = new Set(["bash", "sh", "zsh", "dash", "ksh"]);
 
 /**
- * Does this command run `git push` at all (including inside a shell body)?
+ * The programs outside `WRAPPERS` whose operands the SHELL WILL EXECUTE or
+ * compile, rather than treat as data: `eval` runs its operands, `script -c` /
+ * `script --command` runs its payload, and `make` compiles `VAR=value` overrides
+ * (the recipe later expands them). None is in `WRAPPERS`, so the segmenter leaves
+ * the payload as ONE opaque word and no git argv is ever produced for the word
+ * reader; and none is a shell runner, so `executedBodies` never opens the quote
+ * either. The payload is the only place the push is written.
+ */
+const PAYLOAD_RUNNERS = new Set(["eval", "script", "make"]);
+
+/** A `NAME=value` operand (`make run CMD="git push"`), which may be quoted. */
+const ASSIGNMENT_WORD = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+/** The payload-runner program of this argv, and where its operands begin. */
+function runnerProgram(argv: readonly string[]): { base: string; from: number } | undefined {
+  // A program outside the wrapper table keeps its operands in front of the runner
+  // (`flock /tmp/l eval "git push …"`), and a wrapper inside the table is already
+  // stripped (`env A=1 eval …`), so the runner is sought wherever it sits. Words
+  // before it belong to the outer program, not to this payload. A quoted run is
+  // never a program bash would exec, so a word with a space cannot name a runner.
+  for (let i = 0; i < argv.length; i++) {
+    const word = argv[i] ?? "";
+    if (word.includes(" ") || word.startsWith("-") || ASSIGNMENT_WORD.test(word)) continue;
+    const base = path.basename(word);
+    if (PAYLOAD_RUNNERS.has(base)) return { base, from: i + 1 };
+  }
+  return undefined;
+}
+
+/**
+ * What a non-git runner program hands to a shell, per {@link PAYLOAD_RUNNERS}.
+ * Empty for every other program, so a command whose words name no runner adds
+ * nothing to the question this predicate asks.
+ */
+function runnerPayloads(argv: readonly string[]): string[] {
+  const runner = runnerProgram(argv);
+  if (runner === undefined) return [];
+  const { base, from } = runner;
+  if (base === "script") {
+    const flagAt = argv.findIndex(
+      (w, i) =>
+        i >= from &&
+        (/^-[a-zA-Z]*c[a-zA-Z]*$/.test(w) || w === "--command" || w.startsWith("--command=")),
+    );
+    const flag = flagAt < 0 ? undefined : argv[flagAt];
+    if (flag === undefined) return [];
+    // `--command=BODY` carries its payload attached; every other spelling takes
+    // the next word.
+    const body = flag.startsWith("--command=") ? flag.slice("--command=".length) : argv[flagAt + 1];
+    return body === undefined || body === "" ? [] : [body];
+  }
+  const operands = argv.slice(from).filter((w) => !w.startsWith("-") && !ASSIGNMENT_WORD.test(w));
+  if (base === "make") {
+    return argv
+      .slice(from)
+      .filter((w) => ASSIGNMENT_WORD.test(w))
+      .map((w) => w.slice(w.indexOf("=") + 1));
+  }
+  return operands.length === 0 ? [] : [operands.join(" ")];
+}
+
+/**
+ * Does this command run `git push` at all — visibly, in a shell body, or in
+ * payload text a runner hands to a shell?
+ *
+ * Three readers, ORed, and none of them vetoes another: the regex
+ * ({@link pushesRemote}), scan-not-anchor over the raw text and over the bodies a
+ * shell runner executes; the word reader ({@link commandCarriesPushVerb}), which
+ * walks every segment through the one segmenter and requires the verb where git
+ * reads its verb; and the payload reader ({@link runnerPayloads}), asked of EVERY
+ * segment and passed through the regex, which reads what `eval`, `script -c` /
+ * `--command` and `make VAR=` hand on — programs outside the wrapper table, whose
+ * payload survives the segmenter as one opaque word no git argv is made from.
+ *
+ * **The regex's over-match is deliberate.** It sees the verb anywhere, so an
+ * `echo`, a `grep` or a commit message that merely NAMES `git push` is scanned as
+ * though it pushed. The cost is a couple of bounded git reads and, at worst, a
+ * refusal the agent re-issues — the cheap direction, and the one this predicate
+ * takes. The expensive direction is a push nobody scanned: every attempt to gate
+ * the regex on another reader's verdict leaked one, because a reader that never
+ * saw a segment still answers "not a push" for it. A `runsGit` gate let a single
+ * `git status` silence the regex for the whole chain, and `git status && busybox
+ * git push origin main` was allowed unscanned. So this predicate never answers
+ * "not a push" for anything any reader calls a push; narrowing the matcher belongs
+ * in `git-push-command.ts`, whose other caller is `developer-push-guard.ts` and
+ * where both callers get one verdict, not in a gate here that can only lose
+ * evidence.
  */
 export function commandPushes(command: string): boolean {
-  return pushesRemote(command) !== undefined;
+  if (pushesRemote(command) !== undefined) return true;
+  if (commandCarriesPushVerb(command, PUSH_VERB)) return true;
+  // Per segment, so a push in one segment's payload counts however the others
+  // read. The segmenter already stripped the wrappers, so the runner is sought
+  // past them (`flock /tmp/l eval "git push …"` reaches the payload).
+  return publishCommandLines(command).some((argv) =>
+    runnerPayloads(argv).some((payload) => pushesRemote(payload) !== undefined),
+  );
 }

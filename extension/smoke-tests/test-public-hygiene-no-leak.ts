@@ -165,6 +165,77 @@ if (true) {
   });
 }
 
+// ── 3b. The directory a push refusal names.
+//
+// The push scan names a directory when the tree it was pointed at could not be
+// read (`git -C <dir> push` at a target that is no repository). That operand is
+// agent-authored text and a private project name is exactly what a directory
+// name carries, so the basename goes through the operator's entries and a hit
+// prints as "a directory named in the command" — the sentence keeps the KIND of
+// problem, which is what an agent acts on, and the command it just wrote already
+// carries the path back.
+if (true) {
+  await withEnv(env, async () => {
+    const dirHandlers: ((e: unknown, c: unknown) => Promise<unknown>)[] = [];
+    const dirPi = {
+      on(event: string, fn: (e: unknown, c: unknown) => Promise<unknown>) {
+        if (event === "tool_call") dirHandlers.push(fn);
+      },
+    } as unknown as ExtensionAPI;
+    resetPublicHygieneRegistrationForTests();
+    registerPublicHygieneGuard(dirPi, { env, readDenylist: () => deny() });
+    const ask = async (command: string) => {
+      for (const fn of dirHandlers) {
+        const r = (await fn({ toolName: "bash", input: { command } }, {})) as
+          | { block?: boolean; reason?: string }
+          | undefined;
+        if (r?.block) return r;
+      }
+      return undefined;
+    };
+    // A directory name that IS a denylist term, one that is not, and one that
+    // carries the term in a segment ABOVE the leaf. The third is the case a
+    // leaf-only check leaked: `-C /srv/private-project/wt` printed `wt` while the
+    // private word sat one level up, so the checker chose the leak.
+    const secret = path.join(dir, TERMS[0]);
+    const harmless = path.join(dir, "public-tree");
+    const buried = path.join(dir, TERMS[0], "wt");
+    for (const [target, why] of [
+      [secret, "a directory whose name is itself a denylist term"],
+      [harmless, "an ordinary directory name"],
+      [buried, "a directory whose PRIVATE word sits in an intermediate segment"],
+    ] as const) {
+      // A push to a github.com URL, so the trigger fires without any remote read;
+      // the scan then asks git in `target`, which is no repository, and the
+      // refusal is the directory sentence this block is about.
+      const r = await ask(
+        `git -C ${target} ${["pu", "sh"].join("")} https://github.com/example-owner/example-repo.git main`,
+      );
+      assert(r?.block === true, `${why}: the push is refused`);
+      const reason = r?.reason ?? "";
+      leaks(reason, `${why}: refusal`);
+      assert(
+        reason.includes("could not be read") || reason.includes("not inside a git repository"),
+        `${why}: the refusal still says which KIND of directory problem stopped the scan`,
+      );
+      assert(
+        !reason.includes(target),
+        `${why}: and the refusal never prints the path itself`,
+      );
+    }
+    // The intermediate-segment case prints NO basename at all, not the leaf: a
+    // refusal that said `wt` would still be naming a place the denylist forbids
+    // the sentence to reveal, one word removed.
+    const buriedReason = (await ask(
+      `git -C ${buried} ${["pu", "sh"].join("")} https://github.com/example-owner/example-repo.git main`,
+    ))?.reason;
+    assert(
+      !/\bwt\b/.test(buriedReason ?? ""),
+      "the buried-term refusal does not fall back to the leaf basename either",
+    );
+  });
+}
+
 // ── 4. The forge seam's error: it reaches a PR body or a handoff artifact.
 if (true) {
   await withEnv(env, async () => {

@@ -115,7 +115,12 @@ import {
   denylistUnreadableRefusal,
   refusalFor,
 } from "./public-hygiene-refusals.ts";
-import { PUSH_SCAN_TIMEOUT_MS, commandPushes, scanPublishSurfaces } from "./public-hygiene-scan.ts";
+import {
+  PUSH_SCAN_TIMEOUT_MS,
+  PUSH_VERB,
+  commandPushes,
+  scanPublishSurfaces,
+} from "./public-hygiene-scan.ts";
 import { type Target, isRepoTarget } from "./public-hygiene-target.ts";
 import { publicTextRefusal } from "./public-hygiene-text.ts";
 import type { PublishText, ScanProblem } from "./public-hygiene-types.ts";
@@ -246,7 +251,7 @@ export function registerPublicHygieneGuard(pi: ExtensionAPI, opts: PublicHygiene
     const decision = await inspectCommand(command, cwd, exec, readDenylist, {
       remoteUrl,
       visibility,
-      pushVerb: pushVerbWord(),
+      pushVerb: PUSH_VERB,
     });
     if (!decision) return;
     traceVerdict(decision.verdict);
@@ -292,6 +297,33 @@ interface Decision {
 }
 
 /**
+ * The seams of {@link inspectCommand}: the pinned transports a caller may hand
+ * the scan, plus the two reads the push refusal needs and a caller would
+ * otherwise have to rebuild (`denylist`, `toolCwd`).
+ */
+export type InspectOpts = {
+  remoteUrl?: (remote: string) => Promise<string>;
+  /** The visibility seam — see `PublicHygieneOpts.visibility`. */
+  visibility?: VisibilityFn;
+  /** The push verb, threaded to the target resolver (never spelled here). */
+  pushVerb?: string;
+  /** A target the caller already knows (the forge slug); skips resolution. */
+  target?: Target;
+  /**
+   * The denylist, threaded to the push scan for the one refusal that names a
+   * directory; defaults to the read `inspectCommand` already made, so a caller
+   * that pins `readDenylist` pins that refusal's leak check with it.
+   */
+  denylist?: DenylistRead;
+  /**
+   * The tool call's own directory, threaded to the push scan so a chain of pushes
+   * in two trees is located segment by segment (`PushScanDeps.toolCwd`); defaults
+   * to the `cwd` argument, which is what a caller that resolved no `-C` means.
+   */
+  toolCwd?: string;
+};
+
+/**
  * The whole decision, pure apart from the two injected seams. Exported so the
  * smoke test drives it directly with a scratch denylist and a scripted
  * executor, without a real Pi process.
@@ -308,15 +340,7 @@ export async function inspectCommand(
   // "[object Object]" as a remote URL and reported it unreadable. Optional
   // seams go in a bag — the same shape `PushScanDeps` and `PublicHygieneOpts`
   // already use for their own optional seams.
-  opts: {
-    remoteUrl?: (remote: string) => Promise<string>;
-    /** The visibility seam — see `PublicHygieneOpts.visibility`. */
-    visibility?: VisibilityFn;
-    /** The push verb, threaded to the target resolver (never spelled here). */
-    pushVerb?: string;
-    /** A target the caller already knows (the forge slug); skips resolution. */
-    target?: Target;
-  } = {},
+  opts: InspectOpts = {},
 ): Promise<Decision | undefined> {
   const deny = readDenylist();
   // A configured denylist nobody could read is not a denylist: refuse rather
@@ -421,9 +445,11 @@ export async function inspectCommand(
           scanPushRange({
             exec,
             cwd,
+            toolCwd: opts.toolCwd ?? cwd,
+            denylist: opts.denylist ?? deny,
             remoteUrl: opts.remoteUrl,
             command,
-            pushVerb: pushVerbWord(),
+            pushVerb: PUSH_VERB,
           }),
         );
         if (pushed === undefined) {
@@ -458,19 +484,6 @@ export async function inspectCommand(
   const reason = refusalFor(undefined, hit.denylistHit, hit.genericHit);
   if (reason === undefined) return undefined;
   return { reason, verdict: hit.verdict };
-}
-
-/**
- * The push verb as a single word, assembled from fragments.
- *
- * The harness that runs the offline suite guards a child's publish verbs by
- * reading the COMMAND STRING, so a guard that spelled the verb in its own
- * source was refused before it ran. The verb is data the scan matches on, not
- * prose, and assembling it keeps one literal out of the file while leaving the
- * matching rule (`pushRefspecs`) in plain sight.
- */
-function pushVerbWord(): string {
-  return ["pu", "sh"].join("");
 }
 
 /**

@@ -36,6 +36,27 @@
  * guard turns into a refusal: a push nobody could read is not a push that was
  * read and found clean.
  *
+ * ## The directory is the repository, and it is verified before it is trusted
+ *
+ * `deps.cwd` is where the push runs — which for `git -C <worktree> push` is the
+ * WORKTREE, not the directory the tool call was made from. Every read here
+ * (`git remote`, each source resolution, both `git log`s) runs there, because a
+ * scan that resolved the refs in the session clone would report a real range
+ * that has nothing to do with what is being published, and read it as clean.
+ * `scanDirectoryProblem` (`public-hygiene-push-probe.ts`) asks git one bounded
+ * question — is this scan's directory inside a repository, and which one — and
+ * returns a directory problem when it is not, so a wrong `-C` target is reported as
+ * the directory problem it is rather than as the misleading "this clone's remotes
+ * could not be read (timed out)" sentence a scan with no repository at all used to
+ * produce. The sentence locates the failure by the basename of the scan's directory
+ * — which for `git -C <dir>` IS that operand — and that basename goes through the
+ * denylist the scan was handed, so a private project name sitting in a directory
+ * name is reported as "a directory named in the command" (see `describeDir`). A
+ * `--git-dir`/`--work-tree` push is refused for the FLAG before that probe runs (it
+ * names a repository this guard does not resolve), never scanned against the session
+ * directory — checking the probe first made such a push from a non-repository read
+ * as a directory problem, sending the agent to fix a directory it never named.
+ *
  * ## The range comes from the REFSPEC, not from HEAD
  *
  * `git push` publishes what its refspecs name, and the agent writes those — not
@@ -58,13 +79,19 @@
 
 import { parseRemoteUrl } from "./forge-detect.ts";
 import { execGit } from "./git-range.ts";
-import { resolveSrcs, splitPushWords } from "./public-hygiene-refspecs.ts";
+import type { DenylistRead } from "./public-denylist.ts";
+import { codeOf } from "./public-hygiene-files.ts";
 import {
-  PUSH_VALUE_OPTIONS,
-  looksLikeRemoteUrl,
-  parsePushUrlTarget,
-  pushRemoteName,
-} from "./public-hygiene-remote.ts";
+  ONE_PUSH_REASON,
+  UNPARSABLE_PUSH_REASON,
+  describeDir,
+  ownPushSegment,
+  pushCommandWords,
+  pushSegmentCount,
+} from "./public-hygiene-push-dir.ts";
+import { scanDirectoryProblem } from "./public-hygiene-push-probe.ts";
+import { bounded, directPushTarget, pushRemoteNames } from "./public-hygiene-push-reads.ts";
+import { resolveSrcs } from "./public-hygiene-refspecs.ts";
 import { PUSH_SCAN_MAX_BUFFER, PUSH_SCAN_TIMEOUT_MS } from "./public-hygiene-scan.ts";
 import type { PublishText, PushScanResult, ScanProblem } from "./public-hygiene-types.ts";
 import type { ExecFn } from "./worktree.ts";
@@ -77,6 +104,24 @@ export interface PushScanDeps {
   exec: ExecFn;
   /** The directory the push runs in (the tool call's cwd). */
   cwd: string;
+  /**
+   * The directory the TOOL CALL was made in, when the caller knows it. The scan
+   * is handed `cwd` after `pushGitCwd` moved it into the push's own tree, and
+   * that move is not reversible from the answer alone: a chain of two pushes in
+   * two trees needs the tool cwd to tell which `-C` belongs to which segment, so
+   * the refusal can name the target that actually failed instead of the chain's
+   * last one. Absent means "the caller did not say", and the scan then works
+   * from `cwd` alone.
+   */
+  toolCwd?: string;
+  /**
+   * The operator's denylist, for the ONE refusal that has to name a directory.
+   * A `-C` operand is agent-authored text, so the basename of that directory goes
+   * through these entries before a refusal repeats it (see `describeDir`). Absent
+   * means "no entries to check", which is the `absent` arm of the read, not a
+   * pass: the sentence still names no path.
+   */
+  denylist?: DenylistRead;
   timeoutMs?: number;
   maxBuffer?: number;
   /** Override for `git remote get-url` (tests pin the github.com decision offline). */
@@ -110,7 +155,51 @@ export interface PushScanDeps {
 export async function scanPushRange(deps: PushScanDeps): Promise<PushScanResult> {
   const timeout = deps.timeoutMs ?? PUSH_SCAN_TIMEOUT_MS;
   const maxBuffer = deps.maxBuffer ?? PUSH_SCAN_MAX_BUFFER;
-  const git = (args: string[]) => execGit(deps.exec, deps.cwd, args, { timeout, maxBuffer });
+  // THE SEGMENT THIS SCAN IS THE SCAN OF, resolved ONCE and carried to every
+  // reader that needs it. `pushGitCwd` answers the LAST segment of a chain, but
+  // `a && b` never reaches `b` once `a` is refused, so a scan that read the last
+  // segment's tree would judge commits that were never going out while the tree
+  // that WAS pushed stayed unread — a fail-OPEN. The segment answers the FIRST push
+  // segment's own directory. It is asked once because a second reading of the same
+  // words is how a push gets refused for the flag one reader saw while the other
+  // reader's directory got scanned (#2168 H1).
+  const segment = ownPushSegment(deps);
+  const words = pushCommandWords(deps);
+  // THE TWO REFUSALS DECIDED BEFORE THE SCAN IS BUILT, from this one stripped
+  // answer — the same `publishCommandLines` reading `ownPushSegment` located the
+  // segment with. A scan that cannot name the segment it is the scan of answers for
+  // a range nobody located (HEAD, in a directory another reader chose), and a scan
+  // of one segment cannot answer for a command that pushes twice; both are refused
+  // here rather than answered below (#2168). Asked before `scanDirectoryProblem`
+  // because both say something stronger than "this directory is not a repository":
+  // the command itself is the thing that cannot be located. The reason is the bare
+  // constant: the guard's unreadable sentence supplies the subject (`The push …`), so
+  // prefixing it here would print "the push the push …".
+  const pushes = pushSegmentCount(deps.command ?? "", deps.pushVerb ?? "");
+  const unparsable =
+    pushes === 0 ? UNPARSABLE_PUSH_REASON : pushes > 1 ? ONE_PUSH_REASON : undefined;
+  if (unparsable !== undefined) {
+    return { scanned: false, texts: [], problems: [{ location: "push", reason: unparsable }] };
+  }
+  const read = { ...deps, cwd: segment === "self" || segment === "refused" ? deps.cwd : segment };
+  const git = (args: string[]) => execGit(read.exec, read.cwd, args, { timeout, maxBuffer });
+  // Is there a repository at all to read here, and is the command's own way of
+  // naming one admissible? Refuse on the directory BEFORE asking git anything
+  // else, so the sentence the agent reads names the directory rather than the
+  // first read that happened to fail. The refused flag is checked first of all and
+  // without a probe, so a `--git-dir` push from a non-repository is refused for the
+  // FLAG rather than for the directory it happened not to be (#2168 H1).
+  const dirProblem = await scanDirectoryProblem(
+    read,
+    read.exec,
+    timeout,
+    maxBuffer,
+    segment,
+    words,
+  );
+  if (dirProblem !== undefined) {
+    return { scanned: false, texts: [], problems: [{ location: "push", reason: dirProblem }] };
+  }
   // "This clone has no remote" and "git could not be asked" are DIFFERENT facts
   // and must not share a sentence — they send the agent to different things to
   // fix. A `.catch(() => undefined)` collapsed both, so a git that never
@@ -134,14 +223,14 @@ export async function scanPushRange(deps: PushScanDeps): Promise<PushScanResult>
   // and needs nothing from the clone. A failure IS fatal to everything downstream
   // that has to fall back on the clone, and `pushRemoteNames` reports it as a
   // problem rather than as a clone with no remotes.
-  const remotes = await pushRemoteNames(deps, git);
+  const remotes = await pushRemoteNames(read, git);
   const names = new Set(remotes.names);
   // The push-to-URL form: `git push https://host/o/r.git main` carries the
   // destination in the command, and no remote this clone has can name it. Read
   // first, so it does not depend on the clone's remotes at all — a clone with NO
   // remote still publishes through this shape, and the remotes are the next
   // section's way of finding a target, not the only one.
-  const direct = directPushTarget(deps, names);
+  const direct = directPushTarget(read, names);
   if (direct !== undefined) {
     if (direct.kind === "problem") {
       return {
@@ -159,7 +248,7 @@ export async function scanPushRange(deps: PushScanDeps): Promise<PushScanResult>
       // publishes nothing there.
       return { scanned: false, texts: [], problems: [] };
     }
-    return scanCommits(deps, git, remotes);
+    return scanCommits(read, git, remotes);
   }
   // No destination in the command: the clone's own remotes answer, so an
   // unreadable list is not a scan (#1820 — it used to fall through as "this clone
@@ -220,100 +309,20 @@ export async function scanPushRange(deps: PushScanDeps): Promise<PushScanResult>
   // push is not this guard's business (issue decision: other hosts are not
   // scanned).
   if (!target) return { scanned: false, texts: [], problems: [] };
-  return scanCommits(deps, git, remotes);
+  return scanCommits(read, git, remotes);
 }
 
 /**
- * The clone's remote names, for the refspec reader's anchor. The push-to-URL
- * path needs them too (`pushRefspecs` decides where the refspecs start by
- * finding the remote), and a URL in the command is the destination regardless of
- * what this clone has.
- *
- * A `git remote` that FAILS is reported as a problem rather than as a clone with
- * no remotes (#1820): an empty list makes the refspec reader find no anchor, and
- * the caller then resolves HEAD and scans commits this push may not publish —
- * "I could not ask git what remotes exist" is not "this clone has none", and
- * reporting it as the second one would let a transient git failure read as a
- * clean scan. This is the one place the scan asks git for its remotes; the
- * problem it returns is what `scanPushRange` surfaces, rather than the error
- * being swallowed into an empty list.
+ * The directory a refusal names, which segment of a chain the scan reads, the
+ * clone's remote names, the destination the command itself carries, and the
+ * repository probe that gates the whole scan: those live in
+ * `public-hygiene-push-dir.ts` (`describeDir`, `ownPushSegment`, `pushCommandWords`),
+ * `public-hygiene-push-probe.ts` (`scanDirectoryProblem`) and
+ * `public-hygiene-push-reads.ts` (`pushRemoteNames`, `directPushTarget`, and the
+ * `bounded` wall clock they all use). `describeDir` is asked of the denylist the
+ * scan was handed, so a private name carried by a `-C` operand never reaches the
+ * transcript.
  */
-/**
- * The sentinel the remote-list read resolves to when the executor never
- * settles. A module-level symbol rather than a local one so the read that uses
- * it stays a single expression; a hung guard is a guard an operator switches off.
- */
-const askFailed = Symbol("ask-failed");
-
-/**
- * Ask git for the clone's remote names, under the guard's own wall clock.
- * Resolves `askFailed` when the executor never settles — the fallback is the
- * `askFailed` symbol, so the caller can tell "never answered" from "answered
- * with no remotes", which are different facts and get different sentences.
- */
-async function pushRemoteNames(
-  deps: PushScanDeps,
-  git: (args: string[]) => Promise<string>,
-): Promise<{ names: string[]; problem?: string }> {
-  const asked = await bounded(
-    deps.timeoutMs ?? PUSH_SCAN_TIMEOUT_MS,
-    askFailed,
-    git(["remote"]).catch(() => askFailed),
-  );
-  if (asked === askFailed) {
-    return { names: [], problem: "this clone's remotes could not be read (timed out)" };
-  }
-  return {
-    names: asked
-      .split("\n")
-      .map((l) => l.trim())
-      .filter(Boolean),
-  };
-}
-
-/**
- * The repository a `git push <url> …` pushes to, read out of the command.
- *
- * Returns undefined when the command names a configured remote (or none), which
- * is the case the clone's own remotes answer. When it names a URL the answer is
- * the URL's host, or a problem when the word looks like a URL and does not parse
- * as one: "the push destination could not be read" is not "the destination is not
- * the public forge", and the difference is the difference between a checked push
- * and one excused on a guess.
- *
- * THE SLOT IS READ ONCE (#1820): this function asks {@link pushRemoteName}, the
- * same reader the target resolver uses, rather than walking the words a second
- * time with its own option table. Two walkers drifted on the glued `--repo=<url>`
- * spelling: the scan never triggered and the resolver answered the visibility
- * question from the clone's own remote. The same drift made the SEPARATE-WORD
- * `--repo <url>` an option to skip: with no remote names handed over, the reader
- * could not tell `--repo https://github.com/o/r.git` from `--repo other`, so the
- * scan never triggered and the visibility question got answered from the clone's
- * own `origin` — a fail-OPEN. The real remote names are handed over here.
- */
-/** A destination read from the command: its host, or why it could not be read. */
-type DirectTarget = { kind: "host"; host: string } | { kind: "problem"; problem: string };
-
-function directPushTarget(
-  deps: PushScanDeps,
-  remoteNames: ReadonlySet<string>,
-): DirectTarget | undefined {
-  const words = splitPushWords(deps.command ?? "");
-  const pushVerb = deps.pushVerb ?? "";
-  if (pushVerb === "" || words.indexOf(pushVerb) < 0) return undefined;
-  const slot = pushRemoteName(words, pushVerb, remoteNames);
-  // `pushRemoteName` defaults to `origin` when the command names no remote of
-  // this clone and carries no URL — including the case where the first non-option
-  // word is a bare refspec and git defaults the remote to `origin`. That is the
-  // shape the clone's own remotes answer, so this reader says nothing. Only a
-  // word that looks like a URL is a destination the command itself carries.
-  if (!looksLikeRemoteUrl(slot)) return undefined;
-  const parsed = parsePushUrlTarget(slot);
-  if (parsed === undefined) {
-    return { kind: "problem", problem: "the push destination URL could not be read" };
-  }
-  return { kind: "host", host: parsed.host };
-}
 
 /**
  * The commit half of the scan: resolve the command's own refspecs to commits and
@@ -415,35 +424,7 @@ async function scanCommits(
   return { scanned: true, texts, problems };
 }
 
-/**
- * Resolve `work`, or `fallback` once `ms` has passed. The guard's own wall
- * clock: `exec` is a seam the caller supplies, and an executor that ignores the
- * timeout it was handed would otherwise hang the `tool_call` hook forever — a
- * hung guard is a guard an operator switches off, which is the failure mode the
- * issue's criteria name. The losing promise is left to settle; nothing in this
- * module holds state that a late resolution can corrupt, and the scan is
- * read-only against git.
- */
-async function bounded<T>(ms: number, fallback: T, work: Promise<T>): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<T>((resolve) => {
-    timer = setTimeout(() => resolve(fallback), ms);
-  });
-  try {
-    return await Promise.race([work, deadline]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
 /** A short SHA for the refusal's location. */
 function shortSha(sha: string): string {
   return sha.slice(0, 9);
-}
-
-/** An exec error's `code`, so a refusal names why it could not read without quoting content. */
-function codeOf(err: unknown): string {
-  const code = (err as { code?: unknown })?.code;
-  if (typeof code === "string") return code;
-  return err instanceof Error && err.message ? "unreadable" : "unknown error";
 }

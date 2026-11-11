@@ -26,6 +26,30 @@
  * does with them. `cd` is the deliberate exception: it is the shell moving the
  * rest of the chain, so a `cd` carries forward until a later `cd` replaces it.
  *
+ * ## `-C` is git's SECOND global too, and `--git-dir`/`--work-tree` are refused
+ *
+ * The reader is the walker in `public-hygiene-target.ts` — the one that knows
+ * which of git's globals consume a follower — because `-C <dir>` is not the only
+ * way a command names its repository and it is not even always the first: a
+ * wrapper (`env`, `nohup`, `command`), a `KEY=value` assignment or one earlier
+ * global (`git -c k=v -C <wt> push`) used to leave the scan reading the session
+ * clone while git itself ran in `<wt>`. The scan then resolved HEAD and the
+ * remote list somewhere else, and a worktree push was refused for a source that
+ * existed only in the worktree, or — worse — scanned a range nobody was
+ * publishing.
+ *
+ * `--git-dir` and `--work-tree` are NOT resolved (H7). `--git-dir` alone names
+ * the admin DIRECTORY, not a checkout, so pointing every read there turns a real
+ * push into an unreadable range; `--work-tree` alone is half a pair with no
+ * object database; and the pair taken together can disagree with the cwd the scan
+ * was handed. A push that names its repository that way is therefore refused with
+ * `gitDirRefusal()` — a refusal that names the flag, never its operand — rather
+ * than being resolved in the session directory, which is the one answer that
+ * would be a confident lie. `segmentCwds` still answers something in that slot:
+ * the refusal sentence itself, which is what the hook prints. The scan never
+ * reaches that value, because `scanDirectoryProblem` in `public-hygiene-push-probe.ts`
+ * refuses on the flag before it asks git anything.
+ *
  * ## The directories a body file may live in
  *
  * The OS temp dir (where the forge adapter legitimately writes a body, and where
@@ -45,16 +69,35 @@ import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { simpleCommands } from "./bash-destructive-write.ts";
+import { publishArgv } from "./public-hygiene-command.ts";
+import { isGitProgramWord, walkGitGlobals } from "./public-hygiene-target.ts";
 
 /** The git program, assembled from fragments like the guard assembles its verbs. */
 const GIT_PROGRAM = ["gi", "t"].join("");
+
+/**
+ * Why a push that names its repository with `--git-dir`/`--work-tree` is refused
+ * rather than scanned. Lives HERE (and not beside the other refusal strings in
+ * `public-hygiene-refusals.ts`) because its two readers are `segmentCwds` below
+ * and the push scan: the file that refuses the command is the file that has to
+ * resolve it, and a constant in a third module is a constant one of the two will
+ * stop using. The sentence names the FLAG, never a path — the flag's operand is
+ * agent-authored text and can itself be the private thing this guard keeps out of
+ * a transcript.
+ */
+export function gitDirRefusal(flag: string): string {
+  return `was refused because it names its repository with ${flag}, which this guard does not resolve: that flag names the git admin directory or a bare work tree rather than a checkout this scan can read, and resolving the scan in the session directory instead would read commits this push does not publish. Run the push from the repository itself, or with \`git -C <dir>\``;
+}
 
 /**
  * The directory the push's git reads must run in.
  *
  * The answer is the LAST segment that moved the git, because that is the last
  * push this process could have run; a caller that needs one particular push out
- * of a two-push chain asks about that push's own segment.
+ * of a two-push chain asks about that push's own segment. A segment whose git
+ * named itself with a refused global answers with the refusal sentence, which is
+ * what the hook prints for that command (see the module header for why the scan
+ * never treats it as a directory).
  */
 export function pushGitCwd(toolCwdValue: string, command: string): string {
   const dirs = segmentCwds(toolCwdValue, command);
@@ -71,32 +114,28 @@ export function segmentCwds(toolCwdValue: string, command: string): string[] {
   // The directory a `cd` established, carried forward as a shell carries it;
   // undefined until the first `cd` of the chain.
   let fromCd: string | undefined;
-  for (const argv of simpleCommands(command)) {
+  for (const argv0 of simpleCommands(command)) {
     // Each segment begins where the shell begins it: at the tool cwd, unless a
     // `cd` moved it. A `git -C` from an earlier segment does not come along.
     let dir = fromCd ?? toolCwdValue;
-    for (let i = 0; i < argv.length; i++) {
-      const w = argv[i] ?? "";
-      const base = path.basename(w);
-      // `git -C <dir> push …` — git's one positional global, and the only one
-      // that moves the work tree: `--git-dir` names the `.git` DIRECTORY, so
-      // resolving the scan there points every git call at a tree that is not a
-      // checkout and turns a real push into an unreadable range.
-      if (w === "-C" && i === 1) {
-        const target = argv[i + 1];
-        if (target !== undefined && target !== "") {
-          dir = path.resolve(dir, target);
-          break;
-        }
-      }
+    // Wrapper- and assignment-stripped, the way every publish reader sees the
+    // command: `env FOO=1 git -C <wt> push` and `FOO=bar git -C <wt> push` move
+    // the git exactly as the bare form does, and a reader that only saw the bare
+    // one resolved the scan in the session clone while git ran in the worktree.
+    const argv = publishArgv(argv0);
+    if (isGitProgramWord(argv[0])) {
+      // `git -C <dir>` wherever it sits — git's global, and it consumes its
+      // operand — plus the `--git-dir`/`--work-tree` pair this guard refuses
+      // rather than resolves.
+      const walk = walkGitGlobals(argv);
+      if (walk.dir !== undefined && walk.dir !== "") dir = path.resolve(dir, walk.dir);
+      if (walk.refused) dir = gitDirRefusal(walk.refusedFlag ?? "--git-dir");
+    } else if (argv.length >= 2 && path.basename(argv[0] ?? "") === "cd") {
       // `cd <dir> && …` — a shell prefix that moves the rest of the chain.
-      if (base === "cd" && argv.length >= 2) {
-        const target = argv[1] ?? "";
-        if (target !== "" && !target.startsWith("-")) {
-          dir = path.resolve(dir, target);
-          fromCd = dir;
-        }
-        break;
+      const target = argv[1] ?? "";
+      if (target !== "" && !target.startsWith("-")) {
+        dir = path.resolve(dir, target);
+        fromCd = dir;
       }
     }
     dirs.push(dir);

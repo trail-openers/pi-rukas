@@ -35,6 +35,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { parseRemoteUrl } from "../src/forge-detect.ts";
 import { commitMessageReuse } from "../src/public-hygiene-commit-reuse.ts";
+import { scanPushRange } from "../src/public-hygiene-push.ts";
+import { pushRefspecs } from "../src/public-hygiene-refspecs.ts";
 import {
   PUSH_VALUE_OPTIONS,
   looksLikeRemoteUrl,
@@ -42,8 +44,6 @@ import {
   pushOptionGluedValue,
   pushRemoteName,
 } from "../src/public-hygiene-remote.ts";
-import { pushRefspecs } from "../src/public-hygiene-refspecs.ts";
-import { scanPushRange } from "../src/public-hygiene-push.ts";
 import { resetVisibilityCacheForTests } from "../src/public-hygiene-visibility.ts";
 import type { ExecFn } from "../src/worktree.ts";
 import { withEnv } from "./lib/env-scope.ts";
@@ -53,7 +53,12 @@ const TERM = ["example", "private", "host"].join("-");
 const dir = mkdtempSync(path.join(process.env.TMPDIR ?? tmpdir(), "push-slot-"));
 const denylistPath = path.join(dir, "denylist");
 writeFileSync(denylistPath, `# synthetic\n${TERM}\n`, "utf8");
-
+// The scan asks git one question about `deps.cwd` before it asks anything else —
+// is there a repository here? (#2168: a directory that is not one is now refused
+// BY NAME rather than reported as the timed-out remote read.) Every scan in this
+// file is handed a bare temp dir and a scripted executor, so each script answers
+// that probe with the directory it was given: the cases are about the destination
+// and the anchor, and this line keeps them asking that question instead.
 const PUSH = "push";
 const REMOTES = new Set(["origin"]);
 const GITHUB_URL = "https://github.com/example-owner/example-repo.git";
@@ -217,6 +222,8 @@ await withEnv({ PI_ENSEMBLE_PUBLIC_DENYLIST: denylistPath }, async () => {
   // clone has already published.
   const failingRemotes: ExecFn = async (cmd, opts) => {
     const argv = opts?.argv ?? [];
+    if (argv[0] === "rev-parse" && argv[1] === "--show-toplevel")
+      return { stdout: `${opts?.cwd ?? dir}\n` };
     if (argv[0] === "remote" && argv.length === 1) throw new Error("git: broken pipe");
     if (argv[0] === "rev-parse") return { stdout: `${"a".repeat(40)}\n` };
     if (argv[0] === "log") {
@@ -281,6 +288,8 @@ await withEnv({ PI_ENSEMBLE_PUBLIC_DENYLIST: denylistPath }, async () => {
     const argv = opts?.argv ?? [];
     if (argv[0] === "remote" && argv.length === 1) return { stdout: "origin\n" };
     if (argv[0] === "remote" && argv[1] === "get-url") return { stdout: GITHUB_URL + "\n" };
+    if (argv[0] === "rev-parse" && argv[1] === "--show-toplevel")
+      return { stdout: `${opts?.cwd ?? dir}\n` };
     if (argv[0] === "rev-parse") return { stdout: `${"b".repeat(40)}\n` };
     if (argv[0] === "log") return { stdout: `${"b".repeat(40)}\t${TERM}\u001e\n` };
     if (argv[0] === "diff") return { stdout: "" };
@@ -340,6 +349,8 @@ await withEnv({ PI_ENSEMBLE_PUBLIC_DENYLIST: denylistPath }, async () => {
   const hangingRemotes: ExecFn = (_cmd, opts) => {
     const argv = opts?.argv ?? [];
     if (argv[0] === "remote" && argv.length === 1) return new Promise(() => {});
+    if (argv[0] === "rev-parse" && argv[1] === "--show-toplevel")
+      return Promise.resolve({ stdout: `${opts?.cwd ?? dir}\n` });
     if (argv[0] === "rev-parse") return Promise.resolve({ stdout: `${"a".repeat(40)}\n` });
     if (argv[0] === "log") return Promise.resolve({ stdout: `${"a".repeat(40)}\t${TERM}\u001e\n` });
     return Promise.resolve({ stdout: "" });
