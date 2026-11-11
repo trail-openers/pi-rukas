@@ -26,8 +26,27 @@ const DESCRIPTOR_PREFIX = "Descriptor:";
 /** A line that OPENS a fenced code sample: up to 3 spaces, then 3+ of one char. */
 const FENCE_OPENER = /^(?: {0,3})(?<run>`{3,}|~{3,})/;
 
-/** A line that CLOSES a sample: that run alone on the line, carrying no info string. */
+/** A line that COULD close a sample: that run alone on the line, carrying no info
+ * string. Whether it DOES close the open one is `closesFence`'s predicate, not this
+ * pattern's — a run shorter than its opener is content, like any other line. */
 const FENCE_CLOSER = /^(?: {0,3})(?<run>`{3,}|~{3,})$/;
+
+/**
+ * Whether `run` closes a sample opened by `char`/`len`: the same character, a run
+ * at least as long, and — enforced by the caller, which only matches a line whose
+ * run stands alone — no info string.
+ *
+ * The three conditions are `lean/spec.ts`'s `fencedBlocks`, restated rather than
+ * imported because that module keeps its walker private and exporting a range
+ * variant of it for this one predicate would widen a module whose contract is the
+ * pi-spec block. A closer that failed here and passed there is the drift that
+ * makes a body read two ways, so the shape separating the readers — a four-run
+ * opener with a three-run "closer" — is pinned for both readers in
+ * `test-plan-pi-spec-problem.ts` and `test-lean-spec.ts`.
+ */
+function closesFence(run: string, char: string, len: number): boolean {
+  return run[0] === char && run.length >= len;
+}
 
 /** The heading line that opens a named section. */
 const sectionHead = (heading: string): RegExp =>
@@ -71,11 +90,17 @@ export function sectionLines(body: string, heading: string): string[] {
       let end = -1;
       for (let j = i + 1; j < lines.length; j++) {
         const run = FENCE_CLOSER.exec(lines[j] as string)?.groups?.run;
-        if (run !== undefined && run[0] === char && run.length >= len) {
+        if (run !== undefined && closesFence(run, char, len)) {
           end = j;
           break;
         }
       }
+      // A run that is not this fence's closer is NOT jumped: the scan stays on the
+      // opener's line and reads the short run as prose. Jumping to a line that
+      // failed the predicate swallows everything below it, and a body that merely
+      // lost the long half of its closing fence would then lose its criteria —
+      // zero bullets, which is a legitimate shape, so `piSpecFromDraft` files no
+      // machine block and says nothing while doing it.
       if (end >= 0) {
         i = end;
         continue;
