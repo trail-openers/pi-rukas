@@ -20,14 +20,16 @@ import { detectMainline, restoreCheckout } from "./work-driver-git.ts";
 import { mergeAuthorityJudge } from "./work-driver-judge-seam.ts";
 import { withIntegrationLock } from "./work-driver-lock.ts";
 import {
+  type MergeEvidence,
   gatherMergeEvidence,
   heldByUnresolvedReview,
   mergeAuthorityEnabled,
   resolveMergeAuthority,
 } from "./work-driver-merge-authority.ts";
 import { heldForDeclaredGateFiles } from "./work-driver-merged-gate-files.ts";
+import { authorFromEvidence, heldForMergeAuthor } from "./merge-guard-author.ts";
 import { verifyMergeHead } from "./work-driver-merged-head.ts";
-import { heldForMissingApproval, mergeProtectedHold } from "./work-driver-merged-hold.ts";
+import { heldForMissingApproval, mergeAuthorHold, mergeProtectedHold } from "./work-driver-merged-hold.ts";
 import { type MergeMethod, mechanizedMerge } from "./work-driver-merged-mechanized.ts";
 import { heldForProtectedPaths } from "./work-driver-merged-protected.ts";
 import { hasGitDir } from "./work-driver-merged-repo.ts";
@@ -198,6 +200,33 @@ export async function runMerged(
       oid,
     );
 
+  // The merge-author gate (#2181): the PR's author must be listed in
+  // `.pi/merge-authors` at the cycle's base commit. Like the two gates above it is
+  // NOT behind `mergeAuthorityEnabled()` — `--merge` and `PI_ENSEMBLE_MERGE_AUTHORITY=0`
+  // are statements about permission and reviews, never about who opened the PR, and
+  // a non-allowlisted author parks with the PR left open. The author rides the
+  // evidence read the gate already makes (`mergeEvidenceViewCmd` carries `author`),
+  // so the allowlist decision and the CI verdict describe one moment on the forge.
+  const authorGate = (evidence: MergeEvidence | undefined) =>
+    heldForMergeAuthor({
+      exec: mergeExec,
+      cwd: ctx.repoRoot,
+      baseSha: state.pipelineState.baseSha,
+      author: authorFromEvidence(evidence),
+    });
+
+  /** Park the cycle on an author-gate refusal: the hold, the cap, and a trace. */
+  const authorHold = (reason: string) => {
+    trace(`work-driver: merge held — merge-author gate: ${reason.slice(0, 200)}`);
+    return appendEvent(mergeAuthorHold(state, reason), {
+      kind: "cap-hit",
+      at: Date.now(),
+      cap: "awaiting-human-merge",
+      reviewRound: state.pipelineState.reviewRound,
+      nextStep: "handoff",
+    });
+  };
+
   // #380 — two independent gates, both defaulting to "no". Merging is the
   // one irreversible act in the cycle and had neither; a green PR ≠ permission.
   if (mergeAuthorityEnabled()) {
@@ -267,6 +296,12 @@ export async function runMerged(
     }
     verifiedHead = headCheck.headOid;
     headNotes.push(headCheck.note);
+    // The author gate (#2181) runs on the SAME evidence read the head was taken
+    // from, so the login judged and the commit pinned come from one read of the
+    // forge. Ahead of the protected and gate-file reads: a PR this cycle may not
+    // land at all should not spend a fetch and a diff to be told so.
+    const authorDecision = await authorGate(evidence);
+    if (!authorDecision.ok) return authorHold(authorDecision.reason ?? "the author gate refused");
     // The gate runs on the OID the merge is now pinned to, before any merge is
     // attempted and after every read that could have refused it.
     const protectedHold = await protectedGate(verifiedHead);
@@ -283,6 +318,13 @@ export async function runMerged(
   // gate, so the head is still read and the merge still pinned. An unreadable head
   // refuses exactly as the gated path does.
   if (verifiedHead === undefined) {
+    // The author gate is asked here too, and with no evidence in hand: this branch
+    // is the one the authority switch took (`PI_ENSEMBLE_MERGE_AUTHORITY=0`), which
+    // skipped the permission and evidence reads but not this gate. A missing
+    // evidence read makes the author unreadable, which is a refusal — the cycle
+    // parks on who opened the PR, not on the head it is about to report.
+    const authorDecision = await authorGate(undefined);
+    if (!authorDecision.ok) return authorHold(authorDecision.reason ?? "the author gate refused");
     // No authority gate ran, so this is the only place the protected-path gate can
     // ask with a head in hand; a protected diff parks the same way as above.
     const protectedHold = await protectedGate(undefined);

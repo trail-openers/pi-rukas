@@ -48,6 +48,14 @@
  *      must report `ok` for the PR. A failing, pending, skipped or neutral
  *      check, a `mergeStateStatus` that is not `CLEAN`, zero rows, or an
  *      unreadable read all refuse. GitHub only — the glab path is unchanged.
+ *  10. Merge author (#2181), beside the head equality: the PR's author must be
+ *      listed in `.pi/merge-authors` **at the base commit**. An author the forge
+ *      did not report, an allowlist that is absent, unreadable or empty, and a
+ *      login that is not on it all refuse. No override reaches it — the escape
+ *      hatch in this file's own header registers the hook inert when set, and the
+ *      driver's switches do not reach the guard at all. The read and the refusal
+ *      are in merge-guard-author.ts (`guardMergeAuthorRefusal`), which is also
+ *      where the base-commit rule for this path is written out.
  *
  * ## What this guard is — and is not
  *
@@ -94,6 +102,7 @@ import { execp } from "./exec.ts";
 import { FORGE_EXEC_TIMEOUT_MS } from "./forge-detect.ts";
 import { type MergeCommand, readMergeCommand } from "./merge-allowlist.ts";
 import { protectedMergeRefusal } from "./merge-guard-protected.ts";
+import { guardMergeAuthorRefusal } from "./merge-guard-author.ts";
 import { misdirectedWriteOf } from "./merge-guard-provenance.ts";
 import { guardFetchAndHead, guardMainline, guardMainlineOid } from "./merge-guard-reads-git.ts";
 import {
@@ -336,6 +345,18 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
     );
     if (!fetch.ok) return fetch.block;
     const fetchedHead = fetch.value;
+
+    // The merge-author gate (#2181): one call, one refusal, beside the head
+    // equality and ahead of the protected-path and ledger reads below. The rule,
+    // the base-commit choice and why no override reaches it are in
+    // merge-guard-author.ts.
+    const authorBlock = await guardMergeAuthorRefusal(
+      execFn,
+      cwd,
+      `${remote}/${mainline.value}`,
+      target,
+    );
+    if (authorBlock) return authorBlock;
 
     // The protected-path gate, immediately after the head equality and beside
     // the patch identity below: a PR whose own commits touch `.github/`,

@@ -86,6 +86,17 @@ export interface MergeEvidence {
    * are named as the forge named them, unbounded; the renderer clips them.
    */
   unrecognised?: string[];
+  /**
+   * #2181 — who opened the PR, from the SAME bounded read as the verdict, for
+   * the merge-author allowlist. `undefined` means the read did not answer with
+   * a login; that is a refusal at the gate, never an empty string that could
+   * be compared against a list. Deliberately NOT the string `"unknown"`: the
+   * unreadable-author case has its own refusal wording, and a placeholder would
+   * report it as a person with that name.
+   */
+  author?: string;
+  /** Why `author` is absent, in the operator's words (names the failed read). */
+  authorError?: string;
 }
 
 interface PrCheckRow {
@@ -102,6 +113,27 @@ function headFields(headOid?: string, headOidError?: string) {
   };
 }
 
+/**
+ * The author fields, spread the same way as the head's (#2181): a refusal still
+ * reports what the read saw, and an absent login carries the reason it was absent.
+ */
+function authorFields(author?: string, authorError?: string) {
+  return {
+    ...(author ? { author } : {}),
+    ...(authorError ? { authorError } : {}),
+  };
+}
+
+/**
+ * The PR's author login as `gh` reported it: `author.login` on GitHub. Anything
+ * the CLI did not answer (a null author, a missing field, a non-string) is
+ * `undefined` — the gate refuses on it, so the shape is not coerced to a name.
+ */
+function readAuthor(value: unknown): string | undefined {
+  const login = (value as { login?: unknown } | null | undefined)?.login;
+  return typeof login === "string" && login.trim().length > 0 ? login.trim() : undefined;
+}
+
 /** Gather executed evidence that a PR is genuinely mergeable. */
 export async function gatherMergeEvidence(
   execFn: ExecFn,
@@ -112,6 +144,10 @@ export async function gatherMergeEvidence(
   // #1533 — the head OID the CI verdict was read at, from this one read.
   let headOid: string | undefined;
   let headOidError: string | undefined;
+  // #2181 — the author, from the same read: the allowlist decision and the CI
+  // verdict describe one moment on the forge.
+  let author: string | undefined;
+  let authorError: string | undefined;
   try {
     const { stdout } = await execFn(mergeEvidenceViewCmd(prNumber), {
       cwd: repoRoot,
@@ -121,6 +157,7 @@ export async function gatherMergeEvidence(
       mergeStateStatus?: unknown;
       state?: unknown;
       headRefOid?: unknown;
+      author?: unknown;
     };
     state = {
       // `mergeStateStatus` is a string the CLI passes through; it lands
@@ -143,6 +180,10 @@ export async function gatherMergeEvidence(
     } else {
       headOid = raw;
     }
+    author = readAuthor(parsed.author);
+    if (author === undefined) {
+      authorError = `the PR-state read returned no author login for PR #${prNumber}`;
+    }
   } catch (err) {
     return {
       ok: false,
@@ -151,6 +192,7 @@ export async function gatherMergeEvidence(
       failing: [],
       inconclusive: [],
       headOidError: `the PR-state read for PR #${prNumber} failed: ${(err as Error).message?.slice(0, 120)}`,
+      authorError: `the PR-state read for PR #${prNumber} failed: ${(err as Error).message?.slice(0, 120)}`,
     };
   }
 
@@ -162,6 +204,7 @@ export async function gatherMergeEvidence(
       failing: [],
       inconclusive: [],
       ...headFields(headOid, headOidError),
+      ...authorFields(author, authorError),
     };
   }
 
@@ -177,6 +220,7 @@ export async function gatherMergeEvidence(
       failing: [],
       inconclusive: [],
       ...headFields(headOid, headOidError),
+      ...authorFields(author, authorError),
     };
   }
 
@@ -256,6 +300,7 @@ export async function gatherMergeEvidence(
       failing,
       inconclusive,
       ...headFields(headOid, headOidError),
+      ...authorFields(author, authorError),
     };
   }
   if (pending.length > 0) {
@@ -266,6 +311,7 @@ export async function gatherMergeEvidence(
       failing: [],
       inconclusive,
       ...headFields(headOid, headOidError),
+      ...authorFields(author, authorError),
     };
   }
   if (inconclusive.length > 0) {
@@ -276,6 +322,7 @@ export async function gatherMergeEvidence(
       failing: [],
       inconclusive,
       ...headFields(headOid, headOidError),
+      ...authorFields(author, authorError),
     };
   }
   // `mergeStateStatus` is the authoritative verdict — it already encodes the
@@ -290,6 +337,7 @@ export async function gatherMergeEvidence(
       failing: [],
       inconclusive,
       ...headFields(headOid, headOidError),
+      ...authorFields(author, authorError),
     };
   }
   if (!rowsRead) {
@@ -308,6 +356,7 @@ export async function gatherMergeEvidence(
         failing: [],
         inconclusive: [],
         ...headFields(headOid, headOidError),
+        ...authorFields(author, authorError),
       };
     }
     return {
@@ -319,6 +368,7 @@ export async function gatherMergeEvidence(
       failing: [],
       inconclusive: [],
       ...headFields(headOid, headOidError),
+      ...authorFields(author, authorError),
     };
   }
   if (rows.length === 0) {
@@ -330,6 +380,7 @@ export async function gatherMergeEvidence(
       inconclusive: [],
       ...(unrecognised.length > 0 ? { unrecognised } : {}),
       ...headFields(headOid, headOidError),
+      ...authorFields(author, authorError),
     };
   }
   return {

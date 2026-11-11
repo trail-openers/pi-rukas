@@ -84,3 +84,30 @@ export function mergeProtectedHold(state: WorkState, reason: string): WorkState 
     },
   };
 }
+
+/**
+ * The `merged`-step state for a cycle the merge-author gate held (#2181).
+ *
+ * Same shape as `mergeProtectedHold`, for the same reason — a park with no hold
+ * behind it is a cap-hit the renderers cannot explain — and it reports the same
+ * honest authority: this gate asked neither the grant nor the forge about
+ * permission, so it claims no verdict on either. The reason rides in
+ * `authorGateReason` rather than `headCheckReason` because the two gates need
+ * different operator actions: a head park asks you to look at what landed after
+ * the review, an author park asks you to decide whether this person's PR is landed
+ * at all, and only the field that names them lets the handoff say so.
+ */
+export function mergeAuthorHold(state: WorkState, reason: string): WorkState {
+  return {
+    ...state,
+    pipelineState: {
+      ...state.pipelineState,
+      currentStep: "merged",
+      mergeHold: {
+        authorityGranted: true,
+        authoritySource: "none",
+        authorGateReason: reason,
+      },
+    },
+  };
+}

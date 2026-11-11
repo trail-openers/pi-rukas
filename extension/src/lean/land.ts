@@ -21,6 +21,13 @@
  *      evidence (`gatherMergeEvidence`) reports the head the CI verdict was read
  *      at, from the same read as `mergeStateStatus`; it must equal the newest
  *      decided `verify`'s `verifiedHead`. Anything else → `refused`, naming both.
+ *   3. **May this author's PR be landed at all?** (#2181) The PR's author must be
+ *      listed in `.pi/merge-authors` at the run's `baseSha` — the same gate file,
+ *      the same base commit, and the same shared function the `/work` driver's
+ *      `merged` step and the merge guard call. An allowlist that is absent,
+ *      unreadable or empty, and an author the forge did not report, all →
+ *      `refused`. No override reaches it: `autoMerge` grants that the project
+ *      permits landing, not that this person's PR may be landed.
  *
  * The merge goes through the adapter's `prMerge`, which pins to the verified
  * head and refuses an unpinned call, and carries an explicit squash subject
@@ -37,6 +44,7 @@
  */
 
 import { isFullCommitSha } from "../commit-sha.ts";
+import { authorFromEvidence, heldForMergeAuthor } from "./../merge-guard-author.ts";
 import type { HandlerCtx } from "./engine.ts";
 import type { LandDeps } from "./land-deps.ts";
 import { specifyBranch } from "./specify-tree.ts";
@@ -100,6 +108,19 @@ export async function landOutcome(ctx: HandlerCtx, deps: LandDeps): Promise<Outc
       return refuse(
         `the PR head ${prHead.slice(0, 12)} is not the verified head ${head.slice(0, 12)}`,
       );
+    // #2181 — the merge-author gate, after every check that could refuse and
+    // before the one call that cannot be undone. The author comes from the
+    // evidence read above (`mergeEvidenceViewCmd` carries `author`), so the login
+    // judged belongs to the same PR state the head pin was taken from; the
+    // allowlist is read at the run's base sha by the shared gate, never here and
+    // never from the working tree.
+    const authorGate = await deps.checkAuthor(
+      ctx.repoRoot,
+      ctx.run.baseSha,
+      authorFromEvidence(ev),
+    );
+    if (authorGate.ok !== true)
+      return refuse(`the merge-author gate refused it — ${authorGate.reason ?? "no reason given"}`);
     await deps.merge(ctx.repoRoot, {
       number,
       headOid: head,

@@ -140,6 +140,12 @@ export function parkReason(state: WorkState | undefined): { reason: string; fail
       // reason, which would put prose in the reason's grammar) plus the two OIDs
       // the renderers read out of the state file.
       if (state.pipelineState.mergeHold?.headCheckReason) suffix += ":head";
+      // #2181 — the author gate's own refusal, machine-readably and as a fixed tag
+      // (never the free text, which would put a login in the reason's grammar).
+      // Without it the queue cannot tell a cycle that parked because its author is
+      // not a maintainer from one that parked on a moved head — the two need
+      // different advice, and both arrive as `awaiting-human-merge`.
+      if (state.pipelineState.mergeHold?.authorGateReason) suffix += ":author";
     } else if (cap.cap === "cross-group-conflict") {
       // #1454 — the claimant's number is the only thing that makes this park
       // actionable: the operator has to check ONE cycle, not the whole
