@@ -72,6 +72,12 @@ const LISTED = [
   // test-public-hygiene-push.ts asserts on `argv` — including that a git which
   // never returns is a refusal rather than a hang or a pass.
   "public-hygiene-push.ts",
+  // #2168 — the push scan's repository probe (`git rev-parse --show-toplevel`)
+  // runs in the directory the push itself runs in, so it takes the same argv
+  // form and the caller's own `timeout`/`maxBuffer`: it is the first read of the
+  // scan and the one that must not hang the `tool_call` hook. Its bound is
+  // pinned by test-hygiene-push-segment.ts.
+  "public-hygiene-push-probe.ts",
 ];
 
 /** A git command string handed to an exec call: a `(` then a literal beginning `git `. */
