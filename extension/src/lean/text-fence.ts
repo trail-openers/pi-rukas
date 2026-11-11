@@ -33,8 +33,18 @@ const FENCE_KEEP = /[\n\t]/;
  * end the row, and a fenced reason gains a line no fence was opened for.
  */
 const ANY_CONTROL = /[\p{Cc}\u2028\u2029\u0085]/gu;
-/** A run of 3+ backticks — the sequence that would close or open a fence. */
-const BACKTICK_RUN = /`{3,}/g;
+/**
+ * A run of 3+ backticks or 3+ tildes — the sequences that would close or open a
+ * fence. Both characters, because the block `fenceText` opens is a backtick fence
+ * and a CommonMark code block ALSO closes on a run of tildes: a `~~~` line inside
+ * the payload reaches the rendered fence verbatim, and the first one closes the
+ * block the poster opened while the second reopens it, so whatever sat between them
+ * is markdown rather than quoted text — a `## heading` becomes a section of the
+ * comment or the prompt, and instructions in it are read as the poster's own prose.
+ * That is the same defect the backtick half already refuses, on the other fence
+ * character, and this module is the one place either is decided.
+ */
+const FENCE_RUN = /(?:`{3,}|~{3,})/g;
 const HORIZONTAL_ELLIPSIS = "…";
 /**
  * The line a clipped fence says instead of stopping dead.
@@ -72,21 +82,33 @@ function soften(s: string): string {
  * Untrusted multi-line text, fenced so it stays text.
  *
  * The fence is ` ```text `, which renders as code and never as headings: a
- * `### INJ` inside it is a line of a block, not a section of the comment. Any
- * run of 3+ backticks in the payload is neutralised by swapping each backtick
- * for U+02CB (same count), so no sequence inside can close the fence early.
+ * `### INJ` inside it is a line of a block, not a section of the comment. Any run
+ * of 3+ backticks OR 3+ tildes in the payload is neutralised by swapping each
+ * character for a same-width look-alike (U+02CB for a backtick, U+02DC for a
+ * tilde), so no sequence inside can close the fence early — see `FENCE_RUN` for
+ * why the tilde half is not optional.
  *
  * The truncation marker is emitted INSIDE the fence (so it is part of what the
- * reader sees) and AFTER the backtick neutralisation (so it can never be a
- * payload's own text that happens to look like the marker, and can never itself
- * be mangled). A payload at or under `max` gains nothing — the marker's absence
- * is what makes its presence meaningful.
+ * reader sees) and is the last thing written (so it can never be a payload's own
+ * text that happens to look like the marker, and can never itself be mangled). A
+ * payload at or under `max` gains nothing — the marker's absence is what makes its
+ * presence meaningful. The neutralisation runs BEFORE the cut for the same reason
+ * the marker goes last: see `fenceText`.
  */
 export function fenceText(s: string, max: number): string {
   let body = soften(s);
   const clipped = body.length > max;
+  // Neutralise FIRST, then cut. The order is the invariant, not a nicety: a fence
+  // run that straddles the cut reaches the reader as the surviving fragment of
+  // itself, so a payload that ends `…\n```x` and is clipped two characters early
+  // renders `…\n``…` — inert only because the fragment happens to be one unit
+  // short of a closer. Neutralising first makes every run of 3+ go through the
+  // look-alike swap whole, whatever the cut does to it, and the marker is still
+  // appended last, so it is never itself mangled.
+  body = body.replace(FENCE_RUN, (run) =>
+    (run[0] === "`" ? "\u02cb" : "\u02dc").repeat(run.length),
+  );
   if (clipped) body = `${body.slice(0, max)}${HORIZONTAL_ELLIPSIS}`;
-  body = body.replace(BACKTICK_RUN, (run) => "\u02cb".repeat(run.length));
   return `\`\`\`text\n${body}${clipped ? TRUNCATION_MARKER(max) : ""}\n\`\`\``;
 }
 

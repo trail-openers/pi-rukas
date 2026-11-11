@@ -39,7 +39,9 @@ export function oneLine(s: string): string {
 }
 
 /**
- * `## <heading>` ... content up to the next `## ` (or end of body).
+ * `## <heading>` ... content up to the next `## ` (or end of body). Exported for
+ * the one reader that needs the section's RAW text rather than its bullets —
+ * `plan-pi-spec.ts` reads the `Descriptor:` line out of `## Context & motivation`.
  *
  * The pattern is assembled from plain (non-template) string literals, and that
  * is load-bearing: inside a template literal `\s` and `\S` lose their backslashes,
@@ -54,7 +56,7 @@ const NOT_NL = String.raw`[^\n]`;
 const ANY = String.raw`[\s\S]`;
 const SLICE_HEAD = String.raw`^## `;
 const SLICE_TAIL = String.raw`*\n`;
-const SECTION_SLICE = (heading: string): RegExp =>
+export const SECTION_SLICE = (heading: string): RegExp =>
   new RegExp(`${SLICE_HEAD}${heading}${NOT_NL}${SLICE_TAIL}(${ANY}*?)(?=^## |$(?!${ANY}))`, "gm");
 
 /** The bullets of one `## <heading>` section, in order, status-only bullets dropped. */

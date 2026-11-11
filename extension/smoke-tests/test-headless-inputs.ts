@@ -81,6 +81,7 @@ import { handoffPostBackoffMs } from "../src/work-driver-handoff-post-retry.ts";
 import { handoffDispatchTimeoutMs } from "../src/work-driver-handoff.ts";
 import { intentCriticalityEnabled } from "../src/work-driver-intent-criticality.ts";
 import { intentResolutionEnabled } from "../src/work-driver-intent.ts";
+import { leanIssueProseEnabled } from "../src/lean/issue-prose.ts";
 import { issueImagesEnabled } from "../src/work-driver-issue-images.ts";
 import { mergeAuthorityEnabled } from "../src/work-driver-merge-authority.ts";
 import { NET_GIT_TIMEOUT_DEFAULT_MS } from "../src/work-driver-net-git.ts";
@@ -380,6 +381,9 @@ const LIVE: [string, () => unknown][] = [
   ["PI_ENSEMBLE_HANDOFF_POST_RETRY", handoffPostRetryEnabled],
   ["PI_ENSEMBLE_INTENT", intentResolutionEnabled],
   ["PI_ENSEMBLE_INTENT_CRITICALITY", intentCriticalityEnabled],
+  // #2171 — the oracle seat's issue-prose section. The reader is `v !== "0"`,
+  // so the LIVE assertion below (env deleted) pins "unset means on".
+  ["PI_ENSEMBLE_LEAN_ISSUE_PROSE", leanIssueProseEnabled],
   ["PI_ENSEMBLE_ISSUE_IMAGES", () => issueImagesEnabled()],
   ["PI_ENSEMBLE_LENS_EVIDENCE", evidenceSupplyEnabled],
   ["PI_ENSEMBLE_LENS_ROUND_CAP_MERGE", roundCapMergeEnabled],
@@ -478,5 +482,8 @@ for (const [name, read] of LIVE) {
   assert(caps.inputs === HEADLESS_INPUTS, "capabilities.inputs is HEADLESS_INPUTS");
   assert(caps.files === HEADLESS_FILES, "capabilities.files is HEADLESS_FILES");
 }
+
+// #2171's switch is listed in LIVE above (so its live default is pinned here);
+// its truth table and docs row are test-lean-issue-prose-switch.ts.
 
 process.exit(exit);

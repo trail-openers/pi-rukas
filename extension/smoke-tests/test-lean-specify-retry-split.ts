@@ -23,9 +23,11 @@
 
 import { rmSync } from "node:fs";
 import { challengePrompt } from "../src/lean/challenge-prompt.ts";
-import type { PiSpec } from "../src/lean/spec.ts";
+import { type PiSpec, renderPiSpec } from "../src/lean/spec.ts";
 import { refusalFeedback } from "../src/lean/specify-prompt.ts";
 import { MAX_TEST_LINES } from "../src/lean/test-size.ts";
+import { withEnv } from "./lib/env-scope.ts";
+import { CONSTRAINT } from "./lib/ticket-issue-fixture.ts";
 import {
   ROOTS,
   RUNNER,
@@ -52,6 +54,22 @@ const OVER = "tests/AC1-retry.test.sh";
 const SPLIT_A = "tests/AC1-retry-a.test.sh";
 const SPLIT_B = "tests/AC1-retry-b.test.sh";
 
+/**
+ * The issue body case (a) hands the step: the fixture's own spec — same problem
+ * and criteria, so the boundary's rules still apply unchanged — wrapped in the
+ * prose a filed issue carries, with one constraint nothing but the body states.
+ */
+const SPLIT_BODY = `${renderPiSpec({
+  problem: "The retry helper gives up on the first transient failure.",
+  size: "S",
+  criteria: [
+    { id: "AC1", text: "retries a transient failure twice before failing", verify: "test" },
+  ],
+})}
+
+Add retry handling to the meter, keeping the exception message it already raises.
+${CONSTRAINT}`;
+
 /** A red test of exactly `n` lines — the size is the only variable a case sets. */
 function redOfLength(n: number): string {
   const body = ["#!/bin/sh", 'echo "not ok - $(basename "$0")" 1>&2', "exit 1"];
@@ -66,7 +84,12 @@ function linesOf(text: string): number {
 }
 
 // ── (a) over the cap on attempt 1, split into two in-cap files on attempt 2 ──
-{
+//
+// The switch is PINED absent for this case, not read from the ambient environment:
+// the two #2171 assertions at its end assert the issue section IS rendered, and
+// `leanIssueProseEnabled()` reads `process.env` at call time, so an inherited
+// `PI_ENSEMBLE_LEAN_ISSUE_PROSE=0` failed them red on an unrelated change.
+await withEnv({ PI_ENSEMBLE_LEAN_ISSUE_PROSE: undefined }, async () => {
   const { repoRoot, baseSha } = makeRepo({ "src/retry.ts": "export const x = 1;\n" });
   const half = Math.floor(MAX_TEST_LINES / 2);
   const prompts: string[] = [];
@@ -76,6 +99,9 @@ function linesOf(text: string): number {
     issue: 2058,
     config: CONFIG,
     prompts,
+    // The fixture's spec block, plus prose around it carrying one constraint the
+    // adversary has to be able to read (#2171).
+    specBody: `${SPLIT_BODY}\n\nThe exception rule: ${CONSTRAINT}\n`,
     writes: (wt, dispatch) => {
       if (dispatch === 1) put(wt, OVER, redOfLength(MAX_TEST_LINES + 4), 0o755);
       else {
@@ -112,7 +138,16 @@ function linesOf(text: string): number {
     prompts.length === 2 && prompts[1]?.includes(SPLIT) === true,
     "(a) the retry prompt carries the split instruction",
   );
-}
+  // #2171 — the adversary is shown the issue prose, and both prompts carry the
+  // SAME bytes the step fetched once. A retry that re-read the forge would cost
+  // a `gh` call and could show attempt 2 an issue attempt 1 never saw.
+  assert(r.fetched === 1, `(a) the issue was read once for two dispatches (got ${r.fetched})`);
+  assert(
+    prompts.length === 2 &&
+      prompts.every((p) => p.includes("## The issue") && p.includes(CONSTRAINT)),
+    "(a) BOTH prompts carry the fenced issue section with the body's own constraint",
+  );
+});
 
 // ── (b) the remedy is its own line, so a >300-char size reason cannot clip it ─
 {

@@ -48,6 +48,11 @@ export class ChallengeInfraError extends Error {
 export interface ChallengeDispatchOpts {
   issue: number;
   spec: PiSpec;
+  /**
+   * The body `spec` was parsed from, shown to the adversary as the task
+   * statement (`lean/issue-prose.ts`). Threaded from the step's own fetch.
+   */
+  issueBody?: string;
   /** The frozen acceptance tests the child is shown and told not to touch. */
   frozenPaths: string[];
   wt: string;
@@ -79,6 +84,7 @@ export async function dispatchAdversary(
   const prompt = challengePrompt({
     issue: opts.issue,
     spec: opts.spec,
+    ...(opts.issueBody === undefined ? {} : { issueBody: opts.issueBody }),
     frozenPaths: opts.frozenPaths,
     worktree: opts.wt,
     ...(opts.testRunner === undefined ? {} : { testRunner: opts.testRunner }),

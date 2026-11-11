@@ -15,6 +15,7 @@
 
 import type { TestLocation } from "./config-test-location.ts";
 import { TEST_RUNNER_PLACEHOLDER } from "./config.ts";
+import { leanIssueSection } from "./issue-prose.ts";
 import { criteriaBlock, scopeBlock } from "./spec-blocks.ts";
 import type { PiSpec } from "./spec.ts";
 import { MAX_TEST_BYTES, MAX_TEST_FILES_PER_CRITERION, MAX_TEST_LINES } from "./test-size.ts";
@@ -43,6 +44,14 @@ export interface SpecifyPromptOpts {
    * file was wrong but that the step never saw any.
    */
   resubmit?: boolean;
+  /**
+   * The issue body the step re-read from the forge, shown to the adversary as
+   * "The problem" is not: the spec's problem line is one clipped sentence, and
+   * the constraints the frozen tests must honour live in the prose around it.
+   * Absent, blank, or with `PI_ENSEMBLE_LEAN_ISSUE_PROSE=0`, the section is not
+   * rendered and the prompt is the pre-section shape byte for byte.
+   */
+  issueBody?: string;
 }
 
 /** The most drop reasons {@link refusalFeedback} names; the rest are not repeated. */
@@ -212,6 +221,7 @@ export function specifyPrompt(opts: SpecifyPromptOpts): string {
     opts.testRunner === undefined
       ? "No project test runner is configured, so run each file directly and report the command you used in `note`."
       : `The parent runs each file with the project template \`${opts.testRunner}\` — the literal \`${TEST_RUNNER_PLACEHOLDER}\` is replaced by the file's path, so the file must be executable by that command alone.`;
+  const issueSection = leanIssueSection(opts.issueBody);
   const prompt = [
     `You are writing the ACCEPTANCE TESTS for issue #${opts.issue}, before anybody implements it.`,
     "",
@@ -219,6 +229,11 @@ export function specifyPrompt(opts: SpecifyPromptOpts): string {
     "",
     opts.spec.problem,
     "",
+    // The issue section sits between the problem and the criteria: the child
+    // reads the task statement before the list it must prove. Empty (switch off,
+    // or no body) contributes no line at all, so that render is the pre-section
+    // shape byte for byte rather than the same text with a gap where it was.
+    ...(issueSection === "" ? [] : [issueSection, ""]),
     "## The acceptance criteria",
     "",
     criteriaBlock(opts.spec),

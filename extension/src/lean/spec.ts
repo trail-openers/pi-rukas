@@ -54,10 +54,52 @@ export const CRITERION_ID = /^AC\d+$/;
 const VERIFY_KINDS: readonly string[] = ["test", "command", "manual"];
 const SIZES: readonly string[] = ["S", "M", "L"];
 
+/** A fence line: up to 3 spaces of indent, the run, and everything after it. */
+const FENCE_LINE = /^(?: {0,3})(?<run>`{3,}|~{3,})(?<rest>.*)$/;
+
+/**
+ * Whether the whole LINE `line` closes a sample opened by `char`/`len` — the one
+ * predicate every reader of a drafted or filed body calls, because it is the whole
+ * CommonMark condition and not part of it: up to 3 leading spaces, a run of the
+ * same character at least as long as the opener's, and NOTHING but whitespace after
+ * the run (a closer carries no info string).
+ *
+ * THE closing rule of this module's walkers below, and the one rule its readers
+ * must agree on: `fencedBlocks` decides what `parsePiSpec` can read,
+ * `stripPiSpecBlocks` decides what an oracle seat is shown, and
+ * `plan-pi-spec-descriptor.ts`'s section walker imports this for its own look-ahead.
+ * Where they disagree the same body reads two ways — a strip that keeps a block the
+ * parser dropped, or a section that ends where a strip kept going.
+ *
+ * The take-the-whole-line shape is the point, and why there is deliberately no
+ * exported "does this RUN close it" half next to it: a run-only predicate leaves
+ * the "nothing but the run" condition to each caller, and callers that supply it
+ * differently (a `\s*$` anchor versus a trimmed tail) make the same line a boundary
+ * in one reader and content in the other — a sample the strip called closed (and so
+ * removed from the oracle seat) while the section walker was still inside it, which
+ * carried the sample's quoted `## ` line as the boundary that ended the section
+ * early. Zero criteria is a legitimate draft, so the draft filed NO machine block at
+ * all and said nothing while doing it. One predicate, one tail test; a fourth
+ * line-by-line fence walker, or a second spelling of either half, is the drift to
+ * refuse.
+ *
+ * The tail test is `rest.trim() === ""` and not a `\s*$` anchor: JS treats U+2028
+ * and U+2029 as line terminators, so `.` does not match them while `\s` does, and
+ * the two spellings are not the same class of line.
+ */
+export function closesFenceLine(line: string, char: string, len: number): boolean {
+  const g = FENCE_LINE.exec(line)?.groups;
+  const run = g?.run as string | undefined;
+  return run !== undefined && run[0] === char && run.length >= len && (g?.rest ?? "").trim() === "";
+}
+
 /**
  * Fenced blocks in a CommonMark body: a run of ≥3 backticks or tildes opens,
  * a run of the same char at least as long closes. Blank lines and indented
  * fences do not break the run, so a spec block may contain either.
+ *
+ * The pi-spec reader below is its only caller here; the closing rule it applies
+ * is {@link closesFenceLine}, the one the other readers share.
  */
 function fencedBlocks(body: string): { info: string; content: string }[] {
   const lines = body.split(/\r?\n/);
@@ -71,13 +113,8 @@ function fencedBlocks(body: string): { info: string; content: string }[] {
     const rest = m?.[3] ?? "";
     if (open) {
       // A closing fence is the same character, at least as long, and carries
-      // no info string of its own.
-      if (
-        run !== undefined &&
-        run[0] === open.char &&
-        run.length >= open.len &&
-        rest.trim() === ""
-      ) {
+      // no info string of its own — all three decided by the shared predicate.
+      if (closesFenceLine(line, open.char, open.len)) {
         blocks.push({ info: open.info.trim(), content: open.content.join("\n") });
         open = undefined;
         continue;
@@ -106,12 +143,12 @@ function unterminatedFenceLine(body: string): number | undefined {
   const lines = body.split(/\r?\n/);
   let open: { char: string; len: number; line: number } | undefined;
   for (let i = 0; i < lines.length; i++) {
-    const m = /^( {0,3})(`{3,}|~{3,})(.*)$/.exec(lines[i] as string);
+    const line = lines[i] as string;
+    const m = /^( {0,3})(`{3,}|~{3,})(.*)$/.exec(line);
     const run = m?.[2];
     if (run === undefined) continue;
-    const rest = m?.[3] ?? "";
     if (open) {
-      if (run[0] === open.char && run.length >= open.len && rest.trim() === "") {
+      if (closesFenceLine(line, open.char, open.len)) {
         open = undefined;
         continue;
       }
@@ -162,6 +199,83 @@ function validate(obj: unknown): string | undefined {
 /** The info string of the single spec block in a body, or undefined for none. */
 export function readPiSpecBlockInfo(body: string): string | undefined {
   return fencedBlocks(body).find((b) => b.info === SPEC_INFO)?.info;
+}
+
+/**
+ * The body with its TERMINATED `pi-spec v1` fence removed, for a child that is
+ * shown the issue as the task statement and must not be handed the contract
+ * twice (`lean/specify-prompt.ts`, `lean/challenge-prompt.ts`).
+ *
+ * The rule is exactly {@link closesFenceLine}'s — same fence character, a run at
+ * least as long, a closer that carries no info string — and only a fence whose
+ * info string trims to `SPEC_INFO` is dropped. Everything else survives
+ * byte-for-byte, including the shapes that LOOK like a spec: a fence whose info
+ * merely starts with it, a tilde fence, an indented fence, and a `pi-spec v1`
+ * block that was never closed. The unterminated case is the one that matters:
+ * a truncated body keeps its prose rather than losing half of it to a strip,
+ * and `parsePiSpec` still reports the missing closer for that same body.
+ *
+ * What goes is the opening line, the content and the closer, plus AT MOST ONE
+ * blank — the blank line the block needed to be a block at all. A spec block is
+ * normally flanked by blanks, so taking its three lines and nothing else would
+ * leave the oracle seat a double blank inside the fence, a gap the issue never
+ * had. Bounded that way rather than as a general trim: one blank, only when a
+ * blank survived on each side of the removal, so a body with nothing to strip —
+ * and a body whose block sat directly against its prose — come back byte-identical.
+ * The line SPLITS on `\r?\n` and rejoins on `\n`, which is what `fencedBlocks`
+ * already does to the same body.
+ */
+export function stripPiSpecBlocks(body: string): string {
+  const lines = body.split(/\r?\n/);
+  // Three named groups, not indices: in `(\`{3,}|~{3,})` an alternative that
+  // does not participate captures "", so an index read of the run has to know
+  // which alternative matched. A name cannot get that wrong.
+  const FENCE = /^(?<indent> {0,3})(?<run>`{3,}|~{3,})(?<rest>.*)$/;
+  const kept: string[] = [];
+  let open: { char: string; len: number; spec: boolean; buf: string[] } | undefined;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] as string;
+    const g = FENCE.exec(line)?.groups;
+    const run = g?.run;
+    const rest = g?.rest ?? "";
+    if (open) {
+      if (closesFenceLine(line, open.char, open.len)) {
+        // A spec block: its opening line, its content and its closer all go, so
+        // nothing of `buf` is emitted. Any other fence goes back WHOLE — the
+        // opening line sat outside `buf`, so the closer joins it there.
+        if (!open.spec) kept.push(...open.buf, line);
+        // …and a spec block takes ONE of its flanking blanks with it, so prose that
+        // the block separated by a blank on each side does not end up double-
+        // separated. Only one, and only when a blank still sits on both sides of the
+        // removal — see the jsdoc.
+        else if (kept.at(-1) === "" && lines[i + 1]?.trim() === "") kept.pop();
+        open = undefined;
+        continue;
+      }
+      open.buf.push(line);
+      continue;
+    }
+    if (run !== undefined) {
+      // The opening line is NOT yet committed: an opening line is only text if
+      // the fence turns out not to be the block (or never closes).
+      open = {
+        char: run[0] as string,
+        len: run.length,
+        spec: rest.trim() === SPEC_INFO,
+        buf: [line],
+      };
+      continue;
+    }
+    kept.push(line);
+  }
+  // An open fence that never closed is not a block (`fencedBlocks` says so too),
+  // so its lines — the opening line included — all stay in the rendered text.
+  // Read through a local: outside the loop the compiler has already narrowed the
+  // mutable `open` to `undefined` at the reassign sites, and a narrowing it
+  // carried to the wrong place is a `never` in the way of an ordinary field read.
+  const dangling = open;
+  if (dangling !== undefined) kept.push(...dangling.buf);
+  return kept.join("\n");
 }
 
 /** Read the `pi-spec v1` block out of an issue body. Never throws. */

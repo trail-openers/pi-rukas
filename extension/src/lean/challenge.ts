@@ -111,8 +111,18 @@ const CONTROL_CHARS = new RegExp(
   `[${String.fromCharCode(0x00)}-${String.fromCharCode(0x1f)}${String.fromCharCode(0x7f)}]`,
 );
 
+/** What the contract re-read from the forge gave the challenge step. */
+interface SpecRead {
+  spec: PiSpec;
+  /**
+   * The body it was parsed from, kept for the adversary's brief — the SAME
+   * fetch, never a second one (`lean/issue-prose.ts`).
+   */
+  body: string;
+}
+
 /** The spec, re-read from the forge — the same contract the builder worked to. */
-async function specOf(deps: ChallengeDeps, repoRoot: string, issue: number): Promise<PiSpec> {
+async function specOf(deps: ChallengeDeps, repoRoot: string, issue: number): Promise<SpecRead> {
   let body: string;
   try {
     body = await deps.fetchIssueBody(repoRoot, issue);
@@ -129,7 +139,7 @@ async function specOf(deps: ChallengeDeps, repoRoot: string, issue: number): Pro
   const rules = readiness(parsed.spec);
   if (rules.length > 0)
     throw new ChallengeInfraError(`the issue's spec is not ready: ${rules.join("; ")}`);
-  return parsed.spec;
+  return { spec: parsed.spec, body };
 }
 
 // A round can end holding bytes nobody judged, and `verify` refuses a dirty tree:
@@ -258,7 +268,7 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
   const config = await deps.loadConfig(repoRoot, base).catch((err: unknown) => {
     throw new ChallengeInfraError(`could not load the project config: ${(err as Error).message}`);
   });
-  const spec = await specOf(deps, repoRoot, issue);
+  const { spec, body: issueBody } = await specOf(deps, repoRoot, issue);
   const wanted = testCriteria(spec);
   // ONE binding, ONE refusal: `runnerTemplate` is the string the runner needs and
   // `testRunner` is the same string shown to the adversary, so there is exactly
@@ -281,6 +291,7 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
   const [adversary, row] = await dispatchAdversary(deps.dispatch, {
     issue,
     spec,
+    issueBody,
     frozenPaths: Object.keys(frozen),
     wt,
     repoRoot,

@@ -271,6 +271,12 @@ export interface RunResult {
   outcome?: Outcome;
   threw?: Error;
   dispatched: number;
+  /**
+   * How many times the step read the issue. ONE is the contract: the body the
+   * spec was parsed from is the body the adversary is shown (#2171 threads it,
+   * it does not re-fetch it), so a second call is a silent regression.
+   */
+  fetched: number;
   prompts: string[];
   specs: DispatchSpec[];
   worktree: string;
@@ -376,6 +382,7 @@ export async function runChallenge(opts: RunOpts): Promise<RunResult> {
   const specs: DispatchSpec[] = [];
   const gitArgvs: string[][] = [];
   let dispatched = 0;
+  let fetched = 0;
   const exec: ChallengeDeps["exec"] = async (cmd, o) => {
     if (cmd === "git" && o?.argv) gitArgvs.push(o.argv);
     if (opts.overrideHead !== undefined && o?.argv?.includes("rev-parse"))
@@ -407,7 +414,10 @@ export async function runChallenge(opts: RunOpts): Promise<RunResult> {
   const deps: ChallengeDeps = {
     exec,
     dispatch,
-    fetchIssueBody: async () => opts.specBody ?? SPEC_BODY,
+    fetchIssueBody: async () => {
+      fetched++;
+      return opts.specBody ?? SPEC_BODY;
+    },
     loadConfig: async () => {
       if (opts.noRunner === true) return { ...configWith(), verify: { fast: "true" } };
       if (opts.runner !== undefined) return configWith(opts.runner);
@@ -427,6 +437,7 @@ export async function runChallenge(opts: RunOpts): Promise<RunResult> {
     return {
       outcome,
       dispatched,
+      fetched,
       prompts,
       specs,
       worktree: built.worktree,
@@ -437,6 +448,7 @@ export async function runChallenge(opts: RunOpts): Promise<RunResult> {
     return {
       threw: err as Error,
       dispatched,
+      fetched,
       prompts,
       specs,
       worktree: built.worktree,

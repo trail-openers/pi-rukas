@@ -246,6 +246,10 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
   const read = specRules(body);
   if (read.rules.length > 0) return { kind: "no-red-test", failedRules: read.rules };
   const spec = read.spec as PiSpec;
+  // The same bytes the spec was parsed from, kept for the adversary's brief.
+  // Fetching twice would let the child be shown an issue the contract was not
+  // parsed from.
+  const issueBody = body;
 
   const base = ctx.run.baseSha;
   if (base.trim() === "") throw new SpecifyInfraError("the run carries no base sha");
@@ -320,6 +324,7 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
     repoRoot,
     issue,
     spec,
+    issueBody,
     wt,
     base,
     branch,
