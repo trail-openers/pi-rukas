@@ -195,6 +195,12 @@ export interface RunResult {
   deadDispatches?: DispatchUsageRow[];
   sawBaseHealthy: boolean;
   dispatched: number;
+  /**
+   * How many times the step read the issue. ONE is the contract: the body the
+   * spec was parsed from is the body the adversary is shown, and a second read
+   * costs a `gh` call and can show the child an issue the contract is not.
+   */
+  fetched: number;
   worktree: string;
 }
 
@@ -263,6 +269,7 @@ export async function runSpecify(opts: RunOpts): Promise<RunResult> {
   const deadline = deadlineOf(opts.clock, now);
   let sawBaseHealthy = false;
   let dispatched = 0;
+  let fetched = 0;
   const exec: SpecifyDeps["exec"] = async (cmd, o) => {
     if (cmd === opts.config.verify.fast) sawBaseHealthy = true;
     // The identity is in the env for EVERY exec, including the production
@@ -317,7 +324,10 @@ export async function runSpecify(opts: RunOpts): Promise<RunResult> {
         return got;
       }),
     ...(opts.testLimits === undefined ? {} : { testLimits: opts.testLimits }),
-    fetchIssueBody: async () => opts.specBody ?? BODY,
+    fetchIssueBody: async () => {
+      fetched++;
+      return opts.specBody ?? BODY;
+    },
     loadConfig: async () => opts.config,
     statReporter: async () => ({}),
   };
@@ -328,13 +338,14 @@ export async function runSpecify(opts: RunOpts): Promise<RunResult> {
       ctxFor(opts.repoRoot, opts.baseSha, issue, now, deadline),
       deps,
     );
-    return { outcome, sawBaseHealthy, dispatched, worktree };
+    return { outcome, sawBaseHealthy, dispatched, fetched, worktree };
   } catch (err) {
     return {
       threw: err as Error,
       deadDispatches: err instanceof SpecifyInfraError ? err.dispatches : undefined,
       sawBaseHealthy,
       dispatched,
+      fetched,
       worktree,
     };
   }

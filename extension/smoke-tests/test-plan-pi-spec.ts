@@ -49,7 +49,7 @@ import {
   renderPiSpecSection,
 } from "../src/plan-pi-spec.ts";
 import { AC_FALLBACK, BODY_BUDGET } from "../src/plan-validate.ts";
-import { assert, draftBody, mustSpec, specExit } from "./lib/plan-pi-spec-fixture.ts";
+import { assert, draftBody, draftBodyWithDescriptor, mustSpec, specExit } from "./lib/plan-pi-spec-fixture.ts";
 
 // ------------------------------------------------------------------ the mapper
 
@@ -57,12 +57,15 @@ import { assert, draftBody, mustSpec, specExit } from "./lib/plan-pi-spec-fixtur
   const spec = piSpecFromDraft({
     type: "feature",
     title: "  add   a pi-spec   block  ",
-    body: draftBody([
-      "the parser rejects a malformed token",
-      "the suite passes when `bun test extension/smoke-tests` exits 0",
-      "`./scripts/verify.sh` is green",
-      "the gov file is mentioned but is not a command",
-    ]),
+    body: draftBodyWithDescriptor(
+      [
+        "the parser rejects a malformed token",
+        "the suite passes when `bun test extension/smoke-tests` exits 0",
+        "`./scripts/verify.sh` is green",
+        "the gov file is mentioned but is not a command",
+      ],
+      "give   the oracle  the issue text",
+    ),
   });
   assert(!!spec && spec.criteria.length === 4, "mapper: one criterion per bullet, in order");
   assert(
@@ -81,31 +84,19 @@ import { assert, draftBody, mustSpec, specExit } from "./lib/plan-pi-spec-fixtur
     spec?.criteria[3]?.verify === "test" && spec?.criteria[3]?.command === undefined,
     "mapper: a span that merely starts with runner letters is not a command",
   );
+  // The problem is the draft's own statement of the problem — the `Descriptor:`
+  // line of `## Context & motivation` — not the clipped title, and whitespace is
+  // collapsed the same way the title used to be.
   assert(
-    spec?.problem === "add a pi-spec block",
-    `mapper: problem is the TITLE, whitespace-collapsed (got ${JSON.stringify(spec?.problem)})`,
+    spec?.problem === "give the oracle the issue text",
+    `mapper: problem is the Descriptor line, prefix stripped and whitespace-collapsed (got ${JSON.stringify(spec?.problem)})`,
+  );
+  assert(
+    spec?.problem !== "add a pi-spec block",
+    "mapper: problem is NOT the title when the draft states a descriptor",
   );
   assert(spec?.scope === undefined, "mapper: the block carries NO scope at all");
   assert(!("scope" in (spec ?? {})), "mapper: `scope` is not even a key of the embedded object");
-}
-
-{
-  // The title is the ONLY prose the block may carry, and it is clipped.
-  const spec = piSpecFromDraft({
-    type: "feature",
-    title: "t".repeat(3_000),
-    body: draftBody(["a"]),
-  });
-  assert(
-    (spec?.problem.length ?? 0) === PI_SPEC_PROBLEM_MAX_CHARS,
-    `mapper: problem is the title clipped to ${PI_SPEC_PROBLEM_MAX_CHARS} (got ${spec?.problem.length})`,
-  );
-  assert(
-    !draftBody(["a"])
-      .slice(0, 40)
-      .includes(spec?.problem ?? "\u0000"),
-    "mapper: problem is not the drafted body's opening prose",
-  );
 }
 
 {

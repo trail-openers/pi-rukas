@@ -5,10 +5,13 @@
  *
  * BOUNDED BY CONSTRUCTION, PLACED AT THE TOP, READ BACK BEFORE FILING:
  *
- *   - `piSpecFromDraft` bounds every field it emits — `problem` is the issued
- *     TITLE clipped to 200 UTF-16 units (never body prose), at most 12 criteria
- *     at 200 units each, no `scope` at all. Every criterion is `verify: "test"`
- *     with no command: the drafter never makes a criterion executable.
+ *   - `piSpecFromDraft` bounds every field it emits — `problem` is the drafted
+ *     body's `Descriptor:` line clipped to 200 UTF-16 units (the one statement
+ *     the /plan caller wrote), falling back to the TITLE when that line is
+ *     absent or empty, and never some other paragraph of body prose. At most 12
+ *     criteria at 200 units each, no `scope` at all. Every criterion is
+ *     `verify: "test"` with no command: the drafter never makes a criterion
+ *     executable.
  *   - a CRITERION LONGER THAN THE BOUND IS NEVER CUT: the clip exists only so the
  *     bound can be checked, and `placePiSpecSection` omits the whole block when any
  *     criterion's text is not its bullet whole, with the filed body carrying the
@@ -34,10 +37,15 @@
  * first means no prose written below it can reach it, and the read-back catches
  * what remains.
  *
- * Why `problem` is the TITLE and there is no `scope`: a body-derived problem
- * carried drafted prose into a machine field, including failure text the plan
- * never promised; and the drafted Test surface / Out of scope bullets are prose
- * that `plan-draft.ts` clips at 400 chars, which is not a fence anyone verified.
+ * Why `problem` is the `Descriptor:` line and there is no `scope`: the descriptor
+ * is the one statement of the problem the /plan caller actually wrote, and it is
+ * the line `plan-draft.ts` renders into `## Context & motivation`. The other prose
+ * of that section — and every other drafted section — is angle output that can
+ * carry failure text and hedges the plan never promised, which is what a
+ * free-form body-derived problem used to admit. The derived string goes through
+ * the SAME `oneLine` + `neutraliseFenceRuns` + `clip` pipeline at the SAME 200-unit
+ * bound as the title did, so neither `PI_SPEC_SECTION_MAX_CHARS` nor the budget
+ * fitter's reservation depends on which of the two supplied it.
  *
  * An epic and a spike get no block: an epic's criteria belong to its sub-issues,
  * and a spike's criteria slot is the Expected deliverable — a decision or a proof
@@ -46,8 +54,9 @@
  */
 import type { PiSpec } from "./lean/spec.ts";
 import { SPEC_INFO, parsePiSpec, readiness, renderPiSpec } from "./lean/spec.ts";
+import { criteriaBullets, descriptorProblem } from "./plan-pi-spec-descriptor.ts";
 import { fencePrefix, opensFenceWith } from "./plan-pi-spec-fences.ts";
-import { clip, oneLine, sectionBullets } from "./plan-pi-spec-text.ts";
+import { clip, oneLine } from "./plan-pi-spec-text.ts";
 import type { PlanType } from "./plan-types.ts";
 import { trace, traceWarn } from "./trace.ts";
 
@@ -73,7 +82,7 @@ export const PI_SPEC_OMISSION_PREFIX = "pi-spec block omitted:";
  */
 export const PI_SPEC_EXAMPLE_INFO = `${SPEC_INFO}-example`;
 
-/** The problem field is the issue TITLE, and never renders longer than this. */
+/** The problem field comes from the `Descriptor:` line (title fallback), and never renders longer than this. */
 export const PI_SPEC_PROBLEM_MAX_CHARS = 200;
 
 /** The most criteria the block embeds; the size band still counts the original. */
@@ -168,7 +177,7 @@ export interface PiSpecDraft {
   type: PlanType;
   /** The drafted body, which carries `## Acceptance criteria`. */
   body: string;
-  /** The filed title (`Phase3Fitted.title`); becomes the clipped `problem`. */
+  /** The filed title (`Phase3Fitted.title`); the `problem` fallback when the draft states no descriptor. */
   title: string;
 }
 
@@ -224,6 +233,15 @@ function sizeOf(count: number): PiSpec["size"] {
 }
 
 /**
+ * The problem field's source text: the descriptor if the draft states one, the
+ * filed title otherwise. Both go through the same pipeline at the same bound.
+ * The parsing of the statement out of the body is `plan-pi-spec-descriptor.ts`'s.
+ */
+function problemText(draft: PiSpecDraft): string {
+  return descriptorProblem(draft.body) || draft.title;
+}
+
+/**
  * The drafted body + title → the contract, bounded by construction. Criteria are
  * the draft's own `## Acceptance criteria` bullets, in order, with positional ids
  * `AC1...`, and every one is `verify: "test"` with no command. A backticked command
@@ -234,13 +252,13 @@ function sizeOf(count: number): PiSpec["size"] {
  * twelve ride in the block. `problem` is the title; there is no `scope`.
  *
  * Returns undefined when there is nothing to contract: an epic, a spike, zero
- * criteria, or a title so empty there is no `problem` to state (a spec with an
- * empty problem is one `parsePiSpec` refuses, so it must not be filed).
+ * criteria, or neither a descriptor nor a title to state (`parsePiSpec` refuses a
+ * spec with an empty problem, so one must not be filed).
  */
 export function piSpecFromDraft(draft: PiSpecDraft): PiSpec | undefined {
   if (draft.type === "spike" || draft.type === "epic") return undefined;
   if (draft.title.trim() === "") return undefined;
-  const all = sectionBullets(draft.body, "Acceptance criteria");
+  const all = criteriaBullets(draft.body);
   if (all.length === 0) return undefined;
   const criteria = all.slice(0, PI_SPEC_MAX_CRITERIA).map((bullet, i) => ({
     id: `AC${i + 1}`,
@@ -254,7 +272,7 @@ export function piSpecFromDraft(draft: PiSpecDraft): PiSpec | undefined {
     verify: "test" as const,
   }));
   return {
-    problem: clip(neutraliseFenceRuns(oneLine(draft.title)), PI_SPEC_PROBLEM_MAX_CHARS),
+    problem: clip(neutraliseFenceRuns(oneLine(problemText(draft))), PI_SPEC_PROBLEM_MAX_CHARS),
     criteria,
     size: sizeOf(all.length),
   };
@@ -364,9 +382,7 @@ export function placePiSpecSection(
   // checks EVERY bullet — including the ones past the embedded cap, whose
   // over-length still refuses the whole block. Every offender is named, so a
   // drafter told about one is not refused again for the next.
-  const forms = sectionBullets(body, "Acceptance criteria").map((b) =>
-    neutraliseFenceRuns(oneLine(b)),
-  );
+  const forms = criteriaBullets(body).map((b) => neutraliseFenceRuns(oneLine(b)));
   const offenders = forms
     .map((form, i) => ({ id: `AC${i + 1}`, length: form.length }))
     .filter((form) => form.length > PI_SPEC_CRITERION_MAX_CHARS);

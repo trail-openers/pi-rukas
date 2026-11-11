@@ -69,8 +69,21 @@ installNoPlanCacheStub();
   if (parsed.ok) {
     assert(readiness(parsed.spec).length === 0, "pipeline: the filed spec is ready");
     assert(
-      parsed.spec.problem === r.title.slice(0, PI_SPEC_PROBLEM_MAX_CHARS),
-      "pipeline: the block's problem is the filed ISSUE TITLE",
+      // #2171 — the problem is the drafted `Descriptor:` text, i.e. the statement
+      // the caller wrote, and the filed title (prefix + a cut of the descriptor)
+      // is only its fallback. The descriptor here ends its first sentence well
+      // inside the 200-unit bound, so the whole clause is the problem.
+      parsed.spec.problem === "add a pi-spec block to the plan driver in extension/src" &&
+        parsed.spec.problem !== r.title,
+      "pipeline: the block's problem is the descriptor, not the filed ISSUE TITLE (got " +
+        JSON.stringify(parsed.spec.problem) +
+        " vs title " +
+        JSON.stringify(r.title) +
+        ")",
+    );
+    assert(
+      parsed.spec.problem.length <= PI_SPEC_PROBLEM_MAX_CHARS,
+      `pipeline: the problem stays inside the ${PI_SPEC_PROBLEM_MAX_CHARS}-unit bound (got ${parsed.spec.problem.length})`,
     );
   }
   const provLine = filed.indexOf("_add a pi-spec block");
