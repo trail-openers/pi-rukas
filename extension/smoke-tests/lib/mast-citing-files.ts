@@ -2,15 +2,15 @@
 /**
  * mast-citing-files — the derived roster of repository files that cite the MAST
  * paper, for `test-mast-authoritative-block.ts`. Split out to keep both files
- * under the size ratchet (the same move `lib/pi-version-census.ts` made for the
- * Pi version census, which enumerates with the identical `ls-files` argv).
+ * under the size ratchet. The listing itself is `lib/git-listed-files.ts`, shared
+ * with `test-file-size-limit.ts` so the two repository-wide gates cannot drift to
+ * different definitions of "the files of this repository".
  */
 
-import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
-import { gitTestEnv } from "./git-test-env.ts";
+import { gitListedFiles } from "./git-listed-files.ts";
 
 /**
  * Every repository file that names the paper — derived, never hand-listed, and
@@ -40,38 +40,8 @@ export function discoverCitingFiles(repoRoot: string, arxiv: string, minSites: n
     "outputs",
     "coverage",
   ]);
-  // No shell: argv array to execFileSync, so the repo path is never parsed; a
-  // failed `ls-files` throws out of it rather than passing. `env: gitTestEnv()`
-  // is not decoration — `--exclude-standard` consults the ignore stack whose
-  // topmost source is the host's per-user ignore file, so on a host with a
-  // hostile `~/.config/git/ignore` a new citing file vanishes from the listing
-  // and this gate reports green while the file sits in the tree. `execFileSync`
-  // with no `env` inherits the REAL `environ` on bun 1.3, so the isolated set
-  // has to be threaded (see lib/git-test-env.ts). `maxBuffer` bounds a listing
-  // that grows with the repository; overflowing it throws red, never green.
-  const listed = execFileSync(
-    "git",
-    [
-      "-c",
-      "core.quotepath=false",
-      "-C",
-      repoRoot,
-      "ls-files",
-      "-z",
-      "--cached",
-      "--others",
-      "--exclude-standard",
-    ],
-    { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, env: gitTestEnv() },
-  );
-  if (listed.trim() === "") {
-    throw new Error(
-      `git ls-files at ${repoRoot} returned no paths — refusing to judge an empty roster`,
-    );
-  }
   const out: string[] = [];
-  for (const relative of listed.split("\u0000")) {
-    if (relative === "") continue;
+  for (const relative of gitListedFiles(repoRoot)) {
     const segments = relative.split("/");
     if (segments.some((segment) => skip.has(segment))) continue;
     if (!(relative.endsWith(".ts") || relative.endsWith(".md"))) continue;

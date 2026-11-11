@@ -30,6 +30,21 @@
  * "this is a program"; the execute bit alone is not (a generated data file
  * marked +x is still data), so only `#!`-prefixed files count.
  *
+ * **Enumerated by git, never by a filesystem walk.** The gate means "every source
+ * file of the repository", and a walk reaches content that is not part of it: a
+ * private notes directory (or any other local tree) whose scripts no reviewer sees
+ * and no PR can fix made consolidated /work verify — which runs in the main checkout —
+ * hand back on the host that owns those files, while CI stayed green. `git ls-files
+ * --cached --others --exclude-standard` is the enumeration that matches the contract:
+ * untracked work still counts (a new oversized file that is not yet added is exactly
+ * what the ratchet exists to catch) while anything the ignore stack excludes is out
+ * by definition. The git child runs with `gitTestEnv()` because `--exclude-standard`
+ * consults the per-user ignore file too, and the gate's scope must not depend on a
+ * host config file. An empty listing or a failed `ls-files` throws rather than
+ * passing: an unreadable roster is not a clean repo. The same enumeration the MAST
+ * site roster uses (`lib/mast-citing-files.ts`), for the same reason; the argv lives
+ * in `lib/git-listed-files.ts` shared by both so the two gates cannot drift apart.
+ *
  * **Proven in both directions.** A gate never observed to fail is worthless —
  * this repo's own file-size ratchet shipped with three separate fail-open bugs
  * that each passed CI green, including a counter incremented inside a piped
@@ -40,9 +55,12 @@
  * Escape hatch: `PI_ENSEMBLE_SIZE_RATCHET=0`.
  */
 
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+
+import { gitListedFiles } from "./lib/git-listed-files.ts";
+import { gitIn } from "./lib/git-worktree-fixture.ts";
 
 const HARD_LIMIT = 500;
 const REPO_ROOT = path.join(import.meta.dirname, "..", "..");
@@ -84,32 +102,29 @@ function isExecutableScript(file: string): boolean {
   return head.startsWith("#!");
 }
 
-function listSourceFiles(dir: string): string[] {
-  const out: string[] = [];
-  let entries: string[];
-  try {
-    entries = readdirSync(dir);
-  } catch {
-    return out; // unreadable dir is not a violation
-  }
-  for (const entry of entries) {
-    if (EXCLUDED_DIRS.has(entry)) continue;
-    const full = path.join(dir, entry);
-    let st: ReturnType<typeof statSync>;
-    try {
-      st = statSync(full);
-    } catch {
-      continue; // a broken symlink is not a violation
-    }
-    if (st.isDirectory()) {
-      out.push(...listSourceFiles(full));
-    } else if (SOURCE_EXTENSIONS.some((e) => entry.endsWith(e)) && !entry.endsWith(".d.ts")) {
-      out.push(full);
-    } else if (isExecutableScript(full)) {
-      out.push(full);
-    }
-  }
-  return out;
+/** In scope by name: a source extension (and not a declaration file). */
+function hasSourceExtension(relative: string): boolean {
+  return (
+    SOURCE_EXTENSIONS.some((e) => relative.endsWith(e)) && !relative.endsWith(".d.ts")
+  );
+}
+
+/**
+ * Every repository file that counts as source, as repo-relative paths.
+ *
+ * `gitListedFiles` is the enumeration (`--cached --others --exclude-standard`):
+ * untracked work stays in scope, local-only content is out by definition — see
+ * the module header and that helper's own docstring. The explicit directory
+ * exclusions stay because git enumerates tracked paths too, so an accidentally
+ * committed `dist/` or vendored `skill/` tree is listed content rather than a
+ * stray local one.
+ */
+function listSourceFiles(root: string): string[] {
+  return gitListedFiles(root).filter(
+    (relative) =>
+      !relative.split("/").some((segment) => EXCLUDED_DIRS.has(segment)) &&
+      (hasSourceExtension(relative) || isExecutableScript(path.join(root, relative))),
+  );
 }
 
 function lineCount(file: string): number {
@@ -122,7 +137,7 @@ function lineCount(file: string): number {
 /** Exported shape so the both-directions check below can call it on a fixture. */
 export function findOversized(root: string, limit = HARD_LIMIT): { file: string; lines: number }[] {
   return listSourceFiles(root)
-    .map((file) => ({ file: path.relative(root, file), lines: lineCount(file) }))
+    .map((file) => ({ file, lines: lineCount(path.join(root, file)) }))
     .filter((f) => f.lines > limit)
     .sort((a, b) => b.lines - a.lines);
 }
@@ -145,6 +160,9 @@ if (process.env.PI_ENSEMBLE_SIZE_RATCHET === "0") {
 
 {
   const fixtureRoot = mkdtempSync(path.join(tmpdir(), "pi-ens-sizegate-"));
+  // The enumeration is git's now, so the canary's scratch tree has to be a repo:
+  // an untracked file is `--others` only inside one, and a non-repo throws.
+  gitIn(fixtureRoot, ["init", "-q"]);
   try {
     writeFileSync(path.join(fixtureRoot, "fine.ts"), "x\n".repeat(10));
     writeFileSync(path.join(fixtureRoot, "toolong.sh"), "echo x\n".repeat(HARD_LIMIT + 1));
@@ -193,7 +211,7 @@ if (violations.length === 0) {
 // The scope must actually reach outside extension/, or this is the old gate
 // with a longer docstring.
 {
-  const scanned = listSourceFiles(REPO_ROOT).map((f) => path.relative(REPO_ROOT, f));
+  const scanned = listSourceFiles(REPO_ROOT);
   // #1788's acceptance criterion says "no file exceeds 500 lines", and the
   // feature added six modules plus a bin script. A criterion is only worth
   // what its gate actually measures, so the feature's own files are named here
@@ -219,7 +237,7 @@ if (violations.length === 0) {
   // Closest-to-limit, so the next file to breach is known before it does.
   // build.sh sat at 499 while entirely unmeasured.
   const nearest = listSourceFiles(REPO_ROOT)
-    .map((f) => ({ file: path.relative(REPO_ROOT, f), lines: lineCount(f) }))
+    .map((f) => ({ file: f, lines: lineCount(path.join(REPO_ROOT, f)) }))
     .sort((a, b) => b.lines - a.lines)[0];
   if (nearest) {
     console.log(`  closest to the limit: ${nearest.file} at ${nearest.lines}/${HARD_LIMIT} lines`);
