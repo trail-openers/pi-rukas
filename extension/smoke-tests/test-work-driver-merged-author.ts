@@ -105,8 +105,15 @@ const runFor = (issue: number, extra: Parameters<typeof gateFileRun>[0] = {}) =>
 		"#2181 …and the gate still PROBED for the file — absence is a read's answer, never a skipped check",
 	);
 	assert(
-		r.log.allowlistReads.every((c) => !c.includes("show")),
-		"#2181 …and absence costs only the two probes (the tree mode and the type), never a blob read",
+		// Positive: the read set IS the tree-mode probe and the type probe, in that order,
+		// and nothing else. A negative `!includes("show")` only feared one verb, so a reader
+		// that grew a third read of any kind kept passing.
+		r.log.allowlistReads.length === 2 &&
+			r.log.allowlistReads[0]?.includes("ls-tree") === true &&
+			r.log.allowlistReads[0]?.includes(r.baseSha) === true &&
+			r.log.allowlistReads[1]?.includes("cat-file") === true &&
+			r.log.allowlistReads[1]?.includes(`${r.baseSha}:`) === true,
+		`#2181 …and absence costs exactly the two probes — the tree mode then the type, never a blob read (${JSON.stringify(r.log.allowlistReads)})`,
 	);
 	assert(
 		!(r.log.unexpected ?? []).some((c) => c.includes("rev-parse")),
@@ -165,8 +172,8 @@ const runFor = (issue: number, extra: Parameters<typeof gateFileRun>[0] = {}) =>
 		const at = c.indexOf("ls-tree ");
 		if (at < 0) return c.trim().split(/\s+/).pop() ?? "";
 		// The tree read carries no `<sha>:<path>` spec: its revision is its own argument,
-			// so that argument is what has to name the base commit.
-			return c.slice(at + "ls-tree ".length).split(/\s+/)[0] ?? "";
+		// so that argument is what has to name the base commit.
+		return c.slice(at + "ls-tree ".length).split(/\s+/)[0] ?? "";
 	});
 	assert(
 		specs.length >= 3 &&

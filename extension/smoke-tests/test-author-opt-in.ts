@@ -44,6 +44,30 @@ const ALLOWED = { ok: true, login: "alice" } as const;
 /** The probe's answer for an absent path — git exits non-zero, it does not say "no". */
 const ABSENT: OptInArm = { absent: true };
 
+// The exact read set an absent gate file costs: the tree-mode probe and the type probe,
+// spelled as the seam records them (the joined argv, which is what every stub and log
+// keeps). Each assertion then says "the read set IS these two lines" rather than "none of
+// them contains the word `show`": a reader that grew a third read — of the bytes or of
+// anything else — fails a positive equality where the negative predicate let it through.
+// The flags in front of each read are read off the reader's OWN first call rather than
+// restated here, so this file cannot drift from what the reader actually asks git.
+const HARDENING = await (async (): Promise<string> => {
+  const { exec, calls } = optInExec({});
+  await readMergeAuthorAllowlist(exec, "/r", SHA);
+  const line = calls[0] ?? "";
+  const at = line.indexOf(" ls-tree ");
+  if (at < 0) throw new Error(`the reader's first call is not the tree probe: ${line}`);
+  return line.slice(0, at);
+})();
+const TREE_PROBE = `${HARDENING} ls-tree ${SHA} -- ${MERGE_AUTHORS_FILE}`;
+const TYPE_PROBE = `${HARDENING} cat-file -t --end-of-options ${SHA}:${MERGE_AUTHORS_FILE}`;
+
+/** Order-insensitive set equality on recorded read lines. */
+function sameCalls(actual: readonly string[], expected: readonly string[]): boolean {
+  const key = (xs: readonly string[]) => [...xs].sort().join("\n");
+  return key(actual) === key(expected);
+}
+
 // ---------------------------------------------------------------- A8: absent -> the gate is not applied
 {
   const { exec, calls } = optInExec(ABSENT);
@@ -57,8 +81,11 @@ const ABSENT: OptInArm = { absent: true };
     "…and its detail names the gate file so the operator can see what was not there",
   );
   assert(
-    calls.length > 0 && !calls.some((c) => c.includes("show")),
-    `absence is decided by the two cheap probes — no bytes are read for a file that is not there (${JSON.stringify(calls)})`,
+    // Positive, not merely "no `show`": the read set IS the tree-mode probe and the
+    // type probe and nothing else, so an extra read fails here rather than quietly
+    // widening the gate's git surface.
+    sameCalls(calls, [TREE_PROBE, TYPE_PROBE]),
+    `absence is decided by exactly the two cheap probes — no bytes are read for a file that is not there (${JSON.stringify(calls)})`,
   );
 }
 {
@@ -77,19 +104,22 @@ const ABSENT: OptInArm = { absent: true };
   );
 }
 {
-  const { exec, calls } = optInExec(ABSENT);
+  const { exec } = optInExec(ABSENT);
   const stranger = await heldForMergeAuthor({
     exec,
     cwd: "/r",
     baseSha: SHA,
     author: { ok: true, login: "mallory" },
   });
+  // Per-decision call log: the reads are counted against the decision under assertion
+  // rather than a log shared with the stranger check above.
+  const { exec: probeExec, calls } = optInExec(ABSENT);
   assert(
     stranger.ok === true,
     `A8: an absent gate file means the repository never opted in, so any author lands (${JSON.stringify(stranger)})`,
   );
   const unreadable = await heldForMergeAuthor({
-    exec,
+    exec: probeExec,
     cwd: "/r",
     baseSha: SHA,
     author: { ok: false, detail: "the forge reported no author" },
@@ -99,8 +129,10 @@ const ABSENT: OptInArm = { absent: true };
     "A7: an unreadable author refuses only where the file is present — with no allowlist there is nothing to check it against",
   );
   assert(
-    calls.length > 0 && !calls.some((c) => c.includes("show")),
-    "…and the absent file still costs only the probes, never a blob read",
+    // The shared path costs the SAME two probes as the bare reader: a hex base needs no
+    // resolve (`resolveAllowlistBase` short-circuits), and no bytes are read either way.
+    sameCalls(calls, [TREE_PROBE, TYPE_PROBE]),
+    `…and the absent file still costs only the two probes, never a blob read (${JSON.stringify(calls)})`,
   );
 }
 {
