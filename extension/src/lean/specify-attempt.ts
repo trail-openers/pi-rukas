@@ -209,6 +209,7 @@ async function dispatchAdversary(
 export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<SpecifyAttemptResult> {
   const { deps, config, repoRoot, issue, spec, wt, base, branch, runnerTemplate } = args;
   const { testLocation, wanted, frozenByCriterion, refusal, resubmit } = args;
+  const observeVerdict = deps.observeVerdict;
   // The body the step already fetched to parse `spec` — threaded, never re-read.
   const { issueBody } = args;
   // Each dispatch gets its own budget, armed the way the first was.
@@ -309,6 +310,9 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
           branch,
           // The pipeline resets to the base before calling this prepare.
           allowAheadOfBase: true,
+          ...(deps.beforeSubmoduleInit === undefined
+            ? {}
+            : { beforeSubmoduleInit: deps.beforeSubmoduleInit }),
         }),
       commitMessage: `test: acceptance tests for #${issue}`,
       ...(config.verify.freezeCheck === undefined
@@ -344,13 +348,28 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
       silent: false,
       dispatched: rows,
     };
-  // No kept candidate at all: every criterion is uncovered, and the reason
-  // LEADS with the rules rather than opening on the drop notes, so the two
-  // fields a caller might render say the same thing first. The size drops
-  // follow as their own rules: a decline that only ever says "criterion ACn has
-  // no red test" leaves the operator to work out that the child wrote 154 lines
-  // against a cap of 150.
-  const generic = wanted.map((c) => `criterion ${c.id} has no red test`);
+  // No kept candidate at all, and there are TWO reasons for that, which the
+  // operator needs told apart: a child that never called `submit_tests` at all
+  // (nothing reached the boundary — the adversary's turn ended, the environment
+  // is fine), and a child that submitted files which nothing proved red. The
+  // bench showed the first reported as the second, which sent both to the same
+  // `criterion ACn has no red test` and blamed the issue for a child that wrote
+  // tests it never declared.
+  //
+  // The never-submitted rule keeps the SAME invariant as the gap rule it
+  // replaces: the cause is the FIRST clause of every rule it appears in, so a
+  // caller that renders only `failedRules`, or only the first 200 characters of
+  // one, still reads WHY — and the drop notes the pipeline assembled follow it,
+  // never lead. The size drops still ride as their own rules: a decline that only
+  // ever says the generic line leaves the operator to work out that the child
+  // wrote 154 lines against a cap of 150.
+  const silent = declaredRows.length === 0 && skipped === 0 && refused.length === 0;
+  // The verdict's two gating values, reported before either is folded into the
+  // outcome — see `SpecifyDeps.observeVerdict`.
+  observeVerdict?.({ refused: [...refused], silent });
+  const generic = silent
+    ? ["the child never submitted a test: it ended without calling submit_tests"]
+    : wanted.map((c) => `criterion ${c.id} has no red test`);
   const rules = [...generic, ...sizeRefused];
   return {
     outcome: {
@@ -363,15 +382,16 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
       dispatches: rows,
     },
     refused,
-    // Silence is one specific state, not any empty submission: the child made
-    // no `submit_tests` call the step could read — no row, no malformed call —
-    // and the boundary dropped none of its rows. A child whose calls were all
-    // malformed, or whose rows the boundary dropped, has something the retry can
-    // already name, so its prompt quotes those reasons rather than this nudge.
-    // A file the RED PROOF refused is not counted here: the proof judges bytes
-    // the step already holds, so being asked to submit again could not change
-    // its verdict, and the refusal retry already prints what it found.
-    silent: declaredRows.length === 0 && skipped === 0 && refused.length === 0,
+    // Silence is one specific state — computed above, from the same predicate —
+    // and it is the only state this rule names: the child made no `submit_tests`
+    // call the step could read (no row, no malformed call) and the boundary
+    // dropped none of its rows. A child whose calls were all malformed, or whose
+    // rows the boundary dropped, has something the retry can already name, so its
+    // prompt quotes those reasons rather than this nudge. A file the RED PROOF
+    // refused is not counted here: the proof judges bytes the step already holds,
+    // so being asked to submit again could not change its verdict, and the
+    // refusal retry already prints what it found.
+    silent,
     dispatched: rows,
   };
 }

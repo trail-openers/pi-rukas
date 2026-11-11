@@ -66,6 +66,18 @@ function gitEnv(): Record<string, string> {
     GIT_AUTHOR_EMAIL: "t@t",
     GIT_COMMITTER_NAME: "t",
     GIT_COMMITTER_EMAIL: "t@t",
+    // The fixture's submodules have LOCAL-PATH remotes, and git refuses the `file`
+    // transport for submodules unless the configuration allows it. The allowance is
+    // the FIXTURE'S choice — the thing under test is a checkout whose submodule
+    // remote is another directory on this machine — so it rides in the environment of
+    // every git child, product code's included, via git's own config-count mechanism.
+    // The product never grants it: `specify-preflight.ts` asks git to populate
+    // submodules under the operator's transport policy, and a product-side `always`
+    // would let a `file` URL at any depth of `--recursive` clone a host repository
+    // into the worktree.
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "protocol.file.allow",
+    GIT_CONFIG_VALUE_0: "always",
   };
 }
 
@@ -235,6 +247,33 @@ export interface RunOpts {
   capture?: (wt: string, paths: string[], owners: Map<string, string>) => CaptureResult;
   /** Per-run runner limits, e.g. a short timeout to prove a hang is infra. */
   testLimits?: { timeoutMs?: number };
+  /**
+   * The runner preflight's own bounds. A case shrinks them to watch a hanging
+   * probe end as an infrastructure handback without paying the real two minutes.
+   */
+  preflightLimits?: { timeoutMs?: number };
+  /**
+   * A moment INSIDE the step's own worktree preparation — after the tree has been
+   * reset to the base and BEFORE its submodules are populated, before the dependency
+   * links are built and before anything is dispatched. It is the hook the step threads
+   * to `resetWorktreeToBase` as its `beforeSubmoduleInit`, so the tree it hands over is
+   * the one the reset's clean left: a submodule the base carries is present as a
+   * gitlink and NOTHING has been fetched yet, and this is the last instant at which a
+   * case can sabotage it (or observe it) before the `submodule update --init
+   * --recursive` that has to recover it runs. The one place a case can reach the tree
+   * the child is about to be handed, as opposed to the tree the child wrote into:
+   * `writes` runs with the child already running, and `afterCapture` runs after the red
+   * proofs, so neither sees the state the reset's own submodule step produced. Throwing
+   * from here ends the run, which is how a case makes the preparation itself fail.
+   */
+  afterProvision?: (wt: string) => void;
+  /**
+   * What each attempt's verdict turned on — the boundary's drop labels and the
+   * silence decision. Threading for {@link SpecifyAttemptArgs.observeVerdict},
+   * which is where a case reads the retry gate's own inputs rather than the
+   * outcome they were folded into.
+   */
+  observeVerdict?: (v: { refused: string[]; silent: boolean }) => void;
   /** The issue body the step re-reads; defaults to the single-test-criterion spec. */
   specBody?: string;
   /**
@@ -260,6 +299,13 @@ export interface RunOpts {
   dispatchResults?: DispatchResultOverride;
   /** The run's whole-cycle deadline and the step's clock; both absent by default. */
   clock?: ClockOpts;
+  /**
+   * Collects the argv of every git command the STEP issued, in order — the product's
+   * own argv, not the fixture's. A case asserting what git was ASKED to run (that the
+   * submodule call carries no `-c` of the step's own) reads this rather than reasoning
+   * about source it cannot execute.
+   */
+  gitArgvs?: string[][];
 }
 
 /** Run the step; a throw comes back as the error, so each case asserts on it. */
@@ -272,6 +318,7 @@ export async function runSpecify(opts: RunOpts): Promise<RunResult> {
   let fetched = 0;
   const exec: SpecifyDeps["exec"] = async (cmd, o) => {
     if (cmd === opts.config.verify.fast) sawBaseHealthy = true;
+    if (cmd === "git" && o?.argv !== undefined) opts.gitArgvs?.push([...o.argv]);
     // The identity is in the env for EVERY exec, including the production
     // commit the step makes — that commit is the thing under test.
     // The caller's `o.env` goes LAST on purpose: a caller that set an identity
@@ -324,6 +371,9 @@ export async function runSpecify(opts: RunOpts): Promise<RunResult> {
         return got;
       }),
     ...(opts.testLimits === undefined ? {} : { testLimits: opts.testLimits }),
+    ...(opts.preflightLimits === undefined ? {} : { preflightLimits: opts.preflightLimits }),
+    ...(opts.afterProvision === undefined ? {} : { beforeSubmoduleInit: opts.afterProvision }),
+    ...(opts.observeVerdict === undefined ? {} : { observeVerdict: opts.observeVerdict }),
     fetchIssueBody: async () => {
       fetched++;
       return opts.specBody ?? BODY;
