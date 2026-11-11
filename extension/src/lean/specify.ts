@@ -120,10 +120,11 @@ export interface SpecifyDeps {
   preflightLimits?: TestRunLimits;
   /**
    * Called with a worktree the step has just reset to the base, immediately
-   * before it asks git to populate that tree's submodules. Supplied only by
-   * smoke tests, which use it to break a submodule between the reset and the
+   * before the reset asks git to populate that tree's submodules. Supplied only
+   * by smoke tests, which use it to break a submodule between the clean and the
    * `submodule update --init` that has to recover it — the only way to observe
    * git actually failing that command instead of asserting what it would do.
+   * Threaded to {@link resetWorktreeToBase}, which owns the initialisation.
    */
   beforeSubmoduleInit?: (wt: string) => void | Promise<void>;
   /**

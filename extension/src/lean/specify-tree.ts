@@ -23,13 +23,11 @@
  *      through one descriptor per file, so a link swapped in after validation
  *      is refused rather than followed.
  *   4. `resetWorktreeToBase` — discard child commits, staged changes,
- *      untracked files and ignore tricks, then PROVE the tree is at base and
- *      clean, or throw. A reset nobody confirmed is a claim, not a fact.
- *      Its `clean -fdx` de-populates every submodule, so this module
- *      re-initialises them after every reset it makes (`initSubmodules`,
- *      `specify-preflight.ts`) — a test that imports from a submodule
- *      directory left empty cannot be collected, and the step would blame the
- *      adversary for what the clean did.
+ *      untracked files and ignore tricks, re-initialise the submodules that
+ *      `clean -fdx` de-populated, then PROVE the tree is at base and clean, or
+ *      throw. A reset nobody confirmed is a claim, not a fact, and a reset that
+ *      emptied a submodule hands the child a test it cannot collect: both are
+ *      this module's job rather than each caller's.
  *
  * The worktree itself is created through `worktreeCreate` from ../worktree.ts
  * — so it gets the driver's pre-add guards and its dependency provisioning,
@@ -43,7 +41,6 @@
 import { existsSync, realpathSync } from "node:fs";
 import { provisionWorktree } from "../worktree-provision.ts";
 import { type ExecFn, worktreeCreate, worktreePath } from "../worktree.ts";
-import { initSubmodules } from "./specify-preflight.ts";
 import { NO_HOOKS, resetWorktreeToBase } from "./specify-reset.ts";
 export { type DroppedRow, NEWNESS_REASON, validateSubmitRows } from "./submit-tests-cap.ts";
 
@@ -195,7 +192,7 @@ export async function ensureSpecifyWorktreeWithProvision(
     fromRef: string;
     branch: string;
     allowAheadOfBase?: boolean;
-    /** Threaded to {@link initSubmodules}; observation only, never a product call. */
+    /** Threaded to the reset's submodule re-initialisation; observation only, never a product call. */
     beforeSubmoduleInit?: (wt: string) => void | Promise<void>;
   },
 ): Promise<{ wt: string; linked: string[]; problem?: string }> {
@@ -209,13 +206,12 @@ export async function ensureSpecifyWorktreeWithProvision(
       allowAheadOfBase: opts.allowAheadOfBase,
     });
     // The reset cleans WITHOUT exemptions — `git clean -fdx` takes the
-    // dependency links too — and provisioning then builds them again, which
-    // also re-writes the `info/exclude` entries. One code path for a created
-    // tree and a leftover one, so neither can keep a link the other did not —
-    // and the same single path re-initialises the submodules the clean emptied,
-    // whether or not this reset moved anything.
-    await resetWorktreeToBase(exec, wt, opts.fromRef, opts.branch);
-    await initSubmodules(exec, wt, opts.beforeSubmoduleInit);
+    // dependency links AND the submodule contents — and provisioning then builds
+    // the links again, which also re-writes the `info/exclude` entries. One code
+    // path for a created tree and a leftover one, so neither can keep a link the
+    // other did not — and the reset re-initialises the submodules the clean
+    // emptied itself, whether or not this reset moved anything.
+    await resetWorktreeToBase(exec, wt, opts.fromRef, opts.branch, opts.beforeSubmoduleInit);
     const provision = await provisionWorktree(exec, opts.repoRoot, wt);
     return { wt, linked: provision.linked, ...problemOf(provision) };
   }
@@ -230,8 +226,7 @@ export async function ensureSpecifyWorktreeWithProvision(
   // is pointed at the base rather than left detached at it — the commit that
   // freezes the tests is then a commit ON the run's branch. `resetWorktreeToBase`
   // does the `-B` and the `--hard` together and then proves the tree got there.
-  await resetWorktreeToBase(exec, tree, opts.fromRef, opts.branch);
-  await initSubmodules(exec, tree, opts.beforeSubmoduleInit);
+  await resetWorktreeToBase(exec, tree, opts.fromRef, opts.branch, opts.beforeSubmoduleInit);
   const provision = await provisionWorktree(exec, opts.repoRoot, tree);
   return { wt: tree, linked: provision.linked, ...problemOf(provision) };
 }

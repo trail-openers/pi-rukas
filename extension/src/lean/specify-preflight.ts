@@ -36,14 +36,9 @@
  * per-file infra throw (`assertRan`), which stays the only infra rule for a
  * run already mid-step.
  *
- * Submodules are the other half of this module's answer, because the bench
- * shape that motivated it was an empty submodule directory: `git clean -fdx`
- * de-populates every submodule on every reset, and a test importing from one
- * then fails before collection. `initSubmodules` runs in the same
- * create-or-reset path both `specify` and `challenge` take, right after each
- * reset — including no-ops, since a de-populated submodule cannot be told
- * apart from a populated one without asking git — and a failure there,
- * network included, is the same infrastructure handback.
+ * An empty git submodule is one of the shapes this catches, and it is fixed
+ * where it is caused: `initSubmodules` in `specify-reset.ts` runs inside every
+ * reset, before that reset proves its tree clean.
  */
 
 import { existsSync, lstatSync, unlinkSync, writeFileSync } from "node:fs";
@@ -52,7 +47,7 @@ import type { ExecFn } from "../worktree.ts";
 import type { TestLocation } from "./config-test-location.ts";
 import type { Proof, TestRunLimits } from "./specify-proof.ts";
 import { runTestFile, trim } from "./specify-proof.ts";
-import { NO_HOOKS, SpecifyInfraError } from "./specify-reset.ts";
+import { SpecifyInfraError } from "./specify-reset.ts";
 
 /** Exit status 5 is pytest's "collected 0 items": a runner that ran and found nothing. */
 const PYTEST_NO_TESTS = 5;
@@ -62,7 +57,8 @@ const PYTEST_NO_TESTS = 5;
  *
  * Both say the same thing in a different dialect: the runner started, parsed the
  * file, and reported on it — 0 meaning "ran, nothing to say", 5 meaning pytest's
- * "collected 0 items". The status decides, NOT the proof's classification:
+ * "collected 0 items" (a `green` is exit 0 read as a verdict, so the status test
+ * subsumes it). The status decides, NOT the proof's classification:
  * `runTestFile` calls a non-zero exit that named the file `red`, and a pytest
  * collection error prints the file it could not collect, so the very failure
  * this probe exists to catch arrives as a `red`. Reading classifications here
@@ -71,38 +67,11 @@ const PYTEST_NO_TESTS = 5;
  * was judged".
  */
 function probeHealthy(proof: Proof): boolean {
-  if (proof.kind === "green") return true;
-  return proof.kind !== "infra" && (proof.code === 0 || proof.code === PYTEST_NO_TESTS);
+  return proof.kind === "green" || (proof.kind !== "infra" && proof.code === PYTEST_NO_TESTS);
 }
 
 /** How long one probe run gets; the same bound one red proof gets. */
 const PROBE_TIMEOUT_MS = 120_000;
-
-/** The wall clock on `git submodule update --init --recursive`, which may reach the network. */
-const SUBMODULE_TIMEOUT_MS = 5 * 60_000;
-
-/**
- * The submodule calls' own `-c` flags, added to {@link NO_HOOKS} at the call.
- *
- * There are none, and that is the point: the step asks git to populate submodules
- * with git's OWN transport policy. `protocol.file.allow` is `user` by default — the
- * CVE fix that made git refuse the `file` transport for submodules — and widening it
- * here would let a `file`-protocol URL in the base's `.gitmodules`, at any depth of
- * `--recursive`, clone an arbitrary repository that already exists on this host into
- * the worktree the run then tests and commits. A tracked `.gitmodules` is reviewed as
- * code, but a submodule's own `.gitmodules` is content of ANOTHER repository, fetched
- * from wherever the first one points — so "the URL is tracked content" does not hold
- * past the first level. A base whose submodule genuinely lives on a local path is
- * served by the operator's own `protocol.allow`/`protocol.file.allow` configuration,
- * which git reads as usual: the step adds no licence of its own. Hooks stay refused,
- * whatever the repository carries.
- */
-function submoduleArgv(...argv: string[]): string[] {
-  return [...NO_HOOKS, ...argv];
-}
-
-/** How much of the runner's output the handback quotes. */
-const EXCERPT_MAX = 400;
 
 /** The probe file's name — hidden, so no `testGlob` (none may start with `.`) matches it. */
 const PROBE_BASENAME = ".lean-runner-probe.test";
@@ -127,9 +96,10 @@ const PROBE_CONTENT = "";
  * freezes has to sit under it. That is where the probe goes, and the preflight
  * confirms it on the tree rather than trusting the config: no `mkdir`, because
  * an uncreated directory would be an untracked byte the step then has to
- * account for.
+ * account for. A parent that is not on the tree falls back to the root, which
+ * always is — so the probe always has a place, and this never answers "no".
  */
-function probeRelative(wt: string, testLocation?: TestLocation): string | undefined {
+function probeRelative(wt: string, testLocation?: TestLocation): string {
   if (testLocation === undefined) return PROBE_BASENAME;
   const parent = path.posix.dirname(testLocation.testDir);
   if (parent === ".") return PROBE_BASENAME;
@@ -173,11 +143,6 @@ export async function assertRunnerCanRunTests(
   },
 ): Promise<void> {
   const rel = probeRelative(opts.wt, opts.testLocation);
-  if (rel === undefined) {
-    throw new SpecifyInfraError(
-      `the runner preflight could not place its probe file: the configured test directory's parent does not exist in ${opts.wt}`,
-    );
-  }
   const abs = path.join(opts.wt, rel);
   // Written and read by name, never followed: the step owns the worktree's
   // bytes, and a name the base already carries as a link or a directory is not
@@ -209,7 +174,7 @@ export async function assertRunnerCanRunTests(
     // the step must not spend an adversary on a toolchain that cannot answer.
     if (probeHealthy(proof)) return;
     throw new SpecifyInfraError(
-      `the test runner could not run a test file: ${proof.cmd} — ${trim(proof.detail).slice(0, EXCERPT_MAX)}`,
+      `the test runner could not run a test file: ${proof.cmd} — ${trim(proof.detail)}`,
     );
   } finally {
     // Every path, throw included: a probe left in the tree is an untracked
@@ -223,63 +188,4 @@ export async function assertRunnerCanRunTests(
       }
     }
   }
-}
-/**
- * Populate the worktree's submodules, when its commit has any.
- *
- * The question "does this base have submodules" is answered by git rather than
- * by a heuristic: `git config --file .gitmodules --get-regexp path` exits 1 on
- * a file that lists nothing and non-zero-but-1 on a file it could not read, so
- * "could not tell" refuses the run instead of skipping the initialisation it
- * was asked for. A base with no `.gitmodules` is the normal case and costs one
- * read.
- *
- * `git submodule update --init --recursive` is bounded, because it may reach
- * the network — and a clone with no network, or a submodule whose remote is
- * gone, is the same infrastructure handback as a runner that cannot collect:
- * nothing downstream can judge the work without those files.
- */
-export async function initSubmodules(
-  exec: ExecFn,
-  wt: string,
-  /**
-   * Called with the tree in the state the reset left it — a submodule the base
-   * carries present as a gitlink, nothing fetched — before the step asks git to
-   * populate it. Product code never supplies it; it is how a smoke test sabotage
-   * a submodule between the reset and the command that has to recover it, which
-   * is the only way to watch git fail that command rather than assert what it
-   * would have done.
-   */
-  beforeInit?: (wt: string) => void | Promise<void>,
-): Promise<void> {
-  await beforeInit?.(wt);
-  const listed = await exec("git", {
-    argv: submoduleArgv("config", "--file", ".gitmodules", "--get-regexp", "path"),
-    cwd: wt,
-    timeout: 30_000,
-    maxBuffer: 1024 * 1024,
-  }).catch((err: unknown) => ({ __err: err }) as never);
-  const err = (listed as { __err?: unknown })?.__err;
-  if (err !== undefined) {
-    const code = (err as { code?: unknown }).code;
-    if (typeof code === "number" && code <= 1) return;
-    throw new SpecifyInfraError(
-      `could not tell whether ${wt} has submodules: git config --file .gitmodules --get-regexp path exited ${String(code)}`,
-    );
-  }
-  const ran = await exec("git", {
-    argv: submoduleArgv("submodule", "update", "--init", "--recursive"),
-    cwd: wt,
-    timeout: SUBMODULE_TIMEOUT_MS,
-    maxBuffer: 8 * 1024 * 1024,
-  }).catch((err: unknown) => ({ __err: err }) as never);
-  const failed = (ran as { __err?: unknown })?.__err;
-  if (failed === undefined) return;
-  const e = failed as { stdout?: unknown; stderr?: unknown; message?: unknown };
-  const out = [e.stdout, e.stderr, e.message]
-    .filter((s): s is string => typeof s === "string" && s !== "")
-    .join("\n");
-  throw new SpecifyInfraError(
-    `the worktree's submodules could not be initialised in ${wt}: git submodule update --init --recursive — ${trim(out).slice(0, EXCERPT_MAX)}`,
-  );
 }

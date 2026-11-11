@@ -27,11 +27,21 @@
  *   (d) `challenge` on a submodule base sees the submodule populated too (the
  *       shared provisioning path, not a specify-only fix);
  *   (e) a submodule that cannot be initialised ends the run as infrastructure
- *       naming what failed, with no dispatch and no rows.
+ *       naming what failed, with no dispatch and no rows; that sabotage reaches
+ *       git through the reset's own `beforeSubmoduleInit` seam, which is where
+ *       the initialisation now lives;
+ *   (f) `resetWorktreeToBase` called DIRECTLY on a tree whose submodule was
+ *       emptied leaves it populated and does not throw — the property every
+ *       caller of the reset depends on, and the one a reset whose initialisation
+ *       sat outside it does not have.
  */
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { execp } from "../src/exec.ts";
+import { resetWorktreeToBase } from "../src/lean/specify-reset.ts";
+import type { ExecFn } from "../src/worktree.ts";
+import { gitTestEnv } from "./lib/git-test-env.ts";
 import {
   ROOTS as CHALLENGE_ROOTS,
   challengeFixture,
@@ -420,6 +430,62 @@ function writeSubmoduleTest(wt: string): void {
   assert(
     existsSync(path.join(r.worktree, INSIDE)) === true,
     "(e3) the submodule really was populated, so the fixture's env is what allowed it",
+  );
+}
+
+// ── (f) the reset itself, called directly, is what populates the submodule
+{
+  // The property the review finding is about: the re-initialisation belongs to
+  // `resetWorktreeToBase`, not to the one caller that happened to ask for it.
+  // A hand-emptied tree here rather than a `clean -fdx`: this case is not about
+  // what emptied it, it is about what the reset does about it — so the emptying
+  // is done by hand and the reset is the ONLY thing allowed to put it back.
+  const { repoRoot, baseSha } = repoWithSubmodule();
+  const issue = 58;
+  const wt = path.join(repoRoot, ".worktrees", `lean-${issue}`);
+  git(repoRoot, "worktree", "add", "-q", "--detach", wt, baseSha);
+  const inside = path.join(wt, INSIDE);
+  // The reset's own git children get the FIXTURE's environment, exactly as the
+  // fixture's `exec` wrapper gives it to every git call of the step's: these
+  // submodule remotes are local paths and git refuses the `file` transport
+  // without the allowance. The product still adds none of its own — (e3) above
+  // pins that on the argv.
+  const env: Record<string, string> = {
+    ...gitTestEnv(),
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "protocol.file.allow",
+    GIT_CONFIG_VALUE_0: "always",
+  };
+  const exec: ExecFn = async (cmd, o) => execp(cmd, { ...o, env: { ...env, ...(o?.env ?? {}) } });
+  const reset = (target: string, sha: string) => resetWorktreeToBase(exec, target, sha, "");
+  // A fresh `worktree add` hands out the gitlink and an empty directory — the
+  // state the step's own prepare has to repair — so the precondition is asserted
+  // AFTER the preparation this case is about, not against a hand-populated tree.
+  let threw: Error | undefined;
+  try {
+    await reset(wt, baseSha);
+  } catch (err) {
+    threw = err as Error;
+  }
+  assert(
+    threw === undefined,
+    `(f) preparing the fresh tree does not throw (${threw ? `${threw.name}: ${threw.message.split("\n")[0]}` : "clean"})`,
+  );
+  assert(existsSync(inside), "(f) the prepared tree has the submodule populated");
+  rmSync(path.join(wt, SUB), { recursive: true, force: true });
+  threw = undefined;
+  try {
+    await reset(wt, baseSha);
+  } catch (err) {
+    threw = err as Error;
+  }
+  assert(
+    threw === undefined,
+    `(f) resetting a tree whose submodule was emptied does not throw (${threw ? `${threw.name}: ${threw.message.split("\n")[0]}` : "clean"})`,
+  );
+  assert(
+    existsSync(inside),
+    `(f) and the reset left the submodule populated (got ${existsSync(inside) ? "there" : "empty"})`,
   );
 }
 

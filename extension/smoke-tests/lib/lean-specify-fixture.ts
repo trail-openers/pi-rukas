@@ -256,15 +256,15 @@ export interface RunOpts {
    * A moment INSIDE the step's own worktree preparation — after the tree has been
    * reset to the base and BEFORE its submodules are populated, before the dependency
    * links are built and before anything is dispatched. It is the hook the step threads
-   * to `initSubmodules` as its `beforeSubmoduleInit`, so the tree it hands over is the
-   * one the reset produced: a submodule the base carries is present as a gitlink and
-   * NOTHING has been fetched yet, and this is the last instant at which a case can
-   * sabotage it (or observe it) before the `submodule update --init --recursive` that
-   * has to recover it runs. The one place a case can reach the tree the child is about
-   * to be handed, as opposed to the tree the child wrote into: `writes` runs with the
-   * child already running, and `afterCapture` runs after the red proofs, so neither
-   * sees the state the step's own `initSubmodules` produced. Throwing from here ends
-   * the run, which is how a case makes the preparation itself fail.
+   * to `resetWorktreeToBase` as its `beforeSubmoduleInit`, so the tree it hands over is
+   * the one the reset's clean left: a submodule the base carries is present as a
+   * gitlink and NOTHING has been fetched yet, and this is the last instant at which a
+   * case can sabotage it (or observe it) before the `submodule update --init
+   * --recursive` that has to recover it runs. The one place a case can reach the tree
+   * the child is about to be handed, as opposed to the tree the child wrote into:
+   * `writes` runs with the child already running, and `afterCapture` runs after the red
+   * proofs, so neither sees the state the reset's own submodule step produced. Throwing
+   * from here ends the run, which is how a case makes the preparation itself fail.
    */
   afterProvision?: (wt: string) => void;
   /**
