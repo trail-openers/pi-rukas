@@ -31,6 +31,7 @@
  */
 
 import { rmSync } from "node:fs";
+import type { AuthorRead } from "../src/merge-author-allowlist.ts";
 import type { HandlerCtx } from "../src/lean/engine.ts";
 import { landOutcome } from "../src/lean/land.ts";
 import type { LandDeps, MergeCall } from "../src/lean/land-deps.ts";
@@ -274,9 +275,9 @@ async function run(c: LandCase): Promise<{ outcome?: Outcome; calls: MergeCall[]
     merge: async () => {},
     stateAfter: async () => "MERGED",
     loadConfig: async () => ({ autoMerge: true }),
-    checkAuthor: async (_repo: string, base: string, author: { ok: boolean }) => {
+    checkAuthor: async (_repo: string, base: string, author: AuthorRead) => {
       seenBase = base;
-      seenAuthor = author.ok === true ? (author as { login: string }).login : undefined;
+      seenAuthor = author.ok === true ? author.login : undefined;
       return { ok: true };
     },
   } as unknown as LandDeps;

@@ -307,10 +307,14 @@ await withRepo(async (repo) => {
 
 {
   const { readFileSync } = await import("node:fs");
-  const merged = readFileSync(
-    path.join(import.meta.dirname, "..", "src", "work-driver-merged.ts"),
-    "utf8",
-  );
+  // The authority gate now lives in its own module (the §12 split); the invariant is
+  // that the merged STEP resolves it and parks without a grant, so both files of that
+  // step are read — a `resolveMergeAuthority(` that disappeared from the step entirely
+  // still fails this.
+  const stepDir = path.join(import.meta.dirname, "..", "src");
+  const merged = ["work-driver-merged.ts", "work-driver-merged-authority.ts"]
+    .map((f) => readFileSync(path.join(stepDir, f), "utf8"))
+    .join("\n");
   assert(
     /resolveMergeAuthority\(/.test(merged) && /cap: "awaiting-human-merge"/.test(merged),
     "invariant: runMerged still resolves merge authority and parks as awaiting-human-merge without a grant",

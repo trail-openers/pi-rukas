@@ -139,8 +139,11 @@ const passing = (name: string) => ({ name, state: "SUCCESS", bucket: "pass" });
   assert(
     // #1533 — `headRefOid` is requested by the SAME read: the CI verdict and
     // the merge pin must describe one moment on the forge, so the field list is
-    // part of this gate's pinned argv.
-    calls[0]!.cmd === "gh pr view 7 --json mergeStateStatus,mergeable,state,headRefOid",
+    // part of this gate's pinned argv. #2181 adds `author` to the same read for the
+    // same reason: the login judged against `.pi/merge-authors` and the OID pinned
+    // come from one moment, not two — which is exactly what this assertion protects.
+    calls[0]!.cmd ===
+      "gh pr view 7 --json mergeStateStatus,mergeable,state,headRefOid,author",
     `argv: gh pr view requests exactly the fields the gate knows how to read (got: ${calls[0]!.cmd})`,
   );
   assert(

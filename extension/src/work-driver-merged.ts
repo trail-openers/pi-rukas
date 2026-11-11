@@ -7,8 +7,9 @@
  * `parseMergeCommit` + `runMerged` are the Step 9 pair.
  */
 
-import { errText } from "./protected-paths-text.ts";
 import { execp } from "./exec.ts";
+import { authorFromRead, evidenceAuthorRead, heldForMergeAuthor } from "./merge-guard-author.ts";
+import { errText } from "./protected-paths-text.ts";
 import { trace, traceWarn } from "./trace.ts";
 import { cycleChildOpts } from "./work-cycle-trust.ts";
 import { buildCompletionEvent } from "./work-driver-completion-event.ts";
@@ -20,20 +21,15 @@ import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import { detectMainline, restoreCheckout } from "./work-driver-git.ts";
 import { mergeAuthorityJudge } from "./work-driver-judge-seam.ts";
 import { withIntegrationLock } from "./work-driver-lock.ts";
-import {
-  gatherMergeEvidence,
-  heldByUnresolvedReview,
-  mergeAuthorityEnabled,
-  resolveMergeAuthority,
-} from "./work-driver-merge-authority.ts";
+import { mergeAuthorityEnabled } from "./work-driver-merge-authority.ts";
+import { authorFromForgePr, runAuthorityGate } from "./work-driver-merged-authority.ts";
 import { heldForDeclaredGateFiles } from "./work-driver-merged-gate-files.ts";
-import {
-  authorFromRead,
-  evidenceAuthorRead,
-  heldForMergeAuthor,
-} from "./merge-guard-author.ts";
 import { verifyMergeHead } from "./work-driver-merged-head.ts";
-import { heldForMissingApproval, mergeAuthorHold, mergeProtectedHold } from "./work-driver-merged-hold.ts";
+import {
+  heldForMissingApproval,
+  mergeAuthorHold,
+  mergeProtectedHold,
+} from "./work-driver-merged-hold.ts";
 import { type MergeMethod, mechanizedMerge } from "./work-driver-merged-mechanized.ts";
 import { heldForProtectedPaths } from "./work-driver-merged-protected.ts";
 import { hasGitDir } from "./work-driver-merged-repo.ts";
@@ -191,6 +187,7 @@ export async function runMerged(
     heldForProtectedPaths(ctx, state, mergeExec, verifiedHead);
 
   // The repository's own gate-file list, judged on the same base-commit documents
+  // The repository's own gate-file list, judged on the same base-commit documents
   // and honoured only against a verified quote (work-driver-merged-gate-files.ts).
   // Outside the authority switch, so `--merge` reaches neither gate.
   const gateFileGate = (docs: readonly DoctrineDoc[], oid: string | undefined) =>
@@ -204,13 +201,13 @@ export async function runMerged(
       oid,
     );
 
-  // The merge-author gate (#2181): the PR's author must be listed in
-  // `.pi/merge-authors` at the cycle's base commit. Like the two gates above it is
-  // NOT behind `mergeAuthorityEnabled()` — `--merge` and `PI_ENSEMBLE_MERGE_AUTHORITY=0`
-  // are statements about permission and reviews, never about who opened the PR, and
-  // a non-allowlisted author parks with the PR left open. The author rides the
-  // evidence read the gate already makes (`mergeEvidenceViewCmd` carries `author`),
-  // so the allowlist decision and the CI verdict describe one moment on the forge.
+  // The merge-author gate (#2181): the PR's author must be listed in the operator's
+  // allowlist at the cycle's base commit. Like the two gates above it is NOT behind
+  // `mergeAuthorityEnabled()` — `--merge` and `PI_ENSEMBLE_MERGE_AUTHORITY=0` are
+  // statements about permission and reviews, never about who opened the PR, and a
+  // non-allowlisted author parks with the PR left open. The author rides the evidence
+  // read the gate already makes, so the allowlist decision and the CI verdict describe
+  // one moment on the forge.
   //
   // `state.baseSha` is the commit, but it is OPTIONAL — a resumed or hand-written
   // state may not carry one — and every other base consumer in this driver falls back
@@ -234,9 +231,7 @@ export async function runMerged(
     return stdout.trim() || undefined;
   };
 
-  const authorGate = async (
-    evidence: { author?: string; authorError?: string } | undefined,
-  ) =>
+  const authorGate = async (evidence: { author?: string; authorError?: string } | undefined) =>
     heldForMergeAuthor({
       exec: mergeExec,
       cwd: ctx.repoRoot,
@@ -245,39 +240,6 @@ export async function runMerged(
       baseSha: await authorBase().catch(() => undefined),
       author: authorFromRead(evidenceAuthorRead(evidence)),
     });
-
-  /**
-   * The author read for the branch where no evidence read ran.
-   *
-   * The `PI_ENSEMBLE_MERGE_AUTHORITY=0` branch never calls `gatherMergeEvidence`, so
-   * the login cannot ride that read there. It comes from the same forge question the
-   * step asks anyway (`gh pr view <n> --json author`), not from `readMergeTarget`:
-   * that reader refuses an unrecognisable forge, and a cycle whose forge it cannot
-   * name is a different fault from an author the forge did not report — conflating
-   * them would park every cycle on the switch off. An unreadable login is still a
-   * refusal; this only stops the branch from refusing a PR whose author it holds.
-   */
-  const authorFromTarget = async (
-    ctx: CycleContext,
-    exec: NonNullable<CycleContext["verifyExecFn"]>,
-    prNumber: number,
-  ): Promise<{ author?: string; authorError?: string }> => {
-    try {
-      const { stdout } = await exec(`gh pr view ${prNumber} --json author`, {
-        cwd: ctx.repoRoot,
-        maxBuffer: 64 * 1024,
-      });
-      const login = (JSON.parse(stdout) as { author?: { login?: unknown } }).author?.login;
-      if (typeof login !== "string" || login.trim().length === 0) {
-        return {
-          authorError: `the PR read reported no author login for PR #${prNumber}`,
-        };
-      }
-      return { author: login.trim() };
-    } catch (err) {
-      return { authorError: `the PR read failed (${errText(err)})` };
-    }
-  };
 
   /** Park the cycle on an author-gate refusal: the hold, the cap, and a trace. */
   const authorHold = (reason: string) => {
@@ -294,88 +256,25 @@ export async function runMerged(
   // #380 — two independent gates, both defaulting to "no". Merging is the
   // one irreversible act in the cycle and had neither; a green PR ≠ permission.
   if (mergeAuthorityEnabled()) {
-    // #406 — doctrine is read at the BASE commit, never from the working tree.
-    // This step runs after commit-pr integrated the developer's patches, so an
-    // AGENTS.md read from disk here would include any grant a subagent just
-    // wrote for itself. Reading at base makes such a patch inert without
-    // forbidding it: honest AGENTS.md changes still ship in the PR.
-    const docs = await readMergeDocs();
-    // #407 — the documents are read by a judge and its answer is
-    // citation-verified, not matched against English regexes.
-    const authority = await resolveMergeAuthority(
-      // #1025 — the injected seam is honoured only under the offline suite's
-      // FORBID_LIVE_SPAWN gate (see `injectedJudgeAllowed`): the headless
-      // runner forwards `policyJudgeFn` to the driver, so without that gate a
-      // caller of `runHeadless` could speak for the merge-authority judge.
-      mergeAuthorityJudge(ctx, () =>
-        judgePolicy(ctx.repoRoot, {
-          processGroup: ctx.processGroup === true,
-          signal: ctx.signal,
-          ...cycleChildOpts(ctx), // #1666
-        } satisfies NonNullable<Parameters<typeof judgePolicy>[1]>),
-      ),
-      docs,
-      ctx.mergeGrant,
-      { repoRoot: ctx.repoRoot, issues: ctx.issues ?? [ctx.issue] },
-    );
-    const evidence = authority.granted
-      ? await gatherMergeEvidence(mergeExec, ctx.repoRoot, prNumber)
-      : undefined;
-    const routedRoundCap = heldByUnresolvedReview(state.eventLog);
-    // The head the merge is pinned to, and why the step refuses to merge without
-    // one. Computed here, beside the evidence read it comes from, so the CI
-    // verdict and the pin describe the same moment on the forge.
-    const headCheck =
-      authority.granted && evidence?.ok && !routedRoundCap
-        ? await verifyMergeHead(
-            mergeExec,
-            ctx.repoRoot,
-            state.pipelineState.branchName,
-            evidence,
-            // The reviewed-head comparison needs a real clone to read the review
-            // ledger from, so it is attempted only when the cycle has a repository
-            // on disk. Everything else — a resumed or hand-built state file, a
-            // fixture with no clone — gets the pin and an honest note; parking
-            // those on "no git remote found" would be the driver inventing a fault
-            // the cycle never had. See `verifyMergeHead` and `hasGitDir` for why
-            // the probe is a leaf. Grouped cycles take the SAME rule: the lens
-            // review covers the one integrated branch the merge merges.
-            hasGitDir(ctx.repoRoot) ? undefined : { skipIdentity: true },
-          )
-        : undefined;
-    if (!authority.granted || !evidence?.ok || routedRoundCap || headCheck?.ok !== true) {
-      trace(
-        `work-driver: merge held — authority=${authority.source}, evidence=${evidence?.reason ?? "not gathered"}${headCheck && !headCheck.ok ? `, head=${headCheck.refusal.reason}` : ""}`,
-      );
-      return appendEvent(
-        heldForMissingApproval(state, authority, evidence, routedRoundCap, headCheck),
-        {
-          kind: "cap-hit",
-          at: Date.now(),
-          cap: "awaiting-human-merge",
-          reviewRound: state.pipelineState.reviewRound,
-          nextStep: "handoff",
-        },
-      );
-    }
-    verifiedHead = headCheck.headOid;
-    headNotes.push(headCheck.note);
-    // The author gate (#2181) runs on the SAME evidence read the head was taken
-    // from, so the login judged and the commit pinned come from one read of the
-    // forge. Ahead of the protected and gate-file reads: a PR this cycle may not
-    // land at all should not spend a fetch and a diff to be told so.
-    const authorDecision = await authorGate(evidence);
-    if (!authorDecision.ok) return authorHold(authorDecision.reason ?? "the author gate refused");
-    // The gate runs on the OID the merge is now pinned to, before any merge is
-    // attempted and after every read that could have refused it.
-    const protectedHold = await protectedGate(verifiedHead);
-    if (protectedHold) return protectedHold;
-    // The declared gate files are judged on the same documents, after the same
-    // reads — and a doctrine grant (`--merge`) is not an answer to them.
-    const gateFileHold = await gateFileGate(docs, verifiedHead);
-    if (gateFileHold) return gateFileHold;
+    // The permission gate, the head pin, and the protected / gate-file / author
+    // gates downstream of them, in the order that ordering is documented in
+    // work-driver-merged-authority.ts: doctrine read at the base commit (#406),
+    // the judge's answer citation-verified (#407), and one evidence read serving
+    // the pin, the CI verdict and the author login alike.
+    const gate = await runAuthorityGate({
+      ctx,
+      state,
+      prNumber,
+      mergeExec,
+      readMergeDocs,
+      protectedGate,
+      gateFileGate,
+      authorGate,
+    });
+    if (!gate.ok) return gate.state;
+    verifiedHead = gate.verifiedHead;
+    headNotes.push(gate.note);
   }
-
   // A cycle that reaches this point WITHOUT a verified head has not passed the
   // head check, whatever made it get here: the authority gate off
   // (`PI_ENSEMBLE_MERGE_AUTHORITY=0`) disables only the permission and evidence
@@ -389,7 +288,7 @@ export async function runMerged(
     // `merge-target` already fills from the forge. Refusing here on "no evidence" would
     // report an unreadable author for a PR whose author the step is holding, and would
     // make the switch a way to park every cycle.
-    const authorDecision = await authorGate(await authorFromTarget(ctx, mergeExec, prNumber));
+    const authorDecision = await authorGate(await authorFromForgePr(ctx, mergeExec, prNumber));
     if (!authorDecision.ok) return authorHold(authorDecision.reason ?? "the author gate refused");
     // No authority gate ran, so this is the only place the protected-path gate can
     // ask with a head in hand; a protected diff parks the same way as above.

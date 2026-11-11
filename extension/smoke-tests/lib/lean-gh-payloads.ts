@@ -37,7 +37,7 @@ export const REAL_PR_NUMBER = 1930;
  * (#2181). Placeholder logins only — this repository is public and the real
  * allowlist is the operator's private list.
  */
-export const LEAN_FIXTURE_AUTHOR = "maintainer-1";
+export const LEAN_FIXTURE_AUTHOR = "fixture-maintainer";
 
 /**
  * `gh pr view <n> --json mergeStateStatus,mergeable,state,headRefOid,author` —
@@ -73,9 +73,7 @@ export const REAL_CHECKS_SKIPPED = [
 ];
 
 /** One real failing row. */
-export const REAL_CHECKS_FAIL = [
-  { bucket: "fail", name: "quality-gate", state: "FAILURE" },
-];
+export const REAL_CHECKS_FAIL = [{ bucket: "fail", name: "quality-gate", state: "FAILURE" }];
 
 /**
  * Rows whose checks are still running — `bucket: "pending"`, the category

@@ -123,15 +123,29 @@ export const FIXTURE_PATCH_ID = "e".repeat(40);
  */
 export const EVIDENCE_BASE = "c".repeat(40);
 
+/**
+ * The login the fixture's evidence read reports as the PR's author (#2181).
+ *
+ * Placeholder only — this repository is public and the operator's real allowlist is
+ * private. The fixture commits the same login into `.pi/merge-authors` at the base
+ * commit, which is what lets a case that reaches the merge do so on the gate's own
+ * terms rather than by leaving its author unread.
+ */
+export const S5_FIXTURE_AUTHOR = "fixture-maintainer";
+
 function evidenceJson(fields: Record<string, string>): string {
-  return JSON.stringify({ ...fields, headRefOid: EVIDENCE_HEAD });
+  // #2181 — `author` rides the same read as the head pin and the CI verdict, so the
+  // login the merge-author gate judges and the commit it pins describe one moment
+  // on the forge. The fixture's allowlist names this login; a case that wants the
+  // author gate to refuse overrides the file, not this field.
+  return JSON.stringify({
+    ...fields,
+    headRefOid: EVIDENCE_HEAD,
+    author: { login: S5_FIXTURE_AUTHOR },
+  });
 }
 
-export function mergeView(
-  verdict: MergeVerdict,
-  pr: number,
-  merged: boolean,
-): MergeView {
+export function mergeView(verdict: MergeVerdict, pr: number, merged: boolean): MergeView {
   const passing = [{ name: "typecheck", bucket: "pass", state: "SUCCESS" }];
   const failing = [
     { name: "typecheck", bucket: "pass", state: "SUCCESS" },

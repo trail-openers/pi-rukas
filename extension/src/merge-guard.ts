@@ -101,18 +101,10 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execp } from "./exec.ts";
 import { FORGE_EXEC_TIMEOUT_MS } from "./forge-detect.ts";
 import { type MergeCommand, readMergeCommand } from "./merge-allowlist.ts";
-import { protectedMergeRefusal } from "./merge-guard-protected.ts";
 import { guardMergeAuthorRefusal } from "./merge-guard-author.ts";
-import { misdirectedWriteOf } from "./merge-guard-provenance.ts";
+import { guardMergeLedger } from "./merge-guard-ledger.ts";
+import { protectedMergeRefusal } from "./merge-guard-protected.ts";
 import { guardFetchAndHead, guardMainline, guardMainlineOid } from "./merge-guard-reads-git.ts";
-import {
-  adversarialRefusal,
-  lensNotEvaluatedRefusal,
-  readPrCommentBodies,
-  refuseUnlessCiGreen,
-} from "./merge-guard-reads.ts";
-import { evaluateRoundCapMerge } from "./merge-guard-round-cap.ts";
-import { compareAdversarialIdentity } from "./merge-identity-compare.ts";
 import { mergeIdentityAgainstMainline } from "./merge-identity.ts";
 import { analyseRefusal, clipCheckNames } from "./merge-refusal-render.ts";
 import { GLAB_AUTO_MERGE_REFUSAL, holdReasonText, renderHold } from "./merge-refusals.ts";
@@ -390,127 +382,21 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
     }
     const currentPatchId = identity.patchId;
 
-    // Read the ledger.
-    const ledgerPath = await ledgerPathFor(execFn, cwd);
-    if (!ledgerPath) {
-      return block(
-        "no git common dir found — the review ledger is unavailable; the merge guard refuses by default (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)",
-      );
-    }
-    const entries: LedgerEntry[] = readLedgerAt(ledgerPath);
-    // #1449 round 2 — the override-blind path, resolved ONCE here so the
-    // diagnostic below makes no git call of its own (it is synchronous, and its
-    // never-throw contract is part of why the guard's hot path has no throw
-    // site). An unresolvable clone path is passed through as undefined, which
-    // REPORTS a stamp rather than hiding it: "could not prove it is the clone's
-    // own file" is not evidence of anything.
-    const cloneLedgerPath = await cloneLedgerPathFor(execFn, cwd);
-    // #1449 — "there is no lens entry" has two causes and the operator must be
-    // able to tell them apart from the refusal alone: nobody reviewed the
-    // branch, or a review ran and its row landed at an overridden path this
-    // guard's read never opens. The guard CANNOT spot the redirect inside the
-    // redirecting process — it resolves through the same `ledgerPathFor`, so
-    // guard and writer agree on the file — so the signal is the write-side
-    // provenance the writer persists on the row (`LedgerEntry.writtenTo`), read
-    // from the file the override points at. Fail-open on the DIAGNOSTIC only:
-    // a second read that throws yields no note and the ordinary refusal, never
-    // a pass — the strict fail-closed rule below is untouched. The read itself
-    // lives in merge-guard-provenance.ts, where that contract is enforced: it
-    // swallows every fs/parse fault internally and is synchronous, so nothing
-    // on the guard's decision path is a throw site. `lensNotEvaluatedRefusal`
-    // is its only consumer — the value is read once here and carried, and a
-    // missing value is exactly today's never-reviewed refusal.
-    const redirectedTo = misdirectedWriteOf(ledgerPath, target.headBranch, cloneLedgerPath);
-    const branch = target.headBranch;
-
-    // Adversarial: latest entry must be passed AND match the current patchId.
-    // #1360 — a non-passing row's `detail` is quoted in the refusal, so an
-    // operator told "no passing review" can see the review DID run and why its
-    // row does not count (a narrowed range, a moved head, an edited tree).
-    // #1533 — the comparison itself is `compareAdversarialIdentity`, shared with
-    // the driver's merged step so the two cannot drift on what "same reviewed
-    // patch" means; the refusals below stay the guard's own words.
-    const advVerdict = compareAdversarialIdentity(entries, branch, currentPatchId);
-    if (!advVerdict.ok) {
-      if (advVerdict.cause === "patch-changed") {
-        return block(
-          `adversarial review is stale: ledger patchId ${advVerdict.reviewedPatchId.slice(0, 8)} ≠ current ${advVerdict.currentPatchId.slice(0, 8)} — the branch changed after the review; re-run adversarial_loop`,
-        );
-      }
-      return block(
-        adversarialRefusal(branch, advVerdict.cause === "no-entry" ? undefined : advVerdict.entry),
-      );
-    }
-    // Lens: the strict rule first — the LATEST entry must be `passed`
-    // (any patchId). When it refuses, the #973 round-cap path is consulted:
-    // an ISSUES_FOUND entry with no CRITICAL, at the round cap (or with
-    // nothing at or above the blocking bar), an approving
-    // adversarial review (already checked above), and the residual findings
-    // disclosed on the PR (marker + matching patch) allows the merge — the
-    // same rule AGENTS.md §1 and work-driver-lens-cap.ts apply to the
-    // driver's own cycles. A refusal from either path names the failed
-    // condition (see evaluateRoundCapMerge for the full matrix).
-    //
-    // #2107 — an ALLOW is not taken where it is made. The round-cap path used
-    // to `return` here, which skipped the CI gate entirely: a capped-but-
-    // merge-worthy PR with a red check merged without `gh` being asked a single
-    // question. So the ledger branch sets `allowNote` and falls through to the
-    // single exit point at the bottom of the handler, where the CI read runs on
-    // EVERY allow path. Refusals still return where they are decided (R1 keeps
-    // the existing diagnostics first); only the carve-out — the one return above
-    // that is not an agent merge — stays exempt.
-    let allowNote: string | undefined;
-    const lens = latestEntry(entries, branch, "lens");
-    if (!lens || !lens.passed) {
-      const lensComments = await readPrCommentBodies(execFn, cwd, target, prNumber, repoValue);
-      // #973 review — the round-cap path's headSha check (condition 6) uses
-      // the PR's current head: the fetched OID, which the guard has already
-      // verified equals the PR's `headOid` (a mismatch is the earlier
-      // "stale branch" refusal above). A lens review of an older commit
-      // cannot satisfy the cap.
-      const capDecision = evaluateRoundCapMerge(
-        entries,
-        branch,
-        currentPatchId,
-        lensComments,
-        fetchedHead,
-      );
-      if (capDecision.applies && capDecision.allowed) {
-        allowNote = `round-cap path: ISSUES_FOUND, no CRITICAL, round ${lens?.round}, disclosed on the PR`;
-        trace(
-          `merge-guard: PR #${prNumber} ${branch} — round-cap path allows the merge (ISSUES_FOUND, no CRITICAL, round ${lens?.round}, disclosed on the PR)`,
-        );
-        // #2107 — an ALLOW is not taken where it is made: `allowNote` falls
-        // through to the single CI exit below; a `return` here let a capped
-        // merge skip that gate, and the strict refusal below then refused a
-        // merge the guard had just allowed, `gh` never asked.
-      } else if (capDecision.applies) {
-        return block(
-          `merge refused: ${capDecision.failedCondition ?? "the round-cap conditions are not met"} — the merge guard refuses by default (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)`,
-        );
-      }
-      // The round-cap path did not apply (no entry, or a legacy entry with no
-      // verdict detail): the strict rule's refusal, branch named for the
-      // operator; #1449 — a row that went elsewhere is named, with its file.
-      if (!allowNote) return lensNotEvaluatedRefusal(branch, lens, { redirectedTo }); // #1000 — "the round-cap path was not evaluated" (see lensNotEvaluatedRefusal)
-    }
-
-    if (!allowNote) {
-      trace(`merge-guard: PR #${prNumber} ${branch} — adversarial + lens both pass`);
-    }
-    // #2106 — the LAST gate, and now the ONLY exit: reached by the strict
-    // ledger allow and by the round-cap allow alike. The carve-out return and
-    // the head-equality check both precede it. GitHub only, and fail-closed.
-    //
-    // The head pin is the fetched OID this handler verified against the PR's
-    // `headOid` a few reads earlier: the CI verdict must be the verdict for
-    // THAT commit, or it is a green board for somebody else's work (#2107).
-    const ciBlock = await refuseUnlessCiGreen(execFn, cwd, prNumber, target.forge, {
-      expectedHeadOid: fetchedHead,
+    // Read the ledger. #1360/#973/#2106/#2107 — the adversarial row, the lens row and
+    // the round-cap path, and the single CI exit every allow path falls through to,
+    // live in merge-guard-ledger.ts; the order rules and the redirected-write
+    // diagnostic's contract are that module's header.
+    const ledgerBlock = await guardMergeLedger({
+      execFn,
+      cwd,
+      target,
+      prNumber,
       repoValue,
+      currentPatchId,
+      fetchedHead,
       timeoutMs: EXEC_TIMEOUT_MS,
     });
-    if (ciBlock) return ciBlock;
+    if (ledgerBlock) return ledgerBlock;
   });
 }
 

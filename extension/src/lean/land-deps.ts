@@ -16,7 +16,7 @@
 
 import { execp } from "../exec.ts";
 import type { AuthorRead } from "../merge-author-allowlist.ts";
-import { heldForMergeAuthor, type MergeAuthorDecision } from "../merge-guard-author.ts";
+import { type MergeAuthorDecision, heldForMergeAuthor } from "../merge-guard-author.ts";
 import { deriveConsolidationSubject } from "../work-driver-handoff-subject.ts";
 import type { MergeEvidence } from "../work-driver-merge-evidence.ts";
 import { gatherMergeEvidence } from "../work-driver-merge-evidence.ts";

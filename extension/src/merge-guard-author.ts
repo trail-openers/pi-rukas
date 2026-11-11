@@ -21,17 +21,17 @@
  * opened the PR. See merge-author-allowlist.ts for the fail-closed rule.
  */
 
-import { errText } from "./protected-paths-text.ts";
 import {
+  type AllowlistRead,
   type AuthorGate,
   type AuthorRead,
   MERGE_AUTHORS_FILE,
-  type AllowlistRead,
   mergeAuthorGate,
   mergeGuardAuthorRead,
   readMergeAuthorAllowlist,
 } from "./merge-author-allowlist.ts";
 import type { MergeExecFn, MergeTarget } from "./merge-target.ts";
+import { errText } from "./protected-paths-text.ts";
 
 /** The executor seam every merge path already holds. */
 type AuthorExec = (
@@ -98,7 +98,10 @@ export async function guardMergeAuthorRefusal(
 export function authorFromRead(read: { author?: string; authorError?: string }): AuthorRead {
   const login = read.author?.trim();
   if (login === undefined || login.length === 0) {
-    return { ok: false, detail: read.authorError ?? "the forge's PR read reported no author login" };
+    return {
+      ok: false,
+      detail: read.authorError ?? "the forge's PR read reported no author login",
+    };
   }
   return { ok: true, login };
 }

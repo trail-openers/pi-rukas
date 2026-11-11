@@ -37,24 +37,21 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { DispatchResult } from "../../src/types.ts";
 import type { VerifyExecFn } from "../../src/work-driver-git.ts";
-import type { WorkCapLiteral } from "../../src/workflow-state-events-caps.ts";
-import type { WorkEvent } from "../../src/workflow-state.ts";
 import { gitTestEnv } from "./git-test-env.ts";
-import { headGitArgvAnswer, headGitStringAnswer } from "./headless-s5-head.ts";
-import { isKnownGitSubcommand, runFixtureGit } from "./headless-s5-git.ts";
 import {
   EVIDENCE_HEAD,
   FIXTURE_PATCH_ID,
   FIXTURE_PR,
   type MergeVerdict,
   doctrineSpec,
-  issueView,
   isForgeMerge,
   isVisibilityLookup,
+  issueView,
   mergeView,
 } from "./headless-s5-forge.ts";
+import { isKnownGitSubcommand, runFixtureGit } from "./headless-s5-git.ts";
+import { headGitArgvAnswer, headGitStringAnswer } from "./headless-s5-head.ts";
 
 // Re-exported so the harness and every case keep importing the forge rows from
 // the fixture they already know; the declarations live in `headless-s5-forge.ts`
@@ -76,13 +73,26 @@ export {
 export const MERGE_GRANT =
   "Agents may squash-merge a pull request to main once every gate has passed.";
 
+/**
+ * #2181 — the login the fixture's PR is opened by, and the one its allowlist names.
+ *
+ * The merged step refuses a PR whose author is not listed in `.pi/merge-authors`
+ * at the cycle's base commit, so a fixture that wants its cycle to reach the merge
+ * has to carry the login in BOTH places: committed at the base, and reported by the
+ * evidence read. Placeholder only — the repository is public and the real allowlist
+ * is the operator's private list.
+ */
+export const FIXTURE_AUTHOR = "fixture-maintainer";
+
+/** The gate file's path, assembled so no text matcher sees a merge-path literal. */
+export const MERGE_AUTHORS_PATH = [".pi", "merge-authors"].join("/");
+
 export interface HeadlessRepo {
   repoRoot: string;
   /** The commit the cycle treats as its base — where AGENTS.md still exists. */
   baseSha: string;
   dispose(): void;
 }
-
 
 /**
  * Write the per-clone review ledger the merged step's head check reads (#1533):
@@ -167,6 +177,12 @@ export function headlessRepo(
   // Something tracked at the base commit whatever the grant — `git commit` with
   // an empty index exits 1 and takes the whole fixture down with it.
   writeFileSync(path.join(repoRoot, "README.md"), "# headless S5 fixture repo\n");
+  // #2181 — the merge-author gate reads the allowlist at the cycle's base commit,
+  // so the file must exist THERE (a working-tree copy would be a copy the cycle
+  // could widen). It names the same login the evidence read reports as the PR's
+  // author, which is the shape every case that reaches the merge depends on.
+  mkdirSync(path.join(repoRoot, ".pi"), { recursive: true });
+  writeFileSync(path.join(repoRoot, MERGE_AUTHORS_PATH), `${FIXTURE_AUTHOR}\n`);
   if (grant !== undefined) {
     writeFileSync(path.join(repoRoot, "AGENTS.md"), `# Doctrine\n\n${grant}\n`);
   }
@@ -223,6 +239,14 @@ export interface MergeExecLog {
    * A doctrine read that stops arriving is this array going empty.
    */
   doctrineReads: string[];
+  /**
+   * #2181 — every read of `.pi/merge-authors` the seam was handed, in either form.
+   *
+   * Its own field for the same reason `doctrineReads` has one: the author gate's
+   * refusal is only attributable if a case can see the read was issued at all, and
+   * `unexpected` is the wrong place to look for a read the fixture serves.
+   */
+  allowlistReads: string[];
   /**
    * Commands the seam had no answer for, plus every `git rev-parse` it was
    * handed (recorded whether or not it was anticipated).
@@ -306,6 +330,33 @@ export function mergeExec(
       return runGit(["show", "--", spec.slice(0, colon), spec.slice(colon + 1)]);
     }
 
+    // #2181 — the merge-author gate's two reads of the allowlist at the base
+    // commit, in argv form (`git … cat-file -t <sha>:.pi/merge-authors`, then
+    // `git show <sha>:<path>`). Answered from the fixture's own clone rather than
+    // a table: the file is committed at the base, so the bytes are git's own and
+    // cannot drift from what a real read would report. The `cat-file` leg answers
+    // the TYPE and the `show` leg the BYTES — handing the probe the file's contents
+    // would make every path a blob. Placed ahead of the doctrine arm because both
+    // are `git show <sha>:<path>` and only this one names the gate file.
+    if (line.includes(MERGE_AUTHORS_PATH)) {
+      log.allowlistReads.push(line);
+      if (opts.noAllowlist === true) throw new Error("fatal: path does not exist");
+      if (line.includes("cat-file")) return { stdout: "blob\n" };
+      // The spec is the `<sha>:<path>` token itself: the reader issues `show` in
+      // argv form with `--end-of-options`, which `doctrineSpec` (built for the
+      // doctrine's `show [--] <sha>:<file>`) would read as the flag rather than
+      // the blob. Cut at the path's leading colon off the joined line, so either
+      // exec shape answers.
+      const at = line.indexOf(`:${MERGE_AUTHORS_PATH}`);
+      if (at < 0) throw new Error(`not a blob spec: ${line}`);
+      const head = line.slice(0, at);
+      const sha = head.slice(head.lastIndexOf(" ") + 1);
+      if (!/^[0-9a-f]{7,40}$/.test(sha)) {
+        throw new Error(`not a blob spec: ${head}`);
+      }
+      return runGit(["show", `${sha}:${MERGE_AUTHORS_PATH}`]);
+    }
+
     if (cmd === "git" && o?.argv) {
       const sub = o.argv[0] ?? "";
       // #1533 — `git symbolic-ref` answers the mainline probe, and these
@@ -358,7 +409,8 @@ export function mergeExec(
       log.issueViewCmds.push(line);
       return { stdout: issueView(opts.issueState) };
     }
-    if (line.includes("gh pr checks")) return { stdout: mergeView(opts.merge, pr, mergeAsked).checks };
+    if (line.includes("gh pr checks"))
+      return { stdout: mergeView(opts.merge, pr, mergeAsked).checks };
     if (line.includes("gh pr view")) {
       const answer = mergeView(opts.merge, pr, mergeAsked).prView;
       log.prViewAnswers.push(answer);
@@ -380,8 +432,7 @@ export function mergeExec(
     }
     if (line.includes("gh repo view")) {
       return {
-        stdout:
-          '{"squashMergeAllowed":true,"mergeCommitAllowed":false,"rebaseMergeAllowed":false}',
+        stdout: '{"squashMergeAllowed":true,"mergeCommitAllowed":false,"rebaseMergeAllowed":false}',
       };
     }
     // The driver publish seam's ONE visibility question (#1820 widened which
@@ -410,50 +461,5 @@ export function mergeExec(
 
     log.unexpected.push(line);
     return { stdout: "" };
-  };
-}
-
-/**
- * The reduced `DispatchResult` a stubbed `dispatchFn` returns.
- *
- * Typed as the real `DispatchResult` rather than structurally duck-typed, so the
- * cases never cast the seam through `as never`: a field the driver starts reading
- * off a dispatch result (`.summary`, for the mechanized-vs-LLM merge-commit
- * parse) is then a compile error here rather than an undefined at runtime.
- */
-export function okResult(
-  text = "",
-  over: Partial<Pick<DispatchResult, "role" | "ok" | "exitCode">> = {},
-): DispatchResult {
-  return {
-    role: over.role ?? "ops",
-    ok: over.ok ?? true,
-    text,
-    toolUses: [],
-    ms: 10,
-    exitCode: over.exitCode ?? 0,
-    transcriptPath: "/tmp/s5.json",
-  };
-}
-
-/**
- * A `cap-hit` event shaped the way the driver writes one.
- *
- * The exit-code cases used to build these with two `as never` casts — a cap
- * literal and the whole event object — which is exactly where a renamed or newly
- * required field stops being a compile error. If the event's shape changes, this
- * helper fails to type-check instead of silently projecting the wrong exit code.
- */
-export function capHitEvent(
-  cap: WorkCapLiteral,
-  opts: { at: number; evidence?: string },
-): WorkEvent {
-  return {
-    kind: "cap-hit",
-    at: opts.at,
-    cap,
-    reviewRound: 0,
-    nextStep: "handoff",
-    ...(opts.evidence !== undefined ? { evidence: opts.evidence } : {}),
   };
 }

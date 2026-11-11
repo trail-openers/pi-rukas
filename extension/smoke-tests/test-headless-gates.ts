@@ -32,17 +32,18 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { WorkCapLiteral } from "../src/workflow-state-events-caps.ts";
-import { parseHeadlessArgs } from "../src/headless/cli.ts";
 import { buildCapabilities } from "../src/headless/capabilities.ts";
+import { parseHeadlessArgs } from "../src/headless/cli.ts";
 import { EXIT } from "../src/headless/exit-code.ts";
 import { RESULT_SCHEMA_VERSION, projectIssue } from "../src/headless/result.ts";
 import { runHeadless } from "../src/headless/run.ts";
 import { planChildPermissions } from "../src/spawn-permission.ts";
 import { enterCycle } from "../src/work-driver-cycle-entry.ts";
-import { appendEvent, initialState, type WorkState } from "../src/workflow-state.ts";
-import { MERGE_GRANT, capHitEvent, headlessRepo, okResult } from "./lib/headless-s5-fixture.ts";
-import { initEnv, noSignals, restoreEnv, type DriverSeams } from "./lib/headless-s5-harness.ts";
+import type { WorkCapLiteral } from "../src/workflow-state-events-caps.ts";
+import { type WorkState, appendEvent, initialState } from "../src/workflow-state.ts";
+import { MERGE_GRANT, headlessRepo } from "./lib/headless-s5-fixture.ts";
+import { type DriverSeams, initEnv, noSignals, restoreEnv } from "./lib/headless-s5-harness.ts";
+import { capHitEvent, okResult } from "./lib/headless-s5-results.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -204,11 +205,19 @@ initEnv();
     return { role: "developer", ok: true, text: "", toolUses: [], ms: 0 };
   }) as never;
   const headlessCycle = enterCycle(
-    { issue: 9010, repoRoot: "/nonexistent", host: { emit: () => undefined }, headless: true } as never,
+    {
+      issue: 9010,
+      repoRoot: "/nonexistent",
+      host: { emit: () => undefined },
+      headless: true,
+    } as never,
     recordCore,
   );
   await headlessCycle.dispatchFn({} as never, { role: "developer", prompt: "x" }, undefined);
-  assert(stamped[0]?.workCycleTrust === true, "#1666 — a headless /work child is dispatched with workCycleTrust");
+  assert(
+    stamped[0]?.workCycleTrust === true,
+    "#1666 — a headless /work child is dispatched with workCycleTrust",
+  );
   const plainChild = planChildPermissions({ runId: "g3", role: "developer" });
   assert(
     plainChild.trustChild === false && plainChild.subagentGuardEnabled === true,

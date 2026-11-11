@@ -44,11 +44,7 @@
  */
 
 import { isFullCommitSha } from "../commit-sha.ts";
-import {
-  authorFromRead,
-  evidenceAuthorRead,
-  heldForMergeAuthor,
-} from "./../merge-guard-author.ts";
+import { authorFromRead, evidenceAuthorRead, heldForMergeAuthor } from "./../merge-guard-author.ts";
 import type { HandlerCtx } from "./engine.ts";
 import type { LandDeps } from "./land-deps.ts";
 import { specifyBranch } from "./specify-tree.ts";

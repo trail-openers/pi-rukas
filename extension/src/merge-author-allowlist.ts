@@ -82,7 +82,11 @@ export type AllowlistUnreadable =
 
 /** The allowlist as read at a commit: the logins, or the reason none could be named. */
 export type AllowlistRead =
-  | { ok: true; logins: string[]; /** Case-folded set the comparison runs against. */ set: ReadonlySet<string> }
+  | {
+      ok: true;
+      logins: string[] /** Case-folded set the comparison runs against. */;
+      set: ReadonlySet<string>;
+    }
   | { ok: false; reason: AllowlistUnreadable; detail?: string };
 
 /** The PR's author, as the forge answered it — an absence is a read failure, never a name. */
@@ -162,7 +166,8 @@ export async function readMergeAuthorAllowlist(
     // that can tell a missing path from a broken repository.
     void err;
   }
-  if (type === "tree") return { ok: false, reason: "not-a-blob", detail: `${file} is a directory at the base commit` };
+  if (type === "tree")
+    return { ok: false, reason: "not-a-blob", detail: `${file} is a directory at the base commit` };
   if (type === "symlink" || type === "link") {
     return { ok: false, reason: "not-a-blob", detail: `${file} is a symlink at the base commit` };
   }
@@ -183,7 +188,11 @@ export async function readMergeAuthorAllowlist(
     }));
   } catch (err) {
     if (isBufferOverflow(err)) {
-      return { ok: false, reason: "too-large", detail: `${file} is over the ${ALLOWLIST_MAX_BUFFER} byte read bound` };
+      return {
+        ok: false,
+        reason: "too-large",
+        detail: `${file} is over the ${ALLOWLIST_MAX_BUFFER} byte read bound`,
+      };
     }
     return { ok: false, reason: "git-failed", detail: errText(err) };
   }
@@ -220,10 +229,10 @@ function allowlistRefusal(read: Extract<AllowlistRead, { ok: false }>, file: str
       : read.reason === "bad-base-sha"
         ? `the recorded base commit ${JSON.stringify(read.detail ?? "")} is not a commit sha, so the allowlist could not be read at it`
         : read.reason === "too-large"
-          ? read.detail ?? `${file} is larger than the read bound`
+          ? (read.detail ?? `${file} is larger than the read bound`)
           : read.reason === "git-failed"
             ? `the git read of ${file} failed (${read.detail ?? "no cause reported"})`
-            : read.detail ?? `${file} could not be read as a file at the base commit`;
+            : (read.detail ?? `${file} could not be read as a file at the base commit`);
   return `${why} — an allowlist that could not be read allows nobody, so every merge is refused`;
 }
 
@@ -270,14 +279,21 @@ export function mergeGuardAuthorRead(author: string | undefined): AuthorRead {
   // The placeholder is merge-target's own constant, not a real login: GitHub
   // logins may not contain it, so it can only ever be the stand-in.
   if (login.toLowerCase() === "unknown") {
-    return { ok: false, detail: "the forge's author field was absent, and the target reader substituted a placeholder" };
+    return {
+      ok: false,
+      detail:
+        "the forge's author field was absent, and the target reader substituted a placeholder",
+    };
   }
   // The same reasoning catches `merge-target`'s other stand-ins: a git author name
   // or email is what the reader writes when the forge answered neither, and neither
   // is a GitHub login — `@` is illegal in one. Labeling them "not allowlisted" sent
   // the operator to the allowlist for a PR whose author was never read.
   if (login.toLowerCase() === "local" || login.includes("@")) {
-    return { ok: false, detail: "the forge's author field carried a local git identity, not a forge login" };
+    return {
+      ok: false,
+      detail: "the forge's author field carried a local git identity, not a forge login",
+    };
   }
   return { ok: true, login };
 }

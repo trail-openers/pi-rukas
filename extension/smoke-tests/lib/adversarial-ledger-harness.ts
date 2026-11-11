@@ -20,7 +20,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { LedgerBinding } from "../../src/adversarial-ledger-binding.ts";
@@ -41,6 +41,16 @@ import { gitTestEnv } from "./git-test-env.ts";
 /** The branch every fixture builds. One name so a row's branch is never the
  * thing an arm is accidentally asserting about. */
 export const BRANCH = "feature/x";
+
+/**
+ * #2181 — the login the forge stub reports as the fixture PR's author, and the one
+ * the clone's `.pi/merge-authors` names at the mainline commit.
+ *
+ * The arms in the tests that use this harness are about the reviewed range, not the
+ * author; the two values agree so the merge-author gate passes them through to the
+ * gate each arm actually asserts on. Placeholder only.
+ */
+export const LEDGER_AUTHOR = "fixture-maintainer";
 
 /** Run a real git command in `repo` and return its trimmed stdout.
  *
@@ -95,6 +105,13 @@ export function setupRepo(mainline = "main"): Repo {
   sh(dir, "config", "user.name", "t");
   sh(dir, "checkout", "-qb", mainline);
   writeFileSync(path.join(dir, "base.txt"), "base\n");
+  // #2181 — the merge guard reads `.pi/merge-authors` at the commit it is about to
+  // land onto and fails closed, so a fixture whose arms expect the guard to REACH
+  // the ledger/range decision must carry the gate file on the mainline, naming the
+  // login the forge stub reports as the PR's author. Placeholder only — the real
+  // list is the operator's private one.
+  mkdirSync(path.join(dir, ".pi"), { recursive: true });
+  writeFileSync(path.join(dir, ".pi/merge-authors"), `${LEDGER_AUTHOR}\n`);
   sh(dir, "add", "-A");
   sh(dir, "commit", "-qm", "base");
   sh(dir, "push", "-q", "origin", mainline);
@@ -223,7 +240,7 @@ export function forgeExec(repo: string, pr: { comments: string[] }, baseBranch =
           headRefName: BRANCH,
           headRefOid: sh(repo, "rev-parse", `origin/${BRANCH}`),
           baseRefName: baseBranch,
-          author: { login: "dev" },
+          author: { login: LEDGER_AUTHOR },
           labels: [],
         }),
       };

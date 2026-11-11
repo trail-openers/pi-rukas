@@ -30,19 +30,14 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { DispatchResult } from "../../src/types.ts";
-import type { PolicyJudgeFn } from "../../src/work-driver-policy.ts";
 import type { DriverContext } from "../../src/work-driver-context.ts";
 import type { VerifyExecFn } from "../../src/work-driver-git.ts";
+import type { PolicyJudgeFn } from "../../src/work-driver-policy.ts";
 import { runWorkDriver } from "../../src/work-driver.ts";
-import {
-  type WorkState,
-  initialState,
-  readState,
-  writeState,
-} from "../../src/workflow-state.ts";
-import { commandOf } from "./argv-shell.ts";
+import { type WorkState, initialState, readState, writeState } from "../../src/workflow-state.ts";
 import { gitTestEnv } from "./git-test-env.ts";
-import { isNulDiffRead, nulNameStatus } from "./nul-porcelain.ts";
+import { nulNameStatus } from "./nul-porcelain.ts";
+import { forgeArm, isForgeMerge } from "./work-driver-merged-gate-files-arms.ts";
 
 /** The head the forge reports and the lens row reviewed — nothing moved since the review. */
 export const HEAD_OID = "1".repeat(39) + "a";
@@ -57,7 +52,7 @@ export const MERGE_BASE = "3".repeat(39) + "c";
  * Placeholder only: this repository is public and the operator's real allowlist is
  * private. The value is deliberately not a name anyone could mistake for a person.
  */
-export const FIXTURE_AUTHOR = "maintainer-1";
+export const FIXTURE_AUTHOR = "fixture-maintainer";
 
 /**
  * The doctrine that grants the merge. The authority gate needs it in every case
@@ -386,90 +381,31 @@ export async function gateFileRun(opts: {
       if (isProbe) return { stdout: "blob\n" };
       return { stdout: opts.authorAllowlist ?? `${FIXTURE_AUTHOR}\n` };
     }
-    // The merge gate's 3-field probe, matched on its own field list so it does
-    // not intercept the forge adapter's wide `gh pr view`.
-    if (line.includes("mergeStateStatus,mergeable,state")) {
-      return {
-        // #2181 — `author` rides the same read the head pin is taken from, so the
-        // login judged and the commit pinned describe one moment on the forge.
-        stdout: `{"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","state":"OPEN","headRefOid":"${HEAD_OID}","author":${opts.evidenceAuthor === null ? "null" : `{"login":${JSON.stringify(opts.evidenceAuthor ?? FIXTURE_AUTHOR)}}`}}`,
-      };
+    // The forge and the identity reads are answered by the arm module: its order is
+    // the contract (the 3-field probe before the wide `gh pr view`, the `^{commit}`
+    // resolve before the generic `rev-parse` below), and `undefined` means “not
+    // mine”, which is how a read nobody scripted still reaches `log.unexpected`.
+    const arm = forgeArm(
+      line,
+      cmd,
+      o,
+      {
+        branch,
+        pr,
+        author: FIXTURE_AUTHOR,
+        diff: opts.diff,
+        stateAuthor: opts.stateAuthor,
+        evidenceAuthor: opts.evidenceAuthor,
+        baseUnresolvable: opts.baseUnresolvable,
+        mergeAsked: () => mergeAsked,
+      },
+      log,
+    );
+    if (arm !== undefined) {
+      if (isForgeMerge(line)) mergeAsked = true;
+      return arm;
     }
-    // #2181 — the shared gate resolves a ref-shaped base (`origin/main`) to an OID
-    // before reading the file. Matched on the `^{commit}` peel, which nothing else in
-    // the merged step issues, and placed ahead of the generic `git rev-parse` catch-all
-    // below: that arm answers a ref question with the fixture's HEAD, which for this
-    // read would silently substitute a commit and let the gate decide against a list it
-    // never resolved. `baseUnresolvable` is checked BEFORE the answer, so an arm that
-    // asks for a denied resolve cannot be handed the default and pass for the wrong
-    // reason.
-    if (line.includes("rev-parse") && line.includes("^{commit}")) {
-      log.baseResolves.push(line);
-      if (opts.baseUnresolvable === true) throw new Error("fatal: unknown revision");
-      return { stdout: `${HEAD_OID}\n` };
-    }
-    if (line.includes("gh pr checks")) {
-      return { stdout: '[{"name":"ci","bucket":"pass","state":"SUCCESS"}]' };
-    }
-    if (isForgeMerge(line)) {
-      log.mergeCmds.push(line);
-      mergeAsked = true;
-      return { stdout: "Merged" };
-    }
-    // #2181 — with the permission gate off (`PI_ENSEMBLE_MERGE_AUTHORITY=0`) the
-    // merged step gathers NO evidence, so the author cannot come from the forge and
-    // the gate would refuse an author it never had the chance to read. This is the
-    // one case that reads the login from the state instead, because its subject is
-    // the gate-file park on that branch and the refusal it must NOT receive is the
-    // author's. Every other case leaves this unset and is judged on the forge's own
-    // answer, which is what the gate is for.
-    if (opts.stateAuthor !== undefined && line.includes("--json author")) {
-      log.authorReads.push(line);
-      return { stdout: JSON.stringify({ author: { login: opts.stateAuthor } }) };
-    }
-    if (line.includes("gh pr view")) {
-      return {
-        stdout: JSON.stringify({
-          number: pr,
-          title: "feat(fixture): declared gate files",
-          state: mergeAsked ? "MERGED" : "OPEN",
-          url: `https://github.com/f/f/pull/${pr}`,
-          headRefName: branch,
-          baseRefName: "main",
-          mergeable: "TRUE",
-          mergeStateStatus: "CLEAN",
-          isDraft: false,
-        }),
-      };
-    }
-    if (line.includes("gh repo view")) {
-      return {
-        stdout:
-          '{"squashMergeAllowed":true,"mergeCommitAllowed":false,"rebaseMergeAllowed":false}',
-      };
-    }
-    // The publish seam's one visibility question: `false` = public.
-    if (cmd === "gh" && o?.argv?.[0] === "api") return { stdout: "false\n" };
-    if (line.includes("git config --get remote."))
-      return { stdout: "https://github.com/f/f.git\n" };
-    if (line.includes("git remote")) return { stdout: "origin\n" };
-    if (line.includes("git symbolic-ref")) return { stdout: "origin/main\n" };
-    if (line.includes("git rev-parse --git-common-dir"))
-      return { stdout: `${repoRoot}/.git\n` };
-    if (line.includes("git merge-base")) return { stdout: `${MERGE_BASE}\n` };
-    if (line.includes("git patch-id")) return { stdout: `${PATCH_ID} x\n` };
-    // The protected-path gate resolves `origin/<ref>` to an OID before it diffs
-    // anything. Keyed on the exact argv the shared OID read issues: the generic
-    // catch-all below answers an OID to ANY `rev-parse …origin/`, which is how a
-    // drift off the real command shape would keep passing. It is gone, so a
-    // rev-parse nobody scripted lands in `log.unexpected`.
-    if (/^git rev-parse --verify origin\/(main|feature\/issue-\d+)$/.test(line))
-      return { stdout: `${HEAD_OID}\n` };
-    if (isNulDiffRead(commandOf(cmd, o))) {
-      log.diffReads.push(line);
-      return { stdout: opts.diff ?? "" };
-    }
-    if (line.startsWith("git fetch")) return { stdout: "" };
+    if (line.includes("git rev-parse --git-common-dir")) return { stdout: `${repoRoot}/.git\n` };
     if (line.includes("git rev-parse")) {
       return { stdout: /refs?\/|remotes\//.test(line) ? `${HEAD_OID}\n` : `${branch}\n` };
     }
@@ -552,10 +488,8 @@ function allowlistBlobSpec(line: string): { sha: string; file: string } | undefi
   return { sha: match[1] as string, file };
 }
 
-/** The forge's merge command, matched without spelling it in this file. */
-function isForgeMerge(line: string): boolean {
-  return /\bpr\s+merge\b/.test(line);
-}
+/** The forge's merge command, re-exported so a case can assert on it without a second copy. */
+export { isForgeMerge } from "./work-driver-merged-gate-files-arms.ts";
 
 /** Re-exported so the test spells change sets in the same helper the other fakes use. */
 export { nulNameStatus };
