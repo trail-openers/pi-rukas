@@ -123,6 +123,50 @@ assert(
   "the union alone catches a push whose only spelling is an `env -S` payload",
 );
 
+// ── the union: the WORD READER decides when the command parsed (#2168 H2) ───
+//
+// `commandPushes` used to be `regex || word`, so any text that merely MENTIONED
+// the verb went down the push path — `echo "git push origin x"` included — and a
+// mention from a non-repository cwd was refused with the push directory sentence
+// for a publish that publishes nothing. The union is now ordered by EVIDENCE: a
+// command the segmenter can read is judged by the word reader, and the regex half
+// is the fallback for text it cannot read (an unbalanced quote, an `oo` prefix the
+// word reader does not know, a shell body it does not open). Fail-closed for the
+// unparsable case is unchanged — a command nothing can read is still a push.
+const wordDecidesCases: [string, string][] = [
+  [`echo "git ${P} origin x"`, "a double-quoted mention of the verb"],
+  [`echo 'git ${P} origin x'`, "a single-quoted mention of the verb"],
+  [`echo "git ${P} origin x" && true`, "a quoted mention as the first segment of a chain"],
+  [`git commit -m "fix the ${P} script"`, "a commit message that names the verb"],
+  [`grep -r "git ${P}" .`, "a grep for the verb"],
+];
+for (const [command, why] of wordDecidesCases) {
+  assert(
+    commandPushes(command) === false,
+    `${why} is prose the word reader read, so it is NOT scanned as a push (H2)`,
+  );
+}
+
+// The regex half still carries the load where the word reader cannot reach: a
+// push past a program outside the wrapper table, and a push inside a shell body.
+// Both are pinned as pushes so narrowing the union cannot quietly drop them, and
+// the `busybox` case above is the same claim from the other side.
+for (const [command, why] of [
+  [`busybox git ${P} origin b`, "a git behind a program outside the wrapper table"],
+  [`bash -c 'git ${P} origin main'`, "a push inside a shell body"],
+] as [string, string][]) {
+  assert(commandPushes(command) === true, `${why} is still scanned as a push through the regex half`);
+}
+
+// Fail-closed for text the segmenter cannot read at all: a heredoc body naming
+// the verb arrives as bare words no argv begins at a program, so nothing was
+// PARSED and the regex half is the only reader left. An unparsable command that
+// carries the verb is a push, never a pass.
+assert(
+  commandPushes(`cat <<EOF\nsee git ${P} below\nEOF`) === true,
+  "an unparsable command that carries the verb is still treated as a push (fail closed)",
+);
+
 // The wrapper table's boundary, in the over-refusal direction. `busybox` is not
 // in WRAPPERS, so the segmenter leaves it as the program word and the word
 // reader — which asks its question of the PROGRAM word — says no. The regex half

@@ -20,8 +20,6 @@
  * - `git push` to a remote whose host is github.com: the outgoing commits'
  *   messages and ADDED diff lines, against the PRIVATE denylist only.
  *
- * ## Reuse over new parsers
- *
  * ## What the scan actually follows
  *
  * A publish is found whenever the command's OWN words name it, after the runner
@@ -84,6 +82,7 @@ import { codeOf } from "./public-hygiene-files.ts";
 import { isAssignment } from "./public-hygiene-operands.ts";
 import { commandPrefixLength } from "./public-hygiene-prefix.ts";
 import { containsShellExpansion, shellExpansionProblem } from "./public-hygiene-substitution.ts";
+import { isGitProgramWord } from "./public-hygiene-target.ts";
 import type { PublishScan, PublishText, ScanProblem } from "./public-hygiene-types.ts";
 import { unreadableOperands } from "./public-hygiene-unreadable.ts";
 import { scanGhApi, scanGhPublish, scanGitCommit } from "./public-hygiene-verbs.ts";
@@ -290,6 +289,50 @@ const SHELLS = new Set(["bash", "sh", "zsh", "dash", "ksh"]);
  * to `git-push-command.ts`, which the developer push guard also runs and which
  * over-matching serves better than under-matching.
  */
+/**
+ * Does this command run `git push` at all (including inside a shell body)?
+ *
+ * Two readers, one question, and the WORD READER'S VERDICT DECIDES whenever it
+ * can answer. The word reader ({@link commandCarriesPushVerb}) walks the command
+ * through the same segmenter every other publish reader uses, and requires the verb
+ * at the position git would read it as its verb. The regex (`pushesRemote`) is
+ * scan-not-anchor over the raw text: it sees a push inside a `bash -c` body or past
+ * an `oo` prefix, and it also sees the verb ANYWHERE — including inside text the
+ * command merely MENTIONS.
+ *
+ * The union of the two was the defect this ordering replaces. `commandPushes` used
+ * to answer yes when EITHER said so, so `echo "git push origin x"` — a line that
+ * publishes nothing — went down the push path, and from a non-repository cwd came
+ * back refused with the push directory sentence for a command that pushes nothing.
+ * A commit message or a comment that names the verb paid the same refusal. When the
+ * segmenter produced words for every segment AND one of those segments runs git, the
+ * command's own git words have been read, and that reader's `no` is an answer, not a
+ * gap: the regex no longer overrides it.
+ *
+ * The regex half still decides every case where the word reader had nothing to
+ * judge, and those are exactly the shapes that over-matching buys cheaply:
+ *
+ * - no segment ran git at all (`busybox git push`, `watch‑like` wrappers outside the
+ *   wrapper table) — the word reader refuses to strip a word it was not told to
+ *   strip, so it saw no git and gave no verdict, and the regex catches the push;
+ * - a push a shell body will execute (`bash -c 'git push'`) — the segmenter hands the
+ *   payload back as ONE opaque word, so no git argv was ever produced to read;
+ * - the command could not be parsed into words at all (an unbalanced quote, a
+ *   heredoc body, an `env -S` payload the stripper emptied) — no words, no verdict.
+ *
+ * And the fail-closed rule is intact: absent a verdict the regex is asked, so an
+ * unparsable command that carries the verb is treated as a push. "I could not read
+ * it" is never "it is not a push".
+ */
 export function commandPushes(command: string): boolean {
+  const words = publishCommandLines(command);
+  const parsed = words.length > 0 && words.every((argv) => argv.length > 0);
+  // Did any segment actually run git? A quoted run survives the segmenter as ONE
+  // word (`echo "git push"` → `git push`), so the program word must carry no
+  // whitespace to count — the same rule the word reader applies. Without it, prose
+  // that mentions `git` inside a quote would count as "git was read" and the regex
+  // would be silenced for a command whose git was only ever spoken about.
+  const runsGit = words.some((argv) => isGitProgramWord(argv[0]) && !(argv[0] ?? "").includes(" "));
+  if (parsed && runsGit) return commandCarriesPushVerb(command, PUSH_VERB);
   return pushesRemote(command) !== undefined || commandCarriesPushVerb(command, PUSH_VERB);
 }

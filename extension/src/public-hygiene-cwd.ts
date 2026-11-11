@@ -47,7 +47,7 @@
  * than being resolved in the session directory, which is the one answer that
  * would be a confident lie. `segmentCwds` still answers something in that slot:
  * the refusal sentence itself, which is what the hook prints. The scan never
- * reaches that value, because `resolveScanDirectory` in `public-hygiene-push.ts`
+ * reaches that value, because `scanDirectoryProblem` in `public-hygiene-push-probe.ts`
  * refuses on the flag before it asks git anything.
  *
  * ## The directories a body file may live in

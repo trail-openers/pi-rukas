@@ -66,6 +66,15 @@ export function commandCarriesPushVerb(command: string, pushVerb: string): boole
   for (const words of publishCommandLines(command)) {
     if (!isGitProgramWord(words[0])) continue;
     const walk = walkGitGlobals(words);
+    // A program is git's own only when the word carries NO whitespace. The
+    // segmenter hands back a quoted run as ONE word, so `echo "git push"` arrives
+    // as the single word `git push` — which ENDS in the program name and once read
+    // as the program `git`, making prose that mentions the verb a push and
+    // refusing it with the push directory sentence from a non-repository cwd. Bash
+    // never runs a word containing an unquoted space as that program, and a quoted
+    // run publishes nothing; a path-delimited git (`/usr/bin/git`, `./git`) still
+    // answers, because those carry no space.
+    if ((words[0] ?? "").includes(" ")) continue;
     if (walk.refused) return words.some((word, i) => i >= walk.end && word === pushVerb);
     if (words[walk.end] === pushVerb) return true;
   }

@@ -70,10 +70,46 @@ export function ownPushSegment(deps: PushScanDeps): PushSegment {
   return refused ? "refused" : "self";
 }
 
-/** The directory every git read of this scan runs in (see {@link ownPushSegment}). */
-export function scanCwd(deps: PushScanDeps): string {
-  const own = ownPushSegment(deps);
-  return own === "self" || own === "refused" ? deps.cwd : own;
+/**
+ * The push command's own git words, segmenter-stripped — the lists the readers of
+ * the verb and of git's pre-verb globals walk.
+ *
+ * The segmenter is called ONCE for a scan and its answer handed to every reader
+ * (`scanDirectoryProblem` and the refspec/remote readers all take these words),
+ * because two readings of one command is how a push gets refused for the flag one
+ * reading saw and scanned in the directory the other resolved (#2168). Each argv
+ * is wrapper- and prefix-stripped, so `argv[0]` is the PROGRAM word and
+ * {@link walkGitGlobals} can be asked of it directly.
+ */
+export function pushCommandWords(deps: PushScanDeps): string[][] {
+  return publishCommandLines(deps.command ?? "");
+}
+
+/**
+ * The `--git-dir`/`--work-tree` the scan's own command types, or `undefined`.
+ *
+ * This is the question "does this push name its repository in a way this guard
+ * refuses to resolve", asked of the SAME words the segment reader walked — so the
+ * refusal and the directory can never disagree about which command they are
+ * talking about. It is deliberately asked of the WORDS rather than read off the
+ * segment answer: `ownPushSegment` returns a directory as soon as a segment
+ * carries a `-C`, so a chain like `git --git-dir X push && git -C Y push` answers
+ * with a directory and the flag would go unreported, which is the confident wrong
+ * answer this refuses. The flag is the disqualifier whether or not some segment
+ * also moved the git.
+ *
+ * A quoted run is not a program word (`echo "git push"` arrives as one word
+ * containing a space), so a word with a space is skipped: bash runs no program
+ * from it, and prose must not be refused for a flag it merely mentions.
+ */
+export function refusedGlobalFlag(words: readonly (readonly string[])[]): string | undefined {
+  for (const argv of words) {
+    const prog = argv[0] ?? "";
+    if (!isGitProgramWord(prog) || prog.includes(" ")) continue;
+    const flag = walkGitGlobals(argv).refusedFlag;
+    if (flag !== undefined) return flag;
+  }
+  return undefined;
 }
 
 /**
