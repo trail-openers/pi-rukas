@@ -40,15 +40,15 @@ import path from "node:path";
 import type { VerifyExecFn } from "../../src/work-driver-git.ts";
 import { gitTestEnv } from "./git-test-env.ts";
 import {
-  EVIDENCE_HEAD,
-  FIXTURE_PATCH_ID,
-  FIXTURE_PR,
-  type MergeVerdict,
-  doctrineSpec,
-  isForgeMerge,
-  isVisibilityLookup,
-  issueView,
-  mergeView,
+	EVIDENCE_HEAD,
+	FIXTURE_PATCH_ID,
+	FIXTURE_PR,
+	type MergeVerdict,
+	doctrineSpec,
+	isForgeMerge,
+	isVisibilityLookup,
+	issueView,
+	mergeView,
 } from "./headless-s5-forge.ts";
 import { isKnownGitSubcommand, runFixtureGit } from "./headless-s5-git.ts";
 import { headGitArgvAnswer, headGitStringAnswer } from "./headless-s5-head.ts";
@@ -57,12 +57,12 @@ import { headGitArgvAnswer, headGitStringAnswer } from "./headless-s5-head.ts";
 // the fixture they already know; the declarations live in `headless-s5-forge.ts`
 // only so each file stays under the §12 cap.
 export {
-  EVIDENCE_BASE,
-  EVIDENCE_HEAD,
-  FIXTURE_PATCH_ID,
-  FIXTURE_PR,
-  type MergeVerdict,
-  isForgeMerge,
+	EVIDENCE_BASE,
+	EVIDENCE_HEAD,
+	FIXTURE_PATCH_ID,
+	FIXTURE_PR,
+	type MergeVerdict,
+	isForgeMerge,
 } from "./headless-s5-forge.ts";
 
 /**
@@ -71,7 +71,7 @@ export {
  * words.
  */
 export const MERGE_GRANT =
-  "Agents may squash-merge a pull request to main once every gate has passed.";
+	"Agents may squash-merge a pull request to main once every gate has passed.";
 
 /**
  * #2181 — the login the fixture's PR is opened by, and the one its allowlist names.
@@ -88,10 +88,10 @@ export const FIXTURE_AUTHOR = "fixture-maintainer";
 export const MERGE_AUTHORS_PATH = [".pi", "merge-authors"].join("/");
 
 export interface HeadlessRepo {
-  repoRoot: string;
-  /** The commit the cycle treats as its base — where AGENTS.md still exists. */
-  baseSha: string;
-  dispose(): void;
+	repoRoot: string;
+	/** The commit the cycle treats as its base — where AGENTS.md still exists. */
+	baseSha: string;
+	dispose(): void;
 }
 
 /**
@@ -112,29 +112,29 @@ export interface HeadlessRepo {
  * cases that share this file, not a knob the head check responds to.
  */
 export function seedReviewLedger(
-  repoRoot: string,
-  branch: string,
-  passed = true,
-  headSha = EVIDENCE_HEAD,
+	repoRoot: string,
+	branch: string,
+	passed = true,
+	headSha = EVIDENCE_HEAD,
 ): void {
-  writeFileSync(
-    path.join(repoRoot, ".git", "review-ledger.json"),
-    JSON.stringify({
-      entries: [
-        {
-          branch,
-          kind: "lens",
-          patchId: FIXTURE_PATCH_ID,
-          passed,
-          at: 1,
-          round: 1,
-          hasCritical: false,
-          detail: "APPROVED",
-          headSha,
-        },
-      ],
-    }),
-  );
+	writeFileSync(
+		path.join(repoRoot, ".git", "review-ledger.json"),
+		JSON.stringify({
+			entries: [
+				{
+					branch,
+					kind: "lens",
+					patchId: FIXTURE_PATCH_ID,
+					passed,
+					at: 1,
+					round: 1,
+					hasCritical: false,
+					detail: "APPROVED",
+					headSha,
+				},
+			],
+		}),
+	);
 }
 
 /**
@@ -142,122 +142,127 @@ export function seedReviewLedger(
  * nothing in the working tree. No remotes, no hooks, fixture-local git identity.
  */
 export function headlessRepo(
-  grant: string | undefined,
-  dirName = "headless-s5-",
-  branch = `feature/issue-${FIXTURE_PR}`,
-  reviewRow = true,
-  reviewedHead = EVIDENCE_HEAD,
+	grant: string | undefined,
+	dirName = "headless-s5-",
+	branch = `feature/issue-${FIXTURE_PR}`,
+	reviewRow = true,
+	reviewedHead = EVIDENCE_HEAD,
 ): HeadlessRepo {
-  const repoRoot = mkdtempSync(path.join(tmpdir(), dirName));
-  const git = (...args: string[]) => {
-    // #1145 — `env: gitTestEnv()`: `spawnSync` with no `env` inherits the REAL
-    // `environ` on bun 1.3, and the base SHA this repo records is where the
-    // doctrine read (#406) resolves, so a host ignore file or
-    // `init.defaultBranch` would move the composition's verdict off the code.
-    const child = spawnSync("git", args, { cwd: repoRoot, env: gitTestEnv() });
-    if (child.status !== 0) {
-      throw new Error(`git ${args.join(" ")}: ${child.stderr?.toString().slice(0, 200)}`);
-    }
-    return child.stdout.toString().trim();
-  };
-  git("init", "-b", "main");
-  git("config", "user.email", "s5@test.invalid");
-  git("config", "user.name", "Headless S5 test");
-  git("config", "commit.gpgsign", "false");
-  mkdirSync(path.join(repoRoot, ".git", "info"), { recursive: true });
-  // #1533 — the merged step's head check reads the per-clone review ledger, and
-  // a cycle that reaches the merge with NO lens row recorded is a cycle the
-  // driver never reviewed: the check parks it. Seed one row for the cycle's
-  // branch, carrying the OID the evidence probe reports and the patch id the
-  // exec seam's `git patch-id` answers, so the identity the merged step computes
-  // is the identity on file. A case that wants the moved-head park passes a
-  // `reviewedHead` the branch no longer points at; `reviewRow: false` is the
-  // never-reviewed park.
-  if (reviewRow) seedReviewLedger(repoRoot, branch, true, reviewedHead);
-  // Something tracked at the base commit whatever the grant — `git commit` with
-  // an empty index exits 1 and takes the whole fixture down with it.
-  writeFileSync(path.join(repoRoot, "README.md"), "# headless S5 fixture repo\n");
-  // #2181 — the merge-author gate reads the allowlist at the cycle's base commit,
-  // so the file must exist THERE (a working-tree copy would be a copy the cycle
-  // could widen). It names the same login the evidence read reports as the PR's
-  // author, which is the shape every case that reaches the merge depends on.
-  mkdirSync(path.join(repoRoot, ".pi"), { recursive: true });
-  writeFileSync(path.join(repoRoot, MERGE_AUTHORS_PATH), `${FIXTURE_AUTHOR}\n`);
-  if (grant !== undefined) {
-    writeFileSync(path.join(repoRoot, "AGENTS.md"), `# Doctrine\n\n${grant}\n`);
-  }
-  git("add", "-A");
-  git("commit", "-m", "chore: base");
-  const baseSha = git("rev-parse", "HEAD");
-  if (grant !== undefined) {
-    // The #406 shape: doctrine exists only at the base commit.
-    rmSync(path.join(repoRoot, "AGENTS.md"));
-    git("add", "-A");
-    git("commit", "-m", "chore: hide the doctrine from the working tree");
-  }
-  return {
-    repoRoot,
-    baseSha,
-    dispose: () => {
-      try {
-        rmSync(repoRoot, { recursive: true, force: true });
-      } catch {
-        /* best effort */
-      }
-    },
-  };
+	const repoRoot = mkdtempSync(path.join(tmpdir(), dirName));
+	const git = (...args: string[]) => {
+		// #1145 — `env: gitTestEnv()`: `spawnSync` with no `env` inherits the REAL
+		// `environ` on bun 1.3, and the base SHA this repo records is where the
+		// doctrine read (#406) resolves, so a host ignore file or
+		// `init.defaultBranch` would move the composition's verdict off the code.
+		const child = spawnSync("git", args, { cwd: repoRoot, env: gitTestEnv() });
+		if (child.status !== 0) {
+			throw new Error(
+				`git ${args.join(" ")}: ${child.stderr?.toString().slice(0, 200)}`,
+			);
+		}
+		return child.stdout.toString().trim();
+	};
+	git("init", "-b", "main");
+	git("config", "user.email", "s5@test.invalid");
+	git("config", "user.name", "Headless S5 test");
+	git("config", "commit.gpgsign", "false");
+	mkdirSync(path.join(repoRoot, ".git", "info"), { recursive: true });
+	// #1533 — the merged step's head check reads the per-clone review ledger, and
+	// a cycle that reaches the merge with NO lens row recorded is a cycle the
+	// driver never reviewed: the check parks it. Seed one row for the cycle's
+	// branch, carrying the OID the evidence probe reports and the patch id the
+	// exec seam's `git patch-id` answers, so the identity the merged step computes
+	// is the identity on file. A case that wants the moved-head park passes a
+	// `reviewedHead` the branch no longer points at; `reviewRow: false` is the
+	// never-reviewed park.
+	if (reviewRow) seedReviewLedger(repoRoot, branch, true, reviewedHead);
+	// Something tracked at the base commit whatever the grant — `git commit` with
+	// an empty index exits 1 and takes the whole fixture down with it.
+	writeFileSync(
+		path.join(repoRoot, "README.md"),
+		"# headless S5 fixture repo\n",
+	);
+	// #2181 — the merge-author gate reads the allowlist at the cycle's base commit,
+	// so the file must exist THERE (a working-tree copy would be a copy the cycle
+	// could widen). It names the same login the evidence read reports as the PR's
+	// author, which is the shape every case that reaches the merge depends on.
+	mkdirSync(path.join(repoRoot, ".pi"), { recursive: true });
+	writeFileSync(path.join(repoRoot, MERGE_AUTHORS_PATH), `${FIXTURE_AUTHOR}\n`);
+	if (grant !== undefined) {
+		writeFileSync(path.join(repoRoot, "AGENTS.md"), `# Doctrine\n\n${grant}\n`);
+	}
+	git("add", "-A");
+	git("commit", "-m", "chore: base");
+	const baseSha = git("rev-parse", "HEAD");
+	if (grant !== undefined) {
+		// The #406 shape: doctrine exists only at the base commit.
+		rmSync(path.join(repoRoot, "AGENTS.md"));
+		git("add", "-A");
+		git("commit", "-m", "chore: hide the doctrine from the working tree");
+	}
+	return {
+		repoRoot,
+		baseSha,
+		dispose: () => {
+			try {
+				rmSync(repoRoot, { recursive: true, force: true });
+			} catch {
+				/* best effort */
+			}
+		},
+	};
 }
 
 /** Everything the seam was asked, and the merges it was asked to perform. */
 export interface MergeExecLog {
-  /** Every command line the seam received, joined for argv-form calls. */
-  calls: string[];
-  /** The forge merge invocations it was asked to run, verbatim. */
-  mergeCmds: string[];
-  /**
-   * Every wide `gh pr view` ANSWER the seam handed back, in the order asked.
-   *
-   * `calls` records the commands; this records the replies. The positive
-   * control needs both to make its ordering claim: "the forge said MERGED"
-   * is content, and "only after the merge was asked for" is order.
-   */
-  prViewAnswers: string[];
-  /** #1533 — the head verification's fetch, and the rev-parse that records the
-   * fetched head. Both are answered by the fixture rather than run against a
-   * remote these throwaway repos do not have. */
-  headFetches: string[];
-  headReads: string[];
-  /** #1472 — every `gh issue view` the seam answered, verbatim. */
-  issueViewCmds: string[];
-  /**
-   * Every doctrine read the seam was handed, verbatim, in whatever exec shape
-   * arrived (`git show <sha>:AGENTS.md`, or the argv form).
-   *
-   * A separate field rather than a `calls` filter: the case asserts the gate
-   * ASKED for the doctrine at its base commit, and that question should not
-   * hinge on which of the two exec shapes `readDoctrineAtBase` happens to use.
-   * A doctrine read that stops arriving is this array going empty.
-   */
-  doctrineReads: string[];
-  /**
-   * #2181 — every read of `.pi/merge-authors` the seam was handed, in either form.
-   *
-   * Its own field for the same reason `doctrineReads` has one: the author gate's
-   * refusal is only attributable if a case can see the read was issued at all, and
-   * `unexpected` is the wrong place to look for a read the fixture serves.
-   */
-  allowlistReads: string[];
-  /**
-   * Commands the seam had no answer for, plus every `git rev-parse` it was
-   * handed (recorded whether or not it was anticipated).
-   *
-   * An unrecognised read used to return an empty stdout and be recorded only in
-   * `calls` — indistinguishable from a step the test intended. A `git`/`gh` read
-   * the fixture does not know is a change in the production path, and every case
-   * asserts this stays empty, so such a change fails loudly instead of being
-   * answered "nothing".
-   */
-  unexpected: string[];
+	/** Every command line the seam received, joined for argv-form calls. */
+	calls: string[];
+	/** The forge merge invocations it was asked to run, verbatim. */
+	mergeCmds: string[];
+	/**
+	 * Every wide `gh pr view` ANSWER the seam handed back, in the order asked.
+	 *
+	 * `calls` records the commands; this records the replies. The positive
+	 * control needs both to make its ordering claim: "the forge said MERGED"
+	 * is content, and "only after the merge was asked for" is order.
+	 */
+	prViewAnswers: string[];
+	/** #1533 — the head verification's fetch, and the rev-parse that records the
+	 * fetched head. Both are answered by the fixture rather than run against a
+	 * remote these throwaway repos do not have. */
+	headFetches: string[];
+	headReads: string[];
+	/** #1472 — every `gh issue view` the seam answered, verbatim. */
+	issueViewCmds: string[];
+	/**
+	 * Every doctrine read the seam was handed, verbatim, in whatever exec shape
+	 * arrived (`git show <sha>:AGENTS.md`, or the argv form).
+	 *
+	 * A separate field rather than a `calls` filter: the case asserts the gate
+	 * ASKED for the doctrine at its base commit, and that question should not
+	 * hinge on which of the two exec shapes `readDoctrineAtBase` happens to use.
+	 * A doctrine read that stops arriving is this array going empty.
+	 */
+	doctrineReads: string[];
+	/**
+	 * #2181 — every read of `.pi/merge-authors` the seam was handed, in either form.
+	 *
+	 * Its own field for the same reason `doctrineReads` has one: the author gate's
+	 * refusal is only attributable if a case can see the read was issued at all, and
+	 * `unexpected` is the wrong place to look for a read the fixture serves.
+	 */
+	allowlistReads: string[];
+	/**
+	 * Commands the seam had no answer for, plus every `git rev-parse` it was
+	 * handed (recorded whether or not it was anticipated).
+	 *
+	 * An unrecognised read used to return an empty stdout and be recorded only in
+	 * `calls` — indistinguishable from a step the test intended. A `git`/`gh` read
+	 * the fixture does not know is a change in the production path, and every case
+	 * asserts this stays empty, so such a change fails loudly instead of being
+	 * answered "nothing".
+	 */
+	unexpected: string[];
 }
 
 /**
@@ -282,184 +287,194 @@ export interface MergeExecLog {
  * positive control would prove nothing.
  */
 export function mergeExec(
-  opts: {
-    merge: MergeVerdict;
-    repoRoot: string;
-    prNumber?: number;
-    refuseDoctrine?: boolean;
-    /** #1472 — answer the issue-view with CLOSED so a case can exercise the gate. */
-    issueState?: "OPEN" | "CLOSED";
-    /**
-     * #1533 — the OID `origin/<branch>` resolves to once the merged step has
-     * fetched. Defaults to `EVIDENCE_HEAD` (nothing moved since the review).
-     */
-    fetchedHead?: string;
-    /**
-     * #1533 — the patch identity the FETCHED head answers with. Defaults to the
-     * fixture's `FIXTURE_PATCH_ID` — the reviewed one, i.e. a move that was only
-     * the mainline coming in. A different id is a content change after the review.
-     */
-    fetchedPatchId?: string;
-    /** #1533 — the `headSha` the lens row the head check reads carries. */
-    lensHeadSha?: string;
-  },
-  log: MergeExecLog,
+	opts: {
+		merge: MergeVerdict;
+		repoRoot: string;
+		prNumber?: number;
+		refuseDoctrine?: boolean;
+		/** #1472 — answer the issue-view with CLOSED so a case can exercise the gate. */
+		issueState?: "OPEN" | "CLOSED";
+		/**
+		 * #1533 — the OID `origin/<branch>` resolves to once the merged step has
+		 * fetched. Defaults to `EVIDENCE_HEAD` (nothing moved since the review).
+		 */
+		fetchedHead?: string;
+		/**
+		 * #1533 — the patch identity the FETCHED head answers with. Defaults to the
+		 * fixture's `FIXTURE_PATCH_ID` — the reviewed one, i.e. a move that was only
+		 * the mainline coming in. A different id is a content change after the review.
+		 */
+		fetchedPatchId?: string;
+		/** #1533 — the `headSha` the lens row the head check reads carries. */
+		lensHeadSha?: string;
+	},
+	log: MergeExecLog,
 ): VerifyExecFn {
-  const pr = opts.prNumber ?? FIXTURE_PR;
-  const fetchedHead = opts.fetchedHead ?? EVIDENCE_HEAD;
-  const fetchedPatchId = opts.fetchedPatchId ?? FIXTURE_PATCH_ID;
-  let mergeAsked = false;
-  const runGit = (args: string[]) => runFixtureGit(args, opts.repoRoot);
-  return async (cmd: string, o?: { argv?: string[]; cwd?: string }) => {
-    const line = o?.argv ? [cmd, ...o.argv].join(" ") : cmd;
-    log.calls.push(line);
+	const pr = opts.prNumber ?? FIXTURE_PR;
+	const fetchedHead = opts.fetchedHead ?? EVIDENCE_HEAD;
+	const fetchedPatchId = opts.fetchedPatchId ?? FIXTURE_PATCH_ID;
+	let mergeAsked = false;
+	const runGit = (args: string[]) => runFixtureGit(args, opts.repoRoot);
+	return async (cmd: string, o?: { argv?: string[]; cwd?: string }) => {
+		const line = o?.argv ? [cmd, ...o.argv].join(" ") : cmd;
+		log.calls.push(line);
 
-    const spec = doctrineSpec(cmd, o);
-    if (spec !== undefined) {
-      log.doctrineReads.push(line);
-      if (opts.refuseDoctrine) {
-        throw Object.assign(new Error("no doctrine at the base commit"), {
-          stdout: "",
-          stderr: "",
-        });
-      }
-      const colon = spec.indexOf(":");
-      if (colon <= 0) {
-        throw Object.assign(new Error(`not a blob spec: ${spec}`), { stdout: "", stderr: "" });
-      }
-      return runGit(["show", "--", spec.slice(0, colon), spec.slice(colon + 1)]);
-    }
+		const spec = doctrineSpec(cmd, o);
+		if (spec !== undefined) {
+			log.doctrineReads.push(line);
+			if (opts.refuseDoctrine) {
+				throw Object.assign(new Error("no doctrine at the base commit"), {
+					stdout: "",
+					stderr: "",
+				});
+			}
+			const colon = spec.indexOf(":");
+			if (colon <= 0) {
+				throw Object.assign(new Error(`not a blob spec: ${spec}`), {
+					stdout: "",
+					stderr: "",
+				});
+			}
+			return runGit([
+				"show",
+				"--",
+				spec.slice(0, colon),
+				spec.slice(colon + 1),
+			]);
+		}
 
-    // #2181 — the merge-author gate's two reads of the allowlist at the base
-    // commit, in argv form (`git … cat-file -t <sha>:.pi/merge-authors`, then
-    // `git show <sha>:<path>`). Answered from the fixture's own clone rather than
-    // a table: the file is committed at the base, so the bytes are git's own and
-    // cannot drift from what a real read would report. The `cat-file` leg answers
-    // the TYPE and the `show` leg the BYTES — handing the probe the file's contents
-    // would make every path a blob. Placed ahead of the doctrine arm because both
-    // are `git show <sha>:<path>` and only this one names the gate file.
-    if (line.includes(MERGE_AUTHORS_PATH)) {
-      log.allowlistReads.push(line);
-      if (opts.noAllowlist === true) throw new Error("fatal: path does not exist");
-      if (line.includes("cat-file")) return { stdout: "blob\n" };
-      // The spec is the `<sha>:<path>` token itself: the reader issues `show` in
-      // argv form with `--end-of-options`, which `doctrineSpec` (built for the
-      // doctrine's `show [--] <sha>:<file>`) would read as the flag rather than
-      // the blob. Cut at the path's leading colon off the joined line, so either
-      // exec shape answers.
-      const at = line.indexOf(`:${MERGE_AUTHORS_PATH}`);
-      if (at < 0) throw new Error(`not a blob spec: ${line}`);
-      const head = line.slice(0, at);
-      const sha = head.slice(head.lastIndexOf(" ") + 1);
-      if (!/^[0-9a-f]{7,40}$/.test(sha)) {
-        throw new Error(`not a blob spec: ${head}`);
-      }
-      return runGit(["show", `${sha}:${MERGE_AUTHORS_PATH}`]);
-    }
+		// #2181 — the merge-author gate's two reads of the allowlist at the base
+		// commit, in argv form (`git … cat-file -t <sha>:.pi/merge-authors`, then
+		// `git show <sha>:<path>`). Answered from the fixture's own clone rather than
+		// a table: the file is committed at the base, so the bytes are git's own and
+		// cannot drift from what a real read would report. The `cat-file` leg answers
+		// the TYPE and the `show` leg the BYTES — handing the probe the file's contents
+		// would make every path a blob. Placed ahead of the doctrine arm because both
+		// are `git show <sha>:<path>` and only this one names the gate file.
+		if (line.includes(MERGE_AUTHORS_PATH)) {
+			log.allowlistReads.push(line);
+			if (opts.noAllowlist === true)
+				throw new Error("fatal: path does not exist");
+			if (line.includes("cat-file")) return { stdout: "blob\n" };
+			// The spec is the `<sha>:<path>` token itself: the reader issues `show` in
+			// argv form with `--end-of-options`, which `doctrineSpec` (built for the
+			// doctrine's `show [--] <sha>:<file>`) would read as the flag rather than
+			// the blob. Cut at the path's leading colon off the joined line, so either
+			// exec shape answers.
+			const at = line.indexOf(`:${MERGE_AUTHORS_PATH}`);
+			if (at < 0) throw new Error(`not a blob spec: ${line}`);
+			const head = line.slice(0, at);
+			const sha = head.slice(head.lastIndexOf(" ") + 1);
+			if (!/^[0-9a-f]{7,40}$/.test(sha)) {
+				throw new Error(`not a blob spec: ${head}`);
+			}
+			return runGit(["show", `${sha}:${MERGE_AUTHORS_PATH}`]);
+		}
 
-    if (cmd === "git" && o?.argv) {
-      const sub = o.argv[0] ?? "";
-      // #1533 — `git symbolic-ref` answers the mainline probe, and these
-      // throwaway repos have no `refs/remotes/origin/HEAD` at all: without this
-      // the fixture's own answer was shadowed by the real git failing on a ref
-      // that does not exist, and every merging case parked on an unreadable
-      // mainline. The fixture's `main` is the same answer its `gh repo view`
-      // fallback already gives.
-      if (sub === "symbolic-ref") return { stdout: "origin/main\n" };
-      // #1533 — the head verification's own reads (fetch, the ref resolutions and
-      // the identity's base/diff halves) live in headless-s5-head.ts: these fixture
-      // repos have no remote, so those reads must be answered rather than run.
-      // The delegation returns undefined for every read this seam does not
-      // special-case, so the whitelist below still governs everything else.
-      const headAnswer = headGitArgvAnswer(o.argv, log, { fetchedHead });
-      if (headAnswer !== undefined) return headAnswer;
-      if (!isKnownGitSubcommand(o.argv)) {
-        log.unexpected.push(line);
-        return { stdout: "" };
-      }
-      if (sub === "rev-parse") {
-        // A rev-parse matcher that answers every rev-parse is fine, but each one
-        // is recorded: `restoreCheckout` / `detectMainline` / the preflight read
-        // a ref, and which ref they read is part of the contract.
-        log.unexpected.push(`(recorded) ${line}`);
-      }
-      return runGit(o.argv);
-    }
+		if (cmd === "git" && o?.argv) {
+			const sub = o.argv[0] ?? "";
+			// #1533 — `git symbolic-ref` answers the mainline probe, and these
+			// throwaway repos have no `refs/remotes/origin/HEAD` at all: without this
+			// the fixture's own answer was shadowed by the real git failing on a ref
+			// that does not exist, and every merging case parked on an unreadable
+			// mainline. The fixture's `main` is the same answer its `gh repo view`
+			// fallback already gives.
+			if (sub === "symbolic-ref") return { stdout: "origin/main\n" };
+			// #1533 — the head verification's own reads (fetch, the ref resolutions and
+			// the identity's base/diff halves) live in headless-s5-head.ts: these fixture
+			// repos have no remote, so those reads must be answered rather than run.
+			// The delegation returns undefined for every read this seam does not
+			// special-case, so the whitelist below still governs everything else.
+			const headAnswer = headGitArgvAnswer(o.argv, log, { fetchedHead });
+			if (headAnswer !== undefined) return headAnswer;
+			if (!isKnownGitSubcommand(o.argv)) {
+				log.unexpected.push(line);
+				return { stdout: "" };
+			}
+			if (sub === "rev-parse") {
+				// A rev-parse matcher that answers every rev-parse is fine, but each one
+				// is recorded: `restoreCheckout` / `detectMainline` / the preflight read
+				// a ref, and which ref they read is part of the contract.
+				log.unexpected.push(`(recorded) ${line}`);
+			}
+			return runGit(o.argv);
+		}
 
-    // #1533 — the ledger path helper resolves the clone's git dir with a STRING
-    // form call (`git rev-parse --git-common-dir`, no argv), so the argv branch
-    // above never sees it and it landed in `unexpected`. It reads the fixture's
-    // own repo, so run it there and record it as an anticipated read.
-    if (line === "git rev-parse --git-common-dir") {
-      log.headReads.push(line);
-      return runGit(["rev-parse", "--git-common-dir"]);
-    }
+		// #1533 — the ledger path helper resolves the clone's git dir with a STRING
+		// form call (`git rev-parse --git-common-dir`, no argv), so the argv branch
+		// above never sees it and it landed in `unexpected`. It reads the fixture's
+		// own repo, so run it there and record it as an anticipated read.
+		if (line === "git rev-parse --git-common-dir") {
+			log.headReads.push(line);
+			return runGit(["rev-parse", "--git-common-dir"]);
+		}
 
-    // The evidence gate's 3-field probe — distinct from the forge adapter's wide
-    // prView field list, which also mentions `mergeStateStatus`.
-    if (line.includes("--json mergeStateStatus,mergeable,state")) {
-      return { stdout: mergeView(opts.merge, pr, mergeAsked).evidence };
-    }
-    // #1472 — the closed-issue gate and the attention check both read the
-    // issue state through the forge. Unanswered, they land in `unexpected` and
-    // every case reaching a step boundary fails the clean-log assertion. OPEN
-    // unless a case asks otherwise: a fixture answering CLOSED would park
-    // every cycle.
-    if (line.includes("gh issue view")) {
-      log.issueViewCmds.push(line);
-      return { stdout: issueView(opts.issueState) };
-    }
-    if (line.includes("gh pr checks"))
-      return { stdout: mergeView(opts.merge, pr, mergeAsked).checks };
-    if (line.includes("gh pr view")) {
-      const answer = mergeView(opts.merge, pr, mergeAsked).prView;
-      log.prViewAnswers.push(answer);
-      return { stdout: answer };
-    }
-    if (isForgeMerge(line)) {
-      log.mergeCmds.push(line);
-      // The stateful control: recording the request is what turns the forge's
-      // answer to `gh pr view` into MERGED, so the post-merge verification in
-      // `executeAndVerifyMerge` confirms a merge that was actually issued.
-      mergeAsked = true;
-      if (opts.merge === "blocked" || opts.merge === "unopen") {
-        throw Object.assign(new Error("merge refused by the forge"), {
-          stdout: "",
-          stderr: "refused",
-        });
-      }
-      return { stdout: "Merged" };
-    }
-    if (line.includes("gh repo view")) {
-      return {
-        stdout: '{"squashMergeAllowed":true,"mergeCommitAllowed":false,"rebaseMergeAllowed":false}',
-      };
-    }
-    // The driver publish seam's ONE visibility question (#1820 widened which
-    // publishes ask it). `false` = public, the shape every case here assumes:
-    // a public repository is the only one the hygiene checks apply to at all.
-    if (isVisibilityLookup(cmd, o?.argv)) {
-      return { stdout: "false\n" };
-    }
-    if (line.includes("git config --get remote")) {
-      return { stdout: "https://github.com/s5/s5.git\n" };
-    }
-    if (line.includes("git remote")) return { stdout: "origin\n" };
-    if (line.includes("git symbolic-ref")) return { stdout: "origin/main\n" };
-    // #1533 — the merged step's identity reads that name `origin/<ref>`s these
-    // remote-less fixture repos cannot resolve: the merge base and the patch
-    // identity over it. Both are STRING-form calls, so the argv branch above
-    // never sees them and they landed in `unexpected`. The OID and the patch
-    // id are fixed, so the identity comparison the cases assert on runs.
-    const headString = headGitStringAnswer(line, log, fetchedPatchId);
-    if (headString !== undefined) return headString;
-    // #1533 — the merged step's identity check resolves the mainline through the
-    // STRING form of this probe (the argv branch above cannot see it), and this
-    // clone has no `refs/remotes/origin/HEAD`: the real git always failed here,
-    // so every merging case parked on an unreadable mainline. `origin/main` is
-    // what the fixture's `gh repo view` fallback answers anyway.
+		// The evidence gate's 3-field probe — distinct from the forge adapter's wide
+		// prView field list, which also mentions `mergeStateStatus`.
+		if (line.includes("--json mergeStateStatus,mergeable,state")) {
+			return { stdout: mergeView(opts.merge, pr, mergeAsked).evidence };
+		}
+		// #1472 — the closed-issue gate and the attention check both read the
+		// issue state through the forge. Unanswered, they land in `unexpected` and
+		// every case reaching a step boundary fails the clean-log assertion. OPEN
+		// unless a case asks otherwise: a fixture answering CLOSED would park
+		// every cycle.
+		if (line.includes("gh issue view")) {
+			log.issueViewCmds.push(line);
+			return { stdout: issueView(opts.issueState) };
+		}
+		if (line.includes("gh pr checks"))
+			return { stdout: mergeView(opts.merge, pr, mergeAsked).checks };
+		if (line.includes("gh pr view")) {
+			const answer = mergeView(opts.merge, pr, mergeAsked).prView;
+			log.prViewAnswers.push(answer);
+			return { stdout: answer };
+		}
+		if (isForgeMerge(line)) {
+			log.mergeCmds.push(line);
+			// The stateful control: recording the request is what turns the forge's
+			// answer to `gh pr view` into MERGED, so the post-merge verification in
+			// `executeAndVerifyMerge` confirms a merge that was actually issued.
+			mergeAsked = true;
+			if (opts.merge === "blocked" || opts.merge === "unopen") {
+				throw Object.assign(new Error("merge refused by the forge"), {
+					stdout: "",
+					stderr: "refused",
+				});
+			}
+			return { stdout: "Merged" };
+		}
+		if (line.includes("gh repo view")) {
+			return {
+				stdout:
+					'{"squashMergeAllowed":true,"mergeCommitAllowed":false,"rebaseMergeAllowed":false}',
+			};
+		}
+		// The driver publish seam's ONE visibility question (#1820 widened which
+		// publishes ask it). `false` = public, the shape every case here assumes:
+		// a public repository is the only one the hygiene checks apply to at all.
+		if (isVisibilityLookup(cmd, o?.argv)) {
+			return { stdout: "false\n" };
+		}
+		if (line.includes("git config --get remote")) {
+			return { stdout: "https://github.com/s5/s5.git\n" };
+		}
+		if (line.includes("git remote")) return { stdout: "origin\n" };
+		if (line.includes("git symbolic-ref")) return { stdout: "origin/main\n" };
+		// #1533 — the merged step's identity reads that name `origin/<ref>`s these
+		// remote-less fixture repos cannot resolve: the merge base and the patch
+		// identity over it. Both are STRING-form calls, so the argv branch above
+		// never sees them and they landed in `unexpected`. The OID and the patch
+		// id are fixed, so the identity comparison the cases assert on runs.
+		const headString = headGitStringAnswer(line, log, fetchedPatchId);
+		if (headString !== undefined) return headString;
+		// #1533 — the merged step's identity check resolves the mainline through the
+		// STRING form of this probe (the argv branch above cannot see it), and this
+		// clone has no `refs/remotes/origin/HEAD`: the real git always failed here,
+		// so every merging case parked on an unreadable mainline. `origin/main` is
+		// what the fixture's `gh repo view` fallback answers anyway.
 
-    log.unexpected.push(line);
-    return { stdout: "" };
-  };
+		log.unexpected.push(line);
+		return { stdout: "" };
+	};
 }

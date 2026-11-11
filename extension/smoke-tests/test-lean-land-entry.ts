@@ -38,22 +38,22 @@ import { ROOTS, ciLandLog } from "./lib/lean-ci-land-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
-  if (cond) console.log(`✓ ${msg}`);
-  else {
-    console.error(`✗ ${msg}`);
-    exit = 1;
-  }
+	if (cond) console.log(`✓ ${msg}`);
+	else {
+		console.error(`✗ ${msg}`);
+		exit = 1;
+	}
 }
 
 function ok(over: Partial<MergeEvidence> = {}): MergeEvidence {
-  return { ok: true, failing: [], inconclusive: [], ...over };
+	return { ok: true, failing: [], inconclusive: [], ...over };
 }
 
 interface Drive {
-  calls: MergeCall[];
-  statesRead: number;
-  grantsRead: number;
-  evidenceRead: number;
+	calls: MergeCall[];
+	statesRead: number;
+	grantsRead: number;
+	evidenceRead: number;
 }
 
 /**
@@ -64,141 +64,200 @@ interface Drive {
  * gate that decided and a gate that happened to be downstream of the merge.
  */
 async function drive(
-  issue: number,
-  opts: {
-    autoMerge?: boolean;
-    configThrows?: boolean;
-    ev?: (head: string) => MergeEvidence | undefined;
-    after?: string | undefined;
-    mergeThrows?: boolean;
-    subject?: string;
-    noVerifiedHead?: boolean;
-  } = {},
+	issue: number,
+	opts: {
+		autoMerge?: boolean;
+		configThrows?: boolean;
+		ev?: (head: string) => MergeEvidence | undefined;
+		after?: string | undefined;
+		mergeThrows?: boolean;
+		subject?: string;
+		noVerifiedHead?: boolean;
+	} = {},
 ): Promise<{ outcome?: Outcome; threw?: Error; d: Drive; head: string }> {
-  const f = ciLandLog(issue, opts.noVerifiedHead === true ? { noVerifiedHead: true } : {});
-  const head = f.head;
-  const d: Drive = { calls: [], statesRead: 0, grantsRead: 0, evidenceRead: 0 };
-  const deps: LandDeps = {
-    evidence: async () => {
-      d.evidenceRead++;
-      return opts.ev === undefined ? ok({ headOid: head, mergeStateStatus: "CLEAN" }) : opts.ev(head);
-    },
-    openPr: async () => 42,
-    merge: async (_repo, call) => {
-      d.calls.push(call);
-      if (opts.mergeThrows === true) throw new Error("branch protection refused it");
-    },
-    stateAfter: async () => {
-      d.statesRead++;
-      return opts.after === undefined ? "MERGED" : opts.after;
-    },
-    // #2181 — the author gate, answered the way the production seam answers it for a
-    // forge that reports an allowlisted login: these cases are about the seams AFTER
-    // it (the merge call, the state read-back, the grant). The refusals themselves are
-    // the gate's own suite, test-merge-author-allowlist.ts, and the driver arms in
-    // test-work-driver-merged-gate-files.ts.
-    checkAuthor: async () => ({ ok: true }),
-    loadConfig: async () => {
-      d.grantsRead++;
-      if (opts.configThrows === true)
-        throw new Error("git show <base>:.pi/work.json: unable to read tree");
-      return { autoMerge: opts.autoMerge !== false };
-    },
-    ...(opts.subject === undefined ? {} : { mergeSubject: () => opts.subject }),
-  };
-  try {
-    return { outcome: await landOutcome(f.ctx as HandlerCtx, deps), d, head };
-  } catch (err) {
-    return { threw: err as Error, d, head };
-  }
+	const f = ciLandLog(
+		issue,
+		opts.noVerifiedHead === true ? { noVerifiedHead: true } : {},
+	);
+	const head = f.head;
+	const d: Drive = { calls: [], statesRead: 0, grantsRead: 0, evidenceRead: 0 };
+	const deps: LandDeps = {
+		evidence: async () => {
+			d.evidenceRead++;
+			return opts.ev === undefined
+				? ok({ headOid: head, mergeStateStatus: "CLEAN" })
+				: opts.ev(head);
+		},
+		openPr: async () => 42,
+		merge: async (_repo, call) => {
+			d.calls.push(call);
+			if (opts.mergeThrows === true)
+				throw new Error("branch protection refused it");
+		},
+		stateAfter: async () => {
+			d.statesRead++;
+			return opts.after === undefined ? "MERGED" : opts.after;
+		},
+		// #2181 — the author gate, answered the way the production seam answers it for a
+		// forge that reports an allowlisted login: these cases are about the seams AFTER
+		// it (the merge call, the state read-back, the grant). The refusals themselves are
+		// the gate's own suite, test-merge-author-allowlist.ts, and the driver arms in
+		// test-work-driver-merged-gate-files.ts.
+		checkAuthor: async () => ({ ok: true }),
+		loadConfig: async () => {
+			d.grantsRead++;
+			if (opts.configThrows === true)
+				throw new Error("git show <base>:.pi/work.json: unable to read tree");
+			return { autoMerge: opts.autoMerge !== false };
+		},
+		...(opts.subject === undefined ? {} : { mergeSubject: () => opts.subject }),
+	};
+	try {
+		return { outcome: await landOutcome(f.ctx as HandlerCtx, deps), d, head };
+	} catch (err) {
+		return { threw: err as Error, d, head };
+	}
 }
 
 // ── (l1) the entry point merges, pinned and read back ────────────────────
 {
-  const r = await drive(601, { subject: "fix(retry): make a transient failure retry" });
-  assert(
-    r.outcome?.kind === "merged",
-    `(l1) grant + ok + matching head -> merged via landOutcome (${JSON.stringify(r.outcome ?? r.threw?.message)})`,
-  );
-  assert(r.d.calls.length === 1, "(l1) exactly one merge was attempted");
-  assert(r.d.calls[0]?.headOid === r.head, "(l1) pinned to the verified head");
-  assert(r.d.calls[0]?.method === "squash", "(l1) as a squash");
-  assert(r.d.calls[0]?.subject === "fix(retry): make a transient failure retry", "(l1) carrying the squash subject");
-  assert(r.d.statesRead === 1, "(l1) and the state was read back from the forge, once");
-  assert(r.d.grantsRead === 1 && r.d.evidenceRead === 1, "(l1) both gates were consulted, not assumed");
-  assert(
-    typeof r.d.calls[0]?.headOid === "string" && /^[0-9a-f]{40}$/.test(r.d.calls[0]!.headOid),
-    "(l1) the pin is a full 40-hex oid, not a prefix",
-  );
+	const r = await drive(601, {
+		subject: "fix(retry): make a transient failure retry",
+	});
+	assert(
+		r.outcome?.kind === "merged",
+		`(l1) grant + ok + matching head -> merged via landOutcome (${JSON.stringify(r.outcome ?? r.threw?.message)})`,
+	);
+	assert(r.d.calls.length === 1, "(l1) exactly one merge was attempted");
+	assert(r.d.calls[0]?.headOid === r.head, "(l1) pinned to the verified head");
+	assert(r.d.calls[0]?.method === "squash", "(l1) as a squash");
+	assert(
+		r.d.calls[0]?.subject === "fix(retry): make a transient failure retry",
+		"(l1) carrying the squash subject",
+	);
+	assert(
+		r.d.statesRead === 1,
+		"(l1) and the state was read back from the forge, once",
+	);
+	assert(
+		r.d.grantsRead === 1 && r.d.evidenceRead === 1,
+		"(l1) both gates were consulted, not assumed",
+	);
+	assert(
+		typeof r.d.calls[0]?.headOid === "string" &&
+			/^[0-9a-f]{40}$/.test(r.d.calls[0]!.headOid),
+		"(l1) the pin is a full 40-hex oid, not a prefix",
+	);
 }
 
 // ── (l2) head mismatch: refuse naming BOTH oids, and never merge ─────────
 {
-  const moved = "c".repeat(40);
-  const r = await drive(602, { ev: () => ok({ headOid: moved, mergeStateStatus: "CLEAN" }) });
-  assert(r.outcome?.kind === "refused", `(l2) a moved PR head -> refused (${JSON.stringify(r.outcome)})`);
-  const reason = r.outcome?.reason ?? "";
-  assert(reason.includes("is not the verified head"), `(l2) it names the relation (${reason})`);
-  assert(reason.includes(moved.slice(0, 12)), `(l2) and the PR head it saw (${reason})`);
-  assert(reason.includes(r.head.slice(0, 12)), `(l2) and the verified head it expected (${reason})`);
-  assert(r.d.calls.length === 0, "(l2) the merge seam was NEVER called");
-  assert(r.d.statesRead === 0, "(l2) and nothing was read back after a merge that did not happen");
+	const moved = "c".repeat(40);
+	const r = await drive(602, {
+		ev: () => ok({ headOid: moved, mergeStateStatus: "CLEAN" }),
+	});
+	assert(
+		r.outcome?.kind === "refused",
+		`(l2) a moved PR head -> refused (${JSON.stringify(r.outcome)})`,
+	);
+	const reason = r.outcome?.reason ?? "";
+	assert(
+		reason.includes("is not the verified head"),
+		`(l2) it names the relation (${reason})`,
+	);
+	assert(
+		reason.includes(moved.slice(0, 12)),
+		`(l2) and the PR head it saw (${reason})`,
+	);
+	assert(
+		reason.includes(r.head.slice(0, 12)),
+		`(l2) and the verified head it expected (${reason})`,
+	);
+	assert(r.d.calls.length === 0, "(l2) the merge seam was NEVER called");
+	assert(
+		r.d.statesRead === 0,
+		"(l2) and nothing was read back after a merge that did not happen",
+	);
 }
 
 // ── (l3) no grant ────────────────────────────────────────────────────────
 {
-  const r = await drive(603, { autoMerge: false });
-  assert(r.outcome?.kind === "refused", "(l3) autoMerge false -> refused");
-  assert((r.outcome?.reason ?? "").includes("autoMerge"), "(l3) naming the missing grant");
-  assert(r.d.calls.length === 0, "(l3) no merge was attempted");
+	const r = await drive(603, { autoMerge: false });
+	assert(r.outcome?.kind === "refused", "(l3) autoMerge false -> refused");
+	assert(
+		(r.outcome?.reason ?? "").includes("autoMerge"),
+		"(l3) naming the missing grant",
+	);
+	assert(r.d.calls.length === 0, "(l3) no merge was attempted");
 }
 
 // ── (l4) unreadable config is NOT reported as "the project declined" ─────
 {
-  const r = await drive(604, { configThrows: true });
-  const reason = r.outcome?.reason ?? "";
-  assert(r.outcome?.kind === "refused", `(l4) an unreadable config -> refused (${JSON.stringify(r.outcome)})`);
-  assert(/could not be READ/i.test(reason), `(l4) the refusal names the unreadable config (${reason})`);
-  assert(
-    !/^land refused: autoMerge is not true/.test(reason),
-    `(l4) and does NOT read as the project declining to grant (${reason})`,
-  );
-  assert(r.d.calls.length === 0, "(l4) no merge was attempted");
+	const r = await drive(604, { configThrows: true });
+	const reason = r.outcome?.reason ?? "";
+	assert(
+		r.outcome?.kind === "refused",
+		`(l4) an unreadable config -> refused (${JSON.stringify(r.outcome)})`,
+	);
+	assert(
+		/could not be READ/i.test(reason),
+		`(l4) the refusal names the unreadable config (${reason})`,
+	);
+	assert(
+		!/^land refused: autoMerge is not true/.test(reason),
+		`(l4) and does NOT read as the project declining to grant (${reason})`,
+	);
+	assert(r.d.calls.length === 0, "(l4) no merge was attempted");
 }
 
 // ── (l5) the call returned; the forge did not merge ─────────────────────
 {
-  const r = await drive(605, { after: "OPEN" });
-  assert(r.outcome?.kind === "refused", "(l5) a merge that did not merge -> refused");
-  assert((r.outcome?.reason ?? "").includes("not MERGED"), "(l5) because it was read back");
-  assert(r.d.calls.length === 1, "(l5) the merge was attempted exactly once, then refused");
+	const r = await drive(605, { after: "OPEN" });
+	assert(
+		r.outcome?.kind === "refused",
+		"(l5) a merge that did not merge -> refused",
+	);
+	assert(
+		(r.outcome?.reason ?? "").includes("not MERGED"),
+		"(l5) because it was read back",
+	);
+	assert(
+		r.d.calls.length === 1,
+		"(l5) the merge was attempted exactly once, then refused",
+	);
 }
 
 // ── (l6) nothing verified: refuse before the forge ──────────────────────
 {
-  const r = await drive(606, { noVerifiedHead: true });
-  assert(r.outcome?.kind === "refused", "(l6) no verified head -> refused");
-  assert(r.d.evidenceRead === 0 && r.d.calls.length === 0, "(l6) before the forge was touched at all");
+	const r = await drive(606, { noVerifiedHead: true });
+	assert(r.outcome?.kind === "refused", "(l6) no verified head -> refused");
+	assert(
+		r.d.evidenceRead === 0 && r.d.calls.length === 0,
+		"(l6) before the forge was touched at all",
+	);
 }
 
 // ── (l7) a throwing merge is a refusal, never a `merged` ────────────────
 {
-  const r = await drive(607, { mergeThrows: true });
-  assert(
-    r.outcome?.kind === "refused",
-    `(l7) a throwing merge -> refused, not merged (${JSON.stringify(r.outcome)})`,
-  );
-  assert(r.d.calls.length === 1, "(l7) attempted once, honestly recorded");
-  assert(r.d.statesRead === 0, "(l7) nothing read back after a failed call");
+	const r = await drive(607, { mergeThrows: true });
+	assert(
+		r.outcome?.kind === "refused",
+		`(l7) a throwing merge -> refused, not merged (${JSON.stringify(r.outcome)})`,
+	);
+	assert(r.d.calls.length === 1, "(l7) attempted once, honestly recorded");
+	assert(r.d.statesRead === 0, "(l7) nothing read back after a failed call");
 }
 
 // ── (l8) the production seam supplies a subject (never left to luck) ────
 {
-  // `landDeps()` must hand `land` a mergeSubject: a squash subject becomes the
-  // commit record on main and release-please reads it, so the wiring being absent
-  // is the bug, and it is invisible unless someone asserts it exists.
-  const { landDeps } = await import("../src/lean/land-deps.ts");
-  assert(typeof landDeps().mergeSubject === "function", "(l8) production wiring supplies mergeSubject");
+	// `landDeps()` must hand `land` a mergeSubject: a squash subject becomes the
+	// commit record on main and release-please reads it, so the wiring being absent
+	// is the bug, and it is invisible unless someone asserts it exists.
+	const { landDeps } = await import("../src/lean/land-deps.ts");
+	assert(
+		typeof landDeps().mergeSubject === "function",
+		"(l8) production wiring supplies mergeSubject",
+	);
 }
 
 for (const dir of ROOTS) rmSync(dir, { recursive: true, force: true });

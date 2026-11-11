@@ -24,33 +24,33 @@ import type { WorkEvent } from "../../src/workflow-state.ts";
  * The reduced `DispatchResult` a stubbed `dispatchFn` returns.
  */
 export function okResult(
-  text = "",
-  over: Partial<Pick<DispatchResult, "role" | "ok" | "exitCode">> = {},
+	text = "",
+	over: Partial<Pick<DispatchResult, "role" | "ok" | "exitCode">> = {},
 ): DispatchResult {
-  return {
-    role: over.role ?? "ops",
-    ok: over.ok ?? true,
-    text,
-    toolUses: [],
-    ms: 10,
-    exitCode: over.exitCode ?? 0,
-    transcriptPath: "/tmp/s5.json",
-  };
+	return {
+		role: over.role ?? "ops",
+		ok: over.ok ?? true,
+		text,
+		toolUses: [],
+		ms: 10,
+		exitCode: over.exitCode ?? 0,
+		transcriptPath: "/tmp/s5.json",
+	};
 }
 
 /**
  * A `cap-hit` event shaped the way the driver writes one.
  */
 export function capHitEvent(
-  cap: WorkCapLiteral,
-  opts: { at: number; evidence?: string },
+	cap: WorkCapLiteral,
+	opts: { at: number; evidence?: string },
 ): WorkEvent {
-  return {
-    kind: "cap-hit",
-    at: opts.at,
-    cap,
-    reviewRound: 0,
-    nextStep: "handoff",
-    ...(opts.evidence !== undefined ? { evidence: opts.evidence } : {}),
-  };
+	return {
+		kind: "cap-hit",
+		at: opts.at,
+		cap,
+		reviewRound: 0,
+		nextStep: "handoff",
+		...(opts.evidence !== undefined ? { evidence: opts.evidence } : {}),
+	};
 }

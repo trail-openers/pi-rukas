@@ -50,36 +50,15 @@ import { activeIssuesOf, scratchDir, teardownWorkspaceTmp } from "./work-driver-
 import { type WorkState, type WorkStep, appendEvent } from "./workflow-state.ts";
 import { worktreePrune, worktreeRemove } from "./worktree.ts";
 
-export { buildCompletionEvent, overrideEnvForKillCause } from "./work-driver-completion-event.ts";
+export {
+  buildCompletionEvent,
+  overrideEnvForKillCause,
+} from "./work-driver-completion-event.ts";
 import { runSingleDispatch } from "./work-driver-dispatch-seam.ts";
 
 export { runSingleDispatch };
-
-/**
- * Step 6 — Parse `pr: <N>` from an ops commit-pr reply. Lenient — accepts
- * surrounding markdown emphasis (`**pr**: 556`), backticks (`pr: #556`,
- * `pr: \`#556\``), and the bare-or-`#`-prefixed number. Returns `undefined`
- * when no marker line is present.
- */
-export function parsePrNumber(text: string | undefined): number | undefined {
-  if (!text) return undefined;
-  const m = text.match(/^[ \t]*\*{0,2}pr\*{0,2}\s*:\s*`?#?(\d+)`?\s*$/im);
-  if (!m) return undefined;
-  const n = Number.parseInt(m[1] ?? "", 10);
-  return Number.isFinite(n) && n > 0 ? n : undefined;
-}
-
-/**
- * Parse a `merge-commit: <sha>` marker line from ops's merge reply. Lenient:
- * accepts surrounding markdown (`**merge-commit:**`), backticks, and the 7+
- * hex-char SHA shape `gh pr merge` prints. Returns undefined when no marker is
- * present (the merge still succeeded; we just lost the SHA for the merged event).
- */
-export function parseMergeCommit(text: string | undefined): string | undefined {
-  if (!text) return undefined;
-  const m = text.match(/^[ \t]*[*_`]*\s*merge-commit\b[^0-9a-f\n]*([0-9a-f]{7,40})[^0-9a-f\n]*$/im);
-  return m?.[1];
-}
+import { parseMergeCommit } from "./work-driver-merged-parse.ts";
+export { parsePrNumber, parseMergeCommit } from "./work-driver-merged-parse.ts";
 
 /**
  * Step 9 — Merge the PR.
@@ -125,7 +104,10 @@ export async function runMerged(
           ? failed
           : "PR is still a draft: not marked ready";
     return appendEvent(
-      { ...state, pipelineState: { ...state.pipelineState, currentStep: "merged" } },
+      {
+        ...state,
+        pipelineState: { ...state.pipelineState, currentStep: "merged" },
+      },
       {
         kind: "cap-hit",
         at: Date.now(),
@@ -331,7 +313,10 @@ export async function runMerged(
     // `work-driver-commit.ts` builds its mechanized event directly for the same
     // reason.
     next = appendEvent(
-      { ...state, pipelineState: { ...state.pipelineState, currentStep: "merged" } },
+      {
+        ...state,
+        pipelineState: { ...state.pipelineState, currentStep: "merged" },
+      },
       { kind: "step-started", step: "merged", at: now },
     );
     next = appendEvent(
@@ -485,7 +470,11 @@ export async function runMerged(
 
   return {
     ...next,
-    pipelineState: { ...next.pipelineState, currentStep: "merged", status: "merged" },
+    pipelineState: {
+      ...next.pipelineState,
+      currentStep: "merged",
+      status: "merged",
+    },
     eventLog: [...next.eventLog, { kind: "merged", at: Date.now(), prNumber, mergeCommit }],
   };
 }

@@ -36,7 +36,12 @@ import { errText } from "./protected-paths-text.ts";
 /** The executor seam every merge path already holds. */
 type AuthorExec = (
   cmd: string,
-  opts?: { cwd?: string; timeout?: number; maxBuffer?: number; argv?: string[] },
+  opts?: {
+    cwd?: string;
+    timeout?: number;
+    maxBuffer?: number;
+    argv?: string[];
+  },
 ) => Promise<{ stdout: string; stderr?: string }>;
 
 /** What the gate decided, and what the caller must record alongside it. */
@@ -95,7 +100,10 @@ export async function guardMergeAuthorRefusal(
  * here is a compile error, and the two absence cases are named separately instead:
  * a read that never ran, and a read that answered without an author.
  */
-export function authorFromRead(read: { author?: string; authorError?: string }): AuthorRead {
+export function authorFromRead(read: {
+  author?: string;
+  authorError?: string;
+}): AuthorRead {
   const login = read.author?.trim();
   if (login === undefined || login.length === 0) {
     return {

@@ -192,7 +192,9 @@ export async function authorFromForgePr(
     });
     const login = (JSON.parse(stdout) as { author?: { login?: unknown } }).author?.login;
     if (typeof login !== "string" || login.trim().length === 0) {
-      return { authorError: `the PR read reported no author login for PR #${prNumber}` };
+      return {
+        authorError: `the PR read reported no author login for PR #${prNumber}`,
+      };
     }
     return { author: login.trim() };
   } catch (err) {

@@ -14,13 +14,27 @@
  * working tree (#406's rule: a cycle cannot rewrite the rules it is judged by
  * mid-cycle). `.pi/` is a protected directory, so only the operator can change it.
  *
- * It **fails closed toward the irreversible act**. Absent, a tree, a symlink, a
- * read git refused, or a file that holds nothing but comments all refuse every
- * merge. That inverts `lean/config.ts`'s `gitShow`, whose absent-to-default
- * contract is right for a config and wrong for an allowlist: "the project never
- * named anyone" and "nobody could read the file" both mean *no author is
- * allowlisted*, and neither is a licence to merge. Hence this module's own reader
- * rather than a reuse of that one.
+ * ## The gate is opt-in per repository
+ *
+ * The allowlist is a **grant the repository makes**, and a repository that never
+ * committed the file never made one. `/work` and lean run in repositories other
+ * than this one — including seeded trial repos that carry only the lean config —
+ * and an allowlist that opted out by default would refuse every landing there for
+ * a rule its operator never chose. So **absence is not a refusal**: no file at the
+ * base commit means no author rule, and every other gate keeps its meaning.
+ *
+ * **Presence is fail-closed.** Once the file exists, everything about it that
+ * cannot be established refuses: a tree, a symlink, a read git refused, or a file
+ * that holds nothing but comments. "It is there but nobody could read it" is not
+ * "the project named no anyone" — it is the operator's gate file failing, and the
+ * one act it governs is irreversible. Likewise an author the forge never reported
+ * refuses *when the file is present*: with no file there is no list to check a
+ * login against, so the gate has no subject and says nothing at all.
+ *
+ * That split — absence answers, presence fails closed — is why this module has its
+ * own reader rather than a reuse of `lean/config.ts`'s `gitShow`, which collapses
+ * absent, a tree and a symlink into one "no config" answer. For a config that is
+ * right; for a gate file the two shapes must stay apart.
  *
  * ## The author arrives as a read, never as a placeholder string
  *
@@ -62,11 +76,25 @@ const SHA_RE = /^[0-9a-f]{7,40}$/;
 /** The one git executor this module needs; every caller's seam is assignment-compatible. */
 type AllowlistExec = (
   cmd: string,
-  opts?: { cwd?: string; timeout?: number; maxBuffer?: number; argv?: string[] },
+  opts?: {
+    cwd?: string;
+    timeout?: number;
+    maxBuffer?: number;
+    argv?: string[];
+  },
 ) => Promise<{ stdout: string; stderr?: string }>;
 
-/** Why the allowlist could not be read — operator-facing, and never the content. */
+/**
+ * Why the allowlist did not answer.
+ *
+ * `absent` is NOT one of these in spirit — the repository simply has no rule — but
+ * it travels the same `{ ok: false }` shape so a caller cannot mistake it for a
+ * read that succeeded, and `mergeAuthorGate` is the single place that decides what
+ * each reason means. Every other member is a present gate file that failed.
+ */
 export type AllowlistUnreadable =
+  /** The path is not in the base commit: the repository never opted in (A7). */
+  | "absent"
   /** No base commit was recorded, so no commit exists to read the file at. */
   | "no-base"
   /** The base SHA is missing or not hex, so it cannot be named to git. */
@@ -118,7 +146,12 @@ export function parseMergeAuthorAllowlist(raw: string): string[] {
 
 /** Buffer overflow in either executor's error shape (`execp` and `execFile` differ). */
 function isBufferOverflow(err: unknown): boolean {
-  const e = err as { code?: number | null; killed?: boolean; message?: string; stderr?: string };
+  const e = err as {
+    code?: number | null;
+    killed?: boolean;
+    message?: string;
+    stderr?: string;
+  };
   if (typeof e?.message === "string" && /maxBuffer/i.test(e.message)) return true;
   return e?.killed === true && e.code === null && /maxBuffer/i.test(e.stderr ?? "");
 }
@@ -149,6 +182,8 @@ export async function readMergeAuthorAllowlist(
   }
   const spec = `${baseSha}:${file}`;
   let type = "";
+  /** Git's own words for the probe's failure, kept for the absent/git-failed split. */
+  let probeError = "";
   try {
     const { stdout } = await exec("git", {
       argv: [...GIT_HARDENING, "cat-file", "-t", "--end-of-options", spec],
@@ -158,18 +193,33 @@ export async function readMergeAuthorAllowlist(
     });
     type = stdout.trim();
   } catch (err) {
-    // A missing path and a broken repository both arrive here; the second `git
-    // show` below separates them, because it answers a real failure with its own
-    // stderr while a missing path answers with the standard "does not exist".
+    // A missing path and a broken repository both arrive here, and they must not
+    // collapse: one is "this repository has no author rule" (A7), the other is
+    // "the gate file could not be read". Git tells them apart in its own wording,
+    // so the wording is kept and classified below rather than guessed at by a
+    // second read that would answer a broken repository the same way.
     type = "";
-    // The cause is carried forward by the `git show` below, which is the read
-    // that can tell a missing path from a broken repository.
-    void err;
+    probeError = errText(err);
+    if (ABSENT_PROBE.test(probeError)) {
+      return {
+        ok: false,
+        reason: "absent",
+        detail: `${file} does not exist at the base commit`,
+      };
+    }
   }
   if (type === "tree")
-    return { ok: false, reason: "not-a-blob", detail: `${file} is a directory at the base commit` };
+    return {
+      ok: false,
+      reason: "not-a-blob",
+      detail: `${file} is a directory at the base commit`,
+    };
   if (type === "symlink" || type === "link") {
-    return { ok: false, reason: "not-a-blob", detail: `${file} is a symlink at the base commit` };
+    return {
+      ok: false,
+      reason: "not-a-blob",
+      detail: `${file} is a symlink at the base commit`,
+    };
   }
   if (type !== "blob") {
     return {
@@ -206,6 +256,18 @@ export async function readMergeAuthorAllowlist(
   }
   return { ok: true, logins, set: new Set(logins.map((l) => l.toLowerCase())) };
 }
+
+/**
+ * Git's own wording for "that path is not in that commit", from `cat-file -t`.
+ *
+ * Matched on the phrase set rather than on an exit code, because the exit code for
+ * a missing path (128) is the code for a broken repository, a dubious ownership and
+ * a missing pack file alike — those are `git-failed`, and treating them as absence
+ * would turn a wedged repository into an open gate. `does not exist in` is the
+ * phrase git prints for the path; `not a valid object name` is what a partial
+ * clone adds beside it; both say the SAME thing about the path.
+ */
+const ABSENT_PROBE = /does not exist in|path .* does not exist|not a valid object name/i;
 
 /** The refusal shared by every path, minus the path's own framing. */
 function notAllowlisted(login: string, file: string): string {
@@ -250,6 +312,11 @@ export function mergeAuthorGate(args: {
   file?: string;
 }): AuthorGate {
   const file = args.file ?? MERGE_AUTHORS_FILE;
+  // A repository that never committed the gate file never granted this rule, so
+  // there is nothing to check and nothing to say — not even about an author the
+  // forge could not read, whose only relevance here would be a list that does not
+  // exist. This is the ONE opt-out; every other unreadable input refuses.
+  if (!args.allowlist.ok && args.allowlist.reason === "absent") return { ok: true };
   // The author is classified FIRST. Both refusals block the merge, but they send the
   // operator to different places — the allowlist file, or their `gh` setup — and when
   // both are missing the author is the one fact the gate was asked about. Reporting
@@ -259,7 +326,10 @@ export function mergeAuthorGate(args: {
   if (!args.allowlist.ok) return { ok: false, reason: allowlistRefusal(args.allowlist, file) };
   const login = args.author.login.trim();
   if (login.length === 0) {
-    return { ok: false, reason: authorUnreadable("the forge answered with an empty author", file) };
+    return {
+      ok: false,
+      reason: authorUnreadable("the forge answered with an empty author", file),
+    };
   }
   if (args.allowlist.set.has(login.toLowerCase())) return { ok: true };
   return { ok: false, reason: notAllowlisted(login, file) };

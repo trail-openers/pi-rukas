@@ -63,7 +63,10 @@ function verifiedHead(ctx: HandlerCtx): string | undefined {
 
 /** The `land` step. Returns `merged` | `refused`; never throws. */
 export async function landOutcome(ctx: HandlerCtx, deps: LandDeps): Promise<Outcome> {
-  const refuse = (why: string): Outcome => ({ kind: "refused", reason: `land refused: ${why}` });
+  const refuse = (why: string): Outcome => ({
+    kind: "refused",
+    reason: `land refused: ${why}`,
+  });
   const head = verifiedHead(ctx);
   if (head === undefined) return refuse("no verified head on the step log");
 
@@ -130,7 +133,10 @@ export async function landOutcome(ctx: HandlerCtx, deps: LandDeps): Promise<Outc
     const after = await deps.stateAfter(ctx.repoRoot, number);
     if (after !== "MERGED")
       return refuse(`the PR reports ${String(after)} after the merge, not MERGED`);
-    return { kind: "merged", reason: `merged PR #${String(number)} at ${head.slice(0, 12)}` };
+    return {
+      kind: "merged",
+      reason: `merged PR #${String(number)} at ${head.slice(0, 12)}`,
+    };
   } catch (err) {
     return refuse(`the forge refused the pinned merge — ${(err as Error)?.message ?? String(err)}`);
   }

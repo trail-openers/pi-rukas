@@ -46,15 +46,18 @@ export const LEAN_FIXTURE_AUTHOR = "fixture-maintainer";
  * exercising the gate's unreadable-author path rather than its verdict. `over` can
  * replace or delete it, which is how an arm drives a stranger or an absent author.
  */
-export function realPrViewReply(headOid: string, over: Record<string, unknown> = {}): string {
-  return JSON.stringify({
-    headRefOid: headOid,
-    mergeStateStatus: "CLEAN",
-    mergeable: "MERGEABLE",
-    state: "OPEN",
-    author: { login: LEAN_FIXTURE_AUTHOR },
-    ...over,
-  });
+export function realPrViewReply(
+	headOid: string,
+	over: Record<string, unknown> = {},
+): string {
+	return JSON.stringify({
+		headRefOid: headOid,
+		mergeStateStatus: "CLEAN",
+		mergeable: "MERGEABLE",
+		state: "OPEN",
+		author: { login: LEAN_FIXTURE_AUTHOR },
+		...over,
+	});
 }
 
 /**
@@ -63,17 +66,19 @@ export function realPrViewReply(headOid: string, over: Record<string, unknown> =
  * actual gh output rather than a seam's invention.
  */
 export const REAL_CHECKS_PASS = [
-  { bucket: "pass", name: "quality-gate", state: "SUCCESS" },
-  { bucket: "pass", name: "offline-smoke", state: "SUCCESS" },
+	{ bucket: "pass", name: "quality-gate", state: "SUCCESS" },
+	{ bucket: "pass", name: "offline-smoke", state: "SUCCESS" },
 ];
 
 /** One real row whose bucket GitHub counts as success and we do not. */
 export const REAL_CHECKS_SKIPPED = [
-  { bucket: "skipping", name: "publish-image", state: "SKIPPED" },
+	{ bucket: "skipping", name: "publish-image", state: "SKIPPED" },
 ];
 
 /** One real failing row. */
-export const REAL_CHECKS_FAIL = [{ bucket: "fail", name: "quality-gate", state: "FAILURE" }];
+export const REAL_CHECKS_FAIL = [
+	{ bucket: "fail", name: "quality-gate", state: "FAILURE" },
+];
 
 /**
  * Rows whose checks are still running — `bucket: "pending"`, the category
@@ -82,8 +87,8 @@ export const REAL_CHECKS_FAIL = [{ bucket: "fail", name: "quality-gate", state: 
  * precisely the value the step used to read as red.
  */
 export const REAL_CHECKS_PENDING = [
-  { bucket: "pending", name: "quality-gate", state: "PENDING" },
-  { bucket: "pending", name: "offline-smoke", state: "PENDING" },
+	{ bucket: "pending", name: "quality-gate", state: "PENDING" },
+	{ bucket: "pending", name: "offline-smoke", state: "PENDING" },
 ];
 
 /**
@@ -92,4 +97,4 @@ export const REAL_CHECKS_PENDING = [
  * the whole reason the `--json` flag is load-bearing rather than cosmetic.
  */
 export const REAL_CHECKS_TABLE =
-  "quality-gate\tpass\t17m35s\thttps://github.com/o/r/actions/runs/1/job/1\t\n";
+	"quality-gate\tpass\t17m35s\thttps://github.com/o/r/actions/runs/1/job/1\t\n";

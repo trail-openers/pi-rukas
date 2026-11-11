@@ -19,7 +19,12 @@
  * `mergeCmds.length === 0`; that field is falsifiable only because the control
  * drives the same field to 1.
  */
-export type MergeVerdict = "green" | "blocked" | "failing" | "unopen" | "merged";
+export type MergeVerdict =
+	| "green"
+	| "blocked"
+	| "failing"
+	| "unopen"
+	| "merged";
 
 /**
  * The wide `gh pr view` answer the forge adapter reads for the cycle's PR.
@@ -30,26 +35,28 @@ export type MergeVerdict = "green" | "blocked" | "failing" | "unopen" | "merged"
  * discards is asserting nothing about the field it names.
  */
 function prViewJson(
-  pr: number,
-  facts: {
-    state: "OPEN" | "CLOSED" | "MERGED";
-    mergeStateStatus: "CLEAN" | "BLOCKED";
-    mergeable?: "TRUE" | "UNKNOWN";
-  },
+	pr: number,
+	facts: {
+		state: "OPEN" | "CLOSED" | "MERGED";
+		mergeStateStatus: "CLEAN" | "BLOCKED";
+		mergeable?: "TRUE" | "UNKNOWN";
+	},
 ): string {
-  return JSON.stringify({
-    number: pr,
-    title: "feat(s5): headless gates",
-    state: facts.state,
-    url: `https://github.com/s5/s5/pull/${pr}`,
-    headRefName: "feature/issue-9001",
-    baseRefName: "main",
-    mergeable: facts.mergeable ?? (facts.mergeStateStatus === "CLEAN" ? "TRUE" : "UNKNOWN"),
-    mergeStateStatus: facts.mergeStateStatus,
-    // Always false: a draft cannot merge and would halt the step for a reason
-    // unrelated to what these cases assert.
-    isDraft: false,
-  });
+	return JSON.stringify({
+		number: pr,
+		title: "feat(s5): headless gates",
+		state: facts.state,
+		url: `https://github.com/s5/s5/pull/${pr}`,
+		headRefName: "feature/issue-9001",
+		baseRefName: "main",
+		mergeable:
+			facts.mergeable ??
+			(facts.mergeStateStatus === "CLEAN" ? "TRUE" : "UNKNOWN"),
+		mergeStateStatus: facts.mergeStateStatus,
+		// Always false: a draft cannot merge and would halt the step for a reason
+		// unrelated to what these cases assert.
+		isDraft: false,
+	});
 }
 
 /**
@@ -82,12 +89,12 @@ function prViewJson(
  * an answer that really was handed back.
  */
 interface MergeView {
-  /** The evidence gate's 3-field `gh pr view` answer. */
-  evidence: string;
-  /** The `gh pr checks` rows. */
-  checks: string;
-  /** The forge adapter's wide `gh pr view` answer for the same PR. */
-  prView: string;
+	/** The evidence gate's 3-field `gh pr view` answer. */
+	evidence: string;
+	/** The `gh pr checks` rows. */
+	checks: string;
+	/** The forge adapter's wide `gh pr view` answer for the same PR. */
+	prView: string;
 }
 
 /**
@@ -134,109 +141,116 @@ export const EVIDENCE_BASE = "c".repeat(40);
 export const S5_FIXTURE_AUTHOR = "fixture-maintainer";
 
 function evidenceJson(fields: Record<string, string>): string {
-  // #2181 — `author` rides the same read as the head pin and the CI verdict, so the
-  // login the merge-author gate judges and the commit it pins describe one moment
-  // on the forge. The fixture's allowlist names this login; a case that wants the
-  // author gate to refuse overrides the file, not this field.
-  return JSON.stringify({
-    ...fields,
-    headRefOid: EVIDENCE_HEAD,
-    author: { login: S5_FIXTURE_AUTHOR },
-  });
+	// #2181 — `author` rides the same read as the head pin and the CI verdict, so the
+	// login the merge-author gate judges and the commit it pins describe one moment
+	// on the forge. The fixture's allowlist names this login; a case that wants the
+	// author gate to refuse overrides the file, not this field.
+	return JSON.stringify({
+		...fields,
+		headRefOid: EVIDENCE_HEAD,
+		author: { login: S5_FIXTURE_AUTHOR },
+	});
 }
 
-export function mergeView(verdict: MergeVerdict, pr: number, merged: boolean): MergeView {
-  const passing = [{ name: "typecheck", bucket: "pass", state: "SUCCESS" }];
-  const failing = [
-    { name: "typecheck", bucket: "pass", state: "SUCCESS" },
-    { name: "test", bucket: "FAIL", state: "FAILURE" },
-  ];
-  switch (verdict) {
-    case "merged":
-      // The positive control. Before the merge call the forge answers a green
-      // OPEN PR (`merged === false`); the seam flips it to MERGED only after
-      // the forge merge has actually run, so the post-merge verification in
-      // `executeAndVerifyMerge` has something real to confirm.
-      return {
-        evidence: evidenceJson({
-          mergeStateStatus: "CLEAN",
-          mergeable: "MERGEABLE",
-          state: "OPEN",
-        }),
-        checks: JSON.stringify(passing),
-        prView: prViewJson(pr, {
-          state: merged ? "MERGED" : "OPEN",
-          mergeStateStatus: "CLEAN",
-        }),
-      };
-    case "green":
-      return {
-        evidence: evidenceJson({
-          mergeStateStatus: "CLEAN",
-          mergeable: "MERGEABLE",
-          state: "OPEN",
-        }),
-        checks: JSON.stringify(passing),
-        prView: prViewJson(pr, { state: "OPEN", mergeStateStatus: "CLEAN" }),
-      };
-    case "blocked":
-      return {
-        evidence: evidenceJson({
-          mergeStateStatus: "BLOCKED",
-          mergeable: "UNKNOWN",
-          state: "OPEN",
-        }),
-        checks: JSON.stringify(passing),
-        prView: prViewJson(pr, { state: "OPEN", mergeStateStatus: "BLOCKED" }),
-      };
-    case "failing":
-      // The checks read is the ONLY thing that stops this merge, so the case
-      // can tell "the failing-checks gate refused" from "the state blocklist
-      // refused". A `BLOCKED` state short-circuits in `gatherMergeEvidence`
-      // before the check rows are ever read, so a BLOCKED answer here would
-      // make this case pass even with the failing-checks branch deleted — the
-      // exact vacuity the mutation check exists to catch. GitHub leaves
-      // `mergeStateStatus` at its last-computed value while a required check
-      // flips to FAILURE, so CLEAN-plus-failing-row is the platform-accurate
-      // shape where the checks read is load-bearing.
-      return {
-        evidence: evidenceJson({
-          mergeStateStatus: "CLEAN",
-          mergeable: "MERGEABLE",
-          state: "OPEN",
-        }),
-        checks: JSON.stringify(failing),
-        prView: prViewJson(pr, { state: "OPEN", mergeStateStatus: "CLEAN" }),
-      };
-    case "unopen":
-      // The evidence probe is the ONLY thing in the composition that reports
-      // this PR closed. The wide `prView` stays OPEN (see the block comment
-      // above): if it said CLOSED too, the case would pass on the identity
-      // gate's refusal rather than the evidence gate's.
-      return {
-        evidence: evidenceJson({
-          mergeStateStatus: "CLEAN",
-          mergeable: "MERGEABLE",
-          state: "CLOSED",
-        }),
-        checks: JSON.stringify(passing),
-        prView: prViewJson(pr, { state: "OPEN", mergeStateStatus: "CLEAN" }),
-      };
-    default: {
-      const unhandled: never = verdict;
-      throw new Error(`no fixture view for MergeVerdict ${String(unhandled)}`);
-    }
-  }
+export function mergeView(
+	verdict: MergeVerdict,
+	pr: number,
+	merged: boolean,
+): MergeView {
+	const passing = [{ name: "typecheck", bucket: "pass", state: "SUCCESS" }];
+	const failing = [
+		{ name: "typecheck", bucket: "pass", state: "SUCCESS" },
+		{ name: "test", bucket: "FAIL", state: "FAILURE" },
+	];
+	switch (verdict) {
+		case "merged":
+			// The positive control. Before the merge call the forge answers a green
+			// OPEN PR (`merged === false`); the seam flips it to MERGED only after
+			// the forge merge has actually run, so the post-merge verification in
+			// `executeAndVerifyMerge` has something real to confirm.
+			return {
+				evidence: evidenceJson({
+					mergeStateStatus: "CLEAN",
+					mergeable: "MERGEABLE",
+					state: "OPEN",
+				}),
+				checks: JSON.stringify(passing),
+				prView: prViewJson(pr, {
+					state: merged ? "MERGED" : "OPEN",
+					mergeStateStatus: "CLEAN",
+				}),
+			};
+		case "green":
+			return {
+				evidence: evidenceJson({
+					mergeStateStatus: "CLEAN",
+					mergeable: "MERGEABLE",
+					state: "OPEN",
+				}),
+				checks: JSON.stringify(passing),
+				prView: prViewJson(pr, { state: "OPEN", mergeStateStatus: "CLEAN" }),
+			};
+		case "blocked":
+			return {
+				evidence: evidenceJson({
+					mergeStateStatus: "BLOCKED",
+					mergeable: "UNKNOWN",
+					state: "OPEN",
+				}),
+				checks: JSON.stringify(passing),
+				prView: prViewJson(pr, { state: "OPEN", mergeStateStatus: "BLOCKED" }),
+			};
+		case "failing":
+			// The checks read is the ONLY thing that stops this merge, so the case
+			// can tell "the failing-checks gate refused" from "the state blocklist
+			// refused". A `BLOCKED` state short-circuits in `gatherMergeEvidence`
+			// before the check rows are ever read, so a BLOCKED answer here would
+			// make this case pass even with the failing-checks branch deleted — the
+			// exact vacuity the mutation check exists to catch. GitHub leaves
+			// `mergeStateStatus` at its last-computed value while a required check
+			// flips to FAILURE, so CLEAN-plus-failing-row is the platform-accurate
+			// shape where the checks read is load-bearing.
+			return {
+				evidence: evidenceJson({
+					mergeStateStatus: "CLEAN",
+					mergeable: "MERGEABLE",
+					state: "OPEN",
+				}),
+				checks: JSON.stringify(failing),
+				prView: prViewJson(pr, { state: "OPEN", mergeStateStatus: "CLEAN" }),
+			};
+		case "unopen":
+			// The evidence probe is the ONLY thing in the composition that reports
+			// this PR closed. The wide `prView` stays OPEN (see the block comment
+			// above): if it said CLOSED too, the case would pass on the identity
+			// gate's refusal rather than the evidence gate's.
+			return {
+				evidence: evidenceJson({
+					mergeStateStatus: "CLEAN",
+					mergeable: "MERGEABLE",
+					state: "CLOSED",
+				}),
+				checks: JSON.stringify(passing),
+				prView: prViewJson(pr, { state: "OPEN", mergeStateStatus: "CLEAN" }),
+			};
+		default: {
+			const unhandled: never = verdict;
+			throw new Error(`no fixture view for MergeVerdict ${String(unhandled)}`);
+		}
+	}
 }
 
 /** The forge's issue-view replies (#1472 closed-issue gate + attention check). */
 const ISSUE_OPEN_JSON =
-  '{"number":1,"title":"s5","body":"b","state":"OPEN","url":"https://github.com/s5/s5/issues/1","author":null,"labels":[],"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}';
-const ISSUE_CLOSED_JSON = ISSUE_OPEN_JSON.replace('"state":"OPEN"', '"state":"CLOSED"');
+	'{"number":1,"title":"s5","body":"b","state":"OPEN","url":"https://github.com/s5/s5/issues/1","author":null,"labels":[],"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}';
+const ISSUE_CLOSED_JSON = ISSUE_OPEN_JSON.replace(
+	'"state":"OPEN"',
+	'"state":"CLOSED"',
+);
 
 /** The `gh issue view` reply for the requested state. */
 export function issueView(state: "OPEN" | "CLOSED" | undefined): string {
-  return state === "CLOSED" ? ISSUE_CLOSED_JSON : ISSUE_OPEN_JSON;
+	return state === "CLOSED" ? ISSUE_CLOSED_JSON : ISSUE_OPEN_JSON;
 }
 
 /** The PR number the fixture's state file carries, so replies can name it. */
@@ -244,11 +258,14 @@ export const FIXTURE_PR = 4242;
 
 /** The forge verb, assembled at call time so this file's text stays inert. */
 const MERB = "me" + "rge";
-const FORGE_MERGE = new RegExp(`(?:^|\\s)(?:gh\\s+pr|glab\\s+mr)\\s+${MERB}(?:\\s|$)`, "i");
+const FORGE_MERGE = new RegExp(
+	`(?:^|\\s)(?:gh\\s+pr|glab\\s+mr)\\s+${MERB}(?:\\s|$)`,
+	"i",
+);
 
 /** Whether a command line asks the forge to merge the cycle's PR. */
 export function isForgeMerge(line: string): boolean {
-  return FORGE_MERGE.test(line);
+	return FORGE_MERGE.test(line);
 }
 
 /**
@@ -260,14 +277,17 @@ export function isForgeMerge(line: string): boolean {
  * Both are the same question and the fixture answers both identically, so a
  * change in the exec shape cannot quietly turn the doctrine read into "nothing".
  */
-export function doctrineSpec(cmd: string, o?: { argv?: string[] }): string | undefined {
-  if (o?.argv) {
-    if (cmd !== "git") return undefined;
-    if ((o.argv[0] ?? "") !== "show") return undefined;
-    return o.argv[o.argv[1] === "--" ? 2 : 1];
-  }
-  if (!cmd.startsWith("git show ")) return undefined;
-  return cmd.slice("git show ".length).trim().split(/\s+/)[0];
+export function doctrineSpec(
+	cmd: string,
+	o?: { argv?: string[] },
+): string | undefined {
+	if (o?.argv) {
+		if (cmd !== "git") return undefined;
+		if ((o.argv[0] ?? "") !== "show") return undefined;
+		return o.argv[o.argv[1] === "--" ? 2 : 1];
+	}
+	if (!cmd.startsWith("git show ")) return undefined;
+	return cmd.slice("git show ".length).trim().split(/\s+/)[0];
 }
 
 /**
@@ -282,11 +302,11 @@ export function doctrineSpec(cmd: string, o?: { argv?: string[] }): string | und
  * (#1820 widened which publishes ask this question).
  */
 export function isVisibilityLookup(cmd: string, argv?: string[]): boolean {
-  return (
-    cmd === "gh" &&
-    argv?.[0] === "api" &&
-    /^repos\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(argv[1] ?? "") &&
-    argv[2] === "--jq" &&
-    argv[3] === ".private"
-  );
+	return (
+		cmd === "gh" &&
+		argv?.[0] === "api" &&
+		/^repos\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(argv[1] ?? "") &&
+		argv[2] === "--jq" &&
+		argv[3] === ".private"
+	);
 }

@@ -85,7 +85,10 @@ export function isQueueLevelPark(reason: string | undefined): boolean {
   return QUEUE_PARK_REASONS.some((cap) => new RegExp(`\\bcap ${cap}\\b`).test(reason));
 }
 
-export function parkReason(state: WorkState | undefined): { reason: string; failedStep?: string } {
+export function parkReason(state: WorkState | undefined): {
+  reason: string;
+  failedStep?: string;
+} {
   if (!state) return { reason: "cycle produced no state file" };
   // #1101 — a group the QUEUE parked has no state file of its own, so this
   // function is never the right reader for it. Guarded rather than assumed:
@@ -182,5 +185,8 @@ export function parkReason(state: WorkState | undefined): { reason: string; fail
     }
     return { reason: `cap ${cap.cap}${suffix}`, failedStep: step };
   }
-  return { reason: `cycle ended as ${state.pipelineState.status}`, failedStep: step };
+  return {
+    reason: `cycle ended as ${state.pipelineState.status}`,
+    failedStep: step,
+  };
 }
