@@ -86,6 +86,36 @@ type AllowlistExec = (
 ) => Promise<{ stdout: string; stderr?: string }>;
 
 /**
+ * Whether one exec call is this reader's `git ls-tree` of the gate file.
+ *
+ * The reader asks git THREE questions of the gate file, and each travels in its own
+ * argv shape: `cat-file -t` and `show` carry the `<sha>:<path>` spec, while `ls-tree`
+ * carries the revision, then `--`, then the PATH as separate entries (git's argv
+ * contract). A seam that recognises the allowlist reads only by the joined command line
+ * still sees the path on this call's line, so it must route here — and must answer a
+ * MODE line, never a type or the bytes.
+ *
+ * The other two reads (`cat-file -t`, `show`) name the gate file inside their
+ * `<sha>:<path>` spec, so a seam can spot them by its existing substring match; this
+ * call names it only as a bare path argument, which is why it needs its own predicate.
+ */
+export function isMergeAuthorTreeRead(argv: readonly string[] | undefined): boolean {
+  return (argv ?? []).includes("ls-tree");
+}
+
+/**
+ * The tree read's answer, as git prints it: `<mode> <type> <oid>\t<path>`.
+ *
+ * Exported so every seam that stubs this gate answers with git's real shape rather
+ * than an invented one — a reader that parsed a shorter line would pass against the
+ * fixture and fail against git, which is the failure mode the whole tree read exists
+ * to close.
+ */
+export function mergeAuthorTreeLine(mode: string, file: string): string {
+  return `${mode} ${mode === "040000" ? "tree" : "blob"} ${"0".repeat(40)}\t${file}\n`;
+}
+
+/**
  * Why the allowlist did not answer.
  *
  * `absent` is NOT one of these in spirit — the repository simply has no rule — but
@@ -161,13 +191,59 @@ function isBufferOverflow(err: unknown): boolean {
 const GIT_HARDENING = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"] as const;
 
 /**
+ * The tree entry's mode, read from `git ls-tree <base> -- <file>`, or `undefined`
+ * when the entry is simply not there and `""` when git could not answer at all.
+ *
+ * This is the read `cat-file -t` cannot replace. In the object database a committed
+ * symlink IS a blob — git's `cat-file -t` says `blob` for one — so a gate that trusts
+ * the type alone parses the link's TARGET text as logins, and a file that points at an
+ * attacker-chosen path would be read as an allowlist nobody wrote. The mode is the only
+ * place git records "this entry is a link": `120000` is the symlink, `040000` a
+ * directory, `160000` a submodule (which, like the link, resolves to something other
+ * than the file the operator wrote).
+ *
+ * The failure arms stay apart because the caller's decision is irreversible: no output
+ * is git's honest "this tree holds no such entry" (the opt-out, A7), while a git that
+ * rejected the read tells us nothing about the path and must never be read as absence.
+ * Same rule as `lean/verify-tree.ts`, which reads the mode for the same reason.
+ */
+async function treeEntryMode(
+  exec: AllowlistExec,
+  cwd: string,
+  baseSha: string,
+  file: string,
+): Promise<{ mode?: string; gitFailed: boolean; detail: string }> {
+  try {
+    // git's own argv contract for this query: the revision, then `--`, then the path,
+    // each its own argument (`git ls-tree <rev> -- <path>`). The separator is what
+    // makes it a path question rather than a revision question — without it a path that
+    // also names a ref answers a different query — and it is why the path reaches an
+    // exec seam as its own argv entry (see `isMergeAuthorTreeRead`).
+    const { stdout } = await exec("git", {
+      argv: [...GIT_HARDENING, "ls-tree", baseSha, "--", file],
+      cwd,
+      timeout: ALLOWLIST_TIMEOUT_MS,
+      maxBuffer: 8 * 1024,
+    });
+    const line = (stdout ?? "").trim();
+    if (line.length === 0) return { gitFailed: false, detail: "" };
+    // git prints `<mode> <type> <oid>\t<path>`; the mode is the first field and the
+    // only one this reader needs.
+    return { mode: line.split(/\s+/)[0] ?? "", gitFailed: false, detail: line };
+  } catch (err) {
+    return { gitFailed: true, detail: errorText(err) };
+  }
+}
+
+/**
  * Read the allowlist at a commit through `git show`, failing CLOSED.
  *
  * `undefined`-on-absent is not available here: absence, a tree, a symlink and a
  * git failure all refuse, each naming itself, because the caller's decision is
  * irreversible. The `cat-file -t` leg is what separates "that path is not in that
- * commit" from "that path is a directory" and "that path is a symlink" — git would
- * print a tree's contents or follow the link otherwise.
+ * commit" from "that path is a directory" — git would print a tree's contents
+ * otherwise. What the type CANNOT tell is a symlink, which is a blob to git, so the
+ * entry's MODE is read separately with `git ls-tree` (see `treeEntryMode`).
  */
 export async function readMergeAuthorAllowlist(
   exec: AllowlistExec,
@@ -182,6 +258,25 @@ export async function readMergeAuthorAllowlist(
     return { ok: false, reason: "bad-base-sha", detail: baseSha.slice(0, 40) };
   }
   const spec = `${baseSha}:${file}`;
+  // The tree entry's mode first: it is the only git answer that tells a committed
+  // symlink (a blob, mode 120000) from the regular file the operator wrote, and the
+  // gate must not parse a link's target text as logins.
+  const entry = await treeEntryMode(exec, cwd, baseSha, file);
+  const mode = entry.mode ?? "";
+  if (mode === "120000") {
+    return {
+      ok: false,
+      reason: "not-a-blob",
+      detail: `${file} is a symlink at the base commit`,
+    };
+  }
+  if (mode === "160000") {
+    return {
+      ok: false,
+      reason: "not-a-blob",
+      detail: `${file} is a submodule at the base commit`,
+    };
+  }
   let type = "";
   /** What the probe answered when it failed, for the refusal's detail. */
   let probeError = "";
@@ -208,6 +303,24 @@ export async function readMergeAuthorAllowlist(
     // "that path is not in that commit".
     type = "";
     if (gitCatFileSaysAbsent(err)) {
+      // Two reads, two answers, and the opt-out needs BOTH to say "not there": the
+      // type probe says the spec resolves to nothing, the tree says the base holds no
+      // such entry. A base git could not resolve at all makes the tree read fail —
+      // which is not evidence about the path, and never becomes the opt-out (A7).
+      if (entry.gitFailed) {
+        return {
+          ok: false,
+          reason: "git-failed",
+          detail: `${file} could not be checked in the tree at the base commit (${entry.detail})`,
+        };
+      }
+      if (mode.length > 0) {
+        return {
+          ok: false,
+          reason: "not-a-blob",
+          detail: `${file} is not a readable file at the base commit (tree mode ${mode})`,
+        };
+      }
       return {
         ok: false,
         reason: "absent",
@@ -223,6 +336,9 @@ export async function readMergeAuthorAllowlist(
       detail: `${file} is a directory at the base commit`,
     };
   if (type === "symlink" || type === "link") {
+    // A git that answers `symlink` is not this git (a committed link is a `blob` to
+    // `cat-file`), so this arm is a belt for a git that changes its wording — the mode
+    // read above is what catches a symlink today.
     return {
       ok: false,
       reason: "not-a-blob",
