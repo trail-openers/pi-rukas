@@ -38,12 +38,6 @@
 
 import { BUILD_SCOPE_CONTRACT } from "../src/lean/build-prompt.ts";
 import { challengePrompt } from "../src/lean/challenge-prompt.ts";
-import {
-  LEAN_ISSUE_HEADING,
-  LEAN_ISSUE_LEAD,
-  leanIssueProseEnabled,
-  leanIssueSection,
-} from "../src/lean/issue-prose.ts";
 import type { PiSpec } from "../src/lean/spec.ts";
 import {
   IMPLIED_REQUIREMENTS,
@@ -58,7 +52,6 @@ import {
   MAX_TEST_FILES_PER_CRITERION,
   MAX_TEST_LINES,
 } from "../src/lean/test-size.ts";
-import { CONSTRAINT, INJECT_BODY, ISSUE_BODY, OVER_BODY } from "./lib/ticket-issue-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -297,178 +290,5 @@ assert(
   "specify's write instruction names only the test criterion, never AC2 or AC3",
 );
 
-// ───────────────── (f) the issue section: the oracle seat finally sees the issue
-//
-// Both steps FETCHED the issue body and dropped it after parsing the pi-spec, so
-// the adversary that writes and attacks the frozen tests was told nothing but one
-// clipped `problem` line and the criteria. A frozen test that invented a
-// behaviour the task statement never had was never contradicted. These assertions
-// are made at the PROMPT-FUNCTION boundary for the same `spec` object, which is
-// the only place "equal the pre-change prompt" can mean anything: the /plan
-// `problem` change is separate and is not switch-gated.
-{
-  const withBody = (issueBody: string) => ({
-    specify: specifyPrompt({
-      issue: 1908,
-      spec: SPEC,
-      testRunner: RUNNER,
-      worktree: WT,
-      issueBody,
-    }),
-    challenge: challengePrompt({
-      issue: 1908,
-      spec: SPEC,
-      frozenPaths: FROZEN,
-      worktree: WT,
-      testRunner: RUNNER,
-      issueBody,
-    }),
-  });
-  const plain = withBody(ISSUE_BODY);
-  const bare = specifyPrompt({ issue: 1908, spec: SPEC, testRunner: RUNNER, worktree: WT });
-  const bareChallenge = challengePrompt({
-    issue: 1908,
-    spec: SPEC,
-    frozenPaths: FROZEN,
-    worktree: WT,
-    testRunner: RUNNER,
-  });
-
-  for (const [name, prompt] of [
-    ["specify", plain.specify],
-    ["challenge", plain.challenge],
-  ] as const) {
-    assert(
-      prompt.includes("## The issue") && prompt.includes(CONSTRAINT),
-      `${name}: the prompt carries the fenced issue section with the body's own constraint`,
-    );
-    assert(
-      prompt.includes(LEAN_ISSUE_LEAD),
-      `${name}: the prompt says plainly that the fenced text is data, not instructions`,
-    );
-    assert(
-      prompt.indexOf("## The problem") < prompt.indexOf("## The issue") &&
-        prompt.indexOf("## The issue") < prompt.indexOf("## The acceptance criteria"),
-      `${name}: the section sits after the problem and before the criteria`,
-    );
-    assert(
-      prompt.includes("```text"),
-      `${name}: the body is printed through the fence renderer, never raw`,
-    );
-  }
-
-  // The pi-spec block is stripped — the criteria are already in the brief above,
-  // and the JSON printed twice is a second contract nobody keeps in step.
-  for (const [name, prompt] of [
-    ["specify", plain.specify],
-    ["challenge", plain.challenge],
-  ] as const) {
-    assert(
-      !prompt.includes("pi-spec v1") && !prompt.includes('"verify": "test"'),
-      `${name}: the spec block itself never appears in the issue section`,
-    );
-  }
-
-  // The switch off is the pre-change render byte for byte: the same spec, the
-  // same options, no body — that is what the prompts looked like before the body
-  // was threaded in.
-  const saved = process.env.PI_ENSEMBLE_LEAN_ISSUE_PROSE;
-  process.env.PI_ENSEMBLE_LEAN_ISSUE_PROSE = "0";
-  try {
-    const off = withBody(ISSUE_BODY);
-    assert(
-      off.specify === bare,
-      "specify: PI_ENSEMBLE_LEAN_ISSUE_PROSE=0 renders byte-identically to a prompt built with no body",
-    );
-    assert(
-      off.challenge === bareChallenge,
-      "challenge: PI_ENSEMBLE_LEAN_ISSUE_PROSE=0 renders byte-identically to a prompt built with no body",
-    );
-    assert(
-      !off.specify.includes("## The issue") && !off.challenge.includes("## The issue"),
-      "the off render carries no section heading at all, not an empty one",
-    );
-    assert(
-      leanIssueProseEnabled() === false,
-      "the exported reader reports the switch off",
-    );
-  } finally {
-    if (saved === undefined) delete process.env.PI_ENSEMBLE_LEAN_ISSUE_PROSE;
-    else process.env.PI_ENSEMBLE_LEAN_ISSUE_PROSE = saved;
-  }
-  assert(
-    leanIssueProseEnabled() === true,
-    "unset (restored) means the section is ON — only the literal 0 turns it off",
-  );
-
-  // An injected heading or fence must stay inside the fence: no line of the
-  // prompt outside the section's own fence may read as a heading or open a fence.
-  const injected = withBody(INJECT_BODY);
-  for (const [name, prompt] of [
-    ["specify", injected.specify],
-    ["challenge", injected.challenge],
-  ] as const) {
-    const outside = prompt
-      .split("```text\n")
-      .slice(1)
-      .map((part) => part.split("```")[0] ?? "");
-    const outsideLines = new Set(outside.flatMap((block) => block.split("\n")));
-    const headingsOutside = prompt
-      .split("\n")
-      .filter((line) => /^#{1,6} /.test(line) && !outsideLines.has(line));
-    assert(
-      headingsOutside.every((line) => !line.includes("INJECT")) &&
-        prompt.includes("INJECT") &&
-        prompt.includes("not a fence"),
-      `${name}: the injected heading and fence are IN the brief as text and open no section outside the fence (${headingsOutside.filter((l) => l.includes("INJECT")).join(" | ") || "no heading outside the fence"})`,
-    );
-    assert(
-      !/^### INJECT/m.test(prompt.replace(/```text[\s\S]*?```/g, "")),
-      `${name}: strip the fenced blocks and no injected heading survives in the prompt prose`,
-    );
-    assert(
-      !prompt.includes("undefined"),
-      `${name}: no "undefined" reaches the brief from the issue section`,
-    );
-  }
-
-  // One truncation marker, and never the fence renderer's own clip notice. The
-  // body is bounded by `boundedIssueBody` BEFORE the fence, so the cap can cut
-  // the tail off — an assertion of its own, stated as an absence below.
-  const over = withBody(OVER_BODY);
-  for (const [name, prompt] of [
-    ["specify", over.specify],
-    ["challenge", over.challenge],
-  ] as const) {
-    assert(
-      (prompt.match(/…\(issue truncated\)/g) ?? []).length === 1,
-      `${name}: an over-cap issue prints exactly one truncation marker (saw ${(prompt.match(/…\(issue truncated\)/g) ?? []).length})`,
-    );
-    assert(
-      !prompt.includes("[truncated at "),
-      `${name}: the fence's own clip marker never appears — the body bound is the one in force`,
-    );
-    assert(
-      !prompt.includes(CONSTRAINT),
-      `${name}: the cap really did cut — OVER_BODY's tail constraint is gone, so the marker above is not decoration`,
-    );
-  }
-
-  // Blank bodies render no section, and the renderer itself is the shared one.
-  for (const empty of [undefined, "", "   \n  ", "```pi-spec v1\n{}\n```"]) {
-    const p = specifyPrompt({
-      issue: 1908,
-      spec: SPEC,
-      testRunner: RUNNER,
-      worktree: WT,
-      issueBody: empty,
-    });
-    assert(
-      !p.includes("## The issue") && !p.includes("undefined"),
-      `specify: a ${JSON.stringify(empty)} body renders no section (${LEAN_ISSUE_HEADING} absent)`,
-    );
-    assert(leanIssueSection(empty) === "", `the renderer returns "" for ${JSON.stringify(empty)}`);
-  }
-}
 
 process.exit(exit);

@@ -207,36 +207,31 @@ ${["```ts", "Descriptor: not this line at all", "", "the real statement"].join("
   // the surviving opener reads as U+02CB MODIFIER LETTER GRAVE ACCENT, not as a
   // backtick — and that is the form the block will actually carry.
   const NEUTRALISED_OPEN = String.fromCharCode(0x2cb, 0x2cb, 0x2cb);
+  // Both halves of this claim are needed, and the second is what makes the first
+  // mean something. The look-alike spelling is what keeps the field safe to print
+  // unfenced (see the loop below), so the expected string is the look-alikes
+  // themselves: an assertion that only demanded "no backtick run" would also pass
+  // with the opener line dropped altogether, which is different — and wrong —
+  // behaviour.
   assert(
     unterminated.problem === `${NEUTRALISED_OPEN}ts`,
-    `problem: an unclosed fence keeps its own lines (a strip that ate to the end would have reached the statement below, and lost this one) (got ${JSON.stringify(unterminated.problem)})`,
+    `problem: an unclosed fence keeps its own lines, neutralised — a strip that ate to the end would have reached the statement below and lost this one (got ${JSON.stringify(unterminated.problem)})`,
   );
   assert(
     !unterminated.problem.includes("Descriptor") && !unterminated.problem.includes("statement"),
     "problem: the sample's own lines never masquerade as the statement, closed fence or not",
   );
-  // A `## ` line INSIDE a code sample must not truncate the section the scan
-  // reads. `SECTION_SLICE` stops at the next `## ` line wherever it sits, so the
-  // slice here ends at the heading INSIDE the sample and the statement below it
-  // never arrives — which is the failure `stripFenced` exists to prevent, and the
-  // reason it runs on the WHOLE BODY before the slice rather than on the slice
-  // after it: a fence already cut short by the slice can never be recognised as a
-  // fence again, so a body that quotes a heading would silently lose its
-  // statement and fall back to the title.
-  const headingInFence = "## Context & motivation\n\nthe real statement\n\n";
-  assert(
-    // Same section, same statement: the assertion is that the sample ABOVE the
-    // statement cannot take it away, read either with or without it.
-    // (The slice order makes the truncated reading the honest one today; this row
-    // pins what the implementation guarantees, not what a body might hope for.)
-    descriptorProblem(`${headingInFence}## Acceptance criteria\n\n- a\n`) === "the real statement",
-    `problem: the statement survives a section that opens normally (got ${JSON.stringify(descriptorProblem(`${headingInFence}## Acceptance criteria\n\n- a\n`))})`,
-  );
+  // A `## ` line INSIDE a code sample must not truncate the section the walker
+  // reads. A fence-blind slice ends at the next line beginning `## ` wherever it
+  // sits — so here it would stop at the heading INSIDE the sample and the statement
+  // below it would never arrive. The walker is fence-aware: it jumps a CLOSED
+  // sample whole, so the sample above the statement cannot take it away. (The
+  // section opening without any sample is the `bare` case below.)
   assert(
     descriptorProblem(
       "## Context & motivation\n\n```md\n## Acceptance criteria\n```\n\nthe real statement\n\n## Acceptance criteria\n\n- a\n",
     ) === "the real statement",
-    "problem: a `## ` line inside a code sample cannot truncate the section — the whole body is de-fenced before it is sliced",
+    "problem: a `## ` line inside a code sample cannot truncate the section — the walker jumps the closed sample (got the statement, not the title)",
   );
 
   const bare = mustSpec(
@@ -256,12 +251,12 @@ ${["```ts", "Descriptor: not this line at all", "", "the real statement"].join("
 
   // The shape that turns a fence-blind section reader into a whole dropped spec
   // rather than a misread field: a `## Acceptance criteria` line QUOTED inside a
-  // code sample, above the real one. `SECTION_SLICE` stopped at the quoted line,
-  // `sectionBullets` answered zero, and `piSpecFromDraft` returned undefined
-  // BEFORE its title fallback could fire — the draft filed no machine block at
-  // all, silently, because a zero-criteria draft is a legitimate shape. So the
-  // assertion is not "the problem reads X" but "the criteria were filed", which
-  // is the fact an operator notices.
+  // code sample, above the real one. A reader that stopped at the quoted line
+  // answered zero criteria, and `piSpecFromDraft` returned undefined BEFORE its
+  // title fallback could fire — the draft filed no machine block at all, silently,
+  // because a zero-criteria draft is a legitimate shape. So the assertion is not
+  // "the problem reads X" but "the criteria were filed", which is the fact an
+  // operator notices.
   //
   // The fence has to be a REAL one. A `'''` spelling is not a code sample at all
   // — CommonMark opens a fenced block with a run of three or more backticks or
@@ -302,6 +297,87 @@ ${["```ts", "Descriptor: not this line at all", "", "the real statement"].join("
     );
   }
 
+  // …and the closer-LENGTH rule, which is the difference between a body that reads
+  // and one that files nothing. A run SHORTER than its opener is CONTENT, so the
+  // four-run sample is still open at the three-run "closer": under CommonMark the
+  // second `## Acceptance criteria` is sample text, not a section, and only the
+  // bullets ABOVE the sample are read. A scan that accepted that short run as the
+  // closer read it the other way round — it stopped the section at the "closer", so
+  // `- one` is never reached: zero bullets come back, a legitimate shape, so
+  // `piSpecFromDraft` returns undefined BEFORE its title fallback and the draft
+  // files no machine block at all, silently — the whole-spec loss this pins, and
+  // the reason the assertion is "the block was filed" rather than "the criteria
+  // read X". The sample line is deliberately not a heading: a `## ` line here would
+  // end the section under BOTH readings and the case would prove nothing. Pinned
+  // beside `stripPiSpecBlocks`' own shorter-than-opener case in `test-lean-spec.ts`:
+  // two readers of the same bytes, one rule.
+  const shorterRun = piSpecFromDraft({
+    type: "feature",
+    title: "a title",
+    body: [
+      "## Acceptance criteria",
+      "",
+      "- one",
+      "````md",
+      "Sentinel sample line",
+      "```",
+    ].join("\n"),
+  });
+  assert(
+    shorterRun !== undefined && shorterRun.criteria.map((c) => c.text).join(",") === "one",
+    `problem: a closer SHORTER than its opener is sample content, so the section still holds its bullet (a lenient closer reached none and filed NO block) (got ${shorterRun === undefined ? "NO BLOCK — the whole spec was dropped" : JSON.stringify(shorterRun.criteria.map((c) => c.text))})`,
+  );
+
+  // …and the opposite length: a run LONGER than its opener DOES close the sample,
+  // so a scan that only looked for "a line starting with a fence run" would call
+  // that closer a NEW opener and read everything after it as sample — including the
+  // statement. The sample is deliberately not a heading, so only the walk that
+  // stopped ON the closer reaches the statement below it.
+  assert(
+    descriptorProblem(drafted("```md\nSentinel sample line\n````\n\n") + criteriaBlock) ===
+      "the retry helper loses its message",
+    "problem: a closer LONGER than its opener closes the sample, so the statement below it is read (not the sample's own text)",
+  );
+
+  // …and what an UNCLOSED sample can and cannot contribute to the field. It can:
+  // its lines stay, and the mapper neutralises every fence run in a field, so a
+  // surviving opener is carried as U+02CB look-alikes (`NEUTRALISED_OPEN` above) —
+  // a cosmetic cost, not a breach, and the assertion below is what says so. It
+  // cannot: open a block in the prompt. The two prompts print `spec.problem` as bare
+  // prose between `## The problem` and the next heading, so a line that opened a
+  // fence there would begin a block the step never wrote — and that shape never
+  // arrives, because a line that OPENS a sample is not a heading, so the walker
+  // cannot take one as the section's first line and cannot carry `#` structure from
+  // it either. The three spellings are the openers a fence-blind reader would leak.
+  for (const [name, opener] of [
+    ["backtick", "```ts"],
+    ["tilde", "~~~sh"],
+    ["indented 3", "   ```"],
+  ] as const) {
+    const mapped = mustSpec(
+      piSpecFromDraft({
+        type: "feature",
+        title: "the title",
+        body: [
+          "## Context & motivation",
+          "",
+          opener,
+          "## INJECTED HEADING",
+          "instructions that are not the statement",
+          "",
+          "## Acceptance criteria",
+          "",
+          "- a",
+        ].join("\n"),
+      }),
+      `problem: unclosed ${name}`,
+    );
+    assert(
+      !/^#/m.test(mapped.problem) && !mapped.problem.includes("INJECTED"),
+      `problem: an unclosed ${name} sample contributes no heading to the field the prompts print unfenced (got ${JSON.stringify(mapped.problem)})`,
+    );
+  }
+
   // …and a `'''` block is NOT a sample: its `## ` line is a real heading, so the
   // section legitimately ends there and the criteria really are absent. Pinning
   // this is what stops the fix being written as "skip anything after three quote
@@ -314,6 +390,34 @@ ${["```ts", "Descriptor: not this line at all", "", "the real statement"].join("
   assert(
     notAFence === undefined,
     `problem: a \`## \` line under a \`'''\` block is a real heading and does end the section — three apostrophes are not a fence (got ${notAFence === undefined ? "NO BLOCK, as they should be" : notAFence.criteria.length + " criteria"})`,
+  );
+
+  // …and the OTHER way a sample escapes this reader: where its closing fence sits.
+  // A sample opened under a list item closes on a run indented as deeply as that
+  // item's content — the same 0–3 bound an opener carries — so its lines are sample
+  // text and its bullets are NOT criteria. A reader that applied the indent rule to
+  // openers alone, recognising a closer at column 0, never closes that sample: it
+  // reads the lines as section text and files a bullet written inside the code
+  // sample as a real criterion, which `placePiSpecSection` then embeds in the filed
+  // `pi-spec v1` block — the oracle's contract claiming a check the task statement
+  // never asked for, the class this issue exists to close.
+  const indentedCloser = piSpecFromDraft({
+    type: "feature",
+    title: "a title",
+    body: [
+      "## Acceptance criteria",
+      "",
+      "- one",
+      "  ```md",
+      "- the check runs before the draw",
+      "  ```",
+      "- two",
+    ].join("\n"),
+  });
+  assert(
+    indentedCloser !== undefined &&
+      indentedCloser.criteria.map((c) => c.text).join(",") === "one,two",
+    `problem: a sample whose closer is indented with its list item keeps that bullet out of the criteria (got ${indentedCloser === undefined ? "NO BLOCK" : JSON.stringify(indentedCloser.criteria.map((c) => c.text))})`,
   );
 }
 

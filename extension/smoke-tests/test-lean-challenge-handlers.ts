@@ -14,7 +14,7 @@
  */
 import { phase1Handlers } from "../src/lean/command.ts";
 import { HANDLER_STATES } from "../src/lean/machine.ts";
-import { challengeFixture, git, runChallenge } from "./lib/lean-challenge-fixture.ts";
+import { challengeFixture, git } from "./lib/lean-challenge-fixture.ts";
 import { assert, specExit } from "./lib/plan-pi-spec-fixture.ts";
 
 // ------------------------------ (m) phase1Handlers wires the real challenge step
