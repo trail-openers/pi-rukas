@@ -8,6 +8,15 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.74](https://github.com/trail-openers/pi-rukas/compare/v0.14.73...v0.14.74) (2026-11-11)
+
+
+### Bug Fixes
+
+* **hygiene:** push scan resolves sources in the -C worktree ([#2176](https://github.com/trail-openers/pi-rukas/issues/2176)) ([ddf31c5](https://github.com/trail-openers/pi-rukas/commit/ddf31c535a4c14cf6cb9af24a29e118bcb3fed45))
+* **lean:** diagnose non-delivery: runner preflight, submodule init, never-submitted decline ([#2179](https://github.com/trail-openers/pi-rukas/issues/2179)) ([5fa3242](https://github.com/trail-openers/pi-rukas/commit/5fa32427a568922e73951d01794ba2411c23fec4))
+* **work:** compute the always-run set and stop shared generated files from serialising cycles ([#2186](https://github.com/trail-openers/pi-rukas/issues/2186)) ([c338d9f](https://github.com/trail-openers/pi-rukas/commit/c338d9ffcdfff797d0ab0a24b5b8307bbb04bab3))
+
 ## [0.14.73](https://github.com/trail-openers/pi-rukas/compare/v0.14.72...v0.14.73) (2026-11-11)
 
 
