@@ -193,7 +193,7 @@ export function gitVerbAt(words: readonly string[]): { verb: string; index: numb
 export interface GitGlobalWalk {
   /** The `-C <dir>` the command carries, exactly as written (relative or not), or undefined. */
   dir?: string;
-  /** Did the command name its repository with a bare `--git-dir`/`--work-tree`? */
+  /** Did the command name its repository with a `--git-dir`/`--work-tree`? */
   refused: boolean;
   /** The flag that refused, so a refusal can name it; only set when `refused`. */
   refusedFlag?: string;
@@ -237,14 +237,15 @@ export function walkGitGlobals(words: readonly string[]): GitGlobalWalk {
     const eq = w.indexOf("=");
     const flag = eq < 0 ? w : w.slice(0, eq);
     // `--git-dir`/`--work-tree` are reported rather than resolved, in either
-    // spelling. `refusedFlag` names only a BARE flag: the `=`-attached form
-    // carries a path inside the word, and a path is agent-authored text that can
-    // itself be the private term this guard keeps out of a transcript — a refusal
-    // that echoed the word would echo the path with it.
+    // spelling. `refusedFlag` is the flag TEXT with its operand dropped, in either
+    // spelling: an agent that typed `--work-tree=/x` and is told to drop `--git-dir`
+    // has a real debugging step wasted, and dropping the operand is what keeps the
+    // rule that a refusal never echoes a path — a path is agent-authored text that
+    // can itself be the private term this guard keeps out of a transcript.
     if (flag === "--git-dir" || flag === "--work-tree") {
       refused = true;
+      refusedFlag ??= flag;
       if (eq < 0) {
-        refusedFlag = w;
         // The bare form must consume its operand so the operand is not read as the
         // verb (the same rule `gitVerbAt` follows); the attached form carries its
         // own value and consumes nothing.

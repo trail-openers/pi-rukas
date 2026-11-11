@@ -44,12 +44,16 @@
  * scan that resolved the refs in the session clone would report a real range
  * that has nothing to do with what is being published, and read it as clean.
  * `resolveScanDirectory` asks git one bounded question — is `deps.cwd` inside a
- * repository, and which one — and returns a problem naming the directory when it
- * is not, so a wrong `-C` target is reported as the directory problem it is
- * rather than as the misleading "this clone's remotes could not be read (timed
- * out)" sentence a scan with no repository at all used to produce. A
- * `--git-dir`/`--work-tree` push is refused the same way (it names a repository
- * this guard does not resolve), never scanned against the session directory.
+ * repository, and which one — and returns a directory problem when it is not, so
+ * a wrong `-C` target is reported as the directory problem it is rather than as
+ * the misleading "this clone's remotes could not be read (timed out)" sentence a
+ * scan with no repository at all used to produce. The sentence locates the
+ * failure by the basename of `deps.cwd` — which for `git -C <dir>` IS that
+ * operand — and that basename goes through the denylist the scan was handed, so
+ * a private project name sitting in a directory name is reported as "a directory
+ * named in the command" (see `describeDir`). A `--git-dir`/`--work-tree` push is
+ * refused the same way (it names a repository this guard does not resolve), never
+ * scanned against the session directory.
  *
  * ## The range comes from the REFSPEC, not from HEAD
  *
@@ -73,15 +77,12 @@
 
 import { parseRemoteUrl } from "./forge-detect.ts";
 import { execGit } from "./git-range.ts";
+import type { DenylistRead } from "./public-denylist.ts";
 import { publishCommandLines } from "./public-hygiene-command.ts";
 import { gitDirRefusal } from "./public-hygiene-cwd.ts";
 import { codeOf } from "./public-hygiene-files.ts";
-import {
-  bounded,
-  describeDir,
-  directPushTarget,
-  pushRemoteNames,
-} from "./public-hygiene-push-reads.ts";
+import { describeDir, ownPushSegment, scanCwd } from "./public-hygiene-push-dir.ts";
+import { bounded, directPushTarget, pushRemoteNames } from "./public-hygiene-push-reads.ts";
 import { resolveSrcs } from "./public-hygiene-refspecs.ts";
 import { PUSH_SCAN_MAX_BUFFER, PUSH_SCAN_TIMEOUT_MS } from "./public-hygiene-scan.ts";
 import { isGitProgramWord, walkGitGlobals } from "./public-hygiene-target.ts";
@@ -96,6 +97,24 @@ export interface PushScanDeps {
   exec: ExecFn;
   /** The directory the push runs in (the tool call's cwd). */
   cwd: string;
+  /**
+   * The directory the TOOL CALL was made in, when the caller knows it. The scan
+   * is handed `cwd` after `pushGitCwd` moved it into the push's own tree, and
+   * that move is not reversible from the answer alone: a chain of two pushes in
+   * two trees needs the tool cwd to tell which `-C` belongs to which segment, so
+   * the refusal can name the target that actually failed instead of the chain's
+   * last one. Absent means "the caller did not say", and the scan then works
+   * from `cwd` alone.
+   */
+  toolCwd?: string;
+  /**
+   * The operator's denylist, for the ONE refusal that has to name a directory.
+   * A `-C` operand is agent-authored text, so the basename of that directory goes
+   * through these entries before a refusal repeats it (see `describeDir`). Absent
+   * means "no entries to check", which is the `absent` arm of the read, not a
+   * pass: the sentence still names no path.
+   */
+  denylist?: DenylistRead;
   timeoutMs?: number;
   maxBuffer?: number;
   /** Override for `git remote get-url` (tests pin the github.com decision offline). */
@@ -129,12 +148,18 @@ export interface PushScanDeps {
 export async function scanPushRange(deps: PushScanDeps): Promise<PushScanResult> {
   const timeout = deps.timeoutMs ?? PUSH_SCAN_TIMEOUT_MS;
   const maxBuffer = deps.maxBuffer ?? PUSH_SCAN_MAX_BUFFER;
-  const git = (args: string[]) => execGit(deps.exec, deps.cwd, args, { timeout, maxBuffer });
+  // THE SEGMENT THIS SCAN IS THE SCAN OF. `pushGitCwd` answers the LAST segment of
+  // a chain, but `a && b` never reaches `b` once `a` is refused, so a scan that
+  // read the last segment's tree would judge commits that were never going out
+  // while the tree that WAS pushed stayed unread — a fail-OPEN. Everything below
+  // asks git in `scanCwd`, which is the first push segment's own directory.
+  const read = { ...deps, cwd: scanCwd(deps) };
+  const git = (args: string[]) => execGit(read.exec, read.cwd, args, { timeout, maxBuffer });
   // Is there a repository at all to read here, and is the command's own way of
   // naming one admissible? Refuse on the directory BEFORE asking git anything
   // else, so the sentence the agent reads names the directory rather than the
   // first read that happened to fail.
-  const dirProblem = await resolveScanDirectory(deps, git);
+  const dirProblem = await resolveScanDirectory(read, git);
   if (dirProblem !== undefined) {
     return { scanned: false, texts: [], problems: [{ location: "push", reason: dirProblem }] };
   }
@@ -161,14 +186,14 @@ export async function scanPushRange(deps: PushScanDeps): Promise<PushScanResult>
   // and needs nothing from the clone. A failure IS fatal to everything downstream
   // that has to fall back on the clone, and `pushRemoteNames` reports it as a
   // problem rather than as a clone with no remotes.
-  const remotes = await pushRemoteNames(deps, git);
+  const remotes = await pushRemoteNames(read, git);
   const names = new Set(remotes.names);
   // The push-to-URL form: `git push https://host/o/r.git main` carries the
   // destination in the command, and no remote this clone has can name it. Read
   // first, so it does not depend on the clone's remotes at all — a clone with NO
   // remote still publishes through this shape, and the remotes are the next
   // section's way of finding a target, not the only one.
-  const direct = directPushTarget(deps, names);
+  const direct = directPushTarget(read, names);
   if (direct !== undefined) {
     if (direct.kind === "problem") {
       return {
@@ -186,7 +211,7 @@ export async function scanPushRange(deps: PushScanDeps): Promise<PushScanResult>
       // publishes nothing there.
       return { scanned: false, texts: [], problems: [] };
     }
-    return scanCommits(deps, git, remotes);
+    return scanCommits(read, git, remotes);
   }
   // No destination in the command: the clone's own remotes answer, so an
   // unreadable list is not a scan (#1820 — it used to fall through as "this clone
@@ -247,7 +272,7 @@ export async function scanPushRange(deps: PushScanDeps): Promise<PushScanResult>
   // push is not this guard's business (issue decision: other hosts are not
   // scanned).
   if (!target) return { scanned: false, texts: [], problems: [] };
-  return scanCommits(deps, git, remotes);
+  return scanCommits(read, git, remotes);
 }
 
 /**
@@ -275,39 +300,53 @@ async function resolveScanDirectory(
   git: (args: string[]) => Promise<string>,
 ): Promise<string | undefined> {
   const command = deps.command ?? "";
-  // The flag itself is what disqualifies the command, so it is read off the
-  // words rather than inferred from a failed read: a `--git-dir` push can be
-  // perfectly readable in the session directory, and that readability is the
-  // lie this refuses.
-  for (const argv of publishCommandLines(command)) {
-    if (!isGitProgramWord(argv[0])) continue;
-    const walk = walkGitGlobals(argv);
-    if (walk.refused) return gitDirRefusal(walk.refusedFlag ?? "--git-dir");
+  const deny: DenylistRead = deps.denylist ?? { state: "absent" };
+  if (ownPushSegment(deps) === "refused") {
+    // The flag itself is what disqualifies the command, so it is read off the
+    // words rather than inferred from a failed read: a `--git-dir` push can be
+    // perfectly readable in the session directory, and that readability is the
+    // lie this refuses. A push that gets here was recognised as a publish, so the
+    // sentence carries its own subject.
+    for (const argv of publishCommandLines(command)) {
+      if (!isGitProgramWord(argv[0])) continue;
+      const walk = walkGitGlobals(argv);
+      if (walk.refused) return `the push ${gitDirRefusal(walk.refusedFlag ?? "--git-dir")}`;
+    }
   }
   if (command.includes("$")) {
     return (
-      "names its directory with a shell expansion, so the repository the push runs in could not be " +
-      "read; run the push with a literal path, or `git -C <dir>` with no expansion"
+      "the push names its directory with a shell expansion, so the repository it runs in could not " +
+      "be read; run the push with a literal path, or `git -C <dir>` with no expansion"
     );
   }
+  // The directory the refusal names: the one this scan reads, which for
+  // `git -C <dir> push` IS the operand the agent typed — `pushGitCwd` resolved it
+  // from the command's own `-C`. Naming it is what makes the sentence actionable
+  // for the field shape (a wrong `-C` target), and it is safe only because
+  // `describeDir` drops the path, checks the basename against the operator's
+  // entries, and falls back to a phrase on a match: the operand is agent-authored
+  // text, and the command the agent wrote already carries the path back to it.
+  const located = describeDir(scanCwd(deps), deny);
   let top: string;
   try {
     top = (await git(["rev-parse", "--show-toplevel"])).trim();
   } catch (err) {
-    return `the repository at ${describeDir(deps.cwd)} could not be read (${codeOf(err)})`;
+    return `the repository at ${located} could not be read (${codeOf(err)})`;
   }
   if (!top.startsWith("/")) {
-    return `the directory the push runs in (${describeDir(deps.cwd)}) is not inside a git repository`;
+    return `the directory the push runs in (${located}) is not inside a git repository`;
   }
   return undefined;
 }
 
 /**
- * The directory a refusal names, the clone's remote names, and the destination the
- * command itself carries: those three reads live in
- * `public-hygiene-push-reads.ts`, the module that owns what the scan asks git
- * ABOUT the clone rather than about its commits (`describeDir`,
- * `pushRemoteNames`, `directPushTarget`, and the `bounded` wall clock both use).
+ * The directory a refusal names, which segment of a chain the scan reads, the
+ * clone's remote names, and the destination the command itself carries: those
+ * reads live in `public-hygiene-push-dir.ts` (`describeDir`, `ownPushSegment`,
+ * `scanCwd`) and `public-hygiene-push-reads.ts` (`pushRemoteNames`,
+ * `directPushTarget`, and the `bounded` wall clock both use). `describeDir` is
+ * asked of the denylist the scan was handed, so a private name carried by a `-C`
+ * operand never reaches the transcript.
  */
 
 /**

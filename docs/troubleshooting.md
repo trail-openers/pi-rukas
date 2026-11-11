@@ -960,8 +960,9 @@ repository), not a checkout, so the worktree the scan should read cannot be
 inferred from it, and guessing the session directory instead would read commits
 this push does not publish. Run the push from the repository itself or with `git
 -C <dir>`. A `-C` target that is not inside a repository is likewise refused, with
-a sentence naming the directory — never as the timed-out remote read it used to
-look like.
+a sentence naming that directory's basename (never its path, and not the basename
+at all when the operator's denylist matches it) — never as the timed-out remote
+read it used to look like.
 
 **Fix:** `git log --format=%B <srcs> --not --remotes` and read the messages; the
 refusal names the short sha and the path, so `git show <sha>` finds the line.

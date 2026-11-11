@@ -297,6 +297,33 @@ interface Decision {
 }
 
 /**
+ * The seams of {@link inspectCommand}: the pinned transports a caller may hand
+ * the scan, plus the two reads the push refusal needs and a caller would
+ * otherwise have to rebuild (`denylist`, `toolCwd`).
+ */
+export type InspectOpts = {
+  remoteUrl?: (remote: string) => Promise<string>;
+  /** The visibility seam — see `PublicHygieneOpts.visibility`. */
+  visibility?: VisibilityFn;
+  /** The push verb, threaded to the target resolver (never spelled here). */
+  pushVerb?: string;
+  /** A target the caller already knows (the forge slug); skips resolution. */
+  target?: Target;
+  /**
+   * The denylist, threaded to the push scan for the one refusal that names a
+   * directory; defaults to the read `inspectCommand` already made, so a caller
+   * that pins `readDenylist` pins that refusal's leak check with it.
+   */
+  denylist?: DenylistRead;
+  /**
+   * The tool call's own directory, threaded to the push scan so a chain of pushes
+   * in two trees is located segment by segment (`PushScanDeps.toolCwd`); defaults
+   * to the `cwd` argument, which is what a caller that resolved no `-C` means.
+   */
+  toolCwd?: string;
+};
+
+/**
  * The whole decision, pure apart from the two injected seams. Exported so the
  * smoke test drives it directly with a scratch denylist and a scripted
  * executor, without a real Pi process.
@@ -313,15 +340,7 @@ export async function inspectCommand(
   // "[object Object]" as a remote URL and reported it unreadable. Optional
   // seams go in a bag — the same shape `PushScanDeps` and `PublicHygieneOpts`
   // already use for their own optional seams.
-  opts: {
-    remoteUrl?: (remote: string) => Promise<string>;
-    /** The visibility seam — see `PublicHygieneOpts.visibility`. */
-    visibility?: VisibilityFn;
-    /** The push verb, threaded to the target resolver (never spelled here). */
-    pushVerb?: string;
-    /** A target the caller already knows (the forge slug); skips resolution. */
-    target?: Target;
-  } = {},
+  opts: InspectOpts = {},
 ): Promise<Decision | undefined> {
   const deny = readDenylist();
   // A configured denylist nobody could read is not a denylist: refuse rather
@@ -426,6 +445,8 @@ export async function inspectCommand(
           scanPushRange({
             exec,
             cwd,
+            toolCwd: opts.toolCwd ?? cwd,
+            denylist: opts.denylist ?? deny,
             remoteUrl: opts.remoteUrl,
             command,
             pushVerb: PUSH_VERB,

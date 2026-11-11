@@ -265,10 +265,16 @@ async function inspectWith(
     // names the ADMIN directory, not a worktree, so a scan that guessed the
     // worktree from it could read commits nobody is publishing. The refusal
     // string is what the guard later turns into a message; here it is enough that
-    // the segment does NOT silently resolve to the session directory.
+    // the segment does NOT silently resolve to the session directory. The glued
+    // spellings are pinned on their own, because their operand rides inside the
+    // flag word: a reader that stopped at the first `=`-bearing flag would let
+    // `--work-tree=<dir>` through as an ordinary global, and one that echoed the
+    // word would echo a path.
     for (const spelling of [
       `git --git-dir wt/.git ${PUSH} origin b`,
       `git --work-tree wt ${PUSH} origin b`,
+      `git --work-tree=wt ${PUSH} origin b`,
+      `git --git-dir=wt/.git ${PUSH} origin b`,
       `git --git-dir=wt/.git --work-tree=wt ${PUSH} origin b`,
     ]) {
       const seg = segmentCwds(work, spelling);

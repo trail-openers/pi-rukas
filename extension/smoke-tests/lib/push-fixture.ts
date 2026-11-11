@@ -184,9 +184,13 @@ export function inspect(
   resetPublicHygieneRegistrationForTests();
   resetDenylistCacheForTests();
   const env = ScanEnv.env();
-  return inspectCommand(command, repo, opts.executor ?? exec, () => readPublicDenylist(env), {
-    remoteUrl: opts.remote ?? githubUrl,
-  });
+  return inspectCommand(
+    command,
+    repo,
+    opts.executor ?? exec,
+    () => readPublicDenylist(env),
+    { remoteUrl: opts.remote ?? githubUrl, denylist: readPublicDenylist(env) },
+  );
 }
 
 /**
@@ -211,7 +215,16 @@ export function inspectAt(
     pushGitCwd(toolCwd, command),
     opts.executor ?? exec,
     () => readPublicDenylist(env),
-    { remoteUrl: opts.remote ?? githubUrl },
+    {
+      remoteUrl: opts.remote ?? githubUrl,
+      // The same pinned read the guard uses, handed to the scan so the ONE
+      // refusal that repeats a directory name is checked against this fixture's
+      // denylist rather than against an empty one. `toolCwd` is the caller's own
+      // directory, which the guard passes too: the scan locates a chain segment by
+      // segment from it.
+      denylist: readPublicDenylist(env),
+      toolCwd,
+    },
   );
 }
 

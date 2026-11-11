@@ -280,6 +280,15 @@ const SHELLS = new Set(["bash", "sh", "zsh", "dash", "ksh"]);
  * other catches, so a command is a push when EITHER says so: the shapes both
  * agree on are scanned, and a shape neither recognises is the backstop refusal's
  * job, not a pass.
+ *
+ * The union is deliberately wider than a push. `pushesRemote` matches the verb
+ * ANYWHERE in the text, so `git -c push.default=simple status` enters this path
+ * through the regex half while the word reader — which requires the verb at the
+ * position git would read it — correctly says no. That over-read is the cheap
+ * direction: the command pays a few bounded git reads and is refused as a source
+ * that could not be resolved, never passed. Narrowing the regex half is a change
+ * to `git-push-command.ts`, which the developer push guard also runs and which
+ * over-matching serves better than under-matching.
  */
 export function commandPushes(command: string): boolean {
   return pushesRemote(command) !== undefined || commandCarriesPushVerb(command, PUSH_VERB);

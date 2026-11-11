@@ -22,6 +22,10 @@
  *
  * `askFailed` is what keeps the first of those two facts expressible: an empty
  * list and no answer at all are different facts and get different sentences.
+ *
+ * The directory questions — which segment of a chain this scan is the scan of, and
+ * what a refusal may say about a directory — are answered in
+ * `public-hygiene-push-dir.ts` from the command's own words, not from git.
  */
 
 import type { PushScanDeps } from "./public-hygiene-push.ts";
@@ -132,18 +136,4 @@ export function directPushTarget(
     return { kind: "problem", problem: "the push destination URL could not be read" };
   }
   return { kind: "host", host: parsed.host };
-}
-
-/**
- * A directory in a refusal, basename only.
- *
- * The path an agent typed is agent-authored text, and a private project name can
- * live in a directory name — the same reason the source-resolution refusal never
- * quotes a refspec. The basename is enough for an agent to act on, and it is the
- * only part of a path this refusal has any business repeating.
- */
-export function describeDir(dir: string): string {
-  const trimmed = dir.replace(/\/+$/, "");
-  const base = trimmed.slice(trimmed.lastIndexOf("/") + 1);
-  return base === "" ? "/" : base;
 }

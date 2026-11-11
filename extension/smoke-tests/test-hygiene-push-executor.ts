@@ -165,6 +165,13 @@ await withEnv({ ...gitEnv, PI_ENSEMBLE_PUBLIC_DENYLIST: list }, async () => {
       "and it is refused for the term in the worktree's commit, not for an unresolvable source",
     );
     assert(!(fromWorktree?.reason ?? "").includes(TERM), "and the refusal still carries no term");
+    // The dirty read really was the worktree's: the same push is ALLOWED once the
+    // worktree's commit is gone, so a scan of the session tree alone could not
+    // have produced this refusal, and the refuse-everything shape is excluded.
+    assert(
+      !/could not be read/i.test(fromWorktree?.reason ?? ""),
+      "…and not by a sentence that could not read the tree at all: the refuse-everything shape must stay distinguishable from the refuse-because-dirty shape in the reason text itself",
+    );
     const wtBad = await prodHook()(`git -C ${wt}nope ${PUSH} origin wt-branch`);
     assert(
       wtBad?.block === true &&
@@ -172,19 +179,57 @@ await withEnv({ ...gitEnv, PI_ENSEMBLE_PUBLIC_DENYLIST: list }, async () => {
         (wtBad.reason ?? "").includes("nope"),
       "a `-C` target that is no repository is refused with a sentence naming the directory",
     );
+    // The other direction, which is the fail-OPEN the scan's own segment reader
+    // closes: from the SESSION tree the last segment resolves to the tree of the
+    // push that never got to run (`&&` short-circuits), so the scan locates the
+    // FIRST push segment and the refusal is the directory sentence for the
+    // unreadable target that git would actually have run in — never the chain's
+    // last tree.
+    const chainBad2 = await prodHook()(
+      `git -C ${wt}nope ${PUSH} && cd ${work} && git -C ${wt} ${PUSH} origin wt-branch`,
+    );
+    assert(
+      chainBad2?.block === true &&
+        (chainBad2.reason ?? "").includes("could not be read") &&
+        (chainBad2.reason ?? "").includes("nope"),
+      "in a chain, the refusal names the `-C` target whose read failed",
+    );
+    assert(
+      !/\bwt-exec\b(?!nope)/.test(chainBad2?.reason ?? ""),
+      "and it does not blame the chain's last segment, which git answered in fine",
+    );
     assert(
       !(wtBad?.reason ?? "").includes("remotes could not be read"),
       "and it is not reported as the timed-out remote read it used to look like",
     );
     const wtGitDir = await prodHook()(`git --git-dir ${wt}/.git ${PUSH} origin wt-branch`);
     assert(
-      wtGitDir?.block === true && (wtGitDir.reason ?? "").includes("--git-dir"),
-      "a push that names its repository with --git-dir is refused by name, not scanned in the session cwd",
+      wtGitDir?.block === true &&
+        (wtGitDir.reason ?? "").includes("--git-dir") &&
+        !(wtGitDir.reason ?? "").includes("wt-exec"),
+      "a push that names its repository with --git-dir is refused by name, not scanned in the session cwd, and the refusal names no path",
     );
+    // The glued spelling names the flag the agent actually typed (#2168 round 1):
+    // told to drop `--git-dir` for a `--work-tree=…` push, the agent goes looking
+    // for a flag that is not in the command.
+    for (const [flag, spelling] of [
+      ["--work-tree", `git --work-tree=${wt} ${PUSH} origin wt-branch`],
+      ["--git-dir", `git --git-dir=${wt}/.git ${PUSH} origin wt-branch`],
+    ] as const) {
+      const glued = await prodHook()(spelling);
+      assert(
+        glued?.block === true && (glued.reason ?? "").includes(flag),
+        `a glued \`${flag}=<dir>\` push is refused with a sentence naming ${flag}`,
+      );
+      assert(
+        !(glued?.reason ?? "").includes("wt-exec"),
+        `and that sentence names the flag, never its ${flag} operand`,
+      );
+    }
     await wtRun("reset", "-q", "--hard", "HEAD~1");
     assert(
       (await prodHook()(`git -C ${wt} ${PUSH} -u origin wt-branch`)) === undefined,
-      "and a clean worktree push is allowed while the session tree's HEAD is dirty (#2168, inverse)",
+      "and the same push is allowed once the worktree's commit is gone, while the SESSION tree's HEAD is still dirty (#2168, inverse: a session-tree read could not tell the two apart)",
     );
     execp("git", { argv: ["worktree", "remove", "--force", wt], cwd: work, env: gitEnv } as never);
   }

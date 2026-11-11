@@ -42,10 +42,13 @@
  * the admin DIRECTORY, not a checkout, so pointing every read there turns a real
  * push into an unreadable range; `--work-tree` alone is half a pair with no
  * object database; and the pair taken together can disagree with the cwd the scan
- * was handed. A push that names its repository that way is therefore reported
- * with `GIT_DIR_REFUSAL` — a refusal that names the flag — rather than being
- * resolved in the session directory, which is the one answer that would be a
- * confident lie.
+ * was handed. A push that names its repository that way is therefore refused with
+ * `gitDirRefusal()` — a refusal that names the flag, never its operand — rather
+ * than being resolved in the session directory, which is the one answer that
+ * would be a confident lie. `segmentCwds` still answers something in that slot:
+ * the refusal sentence itself, which is what the hook prints. The scan never
+ * reaches that value, because `resolveScanDirectory` in `public-hygiene-push.ts`
+ * refuses on the flag before it asks git anything.
  *
  * ## The directories a body file may live in
  *
@@ -91,7 +94,10 @@ export function gitDirRefusal(flag: string): string {
  *
  * The answer is the LAST segment that moved the git, because that is the last
  * push this process could have run; a caller that needs one particular push out
- * of a two-push chain asks about that push's own segment.
+ * of a two-push chain asks about that push's own segment. A segment whose git
+ * named itself with a refused global answers with the refusal sentence, which is
+ * what the hook prints for that command (see the module header for why the scan
+ * never treats it as a directory).
  */
 export function pushGitCwd(toolCwdValue: string, command: string): string {
   const dirs = segmentCwds(toolCwdValue, command);
