@@ -1,0 +1,51 @@
+{
+  "state": "not-ready",
+  "code": 11,
+  "reason": "criterion AC1 has no red test",
+  "steps": [
+    {
+      "state": "ready",
+      "key": "2212:ready:0",
+      "outcome": {
+        "kind": "ok"
+      }
+    },
+    {
+      "state": "specify",
+      "key": "2212:specify:0",
+      "outcome": {
+        "kind": "no-red-test",
+        "failedRules": [
+          "criterion AC1 has no red test"
+        ],
+        "reason": "criterion AC1 has no red test; no submitted test was red against <base>; criterion AC1 has no red test; dropped 1: AC1 tests/AC1-child.test.sh: exited 4 without naming AC1-child.test.sh",
+        "dispatches": [
+          {
+            "role": "developer",
+            "ms": 1,
+            "ok": true,
+            "usage": {
+              "input": 5,
+              "output": 6,
+              "cacheRead": 1,
+              "cacheWrite": 2,
+              "cost": 0.125,
+              "turns": 3
+            }
+          }
+        ]
+      }
+    },
+    {
+      "state": "decline",
+      "key": "2212:decline:0",
+      "outcome": {
+        "kind": "done"
+      }
+    }
+  ],
+  "declineRan": 1,
+  "declineRules": [
+    "criterion AC1 has no red test"
+  ]
+}

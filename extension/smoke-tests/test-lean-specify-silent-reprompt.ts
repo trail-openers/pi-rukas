@@ -42,6 +42,13 @@ import {
   redScript,
   runSpecify,
   submit,
+  report as reportShared,
+  TEST_REL,
+  NEVER_SUBMITTED,
+  NUDGE,
+  RETRY_NOTE,
+  CONFIG,
+  writeTest,
 } from "./lib/lean-specify-fixture.ts";
 
 let exit = 0;
@@ -53,36 +60,19 @@ function assert(cond: boolean, msg: string): void {
   }
 }
 
-const RETRY_NOTE = "(after one retry)";
-const NUDGE = "Your previous turn ended without calling submit_tests";
-/**
- * The decline a child that never declared a test earns. Its FIRST clause, in
- * every rule it appears in — the same invariant `criterion <id> has no red test`
- * carries — because the decline comment clips each rule and the run's reason is
- * what an operator reads first.
- */
-const NEVER_SUBMITTED = "the child never submitted a test";
-/**
- * The boundary's newness refusal, as the step's drop note renders it. The child's
- * one row dies on this rule in case (6) — the byte is in the base commit, which is
- * the one place a submitted test may not come from.
- */
 /** The boundary's refusal for a submission against a `verify: "manual"` criterion. */
 const NOT_A_TEST_CRITERION = "is not a test criterion";
 const OVERSIZE = "lines; an acceptance test is at most";
 const REFUSED = "Your previous submission was refused";
-const CONFIG = configWith({ fast: "true", test: RUNNER });
-const TEST_REL = "tests/AC1-retry.test.sh";
 
 /** A test file over `MAX_TEST_LINES`, which the boundary drops. */
 function oversize(): string {
   return `${Array.from({ length: MAX_TEST_LINES + 1 }, (_, i) => `# line ${i}`).join("\n")}\n`;
 }
 
-/** Write `body` at the test path, as the child's own write would. */
-function writeTest(wt: string, body: string): void {
-  mkdirSync(path.join(wt, "tests"), { recursive: true });
-  writeFileSync(path.join(wt, TEST_REL), body, { mode: 0o755 });
+/** The one shared assertion of every case below, on this file's own assert. */
+function report(r: RunResult, label: string): void {
+  reportShared(r, label, assert);
 }
 
 /** A spec whose only criterion is `verify: "manual"` — nothing to submit. */
@@ -97,11 +87,6 @@ ${JSON.stringify(
   2,
 )}
 \`\`\``;
-
-/** The four assertions every case below shares, on one run. */
-function report(r: RunResult, label: string): void {
-  assert(r.threw === undefined, `${label}: no throw (${r.threw?.message ?? "clean"})`);
-}
 
 // ── (1) silent on the first attempt, submits on the re-prompt ────────────────
 {

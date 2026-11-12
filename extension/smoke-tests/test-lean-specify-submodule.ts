@@ -41,7 +41,9 @@ import path from "node:path";
 import { execp } from "../src/exec.ts";
 import { resetWorktreeToBase } from "../src/lean/specify-reset.ts";
 import type { ExecFn } from "../src/worktree.ts";
+import { withEnv } from "./lib/env-scope.ts";
 import { gitTestEnv } from "./lib/git-test-env.ts";
+import { submoduleCalls } from "./lib/lean-submodule-off-fixture.ts";
 import {
   ROOTS as CHALLENGE_ROOTS,
   challengeFixture,
@@ -59,6 +61,14 @@ import {
   runSpecify,
   submit,
 } from "./lib/lean-specify-fixture.ts";
+import {
+  INSIDE,
+  SUB,
+  addSubmodule,
+  repoWithSubmodule,
+  submoduleRemote,
+  writeSubmoduleTest,
+} from "./lib/lean-specify-submodule-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -69,88 +79,9 @@ function assert(cond: boolean, msg: string): void {
   }
 }
 
-/**
- * Mount `url` as a submodule at `at`, from a LOCAL path.
- *
- * `protocol.file.allow` is `user` by default since the CVE that made git refuse
- * it, so a plain `submodule add <path>` fails with `transport 'file' not
- * allowed` — and the refusal is git's policy on a machine's configuration, not a
- * fact about the repository under test. The allowlist is passed per call, which
- * is what a human doing this locally does too; nothing about the step's own
- * behaviour depends on it, because the step never adds a submodule: it only
- * populates one the base already carries.
- */
-function addSubmodule(dir: string, url: string, at: string): void {
-  git(dir, "-c", "protocol.file.allow=always", "submodule", "add", "-q", "--force", url, at);
-}
-
-/** The submodule's mount point, and the file committed inside it. */
-const SUB = "vendor/lib";
-const INSIDE = `${SUB}/lib`;
-/** The file the child's test imports from inside the submodule. */
+/** The runner template the cases configure: `sh {file}`, the shape the fixture's
+ * tests are written for — each names its own path, which is what the proof reads. */
 const RUNNER = "sh {file}";
-
-/** A standalone repo to mount as a submodule, with one committed file. */
-function remoteRepo(): { repoRoot: string; head: string } {
-  const { repoRoot, baseSha } = makeRepo({ lib: "the submodule's content\n" });
-  return { repoRoot, head: baseSha };
-}
-
-/**
- * A repo whose base commit carries a real submodule at `vendor/lib`.
- *
- * Built the way a human would: add the submodule from a local path, then commit
- * what git staged. `git submodule add` writes `.gitmodules` AND the gitlink, and
- * `git add` of the directory is what makes the gitlink part of the base tree —
- * without that commit the worktree would hold an untracked directory, which is a
- * different problem than the one being pinned here.
- */
-function repoWithSubmodule(url?: string, from?: string): { repoRoot: string; baseSha: string } {
-  const remote = from ?? makeRepo({ lib: "the submodule's own content\n" }).repoRoot;
-  const { repoRoot } = makeRepo({ "src/retry.ts": "export const retry = () => {};\n" });
-  addSubmodule(repoRoot, remote, SUB);
-  if (url !== undefined) {
-    // Point the recorded source somewhere that is not there, then un-populate
-    // what `submodule add` checked out: the base now describes a submodule that
-    // can only be obtained by a clone that will fail.
-    const gitmodules = path.join(repoRoot, ".gitmodules");
-    writeFileSync(gitmodules, readFileSync(gitmodules, "utf8").replace(/url = .*/, `url = ${url}`));
-    rmSync(path.join(repoRoot, SUB), { recursive: true, force: true });
-  }
-  git(repoRoot, "add", "-A");
-  git(
-    repoRoot,
-    "commit",
-    "-q",
-    "-m",
-    url === undefined
-      ? "add the vendored submodule"
-      : "point the submodule at a source that is not there",
-  );
-  return { repoRoot, baseSha: git(repoRoot, "rev-parse", "HEAD") };
-}
-/** The child writes a test that reads the submodule's file, and declares it. */
-function writeSubmoduleTest(wt: string): void {
-  mkdirSync(path.join(wt, "tests"), { recursive: true });
-  // The read is the point: an empty submodule directory makes this file fail
-  // before it asserts anything, which is the collection error the preflight
-  // turns into infrastructure.
-  const body = [
-    "#!/bin/sh",
-    `if [ ! -f ${INSIDE} ]; then`,
-    `  echo "cannot import ${SUB}: the submodule is empty" 1>&2`,
-    "  exit 4",
-    "fi",
-    // The proof's own rule: a non-zero exit counts only when the output named
-    // the file, so the script reports its own path — and not the submodule's
-    // name, which would let the red be credited for the wrong reason.
-    'echo "not ok - $0" 1>&2',
-    'echo "assertion failed: retry gave up on the first transient failure" 1>&2',
-    "exit 1",
-    "",
-  ].join("\n");
-  writeFileSync(path.join(wt, "tests/AC1-submodule.test.sh"), body, { mode: 0o755 });
-}
 
 // ── (a) + (b) specify on a submodule base: populated before the probe, and it survives
 {
@@ -273,7 +204,7 @@ function writeSubmoduleTest(wt: string): void {
 {
   const issue = 54;
   const built = challengeFixture(issue);
-  const remote = remoteRepo();
+  const remote = submoduleRemote();
   // The submodule joins the run's BRANCH — the commit `challenge` resets to and
   // proves red against — and the worktree is moved onto it, exactly as a real
   // run's head carries a gitlink its base did not.
@@ -486,6 +417,66 @@ function writeSubmoduleTest(wt: string): void {
   assert(
     existsSync(inside),
     `(f) and the reset left the submodule populated (got ${existsSync(inside) ? "there" : "empty"})`,
+  );
+}
+
+// ── (g) with `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` the step issues NO submodule call
+{
+  // R1's per-path half for `specify` itself. The switch is honoured inside
+  // `resetWorktreeToBase`, so what is asserted is the absence of the call from the
+  // argv the STEP issued — not a directory being empty, which a base with no
+  // submodule would show too. Every case above drives this same shape with the
+  // switch unset and asserts the submodule IS populated, so the argv is the only
+  // thing the switch moved.
+  const { repoRoot, baseSha } = repoWithSubmodule();
+  const gitArgvs: string[][] = [];
+  const seen: string[] = [];
+  let threw: Error | undefined;
+  let outcomeKind: string | undefined;
+  let worktree = "";
+  await withEnv({ PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT: "0" }, async () => {
+    try {
+      const r = await runSpecify({
+        repoRoot,
+        baseSha,
+        issue: 61,
+        config: configWith({ fast: "true", test: RUNNER }),
+        gitArgvs,
+        writes: (wt) => {
+          seen.push(existsSync(path.join(wt, INSIDE)) ? "populated" : "empty");
+          writeSubmoduleTest(wt);
+        },
+        toolUses: [submit("AC1", ["tests/AC1-submodule.test.sh"])],
+      });
+      outcomeKind = r.outcome?.kind;
+      worktree = r.worktree;
+    } catch (err) {
+      threw = err as Error;
+    }
+  });
+  assert(
+    threw === undefined,
+    `(g) the switch-off run does not hand back on the submodule (${threw ? `${threw.name}: ${threw.message.split("\n")[0]}` : "clean"})`,
+  );
+  assert(
+    submoduleCalls(gitArgvs).length === 0,
+    `(g) the step issued no submodule call of any kind (got ${JSON.stringify(
+      submoduleCalls(gitArgvs).map((a) => a.slice(-3)),
+    )})`,
+  );
+  assert(
+    seen.join() === "empty",
+    `(g) and the child worked in the tree v0.14.71 left it — the gitlink stayed empty (got ${seen.join()})`,
+  );
+  assert(
+    existsSync(path.join(worktree, INSIDE)) === false,
+    `(g) and the tree the run left holds no submodule file (got ${
+      existsSync(path.join(worktree, INSIDE)) ? "there" : "empty"
+    })`,
+  );
+  assert(
+    outcomeKind !== undefined,
+    `(g) and the step still reached a verdict rather than infrastructure (got ${String(outcomeKind)})`,
   );
 }
 
