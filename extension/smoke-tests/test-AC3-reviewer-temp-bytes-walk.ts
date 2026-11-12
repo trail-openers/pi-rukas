@@ -200,20 +200,24 @@ async function walkBytes(root: string): Promise<{ bytes: number; bound: string |
   // pin nothing).
   const root = walkRoot("skip");
   const wide = childWideDir(path.join(root, "pi-rukas-child-probe"));
-  writeRealBytes(path.join(wide, "leak.bin"), LEAK_BYTES);
+  // Each expected total is what the filesystem ACTUALLY allocated for that file, not
+  // the requested size: the requested size's partial tail block is retained or
+  // reclaimed by the allocator, and the walk reads `st_blocks`, so pinning to the
+  // request makes the assertion about the allocator rather than about the skip.
+  const wideBytes = writeRealBytes(path.join(wide, "leak.bin"), LEAK_BYTES);
   const measuredWide = await tempAllocatedBytes(root);
   assert(
     "bytes" in measuredWide &&
-      measuredWide.bytes === LEAK_BYTES &&
+      measuredWide.bytes === wideBytes &&
       duWithinBlockTolerance(duBytes(root), measuredWide.bytes, duEntries(root)),
     `temp-watch: a harness-PREFIXED dir at the mode a child's own mkdir gets is a leak, not a harness tree, and matches du (${JSON.stringify([measuredWide, duBytes(root), duEntries(root)])})`,
   );
   const ours = harnessModeDir(path.join(root, "pi-rukas-spawn-slots-1006"));
-  writeRealBytes(path.join(ours, "tree.bin"), BULK_BYTES);
+  const bulkBytes = writeRealBytes(path.join(ours, "tree.bin"), BULK_BYTES);
   const skipped = await tempAllocatedBytes(root);
   assert(
     "bytes" in skipped &&
-      skipped.bytes === LEAK_BYTES &&
+      skipped.bytes === wideBytes &&
       duWithinBlockTolerance(
         duBytes(root) - duBytes(ours),
         skipped.bytes,
@@ -224,7 +228,7 @@ async function walkBytes(root: string): Promise<{ bytes: number; bound: string |
   setMode(ours, 0o755); // same name, same owner, one bit wider
   const widened = await tempAllocatedBytes(root);
   assert(
-    "bytes" in widened && widened.bytes === LEAK_BYTES + BULK_BYTES,
+    "bytes" in widened && widened.bytes === wideBytes + bulkBytes,
     `temp-watch: and the moment that tree is not 0700 the whole harness tree is counted — the mode is not decoration (${JSON.stringify(widened)})`,
   );
   // A harness-prefixed tree the PARENT does not own, carrying bytes: the conjunct

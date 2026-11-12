@@ -16,19 +16,19 @@
  * the provisioned dependency links go with everything else and are rebuilt, so the
  * tree after a reset is built by one code path.
  *
- * `commitTestFiles` takes the pathspec on the COMMIT as well as the add, and
- * afterwards asserts four things: HEAD moved, HEAD's tree differs from the base by
- * exactly the committed paths, nothing was skipped by a hook, and the tree is clean.
- * A mismatch throws rather than handing the run a commit nobody verified.
- *
  * `writeCaptured` follows no link either way: every ancestor of a target must be a
  * real directory, and each file lands through a `wx` temp write plus a rename, so an
  * existing name is never written through.
+ *
+ * The COMMIT that follows the freeze — `commitTestFiles`, and the `committedBlob` the
+ * freeze hashes — is `specify-commit.ts`: discard-and-prove and record-and-prove are
+ * two contracts, and the commit is the seam between them.
  */
 
 import { existsSync, lstatSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { ExecFn } from "../worktree.ts";
+import { leanRunnerPreflightEnabled } from "./runner-preflight-switch.ts";
 import { trim } from "./specify-proof.ts";
 import { changedPaths } from "./specify-tree.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
@@ -238,7 +238,10 @@ export function writeCaptured(wt: string, captured: Map<string, Buffer>): void {
  * imports from one then fails before collection — so a runner that cannot collect is
  * blamed on the adversary. `initSubmodules` runs inside this function rather than in
  * one caller after it, because every reset has to restore them and the resets are
- * made in four places.
+ * made in six places — which is also why `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` is
+ * honoured HERE rather than at any caller: the one place that makes no reset ask git
+ * to populate anything, so the switch-off state holds for build's fold and the
+ * review fix round too, not only for specify.
  *
  * Throws `SpecifyResetError` unless `rev-parse HEAD` equals `baseSha` and
  * `status --porcelain` reports nothing — that confirmation is the function: the
@@ -316,6 +319,12 @@ export async function resetWorktreeToBase(
  * network — and a clone with no network, or a submodule whose remote is gone, is the
  * same infrastructure handback as a runner that cannot collect: nothing downstream
  * can judge the work without those files.
+ *
+ * `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` returns before any of that, so no lean reset
+ * asks git to populate anything and none can fail that way — v0.14.71 issued no
+ * submodule call at all. The test-only `beforeInit` seam fires only when the real
+ * command would have: a case sabotaging a submodule the step never populates would
+ * be watching a git call that does not exist.
  */
 async function initSubmodules(
   exec: ExecFn,
@@ -323,6 +332,7 @@ async function initSubmodules(
   /** Passed through from {@link resetWorktreeToBase}; product code never supplies it. */
   beforeInit?: (wt: string) => void | Promise<void>,
 ): Promise<void> {
+  if (!leanRunnerPreflightEnabled()) return;
   if (!existsSync(path.join(wt, ".gitmodules"))) return;
   await beforeInit?.(wt);
   const listed = await exec("git", {
@@ -378,118 +388,3 @@ function submoduleArgv(...argv: string[]): string[] {
 
 /** The wall clock on `git submodule update --init --recursive`, which may reach the network. */
 const SUBMODULE_TIMEOUT_MS = 5 * 60_000;
-
-/**
- * Commit exactly `paths` on top of `baseSha`, and prove the commit is what it
- * claims to be. Throws `SpecifyCommitError` on any mismatch.
- *
- * The pathspec rides on the COMMIT and not only the add: without it the commit
- * takes whatever the index holds, and the index also holds anything a child
- * staged for itself. `git add` is bounded to the kept paths too, so the index
- * cannot be loaded with anything else in the first place.
- *
- * Both git calls run with `core.hooksPath=/dev/null` and `core.fsmonitor=false`: the
- * hooks a repository carries are somebody else's policy, and a pre-commit hook that
- * rewrites the index would put bytes in the frozen commit the step never captured.
- *
- * `--literal-pathspecs` is a TOP-LEVEL git option and rides on all three calls that
- * name paths, the same way `build-normalise.ts` puts it ahead of the subcommand. It
- * is load-bearing for the diff as much as the writes: a submitted test named
- * `tests/[a]x.test.sh` is one file to this step but a glob to git, and without the
- * flag the add and commit could sweep in a tracked `tests/ax.test.sh` while the
- * un-literal diff still reported the pair as "exactly the paths we meant".
- */
-export async function commitTestFiles(
-  exec: ExecFn,
-  wt: string,
-  baseSha: string,
-  paths: string[],
-  message: string,
-): Promise<void> {
-  if (paths.length === 0) throw new SpecifyCommitError("no test files to commit");
-  const run = async (argv: string[]): Promise<void> => {
-    try {
-      await exec("git", { argv, cwd: wt, timeout: 60_000, maxBuffer: 1024 * 1024 });
-    } catch (err) {
-      throw new SpecifyCommitError(
-        `git ${argv.join(" ")} failed in ${wt}: ${(err as Error).message}`,
-      );
-    }
-  };
-  const LITERAL = "--literal-pathspecs";
-  await run([LITERAL, ...NO_HOOKS, "add", "--", ...paths]);
-  await run([LITERAL, ...NO_HOOKS, "commit", "-m", message, "--", ...paths]);
-
-  const head = await exec("git", {
-    argv: [...NO_HOOKS, "rev-parse", "HEAD"],
-    cwd: wt,
-    timeout: QUICK_GIT_MS,
-    maxBuffer: 1024 * 1024,
-  }).catch(() => undefined);
-  const headSha = (head?.stdout ?? "").trim();
-  if (headSha === "" || headSha === baseSha)
-    throw new SpecifyCommitError(
-      `HEAD did not move from the base ${baseSha} — the acceptance-test commit was never made`,
-    );
-  // `-z` gives the raw paths NUL-separated: without it git C-quotes any name with
-  // non-ASCII bytes and a test named `AC1-café` would never equal itself. `core.
-  // quotePath=off` is set too, so the quoting rule cannot return if `-z` is dropped.
-  const diff = await exec("git", {
-    argv: [
-      LITERAL,
-      ...NO_HOOKS,
-      "-c",
-      "core.quotePath=off",
-      "diff",
-      "--name-only",
-      "-z",
-      baseSha,
-      headSha,
-    ],
-    cwd: wt,
-    timeout: 60_000,
-    maxBuffer: 4 * 1024 * 1024,
-  }).catch(() => undefined);
-  if (diff === undefined)
-    throw new SpecifyCommitError(`could not read the commit's diff against ${baseSha}`);
-  const changed = (diff.stdout ?? "").split("\0").filter((p) => p !== "");
-  const expected = [...paths].sort();
-  if (JSON.stringify(changed.slice().sort()) !== JSON.stringify(expected))
-    throw new SpecifyCommitError(
-      `the acceptance-test commit contains ${JSON.stringify(changed)}, expected exactly ${JSON.stringify(expected)}`,
-    );
-  const left = await changedPaths(exec, wt);
-  if (left.length > 0)
-    throw new SpecifyCommitError(
-      `the worktree is not clean after the acceptance-test commit: ${left
-        .slice(0, 8)
-        .map((e) => `${e.status} ${e.path}`)
-        .join(", ")}`,
-    );
-}
-
-/**
- * `git show HEAD:<path>` — the committed bytes, which are what the freeze hashes.
- * Hashing the blob rather than the file on disk is what makes the recorded hash a
- * fact about the commit rather than a race with whatever the tree looked like a
- * moment earlier.
- */
-export async function committedBlob(exec: ExecFn, wt: string, rel: string): Promise<Buffer> {
-  // `latin1` keeps every byte (see ExecOpts.stdoutEncoding): the hash is over the
-  // committed bytes, and a utf8 round trip would change any invalid sequence.
-  const r = await exec("git", {
-    argv: ["show", `HEAD:${rel}`],
-    cwd: wt,
-    timeout: QUICK_GIT_MS,
-    maxBuffer: 8 * 1024 * 1024,
-    stdoutEncoding: "latin1",
-  }).catch(() => undefined);
-  if (r === undefined) throw new SpecifyCommitError(`could not read the committed blob ${rel}`);
-  const bytes = Buffer.from(r.stdout ?? "", "latin1");
-  // An empty blob is not a test. `git show` of a path not in the tree fails rather
-  // than returning "", so an empty read here means the commit holds an empty file —
-  // and a hash of nothing would let a zero-byte file pass as a frozen test.
-  if (bytes.length === 0)
-    throw new SpecifyCommitError(`the committed blob ${rel} is empty — not a test`);
-  return bytes;
-}

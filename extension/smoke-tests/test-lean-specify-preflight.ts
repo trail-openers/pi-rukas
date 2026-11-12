@@ -26,7 +26,10 @@
  *   (d) a hanging probe ends as infrastructure under the injected bound, so the
  *       bound is observable and a preflight cannot wedge the cycle;
  *   (e) no `verify.test` at all keeps its old verdict and its old wording, and
- *       still dispatches nobody.
+ *       still dispatches nobody;
+ *
+ * The OFF arm of all three throws — `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` — is
+ * `test-lean-specify-preflight-off.ts`, split for the 500-line gate (AGENTS §12).
  */
 
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -82,6 +85,26 @@ function runnerScript(): string {
 
 /** A runner that dies before collection the way pytest does: names nothing, exits 4. */
 const BROKEN_RUNNER = '#!/bin/sh\necho "ImportError: no module named pytest" 1>&2\nexit 4\n';
+
+/**
+ * A runner that hangs on the probe's EMPTY file and reports properly on any other.
+ *
+ * The hang is keyed on emptiness, not on the runner being broken: a real test
+ * prints the naming red the proof requires and exits with the file's own status.
+ * A runner that hung on EVERY file would have hung the red proof too, and the off
+ * arm would then have been a hand-back from the pipeline's own `assertRan` — a case
+ * asserting the switch removed something it does not remove.
+ */
+const HANGING_ON_EMPTY_RUNNER =
+  '#!/bin/sh\necho "runner: $1" 1>&2\ncase "$1" in *lean-runner-probe*) sleep 30;; esac\nexit 1\n';
+
+/** A repo carrying `HANGING_ON_EMPTY_RUNNER` at `runner.sh`, plus the subject. */
+function makeHangingRunnerRepo(): { repoRoot: string; baseSha: string } {
+  return makeRepo({
+    "src/retry.ts": "export const retry = () => {};\n",
+    "runner.sh": HANGING_ON_EMPTY_RUNNER,
+  });
+}
 
 /** The child's ordinary good work: one red test for AC1, declared. */
 function writeRed(wt: string): void {

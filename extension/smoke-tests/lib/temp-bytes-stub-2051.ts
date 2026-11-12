@@ -31,15 +31,25 @@ export function childFreeTemp(tag: string): string {
 }
 
 /**
- * Write `bytes` of REAL (allocated) content to `file`.
+ * Write `bytes` of REAL (allocated) content to `file`, and return the allocation
+ * the filesystem actually gave it.
  *
  * Real, never `truncate`d: the measure is `st_blocks * 512`, and a sparse file
  * reports a huge apparent size for almost no blocks — a fixture that cheated
  * here would clear the threshold arm while allocating nothing at all.
+ *
+ * The return value is the load-bearing half. A write of N bytes allocates either
+ * exactly ceil(N / block) blocks or one block more: the partial tail block is
+ * retained or reclaimed by the allocator, and which happens is a property of the
+ * filesystem's free-space state, not of this fixture (measured on this host: six
+ * identical writes of one size returned two different totals). A caller that pins
+ * an expected total therefore pins it to what THIS write allocated, never to the
+ * size it asked for.
  */
-export function writeRealBytes(file: string, bytes: number): void {
+export function writeRealBytes(file: string, bytes: number): number {
   mkdirSync(path.dirname(file), { recursive: true });
   writeFileSync(file, Buffer.alloc(bytes, 0x78));
+  return lstatSync(file).blocks * 512;
 }
 
 /**

@@ -22,6 +22,7 @@ import type { TestLocation } from "./config-test-location.ts";
 import type { WorkConfig } from "./config.ts";
 import { throwIfDispatchFailed } from "./dispatch-verdict.ts";
 import { type ProviderWaitClass, providerFaultOf } from "./provider-wait.ts";
+import { leanRunnerPreflightEnabled } from "./runner-preflight-switch.ts";
 import type { Criterion, PiSpec } from "./spec.ts";
 import { existsInCommit, fileProblem } from "./specify-path.ts";
 import { specifyPrompt } from "./specify-prompt.ts";
@@ -367,9 +368,15 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
   // The verdict's two gating values, reported before either is folded into the
   // outcome — see `SpecifyDeps.observeVerdict`.
   observeVerdict?.({ refused: [...refused], silent });
-  const generic = silent
-    ? ["the child never submitted a test: it ended without calling submit_tests"]
-    : wanted.map((c) => `criterion ${c.id} has no red test`);
+  // The switch changes the WORDING of this one rule and nothing else: the silence
+  // predicate above and the single retry it gates both exist in v0.14.71, which
+  // reached this point with `silent` true and still printed the criterion rules.
+  // So `"0"` is v0.14.71's decline for the same run, and the retry fires in both
+  // arms.
+  const generic =
+    silent && leanRunnerPreflightEnabled()
+      ? ["the child never submitted a test: it ended without calling submit_tests"]
+      : wanted.map((c) => `criterion ${c.id} has no red test`);
   const rules = [...generic, ...sizeRefused];
   return {
     outcome: {

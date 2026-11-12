@@ -236,6 +236,10 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   // tests were written from. 0 takes the section back out of both prompts.
   // The reader is `leanIssueProseEnabled` in lean/issue-prose.ts.
   flag("LEAN_ISSUE_PROSE", true),
+  // #2212 — #2179's runner preflight and the reset's submodule init, both off
+  // only on `"0"`, which restores v0.14.71's specify (no probe, no submodule
+  // call, exit 11 where the preflight would have handed back at 10).
+  flag("LEAN_RUNNER_PREFLIGHT", true),
   // Unset: derived from the host budget (CPUs, memory, pids.max); 0 = unbounded.
   // #1564 — a lens child's run bound (spawn-child-bound.ts).
   ms("LENS_BOUND_MS", 1_800_000),
