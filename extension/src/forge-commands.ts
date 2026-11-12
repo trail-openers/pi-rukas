@@ -176,9 +176,25 @@ export function issueEditCmd(forge: ForgeType, number: number, bodyFile?: string
 
 // ── CI runs ───────────────────────────────────────────────────────────────
 
+/**
+ * A CI run/pipeline id: a positive integer, or a refusal that names the id.
+ *
+ * The id reaches a shell string, so it is checked rather than coerced. A builder
+ * that accepted `-1`, `1.5` or `NaN` would interpolate whatever it was handed —
+ * every other target in this file goes through a validator or `shq` for the same
+ * reason, and a numeric argument is not exempt because it is typed `number` at
+ * the call site: the value arrives from a request the child composed.
+ */
+function ciId(id: number, what: string): number {
+  if (typeof id !== "number" || !Number.isInteger(id) || id <= 0) {
+    throw new Error(`forge ci: ${what} must be a positive integer (got ${String(id)})`);
+  }
+  return id;
+}
+
 /** Watch a GitHub Actions run (the CLI does the polling). */
 export function ciWatchCmd(runId: number): string {
-  return `gh run watch ${runId}`;
+  return `gh run watch ${ciId(runId, "run id")}`;
 }
 
 /**
@@ -186,7 +202,7 @@ export function ciWatchCmd(runId: number): string {
  * this is one iteration of it). `:id` is the *project* id — glab expands it.
  */
 export function pipelineViewCmd(pipelineId: number): string {
-  return `glab api /projects/:id/pipelines/${pipelineId} --output json`;
+  return `glab api /projects/:id/pipelines/${ciId(pipelineId, "pipeline id")} --output json`;
 }
 
 /** List the project's pipelines (newest first) — the watch's entry point. */
@@ -306,10 +322,13 @@ export function ciRunJobsCmd(forge: ForgeType, owner: string, repo: string, id: 
   // `owner`/`repo` come from the parsed remote URL, which is data the parent
   // does not author — every other builder in this file quotes its data through
   // `shq` for the same reason, and a path segment carrying a shell metacharacter
-  // would otherwise reach the exec string unquoted.
+  // would otherwise reach the exec string unquoted. The run id is checked rather
+  // than quoted: it is a number in the signature, and a value that is not a
+  // positive integer is a caller error, not something to route to the CLI.
+  const runId = ciId(id, "run id");
   if (forge === "github")
-    return `gh api /repos/${shq(owner)}/${shq(repo)}/actions/runs/${id}/jobs --paginate`;
-  return `glab api /projects/:id/pipelines/${id}/jobs --output json`;
+    return `gh api /repos/${shq(owner)}/${shq(repo)}/actions/runs/${runId}/jobs --paginate`;
+  return `glab api /projects/:id/pipelines/${runId}/jobs --output json`;
 }
 
 /**
@@ -320,13 +339,14 @@ export function ciRunJobsCmd(forge: ForgeType, owner: string, repo: string, id: 
  * no `owner` parameter here to keep in step with the caller.
  */
 export function ciRunLogCmd(forge: ForgeType, id: number): string {
-  if (forge === "github") return `gh run view ${id} --log-failed`;
-  return `glab ci trace ${id}`;
+  const runId = ciId(id, "run id");
+  if (forge === "github") return `gh run view ${runId} --log-failed`;
+  return `glab ci trace ${runId}`;
 }
 
 /** One GitLab job's trace — the per-job arm of the GitLab failed-log read. */
 export function ciJobTraceCmd(jobId: number): string {
-  return `glab api /projects/:id/jobs/${jobId}/trace --output json`;
+  return `glab api /projects/:id/jobs/${ciId(jobId, "job id")}/trace --output json`;
 }
 
 // ── CI run fetch ──────────────────────────────────────────────────────────────
@@ -340,7 +360,12 @@ export function ciRunOnce(
   repo: string,
   id: number,
 ): Promise<string> {
+  // The same id rule as `ciRunJobsCmd`, and the same reason: this seam is a
+  // shell string and the id arrives from a caller outside this file.
+  const runId = ciId(id, "run id");
   const cmd =
-    forge === "github" ? `gh api /repos/${owner}/${repo}/actions/runs/${id}` : pipelineViewCmd(id);
+    forge === "github"
+      ? `gh api /repos/${shq(owner)}/${shq(repo)}/actions/runs/${runId}`
+      : pipelineViewCmd(runId);
   return execFn(cmd, { cwd, maxBuffer: 512 * 1024 }).then(({ stdout }) => stdout);
 }

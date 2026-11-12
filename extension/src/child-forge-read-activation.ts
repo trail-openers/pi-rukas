@@ -138,10 +138,10 @@ function describe(err: unknown): string {
  * assembled field by field below rather than by spreading `raw`: what goes on
  * the wire is exactly what this interface names.
  *
- * The payload object is never serialised on its own — `requestForgeRead` puts
- * only `type`, `nonce` and `auth` on the socket and proves these fields with the
- * mac — so the object the parent's executor rebuilds arrives as bytes bound to
- * this child's secret rather than as a readable request any listener can serve.
+ * The fields are never serialised on their own — `requestForgeRead` folds them
+ * into the one flat line it signs and sends — so a listener that is not this
+ * child's parent can neither serve them nor answer for them: it holds no key, so
+ * it can neither forge a request of its own nor a reply this child would believe.
  */
 interface ForgeReadArgs {
   verb: string;
@@ -199,15 +199,15 @@ function forgeReadWire(args: ForgeReadArgs): Record<string, unknown> {
  * cached socket across a long child turn is a socket the parent may have
  * already closed.
  *
- * The child generates a fresh nonce and puts NOTHING on the socket but
- * `type`, `nonce` and `auth`: the verb and the target travel in a nested object
- * that the proof covers and the wire never shows. The proof is a
+ * The child generates a fresh nonce and signs the whole flat request line —
+ * `type`, the verb, its target, and that nonce — with the per-child key, then
+ * puts that line on the socket with `auth` appended. The proof is a
  * `HMAC-SHA256(secret, nonce + signed-request)` — a proof, not the secret — so
- * the child sends it its request (which no stranger can forge) while sending the
- * stranger nothing it can dispatch. The reply is accepted only if its mac
- * verifies over the nonce the child chose; anything else — absent, malformed,
- * wrong — is a refusal that carries no bytes, because bytes from an unverified
- * socket are the exact thing this channel must never trust.
+ * the child sends the parent its request (which no stranger can forge) while
+ * proving who sent it. The reply is accepted only if its mac verifies over the
+ * nonce the child chose; anything else — absent, malformed, wrong — is a refusal
+ * that carries no bytes, because bytes from an unverified socket are the exact
+ * thing this channel must never trust.
  */
 function requestForgeRead(
   args: ForgeReadArgs,

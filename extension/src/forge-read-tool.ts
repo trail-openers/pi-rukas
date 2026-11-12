@@ -76,6 +76,16 @@ const FORGE_STATES: ReadonlySet<string> = new Set(["open", "closed", "merged", "
  */
 const BRANCH_NAME = /^[A-Za-z0-9._/-]+$/;
 
+/**
+ * The longest search string `forge_read` will run. A search string is the one
+ * child-supplied field with no grammar at all — every other filter is a number,
+ * a state or a branch name — and it rides into the parent's credentialed command
+ * string like the rest. A bounded search is still a search; an unbounded one is
+ * a child choosing how much work the parent's credential does on its behalf, and
+ * how many bytes of match the command can pull back.
+ */
+const MAX_QUERY_CHARS = 512;
+
 /** The request as it crosses the socket. `number`/`id` are the target's id. */
 export interface ForgeReadRequest {
   type: "forge-read-request";
@@ -124,8 +134,15 @@ export function validateForgeRead(req: ForgeReadRequest): string | undefined {
     if (needsId && !isPositiveInt(req.id)) {
       return `forge_read ${verb}: needs a positive integer "id"`;
     }
-    if (verb === "issue_search" && (typeof req.query !== "string" || req.query === "")) {
-      return 'forge_read issue_search: needs a non-empty "query"';
+    if (
+      verb === "issue_search" &&
+      (typeof req.query !== "string" ||
+        // A whitespace-only query is the empty query with padding: `gh` would run
+        // the search and answer the whole list, which is not a search at all.
+        req.query.trim() === "" ||
+        req.query.length > MAX_QUERY_CHARS)
+    ) {
+      return `forge_read issue_search: needs a non-empty "query" of at most ${MAX_QUERY_CHARS} characters`;
     }
     // `state` and `sourceBranch` are child-supplied and land in the parent's
     // credentialed command string, so they get the same boundary check the

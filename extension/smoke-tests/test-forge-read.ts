@@ -418,6 +418,34 @@ async function main(): Promise<void> {
     assert(exec.calls.length === 0, `a bad sourceBranch ran no forge command (${exec.calls.join(" | ")})`);
   });
 
+  // The search string is the one child-supplied field with no grammar at all:
+  // every other filter is a number, a state or a branch name. It rides into the
+  // parent's credentialed `gh`/`glab` string like the rest, so it is bounded
+  // here — a bounded search is still a search, and an unbounded one is a child
+  // choosing how much work the parent's credential does on its behalf.
+  await check("a query is bounded to a search, not a slurp", async () => {
+    const short = validateForgeRead({ verb: "issue_search", query: "widget" });
+    assert(short === undefined, `a plain query validates (${short})`);
+    const atCap = validateForgeRead({ verb: "issue_search", query: "x".repeat(512) });
+    assert(atCap === undefined, `the cap itself is accepted (${atCap})`);
+    for (const query of ["", " ".repeat(3), "x".repeat(513), "x".repeat(9000)]) {
+      const reason = validateForgeRead({ verb: "issue_search", query });
+      assert(
+        /query/.test(reason ?? ""),
+        `query of ${query.length} chars refused by name (${reason})`,
+      );
+    }
+    const exec = mkExec({ "": { stdout: "SHOULD NOT RUN" } });
+    let reason = "";
+    try {
+      await read(GH_DET, exec, { verb: "issue_search", query: "x".repeat(9000) });
+    } catch (err) {
+      reason = (err as Error).message;
+    }
+    assert(/query/.test(reason), `the oversized query is refused by name (${reason.slice(0, 60)})`);
+    assert(exec.calls.length === 0, `an oversized query ran no forge command (${exec.calls.join(" | ")})`);
+  });
+
   // ── 5. The parent serves it; the child holds no credential ──────────────
   console.log("shape:");
   await check("detectForge resolves the forge the parent reads", async () => {

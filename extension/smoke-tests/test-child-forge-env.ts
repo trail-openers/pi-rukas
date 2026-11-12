@@ -31,9 +31,24 @@ const childBase = (): Record<string, string> => ({
   PI_ENSEMBLE_ROLE: "developer",
 });
 
-/** The real child-env builder, with the socket path the test plays the parent's. */
-const forgeReadEnv = (source: Record<string, string>, role: string): Record<string, string> =>
-  forgeReadChildEnv(source, role, role === "ops" ? undefined : "/run/parent/broker.sock");
+/**
+ * The real child-env builder, with the socket path AND the key this file plays
+ * the parent's. Both halves go down together (`buildChildForgeEnv` deletes the
+ * pair when either is missing), so a probe that names only a path would build an
+ * env with neither — the case the pairing rule makes unreachable.
+ */
+const PROBE_SECRET = "0".repeat(64);
+const forgeReadEnv = (
+  source: Record<string, string>,
+  role: string,
+): Record<string, string> =>
+  forgeReadChildEnv(
+    source,
+    role,
+    role === "ops" ? undefined : "/run/parent/broker.sock",
+    undefined,
+    role === "ops" ? undefined : PROBE_SECRET,
+  );
 
 const TOKENS = [
   "GH_TOKEN",
@@ -133,6 +148,17 @@ async function main(): Promise<void> {
       `the parent's path wins (got ${env[SOCKET_ENV]})`,
     );
     assert(forgeReadEnv(childBase(), "ops")[SOCKET_ENV] === undefined, "ops gets no socket");
+    // The pair rule reaches the ops arm too: ops is handed a path by no broker,
+    // so a path named for it without a key is deleted rather than published.
+    const opsHalfPair = forgeReadChildEnv(
+      { ...childBase(), PI_ENSEMBLE_ROLE: "ops" },
+      "ops",
+      "/run/parent/broker.sock",
+    );
+    assert(
+      !(SOCKET_ENV in opsHalfPair) && !(SECRET_ENV in opsHalfPair),
+      "a path without its key reaches no child, ops included",
+    );
   });
   await check(
     "a child whose parent served no broker holds no socket path at all",
@@ -158,6 +184,7 @@ async function main(): Promise<void> {
         "ops",
         "/run/parent/ops-broker.sock",
         "/operator/config",
+        newForgeReadSecret(),
       );
       assert(
         ops[SOCKET_ENV] === "/run/parent/ops-broker.sock",
@@ -214,7 +241,13 @@ async function main(): Promise<void> {
       // The arm that keeps the pair: a child the parent DID bind for gets both,
       // so the delete above is a decision about the brokerless case and not a
       // blanket wipe that would also break the honest one.
-      const served = forgeReadChildEnv(childBase(), "developer", "/run/parent/broker.sock");
+      const served = forgeReadChildEnv(
+        childBase(),
+        "developer",
+        "/run/parent/broker.sock",
+        undefined,
+        newForgeReadSecret(),
+      );
       assert(
         served[SOCKET_ENV] === "/run/parent/broker.sock" && /^[0-9a-f]{64}$/.test(served[SECRET_ENV] ?? ""),
         `a served child carries the whole pair (${JSON.stringify(Object.keys(served))})`,
@@ -224,14 +257,60 @@ async function main(): Promise<void> {
   await check("the secret that reaches a child is a fresh 32-byte key, never an inherited one", () => {
     // A key copied from the environment would be one key shared by every child
     // of a parent (and by a reattach), which is the property the per-child secret
-    // exists to remove.
+    // exists to remove. The builder takes the broker's key rather than minting
+    // one, so the freshness being pinned here is the SPAWN layer's: each child's
+    // broker mints its own (`bindForgeReadSocket`), and the pair that reaches a
+    // child is that broker's — never what the environment happened to hold.
     const leaked = "f".repeat(64);
-    const a = forgeReadChildEnv({ ...childBase(), [SECRET_ENV]: leaked }, "developer", "/p/a.sock");
-    const b = forgeReadChildEnv({ ...childBase(), [SECRET_ENV]: leaked }, "developer", "/p/b.sock");
+    const a = forgeReadChildEnv(
+      { ...childBase(), [SECRET_ENV]: leaked },
+      "developer",
+      "/p/a.sock",
+      undefined,
+      newForgeReadSecret(),
+    );
+    const b = forgeReadChildEnv(
+      { ...childBase(), [SECRET_ENV]: leaked },
+      "developer",
+      "/p/b.sock",
+      undefined,
+      newForgeReadSecret(),
+    );
     assert(a[SECRET_ENV] !== leaked, "the inherited key is replaced, not passed through");
     assert(a[SECRET_ENV] !== b[SECRET_ENV], "two children of one parent get two keys");
     assert(/^[0-9a-f]{64}$/.test(a[SECRET_ENV] ?? ""), "32 random bytes, hex");
   });
+  await check(
+    "a socket named without a key is not a pair — the child gets neither half",
+    () => {
+      // The pairing rule, from the other side of the branch. A caller that names
+      // a `socketPath` but holds no `secret` is a caller with no broker to check
+      // the key against (the reattach path, or a plan whose broker was stopped).
+      // MINTING a key there is the defect: it hands the child a key its parent
+      // never bound a server to check, and a child holding half a pair dials a
+      // listener it cannot authenticate — which is the state the delete below
+      // exists to make unreachable. The pair travels together or not at all.
+      const env = buildChildForgeEnv({ ...childBase(), PATH: "/bin" }, "developer", "", "/run/parent/broker.sock");
+      assert(
+        !(SOCKET_ENV in env),
+        `a socket with no key is deleted, not published (${env[SOCKET_ENV]})`,
+      );
+      assert(
+        !(SECRET_ENV in env),
+        `and no key is minted for a broker that does not exist (${env[SECRET_ENV]})`,
+      );
+      // The same rule with an empty-string key: "no key" is a value test, not a
+      // truthiness test an empty string slips through.
+      const empty = buildChildForgeEnv(
+        { ...childBase(), PATH: "/bin" },
+        "developer",
+        "",
+        "/run/parent/broker.sock",
+        "",
+      );
+      assert(!(SOCKET_ENV in empty) && !(SECRET_ENV in empty), "an empty key is no key");
+    },
+  );
   await check("the strip mutates the object it is given and reports what it took", () => {
     const target: Record<string, string | undefined> = { GH_TOKEN: "x", PATH: "/bin" };
     const removed = stripForgeCredentials(target, "developer", "/tmp/empty-dir");

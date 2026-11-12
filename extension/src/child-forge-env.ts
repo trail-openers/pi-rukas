@@ -41,7 +41,6 @@
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { newForgeReadSecret } from "./forge-read-auth.ts";
 import { trace } from "./trace.ts";
 
 /** The five variables that carry a forge login to `gh` / `glab`. */
@@ -155,6 +154,13 @@ export function stripForgeCredentials(
  * absent variables, never a wrong pair or half of one. The child's own predicate
  * (`forgeReadAvailableForRole`) requires both, so a half-pair env registers no
  * tool at all rather than one that can only refuse.
+ *
+ * A caller that names a path and holds no key therefore gets the DELETE branch,
+ * not a minted key. The key is the thing the broker on the other end checks, so
+ * minting one here would publish a pair whose server does not exist: the child
+ * would dial a listener nobody bound and be unable to tell it from a stranger —
+ * the exact state the delete exists to make unreachable. The pair is complete
+ * only when the caller that bound the socket hands down the key it bound it with.
  */
 export function buildChildForgeEnv(
   source: NodeJS.ProcessEnv,
@@ -168,14 +174,9 @@ export function buildChildForgeEnv(
     if (v !== undefined) env[k] = v;
   }
   stripForgeCredentials(env, role, configDir);
-  if (socketPath) {
+  if (socketPath && secret) {
     env.PI_ENSEMBLE_FORGE_READ_SOCKET = socketPath;
-    // A socket the parent named is THIS child's broker, so a caller that holds
-    // the path has the plan's key too. A caller that names a path and no key (a
-    // test standing in for the parent, or a plan inspected after its broker was
-    // stopped) mints one: the pair must always go out complete, because half of
-    // it is the hazard the delete below exists for.
-    env.PI_ENSEMBLE_FORGE_READ_SECRET = secret ?? newForgeReadSecret();
+    env.PI_ENSEMBLE_FORGE_READ_SECRET = secret;
   }
   // DELETED, never assigned `undefined`: this env reaches `childEnvFor`'s spread
   // and the reattach site's own copy, and an `undefined` value there serialises as

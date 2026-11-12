@@ -18,7 +18,7 @@
 
 import * as cmds from "./forge-commands.ts";
 import type { ForgeType } from "./forge-detect.ts";
-import { mapGhChecks, mapGlPipelineJobs } from "./forge-mapping.ts";
+import { mapGhChecks } from "./forge-mapping.ts";
 import { glPipelineJobs, glPipelineJobsAt } from "./forge-pipeline.ts";
 import type { ForgeRun } from "./forge-pipeline.ts";
 import type { NormalizedCICheck } from "./forge-types.ts";

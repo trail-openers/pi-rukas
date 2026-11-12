@@ -73,16 +73,13 @@ import { type Server, createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { detectForge } from "./forge-detect.ts";
-import {
-  type ForgeReadAuthedRequest,
-  type ForgeReadAuthedResponse,
-  forgeReadMac,
-  missingRequestAuth,
-  newForgeReadNonce,
-  newForgeReadSecret,
-  verifyForgeReadMac,
-} from "./forge-read-auth.ts";
+import { newForgeReadNonce, newForgeReadSecret, verifyForgeReadMac } from "./forge-read-auth.ts";
 import { type ForgeReadExecuteOptions, executeForgeRead } from "./forge-read-execute.ts";
+// #2160 — the proof half of the line (the spent-nonce ledger, the request's
+// proof check, the reply's proof) is a module of its own (§12 cap): this file owns
+// the socket and which read to run, that one owns what a line must carry to be
+// believed, in either direction.
+import { authenticateLine, createNonceLedger, writeResponse } from "./forge-read-proof.ts";
 import {
   type ForgeReadRequest,
   type ForgeReadResponse,
@@ -185,6 +182,17 @@ export function bindForgeReadSocket(
     return Promise.reject(err instanceof Error ? err : new Error(String(err)));
   }
   const socketPath = path.join(dir, "broker.sock");
+  // One ledger per broker, with the same lifetime as the key it authenticates
+  // against: a nonce served for this child is spent for this child, and a fresh
+  // dispatch starts clean.
+  const nonces = createNonceLedger();
+  // Lines on one connection are served in order, one at a time. Each line ends
+  // in a credentialed command in the PARENT, so a handler fired without awaiting
+  // it lets the number of commands running at once be whatever the child decided
+  // to write — and the child is the party with no credential, so it is not the
+  // party that chooses the parent's concurrency. This is how permission-broker.ts
+  // serves its verdicts, for the same reason.
+  let chain: Promise<void> = Promise.resolve();
   const server: Server = createServer((conn) => {
     let buffer = "";
     // An idle connection is one that sent a partial line and will send no more:
@@ -210,7 +218,14 @@ export function bindForgeReadSocket(
         const line = buffer.slice(0, nl);
         buffer = buffer.slice(nl + 1);
         nl = buffer.indexOf("\n");
-        void handleLine(line, conn, cwd, opts, secret);
+        // `handleLine` never rejects (every failure path writes a refusal), so
+        // the chain cannot stall; the catch is the belt for a defect in it rather
+        // than a handler for an expected error.
+        chain = chain
+          .then(() => handleLine(line, conn, cwd, opts, secret, nonces))
+          .catch((err: unknown) => {
+            trace(`forge-read-broker: line handler threw: ${(err as Error).message}`);
+          });
       }
     });
     conn.on("error", (err) => {
@@ -280,6 +295,7 @@ async function handleLine(
   cwd: string,
   opts: { timeoutMs?: number; runRead?: RunForgeRead },
   secret: string,
+  nonces: { serve(nonce: string): boolean },
 ): Promise<void> {
   const trimmed = line.trim();
   if (trimmed.length === 0) return;
@@ -296,8 +312,9 @@ async function handleLine(
     writeResponse(conn, { type: "forge-read-response", ok: false, reason: authGate.reason });
     return;
   }
-  // Only the bytes the proof covered become a request: `payload` is the read the
-  // child signed, verified AGAINST this broker's key before a verb is read or a
+  // Only the bytes the proof covered become a request: `signedRequest` is the
+  // line as it arrived with its `auth` key removed — the exact bytes the child
+  // signed — verified AGAINST this broker's key before a verb is read or a
   // command built. The request's own nonce travels back in the reply as `echo`,
   // so the answer's proof binds the request it answers — a reply captured from an
   // earlier call, or produced for another child, verifies under no nonce this
@@ -311,6 +328,21 @@ async function handleLine(
       type: "forge-read-response",
       ok: false,
       reason: "forge_read: unauthenticated request",
+    });
+    return;
+  }
+  // The proof says who sent the line; it does not say the line is NEW. Consuming
+  // the nonce is what makes a recorded request worth one read rather than a
+  // permanent one, and it is claimed here — after the MAC and before the verb is
+  // parsed — so a line that could not prove itself spends nothing, and a line
+  // that proved itself cannot be served twice. Same reason for the refusal's
+  // plainness as the gate above: this caller is not the child the pair belongs
+  // to, so it is told a category and nothing else.
+  if (!nonces.serve(requestNonce)) {
+    writeResponse(conn, {
+      type: "forge-read-response",
+      ok: false,
+      reason: "forge_read: request nonce was already served — replay refused",
     });
     return;
   }
@@ -371,97 +403,5 @@ async function handleLine(
       nonce,
       requestNonce,
     );
-  }
-}
-
-/**
- * The envelope's identity fields, checked for shape. The MAC itself is verified
- * by the caller, over the `payload` it returns — the bytes the child actually
- * signed — so this function holds no key and can be asked of any line.
- *
- * A `nonce`/`auth` that is not the shape this module mints is a refusal, not a
- * comparison, and a line whose `payload` is not an object is the same: there is
- * nothing to verify and therefore nothing to serve.
- */
-function authenticateLine(line: string): {
-  nonce?: string;
-  signedRequest?: string;
-  auth?: unknown;
-  reason?: string;
-} {
-  let envelope: ForgeReadAuthedRequest;
-  try {
-    envelope = JSON.parse(line) as ForgeReadAuthedRequest;
-  } catch {
-    return { reason: "forge_read: request is not a JSON object" };
-  }
-  if (envelope === null || typeof envelope !== "object") {
-    return { reason: "forge_read: request is not a JSON object" };
-  }
-  const missing = missingRequestAuth(envelope.nonce, envelope.auth);
-  if (missing !== undefined) return { reason: missing };
-  // The bytes the child signed are the received line MINUS its `auth` key — a
-  // field cannot cover its own bytes. Rebuilt the same way the child built it
-  // (the parsed object, that one key removed), so the key order the digest is
-  // taken over is the order the bytes arrived in and cannot drift.
-  const unsigned: Record<string, unknown> = { ...envelope };
-  // `Reflect.deleteProperty` rather than `delete` (biome's `noDelete`): the
-  // autofix it recommends — an `undefined` assignment — would leave the key
-  // PRESENT, and the key's absence is what makes these bytes match what the
-  // child signed. Absence is the whole point of the rebuild.
-  Reflect.deleteProperty(unsigned, "auth");
-  return {
-    nonce: envelope.nonce as string,
-    signedRequest: JSON.stringify(unsigned),
-    auth: envelope.auth,
-  };
-}
-
-/**
- * Write one reply, proved. The proof binds the answer AND the request it
- * answers: the request's own nonce comes back under `echo`, so the mac
- * covers both and the child can check that this answer is for the read it asked
- * for, not a reply captured from an earlier call. `mac` itself is excluded — a
- * field cannot cover its own bytes — which is what the child recomputes over.
- *
- * Without a `secret`/`nonce` the line goes out unproved, which is the shape only
- * a refusal to an UNVERIFIED caller may take: it answers nothing, so there is
- * nothing for the child to mistake for forge bytes.
- */
-function writeResponse(
-  conn: { write(data: string): boolean; destroy?(): void },
-  response: ForgeReadResponse,
-  secret?: string,
-  nonce?: string,
-  echo?: string,
-): void {
-  if (secret === undefined || nonce === undefined) {
-    try {
-      conn.write(`${JSON.stringify(response)}\n`);
-    } catch (err) {
-      trace(`forge-read-broker: write failed: ${(err as Error).message}`);
-    }
-    return;
-  }
-  // ONE object, serialised twice: the mac must cover the exact bytes written,
-  // and `JSON.stringify` of a mutated copy can order keys differently. The
-  // `mac` key is added only after the digest, on a copy of the same shape.
-  const unsigned: Record<string, unknown> = { ...response, nonce, echo };
-  const body = JSON.stringify(unsigned);
-  const mac = forgeReadMac(secret, nonce, body);
-  const line = `${JSON.stringify({ ...unsigned, mac })}\n`;
-  if (!verifyForgeReadMac(secret, nonce, body, mac)) {
-    // Self-check, not a defence: a reply whose own proof does not verify under
-    // the key that just made it means the two sides disagree about what was
-    // signed, and a half-written answer is worse than no answer. The child would
-    // refuse it anyway; this keeps the socket from being the place that happens.
-    trace("forge-read-broker: internal reply proof did not verify — connection dropped");
-    conn.destroy?.();
-    return;
-  }
-  try {
-    conn.write(line);
-  } catch (err) {
-    trace(`forge-read-broker: write failed: ${(err as Error).message}`);
   }
 }

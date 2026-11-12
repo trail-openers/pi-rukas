@@ -40,7 +40,7 @@
  */
 
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import type { ForgeReadRequest, ForgeReadResponse } from "./forge-read-tool.ts";
+import type { ForgeReadResponse } from "./forge-read-tool.ts";
 
 /** The env the child reads the parent's broker secret from, beside the socket path. */
 export const FORGE_READ_SECRET_ENV = "PI_ENSEMBLE_FORGE_READ_SECRET";
@@ -95,26 +95,34 @@ export function newForgeReadNonce(): string {
 }
 
 /**
- * The envelope the CHILD puts on the socket: its own identity fields, and the
- * `payload` the proof covers — the declared read, sent only inside that proof.
+ * The envelope the CHILD puts on the socket: the declared read's own fields,
+ * plus the two identity fields the proof adds.
  *
- * Separating the two is what lets the parent prove a request without the child
- * ever putting a verb on the wire. `auth` and `mac` are excluded from what they
- * sign (a field cannot cover its own bytes) on both sides, and neither key is
- * ever a field the parent's parser can reach: `parseForgeReadRequest` whitelists
- * the declared read fields, so `nonce`/`auth` are dropped before the executor
- * sees the object.
+ * The shape is FLAT — the verb and its target sit beside `nonce`, not inside it
+ * — because the proof is taken over the received line with its `auth` key
+ * removed, so there is exactly one serialisation in existence and both sides
+ * rebuild that one. A nested envelope would be a second shape for the two sides
+ * to disagree about, and a disagreement about what was signed is a channel that
+ * answers nothing.
+ *
+ * Flat is not the same as readable-by-the-stranger: nothing here is trusted for
+ * its shape. `auth` and `nonce` are never fields the executor can reach, because
+ * `parseForgeReadRequest` whitelists the declared read fields, so the envelope's
+ * own keys are dropped before the executor sees the object — and a stranger on
+ * the path holds no key, so the bytes it reads are bytes it can neither forge
+ * nor answer.
  */
 export interface ForgeReadAuthedRequest {
   type?: unknown;
   nonce?: unknown;
-  payload?: Partial<ForgeReadRequest>;
   auth?: unknown;
 }
 
 /**
- * The envelope the PARENT puts on the socket: the answer, the reply's own nonce,
- * and `echo` — the request's nonce, so the proof binds which read this answers.
+ * The envelope the PARENT puts on the socket: the answer, the reply's own nonce
+ * (a value the caller did not send, so a reply cannot be made to look like an
+ * answer to a request the child never made), and `echo` — the request's nonce,
+ * so the proof binds which read this answers.
  */
 export type ForgeReadAuthedResponse = ForgeReadResponse & {
   nonce?: string;

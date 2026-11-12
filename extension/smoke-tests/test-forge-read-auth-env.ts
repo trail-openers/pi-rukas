@@ -174,11 +174,14 @@ async function main(): Promise<void> {
 
   console.log("the env construction hands the pair over together:");
   await check("a stripped child gets socket and secret together", () => {
+    // The key is the broker's other half, so the caller that names a path hands
+    // down the key it bound that path with — see `buildChildForgeEnv`.
     const env = forgeReadChildEnv(
       { PATH: "/bin" },
       "developer",
       "/run/parent/broker.sock",
       undefined,
+      newForgeReadSecret(),
     );
     assert(env[SOCKET_ENV] === "/run/parent/broker.sock", "the socket is named");
     assert(
@@ -207,8 +210,15 @@ async function main(): Promise<void> {
       "developer",
       "/p/a.sock",
       undefined,
+      newForgeReadSecret(),
     );
-    const b = forgeReadChildEnv({ [SECRET_ENV]: leaked }, "developer", "/p/b.sock");
+    const b = forgeReadChildEnv(
+      { [SECRET_ENV]: leaked },
+      "developer",
+      "/p/b.sock",
+      undefined,
+      newForgeReadSecret(),
+    );
     assert(a[SECRET_ENV] !== leaked, "an inherited key is replaced, not passed through");
     assert(a[SECRET_ENV] !== b[SECRET_ENV], "two children of one parent get two keys");
   });
