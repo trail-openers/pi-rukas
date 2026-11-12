@@ -82,8 +82,11 @@ S, M, L" are distinct reasons, and they are the rules `decline` posts.
 (`assembleFinalBody` in `plan-driver-final-body.ts`, which calls
 `plan-pi-spec.ts`), and that assembled body is the one the driver files — the
 block is not injected any other way. `plan-pi-spec.ts` maps the
-drafted spec onto the contract, bounds every field it emits (title clipped, at
-most 12 criteria, all `verify: "test"`, no `scope`), and **never files a criterion
+drafted spec onto the contract, bounds every field it emits (the `problem` line is
+`descriptorProblem(body) || title` — the body's `Descriptor:` line, or the filed title when the
+body states none — passed through `oneLine`, then `neutraliseFenceRuns`, then
+`clip(…, PI_SPEC_PROBLEM_MAX_CHARS)`; at most 12 criteria, all `verify: "test"`, no
+`scope`), and **never files a criterion
 cut**: ANY acceptance-criterion bullet longer than 200 characters — including the
 ones past the 12 the block embeds — makes the whole block omit, with a plain
 `pi-spec block omitted:` line in the body naming every over-long criterion and its
