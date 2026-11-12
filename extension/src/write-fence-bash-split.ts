@@ -149,9 +149,9 @@ const OPTION_SHAPED = /^(?:\{\}|[-%+^@#~]+)/;
 const PATH_SHAPED = /^(?:\.{0,2}[~/]|[\w.~+-]*\/)/;
 
 /**
- * Whether the word after `xargs`' `-I`/`-i` is that option's replacement string rather than
- * the command it runs. A command name never reads as a substitution token and neither does a
- * path, so a word of either shape is the command and its operand stays judged.
+ * Whether the word after `xargs`' `-I`/`-i` is that option's replacement string rather than the
+ * command it runs. A command name never reads as a substitution token and neither does a path, so
+ * a word of either shape is the command and its operand stays judged.
  */
 function isReplaceValue(text: string | undefined): boolean {
   return text === undefined || text.startsWith("-") || OPTION_SHAPED.test(text);
@@ -164,15 +164,20 @@ export function isXargsPlaceholder(text: string, placeholder: string): boolean {
 }
 
 /**
- * Every placeholder this `xargs …` argument list substitutes, read from the words as the
- * child typed them (the wrapper still in front): `[]` when nothing on the line is a
- * substitution (so no word may be mistaken for one), otherwise every placeholder the line
- * spelled — the value attached to `-I`/`-i` (`-I{}`, `-i%`), and the spaced value (`-I {}`,
- * `-i %`) only when it is option-shaped — with xargs' own default `{}` included whenever
- * the line substitutes at all, because a bare `{}` left by the wrapper is what xargs itself
- * replaces in that case. A bare `-i` (the BSD short form, whose value is optional) and a
- * `-I` that took no value both mean the default. A spaced value that reads as a path is a
- * path the child typed and not a token, so it is absent from this set and stays judged.
+ * Every placeholder this `xargs …` argument list substitutes, read from the words as the child
+ * typed them (the wrapper still in front): `[]` when nothing on the line substitutes (so no word
+ * may be mistaken for one), otherwise every placeholder the line spelled — the value attached to
+ * `-I`/`-i` (`-I{}`, `-i%`), and the spaced value (`-I {}`, `-i %`) only when it is option-shaped —
+ * with xargs' own default `{}` included whenever the line substitutes at all, because a bare `{}`
+ * left by the wrapper is what xargs itself replaces in that case. A bare `-i` (the BSD short form,
+ * whose value is optional) and a `-I` that took no value both mean the default. A spaced value that
+ * reads as a path is a path the child typed, so it stays out of this set and its operand is judged.
+ *
+ * A value that is a plain WORD (`-I q`, `-I rm`, `-I VICTIM`) is likewise NOT a substitution to
+ * drop an operand on: `-I` takes an ARBITRARY string, so `q` is as legal a replacement string as it
+ * is a path, and reading such a value as a token swallowed the operand beside it — the remover then
+ * seemed to name nothing, and the tree it named was never judged. Real GNU `xargs` 4.10 deletes the
+ * child's own `./q` for `printf q | xargs -I q rm -rf q`.
  */
 export function xargsPlaceholders(args: Word[]): string[] {
   const out: string[] = [];
@@ -183,14 +188,6 @@ export function xargsPlaceholders(args: Word[]): string[] {
     if (isReplaceOption(a)) {
       substitutes = true;
       const value = args[k + 1]?.text;
-      // A `-I`/`-i` whose next word is another option (or nothing) took no value, so xargs
-      // substitutes its own `{}`. A value that reads as a PATH — it contains a `/` or starts
-      // with `~`/`.` — is the child's own string: xargs substitutes exactly it, so it stays out
-      // of this set and its operand is judged as the path it is. That is how `xargs -I <shared>
-      // rm -rf <shared>`, an `xargs -I ./out rm -rf ./<run>`, and an `xargs -I ~ rm -rf ~` are
-      // refused on the path they name. The one non-path value the option really takes (`%`,
-      // `%%`, `-#`) is a token, not a path, and joins the set; so does the bare brace spelling
-      // xargs uses when it took no value at all, which `find` cannot name.
       if (value === undefined || OPTION_SHAPED.test(value)) out.push(XARGS_DEFAULT_PLACEHOLDER);
       else if (!PATH_SHAPED.test(value)) out.push(value);
       k++;
@@ -226,10 +223,11 @@ export function attachedPlaceholder(a: Word): string | undefined {
  * which is what keeps a `find … -exec rm {} +` judged on its start paths rather than on a
  * brace, and a `rm` that named only `{}` left to the unnamed-target refusal.
  *
- * The words are dropped only on the shape that makes them a substitution rather than the
- * path the child typed (`isPlaceholderWord`), because a spaced `-I`/`-i` VALUE survives the
- * wrapper with the same text as the token: `xargs -I <shared> rm -rf <shared>` hands `rm`
- * that path on every run, and dropping the operand dropped the only word naming the victim.
+ * The words are dropped only for the words this line actually substitutes (`isPlaceholderWord`),
+ * never by matching text alone: a spaced `-I`/`-i` VALUE survives the wrapper with the same text
+ * as the token it replaced, and the operand to the right of the command is the path the child
+ * typed — `xargs -I <shared> rm -rf <shared>` hands `rm` that path on every run. Dropping the
+ * operand on a text match alone dropped the only word naming the victim.
  */
 export function withoutPlaceholder(words: Word[], args: Word[]): Word[] {
   const placeholders = new Set(xargsPlaceholders(args));
@@ -237,10 +235,11 @@ export function withoutPlaceholder(words: Word[], args: Word[]): Word[] {
 }
 
 /**
- * Whether one word is a substitution token rather than a path: one of this line's
- * placeholders, and not a path the child could have typed. xargs' own `{}` is always a
- * token; a spaced `-I`/`-i` value is one only when it is option-shaped (`%`, `%%`, `-#`), so
- * the same text appearing as an operand to the right of the command is judged as a path.
+ * Whether one word is a substitution token rather than a path: one of this line's placeholders,
+ * AND shaped like a token (`{}`, or `%`/`%%`/`-#`) — which no path is spelled like. The shape test
+ * is the whole defence: a spaced `-I`/`-i` VALUE survives the wrapper with the same text as the
+ * token it replaced, and `-I` accepts any string at all, so a plain-word value that were also
+ * dropped from the operands would take the only word naming the victim with it.
  */
 function isPlaceholderWord(text: string, placeholders: ReadonlySet<string>): boolean {
   return placeholders.has(text) && (text === XARGS_DEFAULT_PLACEHOLDER || OPTION_SHAPED.test(text));
@@ -357,14 +356,15 @@ function wrapperArgCount(name: string, args: Word[], chdir: Word[]): number {
       continue;
     }
     if (name === "xargs" && XARGS_REPLACE_OPTIONS.includes(a as "-I" | "-i")) {
-      // `xargs` is the one wrapper whose value is OPTIONAL, and its value can be any string,
-      // so the word after a bare `-i`/`-I` is the command when it is an option (`-i rm -rf {}`,
-      // xargs substituting its own `{}`) and the replacement string when it is not (`-I % rm
-      // %`). Consuming a word that was really the command leaves the remover behind as the
-      // first word of the result, which is how an `xargs …` line stopped being read as the
-      // remover it runs — so the value is consumed only when it reads as a token, and the walk
-      // STOPS at the command rather than reading on through its operands (`xargs -I <shared>
-      // rm -rf <shared>` would otherwise treat its own `-rf` and target as more options).
+      // `xargs` is the one wrapper whose `-I`/`-i` value is OPTIONAL (`-i`) and can be any string,
+      // so the word after it is the command when it is an option (`-i rm -rf {}`, xargs
+      // substituting its own `{}`) and the replacement string when it is not (`-I % rm %`,
+      // `-I q rm -rf q`). Consuming a word that was really the command leaves the remover behind
+      // as the first word of the result, which is how an `xargs …` line stopped being read as the
+      // remover it runs — so the walk STOPS at the command rather than reading on through its
+      // operands (`xargs -I <shared> rm -rf <shared>` would otherwise treat its own `-rf` and
+      // target as more options). A value is consumed only when it reads as a token: a plain word is
+      // both a possible value and the command, and stopping there still judges its operand.
       const value = args[k + 1]?.text;
       if (isReplaceValue(value)) {
         k += 2;

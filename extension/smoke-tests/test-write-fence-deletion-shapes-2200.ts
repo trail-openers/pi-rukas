@@ -38,7 +38,17 @@ function assert(cond: boolean, msg: string) {
 }
 
 const fx = buildDeletionFixture("shapes");
-const { base, wt, scratch, childTmp, sharedTmp, siblingTmp, harnessTree, foreignRun } = fx;
+const {
+  base,
+  wt,
+  scratch,
+  childTmp,
+  sharedTmp,
+  sharedRuns,
+  siblingTmp,
+  harnessTree,
+  foreignRun,
+} = fx;
 
 /** The roots a fenced develop child's dispatch gives it; the child works in the worktree. */
 const FENCED_ENV = {
@@ -254,6 +264,56 @@ assert(
   refused(`find ${sharedTmp} | xargs -I%% rm -rf %%`) !== undefined,
   "A8 refuse: a non-path `-I%%` placeholder over the shared root still falls through to the find",
 );
+
+// ============================================================
+// A8b. An `xargs -I` whose VALUE is a plain WORD is still the child's own path. `-I` takes an
+// arbitrary string, so `rm`, `q` and `VICTIM` are all legal replacement strings — and the operand
+// equal to one is the path xargs hands the remover on every run. Reading a plain word as the
+// placeholder dropped the operand, so the remover seemed to name nothing and
+// `printf q | xargs -I rm rm -rf rm` ran. Real GNU `xargs` 4.10 deletes with both spellings —
+// `printf 'victim\n' | xargs -I victim rm -rf victim` cleared a scratch victim dir, and from a
+// cwd inside the worktree, `xargs -I q rm -rf ../outside/q` cleared one outside it. Only the
+// brace/`%`/`-#` family is a token, so a plain word's operand is judged wherever the line puts
+// it; the A8 rows above missed this because every `-I` value there was path-shaped.
+// ============================================================
+/**
+ * THE DISCRIMINATING ROW. `xargs -I` takes an ARBITRARY string, so a plain word is a legal
+ * replacement string AND a legal path, and here the operand IS that word — so no other word on the
+ * line names the victim, and the ONLY thing that can judge it is reading the `-I` value as the
+ * child's own string rather than as a substitution token. Mutate `xargsPlaceholders` to admit a
+ * non-option-shaped `-I` value to the placeholder set and this row goes red: the sole operand is
+ * dropped, the remover seems to name nothing, and the line runs. `real xargs` 4.10 deletes `q`.
+ */
+const wordValuedPlaceholderRefused: Array<[string, string]> = [
+  [`printf q | xargs -I q rm -rf ${sharedRuns}/other-run`, "an operand that IS the word `-I` value, naming a shared root no basename rule knows"],
+  [`printf q | xargs -I rm rm -rf ${sharedRuns}/other-run`, "the replacement string is itself a command name"],
+  [`printf q | xargs -I VICTIM rm -rf ${sharedRuns}/other-run`, "the replacement string is a word in caps"],
+  [`printf q | xargs -i q unlink ${sharedRuns}/other-run`, "the BSD `-i` spelling"],
+  [`printf q | xargs -I q rmdir ${sharedRuns}/other-run`, "`rmdir` with a word `-I` value"],
+  [`printf q | xargs -I q shred -u ${sharedRuns}/other-run/payload`, "`shred -u` with a word `-I` value"],
+  [`printf q | xargs -I q rm -rf ${foreignRun}`, "a word `-I` whose absolute operand is the foreign run"],
+  [`printf q | xargs -I q unlink ${foreignRun}/payload`, "`unlink` with a word `-I` value"],
+  [`printf q | xargs -I q shred -u ${foreignRun}/payload`, "`shred -u` with a word `-I` value"],
+  [
+    `cd ${base} && xargs -I out rm -rf ../${base.slice(base.lastIndexOf("/") + 1)}/shared/other-run`,
+    "a plain-word `-I` value whose relative operand the `cd` puts outside the roots",
+  ],
+];
+for (const [command, why] of wordValuedPlaceholderRefused) {
+  assert(refused(command) !== undefined, `A8b refuse: ${why} — \`${command}\``);
+}
+// The same word-valued lines stay a cleanup when the operand resolves inside the roots: the fix
+// judges the operand, it does not refuse every line whose `-I` value is a word.
+const wordValuedPlaceholderAllowed: Array<[string, string]> = [
+  [`printf q | xargs -I q rm -rf ${wt}/q`, "a word `-I` whose operand is an absolute worktree path"],
+  [`printf q | xargs -I q rm -rf q`, "a word `-I` whose relative operand is inside the worktree"],
+  [`printf q | xargs -I q rm -rf ${childTmp}/q`, "a word `-I` whose operand is the child's own temp dir"],
+  [`find ${wt}/dist | xargs -I q rm -rf q`, "a word-valued `-I` over a worktree build dir"],
+  [`find ${childTmp} | xargs -i q rm -rf q`, "a word-valued BSD `-i` over the child's own temp dir"],
+];
+for (const [command, why] of wordValuedPlaceholderAllowed) {
+  assert(refused(command) === undefined, `A8b allow: ${why} — \`${command}\``);
+}
 
 // ============================================================
 // A9. The command an `-exec` runs is the FIRST word after the action. Picking the
