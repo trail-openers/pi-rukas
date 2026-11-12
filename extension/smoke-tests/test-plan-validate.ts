@@ -16,6 +16,7 @@
 
 import { draftSpec } from "../src/plan-draft.ts";
 import { runPlanPipeline, setPlanDispatch } from "../src/plan-driver.ts";
+import { neverClaimDisclosureSection } from "../src/plan-dropped-artifact.ts";
 import { applyNeverClaimFilter } from "../src/plan-never-claim.ts";
 import {
   EPIC_SUB_ISSUE_MAX,
@@ -203,7 +204,9 @@ function findingsWith(items: { kind: string; text: string }[]) {
   ];
 
   // 1. Verbatim (normalised) echo → dropped, with a disclosure naming the
-  //    phrase, the item kind and the drop count.
+  //    phrase BY POSITION, the item kind and the drop count — never the
+  //    phrase's own text, which the driver's body scan would then find in the
+  //    disclosure it appends itself (#2233).
   const res = applyNeverClaimFilter(findings, forbidden);
   assert(
     res.droppedCount === 1 &&
@@ -214,9 +217,10 @@ function findingsWith(items: { kind: string; text: string }[]) {
   assert(
     res.disclosure.length === 1 &&
       /NEVER CLAIM filter dropped 1 item\(s\) from angle "x"/.test(res.disclosure[0]) &&
-      res.disclosure[0].includes('forbidden phrase "rankings are identical"') &&
-      res.disclosure[0].includes("[acceptance-criterion]"),
-    `#677 filter: the disclosure names the phrase, kind and count (${res.disclosure[0]})`,
+      res.disclosure[0].includes("phrase 1") &&
+      res.disclosure[0].includes("[acceptance-criterion]") &&
+      !res.disclosure[0].includes("rankings are identical"),
+    `#677 filter: the disclosure names the phrase POSITION, kind and count, and no phrase text (${res.disclosure[0]})`,
   );
   assert(
     findings[0].toolUses.length === 2,
@@ -325,6 +329,24 @@ function findingsWith(items: { kind: string; text: string }[]) {
     validateDraft("feature", generated, 0, { operatorOmitted: [] }).ok &&
       bodyContainsForbiddenPhrase(generated, []).length === 0,
     "#677 validate: without forbidden phrases the scan is a no-op",
+  );
+
+  // 6. The renderer and this scanner pinned against each other at one seam
+  //    (#2233): the driver appends `neverClaimDisclosureSection` to the body
+  //    BEFORE `validateDraft` runs, so a disclosure that carried phrase text
+  //    would make every drop unfileable. Quoted so the two cannot drift.
+  const dropped = applyNeverClaimFilter(
+    findingsWith([
+      { kind: "reference", text: "the rankings are identical in the report" },
+      { kind: "edge-case", text: "a pitfall that survives" },
+    ]),
+    forbidden,
+  );
+  assert(
+    dropped.droppedCount === 1 &&
+      bodyContainsForbiddenPhrase(neverClaimDisclosureSection(dropped.disclosure), forbidden)
+        .length === 0,
+    `#2233 validate: the rendered NEVER CLAIM disclosure is itself phrase-free (${dropped.disclosure[0]})`,
   );
 }
 
