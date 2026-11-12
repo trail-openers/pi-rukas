@@ -30,6 +30,7 @@ import { type RunForgeRead, bindForgeReadSocket } from "../src/forge-read-broker
 import {
   askRaw,
   callChildTool,
+  childEnv,
   withTrace,
 } from "./lib/forge-read-auth-fixture.ts";
 import { assert, check, forgeExitCode } from "./lib/forge-harness.ts";
@@ -90,7 +91,7 @@ async function main(): Promise<void> {
     });
     try {
       const onlySocket = await callChildTool(
-        { [SOCKET_ENV]: bound.socketPath, PI_ENSEMBLE_ROLE: "developer" },
+        childEnv({ [SOCKET_ENV]: bound.socketPath }),
         { verb: "pr_view", number: 1 },
       );
       assert(
@@ -98,7 +99,7 @@ async function main(): Promise<void> {
         `a socket alone registers nothing (${onlySocket.text})`,
       );
       const onlySecret = await callChildTool(
-        { [SECRET_ENV]: bound.secret, PI_ENSEMBLE_ROLE: "developer" },
+        childEnv({ [SECRET_ENV]: bound.secret }),
         { verb: "pr_view", number: 1 },
       );
       assert(/no forge_read registered/.test(onlySecret.text), "a key alone registers nothing");
@@ -129,11 +130,10 @@ async function main(): Promise<void> {
     try {
       const res = await withTrace(lines, () =>
         callChildTool(
-          {
+          childEnv({
             [SOCKET_ENV]: foreign.socketPath,
             [SECRET_ENV]: SECRET,
-            PI_ENSEMBLE_ROLE: "developer",
-          },
+          }),
           { verb: "issue_view", number: 1 },
         ),
       );

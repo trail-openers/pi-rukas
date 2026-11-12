@@ -13,6 +13,18 @@
  * transport directly, so a case sees exactly what the model would see: the tool
  * result's text and details. Env goes in and comes out around it, so a pinned
  * `PI_ENSEMBLE_FORGE_READ_*` pair cannot leak into the next case.
+ *
+ * The role is part of that env and never ambient. Registration is gated on
+ * `PI_ENSEMBLE_ROLE` (`registerChildForgeReadTool` reads it out of the process
+ * env and applies the same predicate activation does), so a case that pinned
+ * only the broker pair would register nothing at all whenever the process
+ * running the suite happened to carry a role — which is the normal state inside
+ * a pi-rukas session and inside any parent that spawned the gate. The tool then
+ * answers "no forge_read registered" and every refusal a case meant to observe
+ * is silently replaced by "the tool was never there": a red case that blames
+ * the machine instead of the code. `childEnv` is therefore the ONLY way a case
+ * gets a role into the child; it defaults to a helper role and always writes an
+ * explicit value, so the suite's verdict does not depend on who ran it.
  */
 
 import { createConnection, createServer } from "node:net";
@@ -22,10 +34,24 @@ import {
   registerChildForgeReadTool,
 } from "../../src/child-forge-read-activation.ts";
 
-/** A child env carrying the pair this parent bound. */
-export const pair = (socket: string, secret: string): Record<string, string> => ({
-  [FORGE_READ_SOCKET_ENV]: socket,
-  [FORGE_READ_SECRET_ENV]: secret,
+/** A role-bearing child env carrying the pair this parent bound. */
+export const pair = (socket: string, secret: string): Record<string, string> =>
+  childEnv({ [FORGE_READ_SOCKET_ENV]: socket, [FORGE_READ_SECRET_ENV]: secret });
+
+/**
+ * A child env for a helper role, with `extra` merged on top.
+ *
+ * The `PI_ENSEMBLE_ROLE` entry is written explicitly rather than left to the
+ * environment: an empty/whitespace role is not a helper (the production
+ * predicate refuses it), and an ambient one is whatever the runner's parent
+ * happened to set. A case that wants a different role (ops, no role at all)
+ * overrides the entry in `extra`, or deletes it by passing `undefined`.
+ */
+export const childEnv = (
+  extra: Record<string, string | undefined> = {},
+): Record<string, string | undefined> => ({
+  PI_ENSEMBLE_ROLE: "developer",
+  ...extra,
 });
 
 export interface Foreign {
