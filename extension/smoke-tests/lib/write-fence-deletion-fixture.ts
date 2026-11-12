@@ -37,6 +37,7 @@
  */
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { withEnv } from "./env-scope.ts";
 
@@ -47,6 +48,38 @@ import { withEnv } from "./env-scope.ts";
  */
 export function deletionHost(base: string): { HOME: string; TMPDIR: string } {
   return { HOME: base, TMPDIR: path.join(base, "tmp") };
+}
+
+/**
+ * Create one deletion row's own tree, refusing a location the deletion rule would have judged by
+ * itself rather than by the rule the row tests: a fixture inside the process's own temp root, or
+ * inside the home `os.homedir()` reports, is refused before the row's own env gets asked.
+ *
+ * The deletion rule seeds its forbidden set from the PROCESS environment: `os.tmpdir()` is the seed
+ * of the ancestor walk and `os.homedir()` is the passwd home, refused for itself and — when a temp
+ * root sits under it — for the whole subtree. Neither follows a row's own `HOME`/`TMPDIR`, so a
+ * fixture parked inside either is refused by those two rules before the rule the row tests is asked,
+ * and the row goes red with the guard unchanged. Under the verify runner that is not hypothetical:
+ * it exports both (`lib/verify-loop.sh` gives tests a per-run `TMPDIR`, and #1145 gives them an
+ * isolated `HOME`), and a caller-supplied `TMPDIR` decides where the host's scratch lives. A row that
+ * mkdtemp's under `os.homedir()` therefore lands inside the isolated HOME and loses its carve-out —
+ * green under a bare `bun` invocation, red under the runner, with no rule having changed.
+ *
+ * So the trees the rows build of their own are created here, which keeps a verdict a function of the
+ * row's env object rather than of the invocation. `base` is the fixture root, deliberately outside
+ * both roots, so a row's tree is `mkdtempUnderRoot(base, …)`.
+ */
+export function mkdtempUnderRoot(parent: string, prefix: string): string {
+  const tree = mkdtempSync(path.join(parent, prefix));
+  for (const forbidden of [os.tmpdir(), os.homedir()]) {
+    if (forbidden !== path.sep && tree.startsWith(forbidden + path.sep)) {
+      rmSync(tree, { recursive: true, force: true });
+      throw new Error(
+        `deletion fixture ${prefix}* cannot sit under the root the rule reads from the process (${forbidden}): the row would be judged by that rule, not its own`,
+      );
+    }
+  }
+  return tree;
 }
 
 /**

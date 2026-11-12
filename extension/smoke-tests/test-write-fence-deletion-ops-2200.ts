@@ -15,13 +15,17 @@
  * parent IS the home directory, so an unpinned `TMPDIR` closed the carve-out on every checkout
  * under it and the rows passed only because the machine happened to keep its temp dir elsewhere.
  * Both `HOME` and `TMPDIR` are therefore pinned through an explicit env object on every row
- * here and in the file these came from.
+ * here and in the file these came from. Pinning them is not enough for the rows that build their
+ * OWN tree: the rule also reads `os.tmpdir()` and `os.homedir()` off the process, and a fixture
+ * inside either is refused by those before the row's own rule is asked. Those trees go through
+ * `mkdtempUnderRoot(base, …)` — under the fixture, which is outside both — rather than
+ * `mkdtemp(os.homedir())`, which is green under a bare `bun` and red under the runner's isolated
+ * `HOME` (#1145).
  *
  * Run: cd extension && bun smoke-tests/test-write-fence-deletion-ops-2200.ts
  */
 
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import os from "node:os";
+import { mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import {
   deletionRootsFrom,
@@ -31,6 +35,7 @@ import { withEnv } from "./lib/env-scope.ts";
 import {
   buildDeletionFixture,
   deletionHost,
+  mkdtempUnderRoot,
   withDeletionHost,
 } from "./lib/write-fence-deletion-fixture.ts";
 import {
@@ -209,16 +214,17 @@ await withDeletionHost(HOST, async () => {
       // directory — what macOS publishes as `$TMPDIR`, and any operator who parks their scratch at
       // `~/tmp` — is the shape that silently closed the carve-out, because the temp roots were read
       // from the parent process while `$HOME` came from the spawn. Pointing `TMPDIR` at a dir under
-      // this row's own `$HOME` is that host, reproduced rather than avoided. The tree sits under
-      // the OS home, because the rule refuses that too (`os.homedir()`, the passwd entry, which no
-      // env can move) and a checkout outside it would be refused for that reason rather than the one
-      // under test. The shape is the one a host with a home-relative temp dir really has — a single
-      // home tree holding the temp dir and the checkout, exactly where `~` points them, because a
-      // checkout parked beside the temp root is refused by the rule that closes the tree holding
-      // every run's temp dirs, which is a different rule. The checkout must still be a working root
-      // with its build dir deletable: fail-closed on every ops spawn is what these two assertions
-      // refuse to let the code do quietly. `TMPDIR` is the variable under test, not the machine's.
-      const hostTree = mkdtempSync(path.join(os.homedir(), ".pi-rukas-2200-host-"));
+      // this row's own `$HOME` is that host, reproduced rather than avoided. The tree is the row's own
+      // (`mkdtempUnderRoot`), and the row hands the rule the SAME path as `HOME`: the shape is a single
+      // home tree holding the temp dir and the checkout, exactly where `~` points them. It cannot be
+      // built under `os.homedir()`, because under the runner that is the isolated #1145 home the rule
+      // refuses as itself (and for its whole subtree once a temp root sits in it), which would close
+      // the carve-out before the env-coupling under test got asked. A checkout beside the temp root
+      // would be refused by the rule that closes the tree holding every run's temp dirs, which is a
+      // different rule. The checkout must still be a working root with its build dir deletable:
+      // fail-closed on every ops spawn is what these two assertions refuse to let the code do
+      // quietly. `TMPDIR` is the variable under test, not the machine's.
+      const hostTree = mkdtempUnderRoot(base, "host-");
       const realCheckout = path.join(hostTree, "projects", "checkout");
       // NOT named `tmp`: a directory bearing a temp root's name is refused wherever it sits, which
       // is a different rule and would decide this row before the env-coupling under test got asked.
@@ -241,21 +247,30 @@ await withDeletionHost(HOST, async () => {
       );
       rmSync(hostTree, { recursive: true, force: true });
       // The other half of the host shape, which the row above cannot reach: a machine whose temp
-      // root sits OUTSIDE both home reads (an operator who parks scratch at `~/scratch/machinetmp`,
-      // a container that points `TMPDIR` at a volume of its own). There the tree the walk wants to
-      // add — the temp root's parent — is neither `$HOME` nor `/`, so the exemption that keeps the
-      // carve-out open does not cover it and the walk's own test on that tree is what decides. Two
-      // things must hold at once and this row pins both: a working checkout that merely LIVES under
-      // that tree keeps its carve-out (three assertions, because `allowed.length === 1` alone still
-      // passes when the in-cwd clean is refused by something else), and the tree itself stays
-      // refused for its whole subtree, which is what a child standing beside the temp root reaches
-      // with `rm -rf ..`. A build that got either half wrong shows up here: refuse the parent and
-      // the carve-out closes on every checkout of this shape; stop refusing it and the shared root
-      // one level down opens. `TMPDIR` is the variable under test, not the machine's.
-      const outsideHome = mkdtempSync(path.join(os.homedir(), ".pi-rukas-2200-outside-"));
+      // root sits OUTSIDE the home the row names (an operator who parks scratch at
+      // `~/scratch/machinetmp`, a container that points `TMPDIR` at a volume of its own). There the
+      // tree the walk wants to add — the temp root's parent — is neither `$HOME` nor `/`, so the
+      // exemption that keeps the carve-out open does not cover it and the walk's own test on that
+      // tree is what decides. Two things must hold at once and this row pins both: a working checkout
+      // that merely LIVES under that tree keeps its carve-out (three assertions, because
+      // `allowed.length === 1` alone still passes when the in-cwd clean is refused by something else),
+      // and the tree itself stays refused for its whole subtree, which is what a child standing beside
+      // the temp root reaches with `rm -rf ..`. A build that got either half wrong shows up here:
+      // refuse the parent and the carve-out closes on every checkout of this shape; stop refusing it
+      // and the shared root one level down opens. `TMPDIR` is the variable under test, not the machine's.
+      //
+      // Both trees are the row's own (`mkdtempUnderRoot`, i.e. under the fixture), and the temp root
+      // sits inside the tree the row's `HOME` names so that tree — the temp root's parent — is the one
+      // the walk would claim. The checkout sits in a DIFFERENT tree, which is what makes the temp
+      // root's tree outside `$HOME`; no location under the host can express that. Neither tree may sit
+      // under `os.homedir()` (the runner's #1145 home, refused as itself) nor under `os.tmpdir()` (the
+      // walk's seed, refused for its whole subtree): under the runner both are true of the machine's
+      // real scratch, so a row that built there was refused by the seed before the rule it tests was
+      // asked, and passed or failed on where the invocation happened to keep its temp dirs.
+      const outsideHome = mkdtempUnderRoot(base, "outside-");
       const scratchRoot = path.join(outsideHome, "scratchroot"); // neither HOME nor `/`
       const machineTmp = path.join(scratchRoot, "machinetmp");
-      const checkoutOutside = path.join(outsideHome, "projects", "checkout");
+      const checkoutOutside = path.join(base, "projects", "checkout-outside");
       mkdirSync(path.join(machineTmp, "pi-rukas-Q1"), { recursive: true });
       mkdirSync(path.join(machineTmp, "pi-rukas-Q2"), { recursive: true });
       mkdirSync(checkoutOutside, { recursive: true });
