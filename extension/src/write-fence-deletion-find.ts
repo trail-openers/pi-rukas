@@ -20,7 +20,14 @@
  */
 
 import type { Word } from "./write-fence-bash-lex.ts";
-import { commandName, isRemover, removalOperands, stripPrefix } from "./write-fence-bash-split.ts";
+import {
+  attachedPlaceholder,
+  commandName,
+  isRemover,
+  removalOperands,
+  stripPrefix,
+  xargsPlaceholders,
+} from "./write-fence-bash-split.ts";
 
 /** The `find` actions that run their words as a command, once per match. */
 const FIND_EXEC = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
@@ -56,15 +63,26 @@ export function findRemovals(args: Word[], pipedIntoRemover = false): Word[] {
   return starts.length > 0 ? starts : [{ text: ".", dyn: false }];
 }
 
-/** Whether this simple command is a remover whose targets the command itself does not name. */
+/**
+ * Whether this simple command is a remover whose targets the command itself does not
+ * name. Asked of the segment AS TYPED, so the `xargs` wrapper is still on it: through
+ * xargs the words after the remover are the replacement placeholder (`xargs -I{} rm -rf
+ * {}`, `xargs -i% rm -rf %`), which names a match rather than a path — so the line has
+ * named no tree of its own and is judged by the producer's start paths. A remover that
+ * carries any OTHER word (`xargs rm /tmp/victim`) named that path itself and is judged on
+ * it; a remover with no operands at all (`xargs -0 -r rm -rf`, `ls | xargs rm`) names none.
+ */
 export function namesNoPath(words: Word[]): boolean {
-  const stripped = stripPrefix(words).words;
-  const first = stripped[0];
-  return (
-    first !== undefined &&
-    isRemover(commandName(first.text)) &&
-    removalOperands(stripped.slice(1)).length === 0
-  );
+  const stripped = stripPrefix(words);
+  const first = stripped.words[0];
+  if (first === undefined || !isRemover(commandName(first.text))) return false;
+  const operands = removalOperands(stripped.words.slice(1));
+  // The placeholder is recognised in the words the CHILD typed: `stripPrefix` has already
+  // consumed `-I`'s spaced value, and an attached `-I{}`/`-i%` sits among what remains, so
+  // only the raw segment can say which of the surviving operands are substitutions. A line
+  // that ran through no `xargs` has no placeholder at all, and `''` matches nothing.
+  const placeholders = xargsPlaceholders(words);
+  return operands.every((w) => placeholders.includes(w.text));
 }
 
 /**

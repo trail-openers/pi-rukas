@@ -99,9 +99,51 @@ export function interpreterLiterals(body: string): string[] {
   return out;
 }
 
-/** Does this quoted literal read as a path rather than a message, a flag or a pattern? */
+/**
+ * A quoted literal that names a module rather than a path. `"fs"`, `"fs/promises"`,
+ * `"node:fs"`, `"path"` are what `require(…)` and `import … from …` take, so they are
+ * what a target-less delete call carries as its ONLY literal: `require("fs").rmSync()`
+ * deletes something and names nothing. Counting a specifier as a path made such a call
+ * look readable and let it run; the python and ruby branches already refuse their
+ * `import shutil` / `require "fileutils"` for the same reason (#2200 D7).
+ */
+const BARE_MODULES = new Set([
+  "fs",
+  "fs/promises",
+  "node:fs",
+  "node:fs/promises",
+  "path",
+  "node:path",
+  "os",
+  "node:os",
+  "process",
+  "child_process",
+  "node:child_process",
+]);
+
+/** The shape of a relative or home-relative reference: one that names a file, not a package. */
+const RELATIVE_REFERENCE = /^(?:\.{1,2}\/|~)/;
+
+/**
+ * Does this quoted literal name a module the body imports? A specifier is a bare name,
+ * a `pkg/sub` path, or a `node:` builtin — anything that resolves inside the runtime's
+ * module graph. What the child typed is absolute or carries a `./`, `../` or `~/` prefix,
+ * and every such reference is a file name even when its segments are plain words. The
+ * bare names of the file-system modules are decided by the list above, which keeps a
+ * plain relative path (`tmp/x`, `build`) reading as a path.
+ */
+function readsAsModuleSpecifier(p: string): boolean {
+  if (p.startsWith("/") || p.startsWith("\\") || RELATIVE_REFERENCE.test(p)) return false;
+  const bare = p.startsWith("node:") ? p.slice("node:".length) : p;
+  if (BARE_MODULES.has(p) || BARE_MODULES.has(bare)) return true;
+  if (p.startsWith("node:") || p.startsWith("@")) return true;
+  return !/^[A-Za-z_][\w+.-]*(?:\/[\w+.@-]+)*$/.test(p);
+}
+
+/** Does this quoted literal read as a path rather than a message, a flag, a pattern or a module? */
 function readsAsPath(p: string): boolean {
   if (p.startsWith("-")) return false;
+  if (readsAsModuleSpecifier(p)) return false;
   return p.includes("/") || p === "~" || p.startsWith("~/") || /^[\w.@+-]+$/.test(p);
 }
 

@@ -19,7 +19,10 @@
  * and `PI_ENSEMBLE_WRITE_ROOT` (the #1655 fence registers its own `tool_call`
  * hook whenever the dispatch set a root) — and a process this test happens to
  * run inside carries all three, which shifts every count and leaves a hook
- * behind under `PI_ENSEMBLE_SUBAGENT_MODE=1`.
+ * behind under `PI_ENSEMBLE_SUBAGENT_MODE=1`. The #2200 per-child temp root
+ * (`PI_ENSEMBLE_CHILD_TMP`) is pinned too: a child of a real dispatch carries
+ * it, and a count that only holds with the whole `WRITE_FENCE_ENV` set cleared
+ * is a count that says nothing about the guards.
  *
  * The two hooks that survive the subagent-mode no-op are the #1655 write fence
  * and the #2200 deletion rule: the full pi-rukas extension never registers
@@ -56,6 +59,7 @@ const PIN_CHILD = {
   PI_ENSEMBLE_WRITE_REPO: undefined,
   PI_ENSEMBLE_WRITE_SCRATCH: undefined,
   PI_ENSEMBLE_WRITE_FENCE: undefined,
+  PI_ENSEMBLE_CHILD_TMP: undefined,
 };
 
 // ============================================================

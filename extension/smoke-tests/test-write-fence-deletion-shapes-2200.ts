@@ -129,6 +129,28 @@ assert(
   refused("bun -e $BODY") !== undefined,
   "A3 refuse: an interpreter body word that is dynamic",
 );
+// A body that deletes but whose only quoted literals are MODULE SPECIFIERS names no
+// path either: `"fs"`, `"fs/promises"`, `"node:fs"` are imports, not targets, so the
+// call is unreadable and refused — the same verdict the python and ruby branches give
+// for `import shutil; shutil.rmtree()` with no argument.
+const moduleSpecifierRefused: Array<[string, string]> = [
+  [`node -e 'require("fs").rmSync()'`, "`node -e` with `rmSync()` and no target"],
+  [`node -e 'require("fs").unlinkSync()'`, "`node -e` with `unlinkSync()` and no target"],
+  [`node -e 'require("fs").rm()'`, "`node -e` with `rm()` and no target"],
+  [
+    `node -e 'import { rm } from "fs/promises"; rm()'`,
+    "`node -e` importing `rm` from `fs/promises` with no target",
+  ],
+  [
+    `node -e 'import { rmSync } from "node:fs"; rmSync()'`,
+    "`node -e` importing from `node:fs` with no target",
+  ],
+  [`bun -e 'require("fs").rmSync()'`, "`bun -e` with `rmSync()` and no target"],
+  [`bun -e 'require("node:fs").unlinkSync()'`, "`bun -e` with `unlinkSync()` and no target"],
+];
+for (const [command, why] of moduleSpecifierRefused) {
+  assert(refused(command) !== undefined, `A3 refuse: ${why} — \`${command}\``);
+}
 
 // A body that only *mentions* a removal verb deletes nothing, and the rule reads the
 // call, not the word: a bare `rm`/`unlink` in a message, a comment or a variable name
@@ -148,6 +170,30 @@ assert(
   refused(`perl -e 'unlink "${sharedTmp}/x"'`) !== undefined,
   "A3 refuse: `perl -e` with the bareword `unlink` call",
 );
+
+// ============================================================
+// A5. The `xargs -I` placeholder is not a path. `find <sharedTemp> | xargs -I{} rm -rf {}`
+// used to be ALLOWED: the splitter swallows the placeholder as `-I`'s value, the surviving
+// `rm -rf {}` has the literal operand `{}`, and nothing reached the `find` start paths.
+// A remover operand that IS the replacement placeholder names no path, so the line falls
+// through to the `find` start paths — refused over a shared root, allowed inside the worktree.
+// ============================================================
+const placeholderRefused: Array<[string, string]> = [
+  [`find ${sharedTmp} | xargs -I{} rm -rf {}`, "`xargs -I{} rm -rf {}` over the shared temp root"],
+  [`find ${sharedTmp} | xargs -I {} rm -rf {}`, "`xargs -I {} rm -rf {}` (separate placeholder)"],
+  [`find ${sharedTmp} | xargs -i% rm -rf %`, "`xargs -i% rm -rf %` (BSD short form)"],
+  [`find ${sharedTmp} | xargs -I{} shred -u {}`, "`xargs -I{} shred -u {}` over the shared root"],
+];
+for (const [command, why] of placeholderRefused) {
+  assert(refused(command) !== undefined, `A5 refuse: ${why} — \`${command}\``);
+}
+const placeholderAllowed: Array<[string, string]> = [
+  [`find ${wt}/dist | xargs -I{} rm {}`, "`xargs -I{} rm {}` over a worktree build dir"],
+  [`find ${childTmp} | xargs -i% rm -rf %`, "`xargs -i% rm -rf %` over the child's own temp root"],
+];
+for (const [command, why] of placeholderAllowed) {
+  assert(refused(command) === undefined, `A5 allow: ${why} — \`${command}\``);
+}
 
 // ============================================================
 // A6. A remover behind a wrapper is still that remover: the splitter strips the
@@ -194,6 +240,7 @@ const allowedShapes: Array<[string, string]> = [
     `find ${childTmp} -maxdepth 1 -name 'p*' -print0 | xargs -0 rm`,
     "a find|xargs sweep of its own temp dir",
   ],
+  [`find ${wt}/dist | xargs -I{} rm {}`, "a find|xargs -I{} cleanup in the worktree"],
   [`find ${wt} -type f -exec rm {} +`, "a plain -exec rm over a worktree path"],
   [`find ${wt} -name 'x' -exec rm {} +`, "a -exec rm narrowed by a name test inside the worktree"],
   ["git status --porcelain", "an ordinary read-only command"],

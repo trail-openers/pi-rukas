@@ -107,6 +107,67 @@ export function isRemover(name: string): boolean {
 }
 
 /**
+ * The `xargs` options that choose the replacement placeholder, and its default.
+ * `-I`/`-i` take the placeholder as their value (`-I{}` and `-I {}` are the same
+ * command, as are the GNU `-I` and the BSD `-i` spellings); with neither, xargs
+ * substitutes the two-character brace pair.
+ */
+export const XARGS_REPLACE_OPTIONS = ["-I", "-i"] as const;
+
+/** The placeholder `xargs` substitutes when the command gave it no `-I`/`-i` value. */
+export const XARGS_DEFAULT_PLACEHOLDER = "{}";
+
+/**
+ * The replacement placeholder of one `xargs …` argument list, read from the words as the
+ * child typed them (the wrapper still in front): the value of its `-I`/`-i` in either
+ * spelling (`-I{}`, `-I {}`, `-i%`), or xargs' own default `{}` when it named neither.
+ * `stripPrefix` consumes a spaced value but leaves an attached one, so both spellings
+ * have to be read here rather than from the stripped operands.
+ */
+export function xargsPlaceholder(args: Word[]): string {
+  return xargsPlaceholders(args)[0] ?? XARGS_DEFAULT_PLACEHOLDER;
+}
+
+/**
+ * Every placeholder this line substitutes: `[]` when no `xargs` replacement option names
+ * one (so no word can be mistaken for a substitution), and otherwise each placeholder the
+ * line spelled, with xargs' own default `{}` always included — bash and xargs both leave a
+ * bare `{}` meaning the replacement when the option carried no value of its own.
+ */
+export function xargsPlaceholders(args: Word[]): string[] {
+  const out: string[] = [];
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k];
+    if (a === undefined) continue;
+    if (isReplaceOption(a)) {
+      out.push(args[k + 1]?.text ?? XARGS_DEFAULT_PLACEHOLDER);
+      k++;
+      continue;
+    }
+    const attached = attachedPlaceholder(a);
+    if (attached !== undefined) out.push(attached);
+  }
+  return out.length === 0 ? [] : [...new Set([...out, XARGS_DEFAULT_PLACEHOLDER])];
+}
+
+/** `-I`/`-i`: the option that takes the replacement placeholder as its NEXT word. */
+export function isReplaceOption(a: Word): boolean {
+  return XARGS_REPLACE_OPTIONS.includes(a.text as (typeof XARGS_REPLACE_OPTIONS)[number]);
+}
+
+/** `-I{}`/`-i%`: the placeholder attached to its option, or undefined for any other word. */
+export function attachedPlaceholder(a: Word): string | undefined {
+  if (a.text.length <= 2) return undefined;
+  const option = a.text.slice(0, 2) as (typeof XARGS_REPLACE_OPTIONS)[number];
+  return XARGS_REPLACE_OPTIONS.includes(option) ? a.text.slice(2) : undefined;
+}
+
+/** Whether one word is xargs' replacement placeholder rather than a path it names. */
+export function isXargsPlaceholder(text: string, placeholder: string): boolean {
+  return text === placeholder || text === XARGS_DEFAULT_PLACEHOLDER;
+}
+
+/**
  * The non-option operands of a removal command; `--` ends the options. The deletion
  * rule reads these for `unlink` and `shred`, which the writers table has no entry
  * for, and to tell a remover that named its paths from one whose targets arrive on
