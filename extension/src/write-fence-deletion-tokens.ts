@@ -39,6 +39,10 @@ export const UNRESOLVED_REASON =
 export const GLOB_TARGET_REASON =
   "its path has a glob or a brace list, which expands to files this rule cannot check. Name each path literally";
 
+/** Why a forcing `git clean` carrying a magic pathspec (`:/`, `:(top)…`) is refused: git resolves it from the worktree top, so this rule cannot name the tree. */
+export const MAGIC_PATHSPEC_REASON =
+  "it removes a magic pathspec (`:/` or `:(top)…`), which git resolves from the repository top rather than the directory it runs in, so the tree cannot be judged. Name the path without pathspec magic";
+
 /** Why an expansion at a delete position is refused. */
 export const DYNAMIC_TARGET_REASON =
   "its path comes from a variable, a substitution or ~user, so the target cannot be judged. Name the path literally";

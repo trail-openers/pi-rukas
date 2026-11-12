@@ -45,6 +45,7 @@ import {
   DYNAMIC_TARGET_REASON,
   GIT_CLEAN_LOG_TOKEN,
   GLOB_TARGET_REASON,
+  MAGIC_PATHSPEC_REASON,
   NOT_JUDGED_LOG_TOKEN,
   UNREADABLE_REASON,
 } from "./write-fence-deletion-tokens.ts";
@@ -197,7 +198,11 @@ function chdirOperands(toks: Tok[]): Set<string> {
  * than a git command (#2200 D1), AND by every PATH OPERAND after the verb: `git clean
  * -fdx <dir>` removes that pathspec's tree wherever it sits, and `git clean -fdx ..`
  * removes the parent of the directory it runs in. A clean with no operand is still
- * judged by its base (`base ?? "."`), which is the no-path case.
+ * judged by its base (`base ?? "."`), which is the no-path case. The selectors are read
+ * on both sides of the verb — git honours `-C`/`--git-dir`/`--work-tree` after `clean` as
+ * well as before it — and a forcing clean carrying a MAGIC PATHSPEC (`:/`, `:(top)…`) is
+ * refused, because git resolves that form from the repository top rather than from any
+ * directory this reader can name.
  */
 function gitCleanTrees(args: Word[]): Word[] | undefined {
   let base: Word | undefined;
@@ -242,8 +247,41 @@ function gitCleanTrees(args: Word[]): Word[] | undefined {
     rest.some((a) => a.text === "--force" || (/^-[^-]/.test(a.text) && a.text.includes("f"))) &&
     !rest.some((a) => a.text === "-n" || a.text === "--dry-run");
   if (!forcing) return undefined;
+  // A magic pathspec (`:/`, `:(top)…`, `:(literal)/abs`) is resolved by git from the top of the
+  // worktree, not from the directory the command runs in, so no reading of it here can name the
+  // tree it removes — the forcing case is refused on the operand rather than judged on a guess.
+  if (rest.some((a) => a.text.startsWith(":"))) {
+    return [{ text: ":", dyn: false, refusal: MAGIC_PATHSPEC_REASON }];
+  }
   // Every non-option word after the verb is a pathspec git clean removes (`--` only ends
-  // the options, so it is skipped and what follows it read the same way).
+  // the options, so it is skipped and what follows it read the same way). The tree selectors are
+  // read again here: git honours `-C`/`--git-dir`/`--work-tree` after the verb too.
+  const trees: Word[] = [];
+  let i = 0;
+  while (i < rest.length) {
+    const a = rest[i] as Word;
+    if (a.text === "-C" || a.text === "--git-dir" || a.text === "--work-tree") {
+      const v = rest[i + 1];
+      if (v !== undefined) trees.push(v);
+      i += 2;
+      continue;
+    }
+    if (a.text.startsWith("-C") && a.text.length > 2) {
+      trees.push({ text: a.text.slice(2), dyn: a.dyn });
+      i++;
+      continue;
+    }
+    if (a.text.startsWith("--git-dir=") || a.text.startsWith("--work-tree=")) {
+      trees.push({ text: a.text.slice(a.text.indexOf("=") + 1), dyn: a.dyn });
+      i++;
+      continue;
+    }
+    i++;
+  }
+  // A selector that names no tree at all (`git clean -fdx -C.`) is the base, so it is taken
+  // through `take` and composed with it the same way the pre-verb form is. The word after a
+  // separate-value form is that option's value, not a pathspec, so it is not taken again below.
+  for (const t of trees) take(t);
   return [...operands(rest), base ?? { text: ".", dyn: false }];
 }
 
