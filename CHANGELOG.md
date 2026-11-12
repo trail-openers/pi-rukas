@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.76](https://github.com/trail-openers/pi-rukas/compare/v0.14.75...v0.14.76) (2026-11-12)
+
+
+### Bug Fixes
+
+* **lean:** fenceText neutralises backtick runs only, as v0.14.71 ([#2215](https://github.com/trail-openers/pi-rukas/issues/2215)) ([fbf3847](https://github.com/trail-openers/pi-rukas/commit/fbf38470b927dfc3619e697ad2063054b83dd870))
+
 ## [0.14.75](https://github.com/trail-openers/pi-rukas/compare/v0.14.74...v0.14.75) (2026-11-11)
 
 
