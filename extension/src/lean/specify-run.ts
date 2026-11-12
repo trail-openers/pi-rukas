@@ -42,14 +42,13 @@ import type { ExecFn } from "../worktree.ts";
 import type { FreezeCheck } from "./freeze-check.ts";
 import { freezeCheckDrops, freezeCheckNote, runFreezeCheck } from "./freeze-check.ts";
 import { type CaptureResult, captureTestBytes } from "./specify-capture.ts";
+import { commitTestFiles, committedBlob } from "./specify-commit.ts";
 import type { Proof, TestRunLimits } from "./specify-proof.ts";
 import { runTestFile, sha256 } from "./specify-proof.ts";
+import { SpecifyCommitError } from "./specify-reset.ts";
 import {
-  SpecifyCommitError,
   SpecifyInfraError,
   SpecifyResetError,
-  commitTestFiles,
-  committedBlob,
   resetWorktreeToBase,
   writeCaptured,
 } from "./specify-reset.ts";

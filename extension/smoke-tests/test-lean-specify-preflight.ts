@@ -26,14 +26,16 @@
  *   (d) a hanging probe ends as infrastructure under the injected bound, so the
  *       bound is observable and a preflight cannot wedge the cycle;
  *   (e) no `verify.test` at all keeps its old verdict and its old wording, and
- *       still dispatches nobody.
+ *       still dispatches nobody;
+ *
+ * The OFF arm of all three throws — `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` — is
+ * `test-lean-specify-preflight-off.ts`, split for the 500-line gate (AGENTS §12).
  */
 
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
   ROOTS,
-  RUNNER,
   type RunResult,
   SpecifyInfraError,
   configWith,

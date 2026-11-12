@@ -82,6 +82,7 @@ import { handoffDispatchTimeoutMs } from "../src/work-driver-handoff.ts";
 import { intentCriticalityEnabled } from "../src/work-driver-intent-criticality.ts";
 import { intentResolutionEnabled } from "../src/work-driver-intent.ts";
 import { leanIssueProseEnabled } from "../src/lean/issue-prose.ts";
+import { leanRunnerPreflightEnabled } from "../src/lean/runner-preflight-switch.ts";
 import { issueImagesEnabled } from "../src/work-driver-issue-images.ts";
 import { mergeAuthorityEnabled } from "../src/work-driver-merge-authority.ts";
 import { NET_GIT_TIMEOUT_DEFAULT_MS } from "../src/work-driver-net-git.ts";
@@ -384,6 +385,9 @@ const LIVE: [string, () => unknown][] = [
   // #2171 — the oracle seat's issue-prose section. The reader is `v !== "0"`,
   // so the LIVE assertion below (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LEAN_ISSUE_PROSE", leanIssueProseEnabled],
+  // #2212 — #2179's preflight/submodule behaviour. The reader is `v !== "0"`, so
+  // the LIVE loop below (env deleted) pins "unset means on".
+  ["PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT", leanRunnerPreflightEnabled],
   ["PI_ENSEMBLE_ISSUE_IMAGES", () => issueImagesEnabled()],
   ["PI_ENSEMBLE_LENS_EVIDENCE", evidenceSupplyEnabled],
   ["PI_ENSEMBLE_LENS_ROUND_CAP_MERGE", roundCapMergeEnabled],

@@ -79,8 +79,18 @@ function walkRoot(tag: string): string {
  */
 async function dispatchWithLeak(role: string, leakBytes: number | null, name: string = LEAK_NAME) {
   const scratch = childFreeTemp("root");
+  // What the leak file ACTUALLY allocated, read back from the filesystem rather
+  // than assumed from `leakBytes`: the requested size's tail block is retained or
+  // reclaimed by the allocator, so the two differ by one block on some runs. Every
+  // byte total below is pinned to this, which keeps the assertion about WHICH bytes
+  // the walk counted rather than about the allocator's mood.
+  let allocated = 0;
   stub.body =
-    leakBytes === null ? undefined : () => void writeRealBytes(path.join(scratch, name), leakBytes);
+    leakBytes === null
+      ? undefined
+      : () => {
+          allocated = writeRealBytes(path.join(scratch, name), leakBytes);
+        };
   let res: DispatchResult | undefined;
   await withEnv({ TMPDIR: scratch }, async () => {
     res = await spawnSpecialist(
@@ -95,12 +105,12 @@ async function dispatchWithLeak(role: string, leakBytes: number | null, name: st
     l.includes("could not measure the temp directory"),
   );
   rmSync(scratch, { recursive: true, force: true });
-  return { res, lines, couldNot, written };
+  return { res, lines, couldNot, written, allocated };
 }
 
 // 1 — the leak is reported on the same channel as the $HOME entries; ok untouched
 {
-  const { res, lines, written } = await dispatchWithLeak(ROLE, LEAK_BYTES);
+  const { res, lines, written, allocated } = await dispatchWithLeak(ROLE, LEAK_BYTES);
   // The spawn path makes its own entries inside the root we handed it as TMPDIR
   // (the workdir, the per-uid slot dir, bun's compile cache), so "what the child
   // left" is the names neither side owns, not "exactly one entry".
@@ -115,8 +125,8 @@ async function dispatchWithLeak(role: string, leakBytes: number | null, name: st
   assert(res?.ok === true, `AC3: the reviewer dispatch still succeeded (${res?.ok})`);
   assert(
     lines.length === 1 &&
-      lines[0] === `temp-bytes: ${LEAK_BYTES} (allocated) during the ${ROLE} run`,
-    `AC3: one line names the allocated delta and the role (got ${JSON.stringify(res?.operatorConfig ?? [])})`,
+      lines[0] === `temp-bytes: ${allocated} (allocated) during the ${ROLE} run`,
+    `AC3: one line names the allocated delta and the role (got ${JSON.stringify(res?.operatorConfig ?? [])}, allocated ${allocated})`,
   );
 }
 
@@ -167,15 +177,18 @@ for (const [tag, leak] of [
 // buys it nothing. Red on a prefix-only walk, which skipped this dir entirely.
 {
   const harnessPrefixed = `${HARNESS_TEMP_PREFIXES[1]}child-probe`;
-  const { lines, written } = await dispatchWithLeak(ROLE, LEAK_BYTES, `${harnessPrefixed}/big.bin`);
+  const { lines, written, allocated } = await dispatchWithLeak(
+    ROLE,
+    LEAK_BYTES,
+    `${harnessPrefixed}/big.bin`,
+  );
   assert(
     written.includes(harnessPrefixed),
     `AC3: the child really left its leak under a harness-prefixed directory (${JSON.stringify(written)})`,
   );
   assert(
-    lines.length === 1 &&
-      lines[0] === `temp-bytes: ${LEAK_BYTES} (allocated) during the ${ROLE} run`,
-    `AC3: a harness-prefixed NAME does not hide a leak (a mode-0700 dir we own is the only thing skipped) (got ${JSON.stringify(lines)})`,
+    lines.length === 1 && lines[0] === `temp-bytes: ${allocated} (allocated) during the ${ROLE} run`,
+    `AC3: a harness-prefixed NAME does not hide a leak (a mode-0700 dir we own is the only thing skipped) (got ${JSON.stringify(lines)}, allocated ${allocated})`,
   );
 }
 

@@ -118,7 +118,9 @@ else's work. Where a foreign directory really does sit at that path, move it out
 `the test runner could not run a test file: <the rendered verify.test command> — <the runner's first
 lines>`, with no adversary dispatched and no test frozen. The sibling shape of the same hand-back is
 `the worktree's submodules could not be initialised in <worktree>: git submodule update --init
---recursive — …`.
+--recursive — …`. Both are exit **10**, and both are one switch: `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0`
+restores v0.14.71, which ran no probe and no submodule initialisation at all — the same run then ends
+`not-ready` at exit 11 with the ordinary decline.
 
 **Cause:** the step asked the project's own runner one question before paying an adversary — *can you
 run a test file at all?* — and the runner could not. It is handed an EMPTY test file (hidden, at the
@@ -129,9 +131,9 @@ an import error, a suite that needs an environment variable the run's environmen
 empty directory where a git submodule should have been populated, or a runner that could not be
 started at all. Before this check existed, none of those printed anything naming the file, so the red
 proof graded the run "unclear", `specify` declined with `criterion ACn has no red test`, and the issue
-was refused for an environment nothing had tested. The preflight costs one runner invocation and no
-model call, and it never guesses at a runner's flavour: no per-runner exception table, no
-`pytest`-specific case.
+was refused for an environment nothing had tested. The preflight costs one runner invocation —
+bounded at 120 s — and no model call, and it never guesses at a runner's flavour: no per-runner
+exception table, no `pytest`-specific case.
 
 **Fix:** read the command and the excerpt in the hand-back — they are the runner's own words, run in
 the run's own worktree. The usual four:
@@ -163,7 +165,10 @@ A missing `verify.test` is NOT this hand-back: it stays the verdict it has alway
 project that declines to configure a runner is not a project with a broken one. Note also
 that the probe is not the only place this step can hand back on the environment: a base
 whose submodules cannot be populated fails earlier, in the worktree preparation that runs
-before it.
+before it. Both are `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` away: with that switch at `0` no
+lean reset asks git to populate a submodule — not specify's, not `build`'s fold, not the
+review fix round's — and a runner that dies on the probe-shaped file is graded by the red
+proof alone, exactly as v0.14.71 graded it.
 
 ### Symptom: a lean run hands back with `baseline red: tier <name> is red at the base commit`
 

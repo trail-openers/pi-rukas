@@ -36,15 +36,21 @@
  * per-file infra throw (`assertRan`), which stays the only infra rule for a
  * run already mid-step.
  *
+ * `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` returns before any of it — no probe
+ * written, no runner asked, nothing to throw — so a runner that dies on an empty
+ * file is judged by the red proof alone, exactly as v0.14.71 judged it. The whole
+ * check lives in this file so the switch has exactly one gate to close.
+ *
  * An empty git submodule is one of the shapes this catches, and it is fixed
  * where it is caused: `initSubmodules` in `specify-reset.ts` runs inside every
- * reset, before that reset proves its tree clean.
+ * reset, before that reset proves its tree clean — behind the same switch.
  */
 
 import { existsSync, lstatSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { ExecFn } from "../worktree.ts";
 import type { TestLocation } from "./config-test-location.ts";
+import { leanRunnerPreflightEnabled } from "./runner-preflight-switch.ts";
 import type { Proof, TestRunLimits } from "./specify-proof.ts";
 import { runTestFile, trim } from "./specify-proof.ts";
 import { SpecifyInfraError } from "./specify-reset.ts";
@@ -142,6 +148,10 @@ export async function assertRunnerCanRunTests(
     limits?: TestRunLimits;
   },
 ): Promise<void> {
+  // The switch's ONE gate: off, the probe is never written and the runner is
+  // never asked, so none of this file's three throws can be reached. Read at call
+  // time — see `runner-preflight-switch.ts`.
+  if (!leanRunnerPreflightEnabled()) return;
   const rel = probeRelative(opts.wt, opts.testLocation);
   const abs = path.join(opts.wt, rel);
   // Written and read by name, never followed: the step owns the worktree's
