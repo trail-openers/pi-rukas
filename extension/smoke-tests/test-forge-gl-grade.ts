@@ -1,13 +1,13 @@
 #!/usr/bin/env bun
 /**
- * forge-gl-grade — the GitLab job-state table the `ci` step and the merge-evidence
- * gate share (#2224).
+ * forge-gl-grade — the GitLab job-state table behind `ci`'s row grading (#2224).
  *
- * The table exists because two gates grade the same words — `ci`'s row grading and
- * the driver's merge-evidence gate — and a `skipped` job that one side counts as
- * green is a gate that cannot fail. This suite pins each word to its class, so the
- * day either gate grows a state the other has never seen, the drift is a red here
- * rather than a merge on a job that never ran.
+ * The table exists because a GitLab job row has no `bucket` and its `status`
+ * words are not gh's: a gate that matched them against gh's lists would silently
+ * miss `created`, `waiting_for_resource`, `preparing` and `scheduled`, and a gate
+ * that never matches is a gate that never fails. This suite pins each word to its
+ * class, so the day a state is reclassified the drift is a red here rather than a
+ * merge on a job that never ran.
  *
  * A state the table has never seen is graded `unknown`, which the callers WAIT on:
  * absence is never a pass, and that rule is the one this suite is mostly about.
@@ -24,9 +24,13 @@
  *   (7) `allow_failure` is part of the grade: a job that is allowed to fail is
  *       not a gate, so its `success` reads `not-green` and its `failed` is waited
  *       rather than red — and the flag is a REQUIRED argument precisely so a
- *       caller that never read it cannot silently assume the optimistic answer.
+ *       caller that never read it cannot silently assume the optimistic answer;
+ *   (8) the caller the header names is still a caller: the adapter's job mapper
+ *       reads `allow_failure` through this table, so the flag cannot quietly stop
+ *       being carried and turn a non-gate back into a green.
  */
 
+import { mapGlPipelineJobs } from "../src/forge-mapping.ts";
 import { glJobIsBlocking, gradeGlJobState } from "../src/forge-gl-grade.ts";
 
 let exit = 0;
@@ -128,5 +132,27 @@ assert(glJobIsBlocking(false) === true, "(7) allow_failure false means blocking"
 assert(glJobIsBlocking(true) === false, "(7) allow_failure true means NOT blocking");
 assert(glJobIsBlocking("true") === false, "(7) a string \"true\" is read as allow_failure");
 assert(glJobIsBlocking("false") === true, "(7) a string \"false\" is read as blocking");
+
+// ── (8) the callers that DO consult the table still consult it ───────────
+// The header names exactly two callers, and a header that outlives its callers is
+// how this module once came to advertise a merge-evidence gate that never imported
+// it. These two assertions are the witnesses for that claim rather than prose: the
+// adapter's mapper is what turns GitLab's raw `allow_failure` into the `blocking`
+// flag the table grades, and if the mapper stops calling it then a non-blocking
+// `success` reaches the step as an ordinary green — the exact defect the flag exists
+// to refuse. `ci`'s own row grading is exercised end-to-end by `test-lean-ci-gl.ts`.
+const mapped = mapGlPipelineJobs([{ name: "optional", status: "success", allow_failure: true }]);
+assert(
+  mapped.length === 1 && mapped[0]?.blocking === false,
+  `(8) the adapter carries allow_failure into the table's blocking flag (${JSON.stringify(mapped[0])})`,
+);
+assert(
+  gradeGlJobState(mapped[0]?.state ?? "", mapped[0]?.blocking ?? true) === "not-green",
+  "(8) and a mapped allow-failure success is still not green end-to-end",
+);
+assert(
+  gradeGlJobState("SUCCESS", glJobIsBlocking(undefined)) === "pass",
+  "(8) and a mapped row with no allow_failure field still passes",
+);
 
 process.exit(exit);

@@ -32,8 +32,8 @@
 import { spawnSync } from "node:child_process";
 import { rmSync } from "node:fs";
 import { detectForge } from "../../src/forge-detect.ts";
+import type { Forge } from "../../src/forge-types.ts";
 import type { CiDeps } from "../../src/lean/ci-deps.ts";
-import type { GlForge } from "../../src/lean/ci-forge-gl.ts";
 import { ciOutcome } from "../../src/lean/ci.ts";
 import { defaultConfig } from "../../src/lean/config.ts";
 import type { Budget } from "../../src/lean/config.ts";
@@ -41,6 +41,7 @@ import type { PreexistingTierRecord } from "../../src/lean/state-outcome-maps.ts
 import type { Outcome } from "../../src/lean/state.ts";
 import { gitTestEnv } from "./git-test-env.ts";
 import { PR_URL, ROOTS, ciLandLog } from "./lean-ci-land-fixture.ts";
+import type { GlCase } from "./lean-ci-gl.ts";
 
 export interface CiCase {
   /** What `loadConfig` answers; `full` absent means the project configured none. */
@@ -85,18 +86,32 @@ export interface CiCase {
    * not fall back to `gh`.
    */
   forge?: "github" | "gitlab" | "self-hosted" | "none";
-  /** The MR row the recorder answers, in place of `GL_MR` (a poll passes a
-   *  sequence through `mrAtReads` instead). `diff_refs` is left as given here. */
-  mr?: Record<string, unknown>;
   /** One MR row PER POLL, the last entry repeating — same rule as `viewAt`. */
   mrAtReads?: (head: string) => unknown[];
+  // The three GitLab case fields below are the ones a case may hand straight to
+  // the fixture, so their types are `GlCase`'s OWN — declared once in
+  // `./lean-ci-gl.ts` and picked from here. `CiCase extends GlCase` is the wrong
+  // shape (the GitHub axis has no business naming MR/pipeline fields, and the
+  // two axes are mutually exclusive), but re-typing one of these fields in two
+  // places is how the recorder went red against its own fixture module: the
+  // `as const` job rows of a test case and a `Record<string, unknown>[]`
+  // declaration do not agree, and only a typecheck of both files sees it.
+  /** The MR row the recorder answers, in place of `GL_MR` (a poll passes a
+   *  sequence through `mrAtReads` instead). `diff_refs` is left as given here. */
+  mr?: GlCase["mr"];
   /** The job rows the pipeline read answers (snake_case `status`, as GitLab
    *  sends them). Defaults to the two-success `GL_JOBS` fixture. */
-  jobs?: unknown[];
+  jobs?: GlCase["jobs"];
   /** The MR's pipelines reply. `[]` is the MR with no pipeline at all. */
-  pipelines?: unknown[];
+  pipelines?: GlCase["pipelines"];
+  /** The head the MR reply reports, for a case whose MR moved off the head this
+   *  repo holds. */
+  mrHead?: GlCase["mrHead"];
+  /** The commit the MR's pipeline reports it built — `null` for the pipeline
+   *  that names no commit, another sha for a tag/schedule pipeline. */
+  pipelineSha?: GlCase["pipelineSha"];
   /** The self-hosted host for a `self-hosted` case (default `gitlab.example.com`). */
-  glHost?: string;
+  glHost?: GlCase["glHost"];
   /** Check the worktree out at this oid (the disk gate must catch it). */
   worktreeHead?: string;
   /** Leave the worktree's HEAD detached from the run's branch. */
@@ -291,7 +306,7 @@ export async function run(c: CiCase): Promise<Ran> {
   // readiness composition, the pipelines lookup and the job mapping under test
   // are the production ones and the argv is the adapter's pinned form, not a
   // seam shaped to match this suite's own expectations.
-  const glForge: GlForge | undefined = gitlab
+  const glForge: Forge | undefined = gitlab
     ? await buildGlForge(c, f.repoRoot, committed, forgeAxis === "self-hosted", (cmd) => {
         ran.cmds.push(cmd);
       })
@@ -404,7 +419,7 @@ export async function run(c: CiCase): Promise<Ran> {
         }
         return glForge;
       }
-      return { forge: "github" } as unknown as GlForge;
+      return { forge: "github" } as unknown as Forge;
     },
     ...(c.tierTimeoutMs === null ? {} : { tierTimeoutMs: c.tierTimeoutMs ?? 5_000 }),
     ...(c.waitTimeoutMs === undefined ? {} : { waitTimeoutMs: c.waitTimeoutMs }),

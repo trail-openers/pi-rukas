@@ -24,8 +24,8 @@
  *      not a full 40-hex sha all THROW. A red spends a build round on the code;
  *      none of these are about the code.
  *   3. **A gate that cannot fail is not green.** Job states are graded by
- *      `gradeGlJobState` in `../forge-gl-grade.ts`, the table this step and the
- *      merge-evidence gate share: a blocking job's `success` passes and nothing
+ *      `gradeGlJobState` in `../forge-gl-grade.ts`, the one table that says what
+ *      a GitLab job state means: a blocking job's `success` passes and nothing
  *      else does, `skipped`, `manual` and an `allow_failure: true` job are all
  *      refused, and a state the table has never seen waits rather than passing.
  *      GitLab rows carry no `bucket`, so gh's bucket-first grading cannot reach

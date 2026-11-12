@@ -35,9 +35,9 @@
 
 import { spawnSync } from "node:child_process";
 import { rmSync } from "node:fs";
+import type { Forge } from "../src/forge-types.ts";
 import type { CiDeps } from "../src/lean/ci-deps.ts";
 import { ghReads } from "../src/lean/ci-deps.ts";
-import type { GlForge } from "../src/lean/ci-forge-gl.ts";
 import { ciOutcome } from "../src/lean/ci.ts";
 import { phase1Handlers } from "../src/lean/command.ts";
 import { defaultConfig } from "../src/lean/config.ts";
@@ -214,7 +214,7 @@ async function run(c: Case): Promise<{
     // real one is `io.ts`'s `forgeFor`); a `github` adapter is what keeps the two
     // pinned `gh` reads the reads this suite answers with its captured payloads,
     // and (w5) is the case that says an unreadable `gh` is never a green.
-    forge: async () => ({ forge: "github" }) as unknown as GlForge,
+    forge: async () => ({ forge: "github" }) as unknown as Forge,
   };
   try {
     return {

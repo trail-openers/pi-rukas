@@ -16,9 +16,8 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { detectForge } from "../../src/forge-detect.ts";
-import type { ForgeExecFn } from "../../src/forge-types.ts";
+import type { Forge, ForgeExecFn } from "../../src/forge-types.ts";
 import { createForge } from "../../src/forge.ts";
-import type { GlForge } from "../../src/lean/ci-forge-gl.ts";
 import { GL_MR, GL_MR_CHECKING, glDetection } from "../forge-fixtures.ts";
 import { gitTestEnv } from "./git-test-env.ts";
 
@@ -27,10 +26,12 @@ export interface GlCase {
   /** The MR rows the readiness reads compose from, one per poll. */
   mr?: Record<string, unknown>;
   mrAtReads?: (head: string) => unknown[];
-  /** The raw job rows, in GitLab's snake_case `status` shape. */
-  jobs?: Record<string, unknown>[];
+  /** The raw job rows, in GitLab's snake_case `status` shape. Read-only and
+   *  serialized verbatim, never mutated — so a suite's `as const` job fixtures
+   *  pass straight through from `CiCase` without a cast. */
+  jobs?: readonly Record<string, unknown>[];
   /** The MR's pipelines rows. An empty array is "no pipeline at all". */
-  pipelines?: { id: number; sha?: string; status?: string }[];
+  pipelines?: readonly { id: number; sha?: string; status?: string }[];
   /** What the pipeline the step asks about reports as the commit it built. The
    *  default is the head of the case's own repo, which is what a real MR's pipeline
    *  is built at; `null` is the pipeline that names no commit, and any other string
@@ -173,6 +174,10 @@ const pipelineRow = (head: string) => [{ id: GL_MR_PIPELINE.id, sha: head, statu
  * that is the evidence the step's head pin judges. A self-hosted case gets the
  * detection the REAL `detectForge` returns for the `.pi/forge` + SSH remote this
  * file wrote into the fixture repo.
+ *
+ * Returned as `Forge` (the adapter's own type) because that is what `CiDeps.forge`
+ * declares: this is the real adapter, not a seam shaped to the step's subset, and
+ * the step narrows it to `GlForge` itself when it branches onto the GitLab arm.
  */
 export async function glForge(
   c: GlCase,
@@ -180,7 +185,7 @@ export async function glForge(
   head: string,
   selfHosted: boolean,
   record: (cmd: string) => void,
-): Promise<GlForge> {
+): Promise<Forge> {
   let mrReads = 0;
   const fixtureExec: ForgeExecFn = async (cmd) => {
     record(cmd);
@@ -200,5 +205,5 @@ export async function glForge(
   return createForge(detection, {
     execFn: fixtureExec,
     cwd: repoRoot,
-  }) as unknown as GlForge;
+  });
 }

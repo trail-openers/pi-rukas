@@ -6,10 +6,19 @@
  * grades rows the GitHub way — `bucket ?? state` against gh's pass/fail/pending
  * words — silently misses `created`, `waiting_for_resource`, `preparing` and
  * `scheduled`, and a gate that never matches is a gate that never fails. This
- * table is the answer both callers share: lean's `ci` step refuses to read a
- * pipeline green without it, and the merge-evidence gatherer refuses to merge
- * without the same words. Two lists that can drift about whether `skipped` is
- * green is exactly the defect class this file removes.
+ * is the ONE table for those words: every caller that asks what a GitLab job
+ * state means asks here, and the two that do — lean's `ci` step (via
+ * `glRowGrade`) and the adapter's job mapper (via `glJobIsBlocking`) — are
+ * reached through this file rather than carrying their own word lists.
+ *
+ * What is NOT a caller is worth naming, because the module reads as a shared
+ * gate otherwise: `gatherMergeEvidence` and the merge guard grade `gh` bucket
+ * words on a GitHub-only path (`refuseUnlessCiGreen` returns early for any
+ * other forge), so they do not consult this table and their lists are not
+ * kept in step with it by anything here — which is OUT OF SCOPE of #2224, whose
+ * remit is the `ci` step reading GitLab through the forge adapter. Nothing in
+ * this file stops a future caller from growing a second list; the guarantee it
+ * does give is that no current GitLab read has one.
  *
  * A job's `allow_failure` flag is part of the grade, not a footnote: GitLab
  * reports a job that is allowed to fail as `success` once it finishes, so the
@@ -35,9 +44,9 @@
  *                   bounds its wait and hands the run back, and a server-side
  *                   enum addition never becomes a green by omission.
  *
- * Comparison is case- and whitespace-insensitive because the two callers read
- * the value from different places (the adapter uppercases, the raw API does not),
- * and every caller reads `allow_failure` through `glJobIsBlocking` — GitLab
+ * Comparison is case- and whitespace-insensitive because callers read the value
+ * from different places (the adapter uppercases, the raw API does not), and
+ * every caller reads `allow_failure` through `glJobIsBlocking` — GitLab
  * sends `true`/`false`, an absent field means GitLab's own default, and a caller
  * that never looked at the field must not silently assume the optimistic one.
  */
