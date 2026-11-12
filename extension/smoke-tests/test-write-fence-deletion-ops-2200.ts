@@ -40,7 +40,7 @@ import {
   toolCall,
 } from "./lib/write-fence-deletion-harness.ts";
 
-const { base, sharedTmp, sharedRuns, foreignRun, foreignRunUnderRuns, spawnTempRoot } =
+const { base, sharedTmp, sharedRuns, foreignRun, foreignRunUnderRuns, spawnTempRoot, spawnChildDir } =
   buildDeletionFixture("ops");
 // Pinned for the whole file: the rule reads HOME/TMPDIR from process.env behind any row's back.
 const HOST = deletionHost(base);
@@ -146,6 +146,24 @@ await withDeletionHost(HOST, async () => {
       noWalk.allowed.length === 1,
       "G1b: with no temp root to climb from, that same cwd is an ordinary working directory",
     );
+    // The seed a spawn actually hands the walk, judged on its own. `spawn-support.ts` mkdtemps each
+    // child's temp dir as `pi-rukas-<random>` under `os.tmpdir()`, so a real walk is seeded from
+    // that dir and the only ancestor it can add is the temp root — never the tree above it. That is
+    // why this row's answer is the OPEN one: a build that climbed past the temp root to its parent
+    // would refuse this cwd for its subtree and take the carve-out with it. The row above seeds the
+    // temp root itself (the shape that makes the walk climb to the parent and refuse `runs/`), and
+    // the two together pin both levels: the parent is refused for its subtree, the temp root's own
+    // children are not refused for theirs.
+    const seededAsASpawn = deletionRootsFrom(
+      { PI_ENSEMBLE_ROLE: "ops" },
+      foreignRunUnderRuns,
+      () => spawnChildDir,
+    );
+    assert(
+      seededAsASpawn.allowed.length === 1 &&
+        firstDeletionOutside("rm -rf ../..", seededAsASpawn) !== undefined,
+      "G1b: a walk seeded from a per-child dir (the shape every spawn hands it) leaves the cwd's root alone and still refuses `..`",
+    );
   });
   // The two spellings of "the temp root" the rule recognises, each named by the ROW rather
   // than read from the runner: the process env's `TMPDIR` (which is the row's own pinned
@@ -227,6 +245,45 @@ await withDeletionHost(HOST, async () => {
         "G1b: and that same env still refuses a delete inside the temp dir it points at",
       );
       rmSync(hostTree, { recursive: true, force: true });
+      // The other half of the host shape, which the row above cannot reach: a machine whose temp
+      // root sits OUTSIDE both home reads (an operator who parks scratch at `~/scratch/machinetmp`,
+      // a container that points `TMPDIR` at a volume of its own). There the tree the walk wants to
+      // add — the temp root's parent — is neither `$HOME` nor `/`, so the exemption that keeps the
+      // carve-out open does not cover it and the walk's own test on that tree is what decides. Two
+      // things must hold at once and this row pins both: a working checkout that merely LIVES under
+      // that tree keeps its carve-out (three assertions, because `allowed.length === 1` alone still
+      // passes when the in-cwd clean is refused by something else), and the tree itself stays
+      // refused for its whole subtree, which is what a child standing beside the temp root reaches
+      // with `rm -rf ..`. A build that got either half wrong shows up here: refuse the parent and
+      // the carve-out closes on every checkout of this shape; stop refusing it and the shared root
+      // one level down opens. `TMPDIR` is the variable under test, not the machine's.
+      const outsideHome = mkdtempSync(path.join(os.homedir(), ".pi-rukas-2200-outside-"));
+      const scratchRoot = path.join(outsideHome, "scratchroot"); // neither HOME nor `/`
+      const machineTmp = path.join(scratchRoot, "machinetmp");
+      const checkoutOutside = path.join(outsideHome, "projects", "checkout");
+      mkdirSync(path.join(machineTmp, "pi-rukas-Q1"), { recursive: true });
+      mkdirSync(path.join(machineTmp, "pi-rukas-Q2"), { recursive: true });
+      mkdirSync(checkoutOutside, { recursive: true });
+      const outsideEnv = { PI_ENSEMBLE_ROLE: "ops", HOME: outsideHome, TMPDIR: machineTmp };
+      const inOutsideCheckout = deletionRootsFrom(
+        outsideEnv,
+        checkoutOutside,
+        () => path.join(machineTmp, "pi-rukas-Q1"),
+      );
+      assert(
+        inOutsideCheckout.allowed.length === 1 &&
+          firstDeletionOutside("rm -rf dist", inOutsideCheckout) === undefined &&
+          firstDeletionOutside("rm -rf node_modules", inOutsideCheckout) === undefined,
+        "G1b: an ops checkout keeps the carve-out when the temp root sits OUTSIDE $HOME and / (the walk must refuse only the temp root, not the tree holding it)",
+      );
+      // …and the refusal the carve-out must NOT buy back: the temp root's own subtree, and the
+      // tree holding it, stay out of reach by absolute path from that checkout.
+      assert(
+        firstDeletionOutside(`rm -rf ${machineTmp}/victim`, inOutsideCheckout) !== undefined &&
+          firstDeletionOutside(`rm -rf ${scratchRoot}`, inOutsideCheckout) !== undefined,
+        "G1b: and that same checkout still cannot delete the temp root or the tree holding it",
+      );
+      rmSync(outsideHome, { recursive: true, force: true });
     } finally {
       rmSync(path.join(base, "projects"), { recursive: true, force: true });
     }

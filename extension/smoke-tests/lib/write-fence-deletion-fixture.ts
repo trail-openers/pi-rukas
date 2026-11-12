@@ -13,7 +13,7 @@
  *     runs/                     a shared root no basename rule recognises
  *       other-run/                an ops cwd one `..` from that root
  *     spawntmp/                 the SYNTHETIC spawn temp root, injected as `spawnTempRoot`
- *       pi-rukas-child-A/         a per-run dir under it — the walk's seed
+ *       pi-rukas-Q1/              the per-child dir a spawn hands the walk as its seed
  *
  * The "shared temp root" is a directory of its own rather than the machine's
  * temp dir: the rule must refuse a shared root whatever it is called, and these
@@ -77,10 +77,17 @@ export interface DeletionFixture {
   sharedRuns: string;
   /** A run dir under `sharedRuns`; an ops cwd that reaches that root with `..`. */
   foreignRunUnderRuns: string;
-  /** Pass as `deletionRootsFrom`'s `spawnTempRoot`: the tree the walk is seeded from. */
+  /** Pass as `deletionRootsFrom`'s `spawnTempRoot` for the containment row: the temp root the walk
+   *  is seeded from, so the ancestor it adds is this tree's PARENT. For the shape a real spawn
+   *  hands the walk, use `spawnChildDir` instead. */
   spawnTempRoot: string;
-  /** A per-run dir under `spawnTempRoot` — the seed the ancestor walk climbs from. */
-  tempRunSibling: string;
+  /**
+   * The seed a REAL spawn hands the walk. `spawn-support.ts` mkdtemps each child's per-child temp
+   * dir as `pi-rukas-<random>` under `os.tmpdir()`, so the walk's seed is that dir and the ancestor
+   * it climbs is its parent, the temp root. Injecting the temp root itself asks the walk to climb
+   * one level above anything a spawn does, which is a shape no dispatch reaches.
+   */
+  spawnChildDir: string;
   siblingTmp: string;
   harnessTree: string;
   foreignRun: string;
@@ -117,7 +124,10 @@ export function buildDeletionFixture(tag: string): DeletionFixture {
   // (which it is) and the row would no longer say whether the walk ran.
   const foreignRunUnderRuns = path.join(sharedRuns, "build", "other-run");
   const spawnTempRoot = path.join(ruleTrees, "spawntmp");
-  const tempRunSibling = path.join(spawnTempRoot, "pi-rukas-child-A");
+  // The per-child dir the walk is seeded from, carrying the basename the spawn layer really gives
+  // one (`mkdtemp(os.tmpdir() + "/pi-rukas-")`). A row that seeds the walk here judges the shape
+  // every spawn has — the seed's parent — rather than the tree above it.
+  const spawnChildDir = path.join(spawnTempRoot, "pi-rukas-Q1");
   for (const dir of [
     wt,
     scratch,
@@ -126,7 +136,7 @@ export function buildDeletionFixture(tag: string): DeletionFixture {
     sharedRuns,
     foreignRunUnderRuns,
     spawnTempRoot,
-    tempRunSibling,
+    spawnChildDir,
     siblingTmp,
     harnessTree,
     foreignRun,
@@ -139,7 +149,7 @@ export function buildDeletionFixture(tag: string): DeletionFixture {
     path.join(childTmp, "probe.txt"),
     path.join(foreignRun, "payload"),
     path.join(foreignRunUnderRuns, "payload"),
-    path.join(tempRunSibling, "prompt.txt"),
+    path.join(spawnChildDir, "prompt.txt"),
     path.join(siblingTmp, "other-child.txt"),
     path.join(harnessTree, "review-tree.txt"),
   ]) {
@@ -154,7 +164,7 @@ export function buildDeletionFixture(tag: string): DeletionFixture {
     sharedRuns,
     foreignRunUnderRuns,
     spawnTempRoot,
-    tempRunSibling,
+    spawnChildDir,
     siblingTmp,
     harnessTree,
     foreignRun,

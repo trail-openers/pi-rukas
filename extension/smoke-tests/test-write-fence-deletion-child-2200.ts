@@ -139,6 +139,21 @@ await withDeletionHost(HOST, async () => {
       refused("git clean --dry-run -f") === undefined,
       "E: `git clean --dry-run -f` is still a dry run",
     );
+    // The dry-run test is read as a CLUSTER, not as a leading `-n`. Real `git clean -nfd` is still
+    // a dry run (git lists and removes nothing), so nothing here can delete — but the reader treats
+    // a cluster carrying `f` as forcing, and the forcing case is refused whatever the operand is.
+    // The verdict is therefore fail-closed and deliberate: a bundled `-n` does not open a path
+    // outside the roots. It is pinned because the spelling is what a child types, and a build that
+    // read `-n` inside a cluster as a dry run would let `git clean -nfdx <shared>` through — the
+    // reverse direction is the one that must never come open, so this row says which way it falls.
+    assert(
+      refused("git clean -nfd ..") !== undefined,
+      "E: a bundled `-nfd` cluster is judged forcing and stays refused (fail-closed; real git deletes nothing, and the refusal errs safe)",
+    );
+    assert(
+      refused("git clean -dn ..") === undefined,
+      "E: a cluster whose dry-run flag comes first with no `f` is still a dry run",
+    );
     assert(refused(`git -C ${wt} clean -fdx`) === undefined, "E: inside the worktree it runs");
     // A forcing clean that names a PATH OPERAND was never judged: the reader took only the tree
     // git runs in (`-C`/`--work-tree`, else the cwd), so `git clean -fdx <outside>` read as a
