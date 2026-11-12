@@ -49,6 +49,11 @@ function refusalWord(reason: string): Word {
 }
 const UNNAMED_DIR = refusalWord(UNNAMED_DIR_REASON);
 
+/** Why an `-exec` whose first word is an option cannot be judged at all. */
+const UNREADABLE_EXEC = refusalWord(
+  "its -exec runs a command the rule cannot read, so what it deletes cannot be judged. Name the command directly after -exec",
+);
+
 /**
  * The words a `find` deletes, as it named them; empty when it removes nothing.
  * `pipedIntoRemover` says this `find`'s output is handed to a remover whose victims are
@@ -62,7 +67,7 @@ const UNNAMED_DIR = refusalWord(UNNAMED_DIR_REASON);
 export function findRemovals(args: Word[], pipedIntoRemover = false): Word[] {
   const { starts, expr } = splitFind(args);
   const exec = expr.findIndex((a) => FIND_EXEC.has(a.text));
-  if (exec >= 0) return execRemovals(starts, expr.slice(exec), pipedIntoRemover);
+  if (exec >= 0) return execRemovals(starts, expr.slice(exec + 1), pipedIntoRemover);
   if (!expr.some((a) => a.text === "-delete")) {
     // No removal action of its own: a `find` piped into a remover is the sweep.
     return pipedIntoRemover ? (starts.length > 0 ? starts : [{ text: ".", dyn: false }]) : [];
@@ -112,15 +117,37 @@ export function removesMatches(words: Word[], producer?: Command): boolean {
  */
 function printsNoMatches(producer: Command): boolean {
   if (producer.name !== "find") return false;
-  const cmd = execCommand(producer.args);
-  return cmd !== undefined && isRemover(commandName(cmd.text));
+  const exec = producer.args.findIndex((a) => FIND_EXEC.has(a.text));
+  // Only a remover is silent; an unreadable command may print its matches, which is the
+  // fail-closed answer for the pipe.
+  return exec >= 0 && execIsRemover(producer.args.slice(exec + 1)) === true;
 }
 
-/** The command an `-exec` of this `find`'s arguments runs, or undefined when it has none. */
-function execCommand(args: Word[]): Word | undefined {
-  const exec = args.findIndex((a) => FIND_EXEC.has(a.text));
-  if (exec < 0) return undefined;
-  return args.slice(exec + 1).find((a) => !a.text.startsWith("-"));
+/**
+ * Whether this `find`'s `-exec` runs a remover, or undefined when no command follows the
+ * action at all. The command is the FIRST word after it, not the first word that happens not
+ * to be an option: `find <tree> -exec -- rm -rf {} +` would otherwise read as an `-exec` of
+ * nothing and the reader would see no removal action on a line that deletes. The wrapper in
+ * front of the remover is stripped by the same splitter the rest of the rule uses, so
+ * `-exec sudo rm -rf {} +` is read as the `rm` it is; an `-exec` of anything else prints its
+ * matches instead of removing them. Undefined is the unreadable case the caller refuses.
+ */
+function execIsRemover(expr: Word[]): boolean | undefined {
+  // The `-exec` terminator (`;` or `+`) is not part of the command, and the words handed to
+  // the wrapper stop at it rather than reading past the end of the action. A brace on its
+  // own is xargs' placeholder, not an option, so the terminator test comes first.
+  const body = expr.slice(0, terminator(expr));
+  const cmd = body[0];
+  if (cmd === undefined) return undefined;
+  // An option is not a program name, so the command this `-exec` runs cannot be read.
+  if (cmd.text.startsWith("-")) return undefined;
+  return stripPrefix(body).words.some((w) => isRemover(commandName(w.text)));
+}
+
+/** The index of this `-exec` expression's terminator, or its length when it has none. */
+function terminator(expr: Word[]): number {
+  const end = expr.findIndex((a) => a.text === ";" || a.text === "+");
+  return end < 0 ? expr.length : end;
 }
 
 /**
@@ -134,8 +161,10 @@ function execCommand(args: Word[]): Word | undefined {
  * been in.
  */
 function execRemovals(starts: Word[], execExpr: Word[], pipedIntoRemover: boolean): Word[] {
-  const cmd = execExpr.find((a) => !a.text.startsWith("-"));
-  const silent = cmd !== undefined && isRemover(commandName(cmd.text));
+  // An `-exec` whose command cannot be read deletes whatever it deletes: the reader's
+  // fail-closed vocabulary is a refusal, not a pass for the unreadable form.
+  const silent = execIsRemover(execExpr);
+  if (silent === undefined) return [UNREADABLE_EXEC];
   // A pipe carries only what the `find` prints, and an `-exec <cmd>` prints nothing but
   // what `<cmd>` prints. A non-remover such as `-exec ls` prints the matches, so whatever
   // reaches the remover downstream are those matches — the incident's sweep in another
@@ -145,7 +174,7 @@ function execRemovals(starts: Word[], execExpr: Word[], pipedIntoRemover: boolea
   if (pipedIntoRemover && !silent) {
     return starts.length > 0 ? starts : [{ text: ".", dyn: false }];
   }
-  if (cmd === undefined || !silent) return [];
+  if (!silent) return [];
   // A start path is the tree the victims live under, so a name test narrows within it
   // without hiding it — judged, like the `-print0 | xargs rm` shape above. With no start
   // path the line names no tree and says nothing the reader can resolve: refused.

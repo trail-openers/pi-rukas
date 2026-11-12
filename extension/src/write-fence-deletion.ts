@@ -59,7 +59,7 @@ import {
   UNRESOLVED_REASON,
 } from "./write-fence-deletion-tokens.ts";
 import { appendWriteFenceRefusal } from "./write-fence-log.ts";
-import { isInside, safeResolve } from "./write-fence-path.ts";
+import { homeDir, isInside, safeResolve } from "./write-fence-path.ts";
 
 export {
   DELETION_LOG_TOKEN,
@@ -147,37 +147,155 @@ function usableRoot(raw: string | undefined): { label: string; real: string } | 
   return real === undefined ? undefined : { label: raw, real };
 }
 
+/** Whether this resolved path exists as a directory, as `statSync` reports it. */
+function isDirectory(raw: string): boolean {
+  try {
+    return statSync(raw).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 /**
- * The roots an `ops` cwd is never allowed to stand for: the OS temp root and the well-known
- * temp dirs, `$HOME`, and the filesystem root. The driver dispatches `ops` at the checkout
- * (`roles.ts` gives it `cwd: "repo"`), so a cwd that resolved to one of these is a spawn that
- * pointed the role at a shared tree — and the rule exists precisely to keep a child out of
- * the shared temp root, which the incident cleared. Refusing the cwd as a root there costs an
- * `ops` child nothing it needs (its work is in the checkout) and closes the one shape where
- * the carve-out covered the incident's own damage. The roots are taken from the OS and the
- * well-known spellings, not from the child's env: an env that does not carry `HOME` or
- * `TMPDIR` (a trimmed test env, a scrubbed spawn) must not quietly drop the guard.
+ * The roots an `ops` cwd is never allowed to stand for: the well-known temp dirs, `$HOME`, and
+ * the filesystem root. The driver dispatches `ops` at the checkout (`roles.ts` gives it
+ * `cwd: "repo"`), so a cwd that resolved to one of these is a spawn that pointed the role at a
+ * shared tree — and the rule exists precisely to keep a child out of the shared temp root,
+ * which the incident cleared. Refusing the cwd as a root there costs an `ops` child nothing it
+ * needs (its work is in the checkout) and closes the one shape where the carve-out covered the
+ * incident's own damage.
  *
- * A temp root is refused for its whole subtree, not just its own directory: the rule
- * resolves a path before it judges it, so a child standing in `/tmp/<other run>` could reach
- * the shared root itself with `rm -rf ..` and clear every other project's temp dir — the
- * incident's damage, arrived at one level deeper. `$HOME` is refused only as itself: every
- * path on the volume lies under it, so treating containment as the test there would refuse
- * every cwd, including the checkout the driver actually dispatches `ops` into. The filesystem
- * root likewise is refused only as itself.
+ * The set is a FIXED canonical union compared on resolved paths, and nothing is dropped for
+ * being absent: `TMPDIR` from the process AND from the well-known spellings, and the home
+ * directory read BOTH ways — `$HOME`, which is what the shell expands `~` to, and the OS
+ * passwd entry. A redirected `TMPDIR` (a test env, or a spawn that pointed the role at a tree
+ * of the child's choosing) only ever ADDS a root; it never removes one.
+ *
+ * A temp root is refused for its whole subtree, not just its own directory: the rule resolves a
+ * path before it judges it, so a child standing in `/tmp/<other run>` could reach the shared
+ * root itself with `rm -rf ..` and clear every other project's temp dir — the incident's damage,
+ * arrived at one level deeper. `$HOME` is refused only as itself, and so is the parent of a
+ * redirected `TMPDIR`: treating either as a whole-subtree refusal would refuse every cwd on the
+ * volume, including the checkout the driver actually dispatches `ops` into, because both hold
+ * every path a legitimate working tree can live under. The parent of the MACHINE's own temp
+ * root is the one exception — it holds nothing but per-run scratch, so a child standing in it
+ * reaches every sibling run's temp dir and has no working business there.
  */
-function forbiddenWorkingDirectories(): { real: string; wholeSubtree: boolean }[] {
+function forbiddenWorkingDirectories(
+  env: NodeJS.ProcessEnv,
+): { real: string; wholeSubtree: boolean }[] {
+  // The roots refused for their WHOLE SUBTREE: the temp roots this call sees, and the ancestors
+  // of the machine's own temp tree. A child standing in any of them reaches the shared root
+  // itself — or a SIBLING child's temp dir — with `rm -rf ..`, so a subtree refusal on the
+  // parent is the same refusal one level up.
+  //
+  // The ancestor walk is seeded from the PROCESS's temp tree alone — `TMPDIR`, which is where the
+  // spawn layer mkdtemp's each child's per-child temp root. It never walks from the well-known
+  // `/tmp`, `/var/tmp`, `/private/tmp` spellings: their parents are `/`, `/var` and `/private`,
+  // and refusing `/var` for its subtree would close the carve-out on a checkout parked under it,
+  // which is the same whole-volume error the `$HOME` rule below settles. Those three are refused
+  // as themselves; only their subtree stays open to a working directory. A redirected `TMPDIR`
+  // likewise contributes its own root above and never an ancestor above the process's own.
+  const shared = new Set<string>();
+  const seed = new Set<string>();
+  const addTemp = (raw: string | undefined, seeds: boolean): void => {
+    if (raw === undefined || raw === "" || !path.isAbsolute(raw)) return;
+    const real = safeResolve(raw);
+    if (real === undefined || !isDirectory(real)) return;
+    shared.add(real);
+    if (seeds) seed.add(real);
+  };
+  for (const dir of tempSpellingValues()) addTemp(dir, false);
+  addTemp(process.env.TMPDIR, true);
+  // A directory NAMED for a temp root is a temp root by the only convention a child can be told
+  // to aim at (`mktemp -p ./tmp`, `TMPDIR=$PWD/tmp`), so it is refused wherever it sits, not
+  // merely where the machine keeps its own. The name is what a child's command can be read for;
+  // no checkout, worktree or operator home carries one.
+  //
+  // The walk climbs the PARENT of the process's temp tree, and stops: the tree `mkdtemp` hands
+  // every child's per-child temp dir to holds all of them, so a child standing in its parent
+  // reaches a SIBLING's temp dir with `rm -rf ..`. It climbs no further and is seeded from no
+  // other root. The parent is refused only where the machine's own temp dirs sit there — asked
+  // of `TMPDIR`/`os.tmpdir()` alone, never of a redirected `TMPDIR`'s ancestry: on a test
+  // harness (or any `TMPDIR` inside a checkout) the parent is the repo's own parent, and
+  // refusing it for its subtree would close the carve-out on every tree in the repo. Where the
+  // parent is the filesystem root, the `$HOME`/`/` refusal below already covers it.
+  const holdsTempRoot = (candidate: string): boolean =>
+    [...shared].some((t) => t !== candidate && isInside(t, candidate));
+  for (const real of seed) {
+    const parent = path.dirname(real);
+    if (parent === path.sep || shared.has(parent)) continue;
+    if (!holdsTempRoot(parent)) continue;
+    addTemp(parent, false);
+  }
+  // The roots refused as THEMSELVES: `/`, the home directory the shell expands `~` to, and the
+  // OS passwd entry. Containment is never the test for these — every path on the volume lies
+  // under both, so a whole-subtree refusal there is a refusal of every cwd, including the
+  // checkout the driver really dispatches `ops` into. A child standing IN either and deleting by
+  // a relative path reaches the tree the rule exists for, which is why neither is a working
+  // directory. Read from the env AND the passwd entry, so an env that carries neither `HOME` nor
+  // `TMPDIR` cannot shrink the guard below what the machine actually has.
+  const own = new Set<string>();
+  for (const dir of [homeDir(), os.homedir(), path.sep]) {
+    if (dir === undefined || dir === "" || !path.isAbsolute(dir)) continue;
+    // A home directory that does not exist is still refused as itself: an env that points `HOME`
+    // at a tree of the child's choosing cannot open the carve-out through a home directory that
+    // was never created.
+    const real = safeResolve(dir);
+    if (real !== undefined) own.add(real);
+  }
   const out: { real: string; wholeSubtree: boolean }[] = [];
-  for (const [raw, wholeSubtree] of [
-    [os.tmpdir(), true],
-    ["/tmp", true],
-    ["/private/tmp", true],
-    [os.homedir(), false],
-  ] as const) {
-    const real = raw === undefined || raw === "" ? undefined : safeResolve(raw);
-    if (real !== undefined) out.push({ real, wholeSubtree });
+  for (const real of shared) out.push({ real, wholeSubtree: true });
+  for (const real of own) {
+    if (shared.has(real)) continue;
+    out.push({ real, wholeSubtree: false });
   }
   return out;
+}
+
+/**
+ * The basenames a temp root goes by — the fixed well-known spellings plus whatever this
+ * process's `TMPDIR` is called. A scratch tree names its shared root one of these, and the
+ * name is the only thing a child's command can be read for; no checkout, worktree or operator
+ * home shares one of them. Read at the call, not once at load: a module-level constant would
+ * freeze the name the test harness's redirected `TMPDIR` happened to have, and a scratch tree
+ * named for it would then borrow the refusal.
+ */
+function tempDirectoryNames(): Set<string> {
+  return new Set<string>(
+    [...TEMP_DIRECTORY_SPELLINGS, process.env.TMPDIR]
+      .filter((d): d is string => d !== undefined && d !== "" && path.isAbsolute(d))
+      .map((d) => path.basename(path.resolve(d)))
+      .filter((n) => n !== "" && n !== path.sep),
+  );
+}
+
+/** The temp roots every machine has, whatever its env says. */
+const TEMP_DIRECTORY_SPELLINGS = ["/tmp", "/var/tmp", "/private/tmp"] as const;
+
+/**
+ * The temp roots as this call sees them: the spellings every machine has, plus `TMPDIR`.
+ * `os.tmpdir()` is deliberately NOT one of them — it caches its first answer for the life of
+ * the process, so a test (or a spawn layer) that redirects `TMPDIR` partway through would keep
+ * being judged against the dir it used before. The spawn layer mkdtemp's each child's temp root
+ * under `TMPDIR` too, so the env spelling is the one that names where they really live.
+ */
+function tempSpellingValues(): string[] {
+  // The temp roots as this call sees them: the spellings every machine has, plus `TMPDIR`.
+  // `os.tmpdir()` is read as the env spelling the spawn layer itself uses — it mkdtemp's each
+  // child's per-child temp root under `TMPDIR` — and not as a separate authority: it caches its
+  // first answer for the life of the process, so a harness that redirects `TMPDIR` partway
+  // through would otherwise keep being judged against the dir it started with, and a test that
+  // clears `TMPDIR` would see the child's scratch tree judged as someone else's.
+  return [...TEMP_DIRECTORY_SPELLINGS, process.env.TMPDIR].filter(
+    (d): d is string => d !== undefined && d !== "" && path.isAbsolute(d),
+  );
+}
+
+/** The lexical and resolved spellings of one path, which is how a cwd is compared. */
+function spellingsOf(raw: string): string[] {
+  const resolved = safeResolve(raw);
+  return resolved === undefined ? [path.resolve(raw)] : [resolved, path.resolve(raw)];
 }
 
 /**
@@ -186,15 +304,37 @@ function forbiddenWorkingDirectories(): { real: string; wholeSubtree: boolean }[
  * as a root rather than admitted: `rm -rf .` there would delete the tree the rule was
  * written to protect, and the role has no business standing in it.
  */
-function usableWorkingDirectory(cwd: string): { label: string; real: string } | undefined {
+function usableWorkingDirectory(
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): { label: string; real: string } | undefined {
   const root = usableRoot(cwd);
-  if (root === undefined || root.real === path.sep || root.real === os.homedir()) {
-    return undefined;
-  }
-  const forbidden = forbiddenWorkingDirectories().some(
-    (f) => f.real === root.real || (f.wholeSubtree && isInside(root.real, f.real)),
+  if (root === undefined) return undefined;
+  const spellings = spellingsOf(cwd);
+  // Refused as a working root when it IS one of the shared roots, or lies inside one. Every
+  // comparison is made on BOTH spellings of the cwd — the path the dispatch handed over and
+  // its resolved form — because a scratch tree stands exactly where `~` expands, and a fixture
+  // `$HOME` is the very tree its own rows are written under: judging one spelling alone lets
+  // the env open the carve-out for the tree the rule exists to protect, or close it for a
+  // checkout the driver really dispatches the role into.
+  const homeSpellings = [safeResolve(homeDir()), safeResolve(os.homedir())];
+  const volumeRoots = [path.sep, ...homeSpellings].filter((s): s is string => s !== undefined);
+  const forbidden = forbiddenWorkingDirectories(env);
+  const refused = forbidden.some((f) =>
+    spellings.some(
+      (candidate) => f.real === candidate || (f.wholeSubtree && isInside(candidate, f.real)),
+    ),
   );
-  return forbidden ? undefined : root;
+  const isVolumeRoot = spellings.some((s) => volumeRoots.includes(s));
+  const tempNames = tempDirectoryNames();
+  // A directory NAMED for a temp root (`tmp`, or whatever this machine's `TMPDIR` is called)
+  // is a temp root by the only convention a child can be told to aim at, so the ops carve-out
+  // does not admit it as anyone's working directory — that is how a shared root under a name
+  // the machine does not itself use still refuses the carve-out. A checkout, a worktree and an
+  // operator's home each carry a name no temp root on any machine has.
+  if (refused || isVolumeRoot || spellings.some((s) => tempNames.has(path.basename(s))))
+    return undefined;
+  return root;
 }
 
 /**
@@ -215,7 +355,7 @@ export function deletionRootsFrom(
     usableRoot(env[CHILD_TMP_ENV]),
     // The ops role's own working tree (see UNSCOPED_ROLE), and only while it is a working
     // tree: a cwd that is the temp root, $HOME or / is no one's working directory.
-    isUnscopedRole(env.PI_ENSEMBLE_ROLE) ? usableWorkingDirectory(cwd) : undefined,
+    isUnscopedRole(env.PI_ENSEMBLE_ROLE) ? usableWorkingDirectory(cwd, env) : undefined,
   ].filter((r): r is { label: string; real: string } => r !== undefined);
   return { cwd, labels: usable.map((r) => r.label), allowed: usable.map((r) => r.real) };
 }

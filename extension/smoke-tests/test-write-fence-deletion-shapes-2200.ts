@@ -302,6 +302,117 @@ for (const [command, why] of wrapperAllowed) {
 }
 
 // ============================================================
+// A8. An `xargs -I` whose VALUE is a path is not a placeholder. `xargs -I VALUE cmd`
+// substitutes VALUE for each name read on standard input, so an operand equal to that
+// value is the path the child typed, not a match: `xargs -I <shared> rm -rf <shared>`
+// deletes the shared root (real `xargs` deletes it). Reading the value as a placeholder
+// dropped the operand, so the remover seemed to name nothing and the delete ran.
+// ============================================================
+const pathShapedPlaceholderRefused: Array<[string, string]> = [
+  [`xargs -I ${sharedTmp} rm -rf ${sharedTmp}`, "`xargs -I <shared> rm -rf <shared>`"],
+  [`xargs -i ${sharedTmp}/x rm -rf ${sharedTmp}/x`, "`xargs -i <shared>/x rm -rf <shared>/x`"],
+  [`xargs -I ${sharedTmp} unlink ${sharedTmp}/payload`, "`xargs -I <shared> unlink <shared>/payload`"],
+  // A relative target resolves against the remover's own directory, which `xargs` gives it as
+  // the child's cwd — so the bare line reaches `<wt>/tmp/other-session-run`, a tree inside the
+  // worktree, and deletes nothing the rule forbids. This line, run from the fixture root, is
+  // the one that reaches the foreign run (verified against GNU xargs).
+  [`cd ${base} && xargs -I ./out rm -rf ./${foreignRun.slice(base.length + 1)}`, "a `./`-shaped -I value whose relative target the `cd` puts outside the roots"],
+  [`xargs -I ~ rm -rf ~`, "a bare `~` -I value, which expands to the home directory"],
+];
+for (const [command, why] of pathShapedPlaceholderRefused) {
+  assert(refused(command) !== undefined, `A8 refuse: ${why} — \`${command}\``);
+}
+// A placeholder that is not path-shaped still names no path, so those lines fall through
+// to the `find` start paths (A5) rather than being judged on the brace.
+assert(
+  refused(`find ${sharedTmp} | xargs -I%% rm -rf %%`) !== undefined,
+  "A8 refuse: a non-path `-I%%` placeholder over the shared root still falls through to the find",
+);
+
+// ============================================================
+// A9. The command an `-exec` runs is the FIRST word after the action. Picking the
+// first word that is not an option let `find <shared> -exec -- rm -rf {} +` and
+// `find <shared> -exec sudo rm -rf {} +` read as an `-exec` of nothing (or of a
+// wrapper that is not a remover), so the reader saw no removal action and allowed the
+// line. An `-exec` whose first word is an option cannot be read at all, so it is refused.
+// ============================================================
+const execFirstWordRefused: Array<[string, string]> = [
+  [`find ${sharedTmp} -exec -- rm -rf {} +`, "`-exec -- rm -rf {} +`"],
+  [`find ${sharedTmp} -exec sudo rm -rf {} +`, "`-exec sudo rm -rf {} +`"],
+  [`find ${sharedTmp} -exec sudo -u nobody rm -rf {} +`, "`-exec sudo -u USER rm -rf {} +`"],
+  [`find ${sharedTmp} -execdir rm {} \;`, "`-execdir rm {} \\;`"],
+  [`find ${sharedTmp} -exec -x rm -rf {} +`, "an -exec whose first word is an option"],
+];
+for (const [command, why] of execFirstWordRefused) {
+  assert(refused(command) !== undefined, `A9 refuse: ${why} — \`${command}\``);
+}
+for (const [command, why] of [
+  [`find ${wt} -exec rm {} +`, "an in-tree `-exec rm {} +`"],
+  [`find ${wt} -exec sudo rm -rf {} +`, "an in-tree `-exec sudo rm -rf {} +`"],
+] as Array<[string, string]>) {
+  assert(refused(command) === undefined, `A9 allow: ${why} — \`${command}\``);
+}
+
+// ============================================================
+// A10. An interpreter body that deletes through a SHELL cannot be read: the path lives
+// in a string the shell runs, so the rule has no target to resolve. A body that holds a
+// recognised delete AND a shell-out is refused as unreadable rather than judged on the
+// literals it does name.
+// ============================================================
+const shellOutRefused: Array<[string, string]> = [
+  [
+    `node -e 'require("child_process").execSync("rm -rf ${sharedTmp}")'`,
+    "`node -e` with `child_process.execSync`",
+  ],
+  [
+    `node -e 'const {exec} = require("child_process"); exec("rm -rf ${sharedTmp}")'`,
+    "`node -e` with `child_process.exec`",
+  ],
+  [
+    `node -e 'require("child_process").spawn("rm", ["-rf", "${sharedTmp}"])'`,
+    "`node -e` with `child_process.spawn`",
+  ],
+  [`bun -e 'Bun.spawn(["rm", "-rf", "${sharedTmp}"])'`, "`bun -e` with `Bun.spawn`"],
+  [
+    `python3 -c 'import subprocess; subprocess.call(["rm", "-rf", "${sharedTmp}"])'`,
+    "`python3 -c` with `subprocess`",
+  ],
+  [`python3 -c 'import os; os.system("rm -rf ${sharedTmp}")'`, "`python3 -c` with `os.system`"],
+  [`ruby -e 'system("rm -rf ${sharedTmp}")'`, "`ruby -e` with `system`"],
+  [`ruby -e '\`rm -rf ${sharedTmp}\`'`, "`ruby -e` with backticks"],
+  [`perl -e 'system("rm -rf ${sharedTmp}")'`, "`perl -e` with `system`"],
+];
+for (const [command, why] of shellOutRefused) {
+  assert(refused(command) !== undefined, `A10 refuse: ${why} — \`${command}\``);
+}
+// A body that shells out but deletes nothing itself is not a deletion, and one that
+// deletes through its own library stays judged on its literal (A3).
+for (const [command, why] of [
+  [`node -e 'require("child_process").execSync("ls -l")'`, "a shell-out that deletes nothing"],
+  [`python3 -c 'import subprocess; print(subprocess)'; echo`, "a python body that only imports subprocess"],
+] as Array<[string, string]>) {
+  assert(refused(command) === undefined, `A10 allow: ${why} — \`${command}\``);
+}
+
+// ============================================================
+// A11. A remover behind a namespace or tracing wrapper is still that remover.
+// ============================================================
+for (const [command, why] of [
+  [`busybox rm -rf ${foreignRun}`, "`busybox rm -rf` of another run's dir"],
+  [`strace -f rm -rf ${foreignRun}`, "`strace -f rm -rf` outside the roots"],
+  [`unshare rm -rf ${foreignRun}`, "`unshare rm -rf` outside the roots"],
+  [`nsenter -t 1 rm -rf ${foreignRun}`, "`nsenter -t 1 rm -rf` outside the roots"],
+  [`chroot / rm -rf ${foreignRun}`, "`chroot / rm -rf` outside the roots"],
+  [`firejail rm -rf ${foreignRun}`, "`firejail rm -rf` outside the roots"],
+] as Array<[string, string]>) {
+  assert(refused(command) !== undefined, `A11 refuse: ${why} — \`${command}\``);
+}
+assert(
+  refused(`busybox rm -rf ${wt}/build`) === undefined,
+  `A11 allow: \`busybox rm -rf\` of a build dir in the worktree`,
+);
+
+// ============================================================
 // B. The child's own roots stay deletable — the rule is not a bash ban.
 // ============================================================
 const allowedShapes: Array<[string, string]> = [

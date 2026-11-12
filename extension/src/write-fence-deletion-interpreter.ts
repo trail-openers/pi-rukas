@@ -46,6 +46,23 @@ const INTERPRETERS: Record<string, readonly string[]> = {
 /** The JS spellings: an fs call, or the plain `rm(`/`unlink(`/`rmdir(` call. */
 const JS_CALL = /\b(?:rmSync|unlinkSync|rmdirSync|removeSync|rm\s*\(|rmdir\s*\(|unlink\s*\()/;
 
+/**
+ * The JS spellings that hand a REMOVER to a shell: an exec-family call whose first argument is
+ * a remove command, or `Bun.spawn` of one. Naming the remover is what makes the call a deletion
+ * rather than a shell-out — an `execSync("ls -l")` runs no delete and stays a normal command.
+ */
+const SHELL_DELETE_CALL =
+  /\b(?:exec|execSync|spawn|spawnSync|execFile)\s*\(\s*['"`]\s*(?:rm|rmdir|unlink|shred)\b|\bBun\.(?:spawn|spawnSync)\s*\(\s*\[?\s*['"`]\s*(?:rm|rmdir|unlink|shred)\b/;
+
+/** The Python spellings that hand a command to a shell: `os.system`, `os.popen`, `subprocess`'s call family. */
+const PY_SHELL_CALL = /\bsubprocess\s*\.\s*\w+\s*\(|\bos\.(?:system|popen)\s*\(/;
+
+/** The Ruby spellings that shell out: `system`, backticks, `%x{}`, `IO.popen`, `Open3`. */
+const RUBY_SHELL_CALL = /\bsystem\s*\(|`|%x|\bIO\.popen\b|\bOpen3\b/;
+
+/** The Perl spellings that shell out: `system`, backticks, `qx{}`, an open on a pipe. */
+const PERL_SHELL_CALL = /\bsystem\s*\(|`|\bqx\b|\bIPC::Open/;
+
 /** The Python spellings: `shutil.rmtree`, an `os.` removal, a `Path(...).unlink()`. */
 const PYTHON_CALL =
   /\b(?:shutil\.rmtree|os\.(?:remove|unlink|rmdir)\s*\(|Path\([^)]*\)\s*\.\s*unlink)/;
@@ -84,6 +101,27 @@ function callShape(name: string): RegExp {
     default:
       return JS_CALL;
   }
+}
+
+/**
+ * Whether this body hands a command to a shell — which makes it a deletion whose target this
+ * reader cannot resolve, so `interpreterDeletions` refuses it instead of judging the literals
+ * the body happens to name. A bare shell MODULE name (`child_process`, `subprocess`) counts
+ * only where the body also shows a delete: a body that neither deletes nor calls anything is
+ * not a deletion, and a body that only imports a module deleted nothing.
+ */
+function shellsOut(name: string, body: string): boolean {
+  // The shell call shapes that ARE the delete: `execSync("rm -rf …")` and `Bun.spawn(["rm", …])`
+  // remove whatever the program they run removes, and the target lives in a string this reader
+  // cannot resolve — so the call is refused whole, not judged on whichever literals the body
+  // happens to name. A bare module name with no call (`import subprocess`) deletes nothing.
+  if (SHELL_DELETE_CALL.test(body)) return true;
+  const deletes = callShape(name).test(body);
+  if (deletes && SHELL_MODULE.test(body)) return true;
+  if (name === "python" || name === "python3") return PY_SHELL_CALL.test(body);
+  if (name === "ruby") return RUBY_SHELL_CALL.test(body);
+  if (name === "perl") return PERL_SHELL_CALL.test(body);
+  return false;
 }
 
 /**
@@ -173,6 +211,13 @@ function interpreterBody(args: Word[], flags: readonly string[]): Word | undefin
 }
 
 /**
+ * A body word that names a shell module rather than a shell call: the module a JS body
+ * requires and python's `subprocess`. `shellsOut` counts one only for a body that also shows
+ * a delete, so a body that merely imports the module is not a deletion.
+ */
+const SHELL_MODULE = /\bchild_process\b|\bsubprocess\b/;
+
+/**
  * The paths an interpreter call deletes, already absolute; empty when the call is
  * not an interpreter deletion. A run-time-built body, or a body that deletes without
  * naming a path, returns the single refusal path `undefined` through `reason` — the
@@ -188,7 +233,13 @@ export function interpreterDeletions(
   const body = interpreterBody(args, flags);
   if (body === undefined) return [];
   if (body.dyn) return { reason: INTERPRETER_TARGET_REASON };
-  if (!callShape(name).test(body.text)) return [];
+  const deletes = callShape(name).test(body.text);
+  // A body that hands the delete to a shell deletes something this reader never sees — for
+  // the JS dialects the shell call IS the delete, so such a body counts as one even where no
+  // `fs` call appears. Either way the target is unknowable here and the call is refused, not
+  // judged on whichever literals the body happens to name.
+  if (shellsOut(name, body.text)) return { reason: INTERPRETER_TARGET_REASON };
+  if (!deletes) return [];
   // A target assembled at run time — an interpolation, a concatenation, an env
   // read — cannot be judged, and a body that deletes without naming one is the
   // same case in another spelling. Both are refused, not waved through.
