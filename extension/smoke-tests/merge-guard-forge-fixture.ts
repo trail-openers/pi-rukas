@@ -100,6 +100,37 @@ export interface MergeGateEnv {
   /** #2106 — make the check-row read throw. */
   failChecks?: boolean;
   /**
+   * #2226 — the MR row the gatherer's GitLab arm reads, verbatim JSON. Absent,
+   * the stub answers a green MR (`can_be_merged`, no conflicts, discussions
+   * resolved, no approvals outstanding) carrying the head the guard verified.
+   */
+  glMr?: string;
+  /**
+   * #2226 — the `detailed_merge_status` of that row, for an arm that varies the
+   * readiness rather than replacing the whole payload (`can_be_merged` when
+   * unset).
+   */
+  glMrStatus?: string;
+  /**
+   * #2226 — the MR's pipelines list, verbatim JSON (one row for the MR's
+   * `head_pipeline` — id 5001, sha the verified head — when unset).
+   */
+  glPipelines?: string;
+  /**
+   * #2226 — what the SECOND pipelines page answers, verbatim JSON (`[]` when
+   * unset: a full first page with nothing after it, which is the whole list).
+   * Only ever read when the first page filled its requested size.
+   */
+  glPipelinesPage2?: string;
+  /** #2226 — the pipeline's job rows, verbatim JSON (one `success` row when unset). */
+  glJobs?: string;
+  /**
+   * #2226 — what the SECOND jobs page answers, verbatim JSON (`[]` when unset:
+   * a full first page with nothing after it, which is the whole pipeline). Only
+   * ever read when the first page filled its requested size.
+   */
+  glJobsPage2?: string;
+  /**
    * #2106/#2107 — the head the evidence read reports.
    *
    * - `undefined` (the default) — "the head the guard verified", derived from

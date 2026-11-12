@@ -232,12 +232,17 @@ export function lensNotEvaluatedRefusal(
  * `mergeStateStatus` are all NOT passing there, and an unreadable read
  * refuses there too. `ok: true` is the only answer that lets the merge run.
  *
- * GitHub only, deliberately. `gatherMergeEvidence` spells its two reads with
- * the GitHub argv builders unconditionally (its check rows expect a `bucket`
- * or `state` per check), and `prChecksCmd("gitlab", n)` answers with a
- * pipelines payload whose rows carry neither, so running it for a glab merge
- * would refuse every MR on the absence of evidence. The GitLab path keeps
- * today's behaviour; its evidence gate is its own issue.
+ * #2226 — GitLab runs the same gate. It used to `return undefined` for any
+ * non-GitHub forge, on the reasoning that the gatherer spelled gh argv and
+ * graded rows by `bucket`/`state` that a GitLab pipeline payload does not carry,
+ * so gating a glab merge on it would refuse every MR on the absence of evidence.
+ * The gatherer has a GitLab arm now (`work-driver-merge-evidence-gl.ts`), so the
+ * GitLab gate is no longer its own issue: the reads stay bounded by the guard's
+ * budget below and scoped to the project the merge names, exactly as the gh
+ * reads do. Note the GitLab arm reads its OWN three endpoints (the MR row, its
+ * pipelines, that pipeline's jobs) rather than `prChecksCmd("gitlab", n)`, which
+ * still answers with a pipelines list — so no read on this path can be mistaken
+ * for check rows.
  *
  * #2107 — three things the gatherer's own contract leaves to the caller, and
  * which this guard does NOT leave unpoliced:
@@ -269,7 +274,6 @@ export async function refuseUnlessCiGreen(
     timeoutMs?: number;
   } = {},
 ): Promise<{ block: true; reason: string } | undefined> {
-  if (forge !== "github") return undefined;
   const timeoutMs = opts.timeoutMs ?? EXEC_TIMEOUT_MS;
   // Every read in this pass is bounded by the guard's own per-exec budget: the
   // gatherer passes `maxBuffer` alone, and `MergeExecFn` forwards `timeout` to

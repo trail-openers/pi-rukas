@@ -29,11 +29,16 @@
  */
 
 import { rmSync } from "node:fs";
+import {
+  mergeEvidenceGlMrCmd,
+  mergeEvidenceGlPipelinesCmd,
+} from "../src/forge-commands-gl-evidence.ts";
 import type { HandlerCtx } from "../src/lean/engine.ts";
-import { landOutcome } from "../src/lean/land.ts";
 import type { LandDeps, MergeCall } from "../src/lean/land-deps.ts";
-import type { MergeEvidence } from "../src/work-driver-merge-evidence.ts";
+import { landOutcome } from "../src/lean/land.ts";
 import type { Outcome } from "../src/lean/state.ts";
+import type { MergeEvidence } from "../src/work-driver-merge-evidence.ts";
+import { gatherMergeEvidence } from "../src/work-driver-merge-evidence.ts";
 import { ROOTS, ciLandLog } from "./lib/lean-ci-land-fixture.ts";
 
 let exit = 0;
@@ -258,6 +263,71 @@ async function drive(
 		typeof landDeps().mergeSubject === "function",
 		"(l8) production wiring supplies mergeSubject",
 	);
+}
+
+// ── (l9) #2226 — the evidence seam the land wiring uses is forge-aware ───
+{
+	// E6, driven through the same gatherer `landDeps()` wires: on a GitLab project
+	// the evidence read must reach the GitLab arm and answer from `glab`, not
+	// issue gh argv and refuse a green MR on the absence of evidence — the exact
+	// shape that parked a GitLab pilot's work-lean run at `land`.
+	const HEAD = "a".repeat(40);
+	const asked: string[] = [];
+	// The three fixture keys are the builders' OWN output, not hand-spelled argv:
+	// a builder that grows a parameter used to leave this arm answering a read it
+	// no longer issues, and the failure looked like a gatherer bug rather than a
+	// fixture drift. The exact argv is pinned in test-gh-argv.ts.
+	const rows: Record<string, string> = {
+		[mergeEvidenceGlMrCmd(42)]: JSON.stringify({
+			iid: 42,
+			state: "opened",
+			detailed_merge_status: "can_be_merged",
+			has_conflicts: false,
+			blocking_discussions_resolved: true,
+			approvals_left: 0,
+			sha: HEAD,
+			diff_refs: { head_sha: HEAD },
+			head_pipeline: { id: 5001, sha: HEAD, status: "success" },
+		}),
+		[mergeEvidenceGlPipelinesCmd(42)]: JSON.stringify([
+			{ id: 5001, sha: HEAD, status: "success" },
+		]),
+		// Matched as a prefix, so it stays correct when the builder grows the page
+		// pin (#2226) — the argv itself is pinned in test-gh-argv.ts.
+		'glab api "/projects/:id/pipelines/5001/jobs': JSON.stringify([
+			{ name: "build", status: "success", allow_failure: false },
+			{ name: "test", status: "success", allow_failure: false },
+			// The pilot shape: a manual deploy job the pipeline may fail must not
+			// park the land step.
+			{ name: "deploy-production", status: "manual", allow_failure: true },
+		]),
+	};
+	const glExec = async (cmd: string) => {
+		asked.push(cmd);
+		for (const [frag, stdout] of Object.entries(rows)) {
+			if (cmd.startsWith(frag)) return { stdout };
+		}
+		throw new Error(`unexpected exec: ${cmd}`);
+	};
+	// The seam's own forge source is `detectForge`, whose first precedence is
+	// PI_ENSEMBLE_FORGE — the offline switch every forge matrix in this suite uses.
+	const savedForge = process.env.PI_ENSEMBLE_FORGE;
+	process.env.PI_ENSEMBLE_FORGE = "gitlab";
+	try {
+		const ev = await gatherMergeEvidence(glExec, "/x", 42);
+		assert(
+			ev.ok === true && ev.headOid === HEAD,
+			`(l9) the land evidence read passes a green MR on GitLab (${JSON.stringify(ev)})`,
+		);
+		assert(
+			asked.length > 0 && asked.every((c) => c.startsWith("glab ")),
+			`(l9) …and issued ONLY glab reads — no gh argv on a GitLab project (${JSON.stringify(asked)})`,
+		);
+	} finally {
+		if (savedForge === undefined)
+			Reflect.deleteProperty(process.env, "PI_ENSEMBLE_FORGE");
+		else process.env.PI_ENSEMBLE_FORGE = savedForge;
+	}
 }
 
 for (const dir of ROOTS) rmSync(dir, { recursive: true, force: true });
