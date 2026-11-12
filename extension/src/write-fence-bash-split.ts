@@ -173,11 +173,12 @@ export function isXargsPlaceholder(text: string, placeholder: string): boolean {
  * whose value is optional) and a `-I` that took no value both mean the default. A spaced value that
  * reads as a path is a path the child typed, so it stays out of this set and its operand is judged.
  *
- * A value that is a plain WORD (`-I q`, `-I rm`, `-I VICTIM`) is likewise NOT a substitution to
- * drop an operand on: `-I` takes an ARBITRARY string, so `q` is as legal a replacement string as it
- * is a path, and reading such a value as a token swallowed the operand beside it — the remover then
- * seemed to name nothing, and the tree it named was never judged. Real GNU `xargs` 4.10 deletes the
- * child's own `./q` for `printf q | xargs -I q rm -rf q`.
+ * A value that is a plain WORD (`-I q`, `-I rm`, `-I VICTIM`) enters this set — `-I` accepts an
+ * ARBITRARY string, so `q` is a legal replacement string — yet it is never dropped from an operand
+ * list, because `isPlaceholderWord` also demands a token SHAPE and no word of that kind has one.
+ * The two tests together are what keep the line judged: the same text is the token in `-I`'s slot
+ * and the victim to the right of the command, and `printf q | xargs -I q rm -rf q` really does
+ * delete the child's own `./q` (GNU `xargs` 4.10).
  */
 export function xargsPlaceholders(args: Word[]): string[] {
   const out: string[] = [];
@@ -236,10 +237,12 @@ export function withoutPlaceholder(words: Word[], args: Word[]): Word[] {
 
 /**
  * Whether one word is a substitution token rather than a path: one of this line's placeholders,
- * AND shaped like a token (`{}`, or `%`/`%%`/`-#`) — which no path is spelled like. The shape test
- * is the whole defence: a spaced `-I`/`-i` VALUE survives the wrapper with the same text as the
- * token it replaced, and `-I` accepts any string at all, so a plain-word value that were also
- * dropped from the operands would take the only word naming the victim with it.
+ * AND shaped like a token (`{}`, or `%`/`%%`/`-#`) — which no path is spelled like. Both halves
+ * carry weight. A spaced `-I`/`-i` VALUE survives the wrapper with the same text as the token it
+ * replaced, and `-I` accepts any string at all, so membership alone would drop a plain-word value
+ * out of the operands too — taking the only word naming the victim with it (`xargs -I <shared>
+ * rm -rf <shared>`, `xargs -I q rm -rf q`). And the shape test alone would drop a literal `{}`
+ * operand that the child typed rather than substituted.
  */
 function isPlaceholderWord(text: string, placeholders: ReadonlySet<string>): boolean {
   return placeholders.has(text) && (text === XARGS_DEFAULT_PLACEHOLDER || OPTION_SHAPED.test(text));

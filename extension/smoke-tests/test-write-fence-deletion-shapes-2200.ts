@@ -266,23 +266,24 @@ assert(
 );
 
 // ============================================================
-// A8b. An `xargs -I` whose VALUE is a plain WORD is still the child's own path. `-I` takes an
+// A8b. An `xargs -I` whose VALUE is a plain WORD still names the child's own path. `-I` takes an
 // arbitrary string, so `rm`, `q` and `VICTIM` are all legal replacement strings — and the operand
-// equal to one is the path xargs hands the remover on every run. Reading a plain word as the
-// placeholder dropped the operand, so the remover seemed to name nothing and
-// `printf q | xargs -I rm rm -rf rm` ran. Real GNU `xargs` 4.10 deletes with both spellings —
-// `printf 'victim\n' | xargs -I victim rm -rf victim` cleared a scratch victim dir, and from a
-// cwd inside the worktree, `xargs -I q rm -rf ../outside/q` cleared one outside it. Only the
-// brace/`%`/`-#` family is a token, so a plain word's operand is judged wherever the line puts
+// equal to one is the path xargs hands the remover on every run. Real GNU `xargs` 4.10 deletes with
+// both spellings — `printf 'victim\n' | xargs -I victim rm -rf victim` cleared a scratch victim dir,
+// and from a cwd inside the worktree, `xargs -I q rm -rf ../outside/q` cleared one outside it. Only
+// the brace/`%`/`-#` family is a token, so a plain word's operand is judged wherever the line puts
 // it; the A8 rows above missed this because every `-I` value there was path-shaped.
 // ============================================================
 /**
- * THE DISCRIMINATING ROW. `xargs -I` takes an ARBITRARY string, so a plain word is a legal
- * replacement string AND a legal path, and here the operand IS that word — so no other word on the
- * line names the victim, and the ONLY thing that can judge it is reading the `-I` value as the
- * child's own string rather than as a substitution token. Mutate `xargsPlaceholders` to admit a
- * non-option-shaped `-I` value to the placeholder set and this row goes red: the sole operand is
- * dropped, the remover seems to name nothing, and the line runs. `real xargs` 4.10 deletes `q`.
+ * THE DISCRIMINATING ROWS. `xargs -I` takes an ARBITRARY string, so `q`, `rm` and `VICTIM` are all
+ * legal replacement strings — and every one of them is also a legal path. Membership of the
+ * placeholder set is therefore not enough to drop a word: `isPlaceholderWord` must also require a
+ * token SHAPE, or the sole operand to the right of the command is read as the substitution, the
+ * remover seems to name nothing, and the tree it named is never judged. Mutate that shape test away
+ * (`return placeholders.has(text)`) and the allow rows below go red — the one that matters,
+ * `xargs -I q rm -rf q`, is the line real GNU `xargs` 4.10 really deletes through. The refuse rows
+ * pin the same operand read wherever the `cd` or the line puts it, on the removers the writers table
+ * has no entry for and under the BSD `-i` spelling.
  */
 const wordValuedPlaceholderRefused: Array<[string, string]> = [
   [`printf q | xargs -I q rm -rf ${sharedRuns}/other-run`, "an operand that IS the word `-I` value, naming a shared root no basename rule knows"],
