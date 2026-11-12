@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.77](https://github.com/trail-openers/pi-rukas/compare/v0.14.76...v0.14.77) (2026-11-12)
+
+
+### Bug Fixes
+
+* **lean:** gate [#2179](https://github.com/trail-openers/pi-rukas/issues/2179)'s runner preflight and submodule init behind PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT ([#2220](https://github.com/trail-openers/pi-rukas/issues/2220)) ([36e3663](https://github.com/trail-openers/pi-rukas/commit/36e366352a4ecf3f2f35b6d7bdcaffeecc561162))
+
 ## [0.14.76](https://github.com/trail-openers/pi-rukas/compare/v0.14.75...v0.14.76) (2026-11-12)
 
 
