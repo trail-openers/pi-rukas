@@ -389,6 +389,10 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
         });
       }
       // GitLab: list the MR's pipelines, take the most recent, list its jobs.
+      // A list that ran past the page this read asked for is reported as the
+      // empty set rather than as the page it saw: a caller must never receive a
+      // partial job list it could grade as complete, and every caller already
+      // refuses "no checks reported" as the absence of evidence.
       const pipelines = await run(
         `glab api /projects/:id/merge_requests/${number}/pipelines`,
         (s) => {
@@ -399,14 +403,21 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
       );
       const latest = pipelines[0];
       if (!latest || typeof latest.id !== "number") return [];
-      return glPipelineJobs(run, latest.id);
+      const read = await glPipelineJobs(run, latest.id);
+      // A list that ran past the page it read is reported as the empty set rather
+      // than as the page it saw: a caller must never receive a partial job list it
+      // could grade as complete, and every caller already refuses "no checks
+      // reported" as the absence of evidence.
+      return read.truncated ? [] : read.rows;
     },
 
     // The job rows of ONE named pipeline, plus the commit that pipeline says it
-    // built. `prChecks` takes the newest row of the MR's pipelines list and keeps
-    // only the rows, so a caller that must say which commit they ran at — lean's
-    // `ci` step, which refuses to grade a foreign pipeline — needs this arm; the
-    // `/pipelines/:id` row carries the `sha` the jobs list does not.
+    // built — the ONE jobs read a `ci` poll makes. `prChecks` takes the newest row
+    // of the MR's pipelines list and keeps only the rows, so a caller that must say
+    // which commit they ran at — lean's `ci` step, which refuses to grade a foreign
+    // pipeline — needs this arm; the `/pipelines/:id` row carries the `sha` the jobs
+    // list does not. `truncated` says the list ran past its page: the caller refuses
+    // rather than grading an incomplete list.
     glPipelineJobs: (pipelineId) =>
       glPipelineJobsAt(run, pipelineId, cmds.pipelineViewCmd(pipelineId)),
 

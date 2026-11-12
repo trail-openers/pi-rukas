@@ -30,8 +30,20 @@ export interface GlCase {
    *  serialized verbatim, never mutated — so a suite's `as const` job fixtures
    *  pass straight through from `CiCase` without a cast. */
   jobs?: readonly Record<string, unknown>[];
+  /** The SECOND page of the same jobs read — what a `?page=2` probe answers.
+   *  A case that never gets a jobs read at all (an MR with no pipeline, or one
+   *  whose pipeline names no commit) sets this to `null` to say so: the
+   *  read-for-rows counter then stays at zero, because a case that answered a
+   *  page nobody asked for would be answering a read that never happened.
+   *  Absent means the empty page — what a one-page pipeline really has beyond
+   *  its first page. */
+  jobsPage2?: readonly Record<string, unknown>[] | null;
   /** The MR's pipelines rows. An empty array is "no pipeline at all". */
   pipelines?: readonly { id: number; sha?: string; status?: string }[];
+  /** An MR reply that names NO pipeline: the step must then make no jobs read at
+   *  all. This is the MR with no pipeline, as distinct from `pipelines: []`, which
+   *  is the pipelines LIST the step no longer reads. */
+  noPipeline?: boolean;
   /** What the pipeline the step asks about reports as the commit it built. The
    *  default is the head of the case's own repo, which is what a real MR's pipeline
    *  is built at; `null` is the pipeline that names no commit, and any other string
@@ -69,6 +81,12 @@ const GL_MR_PIPELINE = { id: 5001, status: "running" };
 function withRowHead(row: Record<string, unknown>): Record<string, unknown> {
   if (row.open_pipeline !== undefined || row.head_pipeline !== undefined) return row;
   return { ...row, open_pipeline: GL_MR_PIPELINE };
+}
+
+/** Strip the embedded pipeline rows: an MR that names no pipeline at all. */
+function withNoPipeline(row: Record<string, unknown>): Record<string, unknown> {
+  const { open_pipeline: _o, head_pipeline: _h, ...rest } = row;
+  return rest;
 }
 
 /** The MR address the publish step records for a self-hosted GitLab run. */
@@ -121,6 +139,15 @@ function glMrRow(c: GlCase, head: string, n: number): Record<string, unknown> {
     if (picked !== undefined) return withRowHead(picked as Record<string, unknown>);
   }
   if (c.mr !== undefined) return withRowHead(c.mr);
+  // A case that says its MR names no pipeline gets one: the step must then read
+  // neither the pipelines list nor any jobs page, and a default row that named a
+  // pipeline would make that claim untestable.
+  if (c.noPipeline === true)
+    return withNoPipeline(
+      c.mrHead === undefined
+        ? { ...GL_MR, diff_refs: { head_sha: head } }
+        : { ...GL_MR, diff_refs: { head_sha: c.mrHead } },
+    );
   // The default row tracks the head this repo really holds — the one the verify
   // gate certified: the raw fixture's `head_sha` is a constant. `mrHead` is how a
   // case says the MR has moved off it, and the pipeline follows the reply's own
@@ -190,11 +217,21 @@ export async function glForge(
   const fixtureExec: ForgeExecFn = async (cmd) => {
     record(cmd);
     if (c.unreadable === true) throw new Error("glab: could not reach the API");
-    if (cmd.includes("/jobs")) return { stdout: JSON.stringify(c.jobs ?? GL_TWO_GREEN) };
+    if (cmd.includes("/jobs")) {
+      if (c.noPipeline === true || c.jobsPage2 === null)
+        throw new Error(`fixture: a jobs read nobody should have made — ${cmd}`);
+      return {
+        stdout: JSON.stringify(/page=2/.test(cmd) ? (c.jobsPage2 ?? []) : (c.jobs ?? GL_TWO_GREEN)),
+      };
+    }
+    if (c.noPipeline === true && cmd.includes("/pipelines"))
+      throw new Error(`fixture: a pipelines read nobody should have made — ${cmd}`);
     const one = /^glab api \/projects\/:id\/pipelines\/(\d+) --output json$/.exec(cmd);
     if (one !== null) {
       const sha =
-        c.pipelineSha === null ? undefined : (c.pipelineSha ?? c.mrHead ?? c.pipelines?.[0]?.sha ?? head);
+        c.pipelineSha === null
+          ? undefined
+          : (c.pipelineSha ?? c.mrHead ?? c.pipelines?.[0]?.sha ?? head);
       return { stdout: JSON.stringify({ id: Number(one[1]), sha, status: "success" }) };
     }
     if (cmd.includes("/pipelines"))

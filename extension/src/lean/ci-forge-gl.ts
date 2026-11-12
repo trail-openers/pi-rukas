@@ -18,7 +18,9 @@
  *      composition fields and `diff_refs.head_sha`. A green is never a
  *      composition about one commit with a head taken from another. The pipeline
  *      jobs are the second read, exactly as `gh pr checks` is separate from the
- *      view read.
+ *      view read — and it is made ONCE per poll, by this module: the readiness
+ *      path reads the composition and nothing else, because the same rows read
+ *      twice per poll asked the forge for a page it had already answered.
  *   2. **A forge fault is never a verdict.** An unreadable read, an absent
  *      readiness field (the composition's `ForgeFieldError`), or a head that is
  *      not a full 40-hex sha all THROW. A red spends a build round on the code;
@@ -30,13 +32,17 @@
  *      refused, and a state the table has never seen waits rather than passing.
  *      GitLab rows carry no `bucket`, so gh's bucket-first grading cannot reach
  *      them, and `glRowGrade` is the one place this step asks the table.
- *   4. **The jobs are the head's jobs.** The adapter's `prChecks` reaches a
- *      pipeline through the MR's pipelines LIST and keeps only the job rows, so on
- *      a project that runs tag- or schedule pipelines its rows can belong to a
- *      different commit than the one the readiness was composed at — and a verdict
- *      about a foreign pipeline is a verdict about a commit nobody is merging. The
- *      step therefore reads the jobs of the pipeline **the MR reply itself named**,
- *      and keeps them only when that pipeline reports the head as its own commit.
+ *   4. **The jobs are the head's jobs, and they are all the jobs there are.**
+ *      The adapter's `prChecks` reaches a pipeline through the MR's pipelines LIST
+ *      and keeps only the job rows, so on a project that runs tag- or schedule
+ *      pipelines its rows can belong to a different commit than the one the
+ *      readiness was composed at — and a verdict about a foreign pipeline is a
+ *      verdict about a commit nobody is merging. The step therefore reads the jobs
+ *      of the pipeline **the MR reply itself named**, and keeps them only when that
+ *      pipeline reports the head as its own commit. The same read asks for a page
+ *      of `GL_JOBS_PAGE` and probes a full page once for a second one: rows past
+ *      the page read are rows nobody graded, and a failing job among them is a
+ *      false green — so a list known to continue is refused, not graded.
  *
  * Both reads are the ADAPTER's (`mergeReadiness` and `glPipelineJobs`), so their
  * argv stays the adapter's pinned form and the composition stays the adapter's;
@@ -47,6 +53,7 @@
 
 import { isFullCommitSha } from "../commit-sha.ts";
 import { gradeGlJobState } from "../forge-gl-grade.ts";
+import { GL_JOBS_PAGE } from "../forge-pipeline.ts";
 import type { MergeReadiness, NormalizedCICheck } from "../forge-types.ts";
 import { VerifyInfraError } from "./verify-types.ts";
 
@@ -77,7 +84,6 @@ export type GlForge = {
     readiness?: MergeReadiness;
     reason?: string;
   }>;
-  prChecks(number: number): Promise<NormalizedCICheck[]>;
   /** The MR reply the most recent `mergeReadiness` consumed, or `undefined` when
    *  this adapter never read that number. */
   lastMrRow(number: number): unknown;
@@ -86,14 +92,19 @@ export type GlForge = {
    * the commit the pipeline row itself reported. Optional: only the GitLab adapter
    * implements it, and the step's `readForge` asks for it only on that arm.
    *
-   * This is the head pin's evidence. `prChecks` reaches the pipeline through
-   * `/merge_requests/:iid/pipelines` and keeps only the job rows, so its caller
-   * cannot say which commit they ran at; a project whose pipelines list leads with
-   * a tag or schedule pipeline would otherwise have those rows graded as this MR's
-   * verdict. `pipelineSha` is `undefined` when the pipeline named no commit.
+   * This is the head pin's evidence AND the poll's single jobs read: the step
+   * grades these rows and nothing else, so the adapter's `prChecks` pipelines
+   * lookup is not on this path — its rows carry no commit of their own, and a
+   * project whose pipelines list leads with a tag or schedule pipeline would have
+   * those rows graded as this MR's verdict. `pipelineSha` is `undefined` when the
+   * pipeline named no commit; `rows` is `undefined` when the list ran past the
+   * page the read asked for, which is a refusal rather than a short list.
    */
   glPipelineJobs?(pipelineId: number): Promise<{
     rows: NormalizedCICheck[];
+    /** True when the jobs list ran past the page the read asked for: the rows
+     *  graded are not the whole pipeline (see `GlJobsRead`, `forge-pipeline.ts`). */
+    truncated: boolean;
     pipelineSha: string | undefined;
   }>;
 };
@@ -137,18 +148,17 @@ function mrPipelineRow(
 /**
  * The job rows of the pipeline the MR reply named, and the commit that pipeline
  * reported for itself — the head pin's two pieces of evidence, both from the
- * adapter's own argv.
+ * adapter's own argv, and the ONE jobs read this poll makes.
  *
- * `prChecks` reaches a pipeline through `/merge_requests/:iid/pipelines` and keeps
- * only the job rows, so its caller cannot say which commit they ran at. The
- * `/pipelines/:id` row GitLab answers with carries `sha`, and that is the commit
- * the jobs actually built. Absent or malformed, it says nothing — and absence is
- * never a pass, so the caller gets `undefined` and refuses to grade.
+ * The `/pipelines/:id` row GitLab answers with carries `sha`, and that is the
+ * commit the jobs actually built — the jobs list itself carries none. Absent or
+ * malformed, the pipeline says nothing about which rows are the head's, and
+ * absence is never a pass, so the caller gets `undefined` and refuses to grade.
  */
 async function pipelineJobs(
   forge: GlForge,
   pipelineId: number,
-): Promise<{ rows: NormalizedCICheck[]; pipelineSha: string | undefined }> {
+): Promise<{ rows: NormalizedCICheck[]; truncated: boolean; pipelineSha: string | undefined }> {
   if (forge.glPipelineJobs === undefined)
     throw new VerifyInfraError(
       "this forge adapter cannot report which commit a pipeline's jobs were built at, so ci cannot say the rows it read are the head's",
@@ -161,6 +171,7 @@ async function pipelineJobs(
   const sha = read.pipelineSha;
   return {
     rows: Array.isArray(read.rows) ? read.rows : [],
+    truncated: read.truncated === true,
     pipelineSha: typeof sha === "string" && isFullCommitSha(sha) ? sha : undefined,
   };
 }
@@ -169,18 +180,21 @@ async function pipelineJobs(
  * One read of the MR and its pipeline.
  *
  * `mergeReadiness` runs first because it is the read that consumes the MR reply
- * the head and the pipeline id are then taken from, and `lastMrRow` is read before
- * anything else touches the MR: `prChecks` re-issues the MR read of its own, so a
- * reply cached after it could describe a commit the readiness never saw. Its
- * `ok: false` is an infrastructure throw rather than a red: an absent or unmapped
- * composition field is the forge not answering, which is nobody's verdict about the
- * code.
+ * the head and the pipeline id are then taken from, and `lastMrRow` is read
+ * before anything else touches the MR: any later read of the MR would cache a
+ * reply that could describe a commit the readiness never saw. Its `ok: false` is
+ * an infrastructure throw rather than a red: an absent or unmapped composition
+ * field is the forge not answering, which is nobody's verdict about the code.
  *
- * The rows then come from the pipeline **the readiness named**, not from the newest
- * row of the MR's pipelines list, and are kept only when that pipeline reports the
- * head as its own commit. `[]` — the MR with no pipeline at all, or one whose
- * commit the forge would not say — is what `ci.ts` already refuses as the absence
- * of evidence.
+ * The rows then come from the pipeline **the readiness named**, in ONE read, and
+ * are kept only when that pipeline reports the head as its own commit. `[]` — the
+ * MR with no pipeline at all, a head the forge never named, or a pipeline whose
+ * commit it would not say — is what `ci.ts` already refuses as the absence of
+ * evidence, and it is reached WITHOUT reading any jobs: rows that could belong to
+ * no commit are rows nobody can grade. A truncated list is the other refusal, and
+ * it throws: rows past the page read could hold a failure nobody saw, and a
+ * verdict made on a list known to be incomplete is the false green the page size
+ * exists to prevent.
  */
 export async function glRead(forge: GlForge, number: number): Promise<GlRead> {
   if (typeof forge.lastMrRow !== "function")
@@ -199,14 +213,28 @@ export async function glRead(forge: GlForge, number: number): Promise<GlRead> {
   const mr = forge.lastMrRow(number) as Record<string, unknown> | undefined;
   const head = headFromMr(mr);
   const pipeline = mrPipelineRow(mr);
-  if (pipeline === undefined || typeof pipeline.id !== "number")
+  // A head the forge never named, or a pipeline it never named, means there is
+  // nothing to pin the rows to: the step reads NO jobs at all and `ci.ts` refuses
+  // the absence as green. Asking the forge for rows nobody could attribute to a
+  // commit would be a read that buys no evidence.
+  if (pipeline === undefined || typeof pipeline.id !== "number" || head === undefined)
     return { mergeStateStatus: readiness.readiness, prHead: head, rows: [] };
   const jobs = await pipelineJobs(forge, pipeline.id);
-  if (jobs.pipelineSha === undefined || head === undefined)
+  // The commit the pipeline says it built is asked for FIRST: rows nobody can
+  // attribute to this head are not graded, whether or not the list was complete,
+  // and a foreign pipeline must be refused on the same read either way.
+  if (jobs.pipelineSha === undefined)
     return { mergeStateStatus: readiness.readiness, prHead: head, rows: [] };
   if (jobs.pipelineSha !== head)
     throw new VerifyInfraError(
       `the MR pipeline ${String(pipeline.id)} built ${jobs.pipelineSha.slice(0, 12)}, not the head ${head.slice(0, 12)} the readiness was read at: refusing to grade a pipeline about another commit`,
+    );
+  // And every job the head ran must have been read: a list that continued past
+  // the page holds rows nobody graded, and a failing job among them is a false
+  // green.
+  if (jobs.truncated)
+    throw new VerifyInfraError(
+      `the MR pipeline ${String(pipeline.id)} has more jobs than one page of ${String(GL_JOBS_PAGE)}: its job list is truncated at the page boundary, so ci cannot read every job it ran and refuses to grade what it did not see`,
     );
   return { mergeStateStatus: readiness.readiness, prHead: head, rows: jobs.rows };
 }

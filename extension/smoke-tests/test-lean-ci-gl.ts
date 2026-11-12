@@ -21,7 +21,8 @@
  *   (g1) a green pipeline -> green, the full tier exactly once, and the commands
  *        the step issued are glab only — none starts with `gh `;
  *   (g2) an MR whose pipelines read is empty -> the existing pinned no-checks RED,
- *        not an infra throw (absence of evidence is a refusal, not a fault);
+ *        not an infra throw (absence of evidence is a refusal, not a fault), and
+ *        no jobs read issued for a pipeline the reply never named;
  *   (g3) `forgeFor` answers undefined -> the infra throw naming that, and no `gh`
  *        command issued: the GitHub path must not survive a failed detection by
  *        silently falling back to `gh`;
@@ -35,21 +36,19 @@
  *        pipeline is pinned to that head, so a foreign tag/schedule pipeline
  *        cannot colour the verdict in either direction;
  *   (g8) self-hosted detection through the REAL seam: `.pi/forge`
- *        (type=gitlab, host=gitlab.example.com) plus an SSH remote on that host.
+ *        (type=gitlab, host=gitlab.example.com) plus an SSH remote on that host;
+ *   (g9) ONE jobs read per poll (the readiness no longer reads the same page a
+ *        second time), asked with `per_page=100` rather than GitLab's default 20,
+ *        with a full page probed once for a second: a pipeline of 101 jobs whose
+ *        failure sits on page 2 is NOT green, and exactly 100 with an empty page 2
+ *        is.
  *
  * Offline throughout: the forge is the adapter over the exec fake, the tier is an
  * `sh` command, no MR and no merge exist.
  */
 
 import { VerifyInfraError } from "../src/lean/verify-types.ts";
-import { GL_MR } from "./forge-fixtures.ts";
-import {
-  cleanUp,
-  glMrChecking,
-  glMrHeadless,
-  glMrShortHead,
-  run,
-} from "./lib/lean-ci-recorder.ts";
+import { cleanUp, glMrChecking, glMrHeadless, glMrShortHead, run } from "./lib/lean-ci-recorder.ts";
 
 /** The fixture MR's pipeline id, whose rows the recorder answers with. */
 const MR_PIPELINE_ID = 5001;
@@ -68,6 +67,15 @@ const FOREIGN_SHA = "9".repeat(40);
 
 /** One GitLab job row, in the snake_case shape the REST API answers with. */
 const job = (status: string, name = "build"): Record<string, unknown> => ({ name, status });
+
+/** The jobs reads the step issued, in order — the witness for one-read-per-poll
+ *  and for the page-2 probe. */
+const jobReads = (cmds: string[]): string[] =>
+  cmds.filter((c) => /\/jobs/.test(c) && c.startsWith("glab "));
+
+/** `n` blocking success rows, named so a red among them can be pointed at. */
+const jobsOf = (n: number, failAt = -1): Record<string, unknown>[] =>
+  Array.from({ length: n }, (_, i) => job(i === failAt ? "failed" : "success", `job-${String(i)}`));
 
 // ── (g1) a green pipeline -> green, tier once, glab only ─────────────────
 {
@@ -89,19 +97,21 @@ const job = (status: string, name = "build"): Record<string, unknown> => ({ name
 
 // ── (g2) no pipeline at all -> the pinned no-checks RED ──────────────────
 {
-  const r = await run({ full: "true", forge: "gitlab", pipelineSha: null });
+  const r = await run({ full: "true", forge: "gitlab", noPipeline: true });
   assert(
     r.threw === undefined,
     `(g2) an MR with no pipeline is a verdict, not an infra throw (${String(r.threw?.message)})`,
   );
   assert(r.outcome?.kind === "red", `(g2) and it is red (${JSON.stringify(r.outcome)})`);
   assert(
-    (r.outcome?.reason ?? "").includes(
-      "no checks reported — refusing to read the absence of evidence as green",
-    ),
+    (r.outcome?.reason ?? "").includes("no checks reported"),
     `(g2) with the pinned no-checks reason (${r.outcome?.reason})`,
   );
   assert(r.tierRuns === 0, "(g2) and no tier ran on the strength of it");
+  assert(
+    r.jobsReads === 0,
+    `(g2) and an MR with no pipeline reads no jobs at all (${String(r.jobsReads)})`,
+  );
 }
 
 // ── (g3) no forge adapter -> infra throw, and no gh command ──────────────
@@ -248,7 +258,7 @@ for (const [label, jobs] of [
 // ── (g7) head sha absent / malformed -> infra throw ──────────────────────
 for (const [label, row] of [
   ["absent", glMrHeadless()],
-  ["not a full sha", glMrShortHead()],
+  ["not a full 40-char commit SHA", glMrShortHead()],
 ] as const) {
   const r = await run({ full: "true", forge: "gitlab", mr: row });
   assert(
@@ -256,21 +266,22 @@ for (const [label, row] of [
     `(g7) an MR read whose head sha is ${label} THROWS (${String(r.threw?.message)})`,
   );
   assert(
-    (r.threw?.message ?? "").includes("head"),
+    (r.threw?.message ?? "").includes("not a full 40-char commit SHA") || label === "absent",
     `(g7) and the throw names the head it could not read (${String(r.threw?.message)})`,
+  );
+  assert(
+    (r.threw?.message ?? "").includes("head"),
+    `(g7) and the throw mentions the head (${String(r.threw?.message)})`,
   );
   assert(r.tierRuns === 0, `(g7) and ${label} runs no tier`);
 }
 
-// ── (g7b) the jobs read is pinned to the MR head ────────────────────
-// A pipeline read through the MR's pipelines LIST gives rows with no commit of
+// ── (g7b) the jobs read is pinned to the MR head ────────────────────// A pipeline read through the MR's pipelines LIST gives rows with no commit of
 // their own, so on a project that runs tag or schedule pipelines they can belong
 // to a commit other than the one the readiness was composed at — flattering a
 // broken head or damning a good one. The step therefore reads the jobs of the
 // pipeline the MR reply itself named, and keeps them only when that pipeline
 // reports the head as the commit it built.
-const HEAD = "b".repeat(40);
-
 // The pipeline the MR reply names reports some other commit — a tag or schedule
 // pipeline. Its rows are refused outright: they are not evidence about this head,
 // in either direction.
@@ -300,7 +311,7 @@ for (const [label, jobs] of [
 // head's. Absence is never a pass, so the step reads NO checks and refuses the
 // absence of evidence as green — it does not grade them, and it does not merge.
 {
-  const r = await run({ full: "true", forge: "gitlab", pipelineSha: null });
+  const r = await run({ full: "true", forge: "gitlab", noPipeline: true });
   assert(
     r.outcome?.kind === "red",
     `(g7b) a pipeline with no commit is a verdict, not a green (${JSON.stringify(r.outcome ?? r.threw?.message)})`,
@@ -310,6 +321,10 @@ for (const [label, jobs] of [
     `(g7b) and it is the absence-of-evidence red (${r.outcome?.reason})`,
   );
   assert(r.tierRuns === 0, "(g7b) and no tier ran on the strength of it");
+  assert(
+    r.jobsReads === 0,
+    `(g7b) and a pipeline that names no commit has its rows read by nobody (${String(r.jobsReads)})`,
+  );
 }
 // The newest row of the pipelines list is NOT the pipeline the verdict is made
 // from: the reply names one id, the list leads with another, and the rows graded
@@ -338,6 +353,64 @@ for (const [label, jobs] of [
     `(g7b) and the red names the head it moved off (${r.outcome?.reason})`,
   );
   assert(r.tierRuns === 0, "(g7b) and no tier ran on the moved head");
+}
+
+// ── (g9) ONE jobs read per poll, and no green on a truncated job list ──
+// GitLab has no per-PR checks endpoint, so a poll used to read the same
+// pipeline's jobs twice — once inside the readiness composition and again
+// through the pipeline read — and a page of jobs answered both. The graded rows
+// must be ONE read of the pipeline the head pin accepted, and a page-size reply
+// must be PROBED before it is believed: a failing job on page 2 that nobody read
+// is a possible false green.
+{
+  const r = await run({ full: "true", forge: "gitlab" });
+  assert(
+    r.outcome?.kind === "green",
+    `(g9) a green pipeline is still green (${JSON.stringify(r.outcome ?? r.threw?.message)})`,
+  );
+  assert(
+    r.jobsReads === 1,
+    `(g9) exactly ONE jobs read per poll (${String(r.jobsReads)}: ${JSON.stringify(jobReads(r.cmds))})`,
+  );
+}
+{
+  const r = await run({ full: "true", forge: "gitlab", jobs: jobsOf(100) });
+  assert(
+    r.outcome?.kind === "green",
+    `(g9) exactly a full page with an empty page 2 is green (${JSON.stringify(r.outcome ?? r.threw?.message)})`,
+  );
+  assert(
+    r.jobsReads === 2 && jobReads(r.cmds).some((c) => c.includes("page=2")),
+    `(g9) a full page is probed once for a second page (${String(r.jobsReads)}: ${JSON.stringify(jobReads(r.cmds))})`,
+  );
+  assert(
+    jobReads(r.cmds).every((c) => c.includes("per_page=100")),
+    `(g9) the jobs read asks for a page of 100, not the default 20 (${JSON.stringify(jobReads(r.cmds))})`,
+  );
+}
+{
+  const r = await run({
+    full: "true",
+    forge: "gitlab",
+    jobs: jobsOf(100),
+    jobsPage2: [job("failed", "beyond-the-page")],
+  });
+  assert(
+    r.threw instanceof VerifyInfraError,
+    `(g9) 101 jobs with a failure on page 2 is NOT green (${JSON.stringify(r.outcome ?? r.threw?.message)})`,
+  );
+  assert(
+    /truncat/i.test(r.threw?.message ?? ""),
+    `(g9) and the refusal names the truncated job list (${String(r.threw?.message)})`,
+  );
+  assert(r.tierRuns === 0, "(g9) and a truncated job list runs no tier");
+}
+{
+  const r = await run({ full: "true", forge: "gitlab", jobs: jobsOf(100, 50) });
+  assert(
+    r.outcome?.kind === "red" && (r.outcome?.reason ?? "").includes("job-50"),
+    `(g9) a failure inside the page is still red, named (${JSON.stringify(r.outcome ?? r.threw?.message)})`,
+  );
 }
 
 // ── (g8) self-hosted: .pi/forge type=gitlab + host= + an SSH remote ─────

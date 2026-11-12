@@ -40,8 +40,8 @@ import type { Budget } from "../../src/lean/config.ts";
 import type { PreexistingTierRecord } from "../../src/lean/state-outcome-maps.ts";
 import type { Outcome } from "../../src/lean/state.ts";
 import { gitTestEnv } from "./git-test-env.ts";
-import { PR_URL, ROOTS, ciLandLog } from "./lean-ci-land-fixture.ts";
 import type { GlCase } from "./lean-ci-gl.ts";
+import { ROOTS, ciLandLog } from "./lean-ci-land-fixture.ts";
 
 export interface CiCase {
   /** What `loadConfig` answers; `full` absent means the project configured none. */
@@ -102,8 +102,15 @@ export interface CiCase {
   /** The job rows the pipeline read answers (snake_case `status`, as GitLab
    *  sends them). Defaults to the two-success `GL_JOBS` fixture. */
   jobs?: GlCase["jobs"];
+  /** The same jobs read's SECOND page (`?page=2`), which the step probes when
+   *  the first page came back full. `[]` — the default — is a pipeline that
+   *  really did fit in one page; `null` says this case must never be asked for
+   *  job rows at all. */
+  jobsPage2?: GlCase["jobsPage2"];
   /** The MR's pipelines reply. `[]` is the MR with no pipeline at all. */
   pipelines?: GlCase["pipelines"];
+  /** The MR reply names no pipeline: no jobs read is made at all. */
+  noPipeline?: GlCase["noPipeline"];
   /** The head the MR reply reports, for a case whose MR moved off the head this
    *  repo holds. */
   mrHead?: GlCase["mrHead"];
@@ -208,6 +215,10 @@ export interface Ran {
   head: string;
   /** How many times the full tier's command ran — at HEAD, and at the base probe. */
   tierRuns?: number;
+  /** How many GitLab pipeline-job reads the poll issued — the witness for ONE
+   *  read per poll (the readiness used to read the same page a second time) and
+   *  for the single page-2 probe a full page earns. */
+  jobsReads?: number;
 }
 
 /** The log a run carries when it arrives at `ci`, minus what the case removes. */
@@ -273,7 +284,7 @@ export async function run(c: CiCase): Promise<Ran> {
   // The engine writes the resolved cycle deadline onto the record; a case that
   // wants the poll to see one sets it here, on the object the handler is given.
   if (c.deadlineMs !== undefined) f.ctx.run = { ...f.ctx.run, deadlineMs: c.deadlineMs };
-  const ran: Ran = { cmds: [], slept: [], head: committed, tierRuns: 0 };
+  const ran: Ran = { cmds: [], slept: [], head: committed, tierRuns: 0, jobsReads: 0 };
   let viewReads = 0;
   let checksReads = 0;
   // The legacy-record cases put `verify`'s disclosure on the newest decided verify — the
@@ -309,6 +320,7 @@ export async function run(c: CiCase): Promise<Ran> {
   const glForge: Forge | undefined = gitlab
     ? await buildGlForge(c, f.repoRoot, committed, forgeAxis === "self-hosted", (cmd) => {
         ran.cmds.push(cmd);
+        if (/\/jobs/.test(cmd) && cmd.startsWith("glab ")) ran.jobsReads = (ran.jobsReads ?? 0) + 1;
       })
     : undefined;
   const deps: CiDeps = {

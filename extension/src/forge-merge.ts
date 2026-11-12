@@ -30,7 +30,7 @@
  */
 
 import { prChecksCmd, prViewCmd } from "./forge-commands.ts";
-import { ForgeFieldError, mapGhChecks, mapGhPr, mapGlPipelineJobs } from "./forge-mapping.ts";
+import { ForgeFieldError, mapGhChecks, mapGhPr } from "./forge-mapping.ts";
 import type { MergeReadiness, MergeReadinessResult, NormalizedCICheck } from "./forge-types.ts";
 
 /**
@@ -306,10 +306,14 @@ async function safeGhChecks(
  * `has_conflicts`, `blocking_discussions_resolved`, and `approvals_left`
  * must all be present and typed, or the call fails.
  *
- * CI checks on GitLab are the MR's open pipeline jobs; they are attached
- * to the result for parity with the GitHub path, but readiness is decided
- * by the composition above (a pipeline failure surfaces as
- * `blocked_by_pipeline_status` in the detailed status).
+ * CI checks on GitLab are the MR's open pipeline jobs. This read does NOT
+ * fetch them: it answers the merge question, and the jobs are the pipeline
+ * read's own answer (see `forge-pipeline.ts`). The one caller that needs both
+ * — lean's `ci` step — reads the jobs once, through the pipeline the MR reply
+ * itself named, and refuses rows belonging to any other commit; reading them
+ * here as well asked the forge for the same page twice per poll. `checks` is
+ * therefore always empty on this path, and no caller reads it: the readiness
+ * verdict is the composition, and the composition is the whole answer.
  *
  * `onMrRow` is handed the parsed MR row before composition. The normalized
  * shapes drop every commit oid and every composition field, so a caller that
@@ -358,32 +362,9 @@ export async function checkGitlabReadiness(
     };
   }
 
-  // Attach the pipeline checks (best-effort: a missing pipeline is not a
-  // readiness failure — the composition above is authoritative).
-  let checks: NormalizedCICheck[] = [];
-  try {
-    const pipelineId = (raw as Record<string, unknown>).open_pipeline as Record<
-      string,
-      unknown
-    > | null;
-    if (pipelineId && typeof (pipelineId as Record<string, unknown>).id === "number") {
-      const pid = (pipelineId as Record<string, unknown>).id as number;
-      const { stdout } = await execFn(
-        `glab api /projects/:id/pipelines/${pid}/jobs --output json`,
-        {
-          cwd: repoRoot,
-          maxBuffer,
-          timeout: READINESS_TIMEOUT_MS,
-        },
-      );
-      const jobs: unknown = JSON.parse(stdout || "[]");
-      checks = mapGlPipelineJobs(jobs);
-    }
-  } catch {
-    // No open pipeline, or jobs unreadable — composition is authoritative.
-  }
-
-  return { ok: true, readiness: composed.readiness, detail: composed.detail, checks };
+  // No jobs read: the composition above is the whole readiness answer, and the
+  // pipeline rows are the caller's own read to make (`glPipelineJobsAt`).
+  return { ok: true, readiness: composed.readiness, detail: composed.detail, checks: [] };
 }
 
 // Re-export the prViewCmd for callers that want the raw view command.

@@ -278,10 +278,13 @@ export interface Forge {
    * the rows, so on a project that runs tag- or schedule pipelines its rows can
    * belong to a foreign commit. GitLab's `/pipelines/:id` row carries the `sha`
    * that the jobs list does not. Optional because only GitLab has pipelines by id;
-   * a GitHub caller reads checks per PR and has no such arm.
+   * a GitHub caller reads checks per PR and has no such arm. `truncated` is true
+   * when the list ran past the page the read asked for — see `GlJobsRead` in
+   * `forge-pipeline.ts`: a truncated list is no one's evidence.
    */
   glPipelineJobs?(pipelineId: number): Promise<{
     rows: NormalizedCICheck[];
+    truncated: boolean;
     pipelineSha: string | undefined;
   }>;
   /** #775 — list the PR/MR's review comments (the seam for PR handoff posts). */
