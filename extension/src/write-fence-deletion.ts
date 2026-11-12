@@ -112,6 +112,25 @@ export function firstDeletionOutside(
  * env inventory in headless/inputs.ts stays the single list of what the build honours. */
 export const CHILD_TMP_ENV = "PI_ENSEMBLE_CHILD_TMP";
 
+/**
+ * The one role this rule does not judge. The issue scopes the rule to a child the
+ * driver gave trees to — "a develop or lens-fix child's deletes … are refused outside
+ * its worktree and its own scratch dir" — and keeps the operator's own commands out of
+ * it ("Operator (parent session) commands", Out of scope). An `ops` dispatch is neither:
+ * the driver never fences it, so it has no worktree, no scratch and no reason of its own
+ * to delete, yet it is the role that works in the operator's checkout and clears build
+ * and dependency trees there as its job. Refusing it everything would turn a git/gh
+ * dispatcher into a role that cannot `rm -rf node_modules` where it stands, which is not
+ * what the incident was about. Its OWN cwd is therefore a working root for this rule
+ * only; every other tree, the shared temp root above all, stays refused.
+ */
+const UNSCOPED_ROLE = "ops";
+
+/** Whether this child's role is the one the rule leaves alone inside its own cwd. */
+function isUnscopedRole(role: string | undefined): boolean {
+  return role === UNSCOPED_ROLE;
+}
+
 /** One usable absolute root from the env, as the label it was named by and its realpath. */
 function usableRoot(raw: string | undefined): { label: string; real: string } | undefined {
   if (raw === undefined || raw === "" || !path.isAbsolute(raw)) return undefined;
@@ -141,6 +160,8 @@ export function deletionRootsFrom(
     usableRoot(env.PI_ENSEMBLE_WRITE_ROOT),
     usableRoot(env.PI_ENSEMBLE_WRITE_SCRATCH),
     usableRoot(env[CHILD_TMP_ENV]),
+    // The ops role's own working tree (see UNSCOPED_ROLE); no other role gets the cwd.
+    isUnscopedRole(env.PI_ENSEMBLE_ROLE) ? usableRoot(cwd) : undefined,
   ].filter((r): r is { label: string; real: string } => r !== undefined);
   return { cwd, labels: usable.map((r) => r.label), allowed: usable.map((r) => r.real) };
 }

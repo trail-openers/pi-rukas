@@ -32,7 +32,14 @@
  *      says, allowed inside (that predicate owns the in-tree case), `-n` allowed;
  *   F. the registration canary: `registerDeletionGuard(failClosedPi(pi))` sits
  *      beside `registerWriteFence` and ABOVE the `PI_ENSEMBLE_SUBAGENT_MODE`
- *      no-op, so a strict/headless child carries the hook too (D10).
+ *      no-op, so a strict/headless child carries the hook too (D10);
+ *   G. the scope: the rule judges the children the driver can name a root for —
+ *      a fenced develop/lens-fix dispatch, and the reviewer / lean / nested child
+ *      the driver never fences, which is then refused everything (the driver owns
+ *      that child's trees). An `ops` dispatch is neither: it works in the operator's
+ *      checkout and the issue's own out-of-scope list keeps parent-side work, and
+ *      the operator's commands, outside this rule — so an ops child's delete inside
+ *      its own cwd is left alone, while one aimed at the shared root is not.
  *
  * Observed RED on the code before this change: the `git clean` rows after a `cd`,
  * and the canary.
@@ -52,6 +59,7 @@ import {
 } from "../src/write-fence-deletion.ts";
 import { GIT_CLEAN_LOG_TOKEN } from "../src/write-fence-deletion.ts";
 import { buildDeletionFixture } from "./lib/write-fence-deletion-fixture.ts";
+import { withEnv } from "./lib/env-scope.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -280,6 +288,69 @@ function registerDeletionGuardWith(env: Record<string, string>, cwd: string = wt
   });
   const r = await toolCall(pi, `git -C ${sharedTmp} clean -fdx`);
   assert(r?.block === true, "E: PI_ENSEMBLE_ALLOW_DESTRUCTIVE_GIT does not open the shared root");
+}
+
+// ============================================================
+// G. The scope: which children carry the hook.
+// ============================================================
+{
+  // G1 — an ops dispatch is never fenced by the driver, but it is the one role
+  // that works in the operator's own checkout and does git/PR work there. Only
+  // deletes it cannot justify are refused: its own cwd is a working root, the
+  // shared temp root is not (#2200's acceptance addition).
+  const ops = registerDeletionGuardWith({ PI_ENSEMBLE_ROLE: "ops" }, wt);
+  const inCwd = await toolCall(ops, "rm -rf dist");
+  assert(
+    inCwd === undefined,
+    `G: an ops child's in-cwd \`rm -rf dist\` is not refused by this guard (got ${JSON.stringify(inCwd)})`,
+  );
+  const inCwdRm = await toolCall(ops, `rm -rf ${wt}/node_modules`);
+  assert(inCwdRm === undefined, "G: nor an in-cwd delete named absolutely");
+  const shared = await toolCall(ops, `rm -rf ${foreignRun}`);
+  assert(shared?.block === true, "G: and an ops delete of the shared temp root is still refused");
+}
+{
+  // G2 — the driver-fenced developer child is unchanged: it may delete its own
+  // tree and nothing else.
+  const dev = registerDeletionGuardWith({ ...FENCED_ENV, PI_ENSEMBLE_ROLE: "developer" });
+  assert(
+    (await toolCall(dev, `rm -rf ${wt}/build`)) === undefined,
+    "G: a fenced developer still cleans its worktree",
+  );
+  assert(
+    (await toolCall(dev, `rm -rf ${foreignRun}`))?.block === true,
+    "G: and is still refused outside it",
+  );
+}
+{
+  // G3 — the driver never fences a reviewer, a lean or a nested child: the driver
+  // owns those trees, so they keep NO root and every delete stays refused (D2).
+  const reviewer = registerDeletionGuardWith({
+    PI_ENSEMBLE_ROLE: "code-review-specialist",
+    PI_ENSEMBLE_WRITE_FENCE: "0",
+  });
+  assert(
+    (await toolCall(reviewer, `rm -rf ${scratch}/notes.txt`))?.block === true,
+    "G: an unfenced reviewer child is still refused every delete",
+  );
+}
+{
+  // G4 — the companion is where the rule is registered for a child, so the ops
+  // carve-out has to survive the companion's own registration path: an ops child
+  // loaded through `childGuards` (the argv every child gets) runs its in-cwd clean.
+  await withEnv({ PI_ENSEMBLE_ROLE: "ops", PI_ENSEMBLE_SUBAGENT_MODE: "1" }, async () => {
+    const fake = fakePi();
+    childGuards(fake as unknown as ExtensionAPI);
+    const results = await Promise.all(
+      (fake.handlers.tool_call ?? []).map((h) =>
+        h({ toolName: "bash", input: { command: "rm -rf dist" } }, {}),
+      ),
+    );
+    assert(
+      results.every((x) => x === undefined),
+      `G: the companion leaves an ops child's in-cwd \`rm -rf dist\` alone (got ${JSON.stringify(results)})`,
+    );
+  });
 }
 
 // ============================================================

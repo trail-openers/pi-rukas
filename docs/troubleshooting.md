@@ -801,6 +801,8 @@ Also outside the rule: a command name that is itself an expansion, `cd -`, `GIT_
 
 **No switch:** neither `PI_ENSEMBLE_WRITE_FENCE=0` (the fence's escape hatch, which stays the answer for *writes*) nor any other variable disarms the deletion rule, and it registers for every child in every mode and role — a reviewer with no `PI_ENSEMBLE_WRITE_ROOT` carries it too. A child with no scratch dir cannot append to the refusal log, so its refusals reach the ungated warn and are declared uncounted: the pinned refusal totals cover fenced children only.
 
+**The one role this rule leaves alone in its own directory:** `ops`. The rule judges the children the driver gave trees to (a fenced develop or lens-fix dispatch) and the ones the driver owns entirely (a reviewer, a lean or a nested child, which have no roots and so may delete nothing). An `ops` dispatch is the remaining role: never fenced, but it works in the operator's checkout and clears build and dependency output there as its job. Its own working directory is a root for this rule and nothing else is — `rm -rf dist`, `rm -rf node_modules` run where it stands, while `rm -rf $TMPDIR/<another run>` is refused by the same hook.
+
 **Not checked (categories, not a list to extend):**
 - a script file run by path (`bash sweep.sh`, `bun sweep.ts`) — the rule reads the command line, not the file's contents;
 - interpreter call forms the scanner does not name: only `bun -e`, `node -e`/`--eval`/`--print`, `python -c`, `python3 -c`, `perl -e` and `ruby -e` are read;
