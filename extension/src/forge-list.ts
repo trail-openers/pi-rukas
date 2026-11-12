@@ -61,3 +61,14 @@ export function mapIssueSearchReply(forge: ForgeType, stdout: string): Normalize
     return forge === "github" ? mapGhIssue(o) : mapGlIssue(o);
   });
 }
+
+/**
+ * An issue-LIST reply (#2160). Same shape as the search reply — both CLIs
+ * answer an array of the same rows — but it is its own function so the two
+ * reads can diverge without either one silently changing the other (the search
+ * row set is `number,title,state,url`; the list may grow fields the search
+ * does not carry, and a shared mapper would apply that to both).
+ */
+export function mapIssueListReply(forge: ForgeType, stdout: string): NormalizedIssue[] {
+  return mapIssueSearchReply(forge, stdout);
+}

@@ -273,3 +273,7 @@ When you save structured analysis (JSON gap reports, scraped data, codebase memo
 Empirical pattern: previous /work cycles dropped `analysis/nav-phase1a-gaps.json` and ad-hoc PNG mockups at repo root. That clutter then blocks the next /work's branch step (`git status --porcelain` not empty).
 
 When the scratch dir is named in your dispatch prompt: use it. When it's not: `/tmp/pi-rukas-explore/` is the host-level fallback. NEVER write structured outputs to the repo root or tracked dirs unless the work IS the deliverable (e.g., a research issue whose body you're editing — via the forge CLI's issue-edit verb, `gh issue edit --body-file` on GitHub or `glab api -X PUT` with `description=@<file>` on GitLab).
+
+## Reading the forge
+
+You have no forge login, so do not run `gh`/`glab` to read anything: unauthenticated calls are rate-limited and refuse on a private repo, and a child that goes looking for the credential it was deliberately not given is worse. Read the forge through the **`forge_read`** tool, which runs the read with the parent session's credential and answers the forge's own bytes. Its verbs: an issue read (`issue_view`, `issue_comments`), a PR/MR read (`pr_view`, `pr_diff`, `pr_checks`), a CI read (`ci_run`, `ci_run_log`), and a list (`issue_list`, `pr_list`). It has no write verb.

@@ -44,6 +44,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { enableChildCodemode } from "./child-codemode.ts";
+import { enableChildForgeRead, registerChildForgeReadTool } from "./child-forge-read-activation.ts";
 import { registerModeIndependentGuards } from "./subagent-guard-guards.ts";
 import { trace } from "./trace.ts";
 import { registerWriteFence } from "./write-fence.ts";
@@ -104,6 +105,15 @@ export default function registerChildGuards(pi: ExtensionAPI): void {
   // this companion is the only place it can run. It self-gates on
   // PI_ENSEMBLE_WRITE_ROOT, so a child the driver did not fence is untouched.
   registerWriteFence(failClosedPi(pi));
+  // #2160 — the helper roles' only forge surface, registered by the companion
+  // because a trust-mode child (the interactive default) loads no other
+  // pi-rukas extension and its env carries no login to fall back on. Registered
+  // BEFORE the subagent-mode no-op so the strict child gets it too, where Pi
+  // de-duplicates the name against the forwarded extension's own registration.
+  // The predicate inside is the one activation uses — a stripped role plus a
+  // parent-served broker socket — so the tool is never present in a child that
+  // could not get an answer out of it (an ops child, or one whose bind failed).
+  registerChildForgeReadTool(pi);
   if (process.env.PI_ENSEMBLE_SUBAGENT_MODE === "1") {
     trace(
       "child-guards: PI_ENSEMBLE_SUBAGENT_MODE=1 — full pi-rukas extension registers the guards; no-op",
@@ -118,6 +128,10 @@ export default function registerChildGuards(pi: ExtensionAPI): void {
   // mode — never here AND there.
   pi.on("session_start", () => {
     enableChildCodemode(pi);
+    // #2160 — same site, same append semantics: the helper roles get
+    // `forge_read` here, and the strict path appends it instead when this
+    // companion has no-oped above.
+    enableChildForgeRead(pi, process.env.PI_ENSEMBLE_ROLE);
   });
   // The shared block is the single list of the three mode-independent guards;
   // registerPmBashGuard stays parent-only (it is not in the block). All three

@@ -76,6 +76,7 @@ function restoreEnv(): void {
   const plan = planChildPermissions({
     runId: "t1",
     role: "developer",
+    cwd: "/tmp",
     workCycleTrust: true,
   });
   assert(plan.trustChild === true, "1: a /work child (workCycleTrust) is a trust child");
@@ -95,6 +96,7 @@ function restoreEnv(): void {
   const strictPlan = planChildPermissions({
     runId: "t2",
     role: "developer",
+    cwd: "/tmp",
     workCycleTrust: true,
   });
   assert(
@@ -109,7 +111,7 @@ function restoreEnv(): void {
   );
 
   clearEnv();
-  const plain = planChildPermissions({ runId: "t3", role: "developer" });
+  const plain = planChildPermissions({ runId: "t3", role: "developer", cwd: "/tmp" });
   assert(
     plain.trustChild === false && plain.subagentGuardEnabled === true,
     "1: a non-/work headless child (no workCycleTrust, no parent trust) stays strict",
@@ -117,6 +119,7 @@ function restoreEnv(): void {
   const plainFalse = planChildPermissions({
     runId: "t4",
     role: "developer",
+    cwd: "/tmp",
     workCycleTrust: false,
   });
   assert(plainFalse.trustChild === false, "1: workCycleTrust=false is strict");
@@ -126,6 +129,7 @@ function restoreEnv(): void {
   const disabled = planChildPermissions({
     runId: "t5",
     role: "developer",
+    cwd: "/tmp",
     workCycleTrust: true,
   });
   assert(
@@ -199,10 +203,13 @@ async function childCalls(): Promise<
   (tool: string, input: unknown) => Promise<string | undefined>
 > {
   const handlers: Handler[] = [];
+  // registerChildGuards also registers the #2160 `forge_read` tool; the fake
+  // needs to absorb that registration so the session_start companion can arm.
   const fake = {
     on: (name: string, fn: Handler) => {
       if (name === "tool_call") handlers.push(fn);
     },
+    registerTool: () => {},
   } as unknown as ExtensionAPI;
   registerChildGuards(fake);
   return async (toolName, input) => {

@@ -7,9 +7,12 @@
  * set, the argv shape, the pre-spawn preflight); this file drives the hooks the
  * companion actually installs — how many, what they refuse, that a throwing
  * handler fails closed rather than letting a command through, and that the
- * companion no-ops entirely under PI_ENSEMBLE_SUBAGENT_MODE=1 (where the full
- * pi-rukas extension registers the same guards and a second set would
- * double-run the merge guard's gh/git exec chain).
+ * companion's guard HOOKS all stand down under PI_ENSEMBLE_SUBAGENT_MODE=1
+ * (where the full pi-rukas extension registers the same guards and a second set
+ * would double-run the merge guard's gh/git exec chain). The companion is not
+ * hook-only: it is also the single owner of the `forge_read` tool (#2160), which
+ * it registers whenever this child can use the tool — a stripped role with a
+ * parent-served broker socket — see the tool rows and section 5 below.
  *
  * Env pins go through `withEnv`, which restores exactly what was there
  * (including an absent variable), so nothing leaks into the next test file.
@@ -48,11 +51,24 @@ const PIN_CHILD = {
   PI_ENSEMBLE_WRITE_REPO: undefined,
   PI_ENSEMBLE_WRITE_SCRATCH: undefined,
   PI_ENSEMBLE_WRITE_FENCE: undefined,
+  // #2160 — the tool's registration is gated on the broker pair the parent
+  // hands down (its path AND its per-child secret), so a count is only stable
+  // with an ambient pair cleared too.
+  PI_ENSEMBLE_FORGE_READ_SOCKET: undefined,
+  PI_ENSEMBLE_FORGE_READ_SECRET: undefined,
+};
+
+/** The env of a helper child whose parent DID serve a forge-read broker. */
+const PIN_FORGE_CHILD = {
+  ...PIN_CHILD,
+  PI_ENSEMBLE_ROLE: "developer",
+  PI_ENSEMBLE_FORGE_READ_SOCKET: "/tmp/pi-rukas-forge-read-test/broker.sock",
+  PI_ENSEMBLE_FORGE_READ_SECRET: "0123456789abcdef".repeat(4),
 };
 
 // ============================================================
-// 1. Loading with no SUBAGENT_MODE: the mode-independent guards, no tools,
-//    no commands.
+// 1. Loading with no SUBAGENT_MODE: the mode-independent guards, the one
+//    tool, no commands.
 // ============================================================
 await withEnv(PIN_CHILD, async () => {
   const fake = makeFakePi();
@@ -62,7 +78,13 @@ await withEnv(PIN_CHILD, async () => {
     n === 8,
     `registers exactly 8 tool_call hooks (the mode-independent guards incl. #1105 review-accept, #1113 developer-push, #1666 vipune-write, #1788 public-hygiene and #2140 reviewer-bash-timeout, oo-rewrite excluded; got ${n})`,
   );
-  check(fake.registeredTools.length === 0, "registers no tools (hook-only companion)");
+  // A child with no broker socket gets no tool at all — the tool's registration
+  // and its activation share one predicate, so the always-refuses state is not
+  // reachable (section 5 pairs the two halves).
+  check(
+    fake.registeredTools.length === 0,
+    `registers no tool without a parent broker socket (got ${JSON.stringify(fake.registeredTools)})`,
+  );
   check(fake.registeredCommands.length === 0, "registers no commands");
 });
 
@@ -172,18 +194,92 @@ await withEnv(PIN_CHILD, async () => {
 });
 
 // ============================================================
-// 4. NO-OP: PI_ENSEMBLE_SUBAGENT_MODE=1 → zero hooks registered.
+// 4. NO-OP: PI_ENSEMBLE_SUBAGENT_MODE=1 → zero guard hooks registered. The
+//    tool is NOT part of the no-op: a strict child loads both this companion
+//    and the forwarded extension, and Pi de-duplicates `forge_read` by name, so
+//    registering it here too costs nothing and keeps the trust-mode child (no
+//    forwarded extension at all) from being the only child without the tool.
 // ============================================================
-await withEnv({ ...PIN_CHILD, PI_ENSEMBLE_SUBAGENT_MODE: "1" }, async () => {
+await withEnv(
+  { ...PIN_FORGE_CHILD, PI_ENSEMBLE_SUBAGENT_MODE: "1" },
+  async () => {
+    const fake = makeFakePi();
+    childGuards(fake as unknown as ExtensionAPI);
+    const n = fake.handlers.tool_call?.length ?? 0;
+    check(
+      n === 0,
+      `no-op under PI_ENSEMBLE_SUBAGENT_MODE=1: zero hooks registered (got ${n})`,
+    );
+    check(
+      fake.registeredTools.length === 1 && fake.registeredTools[0] === "forge_read",
+      `no-op still registers forge_read and nothing else (got ${JSON.stringify(fake.registeredTools)})`,
+    );
+    check(
+      fake.registeredCommands.length === 0,
+      "no-op registers no commands (the guard no-op is not a tool/command no-op)",
+    );
+  },
+);
+
+// ============================================================
+// 5. #2160 — the tool's REGISTRATION and its ACTIVATION are one predicate.
+//    A child that gets the tool can always reach a broker; a child that cannot
+//    is never offered it. Ops is the negative arm: it keeps its own login, so
+//    the spawn never gives it a socket and the companion never registers the
+//    tool (agents.json does not grant it either).
+// ============================================================
+await withEnv(PIN_FORGE_CHILD, async () => {
   const fake = makeFakePi();
   childGuards(fake as unknown as ExtensionAPI);
-  const n = fake.handlers.tool_call?.length ?? 0;
-  check(n === 0, `no-op under PI_ENSEMBLE_SUBAGENT_MODE=1: zero hooks registered (got ${n})`);
   check(
-    fake.registeredTools.length === 0 && fake.registeredCommands.length === 0,
-    "no-op registers nothing else",
+    fake.registeredTools.length === 1 && fake.registeredTools[0] === "forge_read",
+    `a stripped child with a broker socket registers exactly one tool, forge_read (got ${JSON.stringify(fake.registeredTools)})`,
   );
 });
+await withEnv({ ...PIN_FORGE_CHILD, PI_ENSEMBLE_ROLE: "ops" }, async () => {
+  const fake = makeFakePi();
+  childGuards(fake as unknown as ExtensionAPI);
+  // Even handed a socket by a caller that should not have, ops — the role that
+  // keeps its login — is not given the proxy.
+  check(
+    fake.registeredTools.length === 0,
+    `ops registers no forge_read even with a socket present (got ${JSON.stringify(fake.registeredTools)})`,
+  );
+});
+await withEnv({ ...PIN_CHILD, PI_ENSEMBLE_ROLE: "developer" }, async () => {
+  const fake = makeFakePi();
+  childGuards(fake as unknown as ExtensionAPI);
+  check(
+    fake.registeredTools.length === 0,
+    `a stripped child whose bind FAILED registers no forge_read (got ${JSON.stringify(fake.registeredTools)})`,
+  );
+});
+// #2160 adversarial round 1 — HALF a pair is no pair. A child handed the socket
+// but not the key has nothing to authenticate whoever answers with, so its every
+// call would be a refusal: registration refuses, exactly as it does for a child
+// with no broker at all. The converse (a key and no path) is the same case.
+await withEnv(
+  { ...PIN_FORGE_CHILD, PI_ENSEMBLE_FORGE_READ_SECRET: undefined },
+  async () => {
+    const fake = makeFakePi();
+    childGuards(fake as unknown as ExtensionAPI);
+    check(
+      fake.registeredTools.length === 0,
+      `a socket without its secret registers no forge_read (got ${JSON.stringify(fake.registeredTools)})`,
+    );
+  },
+);
+await withEnv(
+  { ...PIN_FORGE_CHILD, PI_ENSEMBLE_FORGE_READ_SOCKET: undefined },
+  async () => {
+    const fake = makeFakePi();
+    childGuards(fake as unknown as ExtensionAPI);
+    check(
+      fake.registeredTools.length === 0,
+      `a secret without its socket registers no forge_read (got ${JSON.stringify(fake.registeredTools)})`,
+    );
+  },
+);
 
 if (exit === 0) console.log("✓ all loaded-hook assertions passed");
 process.exit(exit);

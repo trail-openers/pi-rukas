@@ -42,6 +42,9 @@ function fakePi() {
     on(name: string, fn: Handler) {
       handlers[name] = [...(handlers[name] ?? []), fn];
     },
+    // #2160 — the companion registers `forge_read` on load; this suite asserts
+    // the fence's tool_call verdicts, so the fake absorbs the registration.
+    registerTool: () => undefined,
   } as unknown as ExtensionAPI & { handlers: Record<string, Handler[]> };
 }
 

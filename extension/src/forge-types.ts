@@ -10,6 +10,7 @@
 
 import type { ForgeType } from "./forge-detect.ts";
 import type { LabelListResult } from "./forge-label-ops.ts";
+import type { NormalizedReview } from "./forge-reviews.ts";
 
 /** Issue state, normalized across forges (gh `OPEN/CLOSED`, glab `opened/closed`). */
 export type IssueState = "OPEN" | "CLOSED";
@@ -238,10 +239,29 @@ export interface Forge {
   issueComments(number: number): Promise<NormalizedComment[]>;
   /** `allStates` (#1471) searches closed issues too; the default is open ones only. */
   issueSearch(query: string, opts?: { allStates?: boolean }): Promise<NormalizedIssue[]>;
+  /**
+   * #2160 — the repo's issues with their state. `state` is the CLI's own
+   * spelling (`open`/`closed`/`all`); absent means the CLI default. Backs the
+   * `forge_read` tool's `issue_list` verb — the list read `issueSearch` never
+   * covered, because "what is open" is not the same question as a search.
+   */
+  issueList(opts?: { state?: string }): Promise<NormalizedIssue[]>;
+  /**
+   * The SAME command as `issueList`, answering the forge's own bytes rather
+   * than mapped rows. The `forge_read` list verbs need both: the rows to hand
+   * the caller, and the reply's row count to decide whether the page came back
+   * FULL (`gh`/`glab` stop at the page size, and the mapped rows cannot show
+   * that). One command string runs on both paths, from one builder.
+   */
+  issueListRaw(opts?: { state?: string }): Promise<string>;
+  /** The raw-bytes twin of `issueSearch`; see `issueListRaw`. */
+  issueSearchRaw(query: string, opts?: { allStates?: boolean }): Promise<string>;
 
   // Pull requests / MRs
   prView(number: number): Promise<NormalizedPullRequest>;
   prList(opts?: { state?: string; sourceBranch?: string }): Promise<NormalizedPullRequest[]>;
+  /** The raw-bytes twin of `prList`; see `issueListRaw`. */
+  prListRaw(opts?: { state?: string; sourceBranch?: string }): Promise<string>;
   prCreate(
     title: string,
     headBranch: string,
@@ -289,12 +309,26 @@ export interface Forge {
   }>;
   /** #775 — list the PR/MR's review comments (the seam for PR handoff posts). */
   prComments(number: number): Promise<NormalizedComment[]>;
+  /**
+   * #2160 — the PR's reviews / the MR's approvals. Distinct from
+   * `prComments`: a comment is discussion, a review is a verdict, and a helper
+   * that cannot tell them apart reads the wrong thing and reports the wrong
+   * approval state. Backs the `forge_read` tool's `pr_reviews` verb.
+   */
+  prReviews(number: number): Promise<NormalizedReview[]>;
   /** #775 — post a comment on the PR (the in-process handoff fallback seam). */
   prComment(number: number, body: string): Promise<string>;
 
   // CI
   ciWatch(runId: number, opts?: CiWatchOpts): Promise<CiWatchResult>;
   ciRun(id: number): Promise<NormalizedCIRun>;
+  /**
+   * #2160 — the failed-job log text of one CI run / pipeline: the
+   * concatenated failed-job log on GitHub (`gh run view --log-failed`), the
+   * per-job traces joined on GitLab. `""` means "no job failed" — a real
+   * answer, not an error. Backs the `forge_read` tool's `ci_run_log` verb.
+   */
+  ciRunLog(id: number): Promise<string>;
 
   // Merge readiness (SAFETY-CRITICAL)
   mergeReadiness(number: number, opts?: { maxBuffer?: number }): Promise<MergeReadinessResult>;

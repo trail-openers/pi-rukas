@@ -202,6 +202,11 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   input("FORGE", "enum", null, "cycle", { values: ["github", "gitlab"] }),
   // Unset: probe an unknown forge host unless CI is set.
   flag("FORGE_PROBE", null),
+  // #2160 — the parent's per-spawn `forge_read` broker socket, named by the
+  // spawn layer and read by the child's tool. `internal`: the parent derives it
+  // from the run id, so a host never sets it, and an absent one means the child
+  // has no broker to reach (which is what the child's tool reports).
+  dir("FORGE_READ_SOCKET", null, "internal"),
   list("FRONTEND_ONLY_GLOBS", ",", null),
   ms("GIT_NET_TIMEOUT_MS", 300_000),
   // forge: the driver posts the handoff comment and label; host: the result carries it instead.

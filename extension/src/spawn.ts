@@ -22,7 +22,6 @@ import path from "node:path";
 import { preflightChildGuards } from "./child-guards.ts";
 import { ChildProgress } from "./child-progress.ts";
 import { clampToCycleDeadline } from "./cycle-deadline-clock.ts";
-import { scrubGitLocation } from "./git-env.ts";
 import { withHostSpawnSlot } from "./host-spawn-slots.ts";
 import { type ResolvedModelChoice, resolveModel } from "./models.ts";
 import { getPiInvocation } from "./pi-binary-resolve.ts";
@@ -35,6 +34,7 @@ import { createBoundArmed } from "./spawn-bound-armed.ts";
 import { armChildBounds } from "./spawn-budget-arms.ts";
 import { capKillAttribution } from "./spawn-caps.ts";
 import { applyChildBound } from "./spawn-child-bound.ts";
+import { buildChildEnv } from "./spawn-child-env.ts";
 import { collapseEvents } from "./spawn-collapse-events.ts";
 import { installExitKillSeam, startExitWait } from "./spawn-exit-await-session.ts";
 
@@ -51,7 +51,7 @@ import {
 } from "./spawn-inflight.ts";
 import { groupSpawnOpts, leadsProcessGroup, registerChild } from "./spawn-kill.ts";
 import { withOperatorConfigGuard } from "./spawn-operator-config.ts";
-import { applyChildPermissionEnv, planChildPermissions } from "./spawn-permission.ts";
+import { planChildPermissions } from "./spawn-permission.ts";
 import { failedByKill, recordKillBudgets, wireReviewBounds } from "./spawn-review-bounds.ts";
 import { runWithReviewerTree } from "./spawn-reviewer-isolation.ts";
 import { withSpawnSlot } from "./spawn-semaphore.ts";
@@ -77,8 +77,6 @@ import { armCapSession, declareKillFlags, traceKillCauses } from "./spawn-watchd
 import { attachStdinErrorGuard } from "./stdin-guard.ts";
 import { trace, traceWarn } from "./trace.ts";
 import type { DispatchResult, DispatchSpec } from "./types.ts";
-import { vipuneChildEnv } from "./vipune.ts";
-import { childEnvFor, writeFenceChildEnv } from "./write-fence-contract.ts";
 
 export { buildChildArgs, buildCwdHint, makeRunId };
 
@@ -140,9 +138,15 @@ async function spawnSpecialistInner(
   const permissions = planChildPermissions({
     runId,
     role: spec.role,
+    cwd,
     workCycleTrust: opts.workCycleTrust,
   });
   const { subagentGuardEnabled, broker } = permissions;
+  // #2160 — wait for the forge-read bind before the env is built. A bind
+  // failure resolves the same way a success does (with no socket), so this
+  // cannot fail the dispatch; what it prevents is publishing a socket path the
+  // parent never bound, which the child would read as a working forge surface.
+  await permissions.ready;
 
   // #926 — the argv names CHILD_GUARDS_PATH, so verify it BEFORE building the
   // args: a missing companion must be a named dispatch failure, never a child
@@ -159,24 +163,13 @@ async function spawnSpecialistInner(
   // No positional prompt — sent over stdin RPC channel below.
   const invocation = getPiInvocation(childArgs);
 
-  const childEnv = childEnvFor(process.env, spec.role);
-  Object.assign(childEnv, vipuneChildEnv(), writeFenceChildEnv(opts.writeFence));
-  // #1571 — the child works in `cwd`; an inherited GIT_DIR & co. would point
-  // its git at another tree (git-env.ts).
-  scrubGitLocation(childEnv);
-  // Interactive-git hang prevention (#605). These win over the inherited
-  // host env: a child that reaches an editor, sequence editor, terminal
-  // prompt, or full-screen pager (git rebase -i, bare git commit, any
-  // credential prompt, a paged diff) must never wait on a TTY it does not
-  // have — the inactivity watchdog would otherwise kill it 25 minutes later
-  // and misclassify the stall. `true` (the real no-op binary) over `:`
-  // (a shell builtin git cannot exec), per Aider's pattern.
-  childEnv.GIT_EDITOR = "true";
-  childEnv.GIT_SEQUENCE_EDITOR = "true";
-  childEnv.GIT_TERMINAL_PROMPT = "0";
-  childEnv.GIT_PAGER = "cat";
-  applyChildPermissionEnv(childEnv, permissions);
-
+  // #2160 — the ONE child-env construction for this spawn site, and the only
+  // place its env is assembled. Every later step mutates this object in place
+  // (the prompt file, `PI_ENSEMBLE_*`, the reattach markers), so a second build
+  // here would hand `spawn()` a different env than the one every other step
+  // adjusted — and silently undo the forge strip. The canary in
+  // test-child-forge-credentials.ts pins this call to exactly one occurrence.
+  const childEnv = buildChildEnv(spec.role, permissions, opts.writeFence);
   const leadsGroup = leadsProcessGroup(opts.processGroup);
   const child = spawn(invocation.command, invocation.args, {
     cwd,
@@ -423,6 +416,13 @@ async function spawnSpecialistInner(
       broker?.stop();
     } catch (err) {
       trace(`spawn[${spec.role}]: broker stop failed: ${(err as Error).message}`);
+    }
+    // #2160 — same finally, same best-effort rule: a leftover forge-read socket
+    // says nothing about the child's result.
+    try {
+      permissions.stopForgeBroker();
+    } catch (err) {
+      trace(`spawn[${spec.role}]: forge broker stop failed: ${(err as Error).message}`);
     }
   }
 

@@ -28,7 +28,18 @@ import type { LeanState, Step } from "../../src/lean/state.ts";
 import type { DriverHost } from "../../src/work-driver-host.ts";
 import { runVerb } from "../headless-verb-harness.ts";
 
-export const REPO = "/tmp/pi-rukas-work-lean-verb";
+/**
+ * The rig's scratch repo root — the directory `.pi/lean-state/` is written under.
+ *
+ * Per-process, not a fixed global: more than one runner executes this suite on
+ * this host at a time (parallel `/work` worktrees, each its own uid), and a
+ * shared path means the first one to create `.pi/lean-state/` owns it for the
+ * rest — every other runner's `rmSync` of a stale record and every lock write
+ * then fails with EACCES, and the case that reads like "the clock was never
+ * armed" is really "another user's directory refused my write". A pid-scoped
+ * root makes each runner's records its own; the OS reaps `/tmp`.
+ */
+export const REPO = `/tmp/pi-rukas-work-lean-verb-${process.pid}`;
 export const SRC = path.resolve(import.meta.dirname, "..", "..", "src");
 
 /** A run whose step log is `steps` and whose stamp is `code`/`state`. */

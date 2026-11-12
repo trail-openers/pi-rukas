@@ -46,7 +46,7 @@
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
-import { ALLOWLIST } from "./tool-name-allowlist.ts";
+import { ALLOWLIST, forgeReadDoctrineNames } from "./tool-name-allowlist.ts";
 
 /** Re-exported so a caller reads one surface for the gate's decision record. */
 export { ALLOWLIST };
@@ -125,9 +125,17 @@ export function listMarkdownFiles(dir: string): string[] {
   return out;
 }
 
-/** Every `pi.registerTool({ name: "…" })` across extension/src — the same scan
+/** Every `pi.registerTool({ name: … })` across extension/src — the same scan
  *  `test-pm-tool-permissions.ts` uses. Covers the main-session dispatch tools
- *  AND the child companion reporters (report_finding, report_policy, …). */
+ *  AND the child companion reporters (report_finding, report_policy, …).
+ *
+ *  The name is read either as a string literal or as a UPPERCASE CONSTANT
+ *  (`name: FORGE_READ_TOOL`). A literal-only scan missed the tool whose name is
+ *  exported as a constant (`child-forge-read-activation.ts`: `forge_read`) and
+ *  reported it as real, so the gate's roster depended on how a file happened to
+ *  be written. The constant form is resolved by its declaration in the same
+ *  file, so a name that exists nowhere still stays out of the roster — an
+ *  unresolved identifier adds nothing rather than adding its own spelling. */
 export function registeredToolNames(srcDir: string): Set<string> {
   const registered = new Set<string>();
   let files: string[] = [];
@@ -140,6 +148,12 @@ export function registeredToolNames(srcDir: string): Set<string> {
     const text = readFileSync(path.join(srcDir, f), "utf8");
     for (const m of text.matchAll(/registerTool\(\{\s*\n?\s*name:\s*"([^"]+)"/g)) {
       registered.add(m[1] as string);
+    }
+    for (const m of text.matchAll(/registerTool\(\{\s*\n?\s*name:\s*([A-Z][A-Z0-9_]*)\b/g)) {
+      const decl = new RegExp(
+        `const\\s+${m[1]}\\s*(?::[^=]+)?=\\s*"([^"]+)"`,
+      ).exec(text);
+      if (decl?.[1]) registered.add(decl[1]);
     }
   }
   return registered;
@@ -344,6 +358,7 @@ export function knownRoster(
   for (const t of registeredToolNames(srcDir)) roster.add(t);
   for (const t of grantedToolNames(agentsPath)) roster.add(t);
   for (const t of mcpToolNames(agentsPath, mcpConfigPaths)) roster.add(t);
+  for (const t of forgeReadDoctrineNames(srcDir)) roster.add(t);
   for (const t of ALLOWLIST) roster.add(t);
   return roster;
 }

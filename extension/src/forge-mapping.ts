@@ -480,3 +480,18 @@ export function asArray(stdout: string): unknown[] {
   if (!Array.isArray(parsed)) throw new Error(`forge: expected a JSON array, got ${typeof parsed}`);
   return parsed;
 }
+
+/**
+ * The row count of a list reply, or `undefined` when the bytes are not a JSON
+ * array. The caller must never treat that `undefined` as zero: the read that
+ * decides "was this list truncated?" answering "no rows" for bytes it could not
+ * read is how a truncated list is reported as a complete one.
+ */
+export function listRowCount(stdout: string): number | undefined {
+  try {
+    const parsed = JSON.parse(stdout || "[]");
+    return Array.isArray(parsed) ? parsed.length : undefined;
+  } catch {
+    return undefined;
+  }
+}

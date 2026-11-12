@@ -86,6 +86,7 @@ interface MockPi {
   handlers: Record<string, Handler[]>;
   setActiveCalls: string[][];
   activeTools: string[];
+  registeredTools: string[];
   throwOnGet: boolean;
 }
 
@@ -95,6 +96,7 @@ function makeMockPi(activeTools: string[], throwOnGet = false): MockPi {
     handlers,
     setActiveCalls: [],
     activeTools: [...activeTools],
+    registeredTools: [],
     throwOnGet,
   };
   (mock as unknown as Record<string, unknown>).on = (name: string, fn: Handler) => {
@@ -112,6 +114,13 @@ function makeMockPi(activeTools: string[], throwOnGet = false): MockPi {
   // full registration. We don't need the tool_call handler to do anything —
   // we only exercise the session_start activation, which runs before any
   // bypass.
+  // #2160 — the companion registers `forge_read` on load, so the mock absorbs
+  // that registration. This suite's subject is the ACTIVE roster (what
+  // session_start appends), not the tool registry, so recording the name is all
+  // it needs; an absent registerTool would throw before any assertion ran.
+  (mock as unknown as Record<string, unknown>).registerTool = (t: { name: string }) => {
+    mock.registeredTools.push(t.name);
+  };
   return mock;
 }
 
