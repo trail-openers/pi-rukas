@@ -41,9 +41,8 @@ import {
   parsePlainTextPr,
   parsePrNumberFromResponse,
 } from "./forge-mapping.ts";
-import { glPipelineJobs, glPipelineJobsAt } from "./forge-pipeline.ts";
-
 import { checkGithubReadiness, checkGitlabReadiness, composeGlReadiness } from "./forge-merge.ts";
+import { glPipelineJobs, glPipelineJobsAt } from "./forge-pipeline.ts";
 import type { VisibilityFn } from "./public-hygiene-visibility.ts";
 import { isFullCommitSha } from "./review-head-sha.ts";
 import { forgePublishCheck } from "./work-driver-commit-hygiene.ts";
@@ -93,7 +92,6 @@ export interface CreateForgeOpts {
  * or `gitlab` — `unknown` rejects up front, because every operation below
  * is forge-specific and there is no third path to guess.
  */
-
 export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Forge {
   if (det.forge === "unknown") {
     throw new Error(`createForge: forge is "unknown" (source=${det.source}) — refusing to guess`);
