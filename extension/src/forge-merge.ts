@@ -310,6 +310,13 @@ async function safeGhChecks(
  * to the result for parity with the GitHub path, but readiness is decided
  * by the composition above (a pipeline failure surfaces as
  * `blocked_by_pipeline_status` in the detailed status).
+ *
+ * `onMrRow` is handed the parsed MR row before composition. The normalized
+ * shapes drop every commit oid and every composition field, so a caller that
+ * must name the commit its verdict is about can only get it from the reply this
+ * read already consumed — a second read of a moving MR is a second moment. It is
+ * called only for a reply that PARSED, and never on the error paths: a caller
+ * must not be able to read a row the readiness verdict was not made of.
  */
 export async function checkGitlabReadiness(
   execFn: (
@@ -319,6 +326,7 @@ export async function checkGitlabReadiness(
   repoRoot: string,
   mrIid: number,
   opts: ReadinessOpts = {},
+  onMrRow?: (mr: Record<string, unknown>) => void,
 ): Promise<MergeReadinessResult> {
   const maxBuffer = opts.maxBuffer ?? 256 * 1024;
 
@@ -330,6 +338,7 @@ export async function checkGitlabReadiness(
       timeout: READINESS_TIMEOUT_MS,
     });
     raw = JSON.parse(stdout) as Record<string, unknown>;
+    onMrRow?.(raw);
   } catch (err) {
     return {
       ok: false,

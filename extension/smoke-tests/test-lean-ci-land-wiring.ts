@@ -13,7 +13,11 @@
  *   (p) the states that ARE still unbuilt keep throwing the stub's reason
  *
  * Both real handlers are driven on a fixture log with no forge and no full tier,
- * so each reaches its own refusal sentence — which the stub cannot produce.
+ * so each reaches its own refusal sentence — which the stub cannot produce. For
+ * `ci` that sentence is the missing full tier, and the order of the two checks
+ * (tier first, forge second) is what makes this case reach it at all: a run with
+ * no tier has no green on offer and must not pay for a forge read. The forge
+ * half of the same ordering is `test-lean-ci-gl.ts`'s no-adapter case.
  */
 
 import { rmSync } from "node:fs";
@@ -32,6 +36,10 @@ function assert(cond: boolean, msg: string): void {
 
 async function call(state: "ci" | "land", issue: number): Promise<unknown> {
   const f = ciLandLog(issue);
+  // `ci` asks for a full tier BEFORE it reads the forge (a run with no tier has
+  // no green on offer and must not pay for a forge read), so on a fixture repo
+  // with no forge either refusal could be the step's — and the tier sentence is
+  // the one only the step writes. `land`'s grant sentence needs no such help.
   const handler = phase1Handlers(f.repoRoot, issue)[state];
   if (handler === undefined) return "no handler";
   return handler(f.ctx).then(

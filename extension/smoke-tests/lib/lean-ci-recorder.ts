@@ -29,16 +29,19 @@
  * an `sh` command the recorder answers.
  */
 
-import { rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { rmSync } from "node:fs";
+import { detectForge } from "../../src/forge-detect.ts";
+import type { CiDeps } from "../../src/lean/ci-deps.ts";
+import type { GlForge } from "../../src/lean/ci-forge-gl.ts";
+import { ciOutcome } from "../../src/lean/ci.ts";
 import { defaultConfig } from "../../src/lean/config.ts";
 import type { Budget } from "../../src/lean/config.ts";
-import { ciOutcome } from "../../src/lean/ci.ts";
-import type { CiDeps } from "../../src/lean/ci-deps.ts";
 import type { PreexistingTierRecord } from "../../src/lean/state-outcome-maps.ts";
 import type { Outcome } from "../../src/lean/state.ts";
-import { ROOTS, ciLandLog } from "./lean-ci-land-fixture.ts";
+import { GL_MR } from "../forge-fixtures.ts";
 import { gitTestEnv } from "./git-test-env.ts";
+import { PR_URL, ROOTS, ciLandLog } from "./lean-ci-land-fixture.ts";
 
 export interface CiCase {
   /** What `loadConfig` answers; `full` absent means the project configured none. */
@@ -65,6 +68,34 @@ export interface CiCase {
   prHead?: string;
   /** The log carries no publish step at all. */
   noPr?: boolean;
+  /**
+   * Which forge this run is on. Absent means the GitHub behaviour every existing
+   * case drives — the two pinned `gh` reads and gh's bucket-first row grading,
+   * byte for byte. `"gitlab"` routes the run through the recorder's glab arm
+   * instead: the step issues `glab api /projects/:id/merge_requests/N`,
+   * `…/pipelines` and `…/pipelines/<id>/jobs`, and the MR row it reads is the
+   * `GL_MR` fixture with `diff_refs.head_sha` set to the case's own head. A
+   * GitLab case therefore answers glab and nothing else, and the suite's
+   * assertion that no command starts with `gh ` is a witness, not a wish.
+   * `"self-hosted"` is the same read after the REAL detection seam: a `.pi/forge`
+   * carrying `type=gitlab` and `host=` plus an SSH remote on that host, which is
+   * the operator config the known-host table alone would have answered `unknown`.
+   * `"none"` is `forgeFor` answering `undefined` — the step must throw and must
+   * not fall back to `gh`.
+   */
+  forge?: "github" | "gitlab" | "self-hosted" | "none";
+  /** The MR row the recorder answers, in place of `GL_MR` (a poll passes a
+   *  sequence through `mrAtReads` instead). `diff_refs` is left as given here. */
+  mr?: Record<string, unknown>;
+  /** One MR row PER POLL, the last entry repeating — same rule as `viewAt`. */
+  mrAtReads?: (head: string) => unknown[];
+  /** The job rows the pipeline read answers (snake_case `status`, as GitLab
+   *  sends them). Defaults to the two-success `GL_JOBS` fixture. */
+  jobs?: unknown[];
+  /** The MR's pipelines reply. `[]` is the MR with no pipeline at all. */
+  pipelines?: unknown[];
+  /** The self-hosted host for a `self-hosted` case (default `gitlab.example.com`). */
+  glHost?: string;
   /** Check the worktree out at this oid (the disk gate must catch it). */
   worktreeHead?: string;
   /** Leave the worktree's HEAD detached from the run's branch. */
@@ -120,10 +151,7 @@ export interface CiCase {
  * own repo holds — which is the head the gate certified, so the step gets to its
  * polls instead of being red on the first read.
  */
-export function viewAt(
-  head: string,
-  over: Record<string, unknown> = {},
-): Record<string, unknown> {
+export function viewAt(head: string, over: Record<string, unknown> = {}): Record<string, unknown> {
   return { state: "OPEN", mergeStateStatus: "CLEAN", headRefOid: head, ...over };
 }
 
@@ -186,6 +214,28 @@ function at<T>(seq: T[], n: number): T {
   return seq[Math.min(n, seq.length - 1)] as T;
 }
 
+// The GitLab fixture half — the MR rows, the self-hosted config, the real
+// `createForge` — lives in `./lean-ci-gl.ts` and is re-exported so the GitLab
+// suite imports its fixtures from the one module it already imports everything
+// else from.
+export {
+  glMrChecking,
+  glMrHeadless,
+  glMrShortHead,
+  SELF_HOST,
+  glPrUrl,
+  rewritePrUrl,
+  writeSelfHosted,
+  type GlCase,
+} from "./lean-ci-gl.ts";
+import {
+  SELF_HOST,
+  glForge as buildGlForge,
+  glPrUrl,
+  rewritePrUrl,
+  writeSelfHosted,
+} from "./lean-ci-gl.ts";
+
 /** Run `ci` on a real verified+published log, with everything else a recorder. */
 export async function run(c: CiCase): Promise<Ran> {
   const f = ciLandLog(77, logOpts(c));
@@ -195,6 +245,7 @@ export async function run(c: CiCase): Promise<Ran> {
   const ran: Ran = { cmds: [], slept: [], head: f.head, tierRuns: 0 };
   let viewReads = 0;
   let checksReads = 0;
+  const mrReads = 0;
   // The legacy-record cases put `verify`'s disclosure on the newest decided verify — the
   // one field of that record the case is allowed to own. The head it certified stays
   // whatever `logOpts` built, because whether a record is about this head IS that fact.
@@ -206,6 +257,30 @@ export async function run(c: CiCase): Promise<Ran> {
     }
   }
   const marker = c.full ?? c.verifyCmd ?? "";
+  const forgeAxis = c.forge ?? "github";
+  const gitlab = forgeAxis === "gitlab" || forgeAxis === "self-hosted";
+  // The publish step's URL is the ONE place the step may read the number from, so
+  // a GitLab case rewrites it: leaving the GitHub PR URL in place would have the
+  // case exercise the parser it was meant to prove.
+  if (gitlab) rewritePrUrl(f, glPrUrl());
+  // Self-hosted detection is the operator's real config, so it is set up the
+  // operator's real way: a `.pi/forge` naming the type and host, plus an SSH
+  // remote on that host. A fixture that only set `PI_ENSEMBLE_FORGE` would leave
+  // the config-and-remote leg of `detectForge` unexercised — the leg that decides
+  // whether a self-hosted project is a GitLab project at all.
+  if (forgeAxis === "self-hosted") writeSelfHosted(f.repoRoot, c.glHost ?? SELF_HOST);
+  // The forge the step reads through. The GitHub axis answers with a `github`
+  // adapter, which is what every existing case already exercised implicitly: it
+  // asserted the gh argv and gh graded the rows. Every GitLab axis gets the REAL
+  // adapter — `createForge(glDetection(…))` over the exec fake below — so the
+  // readiness composition, the pipelines lookup and the job mapping under test
+  // are the production ones and the argv is the adapter's pinned form, not a
+  // seam shaped to match this suite's own expectations.
+  const glForge: GlForge | undefined = gitlab
+    ? await buildGlForge(c, f.repoRoot, f.head, forgeAxis === "self-hosted", (cmd) => {
+        ran.cmds.push(cmd);
+      })
+    : undefined;
   const deps: CiDeps = {
     exec: async (cmd, o) => {
       ran.cmds.push(cmd);
@@ -223,7 +298,10 @@ export async function run(c: CiCase): Promise<Ran> {
         // rather than by the project — so the base run of the same command gets the SAME
         // stamp. Two runs of one tier must print identical residue for the excuse to
         // compare them verbatim, and a stamp the base never printed is a head-only line.
-        if (c.baseTierOutput !== undefined && String(o?.cwd ?? "").includes(".baseline-lean-verify-"))
+        if (
+          c.baseTierOutput !== undefined &&
+          String(o?.cwd ?? "").includes(".baseline-lean-verify-")
+        )
           throw Object.assign(new Error(`Command failed: ${cmd}`), {
             code: 1,
             stdout: c.baseTierOutput,
@@ -273,8 +351,7 @@ export async function run(c: CiCase): Promise<Ran> {
       }
       if (cmd.startsWith("gh pr checks ")) {
         const n = checksReads++;
-        if (c.checksThrows !== undefined && n < c.checksThrows.length)
-          throw at(c.checksThrows, n);
+        if (c.checksThrows !== undefined && n < c.checksThrows.length) throw at(c.checksThrows, n);
         if (c.checksSeq !== undefined) return { stdout: JSON.stringify(at(c.checksSeq, n)) };
         return { stdout: JSON.stringify(c.checks ?? [{ name: "ci", bucket: "pass" }]) };
       }
@@ -292,6 +369,28 @@ export async function run(c: CiCase): Promise<Ran> {
         : { budgets: { ...defaultConfig().budgets, ci: { ...c.ciBudget } } }),
     }),
     ...(c.verifyCmd === undefined ? {} : { readVerifyCmd: async () => c.verifyCmd }),
+    // The forge seam the step reads the PR/MR through. On the GitHub axis this
+    // goes through the SAME detection production uses (`detectForge` on a plain
+    // `git init` clone answers `github` via the known-host table only when a
+    // remote exists, so the recorder supplies the adapter for that axis) and
+    // `"none"` is the forge-less clone: the step must throw rather than fall back
+    // to the gh argv. A self-hosted case is the one axis that asks the detector
+    // itself, so a broken `.pi/forge` leg fails the case instead of being stubed
+    // around.
+    forge: async (repoRoot) => {
+      if (forgeAxis === "none") return undefined;
+      if (gitlab) {
+        if (forgeAxis === "self-hosted") {
+          const det = await detectForge(repoRoot, {});
+          if (det.forge !== "gitlab")
+            throw new Error(
+              `self-hosted detection answered ${det.forge}/${String(det.host)} for .pi/forge + git@ remote — the case's premise is gone`,
+            );
+        }
+        return glForge;
+      }
+      return { forge: "github" } as unknown as GlForge;
+    },
     ...(c.tierTimeoutMs === null ? {} : { tierTimeoutMs: c.tierTimeoutMs ?? 5_000 }),
     ...(c.waitTimeoutMs === undefined ? {} : { waitTimeoutMs: c.waitTimeoutMs }),
     // The injected sleep MOVES the clock the wait is bounded by — the same

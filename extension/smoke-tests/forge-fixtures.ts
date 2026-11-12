@@ -171,7 +171,9 @@ export const GL_MR_VIEW = {
 
 /**
  * `glab api /projects/:id/merge_requests/:iid` (REST, snake_case). Carries
- * the four readiness fields the epic spec names.
+ * the four readiness fields the epic spec names, plus `diff_refs.head_sha`:
+ * the normalized MR (`mapGlMr`) keeps no commit oid, so the raw reply is the
+ * only place a caller can read which commit its verdict is about.
  */
 export const GL_MR = {
   iid: 17,
@@ -189,6 +191,7 @@ export const GL_MR = {
   has_conflicts: false,
   blocking_discussions_resolved: true,
   approvals_left: 0,
+  diff_refs: { base_sha: "a".repeat(40), head_sha: "b".repeat(40), start_sha: "c".repeat(40) },
   open_pipeline: { id: 5001, status: "running" },
 };
 

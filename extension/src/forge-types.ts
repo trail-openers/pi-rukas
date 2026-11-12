@@ -275,6 +275,16 @@ export interface Forge {
 
   // Merge readiness (SAFETY-CRITICAL)
   mergeReadiness(number: number, opts?: { maxBuffer?: number }): Promise<MergeReadinessResult>;
+  /**
+   * The raw MR row of the most recent `mergeReadiness` of this number, or
+   * `undefined` when this adapter never read it. The normalized shapes drop
+   * every commit oid and every composition field, so the caller that must name
+   * the commit its verdict is about can only read it from the reply the
+   * readiness path already consumed — a second read of a moving MR would be a
+   * second moment. GitLab-only in practice: the GitHub readiness read is a
+   * different command with `headRefOid` already in its result.
+   */
+  lastMrRow?(number: number): unknown;
 
   // Labels
   /**

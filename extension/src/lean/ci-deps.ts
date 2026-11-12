@@ -9,8 +9,10 @@
 
 import { execp } from "../exec.ts";
 import { mergeEvidenceViewCmd, prChecksCmd } from "../forge-commands.ts";
+import type { Forge } from "../forge-types.ts";
 import { loadWorkConfig } from "./config.ts";
 import type { WorkConfig } from "./config.ts";
+import { forgeFor } from "./io.ts";
 import type { VerifyExec } from "./verify-types.ts";
 
 /** What `ci` reaches outside itself. Everything is argv-or-CLI, never a model. */
@@ -64,6 +66,18 @@ export interface CiDeps {
    * 30-minute budget does not take 30 minutes of injected sleeps.
    */
   waitTimeoutMs?: number;
+  /**
+   * The forge adapter for the run's repository, or `undefined` when none can be
+   * resolved. Production is `io.ts`'s ONE detection seam (`detectForge` →
+   * `createForge`, `undefined` for `unknown`), so the step obeys the same answer
+   * `publish` and `land` obey — the `gh` reads below are the GitHub branch of
+   * that answer, never a default. `undefined` is an ANSWER ("this clone has no
+   * forge the harness can drive") and the step refuses on it rather than
+   * falling back to `gh`, which is how a GitLab project whose detection failed
+   * would otherwise be graded on GitHub commands it never ran. A test injects
+   * the adapter its case needs and stays offline.
+   */
+  forge: (repoRoot: string) => PromiseLike<Forge | undefined>;
 }
 
 /** The real timer: the poll's default sleep, never a zero-delay loop. */
@@ -80,6 +94,7 @@ export function ciDeps(): CiDeps {
     loadConfig: (repoRoot, baseSha) => loadWorkConfig(execp, repoRoot, baseSha),
     sleep: realSleep,
     now: Date.now,
+    forge: forgeFor,
   };
 }
 

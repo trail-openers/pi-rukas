@@ -161,6 +161,21 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
   };
 
   /**
+   * The raw MR reply of the most recent readiness read, per MR number.
+   *
+   * `mapGlMr` keeps no commit oid and the readiness result names none, so a
+   * caller that must state WHICH commit its verdict is about has exactly one
+   * place to read it: the reply the composition already consumed. Caching it is
+   * the alternative to a second `glab api` of a moving MR, whose reply could
+   * describe a different commit than the one the verdict was composed from —
+   * precisely the two-moments defect the adapter exists to prevent. Best-effort
+   * by construction: only the GitLab readiness read fills it, and a caller
+   * reading a number that was never read gets `undefined` rather than a stale
+   * row from another MR.
+   */
+  const lastMrRows = new Map<number, Record<string, unknown>>();
+
+  /**
    * Write the body to a temp file, run the operation that takes the file
    * path, then clean up. The temp file is the seam for the GitLab
    * `description=@file` / `--body-file` conventions.
@@ -400,8 +415,14 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
 
     mergeReadiness: (number, opts) => {
       if (forge === "github") return checkGithubReadiness(execFn, cwd, number, opts);
-      return checkGitlabReadiness(execFn, cwd, number, opts);
+      return checkGitlabReadiness(execFn, cwd, number, opts, (raw) => {
+        lastMrRows.set(number, raw);
+      });
     },
+
+    // The readiness read's own MR reply, for the one caller that must name the
+    // commit the verdict was composed at (see `lastMrRows`).
+    lastMrRow: (number) => lastMrRows.get(number),
 
     // ── Labels ────────────────────────────────────────────────────────────
     // The family lives in forge-label-ops.ts (500-line seam) and receives this
