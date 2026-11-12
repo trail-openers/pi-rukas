@@ -84,6 +84,24 @@ export function commandName(word: string): string {
   return word.slice(word.lastIndexOf("/") + 1);
 }
 
+/** The removal commands whose operands are the paths they delete. */
+const REMOVERS = new Set(["rm", "rmdir", "unlink", "shred"]);
+
+/** The removal commands the deletion rule (#2200) reads the operands of. */
+export function isRemover(name: string): boolean {
+  return REMOVERS.has(name);
+}
+
+/**
+ * The non-option operands of a removal command; `--` ends the options. The deletion
+ * rule reads these for `unlink` and `shred`, which the writers table has no entry
+ * for, and to tell a remover that named its paths from one whose targets arrive on
+ * standard input (`xargs … rm -rf`, whose wrapper the splitter has already stripped).
+ */
+export function removalOperands(args: Word[]): Word[] {
+  return operands(args);
+}
+
 /** Non-option operands. `--` ends the options, and `-` alone is stdin/stdout. */
 export function operands(args: Word[]): Word[] {
   return operandsWith(args, []);
