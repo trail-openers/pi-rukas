@@ -65,7 +65,15 @@ const WRAPPERS = new Set([
   "firejail",
 ]);
 
-/** Options of each wrapper that take a separate value (`nice -n 5`, `timeout -s KILL`). */
+/**
+ * The options of each wrapper that take a SEPARATE value (`nice -n 5`, `timeout -s KILL`),
+ * checked against each wrapper's own usage output. A boolean flag listed here swallows the
+ * next word — the wrapper's command, when the flag comes last — and a remover the reader never
+ * saw is a remover the rule never judged. Short namespace flags (`unshare -m`, `nsenter -p`) and
+ * tracing flags (`strace -f`) are boolean: their `[=<file>]` form is attached and optional.
+ * Long options are listed even where `=` is the usual spelling, since spaced `--class 3` is
+ * accepted too.
+ */
 const VALUE_OPTIONS: Record<string, readonly string[]> = {
   env: ["-u", "--unset", "-S", "--split-string"],
   nice: ["-n", "--adjustment"],
@@ -75,7 +83,10 @@ const VALUE_OPTIONS: Record<string, readonly string[]> = {
   sudo: ["-u", "-g", "-C", "-D", "-p", "-r", "-t", "-U", "--user", "--group", "--chdir"],
   doas: ["-u", "-C"],
   caffeinate: ["-t", "-w"],
-  watch: ["-n", "--interval"],
+  // `-q`/`--equexit` takes an OPTIONAL value (usage output), so `watch -q rm …` runs `rm` — which
+  // is why the row for it names a cycles value: with no value the option swallows the command.
+  watch: ["-n", "--interval", "-q", "--equexit"],
+  // `strace -U <columns>` takes a value, though its single-letter shape reads as a boolean cluster.
   xargs: [
     "-I",
     "-n",
@@ -92,11 +103,31 @@ const VALUE_OPTIONS: Record<string, readonly string[]> = {
     "--arg-file",
   ],
   stdbuf: ["-i", "-o", "-e", "--input", "--output", "--error"],
-  strace: ["-o", "-P", "-e", "-s"],
+  strace: ["-o", "-P", "-e", "-s", "-U"],
   ltrace: ["-o", "-e", "-n", "-x"],
-  unshare: ["-m", "-u", "-i", "-p", "-n", "-U", "--map-users", "--map-groups"],
-  chroot: ["--userspec", "--groups", "--chdir"],
-  nsenter: ["-t", "-p", "-m", "-u", "-i", "-n", "-U", "-G", "--target", "--root"],
+  unshare: [
+    "-l",
+    "--load-interp",
+    "--propagation",
+    "-R",
+    "--root",
+    "-w",
+    "--wd",
+    "-S",
+    "--setuid",
+    "-G",
+    "--setgid",
+    "--map-user",
+    "--map-group",
+    "--map-users",
+    "--map-groups",
+    "--owner",
+    "--setgroups",
+    "--monotonic",
+    "--boottime",
+  ],
+  chroot: ["--userspec", "--groups"],
+  nsenter: ["-t", "--target", "-N", "--net-socket", "-W", "--wdns", "-r", "--root", "-w", "--wd"],
   firejail: ["--name", "--root", "--home", "--net", "--dns", "--include", "--profile", "--user"],
 };
 

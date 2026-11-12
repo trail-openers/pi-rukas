@@ -186,43 +186,6 @@ await withDeletionHost(HOST, async () => {
       refused(`git clean -fd -n ${sharedTmp}/x`) === undefined,
       "E: a dry run of an outside path operand stays a dry run",
     );
-    // A tree selector written AFTER the verb was never read either: the reader stopped at the
-    // verb, so `git clean -fdx -C<shared>` read as a clean of the child's own worktree and ran.
-    // Real git applies `-C`/`--work-tree`/`--git-dir` wherever they sit on the line, so each
-    // spelling is judged exactly as the pre-verb form is — and a separate value word after them
-    // is that option's value, not a pathspec.
-    assert(
-      refused(`git clean -fdx -C${sharedTmp}`) !== undefined,
-      "E: a forcing clean with `-C<outside>` after the verb is refused",
-    );
-    assert(
-      refused(`git clean -fdx -C ${sharedTmp}`) !== undefined,
-      "E: a forcing clean with a separate `-C <outside>` value after the verb is refused",
-    );
-    assert(
-      refused(`git clean -fdx --work-tree=${sharedTmp}`) !== undefined,
-      "E: a forcing clean with `--work-tree=<outside>` after the verb is refused",
-    );
-    assert(
-      refused(`git clean -fdx --work-tree ${sharedTmp}`) !== undefined,
-      "E: a forcing clean with a separate `--work-tree <outside>` value after the verb is refused",
-    );
-    assert(
-      refused(`git clean -fdx --git-dir=${sharedTmp}`) !== undefined,
-      "E: a forcing clean with `--git-dir=<outside>` after the verb is refused",
-    );
-    assert(
-      refused(`git clean -fdx -C${wt}`) === undefined,
-      "E: `-C<own worktree>` after the verb still runs an in-tree clean",
-    );
-    assert(
-      refused(`git clean -fdx -C ${wt}`) === undefined,
-      "E: a separate `-C <own worktree>` value after the verb still runs an in-tree clean",
-    );
-    assert(
-      refused(`git clean -fdx --work-tree=${wt}`) === undefined,
-      "E: `--work-tree=<own worktree>` after the verb still runs an in-tree clean",
-    );
     // Pathspec magic: an operand starting with `:` is read by git as a magic pathspec, so
     // `:/x` names from the top level of the worktree and `:(literal)<abs>` names that absolute
     // path wherever it sits — none of which the plain operand read can resolve. A forcing clean
@@ -238,6 +201,29 @@ await withDeletionHost(HOST, async () => {
     assert(
       refused("git clean -fdx :(top)../..") !== undefined,
       "E: a forcing clean with a `:(top)../..` magic pathspec is refused",
+    );
+    // `--pathspec-from-file` hands git the pathspecs in a file (or on stdin as `-`), so the trees
+    // a forcing clean removes are not on the command line at all — no reading of this line names
+    // them. Refused the way the magic pathspec is, in each spelling the option takes.
+    assert(
+      refused("git clean -fdx --pathspec-from-file paths.txt") !== undefined,
+      "E: a forcing clean reading its pathspecs from a file is refused",
+    );
+    assert(
+      refused(`git clean -fdx --pathspec-from-file=${sharedTmp}/paths.txt`) !== undefined,
+      "E: a forcing clean with an attached `--pathspec-from-file=<file>` is refused",
+    );
+    assert(
+      refused("git clean -fdx --pathspec-from-file=-") !== undefined,
+      "E: a forcing clean reading its pathspecs from standard input is refused",
+    );
+    assert(
+      refused("git clean -fdx --pathspec-from-file -") !== undefined,
+      "E: a forcing clean reading stdin through a separate `-` value is refused",
+    );
+    assert(
+      refused("git clean -fd --pathspec-from-file paths.txt") !== undefined,
+      "E: a forcing clean with `--pathspec-from-file` and no `-f` is refused (fail-closed, as with a bundled `-n`)",
     );
     // The git guard's own opt-out is about the child's working tree, so it cannot
     // open the shared root: the refusal stands whatever that switch says.

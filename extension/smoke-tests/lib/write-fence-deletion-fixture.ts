@@ -115,6 +115,8 @@ export function buildDeletionFixture(tag: string): DeletionFixture {
   // (which it is) and the row would no longer say whether the walk ran.
   const foreignRunUnderRuns = path.join(sharedRuns, "build", "other-run");
   const spawnTempRoot = path.join(ruleTrees, "spawntmp");
+  // The per-child dir the walk is seeded from, carrying the basename the spawn layer really gives
+  // one (`mkdtemp(os.tmpdir() + "/pi-rukas-")`). A row that seeds the walk here judges the shape
   for (const dir of [
     wt,
     scratch,

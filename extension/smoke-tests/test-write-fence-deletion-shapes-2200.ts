@@ -12,7 +12,8 @@
  *   A6. a remover behind a wrapper is still that remover — the splitter strips the
  *       privilege and scheduling forms its sibling scanner (`bash-destructive-write.ts`)
  *       strips, so `sudo rm -rf …` is judged rather than skipped, whichever side of
- *       the roots its target lies on;
+ *       the roots its target lies on (the namespace, tracing and sandboxing wrappers
+ *       and their option tables live in `test-write-fence-deletion-wrappers-2200.ts`);
  *   B. deleting inside the child's own roots still works — the rule is not a bash
  *      ban — while a target the command does not name is refused even in-tree.
  *
@@ -406,39 +407,6 @@ for (const [command, why] of [
 ] as Array<[string, string]>) {
   assert(refused(command) === undefined, `A10 allow: ${why} — \`${command}\``);
 }
-
-// ============================================================
-// A11. A remover behind a namespace or tracing wrapper is still that remover.
-// ============================================================
-for (const [command, why] of [
-  [`busybox rm -rf ${foreignRun}`, "`busybox rm -rf` of another run's dir"],
-  [`strace -f rm -rf ${foreignRun}`, "`strace -f rm -rf` outside the roots"],
-  [`unshare rm -rf ${foreignRun}`, "`unshare rm -rf` outside the roots"],
-  [`nsenter -t 1 rm -rf ${foreignRun}`, "`nsenter -t 1 rm -rf` outside the roots"],
-  [`chroot / rm -rf ${foreignRun}`, "`chroot / rm -rf` outside the roots"],
-  // `chroot` takes the new root as a POSITIONAL before the program it runs — exactly one word.
-  // Consume two and the remover itself leaves the reader's view, which is the shape that would let
-  // this line run; consume none and `/bin` reads as the command. `firejail` takes no positional, so
-  // its first word is already the command whatever its options.
-  [
-    `chroot /bin rm -rf ${foreignRun}`,
-    "`chroot /bin rm -rf` — one positional root, the remover still read",
-  ],
-  [
-    `busybox chroot / rm -rf ${foreignRun}`,
-    "`busybox chroot / rm -rf` — a wrapper stacked before the positional root",
-  ],
-  [
-    `firejail --quiet --noprofile rm -rf ${foreignRun}`,
-    "`firejail --quiet --noprofile rm -rf` — flags, no positional to consume",
-  ],
-] as Array<[string, string]>) {
-  assert(refused(command) !== undefined, `A11 refuse: ${why} — \`${command}\``);
-}
-assert(
-  refused(`busybox rm -rf ${wt}/build`) === undefined,
-  "A11 allow: `busybox rm -rf` of a build dir in the worktree",
-);
 
 // ============================================================
 // B. The child's own roots stay deletable — the rule is not a bash ban.
