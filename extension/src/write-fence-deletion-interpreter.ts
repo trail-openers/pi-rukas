@@ -32,12 +32,25 @@ const INTERPRETERS: Record<string, readonly string[]> = {
   ruby: ["-e"],
 };
 
-/** The deletion calls an interpreter body may hold. */
+/**
+ * The deletion calls an interpreter body may hold. Ruby's spellings are named with
+ * their `FileUtils`/`File` receiver because a bare `rm` is a shell command every
+ * body may mention in a message, and `unlink` is a JS/Python verb already read on
+ * its own — the receiver is what makes the match a deletion rather than a word.
+ */
 const DELETE_CALL =
-  /\b(?:rmSync|unlinkSync|rmdirSync|removeSync|shutil\.rmtree|os\.(?:remove|unlink)\b|rm\b|rmdir\b|unlink\b)/;
+  /\b(?:rmSync|unlinkSync|rmdirSync|removeSync|shutil\.rmtree|os\.(?:remove|unlink|rmdir)\b|Path\([^)]*\)\s*\.\s*unlink|FileUtils\.(?:rm_rf|rm_f|remove_entry|remove_entry_secure)|File\.(?:delete|unlink)|rm\b|rmdir\b|unlink\b)/;
 
 /** A quoted literal inside a script body. */
 const STRING_ARG = /(['"])((?:[^'"\\\n]|\\.)*)\1/g;
+
+/**
+ * A template literal that interpolates a run-time value (`${…}`). A path built
+ * this way is the incident's own shape — the target assembled from the
+ * environment's home directory — and the string it produces is not knowable here,
+ * so the call is refused rather than judged on a branch of the template.
+ */
+const TEMPLATE_WITH_SUBSTITUTION = /`[^`]*\$\{[^`]*`/;
 
 /** Is this command one whose words this rule reads at all? */
 export function isInterpreter(name: string): boolean {
@@ -62,6 +75,14 @@ function readsAsPath(p: string): boolean {
   if (p.startsWith("-")) return false;
   return p.includes("/") || p === "~" || p.startsWith("~/") || /^[\w.@+-]+$/.test(p);
 }
+
+/**
+ * A delete target the body builds itself: an env read, an argv slot, a `+` join or
+ * an interpolation. `process.env.HOME` in a body that deletes is exactly the
+ * incident's script, and the string it produces is not knowable here.
+ */
+const DYNAMIC_TARGET =
+  /(?:process\.env|os\.environ|sys\.argv|process\.argv|argv\[|\$[A-Za-z_|]|\+\s*[A-Za-z_$]|[A-Za-z_$][\w$]*\s*\+)/;
 
 /**
  * The body word of an interpreter call, or undefined when the call names none:
@@ -97,6 +118,12 @@ export function interpreterDeletions(
   if (body === undefined) return [];
   if (body.dyn) return { reason: INTERPRETER_TARGET_REASON };
   if (!DELETE_CALL.test(body.text)) return [];
+  // A target assembled at run time — an interpolation, a concatenation, an env
+  // read — cannot be judged, and a body that deletes without naming one is the
+  // same case in another spelling. Both are refused, not waved through.
+  if (DYNAMIC_TARGET.test(body.text) || TEMPLATE_WITH_SUBSTITUTION.test(body.text)) {
+    return { reason: INTERPRETER_TARGET_REASON };
+  }
   const literals = interpreterLiterals(body.text);
   if (literals.length === 0) return { reason: INTERPRETER_TARGET_REASON };
   return literals.map((p) => ({ path: absolutise(p, dir) }));
