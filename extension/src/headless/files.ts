@@ -64,7 +64,7 @@ export const HEADLESS_FILES: readonly HostFile[] = [
     path: ".pi/work.json",
     kind: "config",
     whenAbsent:
-      "lean defaults: no fast tier, the full tier from .pi/verify-cmd, no test runner, autoMerge false",
+      "lean defaults: no fast tier, the full tier from .pi/verify-cmd, no test runner (verify.test is refused at specify for a spec with test criteria, and a spec with only command criteria throws at verify — a project with no runner configures it as 'sh {file}'), autoMerge false",
   },
   {
     path: ".pi/worktree-setup",

@@ -140,6 +140,28 @@ means defaults.** An invalid file is *not* defaulted: it raises
   120 s. `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` restores v0.14.71, where neither is
   paid. A project that configures no `verify.test` keeps its ordinary
   `no test runner configured` verdict, not that hand-back.
+  The template is read by **four** steps, not one, and each answers a different
+  question: `specify` proves a submitted file red with it, `challenge` hands it to
+  its own adversary, `verify` runs the frozen tests through it and then the spec's
+  `command` criteria, and `build` re-runs a child's "these tests cannot all pass
+  together" report with it — a missing template there is only traced, and the
+  report is ignored. Only `specify` and `challenge` refuse on its absence —
+  `specify` declines a spec with `test` criteria with `no test runner configured
+  (.pi/work.json verify.test)`, a verdict and not a hand-back, and `challenge`
+  throws the same words as infrastructure. A spec whose criteria are
+  all `command` (or all `manual`) reaches neither refusal — `ready` never asks for a
+  template, and `specify` dispatches its adversary without one. It still cannot get
+  far: the `command` tier throws `no verify.test runner template is configured for
+  the spec's command criteria` and the run hands back, so a project with no test
+  runner points the template at the file itself — `"verify": { "test":
+  "sh {file}" }` — which satisfies every one of those reads without a runner.
+  Two caveats travel with that choice. A `command` criterion is run through the
+  template in **argv form**, and `command` is itself accepted only as a plain
+  repo-relative file path: anything else (a command line, a metacharacter, a path
+  outside the normalised repo-relative form, a file that changed since the base) is
+  recorded as *not runnable* — never red, never passed — and `publish` keeps the PR
+  a draft. And `sh {file}` executes the file, so a criterion's file must be a
+  script `sh` can run and must exit **0** to count as held.
 - **`verify.testDir` / `verify.testGlob`** — a pair or neither: where the
   adversary's acceptance tests live and what they are called, so the frozen
   tests land where your own CI runs them.
