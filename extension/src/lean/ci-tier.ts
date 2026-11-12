@@ -122,17 +122,19 @@ interface ForgeRead {
   /** The PR head this verdict was observed at. */
   prHead: string | undefined;
   /** The check rows, or `undefined` when the reply was not an array. */
-  rows: { name?: unknown; state?: unknown; bucket?: unknown }[] | undefined;
+  rows: { name?: unknown; state?: unknown; bucket?: unknown; blocking?: unknown }[] | undefined;
 }
 
 /** A row's grade, or `undefined` when the row is simply passing. */
 function gradeRow(
-  row: { state?: unknown; bucket?: unknown },
+  row: { state?: unknown; bucket?: unknown; blocking?: unknown },
   gitlab: boolean,
 ): RowGrade | undefined {
   // GitLab's job rows have no bucket and their `status` words are not gh's, so
-  // the shared table decides them; a word it has never seen waits, never passes.
-  if (gitlab) return glRowGrade({ state: row.state });
+  // the shared table decides them — with the row's own `blocking` flag, the one
+  // field that tells a gate that ran from a gate that could not have failed;
+  // a word it has never seen waits, never passes.
+  if (gitlab) return glRowGrade({ state: row.state, blocking: row.blocking });
   const v = String(row.bucket ?? row.state ?? "")
     .toLowerCase()
     .trim();
@@ -155,7 +157,7 @@ const HANDBACK_NAME_CHARS = 80;
 const HANDBACK_NAMES = 10;
 
 function namesOf(
-  rows: { name?: unknown; state?: unknown; bucket?: unknown }[],
+  rows: { name?: unknown; state?: unknown; bucket?: unknown; blocking?: unknown }[],
   want: RowGrade,
   gitlab: boolean,
 ): string[] {
@@ -209,12 +211,6 @@ function json(text: string, why: string): unknown {
   }
 }
 
-/**
- * One read of the forge: the PR's own verdict and its check rows, from the SAME
- * moment. The head the verdict is about comes out of the same `gh pr view` as
- * the verdict itself — two reads of a moving PR are two moments, and a green
- * about another head is no evidence about this one.
- */
 /**
  * One read of the forge, from ONE moment: the verdict and the head it is about.
  *

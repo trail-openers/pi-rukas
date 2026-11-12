@@ -258,6 +258,52 @@ async function main() {
     });
   }
 
+  // The head pin's evidence: `prChecks` keeps only the rows, so a caller that must
+  // say WHICH commit they ran at reads the pipeline by id instead — and the commit
+  // comes from the pipeline row, not the jobs list, which carries none.
+  {
+    const head = "b".repeat(40);
+    const { fn, calls } = mkExec({
+      "glab api /projects/:id/pipelines/5001/jobs --output json": {
+        stdout: JSON.stringify(GL_JOBS),
+      },
+      "glab api /projects/:id/pipelines/5001 --output json": {
+        stdout: JSON.stringify({ id: 5001, sha: head, status: "success" }),
+      },
+    });
+    const forge = createForge(det, { execFn: fn });
+    await check("glPipelineJobs reports the commit the pipeline built", async () => {
+      const read = await forge.glPipelineJobs!(5001);
+      assert(read.rows.length === 2, `rows ${read.rows.length}`);
+      assert(read.pipelineSha === head, `sha ${String(read.pipelineSha)}`);
+      assert(
+        calls.some((c: string) => /\/pipelines\/5001 --output json/.test(c)),
+        `no pipeline read in ${JSON.stringify(calls)}`,
+      );
+      assert(
+        calls.some((c: string) => /\/pipelines\/5001\/jobs/.test(c)),
+        `no jobs read in ${JSON.stringify(calls)}`,
+      );
+    });
+  }
+  // A pipeline row that names no commit must not hand back a sha the step could
+  // pin to — absence, not a guess.
+  {
+    const { fn } = mkExec({
+      "glab api /projects/:id/pipelines/5002/jobs --output json": {
+        stdout: JSON.stringify(GL_JOBS),
+      },
+      "glab api /projects/:id/pipelines/5002 --output json": {
+        stdout: JSON.stringify({ id: 5002, status: "running" }),
+      },
+    });
+    const forge = createForge(det, { execFn: fn });
+    await check("glPipelineJobs says nothing when the pipeline names no commit", async () => {
+      const read = await forge.glPipelineJobs!(5002);
+      assert(read.pipelineSha === undefined, `sha ${String(read.pipelineSha)}`);
+    });
+  }
+
   // ── CI watch (GitLab polling loop) ──────────────────────────────────────
   // Terminal statuses are success/failed/canceled/skipped/manual — verify a
   // non-`success` terminal is also recognized (the loop must not treat

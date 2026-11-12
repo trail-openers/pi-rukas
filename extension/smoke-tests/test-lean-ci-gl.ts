@@ -29,7 +29,11 @@
  *   (g5) a failed job -> red naming it, tier never run;
  *   (g6) `skipped`/`manual` never read as green; `running` is waited and the
  *        expired wait hands back;
- *   (g7) an absent or malformed `diff_refs.head_sha` -> infra throw;
+ *   (g6b) a job the pipeline allows to fail (`allow_failure: true`) never reads
+ *        as green either — its `success` is a gate that did not decide;
+ *   (g7) an absent or malformed `diff_refs.head_sha` -> infra throw; the MR's
+ *        pipeline is pinned to that head, so a foreign tag/schedule pipeline
+ *        cannot colour the verdict in either direction;
  *   (g8) self-hosted detection through the REAL seam: `.pi/forge`
  *        (type=gitlab, host=gitlab.example.com) plus an SSH remote on that host.
  *
@@ -38,7 +42,17 @@
  */
 
 import { VerifyInfraError } from "../src/lean/verify-types.ts";
-import { cleanUp, glMrChecking, glMrHeadless, glMrShortHead, run } from "./lib/lean-ci-recorder.ts";
+import { GL_MR } from "./forge-fixtures.ts";
+import {
+  cleanUp,
+  glMrChecking,
+  glMrHeadless,
+  glMrShortHead,
+  run,
+} from "./lib/lean-ci-recorder.ts";
+
+/** The fixture MR's pipeline id, whose rows the recorder answers with. */
+const MR_PIPELINE_ID = 5001;
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -48,6 +62,9 @@ function assert(cond: boolean, msg: string): void {
     exit = 1;
   }
 }
+
+/** A full sha that is not the fixture head, for a pipeline at another commit. */
+const FOREIGN_SHA = "9".repeat(40);
 
 /** One GitLab job row, in the snake_case shape the REST API answers with. */
 const job = (status: string, name = "build"): Record<string, unknown> => ({ name, status });
@@ -72,7 +89,7 @@ const job = (status: string, name = "build"): Record<string, unknown> => ({ name
 
 // ── (g2) no pipeline at all -> the pinned no-checks RED ──────────────────
 {
-  const r = await run({ full: "true", forge: "gitlab", pipelines: [] });
+  const r = await run({ full: "true", forge: "gitlab", pipelineSha: null });
   assert(
     r.threw === undefined,
     `(g2) an MR with no pipeline is a verdict, not an infra throw (${String(r.threw?.message)})`,
@@ -190,6 +207,44 @@ for (const status of ["created", "waiting_for_resource", "preparing", "scheduled
   );
 }
 
+// ── (g6b) `allow_failure: true` is not a green ──────────────────────
+// GitLab answers a job that is allowed to fail with `success`, so a step that
+// graded the word alone would call an `only:`/`rules:` optional job a gate that
+// passed. The adapter carries the flag as `blocking` and the shared table refuses it.
+for (const [label, jobs] of [
+  ["an allow-failure success", [{ name: "optional-gate", status: "success", allow_failure: true }]],
+  [
+    "an allow-failure failure",
+    [
+      { name: "build", status: "success" },
+      { name: "optional-gate", status: "failed", allow_failure: true },
+    ],
+  ],
+] as const) {
+  const r = await run({ full: "true", forge: "gitlab", jobs, clockMs: 0, waitTimeoutMs: 60_000 });
+  assert(
+    r.outcome?.kind !== "green",
+    `(g6b) ${label} is never green (${JSON.stringify(r.outcome ?? r.threw?.message)})`,
+  );
+  assert(r.tierRuns === 0, `(g6b) and ${label} runs no full tier`);
+}
+// The other arm of the same word: a blocking success alongside it still passes,
+// so this is the flag deciding and not the suite refusing everything.
+{
+  const r = await run({
+    full: "true",
+    forge: "gitlab",
+    jobs: [
+      { name: "build", status: "success" },
+      { name: "optional-gate", status: "success", allow_failure: false },
+    ],
+  });
+  assert(
+    r.outcome?.kind === "green",
+    `(g6b) a blocking success still grades green (${JSON.stringify(r.outcome ?? r.threw?.message)})`,
+  );
+}
+
 // ── (g7) head sha absent / malformed -> infra throw ──────────────────────
 for (const [label, row] of [
   ["absent", glMrHeadless()],
@@ -205,6 +260,84 @@ for (const [label, row] of [
     `(g7) and the throw names the head it could not read (${String(r.threw?.message)})`,
   );
   assert(r.tierRuns === 0, `(g7) and ${label} runs no tier`);
+}
+
+// ── (g7b) the jobs read is pinned to the MR head ────────────────────
+// A pipeline read through the MR's pipelines LIST gives rows with no commit of
+// their own, so on a project that runs tag or schedule pipelines they can belong
+// to a commit other than the one the readiness was composed at — flattering a
+// broken head or damning a good one. The step therefore reads the jobs of the
+// pipeline the MR reply itself named, and keeps them only when that pipeline
+// reports the head as the commit it built.
+const HEAD = "b".repeat(40);
+
+// The pipeline the MR reply names reports some other commit — a tag or schedule
+// pipeline. Its rows are refused outright: they are not evidence about this head,
+// in either direction.
+for (const [label, jobs] of [
+  ["a green", []],
+  ["a RED", [job("failed", "nightly")]],
+] as const) {
+  const r = await run({
+    full: "true",
+    forge: "gitlab",
+    pipelineSha: FOREIGN_SHA,
+    jobs,
+    clockMs: 0,
+    waitTimeoutMs: 60_000,
+  });
+  assert(
+    r.threw instanceof VerifyInfraError,
+    `(g7b) ${label} pipeline at another commit is refused, not graded (${String(r.threw?.message)})`,
+  );
+  assert(
+    (r.threw?.message ?? "").includes("pipeline"),
+    `(g7b) and the refusal names the pipeline (${String(r.threw?.message)})`,
+  );
+  assert(r.tierRuns === 0, `(g7b) and ${label} foreign pipeline runs no tier`);
+}
+// A pipeline that names no commit at all says nothing about which rows are the
+// head's. Absence is never a pass, so the step reads NO checks and refuses the
+// absence of evidence as green — it does not grade them, and it does not merge.
+{
+  const r = await run({ full: "true", forge: "gitlab", pipelineSha: null });
+  assert(
+    r.outcome?.kind === "red",
+    `(g7b) a pipeline with no commit is a verdict, not a green (${JSON.stringify(r.outcome ?? r.threw?.message)})`,
+  );
+  assert(
+    (r.outcome?.reason ?? "").includes("no checks reported"),
+    `(g7b) and it is the absence-of-evidence red (${r.outcome?.reason})`,
+  );
+  assert(r.tierRuns === 0, "(g7b) and no tier ran on the strength of it");
+}
+// The newest row of the pipelines list is NOT the pipeline the verdict is made
+// from: the reply names one id, the list leads with another, and the rows graded
+// are the named pipeline's — witnessed by the argv the step issued.
+{
+  const r = await run({ full: "true", forge: "gitlab" });
+  assert(
+    r.outcome?.kind === "green",
+    `(g7b) the head's own pipeline is the one graded (${JSON.stringify(r.outcome ?? r.threw?.message)})`,
+  );
+  assert(
+    r.cmds.some((c) => new RegExp(`/pipelines/${String(MR_PIPELINE_ID)} --output json`).test(c)),
+    `(g7b) and the jobs were read from the pipeline the MR reply named (${JSON.stringify(r.cmds)})`,
+  );
+}
+// A moved head is a VERDICT (the PR is not the certified commit), not an infra
+// fault — and the jobs read never gets to be about the old head.
+{
+  const r = await run({ full: "true", forge: "gitlab", mrHead: "d".repeat(40) });
+  assert(
+    r.outcome?.kind === "red",
+    `(g7b) an MR whose head moved is red, not a throw (${JSON.stringify(r.outcome ?? r.threw?.message)})`,
+  );
+  assert(
+    (r.outcome?.reason ?? "").includes("is not the verified head"),
+    `(g7b) and the red names the head it moved off (${r.outcome?.reason})`,
+  );
+  assert(r.tierRuns === 0, "(g7b) and no tier ran on the moved head");
 }
 
 // ── (g8) self-hosted: .pi/forge type=gitlab + host= + an SSH remote ─────

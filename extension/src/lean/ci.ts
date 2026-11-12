@@ -88,15 +88,6 @@ function verifiedHead(ctx: HandlerCtx): string | undefined {
 }
 
 /**
- * The PR number, out of the publish step's recorded URL (never out of prose).
- *
- * The parser is `review`'s own, in `review-log.ts`: it names both `/pull/N` and
- * `/-/merge_requests/N`, so the step that decides whether a run may merge reads
- * the same address the step that reviews it read. A file-local copy that matched
- * only the GitHub form is what made every GitLab run die here with "no PR to read
- * CI for" while its pipeline was green.
- */
-/**
  * Is the disk still the head this run was certified at?
  *
  * `ci` runs its full tier as a shell command IN the worktree, so the tree it judges is
@@ -214,6 +205,14 @@ export async function ciOutcome(ctx: HandlerCtx, deps: CiDeps): Promise<Outcome>
       "no forge adapter could be resolved for this repository: ci reads the PR/MR through the forge, so it refuses to fall back to gh commands",
     );
   const gitlab = forge.forge === "gitlab";
+  // On the GitLab arm the step needs the seam that hands back the MR reply the
+  // readiness was composed from — without it the commit the verdict is about
+  // cannot be named, which is the adapter's fault and not the MR's, so it is
+  // refused here rather than collapsing into "the forge gave no head".
+  if (gitlab && typeof forge.lastMrRow !== "function")
+    throw new VerifyInfraError(
+      "this forge adapter offers no way to read back the MR reply its readiness was composed from, so ci cannot name the commit its verdict is about",
+    );
 
   const checks = await checksRedReason(
     deps,
@@ -223,7 +222,10 @@ export async function ciOutcome(ctx: HandlerCtx, deps: CiDeps): Promise<Outcome>
     verified,
     ciMinutes(cfg),
     gitlab,
-    forge,
+    // The gh arm never reaches the GitLab seam, and `readForge` branches on
+    // `gitlab` before touching it; the cast says "this one has the seam" for the
+    // arm where that is already established above.
+    forge as GlForge,
   );
   if (checks !== undefined) return { kind: "red", reason: checks };
 

@@ -83,12 +83,16 @@ export interface NormalizedPullRequest {
  *
  * There is deliberately no required/optional flag: `gh pr checks --json`
  * does not expose one (`isRequired` is not a field the subcommand supports,
- * and requesting it made every merge-evidence read fail closed — #745), and
- * GitLab has no per-job equivalent. Readiness is decided by the forge's own
- * authoritative signal (GitHub `mergeStateStatus`; GitLab the composed
- * `detailed_merge_status` in `forge-merge.ts`), which already encodes each
- * repo's required-check rules; the per-check rows only name what is
- * failing/pending/skipped.
+ * and requesting it made every merge-evidence read fail closed — #745). GitLab
+ * has no per-job "required" concept either, but it does have `allow_failure`,
+ * which is the sibling fact: a job the pipeline tolerates failing cannot turn a
+ * red pipeline green. Readiness still comes from the forge's own authoritative
+ * signal (GitHub `mergeStateStatus`; GitLab the composed `detailed_merge_status`
+ * in `forge-merge.ts`), which encodes each repo's required-check rules; the
+ * per-check rows name what is failing/pending/skipped, and `blocking` says
+ * whether a row could have failed anything. Only GitLab rows carry it — a GitHub
+ * row never has the field, and `gradeGlJobState` takes the flag explicitly so a
+ * caller cannot mistake an unmapped row for a non-blocking one.
  */
 export interface NormalizedCICheck {
   name: string;
@@ -96,6 +100,8 @@ export interface NormalizedCICheck {
   state: string;
   /** Bucket when the forge reports one (gh: `pass/fail/pending/warning...`). */
   bucket?: string;
+  /** A GitLab job that is NOT `allow_failure: true`. Absent only on gh rows. */
+  blocking?: boolean;
   url?: string;
 }
 
@@ -264,6 +270,20 @@ export interface Forge {
   ): Promise<string>;
   prDiff(number: number): Promise<string>;
   prChecks(number: number): Promise<NormalizedCICheck[]>;
+  /**
+   * The job rows of ONE named pipeline, plus the commit that pipeline reports it
+   * built — the evidence a caller needs to say the rows it graded are the head's.
+   *
+   * `prChecks` reaches a pipeline through the MR's pipelines LIST and keeps only
+   * the rows, so on a project that runs tag- or schedule pipelines its rows can
+   * belong to a foreign commit. GitLab's `/pipelines/:id` row carries the `sha`
+   * that the jobs list does not. Optional because only GitLab has pipelines by id;
+   * a GitHub caller reads checks per PR and has no such arm.
+   */
+  glPipelineJobs?(pipelineId: number): Promise<{
+    rows: NormalizedCICheck[];
+    pipelineSha: string | undefined;
+  }>;
   /** #775 — list the PR/MR's review comments (the seam for PR handoff posts). */
   prComments(number: number): Promise<NormalizedComment[]>;
   /** #775 — post a comment on the PR (the in-process handoff fallback seam). */

@@ -41,6 +41,8 @@ import {
   parsePlainTextPr,
   parsePrNumberFromResponse,
 } from "./forge-mapping.ts";
+import { glPipelineJobs, glPipelineJobsAt } from "./forge-pipeline.ts";
+
 import { checkGithubReadiness, checkGitlabReadiness, composeGlReadiness } from "./forge-merge.ts";
 import type { VisibilityFn } from "./public-hygiene-visibility.ts";
 import { isFullCommitSha } from "./review-head-sha.ts";
@@ -91,6 +93,7 @@ export interface CreateForgeOpts {
  * or `gitlab` — `unknown` rejects up front, because every operation below
  * is forge-specific and there is no third path to guess.
  */
+
 export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Forge {
   if (det.forge === "unknown") {
     throw new Error(`createForge: forge is "unknown" (source=${det.source}) — refusing to guess`);
@@ -398,12 +401,16 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
       );
       const latest = pipelines[0];
       if (!latest || typeof latest.id !== "number") return [];
-      return run(`glab api /projects/:id/pipelines/${latest.id}/jobs --output json`, (s) => {
-        const parsed = JSON.parse(s || "[]");
-        if (!Array.isArray(parsed)) throw new Error("forge: jobs not an array");
-        return mapGlPipelineJobs(parsed);
-      });
+      return glPipelineJobs(run, latest.id);
     },
+
+    // The job rows of ONE named pipeline, plus the commit that pipeline says it
+    // built. `prChecks` takes the newest row of the MR's pipelines list and keeps
+    // only the rows, so a caller that must say which commit they ran at — lean's
+    // `ci` step, which refuses to grade a foreign pipeline — needs this arm; the
+    // `/pipelines/:id` row carries the `sha` the jobs list does not.
+    glPipelineJobs: (pipelineId) =>
+      glPipelineJobsAt(run, pipelineId, cmds.pipelineViewCmd(pipelineId)),
 
     // ── CI ────────────────────────────────────────────────────────────────
 

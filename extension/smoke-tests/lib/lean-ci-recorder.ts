@@ -39,7 +39,6 @@ import { defaultConfig } from "../../src/lean/config.ts";
 import type { Budget } from "../../src/lean/config.ts";
 import type { PreexistingTierRecord } from "../../src/lean/state-outcome-maps.ts";
 import type { Outcome } from "../../src/lean/state.ts";
-import { GL_MR } from "../forge-fixtures.ts";
 import { gitTestEnv } from "./git-test-env.ts";
 import { PR_URL, ROOTS, ciLandLog } from "./lean-ci-land-fixture.ts";
 
@@ -74,9 +73,11 @@ export interface CiCase {
    * byte for byte. `"gitlab"` routes the run through the recorder's glab arm
    * instead: the step issues `glab api /projects/:id/merge_requests/N`,
    * `…/pipelines` and `…/pipelines/<id>/jobs`, and the MR row it reads is the
-   * `GL_MR` fixture with `diff_refs.head_sha` set to the case's own head. A
-   * GitLab case therefore answers glab and nothing else, and the suite's
-   * assertion that no command starts with `gh ` is a witness, not a wish.
+   * `GL_MR` fixture with `diff_refs.head_sha` set to the head the case's repo
+   * really holds, and an `open_pipeline` at that same commit — the step pins the
+   * jobs read to the head, so a pipeline at another commit is refused. A GitLab case therefore answers glab and nothing else,
+   * and the suite's assertion that no command starts with `gh ` is a witness, not
+   * a wish.
    * `"self-hosted"` is the same read after the REAL detection seam: a `.pi/forge`
    * carrying `type=gitlab` and `host=` plus an SSH remote on that host, which is
    * the operator config the known-host table alone would have answered `unknown`.
@@ -236,16 +237,30 @@ import {
   writeSelfHosted,
 } from "./lean-ci-gl.ts";
 
-/** Run `ci` on a real verified+published log, with everything else a recorder. */
+/**
+ * Run `ci` on a real verified+published log, with everything else a recorder.
+ *
+ * The head the run is about is the one the case's repo really holds — the head the
+ * verify gate certified — and the GitLab fixture's MR reply, its embedded pipeline
+ * and the pipelines row all follow it, because the step pins the jobs read to the
+ * head (see `ci-forge-gl.ts`). The head is decided INSIDE `run`, after the fixture
+ * repo is built, and handed back on `Ran.head`.
+ */
 export async function run(c: CiCase): Promise<Ran> {
   const f = ciLandLog(77, logOpts(c));
+  // The single head this run is about: the fixture repo's own commit, which is the
+  // head the verify step certified. Every forge read the recorder answers — gh's
+  // `headRefOid`, the MR's `diff_refs.head_sha`, its embedded pipeline's `sha` and
+  // the pipelines row's `sha` — is stamped with it, so the step's head check is a
+  // check about the commit the run verified, and a case that wants a disagreement
+  // says so in the rows it names (`verifiedHead`, `mr`, `pipelines`).
+  const committed = c.verifiedHead ?? f.head;
   // The engine writes the resolved cycle deadline onto the record; a case that
   // wants the poll to see one sets it here, on the object the handler is given.
   if (c.deadlineMs !== undefined) f.ctx.run = { ...f.ctx.run, deadlineMs: c.deadlineMs };
-  const ran: Ran = { cmds: [], slept: [], head: f.head, tierRuns: 0 };
+  const ran: Ran = { cmds: [], slept: [], head: committed, tierRuns: 0 };
   let viewReads = 0;
   let checksReads = 0;
-  const mrReads = 0;
   // The legacy-record cases put `verify`'s disclosure on the newest decided verify — the
   // one field of that record the case is allowed to own. The head it certified stays
   // whatever `logOpts` built, because whether a record is about this head IS that fact.
@@ -277,7 +292,7 @@ export async function run(c: CiCase): Promise<Ran> {
   // are the production ones and the argv is the adapter's pinned form, not a
   // seam shaped to match this suite's own expectations.
   const glForge: GlForge | undefined = gitlab
-    ? await buildGlForge(c, f.repoRoot, f.head, forgeAxis === "self-hosted", (cmd) => {
+    ? await buildGlForge(c, f.repoRoot, committed, forgeAxis === "self-hosted", (cmd) => {
         ran.cmds.push(cmd);
       })
     : undefined;
