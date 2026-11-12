@@ -172,17 +172,40 @@ assert(
 );
 
 // ============================================================
-// A5. The `xargs -I` placeholder is not a path. `find <sharedTemp> | xargs -I{} rm -rf {}`
+// A5. The `xargs` replacement placeholder is not a path. `find <sharedTemp> | xargs -I{} rm -rf {}`
 // used to be ALLOWED: the splitter swallows the placeholder as `-I`'s value, the surviving
 // `rm -rf {}` has the literal operand `{}`, and nothing reached the `find` start paths.
 // A remover operand that IS the replacement placeholder names no path, so the line falls
 // through to the `find` start paths — refused over a shared root, allowed inside the worktree.
+// The spellings the first fix missed and the second round pinned: no `-I`/`-i` at all, and
+// the BSD bare `-i`. Real `xargs` substitutes its own `{}` in both cases, so a bare `{}`
+// operand names a match and never a path — and the line must fall through to the `find`
+// start paths the same way the attached spellings do. Measured against the code this round
+// started from, the no-option form ran; the bare `-i` form refused by accident, because its
+// `{}` read as a literal path that landed outside the roots — which also made an in-tree
+// `find <own tree> | xargs -i rm {}` a refusal, so both directions are pinned here.
 // ============================================================
 const placeholderRefused: Array<[string, string]> = [
   [`find ${sharedTmp} | xargs -I{} rm -rf {}`, "`xargs -I{} rm -rf {}` over the shared temp root"],
   [`find ${sharedTmp} | xargs -I {} rm -rf {}`, "`xargs -I {} rm -rf {}` (separate placeholder)"],
   [`find ${sharedTmp} | xargs -i% rm -rf %`, "`xargs -i% rm -rf %` (BSD short form)"],
   [`find ${sharedTmp} | xargs -I{} shred -u {}`, "`xargs -I{} shred -u {}` over the shared root"],
+  [
+    `find ${sharedTmp} | xargs -i rm -rf {}`,
+    "`xargs -i rm -rf {}` — bare `-i`, whose placeholder is xargs' own `{}`",
+  ],
+  [
+    `find ${sharedTmp} | xargs -i rm -rf '{}'`,
+    "the same bare `-i` with the placeholder quoted, which the shell strips before xargs sees it",
+  ],
+  [
+    `find ${sharedTmp} | xargs -i rm -rf`,
+    "bare `-i` with no operand at all: the targets are the matches on stdin",
+  ],
+  [
+    `find ${sharedTmp} | xargs rm -rf {}`,
+    "no `-I`/`-i` at all — xargs still substitutes its default `{}`",
+  ],
 ];
 for (const [command, why] of placeholderRefused) {
   assert(refused(command) !== undefined, `A5 refuse: ${why} — \`${command}\``);
@@ -190,9 +213,67 @@ for (const [command, why] of placeholderRefused) {
 const placeholderAllowed: Array<[string, string]> = [
   [`find ${wt}/dist | xargs -I{} rm {}`, "`xargs -I{} rm {}` over a worktree build dir"],
   [`find ${childTmp} | xargs -i% rm -rf %`, "`xargs -i% rm -rf %` over the child's own temp root"],
+  [`find ${wt}/dist | xargs -i rm {}`, "bare `-i` over a worktree build dir"],
+  [`find ${wt}/dist | xargs rm {}`, "no `-I` at all over a worktree build dir"],
 ];
 for (const [command, why] of placeholderAllowed) {
   assert(refused(command) === undefined, `A5 allow: ${why} — \`${command}\``);
+}
+
+// ============================================================
+// A7. A `find` whose matches reach a remover is judged by its start paths EVEN WHEN the
+// remover also names a literal path. `find <shared> -exec ls {} + | xargs rm -rf <in-tree>`
+// used to be ALLOWED: the one in-tree literal made the remover "name a path", so the reader
+// judged only it and never consulted the `find` — while a pipe carries every match, so the
+// outside tree was swept by a line that named it. Measured with real `xargs`, it deletes.
+// A non-remover `-exec` (`ls`, `grep`) prints its matches, so they are the remover's victims;
+// an `-exec` of a remover is silent and hands the pipe nothing.
+// ============================================================
+const pipeLaunderingRefused: Array<[string, string]> = [
+  [
+    `find ${sharedTmp} -exec ls {} + | xargs rm -rf ${wt}/build`,
+    "the round-2 finding: a non-remover `-exec` whose remover names only an in-tree literal",
+  ],
+  [
+    `find ${sharedTmp} -exec grep -l x {} + | xargs rm -rf .`,
+    "the same with `-exec grep` and a relative literal (which resolves inside the worktree)",
+  ],
+  [
+    `find ${sharedTmp} | xargs rm -rf ${wt}/build`,
+    "a plain `find` pipe whose remover names only an in-tree literal",
+  ],
+  [
+    `find ${wt} -exec ls {} + | xargs rm -rf ${siblingTmp}`,
+    "an in-tree `find` reaching out through the pipe: the literal is the outside tree here",
+  ],
+];
+for (const [command, why] of pipeLaunderingRefused) {
+  assert(refused(command) !== undefined, `A7 refuse: ${why} — \`${command}\``);
+}
+// The shapes that must NOT be caught by that rule: a silent `-exec rm` hands the pipe no
+// victims, so only the remover's own literal is judged — and a fully in-tree pipe stays a
+// cleanup.
+const pipeLaunderingAllowed: Array<[string, string]> = [
+  [
+    `find ${wt} -exec rm {} + | xargs rm -rf ${wt}/build`,
+    "a silent `-exec rm` prints nothing, so the downstream remover has only its in-tree literal",
+  ],
+  [
+    `find ${wt} -exec ls {} + | xargs rm -rf ${wt}/build`,
+    "a pipe whose `find` and remover both stay in the worktree",
+  ],
+];
+for (const [command, why] of pipeLaunderingAllowed) {
+  assert(refused(command) === undefined, `A7 allow: ${why} — \`${command}\``);
+}
+// A placeholder-only remover behind a producer that is not a `find` names no tree at all:
+// the placeholder must not turn `ls | xargs -i rm -rf {}` into a pass (the same verdict the
+// rule already gives `ls | xargs rm`).
+for (const [command, why] of [
+  [`ls ${sharedTmp} | xargs -i rm -rf {}`, "`ls … | xargs -i rm -rf {}`"],
+  [`echo ${sharedTmp}/victim | xargs rm -rf {}`, "`echo … | xargs rm -rf {}`"],
+] as Array<[string, string]>) {
+  assert(refused(command) !== undefined, `A7 refuse: ${why} names no tree — \`${command}\``);
 }
 
 // ============================================================

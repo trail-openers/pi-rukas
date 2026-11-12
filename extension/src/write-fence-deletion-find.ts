@@ -21,13 +21,20 @@
 
 import type { Word } from "./write-fence-bash-lex.ts";
 import {
-  attachedPlaceholder,
   commandName,
   isRemover,
   removalOperands,
   stripPrefix,
+  withoutPlaceholder,
   xargsPlaceholders,
 } from "./write-fence-bash-split.ts";
+
+/** One simple command as the reader split it: its name, its words, and where it ran. */
+export interface Command {
+  name: string;
+  args: Word[];
+  dir: string;
+}
 
 /** The `find` actions that run their words as a command, once per match. */
 const FIND_EXEC = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
@@ -44,18 +51,18 @@ const UNNAMED_DIR = refusalWord(UNNAMED_DIR_REASON);
 
 /**
  * The words a `find` deletes, as it named them; empty when it removes nothing.
- * `pipedIntoRemover` says this `find`'s output is handed to a remover that names no
- * path (`find <paths> -print0 | xargs -0 -r rm -rf`) — the incident's own shape, where
- * the victims are the matches printed by this `find` and nothing else on the line names
- * them. They are therefore judged by the `find`'s OWN start paths: a sweep over a
- * shared temp root is refused by those paths, and a cleanup of the child's own tree is
- * allowed by the same rule. A name pattern narrows within those trees without hiding
- * them, so it changes nothing; what is refused is a `find` that names no tree at all.
+ * `pipedIntoRemover` says this `find`'s output is handed to a remover whose victims are
+ * the matches (`find <paths> -print0 | xargs -0 -r rm -rf`) — the incident's own shape,
+ * where nothing but this `find` names them. They are therefore judged by the `find`'s OWN
+ * start paths: a sweep over a shared temp root is refused by those paths, and a cleanup of
+ * the child's own tree is allowed by the same rule. A name pattern narrows within those
+ * trees without hiding them, so it changes nothing; what is refused is a `find` that names
+ * no tree at all.
  */
 export function findRemovals(args: Word[], pipedIntoRemover = false): Word[] {
   const { starts, expr } = splitFind(args);
   const exec = expr.findIndex((a) => FIND_EXEC.has(a.text));
-  if (exec >= 0) return execRemovals(starts, expr, pipedIntoRemover);
+  if (exec >= 0) return execRemovals(starts, expr.slice(exec), pipedIntoRemover);
   if (!expr.some((a) => a.text === "-delete")) {
     // No removal action of its own: a `find` piped into a remover is the sweep.
     return pipedIntoRemover ? (starts.length > 0 ? starts : [{ text: ".", dyn: false }]) : [];
@@ -64,60 +71,86 @@ export function findRemovals(args: Word[], pipedIntoRemover = false): Word[] {
 }
 
 /**
- * Whether this simple command is a remover whose targets the command itself does not
- * name. Asked of the segment AS TYPED, so the `xargs` wrapper is still on it: through
- * xargs the words after the remover are the replacement placeholder (`xargs -I{} rm -rf
- * {}`, `xargs -i% rm -rf %`), which names a match rather than a path — so the line has
- * named no tree of its own and is judged by the producer's start paths. A remover that
- * carries any OTHER word (`xargs rm /tmp/victim`) named that path itself and is judged on
- * it; a remover with no operands at all (`xargs -0 -r rm -rf`, `ls | xargs rm`) names none.
+ * Whether a `find` on the left of this pipe hands the segment its victims. Through
+ * `xargs` a remover substitutes the matches for its placeholder (`xargs rm -rf {}`,
+ * `xargs -i rm -rf '{}'`) or names no path at all (`xargs -0 -r rm -rf`), so the victims
+ * are the matches and only the `find`'s start paths name the trees they live in. Asked of
+ * the segment AS TYPED, so a wrapper still in front of the remover is visible — it is what
+ * makes a `{}` operand a substituted match rather than a path. A remover that also carries
+ * a word which is not a placeholder (`xargs rm /tmp/victim`) did name a path, so that
+ * literal is judged *and* the producer's start paths are judged too: the pipe carries every
+ * match, so one in-tree literal cannot launder a sweep of a tree the `find` walks (#2200).
+ * `producer` is the simple command on the left of the pipe, when there is one. A pipe
+ * carries only what the producer prints, so a `find` whose own `-exec` runs a remover —
+ * which prints nothing — hands over nothing, and the remover's victims are its own operands.
  */
-export function namesNoPath(words: Word[]): boolean {
+export function removesMatches(words: Word[], producer?: Command): boolean {
   const stripped = stripPrefix(words);
   const first = stripped.words[0];
   if (first === undefined || !isRemover(commandName(first.text))) return false;
   const operands = removalOperands(stripped.words.slice(1));
-  // The placeholder is recognised in the words the CHILD typed: `stripPrefix` has already
+  // The placeholders are read from the words the CHILD typed: `stripPrefix` has already
   // consumed `-I`'s spaced value, and an attached `-I{}`/`-i%` sits among what remains, so
   // only the raw segment can say which of the surviving operands are substitutions. A line
   // that ran through no `xargs` has no placeholder at all, and `''` matches nothing.
   const placeholders = xargsPlaceholders(words);
-  return operands.every((w) => placeholders.includes(w.text));
+  const namesOnlyMatches =
+    placeholders.length > 0
+      ? withoutPlaceholder(operands, words).length === 0
+      : operands.length === 0;
+  if (namesOnlyMatches) return true;
+  // The remover named literal paths of its own. It still has the pipe's victims — and so
+  // the producer's start paths must be judged too — unless the producer is known to print
+  // nothing, which is a `find` whose removal action is an `-exec` of a remover.
+  return producer !== undefined && !printsNoMatches(producer);
 }
 
 /**
- * What a `find` whose expression holds an `-exec` removes. When the matches are handed to
- * a remover downstream, the victims are that remover's and the start paths name them;
- * otherwise only an `-exec` of a remover over literal start paths names its own victims.
- * A `find` that named no start path names no tree and is refused, not judged on the cwd
- * it may not have been in.
+ * Whether a `find` on the left of a pipe prints no matches because its removal action is
+ * an `-exec` of a remover (`find … -exec rm {} +`, which is silent). Any other command —
+ * or a name this rule cannot read — may print its matches.
  */
-function execRemovals(starts: Word[], expr: Word[], pipedIntoRemover: boolean): Word[] {
-  const execExpr = expr.slice(expr.findIndex((a) => FIND_EXEC.has(a.text)));
+function printsNoMatches(producer: Command): boolean {
+  if (producer.name !== "find") return false;
+  const cmd = execCommand(producer.args);
+  return cmd !== undefined && isRemover(commandName(cmd.text));
+}
+
+/** The command an `-exec` of this `find`'s arguments runs, or undefined when it has none. */
+function execCommand(args: Word[]): Word | undefined {
+  const exec = args.findIndex((a) => FIND_EXEC.has(a.text));
+  if (exec < 0) return undefined;
+  return args.slice(exec + 1).find((a) => !a.text.startsWith("-"));
+}
+
+/**
+ * What a `find` whose expression holds an `-exec` removes. An `-exec` of a remover over
+ * literal start paths names its own victims; an `-exec` of anything else deletes nothing,
+ * so the line names no victim of its own. When the matches reach a remover downstream they
+ * are that remover's victims and the start paths name them: the pipe carries every match,
+ * so the start paths are judged whether or not the remover also named a literal of its own
+ * — one in-tree literal must not launder a sweep of a tree the `find` walks. A `find` that
+ * named no start path names no tree and is refused, not judged on the cwd it may not have
+ * been in.
+ */
+function execRemovals(starts: Word[], execExpr: Word[], pipedIntoRemover: boolean): Word[] {
   const cmd = execExpr.find((a) => !a.text.startsWith("-"));
-  // A pipe can only carry what the `find` PRINTS, and `-exec <cmd>` prints what `<cmd>`
-  // prints: an `rm` prints nothing, so a remover downstream has no victims to name and
-  // the line is judged as its `-exec` alone (`execRemovals` below). A non-remover such as
-  // `-exec ls` prints the matches, so whatever reaches the remover are those matches —
-  // the incident's sweep in another spelling, judged by the same start paths.
-  if (pipedIntoRemover && !printsNothing(cmd)) {
+  const silent = cmd !== undefined && isRemover(commandName(cmd.text));
+  // A pipe carries only what the `find` prints, and an `-exec <cmd>` prints nothing but
+  // what `<cmd>` prints. A non-remover such as `-exec ls` prints the matches, so whatever
+  // reaches the remover downstream are those matches — the incident's sweep in another
+  // spelling, judged by the same start paths. A silent `-exec` hands the pipe nothing, so
+  // the remover downstream has only its own targets and this `find`'s start paths are not
+  // victims of it.
+  if (pipedIntoRemover && !silent) {
     return starts.length > 0 ? starts : [{ text: ".", dyn: false }];
   }
-  if (cmd === undefined || !isRemover(commandName(cmd.text))) return [];
+  if (cmd === undefined || !silent) return [];
   // A start path is the tree the victims live under, so a name test narrows within it
   // without hiding it — judged, like the `-print0 | xargs rm` shape above. With no start
   // path the line names no tree and says nothing the reader can resolve: refused.
   if (starts.length === 0) return [UNNAMED_DIR];
   return starts;
-}
-
-/**
- * Whether the command `-exec` runs is known to print nothing, so a downstream remover
- * would be deleting nothing the line can name. Only the removers are known silent: any
- * other command (or a name this rule cannot read) may print its matches.
- */
-function printsNothing(cmd: Word | undefined): boolean {
-  return cmd !== undefined && isRemover(commandName(cmd.text));
 }
 
 /** The start paths and the expression of a `find`'s arguments. */

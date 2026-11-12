@@ -28,19 +28,17 @@
 import path from "node:path";
 import { type Tok, type Word, lex } from "./write-fence-bash-lex.ts";
 import {
-  XARGS_DEFAULT_PLACEHOLDER,
-  attachedPlaceholder,
   commandName,
   isRemover,
-  isXargsPlaceholder,
   operands,
   removalOperands,
   simpleCommands,
   stripPrefix,
+  withoutPlaceholder,
 } from "./write-fence-bash-split.ts";
 import { writtenOperands } from "./write-fence-bash-writers.ts";
 import { type BashTarget, bashWriteTargets } from "./write-fence-bash.ts";
-import { findRemovals, namesNoPath } from "./write-fence-deletion-find.ts";
+import { findRemovals, removesMatches } from "./write-fence-deletion-find.ts";
 import { interpreterDeletions, isInterpreter } from "./write-fence-deletion-interpreter.ts";
 import {
   DELETION_LOG_TOKEN,
@@ -59,12 +57,16 @@ export interface RawHit {
   path?: string;
 }
 
-/** One simple command: its words (wrappers and shell keywords stripped) and where it runs. */
+/**
+ * One simple command as the reader split it. `find.ts` asks the same question of the
+ * producer side (`removesMatches`), so the fields it reads — `name` and `args` — are
+ * declared there; the rest are the reader's own.
+ */
 interface Command {
   name: string;
   args: Word[];
   dir: string;
-  /** Whether this command's output is handed to a remover that names no path (`… | xargs rm`). */
+  /** Whether this command's output is handed to a remover whose victims are its matches. */
   pipedIntoRemover: boolean;
   /** The words of the simple command before the wrappers were stripped, which is what
    * names the `xargs` in front of a remover (`xargs -I{} rm -rf {}` → `rm -rf {}`). */
@@ -102,18 +104,15 @@ function commands(command: string, cwd: string): { parsed: boolean; list: Comman
     const first = words[0];
     if (first !== undefined) {
       const name = commandName(first.text);
-      // The segment that just ended is the mouth of the pipe when it is a remover with
-      // no operands: the command before it is then judged by this one's targets, and so
-      // is this one (whose own operand list is empty because the paths arrive on stdin).
-      // Only a `find` on the left hands over victims this rule can name: the producer is
-      // judged by its start paths, and so is this remover. Fed by anything else (`ls |
-      // xargs rm`, `echo path | xargs rm`) the remover's targets stay unknown, which
-      // `unnamedRemoval` refuses rather than judging on the cwd.
+      // Only a producer this rule can name hands over victims: a `find` is judged by its
+      // start paths, and so is the remover it feeds. Fed by anything else (`ls | xargs rm`,
+      // `echo path | xargs rm`) the remover's targets stay unknown, which `unnamedRemoval`
+      // refuses rather than judging on the cwd. The whole segment goes to `removesMatches`
+      // — the `xargs` wrapper still on it is what makes a `{}` operand a substituted match
+      // rather than a path the child typed — along with the producer, whose `-exec` of a
+      // remover prints nothing and therefore hands over nothing.
       const producer = list[list.length - 1];
-      // `namesNoPath` is asked of the WHOLE segment (the `xargs` wrapper still on it),
-      // because the wrapper is the only thing that makes a `{}` operand a substituted
-      // match rather than a path the child typed.
-      const feeds = piped && namesNoPath(cur) && producer?.name === "find";
+      const feeds = piped && producer?.name === "find" && removesMatches(cur, producer);
       if (feeds) producer.pipedIntoRemover = true;
       list.push({
         name,
@@ -271,10 +270,12 @@ function unnamedRemoval(cmd: Command): RawHit[] {
 
 /**
  * The words one command deletes, as it named them; empty when it deletes nothing.
- * A remover that names no path (`rm` after the `xargs` wrapper was stripped) has no
- * operands to name, so it inherits the targets of the `find` whose output it is fed:
- * judging the same paths twice is what keeps the sweep refused by its shared root and
- * an in-tree cleanup allowed by the same paths.
+ * A remover that named only xargs' placeholders or nothing at all has no path of its
+ * own, so it inherits the targets of the `find` whose output it is fed: judging the same
+ * paths twice is what keeps the sweep refused by its shared root and an in-tree cleanup
+ * allowed by the same paths. A remover that named a literal path AND was fed by a `find`
+ * is judged on both — the pipe still carries every match, so the literal cannot hide the
+ * tree the `find` walks.
  */
 function deletedWords(cmd: Command): Word[] {
   if (isRemover(cmd.name)) {
@@ -286,7 +287,8 @@ function deletedWords(cmd: Command): Word[] {
     // then the `find`'s matches and the start paths it named are the evidence. Any other
     // remover that names nothing (`ls | xargs rm`, a bare `rm`) names no tree at all and
     // is left to `unnamedRemoval`, which refuses it rather than judging it on the cwd.
-    return named.length > 0 ? named : findRemovals(cmd.args, cmd.pipedIntoRemover);
+    const fromFind = cmd.pipedIntoRemover ? findRemovals(cmd.args, true) : [];
+    return [...named, ...fromFind];
   }
   if (cmd.name === "find") return findRemovals(cmd.args, cmd.pipedIntoRemover);
   if (cmd.name === "git") {
@@ -299,44 +301,6 @@ function deletedWords(cmd: Command): Word[] {
 /** Is this command one whose words this rule reads at all? */
 function owned(name: string): boolean {
   return isRemover(name) || name === "find" || name === "git" || isInterpreter(name);
-}
-
-/**
- * The replacement placeholder of the `xargs` in front of this command, or undefined
- * when the words were not typed through one. The splitter strips the wrapper, so a
- * remover reaches here with what xargs will hand it — `{}` (or the `-I`/`-i` value),
- * which stands for one matched line and is not a path the child named. Only the
- * xargs-specific `-I`/`-i` mark identifies the wrapper: the attached spelling (`-I{}`,
- * `-i%`) survives the splitter as an operand and is the evidence, since spaced `-I {}
- * / -i %` are consumed as the option's value and leave nothing to identify. The bare
- * `find … -exec rm {} +` form has no `-I`, so its `{}` stays a word of a command whose
- * start paths already name the tree. A word that is exactly the placeholder is dropped,
- * so the line is judged by whatever else names a tree, and a line that names none falls
- * to `unnamedRemoval` rather than being judged on a literal brace (#2200's `find
- * <sharedTemp> | xargs -I{} rm -rf {}`, which passed while `{}` read as a literal operand).
- */
-function xargsOf(args: Word[]): string | undefined {
-  return args.some((a) => attachedPlaceholder(a) !== undefined)
-    ? xargsPlaceholder(args)
-    : undefined;
-}
-
-/**
- * The replacement placeholder of the `xargs` in front of this command: the value of its
- * `-I`/`-i` in either spelling, or xargs' own default `{}` when the option was given with
- * a separate value (`xargs -I {} rm {}`, whose `-I` the splitter consumed) or not at all.
- */
-function xargsPlaceholder(args: Word[]): string {
-  const attached = args.map(attachedPlaceholder).find((p) => p !== undefined);
-  return attached ?? XARGS_DEFAULT_PLACEHOLDER;
-}
-
-/** Drop the words that are xargs' replacement placeholder — they name no path. */
-function withoutPlaceholder(words: Word[], args: Word[]): Word[] {
-  const placeholder = xargsOf(args);
-  return placeholder === undefined
-    ? words
-    : words.filter((w) => !isXargsPlaceholder(w.text, placeholder));
 }
 
 /** A word the rule refuses outright, or a path it can judge, resolved from `dir`. */

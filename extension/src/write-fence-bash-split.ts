@@ -118,36 +118,41 @@ export const XARGS_REPLACE_OPTIONS = ["-I", "-i"] as const;
 export const XARGS_DEFAULT_PLACEHOLDER = "{}";
 
 /**
- * The replacement placeholder of one `xargs …` argument list, read from the words as the
- * child typed them (the wrapper still in front): the value of its `-I`/`-i` in either
- * spelling (`-I{}`, `-I {}`, `-i%`), or xargs' own default `{}` when it named neither.
- * `stripPrefix` consumes a spaced value but leaves an attached one, so both spellings
- * have to be read here rather than from the stripped operands.
- */
-export function xargsPlaceholder(args: Word[]): string {
-  return xargsPlaceholders(args)[0] ?? XARGS_DEFAULT_PLACEHOLDER;
-}
-
-/**
- * Every placeholder this line substitutes: `[]` when no `xargs` replacement option names
- * one (so no word can be mistaken for a substitution), and otherwise each placeholder the
- * line spelled, with xargs' own default `{}` always included — bash and xargs both leave a
- * bare `{}` meaning the replacement when the option carried no value of its own.
+ * Every placeholder this `xargs …` argument list substitutes, read from the words as the
+ * child typed them (the wrapper still in front): `[]` when nothing on the line is a
+ * substitution (so no word may be mistaken for one), otherwise every placeholder the line
+ * spelled — the value of `-I`/`-i` in either spelling (`-I{}`, `-I {}`, `-i%`) — with xargs'
+ * own default `{}` included whenever the line substitutes at all, because a bare `{}` left
+ * by the wrapper is what xargs itself replaces in that case. A bare `-i` (the BSD short
+ * form, whose value is optional) and a `-I` that took no value both mean the default.
  */
 export function xargsPlaceholders(args: Word[]): string[] {
   const out: string[] = [];
+  let substitutes = false;
   for (let k = 0; k < args.length; k++) {
     const a = args[k];
     if (a === undefined) continue;
     if (isReplaceOption(a)) {
-      out.push(args[k + 1]?.text ?? XARGS_DEFAULT_PLACEHOLDER);
+      substitutes = true;
+      const value = args[k + 1]?.text;
+      // A `-I`/`-i` whose next word is another option (or nothing) took no value, so xargs
+      // substitutes its own `{}`; consuming the option here is what keeps the option word
+      // from reading as a placeholder the way an attached spelling would.
+      if (value === undefined || value.startsWith("-")) out.push(XARGS_DEFAULT_PLACEHOLDER);
+      else out.push(value);
       k++;
       continue;
     }
     const attached = attachedPlaceholder(a);
-    if (attached !== undefined) out.push(attached);
+    if (attached !== undefined) {
+      substitutes = true;
+      out.push(attached);
+      continue;
+    }
+    if (isXargsPlaceholder(a.text, XARGS_DEFAULT_PLACEHOLDER)) substitutes = true;
   }
-  return out.length === 0 ? [] : [...new Set([...out, XARGS_DEFAULT_PLACEHOLDER])];
+  if (!substitutes) return [];
+  return [...new Set([...out, XARGS_DEFAULT_PLACEHOLDER])];
 }
 
 /** `-I`/`-i`: the option that takes the replacement placeholder as its NEXT word. */
@@ -162,9 +167,20 @@ export function attachedPlaceholder(a: Word): string | undefined {
   return XARGS_REPLACE_OPTIONS.includes(option) ? a.text.slice(2) : undefined;
 }
 
-/** Whether one word is xargs' replacement placeholder rather than a path it names. */
+/** Whether one word is this xargs' replacement placeholder rather than a path it names. */
 export function isXargsPlaceholder(text: string, placeholder: string): boolean {
   return text === placeholder || text === XARGS_DEFAULT_PLACEHOLDER;
+}
+
+/**
+ * Drop the words that are this line's xargs placeholders — each stands for one matched
+ * name, so it names no path. `[]` from `xargsPlaceholders` leaves the words untouched,
+ * which is what keeps a `find … -exec rm {} +` judged on its start paths rather than on a
+ * brace, and a `rm` that named only `{}` left to the unnamed-target refusal.
+ */
+export function withoutPlaceholder(words: Word[], args: Word[]): Word[] {
+  const placeholders = xargsPlaceholders(args);
+  return placeholders.length === 0 ? words : words.filter((w) => !placeholders.includes(w.text));
 }
 
 /**

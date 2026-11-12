@@ -48,6 +48,7 @@
  */
 
 import { statSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { trace, traceWarn } from "./trace.ts";
@@ -122,7 +123,9 @@ export const CHILD_TMP_ENV = "PI_ENSEMBLE_CHILD_TMP";
  * and dependency trees there as its job. Refusing it everything would turn a git/gh
  * dispatcher into a role that cannot `rm -rf node_modules` where it stands, which is not
  * what the incident was about. Its OWN cwd is therefore a working root for this rule
- * only; every other tree, the shared temp root above all, stays refused.
+ * only; every other tree, the shared temp root above all, stays refused — and the cwd is
+ * admitted as a root only while it is a working tree, never while it *is* (or holds) a temp
+ * root, the home directory, or the filesystem root (see `usableWorkingDirectory`).
  */
 const UNSCOPED_ROLE = "ops";
 
@@ -145,6 +148,56 @@ function usableRoot(raw: string | undefined): { label: string; real: string } | 
 }
 
 /**
+ * The roots an `ops` cwd is never allowed to stand for: the OS temp root and the well-known
+ * temp dirs, `$HOME`, and the filesystem root. The driver dispatches `ops` at the checkout
+ * (`roles.ts` gives it `cwd: "repo"`), so a cwd that resolved to one of these is a spawn that
+ * pointed the role at a shared tree — and the rule exists precisely to keep a child out of
+ * the shared temp root, which the incident cleared. Refusing the cwd as a root there costs an
+ * `ops` child nothing it needs (its work is in the checkout) and closes the one shape where
+ * the carve-out covered the incident's own damage. The roots are taken from the OS and the
+ * well-known spellings, not from the child's env: an env that does not carry `HOME` or
+ * `TMPDIR` (a trimmed test env, a scrubbed spawn) must not quietly drop the guard.
+ *
+ * A temp root is refused for its whole subtree, not just its own directory: the rule
+ * resolves a path before it judges it, so a child standing in `/tmp/<other run>` could reach
+ * the shared root itself with `rm -rf ..` and clear every other project's temp dir — the
+ * incident's damage, arrived at one level deeper. `$HOME` is refused only as itself: every
+ * path on the volume lies under it, so treating containment as the test there would refuse
+ * every cwd, including the checkout the driver actually dispatches `ops` into. The filesystem
+ * root likewise is refused only as itself.
+ */
+function forbiddenWorkingDirectories(): { real: string; wholeSubtree: boolean }[] {
+  const out: { real: string; wholeSubtree: boolean }[] = [];
+  for (const [raw, wholeSubtree] of [
+    [os.tmpdir(), true],
+    ["/tmp", true],
+    ["/private/tmp", true],
+    [os.homedir(), false],
+  ] as const) {
+    const real = raw === undefined || raw === "" ? undefined : safeResolve(raw);
+    if (real !== undefined) out.push({ real, wholeSubtree });
+  }
+  return out;
+}
+
+/**
+ * The `ops` role's cwd as a working root, or undefined when it stands for a shared tree.
+ * A cwd that is the filesystem root or `$HOME`, or that lies inside a temp root, is refused
+ * as a root rather than admitted: `rm -rf .` there would delete the tree the rule was
+ * written to protect, and the role has no business standing in it.
+ */
+function usableWorkingDirectory(cwd: string): { label: string; real: string } | undefined {
+  const root = usableRoot(cwd);
+  if (root === undefined || root.real === path.sep || root.real === os.homedir()) {
+    return undefined;
+  }
+  const forbidden = forbiddenWorkingDirectories().some(
+    (f) => f.real === root.real || (f.wholeSubtree && isInside(root.real, f.real)),
+  );
+  return forbidden ? undefined : root;
+}
+
+/**
  * The roots this child may delete into, from the RAW env. Every role receives a
  * per-child temp root; a fenced dispatch also has its worktree and its scratch
  * dir. Never `loadFenceConfig` — it is undefined for exactly the reviewer and the
@@ -160,8 +213,9 @@ export function deletionRootsFrom(
     usableRoot(env.PI_ENSEMBLE_WRITE_ROOT),
     usableRoot(env.PI_ENSEMBLE_WRITE_SCRATCH),
     usableRoot(env[CHILD_TMP_ENV]),
-    // The ops role's own working tree (see UNSCOPED_ROLE); no other role gets the cwd.
-    isUnscopedRole(env.PI_ENSEMBLE_ROLE) ? usableRoot(cwd) : undefined,
+    // The ops role's own working tree (see UNSCOPED_ROLE), and only while it is a working
+    // tree: a cwd that is the temp root, $HOME or / is no one's working directory.
+    isUnscopedRole(env.PI_ENSEMBLE_ROLE) ? usableWorkingDirectory(cwd) : undefined,
   ].filter((r): r is { label: string; real: string } => r !== undefined);
   return { cwd, labels: usable.map((r) => r.label), allowed: usable.map((r) => r.real) };
 }
