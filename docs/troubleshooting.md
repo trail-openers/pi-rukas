@@ -162,8 +162,11 @@ the run's own worktree. The usual four:
 
 A missing `verify.test` is NOT this hand-back: it stays the verdict it has always been
 (`no test runner configured (.pi/work.json verify.test)`, nothing dispatched), because a
-project that declines to configure a runner is not a project with a broken one. Note also
-that the probe is not the only place this step can hand back on the environment: a base
+project that declines to configure a runner is not a project with a broken one. Lean
+requires `verify.test` for every spec, whatever the kinds of its criteria — a spec whose
+criteria are all `command`-verified is refused too — so a project with no test runner
+gives the template the file itself, `"verify": { "test": "sh {file}" }`, as [lean.md](lean.md)
+describes. Note also that the probe is not the only place this step can hand back on the environment: a base
 whose submodules cannot be populated fails earlier, in the worktree preparation that runs
 before it. Both are `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` away: with that switch at `0` no
 lean reset asks git to populate a submodule — not specify's, not `build`'s fold, not the
