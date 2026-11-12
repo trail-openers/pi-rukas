@@ -25,7 +25,7 @@
  * Real temp repos, real git, stubbed models; no child spawned.
  */
 
-import { existsSync, rmSync } from "node:fs";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { withEnv } from "./lib/env-scope.ts";
 import {
@@ -64,7 +64,7 @@ const { assert, failures } = makeAssert();
  * the submodule is in every commit the reset can land on and the step's `clean
  * -fdx` is what empties it.
  */
-async function drive(tag: string, onFinalReset: (inside: boolean) => void) {
+async function drive(tag: string) {
   const { repoRoot, baseSha } = makeRepo();
   await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 2;\n" });
   // The submodule's source is deleted before ANY checkout of it exists — the run's
@@ -90,12 +90,10 @@ async function drive(tag: string, onFinalReset: (inside: boolean) => void) {
     lens: async (a) => lensRoundFor(a, "APPROVED", []),
     dispatch: async (spec: DispatchSpec) => {
       const wt = spec.cwd as string;
-      // Observed in the FIXER's tree, which the step created from the head that
-      // carries the gitlink: the tree the reset produced, before the child worked.
-      // Observed AFTER the child commits, in the tree the integration's reset just
-      // produced: the run's own worktree, which the step reset to the fixer's head
-      // and re-provisioned. That is the tree the switch decides the fate of.
-      onFinalReset(existsSync(path.join(wt, INSIDE)));
+      // The FIXER's tree, which the step created from the head that carries the
+      // gitlink. What it holds at this instant separates nothing — the dispatch is
+      // before the integration's reset, so it is the same on both arms — and the
+      // observation that does is `insideAfter`, read after the step returned.
       put(wt, `fix-${tag}.ts`, `export const fix_${tag} = 1;\n`);
       git(wt, "add", "-A");
       git(wt, "commit", "-q", "-m", `fix(${tag}): the wave's fix`);
@@ -130,12 +128,9 @@ async function drive(tag: string, onFinalReset: (inside: boolean) => void) {
 {
   let ran: Awaited<ReturnType<typeof drive>> | undefined;
   let boom: Error | undefined;
-  let sawInside = true;
   await withEnv({ PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT: "0" }, async () => {
     try {
-      ran = await drive("off", (inside) => {
-        sawInside = inside;
-      });
+      ran = await drive("off");
     } catch (err) {
       boom = err as Error;
     }
@@ -161,10 +156,7 @@ async function drive(tag: string, onFinalReset: (inside: boolean) => void) {
 
 // ── (b) the control: the same round throws, naming the submodule step
 {
-  let sawInside = true;
-  const on = await drive("on", (inside) => {
-    sawInside = inside;
-  });
+  const on = await drive("on");
   assert(
     on.threw !== undefined && /submodule/i.test(on.threw.message),
     `(b) the same round DOES throw with the switch on (${on.threw?.constructor.name}: ${on.threw?.message.split("\n")[0] ?? "no throw"})`,

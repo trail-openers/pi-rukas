@@ -30,7 +30,6 @@ import { rmSync } from "node:fs";
 import {
   ROOTS,
   type RunResult,
-  configWith,
   makeRepo,
   redScript,
   runSpecify,

@@ -19,11 +19,12 @@
  */
 
 import type { ExecFn } from "../worktree.ts";
-import {
-  SpecifyCommitError as CommitError,
-  NO_HOOKS,
-  type SpecifyCommitError,
-} from "./specify-reset.ts";
+import { SpecifyCommitError as CommitError, NO_HOOKS } from "./specify-reset.ts";
+
+// The one name the commit half's callers and its tests know the error by: the class
+// lives in `specify-reset.ts` beside the reset's own error, and nothing outside this
+// module should have to know that.
+export { SpecifyCommitError } from "./specify-reset.ts";
 import { changedPaths } from "./specify-tree.ts";
 
 /** The wall clock on a short local read (`rev-parse`). */

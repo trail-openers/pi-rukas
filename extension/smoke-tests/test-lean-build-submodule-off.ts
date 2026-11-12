@@ -15,11 +15,11 @@
  *   (b) the control, outside the `withEnv`: the same fold throws, naming the
  *       submodule step, and issues the call the off arm never made.
  *
- * The two arms take different routes through the fold on purpose. (a) is the
- * ordinary fold — it has to commit something for the assertion about the commit to
- * mean anything. (b) is a fold whose child committed but whose kept set is empty,
- * so the reset is the LAST thing the step does before it reports; a reset that
- * fails there cannot be forgiven, which is what makes (b) a control and not a
+ * Both arms run the identical round, because the property under test is the switch
+ * and nothing else: a child that commits a real new file, so the fold has something
+ * to keep (a fold with nothing to commit never reaches the commit the assertion
+ * reads) and the reset is the last claim it makes before it reports — a reset that
+ * fails there cannot be forgiven, which is what makes (b) a control rather than a
  * restatement of (a).
  */
 
@@ -47,16 +47,8 @@ function assert(cond: boolean, msg: string): void {
 
 /**
  * One build round over a base whose submodule has no source left.
- *
- * `keepFile` decides whether the child leaves a file the fold keeps: the off arm
- * needs one (a fold with nothing to commit never reaches the commit the assertion
- * reads), the control arm needs the fold to end AT the reset.
  */
-async function drive(
-  issue: number,
-  opts: { keepFile: boolean },
-  onReset: (insideAtDispatch: boolean) => void,
-): Promise<{
+async function drive(issue: number): Promise<{
   threw?: Error;
   outcome?: { kind?: string };
   submoduleArgv: readonly (readonly string[])[];
@@ -78,17 +70,11 @@ async function drive(
     issue,
     built: { ...built, headBefore: headWithSub },
     // The child commits its work itself, so `classify` finds a change and the fold
-    // reaches its reset.
-    // The reset under test is the fold's, and the fold is a step that forgives a
-    // great deal: a child that produced nothing ends in `exhausted`, a child that
-    // broke the contract ends in `blocked`, and neither route reaches a throw. So
-    // the control arm cannot be "a child that changed nothing" — it has to be a
-    // round that WOULD have committed, in which the reset is the last claim the
-    // step makes before it writes. That is the off arm's own shape: a child that
-    // commits a real new file. Both arms run the identical round; the only thing
-    // that differs is the switch, which is the property under test.
+    // reaches its reset. The fold forgives a great deal: a child that produced
+    // nothing ends in `exhausted`, a child that broke the contract ends in `blocked`,
+    // and neither route reaches a throw — so the control arm cannot be "a child that
+    // changed nothing", it has to be a round that WOULD have committed.
     child: (wt) => {
-      onReset(existsSync(path.join(wt, INSIDE)));
       write(wt, "src/feature.ts", "export const f = 1;\n");
       commit(wt, "build: the child's work");
     },
@@ -106,8 +92,7 @@ async function drive(
 
 // The fixture's own git wrapper: the same isolated env and identity its commits
 // used, so a head read here agrees with the history the fixture built.
-import { git, gitEnvFor } from "./lib/lean-build-fixture.ts";
-import { execFileSync } from "node:child_process";
+import { git } from "./lib/lean-build-fixture.ts";
 const gitHead = (tree: string): string => git(tree, "rev-parse", "HEAD");
 function write(wt: string, rel: string, text: string): void {
   putIn(wt, rel, text);
@@ -118,19 +103,15 @@ function commit(wt: string, message: string): void {
   // `commit`, with the fixture's identity rather than the host's.
   git(wt, "add", "-A");
   git(wt, "commit", "-q", "-m", message);
-  void execFileSync;
 }
 
 // ── (a) off: the fold commits its file and never asked git about submodules
 {
   let ran: Awaited<ReturnType<typeof drive>> | undefined;
   let boom: Error | undefined;
-  let sawInside = true;
   await withEnv({ PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT: "0" }, async () => {
     try {
-      ran = await drive(911, { keepFile: true }, (inside) => {
-        sawInside = inside;
-      });
+      ran = await drive(911);
     } catch (err) {
       boom = err as Error;
     }
@@ -160,10 +141,7 @@ function commit(wt: string, message: string): void {
 
 // ── (b) the control: the same fold throws, naming the submodule step
 {
-  let sawInside = true;
-  const on = await drive(912, { keepFile: true }, (inside) => {
-    sawInside = inside;
-  });
+  const on = await drive(912);
   assert(
     on.threw !== undefined && /submodule/i.test(on.threw.message),
     `(b) the same fold DOES throw with the switch on (${on.threw?.constructor.name}: ${on.threw?.message.split("\n")[0] ?? "no throw"})`,

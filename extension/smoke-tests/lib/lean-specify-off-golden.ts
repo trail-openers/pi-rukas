@@ -3,9 +3,12 @@
  *
  * `test-lean-specify-off-golden.ts` compares a switch-off `specify` run against a
  * record captured ONCE from the v0.14.71 tree (R3). Both sides must build the run
- * the same way, so the recipe lives here and the capture script (run once, against
- * an extracted v0.14.71 tree under this worktree's `tmp/`) calls this same
- * function: a golden whose harness drifted from its capture would pin nothing.
+ * the same way, so the recipe lives here and the capture script
+ * (`fixtures/lean-state/capture-specify-off.ts`) calls this same function: it is run
+ * once against a `git worktree` of the tag, with this file symlinked into that tree
+ * so the harness is the one the committed test uses while every `src/` import it
+ * makes resolves inside the release. A golden whose harness drifted from its capture
+ * would pin nothing.
  *
  * The repo shape is R4's, not the preflight-bug recipe. The runner the base
  * commits is honest about ONE file: it runs a committed green test with `sh` and
@@ -298,12 +301,4 @@ function seedWithRunner(repoRoot: string, issue: number): void {
   goldenGit(wt, "commit", "-q", "-m", "the project's runner");
   goldenGit(repoRoot, "update-ref", "refs/heads/main", goldenGit(wt, "rev-parse", "HEAD"));
   goldenGit(repoRoot, "push", "-q", "origin", "main");
-}
-
-/** The step's outcome as the record holds it, for an assertion that names the field it read. */
-export function outcomeOf(
-  golden: GoldenRun,
-  state: string,
-): Record<string, unknown> | undefined {
-  return golden.steps.find((s) => s.state === state)?.outcome as Record<string, unknown> | undefined;
 }

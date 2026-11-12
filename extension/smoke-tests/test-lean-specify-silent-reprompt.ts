@@ -27,16 +27,13 @@
  *       conjunct would pass every other case in this file.
  */
 
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import path from "node:path";
+import { rmSync } from "node:fs";
 import { IMPLIED_REQUIREMENTS, refusalFeedback } from "../src/lean/specify-prompt.ts";
 import { MAX_TEST_LINES } from "../src/lean/test-size.ts";
 import {
   ROOTS,
-  RUNNER,
   type RunResult,
   TWO_AC_BODY,
-  configWith,
   greenScript,
   makeRepo,
   redScript,
@@ -62,7 +59,6 @@ function assert(cond: boolean, msg: string): void {
 
 /** The boundary's refusal for a submission against a `verify: "manual"` criterion. */
 const NOT_A_TEST_CRITERION = "is not a test criterion";
-const OVERSIZE = "lines; an acceptance test is at most";
 const REFUSED = "Your previous submission was refused";
 
 /** A test file over `MAX_TEST_LINES`, which the boundary drops. */

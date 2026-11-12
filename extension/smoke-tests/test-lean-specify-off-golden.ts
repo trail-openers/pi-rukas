@@ -5,10 +5,10 @@
  *
  * The record it is compared against was captured ONCE from the v0.14.71 tree
  * (R3): `fixtures/lean-state/specify-off-v0.14.71.json`, written by
- * `tmp/issue-2212/capture-off-golden.ts` against a `git worktree` of the tag, and
- * produced by the SAME harness this test uses (`lib/lean-specify-off-golden.ts`),
- * so a record that agrees is a record of the step and not of two fixtures that
- * drifted apart.
+ * `fixtures/lean-state/capture-specify-off.ts` — run against a `git worktree` of the
+ * tag, never into the tracked tree — and produced by the SAME harness this test uses
+ * (`lib/lean-specify-off-golden.ts`), so a record that agrees is a record of the
+ * step and not of two fixtures that drifted apart.
  *
  * What "byte-identical" means here is R2's definition, and nothing looser: the
  * run's terminal state, its exit code, its terminal reason, and each recorded

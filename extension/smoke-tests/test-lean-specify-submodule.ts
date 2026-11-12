@@ -36,7 +36,7 @@
  *       sat outside it does not have.
  */
 
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { execp } from "../src/exec.ts";
 import { resetWorktreeToBase } from "../src/lean/specify-reset.ts";

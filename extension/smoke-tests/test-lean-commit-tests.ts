@@ -18,12 +18,15 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { execp } from "../src/exec.ts";
 import type { ExecFn } from "../src/worktree.ts";
-import { commitTestFiles, committedBlob } from "../src/lean/specify-commit.ts";
-import { SpecifyCommitError } from "../src/lean/specify-reset.ts";
+import {
+  commitTestFiles,
+  committedBlob,
+  SpecifyCommitError,
+} from "../src/lean/specify-commit.ts";
 import { gitTestEnv, trackedTempDir } from "./lib/git-test-env.ts";
 
 let exit = 0;

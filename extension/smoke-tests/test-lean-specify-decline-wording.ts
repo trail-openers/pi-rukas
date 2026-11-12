@@ -24,20 +24,27 @@
  * Real temp repos, real git, a fake child: no token spent.
  */
 
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import path from "node:path";
+import { rmSync } from "node:fs";
 import { refusalFeedback } from "../src/lean/specify-prompt.ts";
 import { withEnv } from "./lib/env-scope.ts";
+// The constants and the shared assertion come from the fixture the silent-reprompt
+// pair also imports, so no two files can drift apart about what the nudge text or the
+// decline clause is — a pair that disagrees about its needle asserts nothing.
 import {
+  CONFIG,
+  NEVER_SUBMITTED,
+  NUDGE,
+  RETRY_NOTE,
   ROOTS,
-  RUNNER,
   type RunResult,
-  configWith,
+  TEST_REL,
   greenScript,
   makeRepo,
   redScript,
+  report as reportShared,
   runSpecify,
   submit,
+  writeTest,
 } from "./lib/lean-specify-fixture.ts";
 
 let exit = 0;
@@ -49,31 +56,15 @@ function assert(cond: boolean, msg: string): void {
   }
 }
 
-const RETRY_NOTE = "(after one retry)";
-const NUDGE = "Your previous turn ended without calling submit_tests";
-/**
- * The decline a child that never declared a test earns. Its FIRST clause, in every
- * rule it appears in — the same invariant `criterion <id> has no red test` carries —
- * because the decline comment clips each rule and the run's reason is what an operator
- * reads first.
- */
-const NEVER_SUBMITTED = "the child never submitted a test";
+/** The assertions every case below shares, on one run, on this file's own tally. */
+function report(r: RunResult, label: string): void {
+  reportShared(r, label, assert);
+}
+
 /** The boundary's refusal for a submission against a `verify: "manual"` criterion. */
 const NOT_A_TEST_CRITERION = "is not a test criterion";
 const REFUSED = "Your previous submission was refused";
-const CONFIG = configWith({ fast: "true", test: RUNNER });
-const TEST_REL = "tests/AC1-retry.test.sh";
 
-/** Write `body` at the test path, as the child's own write would. */
-function writeTest(wt: string, body: string): void {
-  mkdirSync(path.join(wt, "tests"), { recursive: true });
-  writeFileSync(path.join(wt, TEST_REL), body, { mode: 0o755 });
-}
-
-/** The assertions every case below shares, on one run. */
-function report(r: RunResult, label: string): void {
-  assert(r.threw === undefined, `${label}: no throw (${r.threw?.message ?? "clean"})`);
-}
 
 // ── (5) a child that DID submit keeps the old rule: the split is two-sided ───
 {
