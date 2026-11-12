@@ -387,7 +387,7 @@ This is the structural floor for the incident where a PM merged two PRs on a dev
 
 **Grouped multi-workstream cycles.** A grouped `/work` cycle (N>1) records its adversarial entries per workstream tree, not against the integrated branch. A hand/ops fallback merge of the **integrated** branch (e.g. after a handoff) may therefore be refused — the ledger holds no entry under the integration branch's name — until the reviews are re-run on that branch. The driver's own mechanized merge is unaffected (it is exempt by construction and its entries were written against the cycle's branch).
 
-**Escape hatch (operator-set only):** `PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1` disables the guard for the whole session. Use only when you have reviewed by other means and want to merge by hand. It is read once when Pi starts; setting it inside a command (`env …`, `export` in a subshell) has no effect. **It is never the answer to a blocked read** — see "A read-only command was refused with merge text": widening merge protection buys nothing when nothing was being merged.
+**Escape hatch (operator-set only):** `PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1` waives the **review** gates for the whole session — the ledger entries, the CI evidence and the command-form refusals — so use it only when you have reviewed by other means and want to merge by hand. It is **not** a waiver of the merge-author gate: with the hatch set, a PR whose author is not listed in the repository's `.pi/merge-authors` gate file is still refused, and so is one whose author or gate file cannot be read (#2181). It is read once when Pi starts; setting it inside a command (`env …`, `export` in a subshell) has no effect. **It is never the answer to a blocked read** — see "A read-only command was refused with merge text": widening merge protection buys nothing when nothing was being merged.
 
 **Which commands the guard checks (#962).** The guard accepts exactly one form of merge, run as a command of its own:
 
@@ -443,6 +443,24 @@ The shapes that defeat them, and what to do:
 The cleanest shape, and the one the `/work` driver uses: run the reviews **after** the code is final, with `base` at the merge-base and `head` at the tip, and touch nothing until the row is on file. The lens half of the gate has no equivalent binding yet (known residual — see `adversarial-ledger-binding.ts`), so a lens row still passes on the whole-branch identity regardless of the range it was given.
 
 PR: [#912](https://github.com/trail-openers/pi-rukas/issues/912) · PR: [#1360](https://github.com/trail-openers/pi-rukas/issues/1360)
+
+### A merge was refused: the author is not on the allowlist
+
+**Symptom:** `gh pr merge N` (or `glab mr merge N`) is refused with a message that the PR's author is not listed in `.pi/merge-authors`, or that the allowlist is absent, unreadable or empty. The PR's ledger rows and CI may both be green.
+
+**Cause (by design):** The merge-author gate (#2181) runs beside the head-equality check in the mode-independent merge guard. It is **opt-in per repository**: a repository lands any author it likes until it commits `.pi/merge-authors`, and once that file exists at the cycle's base commit the PR's author must be listed in it — one login per line, matched case-insensitively. A file that exists and is unreadable, a symlink, a directory, or empty after comments; a login that is not on it; and an author the forge did not report all refuse. No override reaches it: `PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE`, `PI_ENSEMBLE_MERGE_AUTHORITY` and `--merge` are all statements about permission and reviews, never about who opened the PR, so none of them clears this gate. A cycle with no recorded base commit is refused too — it cannot show the file was absent at its own base.
+
+**Fix:** Two different fixes, and the refusal tells you which. If the message says the author is not listed, add the PR's author to `.pi/merge-authors` (one login per line; the match is case-insensitive) and re-run the merge — or land the PR yourself. If it says the file could not be read, the file is present and broken: fix or remove it, and note that removing it opts the repository out entirely (see "A repository with no `.pi/merge-authors`"). The file is read at the base commit, so the entry must exist before the cycle's merge step — editing it mid-cycle does not retroactively clear a parked cycle; re-run the cycle once the file is on disk.
+
+### A repository with no `.pi/merge-authors` lands any author
+
+**Symptom:** a `/work` cycle or a lean run merges a pull request whose author nobody chose, and no refusal mentioning an allowlist appears anywhere.
+
+**Cause (by design):** the gate is opt-in. Absence of `.pi/merge-authors` at the base commit is read as "this repository has never named the maintainers whose pull requests an agent may land", so the author gate is not applied and every other gate — authority, evidence, the head check, protected paths, declared gate files — keeps its meaning. `/work` and lean run in repositories that are not this one, including seeded trial repositories that commit only `.pi/work.json`, and an allowlist that opted out by default would refuse every landing there.
+
+**Fix:** commit `.pi/merge-authors` (one login per line) to make the repository opt in. It is a gate file under `.pi/`, so a cycle may not add or widen it itself — an operator commits it, or the cycle runs with `--allow-protected .pi/merge-authors`. Once it exists, it fails closed: an unreadable, symlinked, directory or empty file refuses every merge.
+
+PR: [#2181](https://github.com/trail-openers/pi-rukas/issues/2181)
 
 ### A read-only command was refused with merge text
 

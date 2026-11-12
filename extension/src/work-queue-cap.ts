@@ -211,21 +211,41 @@ export function humanActionFor(
   // #380 — the PR is open, green and pushed; the only thing missing is a
   // human decision. Telling the operator to `--restart` here would rebuild
   // work that is already done and open a duplicate PR.
+  // The gate tags follow the PR number, and the number is greedy, so the tags are
+  // captured as one group that is then matched for its own contents — an optional
+  // `(?:…)?` group placed straight after `(\d+)` cannot begin in the middle of the
+  // digits and silently never matches (`:pr99:author` matched none of them).
   const heldMerge = reason.match(
-    /awaiting-human-merge:(granted|no-authority):pr(\d+)(?::tooling)?(?::head)?/,
+    /awaiting-human-merge:(granted|no-authority):pr(\d+)((?::(?:tooling|head|author))+)?/,
   );
   if (heldMerge) {
     const granted = heldMerge[1] === "granted";
     const pr = Number(heldMerge[2]) > 0 ? `#${heldMerge[2]}` : `the PR for #${primary}`;
-    // The tag is carried by the reason string itself (`:tooling` suffix in
-    // `parkReason` above), so the queue cannot drift from the state file:
-    // untagged reasons keep the CI-flavoured action, as do pre-#745 files.
-    const failureKind: EvidenceFailureKind = heldMerge[3] === "tooling" ? "tooling" : "ci";
+    // The tags are carried by the reason string itself (`parkReason` writes them),
+    // so the queue cannot drift from the state file: untagged reasons keep the
+    // CI-flavoured action, as do pre-#745 files.
+    const tags = heldMerge[3] ?? "";
+    const failureKind: EvidenceFailureKind = tags.includes(":tooling") ? "tooling" : "ci";
     // #1533 — the `:head` tag says WHICH gate refused; the two SHAs come from
     // the caller's `mergeHold` (never re-derived here), so a park whose reason
     // predates #1533 — or a caller that passed no state — keeps the CI-flavoured
     // action rather than printing two `unknown`s.
-    const head = heldMerge[4] === ":head" ? hold : undefined;
+    const head = tags.includes(":head") ? hold : undefined;
+    const authorTagged = tags.includes(":author");
+    // #2181 — and the `:author` tag says it was the author gate. The hold reaches
+    // this function as TWO parameters — `head` for the head check, `authorHold`
+    // for this one — and both are the caller's `mergeHold`: passing the record in
+    // the `head` slot here would hand `mergeHeadHoldNote` an `authorGateReason`
+    // with no `headCheckReason`, and the park would print the CI action again.
+    if (authorTagged && hold?.authorGateReason) {
+      return mergeHoldAction(
+        { granted, source: "doctrine" },
+        Number(heldMerge[2]) || undefined,
+        failureKind,
+        undefined,
+        hold,
+      );
+    }
     return granted
       ? mergeHoldAction(
           { granted, source: "doctrine" },

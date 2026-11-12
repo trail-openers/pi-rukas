@@ -16,6 +16,7 @@ All optional. Defaults are reasonable for typical use. This file holds the full 
 | Run transcripts | `~/.pi/agent/ensemble-runs/<date>/` |
 | Saved model config | `~/.pi/agent/ensemble-models.json` |
 | Private backlog (optional) | `<repository root>/.backlog/backlog.md` — a separate clone, kept out of `git status` by a per-clone `.git/info/exclude` entry |
+| Merge-author allowlist | `.pi/merge-authors` — **opt-in per repository**: absent means the repository has no author gate at all (every other gate is unchanged); present, it lists one login per line, matched case-insensitively, and is read at the cycle's base commit by the merge-author gate (#2181). A file that is present and unreadable, a symlink, a directory or empty after comments refuses every merge. |
 
 ## Private backlog (optional)
 

@@ -19,12 +19,15 @@ export const HEAD_OID = "7".repeat(39) + "e";
 
 /** A host with no UI: the merged step never sends a chat message in these tests. */
 export function mkPi(): DriverContext["host"] {
-  return { sendUserMessage: () => {}, emit: () => {} } as unknown as DriverContext["host"];
+	return {
+		sendUserMessage: () => {},
+		emit: () => {},
+	} as unknown as DriverContext["host"];
 }
 
 export interface MockExec {
-  fn: VerifyExecFn;
-  calls: string[];
+	fn: VerifyExecFn;
+	calls: string[];
 }
 
 /**
@@ -34,30 +37,39 @@ export interface MockExec {
  * (`gh pr view`) that would otherwise answer it with the wrong shape.
  */
 export function mkExec(
-  o: Record<string, { stdout?: string; stderr?: string; error?: boolean }> = {},
+	o: Record<string, { stdout?: string; stderr?: string; error?: boolean }> = {},
 ): MockExec {
-  const calls: string[] = [];
-  const fn: VerifyExecFn = async (rawCmd, opts) => {
-    const cmd = opts?.argv ? [rawCmd, ...opts.argv].join(" ") : rawCmd;
-    calls.push(cmd);
-    // The protected-path committed read is matched through the lib derived from
-    // the production argv constants rather than a caller's substring key, so a
-    // command-shape drift fails the match loudly instead of answering a stale
-    // text (or nothing at all) while the assertions pass on an empty change set.
-    if (opts?.argv && isNulDiffRead(cmd)) return { stdout: "" };
-    for (const [k, v] of Object.entries(o)) {
-      if (cmd.includes(k)) {
-        if (v.error) {
-          const e = new Error(v.stderr ?? "err") as Error & { stderr?: string };
-          e.stderr = v.stderr;
-          throw e;
-        }
-        return { stdout: v.stdout ?? "", stderr: v.stderr };
-      }
-    }
-    return { stdout: "" };
-  };
-  return { fn, calls };
+	const calls: string[] = [];
+	const fn: VerifyExecFn = async (rawCmd, opts) => {
+		const cmd = opts?.argv ? [rawCmd, ...opts.argv].join(" ") : rawCmd;
+		calls.push(cmd);
+		// The protected-path committed read is matched through the lib derived from
+		// the production argv constants rather than a caller's substring key, so a
+		// command-shape drift fails the match loudly instead of answering a stale
+		// text (or nothing at all) while the assertions pass on an empty change set.
+		if (opts?.argv && isNulDiffRead(cmd)) return { stdout: "" };
+		// #2181 — the merge-author gate resolves the cycle's recorded base to a commit
+		// before reading the allowlist, and answers only when the peel is `^{commit}` —
+		// the shape nothing else in the merged step issues. Keyed before the caller's own
+		// table so a case cannot accidentally answer it with the head or with a branch
+		// name, either of which would make the gate read a list at the wrong commit; a
+		// case overrides it with its own `"^{commit}"` key.
+		if (cmd.includes("rev-parse") && cmd.includes("^{commit}")) {
+			return { stdout: `${HEAD_OID}\n` };
+		}
+		for (const [k, v] of Object.entries(o)) {
+			if (cmd.includes(k)) {
+				if (v.error) {
+					const e = new Error(v.stderr ?? "err") as Error & { stderr?: string };
+					e.stderr = v.stderr;
+					throw e;
+				}
+				return { stdout: v.stdout ?? "", stderr: v.stderr };
+			}
+		}
+		return { stdout: "" };
+	};
+	return { fn, calls };
 }
 
 /**
@@ -66,19 +78,19 @@ export function mkExec(
  * test-merge-authority.ts, so these fixtures are not re-testing it.
  */
 export function mkCtx(
-  issue: number,
-  exec: VerifyExecFn,
-  opts?: { dispatchFn?: DriverContext["dispatchFn"]; repoRoot?: string },
+	issue: number,
+	exec: VerifyExecFn,
+	opts?: { dispatchFn?: DriverContext["dispatchFn"]; repoRoot?: string },
 ): DriverContext {
-  return {
-    repoRoot: opts?.repoRoot ?? "/fake",
-    issue,
-    host: mkPi(),
-    verifyExecFn: exec,
-    mergeGrant: true,
-    issueBodyFetcherFn: async () => ({
-      stdout: `title:\ttest #${issue}\nstate:\tOPEN\n\nbody`,
-    }),
-    ...(opts?.dispatchFn ? { dispatchFn: opts.dispatchFn } : {}),
-  } as DriverContext;
+	return {
+		repoRoot: opts?.repoRoot ?? "/fake",
+		issue,
+		host: mkPi(),
+		verifyExecFn: exec,
+		mergeGrant: true,
+		issueBodyFetcherFn: async () => ({
+			stdout: `title:\ttest #${issue}\nstate:\tOPEN\n\nbody`,
+		}),
+		...(opts?.dispatchFn ? { dispatchFn: opts.dispatchFn } : {}),
+	} as DriverContext;
 }

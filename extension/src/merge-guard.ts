@@ -15,7 +15,8 @@
  *      both must be the single plain `gh pr merge` / `glab mr merge` form, or
  *      it is refused.
  *   2. Escape hatch: `PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1` (operator-set
- *      only). If set, the hook is inert for the whole session.
+ *      only). If set, every gate below is inert for the whole session EXCEPT the
+ *      merge-author gate (10), which no override reaches.
  *   3. Resolve the merge target: `gh pr view N --json …` (or `glab mr view
  *      N --output json`). A missing/unreadable `gh` AND `glab` both refuse.
  *   4. Carve-out: release-please / dependabot identities pass through.
@@ -48,6 +49,16 @@
  *      must report `ok` for the PR. A failing, pending, skipped or neutral
  *      check, a `mergeStateStatus` that is not `CLEAN`, zero rows, or an
  *      unreadable read all refuse. GitHub only — the glab path is unchanged.
+ *  10. Merge author (#2181), beside the head equality: the PR's author must be
+ *      listed in `.pi/merge-authors` **at the base commit**. An author the forge
+ *      did not report, an allowlist that is unreadable or empty, and a login that
+ *      is not on it all refuse (an ABSENT file is the repository not opting in —
+ *      see merge-author-allowlist.ts). **No override reaches it, step 2 included**:
+ *      with the hatch set this hook stays registered and runs this gate alone — the
+ *      hatch waives the reviews and says nothing about who opened the PR. The driver's
+ *      switches do not reach the guard at all. The read and the refusal are in
+ *      merge-guard-author.ts (`guardMergeAuthorRefusal`), which is also where the
+ *      base-commit rule for this path is written out.
  *
  * ## What this guard is — and is not
  *
@@ -68,7 +79,8 @@
  *
  * Registered BEFORE the sandbox short-circuit, the subagent-mode branch, and
  * the trust-mode bypass in `registerPermissionGuard` / `registerSubagentGuard`
- * (exactly the `registerIssueCreationGuard` placement). In trust mode
+ * (exactly the `registerIssueCreationGuard` placement), and ahead of everything else
+ * this hook does when the escape hatch is set. In trust mode
  * (the interactive default), sandbox mode (the container default), and
  * strict/headless mode, code after those bypasses never runs — so the guard
  * must fire before them.
@@ -93,17 +105,11 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execp } from "./exec.ts";
 import { FORGE_EXEC_TIMEOUT_MS } from "./forge-detect.ts";
 import { type MergeCommand, readMergeCommand } from "./merge-allowlist.ts";
+import { MERGE_AUTHORS_FILE } from "./merge-author-allowlist.ts";
+import { guardMergeAuthorRefusal } from "./merge-guard-author.ts";
+import { guardMergeLedger } from "./merge-guard-ledger.ts";
 import { protectedMergeRefusal } from "./merge-guard-protected.ts";
-import { misdirectedWriteOf } from "./merge-guard-provenance.ts";
 import { guardFetchAndHead, guardMainline, guardMainlineOid } from "./merge-guard-reads-git.ts";
-import {
-  adversarialRefusal,
-  lensNotEvaluatedRefusal,
-  readPrCommentBodies,
-  refuseUnlessCiGreen,
-} from "./merge-guard-reads.ts";
-import { evaluateRoundCapMerge } from "./merge-guard-round-cap.ts";
-import { compareAdversarialIdentity } from "./merge-identity-compare.ts";
 import { mergeIdentityAgainstMainline } from "./merge-identity.ts";
 import { analyseRefusal, clipCheckNames } from "./merge-refusal-render.ts";
 import { GLAB_AUTO_MERGE_REFUSAL, holdReasonText, renderHold } from "./merge-refusals.ts";
@@ -144,12 +150,21 @@ function unreviewedMergeAllowed(): boolean {
  * uses `execp`).
  */
 export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecFn } = {}): void {
-  if (unreviewedMergeAllowed()) {
-    trace("merge-guard: PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 — unreviewed merges permitted");
-    return;
+  // A4: the hatch waives the REVIEWS, not the author rule. With it set the hook still
+  // registers and runs `authorGateOnly` alone, so every gate below stays exactly as
+  // disabled as the hatch has always made them. Returning here used to switch the
+  // author gate off with the rest, which is how an operator who set the hatch to get
+  // one command through also landed strangers.
+  const hatch = unreviewedMergeAllowed();
+  if (hatch) {
+    trace(
+      "merge-guard: PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 — review gates waived; the merge-author gate still applies",
+    );
   }
   pi.on("tool_call", async (event, _ctx) => {
     if (event.toolName !== "bash") return;
+    // The one gate the hatch cannot waive, ahead of every read the hatch disables.
+    if (hatch) return authorGateOnly(event, opts);
     const command = (event.input as { command?: string })?.command ?? "";
     // #1417 — one place that records a hold, so the log can show how often
     // the guard blocks work instead of protecting it. A HOLD is a refusal of
@@ -337,6 +352,18 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
     if (!fetch.ok) return fetch.block;
     const fetchedHead = fetch.value;
 
+    // The merge-author gate (#2181): one call, one refusal, beside the head
+    // equality and ahead of the protected-path and ledger reads below. The rule,
+    // the base-commit choice and why no override reaches it are in
+    // merge-guard-author.ts.
+    const authorBlock = await guardMergeAuthorRefusal(
+      execFn,
+      cwd,
+      `${remote}/${mainline.value}`,
+      target,
+    );
+    if (authorBlock) return authorBlock;
+
     // The protected-path gate, immediately after the head equality and beside
     // the patch identity below: a PR whose own commits touch `.github/`,
     // `.pi/`, `CODEOWNERS` or `agents.json` is not merged by an agent, whatever
@@ -369,130 +396,103 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
     }
     const currentPatchId = identity.patchId;
 
-    // Read the ledger.
-    const ledgerPath = await ledgerPathFor(execFn, cwd);
-    if (!ledgerPath) {
-      return block(
-        "no git common dir found — the review ledger is unavailable; the merge guard refuses by default (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)",
-      );
-    }
-    const entries: LedgerEntry[] = readLedgerAt(ledgerPath);
-    // #1449 round 2 — the override-blind path, resolved ONCE here so the
-    // diagnostic below makes no git call of its own (it is synchronous, and its
-    // never-throw contract is part of why the guard's hot path has no throw
-    // site). An unresolvable clone path is passed through as undefined, which
-    // REPORTS a stamp rather than hiding it: "could not prove it is the clone's
-    // own file" is not evidence of anything.
-    const cloneLedgerPath = await cloneLedgerPathFor(execFn, cwd);
-    // #1449 — "there is no lens entry" has two causes and the operator must be
-    // able to tell them apart from the refusal alone: nobody reviewed the
-    // branch, or a review ran and its row landed at an overridden path this
-    // guard's read never opens. The guard CANNOT spot the redirect inside the
-    // redirecting process — it resolves through the same `ledgerPathFor`, so
-    // guard and writer agree on the file — so the signal is the write-side
-    // provenance the writer persists on the row (`LedgerEntry.writtenTo`), read
-    // from the file the override points at. Fail-open on the DIAGNOSTIC only:
-    // a second read that throws yields no note and the ordinary refusal, never
-    // a pass — the strict fail-closed rule below is untouched. The read itself
-    // lives in merge-guard-provenance.ts, where that contract is enforced: it
-    // swallows every fs/parse fault internally and is synchronous, so nothing
-    // on the guard's decision path is a throw site. `lensNotEvaluatedRefusal`
-    // is its only consumer — the value is read once here and carried, and a
-    // missing value is exactly today's never-reviewed refusal.
-    const redirectedTo = misdirectedWriteOf(ledgerPath, target.headBranch, cloneLedgerPath);
-    const branch = target.headBranch;
-
-    // Adversarial: latest entry must be passed AND match the current patchId.
-    // #1360 — a non-passing row's `detail` is quoted in the refusal, so an
-    // operator told "no passing review" can see the review DID run and why its
-    // row does not count (a narrowed range, a moved head, an edited tree).
-    // #1533 — the comparison itself is `compareAdversarialIdentity`, shared with
-    // the driver's merged step so the two cannot drift on what "same reviewed
-    // patch" means; the refusals below stay the guard's own words.
-    const advVerdict = compareAdversarialIdentity(entries, branch, currentPatchId);
-    if (!advVerdict.ok) {
-      if (advVerdict.cause === "patch-changed") {
-        return block(
-          `adversarial review is stale: ledger patchId ${advVerdict.reviewedPatchId.slice(0, 8)} ≠ current ${advVerdict.currentPatchId.slice(0, 8)} — the branch changed after the review; re-run adversarial_loop`,
-        );
-      }
-      return block(
-        adversarialRefusal(branch, advVerdict.cause === "no-entry" ? undefined : advVerdict.entry),
-      );
-    }
-    // Lens: the strict rule first — the LATEST entry must be `passed`
-    // (any patchId). When it refuses, the #973 round-cap path is consulted:
-    // an ISSUES_FOUND entry with no CRITICAL, at the round cap (or with
-    // nothing at or above the blocking bar), an approving
-    // adversarial review (already checked above), and the residual findings
-    // disclosed on the PR (marker + matching patch) allows the merge — the
-    // same rule AGENTS.md §1 and work-driver-lens-cap.ts apply to the
-    // driver's own cycles. A refusal from either path names the failed
-    // condition (see evaluateRoundCapMerge for the full matrix).
-    //
-    // #2107 — an ALLOW is not taken where it is made. The round-cap path used
-    // to `return` here, which skipped the CI gate entirely: a capped-but-
-    // merge-worthy PR with a red check merged without `gh` being asked a single
-    // question. So the ledger branch sets `allowNote` and falls through to the
-    // single exit point at the bottom of the handler, where the CI read runs on
-    // EVERY allow path. Refusals still return where they are decided (R1 keeps
-    // the existing diagnostics first); only the carve-out — the one return above
-    // that is not an agent merge — stays exempt.
-    let allowNote: string | undefined;
-    const lens = latestEntry(entries, branch, "lens");
-    if (!lens || !lens.passed) {
-      const lensComments = await readPrCommentBodies(execFn, cwd, target, prNumber, repoValue);
-      // #973 review — the round-cap path's headSha check (condition 6) uses
-      // the PR's current head: the fetched OID, which the guard has already
-      // verified equals the PR's `headOid` (a mismatch is the earlier
-      // "stale branch" refusal above). A lens review of an older commit
-      // cannot satisfy the cap.
-      const capDecision = evaluateRoundCapMerge(
-        entries,
-        branch,
-        currentPatchId,
-        lensComments,
-        fetchedHead,
-      );
-      if (capDecision.applies && capDecision.allowed) {
-        allowNote = `round-cap path: ISSUES_FOUND, no CRITICAL, round ${lens?.round}, disclosed on the PR`;
-        trace(
-          `merge-guard: PR #${prNumber} ${branch} — round-cap path allows the merge (ISSUES_FOUND, no CRITICAL, round ${lens?.round}, disclosed on the PR)`,
-        );
-        // #2107 — an ALLOW is not taken where it is made: `allowNote` falls
-        // through to the single CI exit below; a `return` here let a capped
-        // merge skip that gate, and the strict refusal below then refused a
-        // merge the guard had just allowed, `gh` never asked.
-      } else if (capDecision.applies) {
-        return block(
-          `merge refused: ${capDecision.failedCondition ?? "the round-cap conditions are not met"} — the merge guard refuses by default (set PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1 to override)`,
-        );
-      }
-      // The round-cap path did not apply (no entry, or a legacy entry with no
-      // verdict detail): the strict rule's refusal, branch named for the
-      // operator; #1449 — a row that went elsewhere is named, with its file.
-      if (!allowNote) return lensNotEvaluatedRefusal(branch, lens, { redirectedTo }); // #1000 — "the round-cap path was not evaluated" (see lensNotEvaluatedRefusal)
-    }
-
-    if (!allowNote) {
-      trace(`merge-guard: PR #${prNumber} ${branch} — adversarial + lens both pass`);
-    }
-    // #2106 — the LAST gate, and now the ONLY exit: reached by the strict
-    // ledger allow and by the round-cap allow alike. The carve-out return and
-    // the head-equality check both precede it. GitHub only, and fail-closed.
-    //
-    // The head pin is the fetched OID this handler verified against the PR's
-    // `headOid` a few reads earlier: the CI verdict must be the verdict for
-    // THAT commit, or it is a green board for somebody else's work (#2107).
-    const ciBlock = await refuseUnlessCiGreen(execFn, cwd, prNumber, target.forge, {
-      expectedHeadOid: fetchedHead,
+    // Read the ledger. #1360/#973/#2106/#2107 — the adversarial row, the lens row and
+    // the round-cap path, and the single CI exit every allow path falls through to,
+    // live in merge-guard-ledger.ts; the order rules and the redirected-write
+    // diagnostic's contract are that module's header.
+    const ledgerBlock = await guardMergeLedger({
+      execFn,
+      cwd,
+      target,
+      prNumber,
       repoValue,
+      currentPatchId,
+      fetchedHead,
       timeoutMs: EXEC_TIMEOUT_MS,
     });
-    if (ciBlock) return ciBlock;
+    if (ledgerBlock) return ledgerBlock;
   });
 }
 
-function block(reason: string) {
+function block(reason: string): { block: true; reason: string } {
   return { block: true, reason };
+}
+
+/**
+ * The one gate the escape hatch cannot waive: resolve the PR, apply the author check,
+ * answer nothing else.
+ *
+ * A separate handler rather than a flag threaded through the hook above, so "only the
+ * author gate survives the hatch" is a shape a reader can see — the review, head,
+ * protected-path, ledger and CI reads are simply not in this function, and adding a
+ * gate to the hook above cannot silently widen what the hatch disables.
+ *
+ * It mirrors the hook's own reads exactly (same classifier, same PR resolution, same
+ * forge check, same remote and mainline resolution) so the login compared here belongs
+ * to the PR the merge would actually land, and it mirrors the hook's FAIL-CLOSED reads
+ * too: a classifier that throws and a PR number that will not resolve both refuse, so
+ * a merge is never landed on a command or a target this gate could not read. It stops
+ * where the hook stops: a command the classifier will not read as a merge is not refused
+ * here (that hold, and its telemetry, belong to the hook the hatch waives), but a PR
+ * whose author could not be established IS refused — that is this gate failing closed,
+ * not a review gate. The release-please / dependabot carve-out applies at the position
+ * the hook applies it, so this path is never stricter than the hook on a bot PR.
+ */
+async function authorGateOnly(
+  event: { toolName?: string; input?: unknown },
+  opts: { execFn?: MergeExecFn },
+): Promise<{ block: true; reason: string } | undefined> {
+  const command = (event.input as { command?: string })?.command ?? "";
+  let analysis: MergeCommand;
+  try {
+    analysis = readMergeCommand(command);
+  } catch (err) {
+    // Fail closed: a merge is the irreversible act, so a command this gate could not
+    // read is not merged. The text names the classifier as the suspect (the hook's
+    // own classifier-threw hold) — the reader threw, which says nothing about reviews.
+    return block(
+      `merge refused: the merge-author gate is not waived by PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE, and the command could not be read to identify the PR it merges — the classifier threw (${analyseRefusal(err)}). If this is not a merge, report it as a false hold: the guard's classifier is the thing to fix.`,
+    );
+  }
+  if (analysis.kind !== "merge") return undefined;
+  const cwd = process.cwd();
+  const execFn: MergeExecFn = opts.execFn ?? execp;
+  let prNumber = analysis.prNumber;
+  if (prNumber === undefined) {
+    prNumber = await resolvePrNumber(execFn, cwd, undefined, undefined, analysis.repo);
+  }
+  if (prNumber === undefined) {
+    // Fail closed for the same reason: with no PR identified there is no author to
+    // check, and an uncheckable author is not an approved one.
+    return block(
+      `merge refused: the merge-author gate is not waived by PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE, and the PR/MR to be merged could not be identified from the command or the current branch (repo: ${analysis.repo ?? "none"}), so its author could not be checked. Name the number in the merge command.`,
+    );
+  }
+  const targetResult = await readMergeTarget(execFn, cwd, prNumber, undefined, analysis.repo);
+  if (!targetResult.ok) {
+    return block(
+      `merge refused: the merge-author gate is not waived by PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE, and the pull request to be merged could not be read to check its author (${targetResult.reason})`,
+    );
+  }
+  // Carve-out: release-please / dependabot are not agent merges, and the hook lets them
+  // through at this same position — ahead of the remote/mainline reads the gate needs.
+  if (isCarveOut(targetResult.target)) return undefined;
+  // The gate must certify the PR the command actually merges, or the hatch becomes a
+  // route for landing an unchecked author on the other forge.
+  if (targetResult.target.forge !== analysis.forge) {
+    return block(
+      `merge refused: the merge-author gate is not waived by PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE, and \`${
+        analysis.forge === "gitlab" ? "glab mr merge" : "gh pr merge"
+      }\` merges on ${analysis.forge} while this repo's forge is ${targetResult.target.forge} — the author of the PR actually merged could not be checked`,
+    );
+  }
+  const remote = await remoteName(execFn, cwd);
+  if (!remote) {
+    return block(
+      `merge refused: the merge-author gate is not waived by PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE, and no git remote (origin/upstream/first) was found to read ${MERGE_AUTHORS_FILE} at`,
+    );
+  }
+  const mainline = await guardMainline(cwd, execFn);
+  if (!mainline.ok) return mainline.block;
+  return guardMergeAuthorRefusal(execFn, cwd, `${remote}/${mainline.value}`, targetResult.target);
 }

@@ -20,7 +20,13 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { LedgerBinding } from "../../src/adversarial-ledger-binding.ts";
@@ -42,6 +48,16 @@ import { gitTestEnv } from "./git-test-env.ts";
  * thing an arm is accidentally asserting about. */
 export const BRANCH = "feature/x";
 
+/**
+ * #2181 — the login the forge stub reports as the fixture PR's author, and the one
+ * the clone's `.pi/merge-authors` names at the mainline commit.
+ *
+ * The arms in the tests that use this harness are about the reviewed range, not the
+ * author; the two values agree so the merge-author gate passes them through to the
+ * gate each arm actually asserts on. Placeholder only.
+ */
+export const LEDGER_AUTHOR = "fixture-maintainer";
+
 /** Run a real git command in `repo` and return its trimmed stdout.
  *
  * #1145 — `env: gitTestEnv()` on every git child this harness spawns. Only `gh`
@@ -52,25 +68,25 @@ export const BRANCH = "feature/x";
  * decides, and the arm's verdict becomes a property of the machine. Same reason
  * for the two bare `execFileSync` calls in `setupRepo` below. */
 export const sh = (repo: string, ...argv: string[]) => {
-  const stdout = execFileSync("git", ["-C", repo, ...argv], {
-    cwd: repo,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    env: gitTestEnv(),
-  });
-  return stdout.trim();
+	const stdout = execFileSync("git", ["-C", repo, ...argv], {
+		cwd: repo,
+		encoding: "utf8",
+		stdio: ["ignore", "pipe", "pipe"],
+		env: gitTestEnv(),
+	});
+	return stdout.trim();
 };
 
 export interface Repo {
-  dir: string;
-  branch: string;
-  /** The merge-base `origin/main` shares with the branch — the base a correct
-   * review names, and the base the row's patch id is taken against. */
-  mergeBase: string;
-  tip: string;
-  /** The branch's first commit: one commit behind the tip, i.e. the narrowing
-   * a caller reaches for when it reviews `HEAD~1` instead of the branch. */
-  parent: string;
+	dir: string;
+	branch: string;
+	/** The merge-base `origin/main` shares with the branch — the base a correct
+	 * review names, and the base the row's patch id is taken against. */
+	mergeBase: string;
+	tip: string;
+	/** The branch's first commit: one commit behind the tip, i.e. the narrowing
+	 * a caller reaches for when it reviews `HEAD~1` instead of the branch. */
+	parent: string;
 }
 
 /** A repo with `mainline` (default `main`) pushed to a bare origin and a feature
@@ -80,70 +96,87 @@ export interface Repo {
  * #1360 lens 2 is about: a repo whose mainline is `trunk` used to classify a
  * tip-named head as `head-not-current` for a review that was of the tip. */
 export function setupRepo(mainline = "main"): Repo {
-  const root = mkdtempSync(path.join(os.tmpdir(), "adv-1360-"));
-  const origin = path.join(root, "origin.git");
-  const dir = path.join(root, "repo");
-  execFileSync("git", ["-C", root, "init", "-q", "--bare", origin], {
-    stdio: "ignore",
-    env: gitTestEnv(),
-  });
-  execFileSync("git", ["-C", root, "clone", "-q", origin, dir], {
-    stdio: "ignore",
-    env: gitTestEnv(),
-  });
-  sh(dir, "config", "user.email", "t@t.t");
-  sh(dir, "config", "user.name", "t");
-  sh(dir, "checkout", "-qb", mainline);
-  writeFileSync(path.join(dir, "base.txt"), "base\n");
-  sh(dir, "add", "-A");
-  sh(dir, "commit", "-qm", "base");
-  sh(dir, "push", "-q", "origin", mainline);
-  sh(dir, "remote", "set-head", "origin", mainline);
-  const mergeBase = sh(dir, "rev-parse", mainline);
-  sh(dir, "checkout", "-qb", BRANCH, mainline);
-  writeFileSync(path.join(dir, "a.txt"), "a\n");
-  sh(dir, "add", "-A");
-  sh(dir, "commit", "-qm", "commit A");
-  const parent = sh(dir, "rev-parse", "HEAD");
-  writeFileSync(path.join(dir, "b.txt"), "b\n");
-  sh(dir, "add", "-A");
-  sh(dir, "commit", "-qm", "commit B");
-  const tip = sh(dir, "rev-parse", "HEAD");
-  sh(dir, "push", "-q", "origin", BRANCH);
-  return { dir, branch: BRANCH, mergeBase, tip, parent };
+	const root = mkdtempSync(path.join(os.tmpdir(), "adv-1360-"));
+	const origin = path.join(root, "origin.git");
+	const dir = path.join(root, "repo");
+	execFileSync("git", ["-C", root, "init", "-q", "--bare", origin], {
+		stdio: "ignore",
+		env: gitTestEnv(),
+	});
+	execFileSync("git", ["-C", root, "clone", "-q", origin, dir], {
+		stdio: "ignore",
+		env: gitTestEnv(),
+	});
+	sh(dir, "config", "user.email", "t@t.t");
+	sh(dir, "config", "user.name", "t");
+	sh(dir, "checkout", "-qb", mainline);
+	writeFileSync(path.join(dir, "base.txt"), "base\n");
+	// #2181 — the merge guard reads `.pi/merge-authors` at the commit it is about to
+	// land onto and fails closed, so a fixture whose arms expect the guard to REACH
+	// the ledger/range decision must carry the gate file on the mainline, naming the
+	// login the forge stub reports as the PR's author. Placeholder only — the real
+	// list is the operator's private one.
+	mkdirSync(path.join(dir, ".pi"), { recursive: true });
+	writeFileSync(path.join(dir, ".pi/merge-authors"), `${LEDGER_AUTHOR}\n`);
+	sh(dir, "add", "-A");
+	sh(dir, "commit", "-qm", "base");
+	sh(dir, "push", "-q", "origin", mainline);
+	sh(dir, "remote", "set-head", "origin", mainline);
+	const mergeBase = sh(dir, "rev-parse", mainline);
+	sh(dir, "checkout", "-qb", BRANCH, mainline);
+	writeFileSync(path.join(dir, "a.txt"), "a\n");
+	sh(dir, "add", "-A");
+	sh(dir, "commit", "-qm", "commit A");
+	const parent = sh(dir, "rev-parse", "HEAD");
+	writeFileSync(path.join(dir, "b.txt"), "b\n");
+	sh(dir, "add", "-A");
+	sh(dir, "commit", "-qm", "commit B");
+	const tip = sh(dir, "rev-parse", "HEAD");
+	sh(dir, "push", "-q", "origin", BRANCH);
+	return { dir, branch: BRANCH, mergeBase, tip, parent };
 }
 
 /** Create a branch at `sha` — a base that is not the mainline. */
 export const branchAt = (repo: string, name: string, sha: string): void => {
-  sh(repo, "branch", name, sha);
+	sh(repo, "branch", name, sha);
 };
 
 /** Commit a tracked-file change on the branch — the "HEAD moved after the
  * review" shape. */
-export function commitOnBranch(repo: string, name: string, content: string, msg: string): string {
-  writeFileSync(path.join(repo, name), content);
-  sh(repo, "add", "-A");
-  sh(repo, "commit", "-qm", msg);
-  return sh(repo, "rev-parse", "HEAD");
+export function commitOnBranch(
+	repo: string,
+	name: string,
+	content: string,
+	msg: string,
+): string {
+	writeFileSync(path.join(repo, name), content);
+	sh(repo, "add", "-A");
+	sh(repo, "commit", "-qm", msg);
+	return sh(repo, "rev-parse", "HEAD");
 }
 
 /** Edit a TRACKED file with no commit — the "tree changed after the review" shape. */
 export function editTracked(repo: string, name: string, content: string): void {
-  writeFileSync(path.join(repo, name), content);
+	writeFileSync(path.join(repo, name), content);
 }
 
 /** The ledger file for a repo (its git common dir — one ledger per clone, so a
  * worktree of this clone would share it). */
 export const ledgerFile = (repo: string) => {
-  const common = sh(repo, "rev-parse", "--git-common-dir");
-  const abs = path.isAbsolute(common) ? common : path.resolve(repo, common);
-  return path.join(abs, "review-ledger.json");
+	const common = sh(repo, "rev-parse", "--git-common-dir");
+	const abs = path.isAbsolute(common) ? common : path.resolve(repo, common);
+	return path.join(abs, "review-ledger.json");
 };
 
 /** This branch's latest row of `kind`, or undefined. */
-export function latest(repo: string, kind: "adversarial" | "lens"): LedgerEntry | undefined {
-  const file = ledgerFile(repo);
-  return existsSync(file) ? latestEntry(readLedgerFile(file).entries, BRANCH, kind) : undefined;
+export function latest(
+	repo: string,
+	kind: "adversarial" | "lens",
+): LedgerEntry | undefined {
+	const file = ledgerFile(repo);
+	return existsSync(file)
+		? latestEntry(readLedgerFile(file).entries, BRANCH, kind)
+		: undefined;
 }
 
 /** Poll for a row. The arms `await` their writes (both writers return their
@@ -151,15 +184,18 @@ export function latest(repo: string, kind: "adversarial" | "lens"): LedgerEntry 
  * path for a writer that degraded (lock contention, a slow subprocess hop).
  * MUST await between ticks — the writer's subprocess callbacks run on the event
  * loop, so a blocking wait starves them (#984). */
-export async function waitForRow(repo: string, kind: "adversarial" | "lens"): Promise<LedgerEntry> {
-  const deadline = Date.now() + 30_000;
-  for (;;) {
-    const now = latest(repo, kind);
-    if (now) return now;
-    if (Date.now() >= deadline) break;
-    await new Promise((r) => setTimeout(r, 20));
-  }
-  throw new Error(`no ${kind} ledger row appeared for the tool-path review`);
+export async function waitForRow(
+	repo: string,
+	kind: "adversarial" | "lens",
+): Promise<LedgerEntry> {
+	const deadline = Date.now() + 30_000;
+	for (;;) {
+		const now = latest(repo, kind);
+		if (now) return now;
+		if (Date.now() >= deadline) break;
+		await new Promise((r) => setTimeout(r, 20));
+	}
+	throw new Error(`no ${kind} ledger row appeared for the tool-path review`);
 }
 
 /** The forge stub: only `gh` is faked; every git call is real.
@@ -169,90 +205,116 @@ export async function waitForRow(repo: string, kind: "adversarial" | "lens"): Pr
  * refuses for a reason that has nothing to do with the review under test. It is
  * read from the repo (`origin/HEAD`'s target, the same answer `identityBase`
  * resolves) rather than assumed. */
-export function forgeExec(repo: string, pr: { comments: string[] }, baseBranch = "main") {
-  // `o` is typed against `MergeExecFn`'s options (merge-target.ts), not a local
-  // `{ argv? }` shape: the guard calls this through that type, and a parameter
-  // narrower than the one the caller passes is an assignability error (TS2322)
-  // rather than a behaviour difference — the extra fields (`cwd`, `timeout`,
-  // `maxBuffer`, `shell`) are simply not consulted by a stub that runs real git
-  // at `repo`. Widening the parameter is the fix; casting the function away is
-  // not, because the point of the check is that the stub fits the seam.
-  return async (
-    cmd0: string,
-    o?: { cwd?: string; timeout?: number; maxBuffer?: number; shell?: string; argv?: string[] },
-  ): Promise<{ stdout: string }> => {
-    if (cmd0 !== "gh" && !cmd0.startsWith("gh ")) {
-      const stdout = o?.argv
-        ? execFileSync(cmd0, o.argv, {
-            cwd: repo,
-            encoding: "utf8",
-            stdio: "pipe",
-            env: gitTestEnv(),
-          })
-        : execFileSync("/bin/sh", ["-c", cmd0], {
-            cwd: repo,
-            encoding: "utf8",
-            stdio: "pipe",
-            env: gitTestEnv(),
-          });
-      return { stdout };
-    }
-    const cmd = commandOf(cmd0, o);
-    if (cmd.includes("--json comments")) {
-      return { stdout: JSON.stringify({ comments: pr.comments.map((body) => ({ body })) }) };
-    }
-    if (cmd.includes("pr view 12")) {
-      // #2106 — the evidence read is a `gh pr view` too, with its own field
-      // list; answered GREEN here so the guard's new last gate is not what
-      // these arms are deciding on. The field list is matched FIRST because
-      // `pr view 12` alone would otherwise swallow it and hand the gatherer
-      // the identity payload (no `mergeStateStatus`, no full OID) — a refusal
-      // that has nothing to do with the review under test.
-      if (cmd.includes("mergeStateStatus,mergeable,state")) {
-        return {
-          stdout: JSON.stringify({
-            mergeStateStatus: "CLEAN",
-            mergeable: "TRUE",
-            state: "OPEN",
-            headRefOid: sh(repo, "rev-parse", `origin/${BRANCH}`),
-          }),
-        };
-      }
-      return {
-        stdout: JSON.stringify({
-          headRefName: BRANCH,
-          headRefOid: sh(repo, "rev-parse", `origin/${BRANCH}`),
-          baseRefName: baseBranch,
-          author: { login: "dev" },
-          labels: [],
-        }),
-      };
-    }
-    if (cmd.includes("pr checks 12")) {
-      // #2106 — the check rows behind the evidence gate: one passing check.
-      return { stdout: JSON.stringify([{ name: "quality-gate", state: "SUCCESS", bucket: "pass" }]) };
-    }
-    throw new Error(`unexpected gh call: ${cmd}`);
-  };
+export function forgeExec(
+	repo: string,
+	pr: { comments: string[] },
+	baseBranch = "main",
+) {
+	// `o` is typed against `MergeExecFn`'s options (merge-target.ts), not a local
+	// `{ argv? }` shape: the guard calls this through that type, and a parameter
+	// narrower than the one the caller passes is an assignability error (TS2322)
+	// rather than a behaviour difference — the extra fields (`cwd`, `timeout`,
+	// `maxBuffer`, `shell`) are simply not consulted by a stub that runs real git
+	// at `repo`. Widening the parameter is the fix; casting the function away is
+	// not, because the point of the check is that the stub fits the seam.
+	return async (
+		cmd0: string,
+		o?: {
+			cwd?: string;
+			timeout?: number;
+			maxBuffer?: number;
+			shell?: string;
+			argv?: string[];
+		},
+	): Promise<{ stdout: string }> => {
+		if (cmd0 !== "gh" && !cmd0.startsWith("gh ")) {
+			const stdout = o?.argv
+				? execFileSync(cmd0, o.argv, {
+						cwd: repo,
+						encoding: "utf8",
+						stdio: "pipe",
+						env: gitTestEnv(),
+					})
+				: execFileSync("/bin/sh", ["-c", cmd0], {
+						cwd: repo,
+						encoding: "utf8",
+						stdio: "pipe",
+						env: gitTestEnv(),
+					});
+			return { stdout };
+		}
+		const cmd = commandOf(cmd0, o);
+		if (cmd.includes("--json comments")) {
+			return {
+				stdout: JSON.stringify({
+					comments: pr.comments.map((body) => ({ body })),
+				}),
+			};
+		}
+		if (cmd.includes("pr view 12")) {
+			// #2106 — the evidence read is a `gh pr view` too, with its own field
+			// list; answered GREEN here so the guard's new last gate is not what
+			// these arms are deciding on. The field list is matched FIRST because
+			// `pr view 12` alone would otherwise swallow it and hand the gatherer
+			// the identity payload (no `mergeStateStatus`, no full OID) — a refusal
+			// that has nothing to do with the review under test.
+			if (cmd.includes("mergeStateStatus,mergeable,state")) {
+				return {
+					stdout: JSON.stringify({
+						mergeStateStatus: "CLEAN",
+						mergeable: "TRUE",
+						state: "OPEN",
+						headRefOid: sh(repo, "rev-parse", `origin/${BRANCH}`),
+					}),
+				};
+			}
+			return {
+				stdout: JSON.stringify({
+					headRefName: BRANCH,
+					headRefOid: sh(repo, "rev-parse", `origin/${BRANCH}`),
+					baseRefName: baseBranch,
+					author: { login: LEDGER_AUTHOR },
+					labels: [],
+				}),
+			};
+		}
+		if (cmd.includes("pr checks 12")) {
+			// #2106 — the check rows behind the evidence gate: one passing check.
+			return {
+				stdout: JSON.stringify([
+					{ name: "quality-gate", state: "SUCCESS", bucket: "pass" },
+				]),
+			};
+		}
+		throw new Error(`unexpected gh call: ${cmd}`);
+	};
 }
 
 /** Drive the real merge guard from inside `repo`. */
-export async function guard(repo: string, pr: { comments: string[] }, baseBranch = "main") {
-  let handler: ((e: unknown, c: unknown) => Promise<unknown>) | undefined;
-  registerMergeGuard(
-    { on: (n: string, fn: typeof handler) => n === "tool_call" && (handler = fn) } as never,
-    { execFn: forgeExec(repo, pr, baseBranch) },
-  );
-  const prev = process.cwd();
-  process.chdir(repo);
-  try {
-    const r = (await handler?.({ toolName: "bash", input: { command: "gh pr merge 12" } }, {})) as
-      | { block?: boolean; reason?: string }
-      | undefined;
-    return { block: r?.block === true, reason: r?.reason ?? "" };
-  } finally {
-    process.chdir(prev);
-  }
+export async function guard(
+	repo: string,
+	pr: { comments: string[] },
+	baseBranch = "main",
+) {
+	let handler: ((e: unknown, c: unknown) => Promise<unknown>) | undefined;
+	registerMergeGuard(
+		{
+			on: (n: string, fn: typeof handler) =>
+				n === "tool_call" && (handler = fn),
+		} as never,
+		{ execFn: forgeExec(repo, pr, baseBranch) },
+	);
+	const prev = process.cwd();
+	process.chdir(repo);
+	try {
+		const r = (await handler?.(
+			{ toolName: "bash", input: { command: "gh pr merge 12" } },
+			{},
+		)) as { block?: boolean; reason?: string } | undefined;
+		return { block: r?.block === true, reason: r?.reason ?? "" };
+	} finally {
+		process.chdir(prev);
+	}
 }
 
 /** An approving loop result — the verdict every binding arm except one carries.
@@ -263,21 +325,27 @@ export async function guard(repo: string, pr: { comments: string[] }, baseBranch
  * assertion on the written row would notice (AGENTS §12 forbids the `any`
  * equivalent). Every field the interface requires is written out. */
 export const APPROVED: DispatchResult = {
-  role: "adversarial-loop",
-  ok: true,
-  text: "VERDICT: APPROVED",
-  toolUses: [],
-  ms: 0,
-  exitCode: 0,
-  loopOutcome: "approved",
+	role: "adversarial-loop",
+	ok: true,
+	text: "VERDICT: APPROVED",
+	toolUses: [],
+	ms: 0,
+	exitCode: 0,
+	loopOutcome: "approved",
 };
 
 /** A passing lens row so the guard's lens half never colours the verdict. */
 export async function recordPassingLens(repo: string) {
-  const outcome = await writeLensLedgerEntry("APPROVED", "MEDIUM", repo, BRANCH, false);
-  if (!outcome.recorded) {
-    throw new Error(`the lens fixture row was not recorded: ${outcome.reason}`);
-  }
+	const outcome = await writeLensLedgerEntry(
+		"APPROVED",
+		"MEDIUM",
+		repo,
+		BRANCH,
+		false,
+	);
+	if (!outcome.recorded) {
+		throw new Error(`the lens fixture row was not recorded: ${outcome.reason}`);
+	}
 }
 
 /**
@@ -290,68 +358,82 @@ export async function recordPassingLens(repo: string) {
  * to test what the writer does with it.
  */
 export async function toolArm(
-  repo: string,
-  params: {
-    base?: string;
-    head?: string;
-    binding?: Partial<LedgerBinding>;
-    /** true → the /work driver's shape: no provenance marker, so the binding
-     * gates do not apply and the row keeps its pre-#1360 form. */
-    driverPath?: boolean;
-    /** The loop's verdict. Defaults to APPROVED; the rejected arm passes a
-     * rejection to show a refusal detail never overwrites the verdict's own.
-     * ALL THREE verdict-carrying fields are required together — `ok`,
-     * `loopOutcome` AND `text` — so an arm cannot merge a rejection's pass bit
-     * over APPROVED's approving report text (a row whose `passed` says false
-     * while its own `text` says APPROVED is a fixture asserting two opposite
-     * verdicts, and the reply-marker readers read the verdict out of `text`).
-     * The merge below stays a checked `DispatchResult`, not an `as never`
-     * cast. */
-    result?: Pick<DispatchResult, "ok" | "loopOutcome" | "text">;
-    /** The git executor the writer uses. Defaults to the real one — every arm
-     * runs real git; this exists for the arm that counts calls (#1360 lens 6). */
-    execFn?: VerifyExecFn;
-    /** The PR's base branch the guard's forge stub reports, so its `git fetch`
-     * names a ref the repo actually has. Defaults to `main`; a `trunk` fixture
-     * passes `"trunk"` (#1360 lens 2). */
-    baseBranch?: string;
-  },
-): Promise<{ row: LedgerEntry; block: boolean; reason: string; ledgerPath: string }> {
-  const pr = { comments: [] as string[] };
-  await recordPassingLens(repo);
-  // Spreading an absent override is a no-op, so one expression covers both
-  // the default (APPROVED) and the varied arm.
-  await writeAdversarialLedgerEntry({ ...APPROVED, ...params.result }, {
-    workCwd: repo,
-    branch: BRANCH,
-    base: params.base,
-    head: params.head,
-    toolPath: params.driverPath !== true,
-    binding: params.binding ?? {},
-    execFn: params.execFn,
-  });
-  const row = await waitForRow(repo, "adversarial");
-  const g = await guard(repo, pr, params.baseBranch ?? "main");
-  return { row, ...g, ledgerPath: ledgerFile(repo) };
+	repo: string,
+	params: {
+		base?: string;
+		head?: string;
+		binding?: Partial<LedgerBinding>;
+		/** true → the /work driver's shape: no provenance marker, so the binding
+		 * gates do not apply and the row keeps its pre-#1360 form. */
+		driverPath?: boolean;
+		/** The loop's verdict. Defaults to APPROVED; the rejected arm passes a
+		 * rejection to show a refusal detail never overwrites the verdict's own.
+		 * ALL THREE verdict-carrying fields are required together — `ok`,
+		 * `loopOutcome` AND `text` — so an arm cannot merge a rejection's pass bit
+		 * over APPROVED's approving report text (a row whose `passed` says false
+		 * while its own `text` says APPROVED is a fixture asserting two opposite
+		 * verdicts, and the reply-marker readers read the verdict out of `text`).
+		 * The merge below stays a checked `DispatchResult`, not an `as never`
+		 * cast. */
+		result?: Pick<DispatchResult, "ok" | "loopOutcome" | "text">;
+		/** The git executor the writer uses. Defaults to the real one — every arm
+		 * runs real git; this exists for the arm that counts calls (#1360 lens 6). */
+		execFn?: VerifyExecFn;
+		/** The PR's base branch the guard's forge stub reports, so its `git fetch`
+		 * names a ref the repo actually has. Defaults to `main`; a `trunk` fixture
+		 * passes `"trunk"` (#1360 lens 2). */
+		baseBranch?: string;
+	},
+): Promise<{
+	row: LedgerEntry;
+	block: boolean;
+	reason: string;
+	ledgerPath: string;
+}> {
+	const pr = { comments: [] as string[] };
+	await recordPassingLens(repo);
+	// Spreading an absent override is a no-op, so one expression covers both
+	// the default (APPROVED) and the varied arm.
+	await writeAdversarialLedgerEntry(
+		{ ...APPROVED, ...params.result },
+		{
+			workCwd: repo,
+			branch: BRANCH,
+			base: params.base,
+			head: params.head,
+			toolPath: params.driverPath !== true,
+			binding: params.binding ?? {},
+			execFn: params.execFn,
+		},
+	);
+	const row = await waitForRow(repo, "adversarial");
+	const g = await guard(repo, pr, params.baseBranch ?? "main");
+	return { row, ...g, ledgerPath: ledgerFile(repo) };
 }
 
 /** The capture a round produces when it reviews the range it should have: the
  * tree identity and HEAD the writer will recompute, taken at review time. */
-export async function honestBinding(repo: string, base: string, headRef: string) {
-  const { captureBinding } = await import("../../src/adversarial-ledger-binding.ts");
-  return captureBinding(repo, base, headRef);
+export async function honestBinding(
+	repo: string,
+	base: string,
+	headRef: string,
+) {
+	const { captureBinding } = await import(
+		"../../src/adversarial-ledger-binding.ts"
+	);
+	return captureBinding(repo, base, headRef);
 }
 
 /** Read a ledger file verbatim by path — for an arm that captured the path
  * before clearing the ledger override, or that must prove a row EXISTS when its
  * own `passed` boolean is what is under suspicion. */
 export function readRawLedgerFile(file: string): { entries: unknown[] } {
-  return existsSync(file)
-    ? (JSON.parse(readFileSync(file, "utf8")) as { entries: unknown[] })
-    : { entries: [] };
+	return existsSync(file)
+		? (JSON.parse(readFileSync(file, "utf8")) as { entries: unknown[] })
+		: { entries: [] };
 }
 
 /** Read this repo's ledger file verbatim. */
 export function readRawLedger(repo: string): { entries: unknown[] } {
-  return readRawLedgerFile(ledgerFile(repo));
+	return readRawLedgerFile(ledgerFile(repo));
 }

@@ -141,6 +141,23 @@ export function recoveryStepsForCap(
         comment: [`3. ${mergeHoldGrantAction(pr ? `#${pr}` : "the PR")}:`],
         lines: [`/work ${issue} --merge`],
       });
+    } else if (ps.mergeHold?.authorGateReason) {
+      // #2181 — the merge-author gate held this cycle. Neither `--merge` nor a
+      // doctrine grant is an answer to it, and the recovery is NOT a command to
+      // paste: the remedy is that a person lands a PR whose author the agent is
+      // not permitted to land, or adds that person to the operator-owned allowlist
+      // if they belong on it. Naming a merge command here would be the handoff
+      // telling the operator to do the one thing the gate refused.
+      steps.push({
+        section: "awaiting-human-merge",
+        comment: [
+          `3. The merge-author gate refused it — ${ps.mergeHold.authorGateReason}`,
+          "   There is no flag for this: the allowlist is a gate file only you can change.",
+        ],
+        // No command line: the handoff must not offer a merge command for the
+        // very merge the gate refused. Both renderers print comment-only steps.
+        lines: [],
+      });
     } else if (ps.mergeHold?.headCheckReason) {
       // #1533 — the head check held this cycle, so a re-run with `--merge`
       // changes nothing: the gate that refused is the one that compares the

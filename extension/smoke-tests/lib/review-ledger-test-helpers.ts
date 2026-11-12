@@ -43,6 +43,7 @@
  */
 
 import { execSync } from "node:child_process";
+import { REAL_ALLOWED_AUTHOR } from "../merge-guard-helpers.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -54,10 +55,10 @@ const LEDGER_ENV = "PI_ENSEMBLE_REVIEW_LEDGER_FILE";
 
 /** What one `isolateLedger()` call owns, so its undo is exact. */
 interface Isolation {
-  dir: string;
-  file: string;
-  /** Restore the env this call changed and remove its temp dir. Idempotent. */
-  release: () => void;
+	dir: string;
+	file: string;
+	/** Restore the env this call changed and remove its temp dir. Idempotent. */
+	release: () => void;
 }
 
 const active = new Set<Isolation>();
@@ -90,65 +91,65 @@ const baseline = process.env[LEDGER_ENV];
  * return value are unchanged.
  */
 export function isolateLedger(): () => void {
-  const dir = mkdtempSync(path.join(os.tmpdir(), "ledger-iso-"));
-  const file = path.join(dir, "review-ledger.json");
-  process.env[LEDGER_ENV] = file;
-  const iso: Isolation = {
-    dir,
-    file,
-    release: () => {
-      if (!active.has(iso)) return;
-      active.delete(iso);
-      // Restore FIRST: an exit handler that removed the dir while the env still
-      // named it would leave a window where a late writer targets a deleted
-      // directory.
-      //
-      // #1449 round 2 — "restore" means "restore to whatever is still correct",
-      // and when isolations are nested a per-call saved `previous` is not always
-      // it. Each call used to save the env as it found it, so an INNER call's
-      // saved value was the OUTER call's file — a path that is not the caller's
-      // to restore and that the outer release will delete. Restoring it verbatim
-      // points the env at a directory that no longer exists, which is the same
-      // class of bug this helper exists to prevent. That field is gone; the
-      //
-      // So the answer is derived from the set that is still live, never from a
-      // value remembered at acquisition time:
-      //   • any isolation still active  → the env names the innermost live one
-      //     (insertion order is acquisition order, so the LAST entry is the
-      //     innermost), and that file is guaranteed to exist because its owner has
-      //     not released;
-      //   • none left active            → restore what THIS process's outermost
-      //     isolation actually replaced, i.e. the value saved before any isolation
-      //     was taken (`baseline`), which is the only value that is neither a
-      //     helper-created temp nor somebody else's target.
-      // Releasing in either order therefore lands on the same correct answer.
-      //
-      // #1449 round 2 — each step is individually wrapped, because this runs on
-      // the process `exit` handler and an exit handler that throws is the worst
-      // failure this file can have: the remaining isolations in the loop below
-      // never release, so every later suite in the same process inherits a
-      // `PI_ENSEMBLE_REVIEW_LEDGER_FILE` naming a directory that may or may not
-      // exist — the exact leak #1449 was filed for, manufactured by the cleanup
-      // whose job is to prevent it. `process.env` assignment can throw
-      // (ERR_STRING_TOO_LONG on an absurd value, a frozen/locked-down env) and
-      // `rmSync` already had its own guard; now both halves do.
-      try {
-        const innermostLive = [...active][active.size - 1];
-        if (innermostLive) process.env[LEDGER_ENV] = innermostLive.file;
-        else if (baseline === undefined) delete process.env[LEDGER_ENV];
-        else process.env[LEDGER_ENV] = baseline;
-      } catch {
-        // The env could not be restored — nothing else here should follow it.
-      }
-      try {
-        rmSync(iso.dir, { recursive: true, force: true });
-      } catch {
-        // cleanup is best-effort
-      }
-    },
-  };
-  active.add(iso);
-  return iso.release;
+	const dir = mkdtempSync(path.join(os.tmpdir(), "ledger-iso-"));
+	const file = path.join(dir, "review-ledger.json");
+	process.env[LEDGER_ENV] = file;
+	const iso: Isolation = {
+		dir,
+		file,
+		release: () => {
+			if (!active.has(iso)) return;
+			active.delete(iso);
+			// Restore FIRST: an exit handler that removed the dir while the env still
+			// named it would leave a window where a late writer targets a deleted
+			// directory.
+			//
+			// #1449 round 2 — "restore" means "restore to whatever is still correct",
+			// and when isolations are nested a per-call saved `previous` is not always
+			// it. Each call used to save the env as it found it, so an INNER call's
+			// saved value was the OUTER call's file — a path that is not the caller's
+			// to restore and that the outer release will delete. Restoring it verbatim
+			// points the env at a directory that no longer exists, which is the same
+			// class of bug this helper exists to prevent. That field is gone; the
+			//
+			// So the answer is derived from the set that is still live, never from a
+			// value remembered at acquisition time:
+			//   • any isolation still active  → the env names the innermost live one
+			//     (insertion order is acquisition order, so the LAST entry is the
+			//     innermost), and that file is guaranteed to exist because its owner has
+			//     not released;
+			//   • none left active            → restore what THIS process's outermost
+			//     isolation actually replaced, i.e. the value saved before any isolation
+			//     was taken (`baseline`), which is the only value that is neither a
+			//     helper-created temp nor somebody else's target.
+			// Releasing in either order therefore lands on the same correct answer.
+			//
+			// #1449 round 2 — each step is individually wrapped, because this runs on
+			// the process `exit` handler and an exit handler that throws is the worst
+			// failure this file can have: the remaining isolations in the loop below
+			// never release, so every later suite in the same process inherits a
+			// `PI_ENSEMBLE_REVIEW_LEDGER_FILE` naming a directory that may or may not
+			// exist — the exact leak #1449 was filed for, manufactured by the cleanup
+			// whose job is to prevent it. `process.env` assignment can throw
+			// (ERR_STRING_TOO_LONG on an absurd value, a frozen/locked-down env) and
+			// `rmSync` already had its own guard; now both halves do.
+			try {
+				const innermostLive = [...active][active.size - 1];
+				if (innermostLive) process.env[LEDGER_ENV] = innermostLive.file;
+				else if (baseline === undefined) delete process.env[LEDGER_ENV];
+				else process.env[LEDGER_ENV] = baseline;
+			} catch {
+				// The env could not be restored — nothing else here should follow it.
+			}
+			try {
+				rmSync(iso.dir, { recursive: true, force: true });
+			} catch {
+				// cleanup is best-effort
+			}
+		},
+	};
+	active.add(iso);
+	return iso.release;
 }
 
 /**
@@ -160,9 +161,9 @@ export function isolateLedger(): () => void {
  * "honours an already-set value" reaches for the wrong function now.
  */
 export function adoptLedgerOverride(): string | undefined {
-  const value = process.env[LEDGER_ENV]?.trim();
-  if (!value) return undefined;
-  return path.isAbsolute(value) ? value : path.resolve(process.cwd(), value);
+	const value = process.env[LEDGER_ENV]?.trim();
+	if (!value) return undefined;
+	return path.isAbsolute(value) ? value : path.resolve(process.cwd(), value);
 }
 
 /**
@@ -173,7 +174,7 @@ export function adoptLedgerOverride(): string | undefined {
  * review's write.
  */
 export function activeIsolations(): string[] {
-  return [...active].map((i) => i.file);
+	return [...active].map((i) => i.file);
 }
 
 // Process-exit cleanup for isolations still held at exit (the common case: a
@@ -187,13 +188,13 @@ export function activeIsolations(): string[] {
 // helper exists to close. A cleanup loop is not allowed a failure mode worse
 // than the state it is cleaning up.
 process.on("exit", () => {
-  for (const iso of [...active].reverse()) {
-    try {
-      iso.release();
-    } catch {
-      // Best-effort: a release that cannot finish must not abandon its siblings.
-    }
-  }
+	for (const iso of [...active].reverse()) {
+		try {
+			iso.release();
+		} catch {
+			// Best-effort: a release that cannot finish must not abandon its siblings.
+		}
+	}
 });
 
 /** Set up a temp repo with a local bare origin + a feature branch.
@@ -206,42 +207,56 @@ process.on("exit", () => {
  * vanish from the fixture's own status. Both decide the verdict, neither is
  * about the code under test. */
 export function setupRepo(): { repo: string; origin: string; branch: string } {
-  const dir = mkdtempSync(path.join(os.tmpdir(), "ledger-"));
-  const repo = path.join(dir, "repo");
-  const origin = path.join(dir, "origin.git");
-  const gitEnv = gitTestEnv();
-  execSync(`git init -q ${origin}`, { stdio: "ignore", env: gitEnv });
-  execSync(`git clone -q ${origin} ${repo}`, { stdio: "ignore", env: gitEnv });
-  const git = (cmd: string) => execSync(cmd, { cwd: repo, stdio: "ignore", env: gitEnv });
-  git("git config user.email t@t.t");
-  git("git config user.name t");
-  git("echo base > base.txt");
-  git("git add base.txt");
-  git('git commit -qm "base"');
-  // The clone's default branch is whatever the empty origin has (HEAD →
-  // refs/heads/main on modern git); rename to a non-default name so the
-  // `git checkout -qb feature/x` + `git push origin feature/x` below works
-  // without fighting the origin's checked-out branch.
-  git("git branch -M dev");
-  git("git push -q origin dev");
-  // Set the mainline symbolic ref so detectMainline can resolve it without
-  // a network call to gh (the test repo has no GitHub remote).
-  git("git remote set-head origin dev");
-  git("git checkout -qb feature/x dev");
-  git("echo change > change.txt");
-  git("git add change.txt");
-  git('git commit -qm "change"');
-  git("git push -q origin feature/x");
-  return { repo, origin, branch: "feature/x" };
+	const dir = mkdtempSync(path.join(os.tmpdir(), "ledger-"));
+	const repo = path.join(dir, "repo");
+	const origin = path.join(dir, "origin.git");
+	const gitEnv = gitTestEnv();
+	execSync(`git init -q ${origin}`, { stdio: "ignore", env: gitEnv });
+	execSync(`git clone -q ${origin} ${repo}`, { stdio: "ignore", env: gitEnv });
+	const git = (cmd: string) =>
+		execSync(cmd, { cwd: repo, stdio: "ignore", env: gitEnv });
+	git("git config user.email t@t.t");
+	git("git config user.name t");
+	git("echo base > base.txt");
+	git("git add base.txt");
+	git('git commit -qm "base"');
+	// #2181 — the merge-author gate reads `.pi/merge-authors` at the base commit and
+	// fails closed, so a real-git fixture whose guard is expected to REACH the ledger
+	// must carry the gate file: without it every merge refuses before the ledger is
+	// read, and a matrix that asserts a merge is allowed can never pass. The login is
+	// a placeholder — this repository is public and the real allowlist is the
+	// operator's private list — and it is the same value the stubbed harness uses
+	// (`ALLOWED_AUTHOR` in merge-guard-helpers.ts), so both fixtures agree on who the
+	// author of a fixture PR is. An arm that wants the gate to refuse deletes the file
+	// or rewrites it; it does not get to assume a different login.
+	git("mkdir -p .pi");
+	git(`printf '%s\n' '${REAL_ALLOWED_AUTHOR}' > .pi/merge-authors`);
+	git("git add .pi/merge-authors");
+	git('git commit -qm "allowlist"');
+	// The clone's default branch is whatever the empty origin has (HEAD →
+	// refs/heads/main on modern git); rename to a non-default name so the
+	// `git checkout -qb feature/x` + `git push origin feature/x` below works
+	// without fighting the origin's checked-out branch.
+	git("git branch -M dev");
+	git("git push -q origin dev");
+	// Set the mainline symbolic ref so detectMainline can resolve it without
+	// a network call to gh (the test repo has no GitHub remote).
+	git("git remote set-head origin dev");
+	git("git checkout -qb feature/x dev");
+	git("echo change > change.txt");
+	git("git add change.txt");
+	git('git commit -qm "change"');
+	git("git push -q origin feature/x");
+	return { repo, origin, branch: "feature/x" };
 }
 
 /** The review-ledger file's path for a repo (its git common dir). */
 export const ledgerFile = (repo: string) => {
-  const common = execSync("git rev-parse --git-common-dir", {
-    cwd: repo,
-    encoding: "utf8",
-    env: gitTestEnv(),
-  }).trim();
-  const abs = path.isAbsolute(common) ? common : path.resolve(repo, common);
-  return path.join(abs, "review-ledger.json");
+	const common = execSync("git rev-parse --git-common-dir", {
+		cwd: repo,
+		encoding: "utf8",
+		env: gitTestEnv(),
+	}).trim();
+	const abs = path.isAbsolute(common) ? common : path.resolve(repo, common);
+	return path.join(abs, "review-ledger.json");
 };

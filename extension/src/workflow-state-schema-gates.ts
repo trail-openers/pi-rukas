@@ -60,6 +60,15 @@ export interface VerifyMergeHold {
    * the CI gate's verdict — a cycle held on the head has green CI.
    */
   headCheckReason?: string;
+  /**
+   * #2181 — the merge-author gate held this cycle: the PR's author is not listed
+   * in `.pi/merge-authors` at the base commit, or that allowlist / the author read
+   * could not be had. Present only when the author gate refused, and the only
+   * machine-readable mark that says WHICH gate parked: every one of them parks at
+   * `awaiting-human-merge`, and a reason that merely names the login is satisfied
+   * by any renderer that echoes it.
+   */
+  authorGateReason?: string;
 }
 
 /**

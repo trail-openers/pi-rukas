@@ -15,6 +15,8 @@
  */
 
 import { execp } from "../exec.ts";
+import type { AuthorRead } from "../merge-author-allowlist.ts";
+import { type MergeAuthorDecision, heldForMergeAuthor } from "../merge-guard-author.ts";
 import { deriveConsolidationSubject } from "../work-driver-handoff-subject.ts";
 import type { MergeEvidence } from "../work-driver-merge-evidence.ts";
 import { gatherMergeEvidence } from "../work-driver-merge-evidence.ts";
@@ -41,6 +43,18 @@ export interface LandDeps {
   /** The state the forge reports after the merge — the only proof of `merged`. */
   stateAfter: (repoRoot: string, prNumber: number) => PromiseLike<string | undefined>;
   loadConfig: (repoRoot: string, baseSha: string) => Promise<{ autoMerge: boolean }>;
+  /**
+   * The merge-author gate (#2181): is this PR's author listed in
+   * `.pi/merge-authors` at the run's base commit? Production is the shared gate in
+   * `merge-guard-author.ts` — the same function the `/work` driver's `merged` step
+   * and the merge guard call — so no path can drift on what the allowlist means.
+   * Injected so a case can name an author without a forge.
+   */
+  checkAuthor: (
+    repoRoot: string,
+    baseSha: string,
+    author: AuthorRead,
+  ) => PromiseLike<MergeAuthorDecision>;
   /**
    * The squash subject the merge carries; absent, the forge's default is used.
    *
@@ -88,6 +102,11 @@ export function landDeps(): LandDeps {
       return (await f.prView(prNumber))?.state;
     },
     loadConfig: (repoRoot, baseSha) => loadWorkConfig(execp, repoRoot, baseSha),
+    // #2181 — the shared gate, on this process's executor. Reads the allowlist at
+    // the run's base sha with `git show`, so a run cannot land its own PR by
+    // widening the file it is judged by.
+    checkAuthor: (repoRoot, baseSha, author) =>
+      heldForMergeAuthor({ exec: execp, cwd: repoRoot, baseSha, author }),
     // Read from the cache `primeMergeSubject` fills at wiring time. The format is
     // the driver's ONE conventional-subject parser — the commit-pr path derives its
     // title through `deriveConsolidationSubject` from the issue title

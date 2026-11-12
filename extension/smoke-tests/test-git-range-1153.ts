@@ -78,6 +78,11 @@ const LISTED = [
   // scan and the one that must not hang the `tool_call` hook. Its bound is
   // pinned by test-hygiene-push-segment.ts.
   "public-hygiene-push-probe.ts",
+  // #2181 — the merge-author allowlist reads the gate file and the author at the
+  // base commit through `git cat-file` / `git show`, both argv-form under this
+  // module's own `ALLOWLIST_TIMEOUT_MS` / `ALLOWLIST_MAX_BUFFER`, and
+  // test-merge-author-base-unreadable.ts asserts on `argv`.
+  "merge-author-allowlist.ts",
 ];
 
 /** A git command string handed to an exec call: a `(` then a literal beginning `git `. */

@@ -1,5 +1,6 @@
 /**
- * #1533 — validation for `pipelineState.mergeHold`'s head-pin fields.
+ * #1533 — validation for `pipelineState.mergeHold`'s head-pin fields, and #2181's
+ * author-gate field.
  *
  * `mergeHold` reaches the operator through four renderers (explain, the queue
  * action, the chat and markdown handoff), and since #1533 two of its fields
@@ -11,7 +12,8 @@
  * cast in `readState` is the only runtime gate, so the validator is it.
  *
  * Absent validates: a pre-#1533 state file has none of these fields, and a
- * cycle held on CI evidence rather than on the head records none of them.
+ * cycle held on CI evidence rather than on the head records none of them. Same
+ * for #2181's field: every cycle that predates the author gate has none.
  */
 
 const FULL_OID = /^[0-9a-f]{40}$/;
@@ -38,6 +40,12 @@ export function mergeHoldHeadFindings(mergeHold: unknown): string[] {
   }
   if (h.headCheckReason !== undefined && typeof h.headCheckReason !== "string") {
     out.push("pipelineState.mergeHold.headCheckReason is not a string");
+  }
+  // #2181 — the author gate's own mark. It reaches the operator through the same
+  // four renderers as the head fields, and it is the only thing that says which
+  // gate parked, so its type is checked rather than trusted.
+  if (h.authorGateReason !== undefined && typeof h.authorGateReason !== "string") {
+    out.push("pipelineState.mergeHold.authorGateReason is not a string");
   }
   return out;
 }

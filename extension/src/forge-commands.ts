@@ -307,13 +307,19 @@ export function prChecksCmd(forge: ForgeType, number: number): string {
  * driver used to hard-code this field list inline; it lives here so the
  * argv-pinning test (`test-gh-argv.ts`) covers it the same way it covers
  * `prChecksCmd`.
+ *
+ * `author` rides the SAME read as the merge-author allowlist check (#2181):
+ * who opened the PR is judged at the moment the CI verdict is read, and a
+ * second `gh pr view` would be a second moment in which the PR could be
+ * reassigned. Verified against gh 2.102.0 (`author` is a field of that
+ * subcommand; the guard's own identity read already requests it).
  */
 export function mergeEvidenceViewCmd(number: number): string {
   // #1533 — `headRefOid` is requested HERE rather than in a second read: the
   // OID the merge is pinned to must be the OID the CI verdict was observed at,
   // and two reads of a moving PR are two moments, not one. Verified against
   // gh 2.102.0 (`gh pr view <n> --json …,headRefOid` returns it).
-  return `gh pr view ${number} --json mergeStateStatus,mergeable,state,headRefOid`;
+  return `gh pr view ${number} --json mergeStateStatus,mergeable,state,headRefOid,author`;
 }
 
 // ── CI runs ───────────────────────────────────────────────────────────────

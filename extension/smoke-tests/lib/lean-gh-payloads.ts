@@ -33,17 +33,31 @@
 export const REAL_PR_NUMBER = 1930;
 
 /**
- * `gh pr view <n> --json mergeStateStatus,mergeable,state,headRefOid` — verbatim
- * key set and value domains from gh 2.102.0. `headRefOid` is a full 40-hex oid.
+ * The login a fixture PR carries, and the one the lean land fixtures' allowlist names
+ * (#2181). Placeholder logins only — this repository is public and the real
+ * allowlist is the operator's private list.
  */
-export function realPrViewReply(headOid: string, over: Record<string, unknown> = {}): string {
-  return JSON.stringify({
-    headRefOid: headOid,
-    mergeStateStatus: "CLEAN",
-    mergeable: "MERGEABLE",
-    state: "OPEN",
-    ...over,
-  });
+export const LEAN_FIXTURE_AUTHOR = "fixture-maintainer";
+
+/**
+ * `gh pr view <n> --json mergeStateStatus,mergeable,state,headRefOid,author` —
+ * verbatim key set and value domains from gh 2.102.0, plus #2181's `author`: the
+ * land step reads the login out of THIS reply, so an arm that never names one is
+ * exercising the gate's unreadable-author path rather than its verdict. `over` can
+ * replace or delete it, which is how an arm drives a stranger or an absent author.
+ */
+export function realPrViewReply(
+	headOid: string,
+	over: Record<string, unknown> = {},
+): string {
+	return JSON.stringify({
+		headRefOid: headOid,
+		mergeStateStatus: "CLEAN",
+		mergeable: "MERGEABLE",
+		state: "OPEN",
+		author: { login: LEAN_FIXTURE_AUTHOR },
+		...over,
+	});
 }
 
 /**
@@ -52,18 +66,18 @@ export function realPrViewReply(headOid: string, over: Record<string, unknown> =
  * actual gh output rather than a seam's invention.
  */
 export const REAL_CHECKS_PASS = [
-  { bucket: "pass", name: "quality-gate", state: "SUCCESS" },
-  { bucket: "pass", name: "offline-smoke", state: "SUCCESS" },
+	{ bucket: "pass", name: "quality-gate", state: "SUCCESS" },
+	{ bucket: "pass", name: "offline-smoke", state: "SUCCESS" },
 ];
 
 /** One real row whose bucket GitHub counts as success and we do not. */
 export const REAL_CHECKS_SKIPPED = [
-  { bucket: "skipping", name: "publish-image", state: "SKIPPED" },
+	{ bucket: "skipping", name: "publish-image", state: "SKIPPED" },
 ];
 
 /** One real failing row. */
 export const REAL_CHECKS_FAIL = [
-  { bucket: "fail", name: "quality-gate", state: "FAILURE" },
+	{ bucket: "fail", name: "quality-gate", state: "FAILURE" },
 ];
 
 /**
@@ -73,8 +87,8 @@ export const REAL_CHECKS_FAIL = [
  * precisely the value the step used to read as red.
  */
 export const REAL_CHECKS_PENDING = [
-  { bucket: "pending", name: "quality-gate", state: "PENDING" },
-  { bucket: "pending", name: "offline-smoke", state: "PENDING" },
+	{ bucket: "pending", name: "quality-gate", state: "PENDING" },
+	{ bucket: "pending", name: "offline-smoke", state: "PENDING" },
 ];
 
 /**
@@ -83,4 +97,4 @@ export const REAL_CHECKS_PENDING = [
  * the whole reason the `--json` flag is load-bearing rather than cosmetic.
  */
 export const REAL_CHECKS_TABLE =
-  "quality-gate\tpass\t17m35s\thttps://github.com/o/r/actions/runs/1/job/1\t\n";
+	"quality-gate\tpass\t17m35s\thttps://github.com/o/r/actions/runs/1/job/1\t\n";
