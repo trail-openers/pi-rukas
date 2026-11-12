@@ -16,12 +16,12 @@
  * child's OWN per-child temp dir — and the hook has no switch, so the reviewer
  * (no write root) and the `PI_ENSEMBLE_WRITE_FENCE=0` hatch are still judged.
  *
- *   A. the incident's shapes are refused, literal paths included (A1), the
- *      shared temp root under the names it actually has (A2), a sibling child's
- *      temp root and a harness-owned tree (A3), the `xargs` sweep (A4), and
- *      every interpreter form D7 names (A5);
- *   B. deleting inside the child's own roots still works — the rule is not a
- *      bash ban;
+ * Which command shapes count as a deletion (the incident's literal paths, the
+ * shared root under any name, the `xargs` sweep, the interpreter one-liners, a
+ * remover behind a `sudo`-class wrapper, and the in-tree cleanups that must stay
+ * allowed) is pinned in `test-write-fence-deletion-shapes-2200.ts`; this file
+ * covers the hook around that reader:
+ *
  *   C. the no-hatch case: the hook is gated on neither the fence config nor the
  *      operator's switch (D5), and a reviewer-role child with no write root is
  *      still refused (D2);
@@ -34,15 +34,15 @@
  *      beside `registerWriteFence` and ABOVE the `PI_ENSEMBLE_SUBAGENT_MODE`
  *      no-op, so a strict/headless child carries the hook too (D10).
  *
- * Observed RED on the code before this change: the shared-root rows, `find`
- * without start paths, the template-literal interpreter body, the `git clean`
- * rows after a `cd`, and the canary.
+ * Observed RED on the code before this change: the `git clean` rows after a `cd`,
+ * and the canary.
  */
 
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import childGuards from "../src/child-guards.ts";
+import { childEnvFor, writeFenceChildEnv } from "../src/write-fence-contract.ts";
 import {
   CHILD_TMP_ENV,
   DELETION_LOG_TOKEN,
@@ -51,6 +51,7 @@ import {
   registerDeletionGuard,
 } from "../src/write-fence-deletion.ts";
 import { GIT_CLEAN_LOG_TOKEN } from "../src/write-fence-deletion.ts";
+import { buildDeletionFixture } from "./lib/write-fence-deletion-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -82,35 +83,11 @@ async function toolCall(pi: { handlers: Record<string, Handler[]> }, command: st
 
 // ---------------------------------------------------------------- the fixture
 //
-// Everything lives under one directory this file removes on exit, and the
-// "shared temp root" is a directory of its own rather than the machine's temp
-// dir: the rule must refuse a shared root whatever it is called, and this test
-// must never delete outside its own tree.
-const scratchParent = path.join(import.meta.dirname, "tmp-issue-2200");
-mkdirSync(scratchParent, { recursive: true });
-const base = mkdtempSync(path.join(scratchParent, "fixture-"));
-process.on("exit", () => rmSync(base, { recursive: true, force: true }));
-
-const wt = path.join(base, "wt");
-const scratch = path.join(base, "scratch");
-const childTmp = path.join(base, "pi-rukas-child-own");
-const sharedTmp = path.join(base, "tmp");
-const siblingTmp = path.join(base, "pi-rukas-child-sibling");
-const harnessTree = path.join(base, "pi-rukas-review-other");
-const foreignRun = path.join(sharedTmp, "other-session-run");
-for (const dir of [wt, scratch, childTmp, sharedTmp, siblingTmp, harnessTree, foreignRun]) {
-  mkdirSync(dir, { recursive: true });
-}
-for (const p of [
-  path.join(wt, "keep.txt"),
-  path.join(scratch, "notes.txt"),
-  path.join(childTmp, "probe.txt"),
-  path.join(foreignRun, "payload"),
-  path.join(siblingTmp, "other-child.txt"),
-  path.join(harnessTree, "review-tree.txt"),
-]) {
-  writeFileSync(p, "x");
-}
+// The layout (worktree, scratch, the child's own temp dir, a shared temp root of
+// its own, a sibling child's root and a harness-owned tree) is shared with the
+// other #2200 file; see `lib/write-fence-deletion-fixture.ts`.
+const fx = buildDeletionFixture("hook");
+const { base, wt, scratch, childTmp, sharedTmp, foreignRun } = fx;
 
 /** The roots a fenced develop child's dispatch gives it; the child works in the worktree. */
 const FENCED_ENV = {
@@ -143,149 +120,6 @@ function registerDeletionGuardWith(env: Record<string, string>, cwd: string = wt
   const pi = fakePi();
   registerDeletionGuard(pi, { env, cwd });
   return pi;
-}
-
-// ============================================================
-// A1. The incident's shapes: literal paths outside every allowed root.
-// ============================================================
-const refusedShapes: Array<[string, string]> = [
-  [`rm -rf ${foreignRun}`, "the incident's literal `rm -rf` of another run's dir"],
-  [`rm ${foreignRun}/payload`, "a literal `rm` of one file outside the roots"],
-  [`rmdir ${foreignRun}`, "a literal `rmdir` outside the roots"],
-  [`rm -rf ${sharedTmp}`, "a literal `rm -rf` of the shared temp root itself"],
-  [
-    `find ${sharedTmp} -maxdepth 1 -name 'x-*' -delete`,
-    "the acceptance row: `find <sharedTemp> -maxdepth 1 -name 'x-*' -delete`",
-  ],
-  [
-    `find ${sharedTmp} -maxdepth 1 -name 'a-*' -print0 | xargs -0 -r rm -rf`,
-    "the incident's prefix sweep through `find … | xargs -0 -r rm -rf`",
-  ],
-  [`unlink ${foreignRun}/payload`, "`unlink` outside the roots"],
-  [`shred -u ${foreignRun}/payload`, "`shred -u` outside the roots"],
-  [`cd ${sharedTmp} && rm -rf other-session-run`, "a delete reached through `cd`"],
-  [`(cd ${sharedTmp} && rm -rf other-session-run)`, "the same delete inside a subshell"],
-  [`rm -rf ${siblingTmp}`, "another child's per-child temp root (D3)"],
-  [`rm -rf ${harnessTree}`, "a harness-owned temp tree — a live reviewer checkout (D3)"],
-];
-for (const [command, why] of refusedShapes) {
-  assert(refused(command) !== undefined, `A1 refuse: ${why} — \`${command}\``);
-}
-
-// ============================================================
-// A2. The shared temp root under the names it actually has.
-// ============================================================
-for (const root of new Set([sharedTmp, "/tmp", process.env.TMPDIR ?? "/tmp"])) {
-  assert(
-    refused(`rm -rf ${root}/pi-rukas-review-victim`) !== undefined,
-    `A2: a delete under the shared root \`${root}\` is refused`,
-  );
-}
-
-// ============================================================
-// A3. Interpreter one-liners (D7): every call form the spec names.
-// ============================================================
-const interpreterRefused: Array<[string, string]> = [
-  [
-    `node -e 'require("fs").rmSync("${foreignRun}", {recursive: true})'`,
-    "`node -e` with `rmSync` on a literal path",
-  ],
-  [`node --eval 'require("fs").rmSync("${foreignRun}")'`, "`node --eval` with `rmSync`"],
-  [
-    `bun -e 'import fs from "fs"; fs.rmSync("${foreignRun}", {recursive: true})'`,
-    "`bun -e` with `rmSync`",
-  ],
-  [`python -c 'import shutil; shutil.rmtree("${sharedTmp}")'`, "`python -c` with `shutil.rmtree`"],
-  [`python3 -c 'import os; os.remove("${foreignRun}/payload")'`, "`python3 -c` with `os.remove`"],
-  [`perl -e 'unlink "${foreignRun}/payload"'`, "`perl -e` with `unlink`"],
-  [`ruby -e 'FileUtils.rm_rf("${foreignRun}")'`, "`ruby -e` with `rm_rf`"],
-];
-for (const [command, why] of interpreterRefused) {
-  assert(refused(command) !== undefined, `A3 refuse: ${why}`);
-}
-// The incident's own script shape: the target is built from the environment's
-// home directory inside a template literal, so it lives nowhere but the body.
-assert(
-  refused(
-    "node -e 'const p = `${process.env.HOME}/tmp/sweep`; require(\"fs\").rmSync(p, {recursive: true})'",
-  ) !== undefined,
-  "A3 refuse: an interpreter whose target is a template literal built from HOME",
-);
-// A dynamic body or a dynamic target cannot be judged, so it does not run.
-assert(
-  refused("node -e 'require(\"fs\").rmSync(process.env.TARGET, {recursive:true})'") !== undefined,
-  "A3 refuse: an interpreter delete whose target is dynamic",
-);
-assert(
-  refused("bun -e $BODY") !== undefined,
-  "A3 refuse: an interpreter body word that is dynamic",
-);
-
-// A body that only *mentions* a removal verb deletes nothing, and the rule reads the
-// call, not the word: a bare `rm`/`unlink` in a message, a comment or a variable name
-// must not make the one-liner unreadable. The incident's own Perl spelling (`unlink
-// "path"`, a Perl bareword call) is still caught.
-const interpreterAllows: Array<[string, string]> = [
-  [`bun -e 'console.log("rm")'`, "a body whose only rm is inside a string"],
-  [`python3 -c 'print("rm")'`, "a python body that prints the word rm"],
-  [`node -e 'const rm = 1; console.log(rm)'`, "a variable named rm"],
-  [`ruby -e 'puts "unlink"'`, "a ruby body that prints the word unlink"],
-  [`node -e 'console.log("# rm -rf everything")'`, "a message that reads like a delete"],
-];
-for (const [command, why] of interpreterAllows) {
-  assert(refused(command) === undefined, `A3 allow: ${why} — \`${command}\``);
-}
-assert(
-  refused(`perl -e 'unlink "${sharedTmp}/x"'`) !== undefined,
-  "A3 refuse: `perl -e` with the bareword `unlink` call",
-);
-
-// ============================================================
-// B. The child's own roots stay deletable — the rule is not a bash ban.
-// ============================================================
-const allowedShapes: Array<[string, string]> = [
-  [`rm -rf ${wt}/build`, "a build dir inside the worktree"],
-  ["rm -rf ./build", "a relative delete inside the worktree"],
-  [`rm ${scratch}/notes.txt`, "the cycle scratch dir"],
-  [`rm -rf ${childTmp}`, "the child's OWN per-child temp dir"],
-  [`find ${childTmp} -maxdepth 1 -name 'x-*' -delete`, "find -delete over its own temp dir"],
-  [`find ${wt} -name '*.log' -delete`, "find -delete inside the worktree"],
-  // The in-tree shapes a developer reaches for, judged by the paths the command names:
-  // a `find` pipe is judged by its start paths, and so is the remover it feeds.
-  [
-    `find ${wt}/dist -name '*.map' -print0 | xargs -0 -r rm -f`,
-    "a find|xargs cleanup in the worktree",
-  ],
-  [
-    `find ${childTmp} -maxdepth 1 -name 'p*' -print0 | xargs -0 rm`,
-    "a find|xargs sweep of its own temp dir",
-  ],
-  [`find ${wt} -type f -exec rm {} +`, "a plain -exec rm over a worktree path"],
-  [`find ${wt} -name 'x' -exec rm {} +`, "a -exec rm narrowed by a name test inside the worktree"],
-  ["git status --porcelain", "an ordinary read-only command"],
-  ["bun run check", "the project verify"],
-  [`node -e 'console.log("${scratch}/notes.txt")'`, "an interpreter that deletes nothing"],
-];
-for (const [command, why] of allowedShapes) {
-  assert(refused(command) === undefined, `B allow: ${why} — \`${command}\``);
-}
-// …but the same shapes aimed outside the roots stay refused by the paths they name,
-// and a remover fed by anything but a `find` names no tree at all.
-const inTreeRefusals: Array<[string, string]> = [
-  [
-    `find ${sharedTmp} -maxdepth 1 -name 'a-*' -print0 | xargs -0 -r rm -rf`,
-    "the incident's sweep through a find|xargs pipe",
-  ],
-  [`find ${sharedTmp} -name x -exec rm {} +`, "a -exec rm over a shared-root path"],
-  ["rm", "a remover with no operands and no producer"],
-  ["ls | xargs rm", "a remover fed by ls: nothing on the line names the targets"],
-  [`cat ${wt}/list.txt | xargs rm -f`, "a remover fed by a file: nothing names the targets"],
-  [`echo ${sharedTmp}/victim | xargs rm`, "a remover fed by echo"],
-  [`rm -f ${wt}/*.log`, "a glob inside the worktree"],
-  ["find -exec rm {} +", "an -exec rm that names no tree to remove from"],
-];
-for (const [command, why] of inTreeRefusals) {
-  assert(refused(command) !== undefined, `B refuse: ${why} — \`${command}\``);
 }
 
 // ============================================================
@@ -337,6 +171,31 @@ for (const [command, why] of inTreeRefusals) {
   assert(
     refused("find -maxdepth 1 -name 'x-*' -delete") === undefined,
     "C4: the same command inside the worktree still runs",
+  );
+}
+{
+  // C5 — the per-child temp root is STRIPPED from a nested child's env (#2200). A
+  // dispatch made inside a child runs `childEnvFor` before `spawn.ts` sets the
+  // value for its own dir; if the parent's value survived, a nested (unfenced,
+  // lean, lens-review) child would inherit a deletable root it does not own — and
+  // on a host whose `TMPDIR` is a shared root that root is the incident's shape.
+  const nested = childEnvFor({ [CHILD_TMP_ENV]: sharedTmp, PATH: "/bin" }, "explore");
+  assert(
+    nested[CHILD_TMP_ENV] === undefined,
+    "C5: childEnvFor strips an inherited per-child temp root",
+  );
+  assert(
+    (writeFenceChildEnv(undefined)[CHILD_TMP_ENV] ?? undefined) === undefined,
+    "C5: an unfenced dispatch sets no temp root of its own",
+  );
+  const inherited = deletionRootsFrom(nested, base);
+  assert(
+    inherited.allowed.length === 0,
+    "C5: the nested child has no allowed root, so it cannot inherit one",
+  );
+  assert(
+    refused(`rm -rf ${sharedTmp}/victim`, inherited) !== undefined,
+    "C5: the shared root stays refused for the nested child that inherited the value",
   );
 }
 

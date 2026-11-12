@@ -44,6 +44,15 @@ const WRAPPERS = new Set([
   "timeout",
   "xargs",
   "stdbuf",
+  // #2200 — a remover behind a privilege or scheduling wrapper is still that remover:
+  // `sudo rm -rf <worktree>/src` must be judged (and so refused or allowed) as an `rm`,
+  // the way the sibling scanner `bash-destructive-write.ts` already reads them.
+  "sudo",
+  "doas",
+  "setsid",
+  "watch",
+  "gtimeout",
+  "caffeinate",
 ]);
 
 /** Options of each wrapper that take a separate value (`nice -n 5`, `timeout -s KILL`). */
@@ -52,6 +61,11 @@ const VALUE_OPTIONS: Record<string, readonly string[]> = {
   nice: ["-n", "--adjustment"],
   ionice: ["-c", "-n", "-p", "-P", "-u", "--class", "--classdata", "--pid", "--pgid", "--uid"],
   timeout: ["-s", "-k", "--signal", "--kill-after"],
+  gtimeout: ["-s", "-k", "--signal", "--kill-after"],
+  sudo: ["-u", "-g", "-C", "-D", "-p", "-r", "-t", "-U", "--user", "--group", "--chdir"],
+  doas: ["-u", "-C"],
+  caffeinate: ["-t", "-w"],
+  watch: ["-n", "--interval"],
   xargs: [
     "-I",
     "-n",
@@ -185,7 +199,9 @@ function wrapperArgCount(name: string, args: Word[], chdir: Word[]): number {
     }
     k += valued.includes(a) ? 2 : 1;
   }
-  if (name === "timeout" && DURATION.test(args[k]?.text ?? "")) k++;
+  if (name === "timeout" || name === "gtimeout") {
+    if (DURATION.test(args[k]?.text ?? "")) k++;
+  }
   return k;
 }
 
