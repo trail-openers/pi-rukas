@@ -157,11 +157,6 @@ function isReplaceValue(text: string | undefined): boolean {
   return text === undefined || text.startsWith("-") || OPTION_SHAPED.test(text);
 }
 
-/** A bare `{}` — the token xargs substitutes when `-I`/`-i` took no value of its own. */
-function isBracePlaceholder(text: string): boolean {
-  return text === "{}";
-}
-
 /** Whether one word is this xargs' replacement placeholder rather than a path it names. */
 export function isXargsPlaceholder(text: string, placeholder: string): boolean {
   if (text === XARGS_DEFAULT_PLACEHOLDER) return true;

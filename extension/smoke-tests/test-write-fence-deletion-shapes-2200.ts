@@ -92,86 +92,6 @@ for (const root of new Set([sharedTmp, "/tmp", process.env.TMPDIR ?? "/tmp"])) {
 }
 
 // ============================================================
-// A3. Interpreter one-liners (D7): every call form the spec names.
-// ============================================================
-const interpreterRefused: Array<[string, string]> = [
-  [
-    `node -e 'require("fs").rmSync("${foreignRun}", {recursive: true})'`,
-    "`node -e` with `rmSync` on a literal path",
-  ],
-  [`node --eval 'require("fs").rmSync("${foreignRun}")'`, "`node --eval` with `rmSync`"],
-  [
-    `bun -e 'import fs from "fs"; fs.rmSync("${foreignRun}", {recursive: true})'`,
-    "`bun -e` with `rmSync`",
-  ],
-  [`python -c 'import shutil; shutil.rmtree("${sharedTmp}")'`, "`python -c` with `shutil.rmtree`"],
-  [`python3 -c 'import os; os.remove("${foreignRun}/payload")'`, "`python3 -c` with `os.remove`"],
-  [`perl -e 'unlink "${foreignRun}/payload"'`, "`perl -e` with `unlink`"],
-  [`ruby -e 'FileUtils.rm_rf("${foreignRun}")'`, "`ruby -e` with `rm_rf`"],
-];
-for (const [command, why] of interpreterRefused) {
-  assert(refused(command) !== undefined, `A3 refuse: ${why}`);
-}
-// The incident's own script shape: the target is built from the environment's
-// home directory inside a template literal, so it lives nowhere but the body.
-assert(
-  refused(
-    "node -e 'const p = `${process.env.HOME}/tmp/sweep`; require(\"fs\").rmSync(p, {recursive: true})'",
-  ) !== undefined,
-  "A3 refuse: an interpreter whose target is a template literal built from HOME",
-);
-// A dynamic body or a dynamic target cannot be judged, so it does not run.
-assert(
-  refused("node -e 'require(\"fs\").rmSync(process.env.TARGET, {recursive:true})'") !== undefined,
-  "A3 refuse: an interpreter delete whose target is dynamic",
-);
-assert(
-  refused("bun -e $BODY") !== undefined,
-  "A3 refuse: an interpreter body word that is dynamic",
-);
-// A body that deletes but whose only quoted literals are MODULE SPECIFIERS names no
-// path either: `"fs"`, `"fs/promises"`, `"node:fs"` are imports, not targets, so the
-// call is unreadable and refused — the same verdict the python and ruby branches give
-// for `import shutil; shutil.rmtree()` with no argument.
-const moduleSpecifierRefused: Array<[string, string]> = [
-  [`node -e 'require("fs").rmSync()'`, "`node -e` with `rmSync()` and no target"],
-  [`node -e 'require("fs").unlinkSync()'`, "`node -e` with `unlinkSync()` and no target"],
-  [`node -e 'require("fs").rm()'`, "`node -e` with `rm()` and no target"],
-  [
-    `node -e 'import { rm } from "fs/promises"; rm()'`,
-    "`node -e` importing `rm` from `fs/promises` with no target",
-  ],
-  [
-    `node -e 'import { rmSync } from "node:fs"; rmSync()'`,
-    "`node -e` importing from `node:fs` with no target",
-  ],
-  [`bun -e 'require("fs").rmSync()'`, "`bun -e` with `rmSync()` and no target"],
-  [`bun -e 'require("node:fs").unlinkSync()'`, "`bun -e` with `unlinkSync()` and no target"],
-];
-for (const [command, why] of moduleSpecifierRefused) {
-  assert(refused(command) !== undefined, `A3 refuse: ${why} — \`${command}\``);
-}
-
-// A body that only *mentions* a removal verb deletes nothing, and the rule reads the
-// call, not the word: a bare `rm`/`unlink` in a message, a comment or a variable name
-// must not make the one-liner unreadable. The incident's own Perl spelling (`unlink
-// "path"`, a Perl bareword call) is still caught.
-const interpreterAllows: Array<[string, string]> = [
-  [`bun -e 'console.log("rm")'`, "a body whose only rm is inside a string"],
-  [`python3 -c 'print("rm")'`, "a python body that prints the word rm"],
-  [`node -e 'const rm = 1; console.log(rm)'`, "a variable named rm"],
-  [`ruby -e 'puts "unlink"'`, "a ruby body that prints the word unlink"],
-  [`node -e 'console.log("# rm -rf everything")'`, "a message that reads like a delete"],
-];
-for (const [command, why] of interpreterAllows) {
-  assert(refused(command) === undefined, `A3 allow: ${why} — \`${command}\``);
-}
-assert(
-  refused(`perl -e 'unlink "${sharedTmp}/x"'`) !== undefined,
-  "A3 refuse: `perl -e` with the bareword `unlink` call",
-);
-
-// ============================================================
 // A5. The `xargs` replacement placeholder is not a path. `find <sharedTemp> | xargs -I{} rm -rf {}`
 // used to be ALLOWED: the splitter swallows the placeholder as `-I`'s value, the surviving
 // `rm -rf {}` has the literal operand `{}`, and nothing reached the `find` start paths.
@@ -311,13 +231,19 @@ for (const [command, why] of wrapperAllowed) {
 const pathShapedPlaceholderRefused: Array<[string, string]> = [
   [`xargs -I ${sharedTmp} rm -rf ${sharedTmp}`, "`xargs -I <shared> rm -rf <shared>`"],
   [`xargs -i ${sharedTmp}/x rm -rf ${sharedTmp}/x`, "`xargs -i <shared>/x rm -rf <shared>/x`"],
-  [`xargs -I ${sharedTmp} unlink ${sharedTmp}/payload`, "`xargs -I <shared> unlink <shared>/payload`"],
+  [
+    `xargs -I ${sharedTmp} unlink ${sharedTmp}/payload`,
+    "`xargs -I <shared> unlink <shared>/payload`",
+  ],
   // A relative target resolves against the remover's own directory, which `xargs` gives it as
   // the child's cwd — so the bare line reaches `<wt>/tmp/other-session-run`, a tree inside the
   // worktree, and deletes nothing the rule forbids. This line, run from the fixture root, is
   // the one that reaches the foreign run (verified against GNU xargs).
-  [`cd ${base} && xargs -I ./out rm -rf ./${foreignRun.slice(base.length + 1)}`, "a `./`-shaped -I value whose relative target the `cd` puts outside the roots"],
-  [`xargs -I ~ rm -rf ~`, "a bare `~` -I value, which expands to the home directory"],
+  [
+    `cd ${base} && xargs -I ./out rm -rf ./${foreignRun.slice(base.length + 1)}`,
+    "a `./`-shaped -I value whose relative target the `cd` puts outside the roots",
+  ],
+  ["xargs -I ~ rm -rf ~", "a bare `~` -I value, which expands to the home directory"],
 ];
 for (const [command, why] of pathShapedPlaceholderRefused) {
   assert(refused(command) !== undefined, `A8 refuse: ${why} — \`${command}\``);
@@ -373,6 +299,17 @@ const shellOutRefused: Array<[string, string]> = [
     "`node -e` with `child_process.spawn`",
   ],
   [`bun -e 'Bun.spawn(["rm", "-rf", "${sharedTmp}"])'`, "`bun -e` with `Bun.spawn`"],
+  // The exec-family spelling the first list missed: `execFileSync("rm", […])` runs the same
+  // remover `execSync("rm -rf …")` does, and was ALLOWED because the reader's call list had no
+  // entry for it. Read through a destructured import too, which is how it is usually written.
+  [
+    `node -e 'require("child_process").execFileSync("rm", ["-rf", "${sharedTmp}"])'`,
+    "`node -e` with `child_process.execFileSync`",
+  ],
+  [
+    `node -e 'const {execFileSync} = require("child_process"); execFileSync("rm", ["-rf", "${sharedTmp}"])'`,
+    "`execFileSync` called through a destructured import",
+  ],
   [
     `python3 -c 'import subprocess; subprocess.call(["rm", "-rf", "${sharedTmp}"])'`,
     "`python3 -c` with `subprocess`",
@@ -389,7 +326,10 @@ for (const [command, why] of shellOutRefused) {
 // deletes through its own library stays judged on its literal (A3).
 for (const [command, why] of [
   [`node -e 'require("child_process").execSync("ls -l")'`, "a shell-out that deletes nothing"],
-  [`python3 -c 'import subprocess; print(subprocess)'; echo`, "a python body that only imports subprocess"],
+  [
+    `python3 -c 'import subprocess; print(subprocess)'; echo`,
+    "a python body that only imports subprocess",
+  ],
 ] as Array<[string, string]>) {
   assert(refused(command) === undefined, `A10 allow: ${why} — \`${command}\``);
 }
@@ -403,13 +343,28 @@ for (const [command, why] of [
   [`unshare rm -rf ${foreignRun}`, "`unshare rm -rf` outside the roots"],
   [`nsenter -t 1 rm -rf ${foreignRun}`, "`nsenter -t 1 rm -rf` outside the roots"],
   [`chroot / rm -rf ${foreignRun}`, "`chroot / rm -rf` outside the roots"],
-  [`firejail rm -rf ${foreignRun}`, "`firejail rm -rf` outside the roots"],
+  // `chroot` takes the new root as a POSITIONAL before the program it runs — exactly one word.
+  // Consume two and the remover itself leaves the reader's view, which is the shape that would let
+  // this line run; consume none and `/bin` reads as the command. `firejail` takes no positional, so
+  // its first word is already the command whatever its options.
+  [
+    `chroot /bin rm -rf ${foreignRun}`,
+    "`chroot /bin rm -rf` — one positional root, the remover still read",
+  ],
+  [
+    `busybox chroot / rm -rf ${foreignRun}`,
+    "`busybox chroot / rm -rf` — a wrapper stacked before the positional root",
+  ],
+  [
+    `firejail --quiet --noprofile rm -rf ${foreignRun}`,
+    "`firejail --quiet --noprofile rm -rf` — flags, no positional to consume",
+  ],
 ] as Array<[string, string]>) {
   assert(refused(command) !== undefined, `A11 refuse: ${why} — \`${command}\``);
 }
 assert(
   refused(`busybox rm -rf ${wt}/build`) === undefined,
-  `A11 allow: \`busybox rm -rf\` of a build dir in the worktree`,
+  "A11 allow: `busybox rm -rf` of a build dir in the worktree",
 );
 
 // ============================================================

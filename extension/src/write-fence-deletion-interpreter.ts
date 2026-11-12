@@ -50,9 +50,11 @@ const JS_CALL = /\b(?:rmSync|unlinkSync|rmdirSync|removeSync|rm\s*\(|rmdir\s*\(|
  * The JS spellings that hand a REMOVER to a shell: an exec-family call whose first argument is
  * a remove command, or `Bun.spawn` of one. Naming the remover is what makes the call a deletion
  * rather than a shell-out — an `execSync("ls -l")` runs no delete and stays a normal command.
+ * Every exec-family entry the runtime offers is listed: a missing one is a remover the reader
+ * never sees, and `execFileSync("rm", […])` deletes exactly what `execSync("rm -rf …")` does.
  */
 const SHELL_DELETE_CALL =
-  /\b(?:exec|execSync|spawn|spawnSync|execFile)\s*\(\s*['"`]\s*(?:rm|rmdir|unlink|shred)\b|\bBun\.(?:spawn|spawnSync)\s*\(\s*\[?\s*['"`]\s*(?:rm|rmdir|unlink|shred)\b/;
+  /\b(?:exec|execSync|execFileSync|spawn|spawnSync|execFile)\s*\(\s*['"`]\s*(?:rm|rmdir|unlink|shred)\b|\bBun\.(?:spawn|spawnSync)\s*\(\s*\[?\s*['"`]\s*(?:rm|rmdir|unlink|shred)\b/;
 
 /** The Python spellings that hand a command to a shell: `os.system`, `os.popen`, `subprocess`'s call family. */
 const PY_SHELL_CALL = /\bsubprocess\s*\.\s*\w+\s*\(|\bos\.(?:system|popen)\s*\(/;

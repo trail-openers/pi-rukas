@@ -73,9 +73,14 @@ export function expandHome(p: string): string {
 /**
  * The home directory every `~` and `$HOME` expansion resolves to. Read from the live
  * environment first, as the shell does: Bun's os.homedir() snapshots HOME at startup.
+ *
+ * `env` is optional and defaults to the live environment. A caller that judges a path for a
+ * CHILD (the #2200 deletion rule's `ops` carve-out) passes the child's own env, so the home it
+ * refuses is the one that child's `~` expands to — and so it agrees with the `TMPDIR` read from
+ * that same env, rather than comparing one env's home against another's temp root.
  */
-export function homeDir(): string {
-  const home = process.env.HOME;
+export function homeDir(env: NodeJS.ProcessEnv = process.env): string {
+  const home = env.HOME;
   return home !== undefined && path.isAbsolute(home) ? home : os.homedir();
 }
 
