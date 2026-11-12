@@ -37,7 +37,7 @@ import {
 } from "./write-fence-bash-split.ts";
 import { writtenOperands } from "./write-fence-bash-writers.ts";
 import { type BashTarget, bashWriteTargets } from "./write-fence-bash.ts";
-import { findRemovals } from "./write-fence-deletion-find.ts";
+import { findRemovals, namesNoPath } from "./write-fence-deletion-find.ts";
 import { interpreterDeletions, isInterpreter } from "./write-fence-deletion-interpreter.ts";
 import {
   DELETION_LOG_TOKEN,
@@ -61,6 +61,8 @@ interface Command {
   name: string;
   args: Word[];
   dir: string;
+  /** Whether this command's output is handed to a remover that names no path (`… | xargs rm`). */
+  pipedIntoRemover: boolean;
 }
 
 /** Resolve a deletion word the way the child's shell would, from `dir`. */
@@ -84,22 +86,43 @@ function commands(command: string, cwd: string): { parsed: boolean; list: Comman
   const list: Command[] = [];
   let cur: Word[] = [];
   let index = 0;
+  // Whether the pending separator is a pipe. Whether the segment that follows a pipe
+  // is a remover with no operands is answered when that segment ends, and written back
+  // onto both sides of the pipe: the producer's start paths name the victims, and the
+  // remover's own empty operand list is then judged by them (#2200's sweep).
+  let piped = false;
   const flush = (): void => {
     const words = stripPrefix(cur).words;
     const first = words[0];
     if (first !== undefined) {
+      const name = commandName(first.text);
+      // The segment that just ended is the mouth of the pipe when it is a remover with
+      // no operands: the command before it is then judged by this one's targets, and so
+      // is this one (whose own operand list is empty because the paths arrive on stdin).
+      // Only a `find` on the left hands over victims this rule can name: the producer is
+      // judged by its start paths, and so is this remover. Fed by anything else (`ls |
+      // xargs rm`, `echo path | xargs rm`) the remover's targets stay unknown, which
+      // `unnamedRemoval` refuses rather than judging on the cwd.
+      const producer = list[list.length - 1];
+      const feeds = piped && isRemover(name) && namesNoPath(cur) && producer?.name === "find";
+      if (feeds) producer.pipedIntoRemover = true;
       list.push({
-        name: commandName(first.text),
+        name,
         args: words.slice(1),
         dir: dirs[index] ?? cwd,
+        pipedIntoRemover: feeds,
       });
     }
     index++;
     cur = [];
   };
   for (const tok of lexed.toks) {
-    if (tok.kind === "word") cur.push(tok.word);
-    else flush();
+    if (tok.kind === "word") {
+      cur.push(tok.word);
+      continue;
+    }
+    flush();
+    piped = tok.text === "|" || tok.text === "|&";
   }
   flush();
   for (const sub of lexed.subs) {
@@ -217,24 +240,42 @@ function gitCleanTree(args: Word[]): Word | undefined {
  * from a remover that simply had nothing to remove; `xargs`' own options (`-0`,
  * `-r`, `-I`) are options too, so the read is the non-option operands, not the
  * argument count. This is the incident's shape: thirty name prefixes swept out of
- * the shared temp root through exactly this pipe.
+ * the shared temp root through exactly this pipe. The one pipe the rule can judge is
+ * the one whose producer names the trees — `find <paths> … | xargs rm`, judged by
+ * those paths — so `unnamedRemoval` stands down only when the line is of that shape
+ * and the `find` reader has produced real start paths for it.
  */
 const REMOVED_UNKNOWN_REASON =
   "it removes paths the command does not name (they arrive on standard input, or from a match), so the target cannot be judged. Name each path literally";
 
 function unnamedRemoval(cmd: Command): RawHit[] {
   if (!isRemover(cmd.name) || removalOperands(cmd.args).length > 0) return [];
+  // The remover at the mouth of a `find` pipe has its targets judged from that `find`'s
+  // start paths, which `deletedWords` returns for it (see below), so the empty operand
+  // list here is not the unknown case.
+  if (cmd.pipedIntoRemover) return [];
   return [{ token: DELETION_LOG_TOKEN, reason: REMOVED_UNKNOWN_REASON }];
 }
 
-/** The words one command deletes, as it named them; empty when it deletes nothing. */
+/**
+ * The words one command deletes, as it named them; empty when it deletes nothing.
+ * A remover that names no path (`rm` after the `xargs` wrapper was stripped) has no
+ * operands to name, so it inherits the targets of the `find` whose output it is fed:
+ * judging the same paths twice is what keeps the sweep refused by its shared root and
+ * an in-tree cleanup allowed by the same paths.
+ */
 function deletedWords(cmd: Command): Word[] {
   if (isRemover(cmd.name)) {
     const tabled = writtenOperands(cmd.name, cmd.args);
     // The table has no entry for `unlink` or `shred`; their operands are their targets.
-    return tabled.length > 0 ? tabled : removalOperands(cmd.args);
+    const named = tabled.length > 0 ? tabled : removalOperands(cmd.args);
+    // Only the `find` pipe is the case this rule can judge: the remover's victims are
+    // then the `find`'s matches and the start paths it named are the evidence. Any other
+    // remover that names nothing (`ls | xargs rm`, a bare `rm`) names no tree at all and
+    // is left to `unnamedRemoval`, which refuses it rather than judging it on the cwd.
+    return named.length > 0 ? named : findRemovals(cmd.args, cmd.pipedIntoRemover);
   }
-  if (cmd.name === "find") return findRemovals(cmd.args);
+  if (cmd.name === "find") return findRemovals(cmd.args, cmd.pipedIntoRemover);
   if (cmd.name === "git") {
     const tree = gitCleanTree(cmd.args);
     return tree === undefined ? [] : [tree];

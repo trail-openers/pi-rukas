@@ -60,13 +60,6 @@ import {
 import { appendWriteFenceRefusal } from "./write-fence-log.ts";
 import { isInside, safeResolve } from "./write-fence-path.ts";
 
-/** The env names this rule reads: the fence's three plus the child's own temp root. */
-export const DELETION_GUARD_ENV = [
-  "PI_ENSEMBLE_WRITE_ROOT",
-  "PI_ENSEMBLE_WRITE_REPO",
-  "PI_ENSEMBLE_WRITE_SCRATCH",
-] as const;
-
 export {
   DELETION_LOG_TOKEN,
   GIT_CLEAN_LOG_TOKEN,

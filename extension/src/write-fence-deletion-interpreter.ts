@@ -33,13 +33,26 @@ const INTERPRETERS: Record<string, readonly string[]> = {
 };
 
 /**
- * The deletion calls an interpreter body may hold. Ruby's spellings are named with
- * their `FileUtils`/`File` receiver because a bare `rm` is a shell command every
- * body may mention in a message, and `unlink` is a JS/Python verb already read on
- * its own — the receiver is what makes the match a deletion rather than a word.
+ * The deletion calls an interpreter body may hold. Every spelling needs a call shape:
+ * a `(` after the verb (`rm(`, `unlink(`), or a receiver that names a library before it
+ * (`shutil.`, `os.`, `Path(...)`, Ruby's `FileUtils.`/`File.`). A bare `rm`, `rmdir` or
+ * `unlink` is a word every body may carry in a message, a comment, or as a variable
+ * name, and matching one of those refuses a one-liner that deletes nothing — which is
+ * why the words alone are not the trigger. The exception the languages force: in Perl
+ * `unlink "p"` and `unlink("p")` are both calls and a bareword never means plain text,
+ * so the verb is read only for the interpreter that uses it, from the call form that
+ * named it.
  */
-const DELETE_CALL =
-  /\b(?:rmSync|unlinkSync|rmdirSync|removeSync|shutil\.rmtree|os\.(?:remove|unlink|rmdir)\b|Path\([^)]*\)\s*\.\s*unlink|FileUtils\.(?:rm_rf|rm_f|remove_entry|remove_entry_secure)|File\.(?:delete|unlink)|rm\b|rmdir\b|unlink\b)/;
+/** The JS spellings: an fs call, or the plain `rm(`/`unlink(`/`rmdir(` call. */
+const JS_CALL = /\b(?:rmSync|unlinkSync|rmdirSync|removeSync|rm\s*\(|rmdir\s*\(|unlink\s*\()/;
+
+/** The Python spellings: `shutil.rmtree`, an `os.` removal, a `Path(...).unlink()`. */
+const PYTHON_CALL =
+  /\b(?:shutil\.rmtree|os\.(?:remove|unlink|rmdir)\s*\(|Path\([^)]*\)\s*\.\s*unlink)/;
+
+/** The Ruby spellings, each named with the library that provides it. */
+const RUBY_CALL =
+  /\b(?:FileUtils\.(?:rm_rf|rm_f|remove_entry|remove_entry_secure)|File\.(?:delete|unlink)\s*\()/;
 
 /** A quoted literal inside a script body. */
 const STRING_ARG = /(['"])((?:[^'"\\\n]|\\.)*)\1/g;
@@ -55,6 +68,22 @@ const TEMPLATE_WITH_SUBSTITUTION = /`[^`]*\$\{[^`]*`/;
 /** Is this command one whose words this rule reads at all? */
 export function isInterpreter(name: string): boolean {
   return name in INTERPRETERS;
+}
+
+/** The call shape that makes this interpreter's body a deletion, per language. */
+function callShape(name: string): RegExp {
+  switch (name) {
+    case "python":
+    case "python3":
+      return PYTHON_CALL;
+    case "ruby":
+      return RUBY_CALL;
+    // Perl: both the list-operator form (`unlink "p"`) and the parenthesised call.
+    case "perl":
+      return /\bunlink\b|unlink\s*\(/;
+    default:
+      return JS_CALL;
+  }
 }
 
 /**
@@ -117,7 +146,7 @@ export function interpreterDeletions(
   const body = interpreterBody(args, flags);
   if (body === undefined) return [];
   if (body.dyn) return { reason: INTERPRETER_TARGET_REASON };
-  if (!DELETE_CALL.test(body.text)) return [];
+  if (!callShape(name).test(body.text)) return [];
   // A target assembled at run time — an interpolation, a concatenation, an env
   // read — cannot be judged, and a body that deletes without naming one is the
   // same case in another spelling. Both are refused, not waved through.

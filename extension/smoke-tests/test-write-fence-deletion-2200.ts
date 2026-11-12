@@ -216,7 +216,29 @@ assert(
   refused("node -e 'require(\"fs\").rmSync(process.env.TARGET, {recursive:true})'") !== undefined,
   "A3 refuse: an interpreter delete whose target is dynamic",
 );
-assert(refused("bun -e $BODY") !== undefined, "A3 refuse: an interpreter body word that is dynamic");
+assert(
+  refused("bun -e $BODY") !== undefined,
+  "A3 refuse: an interpreter body word that is dynamic",
+);
+
+// A body that only *mentions* a removal verb deletes nothing, and the rule reads the
+// call, not the word: a bare `rm`/`unlink` in a message, a comment or a variable name
+// must not make the one-liner unreadable. The incident's own Perl spelling (`unlink
+// "path"`, a Perl bareword call) is still caught.
+const interpreterAllows: Array<[string, string]> = [
+  [`bun -e 'console.log("rm")'`, "a body whose only rm is inside a string"],
+  [`python3 -c 'print("rm")'`, "a python body that prints the word rm"],
+  [`node -e 'const rm = 1; console.log(rm)'`, "a variable named rm"],
+  [`ruby -e 'puts "unlink"'`, "a ruby body that prints the word unlink"],
+  [`node -e 'console.log("# rm -rf everything")'`, "a message that reads like a delete"],
+];
+for (const [command, why] of interpreterAllows) {
+  assert(refused(command) === undefined, `A3 allow: ${why} — \`${command}\``);
+}
+assert(
+  refused(`perl -e 'unlink "${sharedTmp}/x"'`) !== undefined,
+  "A3 refuse: `perl -e` with the bareword `unlink` call",
+);
 
 // ============================================================
 // B. The child's own roots stay deletable — the rule is not a bash ban.
@@ -228,12 +250,42 @@ const allowedShapes: Array<[string, string]> = [
   [`rm -rf ${childTmp}`, "the child's OWN per-child temp dir"],
   [`find ${childTmp} -maxdepth 1 -name 'x-*' -delete`, "find -delete over its own temp dir"],
   [`find ${wt} -name '*.log' -delete`, "find -delete inside the worktree"],
+  // The in-tree shapes a developer reaches for, judged by the paths the command names:
+  // a `find` pipe is judged by its start paths, and so is the remover it feeds.
+  [
+    `find ${wt}/dist -name '*.map' -print0 | xargs -0 -r rm -f`,
+    "a find|xargs cleanup in the worktree",
+  ],
+  [
+    `find ${childTmp} -maxdepth 1 -name 'p*' -print0 | xargs -0 rm`,
+    "a find|xargs sweep of its own temp dir",
+  ],
+  [`find ${wt} -type f -exec rm {} +`, "a plain -exec rm over a worktree path"],
+  [`find ${wt} -name 'x' -exec rm {} +`, "a -exec rm narrowed by a name test inside the worktree"],
   ["git status --porcelain", "an ordinary read-only command"],
   ["bun run check", "the project verify"],
   [`node -e 'console.log("${scratch}/notes.txt")'`, "an interpreter that deletes nothing"],
 ];
 for (const [command, why] of allowedShapes) {
   assert(refused(command) === undefined, `B allow: ${why} — \`${command}\``);
+}
+// …but the same shapes aimed outside the roots stay refused by the paths they name,
+// and a remover fed by anything but a `find` names no tree at all.
+const inTreeRefusals: Array<[string, string]> = [
+  [
+    `find ${sharedTmp} -maxdepth 1 -name 'a-*' -print0 | xargs -0 -r rm -rf`,
+    "the incident's sweep through a find|xargs pipe",
+  ],
+  [`find ${sharedTmp} -name x -exec rm {} +`, "a -exec rm over a shared-root path"],
+  ["rm", "a remover with no operands and no producer"],
+  ["ls | xargs rm", "a remover fed by ls: nothing on the line names the targets"],
+  [`cat ${wt}/list.txt | xargs rm -f`, "a remover fed by a file: nothing names the targets"],
+  [`echo ${sharedTmp}/victim | xargs rm`, "a remover fed by echo"],
+  [`rm -f ${wt}/*.log`, "a glob inside the worktree"],
+  ["find -exec rm {} +", "an -exec rm that names no tree to remove from"],
+];
+for (const [command, why] of inTreeRefusals) {
+  assert(refused(command) !== undefined, `B refuse: ${why} — \`${command}\``);
 }
 
 // ============================================================
@@ -258,10 +310,7 @@ for (const [command, why] of allowedShapes) {
   assert((pi.handlers.tool_call ?? []).length === 1, "C2: the hook registers with no write root");
   const r = await toolCall(pi, `rm -rf ${sharedTmp}`);
   assert(r?.block === true, "C2: a reviewer-role child with no write root is still refused");
-  const own = await toolCall(
-    registerDeletionGuardWith(FENCED_ENV),
-    `rm -rf ${childTmp}`,
-  );
+  const own = await toolCall(registerDeletionGuardWith(FENCED_ENV), `rm -rf ${childTmp}`);
   assert(own === undefined, "C2: the child's own temp dir stays deletable for a reviewer too");
   const unfenced = await toolCall(
     registerDeletionGuardWith({ PI_ENSEMBLE_ROLE: "code-review-specialist" }),
