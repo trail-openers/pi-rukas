@@ -41,6 +41,11 @@ export async function runResearchAngle(
     /** #1541 — the async job's signal, so dispatch_kill SIGTERMs a live angle
      *  instead of only refusing the next phase. */
     signal?: AbortSignal;
+    /** The research job's own jobId — the deck parent link for this angle's
+     *  child row (see DeckEntry.parentKey). Built once per angle and shared
+     *  by both legs (primary + wigolo re-dispatch), so the fallback leg
+     *  carries the same link as the primary one. */
+    parentKey?: string;
   },
 ): Promise<AngleRun & { fullText: string }> {
   const prompt =
@@ -55,6 +60,7 @@ export async function runResearchAngle(
       {
         label: `research-${a.name}`.slice(0, 24),
         timeoutMs: RESEARCH_DISPATCH_TIMEOUT_MS,
+        ...(ctx.parentKey ? { parentKey: ctx.parentKey } : {}),
         ...(ctx.signal ? { signal: ctx.signal } : {}),
         extraArgs: RESEARCH_EXTRA_ARGS,
       },

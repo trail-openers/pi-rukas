@@ -79,6 +79,19 @@ export interface StartJobInput {
   /** #838 — batch key the job's deck entry groups under (the driver's
    *  per-cycle header, "work:<issue>"); ignored when `skipDeck`. */
   batchKey?: string;
+  /**
+   * The deck row's parent link: the jobId of the job that started this one.
+   * `startJob` copies it verbatim onto its own deck entry (async-jobs.ts), so
+   * the deck can answer "who dispatched this child". The tool-level pipelines
+   * get the value from `WorkHooks.jobId` — the same hook shape adversarial-tool.ts
+   * already uses for its inner children.
+   *
+   * Deck-only: it never reaches the child process (no spawn arg, env or
+   * prompt), and it is NOT `batchKey` — no batch grouping follows from it.
+   * Absent for a top-level dispatch; never an empty string, never the job's
+   * own id.
+   */
+  parentKey?: string;
   /** #838 — display label for the deck entry (row + batch grouping); the
    *  job's own events keep `label` (the driver's cap checkpoint parses the
    *  workstream id out of it). Absent → the deck entry shows `label`. */

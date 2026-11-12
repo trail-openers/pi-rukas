@@ -346,6 +346,9 @@
     "smoke-tests/test-lean-freeze-check-verify.ts",
     "smoke-tests/test-dockerfile-prefetch.ts",
     "smoke-tests/lib/work-driver-merged-gate-files-fixture.ts",
-    "smoke-tests/test-work-driver-merged-gate-files.ts"
+    "smoke-tests/test-work-driver-merged-gate-files.ts",
+    "smoke-tests/lib/deck-parent-projection.ts",
+    "smoke-tests/lib/deck-parent-stub.ts",
+    "smoke-tests/test-dispatch-deck-parent.ts"
   ]
 }

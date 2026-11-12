@@ -62,14 +62,11 @@ export function setFocusedComponentProbe(probe: (() => unknown) | undefined): vo
   focusedComponentProbe = probe;
 }
 
-export interface DeckEntry {
-  key: string;
-  label: string;
-  state: RunningState;
-  seq: number;
-  startedAt: number;
-  batchKey?: string;
-}
+// DeckEntry and StartEntryOpts live in the leaf dispatch-deck-types.ts (the
+// AGENTS.md §12 size cap; that module's jsdoc names the reason) and are
+// re-exported here so every import site keeps its path unchanged.
+export type { DeckEntry, StartEntryOpts } from "./dispatch-deck-types.ts";
+import type { DeckEntry, StartEntryOpts } from "./dispatch-deck-types.ts";
 
 export interface BatchDeckEntry {
   key: string;
@@ -240,13 +237,6 @@ function tryAttachNav(ctx: ExtensionContext): boolean {
   return true;
 }
 
-export interface StartEntryOpts {
-  label: string;
-  role: string;
-  tag?: string;
-  batchKey?: string;
-}
-
 export function startEntry(key: string, opts: StartEntryOpts): void {
   if (isQuiet()) return;
   entries.set(key, {
@@ -256,6 +246,14 @@ export function startEntry(key: string, opts: StartEntryOpts): void {
     seq: nextSeq(),
     startedAt: Date.now(),
     batchKey: opts.batchKey,
+    // The documented invariant is enforced HERE, at the row's one copy site,
+    // rather than left to each caller: a row must never record itself, or an
+    // empty string, as its own parent. `snapshot()` holds only LIVE rows, so
+    // once a child settles there is nothing shipped to check the link against
+    // — a wrong value is undetectable at the moment an operator could look.
+    // The caller passes the PARENT's id; nothing is passed on a top-level
+    // dispatch, so this drops a degenerate value rather than inventing one.
+    ...(opts.parentKey && opts.parentKey !== key ? { parentKey: opts.parentKey } : {}),
   });
   startTickerIfNeeded();
   scheduleRender();
