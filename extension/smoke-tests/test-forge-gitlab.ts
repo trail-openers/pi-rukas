@@ -2,6 +2,7 @@
 // Direct-mapper + parsePrNumberFromResponse shape tests: test-forge-mapping-shapes.ts.
 
 import { composeGlReadiness, createForge, forgeCommands } from "../src/forge.ts";
+import { GL_JOBS_PAGE } from "../src/forge-pipeline.ts";
 import { GL_ISSUE, GL_JOBS, GL_MR, GL_MR_CHECKING, GL_MR_VIEW, GL_PIPELINE_DONE, GL_PIPELINE_RUNNING, GL_PROJECT, glDetection, mkExec } from "./forge-fixtures.ts";
 
 let exitCode = 0;
@@ -247,7 +248,7 @@ async function main() {
       "glab api /projects/:id/merge_requests/17/pipelines": {
         stdout: JSON.stringify([{ id: 5001, status: "running" }]),
       },
-      "glab api /projects/:id/pipelines/5001/jobs": { stdout: JSON.stringify(GL_JOBS) },
+      "/projects/:id/pipelines/5001/jobs?per_page=100&page=1": { stdout: JSON.stringify(GL_JOBS) },
     });
     const forge = createForge(det, { execFn: fn });
     await check("prChecks lists the open pipeline's jobs", async () => {
@@ -255,6 +256,97 @@ async function main() {
       assert(checks.length === 2, `len ${checks.length}`);
       assert(checks[0]!.name === "build", "first name");
       assert(checks[0]!.state === "SUCCESS", `state ${checks[0]!.state}`);
+    });
+  }
+
+  // The head pin's evidence: `prChecks` keeps only the rows, so a caller that must
+  // say WHICH commit they ran at reads the pipeline by id instead — and the commit
+  // comes from the pipeline row, not the jobs list, which carries none.
+  {
+    const head = "b".repeat(40);
+    const { fn, calls } = mkExec({
+      "glab api /projects/:id/pipelines/5001 --output json": {
+        stdout: JSON.stringify({ id: 5001, sha: head, status: "success" }),
+      },
+    });
+    const forge = createForge(det, { execFn: fn });
+    await check("glPipelineJobs reports the commit the pipeline built", async () => {
+      const read = await forge.glPipelineJobs!(5001);
+      assert(read.rows.length === 0, `rows ${read.rows.length}`);
+      assert(read.pipelineSha === head, `sha ${String(read.pipelineSha)}`);
+      assert(
+        calls.some((c: string) => /\/pipelines\/5001 --output json/.test(c)),
+        `no pipeline read in ${JSON.stringify(calls)}`,
+      );
+      assert(
+        calls.some((c: string) => /\/pipelines\/5001\/jobs/.test(c)),
+        `no jobs read in ${JSON.stringify(calls)}`,
+      );
+    });
+  }
+  // A pipeline row that names no commit must not hand back a sha the step could
+  // pin to — absence, not a guess.
+  {
+    const { fn } = mkExec({
+      "glab api /projects/:id/pipelines/5002 --output json": {
+        stdout: JSON.stringify({ id: 5002, status: "running" }),
+      },
+    });
+    const forge = createForge(det, { execFn: fn });
+    await check("glPipelineJobs says nothing when the pipeline names no commit", async () => {
+      const read = await forge.glPipelineJobs!(5002);
+      assert(read.pipelineSha === undefined, `sha ${String(read.pipelineSha)}`);
+    });
+  }
+
+  {
+    const head = "b".repeat(40);
+    const jobsCmd = "/projects/:id/pipelines/5001/jobs";
+    const rows = Array.from({ length: GL_JOBS_PAGE }, (_, i) => ({
+      name: `job-${String(i)}`,
+      status: "success",
+    }));
+    const { fn, calls } = mkExec({
+      [`${jobsCmd}?per_page=100&page=1`]: { stdout: JSON.stringify(rows) },
+      [`${jobsCmd}?per_page=100&page=2`]: { stdout: JSON.stringify([{ name: "x", status: "failed" }]) },
+      "glab api /projects/:id/pipelines/5001 --output json": {
+        stdout: JSON.stringify({ id: 5001, sha: head, status: "success" }),
+      },
+    });
+    const forge = createForge(det, { execFn: fn });
+    await check("glPipelineJobs hides a list that ran past its page", async () => {
+      const read = await forge.glPipelineJobs!(5001);
+      assert(read.truncated, `truncated ${String(read.truncated)}`);
+      assert(
+        read.rows.length === GL_JOBS_PAGE,
+        `rows ${read.rows.length}: a truncated read still reports the page it saw, so the caller can name it`,
+      );
+      assert(
+        calls.every((c: string) => !c.includes("jobs") || c.includes("per_page=100")),
+        `a jobs read asked no page size, so GitLab's default 20 applied: ${JSON.stringify(calls)}`,
+      );
+      assert(
+        calls.filter((c: string) => c.includes(jobsCmd)).length === 2,
+        `expected the page plus one probe: ${JSON.stringify(calls)}`,
+      );
+    });
+  }
+  // A jobs page that is not a list is the forge's fault, and a partial list is
+  // never handed to a caller who would grade it as the whole pipeline.
+  {
+    const { fn } = mkExec({
+      "/projects/:id/pipelines/5003/jobs": { stdout: "{}" },
+    });
+    const forge = createForge(det, { execFn: fn });
+    await check("glPipelineJobs throws rather than map a non-list page", async () => {
+      let rejected: Error | undefined;
+      try {
+        await forge.glPipelineJobs!(5003);
+      } catch (e) {
+        rejected = e as Error;
+      }
+      assert(rejected !== undefined, "should have thrown");
+      assert(/not an array/.test(rejected?.message ?? ""), `wrong error: ${String(rejected?.message)}`);
     });
   }
 

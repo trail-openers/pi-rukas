@@ -15,6 +15,7 @@
  * fail-closed result shape.
  */
 
+import { glJobIsBlocking } from "./forge-gl-grade.ts";
 import type {
   NormalizedCICheck,
   NormalizedCIRun,
@@ -259,13 +260,18 @@ export function mapGhChecks(rows: unknown): NormalizedCICheck[] {
  * exposes `.open_pipeline.id`, and `/pipelines/:pid` exposes the jobs via
  * `?per_page=100`. This mapper takes the pipeline's `jobs` rows.
  * Job `status` values (snake) → uppercased `state`; GitLab has no per-job
- * "required" concept, so `isRequired` is undefined.
+ * "required" concept, so `isRequired` is undefined. `allow_failure` is the one
+ * per-job field that decides whether a `success` is a green at all, so it is
+ * carried as `blocking` (its negation) rather than dropped: a job the pipeline
+ * tolerates failing is not a gate, and a caller that never sees the field cannot
+ * say so. Absent means GitLab's own default — blocking.
  */
 export function mapGlPipelineJobs(rows: unknown): NormalizedCICheck[] {
   if (!Array.isArray(rows)) throw new ForgeFieldError("pipeline jobs", "glab pipeline jobs");
   return (rows as Record<string, unknown>[]).map((j) => ({
     name: str(j.name) ?? "(unnamed)",
     state: (str(j.status) ?? "").toUpperCase(),
+    blocking: glJobIsBlocking(j.allow_failure),
   }));
 }
 

@@ -11,7 +11,7 @@
 
 import { createForge } from "../src/forge.ts";
 import { READINESS_TIMEOUT_MS } from "../src/forge-merge.ts";
-import { GH_CHECKS, GH_PR, GL_JOBS, GL_MR, ghDetection, glDetection, mkExec } from "./forge-fixtures.ts";
+import { GH_CHECKS, GH_PR, GL_MR, ghDetection, glDetection, mkExec } from "./forge-fixtures.ts";
 
 /** Node's exec-timeout shape: killed with SIGTERM and an empty message. */
 function timeoutErr(): Error {
@@ -160,13 +160,15 @@ async function main() {
   {
     const { fn, opts } = mkExec({
       "glab api /projects/:id/merge_requests/17": { stdout: JSON.stringify(GL_MR) },
-      "glab api /projects/:id/pipelines/5001/jobs": { stdout: JSON.stringify(GL_JOBS) },
     });
     const forge = createForge(glDet, { execFn: fn });
-    await check("glab merge_requests and pipelines/jobs are called with timeout=READINESS_TIMEOUT_MS", async () => {
+    await check("the glab MR readiness read is called with timeout=READINESS_TIMEOUT_MS", async () => {
       const result = await forge.mergeReadiness(17);
       assert(result.ok, "ok");
-      assert(opts.length === 2, `expected 2 calls, got ${opts.length}`);
+      // ONE call: the readiness path answers the merge question from the MR reply
+      // alone, and the pipeline's job rows are the pipeline read's own business
+      // (`glPipelineJobsAt`), which a `ci` poll makes once.
+      assert(opts.length === 1, `expected 1 call, got ${opts.length}`);
       for (const o of opts) {
         assert(o !== undefined, "opts recorded");
         assert(o.timeout === READINESS_TIMEOUT_MS, `timeout ${o.timeout}`);

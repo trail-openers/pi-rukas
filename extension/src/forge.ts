@@ -42,6 +42,7 @@ import {
   parsePrNumberFromResponse,
 } from "./forge-mapping.ts";
 import { checkGithubReadiness, checkGitlabReadiness, composeGlReadiness } from "./forge-merge.ts";
+import { glPipelineJobs, glPipelineJobsAt } from "./forge-pipeline.ts";
 import type { VisibilityFn } from "./public-hygiene-visibility.ts";
 import { isFullCommitSha } from "./review-head-sha.ts";
 import { forgePublishCheck } from "./work-driver-commit-hygiene.ts";
@@ -159,6 +160,21 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
     });
     return map(stdout);
   };
+
+  /**
+   * The raw MR reply of the most recent readiness read, per MR number.
+   *
+   * `mapGlMr` keeps no commit oid and the readiness result names none, so a
+   * caller that must state WHICH commit its verdict is about has exactly one
+   * place to read it: the reply the composition already consumed. Caching it is
+   * the alternative to a second `glab api` of a moving MR, whose reply could
+   * describe a different commit than the one the verdict was composed from —
+   * precisely the two-moments defect the adapter exists to prevent. Best-effort
+   * by construction: only the GitLab readiness read fills it, and a caller
+   * reading a number that was never read gets `undefined` rather than a stale
+   * row from another MR.
+   */
+  const lastMrRows = new Map<number, Record<string, unknown>>();
 
   /**
    * Write the body to a temp file, run the operation that takes the file
@@ -373,6 +389,10 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
         });
       }
       // GitLab: list the MR's pipelines, take the most recent, list its jobs.
+      // A list that ran past the page this read asked for is reported as the
+      // empty set rather than as the page it saw: a caller must never receive a
+      // partial job list it could grade as complete, and every caller already
+      // refuses "no checks reported" as the absence of evidence.
       const pipelines = await run(
         `glab api /projects/:id/merge_requests/${number}/pipelines`,
         (s) => {
@@ -383,12 +403,23 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
       );
       const latest = pipelines[0];
       if (!latest || typeof latest.id !== "number") return [];
-      return run(`glab api /projects/:id/pipelines/${latest.id}/jobs --output json`, (s) => {
-        const parsed = JSON.parse(s || "[]");
-        if (!Array.isArray(parsed)) throw new Error("forge: jobs not an array");
-        return mapGlPipelineJobs(parsed);
-      });
+      const read = await glPipelineJobs(run, latest.id);
+      // A list that ran past the page it read is reported as the empty set rather
+      // than as the page it saw: a caller must never receive a partial job list it
+      // could grade as complete, and every caller already refuses "no checks
+      // reported" as the absence of evidence.
+      return read.truncated ? [] : read.rows;
     },
+
+    // The job rows of ONE named pipeline, plus the commit that pipeline says it
+    // built — the ONE jobs read a `ci` poll makes. `prChecks` takes the newest row
+    // of the MR's pipelines list and keeps only the rows, so a caller that must say
+    // which commit they ran at — lean's `ci` step, which refuses to grade a foreign
+    // pipeline — needs this arm; the `/pipelines/:id` row carries the `sha` the jobs
+    // list does not. `truncated` says the list ran past its page: the caller refuses
+    // rather than grading an incomplete list.
+    glPipelineJobs: (pipelineId) =>
+      glPipelineJobsAt(run, pipelineId, cmds.pipelineViewCmd(pipelineId)),
 
     // ── CI ────────────────────────────────────────────────────────────────
 
@@ -400,8 +431,14 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
 
     mergeReadiness: (number, opts) => {
       if (forge === "github") return checkGithubReadiness(execFn, cwd, number, opts);
-      return checkGitlabReadiness(execFn, cwd, number, opts);
+      return checkGitlabReadiness(execFn, cwd, number, opts, (raw) => {
+        lastMrRows.set(number, raw);
+      });
     },
+
+    // The readiness read's own MR reply, for the one caller that must name the
+    // commit the verdict was composed at (see `lastMrRows`).
+    lastMrRow: (number) => lastMrRows.get(number),
 
     // ── Labels ────────────────────────────────────────────────────────────
     // The family lives in forge-label-ops.ts (500-line seam) and receives this

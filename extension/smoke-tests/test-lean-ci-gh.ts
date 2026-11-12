@@ -35,15 +35,17 @@
 
 import { spawnSync } from "node:child_process";
 import { rmSync } from "node:fs";
-import { defaultConfig } from "../src/lean/config.ts";
-import type { Budget } from "../src/lean/config.ts";
-import { phase1Handlers } from "../src/lean/command.ts";
-import { ciOutcome } from "../src/lean/ci.ts";
+import type { Forge } from "../src/forge-types.ts";
 import type { CiDeps } from "../src/lean/ci-deps.ts";
 import { ghReads } from "../src/lean/ci-deps.ts";
+import { ciOutcome } from "../src/lean/ci.ts";
+import { phase1Handlers } from "../src/lean/command.ts";
+import { defaultConfig } from "../src/lean/config.ts";
+import type { Budget } from "../src/lean/config.ts";
+import type { Outcome } from "../src/lean/state.ts";
 import { VerifyInfraError } from "../src/lean/verify-types.ts";
-import { ROOTS, ciLandLog } from "./lib/lean-ci-land-fixture.ts";
 import { gitTestEnv } from "./lib/git-test-env.ts";
+import { ROOTS, ciLandLog } from "./lib/lean-ci-land-fixture.ts";
 import {
   REAL_CHECKS_FAIL,
   REAL_CHECKS_PASS,
@@ -52,7 +54,6 @@ import {
   REAL_CHECKS_TABLE,
   realPrViewReply,
 } from "./lib/lean-gh-payloads.ts";
-import type { Outcome } from "../src/lean/state.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -128,9 +129,7 @@ interface Ran {
  * for, so a step that quietly changed its own command would get nothing back
  * rather than a helpful reply.
  */
-async function run(
-  c: Case,
-): Promise<{
+async function run(c: Case): Promise<{
   outcome?: Outcome;
   threw?: Error;
   ran: Ran;
@@ -182,9 +181,7 @@ async function run(
         checksReads++;
         return {
           stdout:
-            typeof c.checks === "string"
-              ? c.checks
-              : JSON.stringify(c.checks ?? REAL_CHECKS_PASS),
+            typeof c.checks === "string" ? c.checks : JSON.stringify(c.checks ?? REAL_CHECKS_PASS),
         };
       }
       // The disk re-reads go to the fixture's OWN repo, through real git — every
@@ -213,9 +210,21 @@ async function run(
       f.tick(ms);
     },
     now: () => f.ctx.now(),
+    // The GitHub adapter. The step reads the forge through the adapter seam (the
+    // real one is `io.ts`'s `forgeFor`); a `github` adapter is what keeps the two
+    // pinned `gh` reads the reads this suite answers with its captured payloads,
+    // and (w5) is the case that says an unreadable `gh` is never a green.
+    forge: async () => ({ forge: "github" }) as unknown as Forge,
   };
   try {
-    return { outcome: await ciOutcome(f.ctx, deps), ran, slept, checks: checksReads, wt: f.repoRoot, head: f.head };
+    return {
+      outcome: await ciOutcome(f.ctx, deps),
+      ran,
+      slept,
+      checks: checksReads,
+      wt: f.repoRoot,
+      head: f.head,
+    };
   } catch (err) {
     return { threw: err as Error, ran, slept, checks: checksReads, wt: f.repoRoot, head: f.head };
   }
@@ -227,7 +236,10 @@ async function run(
   // tier, and it never reached the forge at all. A red naming the half that is
   // missing — not a green, and not a silent pass.
   const r = await run({ ghDown: true, noTierAtAll: true });
-  assert(r.outcome?.kind === "red", `(w1) gh down + no full tier -> RED, never green (${JSON.stringify(r.outcome ?? r.threw?.message)})`);
+  assert(
+    r.outcome?.kind === "red",
+    `(w1) gh down + no full tier -> RED, never green (${JSON.stringify(r.outcome ?? r.threw?.message)})`,
+  );
   assert(
     (r.outcome?.reason ?? "").includes("no full verify tier"),
     `(w1) the red names the half that is missing (${r.outcome?.reason})`,
@@ -251,7 +263,10 @@ async function run(
 {
   // A tier whose runner vanished from disk is infra too — not the red a good PR
   // would be marked with.
-  const r = await run({ full: "true", tierFails: Object.assign(new Error("spawn ENOENT"), { code: "ENOENT" }) });
+  const r = await run({
+    full: "true",
+    tierFails: Object.assign(new Error("spawn ENOENT"), { code: "ENOENT" }),
+  });
   assert(
     r.threw instanceof VerifyInfraError,
     `(w1) a tier whose runner vanished THROWS rather than marking a good PR red (${String(r.threw?.message)})`,
@@ -273,7 +288,10 @@ async function run(
 }
 {
   const r = await run({ full: "true", checks: REAL_CHECKS_SKIPPED });
-  assert(r.outcome?.kind === "red", `(w2) a real skipping row is not green (${JSON.stringify(r.outcome)})`);
+  assert(
+    r.outcome?.kind === "red",
+    `(w2) a real skipping row is not green (${JSON.stringify(r.outcome)})`,
+  );
   assert((r.outcome?.reason ?? "").includes("publish-image"), "(w2) and the red names it");
   assert(r.ran.tierRuns === 0, "(w2) the tier was not run over a CI nobody passed");
 }
@@ -323,7 +341,10 @@ async function run(
 // ── (w4) one read carries the head AND the verdict ───────────────────────
 {
   const r = await run({ full: "true", view: { mergeStateStatus: "BLOCKED" } });
-  assert(r.outcome?.kind === "red", `(w4) mergeStateStatus BLOCKED -> red (${JSON.stringify(r.outcome)})`);
+  assert(
+    r.outcome?.kind === "red",
+    `(w4) mergeStateStatus BLOCKED -> red (${JSON.stringify(r.outcome)})`,
+  );
   assert((r.outcome?.reason ?? "").includes("BLOCKED"), "(w4) carrying the forge's own word");
   assert(r.ran.tierRuns === 0, "(w4) the tier never ran over a blocked PR");
 }
@@ -349,6 +370,10 @@ async function run(
 // ── (w5) `ci` and `land` are wired; an unbuilt stage still says it is not ─
 {
   const f = ciLandLog(555);
+  // The step asks for a full tier BEFORE it reads the forge, so this case (which
+  // runs the step with its real deps, and therefore with no forge adapter) still
+  // reaches the tier sentence. The forge-first ordering is `test-lean-ci-gl.ts`'s
+  // no-adapter case, which configures a tier precisely to reach the forge.
   const handlers = phase1Handlers(f.repoRoot, 555);
   const settled = await (handlers.ci as (c: never) => Promise<unknown>)(f.ctx as never).then(
     (o) => o,
@@ -408,8 +433,7 @@ async function run(
   // head comparison cannot see.
   const r = await run({ full: "true", detached: true });
   assert(
-    r.threw instanceof VerifyInfraError &&
-      String(r.threw?.message).includes("branch"),
+    r.threw instanceof VerifyInfraError && String(r.threw?.message).includes("branch"),
     `(w6) a detached HEAD THROWS, naming the branch it lost (${String(r.threw?.message)})`,
   );
   assert(r.ran.tierRuns === 0, "(w6) no tier over a tree taken off its ref");
