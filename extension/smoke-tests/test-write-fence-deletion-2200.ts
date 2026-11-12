@@ -111,8 +111,6 @@ const {
   childTmp,
   sharedTmp,
   sharedRuns,
-  foreignRunUnderRuns,
-  spawnTempRoot,
   foreignRun,
 } = fx;
 
