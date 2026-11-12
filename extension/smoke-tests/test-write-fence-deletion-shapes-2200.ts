@@ -26,7 +26,11 @@ import {
   deletionRootsFrom,
   firstDeletionOutside,
 } from "../src/write-fence-deletion.ts";
-import { buildDeletionFixture } from "./lib/write-fence-deletion-fixture.ts";
+import {
+  buildDeletionFixture,
+  deletionHost,
+  withDeletionHost,
+} from "./lib/write-fence-deletion-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -37,7 +41,12 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
+// Every row runs inside this block: the rule consults process.env for the home it refuses
+// (os.homedir) and for the temp root its ancestor walk seeds on (os.tmpdir), so an unpinned
+// runner could make a row green or red by where it happened to put TMPDIR. See withDeletionHost.
 const fx = buildDeletionFixture("shapes");
+const HOST = deletionHost(fx.base);
+await withDeletionHost(HOST, async () => {
 const {
   base,
   wt,
@@ -94,7 +103,10 @@ for (const [command, why] of refusedShapes) {
 // ============================================================
 // A2. The shared temp root under the names it actually has.
 // ============================================================
-for (const root of new Set([sharedTmp, "/tmp", process.env.TMPDIR ?? "/tmp"])) {
+// The temp roots named by the ROW and by the file's pinned host, never by the invocation:
+// `process.env.TMPDIR` here asked the machine which tree it keeps its scratch in, so the set
+// of rows differed per runner and one of them could vanish from the run unnoticed.
+for (const root of new Set([sharedTmp, "/tmp", HOST.TMPDIR])) {
   assert(
     refused(`rm -rf ${root}/pi-rukas-review-victim`) !== undefined,
     `A2: a delete under the shared root \`${root}\` is refused`,
@@ -476,6 +488,8 @@ const inTreeRefusals: Array<[string, string]> = [
 for (const [command, why] of inTreeRefusals) {
   assert(refused(command) !== undefined, `B refuse: ${why} — \`${command}\``);
 }
+
+});
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);

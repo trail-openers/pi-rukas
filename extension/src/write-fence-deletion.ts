@@ -241,10 +241,16 @@ function forbiddenWorkingDirectories(
   // for `ops`. A home directory is refused where it stands, not for everything under it.
   const holdsTempRoot = (candidate: string): boolean =>
     [...shared].some((t) => t !== candidate && isInside(t, candidate));
-  const homeRoots = new Set([safeResolve(homeDir(env)), safeResolve(os.homedir())]);
+  // The two ancestors the walk may NEVER add, read from the same env as everything else here:
+  // the filesystem root and EITHER home read. A temp root is refused for its whole subtree, so
+  // adding either would refuse every working tree on the volume — which is exactly what happens
+  // on a host that publishes a home-relative temp dir (macOS's `$TMPDIR`, an operator's `~/tmp`),
+  // where the parent of the temp root IS the home directory and every checkout under it loses the
+  // `ops` carve-out. The refusal of both as THEMSELVES (below) is what they get.
+  const volumeRoots = new Set([path.sep, safeResolve(homeDir(env)), safeResolve(os.homedir())]);
   for (const real of seed) {
     const parent = path.dirname(real);
-    if (parent === path.sep || shared.has(parent) || homeRoots.has(parent)) continue;
+    if (parent === path.sep || shared.has(parent) || volumeRoots.has(parent)) continue;
     if (!holdsTempRoot(parent)) continue;
     addTemp(parent, false);
   }

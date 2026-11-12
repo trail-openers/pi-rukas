@@ -190,13 +190,16 @@ function chdirOperands(toks: Tok[]): Set<string> {
 }
 
 /**
- * The tree a forcing `git clean` would remove, or undefined when the command is not
+ * The trees a forcing `git clean` would remove, or undefined when the command is not
  * one. A forcing clean (`-f`/`--force`, never `-n`) is judged by the tree it removes
  * in — the last `-C`/`--work-tree` it names, or the directory the command runs in —
  * which is what makes `git clean -fdx` under the shared temp root a deletion rather
- * than a git command (#2200 D1).
+ * than a git command (#2200 D1), AND by every PATH OPERAND after the verb: `git clean
+ * -fdx <dir>` removes that pathspec's tree wherever it sits, and `git clean -fdx ..`
+ * removes the parent of the directory it runs in. A clean with no operand is still
+ * judged by its base (`base ?? "."`), which is the no-path case.
  */
-function gitCleanTree(args: Word[]): Word | undefined {
+function gitCleanTrees(args: Word[]): Word[] | undefined {
   let base: Word | undefined;
   let k = 0;
   const take = (v: Word): void => {
@@ -238,7 +241,10 @@ function gitCleanTree(args: Word[]): Word | undefined {
   const forcing =
     rest.some((a) => a.text === "--force" || (/^-[^-]/.test(a.text) && a.text.includes("f"))) &&
     !rest.some((a) => a.text === "-n" || a.text === "--dry-run");
-  return forcing ? (base ?? { text: ".", dyn: false }) : undefined;
+  if (!forcing) return undefined;
+  // Every non-option word after the verb is a pathspec git clean removes (`--` only ends
+  // the options, so it is skipped and what follows it read the same way).
+  return [...operands(rest), base ?? { text: ".", dyn: false }];
 }
 
 /**
@@ -291,10 +297,7 @@ function deletedWords(cmd: Command): Word[] {
     return [...named, ...fromFind];
   }
   if (cmd.name === "find") return findRemovals(cmd.args, cmd.pipedIntoRemover);
-  if (cmd.name === "git") {
-    const tree = gitCleanTree(cmd.args);
-    return tree === undefined ? [] : [tree];
-  }
+  if (cmd.name === "git") return gitCleanTrees(cmd.args) ?? [];
   return [];
 }
 

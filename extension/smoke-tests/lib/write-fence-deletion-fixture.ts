@@ -25,14 +25,47 @@
  * climb from without the suite ever writing to (or risking the deletion of) the
  * machine's real one.
  *
- * The layout lives under the repo's gitignored `tmp/` (as `write-fence-fixture.ts`
- * does), not beside the test: the exit hook does not fire when the runner's bound
- * kills the process, and a tree left inside the tracked tree would show in
- * `git status`.
+ * The layout lives under extension/smoke-tests/tmp/, not beside the test: the exit hook
+ * does not fire when the runner's bound kills the process, and a tree left inside the
+ * tracked tree would show in git status. That path is NOT git-ignored by anything this
+ * repository commits — the committed .gitignore covers the root-level tmp-dash pattern,
+ * and extension/tmp/ appears only in a per-clone .git/info/exclude — so a run whose
+ * cleanup was skipped leaves an untracked tree there. The path is outside every directory
+ * the write fence, the deletion rule and the repo's gates judge, which is why it is still
+ * the right place for the scratch; an operator who wants a leftover tree out of git status
+ * adds the ignore to their own clone.
  */
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { withEnv } from "./env-scope.ts";
+
+/**
+ * A HOME/TMPDIR pair the deletion rows are written against, with the temp root UNDER the
+ * home (what macOS publishes, and what an operator who parks scratch at ~/tmp has), so a
+ * row cannot pass by having its temp root fall outside the home it names.
+ */
+export function deletionHost(base: string): { HOME: string; TMPDIR: string } {
+  return { HOME: base, TMPDIR: path.join(base, "tmp") };
+}
+
+/**
+ * Run body with HOME and TMPDIR pinned to host, restoring both afterwards.
+ *
+ * Every deletion row reads its verdict from process.env behind the row's back, twice over:
+ * os.homedir() is the passwd home the rule refuses beside the env's HOME, and os.tmpdir()
+ * is the seed of the ancestor walk in forbiddenWorkingDirectories. A row that leaves either
+ * to the runner is judged against whatever host ran it, so the same row can be green under
+ * a temp root outside the home and red under one inside it. Both variables are pinned for
+ * the whole file (the test files open with withDeletionHost) and again for any block that
+ * passes its own HOME/TMPDIR to the rule, so a verdict is a function of the row's own env
+ * object alone.
+ */
+export function withDeletionHost<T>(host: { HOME: string; TMPDIR: string }, body: () => Promise<T>): Promise<T> {
+  return withEnv({ HOME: host.HOME, TMPDIR: host.TMPDIR }, async () => {
+    await body();
+  });
+}
 
 export interface DeletionFixture {
   base: string;

@@ -1,0 +1,285 @@
+#!/usr/bin/env bun
+/**
+ * #2200, the `ops` carve-out rows (G1 / G1b), split out of
+ * `test-write-fence-deletion-2200.ts` by the repo's file-size cap.
+ *
+ * The rule leaves ONE role alone inside its own working directory: an `ops` dispatch, which
+ * the driver never fences and which clears build and dependency trees in the operator's
+ * checkout as its job. These rows pin both halves of that carve-out — that a real checkout
+ * stays deletable, and that the carve-out cannot be widened by pointing the role's cwd at a
+ * tree it does not own (a temp root, a dir named for one, `$HOME`, `/`, or the subtree the
+ * ancestor walk climbs into).
+ *
+ * The rows that keep the carve-out OPEN are the ones the runner's environment used to decide:
+ * the walk climbs a temp root's parent, and on a host whose temp dir sits under `$HOME` that
+ * parent IS the home directory, so an unpinned `TMPDIR` closed the carve-out on every checkout
+ * under it and the rows passed only because the machine happened to keep its temp dir elsewhere.
+ * Both `HOME` and `TMPDIR` are therefore pinned through an explicit env object on every row
+ * here and in the file these came from.
+ *
+ * Run: cd extension && bun smoke-tests/test-write-fence-deletion-ops-2200.ts
+ */
+
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import {
+  deletionRootsFrom,
+  firstDeletionOutside,
+} from "../src/write-fence-deletion.ts";
+import { withEnv } from "./lib/env-scope.ts";
+import {
+  buildDeletionFixture,
+  deletionHost,
+  withDeletionHost,
+} from "./lib/write-fence-deletion-fixture.ts";
+import {
+  assert,
+  exit,
+  registerDeletionGuardWith,
+  toolCall,
+} from "./lib/write-fence-deletion-harness.ts";
+
+const { base, sharedTmp, sharedRuns, foreignRun, foreignRunUnderRuns, spawnTempRoot } =
+  buildDeletionFixture("ops");
+// Pinned for the whole file: the rule reads HOME/TMPDIR from process.env behind any row's back.
+const HOST = deletionHost(base);
+
+await withDeletionHost(HOST, async () => {
+{
+  // G1 — an ops dispatch is never fenced by the driver, but it is the one role
+  // that works in the operator's own checkout and does git/PR work there. Only
+  // deletes it cannot justify are refused: its own cwd is a working root, the
+  // shared temp root is not (#2200's acceptance addition).
+  //
+  // The row names its OWN home, as every row here does. It cannot be the home the file
+  // pinned: the carve-out refuses a cwd that IS the home directory, and the pinned host puts
+  // that home one level above this fixture's `wt` (the home-relative temp root the rule must
+  // tolerate). A checkout lives beside the temp root, not under it, so the row writes that
+  // shape out rather than inheriting a tree it did not choose.
+  const opsCheckout = path.join(base, "ops-checkout");
+  mkdirSync(opsCheckout, { recursive: true });
+  const opsEnv = { PI_ENSEMBLE_ROLE: "ops", HOME: base, TMPDIR: sharedTmp };
+  const ops = registerDeletionGuardWith(opsEnv, opsCheckout);
+  const inCwd = await toolCall(ops, "rm -rf dist");
+  assert(
+    inCwd === undefined,
+    `G: an ops child's in-cwd \`rm -rf dist\` is not refused by this guard (got ${JSON.stringify(inCwd)})`,
+  );
+  const inCwdRm = await toolCall(ops, `rm -rf ${opsCheckout}/node_modules`);
+  assert(inCwdRm === undefined, "G: nor an in-cwd delete named absolutely");
+  const shared = await toolCall(ops, `rm -rf ${foreignRun}`);
+  assert(shared?.block === true, "G: and an ops delete of the shared temp root is still refused");
+}
+{
+  // G1b — the carve-out cannot be widened by pointing the ops child's cwd at a shared tree.
+  // The driver dispatches ops at the checkout (`roles.ts`: `cwd: "repo"`), so a cwd that IS
+  // a temp root, $HOME or / is a spawn that aimed the role at the very tree the rule exists
+  // to protect — and `rm -rf .` there is the incident's damage. The forbidden set is built
+  // from ONE fixed union — the env's temp root, the well-known temp spellings and the home
+  // directory the shell expands `~` to — so an env that points `TMPDIR` at a tree of the
+  // child's choosing cannot shrink it, and a fixture (which never names the machine's own
+  // dirs) cannot make the rule pass by being somewhere else.
+  // The test's own view of the env the rule reads: an ops child spawned with no `HOME` and no
+  // `TMPDIR`, so only the well-known spellings are in play. Without this the block would judge
+  // the fixture under the harness's redirected `TMPDIR`, and a scratch tree inside a shared root
+  // reads as a different tree from the one its rows are written under.
+  await withEnv({ HOME: undefined, TMPDIR: undefined }, async () => {
+    const inSharedRoot = deletionRootsFrom({ PI_ENSEMBLE_ROLE: "ops" }, sharedTmp);
+    assert(
+      inSharedRoot.allowed.length === 0,
+      `G1b: an ops cwd that is the shared temp root (\`${sharedTmp}\`) is not admitted as a root`,
+    );
+    for (const command of [`rm -rf ${sharedTmp}/pi-rukas-review-victim`, "rm -rf .", "rm -rf x"]) {
+      assert(
+        firstDeletionOutside(command, inSharedRoot) !== undefined,
+        `G1b: an ops child standing IN the temp root cannot run \`${command}\``,
+      );
+    }
+    // Two gates, two rows, because the `tmp`-named cwd is refused by the FIRST of them and a
+    // single row would only ever observe that one.
+    //
+    // Gate 1 — the name. A directory called `tmp` is a temp root by the only convention a child
+    // can be told to aim at (`mktemp -p ./tmp`, `TMPDIR=$PWD/tmp`), so the carve-out refuses a cwd
+    // that GOES BY that name outright, wherever it sits: the fixture's own `tmp/other-session-run`
+    // gets no root at all, though the machine keeps none of its temp dirs anywhere near it, and the
+    // child can clean neither that dir nor anything above it.
+    const inTmpNamedDir = deletionRootsFrom(
+      { PI_ENSEMBLE_ROLE: "ops" },
+      path.join(sharedTmp, "named-dir"),
+    );
+    assert(
+      inTmpNamedDir.allowed.length === 0 &&
+        firstDeletionOutside("rm -rf .", inTmpNamedDir) !== undefined &&
+        firstDeletionOutside("rm -rf keep", inTmpNamedDir) !== undefined,
+      "G1b: an ops cwd NAMED `tmp` is refused as a working root by its name, wherever it sits",
+    );
+    // Gate 2 — containment: what the ancestor walk of `forbiddenWorkingDirectories` decides, and
+    // the gate Gate 1 cannot see (the name rule answers that cwd first, so the `tmp`-named tree is
+    // useless for observing it). `runs/` is a shared root no basename rule recognises — not `tmp`,
+    // not `/tmp`, not this env's temp dir — and it sits beside `spawntmp/`, the synthetic spawn
+    // temp root injected below. So the walk climbs from that root and refuses `runs/` for its whole
+    // subtree: a cwd under it loses its working directory, and `rm -rf ..` — which reaches the tree
+    // holding every other run's temp dir — is refused. Both halves are the walk's doing alone: seed
+    // it from a root that is not there and the same cwd keeps its root and `..` runs. Delete the
+    // walk (or its `wholeSubtree` containment) and this row goes red while Gate 1 above stays green.
+    const inChildOfRuns = deletionRootsFrom(
+      { PI_ENSEMBLE_ROLE: "ops" },
+      foreignRunUnderRuns,
+      () => spawnTempRoot,
+    );
+    assert(
+      inChildOfRuns.allowed.length === 0 &&
+        firstDeletionOutside("rm -rf ../..", inChildOfRuns) !== undefined &&
+        firstDeletionOutside(`rm -rf ${sharedRuns}`, inChildOfRuns) !== undefined,
+      "G1b: an ops cwd under a NON-temp-named shared root is refused by the containment walk alone",
+    );
+    // The control that makes the row above say something: seed the same walk from a tree that holds
+    // no run dir and this cwd is an ordinary working directory again — it keeps its root, so the
+    // refusal above is the walk's and not some other rule's. (`rm -rf ..` stays refused there, by
+    // the well-known temp spellings that contain this scratch tree; it is the ROOT that the walk
+    // takes away, so that is what the pair of rows compares.)
+    const noWalk = deletionRootsFrom({ PI_ENSEMBLE_ROLE: "ops" }, foreignRunUnderRuns, () =>
+      path.join(base, "no-such-spawn-tmp"),
+    );
+    assert(
+      noWalk.allowed.length === 1,
+      "G1b: with no temp root to climb from, that same cwd is an ordinary working directory",
+    );
+  });
+  // The two spellings of "the temp root" the rule recognises, each named by the ROW rather
+  // than read from the runner: the process env's `TMPDIR` (which is the row's own pinned
+  // `TMPDIR`, not whatever the invocation happened to carry), and the child's own env value.
+  // Reading the runner's `process.env.TMPDIR` here made the row a test of the machine — a
+  // different temp root per invocation is a different tree judged, and the row could go red
+  // without the rule changing.
+  for (const [name, env, cwd] of [
+    ["TMPDIR from the process env", { TMPDIR: HOST.TMPDIR }, HOST.TMPDIR],
+    ["TMPDIR carried in the child's env", { TMPDIR: sharedTmp }, sharedTmp],
+  ] as Array<[string, Record<string, string | undefined>, string]>) {
+    await withEnv(env, async () => {
+      const roots = deletionRootsFrom({ PI_ENSEMBLE_ROLE: "ops" }, cwd);
+      assert(
+        roots.allowed.length === 0 && firstDeletionOutside("rm -rf .", roots) !== undefined,
+        `G1b: an ops cwd that is the temp root (${name}) is refused as a root`,
+      );
+    });
+  }
+  // The well-known roots are refused whatever the env says: an empty env (no HOME, no
+  // TMPDIR — a trimmed or scrubbed spawn) must not drop the guard, and `$HOME`/`/` are
+  // refused as themselves while a checkout under the home directory stays a working tree.
+  await withEnv({ HOME: undefined, TMPDIR: undefined }, async () => {
+    for (const cwd of ["/", "/tmp", "/var/tmp", "/private/tmp"]) {
+      assert(
+        deletionRootsFrom({ PI_ENSEMBLE_ROLE: "ops" }, cwd).allowed.length === 0,
+        `G1b: an ops cwd of \`${cwd}\` is not a working root, HOME-less env included`,
+      );
+    }
+    // A scratch tree the harness built is admitted as a working directory: the rule decides the
+    // cwd by where the machine's temp dirs are and what `HOME` the spawn handed over, and it
+    // cannot tell a scratch tree from the checkout parked in the same shape. The damage is caught
+    // on the TARGET — an absolute delete of a tree outside the roots is refused — which is why
+    // the row below keeps a checkout working while the shared root two rows up stays closed.
+    const checkout = path.join(base, "projects", "some-checkout");
+    mkdirSync(checkout, { recursive: true });
+    try {
+      const inRepo = deletionRootsFrom({ PI_ENSEMBLE_ROLE: "ops", HOME: base }, checkout);
+      assert(
+        inRepo.allowed.length === 1 && firstDeletionOutside("rm -rf dist", inRepo) === undefined,
+        "G1b: an ops child in a real checkout under $HOME still cleans it",
+      );
+      assert(
+        firstDeletionOutside(`rm -rf ${sharedTmp}/pi-rukas-review-victim`, inRepo) !== undefined,
+        "G1b: and an absolute delete of the temp root from that checkout is refused",
+      );
+      // The env-coupling this row exists for: a machine whose temp dir sits UNDER the home
+      // directory — what macOS publishes as `$TMPDIR`, and any operator who parks their scratch at
+      // `~/tmp` — is the shape that silently closed the carve-out, because the temp roots were read
+      // from the parent process while `$HOME` came from the spawn. Pointing `TMPDIR` at a dir under
+      // this row's own `$HOME` is that host, reproduced rather than avoided. The tree sits under
+      // the OS home, because the rule refuses that too (`os.homedir()`, the passwd entry, which no
+      // env can move) and a checkout outside it would be refused for that reason rather than the one
+      // under test. The shape is the one a host with a home-relative temp dir really has — a single
+      // home tree holding the temp dir and the checkout, exactly where `~` points them, because a
+      // checkout parked beside the temp root is refused by the rule that closes the tree holding
+      // every run's temp dirs, which is a different rule. The checkout must still be a working root
+      // with its build dir deletable: fail-closed on every ops spawn is what these two assertions
+      // refuse to let the code do quietly. `TMPDIR` is the variable under test, not the machine's.
+      const hostTree = mkdtempSync(path.join(os.homedir(), ".pi-rukas-2200-host-"));
+      const realCheckout = path.join(hostTree, "projects", "checkout");
+      // NOT named `tmp`: a directory bearing a temp root's name is refused wherever it sits, which
+      // is a different rule and would decide this row before the env-coupling under test got asked.
+      const homeTmp = path.join(hostTree, "machinetmp");
+      mkdirSync(realCheckout, { recursive: true });
+      mkdirSync(homeTmp, { recursive: true });
+      const tmpInsideHome = deletionRootsFrom(
+        { PI_ENSEMBLE_ROLE: "ops", HOME: hostTree, TMPDIR: homeTmp },
+        realCheckout,
+      );
+      assert(
+        tmpInsideHome.allowed.length === 1 &&
+          firstDeletionOutside("rm -rf dist", tmpInsideHome) === undefined &&
+          firstDeletionOutside("rm -rf node_modules", tmpInsideHome) === undefined,
+        "G1b: an ops child still cleans its checkout when the machine's temp dir sits under $HOME",
+      );
+      assert(
+        firstDeletionOutside(`rm -rf ${homeTmp}/victim`, tmpInsideHome) !== undefined,
+        "G1b: and that same env still refuses a delete inside the temp dir it points at",
+      );
+      rmSync(hostTree, { recursive: true, force: true });
+    } finally {
+      rmSync(path.join(base, "projects"), { recursive: true, force: true });
+    }
+  });
+  // The ancestor walk never climbs to `$HOME` or the volume root. The walk seeds on a temp root
+  // and adds its PARENT for the whole subtree (a child standing there reaches a sibling child's
+  // temp dir with `rm -rf ..`). Where that parent IS the home directory — any host that publishes
+  // a home-relative temp dir, macOS's `$TMPDIR` or an operator's `~/tmp` — adding it closes the
+  // whole subtree, so every checkout under `$HOME` loses the `ops` carve-out. A home directory (and
+  // `/`) is refused where it STANDS, never for everything under it, which is what these rows pin.
+  // The env is the host described above, read through `HOME`/`TMPDIR` only: the rule's own view of
+  // both comes from the one env handed to this call, so the row is the host rather than an imitation
+  // of it. `HOME = <base>`, `TMPDIR = <base>/tmp`.
+  const homeHost = { PI_ENSEMBLE_ROLE: "ops", HOME: base, TMPDIR: sharedTmp };
+  const opsCheckout = path.join(base, "projects", "repo");
+  mkdirSync(opsCheckout, { recursive: true });
+  {
+    const inCheckout = deletionRootsFrom(homeHost, opsCheckout);
+    assert(
+      inCheckout.allowed.length === 1 &&
+        firstDeletionOutside("rm -rf dist", inCheckout) === undefined,
+      `G1b: an ops checkout under \`$HOME\` keeps the carve-out when \`TMPDIR\` is \`$HOME/tmp\` (parent walk must not add \`$HOME\`) (got ${JSON.stringify(inCheckout.allowed)})`,
+    );
+    // The refusal still covers the temp root's own subtree — everything but its parent — so the
+    // carve-out above is not the walk having been dropped.
+    assert(
+      firstDeletionOutside(`rm -rf ${sharedTmp}`, inCheckout) !== undefined &&
+        firstDeletionOutside(`rm -rf ${sharedTmp}/other-session-run`, inCheckout) !== undefined,
+      "G1b: and the temp root's own subtree stays refused from that checkout",
+    );
+    // A home directory is refused as ITSELF, not as a subtree: this line is the one a whole-subtree
+    // refusal of `$HOME` would be indistinguishable from, so it is pinned on its own.
+    assert(
+      firstDeletionOutside(`rm -rf ${base}`, inCheckout) !== undefined,
+      "G1b: and an absolute `rm -rf $HOME` from that checkout is refused",
+    );
+  }
+  {
+    // Fail-closed, and deliberately so: a checkout the dispatch parked INSIDE the temp root is not
+    // a working directory. The rule refuses a temp root for its whole subtree precisely because a
+    // child standing in one reaches the shared root itself with `rm -rf ..`, and the basename rule
+    // refuses a cwd NAMED for a temp root wherever it sits. Both would be undone by admitting this
+    // cwd, so the row says the answer out loud rather than leaving it to be inferred from the row
+    // above, whose cwd sits beside the temp root.
+    const insideTemp = deletionRootsFrom(homeHost, path.join(sharedTmp, "wt", "repo"));
+    assert(
+      insideTemp.allowed.length === 0 &&
+        firstDeletionOutside("rm -rf dist", insideTemp) !== undefined,
+      "G1b: a checkout the dispatch parked inside the temp root is refused fail-closed, not carved out",
+    );
+  }
+}
+});
+
+console.log(`\nexit ${exit}`);
+process.exit(exit);

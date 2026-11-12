@@ -16,10 +16,19 @@ import {
   deletionRootsFrom,
   firstDeletionOutside,
 } from "../src/write-fence-deletion.ts";
-import { buildDeletionFixture } from "./lib/write-fence-deletion-fixture.ts";
+import {
+  buildDeletionFixture,
+  deletionHost,
+  withDeletionHost,
+} from "./lib/write-fence-deletion-fixture.ts";
 import { assert, exit } from "./lib/write-fence-deletion-harness.ts";
 
+// Every row runs inside this block: the rule consults process.env for the home it refuses
+// (os.homedir) and for the temp root its ancestor walk seeds on (os.tmpdir), so an unpinned
+// runner could make a row green or red by where it happened to put TMPDIR. See withDeletionHost.
 const { base, wt, scratch, childTmp, sharedTmp, foreignRun } = buildDeletionFixture("interp");
+const HOST = deletionHost(base);
+await withDeletionHost(HOST, async () => {
 
 const FENCED_ENV = {
   PI_ENSEMBLE_WRITE_ROOT: wt,
@@ -114,6 +123,8 @@ assert(
   "A3 refuse: `perl -e` with the bareword `unlink` call",
 );
 
+
+});
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);
