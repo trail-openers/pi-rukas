@@ -67,14 +67,16 @@ const WRAPPERS = new Set([
 
 /**
  * The options of each wrapper that take a SEPARATE value (`nice -n 5`, `timeout -s KILL`),
- * checked against each wrapper's own usage output. A boolean flag listed here swallows the
+ * checked against each wrapper's own usage output. Exported because the deletion reader
+ * (#2200) re-reads the words the strip left behind with this same table, so the two readers
+ * cannot disagree about which word an option swallowed. A boolean flag listed here swallows the
  * next word — the wrapper's command, when the flag comes last — and a remover the reader never
  * saw is a remover the rule never judged. Short namespace flags (`unshare -m`, `nsenter -p`) and
  * tracing flags (`strace -f`) are boolean: their `[=<file>]` form is attached and optional.
  * Long options are listed even where `=` is the usual spelling, since spaced `--class 3` is
  * accepted too.
  */
-const VALUE_OPTIONS: Record<string, readonly string[]> = {
+export const VALUE_OPTIONS: Record<string, readonly string[]> = {
   env: ["-u", "--unset", "-S", "--split-string"],
   nice: ["-n", "--adjustment"],
   ionice: ["-c", "-n", "-p", "-P", "-u", "--class", "--classdata", "--pid", "--pgid", "--uid"],
@@ -159,6 +161,15 @@ const REMOVERS = new Set(["rm", "rmdir", "unlink", "shred"]);
 /** The removal commands the deletion rule (#2200) reads the operands of. */
 export function isRemover(name: string): boolean {
   return REMOVERS.has(name);
+}
+
+/**
+ * Whether a name is one of the wrappers `stripPrefix` consumes to reach the command behind it.
+ * Exported for the deletion reader (#2200), which has to tell a surviving program from a word a
+ * miscounted wrapper left behind — the answer is this set's, not a second list of names.
+ */
+export function isWrapper(name: string): boolean {
+  return WRAPPERS.has(name);
 }
 
 /**

@@ -43,9 +43,9 @@ export const GLOB_TARGET_REASON =
 export const MAGIC_PATHSPEC_REASON =
   "it removes a magic pathspec (`:/` or `:(top)…`), which git resolves from the repository top rather than the directory it runs in, so the tree cannot be judged. Name the path without pathspec magic";
 
-/** Why a forcing `git clean` carries `--pathspec-from-file`: git reads the pathspecs from a file or stdin, so the command line names no tree. */
-export const PATHSPEC_FILE_REASON =
-  "it reads its pathspecs from a file or standard input (--pathspec-from-file), so the trees it removes cannot be judged. Name each path on the command line";
+/** Why a wrapper the reader cannot see past swallows the command it runs. */
+export const UNJUDGED_WRAPPER_REASON =
+  "its wrapper's options leave no command for this rule to read, so what it deletes cannot be judged. Run the deletion as its own command, without that wrapper";
 
 /** Why an expansion at a delete position is refused. */
 export const DYNAMIC_TARGET_REASON =

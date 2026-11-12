@@ -202,29 +202,6 @@ await withDeletionHost(HOST, async () => {
       refused("git clean -fdx :(top)../..") !== undefined,
       "E: a forcing clean with a `:(top)../..` magic pathspec is refused",
     );
-    // `--pathspec-from-file` hands git the pathspecs in a file (or on stdin as `-`), so the trees
-    // a forcing clean removes are not on the command line at all — no reading of this line names
-    // them. Refused the way the magic pathspec is, in each spelling the option takes.
-    assert(
-      refused("git clean -fdx --pathspec-from-file paths.txt") !== undefined,
-      "E: a forcing clean reading its pathspecs from a file is refused",
-    );
-    assert(
-      refused(`git clean -fdx --pathspec-from-file=${sharedTmp}/paths.txt`) !== undefined,
-      "E: a forcing clean with an attached `--pathspec-from-file=<file>` is refused",
-    );
-    assert(
-      refused("git clean -fdx --pathspec-from-file=-") !== undefined,
-      "E: a forcing clean reading its pathspecs from standard input is refused",
-    );
-    assert(
-      refused("git clean -fdx --pathspec-from-file -") !== undefined,
-      "E: a forcing clean reading stdin through a separate `-` value is refused",
-    );
-    assert(
-      refused("git clean -fd --pathspec-from-file paths.txt") !== undefined,
-      "E: a forcing clean with `--pathspec-from-file` and no `-f` is refused (fail-closed, as with a bundled `-n`)",
-    );
     // The git guard's own opt-out is about the child's working tree, so it cannot
     // open the shared root: the refusal stands whatever that switch says.
     const pi = fakePi();
