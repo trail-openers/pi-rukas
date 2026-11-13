@@ -9,9 +9,12 @@
  *     (`handoff-emitted` with `targetType: "pr"`), minus the comment anchor.
  *  2. The project's git remote, when there is exactly one (so the PR cannot
  *     be on another), the forge is GitHub or GitLab, and the web address is
- *     certain: an `http(s)` remote (host and port kept), or an ssh remote on
- *     github.com / gitlab.com. An ssh remote on any other host is skipped —
- *     its host may be an ssh alias, and its port is not the web port.
+ *     certain: an `http(s)` remote (host and port kept), an ssh remote on
+ *     github.com / gitlab.com, or an ssh remote whose host the project itself
+ *     declares — the `host=` of `.pi/forge`, which the operator wrote down
+ *     precisely because the known-host table does not cover it. An ssh remote
+ *     on any other host is skipped — its host may be an ssh alias, and its
+ *     port is not the web port.
  *
  * Local reads only (`git remote`, `.pi/forge`); the forge probe is off.
  */
@@ -42,8 +45,21 @@ export function recordedPrUrl(state: WorkState, prNumber: number): string | unde
   return undefined;
 }
 
-/** `https://host[:port]/group/…/repo` for a remote, or undefined when not certain. */
-export function webRepoUrl(forge: string, remoteUrl: string): string | undefined {
+/**
+ * `https://host[:port]/group/…/repo` for a remote, or undefined when not certain.
+ *
+ * `declaredHost` is the host the project names for this forge — `.pi/forge`'s
+ * `host=`. With it, an ssh remote to a self-hosted forge gets a web address,
+ * built from the declared host (never the remote's own port, which is an ssh
+ * port) and the remote's full path. It is honoured only when the remote
+ * actually carries that host as its own, so an ssh alias never borrows a web
+ * address from a host it does not name.
+ */
+export function webRepoUrl(
+  forge: string,
+  remoteUrl: string,
+  declaredHost?: string,
+): string | undefined {
   const u = remoteUrl.trim();
   let base: string | undefined;
   let repoPath: string | undefined;
@@ -56,7 +72,12 @@ export function webRepoUrl(forge: string, remoteUrl: string): string | undefined
   } else {
     const m = ssh ?? scp;
     const host = m?.[1]?.toLowerCase();
-    if (!host || !SSH_WEB_HOSTS.has(host) || !m?.[2]) return undefined;
+    const declared = declaredHost?.trim().toLowerCase();
+    if (!host || !m?.[2]) return undefined;
+    // The declared host has to be the remote's own host, and a host whose name
+    // contains a slash names a path rather than a host — neither is certain.
+    if (declared && (declared.includes("/") || declared !== host)) return undefined;
+    if (!SSH_WEB_HOSTS.has(host) && !declared) return undefined;
     base = `https://${host}`;
     repoPath = m[2];
   }
@@ -76,8 +97,9 @@ export function formatPrUrl(
   forge: string,
   remoteUrl: string,
   prNumber: number,
+  declaredHost?: string,
 ): string | undefined {
-  const repo = webRepoUrl(forge, remoteUrl);
+  const repo = webRepoUrl(forge, remoteUrl, declaredHost);
   if (!repo) return undefined;
   return forge === "github" ? `${repo}/pull/${prNumber}` : `${repo}/-/merge_requests/${prNumber}`;
 }
@@ -92,7 +114,9 @@ export async function prUrlResolver(
     if (stdout.trim().split("\n").filter(Boolean).length !== 1) return none;
     const d = await detectForge(repoRoot, { allowProbe: false });
     const url = d.url;
-    return url ? (n) => formatPrUrl(d.forge, url, n) : none;
+    // The host is what makes a self-hosted ssh remote addressable: it is the
+    // `.pi/forge` host, so a host nobody declared stays unaddressable.
+    return url ? (n) => formatPrUrl(d.forge, url, n, d.host) : none;
   } catch {
     return none;
   }
