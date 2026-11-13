@@ -133,6 +133,34 @@ export interface Outcome {
   /// `review` only: the step's OWN wall clock stopped it, not one child's budget.
   reviewBound?: ReviewBoundRecord;
   /**
+   * `handback` only: the head origin's branch holds once this step finished — the
+   * verified one it moved back to, or the unverified one it left standing. A run
+   * whose `fixed` review pushed and whose re-verification never ran otherwise
+   * reports a head no gate certified, and the reader could not tell the two cases
+   * apart from the reason prose. Absent means this step moved nothing and had no
+   * head to name.
+   */
+  shippedHead?: string;
+  /**
+   * `handback` only: whether `shippedHead` is a head the run's own gate certified.
+   * The typed answer to "did verify see what shipped", which no other field of the
+   * record can give once a fix wave moved the branch. Written with `shippedHead`.
+   */
+  shippedVerified?: boolean;
+  /**
+   * `handback` only: the head the run pushed and this step did NOT ship — origin's
+   * branch as the step read it, kept reachable under `refs/lean/unverified/<issue>`
+   * before any rewind. Absent when nothing was left behind.
+   */
+  unshippedHead?: string;
+  /**
+   * `handback` only: why the unshipped head was not shipped, or why a rewind that
+   * was due did not move anything — a lease git refused, an unreadable origin, a
+   * run with no green verify to fall back to. Prose for the operator, beside the
+   * two head fields it explains.
+   */
+  unshippedReason?: string;
+  /**
    * `specify`, `build` and `challenge` only: one row per dispatch the step paid
    * for, including the ones that died or were stopped by their budget. A row is
    * written for every child so the totals a host reads cannot quietly omit the

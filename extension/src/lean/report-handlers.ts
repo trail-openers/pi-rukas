@@ -21,8 +21,11 @@
  * the two. A build-time read would report the channel as it stood at assembly.
  */
 
+import { execp } from "../exec.ts";
 import { handoffChannel } from "../work-driver-handoff-channel.ts";
 import type { HandlerCtx, LeanHandlers } from "./engine.ts";
+import { rewindToVerified } from "./handback-rewind.ts";
+import type { Rewind } from "./handback-rewind.ts";
 import { handbackOutcome } from "./handback.ts";
 import { postHandback, postNotReady } from "./io.ts";
 import { REPORT_FAILED_KIND } from "./machine.ts";
@@ -73,6 +76,15 @@ function stampHost(outcome: Outcome): Outcome {
 }
 
 /**
+ * The rewind seam one run's handback is driven with: the real executor against the
+ * run's own clone, from the repo root (which is a clone of origin whether or not the
+ * run's worktree survived).
+ */
+function rewindFor(ctx: HandlerCtx): (verifiedHead: string) => Promise<Rewind> {
+  return (verifiedHead: string) => rewindToVerified(execp, ctx, verifiedHead, { net: true });
+}
+
+/**
  * The two reporting handlers, wired to the outside world the command owns:
  * `repoRoot`/`issue` are what a post is addressed to.
  */
@@ -83,8 +95,8 @@ export function reportHandlers(repoRoot: string, issue: number): LeanHandlers {
   return {
     handback: (ctx: HandlerCtx) =>
       handoffChannel() === "host"
-        ? handbackOutcome(ctx, noPost).then(stampHost)
-        : handbackOutcome(ctx, postHandback),
+        ? handbackOutcome(ctx, noPost, rewindFor(ctx)).then(stampHost)
+        : handbackOutcome(ctx, postHandback, rewindFor(ctx)),
     decline: async (ctx: HandlerCtx) => {
       // From the log, not from a closure: see `failedRulesFromLog`.
       const rules = failedRulesFromLog(ctx.steps);

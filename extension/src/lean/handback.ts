@@ -23,11 +23,14 @@
 import { assertSafeRef } from "../worktree-loss.ts";
 import { frozenFromLog } from "./build.ts";
 import type { HandlerCtx } from "./engine.ts";
+import { handbackHeads } from "./handback-heads.ts";
+import { type Rewind, rewindToVerified } from "./handback-rewind.ts";
 import { postHandback } from "./io.ts";
 import { BLOCKED_PATH_CAP, BLOCKED_REASON_CAP, validPrUrl } from "./state-outcome.ts";
 import { type Outcome, REPORT_STATES, type Step } from "./state.ts";
 import { budgetSentence, budgetTrio } from "./step-budget.ts";
 import { fenceText, oneLine } from "./text-fence.ts";
+import { leanVerifiedHandbackEnabled } from "./verified-handback-switch.ts";
 import { newestRedVerifyReason } from "./verify-deps.ts";
 
 /** A reason line long enough to be a wall is not a comment a human reads. */
@@ -218,7 +221,7 @@ function frozenLines(frozen: string[]): string {
 /** The comment body: what is needed, what was frozen, and where the work is. */
 export function handbackBody(
   issue: number,
-  opts: { needed: string; frozen: string[]; branch: string; prUrl?: string },
+  opts: { needed: string; frozen: string[]; branch: string; prUrl?: string; heads?: Heads },
 ): string {
   const tests = frozenLines(opts.frozen);
   return [
@@ -226,12 +229,74 @@ export function handbackBody(
     "",
     fenceText(opts.needed, REASON_CLIP),
     "",
+    ...(headLines(opts.heads) ?? []),
     "Frozen acceptance tests:",
     tests,
     "",
     ...branchLine(opts.branch),
     `PR: ${opts.prUrl ?? "no PR yet"}`,
   ].join("\n");
+}
+
+/**
+ * The head lines of the comment, or `undefined` when this run has nothing to say
+ * about heads. A handback that moved nothing and left no unverified head behind
+ * prints no head section at all: an empty one would read as an answer about a
+ * move nobody made.
+ *
+ * Both halves are stated whether or not the rewind landed — which head shipped,
+ * whether verify saw it, and which head was left with its reason — because the
+ * case the operator needs is the one where the shipped head is NOT the verified
+ * one.
+ */
+function headLines(heads: Heads | undefined): string[] | undefined {
+  if (heads === undefined || heads.shippedHead === undefined) return undefined;
+  const lines = [
+    `Shipped head: \`${heads.shippedHead}\` (${heads.shippedVerified === true ? "verified" : "NOT verified"})`,
+  ];
+  if (heads.unshippedHead !== undefined)
+    lines.push(
+      `Unshipped head: \`${heads.unshippedHead}\` — ${heads.unshippedReason ?? "not shipped"}`,
+    );
+  return [...lines, ""];
+}
+
+/**
+ * The head facts of one handback, in the shape the record and the comment both read.
+ *
+ * One shape for both surfaces because they are ONE fact: the comment the forge is
+ * handed and the body the host is handed are the same string, and the step's typed
+ * fields are that string's evidence.
+ */
+interface Heads {
+  shippedHead?: string;
+  shippedVerified?: boolean;
+  unshippedHead?: string;
+  unshippedReason?: string;
+}
+
+/**
+ * The head facts one handback records, from what its rewind settled on.
+ *
+ * A handback the rule does not touch records nothing: no head fields, so the
+ * comment carries no head section. The rewind's own answer is the whole input —
+ * the head origin holds is the shipped head whatever the move did, and whether
+ * it was verified is the question the rule exists to answer.
+ */
+function headFacts(applies: boolean, rewind: Rewind): Heads {
+  if (!applies) return {};
+  // Origin's branch as the step read it. When the rewind landed that sha IS the
+  // verified head (the step checked origin holds it), and when it refused the run
+  // shipped exactly what it left — unverified, which `shippedVerified` says.
+  const shippedHead = rewind.unshippedHead;
+  return {
+    ...(shippedHead === undefined ? {} : { shippedHead }),
+    shippedVerified: rewind.shipped,
+    ...(rewind.shipped || rewind.unshippedHead === undefined
+      ? {}
+      : { unshippedHead: rewind.unshippedHead }),
+    ...(rewind.reason === undefined ? {} : { unshippedReason: rewind.reason }),
+  };
 }
 
 /**
@@ -247,22 +312,41 @@ export function handbackBody(
 export async function handbackOutcome(
   ctx: HandlerCtx,
   post: (repoRoot: string, issue: number, body: string) => Promise<void>,
+  rewind: (verifiedHead: string) => Promise<Rewind> = async () => ({ shipped: false }),
 ): Promise<Outcome> {
   let body: string | undefined;
   try {
     // Inside the try: this step's contract is that it never throws, and a body
     // that failed to build has to be reported the same way a refused post is.
     const prUrl = prUrlFromLog(ctx.steps);
+    const heads = handbackHeads(ctx.steps);
+    // The rewind happens BEFORE the body is built, so the comment states where
+    // origin's branch stands after the move rather than where it stood before it.
+    // The switch is read here, at call time, and a disabled rule moves nothing.
+    const moved =
+      heads.applies && leanVerifiedHandbackEnabled() && heads.verifiedHead !== undefined
+        ? await rewind(heads.verifiedHead)
+        : heads.applies
+          ? { shipped: false, reason: heads.reason ?? "the rule did not move origin's branch" }
+          : { shipped: false };
+    const facts = headFacts(heads.applies, moved);
     body = handbackBody(ctx.issue, {
       needed: neededFromLog(ctx.steps),
       frozen: frozenList(ctx.steps),
       branch: ctx.run.branch,
       ...(prUrl === undefined ? {} : { prUrl }),
+      ...(facts.shippedHead === undefined ? {} : { heads: facts }),
     });
     await post(ctx.repoRoot, ctx.issue, body);
     // `posted: true` is the only place the claim lives: the kind is `done` either way, so without the
     // field a refused post and a delivered one are the same record to a later reader.
-    return { kind: "done", reason: "handback comment posted", posted: true, report: body };
+    return {
+      kind: "done",
+      reason: "handback comment posted",
+      posted: true,
+      report: body,
+      ...facts,
+    };
   } catch (err) {
     // The run ends here either way; the record says whether anyone was told.
     return {
