@@ -19,6 +19,7 @@
 import {
   type PiSpec,
   SPEC_INFO,
+  hasSurvivingSpecShapedFence,
   parsePiSpec,
   readPiSpecBlockInfo,
   readiness,
@@ -246,6 +247,30 @@ assert(
   assert(
     parsePiSpec(stripPiSpecBlocks(valid())).ok === false,
     "strip: a stripped body has no block left to parse — the section is not a second contract",
+  );
+
+  // The predicate `lean/issue-prose.ts` uses to refuse a section that would reprint
+  // the contract. It is a FENCE-SHAPE test, not a substring test over the body: the
+  // two cases below differ only in whether the string sits on an opening fence line,
+  // and a whole-body `includes` would answer them the same way — which is the bug
+  // that silently dropped the issue section for any `/plan` body that quoted the
+  // block format in its own prose.
+  for (const [name, body, want] of [
+    ["look-alike fence (info has extra text)", "```pi-spec v1 extra\nkeep\n```", true],
+    ["look-alike tilde fence", "~~~pi-spec v1 draft\nkeep\n~~~", true],
+    ["indented look-alike fence", "   ```pi-spec v1 extra\nkeep\n   ```", true],
+    ["prose that quotes the format", "A `pi-spec v1` block summarises it.\n\nTAIL requirement.", false],
+    ["a json fence whose CONTENT mentions it", "```json\npi-spec v1\n```", false],
+    ["prose with no fence at all", "Nothing shaped like a fence here.", false],
+  ] as const) {
+    assert(
+      hasSurvivingSpecShapedFence(body) === want,
+      `surviving-fence: a ${name} reads ${String(want)} (got ${String(hasSurvivingSpecShapedFence(body))})`,
+    );
+  }
+  assert(
+    hasSurvivingSpecShapedFence(stripPiSpecBlocks(valid())) === false,
+    "surviving-fence: a body whose real block was stripped carries no spec-shaped fence",
   );
 
   // A removed block takes ONE of its flanking blanks with it. A block is flanked by

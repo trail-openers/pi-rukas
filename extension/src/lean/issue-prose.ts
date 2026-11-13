@@ -29,10 +29,15 @@
  * `PI_ENSEMBLE_LEAN_ISSUE_PROSE=0` removes the section from all three seats and
  * restores the two oracle prompts' pre-feature bytes byte for byte (the builder
  * has no pre-feature section to restore — the switch is what #2228 added there).
- * `PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE=0` reaches the builder's seat only.
+ * `PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE=0` reaches the builder's seat ONLY: the
+ * builder consults both switches at its own call site, so pinning it off leaves
+ * `specify` and `challenge` rendering. That per-seat isolation is the point of
+ * the knob — an operator A/B-ing the builder's brief must not quietly revert the
+ * two oracle prompts as well, which would make the comparison measure two
+ * variables and blame the delta on one.
  */
 import { fencedIssueBody } from "../adversarial-prompts.ts";
-import { SPEC_INFO, stripPiSpecBlocks } from "./spec.ts";
+import { hasSurvivingSpecShapedFence, stripPiSpecBlocks } from "./spec.ts";
 
 /** The section heading. */
 export const LEAN_ISSUE_HEADING = "## The issue";
@@ -84,13 +89,15 @@ function normalizeProse(s: string): string {
 /**
  * The issue section of a lean prompt, or "" when it has nothing to say.
  *
- * Three answers of "nothing": either switch is `0`, the body is blank once its
- * `pi-spec` block is stripped, or — the builder's case, and the one a body-free
- * render cannot show — the prose is the spec's own `problem` line restated, in
- * which case the section would hand the seat its own heading back and label it
- * the task. `problemFor` is passed only by the builder; the oracles omit it and
- * are byte-unchanged, since for them the problem line and the prose are read for
- * different jobs.
+ * Two answers of "nothing" belong to every seat: the body is blank once its
+ * `pi-spec` block is stripped, or a spec-SHAPED FENCE survived that strip. The
+ * builder's seat adds two of its own — the caller's
+ * `PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE=0`, which it consults at its own call site
+ * and never through here (so the two oracle seats are untouched by it), and the
+ * prose being the spec's own `problem` line restated, in which case the section
+ * would hand that seat its own heading back and label it the task. `problemFor`
+ * is passed only by the builder; the oracles omit it and are byte-unchanged,
+ * since for them the problem line and the prose are read for different jobs.
  *
  * `lead` is the seat's own instruction; it defaults to the oracle's, so the two
  * adversary seats render through here without naming anything new.
@@ -100,19 +107,20 @@ export function leanIssueSection(
   lead: string = LEAN_ISSUE_LEAD,
   problemFor?: string,
 ): string {
-  if (!leanIssueProseEnabled() || !leanBuildIssueProseEnabled()) return "";
+  if (!leanIssueProseEnabled()) return "";
   const stripped = stripPiSpecBlocks(issueBody ?? "");
   // The section's own rule 1 — the spec block never appears here, because the
   // criteria print it verbatim one heading below — holds only when the strip fired.
-  // `stripPiSpecBlocks` recognises exactly `pi-spec v1` and no other info string,
-  // a rule `test-lean-spec.ts` pins (a fence whose info merely STARTS with it is
-  // not the block, because `parsePiSpec` must not read it as one either), so such a
-  // look-alike survives the strip and would reprint the contract. Refuse the whole
-  // section rather than print a second copy: a body whose spec is unreadable is a
-  // body whose criteria were never rendered, and its text is a contract no test
-  // enforces. The strip is NOT loosened — its exact-info rule belongs to
+  // A fence whose info merely STARTS with `pi-spec v1` is not the block (the exact
+  // rule `test-lean-spec.ts` pins, shared with `parsePiSpec`), so it survives the
+  // strip and would reprint the contract. Refuse the whole section rather than
+  // print a second copy: a body whose spec is unreadable is a body whose criteria
+  // were never rendered, and its text is a contract no test enforces. The predicate
+  // is a SURVIVING FENCE LINE, not the substring — prose that quotes the block
+  // format is ordinary text and keeps its section, which is the whole point of
+  // #2177/#2228. The strip is NOT loosened: its exact-info rule belongs to
   // `lean/spec.ts` and every reader of the same body.
-  if (stripped.includes(SPEC_INFO)) return "";
+  if (hasSurvivingSpecShapedFence(stripped)) return "";
   const prose = fencedIssueBody(stripped);
   if (prose === "") return "";
   if (problemFor !== undefined && normalizeProse(stripped) === normalizeProse(problemFor))

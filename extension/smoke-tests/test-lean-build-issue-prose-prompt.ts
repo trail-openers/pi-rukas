@@ -38,6 +38,7 @@ import {
 } from "../src/lean/issue-prose.ts";
 import type { PiSpec } from "../src/lean/spec.ts";
 import { withEnv } from "./lib/env-scope.ts";
+import { SPEC_BODY_WITH_PROSE } from "./lib/lean-build-asserts.ts";
 import { CONSTRAINT, INJECT_BODY, ISSUE_BODY, OVER_BODY } from "./lib/ticket-issue-fixture.ts";
 
 let exit = 0;
@@ -103,7 +104,7 @@ await withEnv(ON, async () => {
   );
   assert(prompt.includes("```text"), "the body is printed through the fence renderer, never raw");
   assert(
-    !prompt.includes("pi-spec v1") && !prompt.includes('"verify": "test"'),
+    !prompt.includes('"verify": "test"'),
     "the spec block itself never appears in the issue section — the criteria are printed below it",
   );
   assert(
@@ -115,6 +116,11 @@ await withEnv(ON, async () => {
   // no body — that is what the builder's brief looked like before #2228 threaded
   // the body through the step (B3).
   const bare = build();
+  // Per-seat ISOLATION, which is the whole reason this knob is a second switch
+  // rather than a second value of the first: the builder consults it at its own
+  // call site, so the two oracle prompts keep rendering. An operator A/B-ing the
+  // builder's brief that also reverted `specify`/`challenge` would measure two
+  // variables and blame the delta on one.
   await withEnv({ PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE: "0" }, async () => {
     const off = build(ISSUE_BODY);
     assert(
@@ -124,6 +130,12 @@ await withEnv(ON, async () => {
     assert(
       !off.includes(LEAN_ISSUE_HEADING) && !off.includes(CONSTRAINT),
       "the off render carries no section heading at all, not an empty one",
+    );
+    const oracleLead = leanIssueSection(ISSUE_BODY);
+    assert(
+      oracleLead.startsWith(`${LEAN_ISSUE_HEADING}\n\n${LEAN_ISSUE_LEAD}\n\n`) &&
+        oracleLead.includes(CONSTRAINT),
+      "and the same environment leaves the ORACLE render untouched — the builder's switch reaches the builder's seat only",
     );
   });
   // The shared switch gates the shared renderer, so it gates this seat too (B2).
@@ -215,27 +227,43 @@ await withEnv(ON, async () => {
   );
 
   // B8 — a body whose prose IS the problem line adds nothing, so it says nothing.
-  const restated = build([
-    "```pi-spec v1",
-    JSON.stringify({ ...SPEC, criteria: [{ id: "AC1", text: "x", verify: "test" }] }, null, 2),
-    "```",
-    "",
-    `   ${SPEC.problem}   `,
-  ].join("\n"));
+  const specOnly = (prose: string): string =>
+    [
+      "```pi-spec v1",
+      JSON.stringify(
+        { ...SPEC, criteria: [{ id: "AC1", text: "x", verify: "test" }] },
+        null,
+        2,
+      ),
+      "```",
+      "",
+      prose,
+    ].join("\n");
+  const restated = build(specOnly(`   ${SPEC.problem}   `));
   assert(
     restated === bare,
     "a body that only restates the problem line (whitespace collapsed) renders no section at all",
   );
-  const nearMiss = build([
-    "```pi-spec v1",
-    JSON.stringify({ ...SPEC, criteria: [{ id: "AC1", text: "x", verify: "test" }] }, null, 2),
-    "```",
-    "",
-    `${SPEC.problem} — and keeps its exception message.`,
-  ].join("\n"));
+  const nearMiss = build(specOnly(`${SPEC.problem} — and keeps its exception message.`));
   assert(
     nearMiss.includes(LEAN_ISSUE_HEADING),
     "and a body differing from the problem line by one clause is NOT collapsed away",
+  );
+
+  // B8 is a COMPARISON of prose, not a substring rule — and the converse belongs to
+  // the fence guard above: prose that NAMES the block format (a `/plan` drafter
+  // quoting `pi-spec v1` in its own text, or restating its own `Descriptor:` line,
+  // which `plan-pi-spec.ts` maps verbatim into `spec.problem`) is ordinary prose
+  // with a real requirement in it. The whole point of #2177/#2228 is that such a
+  // requirement reaches the seat, so a guard that refused the section for merely
+  // CONTAINING the string would silently drop it. `SPEC_BODY_WITH_PROSE` is that
+  // body, and its `TAIL-ONLY:` line is what must survive.
+  const quotesTheFormat = build(SPEC_BODY_WITH_PROSE);
+  assert(
+    quotesTheFormat.includes(LEAN_ISSUE_HEADING) &&
+      quotesTheFormat.includes('TAIL-ONLY: the exception message must remain exactly "quota exceeded"') &&
+      quotesTheFormat.includes("`pi-spec v1`"),
+    "a valid body whose PROSE mentions pi-spec v1 keeps its section and its tail requirement — only a surviving spec-shaped fence refuses it",
   );
 });
 

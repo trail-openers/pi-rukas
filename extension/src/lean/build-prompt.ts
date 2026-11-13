@@ -36,7 +36,11 @@
  */
 
 import { TEST_RUNNER_PLACEHOLDER } from "./config.ts";
-import { LEAN_BUILD_ISSUE_LEAD, leanIssueSection } from "./issue-prose.ts";
+import {
+  LEAN_BUILD_ISSUE_LEAD,
+  leanBuildIssueProseEnabled,
+  leanIssueSection,
+} from "./issue-prose.ts";
 import { criteriaBlock, scopeBlock } from "./spec-blocks.ts";
 import type { PiSpec } from "./spec.ts";
 
@@ -137,7 +141,14 @@ export function buildPrompt(opts: BuildPromptOpts): string {
     opts.testRunner === undefined || opts.testRunner.trim() === ""
       ? "No project test runner is configured, so run each frozen file with whatever command runs this repository's tests."
       : `The project runs one test file with \`${opts.testRunner}\` — the literal \`${TEST_RUNNER_PLACEHOLDER}\` is replaced by the file's path. Run the frozen files with that command as you work, and keep going until they pass.`;
-  const issueSection = leanIssueSection(opts.issueBody, LEAN_BUILD_ISSUE_LEAD, opts.spec.problem);
+  // The builder consults BOTH switches at its own call site: `leanIssueSection`
+  // gates on the shared one only, so `PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE=0` takes
+  // this seat's section out and leaves `specify`/`challenge` rendering — which is
+  // the isolation the knob exists for (an A/B on the builder's brief must not
+  // revert the two oracle prompts in the same run).
+  const issueSection = leanBuildIssueProseEnabled()
+    ? leanIssueSection(opts.issueBody, LEAN_BUILD_ISSUE_LEAD, opts.spec.problem)
+    : "";
   return [
     `You are implementing issue #${opts.issue}. The acceptance tests already exist and are committed; your job is to make them pass.`,
     "",

@@ -40,8 +40,17 @@ export const SPEC_BODY = `${FENCE}pi-spec v1\n${JSON.stringify(SPEC, null, 2)}\n
  * that has to show the builder READ the issue needs text the spec object does
  * not already carry, and `parsePiSpec` reads the block from anywhere in the body,
  * so the prose can sit on either side of it.
+ *
+ * The prose NAMES the block format (`pi-spec v1`) on a line that is not a fence.
+ * That is deliberate and it is the adversarial half of this fixture: a guard that
+ * refuses the section whenever the stripped body merely CONTAINS the string would
+ * silently drop the tail requirement for every `/plan` body that quotes the format
+ * in its own text — and `/plan` bodies do, because `plan-pi-spec.ts` documents an
+ * angle item quoting it. Only a surviving spec-shaped FENCE refuses the section.
  */
 export const SPEC_BODY_WITH_PROSE = `Add retry to the meter's quota check.
+
+The rule is spelled out in prose, not in the \`pi-spec v1\` block, which only summarises it.
 
 ${SPEC_BODY}
 

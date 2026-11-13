@@ -67,8 +67,12 @@ await withEnv(
       "(a) the tail sits INSIDE the section, not echoed somewhere else in the brief",
     );
     assert(
-      !prompt.includes("pi-spec v1") && !prompt.includes('"verify": "test"'),
+      !prompt.includes('"verify": "test"'),
       "(a) the spec block itself is stripped — the criteria are printed below, not embedded twice",
+    );
+    assert(
+      prompt.includes("`pi-spec v1`"),
+      "(a) the prose that QUOTES the block format survives the strip and the fence guard — only a surviving spec-shaped FENCE refuses the section",
     );
     assert(
       prompt.includes("```text") &&

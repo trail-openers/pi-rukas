@@ -278,6 +278,27 @@ export function stripPiSpecBlocks(body: string): string {
   return kept.join("\n");
 }
 
+/**
+ * Whether a fence shaped like the spec block SURVIVED in this body: an opening
+ * fence line whose info string starts with {@link SPEC_INFO}.
+ *
+ * `stripPiSpecBlocks` recognises exactly `pi-spec v1` and no other info string —
+ * the same exactness rule `parsePiSpec` applies, so a fence whose info merely
+ * STARTS with it is neither stripped nor read as a spec. Such a fence is the one
+ * spec-shaped text that survives the strip, and a seat shown the stripped body
+ * would be handed a second copy of a contract nothing enforces. A substring test
+ * over the whole body is NOT the same predicate: prose that merely names the
+ * block format (a `/plan` drafter quoting it in its own text, or restating its own
+ * `Descriptor:` line) is ordinary prose and must keep its section, so only an
+ * OPENING FENCE LINE counts.
+ */
+export function hasSurvivingSpecShapedFence(body: string): boolean {
+  for (const line of body.split(/\r?\n/)) {
+    if (/^(?: {0,3})(?:`{3,}|~{3,})[^\S\r\n]*pi-spec v1/.test(line)) return true;
+  }
+  return false;
+}
+
 /** Read the `pi-spec v1` block out of an issue body. Never throws. */
 export function parsePiSpec(body: string): ParseResult {
   const specs = fencedBlocks(body).filter((b) => b.info === SPEC_INFO);
