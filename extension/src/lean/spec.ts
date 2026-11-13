@@ -279,6 +279,25 @@ export function stripPiSpecBlocks(body: string): string {
 }
 
 /**
+ * Whether a fence OPENS the contract: an opening fence whose info string is
+ * {@link SPEC_INFO} as a WHOLE WORD — the exact info, or the exact info followed by
+ * whitespace.
+ *
+ * A prefix test is not this predicate, and the difference is not academic: `/plan`
+ * renames every drafted `pi-spec v1` opener to `pi-spec v1-example`
+ * (`PI_SPEC_EXAMPLE_INFO` in `plan-pi-spec.ts`) precisely so a body that QUOTES the
+ * block format can never be read as a contract. Such a fence is therefore present in
+ * every `/plan`-filed body that illustrates the format, and counting it as a second
+ * spec silently removed the issue section from every seat for every one of them.
+ * `pi-spec v1` PLUS a space is the shape that genuinely carries a second contract
+ * (`fencedBlocks` reads its info as `pi-spec v1 extra`, so the strip and the parser
+ * both refuse it) and still counts.
+ */
+function opensSpecFence(info: string): boolean {
+  return info === SPEC_INFO || info.startsWith(`${SPEC_INFO}${String.fromCharCode(32)}`);
+}
+
+/**
  * A line that OPENS a fence: the run, its character, and its info string.
  *
  * CommonMark's opener condition, and narrower than {@link closesFenceLine}'s — an
@@ -296,18 +315,19 @@ function openingFence(line: string): { char: string; len: number; info: string }
 
 /**
  * Whether a fence shaped like the spec block SURVIVED in this body: an OPENING
- * fence line at depth 0 whose info string starts with {@link SPEC_INFO}, i.e. the
- * shape a second spec block would take.
+ * fence line at depth 0 whose info string is {@link SPEC_INFO} as a whole word
+ * ({@link opensSpecFence}) — the shape a second spec block would take.
  *
  * `stripPiSpecBlocks` recognises exactly `pi-spec v1` and no other info string —
- * the same exactness rule `parsePiSpec` applies, so a fence whose info merely
- * STARTS with it is neither stripped nor read as a spec. Such a fence is the one
- * spec-shaped text that survives the strip, and a seat shown the stripped body
- * would be handed a second copy of a contract nothing enforces. A substring test
- * over the whole body is NOT the same predicate: prose that merely names the
- * block format (a `/plan` drafter quoting it in its own text, or restating its own
- * `Descriptor:` line) is ordinary prose and must keep its section, so only an
- * OPENING FENCE LINE counts.
+ * the same exactness rule `parsePiSpec` applies, so a fence whose info is the spec
+ * info followed by a space (```` ```pi-spec v1 extra ````) is neither stripped nor read
+ * as a spec. Such a fence is the one spec-shaped text that survives the strip, and a
+ * seat shown the stripped body would be handed a second copy of a contract nothing
+ * enforces. A substring test over the whole body is NOT the same predicate: prose that
+ * merely names the block format (a `/plan` drafter quoting it in its own text, or
+ * restating its own `Descriptor:` line) is ordinary prose and must keep its section,
+ * so only an OPENING FENCE LINE counts — and only one whose info is not merely
+ * PREFIXED by the spec info, which is what {@link opensSpecFence} refuses.
  *
  * Which is why this walks the body the way `stripPiSpecBlocks` walks it, on the
  * same predicate, rather than testing lines one at a time. A stateless line test
@@ -329,7 +349,7 @@ export function hasSurvivingSpecShapedFence(body: string): boolean {
     }
     const fence = openingFence(line);
     if (fence === undefined) continue;
-    if (fence.info.trimStart().startsWith(SPEC_INFO)) return true;
+    if (opensSpecFence(fence.info)) return true;
     open = fence;
   }
   return false;

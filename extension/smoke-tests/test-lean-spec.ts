@@ -306,10 +306,33 @@ assert(
       `\`\`\`\`${SPEC_INFO} extra\nkeep\n\`\`\`\`\n\n${TAIL_REQ}`,
       true,
     ],
+    // The info has to be the spec info as a WHOLE WORD. `/plan` renames every drafted
+    // `pi-spec v1` opener to `pi-spec v1-example` (`PI_SPEC_EXAMPLE_INFO` in
+    // `plan-pi-spec.ts`) precisely so a body that QUOTES the block format stays prose,
+    // so a `/plan`-filed body always carries such a fence beside the real block. A
+    // prefix test counted it as a second spec and silently dropped the issue section
+    // from every seat for every one of those bodies.
+    [
+      "the example fence /plan files a quoting body with",
+      `${TAIL_REQ}\n\n\`\`\`${SPEC_INFO}-example\n${JSON.stringify(SPEC, null, 2)}\n\`\`\``,
+      false,
+    ],
+    // …and the positive control: a glued suffix is not an info string, so the shape
+    // that genuinely carries a second contract still refuses.
+    [
+      "a spec-shaped fence with a real info string",
+      `${TAIL_REQ}\n\n\`\`\`${SPEC_INFO} example\n${JSON.stringify(SPEC, null, 2)}\n\`\`\``,
+      true,
+    ],
   ] as const) {
+    // Judged on BOTH bodies the predicate is ever handed. `lean/issue-prose.ts` calls
+    // it on `stripPiSpecBlocks(body)`; the rows above are written as raw bodies, and a
+    // strip that ate too much (or too little) would make the two readings disagree —
+    // which is exactly the drift the strip's jsdoc says the two must not have.
     assert(
-      hasSurvivingSpecShapedFence(body) === want,
-      `surviving-fence: a ${name} reads ${String(want)} (got ${String(hasSurvivingSpecShapedFence(body))})`,
+      hasSurvivingSpecShapedFence(body) === want &&
+        hasSurvivingSpecShapedFence(stripPiSpecBlocks(body)) === want,
+      `surviving-fence: a ${name} reads ${String(want)} on the raw and the stripped body (got ${String(hasSurvivingSpecShapedFence(body))} / ${String(hasSurvivingSpecShapedFence(stripPiSpecBlocks(body)))})`,
     );
   }
   assert(

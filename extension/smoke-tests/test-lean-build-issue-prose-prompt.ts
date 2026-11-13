@@ -247,6 +247,18 @@ await withEnv(ON, async () => {
       "a look-alike sitting inside a json sample",
       [SPEC_BODY, "", "```json", "```pi-spec v1 extra", "```", "", TAIL].join("\n"),
     ],
+    // The `/plan` shape, which the rows above do not cover: a body that QUOTES the block
+    // format is filed with the real block AND a `pi-spec v1-example` fence, because
+    // `neutraliseDraftedPiSpecFences` renames every drafted `pi-spec v1` opener to that
+    // info string (`PI_SPEC_EXAMPLE_INFO` in `plan-pi-spec.ts`). The example is the
+    // quoted format, not a contract — `parsePiSpec` refuses it by the same exact-info
+    // rule the strip uses — so it must not refuse the section. A prefix test over the
+    // info string counted it and silently dropped the builder's tail requirement on
+    // every `/plan`-filed issue.
+    [
+      "the `pi-spec v1-example` fence a /plan-filed body carries",
+      [SPEC_BODY, "", "```pi-spec v1-example", "```", "", TAIL].join("\n"),
+    ],
   ] as const) {
     const withTail = build(body);
     assert(
