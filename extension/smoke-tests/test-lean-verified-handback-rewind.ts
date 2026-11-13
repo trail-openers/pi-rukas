@@ -32,28 +32,20 @@
  * `test-lean-verified-handback.ts`; this file is the half that touches the wire.
  */
 
-import {
-  unverifiedRef,
-  NO_HEAD,
-  rewindToVerified,
-} from "../src/lean/handback-rewind.ts";
 import { rmSync } from "node:fs";
-import {
-  BRANCH,
-  ISSUE,
-  ROOTS,
-  exec,
-} from "./lib/lean-verified-handback-fixture.ts";
+import { NO_HEAD, rewindToVerified, unverifiedRef } from "../src/lean/handback-rewind.ts";
+import type { Rewind } from "../src/lean/handback-rewind.ts";
+import { stepGitEnv } from "./lib/lean-review-fixtures.ts";
+import { BRANCH, ISSUE, ROOTS, exec } from "./lib/lean-verified-handback-fixture.ts";
 import {
   cloneHolds,
   commitOnTop,
+  forceOriginRef,
   originBranchSha,
   originRefSha,
   repoWithFixHead,
   strangerOnTop,
 } from "./lib/lean-verified-handback-repo.ts";
-import { stepGitEnv } from "./lib/lean-review-fixtures.ts";
-import type { Rewind } from "../src/lean/handback-rewind.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -229,6 +221,59 @@ function rewinder(repoRoot: string): (verifiedHead: string) => Promise<Rewind> {
   assert(
     NO_HEAD.shipped === false && (NO_HEAD.reason ?? "").includes("no verified head"),
     `(g) the no-head answer is the one the step prints (${String(NO_HEAD.reason)})`,
+  );
+}
+
+// ── the certified head is not an object this clone can read ───────────────
+{
+  // The arm the record exists to refuse: `verifiedHead` arrives from a child's
+  // verdict and round-trips through the on-disk state file, so it can be a
+  // well-shaped sha for bytes no clone holds — a resumed run whose clone never
+  // fetched, or a state file that was edited. Origin ALREADY holds that sha, so the
+  // string comparison of the `alreadyAtVerified` arm would answer `shippedVerified:
+  // true` with no push and no object probe at all, and the comment would certify
+  // bytes nothing can resolve. Shape is not existence: the rewind asks git first.
+  const repo = repoWithFixHead();
+  const forged = "a".repeat(40);
+  if (cloneHolds(repo.repoRoot, forged))
+    throw new Error(
+      "the case's forged head is a real object, so it would not be the forgery it pins",
+    );
+  // Move origin's branch to the sha the log claims is verified, so this is the
+  // `held === verifiedHead` shape and only the object probe stands between the run
+  // and a certified-looking record.
+  forceOriginRef(repo.origin, forged, `refs/heads/${BRANCH}`);
+  const rewind = await rewinder(repo.repoRoot)(forged);
+  assert(
+    rewind.shipped === false && rewind.alreadyAtVerified !== true,
+    `(m) a head no clone can read is not reported as already-there (${JSON.stringify([rewind.shipped, rewind.alreadyAtVerified])})`,
+  );
+  assert(
+    (rewind.reason ?? "").includes("is not a commit this clone has"),
+    `(m) the record says the certified head is not an object this clone can read (${String(rewind.reason)})`,
+  );
+  assert(
+    originBranchSha(repo.origin) === forged,
+    `(m) origin's branch did not move (${String(originBranchSha(repo.origin))})`,
+  );
+  assert(
+    originRefSha(repo.origin, unverifiedRef(ISSUE)) === undefined,
+    "(m) and no keeping-ref was written",
+  );
+  // And the positive control: the same arm with a head this clone DOES hold still
+  // answers `alreadyAtVerified`, so the probe above is what refused, not a blanket
+  // refusal of every no-push case.
+  // And the positive control, on its OWN repo: the same `held === verifiedHead` arm
+  // with a head this clone DOES hold still answers `alreadyAtVerified`, so the probe
+  // above is what refused, not a blanket refusal of every no-push case. A second call
+  // on the forged repo would not do — origin there is left pointing at bytes no
+  // repository can supply, which every later git command in that clone trips over.
+  const real = repoWithFixHead();
+  forceOriginRef(real.origin, real.branchHeadSha, `refs/heads/${BRANCH}`);
+  const control = await rewinder(real.repoRoot)(real.branchHeadSha);
+  assert(
+    control.shipped === false && control.alreadyAtVerified === true,
+    `(m) control: a certified head this clone holds still reads as already-there (${JSON.stringify([control.shipped, control.alreadyAtVerified])})`,
   );
 }
 

@@ -52,16 +52,12 @@ import {
   unverifiedFixLog,
 } from "./lib/lean-verified-handback-fixture.ts";
 import {
-  bodyLine,
-  driveHandback,
-  rewinder,
-} from "./lib/lean-verified-handback-step.ts";
-import {
   originBranchSha,
   originRefSha,
   repoWithFixHead,
   strangerOnTop,
 } from "./lib/lean-verified-handback-repo.ts";
+import { bodyLine, driveHandback, rewinder } from "./lib/lean-verified-handback-step.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -254,6 +250,56 @@ const PRE_RULE_BODY = [
   );
 }
 
+// ── (h4) the rule spoke, named a head, and origin read as holding nothing ───
+{
+  // The `speaks`-only shape, which no other case drives through the STEP. The rule
+  // fired and named the green's head, so the rewind was asked and declined to move
+  // anything; origin's read then answers nothing (a transport that died, a branch that
+  // is simply gone), so there is no head to print as shipped. What must not happen is
+  // a half-section: a `Shipped head` line naming bytes this step could not read, an
+  // `Unshipped head` naming one it never displaced, or the rule's own no-head prose
+  // printed where a head belongs. The renderer's `lines.length === 0` arm is what the
+  // operator actually sees here, and nothing else in the suite reaches it.
+  const repo = repoWithFixHead();
+  // The green names the base commit, the head this fixture's clone really holds: a
+  // rewind asked for a head it cannot supply dies on objects, and the case is about
+  // the renderer, not about git's transport.
+  const steps = unaskedGateReviewLog({ green: { kind: "green", verifiedHead: repo.baseSha } });
+  const before = originBranchSha(repo.origin);
+  let rewindCalls = 0;
+  const { outcome, posts } = await driveHandback(
+    steps,
+    repo.repoRoot,
+    async () => {
+      rewindCalls++;
+      return { shipped: false };
+    },
+    async () => undefined,
+  );
+  assert(rewindCalls === 1, `(h4) the rule named a head, so the rewind WAS asked (${rewindCalls})`);
+  const body = posts[0] ?? "";
+  assert(
+    outcome.shippedHead === undefined &&
+      outcome.shippedVerified === undefined &&
+      outcome.unshippedHead === undefined &&
+      outcome.unshippedReason === undefined,
+    `(h4) with no head read, NONE of the four fields is recorded — not a false ${JSON.stringify([outcome.shippedHead, outcome.shippedVerified, outcome.unshippedHead, outcome.unshippedReason])})`,
+  );
+  assert(
+    !body.includes("Shipped head:") && !body.includes("Unshipped head:"),
+    `(h4) the comment prints NO head section at all, not a half one (${JSON.stringify(body.split("\n").slice(4, 8))})`,
+  );
+  assert(
+    !body.includes("undefined") && !body.includes("not shipped"),
+    `(h4) and no placeholder leaked into the body (${JSON.stringify(body.split("\n").slice(4, 8))})`,
+  );
+  assert(originBranchSha(repo.origin) === before, "(h4) origin's branch is exactly where it was");
+  assert(
+    originRefSha(repo.origin, unverifiedRef(ISSUE)) === undefined,
+    "(h4) with no keeping-ref written",
+  );
+}
+
 // ── (i) the off-arm body is the PRE-RULE body, byte for byte ────────────────
 {
   // The renderer comparison. It belongs to the OFF arm and nowhere else: with the
@@ -280,7 +326,10 @@ const PRE_RULE_BODY = [
     },
     async () => undefined,
   );
-  assert(rewindCalls === 0, `(i) no head to rewind to means the rewind was never called (${rewindCalls})`);
+  assert(
+    rewindCalls === 0,
+    `(i) no head to rewind to means the rewind was never called (${rewindCalls})`,
+  );
   assert(posts.length === 1, `(i) one comment was posted (${posts.length})`);
   assert(
     posts[0] === PRE_RULE_BODY,
@@ -293,10 +342,7 @@ const PRE_RULE_BODY = [
       outcome.unshippedReason === undefined,
     `(i) a handback that moved nothing and has no unverified head to name carries NONE of the four fields (${JSON.stringify([outcome.shippedHead, outcome.shippedVerified, outcome.unshippedHead, outcome.unshippedReason])})`,
   );
-  assert(
-    originBranchSha(repo.origin) === before,
-    "(i) and origin's branch is where it was",
-  );
+  assert(originBranchSha(repo.origin) === before, "(i) and origin's branch is where it was");
   assert(
     originRefSha(repo.origin, unverifiedRef(ISSUE)) === undefined,
     "(i) with no keeping-ref written",

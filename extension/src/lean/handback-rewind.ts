@@ -96,13 +96,15 @@ export function unverifiedRef(issue: number): string {
  *
  * `--force-with-lease` is enforced on the client: when origin's value for the
  * leased ref is not what this push expected, the porcelain prints `stale info`
- * (and the `! [rejected] … (stale info)` row beside it). Anything else that made
- * the push fail — an unreachable object, an unpack failure, a transport drop —
- * never reached that check, and labelling it a lease refusal would send the
+ * (and the `! [rejected] … (stale info)` row beside it). That wording is the one
+ * this project has observed — `test-lean-verified-handback-rewind.ts` drives a
+ * lease that does not match — and it is the ONLY wording admitted. Anything else
+ * that made the push fail (an unreachable object, an unpack failure, a transport
+ * drop) never reached that check, and labelling it a lease refusal would send the
  * operator to look for someone who moved their branch when the fix is a fetch.
  */
 function leaseRefused(stderr: string): boolean {
-  return /stale info|failed to push because some refs weren't updated/i.test(stderr);
+  return /stale info/i.test(stderr);
 }
 
 /** The first non-empty line of git's complaint, bounded for one comment line. */
@@ -131,6 +133,48 @@ async function quiet(
   }).catch(() => undefined);
   const out = (ran?.stdout ?? "").trim();
   return ran === undefined ? undefined : out;
+}
+
+/**
+ * Does this clone hold `sha` as a commit — yes, no, or could git not be asked?
+ *
+ * The narrowest question that answers it: `git cat-file -e <sha>^{commit}` answers on
+ * its RESULT, not on an exit code the caller has to go looking for — the executor
+ * RESOLVES for an object and REJECTS for an absent one (`lean/base-proof.ts` reads the
+ * same pair, inverted: there a rejection is the expectation). So a resolved call is
+ * `true`, full stop, and the exit code is read only on the rejection shape.
+ *
+ * `undefined` is the third answer, and it is separate on purpose: "no such object" is a
+ * reason to move nothing and say so, while "git did not answer" — never started, timed
+ * out, killed, or rejected with no exit information at all — is not evidence about the
+ * object, and collapsing the two is how a locked index or a hung git becomes a
+ * confident wrong claim about a head.
+ *
+ * The `^{commit}` peel is what makes a blob or a tree at that oid answer `false`.
+ */
+async function holdsCommit(
+  exec: VerifyExec,
+  cwd: string,
+  sha: string,
+  env?: NodeJS.ProcessEnv,
+): Promise<boolean | undefined> {
+  try {
+    await exec("git", {
+      argv: [...NO_HOOKS, "cat-file", "-e", "--end-of-options", `${sha}^{commit}`],
+      cwd,
+      timeout: 60_000,
+      maxBuffer: 8 * 1024,
+      ...(env === undefined ? {} : { env }),
+    });
+    return true;
+  } catch (err) {
+    const e = err as { code?: unknown; killed?: unknown; signal?: unknown };
+    // Only a git that RAN and refused may say `false`. A rejection carrying no exit
+    // information at all is an executor that could not be called, and a killed or
+    // signalled git carried no answer — both are `undefined`, never absence.
+    if (typeof e?.code !== "number" || e.killed === true || e.signal != null) return undefined;
+    return false;
+  }
 }
 
 /** Origin's own value for one ref, read through `ls-remote`, or `undefined`. */
@@ -193,6 +237,26 @@ export async function rewindToVerified(
       shipped: false,
       unshippedHead: held,
       reason: `the recorded verified head ${verifiedHead.slice(0, 12)} is not a full commit sha, so nothing was moved`,
+    };
+  // Shape is not existence — the boundary `commit-sha.ts` states and
+  // `lean/base-proof.ts` exists to close. `verifiedHead` arrives from a child's
+  // `verify` verdict and round-trips through the on-disk state file, so this clone
+  // may hold no such object. Every arm that MOVES origin would have git resolve it
+  // (a push cannot supply bytes the clone lacks), but the arm below that pushes
+  // nothing when origin already holds it would otherwise certify an object nobody
+  // can read as the head the gate approved. So the object is asked of git first.
+  const holdsVerified = await holdsCommit(exec, ctx.repoRoot, verifiedHead, opts.env ?? netEnv);
+  if (holdsVerified === undefined)
+    return {
+      shipped: false,
+      unshippedHead: held,
+      reason: `could not ask git whether this clone holds the verified head ${verifiedHead.slice(0, 12)}, so nothing was moved`,
+    };
+  if (!holdsVerified)
+    return {
+      shipped: false,
+      unshippedHead: held,
+      reason: `the recorded verified head ${verifiedHead.slice(0, 12)} is not a commit this clone has, so nothing was moved`,
     };
 
   // Origin already holds the head the rule would have moved it to. That is the

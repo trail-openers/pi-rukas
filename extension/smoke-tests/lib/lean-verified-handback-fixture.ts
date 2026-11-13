@@ -387,8 +387,22 @@ export async function unverifiedFixLog(head = FAKE_VERIFIED): Promise<Step[]> {
  * gate-entered-and-unfinished cases, which each have their own wording and their own
  * log. A rule that collapsed the three would report a head it had not verified under
  * one of the other two's explanations.
+ *
+ * `green` is for the SPEAKS-ONLY step case only: the gate answers with a head, so the
+ * rule fires naming it while the origin read below is driven to answer nothing — the
+ * one shape that leaves the comment with a `speaks` claim and no head to print. Leave
+ * it unset for every case about a log with no gate verdict at all (the entry stays
+ * UNANSWERED, which is what "the gate never ran" means here — no step, or a step that
+ * decided nothing, reads the same to the rule); passing a green would change the
+ * rule's answer from "no verify of this run decided anything" to "the green recorded
+ * no head", which is (d2)'s wording.
  */
-export function unaskedGateReviewLog(): Step[] {
+export function unaskedGateReviewLog(opts: { green?: Outcome } = {}): Step[] {
+  const verify: Step = {
+    key: `${String(ISSUE)}:verify:0`,
+    state: "verify",
+    startedAt: 8,
+  };
   return [
     { key: `${String(ISSUE)}:ready:0`, state: "ready", startedAt: 5, outcome: { kind: "ok" } },
     {
@@ -398,10 +412,11 @@ export function unaskedGateReviewLog(): Step[] {
       outcome: { kind: "ok", frozen: { "tests/AC1-verified-head.test.sh": "a".repeat(64) } },
     },
     { key: `${String(ISSUE)}:build:0`, state: "build", startedAt: 7, outcome: { kind: "ok" } },
+    ...(opts.green === undefined ? [verify] : [{ ...verify, outcome: opts.green }]),
     {
       key: `${String(ISSUE)}:review:0`,
       state: "review",
-      startedAt: 8,
+      startedAt: 9,
       outcome: { kind: "fixed", reason: "one fix wave" },
     },
   ];
@@ -475,4 +490,3 @@ async function driveTo(
   if (r.run.steps.length === 0) throw new Error("the drive wrote no steps");
   return [...r.run.steps];
 }
-

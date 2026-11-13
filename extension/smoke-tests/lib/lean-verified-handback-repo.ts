@@ -13,7 +13,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { gitTestEnv } from "./git-test-env.ts";
@@ -137,6 +137,25 @@ export function commitOnTop(repoRoot: string, sha: string, message: string): str
   git(repoRoot, "checkout", "-q", "--detach", sha);
   git(repoRoot, "commit", "-q", "--allow-empty", "-m", message);
   return git(repoRoot, "rev-parse", "HEAD");
+}
+
+/**
+ * Make `sha` origin's own value for one ref of ANY name — by name, not by content.
+ *
+ * The stranger arms move the branch by PUSHING a commit, which carries objects; the
+ * forged-head arm has to make origin name a sha no clone holds anywhere, and every
+ * normal way of doing that is refused before the case reaches the code under test: a
+ * push of such a sha dies in transport (`bad object`), and `update-ref` refuses a
+ * nonexistent object whatever `receive.denyCurrentBranch` says — that setting governs
+ * pushes to the current branch, not this validity check. So the ref file is written
+ * directly, which is the only operation that makes a git repository name bytes it does
+ * not have. Origin is the fixture's own private bare repo; `ls-remote` — the read the
+ * rewind under test makes — reports exactly this sha for the ref.
+ */
+export function forceOriginRef(origin: string, sha: string, ref: string): void {
+  const dir = path.join(origin, ...ref.split("/"));
+  mkdirSync(path.dirname(dir), { recursive: true });
+  writeFileSync(dir, `${sha}\n`, { encoding: "utf8" });
 }
 
 /**

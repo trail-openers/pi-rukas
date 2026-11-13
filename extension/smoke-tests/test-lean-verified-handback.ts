@@ -137,11 +137,14 @@ function assert(cond: boolean, msg: string): void {
   );
 }
 {
-  // (d3) the gate never ran at all over a `fixed` review: nothing in the log to read.
+  // (d3) the gate never ANSWERED over a `fixed` review: nothing in the log to read.
+  // The gate step is present and undecided — the shape a run saves when it died
+  // before the gate was first asked — which is what "nothing of this run decided"
+  // means, and the rule reads an unanswered entry and an absent step alike.
   const steps = unaskedGateReviewLog();
   assert(
-    steps.every((s) => s.state !== "verify"),
-    "(d3) the log holds no gate step",
+    steps.filter((s) => s.state === "verify").every((s) => s.outcome === undefined),
+    "(d3) the log's gate step decided nothing",
   );
   const heads = handbackHeads(steps);
   assert(heads.applies, "(d3) the rule applies with no green verify at all");

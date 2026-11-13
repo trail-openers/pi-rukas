@@ -392,7 +392,11 @@ from the LOG, not from the stop cause: when its newest work step is `review` wit
 reachable under `refs/lean/unverified/<issue>`, then rewinds origin's branch to the
 newest decided green `verify`'s head with a lease-pinned push
 (`--force-with-lease=<branch>:<unverified head>`), so the move happens only while
-origin still holds exactly the head this run pushed. The step's outcome then names the
+origin still holds exactly the head this run pushed. Before any arm may call a head
+verified the step asks git that the green's `verifiedHead` is a commit OBJECT this clone
+holds — shape is not existence, and that value arrives from a child's verdict through the
+on-disk state file — so a record cannot certify bytes nobody can resolve. The step's outcome
+then names the
 facts: `shippedHead`, `shippedVerified`, and when they differ, `unshippedHead` with
 `unshippedReason`. When the push is refused — by the lease, or by git failing for any
 other reason before it reached the lease — nothing is moved, and the record names the
