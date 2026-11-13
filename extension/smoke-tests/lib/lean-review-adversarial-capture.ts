@@ -102,7 +102,6 @@ export async function runReviewStepCapturingAll(issueBody: string): Promise<Capt
   const contexts: string[] = [];
   let lensCalls = 0;
   let fixCounter = 0;
-  const env = stepGitEnv();
   const deps: ReviewDeps = reviewDeps(false);
   deps.fetchIssueBody = async () => issueBody;
   deps.loadConfig = async () => defaultConfig();
@@ -128,11 +127,13 @@ export async function runReviewStepCapturingAll(issueBody: string): Promise<Capt
       fixCounter++;
       const name = `split-fix-${String(fixCounter)}.ts`;
       writeFileSync(path.join(wt, name), `export const x = ${String(fixCounter)};\n`);
-      await execp("git", { argv: ["add", "-A"], cwd: wt, env });
+      await execp("git", { argv: ["add", "-A"], cwd: wt, env: stepGitEnv() });
       await execp("git", {
         argv: ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", `fix: ${name}`],
         cwd: wt,
-        env,
+        // The scrub spelled out IN the call: the gate that polices these seams reads
+        // the call, not a name that happens to be bound to a scrubbed env elsewhere.
+        env: stepGitEnv(),
       });
     }
     return result({ role: FIXER_ROLE });

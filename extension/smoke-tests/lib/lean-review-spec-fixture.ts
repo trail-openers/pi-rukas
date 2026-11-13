@@ -19,6 +19,7 @@
  * Lives in lib/ so the smoke glob never self-executes it.
  */
 
+import { criteriaBlock } from "../../src/lean/spec-blocks.ts";
 import { CONSTRAINT } from "./ticket-issue-fixture.ts";
 
 /** One repeat of the statement, ~90 chars. */
@@ -168,18 +169,50 @@ export const UNTERMINATED_SPEC_BODY = `Add a quota check to the meter.\n\n${TAIL
  * criteria section, which prints its own marker and not the issue's. */
 export const MANY_CRITERIA_BODY = `Add a quota check to the meter.\n\n${TAIL_CONSTRAINT}\n\n${LONG_STATEMENT}\n\n${specBlock(BRIEF_STATEMENT, CRITERIA_OVER_CAP_COUNT)}`;
 
+/** The character cap the criteria section is bounded at — the same constant
+ * `renderSpecCriteriaSection` passes to `fenceText`. */
+const CRITERIA_CAP = 20_000;
+
 /** A body whose criteria list passes the criteria cap AND whose clip falls inside
  * a run of backticks: the last criterion's text ends in a 6-backtick run whose
  * first three characters sit at the clip, so `fenceText` neutralises backticks
  * that survive its own slice. The criteria marker is substituted for the generic
  * clip notice, and a substitution that matched nothing here would print the
- * notice the docs promise the seat never sees. */
+ * notice the docs promise the seat never sees.
+ *
+ * The run is placed by RENDERED geometry, not by counting the criterion's own
+ * text: `criteriaBlock` prints `- **AC2** [test] ` before the text and joins the
+ * lines with `\n`, so the run's offset in the block is the rendered prefix, and
+ * the filler before it is what puts exactly `inside` of the run at or before the
+ * cap. Deriving it from the block (and asserting it here, where a bad geometry is
+ * a fixture failure rather than a vacuous arm in the test) is what keeps the arm
+ * from silently drifting past the clip. */
 export const BACKTICK_AT_CLIP_BODY: string = (() => {
   const ticks = 6;
   const inside = 3;
-  // `- **AC2** [test] ` is 17 characters, so this puts exactly `inside` of the
-  // run's characters at or before the cap and the rest past it.
-  const runText = `${"y".repeat(20_000 - 17 - inside)}${"`".repeat(ticks)}z`;
+  const TICK = "\u0060";
+  const render = (runTail: string): string =>
+    criteriaBlock({
+      problem: BRIEF_STATEMENT,
+      criteria: [
+        { id: "AC1", text: "The meter refuses the draw.", verify: "test" },
+        { id: "AC2", text: runTail, verify: "test" },
+      ],
+      size: "S",
+    });
+  // Where the run begins in the rendered block, read off the block itself: the
+  // whole AC1 line plus its newline, plus AC2's `- **AC2** [test] ` prefix.
+  const runOffset = render(`${TICK.repeat(ticks)}z`).indexOf(TICK);
+  const runText = `${"y".repeat(CRITERIA_CAP - runOffset - inside)}${TICK.repeat(ticks)}z`;
+  if (render(runText).indexOf(TICK) !== CRITERIA_CAP - inside) {
+    throw new Error(
+      `BACKTICK_AT_CLIP_BODY geometry: the backtick run starts at ${String(
+        render(runText).indexOf(TICK),
+      )} of a rendered block clipped at ${String(CRITERIA_CAP)}, not ${String(
+        CRITERIA_CAP - inside,
+      )} — the arm would be vacuous.`,
+    );
+  }
   const json = JSON.stringify(
     {
       problem: BRIEF_STATEMENT,

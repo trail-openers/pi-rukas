@@ -94,6 +94,11 @@ function criterionLine(id: string): RegExp {
   return new RegExp(`\\*\\*${id}\\*\\* \\[(test|command|manual)\\]`);
 }
 
+/** The character a fence is built from, as a string: the same reason the
+ * assertions below count it with `split` — in a regex literal it is the terminator,
+ * not the character. */
+const FENCE_CHAR = "\u0060";
+
 await withEnv({ PI_ENSEMBLE_LEAN_REVIEW_SPEC_SPLIT: undefined }, async () => {
   // ── (1) the statement is over the cap on its own ───────────────────────────
   {
@@ -218,6 +223,22 @@ await withEnv({ PI_ENSEMBLE_LEAN_REVIEW_SPEC_SPLIT: undefined }, async () => {
     // the substitution matches. Asserted on this shape because it is the only one
     // where the substitution can fail.
     const clipped = renderSpecCriteriaSection(BACKTICK_AT_CLIP_BODY);
+    // Non-vacuity: the arm is only worth having if the run really straddles the
+    // clip. A run wholly PAST the cap never reaches `fenceText`'s neutralisation
+    // and a run wholly BEFORE it is neutralised before the slice; either way the
+    // marker assertion below passes on a body that exercises nothing. So the
+    // modified run must appear in the printed section, and it must be the
+    // payload's own run: `fenceText` opens its block with a fence of three of the
+    // fence character and closes with another, so the section carries exactly six
+    // of them and every one of the payload's six has become U+02CB — three of them
+    // at the clip line. Counted by split, not by a regex: an escape for the fence
+    // character inside a regex literal reads as the literal's own terminator.
+    assert(
+      clipped.includes("\u02cb".repeat(3)) &&
+        clipped.split(FENCE_CHAR).length === 7 &&
+        (clipped.match(/\u02cb/g) ?? []).length === 3,
+      `(4) and neutralised backticks from the straddling run survive in the clipped region — the arm is not vacuous (modified count ${(clipped.match(/\u02cb/g) ?? []).length}, tail ${JSON.stringify(clipped.slice(-34))})`,
+    );
     assert(
       clipped.includes("…(criteria truncated)") && !/\[truncated at /.test(clipped),
       `(4) and with the clip landing inside a backtick run the criteria section still says \`…(criteria truncated)\` and never the generic clip notice (tail ${JSON.stringify(clipped.slice(-34))})`,
