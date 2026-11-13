@@ -5,7 +5,11 @@
  * AGENTS.md §12). Importers take these names from this module; plan-gaps.ts
  * does not re-export them.
  */
-import { OPEN_POINTS_HEADING, OPEN_POINTS_INTRO } from "./open-points-contract.ts";
+import {
+  OPEN_POINTS_HEADING,
+  OPEN_POINTS_INTRO,
+  withLineAboveOpenPoints,
+} from "./open-points-contract.ts";
 import { duplicateExclusionSection } from "./plan-duplicate-disclosure.ts";
 import { GAP_RESOLUTION_PLACEHOLDER } from "./plan-gap-parse.ts";
 import { planImageLinksSection } from "./plan-images.ts";
@@ -223,7 +227,10 @@ export function finalDraftBody(
   // empty would not parse.
   const disclosed =
     title.trim() === "" && !placed.body.includes(PI_SPEC_OMISSION_PREFIX)
-      ? `${placed.body.trimEnd()}\n\n${PI_SPEC_OMISSION_PREFIX} no issue title to state the problem\n`
+      ? withLineAboveOpenPoints(
+          placed.body,
+          `${PI_SPEC_OMISSION_PREFIX} no issue title to state the problem`,
+        )
       : placed.body;
   return withProvenance(disclosed, provenance);
 }

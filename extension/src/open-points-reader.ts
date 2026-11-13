@@ -11,34 +11,25 @@
  * what the spec says.
  *
  * Split out of work-driver-intent-criticality.ts, which keeps the #574 contradiction
- * classifier: two mechanical rules, one file each, both under the size limit.
+ * classifier: two mechanical rules, one file each, both under the size limit. What one
+ * item's text means is open-points-classify.ts; this module owns the section's lines.
  */
+import { type EntryKind, classifyItem } from "./open-points-classify.ts";
 import {
-  CRITICAL_SEVERITY,
   OPEN_POINTS_HEADING,
   OPEN_POINTS_INTRO,
-  SEVERITY_WORDS,
   openPointsHeadingPattern,
 } from "./open-points-contract.ts";
+import { PI_SPEC_OMISSION_PREFIX } from "./plan-pi-spec.ts";
 import { flattenIssueText, redactThenBound } from "./text-flatten.ts";
 import { trace } from "./trace.ts";
-
-/** Case-folded token without spaces or hyphens: `[CRIT ICAL]` and `[critical]` both fold to `critical`. */
-function foldToken(token: string): string {
-  return token.toLowerCase().replace(/[\s-]/g, "");
-}
-
-/** Tag-like: folds to a severity word without being that word exactly. Such a tag parks; it never passes. */
-function isTagLike(token: string): boolean {
-  return SEVERITY_WORDS.some((word) => word !== token && word.toLowerCase() === foldToken(token));
-}
 
 /**
  * The raw lines of one list item or prose line of the section, before storage.
  *
  * `kind` is fixed when the item starts; only the kinds a reading actually emits are in
  * the union (a `plain` item contributes no text and never becomes an entry — see
- * {@link ItemDisposition}). `pieces` holds the flattened raw lines that make the entry up,
+ * `classifyItem`). `pieces` holds the flattened raw lines that make the entry up,
  * newest last; the closing loop joins them and computes `text` exactly once (#1187 fix
  * round 2). Re-flattening the accumulated text on every continuation line made the reader
  * O(n²) in the length of a wrapped entry, so pieces are collected raw and normalised once,
@@ -46,7 +37,7 @@ function isTagLike(token: string): boolean {
  * treatment as one with twenty.
  */
 interface Entry {
-  kind: "point" | "resolved" | "parked";
+  kind: EntryKind;
   /** Computed once by the closing loop: normalised, redacted and bounded. */
   text: string;
   pieces: string[];
@@ -133,7 +124,12 @@ function entryChars(entry: Entry): number {
 const ATX_HEADING = /^ {0,3}(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$/;
 /** A list item, bullet or ordered, with content after the marker. */
 const LIST_ITEM = /^[ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+(.*)$/;
-/** A setext underline. Inside the section it parks: it is a heading or a thematic break, never a point. */
+/**
+ * A thematic break: three or more of one of `-`, `*`, `_`, spaces allowed between. It
+ * separates the section from what follows, carries no text, and is skipped.
+ */
+const THEMATIC_BREAK = /^ {0,3}([-*_])[ \t]*(?:\1[ \t]*){2,}$/;
+/** A setext underline that is not a thematic break (`===`, `--`). Inside the section it parks: it is a heading, never a point. */
 const SETEXT_UNDERLINE = /^ {0,3}(?:=+|-+)[ \t]*$/;
 /** A code fence opener: three or more backticks or tildes. */
 const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})/;
@@ -144,64 +140,11 @@ function closesFence(line: string, opener: string): boolean {
   return closer !== undefined && closer[0] === opener[0] && closer.length >= opener.length;
 }
 
-/**
- * The disposition {@link classifyItem} reads from one item. A `plain` item contributes no
- * text to a reading, so it is not one of {@link Entry}'s kinds — which is why the union here
- * is wider than Entry's and the reader drops `plain` without counting it.
- */
-type ItemDisposition = Entry["kind"] | "plain";
-
-/**
- * Whether any bracketed token in `text` case-folds to CRITICAL (#1187).
- *
- * One place for the anywhere-scan, so the fall-through at the end of {@link classifyItem}
- * and the link-bullet exemption cannot disagree about what a CRITICAL-shaped tag is.
- */
-function hasCriticalToken(text: string): boolean {
-  return [...text.matchAll(/\[([^\]]*)\]/g)].some(
-    (m) => foldToken(m[1] ?? "") === foldToken(CRITICAL_SEVERITY),
-  );
-}
-
-/**
- * The disposition of one list item, from its flattened text with any task checkbox removed.
- * Severity is recognised only at the start of the text (#1187): a tag behind emphasis or
- * strikethrough is not read, and a CRITICAL-shaped tag anywhere else in the text parks.
- */
-function classifyItem(text: string): ItemDisposition {
-  const lead = text.match(/^\[([^\]]*)\]/);
-  if (lead) {
-    const token = lead[1] ?? "";
-    const after = text.slice(lead[0].length);
-    if (token === CRITICAL_SEVERITY) {
-      // `[RESOLVED]` must follow the tag on this line; an empty answer is not an answer.
-      const answer = after.match(/^\s*\[RESOLVED\](.*)$/);
-      if (answer === null) return "point";
-      return (answer[1] ?? "").trim() ? "resolved" : "parked";
-    }
-    if (SEVERITY_WORDS.includes(token)) return "plain";
-    // The tag-like check runs BEFORE the link exemption (#1187 fix round 2): the writer
-    // puts ` — proposed: …` between the tag and anything else, so a near-miss tag can
-    // never be followed by `(` in a rendered section — exempting link bullets first made
-    // `- [CRIT ICAL](https://x) …` an ordinary note, which the old keyword classifier parked on.
-    if (isTagLike(token)) return "parked";
-    // A markdown link is an ordinary bullet. Any other bracketed token is one we cannot read.
-    // An EXACT severity tag is not exempted by a following link: the tag wins, fail closed.
-    // The link exemption is not a blind pass either (#1187 fix round 4): the anywhere-CRITICAL
-    // scan runs on the whole bullet first, so a tag hidden inside link syntax —
-    // `- [x](https://e/#[CRITICAL] who)` — parks instead of reading as an ordinary note.
-    if (after.startsWith("(")) return hasCriticalToken(text) ? "parked" : "plain";
-    return "parked";
-  }
-  if (/^\W*critical\b/i.test(text)) return "parked";
-  return hasCriticalToken(text) ? "parked" : "plain";
-}
-
 /** What the gate read from an issue's Open points section (#1151, #1187). Every text is flattenIssueText output. */
 export interface OpenPointReading {
   /** Unresolved CRITICAL points. Each one gates. */
   points: string[];
-  /** CRITICAL points answered by an unemphasised `[RESOLVED]` right after the tag. */
+  /** CRITICAL points answered by an unemphasised `[RESOLVED]` on the bullet's first line. */
   resolved: string[];
   /** Section lines that block the cycle: anything that is not a plain bullet, a checkbox, a link or a HIGH/MEDIUM/LOW tag. */
   unparsed: string[];
@@ -265,8 +208,9 @@ const OPEN_POINTS_HEADING_FLAT = flattenIssueText(OPEN_POINTS_HEADING);
  * The section starts at an exact OPEN_POINTS_HEADING and ends at the next heading of the
  * same or higher level outside a fenced block, or at the end of the body. Inside it:
  * blank lines never park; plain bullets, task checkboxes, link bullets and the writer's
- * own intro line do not park; a CRITICAL point parks unless `[RESOLVED]` follows its tag
- * on the same line; and any other line that is not a plain item parks (non-bullet prose,
+ * own intro and omission lines and thematic breaks do not park; a CRITICAL point parks
+ * unless its first line answers it with `[RESOLVED]` (open-points-classify.ts); and any
+ * other line that is not a plain item parks (non-bullet prose,
  * unindented continuation, a sub-heading, a setext underline, a fenced block, an unreadable
  * leading token). Indented prose continues the item above it, and only that item, with no
  * blank line between; an indented line that is itself a list item is its own entry.
@@ -382,13 +326,19 @@ export function readOpenPoints(issueBody: string): OpenPointReading {
       cur = undefined;
       continue;
     }
-    // The one prose line the writer itself emits is not an author's unparseable line.
-    if (flattenIssueText(raw) === OPEN_POINTS_INTRO) {
+    // The prose lines the drivers themselves emit are not an author's unparseable lines,
+    // and a thematic break is layout, not text.
+    const flatLine = flattenIssueText(raw);
+    if (
+      flatLine === OPEN_POINTS_INTRO ||
+      flatLine.startsWith(PI_SPEC_OMISSION_PREFIX) ||
+      THEMATIC_BREAK.test(raw)
+    ) {
       cur = undefined;
       continue;
     }
     if (SETEXT_UNDERLINE.test(raw)) {
-      open("parked", flattenIssueText(raw));
+      open("parked", flatLine);
       cur = undefined;
       continue;
     }
@@ -426,7 +376,7 @@ export function readOpenPoints(issueBody: string): OpenPointReading {
       }
       continue;
     }
-    cur = push("parked", flattenIssueText(raw));
+    cur = push("parked", flatLine);
   }
   const reading: OpenPointReading = { points: [], resolved: [], unparsed: [], counts };
   // The ONE place `text` is computed: for every entry, from all its pieces, once. A

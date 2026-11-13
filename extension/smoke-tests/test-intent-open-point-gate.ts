@@ -121,6 +121,35 @@ const complete = (over: Partial<NormalisedSpec> = {}): NormalisedSpec => ({
   assert(answered.openPoints === undefined, "a resolved point is not a blocking open point");
 }
 
+// [RESOLVED] after the topic answers the point too; a rule and the /plan omission line
+// in the section are not points; a real unresolved point beside them still parks.
+{
+  const lines = [
+    "- [CRITICAL] Which timeout wins [RESOLVED] - the shorter one",
+    "- [CRITICAL][RESOLVED] Who sets it — the operator",
+    "",
+    "---",
+    "pi-spec block omitted: criteria AC1 (258 chars) is over the 200-char bound",
+  ];
+  const later = finaliseSpecVerdict(complete(), body(...lines));
+  assert(
+    later.verdict === "proceed" &&
+      later.openPoints === undefined &&
+      later.assumptions.some(
+        (a) =>
+          a.text ===
+          "resolved open point: [CRITICAL] Which timeout wins [RESOLVED] - the shorter one",
+      ),
+    "resolved points, a thematic break and the omission line yield proceed with the points as assumptions",
+  );
+  const open = finaliseSpecVerdict(complete(), body(...lines, "- [CRITICAL] Which cap applies"));
+  assert(
+    open.verdict === "park" &&
+      JSON.stringify(open.openPoints) === JSON.stringify(["[CRITICAL] Which cap applies"]),
+    "an unresolved CRITICAL point beside them still parks, and is the only point listed",
+  );
+}
+
 // An emphasised [RESOLVED] does not count: the point still parks (the escape documented in parkAction).
 {
   const emphasised = finaliseSpecVerdict(
@@ -132,10 +161,10 @@ const complete = (over: Partial<NormalisedSpec> = {}): NormalisedSpec => ({
     "an emphasised **[RESOLVED]** does not resolve; the point parks",
   );
   assert(
-    /mark it \[RESOLVED\] right after its severity tag, unemphasised/.test(
+    /mark it \[RESOLVED\] on its first line, after the tag or as `topic \[RESOLVED\] - answer`, unemphasised/.test(
       parkAction("unresolved-critical-open-point", 42),
     ),
-    "parkAction documents the unemphasised, immediately-after-the-tag rule",
+    "parkAction documents the unemphasised first-line rule and both forms",
   );
 }
 
