@@ -19,7 +19,18 @@
  * and `PI_ENSEMBLE_WRITE_ROOT` (the #1655 fence registers its own `tool_call`
  * hook whenever the dispatch set a root) — and a process this test happens to
  * run inside carries all three, which shifts every count and leaves a hook
- * behind under `PI_ENSEMBLE_SUBAGENT_MODE=1`.
+ * behind under `PI_ENSEMBLE_SUBAGENT_MODE=1`. The #2200 per-child temp root
+ * (`PI_ENSEMBLE_CHILD_TMP`) is pinned too: a child of a real dispatch carries
+ * it, and a count that only holds with the whole `WRITE_FENCE_ENV` set cleared
+ * is a count that says nothing about the guards.
+ *
+ * The two hooks that survive the subagent-mode no-op are the #1655 write fence
+ * and the #2200 deletion rule: the full pi-rukas extension never registers
+ * either, so for a strict/headless child this companion is their only
+ * registration site, and a second one would double-refuse. The counted set is
+ * therefore the eight mode-independent guards plus those two, and the no-op
+ * count is exactly those two — pinned so a guard that moved above or below the
+ * no-op shows up here rather than as a silent shift.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -48,6 +59,7 @@ const PIN_CHILD = {
   PI_ENSEMBLE_WRITE_REPO: undefined,
   PI_ENSEMBLE_WRITE_SCRATCH: undefined,
   PI_ENSEMBLE_WRITE_FENCE: undefined,
+  PI_ENSEMBLE_CHILD_TMP: undefined,
 };
 
 // ============================================================
@@ -59,8 +71,8 @@ await withEnv(PIN_CHILD, async () => {
   childGuards(fake as unknown as ExtensionAPI);
   const n = fake.handlers.tool_call?.length ?? 0;
   check(
-    n === 8,
-    `registers exactly 8 tool_call hooks (the mode-independent guards incl. #1105 review-accept, #1113 developer-push, #1666 vipune-write, #1788 public-hygiene and #2140 reviewer-bash-timeout, oo-rewrite excluded; got ${n})`,
+    n === 9,
+    `registers exactly 9 tool_call hooks (the mode-independent guards incl. #1105 review-accept, #1113 developer-push, #1666 vipune-write, #1788 public-hygiene and #2140 reviewer-bash-timeout, plus the #1655 write fence and the #2200 deletion rule; oo-rewrite excluded; got ${n})`,
   );
   check(fake.registeredTools.length === 0, "registers no tools (hook-only companion)");
   check(fake.registeredCommands.length === 0, "registers no commands");
@@ -172,13 +184,21 @@ await withEnv(PIN_CHILD, async () => {
 });
 
 // ============================================================
-// 4. NO-OP: PI_ENSEMBLE_SUBAGENT_MODE=1 → zero hooks registered.
+// 4. NO-OP: PI_ENSEMBLE_SUBAGENT_MODE=1 → only the two hooks the full pi-rukas
+//    extension does not register survive (the #1655 fence and the #2200 deletion
+//    rule); the mode-independent guards must not be installed a second time.
 // ============================================================
 await withEnv({ ...PIN_CHILD, PI_ENSEMBLE_SUBAGENT_MODE: "1" }, async () => {
   const fake = makeFakePi();
   childGuards(fake as unknown as ExtensionAPI);
   const n = fake.handlers.tool_call?.length ?? 0;
-  check(n === 0, `no-op under PI_ENSEMBLE_SUBAGENT_MODE=1: zero hooks registered (got ${n})`);
+  // The #2200 deletion rule always registers; the #1655 fence registers only when
+  // the dispatch set a root, which `PIN_CHILD` clears. One hook is the honest count
+  // for an unfenced child, and zero would mean the deletion rule had gone missing.
+  check(
+    n === 1,
+    `no-op under PI_ENSEMBLE_SUBAGENT_MODE=1: only the #2200 deletion rule survives (the guards no-op, the fence has no root here; got ${n})`,
+  );
   check(
     fake.registeredTools.length === 0 && fake.registeredCommands.length === 0,
     "no-op registers nothing else",

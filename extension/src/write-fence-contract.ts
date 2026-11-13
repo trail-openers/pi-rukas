@@ -14,11 +14,20 @@ export interface WriteFence {
   scratch: string;
 }
 
-/** The env the fence reads. A child inherits none of these unless the driver sets them for its dispatch. */
+/**
+ * The env the fence and the deletion rule (#2200) read. A child inherits none of
+ * these unless the driver sets them for its dispatch. `PI_ENSEMBLE_CHILD_TMP` is
+ * listed here although the spawn layer sets it in `spawn.ts`, not in
+ * `writeFenceChildEnv`: it names a deletable root, so a nested dispatch made
+ * inside a child must not carry its parent's per-child temp root — on a host
+ * whose `TMPDIR` is a shared root, an inherited value would hand the child that
+ * shared root as a root it may remove.
+ */
 export const WRITE_FENCE_ENV = [
   "PI_ENSEMBLE_WRITE_ROOT",
   "PI_ENSEMBLE_WRITE_REPO",
   "PI_ENSEMBLE_WRITE_SCRATCH",
+  "PI_ENSEMBLE_CHILD_TMP",
 ] as const;
 
 /**

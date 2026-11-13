@@ -79,6 +79,7 @@ import { trace, traceWarn } from "./trace.ts";
 import type { DispatchResult, DispatchSpec } from "./types.ts";
 import { vipuneChildEnv } from "./vipune.ts";
 import { childEnvFor, writeFenceChildEnv } from "./write-fence-contract.ts";
+import { CHILD_TMP_ENV } from "./write-fence-deletion.ts";
 
 export { buildChildArgs, buildCwdHint, makeRunId };
 
@@ -161,6 +162,10 @@ async function spawnSpecialistInner(
 
   const childEnv = childEnvFor(process.env, spec.role);
   Object.assign(childEnv, vipuneChildEnv(), writeFenceChildEnv(opts.writeFence));
+  // #2200 — the per-spawn temp dir above is also the ONLY temp tree this child may
+  // delete into. Set here, where the dir exists, so the deletion rule's roots and
+  // the spawn's cleanup can never name different directories.
+  childEnv[CHILD_TMP_ENV] = tmpDir;
   // #1571 — the child works in `cwd`; an inherited GIT_DIR & co. would point
   // its git at another tree (git-env.ts).
   scrubGitLocation(childEnv);
