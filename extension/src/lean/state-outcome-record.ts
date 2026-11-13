@@ -144,20 +144,25 @@ export interface Outcome {
   /**
    * `handback` only: whether `shippedHead` is a head the run's own gate certified.
    * The typed answer to "did verify see what shipped", which no other field of the
-   * record can give once a fix wave moved the branch. Written with `shippedHead`.
+   * record can give once a fix wave moved the branch. Written with `shippedHead`,
+   * and true in the one case where this step pushed nothing because origin already
+   * held the certified head — what shipped then is certified whatever this step
+   * did with it.
    */
   shippedVerified?: boolean;
   /**
-   * `handback` only: the head the run pushed and this step did NOT ship — origin's
-   * branch as the step read it, kept reachable under `refs/lean/unverified/<issue>`
-   * before any rewind. Absent when nothing was left behind.
+   * `handback` only: the head this step's own push moved off and did NOT ship,
+   * kept reachable under `refs/lean/unverified/<issue>` by the same transaction
+   * that moved the branch. Absent when this step displaced nothing — a refused
+   * push leaves origin holding the run's head, so there is nothing unshipped to
+   * name, and a branch that never moved displaced nothing.
    */
   unshippedHead?: string;
   /**
    * `handback` only: why the unshipped head was not shipped, or why a rewind that
-   * was due did not move anything — a lease git refused, an unreadable origin, a
-   * run with no green verify to fall back to. Prose for the operator, beside the
-   * two head fields it explains.
+   * was due did not move anything — a lease git refused, a push git rejected for a
+   * reason it states itself, an unreadable origin, a run with no green verify to
+   * fall back to. Prose for the operator, beside the two head fields it explains.
    */
   unshippedReason?: string;
   /**

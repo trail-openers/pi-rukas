@@ -394,8 +394,12 @@ newest decided green `verify`'s head with a lease-pinned push
 (`--force-with-lease=<branch>:<unverified head>`), so the move happens only while
 origin still holds exactly the head this run pushed. The step's outcome then names the
 facts: `shippedHead`, `shippedVerified`, and when they differ, `unshippedHead` with
-`unshippedReason`. If the lease refuses (origin moved) or no green verify exists,
-nothing is moved and the record says so. Every other handback is unchanged. Behind
+`unshippedReason`. When the push is refused — by the lease, or by git failing for any
+other reason before it reached the lease — nothing is moved, and the record names the
+head origin holds with git's own reason beside it, so an operator can tell "someone
+moved my branch" from "the clone could not read that commit". Where origin already
+holds the certified head the step pushed nothing, and the record says so without
+calling the shipped head unverified. Every other handback is unchanged. Behind
 `PI_ENSEMBLE_LEAN_VERIFIED_HANDBACK` (default on; only `0` off), which is read at call
 time.
 

@@ -25,9 +25,17 @@ import { type LeanState, REPORT_STATES, type Step } from "./state.ts";
 
 /** What the handback ships: the green's head, or nothing. */
 export interface HandbackHeads {
-  /** True when the newest work step is a `fixed` review with no later decided `verify`. */
+  /**
+   * True when the newest WORK step is a `fixed` review that the gate has not spoken
+   * for since — and a gate visit the run ENTERED and never answered counts as not
+   * speaking, not as silence to step over.
+   */
   applies: boolean;
-  /** The newest decided green `verify`'s head, or `undefined` when the log has none. */
+  /**
+   * The newest decided green `verify`'s head — the newest green at or before the
+   * review, which is where the run's gate last spoke for the head the review then
+   * moved — or `undefined` when the log has none.
+   */
   verifiedHead?: string;
   /** Why nothing is shipped, in the record's own words, when there is no head to ship. */
   reason?: string;

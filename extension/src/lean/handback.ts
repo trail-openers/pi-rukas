@@ -247,17 +247,6 @@ export function handbackBody(
 
 /**
  * The head lines of the comment, or `undefined` when this run has nothing to say
- * about heads — a handback the rule never touched prints no head section at all,
- * because an empty one would read as an answer about a move nobody made.
- *
- * The shipped head MAY be unknown while the rule is speaking: a log with no green
- * `verify` has nothing to rewind to, and origin may simply not answer. What the
- * operator came to read is the second half — the head that is sitting on the
- * branch UNVERIFIED, and why it was not shipped — so that half prints on its own
- * rather than being hidden behind a head this step could not read.
- */
-/**
- * The head lines of the comment, or `undefined` when this run has nothing to say
  * about heads — a handback the rule never touched, or one whose rewind had no head
  * to move, prints no head section at all. A section naming a head this step never
  * read would be the forged claim V4 exists to keep out of the record.
@@ -278,7 +267,6 @@ function headLines(heads: Heads | undefined): string[] | undefined {
     lines.push(
       `Unshipped head: \`${heads.unshippedHead}\` — ${heads.unshippedReason ?? "not shipped"}`,
     );
-  if (heads.ruleReason !== undefined) lines.push(`No verified head: ${heads.ruleReason}`);
   if (lines.length === 0) return undefined;
   return [...lines, ""];
 }
@@ -301,8 +289,6 @@ interface Heads {
   unshippedHead?: string;
   /** Why the head did not ship, or why nothing moved at all, in the rewind's words. */
   unshippedReason?: string;
-  /** The rule's own finding, where it declined to move anything and said why. */
-  ruleReason?: string;
 }
 
 /**
@@ -311,9 +297,8 @@ interface Heads {
  *
  * A handback the rule does not touch records nothing, and neither does one whose
  * rewind had no head to move: the rule fired, found no green `verify`, and so has
- * no head to name. A section built from `heads.reason` alone would print the rule's
- * finding as though it were a fact about a head, which is the confusion V4 forbids —
- * the reason belongs to the record only where a head exists to be unshipped.
+ * no head to name — the rule's own wording is not a fact about a head and would
+ * read as one, which is the confusion V4 forbids.
  *
  * `originHead` is the head the branch holds as this step read it AFTER its own move,
  * which is the only thing `shippedHead` may claim: a landed rewind moved the branch
@@ -325,16 +310,15 @@ interface Heads {
  * refusal origin still holds it, so there is nothing unshipped to name and only the
  * reason speaks.
  *
- * `shippedVerified` is `rewind.shipped` and nothing more: the rewind is the one
- * caller that read origin BEFORE it wrote, so it alone may say a branch sits at a
- * head the run's gate certified.
+ * `shippedVerified` is `rewind.shipped`, with ONE exception stated by the rewind
+ * rather than inferred here: `alreadyAtVerified` means origin held the certified
+ * head before this step ran, so the head it ships IS the verified one even though
+ * this step pushed nothing. Printing that head as `NOT verified` would send the
+ * operator to inspect bytes the gate certified, and naming an unshipped head this
+ * step never displaced would make the two halves of the record disagree — the exact
+ * failure `test-lean-state-outcome-heads.ts` exists to prevent.
  */
-function headFacts(
-  applies: boolean,
-  rewind: Rewind,
-  originHead: string | undefined,
-  ruleReason?: string,
-): Heads {
+function headFacts(applies: boolean, rewind: Rewind, originHead: string | undefined): Heads {
   if (!applies) return {};
   const shippedHead = originHead ?? rewind.unshippedHead;
   // Nothing to say about heads: this step read origin and there was no head there
@@ -350,7 +334,7 @@ function headFacts(
   return {
     speaks: true,
     shippedHead,
-    shippedVerified: rewind.shipped,
+    shippedVerified: rewind.shipped || rewind.alreadyAtVerified === true,
     ...(leftBehind === undefined ? {} : { unshippedHead: leftBehind }),
     ...(rewind.reason === undefined ? {} : { unshippedReason: rewind.reason }),
   };
@@ -398,7 +382,7 @@ export async function handbackOutcome(
     // read was made, and the record must not look like the answer to a question
     // this step never asked.
     const originHead = ruleOn ? await readOrigin(ctx) : undefined;
-    const facts = ruleOn ? headFacts(heads.applies, moved, originHead, heads.reason) : {};
+    const facts = ruleOn ? headFacts(heads.applies, moved, originHead) : {};
     body = handbackBody(ctx.issue, {
       needed: neededFromLog(ctx.steps),
       frozen: frozenList(ctx.steps),

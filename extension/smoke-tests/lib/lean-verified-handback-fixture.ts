@@ -236,11 +236,51 @@ async function withLaterVerify(steps: Step[], head: string): Promise<Step[]> {
  */
 export async function fixedReviewLog(head = FAKE_VERIFIED): Promise<Step[]> {
   const steps = await driveHeldAt(oneGreenWalk(head), "review", "fixed");
-  // The review's verdict text names the head it reviewed rather than prose alone.
-  // The run's record and the comment the host is handed both carry the shas, and the
-  // OFF-arm capture this file's golden was taken from recorded it this way; a log
-  // whose review said only `one fix wave` would be compared against a body no run
-  // ever posted.
+  return stampReviewReason(steps);
+}
+
+/**
+ * A `fixed`-review log whose gate certified the head origin ALREADY holds.
+ *
+ * The arm no queue of scripted verdicts can produce, because the shape is about the
+ * repo rather than the walk: origin's branch still points at the green's own head when
+ * the handback runs — a rewind that died between its push and its read-back, replayed.
+ * Built from the driven log the same way {@link fixedReviewLog} is, then corrected in
+ * place: the routing green's `verifiedHead` becomes the head the caller's origin holds.
+ * The correction is the whole case, so it is asserted rather than hoped for — the rule
+ * must still fire (a log whose newest gate sits after the review would silence it) and
+ * must fire naming THAT head.
+ */
+export async function alreadyAtVerifiedLog(head: string): Promise<Step[]> {
+  if (head === FAKE_LATER)
+    throw new Error("the already-at-verified head must be a real head the case's origin holds");
+  const steps = await fixedReviewLog(FAKE_VERIFIED);
+  const reviewAt = lastDecidedIndex(steps, (s) => s.state === "review" && s.outcome?.kind === "fixed");
+  const greenAt = lastDecidedIndex(
+    steps,
+    (s) => s.state === "verify" && s.outcome?.kind === "green" && s.outcome.verifiedHead === FAKE_VERIFIED,
+  );
+  if (greenAt < 0 || greenAt > reviewAt)
+    throw new Error(
+      `no routing green sits before the review to re-title (${String(greenAt)} vs ${String(reviewAt)})`,
+    );
+  const green = steps[greenAt] as Step;
+  if (green.outcome === undefined)
+    throw new Error(`the routing green at ${green.key} decided nothing, so there is nothing to re-title`);
+  steps[greenAt] = {
+    ...green,
+    outcome: { ...green.outcome, verifiedHead: head, reason: `all frozen tests green at ${head}` },
+  };
+  const newest = newestDecided(steps, "verify");
+  if (newest?.outcome?.verifiedHead !== head)
+    throw new Error(
+      `the log's newest decided green names ${String(newest?.outcome?.verifiedHead)}, not ${head}`,
+    );
+  return steps;
+}
+
+/** The review verdict re-worded to name the head the case's gate certified. */
+function stampReviewReason(steps: Step[]): Step[] {
   const reviewAt = lastDecidedIndex(steps, (s) => s.state === "review" && s.outcome?.kind === "fixed");
   const review = steps[reviewAt];
   if (review?.outcome !== undefined)
@@ -256,14 +296,15 @@ export async function fixedReviewLog(head = FAKE_VERIFIED): Promise<Step[]> {
   // the wrong thing while passing. The test is the log's own ORDER, never a
   // comparison of keys: `verify:0` and `review:0` order by letter.
   const verified = newestDecided(steps, "verify");
-  if (verified?.outcome?.kind !== "green" || verified.outcome.verifiedHead !== head)
+  if (verified?.outcome?.kind !== "green" || verified.outcome.verifiedHead === undefined)
     throw new Error(
-      `the log's newest decided verify is ${String(verified?.outcome?.kind)} (${String(verified?.outcome?.verifiedHead)}), not a green at ${head}`,
+      `the log's newest decided verify is ${String(verified?.outcome?.kind)}, not a green naming a head`,
     );
   const greenAt = steps.indexOf(verified);
-  if (review === undefined || greenAt > reviewAt)
+  const reviewRow = steps[reviewAt];
+  if (reviewRow === undefined || greenAt > reviewAt)
     throw new Error(
-      `the newest green (${verified.key}) sits at ${String(greenAt)}, after the review (${String(review?.key)}) at ${String(reviewAt)} — the rule would read this log as re-verified`,
+      `the newest green (${verified.key}) sits at ${String(greenAt)}, after the review (${String(reviewRow?.key)}) at ${String(reviewAt)} — the rule would read this log as re-verified`,
     );
   return steps;
 }
@@ -434,3 +475,4 @@ async function driveTo(
   if (r.run.steps.length === 0) throw new Error("the drive wrote no steps");
   return [...r.run.steps];
 }
+

@@ -13,7 +13,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { gitTestEnv } from "./git-test-env.ts";
@@ -93,14 +93,25 @@ export function repoWithFixHead(): {
 }
 
 /**
- * A commit on top of `sha` in a SEPARATE clone of origin, and pushed from there.
+ * A commit on top of `base`, made in a scratch repo, PUSHED TO ORIGIN ONLY.
  *
- * A stranger cannot be made in the run's own clone. `--force-with-lease=<ref>:<sha>`
- * checks the sha against the clone's remote-tracking ref, and a commit made and
- * pushed locally leaves that ref in exactly the state that makes a lease on the old
- * head succeed — so a case that moved origin this way would watch the rewind accept
- * a branch somebody else had moved and call it a refusal. The separate clone is the
- * only shape in which origin has moved and this run's clone has not been told.
+ * Two properties the lease cases need together, and only this shape gives them.
+ *
+ * **Origin has moved and the run's clone has not been told.** A stranger cannot be
+ * made in the run's own clone: `--force-with-lease=<ref>:<sha>` checks the sha
+ * against the clone's remote-tracking ref, and a commit made and pushed locally
+ * leaves that ref in exactly the state that makes a lease on the old head succeed —
+ * so a case that moved origin that way would watch the rewind accept a branch
+ * somebody else had moved and call it a refusal.
+ *
+ * **The run's clone has never seen the stranger's objects.** A clone of origin
+ * would fetch the stranger's chain into the run's own object store, and the rewind's
+ * push would then be refused by its lease rather than by git failing to supply the
+ * objects the refspecs name. Both refusals are correct refusals; they print
+ * different reasons, so the case that pins each has to produce exactly one of them.
+ * Pushing from a scratch repo whose origin is the bare repo leaves the run's clone
+ * holding nothing of the commit it is being refused over — which is the state a
+ * resumed run whose clone never fetched the stranger is really in.
  */
 export function strangerOnTop(
   repo: { repoRoot: string; origin: string },
@@ -109,12 +120,15 @@ export function strangerOnTop(
 ): string {
   const other = mkdtempSync(path.join(tmpdir(), "lean-handback-other-"));
   ROOTS.push(other);
-  git(repo.repoRoot, "clone", "-q", repo.origin, other);
-  git(other, "checkout", "-q", "-B", BRANCH, `origin/${BRANCH}`);
-  git(other, "reset", "-q", "--hard", base);
+  git(other, "init", "-q", "-b", BRANCH);
+  // The stranger is made on the run's base commit and pushed to origin directly, so
+  // origin's branch moves ahead of what the run's clone was told — without ever
+  // travelling through that clone's object store or its remote-tracking refs.
+  git(other, "fetch", "-q", repo.repoRoot, base);
+  git(other, "checkout", "-q", "-B", BRANCH, "FETCH_HEAD");
   git(other, "commit", "-q", "--allow-empty", "-m", message);
   const sha = git(other, "rev-parse", "HEAD");
-  git(other, "push", "-q", "origin", `HEAD:refs/heads/${BRANCH}`);
+  git(other, "push", "-q", "--force", repo.origin, `HEAD:refs/heads/${BRANCH}`);
   return sha;
 }
 
@@ -123,4 +137,22 @@ export function commitOnTop(repoRoot: string, sha: string, message: string): str
   git(repoRoot, "checkout", "-q", "--detach", sha);
   git(repoRoot, "commit", "-q", "--allow-empty", "-m", message);
   return git(repoRoot, "rev-parse", "HEAD");
+}
+
+/**
+ * Whether `repoRoot`'s object store holds `sha`.
+ *
+ * The cases use it as a PRECONDITION, not an assertion about lean: the stranger and
+ * the unreachable-head arms are only the case they claim while the run's clone cannot
+ * supply the objects the rewind's refspecs name, and `cat-file -e` is how a test finds
+ * that out rather than assuming it. A scratch dir, not a checkout, so nothing here
+ * moves a branch or a ref of the run's clone.
+ */
+export function cloneHolds(repoRoot: string, sha: string): boolean {
+  const r = spawnSync("git", ["--git-dir", path.join(repoRoot, ".git"), "cat-file", "-e", sha], {
+    cwd: existsSync(repoRoot) ? repoRoot : tmpdir(),
+    encoding: "utf8",
+    env: { ...gitTestEnv(), GIT_TERMINAL_PROMPT: "0" },
+  });
+  return r.status === 0;
 }

@@ -42,6 +42,13 @@ export interface Rewind {
   unshippedHead?: string;
   /** Why nothing moved, in the record's own words, when `shipped` is false. */
   reason?: string;
+  /**
+   * The head the run pushed is ALREADY the head origin holds — the outcome the rule
+   * wants, produced by an earlier step rather than by this one. Distinguishable from
+   * a refusal precisely because no head was displaced: the caller must not print the
+   * head it ships as unverified, nor name a head this step never moved off.
+   */
+  alreadyAtVerified?: boolean;
 }
 
 /** Origin's own value for the run's branch, or `undefined` when it cannot be read. */
@@ -84,6 +91,30 @@ export function unverifiedRef(issue: number): string {
   return `refs/lean/unverified/${String(issue)}`;
 }
 
+/**
+ * Whether git said the words a lease refusal says.
+ *
+ * `--force-with-lease` is enforced on the client: when origin's value for the
+ * leased ref is not what this push expected, the porcelain prints `stale info`
+ * (and the `! [rejected] … (stale info)` row beside it). Anything else that made
+ * the push fail — an unreachable object, an unpack failure, a transport drop —
+ * never reached that check, and labelling it a lease refusal would send the
+ * operator to look for someone who moved their branch when the fix is a fetch.
+ */
+function leaseRefused(stderr: string): boolean {
+  return /stale info|failed to push because some refs weren't updated/i.test(stderr);
+}
+
+/** The first non-empty line of git's complaint, bounded for one comment line. */
+function firstLine(stderr: string): string {
+  const line =
+    stderr
+      .split("\n")
+      .map((l) => l.trim())
+      .find((l) => l !== "") ?? "no reason was reported";
+  return line.length > 160 ? `${line.slice(0, 160)}…` : line;
+}
+
 /** Run one git command and report failure as `undefined` rather than throwing. */
 async function quiet(
   exec: VerifyExec,
@@ -123,7 +154,9 @@ async function originRef(
  * so no tree has to be clean for it to be correct. Every refusal is a `Rewind`
  * with `shipped: false`, never a throw: the reporting step's contract is that
  * it always answers, and a run whose rewind failed still ends with a comment
- * that says the shipped head is unverified and why.
+ * that says the shipped head is unverified and why. The one refusal that is not
+ * an unverified head is `alreadyAtVerified` — origin held the certified head
+ * before this step ran, so what it ships needs no caveat.
  */
 export async function rewindToVerified(
   exec: VerifyExec,
@@ -165,17 +198,21 @@ export async function rewindToVerified(
   // Origin already holds the head the rule would have moved it to. That is the
   // outcome the rule wants, but this step did not produce it: no push, no keep,
   // and a record that said `shipped: true` would claim a move this step never
-  // made. It answers `shipped: false` with the reason that says origin already
-  // holds it, and leaves `unshippedHead` UNSET — origin holds one head and this
-  // step moved nothing, so there is no head the run pushed that it displaced.
+  // made. So it answers `shipped: false` — and says WHY by name, in
+  // `alreadyAtVerified`, rather than leaving the caller to tell this arm from a
+  // refusal by its shape alone: the head this step ships IS the certified one, and
+  // `unshippedHead` repeats it only so the record still answers "what is on the
+  // branch" — the caller's own rule for hiding a head that was never displaced
+  // (`headFacts` in handback.ts) is what stops it printing as an unshipped one.
   //
-  // `unshippedHead` means exactly one thing throughout this module: the head this
-  // step's own push moved off. That is why the refusal arms below DO set it (the
-  // step pushed, and origin is still holding that head) while this arm does not.
+  // Every other `shipped: false` arm sets `alreadyAtVerified` at most to undefined,
+  // which reads as "not verified": those arms hold a head no gate ever certified.
   if (held === verifiedHead)
     return {
       shipped: false,
-      reason: `origin already holds the verified head ${held.slice(0, 12)}, so nothing was moved`,
+      alreadyAtVerified: true,
+      unshippedHead: held,
+      reason: `origin already holds the verified head ${held.slice(0, 12)}, so this step moved nothing`,
     };
 
   // One push, two refspecs: the branch moves back to the verified head AND the
@@ -193,10 +230,6 @@ export async function rewindToVerified(
   // holds may be one it has never seen — so the local write would fail first and
   // the record would blame the keeping-ref for what was the lease's refusal. The
   // head is named on the command line instead, and origin is what decides.
-  // lease is bound to the head this step read, and by the time a second push ran
-  // that lease was already spent, so a refused rewind could still leave a ref on
-  // origin naming a head nothing moved. Git refuses the whole push when the lease
-  // does not match, so neither ref moves and the record says so.
   //
   // The branch refspec is FORCED (`+`) because a rewind is a non-fast-forward move
   // by definition, and an unforced refspec to a branch that has moved ahead is a
@@ -209,41 +242,51 @@ export async function rewindToVerified(
   // run pushed, and it would accept a rewind of a branch somebody else moved — the
   // exact rewrite V2 forbids. Binding the lease to the sha this step read off origin
   // makes origin the arbiter, from the same `ls-remote` the record reports.
-  const ran = await exec("git", {
-    argv: [
-      ...NO_HOOKS,
-      "push",
-      `--force-with-lease=${ref}:${held}`,
-      "origin",
-      `+${verifiedHead}:${ref}`,
-      `${held}:${unverifiedRef(ctx.issue)}`,
-    ],
+  const pushArgv = [
+    ...NO_HOOKS,
+    "push",
+    `--force-with-lease=${ref}:${held}`,
+    "origin",
+    `+${verifiedHead}:${ref}`,
+    `${held}:${unverifiedRef(ctx.issue)}`,
+  ];
+  // A push that git rejected comes back as the stderr it printed; a push that ran
+  // comes back as `undefined`. `execp` rejects with the exec error shape, which
+  // carries the captured stderr, and `killGroup`'s group-kill rejection does too.
+  const pushStderr = await exec("git", {
+    argv: pushArgv,
     cwd: ctx.repoRoot,
     timeout: 120_000,
     maxBuffer: 4 * 1024 * 1024,
     killGroup: true,
     ...(pushEnv === undefined ? {} : { env: pushEnv }),
-  }).catch((err: unknown) => {
-    const e = err as { stderr?: unknown; message?: unknown };
-    traceWarn(
-      `lean handback: the rewind of ${branch} failed — ${String(e?.stderr ?? e?.message ?? err).slice(0, 200)}`,
-    );
-    return undefined;
-  });
-  if (ran === undefined) {
-    // git refused, or never got as far as refusing. Either way origin is the
-    // arbiter of what the record says: re-read the branch, and let its value name
-    // the outcome. A push that failed for a reason nobody predicted would otherwise
-    // print a lease refusal the operator could not check, and a branch that
-    // nevertheless arrived at the verified head would be reported as unmoved.
+  })
+    .then(() => undefined)
+    .catch((err: unknown) => {
+      const e = err as { stderr?: unknown; message?: unknown };
+      const why = String(e?.stderr ?? e?.message ?? err);
+      traceWarn(`lean handback: the rewind of ${branch} failed — ${why.slice(0, 200)}`);
+      return why;
+    });
+  if (pushStderr !== undefined) {
+    // git said no. The lease is not the only reason a push says no: this clone may
+    // simply not hold an object the refspecs name (a resumed run whose clone never
+    // fetched a third party's head fails with `bad object` / `unpacker error`), and
+    // git never reached the lease check at all. The two need different operator
+    // actions — one is "someone else moved your branch", the other is "fetch and
+    // retry" — so the line is chosen from git's own stderr, and origin stays the
+    // arbiter of what the branch holds.
     const refused = await originRef(exec, ctx.repoRoot, ref, opts.env ?? netEnv);
+    const where = `origin still holds ${refused === undefined ? "an unreadable head" : refused.slice(0, 12)}`;
     return {
       shipped: false,
       unshippedHead: held,
       reason:
         refused === verifiedHead
           ? `origin holds the verified head ${verifiedHead.slice(0, 12)}, though ${unverifiedRef(ctx.issue)} is not readable there`
-          : `origin still holds ${refused === undefined ? "an unreadable head" : refused.slice(0, 12)} — the lease refused the rewind`,
+          : leaseRefused(pushStderr)
+            ? `${where} — the lease refused the rewind`
+            : `${where} — the rewind push failed: ${firstLine(pushStderr)}`,
     };
   }
 

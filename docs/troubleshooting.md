@@ -3958,9 +3958,12 @@ decided green `verify`'s head with a lease-pinned push
 (`--force-with-lease=<branch>:<unverified head>`), so it moves the branch only while origin
 still holds exactly the head this run pushed. The step's outcome carries `shippedHead`,
 `shippedVerified`, and when they differ `unshippedHead` and `unshippedReason`; the comment
-body and the host-channel body name them. If the lease refuses (someone moved the branch)
-or the run has no green `verify` at all, nothing is moved and the record says which head
-shipped, that it was not verified, and why. Read `shippedVerified: false` as the reason to
+body and the host-channel body name them. When the push is refused — by the lease, or
+by git failing before it reached the lease — nothing is moved and the record says which
+head
+shipped, that it was not verified, and why, naming origin's head with git's own reason
+beside it. Where origin already holds the certified head, the step pushed nothing and
+says so, without calling the shipped head unverified. Read `shippedVerified: false` as the reason to
 look before merging. The rule is behind `PI_ENSEMBLE_LEAN_VERIFIED_HANDBACK` (default on;
 `0` restores the pre-rule step that reports and moves nothing). It keys on the step log, so
 it covers every handback whose newest work step is a `fixed` review, whatever stopped the
