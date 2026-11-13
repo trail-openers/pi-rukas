@@ -95,12 +95,19 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
         childBoundMs: _budgetBound,
         signal: _budgetSignal,
         onProgress: _budgetProgress,
+        // The criteria section is the loop's, not the caller's: only lean's review
+        // seam renders one, and it also strips the block from the prose it passes
+        // as `issueBody` — so a section supplied elsewhere would not pair with the
+        // body it sits beside. A raw arg carrying the key is dropped the same way
+        // the budget arms are.
+        reviewCriteria: _criteria,
         ...callerParams
       } = params as typeof params & {
         toolPath?: unknown;
         childBoundMs?: unknown;
         signal?: unknown;
         onProgress?: unknown;
+        reviewCriteria?: unknown;
       };
       // #1154 — the verdict policy is set after the raw spread, so a caller
       // cannot spoof it: reportOnly picks "terminal"; anything else gets none.

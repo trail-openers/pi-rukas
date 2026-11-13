@@ -6,7 +6,8 @@
  *
  *   - `fileIssue`: the filing seam (forge resolve → issueCreate → discriminated
  *     failure reasons),
- *   - `planForgeFor`: forge adapter resolution (detectForge + createForge),
+ *   - `planForgeFor`: forge adapter resolution (the driver's shared guarded
+ *     detection, `resolveCycleForge`),
  *   - `setPlanForge`: the injectable forge-resolution seam (tests),
  *   - the `FilingFailure` / `FilingResult` types (D7: discriminated reasons).
  *
@@ -21,10 +22,10 @@
  * `PlanResult.filingFailure` (plan-types.ts) references this type, so a
  * reason added on the filing side is forced onto the type side.
  */
-import { detectForge } from "./forge-detect.ts";
 import type { FileIssueOpts } from "./forge-types.ts";
-import { type Forge, createForge } from "./forge.ts";
+import type { Forge } from "./forge.ts";
 import { trace } from "./trace.ts";
+import { resolveCycleForge } from "./work-driver-forge-ctx.ts";
 
 /**
  * A filing failure (or deliberate skip) with enough detail to diagnose it
@@ -142,20 +143,17 @@ export async function fileIssue(
 
 /**
  * Resolve the forge adapter for the plan driver's filing step
- * (#612 S4 task-b). `PI_ENSEMBLE_FORGE=none` refuses; unknown detection
- * falls back to raw `gh` (pre-migration behaviour). Detection errors are no
- * longer swallowed silently (D7): they propagate to `fileIssue`'s catch and
- * are carried through the `create-error` failure.
+ * (#612 S4 task-b) through the driver's one guarded detection, so /plan
+ * files against the same forge a /work cycle would post to.
+ * `PI_ENSEMBLE_FORGE=none` or an unresolvable repo returns `undefined` and
+ * `fileIssue` reports `forge-unresolved`.
  *
  * #1377: no `labels` parameter. Labels are arguments to the create call, not
  * properties of the adapter, so a filing that resolved its forge once and then
  * filed under labels the gate never saw is not representable.
  */
 export async function planForgeFor(repoRoot: string): Promise<Forge | undefined> {
-  if (process.env.PI_ENSEMBLE_FORGE === "none") return undefined;
-  const det = await detectForge(repoRoot, {});
-  if (det.forge === "unknown") return undefined;
-  return createForge(det, { cwd: repoRoot });
+  return resolveCycleForge(repoRoot, { traceLabel: "plan-filing" });
 }
 
 /**

@@ -24,9 +24,9 @@
  */
 
 import { execp } from "./exec.ts";
-import { detectForge } from "./forge-detect.ts";
-import { type Forge, createForge } from "./forge.ts";
+import type { Forge } from "./forge.ts";
 import { trace } from "./trace.ts";
+import { resolveCycleForge } from "./work-driver-forge-ctx.ts";
 
 export const ATTENTION_LABEL = "needs-human-attention";
 
@@ -34,21 +34,14 @@ export const ATTENTION_LABEL = "needs-human-attention";
  * Resolve the forge adapter for the attention gate (#612 S4 task-b).
  *
  * The gate runs before any dispatch is paid for, so there is no cycle
- * context to carry a `Forge` in — build one per check (detection is a
- * cached-free, cheap local git read; the check itself is one `issue view`
- * per issue in the group). `PI_ENSEMBLE_FORGE=none` refuses the forge
- * path; unknown detection falls back to raw `gh` exec, which is the
- * pre-migration behaviour — the gate keeps working on every repo shape.
+ * context to carry a `Forge` in — build one per check. Resolution goes
+ * through `resolveCycleForge`, the driver's one guarded detection, so the
+ * answer agrees with the cycle's own steps: `PI_ENSEMBLE_FORGE=none` or an
+ * undetectable forge yields `undefined` and the gate takes its no-forge path
+ * rather than issuing `gh` at a repository that may not be on GitHub.
  */
 export async function attentionForge(repoRoot: string): Promise<Forge | undefined> {
-  if (process.env.PI_ENSEMBLE_FORGE === "none") return undefined;
-  try {
-    const det = await detectForge(repoRoot, {});
-    if (det.forge === "unknown") return undefined;
-    return createForge(det, { cwd: repoRoot });
-  } catch {
-    return undefined;
-  }
+  return resolveCycleForge(repoRoot, { traceLabel: "attention" });
 }
 
 export interface AttentionVerdict {

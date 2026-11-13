@@ -46,7 +46,7 @@ assert(
   "a non-bullet prose line stores its own text (was an empty bullet)",
 );
 assert(
-  readOpenPoints(section("Setext title", "---")).unparsed.some((t) => t === "---"),
+  readOpenPoints(section("Setext title", "===")).unparsed.some((t) => t === "==="),
   "a setext underline stores its own text (was an empty bullet)",
 );
 assert(
@@ -161,7 +161,29 @@ assert(
     counts("### Details").u === 1,
   "a sub-heading inside the section parks and does not end the section",
 );
-assert(counts("Setext title", "---").u >= 1, "a setext underline inside the section parks");
+assert(counts("===").u === 1, "a setext underline inside the section parks");
+assert(
+  counts("- [CRITICAL] decide whether [RESOLVED] markers are needed").p === 1,
+  "a topic that merely mentions [RESOLVED], with no separator after it, still gates",
+);
+for (const marked of ["**[RESOLVED]**", "*[RESOLVED]*", "_[RESOLVED]_", "~~[RESOLVED]~~"]) {
+  assert(
+    counts(`- [CRITICAL] Which timeout wins ${marked} - the short one`).p === 1,
+    `an emphasised ${marked} after the topic does not resolve the point`,
+  );
+}
+assert(
+  counts("- [CRITICAL] Which timeout wins [resolved] - the short one").p === 1,
+  "a lowercase [resolved] after the topic does not resolve the point",
+);
+assert(
+  counts("- [CRITICAL] Which timeout wins [RESOLVED] -   ").p === 1,
+  "a later [RESOLVED] with an empty answer after the separator still gates",
+);
+assert(
+  counts("- [CRITICAL] Which timeout wins", "  [RESOLVED] - the short one").p === 1,
+  "[RESOLVED] only on a continuation line does not resolve the point",
+);
 assert(
   counts("```", "- [CRITICAL] never closed").u >= 1 &&
     counts("```", "- [CRITICAL] never closed").p === 0,
@@ -181,6 +203,20 @@ assert(
 );
 
 // --- Forms that PASS (never park) ------------------------------------------
+
+for (const rule of ["---", "***", "___", "- - -", "* * *", "   -----"]) {
+  assert(counts(rule).u === 0 && counts(rule).p === 0, `a thematic break ${rule} does not park`);
+}
+assert(
+  counts("pi-spec block omitted: criteria AC1 (258 chars) is over the 200-char bound").u === 0,
+  "the /plan driver's own omission line does not park",
+);
+for (const sep of ["-", "–", "—", ":"]) {
+  assert(
+    counts(`- [CRITICAL] Which timeout wins [RESOLVED] ${sep} the short one`).r === 1,
+    `[RESOLVED] after the topic with separator ${sep} and an answer resolves the point`,
+  );
+}
 
 assert(counts("- plain untagged note").u === 0, "plain untagged bullet does not park");
 assert(counts("- [ ] an open task").u === 0, "unchecked task checkbox does not park");

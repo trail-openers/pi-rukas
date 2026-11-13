@@ -278,6 +278,83 @@ export function stripPiSpecBlocks(body: string): string {
   return kept.join("\n");
 }
 
+/**
+ * Whether a fence OPENS the contract: an opening fence whose info string is
+ * {@link SPEC_INFO} as a WHOLE WORD — the exact info, or the exact info followed by
+ * whitespace.
+ *
+ * A prefix test is not this predicate, and the difference is not academic: `/plan`
+ * renames every drafted `pi-spec v1` opener to `pi-spec v1-example`
+ * (`PI_SPEC_EXAMPLE_INFO` in `plan-pi-spec.ts`) precisely so a body that QUOTES the
+ * block format can never be read as a contract. Such a fence is therefore present in
+ * every `/plan`-filed body that illustrates the format, and counting it as a second
+ * spec silently removed the issue section from every seat for every one of them.
+ * `pi-spec v1` PLUS a space is the shape that genuinely carries a second contract
+ * (`fencedBlocks` reads its info as `pi-spec v1 extra`, so the strip and the parser
+ * both refuse it) and still counts.
+ */
+function opensSpecFence(info: string): boolean {
+  return info === SPEC_INFO || info.startsWith(`${SPEC_INFO}${String.fromCharCode(32)}`);
+}
+
+/**
+ * A line that OPENS a fence: the run, its character, and its info string.
+ *
+ * CommonMark's opener condition, and narrower than {@link closesFenceLine}'s — an
+ * opener CARRIES an info string while a closer may carry nothing but whitespace.
+ * Three spaces of indent is the most a fence may take, so the 4-space-indented
+ * look-alike is indented code: a line the shape test below cannot tell from an
+ * opener, and the reason this is a predicate rather than a regex at the call site.
+ */
+function openingFence(line: string): { char: string; len: number; info: string } | undefined {
+  const g = FENCE_LINE.exec(line)?.groups;
+  const run = g?.run;
+  if (run === undefined) return undefined;
+  return { char: run[0] as string, len: run.length, info: g?.rest ?? "" };
+}
+
+/**
+ * Whether a fence shaped like the spec block SURVIVED in this body: an OPENING
+ * fence line at depth 0 whose info string is {@link SPEC_INFO} as a whole word
+ * ({@link opensSpecFence}) — the shape a second spec block would take.
+ *
+ * `stripPiSpecBlocks` recognises exactly `pi-spec v1` and no other info string —
+ * the same exactness rule `parsePiSpec` applies, so a fence whose info is the spec
+ * info followed by a space (```` ```pi-spec v1 extra ````) is neither stripped nor read
+ * as a spec. Such a fence is the one spec-shaped text that survives the strip, and a
+ * seat shown the stripped body would be handed a second copy of a contract nothing
+ * enforces. A substring test over the whole body is NOT the same predicate: prose that
+ * merely names the block format (a `/plan` drafter quoting it in its own text, or
+ * restating its own `Descriptor:` line) is ordinary prose and must keep its section,
+ * so only an OPENING FENCE LINE counts — and only one whose info is not merely
+ * PREFIXED by the spec info, which is what {@link opensSpecFence} refuses.
+ *
+ * Which is why this walks the body the way `stripPiSpecBlocks` walks it, on the
+ * same predicate, rather than testing lines one at a time. A stateless line test
+ * cannot tell an opener from a line that merely LOOKS like one — a `pi-spec v1`
+ * line quoted inside a tilde sample, a 4-backtick or 4-space-indented look-alike,
+ * an inline code span alone on its line — and refuses the WHOLE section for text
+ * the strip kept as content. `parsePiSpec` still reads those bodies as a spec, so
+ * the seat silently loses its prose on an issue that is well-formed: the same
+ * silent-empty-section failure #2228 exists to close, on a different shape. Lines
+ * inside another open fence never count (they are that fence's content, and cannot
+ * reopen the contract), and an inline code span is not an opener at all.
+ */
+export function hasSurvivingSpecShapedFence(body: string): boolean {
+  let open: { char: string; len: number } | undefined;
+  for (const line of body.split(/\r?\n/)) {
+    if (open !== undefined) {
+      if (closesFenceLine(line, open.char, open.len)) open = undefined;
+      continue;
+    }
+    const fence = openingFence(line);
+    if (fence === undefined) continue;
+    if (opensSpecFence(fence.info)) return true;
+    open = fence;
+  }
+  return false;
+}
+
 /** Read the `pi-spec v1` block out of an issue body. Never throws. */
 export function parsePiSpec(body: string): ParseResult {
   const specs = fencedBlocks(body).filter((b) => b.info === SPEC_INFO);

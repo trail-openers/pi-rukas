@@ -19,8 +19,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { resetDenylistCacheForTests } from "../src/public-denylist.ts";
 import { PublicHygieneError } from "../src/public-hygiene-config.ts";
-import { isPrivateTarget, resetVisibilityCacheForTests } from "../src/public-hygiene-visibility.ts";
 import { publicTextRefusal } from "../src/public-hygiene-text.ts";
+import { isPrivateTarget, resetVisibilityCacheForTests } from "../src/public-hygiene-visibility.ts";
 import type { VerifyExecFn } from "../src/work-driver-git.ts";
 import { executeAndVerifyMerge } from "../src/work-driver-merged-mechanized.ts";
 import { assert, exit } from "./merge-guard-helpers.ts";
@@ -64,10 +64,12 @@ process.env.PI_ENSEMBLE_PUBLIC_DENYLIST = list;
 // list the first case read.
 resetDenylistCacheForTests();
 // The forge is forced unknown so these cases run the DIRECT-exec fallback —
-// the path this file exists to cover. `forgeForCycle` otherwise builds a real
-// adapter from a github.com remote and the merge goes through `forge.prMerge`,
-// which already had the check; asserting on that path would leave the fallback
-// untested while reporting green.
+// the path this file exists to cover. With real detection, `forgeForCycle`
+// would otherwise build a real adapter from a github.com remote and the merge
+// would go through `forge.prMerge`, which already had the check; asserting on
+// that path would leave the fallback untested while reporting green. An empty
+// value is not a forge name, so detection falls through to the remote — which
+// the repo below deliberately does not have.
 const prevForge = process.env.PI_ENSEMBLE_FORGE;
 process.env.PI_ENSEMBLE_FORGE = "";
 
@@ -304,7 +306,7 @@ try {
     remotes.calls.every((c) => !c.includes("pr merge")),
     "and that refusal still happens before any exec",
   );
-  resetVisibilityCacheForTests();  // Sanity: the seam's own checker answers, so a failure above means the merge
+  resetVisibilityCacheForTests(); // Sanity: the seam's own checker answers, so a failure above means the merge
   // path is missing the check and not that the checker is unreachable. It is
   // called with the default reader, so it is asked while the denylist is the
   // entry-bearing one rather than the generic-only file case 4 installs.

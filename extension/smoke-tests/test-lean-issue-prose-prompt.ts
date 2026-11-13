@@ -30,6 +30,7 @@ import { challengePrompt } from "../src/lean/challenge-prompt.ts";
 import {
   LEAN_ISSUE_HEADING,
   LEAN_ISSUE_LEAD,
+  leanBuildIssueProseEnabled,
   leanIssueProseEnabled,
   leanIssueSection,
 } from "../src/lean/issue-prose.ts";
@@ -126,6 +127,30 @@ const FROZEN = ["tests/AC1-retry.test.ts", "tests/AC2-bound.test.ts"];
         `${name}: the spec block itself never appears in the issue section`,
       );
     }
+
+    // #2228's builder-only knob must NOT reach this seat. The two switches look
+    // interchangeable from the docs table and one renderer serves all three seats,
+    // so the isolation is a property of WHERE each is consulted — the builder calls
+    // its own at its own call site (`build-prompt.ts`). Pinned here, at the oracle
+    // end, because that is the seat the builder's switch must leave alone: an
+    // earlier cut ANDed the builder's reader into the shared renderer, which
+    // silently reverted both prompts to their pre-#2171 bytes and made an A/B on
+    // the builder measure two variables.
+    await withEnv({ PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE: "0" }, async () => {
+      assert(
+        leanBuildIssueProseEnabled() === false,
+        "the builder's reader reports its own switch off",
+      );
+      const still = withBody(ISSUE_BODY);
+      assert(
+        still.specify === plain.specify && still.challenge === plain.challenge,
+        "PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE=0 leaves both oracle prompts byte-identical — the builder's knob is the builder's only",
+      );
+      assert(
+        still.specify.includes("## The issue") && still.challenge.includes("## The issue"),
+        "and both oracle seats still carry the section under that environment",
+      );
+    });
 
     // The switch off is the pre-change render byte for byte: the same spec, the
     // same options, no body — that is what the prompts looked like before the body

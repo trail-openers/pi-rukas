@@ -44,6 +44,8 @@ import {
   type SpecAssumption,
   type SpecDeliverable,
   type SpecEvidence,
+  VERDICT_RULES,
+  type VerdictRule,
 } from "./work-driver-intent.ts";
 import { dispatchArtifactPath, writeDispatchArtifact } from "./workflow-state.ts";
 
@@ -317,9 +319,7 @@ function validateSpec(raw: unknown): NormalisedSpec | undefined {
   if (!isAssumptionArray(v.assumptions)) return undefined;
   if (!isStringArray(v.openQuestions)) return undefined;
   if (!isEvidenceArray(v.evidence)) return undefined;
-  if (v.verdict !== "proceed" && v.verdict !== "proceed-with-assumptions" && v.verdict !== "park") {
-    return undefined;
-  }
+  if (!isVerdict(v.verdict)) return undefined;
   const out: NormalisedSpec = {
     // EVERY restored string goes through `boundReadText` (#1187 fix round 4): the artifact
     // is a file a prior cycle (or a truncated write) produced, and `intent`, `rationale`
@@ -433,7 +433,26 @@ function validateSpec(raw: unknown): NormalisedSpec | undefined {
     if (r === undefined) return undefined;
     out.verdictSource = r;
   }
+  // Optional: absent in artifacts written before the fields existed, and absent by design
+  // when no verdict parsed or no rule ran. A present value must be a declared one.
+  const rv = v.resolverVerdict;
+  const rule = v.verdictRule;
+  if (
+    (rv !== undefined && !isVerdict(rv)) ||
+    (rule !== undefined && !VERDICT_RULES.includes(rule as VerdictRule))
+  ) {
+    trace(
+      `work-driver: intent — spec artifact refused: resolverVerdict ${JSON.stringify(rv)} / verdictRule ${JSON.stringify(rule)} is not a declared value; intent re-runs from the issue body`,
+    );
+    return undefined;
+  }
+  if (rv !== undefined) out.resolverVerdict = rv;
+  if (rule !== undefined) out.verdictRule = rule as VerdictRule;
   return out;
+}
+
+function isVerdict(val: unknown): val is NormalisedSpec["verdict"] {
+  return val === "proceed" || val === "proceed-with-assumptions" || val === "park";
 }
 
 /** Read a `"parsed" | "default"` field, returning undefined on a bad value. */

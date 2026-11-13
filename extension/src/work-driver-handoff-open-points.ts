@@ -58,7 +58,7 @@ export function openPointsMarkdown(spec: OpenPointsSource, issue: number): strin
   return [
     `### ${OPEN_POINTS_HANDOFF_HEADING}`,
     "",
-    `Answer each point, mark it [RESOLVED] right after its severity tag on the first line (unemphasised), then run \`/work ${issue} --restart\`.`,
+    `Answer each point, mark it [RESOLVED] on its first line, after the severity tag or as \`topic [RESOLVED] - answer\` (unemphasised), then run \`/work ${issue} --restart\`.`,
     "",
     ...points.map((p) => `- ${codeSpan(p)}`),
     "",
@@ -71,7 +71,7 @@ export function openPointsChat(spec: OpenPointsSource, issue: number): string[] 
   if (points.length === 0) return [];
   return [
     `${OPEN_POINTS_HANDOFF_HEADING}:`,
-    `  answer each point, mark it [RESOLVED] right after its tag, then run /work ${issue} --restart`,
+    `  answer each point, mark it [RESOLVED] on its first line (after the tag, or \`topic [RESOLVED] - answer\`), then run /work ${issue} --restart`,
     ...points.map((p) => `  - ${codeSpan(p)}`),
   ];
 }

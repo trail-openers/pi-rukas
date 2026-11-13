@@ -26,7 +26,7 @@ import {
   synthKillCause,
 } from "./adversarial-reviewer-arm.ts";
 import { type RoundReview, roundAfterReread } from "./adversarial-round-state.ts";
-import { createUsageTally } from "./adversarial-usage.ts";
+import { type RoundRecord, createUsageTally } from "./adversarial-usage.ts";
 import {
   decideLoopAction,
   fixRefusedResult,
@@ -48,13 +48,6 @@ import { trace } from "./trace.ts";
 import type { AdversarialVerdict, DispatchResult } from "./types.ts";
 import type { ExecFn } from "./worktree.ts";
 export const MAX_ROUNDS = 3;
-
-/** One round's outcome, as the loop records it for the ledger and the report. */
-interface RoundRecord {
-  round: number;
-  verdict: AdversarialVerdict;
-  ms: number;
-}
 
 /**
  * Run the 3-round adversarial loop directly. Exported so the work-driver can
@@ -324,6 +317,8 @@ export async function runAdversarialLoop(
         round,
         maxRounds: MAX_ROUNDS,
         issueBody: params.issueBody,
+        // Printed only if the caller rendered one — see `reviewCriteria`.
+        reviewCriteria: params.reviewCriteria,
         fixDelta: round === firstRound ? params.fixDelta : undefined,
         gateCmd: params.gateCmd,
         // #1040 — comments this round's diff removed, for the reviewer to judge.
@@ -452,6 +447,8 @@ export async function runAdversarialLoop(
             diff: review.diff,
             round,
             issueBody: params.issueBody,
+            // The same section the reviewer was given, or none: see `reviewCriteria`.
+            reviewCriteria: params.reviewCriteria,
             priorFindings: [...priorFindings],
             diffRange: review.range,
           }),

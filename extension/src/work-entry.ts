@@ -18,11 +18,11 @@ import { notifyAgent } from "./agent-message.ts";
 import { setJobIssues } from "./async-jobs-registry.ts";
 import { startJob } from "./async-jobs.ts";
 import { execp } from "./exec.ts";
-import { detectForge } from "./forge-detect.ts";
-import { type Forge, createForge } from "./forge.ts";
+import type { Forge } from "./forge.ts";
 import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import type { WorkInvocation } from "./work-args.ts";
+import { resolveCycleForge } from "./work-driver-forge-ctx.ts";
 import { effectiveParallelGroups, groupIssues } from "./work-driver-grouping.ts";
 import type { DriverHost } from "./work-driver-host.ts";
 import { setSiblingClaimWait } from "./work-driver-path-claims.ts";
@@ -206,23 +206,14 @@ export async function runGroupedIssues(
 
 /**
  * Forge adapter for the /work entry path (#612 S4 task-b). The entry path
- * never ran through a driver cycle, so no `Forge` exists to reuse — build
- * one from S1's detection. `PI_ENSEMBLE_FORGE=none` (and any unresolvable
- * repo) refuses the forge path; callers fall back to raw `gh` exec.
+ * never ran through a driver cycle, so no `Forge` exists to reuse — build one
+ * through the driver's one guarded detection, so an entry and the cycle it
+ * starts give the same forge answer for the same repo. `PI_ENSEMBLE_FORGE=none`
+ * (and any unresolvable repo) refuses the forge path; callers fall back to raw
+ * `gh` exec.
  */
 export async function entryForge(repoRoot: string): Promise<Forge | undefined> {
-  if (process.env.PI_ENSEMBLE_FORGE === "none") return undefined;
-  try {
-    const det = await detectForge(repoRoot, {});
-    if (det.forge === "unknown") {
-      trace(`work-entry: forge unknown (source=${det.source}) — raw-gh path`);
-      return undefined;
-    }
-    return createForge(det, { cwd: repoRoot });
-  } catch (err) {
-    trace(`work-entry: forge detection failed: ${(err as Error).message} — raw-gh path`);
-    return undefined;
-  }
+  return resolveCycleForge(repoRoot, { traceLabel: "work-entry" });
 }
 
 /**

@@ -8,6 +8,36 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.80](https://github.com/trail-openers/pi-rukas/compare/v0.14.79...v0.14.80) (2026-11-13)
+
+
+### Features
+
+* **work:** show the resolver's verdict and the rule behind an intent park ([#2251](https://github.com/trail-openers/pi-rukas/issues/2251)) ([90857f1](https://github.com/trail-openers/pi-rukas/commit/90857f1222f0d5156f5c00ee55ce1170888a3abb)), closes [#2167](https://github.com/trail-openers/pi-rukas/issues/2167)
+
+
+### Bug Fixes
+
+* **lean:** give reviewers the spec criteria unbounded ([#2250](https://github.com/trail-openers/pi-rukas/issues/2250)) ([984ca74](https://github.com/trail-openers/pi-rukas/commit/984ca74833e34d6e9b36a12182f5f2305eeb8bd7))
+* **lean:** hand back the last verified head ([#2254](https://github.com/trail-openers/pi-rukas/issues/2254)) ([d87ba76](https://github.com/trail-openers/pi-rukas/commit/d87ba76ca24d31c49a7a98e1dbb72b1d16c09183))
+* **work:** read [RESOLVED] after the topic and skip rules in Open points ([#2252](https://github.com/trail-openers/pi-rukas/issues/2252)) ([2fc3380](https://github.com/trail-openers/pi-rukas/commit/2fc33808ba241e76364c5938bfd25dbab3cfc6f0)), closes [#2167](https://github.com/trail-openers/pi-rukas/issues/2167)
+
+## [0.14.79](https://github.com/trail-openers/pi-rukas/compare/v0.14.78...v0.14.79) (2026-11-13)
+
+
+### Features
+
+* **lean:** show the build step the issue prose ([#2247](https://github.com/trail-openers/pi-rukas/issues/2247)) ([687250f](https://github.com/trail-openers/pi-rukas/commit/687250f955a2ce3ee51cd1103d1e0dbae44102b1))
+
+
+### Bug Fixes
+
+* **sandbox:** mount the glab config into the sandbox wrapper ([#2246](https://github.com/trail-openers/pi-rukas/issues/2246)) ([c53c492](https://github.com/trail-openers/pi-rukas/commit/c53c492fb8fa78319cd2f422f01557d205376563))
+* **spawn:** give each child its own TMPDIR ([#2245](https://github.com/trail-openers/pi-rukas/issues/2245)) ([b740d72](https://github.com/trail-openers/pi-rukas/commit/b740d7213de1091418ec30c349eafba368df6b74))
+* **work:** detect the forge in the classic /work driver ([#2249](https://github.com/trail-openers/pi-rukas/issues/2249)) ([e26db9f](https://github.com/trail-openers/pi-rukas/commit/e26db9f24f621fc5748767abfe72aa5e83c6100e))
+* **work:** escape deliverable names; a file to create is not missing ([#2248](https://github.com/trail-openers/pi-rukas/issues/2248)) ([da7789d](https://github.com/trail-openers/pi-rukas/commit/da7789d07efe2fef4aeecf846652a0436bdbb67a)), closes [#2189](https://github.com/trail-openers/pi-rukas/issues/2189)
+* **work:** Headless prUrl is empty for SSH remotes to a… ([#2239](https://github.com/trail-openers/pi-rukas/issues/2239)) ([b8301a8](https://github.com/trail-openers/pi-rukas/commit/b8301a889aac855e8383368c721d01d19f54523e))
+
 ## [0.14.78](https://github.com/trail-openers/pi-rukas/compare/v0.14.77...v0.14.78) (2026-11-13)
 
 

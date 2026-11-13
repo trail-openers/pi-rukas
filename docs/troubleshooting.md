@@ -602,6 +602,14 @@ A lens that exits 0 without calling `report_finding` used to be indistinguishabl
 
 **If a reviewer still seems to be judging only part of a change:** the notice in its prompt says how much was inlined; re-run the review against a narrower range, or have it read the named files directly.
 
+### A reviewer says it never saw the acceptance criteria
+
+**Symptom:** a lean review's adversarial verdict or a lens finding argues about behaviour the issue's `pi-spec v1` block specified, and the child's own transcript shows it reasoning from the prose only — or it says the issue "does not state" a criterion that is in the issue.
+
+**Cause and what to check first:** the lean review seats receive the issue in two sections — the prose block, bounded like any other issue block with `…(issue truncated)`, and the criteria section, `## The acceptance criteria (pi-spec v1)`, printed in full up to its own 20 000-character cap, past which it says `…(criteria truncated)` — the two markers are deliberately different, so which half was cut is readable off the brief. So the first thing to read is the child's brief: no criteria section at all means the block did not parse. A `pi-spec v1` block is read only when it is the file's only such block, opens with the info string on its own line, closes with a line of backticks, and carries JSON that matches the schema; a second block, an unterminated fence, or a schema mismatch makes it *unreadable to every seat*, not just the reviewer, and the oracle run refuses such an issue. Fix the issue body (`/plan` re-authors it) rather than the review.
+
+**If the block is fine and the criteria section is still missing:** `PI_ENSEMBLE_LEAN_REVIEW_SPEC_SPLIT=0` (or an exported `=0` in the parent shell) takes the split out and the reviewer reads one bounded block again, where a long statement can cut the criteria. See [configuration.md](configuration.md).
+
 ### A lens line says `N malformed report_finding call(s) skipped`
 
 Pi validates `report_finding` arguments against the tool's schema and rejects a call missing `severity`, `path` or `title` with `Validation failed for tool "report_finding"` — that text is Pi's, and it names one missing key per rejection. A rejected call records nothing; the lens normally repeats it, so the count beside the lens's findings usually means wasted turns, not a lost finding. To check, compare the lens's `N findings` with what its closing summary lists: a finding in the prose with no matching entry was rejected and never re-sent. Since #1847 a lens has no `Skill Load Status` line at all — the parent puts the skill body in the prompt, so there is no load for the child to report, and the lens's own row ends with `— skill delivered inline (<skill dir>)` instead (after the finding count, e.g. `0 findings — skill delivered inline (code-review-security)`).
@@ -709,6 +717,20 @@ The gate now requires the PR to be **open** and to have this cycle's branch as i
 ### The PR was merged or closed while `/work` was still reviewing it
 
 The driver reads the cycle's PR before lens-review, lens-fix, ci, and before it pushes a lens fix. **Merged** by a person: the cycle ends `merged`, and the terminal line says *merged by someone else during <step>* — the driver merged nothing and pushes nothing further; unpushed work stays in the cycle's worktree(s). **Closed** without a merge: it parks as `pr-not-open:<step>` with a `[pr-not-open]` failure (`verify-failed:<step>` before #1349). If the PR's state cannot be read, the step runs as before. The review's residual findings are posted to the recorded PR number (a merged PR still takes comments); if that fails they go to the issue, and `/work-status` shows a `lens-residuals-post-failed` event saying where they went.
+
+### `/work` on a GitLab project says a check reads GitHub pull requests only
+
+**Symptom:** a cycle on a self-hosted GitLab project halts at commit-pr with *"forge not determined for this repo — cannot open the PR"*, or the handoff / trace says the open-PR pre-flight was skipped because *"the forge is gitlab; the open-PR body lookup reads GitHub pull requests only"* or *"the forge is gitlab; --continue-pr reads GitHub pull requests only"*. Nothing was refused by a policy — the driver could not tell it was on GitLab at all.
+
+**Cause:** the cycle resolves its forge once, from the repo, and every step honours that answer. `PI_ENSEMBLE_FORGE` wins over everything, so an exported `PI_ENSEMBLE_FORGE=github` (or `=none`) in the environment Pi was launched from decides the answer before the repository is ever asked — and a self-hosted instance is unclassifiable without `.pi/forge`: the known-host table names only `github.com` and `gitlab.com`, and the probe that could classify another host is opt-in and off in CI, so the cycle gets `unknown`, which means no forge and no forge calls.
+
+**Fix:**
+
+1. `env | grep PI_ENSEMBLE_FORGE` — if it prints `github` or `none`, that variable is the answer, not the repo. Clear it for the session (`env -u PI_ENSEMBLE_FORGE pi`) or set it to the forge you mean; set it to `none` to turn the forge off on purpose.
+2. Write `<project>/.pi/forge` with `type=gitlab` and `host=<the remote's host>`. The `host` must equal the remote's host or the file is not applied: `git remote get-url origin` is what it has to agree with. The remote must carry a host **and** an `owner/repo` path (`group/project`, or a GitLab subgroup `group/sub/project`) — a path deeper than that parses to no host at all, and a config whose host disagrees with a host that never parsed is applied anyway, which is how a cycle ends up with an adapter for an instance its remote never named. Run it through a wrapper (`ssh://…/repo.git`) or an scp-style remote (`git@host:group/repo.git`) — both parse; an ssh *alias* with no hostname in it does not, and leaves the cycle forge-less.
+3. `PI_ENSEMBLE_DEBUG=1` traces the resolution with the source that decided it — `env`, `config`, `known-host` or `unknown` — which is how you tell "no remote was read" from "the config's host disagreed with the remote".
+
+Two refusals stay refusals on a correctly-detected GitLab project, and both are the honest answer rather than a bug: the open-PR pre-flight reads the PR **body** for a closing keyword and GitLab's MR list carries no body field, and `--continue-pr` reads GitHub pull requests only. Each names the forge in its reason instead of running `gh`, and the cycle proceeds past the pre-flight (it fails open) — only `--continue-pr` actually caps, as `continue-pr-not-found`.
 
 ### `/work` halts at the branch step naming the mainline
 
@@ -1186,6 +1208,24 @@ PR: [#196](https://github.com/trail-openers/pi-rukas/pull/196)
 **Fix:** The wrapper extracts the token via `gh auth token` on the host and forwards it as `GH_TOKEN` env into the container. If you're seeing 401, check the host: `gh auth status` should report you authenticated. If you're using a personal access token directly, export it as `GH_TOKEN` in your shell so the wrapper forwards it explicitly.
 
 PR: [#203](https://github.com/trail-openers/pi-rukas/pull/203)
+
+### `glab` commands return 401 "Unauthorized" inside the container
+
+**Symptom:** Inside `pi-rukas`, `glab mr list` / `glab issue list` fails with 401 (or "unauthenticated"), while the same commands work on the host. `gh` in the same container is fine.
+
+**Cause:** GitLab auth in the sandbox is the **host-provided `GITLAB_TOKEN`**, forwarded by the wrapper's ordinary host-env passthrough (with `GITLAB_HOST` for a self-hosted instance such as `gitlab.example.com`). `glab` — unlike `gh` — has no command that prints its stored token, so the wrapper can extract nothing: a `glab auth login` that keeps its token in the host OS keychain never crosses into the container. The glab config dir *is* mounted read-only for continuity, but a config directory is not a credential.
+
+**Fix:** Export the token on the host before launching, so the passthrough forwards it:
+
+```bash
+export GITLAB_TOKEN=glpat-…                     # and for self-hosted:
+export GITLAB_HOST=gitlab.example.com
+pi-rukas
+```
+
+Do **not** run `glab auth login` inside the container to repair this — the config mount is read-only, so the write cannot land. Check the host first: `env | grep GITLAB_` should show the token. `GITLAB_CI` is on the wrapper's env blocklist deliberately: a host export of it (a real one, when `pi-rukas` is launched from inside a CI job) would otherwise switch the container's glab to job-token auth. `GITLAB_CI_*` job variables still pass. For **pushing** from the sandbox, use the SSH agent (mounted and forwarded by default) or an HTTPS remote that carries a token — the container has no writable credential store.
+
+Covered by the offline gate `extension/smoke-tests/test-sandbox-glab-config-mount.ts`.
 
 ### Custom LLM endpoint on a private hostname returns "connection refused" or "no such host"
 
@@ -3938,3 +3978,37 @@ The channel: the driver creates a private `0700` temp dir per verify call and pa
 - **Every cycle parks although the base is genuinely red** — the writer and reader have drifted. `bun smoke-tests/test-verify-report-file.ts` section 4 runs the real loop and reads its report back; that is the assertion that catches writer drift a parser unit test cannot see.
 
 The variable is a driver-internal process contract, not operator configuration — deliberately **not** a `PI_ENSEMBLE_*` name and not in `HEADLESS_INPUTS`. There is no supported way to set it by hand, and a relative value is refused with a warning rather than written into the checkout under test.
+
+### Symptom: a lean handback shipped a head the gate never certified
+
+**Symptom:** a `work-lean` run ends `handed-back` (exit 10) on an issue whose PR head has
+no green `verify` behind it. The step log's newest work step is `review` with kind `fixed`
+— the fix wave pushed a new head — and the re-verification that `fixed` routes into never
+ran, because the between-steps deadline, the step cap, a handler throw or a table edge
+stopped the run first. The handback comment names neither the shipped head nor whether it
+was verified.
+
+**Cause:** the handback reported the head origin held without moving it, and origin held
+the fix wave's bytes. `review-git.ts`'s `integrate()` is the only writer of public bytes in
+the review step; once it has pushed, "shipped" and "verified" are two different commits.
+
+**Fix:** the handback now ships the last verified head. It keeps the unverified head
+reachable under `refs/lean/unverified/<issue>`, then rewinds origin's branch to the newest
+decided green `verify`'s head with a lease-pinned push
+(`--force-with-lease=<branch>:<unverified head>`), so it moves the branch only while origin
+still holds exactly the head this run pushed. The step's outcome carries `shippedHead`,
+`shippedVerified`, and when they differ `unshippedHead` and `unshippedReason`; the
+comment body names them, and on `PI_ENSEMBLE_HANDOFF_CHANNEL=host` the body the host
+is handed is that same comment. When the push is refused — by the lease, or
+by git failing before it reached the lease — nothing is moved and the record says which
+head shipped, that it was not verified, and why, naming origin's head with git's own reason
+beside it. The step also refuses to certify a head it cannot prove: the recorded verified
+head is asked of git as a commit object this clone holds before any arm may call the shipped
+head verified, so a state file naming bytes nobody has moves nothing and reads as unverified.
+Where origin already holds the certified head, the step pushed nothing and
+says so, without calling the shipped head unverified. Read `shippedVerified: false` as the reason to
+look before merging. The rule is behind `PI_ENSEMBLE_LEAN_VERIFIED_HANDBACK` (default on;
+`0` restores the pre-rule step that reports and moves nothing). It keys on the step log, so
+it covers every handback whose newest work step is a `fixed` review, whatever stopped the
+run. Source: `lean/handback-heads.ts`, `lean/handback-rewind.ts`, `docs/lean.md` → "The
+verified handback".

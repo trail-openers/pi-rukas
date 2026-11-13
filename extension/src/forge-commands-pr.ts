@@ -34,6 +34,23 @@ export function prListCmd(
 }
 
 /**
+ * The open-PR lookup the classic driver's pre-merge gates issue OUTSIDE the
+ * adapter: `gh pr list --state open` carrying the `body` field, which
+ * `prListCmd` does not request and `matchPrForIssue` reads.
+ *
+ * GitHub-only by construction. GitLab's `glab mr list` carries no body field
+ * at all (its rows are the mapper's, and none of them is a description), so a
+ * GitLab cycle asking this question would read an empty body for every MR and
+ * decide "no PR matches" — a wrong answer from a command that exited 0. The
+ * caller refuses with this string instead of issuing it. `state` is the caller
+ * to supply (`--state` is how gh selects open PRs; an absent state is not
+ * "open").
+ */
+export function openPrBodyListCmd(state: string): string {
+  return `gh pr list --state ${shq(state)} --limit 100 --json number,headRefName,body`;
+}
+
+/**
  * `gh pr create` does NOT support `--json` (verified: `gh pr create --help`
  * — no `--json` in the flag list, and the doc text explicitly states
  * "Upon success, the URL of the created pull request will be printed").

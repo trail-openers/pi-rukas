@@ -11,15 +11,18 @@
  *   - every unresolved CRITICAL point parks the cycle, whatever its topic (#1187).
  *     No keyword or topic classification decides it: the park reason is
  *     `unresolved-critical-open-point`.
- *   - a point is answered only when `[RESOLVED]` appears unemphasised, right after
- *     the severity tag on the bullet's own first line (`- [CRITICAL][RESOLVED] …` or
- *     `- [CRITICAL] [RESOLVED] …`). `**[RESOLVED]**` does not count and parks.
+ *   - a point is answered only by an unemphasised `[RESOLVED]` on the bullet's own
+ *     first line: right after the severity tag (`- [CRITICAL][RESOLVED] …`,
+ *     `- [CRITICAL] [RESOLVED] …`), or after the topic followed by a separator and the
+ *     answer (`- [CRITICAL] topic [RESOLVED] - answer`; `–`, `—` or `:` also separate).
+ *     `**[RESOLVED]**` does not count and parks.
  *     Answer the point in the issue body, then re-run with `/work N --restart`.
  *     `[RESOLVED]` is matched CASE-SENSITIVELY by design: `[resolved]` is emphasis-free
  *     markup an author could reach by accident, and only the exact machine-written token
  *     the writer emits counts as an answer — a near-miss keeps the point gating.
- *   - any other line in the section that is not a plain bullet, checkbox or link
- *     bullet parks as unparsed, rather than being ignored (open-points-reader.ts).
+ *   - any other line in the section that is not a plain bullet, checkbox, link
+ *     bullet or thematic break (`---`) parks as unparsed, rather than being ignored
+ *     (open-points-reader.ts).
  *   - the one intro sentence below is prose the WRITER emits, so the READER skips it
  *     verbatim (#1187 fix round 1): without that exemption a gap-gate-filed issue can
  *     never be cleared by `[RESOLVED]`, because the intro parks after every point is answered.
@@ -73,4 +76,15 @@ export function escapeRegExpLiteral(text: string): string {
  */
 export function openPointsHeadingPattern(): string {
   return `^ {0,3}#{1,6}[ \t]+${escapeRegExpLiteral(OPEN_POINTS_HEADING)}[ \t]*#*[ \t]*$`;
+}
+
+/**
+ * `body` with `line` as its own paragraph ABOVE the rendered Open points section, or at
+ * the end when there is none. A driver's note appended after the section's last bullet
+ * would sit inside the section, where the intent gate reads every line.
+ */
+export function withLineAboveOpenPoints(body: string, line: string): string {
+  const at = body.lastIndexOf(`\n## ${OPEN_POINTS_HEADING}\n`);
+  if (at < 0) return `${body.trimEnd()}\n\n${line}\n`;
+  return `${body.slice(0, at).trimEnd()}\n\n${line}\n${body.slice(at)}`;
 }

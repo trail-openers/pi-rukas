@@ -116,6 +116,7 @@ function parkUnchecked(spec: NormalisedSpec, note: SpecAssumption): NormalisedSp
     verdict: "park",
     parkReason: "blank-issue-body",
     parkReasonSource: "default",
+    verdictRule: "blank-body-gate",
   };
 }
 
@@ -174,6 +175,7 @@ function applyOpenPointGate(spec: NormalisedSpec, reading: OpenPointReading): No
     verdict: "park",
     parkReason: "unresolved-critical-open-point",
     parkReasonSource: "default",
+    verdictRule: "open-point-gate",
     openPoints: blocking,
   };
 }

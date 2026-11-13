@@ -14,27 +14,23 @@
  */
 
 import { execp } from "../exec.ts";
-import { detectForge } from "../forge-detect.ts";
-import { type Forge, type ForgeDetection, createForge } from "../forge.ts";
+import type { Forge } from "../forge.ts";
 import { detectMainline } from "../mainline.ts";
+import { resolveCycleForge } from "../work-driver-forge-ctx.ts";
 import { oneLine } from "./text-fence.ts";
 
 /**
  * The forge adapter for this repo, or undefined when it cannot be resolved.
+ *
+ * Resolution goes through the driver's one guarded detection so a lean run and
+ * a `/work` cycle give the same answer for the same repo.
  *
  * Exported because `publish` asks for the same adapter in a narrower shape
  * (`PublishForge` is a `Pick` of `Forge`), and a second lookup here would be
  * a second detection path with its own failure modes.
  */
 export async function forgeFor(repoRoot: string): Promise<Forge | undefined> {
-  if (process.env.PI_ENSEMBLE_FORGE === "none") return undefined;
-  try {
-    const det: ForgeDetection = await detectForge(repoRoot, {});
-    if (det.forge === "unknown") return undefined;
-    return createForge(det, { cwd: repoRoot });
-  } catch {
-    return undefined;
-  }
+  return resolveCycleForge(repoRoot, { traceLabel: "lean" });
 }
 
 /** The issue body: the adapter when there is one, raw `gh` when there is not. */
