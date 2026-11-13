@@ -20,11 +20,18 @@
  * `done` with a reason that says the comment never went out.
  */
 
+import { execp } from "../exec.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import { frozenFromLog } from "./build.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { handbackHeads } from "./handback-heads.ts";
-import { type Rewind, rewindToVerified } from "./handback-rewind.ts";
+import {
+  NO_HEAD,
+  type Rewind,
+  SWITCHED_OFF,
+  originBranchHead,
+  rewindToVerified,
+} from "./handback-rewind.ts";
 import { postHandback } from "./io.ts";
 import { BLOCKED_PATH_CAP, BLOCKED_REASON_CAP, validPrUrl } from "./state-outcome.ts";
 import { type Outcome, REPORT_STATES, type Step } from "./state.ts";
@@ -240,24 +247,39 @@ export function handbackBody(
 
 /**
  * The head lines of the comment, or `undefined` when this run has nothing to say
- * about heads. A handback that moved nothing and left no unverified head behind
- * prints no head section at all: an empty one would read as an answer about a
- * move nobody made.
+ * about heads — a handback the rule never touched prints no head section at all,
+ * because an empty one would read as an answer about a move nobody made.
  *
- * Both halves are stated whether or not the rewind landed — which head shipped,
- * whether verify saw it, and which head was left with its reason — because the
- * case the operator needs is the one where the shipped head is NOT the verified
- * one.
+ * The shipped head MAY be unknown while the rule is speaking: a log with no green
+ * `verify` has nothing to rewind to, and origin may simply not answer. What the
+ * operator came to read is the second half — the head that is sitting on the
+ * branch UNVERIFIED, and why it was not shipped — so that half prints on its own
+ * rather than being hidden behind a head this step could not read.
+ */
+/**
+ * The head lines of the comment, or `undefined` when this run has nothing to say
+ * about heads — a handback the rule never touched, or one whose rewind had no head
+ * to move, prints no head section at all. A section naming a head this step never
+ * read would be the forged claim V4 exists to keep out of the record.
+ *
+ * Where there IS a head, both halves are stated whether or not the rewind landed —
+ * which head shipped, whether verify saw it, and which head was left with its
+ * reason — because the case the operator came to read is the one where the shipped
+ * head is NOT the verified one.
  */
 function headLines(heads: Heads | undefined): string[] | undefined {
-  if (heads === undefined || heads.shippedHead === undefined) return undefined;
-  const lines = [
-    `Shipped head: \`${heads.shippedHead}\` (${heads.shippedVerified === true ? "verified" : "NOT verified"})`,
-  ];
+  if (heads === undefined) return undefined;
+  const lines: string[] = [];
+  if (heads.shippedHead !== undefined)
+    lines.push(
+      `Shipped head: \`${heads.shippedHead}\` (${heads.shippedVerified === true ? "verified" : "NOT verified"})`,
+    );
   if (heads.unshippedHead !== undefined)
     lines.push(
       `Unshipped head: \`${heads.unshippedHead}\` — ${heads.unshippedReason ?? "not shipped"}`,
     );
+  if (heads.ruleReason !== undefined) lines.push(`No verified head: ${heads.ruleReason}`);
+  if (lines.length === 0) return undefined;
   return [...lines, ""];
 }
 
@@ -269,32 +291,67 @@ function headLines(heads: Heads | undefined): string[] | undefined {
  * fields are that string's evidence.
  */
 interface Heads {
+  /** True when the rule spoke for this handback, whether or not it read a head. */
+  speaks?: boolean;
+  /** The head origin's branch holds as this step read it, after any move. */
   shippedHead?: string;
+  /** Whether that head is one the run's own gate certified. */
   shippedVerified?: boolean;
+  /** The head the run left on origin that did NOT ship, when a move moved it off. */
   unshippedHead?: string;
+  /** Why the head did not ship, or why nothing moved at all, in the rewind's words. */
   unshippedReason?: string;
+  /** The rule's own finding, where it declined to move anything and said why. */
+  ruleReason?: string;
 }
 
 /**
- * The head facts one handback records, from what its rewind settled on.
+ * The head facts one handback records, from the head origin holds and what the
+ * rewind settled on.
  *
- * A handback the rule does not touch records nothing: no head fields, so the
- * comment carries no head section. The rewind's own answer is the whole input —
- * the head origin holds is the shipped head whatever the move did, and whether
- * it was verified is the question the rule exists to answer.
+ * A handback the rule does not touch records nothing, and neither does one whose
+ * rewind had no head to move: the rule fired, found no green `verify`, and so has
+ * no head to name. A section built from `heads.reason` alone would print the rule's
+ * finding as though it were a fact about a head, which is the confusion V4 forbids —
+ * the reason belongs to the record only where a head exists to be unshipped.
+ *
+ * `originHead` is the head the branch holds as this step read it AFTER its own move,
+ * which is the only thing `shippedHead` may claim: a landed rewind moved the branch
+ * to the verified head, so origin answers "the verified one", and a refused one left
+ * the run's own push there, so origin answers "the unverified one".
+ *
+ * `unshippedHead` is the head the run pushed that origin no longer holds — the
+ * rewind's own pre-move read, which the step could not have produced itself. On a
+ * refusal origin still holds it, so there is nothing unshipped to name and only the
+ * reason speaks.
+ *
+ * `shippedVerified` is `rewind.shipped` and nothing more: the rewind is the one
+ * caller that read origin BEFORE it wrote, so it alone may say a branch sits at a
+ * head the run's gate certified.
  */
-function headFacts(applies: boolean, rewind: Rewind): Heads {
+function headFacts(
+  applies: boolean,
+  rewind: Rewind,
+  originHead: string | undefined,
+  ruleReason?: string,
+): Heads {
   if (!applies) return {};
-  // Origin's branch as the step read it. When the rewind landed that sha IS the
-  // verified head (the step checked origin holds it), and when it refused the run
-  // shipped exactly what it left — unverified, which `shippedVerified` says.
-  const shippedHead = rewind.unshippedHead;
+  const shippedHead = originHead ?? rewind.unshippedHead;
+  // Nothing to say about heads: this step read origin and there was no head there
+  // for it to ship or move. The rule's finding is still reported — it is the answer
+  // to the question the operator asks of a handed-back run, "why is what I was sent
+  // not the thing the gate approved?" — but it is reported as the rule's own words
+  // beside the head that actually shipped, never dressed up as a head.
+  if (shippedHead === undefined && rewind.unshippedHead === undefined) return {};
+  const leftBehind =
+    rewind.unshippedHead !== undefined && rewind.unshippedHead !== shippedHead
+      ? rewind.unshippedHead
+      : undefined;
   return {
-    ...(shippedHead === undefined ? {} : { shippedHead }),
+    speaks: true,
+    shippedHead,
     shippedVerified: rewind.shipped,
-    ...(rewind.shipped || rewind.unshippedHead === undefined
-      ? {}
-      : { unshippedHead: rewind.unshippedHead }),
+    ...(leftBehind === undefined ? {} : { unshippedHead: leftBehind }),
     ...(rewind.reason === undefined ? {} : { unshippedReason: rewind.reason }),
   };
 }
@@ -313,6 +370,10 @@ export async function handbackOutcome(
   ctx: HandlerCtx,
   post: (repoRoot: string, issue: number, body: string) => Promise<void>,
   rewind: (verifiedHead: string) => Promise<Rewind> = async () => ({ shipped: false }),
+  /** Where origin's branch stands, read by this step. Seam for the test to drive. */
+  readOrigin: (
+    ctx: Pick<HandlerCtx, "repoRoot" | "issue" | "run">,
+  ) => Promise<string | undefined> = (ctx) => originBranchHead(execp, ctx),
 ): Promise<Outcome> {
   let body: string | undefined;
   try {
@@ -320,26 +381,36 @@ export async function handbackOutcome(
     // that failed to build has to be reported the same way a refused post is.
     const prUrl = prUrlFromLog(ctx.steps);
     const heads = handbackHeads(ctx.steps);
+    // ONE call time read of the switch, so the arm that moves origin and the arm
+    // that only reports cannot disagree with each other.
+    const ruleOn = heads.applies && leanVerifiedHandbackEnabled();
     // The rewind happens BEFORE the body is built, so the comment states where
     // origin's branch stands after the move rather than where it stood before it.
-    // The switch is read here, at call time, and a disabled rule moves nothing.
     const moved =
-      heads.applies && leanVerifiedHandbackEnabled() && heads.verifiedHead !== undefined
+      ruleOn && heads.verifiedHead !== undefined
         ? await rewind(heads.verifiedHead)
-        : heads.applies
-          ? { shipped: false, reason: heads.reason ?? "the rule did not move origin's branch" }
-          : { shipped: false };
-    const facts = headFacts(heads.applies, moved);
+        : ruleOn
+          ? NO_HEAD
+          : SWITCHED_OFF;
+    // Where origin's branch stands now, read by this step rather than inferred
+    // from the move. A handback the rule never touched has nothing to say about
+    // heads and reads nothing: `SWITCHED_OFF` carries no head precisely because no
+    // read was made, and the record must not look like the answer to a question
+    // this step never asked.
+    const originHead = ruleOn ? await readOrigin(ctx) : undefined;
+    const facts = ruleOn ? headFacts(heads.applies, moved, originHead, heads.reason) : {};
     body = handbackBody(ctx.issue, {
       needed: neededFromLog(ctx.steps),
       frozen: frozenList(ctx.steps),
       branch: ctx.run.branch,
       ...(prUrl === undefined ? {} : { prUrl }),
-      ...(facts.shippedHead === undefined ? {} : { heads: facts }),
+      ...(facts.shippedHead === undefined && !facts.speaks ? {} : { heads: facts }),
     });
     await post(ctx.repoRoot, ctx.issue, body);
     // `posted: true` is the only place the claim lives: the kind is `done` either way, so without the
     // field a refused post and a delivered one are the same record to a later reader.
+    // `...facts` is deliberately LAST: the four head fields are the record's head
+    // facts and nothing above them may speak for a head.
     return {
       kind: "done",
       reason: "handback comment posted",

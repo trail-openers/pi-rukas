@@ -21,7 +21,7 @@
  * different claim from "the run once saw a gate".
  */
 
-import { REPORT_STATES, type Step, newestDecided } from "./state.ts";
+import { type LeanState, REPORT_STATES, type Step } from "./state.ts";
 
 /** What the handback ships: the green's head, or nothing. */
 export interface HandbackHeads {
@@ -33,13 +33,70 @@ export interface HandbackHeads {
   reason?: string;
 }
 
-/** The newest step that was WORK and carried a verdict; a report state is how a run ended. */
-function newestDecidedWorkStep(steps: Step[]): Step | undefined {
+/**
+ * The newest step that was WORK and carried a verdict, and WHERE it sits.
+ *
+ * The position is part of the answer, not an optimisation: the rule below has to
+ * say whether the gate was decided before or after this step, and the only thing
+ * that orders two steps is their place in the log.
+ */
+function newestDecidedWorkStep(steps: Step[]): { step: Step; at: number } | undefined {
   for (let i = steps.length - 1; i >= 0; i--) {
     const step = steps[i];
     if (step === undefined || step.outcome === undefined) continue;
     if (REPORT_STATES.includes(step.state)) continue;
-    return step;
+    return { step, at: i };
+  }
+  return undefined;
+}
+
+/**
+ * The newest step of one state that carried a verdict, and WHERE it sits.
+ *
+ * Not `newestDecided` over the whole log: that one reads the newest step of a state
+ * that ANSWERED, anywhere, and for the land gate and the publish check that is the
+ * right question — a crash mid-step says nothing, so the previous verdict still
+ * stands. Here it is not. This rule asks whether the gate decided BEFORE the review
+ * whose fix wave is being handed back, and a gate visit the run never finished is
+ * not silence to step over: it is the run entering the gate and coming out with no
+ * answer, which is the one thing the rule exists to refuse to ship over. Reading
+ * past it would ship the bytes of a fix the re-verification was started for and never
+ * certified.
+ *
+ * So the scan starts at the newest work step and walks back from there, and what it
+ * finds after that point cannot be ignored. `startedAt` is not consulted: like the
+ * key, it is a fact the record carries rather than the order the run happened in.
+ * The scan is a plain backwards loop rather than `findLast`, which the ES2022 lib
+ * floor this project targets does not promise.
+ */
+function newestStateStepAfter(
+  steps: Step[],
+  state: LeanState,
+  after: number,
+): { step: Step; at: number } | undefined {
+  for (let i = steps.length - 1; i > after; i--) {
+    const step = steps[i];
+    if (step === undefined || step.state !== state) continue;
+    return { step, at: i };
+  }
+  return undefined;
+}
+
+/**
+ * The newest step of one state that carried a verdict, at or before `throughAt`.
+ *
+ * The other half of the same reading: the green the rule may take a head from is one
+ * the run recorded and finished, in the part of the log the review closes off.
+ */
+function newestDecidedThrough(
+  steps: Step[],
+  state: LeanState,
+  throughAt: number,
+): { step: Step; at: number } | undefined {
+  for (let i = Math.min(throughAt, steps.length - 1); i >= 0; i--) {
+    const step = steps[i];
+    if (step === undefined || step.state !== state || step.outcome === undefined) continue;
+    return { step, at: i };
   }
   return undefined;
 }
@@ -52,27 +109,34 @@ function newestDecidedWorkStep(steps: Step[]): Step | undefined {
  * left it, and there is nothing to say about it.
  */
 export function handbackHeads(steps: Step[]): HandbackHeads {
-  const newest = newestDecidedWorkStep(steps);
+  const newestWork = newestDecidedWorkStep(steps);
+  if (newestWork === undefined) return { applies: false };
+  const newest = newestWork.step;
   if (newest?.state !== "review" || newest.outcome?.kind !== "fixed") return { applies: false };
-  const green = newestDecided(steps, "verify");
-  if (green?.outcome?.kind !== "green")
+  // Anything the gate stepped into AFTER the review has to be looked at, verdict or
+  // no verdict, before any older green may speak for the head.
+  const trailing = newestStateStepAfter(steps, "verify", newestWork.at);
+  if (trailing !== undefined && trailing.step.outcome === undefined)
     return {
       applies: true,
-      reason:
-        green === undefined
-          ? "no verify step of this run decided anything, so no head is verified"
-          : `the newest decided verify is ${String(green.outcome?.kind)}, not green, so no head is verified`,
+      reason: `the run entered the gate again at ${trailing.step.key} and never recorded what it decided, so no head is verified`,
     };
-  const head = green.outcome.verifiedHead;
+  const green = newestDecidedThrough(steps, "verify", newestWork.at);
+  if (green === undefined)
+    return {
+      applies: true,
+      reason: "no verify step of this run decided anything, so no head is verified",
+    };
+  if (green.step.outcome?.kind !== "green")
+    return {
+      applies: true,
+      reason: `the newest decided verify is ${String(green.step.outcome?.kind)}, not green, so no head is verified`,
+    };
+  const head = green.step.outcome.verifiedHead;
   if (typeof head !== "string" || head === "")
     return {
       applies: true,
       reason: "the green verify recorded no head, so there is no verified head to ship",
-    };
-  if (green.key > newest.key)
-    return {
-      applies: true,
-      reason: `a verify decided after the fixed review (${green.key}) already speaks for the head`,
     };
   return { applies: true, verifiedHead: head };
 }
