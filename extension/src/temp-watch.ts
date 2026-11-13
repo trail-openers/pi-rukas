@@ -27,6 +27,17 @@
  * `/tmp` is a symlink. The root is the temp dir rather than the child's cwd
  * because the quota that fills is the shared one.
  *
+ * The channel is INERT for a repointed child (#2241). A child's `TMPDIR`, `TMP`
+ * and `TEMP` now name its own per-spawn dir, so everything it writes lands there
+ * and the spawn's `finally` removes it — it no longer lands in the root this walk
+ * measures, and a leak this line reports can no longer come from such a child. It
+ * still measures the shared root, which is where a leak from anything OUTSIDE a
+ * repointed child (a helper a child execs with its own env, a nested process that
+ * sets TMPDIR elsewhere, a pre-#2241 child) still shows up. The disclosure is kept
+ * rather than deleted for that reason, and the residual is stated plainly: for a
+ * child whose temp root the harness set, a large scratch tree it left in its OWN
+ * dir is invisible here, and what removes it is the spawn's cleanup, not this walk.
+ *
  * What the walk does not enter, and why:
  *
  *   - The harness's own trees are skipped by OWNERSHIP, never by name. A name is
@@ -41,7 +52,9 @@
  *     exactly that way: `writeRolePromptFile`'s prompt dir, the permission
  *     socket's directory, `host-spawn-slots`' slot dir, `reviewer-tree`'s
  *     checkout and `work-driver-toolchain-canary`'s probe dir all `mkdtemp` and
- *     set `0700` explicitly. A child's own `mkdir` gets `0777 & ~umask`, which at any
+ *     set `0700` explicitly — including `writeRolePromptFile`'s dir, which since
+ *     #2241 is also the child's whole `TMPDIR` and so must keep that mode for the
+ *     skip to still read it as the harness's own. A child's own `mkdir` gets `0777 & ~umask`, which at any
  *     umask up to `007` is wider than `0700` and reads as a leak. What a child CAN
  *     do is `chmod 700` its own harness-prefixed directory and match all three — the
  *     honest shapes and that one are indistinguishable from the parent's side, since
