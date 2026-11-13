@@ -36,6 +36,7 @@
  */
 
 import { TEST_RUNNER_PLACEHOLDER } from "./config.ts";
+import { LEAN_BUILD_ISSUE_LEAD, leanIssueSection } from "./issue-prose.ts";
 import { criteriaBlock, scopeBlock } from "./spec-blocks.ts";
 import type { PiSpec } from "./spec.ts";
 
@@ -74,6 +75,17 @@ export interface BuildPromptOpts {
   testRunner?: string;
   /** Why this round exists: the `verify:red` or `ci:red` reason, clipped by the caller. */
   reentry?: string;
+  /**
+   * The issue body the step read for its own spec parse. The frozen tests were
+   * written from this text and the criteria below are a summary of it, so a
+   * requirement stated only in prose — a fixed exception message, a non-obvious
+   * "never do X" — is otherwise invisible to the one seat that writes the code.
+   * Absent, blank, stripped to the spec block alone, stripped to a restatement of
+   * `spec.problem`, or with either `PI_ENSEMBLE_LEAN_ISSUE_PROSE` or
+   * `PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE` at `"0"`, no section is rendered and the
+   * brief is the pre-section shape byte for byte.
+   */
+  issueBody?: string;
   /**
    * The previous attempt's budget verdict plus the frozen files the driver re-ran
    * red, when this round retries a build its own ceiling stopped — no gate
@@ -125,6 +137,7 @@ export function buildPrompt(opts: BuildPromptOpts): string {
     opts.testRunner === undefined || opts.testRunner.trim() === ""
       ? "No project test runner is configured, so run each frozen file with whatever command runs this repository's tests."
       : `The project runs one test file with \`${opts.testRunner}\` — the literal \`${TEST_RUNNER_PLACEHOLDER}\` is replaced by the file's path. Run the frozen files with that command as you work, and keep going until they pass.`;
+  const issueSection = leanIssueSection(opts.issueBody, LEAN_BUILD_ISSUE_LEAD, opts.spec.problem);
   return [
     `You are implementing issue #${opts.issue}. The acceptance tests already exist and are committed; your job is to make them pass.`,
     "",
@@ -132,6 +145,9 @@ export function buildPrompt(opts: BuildPromptOpts): string {
     "",
     opts.spec.problem,
     "",
+    // Same seam as `specify-prompt` / `challenge-prompt`: the task statement
+    // before the criteria, and no line at all when there is nothing to show.
+    ...(issueSection === "" ? [] : [issueSection, ""]),
     "## The acceptance criteria",
     "",
     criteriaBlock(opts.spec),
