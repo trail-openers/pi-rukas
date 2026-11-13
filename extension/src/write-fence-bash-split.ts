@@ -18,7 +18,7 @@ export interface Simple {
 }
 
 /** Shell keywords that precede a simple command without being the command. */
-const KEYWORDS = new Set([
+export const KEYWORDS = new Set([
   "if",
   "then",
   "else",
@@ -134,15 +134,15 @@ export const VALUE_OPTIONS: Record<string, readonly string[]> = {
 };
 
 /** Assignments of the form `NAME=VALUE`, which `env` and a command prefix accept. */
-const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+export const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
 /**
  * The wrapper that takes the new root as a POSITIONAL argument before the program it runs:
  * `chroot NEWROOT PROG`. One positional only — consuming the command itself would leave a
  * remover the reader never saw.
  */
-const POSITIONAL_ROOT_WRAPPERS = ["chroot"] as const;
-const DURATION = /^\d+(\.\d+)?[smhd]?$/;
+export const POSITIONAL_ROOT_WRAPPERS = ["chroot"] as const;
+export const DURATION = /^\d+(\.\d+)?[smhd]?$/;
 
 /** A simple command with its keywords, assignments and wrappers removed, and any `env -C` directories. */
 export interface Prefixed {
@@ -364,7 +364,7 @@ export function optionValues(args: Word[], names: readonly string[]): Word[] {
  * wrong leaves the command behind as the first word of the stripped result, which is how an
  * `xargs …` line stopped being read as the remover it runs.
  */
-function wrapperArgCount(name: string, args: Word[], chdir: Word[]): number {
+export function wrapperArgCount(name: string, args: Word[], chdir: Word[]): number {
   const valued = VALUE_OPTIONS[name] ?? [];
   let k = 0;
   while (k < args.length) {

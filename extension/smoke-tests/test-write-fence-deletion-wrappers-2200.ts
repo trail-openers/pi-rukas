@@ -21,6 +21,14 @@
  * name them the strip would find the remover and the same rows stay green, which is why they
  * are the class rather than a list.
  *
+ * That scan is bounded by what it may conclude from. A wrapper strip that ate a word its table
+ * called a value is an escape only when the word it ate is a command this rule owns: `watch -q
+ * rm …` and `env -S rm …` really run the remover out of the option's value slot. A strip that
+ * ate an ordinary program the same way — `timeout 60 make` eats `make` for no option at all, an
+ * untabled option or an OPTIONAL value — is a wrapped command that deletes nothing, and refusing
+ * it is an over-refusal of every build, test and script a child runs behind a wrapper. The A11b
+ * rows below pin that second direction.
+ *
  * Run: cd extension && bun smoke-tests/test-write-fence-deletion-wrappers-2200.ts
  */
 
@@ -162,11 +170,37 @@ await withDeletionHost(HOST, async () => {
     refused(`watch -q git clean -fdx ${wt}/build`, fenced) !== undefined,
     "A11 refuse: `watch -q git <verb> -fdx` in-tree — no program, so no judgement",
   );
-  // A wrapper whose program this rule cannot read at all is a line it refuses to guess at, whoever
-  // that program is: `watch -q <program>` never leaves a command for the reader, so it is refused
-  // whether the program deletes anything or nothing. The child drops the wrapper and runs it.
+  // A wrapper whose program this rule cannot read at all is a line it refuses to guess at, but
+  // only where the word the strip swallowed is one this rule OWNS: that is the escape (`watch -q
+  // rm …`, `env -S rm …`, and here `git`/`node`/`bun` — each consumed as the OPTIONAL value of
+  // `-q`, each a name the rule reads). Anything else is a wrapped command that deletes nothing.
   for (const line of [`watch -q git status`, `watch -q node x`, `watch -q bun run check`]) {
-    assert(refused(line, fenced) !== undefined, `A11 refuse: ${line} leaves no command to read`);
+    assert(
+      refused(line, fenced) !== undefined,
+      `A11 refuse: ${line} — the strip ate an OWNED name for -q's optional value, so it is refused`,
+    );
+  }
+
+  // A11b. The other direction of the same scan. A strip that swallows the word in the program's
+  // slot is an escape only when that word is one this rule owns; a strip that swallows `make`,
+  // `cargo` or a project script is a wrapped command that deletes nothing, and refusing it takes
+  // the child's whole toolchain away. These nine lines were ALLOWED before the scan landed and
+  // REFUSED after it; each really runs (verified against the tool) and none deletes anything. The
+  // escape needs an OWNED name in the option's value slot — a wrapper in front of `make` supplies
+  // none, whatever its option table says about `-n`, `-c`, `-p` or a duration.
+  const wrappedAllowed: Array<[string, string]> = [
+    ["nice -n 5 make", "`nice -n 5` before a build"],
+    ["nohup make", "`nohup` before a build"],
+    ["timeout 60 make", "`timeout <duration>` before a build"],
+    ["ionice -c 3 make", "`ionice -c 3` before a build"],
+    ["env -i PATH=/usr/bin make", "`env -i` with an assignment, before a build"],
+    ["strace -p 1 ls", "an untabled option (`strace -p <pid>`) before a read-only command"],
+    ["sudo -n true", "`sudo -n` before a no-op"],
+    ["nice -n 5 cargo test", "`nice -n 5` before the test runner"],
+    ["nohup ./scripts/build.sh", "`nohup` before a project script"],
+  ];
+  for (const [command, why] of wrappedAllowed) {
+    assert(refused(command, fenced) === undefined, `A11b allow: ${why} — \`${command}\``);
   }
 });
 

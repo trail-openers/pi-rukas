@@ -431,6 +431,10 @@ const allowedShapes: Array<[string, string]> = [
   [`find ${wt}/dist | xargs -I{} rm {}`, "a find|xargs -I{} cleanup in the worktree"],
   [`find ${wt} -type f -exec rm {} +`, "a plain -exec rm over a worktree path"],
   [`find ${wt} -name 'x' -exec rm {} +`, "a -exec rm narrowed by a name test inside the worktree"],
+  // The same `-exec` judged by its operands: with every literal inside the roots it stays allowed,
+  // which is what makes the refusal above a judgement about the path and not a blanket ban on the
+  // action.
+  [`find ${wt} -exec rm -rf {} +`, "an -exec rm whose only operands are placeholders"],
   ["git status --porcelain", "an ordinary read-only command"],
   ["bun run check", "the project verify"],
   [`node -e 'console.log("${scratch}/notes.txt")'`, "an interpreter that deletes nothing"],
@@ -452,6 +456,16 @@ const inTreeRefusals: Array<[string, string]> = [
   [`echo ${sharedTmp}/victim | xargs rm`, "a remover fed by echo"],
   [`rm -f ${wt}/*.log`, "a glob inside the worktree"],
   ["find -exec rm {} +", "an -exec rm that names no tree to remove from"],
+  // An `-exec` of a remover is judged by the find's start paths AND by every literal operand the
+  // remover itself names: `find <in-tree> -exec rm -rf <outside> \;` runs that remover once per
+  // match with the outside path spliced in verbatim, so an in-tree start path must not stand in for
+  // the tree it really deletes. The `+` form is the same command with a different terminator.
+  [`find ${wt} -exec rm -rf ${foreignRun} \;`, "an in-tree find whose -exec rm names an outside path"],
+  [`find ${wt} -exec rm -rf ${foreignRun} +`, "the same with the `+` terminator"],
+  [
+    `find ${wt} -execdir rm -rf ${foreignRun} \;`,
+    "the same through -execdir",
+  ],
 ];
 for (const [command, why] of inTreeRefusals) {
   assert(refused(command) !== undefined, `B refuse: ${why} — \`${command}\``);
