@@ -272,7 +272,7 @@ function headLines(heads: Heads | undefined): string[] | undefined {
 }
 
 /**
- * The head facts of one handback, in the shape the record and the comment both read.
+ * The head facts of one handback, in the shape the comment reads them.
  *
  * One shape for both surfaces because they are ONE fact: the comment the forge is
  * handed and the body the host is handed are the same string, and the step's typed
@@ -280,7 +280,7 @@ function headLines(heads: Heads | undefined): string[] | undefined {
  */
 interface Heads {
   /** True when the rule spoke for this handback, whether or not it read a head. */
-  speaks?: boolean;
+  render: boolean;
   /** The head origin's branch holds as this step read it, after any move. */
   shippedHead?: string;
   /** Whether that head is one the run's own gate certified. */
@@ -293,7 +293,14 @@ interface Heads {
 
 /**
  * The head facts one handback records, from the head origin holds and what the
- * rewind settled on.
+ * rewind settled on, plus the one thing the comment needs that the record does
+ * not: whether the rule spoke at all.
+ *
+ * The pair is kept apart deliberately. The four head fields are `Outcome`'s —
+ * owned, shaped, rebuilt on reload — and the render decision is none of them: a
+ * boolean that says "print a head section" is a renderer's flag, and a key the
+ * record does not declare would be carried by the saved file without ever being
+ * judged by the validator. So `render` travels to the body and nowhere else.
  *
  * A handback the rule does not touch records nothing, and neither does one whose
  * rewind had no head to move: the rule fired, found no green `verify`, and so has
@@ -319,20 +326,20 @@ interface Heads {
  * failure `test-lean-state-outcome-heads.ts` exists to prevent.
  */
 function headFacts(applies: boolean, rewind: Rewind, originHead: string | undefined): Heads {
-  if (!applies) return {};
+  if (!applies) return { render: false };
   const shippedHead = originHead ?? rewind.unshippedHead;
   // Nothing to say about heads: this step read origin and there was no head there
   // for it to ship or move. The rule's finding is still reported — it is the answer
   // to the question the operator asks of a handed-back run, "why is what I was sent
   // not the thing the gate approved?" — but it is reported as the rule's own words
   // beside the head that actually shipped, never dressed up as a head.
-  if (shippedHead === undefined && rewind.unshippedHead === undefined) return {};
+  if (shippedHead === undefined && rewind.unshippedHead === undefined) return { render: false };
   const leftBehind =
     rewind.unshippedHead !== undefined && rewind.unshippedHead !== shippedHead
       ? rewind.unshippedHead
       : undefined;
   return {
-    speaks: true,
+    render: true,
     shippedHead,
     shippedVerified: rewind.shipped || rewind.alreadyAtVerified === true,
     ...(leftBehind === undefined ? {} : { unshippedHead: leftBehind }),
@@ -382,25 +389,28 @@ export async function handbackOutcome(
     // read was made, and the record must not look like the answer to a question
     // this step never asked.
     const originHead = ruleOn ? await readOrigin(ctx) : undefined;
-    const facts = ruleOn ? headFacts(heads.applies, moved, originHead) : {};
+    const facts = ruleOn ? headFacts(heads.applies, moved, originHead) : { render: false };
+    const { render, ...record } = facts;
     body = handbackBody(ctx.issue, {
       needed: neededFromLog(ctx.steps),
       frozen: frozenList(ctx.steps),
       branch: ctx.run.branch,
       ...(prUrl === undefined ? {} : { prUrl }),
-      ...(facts.shippedHead === undefined && !facts.speaks ? {} : { heads: facts }),
+      ...(render ? { heads: facts } : {}),
     });
     await post(ctx.repoRoot, ctx.issue, body);
     // `posted: true` is the only place the claim lives: the kind is `done` either way, so without the
     // field a refused post and a delivered one are the same record to a later reader.
-    // `...facts` is deliberately LAST: the four head fields are the record's head
-    // facts and nothing above them may speak for a head.
+    // `record` is deliberately LAST: the four head fields are the record's head
+    // facts and nothing above them may speak for a head. `render` is stripped rather
+    // than spread — it is the renderer's flag, and the record carries only what
+    // `Outcome` declares and the validator judges.
     return {
       kind: "done",
       reason: "handback comment posted",
       posted: true,
       report: body,
-      ...facts,
+      ...record,
     };
   } catch (err) {
     // The run ends here either way; the record says whether anyone was told.

@@ -14,6 +14,13 @@
  * same reason: a forced update is legitimate only because it is bound to a sha
  * this step read.
  *
+ * The branch it moves is state-file data too, so it gets the same guard the
+ * run's two other force-push sites apply before they build an argv —
+ * `assertPublishableBranch`. Legality is not enough: `main` is a legal ref, and
+ * a `+<head>:refs/heads/main` is exactly what a hand-edited state file turns a
+ * rewind into. A refusal of that kind moves nothing and says so in the record,
+ * like every other refusal here.
+ *
  * Two reads make the claim honest and neither is porcelain: origin is read
  * BEFORE the push (that read is what the lease is bound to, and what the record
  * names as the unshipped head), and origin is read AGAIN after it. Success is
@@ -25,6 +32,7 @@ import { isFullCommitSha } from "../commit-sha.ts";
 import { traceWarn } from "../trace.ts";
 import { netGitEnv, netRefProblem } from "../work-driver-net-git.ts";
 import type { HandlerCtx } from "./engine.ts";
+import { PublishInfraError, assertPublishableBranch } from "./publish-deps.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import { specifyBranch } from "./specify-tree.ts";
 import type { VerifyExec } from "./verify-types.ts";
@@ -221,6 +229,23 @@ export async function rewindToVerified(
   const unsafe = netRefProblem(ref);
   if (unsafe !== undefined)
     return { shipped: false, reason: `the branch is not pushable: ${unsafe}` };
+  // Legality is one thing and permission another: `netRefProblem` says the name
+  // is a ref git will take, which `main` is. The branch this push FORCES is
+  // `specifyBranch(run.branch, …)` — state-file data — so it gets `publish`'s and
+  // `review`'s own guard, not a third rule: a rewind is a force-push to the run's
+  // branch, and it is the one such site that shipped without it. The guard throws
+  // `PublishInfraError` at its callers; here the refusal is a `Rewind`, because
+  // this step's contract is that it always answers — and the run whose state file
+  // names the mainline still gets a comment saying so. `held` is read AFTER the
+  // refusal on purpose: a step that moved nothing has no head to name as the one
+  // it left behind, which is the same rule `alreadyAtVerified` exists to keep.
+  const pushable = await assertPublishableBranch(ctx.repoRoot, branch).then(
+    () => undefined,
+    (err: unknown) =>
+      err instanceof PublishInfraError ? err.message : String((err as Error)?.message ?? err),
+  );
+  if (pushable !== undefined)
+    return { shipped: false, reason: `the branch is not pushable: ${pushable}` };
   // A head that is not a sha is not a rewind, but it is still the case the
   // operator came to read: the rule fired, so the run has an unverified head on
   // origin and there was nothing verified to move to. `held` is therefore read

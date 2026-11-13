@@ -28,15 +28,27 @@
  * survivable: the displaced head reaches origin under the keeping-ref in the same
  * transaction that moved the branch.
  *
+ * (n) is the arm that never existed: the branch whose ref the rewind force-pushes is
+ * state-file data, and the two other force-push sites on the run's branch — `publish`
+ * and `review` — both run `assertPublishableBranch` over theirs first, so only the
+ * rewind would take a `+<verifiedHead>:refs/heads/main` from a hand-edited or forged
+ * state file. The case drives a rewind whose run branch is a mainline name, which is
+ * what that state file produces, against the fixture's real origin — whose branch of
+ * that name is reachable at the fix head, so a missing guard LANDS instead of failing
+ * for want of a ref.
+ *
  * The rule's reading of the log and the reporting step that prints the heads are
  * `test-lean-verified-handback.ts`; this file is the half that touches the wire.
  */
 
 import { rmSync } from "node:fs";
+import { isFullCommitSha } from "../src/commit-sha.ts";
+import { handbackHeads } from "../src/lean/handback-heads.ts";
 import { NO_HEAD, rewindToVerified, unverifiedRef } from "../src/lean/handback-rewind.ts";
 import type { Rewind } from "../src/lean/handback-rewind.ts";
 import { stepGitEnv } from "./lib/lean-review-fixtures.ts";
-import { BRANCH, ISSUE, ROOTS, exec } from "./lib/lean-verified-handback-fixture.ts";
+import { FAKE_VERIFIED, BRANCH, ISSUE, ROOTS, exec, fixedReviewLog } from "./lib/lean-verified-handback-fixture.ts";
+import { pushBranchOnOrigin } from "./lib/lean-verified-handback-repo.ts";
 import {
   cloneHolds,
   commitOnTop,
@@ -274,6 +286,94 @@ function rewinder(repoRoot: string): (verifiedHead: string) => Promise<Rewind> {
   assert(
     control.shipped === false && control.alreadyAtVerified === true,
     `(m) control: a certified head this clone holds still reads as already-there (${JSON.stringify([control.shipped, control.alreadyAtVerified])})`,
+  );
+}
+
+// ── the branch is not a lean branch: the rewind refuses ────────────────────
+{
+  // `branch` reaches the rewind from the run's persisted state file, and the ref the
+  // rewind force-pushes is built from it. `publish` and `review` both refuse a name
+  // that is not a `lean/` branch before they build a push argv; the rewind is the
+  // third force-push site on that same state-file string, and until this case it was
+  // the only one whose only check was that the name was legal — `main` is legal.
+  //
+  // The fixture's own clone started on `main`, so origin HAS a branch of that name and
+  // the forged state file's target is reachable: without the guard the `+`-forced
+  // refspec below lands and rewrites it. Every assertion is read back off origin.
+  const MAINLINE = "main";
+  const repo = repoWithFixHead();
+  // Make the mainline a rewind target the run's clone can actually supply, so a
+  // missing guard is a landing rather than a transport failure it would hide.
+  pushBranchOnOrigin(repo.repoRoot, repo.headSha, MAINLINE);
+  const mainBefore = originBranchSha(repo.origin, MAINLINE);
+  const leanBefore = originBranchSha(repo.origin);
+  if (mainBefore !== repo.headSha || leanBefore !== repo.branchHeadSha)
+    throw new Error(
+      `the case's precondition is wrong: origin holds ${String(mainBefore)} on ${MAINLINE} and ${String(leanBefore)} on ${BRANCH}`,
+    );
+  const rewind = await rewindToVerified(
+    exec,
+    { repoRoot: repo.repoRoot, issue: ISSUE, run: { branch: MAINLINE } } as never,
+    repo.baseSha,
+    { net: true },
+  );
+  assert(
+    rewind.shipped === false,
+    `(n) a rewind of a non-lean branch ships nothing (${show(rewind)})`,
+  );
+  assert(
+    (rewind.reason ?? "").includes("work-lean pushes only lean/ branches"),
+    `(n) the reason names the publishable-branch refusal (${String(rewind.reason)})`,
+  );
+  assert(
+    originBranchSha(repo.origin, MAINLINE) === mainBefore,
+    `(n) origin's ${MAINLINE} is untouched (${String(originBranchSha(repo.origin, MAINLINE))})`,
+  );
+  assert(
+    originBranchSha(repo.origin) === leanBefore,
+    `(n) and no other branch moved either (${String(originBranchSha(repo.origin))})`,
+  );
+  assert(
+    originRefSha(repo.origin, unverifiedRef(ISSUE)) === undefined,
+    `(n) and a refused rewind wrote no keeping-ref (${String(originRefSha(repo.origin, unverifiedRef(ISSUE)))})`,
+  );
+}
+
+// ── a green whose head is not a full sha ships no head ─────────────────────
+{
+  // The rule's own `isFullCommitSha` rule for the field the rewind force-pushes.
+  // `verifiedHead` arrives from a child's verdict and round-trips through the state
+  // file, and `land.ts` / `ci.ts` ask the same question of the same field: a
+  // well-formed-looking-but-truncated string is not a head, and the answer for it is
+  // the same one the rule gives when the green named no head at all — `applies`, with
+  // no `verifiedHead` and the no-head reason. Without the check the rewind is handed
+  // the string and answers with git's own complaint instead of the rule's.
+  const rows: readonly [string, unknown][] = [
+    ["a truncated sha", "abc123"],
+    ["upper-case hex", "A".repeat(40)],
+    ["a non-string", 42],
+    ["whitespace", " "],
+  ];
+  for (const [label, head] of rows) {
+    const steps = (await fixedReviewLog()).map((s) =>
+      s.state === "verify" && s.outcome?.kind === "green"
+        ? { ...s, outcome: { ...s.outcome, verifiedHead: head as never } }
+        : s,
+    );
+    const heads = handbackHeads(steps);
+    assert(
+      heads.applies &&
+        heads.verifiedHead === undefined &&
+        (heads.reason ?? "").includes("the green verify recorded no head"),
+      `(o) a green whose ${label} is not a full sha is no head at all (${JSON.stringify([heads.applies, heads.verifiedHead, heads.reason])})`,
+    );
+  }
+  // The shape the check must NOT reject: the 40-hex the rule accepts, so the rule above
+  // is a sha rule and not a blanket refusal of every head.
+  const good = await fixedReviewLog();
+  assert(
+    handbackHeads(good).verifiedHead === FAKE_VERIFIED && isFullCommitSha(FAKE_VERIFIED),
+    `(o) control: the 40-hex head the drive recorded still ships (${String(handbackHeads(good).verifiedHead)})`,
   );
 }
 

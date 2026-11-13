@@ -159,6 +159,18 @@ export function forceOriginRef(origin: string, sha: string, ref: string): void {
 }
 
 /**
+ * A branch of ANOTHER name on the fixture's origin, holding `sha`.
+ *
+ * The non-lean-branch case needs origin to hold a branch the rewind is never allowed
+ * to touch — and a target that does not exist would make a missing guard fail in
+ * transport rather than land, which is the difference between pinning a refusal and
+ * pinning an accident. The run's clone already holds `sha`, so the push is ordinary.
+ */
+export function pushBranchOnOrigin(repoRoot: string, sha: string, branch: string): void {
+  git(repoRoot, "push", "-q", "--force", "origin", `${sha}:refs/heads/${branch}`);
+}
+
+/**
  * Whether `repoRoot`'s object store holds `sha`.
  *
  * The cases use it as a PRECONDITION, not an assertion about lean: the stranger and

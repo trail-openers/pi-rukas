@@ -21,6 +21,7 @@
  * different claim from "the run once saw a gate".
  */
 
+import { isFullCommitSha } from "../commit-sha.ts";
 import { type LeanState, REPORT_STATES, type Step } from "./state.ts";
 
 /** What the handback ships: the green's head, or nothing. */
@@ -141,7 +142,14 @@ export function handbackHeads(steps: Step[]): HandbackHeads {
       reason: `the newest decided verify is ${String(green.step.outcome?.kind)}, not green, so no head is verified`,
     };
   const head = green.step.outcome.verifiedHead;
-  if (typeof head !== "string" || head === "")
+  // The same rule `land.ts` and `ci.ts` apply to this field: a head is a full
+  // commit sha, and anything else is the green having named no head at all. The
+  // rewind would refuse a malformed one too, but by then the rule has already
+  // committed to shipping a head, and the answer the operator needs is the rule's
+  // own — `applies` with no head, in the no-head wording — not git's complaint
+  // about a refspec. Shape is not existence, which is the boundary
+  // `commit-sha.ts` states.
+  if (typeof head !== "string" || !isFullCommitSha(head))
     return {
       applies: true,
       reason: "the green verify recorded no head, so there is no verified head to ship",

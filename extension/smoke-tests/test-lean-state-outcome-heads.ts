@@ -22,10 +22,21 @@
  * files cannot drift on what a forged record looks like.
  */
 
+import { readFileSync } from "node:fs";
 import { REPORTING_STATES } from "../src/lean/state-outcome.ts";
-import { REPORT_STATES, loadRun } from "../src/lean/state.ts";
+import {
+  type LeanRun,
+  REPORT_STATES,
+  createRun,
+  leanStateFile,
+  loadRun,
+  saveRun,
+} from "../src/lean/state.ts";
 import { makeAssert, tempDir } from "./lib/lean-engine-fixtures.ts";
 import { CLOCK, STEP, forgedOutcomeField } from "./lib/lean-state-outcome-rig.ts";
+import { fixedReviewLog } from "./lib/lean-verified-handback-fixture.ts";
+import { repoWithFixHead } from "./lib/lean-verified-handback-repo.ts";
+import { driveHandback, rewinder } from "./lib/lean-verified-handback-step.ts";
 
 const { assert, failures } = makeAssert();
 
@@ -154,6 +165,72 @@ for (const [label, issue, step, expect] of [
     assert(
       heads?.unshippedHead === leftBehind && heads.unshippedReason === reason,
       `and the head it left behind with the reason why (got ${JSON.stringify([heads?.unshippedHead, heads?.unshippedReason])})`,
+    );
+  } finally {
+    cleanup();
+  }
+}
+
+/**
+ * What the step actually SAVES, read out of the state file it wrote.
+ *
+ * The other half of the ownership rule. The four head fields are the record's head
+ * facts, and each is owned, shaped and rebuilt field by field; a key `Outcome` does
+ * not declare is a claim no validator ever judged. The handback's render decision —
+ * "the rule spoke for this handback" — is one such key: it belongs to the comment, not
+ * to the record. `buildOutcome` would drop it on reload, so its whole life is the
+ * window between the handler and the file, and the only reader that can see it is the
+ * saved bytes. Driven through the REAL step with the rule on and the rewind landed, so
+ * the outcome has head fields to carry and a render decision to leak — a hand-written
+ * outcome would pin the fixture rather than the handler.
+ */
+{
+  const repo = repoWithFixHead();
+  const steps = await fixedReviewLog(repo.baseSha);
+  const { dir, cleanup } = tempDir();
+  try {
+    // The rewind and the origin read run in the FIXTURE's clone (they are git calls),
+    // while the record is saved into `dir`, which is what `saveRun`/`leanStateFile`
+    // address. The two repos are separate on purpose: the state file's home is the
+    // thing under test here, not the clone.
+    const { outcome } = await driveHandback(steps, repo.repoRoot, rewinder(repo.repoRoot));
+    assert(
+      outcome.shippedHead !== undefined && outcome.shippedVerified === true,
+      `the driven handback recorded its head fields (got ${JSON.stringify([outcome.shippedHead, outcome.shippedVerified])})`,
+    );
+    const issue = 72;
+    const run: LeanRun = {
+      ...createRun({
+        issue,
+        version: "test",
+        models: {},
+        baseSha: "a".repeat(40),
+        branch: "lean/issue-72",
+      }),
+      state: "handback",
+      steps: [
+        {
+          key: `${String(issue)}:handback:0`,
+          state: "handback",
+          startedAt: CLOCK,
+          endedAt: CLOCK,
+          outcome,
+        },
+      ],
+    };
+    saveRun(dir, run);
+    const saved = JSON.parse(readFileSync(leanStateFile(dir, issue), "utf8")) as {
+      steps: { outcome?: Record<string, unknown> }[];
+    };
+    const keys = Object.keys(saved.steps.at(-1)?.outcome ?? {}).sort();
+    assert(
+      !keys.includes("speaks"),
+      `the saved handback outcome carries no render-decision key (got ${JSON.stringify(keys)})`,
+    );
+    const back = loadRun(dir, issue)?.steps.at(-1)?.outcome;
+    assert(
+      back?.shippedHead === outcome.shippedHead && back?.shippedVerified === true,
+      `and the owned head fields still survive the reload (got ${JSON.stringify([back?.shippedHead, back?.shippedVerified])})`,
     );
   } finally {
     cleanup();
