@@ -152,6 +152,18 @@ export const OVER_STATEMENT_BODY = SPEC_BODY;
  * ordinary case, with no bound applied to anything. */
 export const SMALL_SPEC_BODY = `Add a quota check to the meter.\n\n${TAIL_CONSTRAINT}\n\n${specBlock(BRIEF_STATEMENT, 20)}`;
 
+/** The head criteria of a body that reaches no bound: `AC1`–`AC5`, whose rows
+ * the criteria section renders and whose JSON the raw block also carries. */
+export const SHORT_CRITERION_IDS = HEAD_CRITERION_IDS;
+
+/** A body short enough that its block survives a bound that never fires — the
+ * shape that tells a STRIP apart from a CUT. `SPEC_BODY` is over the cap, so a
+ * seat that strips nothing there still prints no tail JSON: the block was cut
+ * before it. Here nothing is cut, so every criterion's JSON is present verbatim
+ * in a seat that was handed the raw body, and its absence is a fact about the
+ * strip alone. */
+export const SHORT_SPEC_BODY = `Add a quota check to the meter.\n\n${TAIL_CONSTRAINT}\n\n${specBlock(BRIEF_STATEMENT, HEAD_CRITERION_IDS.length)}`;
+
 /** A body over the cap ONLY because of its block: the prose alone fits, so with
  * the split the prose survives whole, which the off arm cannot produce. */
 export const MEDIUM_SPEC_BODY = `Add a quota check to the meter.\n\n${TAIL_CONSTRAINT}\n\n${specBlock(MID_STATEMENT, 40)}`;

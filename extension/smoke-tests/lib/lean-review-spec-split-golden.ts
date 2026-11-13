@@ -80,3 +80,17 @@ export function goldenAdversarialIssueBlock(issueBody: string | undefined): stri
   if (body === "") return "";
   return `\n\n${ISSUE_PROMPT_LEAD} ${ADVERSARIAL_FINDING_RULE}\n\n${body}`;
 }
+
+/**
+ * A body's raw block as a seat that strips nothing prints it: `fencedIssueBody`
+ * on the RAW bytes, which for a body under the cap is the block verbatim — every
+ * criterion's JSON, quotes and all. The ON-arm case reads this as what a brief
+ * must NOT contain, so the negative assertion is computed rather than hand-typed:
+ * hand-picked keys would be an assertion about the fixture's spelling, and a body
+ * that renames a key would pass on a seat that strips nothing at all.
+ */
+export function rawBlockPayload(issueBody: string): string[] {
+  const printed = fencedIssueBody(issueBody);
+  const keys = ["problem", "criteria", "id", "text", "verify"];
+  return keys.map((k) => `"${k}"`).filter((needle) => printed.includes(needle));
+}

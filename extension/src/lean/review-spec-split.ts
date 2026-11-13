@@ -92,6 +92,29 @@ export function reviewCriteriaSection(rawBody: string | undefined): {
 }
 
 /**
+ * The `issueBody` the adversarial seat is handed, for the loop to print as its
+ * issue block. With a criteria section following it must be the STRIPPED prose —
+ * the loop prints its own issue block from this value, so a raw body here puts
+ * the whole `pi-spec v1` block in front of the reviewer a second time, JSON and
+ * all, beside the section that already renders it.
+ *
+ * The `criteria !== ""` test is the same one `reviewCriteriaSection` applies, so
+ * the two calls thread a pair or thread nothing: a body with no parsable block
+ * keeps the raw bytes and the prompt stays today's. A body whose block parses,
+ * strips and then renders no rows is the one case the pair is split over — it
+ * cannot be, because `criteriaBlock` emits a line per criterion and the split
+ * reaches here only when the parse that produced that list succeeded.
+ *
+ * NOT the same as `renderReviewProse`: that one bounds, and the loop applies its
+ * own bound to what it prints. Stripping and re-bounding here would be the second
+ * bound `MAX_ISSUE_CHARS` exists to forbid.
+ */
+export function seatIssueBody(rawBody: string | undefined): string | undefined {
+  if (!leanReviewSpecSplitEnabled()) return rawBody;
+  return renderSpecCriteriaSection(rawBody) === "" ? rawBody : stripPiSpecBlocks(rawBody ?? "");
+}
+
+/**
  * One call at each print site, so the switch is read in exactly one place: with
  * it off this is today's `fencedIssuePromptBlock(rawBody, rule, fencedIssueBody)`
  * — the parse, the strip and the criteria render never happen — and with it on it

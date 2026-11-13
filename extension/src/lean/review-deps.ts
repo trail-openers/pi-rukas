@@ -39,7 +39,7 @@ import { leanChildOpts } from "./child-opts.ts";
 import { loadWorkConfig } from "./config.ts";
 import { fetchIssueBody, forgeFor } from "./io.ts";
 import type { ReviewWave } from "./review-args.ts";
-import { reviewCriteriaSection, reviewIssueBlock } from "./review-spec-split.ts";
+import { reviewCriteriaSection, reviewIssueBlock, seatIssueBody } from "./review-spec-split.ts";
 import type { ReviewDeps } from "./review.ts";
 import type { BudgetArms, BudgetFired } from "./step-budget.ts";
 import { fenceText, promptText } from "./text-fence.ts";
@@ -74,11 +74,17 @@ export function reviewDeps(headless: boolean): ReviewDeps {
           head: a.head,
           workCwd: a.cwd,
           context: adversarialContext(a.issue, a.wave, a.blockingFindings),
-          issueBody: a.issueBody,
+          issueBody: seatIssueBody(a.issueBody),
           // The split's criteria section, rendered HERE — the only seam that sets
           // it. The /work driver and the `adversarial_loop` tool leave the loop's
           // `reviewCriteria` absent and their prompts stay byte-identical; with the
           // switch off this renders `""` and the loop prints no section.
+          //
+          // The pair is one decision: `seatIssueBody` strips for exactly the bodies
+          // this renders a section for, because the loop prints its issue block from
+          // `issueBody` ITSELF. Handing it the raw body while rendering the section
+          // put the machine block in the reviewer's prompt twice — once as JSON, once
+          // as criteria rows — and the block is what the split exists to keep out.
           ...reviewCriteriaSection(a.issueBody),
           // The reviewer's lane is one verdict; the fix round is this step's, so the loop
           // must not dispatch a fixer of its own.
