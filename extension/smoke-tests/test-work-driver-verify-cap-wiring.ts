@@ -180,6 +180,16 @@ process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
         });
         const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, stubOpts) => {
           cmd = commandOf(cmd, stubOpts);
+          // The commit-pr gate resolves the cycle's forge through the remote
+          // before it will run a PR lookup: with no remote it resolves no forge
+          // and refuses, so the reads below would never be asked. A github.com
+          // remote keeps this a GitHub cycle; the GitLab arm is covered in
+          // test-work-driver-forge-ctx.ts.
+          if (cmd.includes("remote.origin.url")) {
+            return { stdout: "https://github.com/o/r\n" };
+          }
+          if (cmd.includes("remote.upstream.url")) return { stdout: "" };
+          if (cmd === "git remote") return { stdout: "origin\n" };
           if (cmd === "git rev-parse HEAD")
             return { stdout: "1111111111111111111111111111111111111111\n" };
           if (isNulStatusRead(cmd)) return { stdout: nulStatus(" M src/lib.rs") };
@@ -282,6 +292,16 @@ process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "2000";
         });
         const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, stubOpts) => {
           cmd = commandOf(cmd, stubOpts);
+          // The commit-pr gate resolves the cycle's forge through the remote
+          // before it will run a PR lookup: with no remote it resolves no forge
+          // and refuses, so the `gh pr list` repair below would never be asked.
+          // A github.com remote keeps this a GitHub cycle; the GitLab arm is
+          // covered in test-work-driver-forge-ctx.ts.
+          if (cmd.includes("remote.origin.url")) {
+            return { stdout: "https://github.com/o/r\n" };
+          }
+          if (cmd.includes("remote.upstream.url")) return { stdout: "" };
+          if (cmd === "git remote") return { stdout: "origin\n" };
           if (cmd === "git rev-parse HEAD")
             return { stdout: "1111111111111111111111111111111111111111\n" };
           if (isNulStatusRead(cmd)) return { stdout: nulStatus(" M src/lib.rs") };

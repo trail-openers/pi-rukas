@@ -710,6 +710,20 @@ The gate now requires the PR to be **open** and to have this cycle's branch as i
 
 The driver reads the cycle's PR before lens-review, lens-fix, ci, and before it pushes a lens fix. **Merged** by a person: the cycle ends `merged`, and the terminal line says *merged by someone else during <step>* — the driver merged nothing and pushes nothing further; unpushed work stays in the cycle's worktree(s). **Closed** without a merge: it parks as `pr-not-open:<step>` with a `[pr-not-open]` failure (`verify-failed:<step>` before #1349). If the PR's state cannot be read, the step runs as before. The review's residual findings are posted to the recorded PR number (a merged PR still takes comments); if that fails they go to the issue, and `/work-status` shows a `lens-residuals-post-failed` event saying where they went.
 
+### `/work` on a GitLab project says a check reads GitHub pull requests only
+
+**Symptom:** a cycle on a self-hosted GitLab project halts at commit-pr with *"forge not determined for this repo — cannot open the PR"*, or the handoff / trace says the open-PR pre-flight was skipped because *"the forge is gitlab; the open-PR body lookup reads GitHub pull requests only"* or *"the forge is gitlab; --continue-pr reads GitHub pull requests only"*. Nothing was refused by a policy — the driver could not tell it was on GitLab at all.
+
+**Cause:** the cycle resolves its forge once, from the repo, and every step honours that answer. `PI_ENSEMBLE_FORGE` wins over everything, so an exported `PI_ENSEMBLE_FORGE=github` (or `=none`) in the environment Pi was launched from decides the answer before the repository is ever asked — and a self-hosted instance is unclassifiable without `.pi/forge`: the known-host table names only `github.com` and `gitlab.com`, and the probe that could classify another host is opt-in and off in CI, so the cycle gets `unknown`, which means no forge and no forge calls.
+
+**Fix:**
+
+1. `env | grep PI_ENSEMBLE_FORGE` — if it prints `github` or `none`, that variable is the answer, not the repo. Clear it for the session (`env -u PI_ENSEMBLE_FORGE pi`) or set it to the forge you mean; set it to `none` to turn the forge off on purpose.
+2. Write `<project>/.pi/forge` with `type=gitlab` and `host=<the remote's host>`. The `host` must equal the remote's host or the file is not applied: `git remote get-url origin` is what it has to agree with. The remote must carry a host **and** an `owner/repo` path (`group/project`, or a GitLab subgroup `group/sub/project`) — a path deeper than that parses to no host at all, and a config whose host disagrees with a host that never parsed is applied anyway, which is how a cycle ends up with an adapter for an instance its remote never named. Run it through a wrapper (`ssh://…/repo.git`) or an scp-style remote (`git@host:group/repo.git`) — both parse; an ssh *alias* with no hostname in it does not, and leaves the cycle forge-less.
+3. `PI_ENSEMBLE_DEBUG=1` traces the resolution with the source that decided it — `env`, `config`, `known-host` or `unknown` — which is how you tell "no remote was read" from "the config's host disagreed with the remote".
+
+Two refusals stay refusals on a correctly-detected GitLab project, and both are the honest answer rather than a bug: the open-PR pre-flight reads the PR **body** for a closing keyword and GitLab's MR list carries no body field, and `--continue-pr` reads GitHub pull requests only. Each names the forge in its reason instead of running `gh`, and the cycle proceeds past the pre-flight (it fails open) — only `--continue-pr` actually caps, as `continue-pr-not-found`.
+
 ### `/work` halts at the branch step naming the mainline
 
 The branch step recorded whatever branch `repoRoot` was on, and that value becomes the branch the cycle force-pushes to. If an ops child creates the branch and then returns `repoRoot` to `main`, the cycle would have adopted `main`. It now halts. Re-run with `--restart` after checking `git -C <repo> branch --show-current`.

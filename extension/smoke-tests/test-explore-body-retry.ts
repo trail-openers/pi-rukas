@@ -66,6 +66,13 @@ async function makeRepo(prefix: string): Promise<string> {
   const dir = mkdtempSync(path.join(tmpdir(), prefix));
   const fs = await import("node:fs/promises");
   await fs.mkdir(path.join(dir, ".git", "info"), { recursive: true });
+  // Pin the forge to GitHub. The issue-body fetch goes through the cycle's
+  // forge adapter, and a repo this shallow (a bare `.git/info`, no real git
+  // object store, so no remote that could be read) resolves no forge — which
+  // now refuses the fetch with its own named reason instead of reaching the
+  // transient `gh` rejections these cases are about. Naming the forge in env is
+  // detection's documented hard override and keeps this file asserting retries.
+  process.env.PI_ENSEMBLE_FORGE = "github";
   return dir;
 }
 

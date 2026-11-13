@@ -14,6 +14,7 @@
  *     the unique id `synthesizeDriverCompletion` already mints.
  */
 
+import { mkdirSync, writeFileSync } from "node:fs";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { mechanizedCommitPr } from "../src/work-driver-commit.ts";
@@ -21,6 +22,7 @@ import { priorHandoffCommentUrl } from "../src/work-driver-handoff.ts";
 import { findOpenPrForBranch } from "../src/work-driver-pr-preflight.ts";
 import type { WorkEvent, WorkState } from "../src/workflow-state.ts";
 import { appendEvent, initialState } from "../src/workflow-state.ts";
+import { trackedTempDir } from "./lib/git-test-env.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -35,33 +37,79 @@ function assert(cond: boolean, msg: string) {
 
 type Exec = (cmd: string, opts?: unknown) => Promise<{ stdout: string; stderr?: string }>;
 
+/**
+ * The remote the non-existent-path lookup fixtures answer with.
+ *
+ * Both raw-`gh` pre-merge lookups now ask which forge the repo is on before
+ * they run `gh` (they read the PR `body` field, which only GitHub's list
+ * carries), so a fake exec that never answers the remote read gets a named
+ * refusal instead of a PR row. A github.com remote is the answer that lets the
+ * GitHub-side assertions run; the GitLab side is asserted in
+ * `test-work-driver-forge-ctx.ts`.
+ */
+const GH_REMOTE = "https://github.com/o/r\n";
+
 {
   const cmds: string[] = [];
   const hit: Exec = async (cmd) => {
     cmds.push(cmd);
+    if (cmd.includes("remote.origin.url")) return { stdout: GH_REMOTE };
     return { stdout: JSON.stringify([{ number: 12 }]) };
   };
   assert(
     (await findOpenPrForBranch(hit as never, "/r", "feature/issue-9-x")) === 12,
     "findOpenPrForBranch: an open PR heading the branch returns its number",
   );
+  // The lookup command itself, not the remote read that had to answer first.
+  const lookup = cmds.find((c) => c.startsWith("gh pr list")) ?? "";
   assert(
-    /--head "feature\/issue-9-x"/.test(cmds[0] ?? "") && /--state open/.test(cmds[0] ?? ""),
+    /--head "feature\/issue-9-x"/.test(lookup) && /--state open/.test(lookup),
     "…via an exact --head --state open query",
   );
-  const empty: Exec = async () => ({ stdout: "[]" });
+  const empty: Exec = async (cmd) =>
+    cmd.includes("remote.origin.url") ? { stdout: GH_REMOTE } : { stdout: "[]" };
   assert((await findOpenPrForBranch(empty as never, "/r", "b")) === undefined, "no PR → undefined");
-  const boom: Exec = async () => {
+  const boom: Exec = async (cmd) => {
+    if (cmd.includes("remote.origin.url")) return { stdout: GH_REMOTE };
     throw new Error("gh: network");
   };
   assert(
     (await findOpenPrForBranch(boom as never, "/r", "b")) === undefined,
     "unreadable gh FAILS OPEN (the push rejection remains the backstop)",
   );
-  const garbage: Exec = async () => ({ stdout: "not json" });
+  const garbage: Exec = async (cmd) =>
+    cmd.includes("remote.origin.url") ? { stdout: GH_REMOTE } : { stdout: "not json" };
   assert(
     (await findOpenPrForBranch(garbage as never, "/r", "b")) === undefined,
     "unparseable JSON fails open",
+  );
+}
+
+{
+  // The named refusal: the same lookup against a GitLab repo never runs `gh`.
+  const cmds: string[] = [];
+  const gl: Exec = async (cmd) => {
+    cmds.push(cmd);
+    if (cmd.includes("remote.origin.url")) {
+      return { stdout: "git@gitlab.example.com:g/r.git\n" };
+    }
+    if (cmd.includes(".pi/forge")) return { stdout: "" };
+    return { stdout: JSON.stringify([{ number: 12 }]) };
+  };
+  const repoRoot = trackedTempDir("reentry-gl-");
+  mkdirSync(path.join(repoRoot, ".pi"), { recursive: true });
+  writeFileSync(
+    path.join(repoRoot, ".pi", "forge"),
+    "type=gitlab\nhost=gitlab.example.com\n",
+    "utf8",
+  );
+  assert(
+    (await findOpenPrForBranch(gl as never, repoRoot, "feature/issue-9-x")) === undefined,
+    "findOpenPrForBranch on a GitLab repo is a NAMED REFUSAL, not a gh call",
+  );
+  assert(
+    cmds.every((c) => !c.startsWith("gh ") && !c.includes("pr list --state open --head")),
+    `…and no gh lookup ran (${cmds.join(" | ")})`,
   );
 }
 
@@ -83,6 +131,13 @@ type Exec = (cmd: string, opts?: unknown) => Promise<{ stdout: string; stderr?: 
   const cmds: string[] = [];
   const exec: Exec = async (cmd) => {
     cmds.push(cmd);
+    // The remote read the branch's forge detection makes before it will run a
+    // `gh` lookup: the lookup is GitHub-only, so a repo whose forge cannot be
+    // named refuses it (see `rawGhLookupRefusal`) and this fixture would see
+    // no PR at all.
+    if (cmd.includes("remote.origin.url")) {
+      return { stdout: "https://github.com/o/r\n" };
+    }
     if (cmd.includes("gh pr list") && cmd.includes("--head")) {
       return { stdout: JSON.stringify([{ number: 77 }]) };
     }

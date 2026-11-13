@@ -15,10 +15,10 @@
  * degrades to an empty inventory, never a throw (a memory problem must not
  * cost a cycle whose code work is done).
  */
-import { detectForge } from "./forge-detect.ts";
-import { type Forge, createForge } from "./forge.ts";
+import type { Forge } from "./forge.ts";
 import type { MemoryHit } from "./vipune.ts";
 import { type SearchResult, selectResults, vipuneSearch } from "./vipune.ts";
+import { resolveCycleForge } from "./work-driver-forge-ctx.ts";
 
 // ---------------------------------------------------------------------------
 // vipune seam — injectable for tests (the same DI pattern as setPlanDispatch /
@@ -36,18 +36,12 @@ export function setPlanVipuneSearch(fn: PlanVipuneSearchFn | null): void {
 
 /**
  * Resolve the forge adapter for the plan-draft inventory step
- * (#612 S4 task-b). `PI_ENSEMBLE_FORGE=none` refuses; unknown detection
- * falls back to raw `gh` (pre-migration behaviour).
+ * (#612 S4 task-b) through the driver's one guarded detection, so the
+ * inventory reads the same forge the filing step files against.
+ * `PI_ENSEMBLE_FORGE=none` or an unresolvable repo returns `undefined`.
  */
 async function planDraftForge(repoRoot: string): Promise<Forge | undefined> {
-  if (process.env.PI_ENSEMBLE_FORGE === "none") return undefined;
-  try {
-    const det = await detectForge(repoRoot, {});
-    if (det.forge === "unknown") return undefined;
-    return createForge(det, { cwd: repoRoot });
-  } catch {
-    return undefined;
-  }
+  return resolveCycleForge(repoRoot, { traceLabel: "plan-inventory" });
 }
 
 export interface MechanicalInventory {
