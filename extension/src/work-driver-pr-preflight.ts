@@ -24,7 +24,9 @@
  * cap-hit and lets the operator decide, per §7 cap-hit doctrine.
  */
 
+import { openPrBodyListCmd } from "./forge-commands.ts";
 import { trace } from "./trace.ts";
+import { resolveCycleForge } from "./work-driver-forge-ctx.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
 
 /** An open PR the driver believes already covers this cycle's issue. */
@@ -46,6 +48,43 @@ export interface PrListRow {
 export function prPreflightEnabled(): boolean {
   const v = process.env.PI_ENSEMBLE_PR_PREFLIGHT;
   return v !== "0" && v !== "false";
+}
+
+/**
+ * The named refusal a non-GitHub cycle gets from the raw-`gh` body lookups.
+ *
+ * They ask a GitHub-specific question — "does the PR's BODY close this
+ * issue?" — through a command the forge adapter does not model (its `prList`
+ * requests no `body`), and GitLab's MR list has no body field at all. So on a
+ * GitLab project the honest answer is not "no PR matches" (which is what
+ * running `gh` there would produce, from a command that cannot see the
+ * repository) — it is "this check cannot answer on this forge", named.
+ *
+ * `undefined` means the forge IS GitHub and the lookup may run.
+ */
+export function rawGhLookupRefusal(forgeType: string | undefined): string | undefined {
+  if (forgeType === "github") return undefined;
+  return `the forge is ${forgeType ?? "unknown"}; the open-PR body lookup reads GitHub pull requests only`;
+}
+
+/**
+ * The forge this repo's raw-`gh` lookup is allowed to run against.
+ *
+ * Resolved through the same guarded detection every other cycle-seam read uses
+ * (`resolveCycleForge`), so the answer a preflight gives agrees with the answer
+ * the commit step gives — the cycle cannot refuse `gh` in one gate and issue it
+ * in another. Detection runs on the caller's own exec seam, so a test's fake
+ * answers the remote read and nothing dials out.
+ */
+async function rawGhLookupForge(
+  execFn: VerifyExecFn,
+  repoRoot: string,
+): Promise<string | undefined> {
+  const forge = await resolveCycleForge(repoRoot, {
+    execFn,
+    traceLabel: "pr-preflight",
+  });
+  return forge?.forge;
 }
 
 /** The body and branch patterns that tie a PR to `issue`; see matchPrForIssue. */
@@ -102,29 +141,32 @@ export function matchPrForIssue(prs: PrListRow[], issue: number): ExistingPr | u
  *
  * Fails OPEN: any `gh` or parse failure returns undefined so the cycle
  * proceeds. A lookup outage must never block work — the cost of missing a
- * duplicate is one wasted cycle, the cost of a false halt is every cycle.
+ * duplicate is one wasted cycle, the cost of a false halt is every cycle. On a
+ * forge other than GitHub it refuses with a NAMED reason rather than running
+ * `gh` at a repository that has no pull requests.
  */
 export async function findOpenPrForIssue(
   execFn: VerifyExecFn,
   repoRoot: string,
   issue: number,
 ): Promise<ExistingPr | undefined> {
-  // NOTE: this site stays a direct command rather than going through the
-  // forge adapter because the test suite pins the `gh pr list` command
-  // string and the raw-JSON row shape (which does not include `body`,
-  // the field `matchPrForIssue` reads). The forge adapter's `prList` does
-  // not request `body` in its `--json` field list, so routing through it
-  // would break the body-signal half of the matcher. The S4 spec for this
-  // file does not name a forge method for this site either.
+  // The gate and the command both come from the two helpers `findOpenPrForBranch`
+  // uses, so the two raw-`gh` body lookups cannot drift: one cannot ask the forge
+  // while the other issues `gh` unasked. The command is `openPrBodyListCmd`'s
+  // rather than a literal here because that builder is what documents the lookup
+  // as GitHub-only — a caller carrying its own copy of the string leaves the
+  // builder unexercised and the invariant unenforced.
+  const refusal = rawGhLookupRefusal(await rawGhLookupForge(execFn, repoRoot));
+  if (refusal !== undefined) {
+    trace(`pr-preflight: ${refusal} — not looking for an existing PR for #${issue}`);
+    return undefined;
+  }
   let stdout: string;
   try {
-    ({ stdout } = await execFn(
-      "gh pr list --state open --limit 100 --json number,headRefName,body",
-      {
-        cwd: repoRoot,
-        maxBuffer: 4 * 1024 * 1024,
-      },
-    ));
+    ({ stdout } = await execFn(openPrBodyListCmd("open"), {
+      cwd: repoRoot,
+      maxBuffer: 4 * 1024 * 1024,
+    }));
   } catch (err) {
     trace(`pr-preflight: gh pr list failed, proceeding: ${(err as Error).message?.slice(0, 200)}`);
     return undefined;
@@ -238,13 +280,19 @@ export async function listOpenPrsForIssue(
  * Distinct from `findOpenPrForIssue` (fuzzy issue/branch matching, used
  * before any dispatch is paid): this one is exact and runs at the seam that
  * actually creates the PR. Fails OPEN (undefined) on any gh/JSON error —
- * the push non-fast-forward rejection remains the backstop.
+ * the push non-fast-forward rejection remains the backstop. On a forge other
+ * than GitHub it refuses with a NAMED reason rather than running `gh`.
  */
 export async function findOpenPrForBranch(
   execFn: VerifyExecFn,
   repoRoot: string,
   branchName: string,
 ): Promise<number | undefined> {
+  const refusal = rawGhLookupRefusal(await rawGhLookupForge(execFn, repoRoot));
+  if (refusal !== undefined) {
+    trace(`pr-preflight: ${refusal} — not looking for an existing PR by branch`);
+    return undefined;
+  }
   try {
     const { stdout } = await execFn(
       `gh pr list --state open --head ${JSON.stringify(branchName)} --json number --limit 5`,

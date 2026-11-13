@@ -267,15 +267,14 @@ export function mkForge(opts: ForgeOpts = {}) {
  * A context whose forge cannot be resolved — the `skipped: "forge"` shape the
  * re-arm HALTS on.
  *
- * Why it is shaped this way: `forgeForCycle` hard-overrides detection with
- * `PI_ENSEMBLE_FORGE=github`, so a fake `verifyExecFn` cannot make detection
- * return "unknown" — it always builds an adapter. The real forge-less cycle is
- * one where resolving the adapter THROWS (`createForge` refuses an unknown
- * detection, and any detection failure lands in `resolveForge`'s catch and
- * yields `undefined`). A throwing `forge` getter reproduces exactly that: the
- * read throws inside `resolveForge`, it returns `undefined`, and the re-arm is
- * left with no adapter, no read and no command to hand the operator — which is
- * why that decline halts rather than proceeding.
+ * Why it is shaped this way: detection now runs for real, so a repo with no
+ * remote and no `.pi/forge` resolves `unknown` and the adapter resolution
+ * yields `undefined` on its own. The throwing `forge` getter pins the OTHER
+ * forge-less shape the re-arm can meet — an adapter that cannot answer —
+ * without depending on what `git` this machine has on PATH answers for
+ * `/nonexistent`. Both land in `resolveForge`'s undefined/catch branch, and the
+ * re-arm is left with no adapter, no read and no command to hand the operator —
+ * which is why that decline halts rather than proceeding.
  */
 export function mkCtxWithoutForge(): DriverContext {
   const { execFn } = gitFake();

@@ -5,9 +5,10 @@
  * is touched.
  */
 
-import { type ForgeType, detectForge } from "./forge-detect.ts";
+import type { ForgeType } from "./forge-detect.ts";
 import { detectMainline } from "./work-driver-branch-mechanized.ts";
 import type { DriverContext } from "./work-driver-context.ts";
+import { resolveCycleForge } from "./work-driver-forge-ctx.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
 import { netRefProblem } from "./work-driver-net-git.ts";
 import {
@@ -87,11 +88,12 @@ export type ContinueCap =
 
 async function forgeOf(ctx: DriverContext): Promise<ForgeType> {
   if (ctx.forge) return ctx.forge.forge;
-  try {
-    return (await detectForge(ctx.repoRoot)).forge;
-  } catch {
-    return "unknown";
-  }
+  // The shared guarded resolution, not a private detectForge: the cycle's
+  // forge answer must be the one answer every pre-merge gate gives.
+  const forge = await resolveCycleForge(ctx.repoRoot, {
+    traceLabel: "continue-pr",
+  });
+  return forge?.forge ?? "unknown";
 }
 
 /** The one PR to continue with a safe head, or the cap that says why not. */
@@ -100,8 +102,19 @@ export async function continueLookup(
   execFn: VerifyExecFn,
   mainline: string,
 ): Promise<{ ok: true; pr: OpenPrMatch } | { cap: ContinueCap; evidence: string }> {
+  // The forge is asked BEFORE the lookup runs. `--continue-pr` reads GitHub
+  // pull requests only, so on another forge the lookup would be a raw `gh pr
+  // list` against a repository that has none — the refusal is known without it,
+  // and a cycle on a GitLab project must never issue `gh` to learn that.
+  const forge = await forgeOf(ctx);
+  if (forge !== "github") {
+    return {
+      cap: "continue-pr-not-found",
+      evidence: `the forge is ${forge}; --continue-pr reads GitHub pull requests only`,
+    };
+  }
   const listed = await listOpenPrsForIssue(execFn, ctx.repoRoot, ctx.issue);
-  const found = classifyContinueLookup(listed, ctx.issue, await forgeOf(ctx));
+  const found = classifyContinueLookup(listed, ctx.issue, forge);
   if (!("ok" in found)) return found;
   const problem = await continueHeadProblem(execFn, ctx.repoRoot, found.pr, mainline);
   return problem ? { cap: "continue-pr-unsafe-head", evidence: problem } : found;

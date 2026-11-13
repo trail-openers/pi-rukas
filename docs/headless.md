@@ -490,6 +490,33 @@ On the `host` channel the attention gate still reads `needs-human-attention`, bu
 
 The host channel also has its own **repeat signal**, and it is not the label. `issues[].handoff.repeat` and a refusal at the pre-loop guard cover **every** cap a cycle can park on, not just the three the park records exist for: a host handoff that handed this identical park's body over twice already — same cap, same cause, same issue text — makes the third `work <issue>` refuse with `cap: "repeat-park"` and exit 40, dispatched by nothing and writing no state file. It exists because on this channel pi-rukas leaves nothing on the forge for a re-run to notice, and a factory that passes `--restart` every cycle otherwise re-runs one park indefinitely. See [Parks for hosts](#parks-for-hosts).
 
+## Which forge a cycle works on
+
+A cycle asks the repository which forge it lives on once, through one guarded detection, and every step uses that answer — so a cycle on a GitLab project talks to GitLab and a cycle whose forge nothing can name talks to neither. Resolution order, first match wins:
+
+1. **`PI_ENSEMBLE_FORGE`** — a hard override. `github` or `gitlab` wins over everything, including the repo's own config; `none` turns the forge off entirely (no detection, no forge call, no network); anything else is ignored and resolution continues.
+2. **`.pi/forge`** at the project root — the file that names a forge the remote's host alone cannot classify (a self-hosted instance). Two keys, one per line, `#` for comments:
+   ```
+   type=gitlab
+   host=gitlab.example.com
+   ```
+   `type` must be `github` or `gitlab` or the line is ignored; `host` is optional, and when present it must equal the remote's host for the file to apply — a config naming another host is not applied to this remote. The comparison is against the host the remote URL **parses**, and a URL parses only when its path is `owner/repo` (`group/project`, or a GitLab subgroup `group/sub/project`): a remote whose path is anything deeper yields no host, and with no host parsed there is nothing for the config's `host` to disagree with, so the config is applied regardless. Give the remote a host and an `owner/repo` path.
+3. **The known-host table** — `github.com` → GitHub, `gitlab.com` → GitLab. Case-insensitive, a `:port` ignored. Resolved from the remote `origin`, then `upstream`, then the first remote.
+4. **`unknown`** — no forge. The API probe that could classify another host never runs inside a cycle (it is opt-in for operators and off in CI), so an unknown host without a `.pi/forge` is a forge-less cycle, never a guess.
+
+What a GitLab cycle supports, and what is GitHub-only by construction:
+
+| Pre-merge step | On GitLab |
+|---|---|
+| Explore (read the issue) | yes — `glab issue view` |
+| Branch step's "is a PR already open for this issue?" | **refused, with a named reason** — the check reads the PR **body** for a closing keyword, and GitLab's MR list carries no body field. Refusing names the forge; running `gh` there would answer "no PR" from a command that cannot see the repository. The repeat-park guard's re-check of a recorded PR is the same lookup and refuses the same way. |
+| The same check at commit-pr, by branch | refused the same way |
+| `--continue-pr` | **GitHub only** — see [`--continue-pr` for hosts](#--continue-pr-for-hosts) |
+| Draft PR, draft re-arm, PR comments, label work, the handoff post | yes — the GitLab branch of each command |
+| CI / merge evidence and the merge itself | separate concern, not this section |
+
+A refused check fails **open**: the cycle proceeds and says so in the trace (`PI_ENSEMBLE_DEBUG=1`), because a lookup that cannot answer must not halt work. A step that cannot be run at all (opening the cycle's PR with no forge named) halts with its own named reason.
+
 ## `--restart` for hosts
 
 `work <issue> --restart` is the supported way to run an issue again after a handoff that a person has dealt with. A host passes it; it never removes labels itself.
@@ -527,7 +554,7 @@ Limits:
 - **`PI_ENSEMBLE_PR_PREFLIGHT` is ignored.** The lookup always runs in this mode.
 - **A red mainline parks the refresh.** When the verify command already fails at the mainline tip, commit-pr stops on `integration-verify-failed` and nothing is pushed. Fix the mainline first.
 - **At most 500 open PRs.** A full page cannot prove that only one PR matches, so the lookup fails closed with `continue-pr-not-found`.
-- **GitHub only.** Another forge gives `continue-pr-not-found`.
+- **GitHub only.** Another forge gives `continue-pr-not-found`, and the lookup is refused **before** any forge call runs — a GitLab cycle never issues `gh` to discover this. The check is GitHub-only by construction because it reads the PR **body** for a closing keyword, which GitLab's MR list does not carry.
 
 The caps (each has a row in [troubleshooting.md](troubleshooting.md)):
 

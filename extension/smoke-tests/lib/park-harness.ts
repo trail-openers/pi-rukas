@@ -29,6 +29,22 @@ import { runExplore } from "../../src/work-driver-explore.ts";
 import { runHandoff } from "../../src/work-driver-handoff.ts";
 import type { DriverHost } from "../../src/work-driver-host.ts";
 import { type WorkState, appendEvent, initialState } from "../../src/workflow-state.ts";
+import { withEnv } from "./env-scope.ts";
+
+/**
+ * Run a case that depends on the open-PR lookup answering, with the forge named.
+ *
+ * The guard's re-check resolves the cycle's forge through detection, whose first
+ * leg is `PI_ENSEMBLE_FORGE` — and files in this suite turn the forge off at
+ * module scope (`=none`) for their own reasons. Under `none` the re-check
+ * short-circuits before the harness's exec seam is ever asked and reports "no PR
+ * open" for a reason that has nothing to do with what the case is testing. Naming
+ * the forge for the duration of the body is the documented hard override, scoped
+ * so it cannot leak past the case.
+ */
+export function withForgeEnv<T>(body: () => Promise<T>): Promise<T> {
+  return withEnv({ PI_ENSEMBLE_FORGE: "github" }, body);
+}
 
 export const ISSUE = 85;
 export const URL = `https://github.com/o/r/issues/${ISSUE}#issuecomment-111`;
@@ -243,8 +259,20 @@ export function ctxOf(w: World, opts: CtxOpts = {}): DriverContext {
     },
     // The seam `findOpenPrForIssue` runs its `gh pr list` through — the same
     // seam the branch pre-flight uses, so the guard's re-check is the same lookup.
-    verifyExecFn: async () => ({
-      stdout: opts.prList === undefined ? "" : JSON.stringify(opts.prList),
+    // It answers the remote read too: that lookup asks which forge the repo is on
+    // before it will run `gh`, and a temp dir with a bare `.git` carries no
+    // remote, so the gate would refuse the re-check and the `prList` rows below
+    // would never be read. A github.com remote is the answer that keeps every
+    // park here a GitHub cycle; the GitLab refusal is asserted in
+    // test-work-driver-reentry.ts. A case that turns the forge off entirely
+    // (`PI_ENSEMBLE_FORGE=none`) short-circuits the resolution before this seam is
+    // asked, so those files run their open-PR cases under `withForgeEnv`.
+    verifyExecFn: async (cmd: string) => ({
+      stdout: cmd.includes("remote.origin.url")
+        ? "https://github.com/o/r\n"
+        : opts.prList === undefined
+          ? ""
+          : JSON.stringify(opts.prList),
     }),
     dispatchFn: async (_pi, spec) => {
       if (spec.role === "explore") {

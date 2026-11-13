@@ -414,6 +414,15 @@ const specWith = (criteria: string[]) => ({
             }),
             stderr: "",
           };
+        // The commit-pr gate resolves the cycle's forge through the remote before
+        // it will run a PR lookup: with no remote it resolves no forge and the
+        // gate's cap parks the cycle before the coverage note is recorded. A
+        // github.com remote keeps this a GitHub cycle; the GitLab arm is covered
+        // in test-work-driver-forge-ctx.ts.
+        if (cmd.includes("remote.origin.url"))
+          return { stdout: "https://github.com/o/r\n" };
+        if (cmd.includes("remote.upstream.url")) return { stdout: "" };
+        if (cmd === "git remote") return { stdout: "origin\n" };
         if (o?.argv) return execFn([cmd, ...o.argv].map((a) => `'${a}'`).join(" "), o);
         return execFn(cmd, o);
       };
