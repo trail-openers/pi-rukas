@@ -282,6 +282,62 @@ for (const [label, issue, step, expect] of [
     /outcome used must be a non-negative safe integer/,
   ],
   [
+    // The four head fields are what the verified handback saw when it moved origin's
+    // branch, and the comment prints them beside the bytes it hands back. On a step
+    // that is not the reporting one they are a shipping claim the run never made —
+    // the same forgery `posted` refuses above, in the direction that matters most,
+    // because a `shippedHead` on a `build` step reads as a certified head to every
+    // reader of the record. All four go on one non-handback step: the table checks
+    // each field independently, and one record that carries all of them pins the
+    // whole group at the step that may not carry any.
+    "head fields on a build step",
+    64,
+    {
+      key: "64:build:0",
+      state: "build",
+      startedAt: CLOCK,
+      endedAt: CLOCK,
+      outcome: {
+        kind: "ok",
+        shippedHead: "c".repeat(40),
+        shippedVerified: true,
+        unshippedHead: "d".repeat(40),
+        unshippedReason: "the lease refused the rewind",
+      },
+    },
+    /is only recorded by a handback step/,
+  ],
+  [
+    // A truthy string survives `if (outcome.shippedVerified)` and prints an
+    // unverified head as one the gate certified, which is the exact claim the rule
+    // exists to make trustworthy. The field is a boolean or the record is refused.
+    "shippedVerified as a string on a handback step",
+    65,
+    {
+      key: "65:handback:0",
+      state: "handback",
+      startedAt: CLOCK,
+      endedAt: CLOCK,
+      outcome: { kind: "done", shippedHead: "c".repeat(40), shippedVerified: "yes" },
+    },
+    /shippedVerified must be a boolean/,
+  ],
+  [
+    // The head fields are the answer to a question about SPECIFIC bytes, so a
+    // field naming a head that is not a commit is not a partial record — it is a
+    // record about nothing. The loader takes a full sha or refuses.
+    "shippedHead that is not a full sha",
+    66,
+    {
+      key: "66:handback:0",
+      state: "handback",
+      startedAt: CLOCK,
+      endedAt: CLOCK,
+      outcome: { kind: "done", shippedHead: "abc123" },
+    },
+    /shippedHead must be a 40-hex commit sha/,
+  ],
+  [
     // #1920 A — `draft` is what the publish step handed the forge, and the only
     // typed answer to "green and waiting, or a draft behind unverified bytes".
     // On any other step it is a readiness claim the run never made.

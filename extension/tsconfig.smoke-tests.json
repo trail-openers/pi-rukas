@@ -308,6 +308,8 @@
     "smoke-tests/test-lean-state-blocked-by.ts",
     "smoke-tests/test-lean-machine-caps.ts",
     "smoke-tests/test-lean-handback-cause.ts",
+    "smoke-tests/lib/lean-verified-handback-fixture.ts",
+    "smoke-tests/test-lean-verified-handback.ts",
     "smoke-tests/lib/lean-build-asserts.ts",
     "smoke-tests/lib/lean-build-artifacts.ts",
     "smoke-tests/test-lean-state-outcome.ts",

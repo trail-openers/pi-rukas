@@ -1,299 +1,545 @@
 /**
- * lib/lean-verified-handback-fixture — the rigs the files that test the verified
- * handback share: the queue and the stop that reproduce the defect, the post spy
- * that captures the comment, and the real-repo git harness the lease rewind is
- * driven against.
+ * lib/lean-verified-handback-fixture — the rig `test-lean-verified-handback.ts`
+ * drives the verified-handback rule with.
  *
- * The reproduction is the sequence the defect needs and nothing else: a review
- * step that ends `fixed` (its fix wave pushed a new head), and a drive stopped
- * there, so the re-verify the table routes into never runs.
+ * The rule reads ONE thing: the step log (`src/lean/handback-heads.ts`). So every
+ * case hands the rule, the rewind, or the handback step a log a real drive wrote,
+ * plus a real repo whose origin a real `git push` moves. What the rule does NOT
+ * read is the stop cause — the deadline, the step cap, a handler that threw — so
+ * nothing here drives the engine's clock or kills a child to manufacture one:
+ * that would test the engine's routing (other files pin it) while leaving the
+ * rule's own reading unobserved.
  *
- * Why a bounded hang rather than a throw or a clock: the engine writes a step
- * ahead and then calls its handler, so a handler that throws records
- * `{kind: "error"}` — a DECIDED `verify`, which is a different record from the
- * one the defect needs, and a rule keyed on the log would not fire. Only a
- * process that died between the write-ahead and the outcome leaves the entry the
- * write-ahead made without a verdict. So the rig's handler for the re-verify
- * parks on a promise the harness RELEASES once it has read the record, and the
- * released drive lands its error verdict on an in-memory copy that nothing reads
- * — the file on disk keeps the shape the killed process left, which is the shape
- * the engine's own resume path (`resume.ts`) drives.
+ * The logs are BUILT by the engine, not typed by hand — `driveTo` runs `runLean`
+ * with scripted handlers and returns the record the drive saved. A hand-written
+ * array is a guess about what a drive writes, which is why
+ * `lib/lean-real-log-fixture.ts` exists for the resume cases; the same argument
+ * holds here. The `fixed`-review log is the interesting one: the table routes a
+ * `fixed` review into a re-verification, so the plan answers `verify` ONCE and the
+ * drive then dies at the second visit (the queue is empty and a queueless handler
+ * throws, which the engine records as an error) — and the truncated prefix handed
+ * back is the residue of the run at that moment: newest WORK step = the `fixed`
+ * review, newest DECIDED `verify` = the green behind it.
  *
- * The clock is the house {@link crossing} rig from
- * `lib/lean-host-contract-fixture.ts`, keyed on the step the run stands in. Its
- * two positions — `Date.now()` while the run works, and `Date.now() + 240 min −
- * 1 min` at the boundary it judges — are derived from the SAME reads the engine's
- * stop test makes, so the run is never born past its own deadline: an epoch
- * pinned in the past puts every boundary inside the handoff allowance and the run
- * stops before its first step, which is a red case, not the bug.
- *
- * The post spy is the whole post path: `handbackOutcome` takes `post` as an
- * argument, so capturing what it was handed needs no seam anywhere else, and the
- * off-arm golden compares those bytes against a capture taken before the rule
- * existed.
+ * The rewind is driven against a REAL repo with a REAL bare origin through the
+ * real executor, so "nothing moved" is a fact about the ref origin holds
+ * afterwards — the house pattern of `lib/lean-publish-fixture.ts`. Every git call,
+ * the fixture's own and the step's, carries `stepGitEnv()`, which is what keeps
+ * `test-verify-loop-git-env` green.
  */
 
 import { spawnSync } from "node:child_process";
-import { isFullCommitSha } from "../../src/commit-sha.ts";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { LeanHandlers } from "../../src/lean/engine.ts";
-import { type Outcome, REPORT_STATES } from "../../src/lean/state.ts";
+import { execp } from "../../src/exec.ts";
+import type { HandlerCtx, LeanHandlers } from "../../src/lean/engine.ts";
+import { runLean } from "../../src/lean/engine.ts";
 import { MAX_BUILD_ATTEMPTS } from "../../src/lean/machine.ts";
+import {
+  type LeanRun,
+  type LeanState,
+  type Outcome,
+  type Step,
+  createRun,
+  newestDecided,
+} from "../../src/lean/state.ts";
 import { gitTestEnv } from "./git-test-env.ts";
+import { git, makeRepo, stepGitEnv } from "./lean-review-fixtures.ts";
 
-/** The full commit shas the cases use, so a head in a record is a chosen value. */
-export const VERIFIED_SHA = "1111111111111111111111111111111111111111";
-export const FIX_SHA = "2222222222222222222222222222222222222222";
+/** The run's branch; `specifyBranch` prints it verbatim, so the rewind's ref is this. */
+export const BRANCH = "lean/issue-2242";
 
-/** The green gate's own words for the head it certified, printed as the comment's `needed:` line. */
-export const VERIFY_REASON = `all frozen tests green at ${VERIFIED_SHA}`;
+/** The issue every case drives, so a ref or a record names one value. */
+export const ISSUE = 2242;
 
-/**
- * The queue for a run whose review fixed its head: the walk up to the review is
- * the ordinary green one, and the review answers `fixed`.
- *
- * `verify` holds exactly ONE verdict — the green the run earned BEFORE the
- * review — and that is the whole point. The re-verify `review:fixed` routes into
- * is never answered, which is what leaves the entry the write-ahead made without
- * an outcome.
- *
- * `handback` and `decline` are absent on purpose: they are the steps the cases
- * observe, and the driver installs the REAL reporting handler (with the post spy)
- * rather than a scripted verdict.
- */
-export const FIXED_THEN_CROSSING: Partial<Record<string, Outcome[]>> = {
-  ready: [{ kind: "ok" }],
-  // `frozen` is what the handback comment lists under `Frozen acceptance tests:`, so
-  // the run carries a contract: a comment with no lines there would not reproduce the
-  // body the off-arm golden has to match.
-  specify: [
-    {
-      kind: "ok",
-      frozen: { "tests/AC1-verified-head.test.sh": "a".repeat(64) },
-      tests: { AC1: ["tests/AC1-verified-head.test.sh"] },
-    },
-  ],
-  build: Array.from({ length: MAX_BUILD_ATTEMPTS }, () => ({ kind: "ok" }) as Outcome),
-  challenge: [{ kind: "none" }],
-  verify: [{ kind: "green", verifiedHead: VERIFIED_SHA, reason: VERIFY_REASON }],
-  publish: [
-    {
-      kind: "ok",
-      prUrl: "https://github.com/o/r/pull/1",
-      publishedHead: FIX_SHA,
-      reason: `published PR at ${FIX_SHA.slice(0, 12)}`,
-    },
-  ],
-  review: [{ kind: "fixed", reason: `review clean at ${FIX_SHA.slice(0, 12)}, one fix wave` }],
-};
+/** Heads no real repo produced, for the rule's own cases where nothing is pushed. */
+export const FAKE_VERIFIED = "1".repeat(40);
 
-/**
- * Handlers for one pass of the drive, and the handle on the step it parks at.
- *
- * `park` names what the harness expects the pass to be stopped on. `verify` is the
- * defect's own position: the queue runs dry at the re-verification and the handler
- * hangs there, which is the only thing that leaves the entry the write-ahead made
- * without an outcome. `handback` is the second pass: every verdict the replay needs
- * is queued, and the reporting step — the one the case observes through its real
- * handler — must not be answered from the script, so the pass stands at it until
- * the harness releases it, with its record already saved.
- */
-export interface StoppedDrive {
-  handlers: LeanHandlers;
-  /** Every state whose handler ran, in order — the walk's own witness. */
-  calls: string[];
-  /** The state the drive is parked on; `undefined` until the harness sees it. */
-  standingAt: () => string | undefined;
-  /** Release the parked handler so the drive's promise settles (nothing reads its answer). */
-  release: () => void;
+/** A second head no real repo produced, so "another green" is a distinct value. */
+export const FAKE_LATER = "2".repeat(40);
+
+/** The green's reason line, so the comment's `needed:` block names the head it certified. */
+export const VERIFY_REASON = `all frozen tests green at ${FAKE_VERIFIED}`;
+
+/** The executor the rewind is driven with: the real one, on an isolated git view. */
+export const exec = ((cmd, opts) =>
+  execp(cmd, { ...(opts ?? {}), env: stepGitEnv() })) as typeof execp;
+
+/** Every temp dir this file's fixtures made, removed by the test at its end. */
+export const ROOTS: string[] = [];
+
+function scratch(): string {
+  const dir = mkdtempSync(path.join(tmpdir(), "lean-handback-drive-"));
+  ROOTS.push(dir);
+  return dir;
+}
+
+/** The handback step's context: the run, its log, and the repo the rewind acts on. */
+export function handbackCtx(
+  steps: Step[],
+  repoRoot: string,
+  issue = ISSUE,
+  branch = BRANCH,
+): HandlerCtx {
+  const run: LeanRun = {
+    ...createRun({ issue, version: "test", models: {}, baseSha: FAKE_VERIFIED, branch }),
+    steps,
+  };
+  return { repoRoot, issue, run, steps, stepKey: `${String(issue)}:handback:0`, now: () => 5 };
 }
 
 /**
- * Handlers for the walk up to and including the review, which then STOP the drive
- * the way a killed process does at the re-verify its `fixed` review routes into.
+ * The plan every driven log starts from: an ordinary walk to the review.
  *
- * A handler cannot decline to answer: `settle` records whatever it returns, and a
- * throw it catches becomes `{kind: "error"}` — a DECIDED step. The only thing that
- * leaves the entry the write-ahead made WITHOUT an outcome is a handler that hangs.
- * So the queue running dry at `verify` parks on a promise, and the harness releases
- * it (`release`) after it has read the record the hanging drive left on disk. The
- * released drive then writes its error verdict into that file, which is why the
- * harness re-arms the pending entry before the second pass — the file has to hold
- * the residue a killed process left, not the answer a released promise wrote.
+ * `publish` carries TWO entries because the table visits it twice on the fix-wave
+ * walk (`review:fixed` routes back through `verify`, which routes to `publish`
+ * again), and a queue that ran dry at the second visit would record an `error`
+ * where the case wants the run to keep walking.
  *
- * The park is bounded by the driver, which fails loudly if the hang is anywhere but
- * the re-verify — a walk that never reached a `fixed` review is a red case, not a
- * test that waits forever.
+ * `build` carries the queue the walk visits. A RED at the gate is routed back
+ * through `viaBuild`, which BILLs one of the table's rounds per visit, so the run
+ * visits `build` as many times as its first gate verdict was red plus one; a queue
+ * short of that gets the run to its gate instead of to its review. The constant
+ * plus one is the ceiling the table can bill, so the plan never runs dry before
+ * the table's own cap does.
  */
-export function stopAtReverify(
-  plan: Partial<Record<string, Outcome[]>>,
-  park: "verify" | "handback" = "verify",
-  /** How many `verify` verdicts this pass may answer before the re-verification parks it. */
-  verifyVisits = 2,
-): StoppedDrive {
-  const handlers: LeanHandlers = {};
-  const calls: string[] = [];
-  // A FRESH plan object per pass: the queues are built from the caller's plan at call
-  // time, so a queue drained by the first pass cannot starve the second.
-  const queues = Object.fromEntries(
-    Object.entries(structuredClone(plan)).map(([state, queue]) => [state, [...(queue ?? [])]]),
-  ) as Record<string, Outcome[]>;
-  // The pass stops where its queue runs out — the re-verification the `fixed` review
-  // routes into and nothing answers. `standingAt` is what the harness checks, so a
-  // stop anywhere else is a red case rather than a walk that quietly ran past it.
-  let standing: string | undefined;
-  let resolvePark: ((outcome: Outcome) => void) | undefined;
-  for (const state of [...new Set([...Object.keys(queues), park])]) {
-    handlers[state as never] = (async () => {
-      // The parked state never answers from a queue: reaching it at all on the pass
-      // that is supposed to stand there is the pass's stop, and reaching it on the
-      // other pass is the bug. `standingAt` and `calls` say which happened.
-      if (state === park) {
-        calls.push(state);
-        standing = state;
-        return new Promise<Outcome>((resolve) => {
-          resolvePark = resolve;
-        });
-      }
-      // `verify` is deliberately in BOTH roles: pass one walks INTO the
-      // re-verification and parks there, so its green queue is deliberately one entry
-      // short of the visits the log will hold. Pass two's plan holds one verdict per
-      // visit its REPLAY consumes, so a replay never mistakes a decided entry for the
-      // pending one — `verifiedPosition` consumes an entry per visit and the queue is
-      // consumed in step.
-      const next = queues[state]?.shift();
-      // A reporting state is never answered from the queue: the driver installs the
-      // REAL handler for it, so a queue that carried one would shadow the step under
-      // test. Listing them keeps the plan honest rather than silently ignored.
-      if (next !== undefined && REPORT_STATES.includes(state as never))
-        throw new Error(
-          `the plan scripts ${state}, which is the step the case observes — remove the entry`,
-        );
-      calls.push(state);
-      if (next === undefined)
-        throw new Error(`no scripted outcome for ${state} — the walk ran past its plan`);
-      return next;
-    }) as never;
-  }
+function walkPlan(verifyQueue: Outcome[]): Partial<Record<LeanState, Outcome[]>> {
   return {
-    handlers,
-    calls,
-    standingAt: () => standing,
-    // Idempotent: the harness releases from its assertions AND from a `finally`, and
-    // a second call must not throw or change an answer already given.
-    release: () => resolvePark?.({ kind: "done", reason: "released by the harness" }),
+    ready: [{ kind: "ok" }],
+    // A frozen contract, so the handback comment carries a `Frozen acceptance
+    // tests:` section: the off-arm comparison covers the WHOLE body.
+    specify: [
+      {
+        kind: "ok",
+        frozen: { "tests/AC1-verified-head.test.sh": "a".repeat(64) },
+        tests: { AC1: ["tests/AC1-verified-head.test.sh"] },
+      },
+    ],
+    build: Array.from({ length: MAX_BUILD_ATTEMPTS + 2 }, () => ({ kind: "ok" }) as Outcome),
+    challenge: [{ kind: "none" }],
+    verify: verifyQueue,
+    publish: [
+      { kind: "ok", prUrl: "https://github.com/o/r/pull/1" },
+      { kind: "ok", prUrl: "https://github.com/o/r/pull/2" },
+    ],
+    review: [{ kind: "fixed", reason: "one fix wave" }],
   };
 }
 
-/** The comment a post spy captured. */
-export interface CapturedPost {
-  repoRoot: string;
-  issue: number;
-  body: string;
+/** The green the walk earns before the review, naming the head the rule ships. */
+function green(head: string, reason = `all frozen tests green at ${head}`): Outcome {
+  return { kind: "green", verifiedHead: head, reason };
 }
 
-/** A `post` seam that records every body it was handed. */
-export function postSpy(): {
-  posts: CapturedPost[];
-  post: (r: string, i: number, b: string) => Promise<void>;
-} {
-  const posts: CapturedPost[] = [];
-  return {
-    posts,
-    post: async (repoRoot: string, issue: number, body: string) => {
-      posts.push({ repoRoot, issue, body });
-    },
-  };
+/** The red the gate returns on the walk's first visit, which buys another round. */
+function red(): Outcome {
+  return { kind: "red", reason: "AC1 exited 1 on the run's first build round" };
 }
 
 /**
- * How long the harness waits for the drive to reach the re-verify before it calls
- * the walk broken. The drive is scripted and instantaneous, so a case that does not
- * reach the boundary in this long never will, and must be reported rather than waited on.
+ * The plan of a run whose gate went green the FIRST time it was asked.
+ *
+ * That single visit is load-bearing in a way a queue length should not be. The rule
+ * reads the log's ORDER (see `handback-heads.ts`): a walk that read its gate twice
+ * stands at its review with the second visit's entry LAST in the log, which reads
+ * — correctly — as "a verify decided after the fixed review". The handback the
+ * defect describes is the ordinary run whose gate went green once, whose single
+ * `verify` entry sits BEFORE the review in the log and whose rule therefore fires.
  */
-export const ARRIVE_GRACE_MS = 1_000;
-
-/** A promise that settles after `ms`. */
-export function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function oneGreenWalk(head: string): Partial<Record<LeanState, Outcome[]>> {
+  // TWO greens, not one: the table routes a `fixed` review into a re-verification
+  // and a gate that runs dry there records an `error` and ends the run, so the drive
+  // cannot reach its merge on a single entry. The walk is cut at its review either
+  // way, and the case is about the newest gate verdict BEFORE that re-verification.
+  return { ...walkPlan([]), verify: [green(head, VERIFY_REASON), green(FAKE_LATER)] };
 }
 
-/** Run git and require success, so a fixture failure is loud, not a wrong verdict. */
-export function git(dir: string, ...args: string[]): string {
-  const r = spawnSync("git", args, {
-    cwd: dir,
-    encoding: "utf8",
-    env: {
-      ...gitTestEnv(),
-      GIT_AUTHOR_NAME: "t",
-      GIT_AUTHOR_EMAIL: "t@t",
-      GIT_COMMITTER_NAME: "t",
-      GIT_COMMITTER_EMAIL: "t@t",
+/** Land the walk on its merge, so the drive reaches a terminal state legitimately. */
+function toMerge(): Partial<Record<LeanState, Outcome[]>> {
+  return { ci: [{ kind: "green" }], land: [{ kind: "merged" }] };
+}
+
+/**
+ * The log as the run held it while it stood at the LAST step of `state` that
+ * decided `kind`: that step's own entry, which carries its verdict, and nothing the
+ * route after it wrote.
+ *
+ * The engine writes a step ahead and fills its `outcome` into the same entry when
+ * the handler returns, so the prefix has to END at that entry: one shorter would
+ * drop the verdict the case is about, one longer would drag in the next step's.
+ * That prefix is what the durable record looked like at the moment the run stood
+ * there — which is exactly the bytes the reporting step reads on a resumed run.
+ */
+function heldAt(steps: Step[], state: LeanState, kind: string): Step[] {
+  const at = lastDecidedIndex(steps, (s) => s.state === state && s.outcome?.kind === kind);
+  if (at < 0) throw new Error(`the driven log has no ${state} step that decided ${kind}`);
+  return steps.slice(0, at + 1);
+}
+
+/** The last index satisfying `pred`, without `Array#findLastIndex` (lib is ES2022). */
+function lastDecidedIndex(steps: Step[], pred: (s: Step) => boolean): number {
+  for (let i = steps.length - 1; i >= 0; i--) if (pred(steps[i] as Step)) return i;
+  return -1;
+}
+
+/** Drive `plan` to its merge and return the log as the run held it at `state`/`kind`. */
+async function driveHeldAt(
+  plan: Partial<Record<LeanState, Outcome[]>>,
+  state: LeanState,
+  kind: string,
+): Promise<Step[]> {
+  return heldAt(await driveTo({ ...plan, ...toMerge() }, { stopAt: "landed" }), state, kind);
+}
+
+/**
+ * The `verify` that decided AFTER the fix wave, appended to a driven log.
+ *
+ * This is the ONE fact the table will not hand over on demand: the engine drives
+ * from the position its log FOLDS to, so a walk stopped at its review can never be
+ * made to decide the re-verification it routes into. The entry is therefore appended
+ * to a real driven log, carrying the key the engine's own attempt rule would give it
+ * on that visit and the shape `state.ts` loads — the rule's reading is over a log a
+ * run could have saved, and the assertion is about the rule, not the harness.
+ *
+ * The key's attempt number is the engine's own rule — the count of entries the
+ * state already holds — so the appended entry is the one a real re-visit of the
+ * gate wrote. The rule reads POSITION, not that number, so nothing here depends on
+ * a key ordering; what the log needs is for the entry to sit after the review, and
+ * an append is what puts it there.
+ */
+async function withLaterVerify(steps: Step[], head: string): Promise<Step[]> {
+  const visits = steps.filter((s) => s.state === "verify").length;
+  const first = steps.find((s) => s.state === "verify");
+  if (first === undefined) throw new Error("the driven log has no gate step to re-visit");
+  return [
+    ...steps,
+    {
+      key: `${String(ISSUE)}:verify:${String(visits)}`,
+      state: "verify",
+      startedAt: first.startedAt,
+      endedAt: first.startedAt + 1,
+      outcome: green(head),
     },
+  ];
+}
+
+/**
+ * The log whose newest work step is a `fixed` review with a decided green behind
+ * it, and which head that green named.
+ *
+ * The drive goes all the way to its merge — a legal walk, every verdict the table
+ * routes on answered — and the log handed back is what the run held at its review:
+ * the review WITH its verdict and nothing the re-verification decided afterwards.
+ * The `verify` queue carries two greens because the table re-visits the gate after
+ * a `fixed` review and a queue that ran dry there would stop the drive at its gate
+ * instead of walking it to the merge; the re-verification's verdict is cut, which is
+ * the whole point of the case.
+ */
+export async function fixedReviewLog(head = FAKE_VERIFIED): Promise<Step[]> {
+  const steps = await driveHeldAt(oneGreenWalk(head), "review", "fixed");
+  // The review's verdict text names the head it reviewed rather than prose alone.
+  // The run's record and the comment the host is handed both carry the shas, and the
+  // OFF-arm capture this file's golden was taken from recorded it this way; a log
+  // whose review said only `one fix wave` would be compared against a body no run
+  // ever posted.
+  const reviewAt = lastDecidedIndex(steps, (s) => s.state === "review" && s.outcome?.kind === "fixed");
+  const review = steps[reviewAt];
+  if (review?.outcome !== undefined)
+    steps[reviewAt] = {
+      ...review,
+      outcome: { ...review.outcome, reason: VERIFY_REASON },
+    };
+  // What the case is about: the newest DECIDED gate verdict the rule will read is a
+  // green naming this head, and it sits EARLIER in the log than the review does —
+  // which is what the rule reads as "the green still speaks for the head". A log
+  // whose newest gate sits after the review is one the rule reads as re-verified,
+  // and it has its own case for that reading — so this fixture would be asserting
+  // the wrong thing while passing. The test is the log's own ORDER, never a
+  // comparison of keys: `verify:0` and `review:0` order by letter.
+  const verified = newestDecided(steps, "verify");
+  if (verified?.outcome?.kind !== "green" || verified.outcome.verifiedHead !== head)
+    throw new Error(
+      `the log's newest decided verify is ${String(verified?.outcome?.kind)} (${String(verified?.outcome?.verifiedHead)}), not a green at ${head}`,
+    );
+  const greenAt = steps.indexOf(verified);
+  if (review === undefined || greenAt > reviewAt)
+    throw new Error(
+      `the newest green (${verified.key}) sits at ${String(greenAt)}, after the review (${String(review?.key)}) at ${String(reviewAt)} — the rule would read this log as re-verified`,
+    );
+  return steps;
+}
+
+/**
+ * The log of a run whose fix wave WAS re-verified: a `verify` decided AFTER the
+ * `fixed` review, so the rule must not speak for it.
+ */
+export async function reverifiedLog(
+  head = FAKE_VERIFIED,
+  reverifiedHead = FAKE_LATER,
+): Promise<Step[]> {
+  const steps = await withLaterVerify(await fixedReviewLog(head), reverifiedHead);
+  const newest = lastDecided(steps);
+  if (newest?.state !== "verify" || newest.outcome?.kind !== "green")
+    throw new Error(
+      `the log's newest work step is ${String(newest?.state)}:${String(newest?.outcome?.kind)}, not a decided verify`,
+    );
+  if (!steps.some((s) => s.state === "review" && s.outcome?.kind === "fixed"))
+    throw new Error("the log holds no fixed review, so the case would prove nothing");
+  return steps;
+}
+
+/** The log of a run whose review decided `done` — clean, with no fix wave. */
+export async function reviewDoneLog(head = FAKE_VERIFIED): Promise<Step[]> {
+  return driveHeldAt(
+    {
+      ...walkPlan([red(), green(head)]),
+      review: [{ kind: "done", reason: "review clean, no findings" }],
+    },
+    "review",
+    "done",
+  );
+}
+
+/**
+ * The log whose newest work step is a `fixed` review and whose gate NEVER decided:
+ * the handback over unverified bytes with no green to go back to.
+ *
+ * The two halves are in tension, and that is the interesting part. The table only
+ * reaches a review through a DECIDED green, so a driven log standing at a `fixed`
+ * review always carries one behind it; and the one edge that puts a run at
+ * `handback` with an unanswered gate — the handler's `error` — is a DECIDED step,
+ * which `newestDecided` sees, so the rule answers its other wording. No single
+ * driven log is both, which is why the rule carries two reasons.
+ *
+ * So this takes the driven fix-wave log above — real keys, real order, the review
+ * the table actually routed — keeps every step up to and including that review, and
+ * takes the HEAD out of the green's verdict. The gate still answered, and the
+ * report still quotes what it said; what it no longer names is a head, which is the
+ * one thing the rule reads.
+ *
+ * The verdict and its text stay because the report's `needed:` line is the newest
+ * decided verdict the log holds, read through {@link neededFromLog} — a function the
+ * rule must not touch, and whose output the byte-for-byte comparison in the test is
+ * against. An outcome-less step would print the fall-back sentence no pre-rule run
+ * ever posted, and the comparison would be with a body nothing emitted.
+ */
+export async function unverifiedFixLog(head = FAKE_VERIFIED): Promise<Step[]> {
+  const steps = await fixedReviewLog(head);
+  const at = lastDecidedIndex(steps, (s) => s.state === "review" && s.outcome?.kind === "fixed");
+  const held = steps.slice(0, at + 1);
+  return held.map((s) => {
+    if (s.state !== "verify" || s.outcome?.kind !== "green") return s;
+    const { verifiedHead: _dropped, ...rest } = s.outcome;
+    return { ...s, outcome: rest };
   });
-  if (r.status !== 0)
-    throw new Error(`git ${args.join(" ")} failed in ${dir}: ${(r.stderr ?? "").trim()}`);
-  return (r.stdout ?? "").trim();
 }
 
-/** Run git and report failure as `undefined` rather than throwing. */
-export function gitQuiet(dir: string, ...args: string[]): string | undefined {
-  const r = spawnSync("git", args, {
-    cwd: dir,
+/**
+ * The log of a run that reached a handback with a `fixed` review and a gate that
+ * answered NOTHING: the newest work step is the review, and the log holds no verdict
+ * of the gate at all.
+ *
+ * No walk produces this, and it is not meant to look like one. It is the log a run
+ * saves when its gate is stopped before it is first asked — a crash between the
+ * review's verdict and the step that would have taken it, a run restored from a
+ * record written before the gate ran — and it is the one input the rule answers with
+ * "nothing decided", as opposed to the green-missing-a-head and the
+ * gate-entered-and-unfinished cases, which each have their own wording and their own
+ * log. A rule that collapsed the three would report a head it had not verified under
+ * one of the other two's explanations.
+ */
+export function unaskedGateReviewLog(): Step[] {
+  return [
+    { key: `${String(ISSUE)}:ready:0`, state: "ready", startedAt: 5, outcome: { kind: "ok" } },
+    {
+      key: `${String(ISSUE)}:specify:0`,
+      state: "specify",
+      startedAt: 6,
+      outcome: { kind: "ok", frozen: { "tests/AC1-verified-head.test.sh": "a".repeat(64) } },
+    },
+    { key: `${String(ISSUE)}:build:0`, state: "build", startedAt: 7, outcome: { kind: "ok" } },
+    {
+      key: `${String(ISSUE)}:review:0`,
+      state: "review",
+      startedAt: 8,
+      outcome: { kind: "fixed", reason: "one fix wave" },
+    },
+  ];
+}
+
+/**
+ * The log whose gate was entered and never ANSWERED, over a `fixed` review.
+ *
+ * The rule's other "no verified head" wording, and a different log from
+ * {@link unverifiedFixLog} on purpose. One green is left standing because the table
+ * only routes to a review through a decided gate; every gate step after it loses its
+ * outcome, which is what a run that was stopped inside the re-verification saved.
+ * So the newest gate the rule can read is no gate at all, and it must answer that
+ * nothing of this run decided anything — the wording a green missing its head does
+ * not earn.
+ */
+export async function undecidedFixLog(head = FAKE_VERIFIED): Promise<Step[]> {
+  const steps = await fixedReviewLog(head);
+  const at = lastDecidedIndex(steps, (s) => s.state === "review" && s.outcome?.kind === "fixed");
+  const held = steps.slice(0, at + 1);
+  const first = held.find((s) => s.state === "verify");
+  if (first === undefined) throw new Error("the driven log has no gate step to re-visit");
+  // The key and shape the engine's own attempt rule gives the re-verification, so
+  // this is a log a run could have saved with its gate still open.
+  return [
+    ...held,
+    { key: `${String(ISSUE)}:verify:${String(held.filter((s) => s.state === "verify").length)}`, state: "verify" as const, startedAt: first.startedAt },
+  ];
+}
+
+/**
+ * A repo whose origin's branch holds a fix head pushed on top of the base commit.
+ *
+ * `baseSha` is the head the green `verify` certified and `headSha` the one the fix
+ * wave put on top of it; both are real commits with real content, and
+ * `branchHeadSha` is what origin's branch holds when the case starts — the head the
+ * rewind's lease is bound to, and the one the keeping-ref must hold afterwards.
+ *
+ * The base is made reachable on origin under a ref of its own first: a push writes
+ * objects, and origin would otherwise refuse the rewind for a reason that has
+ * nothing to do with the lease.
+ *
+ * Every fact here is READ back off origin rather than assumed from the local repo:
+ * a case whose "head the run pushed" was a local `rev-parse` could pass while
+ * origin held something else, which is the whole subject of these cases.
+ */
+export function repoWithFixHead(): {
+  repoRoot: string;
+  origin: string;
+  baseSha: string;
+  headSha: string;
+  branchHeadSha: string;
+} {
+  const { repoRoot, origin, baseSha } = makeRepo();
+  ROOTS.push(repoRoot, origin);
+  git(repoRoot, "checkout", "-q", "-B", BRANCH);
+  git(repoRoot, "commit", "-q", "--allow-empty", "-m", "fix: the review's finding");
+  const headSha = git(repoRoot, "rev-parse", "HEAD");
+  // Keep the base reachable on origin by a name the rewind never touches, so the
+  // rewind's push of it is refused only ever by its lease.
+  git(repoRoot, "push", "-q", "origin", `${baseSha}:refs/lean/base/${String(ISSUE)}`);
+  git(repoRoot, "push", "-q", "origin", `${headSha}:refs/heads/${BRANCH}`);
+  const branchHeadSha = originBranchSha(origin);
+  if (branchHeadSha !== headSha)
+    throw new Error(
+      `origin's branch holds ${String(branchHeadSha)}, not the fix head ${headSha} — every head fact below would be a guess`,
+    );
+  return { repoRoot, origin, baseSha, headSha, branchHeadSha };
+}
+
+/** The newest step that was WORK and carried a verdict (a report state is how a run ended). */
+function lastDecided(steps: Step[]): Step | undefined {
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const step = steps[i];
+    if (step === undefined || step.outcome === undefined) continue;
+    if (step.state === "handback" || step.state === "decline") continue;
+    return step;
+  }
+  return undefined;
+}
+
+/**
+ * Drive a run with a scripted plan and hand back the log it wrote.
+ *
+ * `runLean` stops on a state with no handler, so the plan's states get queue-backed
+ * handlers and the walk runs to wherever the table and the queues take it. A state
+ * whose queue is empty THROWS, which the engine records as `error` and ends the run
+ * — that is the mechanism every truncated case uses, and the reason the plan, not
+ * the harness, decides where a run dies.
+ */
+async function driveTo(
+  plan: Partial<Record<LeanState, Outcome[]>>,
+  opts: { stopAt?: LeanState } = {},
+): Promise<Step[]> {
+  const dir = scratch();
+  const handlers: LeanHandlers = {};
+  const queues: Partial<Record<LeanState, Outcome[]>> = {};
+  for (const [state, queue] of Object.entries(plan))
+    queues[state as LeanState] = [...(queue ?? [])];
+  for (const state of Object.keys(queues) as LeanState[]) {
+    handlers[state] = async () => {
+      const next = queues[state]?.shift();
+      if (next === undefined) throw new Error(`no scripted outcome for ${String(state)}`);
+      return next;
+    };
+  }
+  const r = await runLean({ repoRoot: dir, issue: ISSUE, handlers, maxSteps: 24 });
+  if (opts.stopAt !== undefined && r.state !== opts.stopAt)
+    throw new Error(
+      `the drive ended ${r.state}, not ${opts.stopAt}: ${r.run.steps.map((s) => `${s.key}=${String(s.outcome?.kind ?? "?")}${s.outcome?.message === undefined ? "" : `(${s.outcome.message.slice(0, 40)}`}`).join(" ")}`,
+    );
+  if (r.run.steps.length === 0) throw new Error("the drive wrote no steps");
+  return [...r.run.steps];
+}
+
+
+/** What origin holds for one ref of any name, or `undefined` when it holds nothing. */
+export function originRefSha(origin: string, ref: string): string | undefined {
+  const r = spawnSync("git", ["ls-remote", ".", ref], {
+    cwd: origin,
     encoding: "utf8",
     env: { ...gitTestEnv(), GIT_TERMINAL_PROMPT: "0" },
   });
-  return r.status === 0 ? (r.stdout ?? "").trim() : undefined;
-}
-
-/** Write a file inside a fixture repo, making the parent directories. */
-export function put(dir: string, rel: string, body: string): void {
-  const abs = path.join(dir, rel);
-  mkdirSync(path.dirname(abs), { recursive: true });
-  writeFileSync(abs, body);
-}
-
-/** A clone with a real bare origin, a base commit, and a branch tip of the fix wave's head. */
-export function originRepo(opts: {
-  branch: string;
-  head?: { file: string; body: string };
-}): { repoRoot: string; origin: string; baseSha: string; headSha: string } {
-  const repoRoot = mkdtempSync(path.join(tmpdir(), "lean-handback-repo-"));
-  const origin = mkdtempSync(path.join(tmpdir(), "lean-handback-origin-"));
-  git(repoRoot, "init", "-q", "-b", "main");
-  git(origin, "init", "-q", "--bare");
-  put(repoRoot, "a.ts", "export const a = 1;\n");
-  git(repoRoot, "add", "-A");
-  git(repoRoot, "commit", "-q", "-m", "base");
-  const baseSha = git(repoRoot, "rev-parse", "HEAD");
-  git(repoRoot, "remote", "add", "origin", origin);
-  git(repoRoot, "push", "-q", "-u", "origin", "main");
-  git(repoRoot, "checkout", "-q", "-B", opts.branch);
-  let headSha = baseSha;
-  if (opts.head !== undefined) {
-    put(repoRoot, opts.head.file, opts.head.body);
-    git(repoRoot, "add", "-A");
-    git(repoRoot, "commit", "-q", "-m", "fix: the finding");
-    headSha = git(repoRoot, "rev-parse", "HEAD");
-  }
-  git(repoRoot, "push", "-q", "origin", opts.branch);
-  return { repoRoot, origin, baseSha, headSha };
-}
-
-/** Origin's own value for one branch, read through a fresh `ls-remote`. */
-export function originSha(origin: string, branch: string): string | undefined {
-  const out = gitQuiet(origin, "ls-remote", "--heads", ".", `refs/heads/${branch}`);
-  if (out === undefined || out === "") return undefined;
+  if (r.status !== 0) throw new Error(`ls-remote ${ref} failed: ${(r.stderr ?? "").trim()}`);
+  const out = (r.stdout ?? "").trim();
+  if (out === "") return undefined;
   const [sha = ""] = out.split(/\s+/);
   return sha === "" ? undefined : sha;
 }
 
-/** Origin's own value for one ref of any name, read through a fresh `ls-remote`. */
-export function originRefSha(origin: string, ref: string): string | undefined {
-  const out = gitQuiet(origin, "ls-remote", ".", ref);
-  if (out === undefined || out === "") return undefined;
-  const [sha = ""] = out.split(/\s+/);
-  return sha === "" ? undefined : sha;
+/** Origin's branch, or `undefined` when origin has no such branch. */
+export function originBranchSha(origin: string, branch = BRANCH): string | undefined {
+  return originRefSha(origin, `refs/heads/${branch}`);
+}
+
+/**
+ * The head the rule's cases use: a real head from a real repo, so a rewind driven
+ * with it can be read back out of origin.
+ */
+export function shaOf(repoRoot: string, rev: string): string {
+  return git(repoRoot, "rev-parse", rev);
+}
+
+/**
+ * A commit on top of `sha` in a SEPARATE clone of origin, and pushed from there.
+ *
+ * A stranger cannot be made in the run's own clone. `--force-with-lease=<ref>:<sha>`
+ * checks the sha against the clone's remote-tracking ref, and a commit made and
+ * pushed locally leaves that ref in exactly the state that makes a lease on the old
+ * head succeed — so a case that moved origin this way would watch the rewind accept
+ * a branch somebody else had moved and call it a refusal. The separate clone is the
+ * only shape in which origin has moved and this run's clone has not been told.
+ */
+export function strangerOnTop(
+  repo: { repoRoot: string; origin: string },
+  base: string,
+  message: string,
+): string {
+  const other = mkdtempSync(path.join(tmpdir(), "lean-handback-other-"));
+  ROOTS.push(other);
+  git(repo.repoRoot, "clone", "-q", repo.origin, other);
+  git(other, "checkout", "-q", "-B", BRANCH, `origin/${BRANCH}`);
+  git(other, "reset", "-q", "--hard", base);
+  git(other, "commit", "-q", "--allow-empty", "-m", message);
+  const sha = git(other, "rev-parse", "HEAD");
+  git(other, "push", "-q", "origin", `HEAD:refs/heads/${BRANCH}`);
+  return sha;
+}
+
+/** A commit on top of `sha`, detached, so no branch moves. */
+export function commitOnTop(repoRoot: string, sha: string, message: string): string {
+  git(repoRoot, "checkout", "-q", "--detach", sha);
+  git(repoRoot, "commit", "-q", "--allow-empty", "-m", message);
+  return git(repoRoot, "rev-parse", "HEAD");
+}
+
+/** Push an existing commit into origin's branch — how a case moves it behind lean's back. */
+export function pushToOrigin(repoRoot: string, sha: string, branch = BRANCH): void {
+  git(repoRoot, "push", "-q", "origin", `${sha}:refs/heads/${branch}`);
 }
