@@ -38,7 +38,7 @@ import {
 } from "../src/lean/issue-prose.ts";
 import type { PiSpec } from "../src/lean/spec.ts";
 import { withEnv } from "./lib/env-scope.ts";
-import { SPEC_BODY_WITH_PROSE } from "./lib/lean-build-asserts.ts";
+import { SPEC_BODY, SPEC_BODY_WITH_PROSE } from "./lib/lean-build-asserts.ts";
 import { CONSTRAINT, INJECT_BODY, ISSUE_BODY, OVER_BODY } from "./lib/ticket-issue-fixture.ts";
 
 let exit = 0;
@@ -225,6 +225,35 @@ await withEnv(ON, async () => {
     lookAlikePlain.includes(LEAN_ISSUE_HEADING),
     "and a fence that merely contains the word pi-spec is still ordinary prose, so it renders",
   );
+
+  // The look-alike's SHAPE does not decide — its fence DEPTH does. Each body below is
+  // a real `pi-spec v1` block (so `parsePiSpec` reads it, and a run on it is a run with
+  // real criteria) plus a requirement stated only in prose, plus a spec-shaped line the
+  // strip keeps as another fence's CONTENT. Refusing the section for those is the #2228
+  // bug wearing a different hat: the builder silently loses the tail requirement on a
+  // body that is well-formed. Each row was observed RED against the old stateless
+  // line-by-line predicate, which called the quoted line an opening fence.
+  const TAIL = 'TAIL-ONLY: the exception message must remain exactly "quota exceeded"';
+  for (const [name, body] of [
+    [
+      "a spec line quoted inside a tilde sample",
+      [SPEC_BODY, "", "~~~md", "```pi-spec v1 extra", "~~~", "", TAIL].join("\n"),
+    ],
+    [
+      "a look-alike inside a fence its closer is too short to close",
+      [SPEC_BODY, "", "````md", "```pi-spec v1 extra", "```", "", TAIL].join("\n"),
+    ],
+    [
+      "a look-alike sitting inside a json sample",
+      [SPEC_BODY, "", "```json", "```pi-spec v1 extra", "```", "", TAIL].join("\n"),
+    ],
+  ] as const) {
+    const withTail = build(body);
+    assert(
+      withTail.includes(LEAN_ISSUE_HEADING) && withTail.includes(TAIL),
+      `a real spec block coexisting with ${name} still renders the section and its tail requirement`,
+    );
+  }
 
   // B8 — a body whose prose IS the problem line adds nothing, so it says nothing.
   const specOnly = (prose: string): string =>

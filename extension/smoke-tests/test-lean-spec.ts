@@ -250,11 +250,26 @@ assert(
   );
 
   // The predicate `lean/issue-prose.ts` uses to refuse a section that would reprint
-  // the contract. It is a FENCE-SHAPE test, not a substring test over the body: the
-  // two cases below differ only in whether the string sits on an opening fence line,
-  // and a whole-body `includes` would answer them the same way — which is the bug
-  // that silently dropped the issue section for any `/plan` body that quoted the
-  // block format in its own prose.
+  // the contract, judged on the body the CALLER actually hands it — the stripped one
+  // (`issue-prose.ts` calls it on `stripPiSpecBlocks(body)`), so every row below is a
+  // body that still carries its fences.
+  //
+  // It is a FENCE-SHAPE test, not a substring test over the body: two rows differ only
+  // in whether the string sits on an opening fence line, and a whole-body `includes`
+  // would answer them the same way — the bug that silently dropped the issue section
+  // for any `/plan` body that quoted the block format in its own prose.
+  //
+  // Shape alone is not enough either. A predicate that reads lines one at a time cannot
+  // tell an OPENING fence from a line that merely looks like one, so it refuses the
+  // WHOLE section for text the strip kept as another fence's CONTENT — and the strip
+  // keeps such a line precisely when the closer is SHORTER than the opener (a real
+  // block, so `parsePiSpec` reads it and the run has real criteria). `short-closer`
+  // below is that body: the old line-by-line test called its quoted `pi-spec v1` line
+  // an opener, and the builder silently lost its tail requirement on an issue that is
+  // well-formed — the same silent-empty-section failure #2228 exists to close.
+  const TAIL_REQ = "TAIL requirement.";
+  const specBlock = (info = SPEC_INFO, closer = "```", fence = "```", indent = ""): string =>
+    `${indent}${fence}${info}\n${JSON.stringify(SPEC, null, 2)}\n${indent}${closer}`;
   for (const [name, body, want] of [
     ["look-alike fence (info has extra text)", "```pi-spec v1 extra\nkeep\n```", true],
     ["look-alike tilde fence", "~~~pi-spec v1 draft\nkeep\n~~~", true],
@@ -262,6 +277,35 @@ assert(
     ["prose that quotes the format", "A `pi-spec v1` block summarises it.\n\nTAIL requirement.", false],
     ["a json fence whose CONTENT mentions it", "```json\npi-spec v1\n```", false],
     ["prose with no fence at all", "Nothing shaped like a fence here.", false],
+    // The red row: a 4-backtick block whose 3-backtick closer is too short to close
+    // it, so `pi-spec v1 extra` is CONTENT of that block (`parsePiSpec` reads the spec,
+    // the strip keeps the sample whole) and nothing here reopens the contract.
+    [
+      "a look-alike inside a fence its closer is too short to close",
+      `${specBlock("md", "\`\`\`", "\`\`\`\`")}\n\n${TAIL_REQ}`,
+      false,
+    ],
+    // A `pi-spec v1` line quoted inside a tilde sample is that sample's content.
+    [
+      "a spec line inside a tilde sample",
+      `~~~md\n${SPEC_INFO}\n~~~\n\n${TAIL_REQ}`,
+      false,
+    ],
+    // An inline code span quoting the format, alone on its line — the same text as the
+    // `prose that quotes the format` row above with one backtick each side, which is
+    // what makes a shape-only line test get it wrong.
+    [
+      "an inline code span on its own line",
+      `${TAIL_REQ}\n\n\`${SPEC_INFO} extra\``,
+      false,
+    ],
+    // The positive control beside the red row: the same 4-backtick look-alike at depth
+    // 0, with a closer long enough to close it, IS a second spec block and does refuse.
+    [
+      "a genuine 4-backtick look-alike at depth 0",
+      `\`\`\`\`${SPEC_INFO} extra\nkeep\n\`\`\`\`\n\n${TAIL_REQ}`,
+      true,
+    ],
   ] as const) {
     assert(
       hasSurvivingSpecShapedFence(body) === want,

@@ -279,8 +279,25 @@ export function stripPiSpecBlocks(body: string): string {
 }
 
 /**
- * Whether a fence shaped like the spec block SURVIVED in this body: an opening
- * fence line whose info string starts with {@link SPEC_INFO}.
+ * A line that OPENS a fence: the run, its character, and its info string.
+ *
+ * CommonMark's opener condition, and narrower than {@link closesFenceLine}'s — an
+ * opener CARRIES an info string while a closer may carry nothing but whitespace.
+ * Three spaces of indent is the most a fence may take, so the 4-space-indented
+ * look-alike is indented code: a line the shape test below cannot tell from an
+ * opener, and the reason this is a predicate rather than a regex at the call site.
+ */
+function openingFence(line: string): { char: string; len: number; info: string } | undefined {
+  const g = FENCE_LINE.exec(line)?.groups;
+  const run = g?.run;
+  if (run === undefined) return undefined;
+  return { char: run[0] as string, len: run.length, info: g?.rest ?? "" };
+}
+
+/**
+ * Whether a fence shaped like the spec block SURVIVED in this body: an OPENING
+ * fence line at depth 0 whose info string starts with {@link SPEC_INFO}, i.e. the
+ * shape a second spec block would take.
  *
  * `stripPiSpecBlocks` recognises exactly `pi-spec v1` and no other info string —
  * the same exactness rule `parsePiSpec` applies, so a fence whose info merely
@@ -291,10 +308,29 @@ export function stripPiSpecBlocks(body: string): string {
  * block format (a `/plan` drafter quoting it in its own text, or restating its own
  * `Descriptor:` line) is ordinary prose and must keep its section, so only an
  * OPENING FENCE LINE counts.
+ *
+ * Which is why this walks the body the way `stripPiSpecBlocks` walks it, on the
+ * same predicate, rather than testing lines one at a time. A stateless line test
+ * cannot tell an opener from a line that merely LOOKS like one — a `pi-spec v1`
+ * line quoted inside a tilde sample, a 4-backtick or 4-space-indented look-alike,
+ * an inline code span alone on its line — and refuses the WHOLE section for text
+ * the strip kept as content. `parsePiSpec` still reads those bodies as a spec, so
+ * the seat silently loses its prose on an issue that is well-formed: the same
+ * silent-empty-section failure #2228 exists to close, on a different shape. Lines
+ * inside another open fence never count (they are that fence's content, and cannot
+ * reopen the contract), and an inline code span is not an opener at all.
  */
 export function hasSurvivingSpecShapedFence(body: string): boolean {
+  let open: { char: string; len: number } | undefined;
   for (const line of body.split(/\r?\n/)) {
-    if (/^(?: {0,3})(?:`{3,}|~{3,})[^\S\r\n]*pi-spec v1/.test(line)) return true;
+    if (open !== undefined) {
+      if (closesFenceLine(line, open.char, open.len)) open = undefined;
+      continue;
+    }
+    const fence = openingFence(line);
+    if (fence === undefined) continue;
+    if (fence.info.trimStart().startsWith(SPEC_INFO)) return true;
+    open = fence;
   }
   return false;
 }
