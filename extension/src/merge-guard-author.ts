@@ -9,6 +9,14 @@
  * of "read `.pi/merge-authors` at the base commit and compare a login" is exactly
  * the drift this project keeps removing.
  *
+ * `authorGateOnly` — the handler the guard runs when the escape hatch is set —
+ * lives here too, for the same reason and for the §12 file cap (AGENTS.md §12):
+ * it is the author gate and nothing else, so it belongs beside the other three
+ * callers of `guardMergeAuthorRefusal` rather than in the hook that waives it.
+ * Its refusals name the hatch to the operator — which switch did not save them —
+ * and that wording lives in merge-guard-author-text.ts, because this module is
+ * scanned for the hatch's name to prove no override reaches the rule.
+ *
  * The author is NOT read here. It arrives on the evidence read the caller already
  * made (`MergeEvidence.author`), which the field list in `mergeEvidenceViewCmd`
  * requests from the same `gh pr view` that carries the CI verdict and the head
@@ -21,6 +29,9 @@
  * opened the PR. See merge-author-allowlist.ts for the fail-closed rule.
  */
 
+import { execp } from "./exec.ts";
+import type { DetectForgeOpts } from "./forge-detect.ts";
+import { type MergeCommand, readMergeCommand } from "./merge-allowlist.ts";
 import {
   type AllowlistRead,
   type AuthorGate,
@@ -30,8 +41,24 @@ import {
   mergeGuardAuthorRead,
   readMergeAuthorAllowlist,
 } from "./merge-author-allowlist.ts";
-import type { MergeExecFn, MergeTarget } from "./merge-target.ts";
+import {
+  AUTHOR_HATCH_SENTENCE,
+  authorUnreadableForgeSentence,
+  authorUnreadableRemoteSentence,
+  authorUnreadableTargetSentence,
+  authorUnresolvedPrSentence,
+} from "./merge-guard-author-text.ts";
+import { guardMainline } from "./merge-guard-reads-git.ts";
+import { analyseRefusal } from "./merge-refusal-render.ts";
+import {
+  type MergeExecFn,
+  type MergeTarget,
+  isCarveOut,
+  readMergeTarget,
+  resolvePrNumber,
+} from "./merge-target.ts";
 import { errText } from "./protected-paths-text.ts";
+import { remoteName } from "./review-ledger-path.ts";
 
 /** The executor seam every merge path already holds. */
 type AuthorExec = (
@@ -230,4 +257,89 @@ export async function heldForMergeAuthor(args: {
   if ("failure" in resolved) return decideMergeAuthor(resolved.failure, args.author);
   const allowlist = await readMergeAuthorAllowlist(args.exec, args.cwd, resolved.oid, file);
   return decideMergeAuthor(allowlist, args.author);
+}
+
+function block(reason: string): { block: true; reason: string } {
+  return { block: true, reason };
+}
+
+/**
+ * The one gate the escape hatch cannot waive: resolve the PR, apply the author check,
+ * answer nothing else. Called by the hook in merge-guard.ts when
+ * `PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE=1` is set.
+ *
+ * A separate handler rather than a flag threaded through the hook, so "only the
+ * author gate survives the hatch" is a shape a reader can see — the review, head,
+ * protected-path, ledger and CI reads are simply not in this function, and adding a
+ * gate to the hook cannot silently widen what the hatch disables.
+ *
+ * It mirrors the hook's own reads exactly (same classifier, same PR resolution, same
+ * forge check, same remote and mainline resolution) so the login compared here belongs
+ * to the PR the merge would actually land, and it mirrors the hook's FAIL-CLOSED reads
+ * too: a classifier that throws and a PR number that will not resolve both refuse, so
+ * a merge is never landed on a command or a target this gate could not read. It stops
+ * where the hook stops: a command the classifier will not read as a merge is not refused
+ * here (that hold, and its telemetry, belong to the hook the hatch waives), but a PR
+ * whose author could not be established IS refused — that is this gate failing closed,
+ * not a review gate. The release-please / dependabot carve-out applies at the position
+ * the hook applies it, so this path is never stricter than the hook on a bot PR.
+ */
+export async function authorGateOnly(
+  event: { toolName?: string; input?: unknown },
+  opts: { execFn?: MergeExecFn; forgeOpts?: DetectForgeOpts },
+): Promise<{ block: true; reason: string } | undefined> {
+  const command = (event.input as { command?: string })?.command ?? "";
+  let analysis: MergeCommand;
+  try {
+    analysis = readMergeCommand(command);
+  } catch (err) {
+    // Fail closed: a merge is the irreversible act, so a command this gate could not
+    // read is not merged. The text names the classifier as the suspect (the hook's
+    // own classifier-threw hold) — the reader threw, which says nothing about reviews.
+    return block(
+      `merge refused: ${AUTHOR_HATCH_SENTENCE}, and the command could not be read to identify the PR it merges — the classifier threw (${analyseRefusal(err)}). If this is not a merge, report it as a false hold: the guard's classifier is the thing to fix.`,
+    );
+  }
+  if (analysis.kind !== "merge") return undefined;
+  const cwd = process.cwd();
+  const execFn: MergeExecFn = opts.execFn ?? execp;
+  let prNumber = analysis.prNumber;
+  if (prNumber === undefined) {
+    prNumber = await resolvePrNumber(execFn, cwd, undefined, opts.forgeOpts, analysis.repo);
+  }
+  if (prNumber === undefined) {
+    // Fail closed for the same reason: with no PR identified there is no author to
+    // check, and an uncheckable author is not an approved one.
+    return block(
+      `merge refused: ${AUTHOR_HATCH_SENTENCE}, and ${authorUnresolvedPrSentence(analysis.repo)}`,
+    );
+  }
+  const targetResult = await readMergeTarget(execFn, cwd, prNumber, opts.forgeOpts, analysis.repo);
+  if (!targetResult.ok) {
+    return block(
+      `merge refused: ${AUTHOR_HATCH_SENTENCE}, and ${authorUnreadableTargetSentence(targetResult.reason)}`,
+    );
+  }
+  // Carve-out: release-please / dependabot are not agent merges, and the hook lets them
+  // through at this same position — ahead of the remote/mainline reads the gate needs.
+  if (isCarveOut(targetResult.target)) return undefined;
+  // The gate must certify the PR the command actually merges, or the hatch becomes a
+  // route for landing an unchecked author on the other forge.
+  if (targetResult.target.forge !== analysis.forge) {
+    return block(
+      `merge refused: ${AUTHOR_HATCH_SENTENCE}, and ${authorUnreadableForgeSentence(
+        analysis.forge,
+        targetResult.target.forge,
+      )}`,
+    );
+  }
+  const remote = await remoteName(execFn, cwd);
+  if (!remote) {
+    return block(
+      `merge refused: ${AUTHOR_HATCH_SENTENCE}, and ${authorUnreadableRemoteSentence(MERGE_AUTHORS_FILE)}`,
+    );
+  }
+  const mainline = await guardMainline(cwd, execFn);
+  if (!mainline.ok) return mainline.block;
+  return guardMergeAuthorRefusal(execFn, cwd, `${remote}/${mainline.value}`, targetResult.target);
 }
