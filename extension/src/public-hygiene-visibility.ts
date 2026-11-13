@@ -64,7 +64,7 @@ import { trace, traceWarn } from "./trace.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /** The one host whose repository visibility `gh` can answer for. */
-const GITHUB_HOST = "github.com";
+export const GITHUB_HOST = "github.com";
 
 /** Bound on the visibility question. Generous over a normal `gh api` round trip. */
 export const VISIBILITY_TIMEOUT_MS = 10_000;

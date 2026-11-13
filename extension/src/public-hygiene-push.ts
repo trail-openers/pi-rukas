@@ -24,10 +24,13 @@
  * ## The trigger, and why other hosts are exempt
  *
  * Any remote whose host resolves to `github.com` through `parseRemoteUrl`
- * (forge-detect.ts) — the HOST TABLE decides, not repository visibility, which
- * nothing in this codebase can read. A private GitHub repo behind that host is
- * scanned too, which is the conservative direction; a company host name or a
- * self-hosted forge is not, per issue decision 3.
+ * (forge-detect.ts) asked as a GitHub remote — the HOST TABLE decides, not
+ * repository visibility, which nothing in this codebase can read. A private
+ * GitHub repo behind that host is scanned too, which is the conservative
+ * direction; a company host name or a self-hosted forge is not, per issue
+ * decision 3. Asking as GitHub is what keeps a github.com remote whose path is
+ * deeper than `owner/repo` out of the scan: github.com serves no repository at
+ * such a path, so the push cannot publish one.
  *
  * ## The budget
  *
@@ -299,7 +302,11 @@ export async function scanPushRange(deps: PushScanDeps): Promise<PushScanResult>
         };
       }
     }
-    const parsed = parseRemoteUrl(url.trim());
+    const parsed = parseRemoteUrl(url.trim(), "github");
+    // The forge argument is not an assumption about the remote — it is the
+    // question this scan asks: "does this remote name a repository ON the public
+    // host?" A path deeper than `owner/repo` is no such repository even when the
+    // host matches, so the parse refuses rather than yielding a truncated slug.
     if (parsed?.host === PUBLIC_GITHUB_HOST) {
       target = { remote: name, host: parsed.host };
       break;

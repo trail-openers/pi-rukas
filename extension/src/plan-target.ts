@@ -119,7 +119,13 @@ export async function repoIdentityAt(dir: string): Promise<RepoIdentity | undefi
       timeout: 10_000,
     });
     const parsed = parseRemoteUrl(stdout.trim());
-    return parsed ? { host: parsed.host, segments: [parsed.owner, parsed.repo] } : undefined;
+    if (!parsed) return undefined;
+    // The identity is the whole namespace path, so a clone of a GitLab subgroup
+    // matches a target that names it. Case is preserved, as `parseRepoIdentity`
+    // preserves it; a github.com clone deeper than `owner/repo` names no
+    // repository the way github.com serves one, so it is no identity.
+    if (parsed.host === DEFAULT_HOST && parsed.path.length !== 2) return undefined;
+    return { host: parsed.host, segments: parsed.path };
   } catch {
     return undefined;
   }

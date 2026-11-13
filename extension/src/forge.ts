@@ -18,6 +18,7 @@ import * as cmds from "./forge-commands.ts";
 import { listIssueComments, listPrComments, postPrComment } from "./forge-comments.ts";
 import type { PublicTextCheck } from "./forge-comments.ts";
 import type { ForgeDetection, ForgeType } from "./forge-detect.ts";
+import { parseRemoteUrl } from "./forge-detect.ts";
 import { type LabelListResult, labelOps } from "./forge-label-ops.ts";
 import { mapIssueSearchReply, mapPrListReply } from "./forge-list.ts";
 import {
@@ -100,8 +101,14 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
   const cwd = opts.cwd ?? process.cwd();
   const extraOpts = opts.execOpts ?? {};
   const forge = det.forge;
-  const owner = det.url ? (parseOwner(det.url) ?? "") : "";
-  const repo = det.url ? (parseRepo(det.url) ?? "") : "";
+  // One parser for every remote read in the driver: the adapter's slug comes
+  // from the same `parseRemoteUrl` the detector used, not from a second regex
+  // over the raw URL. A GitLab project may sit under subgroups, so the owner is
+  // the whole namespace above the project — the slug `gh`/`glab` and the
+  // public-hygiene target both need — and the repo is the last segment.
+  const parsed = det.url ? parseRemoteUrl(det.url, forge) : undefined;
+  const repo = parsed ? (parsed.path[parsed.path.length - 1] ?? "") : "";
+  const owner = parsed ? parsed.path.slice(0, -1).join("/") : "";
 
   /**
    * #1261 — default per-call exec timeout. `gh` calls against a healthy API
@@ -453,18 +460,6 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
         return mapGlRepo(asRecord(stdout));
       }),
   };
-}
-
-/** Extract the owner (first path segment) from a remote URL. */
-export function parseOwner(url: string): string | undefined {
-  const m = url.replace(/\.git$/i, "").match(/\/([^/]+)\/([^/]+)$/);
-  return m?.[1];
-}
-
-/** Extract the repo (last path segment) from a remote URL. */
-export function parseRepo(url: string): string | undefined {
-  const m = url.replace(/\.git$/i, "").match(/\/([^/]+)\/([^/]+)$/);
-  return m?.[2];
 }
 
 // Re-export the sub-module pieces so callers can reach them from forge.ts
