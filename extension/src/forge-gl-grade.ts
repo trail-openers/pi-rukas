@@ -153,16 +153,18 @@ export function gradeGlJobState(state: string, blocking: boolean): GlJobGrade {
  * `.status` off such a row throws instead, and an exception that escapes the
  * gatherer is not a refusal — the caller never receives a verdict at all.
  */
+/** Whether a row's own `status` names a job that EXECUTED — everything else never ran.
+ * Exported for the merge-evidence gate's at-least-one-ran rule, so the two readers
+ * of that word list cannot drift apart. */
+export function jobRowExecuted(row: unknown): boolean {
+  const status = (row as { status?: unknown } | null)?.status;
+  return typeof status === "string" && GL_EXECUTED.has(status.toLowerCase());
+}
+
 export function gradeGlJobRow(row: Record<string, unknown>): GlJobGrade {
   const fields = (typeof row === "object" && row !== null ? row : {}) as Record<string, unknown>;
   const status = typeof fields.status === "string" ? fields.status : "";
   return gradeGlJobState(status, glJobIsBlocking(fields.allow_failure));
-}
-
-/** Whether a row's own `status` is one that ran (a non-object row never did). */
-function rowExecuted(row: unknown): boolean {
-  const status = (row as { status?: unknown } | null)?.status;
-  return typeof status === "string" && GL_EXECUTED.has(status.toLowerCase());
 }
 
 /** Whether a row is a retry still queued — an absence of verdict, not a pass. */
@@ -249,7 +251,7 @@ export function currentJobAttempts(rows: unknown[]): unknown[] {
       // keeps the seat, and the gatherer refuses on it as pending, which is the
       // same answer the retained failure would have given.
       if (!named) continue;
-      if (!rowExecuted(r) && !rowIsPending(r)) continue;
+      if (!jobRowExecuted(r) && !rowIsPending(r)) continue;
     }
     best.set(name, { row, id });
   }

@@ -203,11 +203,15 @@ export function mergeGuardExec(env: MergeGuardEnv) {
 		) {
 			throw new Error(`forge read not scoped to the command's repo: ${cmd}`);
 		}
-		// The identity read. gh: `gh pr view N --json <fields>`; glab: `glab mr view
+		// The identity read. Which forge it asks is the TARGET's business, never the
+		// env pin's: gh asks `gh pr view N --json <fields>`, glab asks `glab mr view
 		// N --output json` (#2226 — the guard's identity read is forge-aware, so a
-		// GitLab arm asks glab and must be ANSWERED, not fallen through). Its head
-		// comes from `diff_refs.head_sha`, the field the GitLab MR reply carries it
-		// in, widened to the one value every other reader answers with.
+		// GitLab arm asks glab and must be ANSWERED, not fallen through). Keying this
+		// arm off `PI_ENSEMBLE_FORGE` instead would make the arm that withholds the
+		// pin (`unsetForgeEnv`, for the gatherer's detection) fail on the harness
+		// rather than on the code under test. The head comes from
+		// `diff_refs.head_sha`, the field the GitLab MR reply carries it in, widened
+		// to the one value every other reader answers with.
 		if (cmd.includes(isGl ? "glab mr view" : "gh pr view")) {
 			if (cmd.includes("--json number")) {
 				if (env.branchNumber === "empty") return { stdout: "{}" };
@@ -284,18 +288,28 @@ export function mergeGuardExec(env: MergeGuardEnv) {
 		// Remote resolution: origin → upstream → first remote. The origin host
 		// follows the target's forge, so the gatherer's own detection (#2226)
 		// classifies this clone the same way the arm is being driven.
+		//
+		// `failRemoteUrl` answers with a remote no parser claims. It is the ONLY
+		// remote read an `unsetForgeEnv` arm lets through: with `PI_ENSEMBLE_FORGE`
+		// withheld (`makeHook`) the guard's own forge decision no longer consults a
+		// URL at all — `targetForCommand`/`resolvePrNumber` are handed
+		// `{ env: { PI_ENSEMBLE_FORGE: <target forge> } }`, the precedence production
+		// sets out of band — while the GATHERER is handed nothing but this URL and
+		// must classify the clone itself. That asymmetry is the question the arm in
+		// `test-merge-guard-ci-evidence-gitlab.ts` asks: an unreadable remote must
+		// decide the gatherer's forge, nobody else's.
 		if (cmd.includes("git config --get remote.origin.url")) {
-			if (env.remote === "origin")
+			if (env.failRemoteUrl) return { stdout: "https://internal.invalid/r.git\n" };
 				return {
 					stdout: `git@${isGl ? "gitlab" : "github"}.com:o/r.git\n`,
 				};
 			return { stdout: "" };
 		}
 		if (cmd.includes("git config --get remote.upstream.url")) {
-			// Always a github.com host: the matrices whose subject is remote
-		// resolution drive a GitHub target, and the origin arm above is the one
-		// that follows the arm's forge. One host for both remotes would let the
-		// remote under test decide the forge.
+			// Always a github.com host: the matrices whose subject is remote resolution
+			// drive a GitHub target, and the origin arm above is the one that follows the
+			// arm's forge. One host for both remotes would let the remote under test
+			// decide the forge.
 			if (env.remote === "upstream")
 				return { stdout: "git@github.com:o/r.git\n" };
 			return { stdout: "" };

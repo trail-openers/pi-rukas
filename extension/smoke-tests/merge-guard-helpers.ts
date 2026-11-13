@@ -207,14 +207,32 @@ export async function makeHook(
 			if (name === "tool_call") handler = fn;
 		},
 	} as never;
-	registerMergeGuard(fakePi, { execFn: mergeGuardExec(env) });
+	registerMergeGuard(fakePi, {
+		execFn: mergeGuardExec(env),
+		// #2226 — the guard's OWN forge decision (merge-target.ts → detectForge) is
+		// driven from an env the harness supplies rather than the ambient one, so an
+		// arm may withhold `PI_ENSEMBLE_FORGE` from everything EXCEPT that decision
+		// (see `unsetForgeEnv`, and the origin-URL arm of the stub). Production gets
+		// the same precedence from the real environment, where the variable is set by
+		// the operator or not at all — and the gatherer keeps classifying the clone
+		// from the remote, which is the point of the arm.
+		...(env.target.forge === "gitlab" && env.unsetForgeEnv === true
+			? { forgeOpts: { env: { PI_ENSEMBLE_FORGE: "gitlab" } } }
+			: {}),
+	});
 	const call = handler;
 	if (!call)
 		throw new Error("the merge guard did not register a tool_call handler");
 	const isGl = env.target.forge === "gitlab";
+	// #2226 — the threading witness withholds the pin (see `unsetForgeEnv`): with
+	// the pin present, detection's first precedence answers whatever the target
+	// already carries, so an arm about the REMOTE has to remove the shortcut to
+	// mean what it says. Restored in `finally` below, exactly as the flip is.
+	const dropForgeEnv = env.unsetForgeEnv === true;
 	return async (event: unknown, ctx: unknown) => {
 		const forgeEnvBefore = process.env.PI_ENSEMBLE_FORGE;
 		if (isGl) process.env.PI_ENSEMBLE_FORGE = "gitlab";
+		if (dropForgeEnv) Reflect.deleteProperty(process.env, "PI_ENSEMBLE_FORGE");
 		try {
 			return await call(event, ctx);
 		} finally {
@@ -236,6 +254,9 @@ export async function hookDecision(
 		failFetch?: boolean;
 		ledgerCommonDir?: string;
 		remote?: string;
+		/** #2226 — see `MergeGateEnv.failRemoteUrl` / `unsetForgeEnv`. */
+		failRemoteUrl?: boolean;
+		unsetForgeEnv?: boolean;
 		ghComments?: string;
 		mainline?: string;
 		mergeBase?: string;
@@ -287,6 +308,8 @@ export async function hookDecision(
 		/** #2107 — the `timeout` each exec was given, so a test can assert the bound. */
 		timeouts: [] as number[],
 		remote: opts.remote ?? "origin",
+		failRemoteUrl: opts.failRemoteUrl,
+		unsetForgeEnv: opts.unsetForgeEnv,
 		ghComments: opts.ghComments,
 		mainline: opts.mainline,
 		mergeBase: opts.mergeBase,

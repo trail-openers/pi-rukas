@@ -49,7 +49,12 @@ import {
   mergeEvidenceGlPipelinesPage2Cmd,
 } from "./forge-commands-gl-evidence.ts";
 import { FORGE_EXEC_TIMEOUT_MS } from "./forge-detect.ts";
-import { type GlJobGrade, currentJobAttempts, gradeGlJobRow } from "./forge-gl-grade.ts";
+import {
+  type GlJobGrade,
+  currentJobAttempts,
+  gradeGlJobRow,
+  jobRowExecuted,
+} from "./forge-gl-grade.ts";
 import { composeGlReadiness } from "./forge-merge.ts";
 import { isFullCommitSha } from "./review-head-sha.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
@@ -112,15 +117,14 @@ function headError(raw: Record<string, unknown>, mrIid: number): string {
     : `the MR-state read returned a head OID that is not a full 40-char SHA for MR !${mrIid} (got ${String(got).slice(0, 48)})`;
 }
 
-/** The job states that mean the row EXECUTED — everything else never ran. */
-const RAN_STATES = new Set(["success", "failed", "canceled"]);
-
-/** Whether any row the gate graded is one that actually ran. */
+/**
+ * Whether any row the gate graded is one that actually ran — the land gate's
+ * at-least-one-ran rule, asked of the same word list the grading table uses
+ * (`GL_EXECUTED`, through `jobRowExecuted`): a second copy of the three states
+ * here would let the two disagree about what counts as a verdict.
+ */
 function anyRowExecuted(rows: unknown[]): boolean {
-  return rows.some((r) => {
-    const s = (r as Record<string, unknown> | null)?.status;
-    return typeof s === "string" && RAN_STATES.has(s.toLowerCase());
-  });
+  return rows.some(jobRowExecuted);
 }
 
 /** The evidence for a GitLab MR, or the named reason it cannot merge. */

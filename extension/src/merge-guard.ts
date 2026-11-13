@@ -103,7 +103,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execp } from "./exec.ts";
-import { FORGE_EXEC_TIMEOUT_MS } from "./forge-detect.ts";
+import { type DetectForgeOpts, FORGE_EXEC_TIMEOUT_MS } from "./forge-detect.ts";
 import { type MergeCommand, readMergeCommand } from "./merge-allowlist.ts";
 import { MERGE_AUTHORS_FILE } from "./merge-author-allowlist.ts";
 import { guardMergeAuthorRefusal } from "./merge-guard-author.ts";
@@ -147,9 +147,12 @@ function unreviewedMergeAllowed(): boolean {
  *
  * `opts.execFn` replaces the shell executor for the guard's gh/git calls
  * (tests drive the REAL hook through this option with a stub; production
- * uses `execp`).
+ * uses `execp`). `opts.forgeOpts` is the twin seam for the forge decision.
  */
-export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecFn } = {}): void {
+export function registerMergeGuard(
+  pi: ExtensionAPI,
+  opts: { execFn?: MergeExecFn; forgeOpts?: DetectForgeOpts } = {},
+): void {
   // A4: the hatch waives the REVIEWS, not the author rule. With it set the hook still
   // registers and runs `authorGateOnly` alone, so every gate below stays exactly as
   // disabled as the hatch has always made them. Returning here used to switch the
@@ -288,7 +291,7 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
     // accepted form, so those refusals keep it: there an operator who has
     // reviewed by other means genuinely decides.
     if (prNumber === undefined) {
-      prNumber = await resolvePrNumber(execFn, cwd, undefined, undefined, repoValue);
+      prNumber = await resolvePrNumber(execFn, cwd, undefined, opts.forgeOpts, repoValue);
     }
     if (prNumber === undefined) {
       return earlyRefuse(
@@ -299,7 +302,7 @@ export function registerMergeGuard(pi: ExtensionAPI, opts: { execFn?: MergeExecF
 
     // Read the merge target (gh/glab) in the command's -R/--repo repo, or
     // the CWD's. Fail-closed on unreadable.
-    const targetResult = await readMergeTarget(execFn, cwd, prNumber, undefined, repoValue);
+    const targetResult = await readMergeTarget(execFn, cwd, prNumber, opts.forgeOpts, repoValue);
     if (!targetResult.ok) {
       return block(`merge refused: ${targetResult.reason}`);
     }
@@ -440,7 +443,7 @@ function block(reason: string): { block: true; reason: string } {
  */
 async function authorGateOnly(
   event: { toolName?: string; input?: unknown },
-  opts: { execFn?: MergeExecFn },
+  opts: { execFn?: MergeExecFn; forgeOpts?: DetectForgeOpts },
 ): Promise<{ block: true; reason: string } | undefined> {
   const command = (event.input as { command?: string })?.command ?? "";
   let analysis: MergeCommand;
@@ -459,7 +462,7 @@ async function authorGateOnly(
   const execFn: MergeExecFn = opts.execFn ?? execp;
   let prNumber = analysis.prNumber;
   if (prNumber === undefined) {
-    prNumber = await resolvePrNumber(execFn, cwd, undefined, undefined, analysis.repo);
+    prNumber = await resolvePrNumber(execFn, cwd, undefined, opts.forgeOpts, analysis.repo);
   }
   if (prNumber === undefined) {
     // Fail closed for the same reason: with no PR identified there is no author to
@@ -468,7 +471,7 @@ async function authorGateOnly(
       `merge refused: the merge-author gate is not waived by PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE, and the PR/MR to be merged could not be identified from the command or the current branch (repo: ${analysis.repo ?? "none"}), so its author could not be checked. Name the number in the merge command.`,
     );
   }
-  const targetResult = await readMergeTarget(execFn, cwd, prNumber, undefined, analysis.repo);
+  const targetResult = await readMergeTarget(execFn, cwd, prNumber, opts.forgeOpts, analysis.repo);
   if (!targetResult.ok) {
     return block(
       `merge refused: the merge-author gate is not waived by PI_ENSEMBLE_ALLOW_UNREVIEWED_MERGE, and the pull request to be merged could not be read to check its author (${targetResult.reason})`,

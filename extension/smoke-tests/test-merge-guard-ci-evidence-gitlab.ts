@@ -433,7 +433,45 @@ for (const [label, mr] of [
     !r.calls.some((c) => c === mergeEvidenceGlJobsPage2Cmd(5001)),
     `…and no second-page probe issued for a page it knew was short (${JSON.stringify(r.calls)})`,
   );
+  // The arm's own precondition, visible: the guard DOES resolve the forge from the
+  // clone's remote, and this answer is one the classifier can use. Without it the
+  // matrix could pass on a guard that never consulted the remote at all — a
+  // different fact from "consulting it cannot change the verdict", which the
+  // unreadable-remote arm below supplies.
+  assert(
+    r.calls.some((c) => c.includes("git config --get remote.origin.url")),
+    `canary: the guard resolved the forge from the clone's remote (${JSON.stringify(r.calls.filter((c) => c.includes("remote")))})`,
+  );
   assert(r.block === false, "…and on that answer it allowed the merge");
+}
+
+// ------------------------------------ the remote cannot decide this merge's verdict
+{
+  // #2226 — the threading witness. The guard hands the gatherer the forge its own
+  // target carries instead of letting it re-detect one; without that, an unreadable
+  // origin surfaced as THIS merge's tooling refusal and the operator was sent to
+  // fix a remote while the CI verdict went unread. The driver's caller has this
+  // coverage in test-headless-evidence-gate.ts §3b; the guard had none.
+  //
+  // The knobs are load-bearing, not incidental: with the harness's
+  // PI_ENSEMBLE_FORGE pin in place, detection answers whatever the target already
+  // carries, so a regression that dropped the threaded argument could not change
+  // an outcome. failRemoteUrl + unsetForgeEnv (see MergeGateEnv) take that shortcut
+  // away from the GATHERER only; the guard's own target read keeps its forge.
+  const r = await hookDecision(MR_COMMAND, GOOD_ENTRIES, {
+    target: GL_TARGET,
+    failRemoteUrl: true,
+    unsetForgeEnv: true,
+    glJobs: jobs(job("build", "success")),
+  });
+  assert(
+    r.block === false,
+    `#2226: an unreadable remote does not refuse the merge — the guard named the forge (${r.reason})`,
+  );
+  assert(
+    r.calls.some((c) => c === mergeEvidenceGlMrCmd(12)),
+    `…and the forge's own verdict was reached despite it (${JSON.stringify(r.calls.filter((c) => c.startsWith("glab ")))})`,
+  );
 }
 
 // --------------------------------------------------- the -R scoping carries over
