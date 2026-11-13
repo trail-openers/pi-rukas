@@ -28,7 +28,7 @@ Every state in that walk has a handler. A review that fixed its head re-enters
 | `review` | both gates, driver-routed | The run's gate. One report-only adversarial pass and one six-lens round at a resolved commit from origin — the full review. Only a blocking verdict from the adversarial gate, or a lens row at the run's resolved review threshold, buys the wave: ONE fixer, given every blocking finding at once, in a disposable worktree of its own, then ONE re-review — the whole branch when pass 1 carried a CRITICAL (a row in either tier, `reported` or the discounted `advisory`), since the layer retires that class on a complete full round only and a delta can never clear it; otherwise a delta over the fix, which answers each blocking row ADDRESSED or NOT ADDRESSED. That upgrade REPLACES the delta round. An `REVIEW_INCOMPLETE` re-review is re-bought ONCE, behind a FRESH read of the step clock (a step already past its bound routes `fixed`, disclosed, rather than throwing); a round-cap or streak verdict is another component's budget and buys nothing. There is no second wave. Both gates clean passes, on one of two kinds: `done` when no fix wave ran, which goes to `ci`, or `fixed` when the wave integrated and pushed commits, which goes back through `verify` — the green `ci` demands has to be about the head the PR stands on. Anything else throws and the run hands back, with a named cause: a blocking finding the wave did not address, a CRITICAL the fix introduced, a fix that changed nothing, a round that ran no lens, a gate with no verdict, a re-review that did not range over the fix, a fixer that rewrote the frozen contract, a child its budget stopped. |
 | `ci` | driver | Observes the pipeline: the forge's required-check verdict (`mergeStateStatus` + `gh pr checks`) read at the PR head, and the project's full tier run in the run's worktree — both about the newest decided `verify`'s `verifiedHead`, which the disk is re-read against immediately before the tier. The forge is **polled**, not read once: both reads re-issue every 60 s while any row is still running (`pending`/`queued`/`in_progress`/`waiting`, or a state this step has never seen), because a check that has not finished is not a check that failed and grading one red spends a build round on code that is not broken. `green` needs `mergeStateStatus` `CLEAN` with every row passing; `red` names the rows that actually failed or came in `skipped`/`neutral`, or reports a PR that is not `OPEN`, no rows at all, or a head that moved off the verified one — the head is re-read on every poll and the poll that sees the move settles the step. The wait is bounded by `budgets.ci.minutes` (the tier keeps its own separate bound of the same size afterwards), and a wait that expires — or reaches the run's cycle deadline — **throws** `VerifyInfraError` naming the checks that never finished, so the run hands back instead of taking a build round; a worktree that has moved off that head throws too.  A red full tier is excused by the same LINE rule `verify` applies — every WHOLE FAILURE LINE the shared classifier reads from the head run, trimmed and with its tree root stripped, printed verbatim by the base, from a tier run that observed the work: a killed, un-startable or buffer-overflowed full tier never excuses, it keeps its red. `ci` always re-probes the base in its own throwaway checkout and excuses only on that probe's output; it never replays a `verify` record, and no recorded `baseNames`-style set — not even a byte-identical command from the newest decided verify — buys it a shorter path. The cost is one extra tier run per red full tier. |
 | `land` | driver | The one irreversible act. Refuses unless `.pi/work.json` **at the run's base** grants `autoMerge: true`, the forge's merge evidence is clean, and the PR head equals the verified head; then merges squashed through the adapter, pinned to that head, and reads the result back. `merged` or `refused`; it never throws. |
-| `handback` | driver | Posts one issue comment saying what the run still needs, then ends the run. |
+| `handback` | driver | Ships the last verified head, then posts one issue comment saying what the run still needs and ends the run. |
 
 Two refusals sit beside the main line: `decline` posts the rules an unreadable
 or unready spec failed and ends the run `not-ready`, and any handler that
@@ -381,6 +381,31 @@ criterion, opens the PR as a **draft**.
 visit, keyed `<issue>:<state>:<n>`, outcome stamped in when the step settles)
 and `state`/`counters` are a cache that `resume.ts` re-derives rather than
 trusts. Read it when you want to know what a run actually decided.
+
+**The verified handback.** A `review` step whose fix wave pushed is the one edge in
+the table that puts bytes on origin's branch that no gate has certified: the run is
+then routed back through `verify`, and if anything stops it before that step runs —
+the between-steps deadline, the step cap, a handler that threw, a table edge — origin
+is left holding a head the shipped record cannot vouch for. The handback answers that
+from the LOG, not from the stop cause: when its newest work step is `review` with kind
+`fixed` and no later decided `verify` exists, it first keeps the unverified head
+reachable under `refs/lean/unverified/<issue>`, then rewinds origin's branch to the
+newest decided green `verify`'s head with a lease-pinned push
+(`--force-with-lease=<branch>:<unverified head>`), so the move happens only while
+origin still holds exactly the head this run pushed. Before any arm may call a head
+verified the step asks git that the green's `verifiedHead` is a commit OBJECT this clone
+holds — shape is not existence, and that value arrives from a child's verdict through the
+on-disk state file — so a record cannot certify bytes nobody can resolve. The step's outcome
+then names the
+facts: `shippedHead`, `shippedVerified`, and when they differ, `unshippedHead` with
+`unshippedReason`. When the push is refused — by the lease, or by git failing for any
+other reason before it reached the lease — nothing is moved, and the record names the
+head origin holds with git's own reason beside it, so an operator can tell "someone
+moved my branch" from "the clone could not read that commit". Where origin already
+holds the certified head the step pushed nothing, and the record says so without
+calling the shipped head unverified. Every other handback is unchanged. Behind
+`PI_ENSEMBLE_LEAN_VERIFIED_HANDBACK` (default on; only `0` off), which is read at call
+time.
 
 **A handback comment** on the issue, in this order of usefulness: the newest
 budget breach **that no step other than a report (`handback`, `decline`) is newer than** — a `challenge` breach the

@@ -163,6 +163,13 @@ const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>>
   // The review step's own clock. On any other step it claims a review stopped short of
   // judging its lanes when no review of this run stopped at all.
   reviewBound: "review",
+  // The four head facts of a handback that shipped (or refused to ship) a verified head.
+  // `handback` alone: any other step carrying them would claim a move its own step never
+  // made, and the rewind is the reporting step's act, not a gate's verdict.
+  shippedHead: "handback",
+  shippedVerified: "handback",
+  unshippedHead: "handback",
+  unshippedReason: "handback",
 };
 
 /** The ceilings a budget verdict may name; the only reader of the field's type. */
@@ -271,6 +278,17 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
     if (typeof oc.publishedHead !== "string" || !isFullCommitSha(oc.publishedHead))
       return "outcome publishedHead must be a 40-hex commit sha";
   }
+  // The handback's three head facts are each the shape their gate's field takes, so a
+  // truncated or mistyped value is refused rather than carried: the comment prints them
+  // as evidence of what shipped.
+  for (const field of ["shippedHead", "unshippedHead"] as const) {
+    if (oc[field] !== undefined && (typeof oc[field] !== "string" || !isFullCommitSha(oc[field])))
+      return `outcome ${field} must be a 40-hex commit sha`;
+  }
+  if (oc.shippedVerified !== undefined && typeof oc.shippedVerified !== "boolean")
+    return "outcome shippedVerified must be a boolean";
+  if (oc.unshippedReason !== undefined && typeof oc.unshippedReason !== "string")
+    return "outcome unshippedReason must be a string";
   if (oc.commandCriteria !== undefined) {
     const problem = commandCriteriaProblem(oc.commandCriteria);
     if (problem !== undefined) return problem;
@@ -350,6 +368,10 @@ export function buildOutcome(oc: Record<string, unknown>): Outcome {
       : { preexistingFailures: validatedPreexistingFailures(oc.preexistingFailures) }),
     ...(typeof oc.prUrl === "string" ? { prUrl: oc.prUrl } : {}),
     ...(typeof oc.publishedHead === "string" ? { publishedHead: oc.publishedHead } : {}),
+    ...(typeof oc.shippedHead === "string" ? { shippedHead: oc.shippedHead } : {}),
+    ...(typeof oc.shippedVerified === "boolean" ? { shippedVerified: oc.shippedVerified } : {}),
+    ...(typeof oc.unshippedHead === "string" ? { unshippedHead: oc.unshippedHead } : {}),
+    ...(typeof oc.unshippedReason === "string" ? { unshippedReason: oc.unshippedReason } : {}),
     ...(typeof oc.draft === "boolean" ? { draft: oc.draft } : {}),
     ...(typeof oc.posted === "boolean" ? { posted: oc.posted } : {}),
     // Rebuilt beside `posted`, because the two are ONE fact — who owns the channel, and did
