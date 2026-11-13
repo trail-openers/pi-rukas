@@ -294,7 +294,11 @@ export async function refuseUnlessCiGreen(
   });
   let evidence: MergeEvidence;
   try {
-    evidence = await Promise.race([gatherMergeEvidence(bounded, cwd, prNumber), budget]);
+    // The forge the guard's own target named, threaded through rather than left
+    // to detection: the guard has already resolved it, and re-detecting it here
+    // would make an unrelated unreadable remote read as a CI/tooling refusal of
+    // this merge (#2226).
+    evidence = await Promise.race([gatherMergeEvidence(bounded, cwd, prNumber, forge), budget]);
   } catch (err) {
     return ciToolingRefusal(prNumber, analyseRefusal(err));
   }

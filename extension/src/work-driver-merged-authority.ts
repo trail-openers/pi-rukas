@@ -34,6 +34,7 @@
  * in the cycle, and a green PR is not permission.
  */
 
+import type { ForgeType } from "./forge-detect.ts";
 import { authorFromRead, evidenceAuthorRead } from "./merge-guard-author.ts";
 import type { MergeExecFn } from "./merge-target.ts";
 import { errText } from "./protected-paths-text.ts";
@@ -69,6 +70,14 @@ export type AuthorityGateArgs = {
   state: WorkState;
   prNumber: number;
   mergeExec: MergeExecFn;
+  /**
+   * The forge the merge is on, named by the caller (#2226). The merged step has
+   * resolved one by the time it reaches here and its merge command is refused
+   * unless it matches the command's own forge, so the evidence read describes the
+   * same forge the merge acts on. Absent, the gatherer detects — the last resort,
+   * not the first read.
+   */
+  forge?: ForgeType;
   /** The base-commit doctrine documents, read once and shared with the gate-file judge. */
   readMergeDocs: () => Promise<DoctrineDoc[]>;
   /** The protected-path gate, which takes the OID the merge is pinned to. */
@@ -107,7 +116,7 @@ export async function runAuthorityGate(args: AuthorityGateArgs): Promise<Authori
     { repoRoot: ctx.repoRoot, issues: ctx.issues ?? [ctx.issue] },
   );
   const evidence = authority.granted
-    ? await gatherMergeEvidence(mergeExec, ctx.repoRoot, prNumber)
+    ? await gatherMergeEvidence(mergeExec, ctx.repoRoot, prNumber, args.forge)
     : undefined;
   const routedRoundCap = heldByUnresolvedReview(state.eventLog);
   // The head the merge is pinned to, and why the step refuses to merge without one.

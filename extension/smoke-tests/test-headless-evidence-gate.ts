@@ -32,7 +32,15 @@
  */
 
 import { EXIT } from "../src/headless/exit-code.ts";
-import { MERGE_GRANT } from "./lib/headless-s5-fixture.ts";
+import { rmSync } from "node:fs";
+import { gatherMergeEvidence } from "../src/work-driver-merge-evidence.ts";
+import {
+  type MergeExecLog,
+  FIXTURE_PR,
+  MERGE_GRANT,
+  headlessRepo,
+  mergeExec,
+} from "./lib/headless-s5-fixture.ts";
 import {
   assertEvidenceProbe,
   assertEvidenceReason,
@@ -240,6 +248,72 @@ initEnv();
   );
   assert(r.log.mergeCmds.length === 0, "a PR that is not OPEN is never merged");
   assertLogClean(assert, r.log);
+}
+
+// ── 3b. The gatherer asks NOBODY for a forge the caller already named (#2226).
+// The finding: `gatherMergeEvidence` resolved the forge through `detectForge` on
+// EVERY read, so the gate's verdict depended on two `git config` calls the merge
+// itself never makes. On a clone whose remote is unreadable, the evidence gate
+// refused as `tooling` with a FORGE reason — the operator was sent to fix a remote
+// while the CI verdict that actually decides the merge was never read, and the
+// attribution every case above exists to pin was replaced by a fault of the
+// detection's own. The fix is at the callers: each one already resolves a forge
+// (the guard its target, lean land its adapter, the merged step the cycle's) and
+// names it, so detection survives only as the last resort for a caller that has
+// none.
+//
+// The fixture's clone has NO remote, which is what makes this a real assertion
+// rather than a tautology: detection on it answers `unknown`, so an arm that still
+// detects refuses for the forge reason BEFORE it asks `gh` anything — and the
+// `unexpected`-clean check would not catch that, because no read was issued to
+// record.
+{
+  const repo = headlessRepo(MERGE_GRANT, "headless-s5-forge-arg-");
+  const log: MergeExecLog = {
+    calls: [],
+    mergeCmds: [],
+    prViewAnswers: [],
+    issueViewCmds: [],
+    unexpected: [],
+    headFetches: [],
+    headReads: [],
+    doctrineReads: [],
+    allowlistReads: [],
+  };
+  const exec = mergeExec({ merge: "blocked", repoRoot: repo.repoRoot }, log);
+  const asked: string[] = [];
+  const counting = async (cmd: string, o?: { argv?: string[]; cwd?: string }) => {
+    asked.push(o?.argv ? [cmd, ...o.argv].join(" ") : cmd);
+    return exec(cmd, o);
+  };
+  // (i) A caller that NAMES the forge: the gate reaches the forge's own verdict,
+  // and issues no remote read on the way to it.
+  const named = await gatherMergeEvidence(counting, repo.repoRoot, FIXTURE_PR, "github");
+  assert(
+    named.ok === false && named.mergeStateStatus === "BLOCKED",
+    `a named forge yields the forge's CI verdict, not a forge-detection refusal (${JSON.stringify(named)})`,
+  );
+  assert(
+    named.failureKind === undefined,
+    `…and it is a CI verdict, not tooling (${named.failureKind})`,
+  );
+  assert(
+    asked.length > 0 && !asked.some((c) => c.includes("remote")),
+    `…reached without a single remote read (${JSON.stringify(asked)})`,
+  );
+  // (ii) A caller that names NOTHING: detection is still consulted, and on this
+  // remote-less clone it fails CLOSED as tooling rather than guessing. Deleting
+  // the last-resort branch would make this arm fall through to the gh path.
+  const unnamed = await gatherMergeEvidence(exec, repo.repoRoot, FIXTURE_PR);
+  assert(
+    unnamed.ok === false && unnamed.failureKind === "tooling",
+    `an unnamed forge still refuses as tooling — detection is kept, not removed (${JSON.stringify(unnamed)})`,
+  );
+  assert(
+    /forge/i.test(unnamed.reason ?? ""),
+    `…and the refusal names the unresolved forge as its own cause (${unnamed.reason})`,
+  );
+  rmSync(repo.repoRoot, { recursive: true, force: true });
 }
 
 // ── 4. The positive control: everything green → exactly one merge, and the

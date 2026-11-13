@@ -18,6 +18,7 @@ import { readDoctrineAtBase } from "./work-driver-doctrine.ts";
 import { markDraftPrReady } from "./work-driver-draft-pr.ts";
 import { synthesizeDriverCompletion } from "./work-driver-events.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
+import { forgeTypeForCycle } from "./work-driver-forge-type.ts";
 import { detectMainline, restoreCheckout } from "./work-driver-git.ts";
 import { mergeAuthorityJudge } from "./work-driver-judge-seam.ts";
 import { withIntegrationLock } from "./work-driver-lock.ts";
@@ -256,6 +257,9 @@ export async function runMerged(
       state,
       prNumber,
       mergeExec,
+      // The forge the cycle is on, resolved once here so the evidence read is
+      // not left to detect one from a remote it has no reason to own (#2226).
+      forge: await forgeTypeForCycle(ctx, mergeExec),
       readMergeDocs,
       protectedGate,
       gateFileGate,
