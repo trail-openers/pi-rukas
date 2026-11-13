@@ -70,6 +70,7 @@ import {
   leanBuildIssueProseEnabled,
   leanIssueProseEnabled,
 } from "../../src/lean/issue-prose.ts";
+import { leanReviewSpecSplitEnabled } from "../../src/lean/review-spec-split.ts";
 import { leanRunnerPreflightEnabled } from "../../src/lean/runner-preflight-switch.ts";
 import { leanVerifiedHandbackEnabled } from "../../src/lean/verified-handback-switch.ts";
 import { issueImagesEnabled } from "../../src/work-driver-issue-images.ts";
@@ -84,8 +85,8 @@ import { policyJudgeEnabled } from "../../src/work-driver-policy.ts";
 import { prPreflightEnabled } from "../../src/work-driver-pr-preflight.ts";
 import { resumeEnabled, sessionReattachEnabled } from "../../src/work-driver-resume.ts";
 import { stepNoticeThresholdMs } from "../../src/work-driver-step-notice.ts";
+import { testDeleteTolerance } from "../../src/work-driver-verify-develop-helpers.ts";
 import { verifyTimeoutMs } from "../../src/work-driver-verify-budget.ts";
-import { testDeleteTolerance, verifyTimeoutMs } from "../../src/work-driver-verify-develop-helpers.ts";
 import { queueOrderingEnabled } from "../../src/work-queue-scheduler.ts";
 import { queueDeferCapMs, queueHaltOnFailure } from "../../src/work-queue.ts";
 import { tierDefaultReader } from "./verify-tier-pin.ts";
@@ -157,6 +158,9 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // #2228 — the builder seat's issue-prose section. The reader is `v !== "0"`, so
   // the gate's LIVE loop (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE", leanBuildIssueProseEnabled],
+  // The lean review seats' spec split. The reader is `v !== "0"`, so the LIVE
+  // assertion in the gate (env deleted) pins "unset means on".
+  ["PI_ENSEMBLE_LEAN_REVIEW_SPEC_SPLIT", leanReviewSpecSplitEnabled],
   // #2212 — #2179's preflight/submodule behaviour. The reader is `v !== "0"`, so
   // the gate's LIVE loop (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT", leanRunnerPreflightEnabled],

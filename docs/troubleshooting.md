@@ -602,6 +602,14 @@ A lens that exits 0 without calling `report_finding` used to be indistinguishabl
 
 **If a reviewer still seems to be judging only part of a change:** the notice in its prompt says how much was inlined; re-run the review against a narrower range, or have it read the named files directly.
 
+### A reviewer says it never saw the acceptance criteria
+
+**Symptom:** a lean review's adversarial verdict or a lens finding argues about behaviour the issue's `pi-spec v1` block specified, and the child's own transcript shows it reasoning from the prose only — or it says the issue "does not state" a criterion that is in the issue.
+
+**Cause and what to check first:** the lean review seats receive the issue in two sections — the prose block, bounded like any other issue block with `…(issue truncated)`, and the criteria section, `## The acceptance criteria (pi-spec v1)`, printed in full up to its own 20 000-character cap, past which it says `…(criteria truncated)` — the two markers are deliberately different, so which half was cut is readable off the brief. So the first thing to read is the child's brief: no criteria section at all means the block did not parse. A `pi-spec v1` block is read only when it is the file's only such block, opens with the info string on its own line, closes with a line of backticks, and carries JSON that matches the schema; a second block, an unterminated fence, or a schema mismatch makes it *unreadable to every seat*, not just the reviewer, and the oracle run refuses such an issue. Fix the issue body (`/plan` re-authors it) rather than the review.
+
+**If the block is fine and the criteria section is still missing:** `PI_ENSEMBLE_LEAN_REVIEW_SPEC_SPLIT=0` (or an exported `=0` in the parent shell) takes the split out and the reviewer reads one bounded block again, where a long statement can cut the criteria. See [configuration.md](configuration.md).
+
 ### A lens line says `N malformed report_finding call(s) skipped`
 
 Pi validates `report_finding` arguments against the tool's schema and rejects a call missing `severity`, `path` or `title` with `Validation failed for tool "report_finding"` — that text is Pi's, and it names one missing key per rejection. A rejected call records nothing; the lens normally repeats it, so the count beside the lens's findings usually means wasted turns, not a lost finding. To check, compare the lens's `N findings` with what its closing summary lists: a finding in the prose with no matching entry was rejected and never re-sent. Since #1847 a lens has no `Skill Load Status` line at all — the parent puts the skill body in the prompt, so there is no load for the child to report, and the lens's own row ends with `— skill delivered inline (<skill dir>)` instead (after the finding count, e.g. `0 findings — skill delivered inline (code-review-security)`).

@@ -248,6 +248,12 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   // tests were written from. 0 takes the section back out of both prompts.
   // The reader is `leanIssueProseEnabled` in lean/issue-prose.ts.
   flag("LEAN_ISSUE_PROSE", true),
+  // Show the lean review seats (six lenses, adversarial reviewer, review fixer)
+  // the issue's prose and the spec's criteria as two sections, so a long
+  // statement cannot cut the criteria by competing with its own block for one
+  // bound. 0 restores the single bounded block. The reader is
+  // `leanReviewSpecSplitEnabled` in lean/review-spec-split.ts.
+  flag("LEAN_REVIEW_SPEC_SPLIT", true),
   // #2212 — #2179's runner preflight and the reset's submodule init, both off
   // only on `"0"`, which restores v0.14.71's specify (no probe, no submodule
   // call, exit 11 where the preflight would have handed back at 10).

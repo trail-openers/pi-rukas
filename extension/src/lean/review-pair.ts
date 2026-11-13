@@ -106,7 +106,15 @@ export async function buyFullReview(
 }> {
   const { base, head, branch, issueBody, pr, threshold, rows, budget } = opts;
   const [gateSettled, lensSettled] = await Promise.allSettled([
-    adversarialGate(deps, ctx, { base, head, branch, issueBody, wave: "full", rows, budget }),
+    adversarialGate(deps, ctx, {
+      base,
+      head,
+      branch,
+      issueBody,
+      wave: "full",
+      rows,
+      budget,
+    }),
     lensGate(deps, ctx, {
       base,
       branch,
