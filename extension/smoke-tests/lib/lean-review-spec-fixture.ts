@@ -43,7 +43,9 @@ const TAIL_CONSTRAINT = `${CONSTRAINT} The check runs before any state is writte
 
 /** Filler that carries a body over the cap without naming anything a later
  * assertion reads. */
-const FILLER = "A page of context about the meter, its quota and the ledger behind it. ".repeat(160);
+const FILLER = "A page of context about the meter, its quota and the ledger behind it. ".repeat(
+  160,
+);
 
 /** One criterion's text, long enough that a handful of them fill the criteria
  * cap — the arm that prints the criteria marker rather than nothing. */
@@ -165,3 +167,30 @@ export const UNTERMINATED_SPEC_BODY = `Add a quota check to the meter.\n\n${TAIL
 /** A body whose criteria list passes the criteria cap — the over-cap arm of the
  * criteria section, which prints its own marker and not the issue's. */
 export const MANY_CRITERIA_BODY = `Add a quota check to the meter.\n\n${TAIL_CONSTRAINT}\n\n${LONG_STATEMENT}\n\n${specBlock(BRIEF_STATEMENT, CRITERIA_OVER_CAP_COUNT)}`;
+
+/** A body whose criteria list passes the criteria cap AND whose clip falls inside
+ * a run of backticks: the last criterion's text ends in a 6-backtick run whose
+ * first three characters sit at the clip, so `fenceText` neutralises backticks
+ * that survive its own slice. The criteria marker is substituted for the generic
+ * clip notice, and a substitution that matched nothing here would print the
+ * notice the docs promise the seat never sees. */
+export const BACKTICK_AT_CLIP_BODY: string = (() => {
+  const ticks = 6;
+  const inside = 3;
+  // `- **AC2** [test] ` is 17 characters, so this puts exactly `inside` of the
+  // run's characters at or before the cap and the rest past it.
+  const runText = `${"y".repeat(20_000 - 17 - inside)}${"`".repeat(ticks)}z`;
+  const json = JSON.stringify(
+    {
+      problem: BRIEF_STATEMENT,
+      criteria: [
+        { id: "AC1", text: "The meter refuses the draw.", verify: "test" },
+        { id: "AC2", text: runText, verify: "test" },
+      ],
+      size: "S",
+    },
+    null,
+    2,
+  );
+  return `Add a quota check to the meter.\n\n${TAIL_CONSTRAINT}\n\n\`\`\`pi-spec v1\n${json}\n\`\`\`\n`;
+})();

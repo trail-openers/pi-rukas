@@ -17,8 +17,8 @@
  *      then bounded at `MAX_ISSUE_CHARS` with the layer's own truncation marker,
  *      so what survives the cut is prose;
  *   2. the criteria are rendered from the parsed spec (`criteriaBlock`, the same
- *      renderer `/plan`'s builder prints), so no criterion is ever cut by a prose
- *      bound;
+ *      renderer the `build`/`specify`/`challenge` prompts print), so no criterion
+ *      is ever cut by a prose bound;
  *   3. both are disarmed at the print site by `fenceText`, because a criterion's
  *      text is issue-author prose crossing into six children's briefs.
  *

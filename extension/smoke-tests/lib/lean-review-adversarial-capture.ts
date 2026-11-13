@@ -18,10 +18,15 @@
  */
 
 import { mock } from "bun:test";
+import { existsSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import { execp } from "../../src/exec.ts";
+import { defaultConfig } from "../../src/lean/config.ts";
 import { reviewDeps } from "../../src/lean/review-deps.ts";
 import type { ReviewDeps } from "../../src/lean/review.ts";
+import { FIXER_ROLE } from "../../src/lean/step-budget.ts";
+import { DEFAULT_REVIEW_THRESHOLD } from "../../src/review-severity-default.ts";
 import type { DispatchResult } from "../../src/types.ts";
-import { isolateLedger } from "./review-ledger-test-helpers.ts";
 import {
   BRANCH,
   blockingFinding,
@@ -32,13 +37,8 @@ import {
   result,
   setup,
 } from "./lean-review-fixtures.ts";
-import { defaultConfig } from "../../src/lean/config.ts";
-import { DEFAULT_REVIEW_THRESHOLD } from "../../src/review-severity-default.ts";
-import { FIXER_ROLE } from "../../src/lean/step-budget.ts";
-import { execp } from "../../src/exec.ts";
-import { existsSync, writeFileSync } from "node:fs";
-import path from "node:path";
 import { stepGitEnv } from "./lean-review-fixtures.ts";
+import { isolateLedger } from "./review-ledger-test-helpers.ts";
 
 isolateLedger();
 

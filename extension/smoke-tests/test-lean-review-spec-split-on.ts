@@ -20,16 +20,21 @@
  */
 
 import { MAX_ISSUE_CHARS } from "../src/adversarial-prompts.ts";
+import {
+  LEAN_REVIEW_CRITERIA_HEADING,
+  renderSpecCriteriaSection,
+} from "../src/lean/review-criteria.ts";
 import { fixPrompt, lensContext } from "../src/lean/review-deps.ts";
-import { LEAN_REVIEW_CRITERIA_HEADING, renderSpecCriteriaSection } from "../src/lean/review-criteria.ts";
 import {
   leanReviewSpecSplitEnabled,
   renderReviewIssueBlock,
   renderReviewProse,
-  reviewCriteriaForSeat,
 } from "../src/lean/review-spec-split.ts";
 import { withEnv } from "./lib/env-scope.ts";
+import { makeAssert } from "./lib/lean-engine-fixtures.ts";
+import { runReviewStepCapturingAll } from "./lib/lean-review-adversarial-capture.ts";
 import {
+  BACKTICK_AT_CLIP_BODY,
   CRITERIA_OVER_CAP_COUNT,
   HEAD_CRITERION_IDS,
   MANY_CRITERIA_BODY,
@@ -41,18 +46,21 @@ import {
   SPEC_TAIL_CONSTRAINT,
   UNTERMINATED_SPEC_BODY,
 } from "./lib/lean-review-spec-fixture.ts";
-import { makeAssert } from "./lib/lean-engine-fixtures.ts";
-import { runReviewStepCapturingAll } from "./lib/lean-review-adversarial-capture.ts";
-import {
-  FIXER_DECLINE_LEAD_IN,
-  goldenLensContext,
-} from "./lib/lean-review-spec-split-golden.ts";
+import { goldenLensContext } from "./lib/lean-review-spec-split-golden.ts";
 
 const { assert, failures } = makeAssert();
 (globalThis as { __captured?: unknown }).__captured = undefined;
 
 /** One seat's print: the pure renderers plus the two briefs that call them. */
-function seats(body: string): Record<string, string> {
+interface SeatRenders {
+  prose: string;
+  criteria: string;
+  block: string;
+  lens: string;
+  fix: string;
+}
+
+function seats(body: string): SeatRenders {
   return {
     prose: renderReviewProse(body),
     criteria: renderSpecCriteriaSection(body),
@@ -204,6 +212,16 @@ await withEnv({ PI_ENSEMBLE_LEAN_REVIEW_SPEC_SPLIT: undefined }, async () => {
         (lens.match(/…\(criteria truncated\)/g) ?? []).length === 1,
       "(4) and the two cuts stay tellable apart in one brief",
     );
+    // The arm the plain list cannot reach: here the clip falls INSIDE a run of
+    // backticks, and `fenceText` neutralises backticks after slicing, so the clip
+    // line the marker is substituted for can be rendered out of the characters
+    // the substitution matches. Asserted on this shape because it is the only one
+    // where the substitution can fail.
+    const clipped = renderSpecCriteriaSection(BACKTICK_AT_CLIP_BODY);
+    assert(
+      clipped.includes("…(criteria truncated)") && !/\[truncated at /.test(clipped),
+      `(4) and with the clip landing inside a backtick run the criteria section still says \`…(criteria truncated)\` and never the generic clip notice (tail ${JSON.stringify(clipped.slice(-34))})`,
+    );
   }
 
   // ── (5) the adversarial seat, on the prompt the child was ACTUALLY given ────
@@ -270,9 +288,14 @@ await withEnv({ PI_ENSEMBLE_LEAN_REVIEW_SPEC_SPLIT: undefined }, async () => {
       "(5) and it sits inside a fence the prompt opened, never as a section of the brief",
     );
     const fences = (lens.match(/^```/gm) ?? []).length;
-    assert(fences % 2 === 0 && fences >= 2, `(5) and the brief's fences still pair (${String(fences)})`);
+    assert(
+      fences % 2 === 0 && fences >= 2,
+      `(5) and the brief's fences still pair (${String(fences)})`,
+    );
   }
 });
 
-console.log(`\n${failures() === 0 ? "on arm green" : "on arm RED"} (${String(failures())} failing)`);
+console.log(
+  `\n${failures() === 0 ? "on arm green" : "on arm RED"} (${String(failures())} failing)`,
+);
 process.exit(failures());

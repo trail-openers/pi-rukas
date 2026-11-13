@@ -1,5 +1,6 @@
 /**
- * adversarial-usage — the loop's accumulated cost and the result it builds.
+ * adversarial-usage — the loop's accumulated cost and the round bookkeeping it
+ * reports with.
  *
  * `runAdversarialLoop` folds every dispatch result it receives into one
  * usage/cost tally and remembers the last transcript and model it saw, so the
@@ -8,10 +9,13 @@
  * policy, a diff that could not be computed, workCwd missing) and each folds
  * through the same tally, so a partial loop's cost is never reported as zero.
  *
+ * This file also holds the loop's per-round record: one entry per dispatched
+ * round, which the result builders fold into `adversarialRounds`.
+ *
  * Split from `adversarial.ts` (AGENTS.md §12, the 500-line gate).
  */
 
-import type { DispatchResult, DispatchUsage } from "./types.ts";
+import type { AdversarialVerdict, DispatchResult, DispatchUsage } from "./types.ts";
 import { addCount } from "./usage-fold.ts";
 
 /** What a result carries when nothing ran at all. Module-local: the loop reads
@@ -65,4 +69,11 @@ export function createUsageTally(): UsageTally {
       if (r.model && !lastModel) lastModel = r.model;
     },
   };
+}
+
+/** One round's outcome, as the loop records it for the ledger and the report. */
+export interface RoundRecord {
+  round: number;
+  verdict: AdversarialVerdict;
+  ms: number;
 }

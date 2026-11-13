@@ -13,8 +13,8 @@
  * existing brief depends on.
  */
 
-import { lensContext } from "../src/lean/review-deps.ts";
 import { LEAN_REVIEW_CRITERIA_HEADING } from "../src/lean/review-criteria.ts";
+import { lensContext } from "../src/lean/review-deps.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import { SPEC_BODY } from "./lib/lean-review-spec-fixture.ts";
@@ -25,7 +25,15 @@ const CARRIED = "- [HIGH] SECURITY src/a.ts:12: a carried row the gate left open
 const DELTA = "## Fixed by the last pass\n- src/a.ts:12 guarded the draw";
 
 /** The first index of each marker in the brief, `-1` when absent. */
-function positions(brief: string): Record<string, number> {
+type BriefPositions = {
+  scope: number;
+  prose: number;
+  criteria: number;
+  carried: number;
+  delta: number;
+};
+
+function positions(brief: string): BriefPositions {
   return {
     scope: brief.indexOf("/work-lean issue #7"),
     prose: brief.indexOf("What this change was asked to do"),
@@ -36,7 +44,7 @@ function positions(brief: string): Record<string, number> {
 }
 
 /** `a` strictly before `b`, both present. */
-function before(p: Record<string, number>, a: string, b: string): boolean {
+function before(p: BriefPositions, a: keyof BriefPositions, b: keyof BriefPositions): boolean {
   return p[a] !== -1 && p[b] !== -1 && p[a] < p[b];
 }
 
@@ -61,7 +69,10 @@ for (const value of [undefined, "0"] as const) {
         `${arm}: no criteria section is printed, and the prose block precedes the carried findings`,
       );
     } else {
-      assert(before(p, "prose", "criteria"), `${arm}: the prose block precedes the criteria section`);
+      assert(
+        before(p, "prose", "criteria"),
+        `${arm}: the prose block precedes the criteria section`,
+      );
       assert(before(p, "criteria", "carried"), `${arm}: the criteria precede the carried findings`);
     }
     assert(

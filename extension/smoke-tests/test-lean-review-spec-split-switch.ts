@@ -42,9 +42,10 @@ const docs = (file: string): string =>
 {
   // The `review` row of the step table is where a reader learns what the gates
   // read; it must say the criteria arrive whole and un-truncated.
-  const row = docs("lean.md")
-    .split("\n")
-    .find((l) => l.startsWith("| `review` |")) ?? "";
+  const row =
+    docs("lean.md")
+      .split("\n")
+      .find((l) => l.startsWith("| `review` |")) ?? "";
   assert(row !== "", "docs/lean.md has a `review` row");
   assert(
     row.includes("PI_ENSEMBLE_LEAN_REVIEW_SPEC_SPLIT"),
@@ -79,5 +80,7 @@ await withEnv({ PI_ENSEMBLE_LEAN_REVIEW_SPEC_SPLIT: undefined }, async () => {
   }
 });
 
-console.log(`\n${failures() === 0 ? "switch green" : "switch RED"} (${String(failures())} failing)`);
+console.log(
+  `\n${failures() === 0 ? "switch green" : "switch RED"} (${String(failures())} failing)`,
+);
 process.exit(failures());

@@ -21,25 +21,25 @@
  * these assertions measure the wrong arm.
  */
 
-import { fixPrompt, lensContext } from "../src/lean/review-deps.ts";
-import { buildAdversarialPrompt, MAX_ISSUE_CHARS } from "../src/adversarial-prompts.ts";
+import { MAX_ISSUE_CHARS, buildAdversarialPrompt } from "../src/adversarial-prompts.ts";
 import { renderSpecCriteriaSection } from "../src/lean/review-criteria.ts";
+import { fixPrompt, lensContext } from "../src/lean/review-deps.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
-import {
-  CRITERIA_BEARING_BODIES,
-  FIXER_DECLINE_LEAD_IN,
-  goldenAdversarialIssueBlock,
-  goldenFixIssueSection,
-  goldenLensContext,
-  GOLDEN_BODIES,
-} from "./lib/lean-review-spec-split-golden.ts";
 import {
   CLASSIC_SPEC_BODY,
   OVER_STATEMENT_BODY,
   SPEC_BODY,
   SPEC_CRITERION_IDS,
 } from "./lib/lean-review-spec-fixture.ts";
+import {
+  CRITERIA_BEARING_BODIES,
+  FIXER_DECLINE_LEAD_IN,
+  GOLDEN_BODIES,
+  goldenAdversarialIssueBlock,
+  goldenFixIssueSection,
+  goldenLensContext,
+} from "./lib/lean-review-spec-split-golden.ts";
 
 const { assert, failures } = makeAssert();
 
@@ -179,5 +179,7 @@ await withEnv({ PI_ENSEMBLE_LEAN_REVIEW_SPEC_SPLIT: "0" }, async () => {
   }
 });
 
-console.log(`\n${failures() === 0 ? "off arm green" : "off arm RED"} (${String(failures())} failing)`);
+console.log(
+  `\n${failures() === 0 ? "off arm green" : "off arm RED"} (${String(failures())} failing)`,
+);
 process.exit(failures());

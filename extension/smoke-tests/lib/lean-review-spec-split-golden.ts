@@ -16,9 +16,9 @@
 
 import {
   ADVERSARIAL_FINDING_RULE,
+  ISSUE_PROMPT_LEAD,
   fencedIssueBody,
   fencedIssuePromptBlock,
-  ISSUE_PROMPT_LEAD,
 } from "../../src/adversarial-prompts.ts";
 import { FIXER_DECLINE_RULE } from "../../src/work-driver-lens-issue.ts";
 import {

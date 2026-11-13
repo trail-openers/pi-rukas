@@ -5,12 +5,13 @@
  * bounded string, so a long statement cut the block and the statement's own tail.
  * The prose half of the split is `review-spec-split.ts`; this is the criteria half.
  *
- * `criteriaBlock` — the renderer `/plan`'s builder prints — keeps the wording a run
- * is judged on and the wording its reviewers read in one place, and `fenceText`
- * disarms the result like every other cross-boundary value at these print sites.
- * `reviewerCriteriaSection` (`adversarial-loop-params.ts`) is the loop's only reader
- * of this, and the switch lives THERE — not on the loop's params, so classic /work
- * cannot pass criteria in and its reviewer's prompt is unchanged by this feature.
+ * `criteriaBlock` — the renderer the `build`, `specify` and `challenge` prompts
+ * print (`lean/spec-blocks.ts`) — keeps the wording a run is judged on and the
+ * wording its reviewers read in one place, and `fenceText` disarms the result like
+ * every other cross-boundary value at these print sites. The adversarial seat gets
+ * it through the loop's `reviewCriteria` param, and the switch lives in
+ * `review-spec-split.ts` — not on the loop's params, so classic /work cannot pass
+ * criteria in and its reviewer's prompt is unchanged by this feature.
  */
 import { criteriaBlock } from "./spec-blocks.ts";
 import { parsePiSpec } from "./spec.ts";
