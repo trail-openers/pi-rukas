@@ -21,11 +21,7 @@
  *   ledger can bind to a commit rather than to a string this step handed over.
  */
 
-import {
-  ADVERSARIAL_FINDING_RULE,
-  fencedIssueBody,
-  fencedIssuePromptBlock,
-} from "../adversarial-prompts.ts";
+import { ADVERSARIAL_FINDING_RULE } from "../adversarial-prompts.ts";
 import { runAdversarialLoop } from "../adversarial.ts";
 import { execp } from "../exec.ts";
 import type { LensReviewSummary, Severity } from "../lens-review-format.ts";
@@ -43,6 +39,7 @@ import { leanChildOpts } from "./child-opts.ts";
 import { loadWorkConfig } from "./config.ts";
 import { fetchIssueBody, forgeFor } from "./io.ts";
 import type { ReviewWave } from "./review-args.ts";
+import { reviewCriteriaSection, reviewIssueBlock } from "./review-spec-split.ts";
 import type { ReviewDeps } from "./review.ts";
 import type { BudgetArms, BudgetFired } from "./step-budget.ts";
 import { fenceText, promptText } from "./text-fence.ts";
@@ -78,6 +75,11 @@ export function reviewDeps(headless: boolean): ReviewDeps {
           workCwd: a.cwd,
           context: adversarialContext(a.issue, a.wave, a.blockingFindings),
           issueBody: a.issueBody,
+          // The split's criteria section, rendered HERE — the only seam that sets
+          // it. The /work driver and the `adversarial_loop` tool leave the loop's
+          // `reviewCriteria` absent and their prompts stay byte-identical; with the
+          // switch off this renders `""` and the loop prints no section.
+          ...reviewCriteriaSection(a.issueBody),
           // The reviewer's lane is one verdict; the fix round is this step's, so the loop
           // must not dispatch a fixer of its own.
           reportOnly: true,
@@ -274,11 +276,7 @@ export function lensContext(
       ? "full review of the branch"
       : "re-review of the fix wave's commits";
   const parts = [`/work-lean issue #${String(issue)}, lens-review ${scope}`];
-  const issueBlock = fencedIssuePromptBlock(
-    extra.issueBody,
-    ADVERSARIAL_FINDING_RULE,
-    fencedIssueBody,
-  );
+  const issueBlock = reviewIssueBlock(extra.issueBody, ADVERSARIAL_FINDING_RULE);
   if (issueBlock !== "") parts.push(issueBlock.trim());
   const carried = extra.carried?.trim();
   if (carried !== undefined && carried !== "")
@@ -353,10 +351,9 @@ export function fixPrompt(opts: ReviewFixArgs): string {
   //
   // The FULL decline rule is printed once, in its own section below, because it is a
   // procedure and not one sentence; printing it twice is one rule to reconcile twice.
-  const issueBlock = fencedIssuePromptBlock(
+  const issueBlock = reviewIssueBlock(
     opts.issueBody,
     "A finding you cannot apply without contradicting it is declined, not implemented — how is stated below.",
-    fencedIssueBody,
   );
   // Printed as its own section because a brief with no issue block has no requirement to
   // cite, and the rule must then not appear at all.

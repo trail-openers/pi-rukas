@@ -84,6 +84,13 @@ export interface AdversarialArgs {
   cwd: string;
   issue: number;
   issueBody: string;
+  /**
+   * The issue's acceptance criteria for the reviewer's own section, rendered by the
+   * spec split (`lean/review-criteria.ts`) at the seam. Set only by lean's review
+   * step; absent means the loop prints no section, which is what keeps classic /work
+   * and the `adversarial_loop` tool byte-identical.
+   */
+  reviewCriteria?: string;
   wave: ReviewWave;
   /**
    * The findings the fix range was allowed to contain, for the `fix` wave only.

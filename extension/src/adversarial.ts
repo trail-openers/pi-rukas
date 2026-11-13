@@ -41,7 +41,7 @@ import {
 } from "./adversarial-verdict.ts";
 import { markOrchestrator } from "./async-jobs.ts";
 import { formatReportLine, renderCommentEvidence, roundComments } from "./comment-evidence.ts";
-import type { LostCommentResult } from "./comment-retention.ts";
+import { reviewCriteriaSection as criteria } from "./lean/review-spec-split.ts";
 import { type RangeDiff, computeRangeDiff } from "./review-diff.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
@@ -324,6 +324,7 @@ export async function runAdversarialLoop(
         round,
         maxRounds: MAX_ROUNDS,
         issueBody: params.issueBody,
+        ...criteria(params.issueBody),
         fixDelta: round === firstRound ? params.fixDelta : undefined,
         gateCmd: params.gateCmd,
         // #1040 — comments this round's diff removed, for the reviewer to judge.

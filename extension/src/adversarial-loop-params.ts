@@ -63,6 +63,15 @@ export type AdversarialLoopParams = ReportPolicy & {
   fixDelta?: string;
   /** The issue this diff is meant to satisfy (#278). Optional: older state files have none. */
   issueBody?: string;
+  /**
+   * The issue's acceptance criteria, rendered by the lean review step's spec
+   * split so they reach the reviewer in their own section — the bounded
+   * `issueBody` is the issue's prose with its `pi-spec` block stripped, and one
+   * bound over both used to cut whichever arrived second. Set ONLY by lean's
+   * review step (`lean/review-deps.ts`); the /work driver and the tool path
+   * leave it absent and their prompts stay byte-identical.
+   */
+  reviewCriteria?: string;
   /** The gate the driver already ran green on this tree; the reviewer is told not to re-run it. */
   gateCmd?: string;
   /** #799 — the slow-run recorder for this loop's inner children (each
