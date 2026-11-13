@@ -66,8 +66,8 @@ const UNREADABLE_EXEC = refusalWord(
  */
 export function findRemovals(args: Word[], pipedIntoRemover = false): Word[] {
   const { starts, expr } = splitFind(args);
-  const exec = expr.findIndex((a) => FIND_EXEC.has(a.text));
-  if (exec >= 0) return execRemovals(starts, expr.slice(exec + 1), pipedIntoRemover);
+  const clauses = execClauses(expr);
+  if (clauses.length > 0) return execRemovals(starts, clauses, pipedIntoRemover);
   if (!expr.some((a) => a.text === "-delete")) {
     // No removal action of its own: a `find` piped into a remover is the sweep.
     return pipedIntoRemover ? (starts.length > 0 ? starts : [{ text: ".", dyn: false }]) : [];
@@ -106,25 +106,50 @@ export function removesMatches(words: Word[], producer?: Command): boolean {
   if (namesOnlyMatches) return true;
   // The remover named literal paths of its own. It still has the pipe's victims — and so
   // the producer's start paths must be judged too — unless the producer is known to print
-  // nothing, which is a `find` whose removal action is an `-exec` of a remover.
+  // nothing, which is a `find` none of whose `-exec` clauses runs a remover.
   return producer !== undefined && !printsNoMatches(producer);
 }
 
 /**
- * Whether a `find` on the left of a pipe prints no matches because its removal action is
- * an `-exec` of a remover (`find … -exec rm {} +`, which is silent). Any other command —
- * or a name this rule cannot read — may print its matches.
+ * Whether a `find` on the left of a pipe prints no matches because EVERY one of its removal
+ * actions is an `-exec` of a remover (`find … -exec rm {} +`, which is silent). A chained
+ * `-exec ls {} + -exec rm -rf <t> \;` prints through one of its clauses, so the pipe still
+ * carries matches and this says no. Any other command — or a name this rule cannot read — may
+ * print its matches, which is the fail-closed answer for the pipe.
  */
 function printsNoMatches(producer: Command): boolean {
   if (producer.name !== "find") return false;
-  const exec = producer.args.findIndex((a) => FIND_EXEC.has(a.text));
+  const clauses = execClauses(splitFind(producer.args).expr);
   // Only a remover is silent; an unreadable command may print its matches, which is the
   // fail-closed answer for the pipe.
-  return exec >= 0 && execIsRemover(producer.args.slice(exec + 1)) === true;
+  return clauses.length > 0 && clauses.every((clause) => execIsRemover(clause) === true);
 }
 
 /**
- * Whether this `find`'s `-exec` runs a remover, or undefined when the action names no command at
+ * The `-exec` clauses of a `find` expression, in order: one per `-exec`/`-execdir`/`-ok`/`-okdir`
+ * action, holding the words between that action and its own `;` or `+` terminator. GNU `find` runs
+ * every action it is given, so one line may carry several, and judging only the first — which is
+ * what reading to the first terminator did — let a chained clause delete with impunity. Scanning
+ * resumes after each terminator, so nothing between two clauses is mistaken for a command, and an
+ * action with no terminator runs to the end of the expression. The terminator itself is kept in the
+ * clause: it is not an operand (`{}` is the match `find` substitutes and `;` is syntax), and it is
+ * what stops the operand read — see `clauseOperands`.
+ */
+function execClauses(expr: Word[]): Word[][] {
+  const clauses: Word[][] = [];
+  for (let at = 0; at < expr.length; at++) {
+    if (!FIND_EXEC.has(expr[at]?.text ?? "")) continue;
+    const body = expr.slice(at + 1);
+    const end = body.findIndex((a) => a.text === ";" || a.text === "+");
+    clauses.push(end < 0 ? body : body.slice(0, end));
+    // Resume past this clause's terminator, so the next `-exec` is the one after it.
+    if (end >= 0) at += end + 1;
+  }
+  return clauses;
+}
+
+/**
+ * Whether this `find`'s `-exec` clause runs a remover, or undefined when the action names no command at
  * all. The command is the FIRST word after the action, not the first word that happens not to be an
  * option: `find <tree> -exec -- rm -rf {} +` and `-exec -x rm …` would otherwise read as an `-exec`
  * of nothing, and the reader would see no removal action on a line that deletes. Whether that first
@@ -132,11 +157,10 @@ function printsNoMatches(producer: Command): boolean {
  * stripping it and asking the word behind it, so `-exec sudo rm -rf {} +` is read as the `rm` it is
  * while `-exec ls` prints its matches instead of removing them.
  */
-function execIsRemover(expr: Word[]): boolean | undefined {
-  const body = expr.slice(0, terminator(expr));
-  const cmd = body[0];
+function execIsRemover(clause: Word[]): boolean | undefined {
+  const cmd = clause[0];
   if (cmd === undefined) return undefined;
-  const stripped = stripPrefix(body).words;
+  const stripped = stripPrefix(clause).words;
   const command = stripped[0];
   // No word survived the wrappers, so the action gave a wrapper and no program: it names no command,
   // which is the unreadable case the caller refuses rather than a pass.
@@ -147,59 +171,73 @@ function execIsRemover(expr: Word[]): boolean | undefined {
 }
 
 /**
- * The remover this `-exec` runs, with the words after it, or undefined when the action runs no
- * remover. The operands are what the caller judges besides the start paths.
+ * The remover this `-exec` clause runs, with the words after it, or undefined when the clause runs
+ * no remover. The operands are what the caller judges besides the start paths.
  */
-function execCommand(expr: Word[]): { command: Word; operands: Word[] } | undefined {
-  if (execIsRemover(expr) !== true) return undefined;
-  const stripped = stripPrefix(expr.slice(0, terminator(expr))).words;
+function execCommand(clause: Word[]): { command: Word; operands: Word[] } | undefined {
+  if (execIsRemover(clause) !== true) return undefined;
+  const stripped = stripPrefix(clause).words;
   const command = stripped[0];
-  return command === undefined ? undefined : { command, operands: stripped.slice(1) };
-}
-
-/** The index of this `-exec` expression's terminator, or its length when it has none. */
-function terminator(expr: Word[]): number {
-  const end = expr.findIndex((a) => a.text === ";" || a.text === "+");
-  return end < 0 ? expr.length : end;
+  return command === undefined
+    ? undefined
+    : { command, operands: clauseOperands(stripped.slice(1)) };
 }
 
 /**
- * What a `find` whose expression holds an `-exec` removes. An `-exec` of a remover over
- * literal start paths names its own victims; an `-exec` of anything else deletes nothing,
- * so the line names no victim of its own. When the matches reach a remover downstream they
- * are that remover's victims and the start paths name them: the pipe carries every match,
- * so the start paths are judged whether or not the remover also named a literal of its own
- * — one in-tree literal must not launder a sweep of a tree the `find` walks. A `find` that
- * named no start path names no tree and is refused, not judged on the cwd it may not have
- * been in.
+ * The operand words of one `-exec` clause: everything up to its own terminator, so an
+ * unquoted `;` — the spelling that reaches `find` when the line left it unescaped, and the
+ * word the operand reader would otherwise skip as an option — cannot carry the clause past
+ * its end into the words of the clause chained behind it.
  */
-function execRemovals(starts: Word[], execExpr: Word[], pipedIntoRemover: boolean): Word[] {
-  // An `-exec` whose command cannot be read deletes whatever it deletes: the reader's
+function clauseOperands(words: Word[]): Word[] {
+  const end = words.findIndex((w) => w.text === ";" || w.text === "+");
+  return end < 0 ? words : words.slice(0, end);
+}
+
+/**
+ * What a `find` whose expression holds `-exec` clauses removes — every clause counted, since
+ * `find` runs them all. An `-exec` of a remover over literal start paths names its own victims;
+ * an `-exec` of anything else deletes nothing, so it adds no victim of its own. When the matches
+ * reach a remover downstream they are that remover's victims and the start paths name them: the
+ * pipe carries every match, so the start paths are judged whether or not the remover also named a
+ * literal of its own — one in-tree literal must not launder a sweep of a tree the `find` walks. A
+ * `find` that named no start path names no tree and is refused, not judged on the cwd it may not
+ * have been in.
+ */
+function execRemovals(starts: Word[], clauses: Word[][], pipedIntoRemover: boolean): Word[] {
+  // Any clause whose command cannot be read deletes whatever it deletes: the reader's
   // fail-closed vocabulary is a refusal, not a pass for the unreadable form.
-  const silent = execIsRemover(execExpr);
-  if (silent === undefined) return [UNREADABLE_EXEC];
-  // A pipe carries only what the `find` prints, and an `-exec <cmd>` prints nothing but
-  // what `<cmd>` prints. A non-remover such as `-exec ls` prints the matches, so whatever
-  // reaches the remover downstream are those matches — the incident's sweep in another
-  // spelling, judged by the same start paths. A silent `-exec` hands the pipe nothing, so
-  // the remover downstream has only its own targets and this `find`'s start paths are not
-  // victims of it.
-  if (pipedIntoRemover && !silent) {
+  const removers: Word[][] = [];
+  for (const clause of clauses) {
+    const silent = execIsRemover(clause);
+    if (silent === undefined) return [UNREADABLE_EXEC];
+    if (silent) removers.push(clause);
+  }
+  // Only a `find` every clause of which is a remover is silent, so a line that prints in any
+  // clause is judged by its start paths when a remover sits at the mouth of the pipe: those
+  // matches are what reach it. A silent `find` hands the pipe nothing, so the remover
+  // downstream has only its own targets and this `find`'s start paths are not victims of it.
+  if (pipedIntoRemover && removers.length < clauses.length) {
     return starts.length > 0 ? starts : [{ text: ".", dyn: false }];
   }
-  if (!silent) return [];
+  if (removers.length === 0) return [];
   // A start path is the tree the victims live under, so a name test narrows within it
   // without hiding it — judged, like the `-print0 | xargs rm` shape above. With no start
   // path the line names no tree and says nothing the reader can resolve: refused.
   if (starts.length === 0) return [UNNAMED_DIR];
-  // The remover's own literal operands are judged too: `find <in-tree> -exec rm -rf <outside> \;`
-  // runs that remover once per match with the outside path spliced in verbatim, so an in-tree start
-  // path cannot stand in for the tree it really deletes. A brace is the match `find` substitutes and
-  // the terminator is not an operand, so neither is a path — which is what keeps the ordinary
-  // `find <in-tree> -exec rm -rf {} +` a cleanup rather than a refusal.
-  const literals = execCommand(execExpr);
-  if (literals === undefined) return starts;
-  return [...starts, ...withoutPlaceholder(removalOperands(literals.operands), execExpr)];
+  // Every remover clause's own literal operands are judged too: `find <in-tree> -exec rm -rf
+  // <outside> \;` runs that remover once per match with the outside path spliced in verbatim, so
+  // an in-tree start path cannot stand in for the tree it really deletes — and neither can a
+  // silent first clause vouch for the remover chained behind it. A brace is the match `find`
+  // substitutes and the terminator is not an operand, so neither is a path — which is what keeps
+  // the ordinary `find <in-tree> -exec rm -rf {} +` a cleanup rather than a refusal.
+  const literals: Word[] = [];
+  for (const clause of removers) {
+    const command = execCommand(clause);
+    if (command === undefined) continue;
+    literals.push(...withoutPlaceholder(clauseOperands(removalOperands(command.operands)), clause));
+  }
+  return [...starts, ...literals];
 }
 
 /** The start paths and the expression of a `find`'s arguments. */

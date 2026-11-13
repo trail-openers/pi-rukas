@@ -354,6 +354,11 @@ for (const [command, why] of [
 }
 
 // ============================================================
+// A9b lives in `test-write-fence-deletion-exec-clauses-2200.ts` — the chained `-exec`
+// clauses, split out by the repo's file-size cap.
+// ============================================================
+
+// ============================================================
 // A10. An interpreter body that deletes through a SHELL cannot be read: the path lives
 // in a string the shell runs, so the rule has no target to resolve. A body that holds a
 // recognised delete AND a shell-out is refused as unreadable rather than judged on the

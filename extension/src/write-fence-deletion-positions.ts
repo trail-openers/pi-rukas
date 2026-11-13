@@ -101,7 +101,23 @@ function commands(command: string, cwd: string): { parsed: boolean; list: Comman
   // onto both sides of the pipe: the producer's start paths name the victims, and the
   // remover's own empty operand list is then judged by them (#2200's sweep).
   let piped = false;
+  // The `find` whose expression an unquoted `;` cut short. GNU `find` ends an action only at a
+  // `;` or `+` that reaches it as a WORD, so an unescaped terminator is one bash consumes to end
+  // the command — and what follows it is still the rest of that `find`'s expression, run by the
+  // same process (`find <wt> -exec rm {} ; -exec rm -rf <shared> ;` deletes from both trees).
+  // Without this, the tail segment reads as a command named `-exec` that nothing owns.
+  let openFind: Command | undefined;
   const flush = (): void => {
+    // A segment that starts inside a `find` expression is that `find`'s own continuation, so it
+    // carries the same name and arguments — which is what lets the reader judge the chained
+    // clause instead of losing it. A real separator (`&&`, `|`) ends the `find`.
+    if (openFind !== undefined && continuesFindExpression(cur)) {
+      openFind.args.push(...cur);
+      index++;
+      cur = [];
+      return;
+    }
+    openFind = undefined;
     const words = judgedWords(cur);
     const first = words[0];
     if (first !== undefined) {
@@ -123,6 +139,7 @@ function commands(command: string, cwd: string): { parsed: boolean; list: Comman
         pipedIntoRemover: feeds,
         xargs: cur,
       });
+      if (name === "find") openFind = list[list.length - 1];
     }
     index++;
     cur = [];
@@ -141,6 +158,17 @@ function commands(command: string, cwd: string): { parsed: boolean; list: Comman
     list.push(...inner.list);
   }
   return { parsed: true, list };
+}
+
+/**
+ * Whether a segment continues the `find` an unquoted `;` ended: its first word is a `find` test
+ * or action (an option — `-exec`, `-delete`, `-name` — or an open paren). A segment whose head is
+ * anything else is a new command (`; rm -rf <shared>`, `; echo done`), so this never folds an
+ * ordinary second command into the `find` before it.
+ */
+function continuesFindExpression(words: Word[]): boolean {
+  const first = words[0];
+  return first !== undefined && /^[-(]/.test(first.text) && first.text !== "-";
 }
 
 /**
