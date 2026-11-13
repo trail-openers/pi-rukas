@@ -22,7 +22,18 @@
  * and `PI_ENSEMBLE_WRITE_ROOT` (the #1655 fence registers its own `tool_call`
  * hook whenever the dispatch set a root) — and a process this test happens to
  * run inside carries all three, which shifts every count and leaves a hook
- * behind under `PI_ENSEMBLE_SUBAGENT_MODE=1`.
+ * behind under `PI_ENSEMBLE_SUBAGENT_MODE=1`. The #2200 per-child temp root
+ * (`PI_ENSEMBLE_CHILD_TMP`) is pinned too: a child of a real dispatch carries
+ * it, and a count that only holds with the whole `WRITE_FENCE_ENV` set cleared
+ * is a count that says nothing about the guards.
+ *
+ * The two hooks that survive the subagent-mode no-op are the #1655 write fence
+ * and the #2200 deletion rule: the full pi-rukas extension never registers
+ * either, so for a strict/headless child this companion is their only
+ * registration site, and a second one would double-refuse. The counted set is
+ * therefore the eight mode-independent guards plus those two, and the no-op
+ * count is exactly those two — pinned so a guard that moved above or below the
+ * no-op shows up here rather than as a silent shift.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -51,6 +62,7 @@ const PIN_CHILD = {
   PI_ENSEMBLE_WRITE_REPO: undefined,
   PI_ENSEMBLE_WRITE_SCRATCH: undefined,
   PI_ENSEMBLE_WRITE_FENCE: undefined,
+  PI_ENSEMBLE_CHILD_TMP: undefined,
   // #2160 — the tool's registration is gated on the broker pair the parent
   // hands down (its path AND its per-child secret), so a count is only stable
   // with an ambient pair cleared too.
@@ -75,8 +87,8 @@ await withEnv(PIN_CHILD, async () => {
   childGuards(fake as unknown as ExtensionAPI);
   const n = fake.handlers.tool_call?.length ?? 0;
   check(
-    n === 8,
-    `registers exactly 8 tool_call hooks (the mode-independent guards incl. #1105 review-accept, #1113 developer-push, #1666 vipune-write, #1788 public-hygiene and #2140 reviewer-bash-timeout, oo-rewrite excluded; got ${n})`,
+    n === 9,
+    `registers exactly 9 tool_call hooks (the mode-independent guards incl. #1105 review-accept, #1113 developer-push, #1666 vipune-write, #1788 public-hygiene and #2140 reviewer-bash-timeout, plus the #1655 write fence and the #2200 deletion rule; oo-rewrite excluded; got ${n})`,
   );
   // A child with no broker socket gets no tool at all — the tool's registration
   // and its activation share one predicate, so the always-refuses state is not
@@ -207,8 +219,8 @@ await withEnv(
     childGuards(fake as unknown as ExtensionAPI);
     const n = fake.handlers.tool_call?.length ?? 0;
     check(
-      n === 0,
-      `no-op under PI_ENSEMBLE_SUBAGENT_MODE=1: zero hooks registered (got ${n})`,
+      n === 1,
+      `no-op under PI_ENSEMBLE_SUBAGENT_MODE=1: only the #2200 deletion rule survives (the guards no-op, the fence has no root here; got ${n})`,
     );
     check(
       fake.registeredTools.length === 1 && fake.registeredTools[0] === "forge_read",
@@ -231,6 +243,25 @@ await withEnv(
 await withEnv(PIN_FORGE_CHILD, async () => {
   const fake = makeFakePi();
   childGuards(fake as unknown as ExtensionAPI);
+  const n = fake.handlers.tool_call?.length ?? 0;
+  // Eight, not section 1's nine: this env names `developer`, so the #2200
+  // deletion rule's `ops` cwd carve-out is off and the #1655 fence self-gates off
+  // (no `PI_ENSEMBLE_WRITE_ROOT`), leaving the mode-independent guards plus the
+  // deletion rule. The control below is the load-bearing half: the same env with
+  // a write root MUST add a hook, so this number cannot be reached by the fence
+  // or the deletion rule quietly failing to register.
+  check(
+    n === 8,
+    `a stripped child with a broker socket registers the guards plus the #2200 deletion rule (got ${n})`,
+  );
+  await withEnv({ ...PIN_FORGE_CHILD, PI_ENSEMBLE_WRITE_ROOT: "/tmp" }, async () => {
+    const fenced = makeFakePi();
+    childGuards(fenced as unknown as ExtensionAPI);
+    check(
+      (fenced.handlers.tool_call?.length ?? 0) === n + 1,
+      `control: the same child with a write root registers one hook more — the #1655 fence (got ${fenced.handlers.tool_call?.length ?? 0}, want ${n + 1})`,
+    );
+  });
   check(
     fake.registeredTools.length === 1 && fake.registeredTools[0] === "forge_read",
     `a stripped child with a broker socket registers exactly one tool, forge_read (got ${JSON.stringify(fake.registeredTools)})`,

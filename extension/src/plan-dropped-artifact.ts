@@ -254,10 +254,18 @@ export function compactedDisclosure(budget: {
 /**
  * The NEVER CLAIM disclosure the driver appends after drafting (#677): the
  * operator's forbidden phrases caused structured items to be dropped, and the
- * filed spec names each one. Empty input returns "" so the driver's append is a
+ * filed spec names each drop. Empty input returns "" so the driver's append is a
  * no-op and the body stays byte-identical when nothing was dropped. Lives here
  * beside the compaction disclosure — one module owns "what the body says about
  * items it had to give up", and plan-driver.ts sits at the 500-line seam.
+ *
+ * The driver appends this blockquote to the drafted body BEFORE the
+ * forbidden-phrase scan, so the lines it renders are themselves judged by that
+ * scan. They are phrase-free by construction (#2233) — the filter's wording is
+ * positional, naming `phrase N` rather than quoting it — and a drop that put the
+ * phrase back into a generated section would halt the run as `draft-invalid`
+ * while naming the very thing the operator ruled out. `test-plan-never-claim-fileable.ts`
+ * pins the renderer against the scanner at this seam.
  */
 export function neverClaimDisclosureSection(disclosure: string[]): string {
   if (disclosure.length === 0) return "";

@@ -62,6 +62,9 @@ assert(
       PI_ENSEMBLE_WRITE_ROOT: "/ambient/root",
       PI_ENSEMBLE_WRITE_REPO: "/ambient/repo",
       PI_ENSEMBLE_WRITE_SCRATCH: "/ambient/scratch",
+      // #2200 — the per-child temp root names a DELETABLE root, so it is stripped
+      // with the rest: a nested dispatch must get its own, never its parent's.
+      PI_ENSEMBLE_CHILD_TMP: "/ambient/child-tmp",
       PATH: "/bin",
     },
     "explore",
@@ -70,9 +73,10 @@ assert(
     inherited.PI_ENSEMBLE_WRITE_ROOT === undefined &&
       inherited.PI_ENSEMBLE_WRITE_REPO === undefined &&
       inherited.PI_ENSEMBLE_WRITE_SCRATCH === undefined &&
+      inherited.PI_ENSEMBLE_CHILD_TMP === undefined &&
       inherited.PATH === "/bin" &&
       inherited.PI_ENSEMBLE_ROLE === "explore",
-    "A: an unfenced child never inherits an ambient write root, repo or scratch (other env and its role kept)",
+    "A: an unfenced child never inherits an ambient write root, repo, scratch or per-child temp root (other env and its role kept)",
   );
 }
 {
@@ -83,7 +87,7 @@ assert(
   const spawnEntry = readFileSync(path.join(SRC, "spawn.ts"), "utf8");
   assert(
     spawn.includes("writeFenceChildEnv(writeFence)") &&
-      spawnEntry.includes("buildChildEnv(spec.role, permissions, opts.writeFence)"),
+      spawnEntry.includes("buildChildEnv(spec.role, permissions, opts.writeFence, tmpDir)"),
     "A: spawn.ts builds the child env from the dispatch's writeFence",
   );
 }

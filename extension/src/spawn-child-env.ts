@@ -17,7 +17,12 @@
  *   4. the GIT_* non-interactive pins — they MUST come after the inherited copy
  *      to win over the host's values (#605; the layout is pinned by
  *      test-subagent-git-guard.ts's lexical canary);
- *   5. `applyChildPermissionEnv` — the permission-mode marker and socket.
+ *   5. `applyChildPermissionEnv` — the permission-mode marker and socket;
+ *   6. `childTempEnv` — the child's own temp root, LAST, so no inherited
+ *      `TMPDIR`/`TMP`/`TEMP` can win (#2241; the placement is pinned by
+ *      test-child-tmpdir-2241.ts's canary, which reads this call site in
+ *      `spawn.ts` — the caller passes the per-spawn dir and nothing after this
+ *      line may touch the env).
  *
  * Nothing here decides policy: every rule lives with its owner and this module
  * only composes them. It takes the values the caller resolved rather than the
@@ -32,7 +37,8 @@ import {
 } from "./spawn-permission.ts";
 import { vipuneChildEnv } from "./vipune.ts";
 import type { WriteFence } from "./write-fence-contract.ts";
-import { writeFenceChildEnv } from "./write-fence-contract.ts";
+import { childTempEnv, writeFenceChildEnv } from "./write-fence-contract.ts";
+import { CHILD_TMP_ENV } from "./write-fence-deletion.ts";
 
 /**
  * Build the environment one specialist child runs with.
@@ -40,13 +46,16 @@ import { writeFenceChildEnv } from "./write-fence-contract.ts";
  * `role` is the dispatched role (the forge strip is role-gated on it), `plan`
  * is the child's permission/forge plan from `planChildPermissions` — awaited on
  * `plan.ready` by the caller, since the forge socket only exists once the bind
- * settled — and `writeFence` is the dispatch's fence — absent for an unfenced
- * child, which keeps the fence off for it.
+ * settled — `writeFence` is the dispatch's fence — absent for an unfenced
+ * child, which keeps the fence off for it — and `childTmp` is the spawn's
+ * per-spawn dir: the ONLY temp tree this child may delete into (#2200), so it
+ * is named as its deletion root and, last, as its temp root (#2241).
  */
 export function buildChildEnv(
   role: string,
   plan: ChildPermissionPlan,
   writeFence?: WriteFence,
+  childTmp?: string,
 ): Record<string, string> {
   // #2160 — the base env comes from the one helper both spawn paths call: it
   // strips a non-ops child's forge tokens, points its config roots at a fresh
@@ -68,5 +77,17 @@ export function buildChildEnv(
   childEnv.GIT_TERMINAL_PROMPT = "0";
   childEnv.GIT_PAGER = "cat";
   applyChildPermissionEnv(childEnv, plan);
+  // #2241 — the child's own temp root, LAST of the childEnv writes. The
+  // per-spawn dir is named TWICE because the two names answer different
+  // questions: `PI_ENSEMBLE_CHILD_TMP` is the root the deletion rule (#2200)
+  // judges against (set here, where the dir exists, so the rule's roots and the
+  // spawn's cleanup can never name different directories), and TMPDIR/TMP/TEMP
+  // are the spellings the child's own tools honour. An inherited value must
+  // never win, so nothing below this line may touch the env — the placement the
+  // `GIT_*` canary in test-subagent-git-guard.ts pins for its own assignments.
+  if (childTmp !== undefined) {
+    childEnv[CHILD_TMP_ENV] = childTmp;
+    Object.assign(childEnv, childTempEnv(childTmp));
+  }
   return childEnv;
 }

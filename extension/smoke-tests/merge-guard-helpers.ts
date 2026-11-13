@@ -7,6 +7,10 @@
  * share one implementation (the 500-line gate: the round-cap matrix is a
  * sibling file, and the shared harness lives here rather than being
  * duplicated).
+ *
+ * The forge/git ANSWERS the matrix reads live in `merge-guard-stub.ts` (also
+ * §12): this file is registration, ledger state and the runner; that one is what
+ * a `gh`/`glab`/`git` call is answered with.
  */
 
 import { execSync } from "node:child_process";
@@ -29,13 +33,11 @@ import {
 	ledgerPathFor,
 } from "../src/review-ledger.ts";
 import { adversarialPassed, lensPassed } from "../src/review-ledger.ts";
-import { commandOf } from "./lib/argv-shell.ts";
-import { isNulDiffRead } from "./lib/nul-porcelain.ts";
 import type { MergeGateEnv } from "./merge-guard-forge-fixture.ts";
-import { evidenceHeadFor, widenOid } from "./merge-guard-forge-fixture.ts";
 import { type MergeGuardEnv, mergeGuardExec } from "./merge-guard-stub.ts";
 // The hook reads the forge from PI_ENSEMBLE_FORGE (the detectForge hard
-// override) so the decision matrix runs offline, without a real remote.
+// override) so the decision matrix runs offline, without a real remote. A
+// GitLab arm flips it for the duration of its own decision (see `makeHook`).
 process.env.PI_ENSEMBLE_FORGE = "github";
 
 let LEDGER_FILE: string | undefined;
@@ -85,6 +87,7 @@ export function assert(cond: boolean, msg: string) {
 
 export { ledgerPathFor, latestEntry, adversarialPassed, lensPassed };
 export type { LedgerEntry, MergeTarget };
+export type { MergeGuardEnv };
 
 export const TARGET: MergeTarget = {
 	forge: "github",
@@ -176,6 +179,21 @@ export async function withLedger(
  * The one entry point a matrix has: it registers `registerMergeGuard` and hands it
  * `mergeGuardExec`'s arms, so no test reaches the stub directly and none can
  * register the guard twice in a process.
+ *
+ * The #2226 forge switch lives here, around the handler. The gatherer resolves
+ * the forge through the real `detectForge`, whose FIRST precedence is
+ * `PI_ENSEMBLE_FORGE` — pinned to `github` at module scope above for the GitHub
+ * matrices — so a GitLab arm flips it for the duration of its own decision and
+ * restores it afterwards. Flipping it per-decision rather than at module scope
+ * is what lets ONE file drive both arms without the second silently inheriting
+ * the first's forge (which would send a GitLab arm down the gh path, or a
+ * GitHub arm down the glab one, and have each pass on the wrong forge's stub).
+ *
+ * The flip is REAPPLIED on every call to the returned handler and restored when
+ * that call settles — it is not held from here to there. A caller that set it
+ * once and threw before invoking the handler (or never invoked it) would leave
+ * `gitlab` in `process.env` for every later arm in the same process, and those
+ * arms would silently drive the glab stub.
  */
 export async function makeHook(
 	env: MergeGuardEnv,
@@ -189,10 +207,40 @@ export async function makeHook(
 			if (name === "tool_call") handler = fn;
 		},
 	} as never;
-	registerMergeGuard(fakePi, { execFn: mergeGuardExec(env) });
-	if (!handler)
+	registerMergeGuard(fakePi, {
+		execFn: mergeGuardExec(env),
+		// #2226 — the guard's OWN forge decision (merge-target.ts → detectForge) is
+		// driven from an env the harness supplies rather than the ambient one, so an
+		// arm may withhold `PI_ENSEMBLE_FORGE` from everything EXCEPT that decision
+		// (see `unsetForgeEnv`, and the origin-URL arm of the stub). Production gets
+		// the same precedence from the real environment, where the variable is set by
+		// the operator or not at all — and the gatherer keeps classifying the clone
+		// from the remote, which is the point of the arm.
+		...(env.target.forge === "gitlab" && env.unsetForgeEnv === true
+			? { forgeOpts: { env: { PI_ENSEMBLE_FORGE: "gitlab" } } }
+			: {}),
+	});
+	const call = handler;
+	if (!call)
 		throw new Error("the merge guard did not register a tool_call handler");
-	return handler;
+	const isGl = env.target.forge === "gitlab";
+	// #2226 — the threading witness withholds the pin (see `unsetForgeEnv`): with
+	// the pin present, detection's first precedence answers whatever the target
+	// already carries, so an arm about the REMOTE has to remove the shortcut to
+	// mean what it says. Restored in `finally` below, exactly as the flip is.
+	const dropForgeEnv = env.unsetForgeEnv === true;
+	return async (event: unknown, ctx: unknown) => {
+		const forgeEnvBefore = process.env.PI_ENSEMBLE_FORGE;
+		if (isGl) process.env.PI_ENSEMBLE_FORGE = "gitlab";
+		if (dropForgeEnv) Reflect.deleteProperty(process.env, "PI_ENSEMBLE_FORGE");
+		try {
+			return await call(event, ctx);
+		} finally {
+			if (forgeEnvBefore === undefined)
+				Reflect.deleteProperty(process.env, "PI_ENSEMBLE_FORGE");
+			else process.env.PI_ENSEMBLE_FORGE = forgeEnvBefore;
+		}
+	};
 }
 
 export async function hookDecision(
@@ -206,6 +254,9 @@ export async function hookDecision(
 		failFetch?: boolean;
 		ledgerCommonDir?: string;
 		remote?: string;
+		/** #2226 — see `MergeGateEnv.failRemoteUrl` / `unsetForgeEnv`. */
+		failRemoteUrl?: boolean;
+		unsetForgeEnv?: boolean;
 		ghComments?: string;
 		mainline?: string;
 		mergeBase?: string;
@@ -236,9 +287,16 @@ export async function hookDecision(
 		/** The mainline OID resolve answers a non-OID (fail-closed arm). */ failBaseOid?:
 			| "throws"
 			| "garbage";
+		/** #2226 — the GitLab arms' fixture knobs, declared here (see MergeGateEnv). */
+		glMr?: string;
+		glMrStatus?: string;
+		glPipelines?: string;
+		glPipelinesPage2?: string;
+		glJobs?: string;
+		glJobsPage2?: string;
 	} & MergeGateEnv = {},
 ) {
-	const env: Parameters<typeof makeHook>[0] = {
+	const env: MergeGuardEnv = {
 		target: opts.target ?? TARGET,
 		currentPatchId: opts.patchId ?? "p1",
 		fetchedHead: opts.fetchedHead ?? "abc123",
@@ -250,6 +308,8 @@ export async function hookDecision(
 		/** #2107 — the `timeout` each exec was given, so a test can assert the bound. */
 		timeouts: [] as number[],
 		remote: opts.remote ?? "origin",
+		failRemoteUrl: opts.failRemoteUrl,
+		unsetForgeEnv: opts.unsetForgeEnv,
 		ghComments: opts.ghComments,
 		mainline: opts.mainline,
 		mergeBase: opts.mergeBase,
@@ -270,6 +330,12 @@ export async function hookDecision(
 		failChecks: opts.failChecks,
 		evidenceHeadOid: opts.evidenceHeadOid,
 		hangChecks: opts.hangChecks,
+		glMr: opts.glMr,
+		glMrStatus: opts.glMrStatus,
+		glPipelines: opts.glPipelines,
+		glPipelinesPage2: opts.glPipelinesPage2,
+		glJobs: opts.glJobs,
+		glJobsPage2: opts.glJobsPage2,
 		repoFlag: opts.repoFlag,
 		targetRepo: opts.targetRepo,
 	};

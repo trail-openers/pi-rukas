@@ -8,6 +8,20 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.78](https://github.com/trail-openers/pi-rukas/compare/v0.14.77...v0.14.78) (2026-11-13)
+
+
+### Features
+
+* **land:** land only allowlisted authors' pull requests where the repository opts in ([#2194](https://github.com/trail-openers/pi-rukas/issues/2194)) ([86de167](https://github.com/trail-openers/pi-rukas/commit/86de1677a34062d89a15285ea584d11ab3da0f1a))
+* **work:** read GitLab evidence for the land gate ([#2238](https://github.com/trail-openers/pi-rukas/issues/2238)) ([6df7c61](https://github.com/trail-openers/pi-rukas/commit/6df7c61a1286b7d99de0b23910cfd934534634e4))
+
+
+### Bug Fixes
+
+* **guards:** refuse a child's deletes outside its worktree ([#2222](https://github.com/trail-openers/pi-rukas/issues/2222)) ([9ae19be](https://github.com/trail-openers/pi-rukas/commit/9ae19be74da57130bebcecfa09bf7d9ef8dc806d))
+* **lean:** read GitLab MR checks through the forge adapter in the ci step ([#2231](https://github.com/trail-openers/pi-rukas/issues/2231)) ([5344902](https://github.com/trail-openers/pi-rukas/commit/53449028f6469999c3f06027526892fa30286ea0))
+
 ## [0.14.77](https://github.com/trail-openers/pi-rukas/compare/v0.14.76...v0.14.77) (2026-11-12)
 
 

@@ -177,6 +177,13 @@ export function issueEditCmd(forge: ForgeType, number: number, bodyFile?: string
 // ── CI runs ───────────────────────────────────────────────────────────────
 
 /**
+ * The page size and the three read builders the GitLab arm of the
+ * merge-evidence gate issues now live in `forge-commands-gl-evidence.ts` (#2226,
+ * §12 size cap): they exist only for that arm, so they sit beside the module
+ * that grades their answers rather than in the forge-wide table below.
+ */
+
+/**
  * A CI run/pipeline id: a positive integer, or a refusal that names the id.
  *
  * The id reaches a shell string, so it is checked rather than coerced. A builder

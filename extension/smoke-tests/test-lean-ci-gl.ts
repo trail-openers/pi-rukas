@@ -30,8 +30,11 @@
  *   (g5) a failed job -> red naming it, tier never run;
  *   (g6) `skipped`/`manual` never read as green; `running` is waited and the
  *        expired wait hands back;
- *   (g6b) a job the pipeline allows to fail (`allow_failure: true`) never reads
- *        as green either — its `success` is a gate that did not decide;
+ *   (g6b) the `allow_failure` ruling: a `manual`/`skipped` row the pipeline is
+ *        allowed to fail is EXEMPT and reads green (so a manual allow-failure
+ *        deploy job does not redden a green pipeline), while an allow-failure
+ *        `failed` row is still red, a `manual` row whose flag the API never
+ *        answered is still refused, and an exempt row may not be the only row.
  *   (g7) an absent or malformed `diff_refs.head_sha` -> infra throw; the MR's
  *        pipeline is pinned to that head, so a foreign tag/schedule pipeline
  *        cannot colour the verdict in either direction;
@@ -217,42 +220,17 @@ for (const status of ["created", "waiting_for_resource", "preparing", "scheduled
   );
 }
 
-// ── (g6b) `allow_failure: true` is not a green ──────────────────────
-// GitLab answers a job that is allowed to fail with `success`, so a step that
-// graded the word alone would call an `only:`/`rules:` optional job a gate that
-// passed. The adapter carries the flag as `blocking` and the shared table refuses it.
-for (const [label, jobs] of [
-  ["an allow-failure success", [{ name: "optional-gate", status: "success", allow_failure: true }]],
-  [
-    "an allow-failure failure",
-    [
-      { name: "build", status: "success" },
-      { name: "optional-gate", status: "failed", allow_failure: true },
-    ],
-  ],
-] as const) {
-  const r = await run({ full: "true", forge: "gitlab", jobs, clockMs: 0, waitTimeoutMs: 60_000 });
-  assert(
-    r.outcome?.kind !== "green",
-    `(g6b) ${label} is never green (${JSON.stringify(r.outcome ?? r.threw?.message)})`,
-  );
-  assert(r.tierRuns === 0, `(g6b) and ${label} runs no full tier`);
-}
-// The other arm of the same word: a blocking success alongside it still passes,
-// so this is the flag deciding and not the suite refusing everything.
+// ── (g6b) the `allow_failure` ruling — graded in its own file (§12 cap) ──
+// The ruling is a contract shared with the land gate rather than one more poll
+// case, and this file had reached the cap, so the block lives in a sibling suite
+// that drives the same recorder over the same fixture. It is imported rather
+// than run as its own entry point so its `exit` joins this one: a separate
+// process would report green here with the ruling red, which is the one shape a
+// gate must not have.
 {
-  const r = await run({
-    full: "true",
-    forge: "gitlab",
-    jobs: [
-      { name: "build", status: "success" },
-      { name: "optional-gate", status: "success", allow_failure: false },
-    ],
-  });
-  assert(
-    r.outcome?.kind === "green",
-    `(g6b) a blocking success still grades green (${JSON.stringify(r.outcome ?? r.threw?.message)})`,
-  );
+	const allowFailure = await import("./lib/lean-ci-gl-allow-failure.ts");
+	const failed = await allowFailure.runAllowFailureCases(assert);
+	if (failed) exit = 1;
 }
 
 // ── (g7) head sha absent / malformed -> infra throw ──────────────────────

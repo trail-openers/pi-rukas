@@ -21,6 +21,8 @@
   "include": [
     "src/**/*",
     "scripts/**/*",
+    "smoke-tests/lib/headless-contract-git.ts",
+    "smoke-tests/test-headless-pr-url.ts",
     "smoke-tests/lib/merge-allowlist-target.ts",
     "smoke-tests/lib/bun-test.d.ts",
     "smoke-tests/lib/worktree-sweep-assert.ts",
@@ -349,6 +351,12 @@
     "smoke-tests/test-lean-freeze-check-verify.ts",
     "smoke-tests/test-dockerfile-prefetch.ts",
     "smoke-tests/lib/work-driver-merged-gate-files-fixture.ts",
-    "smoke-tests/test-work-driver-merged-gate-files.ts"
+    "smoke-tests/test-work-driver-merged-gate-files.ts",
+    "smoke-tests/merge-evidence-gl-fixtures.ts",
+    "smoke-tests/test-merge-evidence-gitlab.ts",
+    "smoke-tests/test-merge-evidence-gl-pagination.ts",
+    "smoke-tests/test-merge-evidence-gl-pipeline-sha.ts",
+    "smoke-tests/test-merge-evidence-gl-retry-bound.ts",
+    "smoke-tests/test-merge-guard-ci-evidence-gitlab.ts"
   ]
 }

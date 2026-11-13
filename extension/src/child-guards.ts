@@ -47,6 +47,7 @@ import { enableChildCodemode } from "./child-codemode.ts";
 import { enableChildForgeRead, registerChildForgeReadTool } from "./child-forge-read-activation.ts";
 import { registerModeIndependentGuards } from "./subagent-guard-guards.ts";
 import { trace } from "./trace.ts";
+import { registerDeletionGuard } from "./write-fence-deletion.ts";
 import { registerWriteFence } from "./write-fence.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -100,6 +101,13 @@ export function preflightChildGuards(): void {
  * exec chain twice per merge attempt.
  */
 export default function registerChildGuards(pi: ExtensionAPI): void {
+  // #2200 — the deletion rule is registered FIRST and unconditionally: it has no
+  // env switch, so a reviewer (no write root), a read-only role, and a child under
+  // the developer's `PI_ENSEMBLE_WRITE_FENCE=0` hatch are all still judged. It sits
+  // beside the write fence rather than inside it because the two rules have
+  // different allowances — the fence lets a build write anywhere under the OS temp
+  // dirs, the deletion rule lets a child delete only inside its own roots.
+  registerDeletionGuard(failClosedPi(pi));
   // #1655 — the write fence is registered BEFORE the subagent-mode no-op. The
   // full pi-rukas extension never carries it, so under PI_ENSEMBLE_SUBAGENT_MODE=1
   // this companion is the only place it can run. It self-gates on

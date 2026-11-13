@@ -164,12 +164,15 @@ async function spawnSpecialistInner(
   const invocation = getPiInvocation(childArgs);
 
   // #2160 — the ONE child-env construction for this spawn site, and the only
-  // place its env is assembled. Every later step mutates this object in place
-  // (the prompt file, `PI_ENSEMBLE_*`, the reattach markers), so a second build
-  // here would hand `spawn()` a different env than the one every other step
+  // place its env is assembled: `buildChildEnv` (spawn-child-env.ts) stacks the
+  // forge strip, the vipune and fence additions, the git scrub, the GIT_* pins
+  // and the permission marker, and names `tmpDir` as the child's temp root LAST
+  // (#2241), so nothing between here and `spawn()` may write the env. A second
+  // build would hand `spawn()` a different env than the one every other step
   // adjusted — and silently undo the forge strip. The canary in
   // test-child-forge-credentials.ts pins this call to exactly one occurrence.
-  const childEnv = buildChildEnv(spec.role, permissions, opts.writeFence);
+  const childEnv = buildChildEnv(spec.role, permissions, opts.writeFence, tmpDir);
+
   const leadsGroup = leadsProcessGroup(opts.processGroup);
   const child = spawn(invocation.command, invocation.args, {
     cwd,

@@ -149,6 +149,13 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   // #1560 — the per-child run bound: wrap-up steer at the bound, kill this long after.
   ms("CHILD_BOUND_GRACE_MS", 600_000),
   flag("CHILD_CODEMODE", true),
+  // #2200 — the ONE temp directory a child may delete into: the spawn layer's own
+  // per-child dir (`writeRolePromptFile`). The shared temp root is never a delete
+  // target. Alongside it the deletion rule also allows the worktree and the cycle's
+  // scratch dir (both named by the fence's own variables); this one is read here and
+  // not through `loadFenceConfig`, so a reviewer (no write root) and the
+  // `PI_ENSEMBLE_WRITE_FENCE=0` case still get judged.
+  dir("CHILD_TMP", null, "internal"),
   ms("CI_WATCH_TIMEOUT_MS", 1_800_000),
   flag("CLAIM_SCAN", true),
   // #1454 — how long a claim whose claimant state file cannot be read may
