@@ -275,6 +275,17 @@ export function buildFixPrompt(opts: {
   diff: string;
   round: number;
   issueBody?: string;
+  /**
+   * The issue's acceptance criteria as their own section, printed beside the
+   * issue block. The fixer is held to the same rule as the reviewer about the
+   * issue — a fix that satisfies a finding by violating a criterion is the
+   * failure that rule exists to catch — so when the caller renders the criteria
+   * separately from the body, this half has to receive them too or the rule
+   * points at text the brief no longer carries. Printed only when present: the
+   * /work driver and the `adversarial_loop` tool never set it and their prompts
+   * are byte-identical without it.
+   */
+  reviewCriteria?: string;
   priorFindings?: string[];
   /** See `buildAdversarialPrompt.diffRange` — the ref range this diff came from,
    * which the truncation notice names when the diff is over the inline cap. */
@@ -291,11 +302,14 @@ export function buildFixPrompt(opts: {
   // crosses into a child — one `### heading` or a ``` fence inside it would
   // otherwise open a section of this prompt the driver never wrote.
   const issue = fencedIssuePromptBlock(opts.issueBody, FIXER_ISSUE_RULE, fencedIssueBody);
+  // The same section the reviewer's prompt carries, in the same position — right
+  // after the issue block it belongs to, and before the instruction to fix.
+  const criteria = opts.reviewCriteria ? `\n\n${opts.reviewCriteria}` : "";
   return `Fix the following adversarial review findings. Original context: ${opts.context}
 Round ${opts.round} fix.
 
 Findings:
-${opts.findings}${priorSection}${issue}
+${opts.findings}${priorSection}${issue}${criteria}
 
 Make the minimal changes needed to address every finding. Run local quality gates before returning.
 
