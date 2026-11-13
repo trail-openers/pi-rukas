@@ -300,6 +300,7 @@ export function mergeGuardExec(env: MergeGuardEnv) {
 		// decide the gatherer's forge, nobody else's.
 		if (cmd.includes("git config --get remote.origin.url")) {
 			if (env.failRemoteUrl) return { stdout: "https://internal.invalid/r.git\n" };
+			if (env.remote === "origin" || env.remote === undefined)
 				return {
 					stdout: `git@${isGl ? "gitlab" : "github"}.com:o/r.git\n`,
 				};
