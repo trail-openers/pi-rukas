@@ -135,6 +135,14 @@ function makeConvergeExec(
       diffRead += 1;
       return { stdout: nulNameStatus(...filesForDiff()) };
     }
+    // The commit-pr forge resolution reads the remote before it will build an
+    // adapter; with no remote it resolves no forge, the PR-number lookup and the
+    // prVerify gate both refuse, and the cycle parks at commit-pr before ever
+    // reaching lens-review. A github.com remote keeps this a GitHub cycle; the
+    // GitLab arm is covered in test-work-driver-forge-ctx.ts.
+    if (cmd.includes("remote.origin.url")) return { stdout: "https://github.com/o/r\n" };
+    if (cmd.includes("remote.upstream.url")) return { stdout: "" };
+    if (cmd === "git remote") return { stdout: "origin\n" };
     if (cmd.includes("rev-parse --verify origin/"))
       return { stdout: `${"a".repeat(40)}\n` };
     if (cmd.startsWith("git rev-list --count")) return { stdout: "1\n" };

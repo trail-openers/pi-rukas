@@ -78,7 +78,7 @@ import { attachStdinErrorGuard } from "./stdin-guard.ts";
 import { trace, traceWarn } from "./trace.ts";
 import type { DispatchResult, DispatchSpec } from "./types.ts";
 import { vipuneChildEnv } from "./vipune.ts";
-import { childEnvFor, writeFenceChildEnv } from "./write-fence-contract.ts";
+import { childEnvFor, childTempEnv, writeFenceChildEnv } from "./write-fence-contract.ts";
 import { CHILD_TMP_ENV } from "./write-fence-deletion.ts";
 
 export { buildChildArgs, buildCwdHint, makeRunId };
@@ -181,6 +181,8 @@ async function spawnSpecialistInner(
   childEnv.GIT_TERMINAL_PROMPT = "0";
   childEnv.GIT_PAGER = "cat";
   applyChildPermissionEnv(childEnv, permissions);
+  // #2241 — the child's own temp root, LAST of the childEnv writes.
+  Object.assign(childEnv, childTempEnv(tmpDir));
 
   const leadsGroup = leadsProcessGroup(opts.processGroup);
   const child = spawn(invocation.command, invocation.args, {

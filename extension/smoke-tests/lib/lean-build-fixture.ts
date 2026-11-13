@@ -43,7 +43,7 @@ import {
   deadlineOf,
   resultOverride,
 } from "./lean-build-artifacts.ts";
-import { SPEC_BODY, configWithRunner } from "./lean-build-asserts.ts";
+import { configWithRunner, issueBodyReader } from "./lean-build-asserts.ts";
 
 /** Temp dirs this module made; the caller removes them at the end of the run. */
 export const ROOTS: string[] = [];
@@ -303,6 +303,12 @@ export interface RunResult {
    */
   deadDispatches?: DispatchUsageRow[];
   dispatched: number;
+  /**
+   * How many times the step read the issue. ONE is the contract — the body the
+   * spec was parsed from is the body the builder is shown (#2228 threads it, it
+   * does not re-fetch it), so a second call is a 60 s `gh` round-trip paid twice.
+   */
+  fetched: number;
   prompts: string[];
   specs: DispatchSpec[];
   /** The `extraArgs` of each dispatch, so a case can pin the reporter companion.
@@ -348,6 +354,8 @@ export interface RunOpts {
   loadConfigError?: string;
   /** A child whose dispatch did not succeed — the infra case, as in `challenge`. */
   dispatchOk?: boolean;
+  /** The issue body the step re-reads; defaults to `SPEC_BODY` (a bare spec fence). */
+  specBody?: string;
   /**
    * The whole `DispatchResult` of the nth child (0-based), verbatim, or a rule
    * for it — see {@link resultOverride}. The shape a case needs to hand its dead
@@ -394,6 +402,7 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
   const extraArgs: (readonly string[])[] = [];
   const gitArgvs: string[][] = [];
   let dispatched = 0;
+  let fetched = 0; // written by the reader in `lean-build-asserts.ts`, read by `finish()`
   // The child's acts belong to the FIRST dispatch: a re-dispatched child sees the
   // tree its dead predecessor left, as a no-work retry case asserts.
   let childActed = false;
@@ -431,7 +440,7 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
   const inner: BuildDeps = {
     exec,
     dispatch,
-    fetchIssueBody: async () => SPEC_BODY,
+    fetchIssueBody: issueBodyReader(opts.specBody, () => fetched++),
     loadConfig: async () => {
       if (opts.loadConfigError !== undefined) throw new Error(opts.loadConfigError);
       return opts.config ?? configWithRunner();
@@ -464,6 +473,7 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
   // the returned result and the thrown one carry.
   const finish = () => ({
     dispatched,
+    fetched,
     prompts,
     specs,
     extraArgs,

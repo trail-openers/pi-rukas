@@ -73,6 +73,16 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
         const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
           cmd = commandOf(cmd, o);
           calls.push(cmd);
+          // The commit-pr forge resolution reads the remote before it will build
+          // an adapter, and with no remote it resolves no forge — so `prCreate`
+          // refuses with its named reason and the mechanized path never runs.
+          // A github.com remote is the answer that keeps this a GitHub cycle;
+          // the GitLab arm is covered in test-work-driver-forge-ctx.ts.
+          if (cmd.includes("remote.origin.url")) {
+            return { stdout: "https://github.com/o/r\n" };
+          }
+          if (cmd.includes("remote.upstream.url")) return { stdout: "" };
+          if (cmd === "git remote") return { stdout: "origin\n" };
           if (cmd === "git rev-parse HEAD")
             return { stdout: "1111111111111111111111111111111111111111\n" };
           if (cmd === "git rev-parse --abbrev-ref HEAD") return { stdout: "feature/issue-994\n" };

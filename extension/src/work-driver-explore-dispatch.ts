@@ -68,7 +68,12 @@ export async function resolveExploreSpec(
   const prose = await recoverOffloadedSpec(text, scratchDir(ctx.repoRoot, ctx.issue));
   const artifact = await readSpecArtifact(ctx.repoRoot, ctx.issue);
   const { spec, source } = resolveIntentVerdict(prose, artifact);
-  return spec === undefined ? undefined : { spec, source };
+  if (spec === undefined) return undefined;
+  if (source === "prose") return { spec, source };
+  // This reply's own verdict did not parse, so the restored spec carries none: its
+  // verdict comes from the artifact, and the rule says so.
+  const { resolverVerdict: _rv, ...restored } = spec;
+  return { spec: { ...restored, verdictRule: "spec-artifact-restore" }, source };
 }
 
 /**

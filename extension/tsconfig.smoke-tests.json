@@ -195,6 +195,9 @@
     "smoke-tests/lib/lean-submodule-off-fixture.ts",
     "smoke-tests/test-lean-build.ts",
     "smoke-tests/test-lean-build-budget-retry.ts",
+    "smoke-tests/test-lean-build-issue-prose-prompt.ts",
+    "smoke-tests/test-lean-build-issue-prose-step.ts",
+    "smoke-tests/test-lean-build-issue-prose-switch.ts",
     "smoke-tests/test-lean-resume-build-budget.ts",
     "smoke-tests/lib/lean-build-fixture.ts",
     "smoke-tests/test-lean-publish.ts",
@@ -366,6 +369,7 @@
     "smoke-tests/test-lean-review-spec-split-order.ts",
     "smoke-tests/test-lean-review-spec-split-switch.ts",
     "smoke-tests/test-adversarial-fix-round-criteria.ts",
-    "smoke-tests/test-lean-review-deps-criteria-pair.ts"
+    "smoke-tests/test-lean-review-deps-criteria-pair.ts",
+    "smoke-tests/lib/headless-env-scan.ts"
   ]
 }

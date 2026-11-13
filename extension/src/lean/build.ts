@@ -184,8 +184,18 @@ function addedByChallengeFromLog(steps: Step[]): string | undefined {
   return undefined;
 }
 
+/** What the contract re-read from the forge gave the build step. */
+interface SpecRead {
+  spec: PiSpec;
+  /**
+   * The body it was parsed from, kept for the builder's brief — the SAME
+   * fetch, never a second one (`lean/issue-prose.ts`).
+   */
+  body: string;
+}
+
 /** The spec, re-read from the forge: a build against an unread spec is fiction. */
-async function specOf(deps: BuildDeps, repoRoot: string, issue: number): Promise<PiSpec> {
+async function specOf(deps: BuildDeps, repoRoot: string, issue: number): Promise<SpecRead> {
   let body: string;
   try {
     body = await deps.fetchIssueBody(repoRoot, issue);
@@ -194,7 +204,7 @@ async function specOf(deps: BuildDeps, repoRoot: string, issue: number): Promise
   }
   const parsed = parsePiSpec(body);
   if (!parsed.ok) throw new BuildInfraError(`the issue's spec is unusable: ${parsed.reason}`);
-  return parsed.spec;
+  return { spec: parsed.spec, body };
 }
 
 /** The `build` step. Returns `ok` | `exhausted` | `blocked`; THROWS on infrastructure. */
@@ -236,7 +246,7 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
   const config = await deps.loadConfig(repoRoot, base).catch((err: unknown) => {
     throw new BuildInfraError(`could not load the project config: ${(err as Error).message}`);
   });
-  const spec = await specOf(deps, repoRoot, issue);
+  const { spec, body: issueBody } = await specOf(deps, repoRoot, issue);
   // Rounds this run has DISPATCHED and paid for. `buildAttempts` is the authority
   // now the table bills a round on entering `build` and never on leaving it: it
   // counts dispatches, not table visits, so one child a ceiling stopped costs one
@@ -308,6 +318,7 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
       repoRoot,
       attempt: label,
       testRunner: config.verify.test,
+      issueBody,
       budget,
       ...(reentry === undefined ? {} : { reentry }),
       ...(added === undefined ? {} : { added }),

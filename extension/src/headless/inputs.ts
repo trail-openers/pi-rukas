@@ -239,6 +239,11 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("INTENT_CRITICALITY", true),
   flag("INVARIANT_MEMORY", true),
   input("ISSUE_IMAGES", "boolean", true, "cycle", { manifestVersion: 1 }),
+  // #2228 — show the BUILDER the issue prose its frozen tests were written from.
+  // `0` takes the section out of the build prompt only; `LEAN_ISSUE_PROSE=0`
+  // also takes it out, since one renderer serves all three seats.
+  // The reader is `leanBuildIssueProseEnabled` in lean/issue-prose.ts.
+  flag("LEAN_BUILD_ISSUE_PROSE", true),
   // #2171 — show the specify/challenge adversary the issue prose its frozen
   // tests were written from. 0 takes the section back out of both prompts.
   // The reader is `leanIssueProseEnabled` in lean/issue-prose.ts.

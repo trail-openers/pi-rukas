@@ -205,6 +205,38 @@ for (const incident of incidents) {
 }
 
 {
+  // A deliverable basename is matched as text, never as a pattern: the plain
+  // fixture above and each metacharacter name must reach the same verdict.
+  const names = ["retry-config(500).ts", "500).ts", "x(1.ts", "a+b.ts", "x[1].ts", "q?.ts"];
+  for (const name of [...names, "s$.ts", "c^.ts", "p|q.ts", "star*.ts", "back\\slash.ts"]) {
+    const verdictFor = (claim: string) => {
+      try {
+        return reconcileVerdict(
+          spec({
+            // No intent token overlaps a claim, so only the name can match.
+            intent: "Warn about a low ceiling.",
+            deliverables: [
+              { id: "warn", description: "warn when the ceiling is low", paths: [`src/${name}`] },
+            ],
+            evidence: [contradicted(claim)],
+          }),
+        ).verdict;
+      } catch (err) {
+        return `threw: ${(err as Error).message}`;
+      }
+    };
+    assert(verdictFor(`${name} does not exist`) === "park", `${name}: named and absent parks`);
+    // Only the literal name references the deliverable; read as a pattern,
+    // `+`, `?`, `*` and `[…]` would match this other name too.
+    const lookalike = name.replace(/[^a-z0-9.-]/g, "");
+    assert(
+      verdictFor(`${lookalike} does not exist`) === "proceed-with-assumptions",
+      `${name}: a look-alike name is not this deliverable`,
+    );
+  }
+}
+
+{
   // If the resolver supplied no claim from which criticality can be derived,
   // absence of evidence is not permission to build: fail closed as load-bearing.
   const missingCriticality = spec({
@@ -261,7 +293,9 @@ const asState = (s: NormalisedSpec): WorkState =>
   const parsed = parseNormalisedSpec(PROCEED_REPLY);
   assert(
     parsed?.verdict === "proceed" &&
-      parsed.evidence.some((e) => e.claim === CONTRADICTED_MEMORY_ROW && e.verdict === "contradicted"),
+      parsed.evidence.some(
+        (e) => e.claim === CONTRADICTED_MEMORY_ROW && e.verdict === "contradicted",
+      ),
     "one measured cycle: the reply parses as proceed with the memory row contradicted",
   );
   const resolved = reconcileVerdict(parsed as NormalisedSpec);
@@ -332,7 +366,8 @@ const asState = (s: NormalisedSpec): WorkState =>
     "the handoff's contradicting evidence lists the code reading only",
   );
   assert(
-    memoryPart.includes(CONTRADICTED_MEMORY_ROW) && memoryPart.includes("not a reading of the code"),
+    memoryPart.includes(CONTRADICTED_MEMORY_ROW) &&
+      memoryPart.includes("not a reading of the code"),
     "the handoff names the memory row as stale memory, apart from the evidence",
   );
 }

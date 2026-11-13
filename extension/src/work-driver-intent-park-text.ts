@@ -19,7 +19,7 @@ export function explainPark(reason: ParkReason, issue: number): string {
     case "too-large":
       return `#${issue} is too large to execute as one cycle. Split it into separate issues; each should be a diff a reviewer can hold in their head.`;
     case "unresolved-critical-open-point":
-      return `#${issue} has unresolved CRITICAL open points in its Open points section (listed below). The driver will not choose the answer for you. Answer each one in the issue body and mark it [RESOLVED] right after its severity tag on the first line; an emphasised **[RESOLVED]** does not count. Then re-run.`;
+      return `#${issue} has unresolved CRITICAL open points in its Open points section (listed below). The driver will not choose the answer for you. Answer each one in the issue body and mark it [RESOLVED] on its first line, right after the severity tag or as \`topic [RESOLVED] - answer\`; an emphasised **[RESOLVED]** does not count. Then re-run.`;
     case "blank-issue-body":
       return `#${issue}'s body is blank, so the driver could not check its Open points section. Add the issue body and re-run.`;
     case "premise-unsound":
@@ -39,7 +39,7 @@ export function parkAction(reason: ParkReason, issue: number): string {
     case "too-large":
       return `split #${issue} into separate issues`;
     case "unresolved-critical-open-point":
-      return `answer each unresolved CRITICAL open point in #${issue}'s body (mark it [RESOLVED] right after its severity tag, unemphasised) and run /work ${issue} --restart`;
+      return `answer each unresolved CRITICAL open point in #${issue}'s body (mark it [RESOLVED] on its first line, after the tag or as \`topic [RESOLVED] - answer\`, unemphasised) and run /work ${issue} --restart`;
     case "blank-issue-body":
       return `add a body to #${issue} and run /work ${issue} --restart`;
     case "premise-unsound":

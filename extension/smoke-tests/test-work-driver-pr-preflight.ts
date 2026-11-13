@@ -110,6 +110,13 @@ function ctxWith(prListJson: string | Error, dispatched: string[]): DriverContex
     repoRoot: "/tmp/does-not-exist",
     issue: 5,
     verifyExecFn: async (cmd: string) => {
+      // The pre-flight now asks which forge the repo is on before it will run
+      // `gh` (the body lookup is GitHub-only by construction). A non-existent
+      // path with an injected exec resolves no remote, so the remote read is
+      // answered here — a github.com remote is the answer that keeps these
+      // cases GitHub cycles. The GitLab refusal is asserted in
+      // test-work-driver-reentry.ts.
+      if (cmd.includes("remote.origin.url")) return { stdout: "https://github.com/o/r\n" };
       if (cmd.startsWith("gh pr list")) {
         if (prListJson instanceof Error) throw prListJson;
         return { stdout: prListJson };

@@ -44,6 +44,14 @@ import { pendingShutdownBoundMs } from "../src/pending-jobs-signal.ts";
 import { planCacheTtlMs } from "../src/plan-investigation-cache.ts";
 import { lensFixBoundMs, reviewCapMs, reviewWallClockMs } from "../src/review-budget.ts";
 import { readSites } from "./lib/pi-read-sites.ts";
+import {
+  covers,
+  DYNAMIC_KEYS,
+  problems,
+  type Scan,
+  scan,
+  scanText,
+} from "./lib/headless-env-scan.ts";
 import { lensFixLandAheadEnabled } from "../src/work-driver-lens-fix-bound-land.ts";
 import { transcriptRetentionDays } from "../src/runs-retention.ts";
 import { autoSteerEnabled } from "../src/slow-notice.ts";
@@ -81,7 +89,10 @@ import { handoffPostBackoffMs } from "../src/work-driver-handoff-post-retry.ts";
 import { handoffDispatchTimeoutMs } from "../src/work-driver-handoff.ts";
 import { intentCriticalityEnabled } from "../src/work-driver-intent-criticality.ts";
 import { intentResolutionEnabled } from "../src/work-driver-intent.ts";
-import { leanIssueProseEnabled } from "../src/lean/issue-prose.ts";
+import {
+  leanBuildIssueProseEnabled,
+  leanIssueProseEnabled,
+} from "../src/lean/issue-prose.ts";
 import { leanReviewSpecSplitEnabled } from "../src/lean/review-spec-split.ts";
 import { leanRunnerPreflightEnabled } from "../src/lean/runner-preflight-switch.ts";
 import { issueImagesEnabled } from "../src/work-driver-issue-images.ts";
@@ -110,106 +121,6 @@ function assert(cond: boolean, msg: string) {
     console.error(`✗ ${msg}`);
     exit = 1;
   }
-}
-
-const COMMENT = /^\s*(\*|\/\*|\/\/)/;
-const NAME = "PI_ENSEMBLE_[A-Za-z0-9_]*";
-const EXACT = [
-  new RegExp(`[A-Za-z]*[eE]nv\\??\\.(${NAME})`, "g"),
-  new RegExp(`env\\[\\s*["'\`](${NAME})["'\`]\\s*\\]`, "g"),
-  new RegExp(`["'\`](${NAME})["'\`](?!\\s*\\+)`, "g"),
-];
-const DYNAMIC = [
-  new RegExp(`\`(${NAME})\\$\\{`, "g"),
-  new RegExp(`["'\`](${NAME})["'\`]\\s*\\+`, "g"),
-];
-const DESTRUCTURE = /\{([^}]*)\}\s*=\s*(?:process\.env|[A-Za-z]*[eE]nv)\b/g;
-
-/**
- * The approved dynamic keys: the key text in source → the family entry it
- * reads. `envKey("PI_ENSEMBLE_DECISION_MODE", seam)` appends `_<SEAM>`.
- */
-const DYNAMIC_KEYS: Record<string, string> = {
-  PI_ENSEMBLE_DECISION_BUDGET: "PI_ENSEMBLE_DECISION_BUDGET_<SEAM>",
-  PI_ENSEMBLE_DECISION_MODE: "PI_ENSEMBLE_DECISION_MODE_<SEAM>",
-  PI_ENSEMBLE_DECISION_TIMEOUT_MS: "PI_ENSEMBLE_DECISION_TIMEOUT_MS_<SEAM>",
-  PI_ENSEMBLE_MODEL_: "PI_ENSEMBLE_MODEL_<ROLE>",
-  PI_ENSEMBLE_MODEL_LENS_: "PI_ENSEMBLE_MODEL_LENS_<LENS>",
-  PI_ENSEMBLE_PROVIDER_: "PI_ENSEMBLE_PROVIDER_<ROLE>",
-  PI_ENSEMBLE_PROVIDER_LENS_: "PI_ENSEMBLE_PROVIDER_LENS_<LENS>",
-  PI_ENSEMBLE_TOKEN_BUDGET_: "PI_ENSEMBLE_TOKEN_BUDGET_<ROLE>",
-};
-
-interface Scan {
-  /** Literal names read, → one file reading each. */
-  exact: Map<string, string>;
-  /** Dynamic key texts, → one file using each. */
-  dynamic: Map<string, string>;
-}
-
-function scanText(text: string, rel: string, out: Scan): void {
-  const put = (m: Map<string, string>, name: string) => {
-    if (!m.has(name)) m.set(name, rel);
-  };
-  for (const line of text.split("\n")) {
-    if (COMMENT.test(line)) continue;
-    const dynamicHere = new Set<string>();
-    for (const re of DYNAMIC) {
-      for (const m of line.matchAll(re)) {
-        dynamicHere.add(m[1] as string);
-        put(out.dynamic, m[1] as string);
-      }
-    }
-    for (const re of EXACT) {
-      for (const m of line.matchAll(re)) {
-        const name = m[1] as string;
-        if (dynamicHere.has(name)) continue;
-        // A trailing `_` or a bare prefix is a key built at runtime.
-        if (name.endsWith("_") || name in DYNAMIC_KEYS) put(out.dynamic, name);
-        else put(out.exact, name);
-      }
-    }
-    for (const m of line.matchAll(DESTRUCTURE)) {
-      for (const n of (m[1] as string).matchAll(new RegExp(`\\b(${NAME})\\b`, "g"))) {
-        put(out.exact, n[1] as string);
-      }
-    }
-  }
-}
-
-/** Every PI_ENSEMBLE_* read under `root`. */
-function scan(root: string): Scan {
-  const out: Scan = { exact: new Map(), dynamic: new Map() };
-  // The inventory itself is excluded: a name written there must not list itself.
-  const files = readdirSync(root, { recursive: true, encoding: "utf8" }).filter(
-    (f) => f.endsWith(".ts") && !f.endsWith(".test.ts") && f !== path.join("headless", "inputs.ts"),
-  );
-  for (const rel of files) scanText(readFileSync(path.join(root, rel), "utf8"), rel, out);
-  return out;
-}
-
-/** Whether `name` is the entry, or a member of its family (prefix + a listed id). */
-function covers(entry: HostInput, name: string): boolean {
-  const i = entry.name.indexOf("<");
-  if (i < 0) return entry.name === name;
-  const prefix = entry.name.slice(0, i);
-  if (entry.members) return entry.members.some((m) => name === prefix + m);
-  return new RegExp(`^${prefix}[A-Z][A-Z0-9_]*$`).test(name);
-}
-
-/** The problems a scan shows against an inventory: unlisted reads and unapproved dynamic keys. */
-function problems(found: Scan, inputs: readonly HostInput[]): string[] {
-  const out: string[] = [];
-  for (const [n, f] of found.exact) {
-    if (!inputs.some((e) => covers(e, n))) out.push(`unlisted ${n} (${f})`);
-  }
-  for (const [k, f] of found.dynamic) {
-    const family = DYNAMIC_KEYS[k];
-    if (family === undefined) out.push(`unapproved dynamic key ${k} (${f})`);
-    else if (!inputs.some((e) => e.name === family))
-      out.push(`dynamic key ${k} → unlisted ${family}`);
-  }
-  return out;
 }
 
 const srcRoot = path.resolve(import.meta.dirname, "..", "src");
@@ -386,6 +297,9 @@ const LIVE: [string, () => unknown][] = [
   // #2171 — the oracle seat's issue-prose section. The reader is `v !== "0"`,
   // so the LIVE assertion below (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LEAN_ISSUE_PROSE", leanIssueProseEnabled],
+  // #2228 — the builder seat's issue-prose section. The reader is `v !== "0"`, so
+  // the LIVE assertion below (env deleted) pins "unset means on".
+  ["PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE", leanBuildIssueProseEnabled],
   // The lean review seats' spec split. The reader is `v !== "0"`, so the LIVE
   // assertion below (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LEAN_REVIEW_SPEC_SPLIT", leanReviewSpecSplitEnabled],

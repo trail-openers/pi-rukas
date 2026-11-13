@@ -152,10 +152,11 @@ export const STDERR_TAIL_BYTES = 64 * 1024;
  * without racing a sibling's. That `finally` owns the cleanup and does so
  * best-effort: a leftover temp prompt says nothing about the child's result.
  *
- * The directory is ALSO the child's own temp root (#2200): it is handed to the
- * child as `PI_ENSEMBLE_CHILD_TMP` and is the only temp tree the deletion rule
- * lets it remove. One per-spawn dir for both jobs, because the spawn already
- * makes exactly one and a second would be a root the rule allows that nobody owns.
+ * The directory is ALSO the child's own temp root (#2200, #2241): the child gets
+ * it as `PI_ENSEMBLE_CHILD_TMP` and, through `childTempEnv`, as its `TMPDIR`,
+ * `TMP` and `TEMP` — the only temp tree the deletion rule lets it remove, and the
+ * only one its tools write into. One dir for both jobs: the spawn already makes
+ * exactly one, and a second is a root nobody owns.
  *
  * Lives here rather than inline in `spawn.ts` for the AGENTS.md §12 size cap;
  * the seam is the write AND the directory it lives in, so the caller cannot end
@@ -166,6 +167,7 @@ export async function writeRolePromptFile(
   systemPrompt: string,
 ): Promise<{ tmpDir: string; tmpPromptFile: string }> {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-rukas-"));
+  await fs.chmod(tmpDir, 0o700); // the #2051 walk reads a harness tree by owner AND mode
   const tmpPromptFile = path.join(tmpDir, `${role}.md`);
   await fs.writeFile(tmpPromptFile, systemPrompt);
   return { tmpDir, tmpPromptFile };
