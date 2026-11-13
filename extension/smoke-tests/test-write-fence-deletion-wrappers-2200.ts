@@ -4,30 +4,22 @@
  * that remover, split out of `test-write-fence-deletion-shapes-2200.ts` by the repo's
  * file-size cap.
  *
- * The reader strips every wrapper in its table before the command it runs, so what each
- * wrapper's option table claims about its options decides whether the remover is seen at all:
- * an option listed as value-taking consumes the following word, and when that option is
- * really a BOOLEAN flag the word it swallows is `rm` itself — a remover the rule never judged,
- * which is how `unshare -m rm -rf <shared temp root>` ran. Each row below is therefore read
- * against the wrapper's own usage output, and the two directions are pinned: a boolean flag
- * before a remover must still be refused, and a genuinely value-taking option's value must
- * still be skipped rather than read as the command.
+ * The deletion rule reads a wrapper segment from its RAW words: when the first word is a wrapper
+ * (`WRAPPERS`), the segment is judged from the first word after it that names a command the rule owns
+ * — `rm`, `rmdir`, `unlink`, `shred`, `find`, `git`, or a tabled interpreter — whatever options stand
+ * in front of that word, and with no reasoning about what any option takes. If no owned name appears
+ * after the wrapper, the segment is not a deletion at all. That is why the rows below name options no
+ * wrapper table lists (`strace -p`, `ltrace -l`) or takes optionally (`watch -q [cycles]`, `env -S
+ * <split-string>`): the rule never consults those tables, so a remover is reached whatever a table
+ * claims about the option in front of it.
  *
- * The tables cannot be complete, so the reader does not rely on them alone: when a wrapper's
- * head after the strip is not a command the rule owns, the reader scans that segment's words
- * for the first command it owns and judges from there. The rows that pin that are the ones
- * whose option the table does not list at all (`strace -p`, `ltrace -l`) and whose value is
- * OPTIONAL (`nsenter -S [uid]`, `watch -q [cycles]`, `env -S <s>`) — with each table fixed to
- * name them the strip would find the remover and the same rows stay green, which is why they
- * are the class rather than a list.
- *
- * That scan is bounded by what it may conclude from. A wrapper strip that ate a word its table
- * called a value is an escape only when the word it ate is a command this rule owns: `watch -q
- * rm …` and `env -S rm …` really run the remover out of the option's value slot. A strip that
- * ate an ordinary program the same way — `timeout 60 make` eats `make` for no option at all, an
- * untabled option or an OPTIONAL value — is a wrapped command that deletes nothing, and refusing
- * it is an over-refusal of every build, test and script a child runs behind a wrapper. The A11b
- * rows below pin that second direction.
+ * The same reading is what keeps a wrapped build allowed: `make`, `cargo`, `ls`, `true` and a project
+ * script are not names the rule owns, so nothing behind such a wrapper is judged, and a line whose
+ * program is an ordinary one stays a line that deletes nothing. Two consequences are pinned in both
+ * directions: an owned name that is only an argument to an ordinary program (`env VAR=1 echo rm
+ * file`) is not judged, while the same name in the command slot is judged wherever it points — so
+ * `env VAR=1 echo rm <outside>` is refused as the `rm` of that path, an over-refusal the rule accepts
+ * rather than reason about `env -S`.
  *
  * Run: cd extension && bun smoke-tests/test-write-fence-deletion-wrappers-2200.ts
  */
@@ -76,10 +68,10 @@ await withDeletionHost(HOST, async () => {
       `firejail --quiet --noprofile rm -rf ${foreignRun}`,
       "`firejail --quiet --noprofile rm -rf` — flags, no positional to consume",
     ],
-    // A wrapper's BOOLEAN flag takes no value, so the word after it is the command. A table that
-    // lists a boolean as value-taking consumes `rm` itself as that option's value and the remover
-    // leaves the reader's view entirely — which is how `unshare -m rm -rf <outside>` ran. Each row
-    // here is a flag the wrapper's own usage output spells without an argument.
+    // A wrapper's BOOLEAN flag takes no value, so the word after it is the command; a flag the table
+    // calls value-taking, or one it does not name at all, is answered the same way now, because the
+    // deletion side never asks a table what an option takes. Each row is a flag the wrapper's own
+    // usage output spells without an argument.
     [`unshare -m rm -rf ${foreignRun}`, "`unshare -m` (mount ns) before a remover"],
     [`unshare -p -f rm -rf ${foreignRun}`, "`unshare -p -f` before a remover"],
     [`nsenter -m rm -rf ${foreignRun}`, "`nsenter -m` (mount ns) before a remover"],
@@ -118,7 +110,7 @@ await withDeletionHost(HOST, async () => {
     [`env -S rm -rf ${foreignRun}`, "`env -S` with no split-string value"],
     [
       `sudo -u nobody strace -p 1 rm -rf ${foreignRun}`,
-      "a stacked wrapper whose own option swallows the next wrapper's boolean",
+      "a stacked wrapper: the `rm` is judged through the `strace` its `-u` swallowed",
     ],
   ];
   for (const [command, why] of wrapperRefused) {
@@ -132,16 +124,18 @@ await withDeletionHost(HOST, async () => {
   // into a refusal: the same spellings aimed inside the child's roots are ordinary cleans.
   const wrapperAllowed: Array<[string, string]> = [
     [`strace -p 1 rm -rf ${wt}/build`, "`strace -p 1 rm -rf` of a build dir in the worktree"],
+    // `watch` runs whatever it is given, so an `rm` behind it is judged by the path it names — and a
+    // path inside the child's roots is the cleanup it always was.
+    [`watch -q rm -rf ${wt}/build`, "`watch -q rm -rf` of a build dir in the worktree"],
     [
       `sudo unshare -m nice -n 5 rm -rf ${wt}/build`,
       "stacked privilege, namespace and scheduling wrappers before an in-tree remover",
     ],
-    // The boundary of the scan: it reads only the word that holds the slot a wrapper's program
-    // occupies, so an owned name that appears anywhere else is not a command. `rm other` and
-    // `echo rm file` hold a remover's name and are judged as the `timeout`/`env` lines they are;
-    // `ls <shared>` holds no owned command at all, so it is judged as `ls`, which deletes nothing.
-    // Each of these really runs (verified against the tools), so a scan that read further than the
-    // program slot would refuse an ordinary command.
+    // The boundary of the scan: only the FIRST owned name is taken as the command, and a segment with
+    // no owned name behind its wrapper deletes nothing. `timeout 10 rm other` names a remover whose
+    // operand is a relative path under the child's cwd, so it runs; `env VAR=1 echo rm file` names a
+    // remover only as an argument of `echo`, which is not a name the rule owns; `ls <shared>` holds no
+    // owned name at all. Each of these really runs (verified against the tools).
     [`timeout 10 rm other`, "a relative operand that happens to be named `rm`"],
     [`env VAR=1 echo rm file`, "an owned name that is an argument, not the program"],
     [`ls ${sharedTmp}`, "a non-owned command whose operand is the shared temp root"],
@@ -149,35 +143,22 @@ await withDeletionHost(HOST, async () => {
   for (const [command, why] of wrapperAllowed) {
     assert(refused(command, fenced) === undefined, `A11 allow: ${why} — \`${command}\``);
   }
-  // `watch -q` takes an OPTIONAL cycles value, so the strip reads the word after it as that value
-  // and no command survives for the reader to resolve. The scan has nothing to judge on such a
-  // segment — the only word the strip left is an operand, and an operand is an argument — so the
-  // line is refused wherever its target lies, in the worktree included. The child runs the delete
-  // as its own command, which is the shape the rule can read.
+  // The accepted false positive, named for itself: `env VAR=1 echo rm <outside>` is refused as the
+  // `rm` of that path. The first name the rule owns after `env` is the `rm` sitting in `echo`'s
+  // argument list, and the rule does not reason about `env -S` — which really would split the string
+  // into words, so no single word on that line names the program the shell ends up running.
   assert(
-    refused(`watch -q rm -rf ${wt}/build`, fenced) !== undefined,
-    "A11 refuse: `watch -q rm -rf` — an OPTIONAL value left no command, so it is refused in-tree too",
+    refused(`env VAR=1 echo rm ${foreignRun}/payload`, fenced) !== undefined,
+    "A11 refuse: `env VAR=1 echo rm <outside>` — the accepted conservative false positive",
   );
-  // The same miscount one wrapper deeper, where the survivor is not even a path: `watch -q` read
-  // `git` for its optional cycles and the segment begins at git's VERB, so the tree the forcing
-  // clean clears is named by a line whose program is gone. Refused outside the roots, and refused
-  // in them, for the same reason.
-  assert(
-    refused(`watch -q git clean -fdx ${foreignRun}`, fenced) !== undefined,
-    "A11 refuse: `watch -q git <verb> -fdx` — the strip ate `git`, so the tree is unjudged",
-  );
-  assert(
-    refused(`watch -q git clean -fdx ${wt}/build`, fenced) !== undefined,
-    "A11 refuse: `watch -q git <verb> -fdx` in-tree — no program, so no judgement",
-  );
-  // A wrapper whose program this rule cannot read at all is a line it refuses to guess at, but
-  // only where the word the strip swallowed is one this rule OWNS: that is the escape (`watch -q
-  // rm …`, `env -S rm …`, and here `git`/`node`/`bun` — each consumed as the OPTIONAL value of
-  // `-q`, each a name the rule reads). Anything else is a wrapped command that deletes nothing.
+  // A `watch`ed read-only command keeps its own head: the `git`, `node` and `bun` of these lines are
+  // owned names, but what the wrapper execs is `git status`, `node x` and `bun run check`, and the
+  // first owned name the scan reaches therefore names no path. Each really runs (verified against the
+  // tools) and none deletes anything.
   for (const line of [`watch -q git status`, `watch -q node x`, `watch -q bun run check`]) {
     assert(
-      refused(line, fenced) !== undefined,
-      `A11 refuse: ${line} — the strip ate an OWNED name for -q's optional value, so it is refused`,
+      refused(line, fenced) === undefined,
+      `A11 allow: ${line} — the wrapper runs an ordinary command, so nothing is judged`,
     );
   }
 
