@@ -32,7 +32,7 @@
  * `PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE=0` reaches the builder's seat only.
  */
 import { fencedIssueBody } from "../adversarial-prompts.ts";
-import { stripPiSpecBlocks } from "./spec.ts";
+import { SPEC_INFO, stripPiSpecBlocks } from "./spec.ts";
 
 /** The section heading. */
 export const LEAN_ISSUE_HEADING = "## The issue";
@@ -102,6 +102,17 @@ export function leanIssueSection(
 ): string {
   if (!leanIssueProseEnabled() || !leanBuildIssueProseEnabled()) return "";
   const stripped = stripPiSpecBlocks(issueBody ?? "");
+  // The section's own rule 1 — the spec block never appears here, because the
+  // criteria print it verbatim one heading below — holds only when the strip fired.
+  // `stripPiSpecBlocks` recognises exactly `pi-spec v1` and no other info string,
+  // a rule `test-lean-spec.ts` pins (a fence whose info merely STARTS with it is
+  // not the block, because `parsePiSpec` must not read it as one either), so such a
+  // look-alike survives the strip and would reprint the contract. Refuse the whole
+  // section rather than print a second copy: a body whose spec is unreadable is a
+  // body whose criteria were never rendered, and its text is a contract no test
+  // enforces. The strip is NOT loosened — its exact-info rule belongs to
+  // `lean/spec.ts` and every reader of the same body.
+  if (stripped.includes(SPEC_INFO)) return "";
   const prose = fencedIssueBody(stripped);
   if (prose === "") return "";
   if (problemFor !== undefined && normalizeProse(stripped) === normalizeProse(problemFor))

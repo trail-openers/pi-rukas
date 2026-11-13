@@ -26,10 +26,15 @@ function assert(cond: boolean, msg: string): void {
   }
 }
 
-/** The spec block the fixture's frozen test was written from, with prose on BOTH
- * sides of it — so a section that rendered only the block (or nothing) cannot
- * pass, and one assertion covers both directions of the strip. */
 const PROSE_BODY = SPEC_BODY_WITH_PROSE;
+// The two sides of the block are asserted SEPARATELY, each on a string only that
+// side carries — the strip removes one contiguous region, so a single conjunctive
+// assertion cannot tell "both halves survived" from "the head survived and the
+// tail went unnoticed". The tail line used to re-print a criterion verbatim, so a
+// renderer that clipped the body at the block still satisfied it; `TAIL-ONLY:` is
+// in neither the spec object nor the criteria, so only the strip-and-print path
+// can put it in the brief, and its position pins that it landed INSIDE the section
+// rather than echoed somewhere else in it.
 
 await withEnv(
   {
@@ -49,10 +54,17 @@ await withEnv(
     );
     assert(r.fetched === 1, `(a) the issue was read exactly once (got ${r.fetched})`);
     assert(
-      prompt.includes("## The issue") &&
-        prompt.includes('The exception message must remain exactly "quota exceeded"') &&
-        prompt.includes("Add retry to the meter's quota check."),
-      "(a) the prose above AND below the spec block reaches the builder's brief",
+      prompt.includes("Add retry to the meter's quota check."),
+      "(a) the prose ABOVE the spec block reaches the builder's brief",
+    );
+    assert(
+      prompt.includes('TAIL-ONLY: the exception message must remain exactly "quota exceeded"'),
+      "(a) the prose BELOW the block reaches it too — a strip or a renderer that lost the tail fails here",
+    );
+    assert(
+      prompt.indexOf("## The issue") < prompt.indexOf("TAIL-ONLY:") &&
+        prompt.indexOf("TAIL-ONLY:") < prompt.indexOf("## The acceptance criteria"),
+      "(a) the tail sits INSIDE the section, not echoed somewhere else in the brief",
     );
     assert(
       !prompt.includes("pi-spec v1") && !prompt.includes('"verify": "test"'),

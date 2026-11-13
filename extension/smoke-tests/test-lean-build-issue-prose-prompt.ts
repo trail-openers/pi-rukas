@@ -184,6 +184,36 @@ await withEnv(ON, async () => {
     );
   }
 
+  // A `pi-spec v1` look-alike whose info line carries trailing text is NOT a block
+  // (`test-lean-spec.ts` pins that — `parsePiSpec` must not read it either), so the
+  // strip leaves it whole. At this seat that is the one body shape under which the
+  // section would reprint the contract the criteria already print, so the rule the
+  // section states is checked rather than assumed. A look-alike that mentions no
+  // version (`​```pi-spec`, or a `json` fence quoting one) is ordinary prose and
+  // still renders.
+  const lookAlike = build([
+    "```pi-spec v1 extra",
+    SPEC.problem,
+    "```",
+    "",
+    "A requirement stated only here.",
+  ].join("\n"));
+  assert(
+    lookAlike === bare,
+    "a body whose only spec-shaped fence carries trailing info-string text renders no section rather than reprinting the contract",
+  );
+  const lookAlikePlain = build([
+    "```json",
+    "pi-spec",
+    "```",
+    "",
+    "A requirement stated only here.",
+  ].join("\n"));
+  assert(
+    lookAlikePlain.includes(LEAN_ISSUE_HEADING),
+    "and a fence that merely contains the word pi-spec is still ordinary prose, so it renders",
+  );
+
   // B8 — a body whose prose IS the problem line adds nothing, so it says nothing.
   const restated = build([
     "```pi-spec v1",

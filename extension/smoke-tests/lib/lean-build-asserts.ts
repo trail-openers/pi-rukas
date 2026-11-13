@@ -45,7 +45,7 @@ export const SPEC_BODY_WITH_PROSE = `Add retry to the meter's quota check.
 
 ${SPEC_BODY}
 
-The exception message must remain exactly "quota exceeded", and the check runs before the draw.
+TAIL-ONLY: the exception message must remain exactly "quota exceeded", and the check runs before the draw.
 `;
 
 /**
@@ -64,7 +64,8 @@ export function issueBodyReader(specBody: string | undefined, onFetch: () => voi
   };
 }
 
-/** `git status --porcelain -uall` for a worktree, "" when clean. */export function status(wt: string): string {
+/** `git status --porcelain -uall` for a worktree, "" when clean. */
+export function status(wt: string): string {
   return git(wt, "status", "--porcelain", "-uall");
 }
 
