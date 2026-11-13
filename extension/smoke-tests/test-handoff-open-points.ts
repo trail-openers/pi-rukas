@@ -5,6 +5,7 @@
  * The gate writes `openPoints` (flattenIssueText output); the renderers only quote it.
  */
 
+import { explainPrSteps, resolverVerdictLine } from "../src/work-driver-explain-pr-steps.ts";
 import {
   OPEN_POINTS_HANDOFF_HEADING,
   codeSpan,
@@ -16,6 +17,8 @@ import {
   parseNormalisedSpecArtifact,
 } from "../src/work-driver-intent-artifact.ts";
 import { type NormalisedSpec, finaliseSpecVerdict } from "../src/work-driver-intent-finalise.ts";
+import { parseNormalisedSpec } from "../src/work-driver-intent.ts";
+import type { WorkState } from "../src/workflow-state.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -212,6 +215,78 @@ assert(
   assert(
     parseNormalisedSpecArtifact(JSON.stringify(spec())) === undefined,
     "artifact: an artifact without the current gateVersion is refused, so an old-gate proceed cannot come back",
+  );
+}
+
+// The park's handoff names the resolver's own verdict and the rule that parked.
+{
+  const reply = (v: string) => `${v}\n\n## Spec\n\n### Intent\nx\n\n## Rationale\nclear\n`;
+  assert(
+    parseNormalisedSpec(reply("INTENT-VERDICT: proceed-with-assumptions"))?.resolverVerdict ===
+      "proceed-with-assumptions",
+    "parse: the resolver's verdict is recorded as stated",
+  );
+  assert(
+    parseNormalisedSpec(reply(""))?.resolverVerdict === undefined,
+    "parse: no verdict token leaves resolverVerdict absent, not a default",
+  );
+  const body = "## Open points (unresolved at the gap-gate cap)\n\n- [CRITICAL] pick a name\n";
+  const gated = finaliseSpecVerdict(
+    spec({
+      verdict: "proceed-with-assumptions",
+      resolverVerdict: "proceed-with-assumptions",
+      parkReason: undefined,
+      evidence: [{ claim: "c", source: "s", verdict: "confirmed" }],
+    }),
+    body,
+  );
+  const line = resolverVerdictLine(gated);
+  assert(
+    gated.verdict === "park" && gated.verdictRule === "open-point-gate",
+    "gate: an open-point park records the open-point gate as the rule",
+  );
+  assert(
+    line.includes("Resolver verdict: proceed-with-assumptions — parked by: open-point gate") &&
+      line.includes("called the issue buildable"),
+    "handoff: the line shows the resolver's proceed, the gate that parked, and that the resolver called it buildable",
+  );
+  const parkState = { issue: 7, eventLog: [], pipelineState: { normalisedSpec: gated } };
+  assert(
+    explainPrSteps("intent-park", parkState as unknown as WorkState).includes(line),
+    "handoff: the intent-park explanation carries the resolver-verdict line",
+  );
+  const declared = finaliseSpecVerdict(
+    spec({ parkReason: "too-large", resolverVerdict: "park", verdictSource: "parsed" }),
+    body,
+  );
+  const declaredLine = resolverVerdictLine(declared);
+  assert(
+    declared.verdictRule === undefined &&
+      declaredLine.startsWith("Resolver verdict: park — parked by the resolver; no rule") &&
+      !declaredLine.includes("buildable"),
+    "handoff: a resolver-declared park shows its verdict and no override",
+  );
+  assert(
+    resolverVerdictLine(spec()).startsWith("Resolver verdict: not parsed"),
+    "handoff: an absent resolver verdict is said to be unparsed",
+  );
+  const withFields = (over: Record<string, unknown>) =>
+    parseNormalisedSpecArtifact(
+      JSON.stringify({ ...spec(), gateVersion: SPEC_ARTIFACT_GATE_VERSION, ...over }),
+    );
+  const kept = withFields({ resolverVerdict: "proceed", verdictRule: "open-point-gate" });
+  assert(
+    kept?.resolverVerdict === "proceed" && kept.verdictRule === "open-point-gate",
+    "artifact: resolverVerdict and verdictRule round-trip",
+  );
+  assert(
+    withFields({}) !== undefined && withFields({})?.resolverVerdict === undefined,
+    "artifact: an artifact without the new fields still loads",
+  );
+  assert(
+    withFields({ resolverVerdict: "build-it" }) === undefined &&
+      withFields({ verdictRule: "vibes" }) === undefined,
+    "artifact: an undeclared resolverVerdict or verdictRule is refused",
   );
 }
 

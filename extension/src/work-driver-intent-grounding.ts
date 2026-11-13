@@ -76,7 +76,12 @@ export async function groundAlreadyImplemented(
   const { parkReason: _r, parkReasonSource: _rs, verdictSource: _vs, ...rest } = spec;
   const assumptions = [...spec.assumptions, refutation];
   if (specIsActionable(spec)) {
-    return { ...rest, verdict: "proceed-with-assumptions", assumptions };
+    return {
+      ...rest,
+      verdict: "proceed-with-assumptions",
+      verdictRule: "mainline-grounding",
+      assumptions,
+    };
   }
   return {
     ...rest,
@@ -84,6 +89,7 @@ export async function groundAlreadyImplemented(
     parkReason: "underspecified",
     parkReasonSource: "default",
     verdictSource: "parsed",
+    verdictRule: "mainline-grounding",
     assumptions,
   };
 }
