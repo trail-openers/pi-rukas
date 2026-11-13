@@ -16,12 +16,24 @@
 | `~/.pi/agent/models.json` | same | bind (ro) | Pi PROVIDER config (anthropic / openai / a local GPU provider / a private gateway / etc.). |
 | `~/.pi/agent/mcp.json` | same | bind (ro) | Pi 1.0.0's native MCP config (codebase-memory-mcp wiring + your other MCP servers). Issue #959 moved the wiring from the adapter-era `~/.config/mcp/mcp.json` to this path; the devcontainer.json bind-mount of `~/.config/mcp` is removed (see docs/mcp.md). |
 | `~/.config/gh/` | same | bind (ro) | gh CLI config (fallback; primary auth is `GH_TOKEN` extracted from `gh auth token` and forwarded as env). |
+| the host glab config dir (`$GLAB_CONFIG_DIR`, else `$XDG_CONFIG_HOME/glab-cli`, else `~/.config/glab-cli`) | the same path | bind (ro) | glab CLI config — config continuity only, NOT auth. The image ships `glab`; auth is `GITLAB_TOKEN` (with `GITLAB_HOST`) forwarded by the env passthrough, since `glab` prints no token. Mounted only when the host dir exists, and the wrapper then sets `GLAB_CONFIG_DIR` to the container path. |
 | — | `~/.cache/` | named volume `pi-ensemble-cache` | codebase-memory-mcp index, HF model cache. |
 | — | `~/.bun/` | named volume `pi-ensemble-bun-cache` | bun download cache. |
 | — | `~/.cargo/` | named volume `pi-ensemble-cargo-cache` | cargo download cache. |
 | — | `/commandhistory` | named volume `pi-ensemble-history` | shell history. |
 
 **Cross-mode persistence:** vipune memories, transcripts, sessions, model picks, MCP config, and gh auth all share state between host-mode `pi` and sandbox-mode `pi-rukas` (same bind-mount targets, same Pi scope-bucket keys post-#207). Container-local caches (above) don't — they're container-scoped and survive container restarts via named volumes, but the host runs against its own caches.
+
+**GitLab auth.** The sandbox image ships `glab`, and the wrapper gives it the same config continuity it gives `gh`: the host glab config dir is bind-mounted read-only at `.config/glab-cli` in the container home (resolved from `GLAB_CONFIG_DIR`, else `$XDG_CONFIG_HOME/glab-cli`, else `~/.config/glab-cli` — an override that is not an absolute path is ignored, and with no directory on the host there is no mount at all).
+
+That mount is a **config** fallback, not an auth channel. **Auth is the host's `GITLAB_TOKEN`**, with `GITLAB_HOST` for a self-hosted instance (`gitlab.example.com`) — both reach the container through the ordinary host-env passthrough, forwarded once each. Unlike `gh`, `glab` has no command that prints its stored token, so the wrapper extracts nothing: a `glab auth login` whose token lives in the host OS keychain does **not** reach the container. Export the token instead:
+
+```bash
+export GITLAB_TOKEN=glpat-…      # and GITLAB_HOST=gitlab.example.com for self-hosted
+pi-rukas
+```
+
+Do not run `glab auth login` inside the container to fix an auth failure: the config mount is read-only, so the write cannot land. `GITLAB_CI` is on the env blocklist — a host export of it (a real one, if you launch `pi-rukas` from inside a CI job) would otherwise switch the container's glab to job-token auth. `GITLAB_CI_*` job variables are not blocked. **Pushing** from the sandbox needs either the SSH agent (the default: `~/.ssh` is mounted read-only and the host's `SSH_AUTH_SOCK` is forwarded) or an HTTPS remote that carries a token, since the container has no writable credential store.
 
 **Wrapper subcommands:**
 

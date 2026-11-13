@@ -1187,6 +1187,24 @@ PR: [#196](https://github.com/trail-openers/pi-rukas/pull/196)
 
 PR: [#203](https://github.com/trail-openers/pi-rukas/pull/203)
 
+### `glab` commands return 401 "Unauthorized" inside the container
+
+**Symptom:** Inside `pi-rukas`, `glab mr list` / `glab issue list` fails with 401 (or "unauthenticated"), while the same commands work on the host. `gh` in the same container is fine.
+
+**Cause:** GitLab auth in the sandbox is the **host-provided `GITLAB_TOKEN`**, forwarded by the wrapper's ordinary host-env passthrough (with `GITLAB_HOST` for a self-hosted instance such as `gitlab.example.com`). `glab` — unlike `gh` — has no command that prints its stored token, so the wrapper can extract nothing: a `glab auth login` that keeps its token in the host OS keychain never crosses into the container. The glab config dir *is* mounted read-only for continuity, but a config directory is not a credential.
+
+**Fix:** Export the token on the host before launching, so the passthrough forwards it:
+
+```bash
+export GITLAB_TOKEN=glpat-…                     # and for self-hosted:
+export GITLAB_HOST=gitlab.example.com
+pi-rukas
+```
+
+Do **not** run `glab auth login` inside the container to repair this — the config mount is read-only, so the write cannot land. Check the host first: `env | grep GITLAB_` should show the token. `GITLAB_CI` is on the wrapper's env blocklist deliberately: a host export of it (a real one, when `pi-rukas` is launched from inside a CI job) would otherwise switch the container's glab to job-token auth. `GITLAB_CI_*` job variables still pass. For **pushing** from the sandbox, use the SSH agent (mounted and forwarded by default) or an HTTPS remote that carries a token — the container has no writable credential store.
+
+Covered by the offline gate `extension/smoke-tests/test-sandbox-glab-config-mount.ts`.
+
 ### Custom LLM endpoint on a private hostname returns "connection refused" or "no such host"
 
 **Symptom:** A custom provider (configured in `~/.pi/agent/models.json` with `baseUrl: "http://gateway:8080/v1"`) works from host-mode `pi` but fails inside `pi-rukas`.
