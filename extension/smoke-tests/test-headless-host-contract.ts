@@ -7,7 +7,8 @@
  *   - the result projects `failedStep`, summed `usage`, `resumable` and a typed `cap`
  *   - the --json document carries `schemaVersion` 2 and `buildCommit`
  *   - `buildCommit` resolves from the baked marker, the install checkout, or the release
- *   - `prUrl` is built for GitHub and GitLab remotes only
+ *   - `prUrl` comes from the URL the driver recorded (its URL-building leg is
+ *     `test-headless-pr-url.ts`)
  *   - NDJSON marks every kind outside the stable subset `unstable: true`
  *
  * Offline: temp directories only, and one `--capabilities` run of the CLI.
@@ -29,7 +30,6 @@ import {
   NDJSON_STABLE_VERSION,
   validateNdjsonLine,
 } from "../src/headless/ndjson.ts";
-import { formatPrUrl, prUrlFromComment } from "../src/headless/pr-url.ts";
 import { RESULT_SCHEMA_VERSION, projectIssue, resultDocument } from "../src/headless/result.ts";
 import type { WorkEvent } from "../src/workflow-state-events.ts";
 import { WORK_STEPS } from "../src/workflow-state-schema.ts";
@@ -411,37 +411,11 @@ const capHit = (cap: string, at: number): WorkEvent =>
 }
 
 // ── prUrl: only when unambiguous.
+// The whole `prUrl` surface — the ten-row `formatPrUrl` table, the recorded
+// comment, and the self-hosted ssh rows — lives in `test-headless-pr-url.ts`,
+// which is the file for that concern. Only what the result projection proves
+// stays here: the driver's own recorded URL wins over anything built locally.
 {
-  const cases: [string, string, string | undefined][] = [
-    ["github", "git@github.com:o/r.git", "https://github.com/o/r/pull/5"],
-    ["github", "ssh://git@github.com:22/o/r.git", "https://github.com/o/r/pull/5"],
-    ["github", "https://ghe.example.com:8443/o/r", "https://ghe.example.com:8443/o/r/pull/5"],
-    ["github", "https://github.com/o/r/extra", undefined],
-    [
-      "gitlab",
-      "https://gitlab.example.com/g/sub/p.git",
-      "https://gitlab.example.com/g/sub/p/-/merge_requests/5",
-    ],
-    ["gitlab", "git@gitlab.com:g/sub/p.git", "https://gitlab.com/g/sub/p/-/merge_requests/5"],
-    // An ssh alias host (or a self-hosted ssh host) has no certain web address.
-    ["github", "git@github-work:o/r.git", undefined],
-    ["gitlab", "ssh://git@gitlab.example.com:2222/g/p.git", undefined],
-    ["gitlab", "https://gitlab.example.com/g/../p", undefined],
-    ["unknown", "https://x.example/o/r", undefined],
-  ];
-  for (const [forge, remote, want] of cases) {
-    const got = formatPrUrl(forge, remote, 5);
-    assert(got === want, `${forge} ${remote} → ${want ?? "no URL"} (${got ?? "none"})`);
-  }
-  assert(
-    prUrlFromComment("https://github.com/o/r/pull/5#issuecomment-1", 5) ===
-      "https://github.com/o/r/pull/5",
-    "a recorded PR comment URL yields the PR URL",
-  );
-  assert(
-    prUrlFromComment("https://github.com/o/r/pull/6#issuecomment-1", 5) === undefined,
-    "a comment on another PR is not used",
-  );
   const s = build(
     [
       { kind: "merged", at: 1, prNumber: 5 },

@@ -21,6 +21,8 @@
   "include": [
     "src/**/*",
     "scripts/**/*",
+    "smoke-tests/lib/headless-contract-git.ts",
+    "smoke-tests/test-headless-pr-url.ts",
     "smoke-tests/lib/merge-allowlist-target.ts",
     "smoke-tests/lib/bun-test.d.ts",
     "smoke-tests/lib/worktree-sweep-assert.ts",
