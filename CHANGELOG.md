@@ -8,6 +8,20 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.80](https://github.com/trail-openers/pi-rukas/compare/v0.14.79...v0.14.80) (2026-11-13)
+
+
+### Features
+
+* **work:** show the resolver's verdict and the rule behind an intent park ([#2251](https://github.com/trail-openers/pi-rukas/issues/2251)) ([90857f1](https://github.com/trail-openers/pi-rukas/commit/90857f1222f0d5156f5c00ee55ce1170888a3abb)), closes [#2167](https://github.com/trail-openers/pi-rukas/issues/2167)
+
+
+### Bug Fixes
+
+* **lean:** give reviewers the spec criteria unbounded ([#2250](https://github.com/trail-openers/pi-rukas/issues/2250)) ([984ca74](https://github.com/trail-openers/pi-rukas/commit/984ca74833e34d6e9b36a12182f5f2305eeb8bd7))
+* **lean:** hand back the last verified head ([#2254](https://github.com/trail-openers/pi-rukas/issues/2254)) ([d87ba76](https://github.com/trail-openers/pi-rukas/commit/d87ba76ca24d31c49a7a98e1dbb72b1d16c09183))
+* **work:** read [RESOLVED] after the topic and skip rules in Open points ([#2252](https://github.com/trail-openers/pi-rukas/issues/2252)) ([2fc3380](https://github.com/trail-openers/pi-rukas/commit/2fc33808ba241e76364c5938bfd25dbab3cfc6f0)), closes [#2167](https://github.com/trail-openers/pi-rukas/issues/2167)
+
 ## [0.14.79](https://github.com/trail-openers/pi-rukas/compare/v0.14.78...v0.14.79) (2026-11-13)
 
 
