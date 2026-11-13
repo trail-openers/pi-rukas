@@ -11,7 +11,8 @@
  * Harness pattern: pinned literals, no framework (test-clip-title.ts shape).
  */
 
-import { parseRemoteUrl } from "../src/forge-detect.ts";
+import { MAX_SEGMENTS, MIN_SEGMENTS, parseRemoteUrl } from "../src/forge-detect.ts";
+import { isSegment, parseRepoIdentity } from "../src/plan-target.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -167,8 +168,87 @@ eq(
 );
 eq(
   parseRemoteUrl("git@github.com:group/sub/project.git", "gitlab"),
-  { host: "github.com", path: SUBGROUP },
-  "…and a GitHub-shaped URL parses under the GitLab rule (a GitHub remote under a subgroup is not a thing this parser decides alone)",
+  undefined,
+  "…but a caller CANNOT lift the `owner/repo` bound off a github.com URL: the argument asserts the site, and github.com serves no repository at a deeper path, so a mislabelled GitHub remote yields no slug for the visibility lookup to read as 'private, skip the scan'",
+);
+eq(
+  parseRemoteUrl("git@github.com:group/sub/project.git"),
+  undefined,
+  "…and the unqualified parse refuses the same URL",
+);
+eq(
+  parseRemoteUrl("git@github.com:owner/repo.git", "gitlab"),
+  { host: "github.com", path: ["owner", "repo"] },
+  "a two-segment github.com URL still parses however the caller labels the forge",
+);
+
+console.log("\n--- parseRemoteUrl: a trailing separator after `.git` ---");
+
+// git itself tolerates and rewrites these, and they survive a copy-pasted remote
+// URL. The separators are stripped before the `.git` suffix, so the last segment
+// is `project` — a slug carrying `project.git` names no repository and would be
+// handed to the forge CLI, the hygiene target and the plan identity alike.
+eq(
+  parseRemoteUrl("https://gitlab.example.com/group/sub/project.git/"),
+  { host: "gitlab.example.com", path: SUBGROUP },
+  "a subgroup path ending `.git/` still yields `project`, not `project.git`",
+);
+eq(
+  parseRemoteUrl("git@github.com:owner/repo.git/"),
+  { host: "github.com", path: ["owner", "repo"] },
+  "…same for a two-segment GitHub URL",
+);
+eq(
+  parseRemoteUrl("https://gitlab.example.com/a/b/c/d/e.git///"),
+  { host: "gitlab.example.com", path: ["a", "b", "c", "d", "e"] },
+  "…and for the deepest accepted path with several trailing separators",
+);
+
+console.log("\n--- the parser and the plan identity agree on a path segment ---");
+
+// `forge-detect.ts` imports the segment grammar from `plan-target.ts` rather than
+// restating it, so the two surfaces cannot disagree about what the same namespace
+// string is: a segment the remote parser accepts and the identity rules refuse
+// would be a repository a clone has a remote for and cannot name as a target.
+// Every row is a path the parser must ACCEPT — a refusal on either side of a
+// rejected string is agreement about nothing.
+for (const s of ["x", "a.b", "proj.git", "pro_ject", "P1"]) {
+  eq(
+    parseRemoteUrl(`https://gitlab.example.com/group/${s}`)?.path,
+    ["group", s.replace(/\.git$/i, "")],
+    `the parser accepts a segment the identity rules accept: ${JSON.stringify(s)}`,
+  );
+  eq(
+    isSegment(s),
+    parseRepoIdentity(`gitlab.example.com/group/${s}`)?.segments.at(-1) === s,
+    `…and both surfaces share one grammar for it: ${JSON.stringify(s)}`,
+  );
+}
+for (const s of ["a b", "a%2Fb", "-", "", "-x", ".hidden"]) {
+  eq(
+    parseRemoteUrl(`https://gitlab.example.com/group/${s}`),
+    undefined,
+    `a segment the grammar refuses is refused by the parser too: ${JSON.stringify(s)}`,
+  );
+}
+
+// The bound the docs state is the bound the parser has. `test-forge-subgroup-docs`
+// pins the prose to these constants; this pins the parser's own behaviour at the
+// boundary, so neither can drift from the other silently.
+eq(
+  parseRemoteUrl(`https://gitlab.example.com/${Array.from({ length: MAX_SEGMENTS }, (_, i) => `s${i}`).join("/")}`) !== undefined,
+  true,
+  `the deepest accepted path is MAX_SEGMENTS (${MAX_SEGMENTS})`,
+);
+eq(
+  parseRemoteUrl(`https://gitlab.example.com/${Array.from({ length: MAX_SEGMENTS + 1 }, (_, i) => `s${i}`).join("/")}`),
+  undefined,
+  `one past it (${MAX_SEGMENTS + 1}) is refused`,
+);
+eq(
+  parseRemoteUrl("https://gitlab.example.com/only-one"),
+  undefined,
+  `below MIN_SEGMENTS (${MIN_SEGMENTS}) is refused`,
 );
 console.log(`\nexit ${exit}`);
 process.exit(exit);

@@ -36,7 +36,7 @@
  */
 
 import { type ParsedRemote, parseRemoteUrl } from "./forge-detect.ts";
-import type { RepoTarget } from "./public-hygiene-visibility.ts";
+import { GITHUB_HOST, type RepoTarget } from "./public-hygiene-visibility.ts";
 
 /** The option words whose value arrives as the NEXT word.
  *
@@ -99,14 +99,21 @@ export function pushOptionGluedValue(word: string): string | undefined {
  * The target is a `RepoTarget`, which names a repository by `owner`/`repo`. A
  * GitLab namespace path may run deeper than that, so the shared parse's `path`
  * is reduced to the slug here — the last segment and the namespace above it —
- * exactly as `createForge` reduces it. Depth itself is not policed here: this is
- * a push, and a deep path on any host is still a repository that receives bytes.
+ * exactly as `createForge` reduces it. Depth itself is policed only on github.com,
+ * where the host serves `owner/repo` and nothing else: a deeper path there names
+ * no repository `gh` can resolve, so a `RepoTarget` for it would be an owner
+ * containing a slash that the visibility lookup asks about as if it were a slug
+ * (`gh api repos/group/sub/project`). On every other host a deep path is still a
+ * repository that receives bytes, so the slug is kept.
  */
 export function parsePushUrlTarget(word: string): RepoTarget | undefined {
   if (!looksLikeRemoteUrl(word)) return undefined;
   const w = word.trim();
   const viaShared = parseRemoteUrl(w);
-  if (viaShared !== undefined) return repoTarget(viaShared);
+  if (viaShared !== undefined) {
+    if (viaShared.host === GITHUB_HOST && viaShared.path.length !== 2) return undefined;
+    return repoTarget(viaShared);
+  }
   // The one shape the shared parser does not cover: `host:path` with no `user@`.
   const bare = scpHostPath(w);
   if (bare === undefined) return undefined;

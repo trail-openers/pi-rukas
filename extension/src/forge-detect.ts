@@ -36,6 +36,11 @@
 
 import { execp } from "./exec.ts";
 import { defaultProbe, shouldProbe } from "./forge-probe.ts";
+// The segment grammar is imported, not restated: what a remote URL may name and
+// what a plan target may name are the same set of strings, and a second copy of
+// the predicate is a second copy that can drift — the divergence this parser
+// exists to remove.
+import { isSegment } from "./plan-target.ts";
 import { trace } from "./trace.ts";
 
 /**
@@ -141,19 +146,26 @@ export interface ParsedRemote {
 }
 
 /**
- * The forge whose depth rule applies to a path. `undefined` means the caller
- * does not know yet — it gets the host and the path and applies its own rule.
+ * The forge whose depth rule applies to a path. An ASSERTION about the site the
+ * remote points at, not a guess: it can relax the host-derived depth rule — a
+ * remote nothing recognised gets the GitLab depth when the caller knows it is
+ * GitLab — but it NEVER tightens a github.com path below `owner/repo` and never
+ * lets one run deeper, because that bound is a fact about the public host, not a
+ * rule the caller gets to pick. Callers pass only the forge they actually
+ * detected. `undefined` means the caller does not know yet — it gets the host and
+ * the path and applies its own rule.
  */
 export type ForgeArg = "github" | "gitlab";
 
-/** A path segment both forges and git accept — the same grammar as the identity
- * rules in `plan-target.ts`, which is a separate surface with its own reasons
- * to refuse a string. */
-const isSegment = (s: string): boolean => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(s);
-
-/** The shallowest path that names a repository, and the deepest we accept. */
-const MIN_SEGMENTS = 2;
-const MAX_SEGMENTS = 5;
+/**
+ * The shallowest path that names a repository, and the deepest this parser
+ * accepts. The docs state both bounds (`docs/headless.md`,
+ * `docs/troubleshooting.md`) and `test-forge-subgroup-docs.ts` pins the stated
+ * numbers to these, so a bound change turns that gate red rather than leaving the
+ * operator-facing prose describing a parser that no longer exists.
+ */
+export const MIN_SEGMENTS = 2;
+export const MAX_SEGMENTS = 5;
 
 /**
  * Parse one remote URL into host + namespace path.
@@ -171,6 +183,11 @@ const MAX_SEGMENTS = 5;
  * knows the forge passes it; one that does not gets the host and the path and
  * applies the rule itself — which is what `detectForge` does, since its own
  * resolution order decides the type only after the host parsed.
+ *
+ * One thing the argument cannot override: a `github.com` path is always exactly
+ * `owner/repo`, whatever the caller believes the forge is. github.com serves no
+ * repository at a deeper path, and a slug it does not serve must not reach the
+ * visibility lookup — see {@link ForgeArg}.
  *
  * Returns `undefined` for anything that is not one of these forms, or whose
  * path fails the depth bound or the segment grammar — fail-closed.
@@ -217,21 +234,31 @@ export function parseRemoteUrl(url: string, forge?: ForgeArg): ParsedRemote | un
  *
  * `host` is needed alongside `forge` because GitHub's one-repository-per-owner
  * rule is a fact about the site, not about what the caller believes: an
- * unqualified parse of a github.com URL is held to the GitHub rule, and a
- * caller that passes `forge` deliberately overrides it (that is the whole point
- * of the parameter).
+ * unqualified parse is held to the rule of the host it named, and `forge` only
+ * ever ADDS a rule — it never lifts the `owner/repo` bound off a github.com URL.
+ * A caller that mislabels a github.com remote as GitLab (an exported
+ * `PI_ENSEMBLE_FORGE=gitlab` in a GitHub clone) therefore gets no deep slug for
+ * it, which is what keeps that slug out of the public-repository visibility
+ * lookup that reads a resolvable slug as a licence to skip the publish scan.
+ *
+ * The separators are stripped before the `.git` suffix, not after it: a remote
+ * whose path ends `.git/` (git tolerates and rewrites these, and they survive a
+ * copy-pasted remote URL) still has to yield `project`, not `project.git` — this
+ * parser is now the single slug source for the forge adapter, the hygiene target
+ * resolver and the plan identity, and a `.git` tail makes each of them name a
+ * repository that does not exist.
  */
 function parseNamespace(
   path: string,
   forge: ForgeArg | undefined,
   host: string,
 ): string[] | undefined {
-  const p = path.replace(/\.git$/i, "").replace(/\/+$/, "");
+  const p = path.replace(/\/+$/, "").replace(/\.git$/i, "");
   const segments = p.split("/");
   if (segments.length < MIN_SEGMENTS || segments.length > MAX_SEGMENTS) return undefined;
   if (!segments.every(isSegment)) return undefined;
   const githubish = forge === undefined ? host === "github.com" : forge === "github";
-  if (githubish && segments.length !== MIN_SEGMENTS) return undefined;
+  if ((githubish || host === "github.com") && segments.length !== MIN_SEGMENTS) return undefined;
   return segments;
 }
 

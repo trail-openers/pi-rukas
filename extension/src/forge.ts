@@ -18,7 +18,6 @@ import * as cmds from "./forge-commands.ts";
 import { listIssueComments, listPrComments, postPrComment } from "./forge-comments.ts";
 import type { PublicTextCheck } from "./forge-comments.ts";
 import type { ForgeDetection, ForgeType } from "./forge-detect.ts";
-import { parseRemoteUrl } from "./forge-detect.ts";
 import { type LabelListResult, labelOps } from "./forge-label-ops.ts";
 import { mapIssueSearchReply, mapPrListReply } from "./forge-list.ts";
 import {
@@ -44,6 +43,7 @@ import {
 } from "./forge-mapping.ts";
 import { checkGithubReadiness, checkGitlabReadiness, composeGlReadiness } from "./forge-merge.ts";
 import { glPipelineJobs, glPipelineJobsAt } from "./forge-pipeline.ts";
+import { forgePublishTarget } from "./forge-publish-target.ts";
 import type { VisibilityFn } from "./public-hygiene-visibility.ts";
 import { isFullCommitSha } from "./review-head-sha.ts";
 import { forgePublishCheck } from "./work-driver-commit-hygiene.ts";
@@ -101,14 +101,14 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
   const cwd = opts.cwd ?? process.cwd();
   const extraOpts = opts.execOpts ?? {};
   const forge = det.forge;
-  // One parser for every remote read in the driver: the adapter's slug comes
-  // from the same `parseRemoteUrl` the detector used, not from a second regex
-  // over the raw URL. A GitLab project may sit under subgroups, so the owner is
-  // the whole namespace above the project — the slug `gh`/`glab` and the
-  // public-hygiene target both need — and the repo is the last segment.
-  const parsed = det.url ? parseRemoteUrl(det.url, forge) : undefined;
-  const repo = parsed ? (parsed.path[parsed.path.length - 1] ?? "") : "";
-  const owner = parsed ? parsed.path.slice(0, -1).join("/") : "";
+  // One parser for every remote read in the driver: the adapter's slug comes from
+  // the same `parseRemoteUrl` the detector used, not from a second regex over the
+  // raw URL, and the publish target is decided with it — see
+  // `forge-publish-target.ts` for why the host is the remote's and why a deep
+  // github.com path names no target.
+  const publishTarget = forgePublishTarget(det.url, forge);
+  const owner = publishTarget?.owner ?? "";
+  const repo = publishTarget?.repo ?? "";
 
   /**
    * #1261 — default per-call exec timeout. `gh` calls against a healthy API
@@ -136,8 +136,11 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
       timeoutMs: extraOpts.timeout,
       // The adapter's own slug is the target: no command string has to be
       // parsed to work out which repository a `gh pr create` writes to when the
-      // adapter was built from that repository's remote.
-      target: owner !== "" && repo !== "" ? { owner, repo, host: det.host } : undefined,
+      // adapter was built from that repository's remote. Undefined when the
+      // remote named no repository the guard may treat as a checked target, which
+      // routes the caller to the command-based resolver rather than to a lookup
+      // on a slug the host does not serve.
+      target: publishTarget,
     });
 
   /**

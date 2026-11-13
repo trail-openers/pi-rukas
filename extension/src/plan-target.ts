@@ -72,8 +72,14 @@ export function identityText(i: RepoIdentity): string {
   return `${i.host}/${i.segments.join("/")}`;
 }
 
-/** A path segment both forges and git accept. */
-const isSegment = (s: string): boolean => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(s);
+/**
+ * A path segment both forges and git accept. The ONE definition: `forge-detect.ts`
+ * parses the same namespace out of a remote URL, and the two surfaces must not
+ * disagree about what a segment is — a remote the parser accepts and the identity
+ * rules refuse (or the other way round) is a repository that exists on one seam
+ * and not the other.
+ */
+export const isSegment = (s: string): boolean => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(s);
 
 /** A first segment is a host only when it has a dot and every label is DNS-shaped. */
 const isHost = (s: string): boolean =>
