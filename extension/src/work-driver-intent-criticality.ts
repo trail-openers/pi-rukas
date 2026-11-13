@@ -13,6 +13,7 @@
  * `applyOpenPointGate` in work-driver-intent-finalise.ts is what turns a reading into a
  * park. This module never fetches the issue and never decides what the spec says.
  */
+import { escapeRegExpLiteral } from "./open-points-contract.ts";
 import type { NormalisedSpec, SpecAssumption, SpecEvidence } from "./work-driver-intent.ts";
 import { normaliseDeclaredPath } from "./work-driver-verify.ts";
 
@@ -101,36 +102,56 @@ function assertsLoadBearingContradiction(spec: NormalisedSpec, evidence: SpecEvi
   if (evidence.claim.trim() === "") return true;
   // A stale memory row contradicts the memory, not the issue.
   if (isMemoryClaim(evidence)) return false;
-  const deliverableBasenames = spec.deliverables
-    .flatMap((deliverable) => deliverable.paths)
-    .map(normaliseDeclaredPath)
-    .filter(Boolean)
-    .map((path) => path.split("/").pop()?.toLowerCase() ?? "")
-    .filter(Boolean);
+  const deliverablePaths = (deliverables: NormalisedSpec["deliverables"]) =>
+    deliverables
+      .flatMap((deliverable) => deliverable.paths)
+      .map(normaliseDeclaredPath)
+      .filter(Boolean)
+      .map((path) => path.toLowerCase());
+  const basename = (path: string) => path.split("/").pop() ?? "";
+  // A basename is matched as text: a name such as `retry(500).ts` is a file,
+  // not a pattern.
+  const names = (name: string) =>
+    name !== "" &&
+    new RegExp(`(?:^|[^a-z0-9_./-])${escapeRegExpLiteral(name)}(?:$|[^a-z0-9_./-])`, "i").test(
+      evidence.claim,
+    );
   const claimTokens = criticalityTokens(evidence.claim);
-  const referencesDeliverable = deliverableBasenames.some((basename) => {
-    const escaped = basename.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&");
-    return new RegExp(`(?:^|[^a-z0-9_./-])${escaped}(?:$|[^a-z0-9_./-])`, "i").test(evidence.claim);
-  });
+  const referencesDeliverable = deliverablePaths(spec.deliverables).some((p) => names(basename(p)));
   const intentTokens = criticalityTokens(spec.intent);
   const referencesIntent = [...claimTokens].some((token) => intentTokens.has(token));
   if (!referencesDeliverable && !referencesIntent) return false;
 
   // Keep these patterns explicit. In particular, a plain "not confirmed"
   // must remain unverifiable rather than becoming a reason to park.
-  return (
-    /\b(?:no longer exists|does not exist|doesn't exist|not present|not found|missing)\b/i.test(
-      evidence.claim,
-    ) ||
+  const relocatedOrDone =
     /\b(?:moved|relocated|renamed)\b(?:\s+to\b|\s+from\b|\s+into\b|\s+out of\b)?/i.test(
       evidence.claim,
     ) ||
     /\b(?:now )?lives in\b/i.test(evidence.claim) ||
     /\b(?:already implemented|already explicit|already checked|already exists)\b/i.test(
       evidence.claim,
+    );
+  if (relocatedOrDone) return true;
+  if (
+    !/\b(?:no longer exists|does not exist|doesn't exist|not present|not found|missing)\b/i.test(
+      evidence.claim,
     )
+  ) {
+    return false;
+  }
+  // The absence of a file the spec asks to create is the starting state, not a
+  // contradiction. Only a deliverable whose own description says it creates
+  // the file counts: "fix foo.ts" with foo.ts gone still parks.
+  const created = deliverablePaths(
+    spec.deliverables.filter((d) => CREATES_FILE.test(d.description)),
   );
+  return !created.some((p) => names(p) || names(basename(p)));
 }
+
+/** A deliverable description that asks for a file to be created. */
+const CREATES_FILE =
+  /\bcreat(?:e|es|ed|ing)\b|\b(?:add(?:s|ed|ing)?\s+(?:an?\s+)?(?:new\s+)?|new\s+)(?:\w+\s+)?(?:file|module|script|tests?)\b/i;
 
 /**
  * Contradictions that are strong enough to override a proceed verdict.

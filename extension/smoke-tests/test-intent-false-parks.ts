@@ -367,5 +367,43 @@ const spec = (marker: "dash" | "numbered") => {
   }
 }
 
+// A file the issue asks to create is absent before the work starts. A resolver
+// that records that absence as a contradicted row has found the starting state,
+// not a stale premise; the same row against a file the issue asks to FIX is.
+{
+  const reply = (deliverable: string, path: string) =>
+    parseNormalisedSpec(
+      [
+        "INTENT-VERDICT: proceed",
+        "",
+        "## Spec",
+        "",
+        "### Intent",
+        `Cover the parser with tests in ${path}.`,
+        "",
+        "### Deliverables",
+        `- d1: ${deliverable} [paths: ${path}]`,
+        "",
+        "### Acceptance criteria",
+        "- the parser tests pass",
+        "",
+        "### Evidence",
+        `- ${path} does not exist — ${path} — contradicted`,
+        "",
+      ].join("\n"),
+    );
+  const create = reply("Create a new test file tests/x.rs for the parser", "tests/x.rs");
+  assert(
+    create !== undefined && reconcileVerdict(create).verdict === "proceed-with-assumptions",
+    "a file the issue asks to create being absent is not contradicted-by-code",
+  );
+  const fix = reply("Fix the parser in src/foo.ts", "src/foo.ts");
+  const fixed = fix && reconcileVerdict(fix);
+  assert(
+    fixed?.verdict === "park" && fixed.parkReason === "contradicted-by-code",
+    "a file the issue asks to fix being absent still parks as contradicted-by-code",
+  );
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);
