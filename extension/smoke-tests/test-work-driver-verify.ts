@@ -259,6 +259,19 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
 
     // --- verifyStepOutcome: commit-pr ---
     {
+      // The commit-pr gate resolves the cycle's forge through the remote before
+      // it will run a PR lookup: with no remote it resolves no forge, refuses the
+      // lookup, and the `gh` assertions below are never asked. A github.com
+      // remote keeps these fixtures GitHub cycles; the GitLab arm is covered in
+      // test-work-driver-forge-ctx.ts.
+      const ghRemote = (cmd: string): { stdout: string } | undefined =>
+        cmd.includes("remote.origin.url")
+          ? { stdout: "https://github.com/o/r\n" }
+          : cmd.includes("remote.upstream.url")
+            ? { stdout: "" }
+            : cmd === "git remote"
+              ? { stdout: "origin\n" }
+              : undefined;
       const dir = mkdtempSync(path.join(tmpdir(), "verify-commitpr-"));
       try {
         let s = initialState(999, 1000);
@@ -289,6 +302,8 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
 
         // Commits ahead + PR resolves → ok.
         const happy: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
+          const remote = ghRemote(cmd);
+          if (remote) return remote;
           if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
           if (cmd.includes("rev-parse --verify origin/"))
             return { stdout: "a".repeat(40) + "\n" };
@@ -307,6 +322,8 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
           pipelineState: { ...sNoPr.pipelineState, branchName: "feature/issue-999" },
         };
         const adopt: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
+          const remote = ghRemote(cmd);
+          if (remote) return remote;
           if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
           if (cmd.includes("rev-parse --verify origin/"))
             return { stdout: "a".repeat(40) + "\n" };
@@ -347,6 +364,8 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
 
         // prNumber set but gh pr view errors → failure.
         const ghosted: NonNullable<DriverContext["verifyExecFn"]> = async (cmd) => {
+          const remote = ghRemote(cmd);
+          if (remote) return remote;
           if (cmd.startsWith("git symbolic-ref")) return { stdout: "main\n" };
           if (cmd.includes("rev-parse --verify origin/"))
             return { stdout: "a".repeat(40) + "\n" };

@@ -133,10 +133,9 @@ const { assert, status } = mkAssert();
     // No forge at all: no command to issue, no read to make, and no command to
     // hand the operator — the halt is the only honest answer.
     { what: "forge undetectable", ctx: mkCtxWithoutForge(), halts: true, plumbs: 1 },
-    // A forge whose every call fails. `forgeForCycle` hard-overrides detection
-    // with `PI_ENSEMBLE_FORGE=github`, so a forge-less host reaches the re-arm
-    // as an adapter that cannot answer, not as `undefined` — same shape, and
-    // the re-arm has no route around either.
+    // A forge whose every call fails: a forge-less host can also reach the
+    // re-arm as an adapter that cannot answer, and the re-arm has no route
+    // around either shape — so both decline the same way.
     { what: "forge refuses every call", ctx: mkCtxWithoutForge(), halts: true, plumbs: 1 },
     {
       what: "identity refused (another branch's PR)",

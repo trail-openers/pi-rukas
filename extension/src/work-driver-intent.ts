@@ -56,6 +56,20 @@ export type ParkReason =
 
 export type IntentVerdict = "proceed" | "proceed-with-assumptions" | "park";
 
+/** The driver rules that can change the verdict after the resolver's reply was parsed. */
+export const VERDICT_RULES = [
+  "complete-spec-override",
+  "evidence-contradiction",
+  "supporting-contradiction",
+  "not-actionable",
+  "assumption-promotion",
+  "mainline-grounding",
+  "open-point-gate",
+  "blank-body-gate",
+  "spec-artifact-restore",
+] as const;
+export type VerdictRule = (typeof VERDICT_RULES)[number];
+
 export interface SpecDeliverable {
   id: string;
   description: string;
@@ -114,6 +128,14 @@ export interface NormalisedSpec {
    * a park the resolver actually declared may not.
    */
   verdictSource?: "parsed" | "default";
+  /**
+   * The verdict the resolver's reply stated, before any driver rule ran; absent when no
+   * verdict token parsed. Recorded so a park the rules produced is told apart from one
+   * the resolver declared without reading the rationale prose.
+   */
+  resolverVerdict?: IntentVerdict;
+  /** The rule that last changed `verdict`; absent when no rule changed it. */
+  verdictRule?: VerdictRule;
   /** The resolver's own words on why — surfaced verbatim in the handoff. */
   rationale: string;
 }
@@ -147,7 +169,6 @@ function sliceSubsection(text: string, name: string): string | undefined {
   return sliceSpecField(text, name);
 }
 
-/** Bullet lines of a markdown section, with the leading marker stripped. */
 /**
  * The items of a markdown list, whichever marker the writer used.
  *
@@ -167,27 +188,6 @@ function bullets(section: string | undefined): string[] {
     .map((l) => l.replace(/^(?:[-*]|\d+[.)])\s+/, "").trim())
     .filter(Boolean);
 }
-
-/**
- * Read a `TOKEN: value` marker in the shapes resolvers actually emit.
- *
- * The prompt asks for an inline `PARK-REASON: <value>`, but a real resolver
- * wrote it as a markdown heading with the value on the next line:
- *
- *     ### PARK-REASON
- *     already-implemented
- *
- * The old colon-anchored regex silently missed that, and the synthesised
- * default then flowed into a decision (#404). Both forms are accepted; bold
- * and heading markers are tolerated, as they are on every sibling parser.
- */
-// The private `readToken` duplicate is DELETED (seam audit 2026-09-09): it
-// was strictly weaker than reply-markers.ts's shared reader — FIRST match
-// instead of LAST (the exact defect readMarker was built to fix: a resolver
-// musing about a verdict had its musing read as the verdict), a mandatory
-// colon, and no post-value bold tolerance. `readMarker` keeps the heading
-// form (#404) and is wider on every axis, so parseable-today stays
-// parseable and the provenance semantics below are unchanged.
 
 /**
  * Parse the resolver's reply into a normalised spec.
@@ -226,6 +226,7 @@ export function parseNormalisedSpec(text: string): NormalisedSpec | undefined {
     openQuestions: bullets(sliceSubsection(section, "Open questions")),
     evidence: parseEvidence(sliceSubsection(section, "Evidence")),
     verdict,
+    ...(rawVerdict ? { resolverVerdict: rawVerdict as IntentVerdict } : {}),
     // A park with no stated reason is still a park, and `underspecified` is
     // still the honest label for the operator. But #404: the driver must
     // remember that it INVENTED this value, because `reconcileVerdict` treats
@@ -420,6 +421,7 @@ export function reconcileVerdict(spec: NormalisedSpec): NormalisedSpec {
       return {
         ...rest,
         verdict: "proceed-with-assumptions",
+        verdictRule: "complete-spec-override",
         assumptions: [...spec.assumptions, OVERRIDE_ASSUMPTION],
       };
     }
@@ -428,7 +430,12 @@ export function reconcileVerdict(spec: NormalisedSpec): NormalisedSpec {
   const supporting = supportingContradictions(spec);
   if (loadBearingContradictions(spec).length > 0) {
     trace("work-driver: intent — load-bearing evidence contradicts a proceed verdict, parking");
-    return { ...spec, verdict: "park", parkReason: "contradicted-by-code" };
+    return {
+      ...spec,
+      verdict: "park",
+      parkReason: "contradicted-by-code",
+      verdictRule: "evidence-contradiction",
+    };
   }
   // Peripheral contradictions are retained as assumptions rather than
   // overriding the resolver's actionable decision. A contradicted row can be
@@ -444,6 +451,7 @@ export function reconcileVerdict(spec: NormalisedSpec): NormalisedSpec {
     return {
       ...spec,
       verdict: "proceed-with-assumptions",
+      verdictRule: "supporting-contradiction",
       assumptions: [...spec.assumptions, ...added],
     };
   }
@@ -455,12 +463,17 @@ export function reconcileVerdict(spec: NormalisedSpec): NormalisedSpec {
     trace(
       "work-driver: intent — 'proceed' with no deliverables or criteria, parking as underspecified",
     );
-    return { ...spec, verdict: "park", parkReason: "underspecified" };
+    return {
+      ...spec,
+      verdict: "park",
+      parkReason: "underspecified",
+      verdictRule: "not-actionable",
+    };
   }
   // Claiming a plain `proceed` while recording assumptions understates what
   // review needs to see; promote so the assumptions reach the PR body.
   if (spec.verdict === "proceed" && spec.assumptions.length > 0) {
-    return { ...spec, verdict: "proceed-with-assumptions" };
+    return { ...spec, verdict: "proceed-with-assumptions", verdictRule: "assumption-promotion" };
   }
   return spec;
 }

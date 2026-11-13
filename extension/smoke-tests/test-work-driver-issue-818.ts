@@ -18,8 +18,6 @@
  * the TITLE argument actually handed to the forge, not a helper.
  */
 
-import { commandOf } from "./lib/argv-shell.ts";
-import { answerDiffReads } from "./lib/clean-repo-fixture.ts";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -27,6 +25,8 @@ import { deriveCommitPrTitle } from "../src/work-driver-commit.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { runWorkDriver } from "../src/work-driver.ts";
 import { readState } from "../src/workflow-state.ts";
+import { commandOf } from "./lib/argv-shell.ts";
+import { answerDiffReads } from "./lib/clean-repo-fixture.ts";
 
 import {
   makeFakePi,
@@ -227,6 +227,18 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       const exec: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
         cmd = commandOf(cmd, o);
         calls.push(cmd);
+        // The commit-pr forge resolution reads the remote before it will build
+        // an adapter, and with no remote it resolves no forge — so `prCreate`
+        // refuses with its named reason and this e2e never reaches the command
+        // it exists to assert on. A github.com remote is the answer that keeps
+        // this a GitHub cycle; the GitLab arm is covered in
+        // test-work-driver-forge-ctx.ts.
+        if (cmd.includes("remote.origin.url")) {
+          return { stdout: "https://github.com/o/r\n" };
+        }
+        if (cmd.includes("remote.upstream.url") || cmd === "git remote") {
+          return { stdout: cmd === "git remote" ? "origin\n" : "" };
+        }
         if (cmd === "git rev-parse HEAD")
           return { stdout: "1111111111111111111111111111111111111111\n" };
         if (cmd === "git rev-parse --abbrev-ref HEAD") return { stdout: "feature/issue-818\n" };

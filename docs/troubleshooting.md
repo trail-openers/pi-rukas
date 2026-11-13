@@ -710,6 +710,20 @@ The gate now requires the PR to be **open** and to have this cycle's branch as i
 
 The driver reads the cycle's PR before lens-review, lens-fix, ci, and before it pushes a lens fix. **Merged** by a person: the cycle ends `merged`, and the terminal line says *merged by someone else during <step>* — the driver merged nothing and pushes nothing further; unpushed work stays in the cycle's worktree(s). **Closed** without a merge: it parks as `pr-not-open:<step>` with a `[pr-not-open]` failure (`verify-failed:<step>` before #1349). If the PR's state cannot be read, the step runs as before. The review's residual findings are posted to the recorded PR number (a merged PR still takes comments); if that fails they go to the issue, and `/work-status` shows a `lens-residuals-post-failed` event saying where they went.
 
+### `/work` on a GitLab project says a check reads GitHub pull requests only
+
+**Symptom:** a cycle on a self-hosted GitLab project halts at commit-pr with *"forge not determined for this repo — cannot open the PR"*, or the handoff / trace says the open-PR pre-flight was skipped because *"the forge is gitlab; the open-PR body lookup reads GitHub pull requests only"* or *"the forge is gitlab; --continue-pr reads GitHub pull requests only"*. Nothing was refused by a policy — the driver could not tell it was on GitLab at all.
+
+**Cause:** the cycle resolves its forge once, from the repo, and every step honours that answer. `PI_ENSEMBLE_FORGE` wins over everything, so an exported `PI_ENSEMBLE_FORGE=github` (or `=none`) in the environment Pi was launched from decides the answer before the repository is ever asked — and a self-hosted instance is unclassifiable without `.pi/forge`: the known-host table names only `github.com` and `gitlab.com`, and the probe that could classify another host is opt-in and off in CI, so the cycle gets `unknown`, which means no forge and no forge calls.
+
+**Fix:**
+
+1. `env | grep PI_ENSEMBLE_FORGE` — if it prints `github` or `none`, that variable is the answer, not the repo. Clear it for the session (`env -u PI_ENSEMBLE_FORGE pi`) or set it to the forge you mean; set it to `none` to turn the forge off on purpose.
+2. Write `<project>/.pi/forge` with `type=gitlab` and `host=<the remote's host>`. The `host` must equal the remote's host or the file is not applied: `git remote get-url origin` is what it has to agree with. The remote must carry a host **and** an `owner/repo` path (`group/project`, or a GitLab subgroup `group/sub/project`) — a path deeper than that parses to no host at all, and a config whose host disagrees with a host that never parsed is applied anyway, which is how a cycle ends up with an adapter for an instance its remote never named. Run it through a wrapper (`ssh://…/repo.git`) or an scp-style remote (`git@host:group/repo.git`) — both parse; an ssh *alias* with no hostname in it does not, and leaves the cycle forge-less.
+3. `PI_ENSEMBLE_DEBUG=1` traces the resolution with the source that decided it — `env`, `config`, `known-host` or `unknown` — which is how you tell "no remote was read" from "the config's host disagreed with the remote".
+
+Two refusals stay refusals on a correctly-detected GitLab project, and both are the honest answer rather than a bug: the open-PR pre-flight reads the PR **body** for a closing keyword and GitLab's MR list carries no body field, and `--continue-pr` reads GitHub pull requests only. Each names the forge in its reason instead of running `gh`, and the cycle proceeds past the pre-flight (it fails open) — only `--continue-pr` actually caps, as `continue-pr-not-found`.
+
 ### `/work` halts at the branch step naming the mainline
 
 The branch step recorded whatever branch `repoRoot` was on, and that value becomes the branch the cycle force-pushes to. If an ops child creates the branch and then returns `repoRoot` to `main`, the cycle would have adopted `main`. It now halts. Re-run with `--restart` after checking `git -C <repo> branch --show-current`.
@@ -1186,6 +1200,24 @@ PR: [#196](https://github.com/trail-openers/pi-rukas/pull/196)
 **Fix:** The wrapper extracts the token via `gh auth token` on the host and forwards it as `GH_TOKEN` env into the container. If you're seeing 401, check the host: `gh auth status` should report you authenticated. If you're using a personal access token directly, export it as `GH_TOKEN` in your shell so the wrapper forwards it explicitly.
 
 PR: [#203](https://github.com/trail-openers/pi-rukas/pull/203)
+
+### `glab` commands return 401 "Unauthorized" inside the container
+
+**Symptom:** Inside `pi-rukas`, `glab mr list` / `glab issue list` fails with 401 (or "unauthenticated"), while the same commands work on the host. `gh` in the same container is fine.
+
+**Cause:** GitLab auth in the sandbox is the **host-provided `GITLAB_TOKEN`**, forwarded by the wrapper's ordinary host-env passthrough (with `GITLAB_HOST` for a self-hosted instance such as `gitlab.example.com`). `glab` — unlike `gh` — has no command that prints its stored token, so the wrapper can extract nothing: a `glab auth login` that keeps its token in the host OS keychain never crosses into the container. The glab config dir *is* mounted read-only for continuity, but a config directory is not a credential.
+
+**Fix:** Export the token on the host before launching, so the passthrough forwards it:
+
+```bash
+export GITLAB_TOKEN=glpat-…                     # and for self-hosted:
+export GITLAB_HOST=gitlab.example.com
+pi-rukas
+```
+
+Do **not** run `glab auth login` inside the container to repair this — the config mount is read-only, so the write cannot land. Check the host first: `env | grep GITLAB_` should show the token. `GITLAB_CI` is on the wrapper's env blocklist deliberately: a host export of it (a real one, when `pi-rukas` is launched from inside a CI job) would otherwise switch the container's glab to job-token auth. `GITLAB_CI_*` job variables still pass. For **pushing** from the sandbox, use the SSH agent (mounted and forwarded by default) or an HTTPS remote that carries a token — the container has no writable credential store.
+
+Covered by the offline gate `extension/smoke-tests/test-sandbox-glab-config-mount.ts`.
 
 ### Custom LLM endpoint on a private hostname returns "connection refused" or "no such host"
 

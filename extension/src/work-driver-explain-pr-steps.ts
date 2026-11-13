@@ -12,11 +12,46 @@
 import { explainPushRefusal } from "./work-driver-explain-push-refusal.ts";
 import { repeatParkNote } from "./work-driver-explain-repeat.ts";
 import { isMemoryClaim } from "./work-driver-intent-criticality.ts";
-import { type ParkReason, explainPark } from "./work-driver-intent.ts";
+import {
+  type NormalisedSpec,
+  type ParkReason,
+  type VerdictRule,
+  explainPark,
+} from "./work-driver-intent.ts";
 import { lastCapHit } from "./workflow-state-cap.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
 type Cap = Extract<WorkEvent, { kind: "cap-hit" }>["cap"];
+
+const RULE_LABEL: Record<VerdictRule, string> = {
+  "complete-spec-override": "complete-spec override",
+  "evidence-contradiction": "load-bearing evidence contradiction",
+  "supporting-contradiction": "supporting evidence contradiction",
+  "not-actionable": "nothing-to-build check",
+  "assumption-promotion": "assumption promotion",
+  "mainline-grounding": "already-implemented mainline check",
+  "open-point-gate": "open-point gate",
+  "blank-body-gate": "blank issue body gate",
+  "spec-artifact-restore": "restore from the persisted spec artifact",
+};
+
+/**
+ * The resolver's own verdict beside the rule that parked, so a park the rules produced
+ * reads differently from one the resolver declared, without parsing its rationale.
+ */
+export function resolverVerdictLine(spec: NormalisedSpec): string {
+  const rv = spec.resolverVerdict;
+  const by = spec.verdictRule
+    ? `parked by: ${RULE_LABEL[spec.verdictRule]}`
+    : rv === "park"
+      ? "parked by the resolver; no rule overrode it"
+      : "parked by: the default for a reply with no readable verdict";
+  const buildable =
+    rv === "proceed" || rv === "proceed-with-assumptions"
+      ? ". The resolver called the issue buildable; the park comes from the rule, not from its judgement"
+      : "";
+  return `Resolver verdict: ${rv ?? "not parsed from its reply"} — ${by}${buildable}.`;
+}
 
 /**
  * Explains the parks and the push refusal; the dispatch in `explainCap` is
@@ -68,9 +103,10 @@ export function explainPrSteps(cap: Cap, state: WorkState): string {
           ? `\n\nStale memory rows the resolver found (a correction to memory, not a reading of the code):\n${staleMemory.map(row).join("\n")}`
           : "");
       const rationale = spec?.rationale ? `\n\nResolver's rationale: ${spec.rationale}` : "";
+      const verdict = spec ? `\n\n${resolverVerdictLine(spec)}` : "";
       // A repeat was re-resolved but not re-reported; say so, so the operator
       // does not look for a new comment (work-driver-park-memory.ts).
-      return `${repeatParkNote(state)}${why} No code was written — the driver halted at intent resolution, before plan or branch ran.${evidence}${rationale}`;
+      return `${repeatParkNote(state)}${why} No code was written — the driver halted at intent resolution, before plan or branch ran.${evidence}${verdict}${rationale}`;
     }
     default:
       return `unhandled intent-park cap: ${cap}`;

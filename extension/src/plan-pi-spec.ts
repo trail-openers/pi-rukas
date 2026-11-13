@@ -54,6 +54,7 @@
  */
 import type { PiSpec } from "./lean/spec.ts";
 import { SPEC_INFO, parsePiSpec, readiness, renderPiSpec } from "./lean/spec.ts";
+import { withLineAboveOpenPoints } from "./open-points-contract.ts";
 import { criteriaBullets, descriptorProblem } from "./plan-pi-spec-descriptor.ts";
 import { fencePrefix, opensFenceWith } from "./plan-pi-spec-fences.ts";
 import { clip, oneLine } from "./plan-pi-spec-text.ts";
@@ -68,8 +69,9 @@ export const PI_SPEC_READINESS_PREFIX = "pi-spec readiness:";
 
 /**
  * Prefix of the disclosure line a body files with when its block was left out.
- * Plain text at the END of the body, never a heading: the block's absence is a
- * fact the operator reads, not a section they skim past.
+ * Plain text at the end of the body, above any Open points section, never a
+ * heading: the block's absence is a fact the operator reads, not a section they
+ * skim past.
  */
 export const PI_SPEC_OMISSION_PREFIX = "pi-spec block omitted:";
 
@@ -434,9 +436,9 @@ function omit(
   if (failed) traceWarn(msg);
   else trace(msg);
   return {
-    // The disclosure is appended to `body`, not to a candidate, so nothing of the
-    // candidate's rewritten shape leaks into a filing that has no block in it.
-    body: disclosure ? `${body.trimEnd()}\n\n${PI_SPEC_OMISSION_PREFIX} ${shown}\n` : body,
+    // The disclosure goes on `body`, not on a candidate, so nothing of the candidate's
+    // rewritten shape leaks into a filing that has no block in it.
+    body: disclosure ? withLineAboveOpenPoints(body, `${PI_SPEC_OMISSION_PREFIX} ${shown}`) : body,
     spec: undefined,
     omitted: shown,
   };

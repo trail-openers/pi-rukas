@@ -41,6 +41,12 @@ export interface BuildDispatchOpts {
   attempt: number;
   /** The project's `verify.test` runner template (e.g. `bun run {file}`), if configured. */
   testRunner?: string;
+  /**
+   * The issue body the step already read to parse the spec. Threaded to the
+   * prompt so the builder sees the prose the criteria summarise (#2228); the
+   * step never fetches twice to get it.
+   */
+  issueBody?: string;
   /** Why this round exists: the `verify:red` or `ci:red` reason, if any. */
   reentry?: string;
   /** The previous attempt's budget stop and what is still failing, if it was one. */
@@ -119,6 +125,7 @@ export async function dispatchBuilder(
     worktree: opts.wt,
     attempt: opts.attempt,
     ...(opts.testRunner === undefined ? {} : { testRunner: opts.testRunner }),
+    ...(opts.issueBody === undefined ? {} : { issueBody: opts.issueBody }),
     ...(opts.reentry === undefined ? {} : { reentry: opts.reentry }),
     ...(opts.budgetStop === undefined ? {} : { budgetStop: opts.budgetStop }),
     ...(opts.added === undefined ? {} : { added: opts.added }),

@@ -32,6 +32,47 @@ const FENCE = "```";
 /** A body carrying the spec `build` re-reads from the forge. */
 export const SPEC_BODY = `${FENCE}pi-spec v1\n${JSON.stringify(SPEC, null, 2)}\n${FENCE}`;
 
+/**
+ * `SPEC_BODY` with a requirement in prose OUTSIDE the block, above and below it.
+ *
+ * Every existing build case's body is the bare fence, so prose-free by
+ * construction: a renderer that printed nothing still passed them all. A case
+ * that has to show the builder READ the issue needs text the spec object does
+ * not already carry, and `parsePiSpec` reads the block from anywhere in the body,
+ * so the prose can sit on either side of it.
+ *
+ * The prose NAMES the block format (`pi-spec v1`) on a line that is not a fence.
+ * That is deliberate and it is the adversarial half of this fixture: a guard that
+ * refuses the section whenever the stripped body merely CONTAINS the string would
+ * silently drop the tail requirement for every `/plan` body that quotes the format
+ * in its own text — and `/plan` bodies do, because `plan-pi-spec.ts` documents an
+ * angle item quoting it. Only a surviving spec-shaped FENCE refuses the section.
+ */
+export const SPEC_BODY_WITH_PROSE = `Add retry to the meter's quota check.
+
+The rule is spelled out in prose, not in the \`pi-spec v1\` block, which only summarises it.
+
+${SPEC_BODY}
+
+TAIL-ONLY: the exception message must remain exactly "quota exceeded", and the check runs before the draw.
+`;
+
+/**
+ * The build step's `fetchIssueBody` dep, counting its own calls.
+ *
+ * The counter is the canary: the body the spec was parsed from is the body the
+ * builder is shown (#2228 threads it, it does not re-fetch it), so a second call
+ * means the step re-read the issue and the run pays for a `gh` round-trip twice.
+ * It lives here rather than in the fixture because a `gh` read is a READ, which is
+ * the seam this module owns.
+ */
+export function issueBodyReader(specBody: string | undefined, onFetch: () => void) {
+  return async (): Promise<string> => {
+    onFetch();
+    return specBody ?? SPEC_BODY;
+  };
+}
+
 /** `git status --porcelain -uall` for a worktree, "" when clean. */
 export function status(wt: string): string {
   return git(wt, "status", "--porcelain", "-uall");

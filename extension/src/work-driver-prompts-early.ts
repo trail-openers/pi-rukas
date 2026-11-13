@@ -166,7 +166,7 @@ function intentResolutionBlock(issues: number[]): string {
     "  1. **Against the code.** Do the named symbols and files exist? Does the described behaviour match what the code actually does? Is this already implemented? Use `mcp__codebase_memory__search_code` / `mcp__codebase_memory__trace_path` and read the files.",
     "  2. **Against the world.** If a third-party API or library behaviour is referenced, does it exist with that shape? Use `ctx7` or web search.",
     "",
-    "A contradiction between the issue and the code is the most valuable thing you can find. Report it — do not quietly work around it.",
+    "A contradiction between the issue and the code is the most valuable thing you can find. Report it — do not quietly work around it. A file the issue asks you to create being absent is the starting state, not a contradiction.",
     "",
     "Then emit these two markers on their own lines, followed by a `## Spec` block:",
     "",
