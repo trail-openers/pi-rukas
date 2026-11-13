@@ -28,6 +28,10 @@
  *
  * Anything unmatched THROWS rather than answering empty: an unrecognised read is a
  * fixture gap, and silence here is how a matrix starts asserting nothing.
+ *
+ * The GitLab evidence arms (#2226) are matched in `merge-guard-stub-gl.ts`, still
+ * from this one function and still ahead of the git arms, so the order stays the
+ * contract of this file rather than of two.
  */
 
 import { MERGE_AUTHORS_FILE, mergeAuthorTreeLine } from "../src/merge-author-allowlist.ts";
@@ -36,6 +40,7 @@ import { commandOf } from "./lib/argv-shell.ts";
 import { isNulDiffRead } from "./lib/nul-porcelain.ts";
 import type { MergeGateEnv } from "./merge-guard-forge-fixture.ts";
 import { evidenceHeadFor, widenOid } from "./merge-guard-forge-fixture.ts";
+import { glEvidenceAnswer } from "./merge-guard-stub-gl.ts";
 import { DEFAULT_AUTHOR_ALLOWLIST } from "./merge-guard-helpers.ts";
 
 /** Every knob the stub reads, beyond the shared CI/protected-env knobs. */
@@ -160,6 +165,14 @@ export function mergeGuardExec(env: MergeGuardEnv) {
 			labels: t.labels.map((n) => ({ name: n })),
 		}),
 	};
+	// #2226 — the forge this matrix drives. The fixture's own `forge` field decides
+	// it, so a GitLab arm passes `target: {…TARGET, forge: "gitlab"}` and the two
+	// forge-dependent answers below (the gatherer's reads, and the remote host the
+	// gatherer's own detection classifies) cannot disagree with each other. The
+	// helper flips `PI_ENSEMBLE_FORGE` for the duration of the decision so the
+	// gatherer takes its GitLab arm; the stub itself must not READ that variable,
+	// which is pinned once at module scope for the GitHub matrices.
+	const isGl = env.target.forge === "gitlab";
 	// #2107 — the repo scoping: the value every `gh` read must end with. A forge
 	// read that dropped it answers about a different PR than the one the merge
 	// acts on, so `execFn` refuses it (see below).
@@ -183,13 +196,39 @@ export function mergeGuardExec(env: MergeGuardEnv) {
 		// a scoped read always ENDS with it — and it has to cover the argv form
 		// (#1095) that `gh pr checks` is issued in, whose joined text a `gh pr `
 		// prefix test never saw.
-		if (wantRepoFlag && cmd.startsWith("gh ") && !cmd.endsWith(wantRepoFlag)) {
+		if (
+			wantRepoFlag &&
+			/^(gh|glab) /.test(cmd) &&
+			!cmd.endsWith(wantRepoFlag)
+		) {
 			throw new Error(`forge read not scoped to the command's repo: ${cmd}`);
 		}
-		if (cmd.includes("gh pr view")) {
+		// The identity read. Which forge it asks is the TARGET's business, never the
+		// env pin's: gh asks `gh pr view N --json <fields>`, glab asks `glab mr view
+		// N --output json` (#2226 — the guard's identity read is forge-aware, so a
+		// GitLab arm asks glab and must be ANSWERED, not fallen through). Keying this
+		// arm off `PI_ENSEMBLE_FORGE` instead would make the arm that withholds the
+		// pin (`unsetForgeEnv`, for the gatherer's detection) fail on the harness
+		// rather than on the code under test. The head comes from
+		// `diff_refs.head_sha`, the field the GitLab MR reply carries it in, widened
+		// to the one value every other reader answers with.
+		if (cmd.includes(isGl ? "glab mr view" : "gh pr view")) {
 			if (cmd.includes("--json number")) {
 				if (env.branchNumber === "empty") return { stdout: "{}" };
 				return { stdout: JSON.stringify({ number: t.prNumber }) };
+			}
+			if (isGl) {
+				if (env.failGh) throw new Error("glab: not found");
+				return {
+					stdout: JSON.stringify({
+						iid: t.prNumber,
+						source_branch: t.headBranch,
+						target_branch: t.baseBranch,
+						author: { username: t.author },
+						labels: t.labels.map((n) => ({ name: n })),
+						diff_refs: { head_sha: headOid },
+					}),
+				};
 			}
 			// #2106 — the CI evidence read is a `gh pr view` too, told apart ONLY by
 			// its field list. A matcher that keyed on `gh pr view` alone would hand
@@ -222,6 +261,15 @@ export function mergeGuardExec(env: MergeGuardEnv) {
 					]),
 			};
 		}
+		// ── #2226 — the GitLab evidence reads of the gatherer's GitLab arm, and
+		// ONLY for a gitlab target (see `merge-guard-stub-gl.ts`, which owns their
+		// argv matchers and their order). A gitlab arm that fell through to the
+		// catch-all below fails on `unexpected exec`, which is how a stub that
+		// answered the wrong forge shows up.
+		if (isGl) {
+			const answered = await glEvidenceAnswer(env, cmd, headOid);
+			if (answered) return answered;
+		}
 		if (cmd.includes("git fetch")) {
 			if (env.failFetch) throw new Error("unable to connect");
 			return { stdout: "" };
@@ -237,13 +285,32 @@ export function mergeGuardExec(env: MergeGuardEnv) {
 		// allowlist is then read at. Matched on `^{commit}` — the only such read is this
 		// one — and deliberately ahead of the generic `rev-parse <remote>/…` arms below.
 		if (cmd.includes("^{commit}")) return baseResolveAnswer(env, fetched);
-		// Remote resolution: origin → upstream → first remote.
+		// Remote resolution: origin → upstream → first remote. The origin host
+		// follows the target's forge, so the gatherer's own detection (#2226)
+		// classifies this clone the same way the arm is being driven.
+		//
+		// `failRemoteUrl` answers with a remote no parser claims. It is the ONLY
+		// remote read an `unsetForgeEnv` arm lets through: with `PI_ENSEMBLE_FORGE`
+		// withheld (`makeHook`) the guard's own forge decision no longer consults a
+		// URL at all — `targetForCommand`/`resolvePrNumber` are handed
+		// `{ env: { PI_ENSEMBLE_FORGE: <target forge> } }`, the precedence production
+		// sets out of band — while the GATHERER is handed nothing but this URL and
+		// must classify the clone itself. That asymmetry is the question the arm in
+		// `test-merge-guard-ci-evidence-gitlab.ts` asks: an unreadable remote must
+		// decide the gatherer's forge, nobody else's.
 		if (cmd.includes("git config --get remote.origin.url")) {
-			if (env.remote === "origin")
-				return { stdout: "git@github.com:o/r.git\n" };
+			if (env.failRemoteUrl) return { stdout: "https://internal.invalid/r.git\n" };
+			if (env.remote === "origin" || env.remote === undefined)
+				return {
+					stdout: `git@${isGl ? "gitlab" : "github"}.com:o/r.git\n`,
+				};
 			return { stdout: "" };
 		}
 		if (cmd.includes("git config --get remote.upstream.url")) {
+			// Always a github.com host: the matrices whose subject is remote resolution
+			// drive a GitHub target, and the origin arm above is the one that follows the
+			// arm's forge. One host for both remotes would let the remote under test
+			// decide the forge.
 			if (env.remote === "upstream")
 				return { stdout: "git@github.com:o/r.git\n" };
 			return { stdout: "" };

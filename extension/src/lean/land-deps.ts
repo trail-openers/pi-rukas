@@ -84,7 +84,13 @@ const subjectCache = new Map<number, string | undefined>();
 export function landDeps(): LandDeps {
   const adapter = async (repoRoot: string) => forgeFor(repoRoot);
   return {
-    evidence: (repoRoot, prNumber) => gatherMergeEvidence(execp, repoRoot, prNumber),
+    // The forge this seam already resolves for every other operation, named on
+    // the evidence read rather than left to the gatherer's last-resort detection:
+    // a clone whose remote the gatherer cannot read should refuse on its CI
+    // verdict, not on a forge fault the rest of this function never hit (#2226).
+    // `undefined` (no adapter) falls through to the gatherer's own refusal.
+    evidence: async (repoRoot, prNumber) =>
+      gatherMergeEvidence(execp, repoRoot, prNumber, (await adapter(repoRoot))?.forge),
     openPr: async (repoRoot, branch) => {
       const f = await adapter(repoRoot);
       if (f === undefined) return undefined;

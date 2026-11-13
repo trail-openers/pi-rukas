@@ -223,6 +223,12 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
 			repoRoot: dir,
 			issue: 950,
 			mergeGrant: true,
+			// #2226 — the forge the evidence read resolves for itself, named because this
+			// fixture is not a clone: its fake remote is a URL no parser claims
+			// (`https://x.invalid/r.git`), so detection answers `undefined` and
+			// `gatherMergeEvidence` refuses as tooling before it issues a single `gh` read.
+			// Naming it here states the forge every `gh` arm in this file already answers on.
+			forge: { forge: "github" } as unknown as DriverContext["forge"],
 			verifyExecFn: greenGh,
 			issueBodyFetcherFn: mockIssueBodyOk,
 			dispatchFn: async (_pi, spec, opts) => {
@@ -290,6 +296,12 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
 			repoRoot: dir,
 			issue: 951,
 			mergeGrant: true,
+			// #2226 — the forge the evidence read resolves for itself, named because this
+			// fixture is not a clone: its fake remote is a URL no parser claims
+			// (`https://x.invalid/r.git`), so detection answers `undefined` and
+			// `gatherMergeEvidence` refuses as tooling before it issues a single `gh` read.
+			// Naming it here states the forge every `gh` arm in this file already answers on.
+			forge: { forge: "github" } as unknown as DriverContext["forge"],
 			verifyExecFn: greenGh,
 			issueBodyFetcherFn: mockIssueBodyOk,
 			dispatchFn: async (_pi, spec, opts) => {

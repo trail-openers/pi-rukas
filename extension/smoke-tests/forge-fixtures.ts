@@ -221,10 +221,17 @@ export const GL_PIPELINE_DONE = {
   ref: "feature/issue-17-x",
 };
 
-/** `glab api /projects/:id/pipelines/:pid/jobs` rows (snake_case). */
+/**
+ * `glab api /projects/:id/pipelines/:pid/jobs` rows (snake_case).
+ *
+ * `allow_failure` is a real field on every row of that endpoint, so the fixture
+ * carries it: the merge-evidence gate grades an allow-failure `manual`/`skipped`
+ * row as passing, and a fixture that omitted it would hide the difference
+ * between "allowed to fail" and "the row did not say".
+ */
 export const GL_JOBS = [
-  { name: "build", status: "success" },
-  { name: "test", status: "success" },
+  { name: "build", status: "success", allow_failure: false },
+  { name: "test", status: "success", allow_failure: false },
 ];
 
 /** `glab api /projects/:id` project row (snake_case). */

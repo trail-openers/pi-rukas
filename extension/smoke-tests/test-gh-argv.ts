@@ -30,11 +30,18 @@
  */
 
 import {
-	labelAddCmd,
-	labelRemoveCmd,
-	mergeEvidenceViewCmd,
-	pipelineViewCmd,
-	prChecksCmd,
+  GL_JOB_PAGE_SIZE,
+  mergeEvidenceGlJobsCmd,
+  mergeEvidenceGlJobsPage2Cmd,
+  mergeEvidenceGlMrCmd,
+  mergeEvidenceGlPipelinesCmd,
+} from "../src/forge-commands-gl-evidence.ts";
+import {
+  labelAddCmd,
+  labelRemoveCmd,
+  mergeEvidenceViewCmd,
+  pipelineViewCmd,
+  prChecksCmd,
 } from "../src/forge-commands.ts";
 
 let exit = 0;
@@ -88,20 +95,17 @@ function requestedFields(cmd: string, flag: string): string[] {
 // ── gh pr checks — the field list gh 2.98.0 actually supports ─────────────
 
 {
-	const cmd = prChecksCmd("github", 17);
-	const fields = requestedFields(cmd, "--json");
-	assert(
-		cmd === "gh pr checks 17 --json name,state,bucket",
-		`exact argv: ${cmd}`,
-	);
-	assert(
-		fields.length > 0 && fields.every((f) => GH_PR_CHECKS_FIELDS.has(f)),
-		`every requested field (${fields.join(",")}) is in the gh 2.98.0 supported set for \`gh pr checks --json\` — a field outside that set makes the whole invocation fail closed (the #745 bug)`,
-	);
-	assert(
-		!fields.includes("isRequired"),
-		"isRequired must not be requested — it is not a field this subcommand supports",
-	);
+  const cmd = prChecksCmd("github", 17);
+  const fields = requestedFields(cmd, "--json");
+  assert(cmd === "gh pr checks 17 --json name,state,bucket", `exact argv: ${cmd}`);
+  assert(
+    fields.length > 0 && fields.every((f) => GH_PR_CHECKS_FIELDS.has(f)),
+    `every requested field (${fields.join(",")}) is in the gh 2.98.0 supported set for \`gh pr checks --json\` — a field outside that set makes the whole invocation fail closed (the #745 bug)`,
+  );
+  assert(
+    !fields.includes("isRequired"),
+    "isRequired must not be requested — it is not a field this subcommand supports",
+  );
 }
 
 // ── gh pr view — the merge-evidence gate's state read ──────────────────────
@@ -127,25 +131,71 @@ function requestedFields(cmd: string, flag: string): string[] {
 // ── GitLab — no --json field list can creep in on the glab side either ────
 
 {
-	const checks = prChecksCmd("gitlab", 17);
-	assert(
-		checks ===
-			'glab api "/projects/:id/merge_requests/17/pipelines" --output json',
-		`glab prChecksCmd exact argv: ${checks}`,
-	);
-	assert(
-		!checks.includes("--json"),
-		"glab prChecksCmd must not grow a field list — a field set is exactly how #745 happened",
-	);
-	const jobs = pipelineViewCmd(5001);
-	assert(
-		jobs === "glab api /projects/:id/pipelines/5001 --output json",
-		`glab pipelineViewCmd exact argv: ${jobs}`,
-	);
-	assert(
-		!jobs.includes("--json"),
-		"glab pipelineViewCmd must not grow a field list either",
-	);
+  const checks = prChecksCmd("gitlab", 17);
+  assert(
+    checks === 'glab api "/projects/:id/merge_requests/17/pipelines" --output json',
+    `glab prChecksCmd exact argv: ${checks}`,
+  );
+  assert(
+    !checks.includes("--json"),
+    "glab prChecksCmd must not grow a field list — a field set is exactly how #745 happened",
+  );
+  const jobs = pipelineViewCmd(5001);
+  assert(
+    jobs === "glab api /projects/:id/pipelines/5001 --output json",
+    `glab pipelineViewCmd exact argv: ${jobs}`,
+  );
+  assert(!jobs.includes("--json"), "glab pipelineViewCmd must not grow a field list either");
+}
+
+// ── #2226 — the GitLab merge-evidence reads, pinned like every other argv ──
+
+{
+  // The three reads the gatherer's GitLab arm is allowed to issue, and nothing
+  // else. They are pinned HERE (rather than only in the evidence tests) because
+  // they gate the one irreversible act: a builder that quietly changed endpoint
+  // would send the gate to the wrong MR or the wrong pipeline, and the verdict
+  // it reports would still look well-formed.
+  const mr = mergeEvidenceGlMrCmd(17);
+  assert(mr === "glab api /projects/:id/merge_requests/17", `glab MR-state argv: ${mr}`);
+  assert(!mr.includes("--json"), "glab MR-state argv must not grow a field list (#745)");
+  const pipes = mergeEvidenceGlPipelinesCmd(17);
+  assert(
+    pipes === 'glab api "/projects/:id/merge_requests/17/pipelines?per_page=100" --output json',
+    `glab pipelines argv: ${pipes}`,
+  );
+  assert(!pipes.includes("--json"), "glab pipelines argv must not grow a field list either");
+  // #2226 — the pipelines list is read to PROVE the MR's head pipeline belongs
+  // to this MR, so it is pinned to the same page size as the jobs read: with
+  // the API's 20-row default, an MR whose 21st-oldest pipeline is the head's
+  // would look like the forge contradicting itself.
+  assert(
+    pipes.includes(`per_page=${GL_JOB_PAGE_SIZE}`),
+    `glab pipelines argv must pin the page size (the API default is 20): ${pipes}`,
+  );
+  const glJobs = mergeEvidenceGlJobsCmd(5001);
+  assert(
+    glJobs === 'glab api "/projects/:id/pipelines/5001/jobs?per_page=100" --output json',
+    `glab jobs argv: ${glJobs}`,
+  );
+  assert(!glJobs.includes("--json"), "glab jobs argv must not grow a field list either");
+  // #2226 — the page size is load-bearing: the endpoint's own default is 20, so
+  // an argv that lost `per_page` would quietly grade the first 20 jobs of a
+  // 356-job pipeline and report it as the whole verdict. Pinned here, at the
+  // same seam that pins the endpoint itself, rather than only in the gatherer.
+  assert(
+    glJobs.includes(`per_page=${GL_JOB_PAGE_SIZE}`),
+    `glab jobs argv must pin the page size (the API default is 20): ${glJobs}`,
+  );
+  // #2226 — the second-page probe. It is a fourth read, so it is pinned here
+  // like the three that decide the verdict: a builder that dropped `&page=2`
+  // would re-read page 1, always answer "there are more rows", and turn every
+  // pipeline of exactly a page back into a permanent refusal.
+  const glJobs2 = mergeEvidenceGlJobsPage2Cmd(5001);
+  assert(
+    glJobs2 === 'glab api "/projects/:id/pipelines/5001/jobs?per_page=100&page=2" --output json',
+    `glab jobs page-2 argv: ${glJobs2}`,
+  );
 }
 
 // ── #775 — the label edit commands must name a real gh subcommand ────────

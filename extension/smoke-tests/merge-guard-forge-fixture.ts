@@ -100,6 +100,63 @@ export interface MergeGateEnv {
   /** #2106 — make the check-row read throw. */
   failChecks?: boolean;
   /**
+   * #2226 — answer the origin-URL read with a remote no parser claims, instead of
+   * a parsable one. The witness for the guard's FORGE THREADING: the gatherer is
+   * handed the target's forge rather than left to re-detect one. A parsable remote
+   * is NOT enough for that witness — detection's first precedence is the harness's
+   * `PI_ENSEMBLE_FORGE` pin, which answers whatever the target already carries, so
+   * with it in place a regression that dropped the threaded argument could not
+   * change any outcome. Pair it with {@link unsetForgeEnv}, which withholds that
+   * pin so detection has only the (unusable) remote to classify, as it does in
+   * production where the variable is never set.
+   */
+  failRemoteUrl?: boolean;
+  /**
+   * #2226 — with {@link failRemoteUrl}, withhold the harness's `PI_ENSEMBLE_FORGE`
+   * pin for the duration of this decision, so the gatherer's last-resort detection
+   * has only the (unusable) remote to classify. Set only by the arm that sets
+   * `failRemoteUrl`; every other arm keeps the pin, because the matrices about the
+   * CHECK verdicts drive both forges through it.
+   *
+   * The guard's OWN reads stay on the target's forge: the stub classifies this
+   * clone from `target.forge` rather than from the variable (see the origin-URL
+   * arm in `merge-guard-stub.ts`), which is the property this arm needs — an arm
+   * that withheld the pin also from the identity read would fail on the harness
+   * rather than on the gatherer.
+   */
+  unsetForgeEnv?: boolean;
+  /**
+   * #2226 — the MR row the gatherer's GitLab arm reads, verbatim JSON. Absent,
+   * the stub answers a green MR (`can_be_merged`, no conflicts, discussions
+   * resolved, no approvals outstanding) carrying the head the guard verified.
+   */
+  glMr?: string;
+  /**
+   * #2226 — the `detailed_merge_status` of that row, for an arm that varies the
+   * readiness rather than replacing the whole payload (`can_be_merged` when
+   * unset).
+   */
+  glMrStatus?: string;
+  /**
+   * #2226 — the MR's pipelines list, verbatim JSON (one row for the MR's
+   * `head_pipeline` — id 5001, sha the verified head — when unset).
+   */
+  glPipelines?: string;
+  /**
+   * #2226 — what the SECOND pipelines page answers, verbatim JSON (`[]` when
+   * unset: a full first page with nothing after it, which is the whole list).
+   * Only ever read when the first page filled its requested size.
+   */
+  glPipelinesPage2?: string;
+  /** #2226 — the pipeline's job rows, verbatim JSON (one `success` row when unset). */
+  glJobs?: string;
+  /**
+   * #2226 — what the SECOND jobs page answers, verbatim JSON (`[]` when unset:
+   * a full first page with nothing after it, which is the whole pipeline). Only
+   * ever read when the first page filled its requested size.
+   */
+  glJobsPage2?: string;
+  /**
    * #2106/#2107 — the head the evidence read reports.
    *
    * - `undefined` (the default) — "the head the guard verified", derived from

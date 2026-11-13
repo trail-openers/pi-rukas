@@ -21,17 +21,28 @@
  *   (5) a word the table has never seen is `unknown`, never `pass`;
  *   (6) grading is case- and whitespace-tolerant, because the value is the forge's
  *       string and a forge that capitalises must not silently become `unknown`;
- *   (7) `allow_failure` is part of the grade: a job that is allowed to fail is
- *       not a gate, so its `success` reads `not-green` and its `failed` is waited
- *       rather than red — and the flag is a REQUIRED argument precisely so a
- *       caller that never read it cannot silently assume the optimistic answer;
+ *   (7) `allow_failure` is part of the grade, and it exempts ONLY the never-ran
+ *       states: an allowed-to-fail `manual`/`skipped` is `pass` (GitLab does not
+ *       count them against the pipeline, so a `manual` allow-failure deploy job
+ *       must not turn a green pipeline red), while its `success` still passes,
+ *       its `failed`/`canceled` stay RED and an unseen state stays `unknown` —
+ *       an exemption that reached a row that ran would be a `.gitlab-ci.yml`
+ *       switch for this gate, and one that reached a queued row would merge
+ *       behind a job that has not reported. The flag is a REQUIRED argument
+ *       precisely so a caller that never read it cannot silently assume the
+ *       optimistic answer;
  *   (8) the caller the header names is still a caller: the adapter's job mapper
  *       reads `allow_failure` through this table, so the flag cannot quietly stop
- *       being carried and turn a non-gate back into a green.
+ *       being carried and turn an exempt row back into a refusal.
  */
 
 import { mapGlPipelineJobs } from "../src/forge-mapping.ts";
-import { glJobIsBlocking, gradeGlJobState } from "../src/forge-gl-grade.ts";
+import {
+  currentJobAttempts,
+  glJobIsBlocking,
+  gradeGlJobRow,
+  gradeGlJobState,
+} from "../src/forge-gl-grade.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -106,24 +117,45 @@ for (const [raw, want] of [
   );
 }
 
-// ── (7) `allow_failure` decides whether a `success` is a green ────────────
-// GitLab reports a job that is allowed to fail as `success` once it finishes, so
-// the word alone cannot separate a gate that ran from a gate that could not have
-// failed the pipeline. A non-blocking job therefore never passes: its `success`
-// joins `skipped`/`manual` as `not-green`, and its `failed` is waited rather than
-// spent as a red on code that cannot have failed anything.
+// ── (7) `allow_failure` exempts the never-ran states, and only those ──────
+// GitLab does not count a job the pipeline is allowed to fail against the
+// pipeline, and its commit-status machine calls such a pipeline `success`. So a
+// `manual` or `skipped` row carrying `allow_failure: true` is a pass here: it is
+// a job the pipeline never intended to run, which is what a typical GitLab
+// pipeline with a human-triggered deploy job looks like, and refusing on it was
+// the false red this ruling removes. What the exemption does NOT reach is the
+// point of the whole section: a row that ran and said something negative stays
+// RED, and a state this table has never seen stays `unknown`. An exemption that
+// read either of those as green would hand anyone who can edit `.gitlab-ci.yml`
+// a switch for the gate that reads this table.
+for (const s of ["manual", "skipped"]) {
+  assert(
+    gradeGlJobState(s, false) === "pass",
+    `(7) an allow-failure ${s} is exempt, not a refusal (${String(gradeGlJobState(s, false))})`,
+  );
+}
 assert(
-  gradeGlJobState("success", false) === "not-green",
-  `(7) a non-blocking success is NOT green (${String(gradeGlJobState("success", false))})`,
+  gradeGlJobState("success", false) === "pass",
+  `(7) an allow-failure success still passes (${String(gradeGlJobState("success", false))})`,
 );
-assert(
-  gradeGlJobState("failed", false) === "unknown",
-  `(7) a non-blocking failure is waited, not red (${String(gradeGlJobState("failed", false))})`,
-);
-assert(
-  gradeGlJobState("running", false) === "pending",
-  `(7) a non-blocking running job still waits (${String(gradeGlJobState("running", false))})`,
-);
+for (const s of ["failed", "canceled"]) {
+  assert(
+    gradeGlJobState(s, false) === "fail",
+    `(7) an allow-failure ${s} stays RED — allow_failure is not a switch for the gate (${String(gradeGlJobState(s, false))})`,
+  );
+}
+for (const s of ["running", "pending", "created", "scheduled"]) {
+  assert(
+    gradeGlJobState(s, false) === "pending",
+    `(7) an allow-failure ${s} still waits — "will run" is not "may be skipped" (${String(gradeGlJobState(s, false))})`,
+  );
+}
+for (const s of ["succeeded", "ok", "???"]) {
+  assert(
+    gradeGlJobState(s, false) === "unknown",
+    `(7) an allow-failure row in an unseen state is unknown, never passed (${String(gradeGlJobState(s, false))})`,
+  );
+}
 // The reading of the raw field itself: GitLab sends booleans, an absent field is
 // its own default (blocking), and a string `"true"` from an odd instance must not
 // make a non-gate into a gate.
@@ -134,25 +166,80 @@ assert(glJobIsBlocking("true") === false, "(7) a string \"true\" is read as allo
 assert(glJobIsBlocking("false") === true, "(7) a string \"false\" is read as blocking");
 
 // ── (8) the callers that DO consult the table still consult it ───────────
-// The header names exactly two callers, and a header that outlives its callers is
-// how this module once came to advertise a merge-evidence gate that never imported
-// it. These two assertions are the witnesses for that claim rather than prose: the
+// The header names the callers, and a header that outlives its callers is how
+// this module once came to advertise a merge-evidence gate that never imported
+// it. These assertions are the witnesses for that claim rather than prose: the
 // adapter's mapper is what turns GitLab's raw `allow_failure` into the `blocking`
-// flag the table grades, and if the mapper stops calling it then a non-blocking
-// `success` reaches the step as an ordinary green — the exact defect the flag exists
-// to refuse. `ci`'s own row grading is exercised end-to-end by `test-lean-ci-gl.ts`.
+// flag the table grades, and if the mapper stopped calling it then an exempt row
+// would reach the step as an ordinary blocking row and be refused — the mirror
+// image of the defect the flag exists to remove. `ci`'s own row grading is
+// exercised end-to-end by `test-lean-ci-gl.ts`, the merge gate's by
+// `test-merge-guard-ci-evidence-gitlab.ts`.
 const mapped = mapGlPipelineJobs([{ name: "optional", status: "success", allow_failure: true }]);
 assert(
   mapped.length === 1 && mapped[0]?.blocking === false,
   `(8) the adapter carries allow_failure into the table's blocking flag (${JSON.stringify(mapped[0])})`,
 );
 assert(
-  gradeGlJobState(mapped[0]?.state ?? "", mapped[0]?.blocking ?? true) === "not-green",
-  "(8) and a mapped allow-failure success is still not green end-to-end",
+  gradeGlJobState(mapped[0]?.state ?? "", mapped[0]?.blocking ?? true) === "pass",
+  "(8) and a mapped allow-failure success passes end-to-end",
+);
+// The row form, which is what the merge gate grades: it reads the raw
+// `allow_failure` field through `glJobIsBlocking` itself, so a raw API row and an
+// adapter-mapped row must not disagree about the same job.
+assert(
+  gradeGlJobRow({ name: "deploy", status: "manual", allow_failure: true }) === "pass",
+  "(8) a raw allow-failure manual ROW passes (the merge gate's shape)",
+);
+assert(
+  gradeGlJobRow({ name: "deploy", status: "manual" }) === "not-green",
+  "(8) a manual row that did not answer allow_failure is still refused",
+);
+assert(
+  gradeGlJobRow(null as unknown as Record<string, unknown>) === "unknown",
+  "(8) a row that is not an object is refused, not thrown on",
 );
 assert(
   gradeGlJobState("SUCCESS", glJobIsBlocking(undefined)) === "pass",
   "(8) and a mapped row with no allow_failure field still passes",
 );
+
+// ── (9) the retry rule: one row per job NAME, and a red survives it ──────
+// `/pipelines/:id/jobs` is a job HISTORY. The endpoint keeps every superseded
+// attempt, so grading the raw rows refuses a pipeline the forge itself calls
+// green. The collapse keeps the highest id per name — but only where the higher
+// row is a verdict: see `currentJobAttempts`' header for the three rules.
+{
+  const retried = currentJobAttempts([
+    { name: "test", id: 1, status: "failed", allow_failure: false },
+    { name: "test", id: 2, status: "success", allow_failure: false },
+  ]);
+  assert(
+    retried.length === 1 && gradeGlJobRow(retried[0] as Record<string, unknown>) === "pass",
+    `(9) a retried job is ONE row, the retry's verdict (${JSON.stringify(retried)})`,
+  );
+}
+{
+  // The direction this rule exists to block: an exempt row (which grades `pass`
+  // without a job having run) may not take the seat of a row that FAILED.
+  const notARetry = currentJobAttempts([
+    { name: "test", id: 1, status: "failed", allow_failure: false },
+    { name: "test", id: 2, status: "manual", allow_failure: true },
+  ]);
+  assert(
+    gradeGlJobRow(notARetry[0] as Record<string, unknown>) === "fail",
+    `(9) a never-ran allow-failure row cannot retire a failure (${JSON.stringify(notARetry)})`,
+  );
+}
+{
+  const queued = currentJobAttempts([
+    { name: "test", id: 1, status: "failed", allow_failure: false },
+    { name: "test", id: 2, status: "running", allow_failure: false },
+  ]);
+  assert(
+    gradeGlJobRow(queued[0] as Record<string, unknown>) === "pending",
+    `(9) a retry still queued keeps the seat and is waited, not passed (${JSON.stringify(queued)})`,
+  );
+}
 
 process.exit(exit);

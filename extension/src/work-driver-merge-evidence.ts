@@ -28,8 +28,11 @@
  */
 
 import { mergeEvidenceViewCmd, prChecksCmd } from "./forge-commands.ts";
+import type { ForgeType } from "./forge-detect.ts";
+import { detectForge } from "./forge-detect.ts";
 import { isFullCommitSha } from "./review-head-sha.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
+import { gatherGitlabMergeEvidence } from "./work-driver-merge-evidence-gl.ts";
 import type { EvidenceFailureKind } from "./workflow-state-cap.ts";
 
 /** Shell executor, matching `DriverContext.verifyExecFn`. */
@@ -134,12 +137,47 @@ function readAuthor(value: unknown): string | undefined {
   return typeof login === "string" && login.trim().length > 0 ? login.trim() : undefined;
 }
 
-/** Gather executed evidence that a PR is genuinely mergeable. */
+/**
+ * Gather executed evidence that a PR/MR is genuinely mergeable.
+ *
+ * `forge` is NAMED by every caller that has one (#2226) — the merge guard passes
+ * its target's forge, lean land passes its adapter's, the merged step and the
+ * stepback ci step pass the cycle's — and the gatherer detects one only when no
+ * caller named it. Detection as the first read made an unrelated unreadable
+ * remote answer for the merge: the gate refused as tooling for a forge fault, on
+ * a clone whose CI verdict it never got to read. The branch stays POSITIVE in
+ * both directions: an unresolved forge is a tooling refusal, never a fall-through
+ * to the gh path. Falling through meant a repo whose remote does not resolve ran
+ * `gh` against a GitLab project (or no forge at all) and reported the answer as
+ * this merge's CI verdict — the one shape of this gate that could pass a merge on
+ * reads of the wrong forge. The GitHub argv is exactly what it always was, and its two
+ * reads keep the bounds they always had — the merge guard supplies theirs by
+ * wrapping the executor (`merge-guard-reads.ts`), and the driver's own callers pass
+ * an executor whose default bound is the same `FORGE_EXEC_TIMEOUT_MS`.
+ */
 export async function gatherMergeEvidence(
   execFn: ExecFn,
   repoRoot: string,
   prNumber: number,
+  forge?: ForgeType,
 ): Promise<MergeEvidence> {
+  // Detection is the LAST resort, not the first read. Every consumer of this
+  // gate already resolves a forge for its own work — the merge guard has its
+  // target, lean land has its adapter, the merged step has the cycle's — and an
+  // unrelated unreadable remote must not surface as this merge's CI/tooling
+  // refusal. `undefined` (a caller that has none) is the only path that asks
+  // #2226's question.
+  const resolved = forge ?? (await detectForge(repoRoot, { allowProbe: false })).forge;
+  const empty = { failing: [], inconclusive: [] };
+  if (resolved === "gitlab") return gatherGitlabMergeEvidence(execFn, repoRoot, prNumber);
+  if (resolved !== "github") {
+    return {
+      ok: false,
+      failureKind: "tooling",
+      reason: `the forge for ${repoRoot} could not be resolved (detected "${resolved}") — refusing to read CI evidence for PR/MR #${prNumber} against a forge this gate cannot identify. Set PI_ENSEMBLE_FORGE or fix the remote, then re-run.`,
+      ...empty,
+    };
+  }
   let state: { mergeStateStatus?: string; state?: string };
   // #1533 — the head OID the CI verdict was read at, from this one read.
   let headOid: string | undefined;
@@ -189,8 +227,7 @@ export async function gatherMergeEvidence(
       ok: false,
       failureKind: "tooling",
       reason: `could not read PR state: ${(err as Error).message?.slice(0, 160)}`,
-      failing: [],
-      inconclusive: [],
+      ...empty,
       headOidError: `the PR-state read for PR #${prNumber} failed: ${(err as Error).message?.slice(0, 120)}`,
       authorError: `the PR-state read for PR #${prNumber} failed: ${(err as Error).message?.slice(0, 120)}`,
     };
@@ -201,8 +238,7 @@ export async function gatherMergeEvidence(
       ok: false,
       reason: `PR is ${state.state}, not OPEN`,
       mergeStateStatus: state.mergeStateStatus,
-      failing: [],
-      inconclusive: [],
+      ...empty,
       ...headFields(headOid, headOidError),
       ...authorFields(author, authorError),
     };
@@ -217,8 +253,7 @@ export async function gatherMergeEvidence(
       ok: false,
       reason: `mergeStateStatus is ${state.mergeStateStatus}`,
       mergeStateStatus: state.mergeStateStatus,
-      failing: [],
-      inconclusive: [],
+      ...empty,
       ...headFields(headOid, headOidError),
       ...authorFields(author, authorError),
     };

@@ -76,6 +76,14 @@ export function mkExec(
  * A driver context for the merged step. `mergeGrant: true` grants authority the
  * way `/work N --merge` does — the gate itself is covered by
  * test-merge-authority.ts, so these fixtures are not re-testing it.
+ *
+ * `forge` is injected because these fixtures are not clones: their fake remote is
+ * either a path with no repository behind it or a URL no parser claims
+ * (`https://x.invalid/r.git`), so the merged step's own forge resolution
+ * (`forgeTypeForCycle`, #2226) answers `undefined` and the evidence read refuses
+ * as tooling before it asks the forge anything. A cycle whose harness injected an
+ * adapter is judged on THAT forge — which is the seam this field is — so naming
+ * `github` here states the forge every `gh` arm below already answers on.
  */
 export function mkCtx(
 	issue: number,
@@ -88,6 +96,7 @@ export function mkCtx(
 		host: mkPi(),
 		verifyExecFn: exec,
 		mergeGrant: true,
+		forge: { forge: "github" } as unknown as DriverContext["forge"],
 		issueBodyFetcherFn: async () => ({
 			stdout: `title:\ttest #${issue}\nstate:\tOPEN\n\nbody`,
 		}),

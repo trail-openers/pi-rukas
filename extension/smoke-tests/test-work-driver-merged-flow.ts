@@ -71,6 +71,12 @@ function mkCtx(
 		host: mkPi(),
 		verifyExecFn: exec,
 		mergeGrant: true, // #380 — granted the way `/work N --merge` would
+		// #2226 — the forge the evidence read resolves for itself, named because this
+		// fixture is not a clone: its fake remote is a URL no parser claims
+		// (`https://x.invalid/r.git`), so detection answers `undefined` and
+		// `gatherMergeEvidence` refuses as tooling before it issues a single `gh` read.
+		// Naming it here states the forge every `gh` arm in this file already answers on.
+		forge: { forge: "github" } as unknown as DriverContext["forge"],
 		issueBodyFetcherFn: async () => ({
 			stdout: `title:\ttest #${issue}\nstate:\tOPEN\n\nbody`,
 		}),

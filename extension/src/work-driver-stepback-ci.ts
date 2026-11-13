@@ -15,6 +15,7 @@ import { readMarker } from "./reply-markers.ts";
 import { trace } from "./trace.ts";
 import { discloseInPrBody, runCiVerifyFull } from "./work-driver-ci-verify.ts";
 import { type CycleContext, type DriverContext, MAX_CI_RETRIES } from "./work-driver-context.ts";
+import { forgeTypeForCycle } from "./work-driver-forge-type.ts";
 import {
   contradictsSuccess,
   gatherMergeEvidence,
@@ -383,6 +384,10 @@ export async function runCi(ctx: CycleContext, state: WorkState, now: number): P
           ctx.verifyExecFn ?? execp,
           ctx.repoRoot,
           next.pipelineState.prNumber,
+          // Named by the caller rather than left to the gatherer's last-resort
+          // detection (#2226): a demotion decided here must be a CI verdict, and
+          // a forge the caller could not resolve is its own refusal.
+          await forgeTypeForCycle(ctx, ctx.verifyExecFn ?? execp),
         ),
       );
       if (contradiction) {

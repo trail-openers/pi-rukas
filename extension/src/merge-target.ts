@@ -95,6 +95,11 @@ export type MergeTargetResult = { ok: true; target: MergeTarget } | MergeTargetE
  * Fails closed on every fault: unreadable forge, unreadable PR, missing
  * fields. The refusal reason names the escape hatch so the operator knows
  * how to override.
+ *
+ * `forgeOpts.env` is the harness seam for the guard's forge decision: a matrix
+ * that drives a GitLab clone without an ambient `PI_ENSEMBLE_FORGE` (the
+ * gatherer's detection then has only the remote to classify) names the forge for
+ * the GUARD here while leaving the gatherer's own resolution untouched.
  */
 export async function readMergeTarget(
   execFn: MergeExecFn,

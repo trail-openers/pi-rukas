@@ -322,6 +322,13 @@ export function mergeEvidenceViewCmd(number: number): string {
   return `gh pr view ${number} --json mergeStateStatus,mergeable,state,headRefOid,author`;
 }
 
+/**
+ * The page size and the three read builders the GitLab arm of the
+ * merge-evidence gate issues now live in `forge-commands-gl-evidence.ts` (#2226,
+ * §12 size cap): they exist only for that arm, so they sit beside the module
+ * that grades their answers rather than in the forge-wide table below.
+ */
+
 // ── CI runs ───────────────────────────────────────────────────────────────
 
 /** Watch a GitHub Actions run (the CLI does the polling). */
