@@ -1,6 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { classifyDispatchOutcome } from "./adversarial-classify.ts";
-import { criteriaForSeat } from "./adversarial-criteria-seat.ts";
 import {
   type FenceRecord,
   type FencedRound,
@@ -318,7 +317,8 @@ export async function runAdversarialLoop(
         round,
         maxRounds: MAX_ROUNDS,
         issueBody: params.issueBody,
-        ...criteriaForSeat(params),
+        // Printed only if the caller rendered one — see `reviewCriteria`.
+        reviewCriteria: params.reviewCriteria,
         fixDelta: round === firstRound ? params.fixDelta : undefined,
         gateCmd: params.gateCmd,
         // #1040 — comments this round's diff removed, for the reviewer to judge.
@@ -447,7 +447,8 @@ export async function runAdversarialLoop(
             diff: review.diff,
             round,
             issueBody: params.issueBody,
-            ...criteriaForSeat(params),
+            // The same section the reviewer was given, or none: see `reviewCriteria`.
+            reviewCriteria: params.reviewCriteria,
             priorFindings: [...priorFindings],
             diffRange: review.range,
           }),

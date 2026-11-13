@@ -6,35 +6,34 @@
  * adversarial reviewer and the fixer — ONE rendering: the issue's prose with its
  * `pi-spec v1` block stripped, and the criteria as their own section. The two
  * loop-internal prompt sites (`adversarial.ts`, the reviewer and the fix round)
- * both take `criteriaForSeat`, and a spread makes an unread parameter invisible:
- * `buildFixPrompt` accepted no `reviewCriteria` field, TypeScript could not
- * reject a key arriving through a spread, and the fixer's brief silently carried
- * no criteria at all — while its own rule about the issue pointed at text the
- * brief had already had stripped out of it. The assertions below run on the
- * string the loop's fix child was ACTUALLY dispatched with.
+ * both take `params.reviewCriteria` straight through, and a spread makes an unread
+ * parameter invisible: `buildFixPrompt` accepted no `reviewCriteria` field,
+ * TypeScript could not reject a key arriving through a spread, and the fixer's
+ * brief silently carried no criteria at all — while its own rule about the issue
+ * pointed at text the brief had already had stripped out of it. The assertions
+ * below run on the string the loop's fix child was ACTUALLY dispatched with.
  *
  * The loop's own fix round only runs when a round routes to a fix, so this drives
  * a non-reportOnly loop (the shape the `adversarial_loop` tool and the /work
  * driver use): round 1's reviewer blocks, the fixer replies, round 2 approves —
  * so exactly one fixer prompt is ever built.
  *
- * Three arms, one per contract the wiring has to hold:
+ * Two arms, one per contract the wiring has to hold:
  *   1. **supplied** — a caller that handed the loop a stripped body plus a rendered
  *      section: BOTH children get that section byte for byte, and the block's JSON
  *      appears nowhere outside it. This is the arm the defect broke.
- *   2. **derives** — a caller that handed over a raw body and no section: both
- *      children get the same section, so a loop that re-derives is consistent about
- *      both of its seats and neither is criteria-less.
- *   3. **suppressed** — a caller that supplied an EMPTY section on the same raw
- *      body: neither child gets one, where arm 2 got one. That is the
- *      `"reviewCriteria" in params` decision, and the diff against arm 2 is what
- *      makes this arm non-vacuous: an implementation that ignored the key and always
- *      re-derived would pass arm 2 and fail here.
+ *   2. **absent** — a caller that handed over a raw body and NO section: neither
+ *      child gets one, and both keep the raw block. The loop has no derive arm, so
+ *      a caller that never rendered a section cannot be given one; that is what
+ *      keeps classic /work and the tool path outside the split (and
+ *      `test-adversarial-classic-criteria-not-derived.ts` is the byte-identity
+ *      half of the same promise).
  *
- * Byte-identity for callers that thread nothing is `test-lean-review-spec-split-off.ts`'s
- * job, on the pre-split goldens; the `adversarial_loop` tool path is covered by
- * `test-adversarial-tool-guards.ts`. This file asserts only what those do not: what
- * the loop's OWN fix-round prompt carries.
+ * Byte-identity for callers that thread nothing is
+ * `test-adversarial-classic-criteria-not-derived.ts`, driven against the switch-
+ * OFF render; the `adversarial_loop` tool's raw-args strip is asserted there too.
+ * This file asserts only what those do not: what the loop's OWN fix-round prompt
+ * carries when a section IS supplied.
  */
 
 import { mock } from "bun:test";
@@ -247,50 +246,41 @@ try {
     judgeWithCriteria("supplied re-review", "reviewer", reviewers[1] ?? "");
   }
 
-  // ── 2. DERIVES: a raw body and no section — both seats, consistently ───────
+  // ── 2. ABSENT: no section supplied → neither seat gets one, block stays raw ──
+  // The loop renders nothing of its own. A caller that handed it a raw body and no
+  // section must see that body printed as-is, with no criteria section added: this
+  // is classic /work and the tool path, and the arm that fails the moment anyone
+  // puts a derive back into the loop's criteria wiring.
   {
-    const { reviewers, fixers, outcome } = await drive("feature/adv-criteria-derived", {
+    const { reviewers, fixers, outcome } = await drive("feature/adv-criteria-absent", {
       issueBody: SPEC_BODY,
     });
     assert(
       reviewers.length === 2 && fixers.length === 1,
-      `derives: one reviewer, a fixer and a re-review (reviewer ${String(reviewers.length)}, fixer ${String(fixers.length)}, ${outcome})`,
+      `absent: one reviewer, a fixer and a re-review (reviewer ${String(reviewers.length)}, fixer ${String(fixers.length)}, ${outcome})`,
     );
     const reviewer = reviewers[0] ?? "";
     const fixer = fixers[0] ?? "";
-    judgeCommon("derives", reviewer, fixer);
-    judgeWithCriteria("derives", "reviewer", reviewer);
-    judgeWithCriteria("derives", "fixer", fixer);
+    judgeCommon("absent", reviewer, fixer);
+    for (const [seat, brief] of [
+      ["reviewer", reviewer],
+      ["fixer", fixer],
+    ] as const) {
+      assert(
+        !brief.includes(LEAN_REVIEW_CRITERIA_HEADING),
+        `absent: the ${seat} gets no criteria section the caller did not supply`,
+      );
+      assert(
+        brief.includes('"problem"') && brief.includes("pi-spec v1"),
+        `absent: and the ${seat} still reads the raw block — so the absence above is the loop printing no section, not a bound that cut it`,
+      );
+    }
+    // Non-vacuity against arm 1: same body, same loop, the only difference is the
+    // key. An implementation that rendered a section from the body regardless would
+    // pass arm 1 and fail here.
     assert(
-      reviewer.includes(CRITERIA) && fixer.includes(CRITERIA),
-      "derives: the loop re-derived ONE section and gave it to both of its seats — neither is criteria-less",
-    );
-  }
-
-  // ── 3. SUPPRESSED: an empty section is honoured, not overridden ────────────
-  {
-    const { reviewers, fixers, outcome } = await drive("feature/adv-criteria-suppressed", {
-      issueBody: SPEC_BODY,
-      reviewCriteria: "",
-    });
-    assert(
-      reviewers.length === 2 && fixers.length === 1,
-      `suppressed: one reviewer, a fixer and a re-review (reviewer ${String(reviewers.length)}, fixer ${String(fixers.length)}, ${outcome})`,
-    );
-    const reviewer = reviewers[0] ?? "";
-    const fixer = fixers[0] ?? "";
-    judgeCommon("suppressed", reviewer, fixer);
-    assert(
-      !reviewer.includes(LEAN_REVIEW_CRITERIA_HEADING) &&
-        !fixer.includes(LEAN_REVIEW_CRITERIA_HEADING),
-      "suppressed: neither seat gets a criteria section the caller suppressed",
-    );
-    // Non-vacuity against arm 2: same body, same loop, the only difference is the
-    // key. A `criteriaForSeat` that ignored `"reviewCriteria" in params` and always
-    // re-derived would have passed arm 2 and fails here.
-    assert(
-      reviewer.includes('"problem"') && fixer.includes('"problem"'),
-      "suppressed: and the raw block is still in both briefs — so the absence above is the caller's decision being honoured, not a bound that cut it",
+      CRITERIA.length > 0 && !reviewer.includes(CRITERIA) && !fixer.includes(CRITERIA),
+      "absent: the section arm 1 supplied is exactly what these two briefs do NOT contain",
     );
   }
 } finally {
