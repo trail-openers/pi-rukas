@@ -21,17 +21,15 @@ import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { ISSUE_BODY_TIMEOUT_MS } from "../src/work-driver-explore.ts";
 import { repeatParkVerdict } from "../src/work-driver-park-memory.ts";
+import { REPEAT_PARK_REFUSAL_PREFIX, refuseRepeatPark } from "../src/work-driver-state-guards.ts";
 import {
-  REPEAT_PARK_REFUSAL_PREFIX,
-  refuseRepeatPark,
-} from "../src/work-driver-state-guards.ts";
-import {
+  assert,
   ISSUE,
   armParkRecord,
-  assert,
   ctxOf,
   exitCode,
   fingerprintOf,
+  withForgeEnv,
   world,
 } from "./lib/park-harness.ts";
 
@@ -101,52 +99,54 @@ process.env.PI_ENSEMBLE_FORGE = "none";
   }
 
   // 4c. existing-pr-detected: refuses only while that PR is still open.
-  for (const [prList, label] of [
-    [OPEN_PR, "still open"],
-    [[], "since closed"],
-  ] as const) {
-    const w = world(`pr-${label}`);
-    try {
-      armParkRecord(w, "existing-pr-detected", {
-        reason: "77",
-        fingerprint: fingerprintOf(w),
-        count: 2,
-        deliveredCount: 2,
-      });
-      const ctx = ctxOf(w, { prList });
-      const refusal = await repeatParkVerdict(ctx);
-      if (label === "still open") {
-        assert(
-          refusal?.cap === "existing-pr-detected" &&
-            refusal.reason === "77" &&
-            refusal.count === 2 &&
-            refusal.issue === ISSUE,
-          "existing-pr-detected: the PR is still open, so the guard names the cap, the PR and the count",
-        );
-        const refused = await refuseRepeatPark(ctx);
-        assert(
-          typeof refused?.reason === "string" &&
-            refused.reason.startsWith(REPEAT_PARK_REFUSAL_PREFIX) &&
-            refused.reason.includes("existing-pr-detected") &&
-            refused.repeatPark?.cap === "existing-pr-detected" &&
-            refused.repeatPark.issue === ISSUE &&
-            refused.repeatPark.count === 2,
-          "…and refuseRepeatPark turns that into the reason the runner recognises, WITH the record fields on the refusal",
-        );
-      } else {
-        assert(
-          refusal === undefined,
-          "existing-pr-detected: the PR has since been closed — the guard re-reads the forge instead of enforcing a GitHub state it has not looked at",
-        );
-        assert(
-          (await refuseRepeatPark(ctx)) === undefined,
-          "…and the start runs",
-        );
+  // The whole loop runs with the forge named: the re-check resolves the cycle's
+  // forge before it will run the lookup, and this file turns the forge off at
+  // module scope for the cases that do not touch the forge at all.
+  await withForgeEnv(async () => {
+    for (const [prList, label] of [
+      [OPEN_PR, "still open"],
+      [[], "since closed"],
+    ] as const) {
+      const w = world(`pr-${label}`);
+      try {
+        armParkRecord(w, "existing-pr-detected", {
+          reason: "77",
+          fingerprint: fingerprintOf(w),
+          count: 2,
+          deliveredCount: 2,
+        });
+        const ctx = ctxOf(w, { prList });
+        const refusal = await repeatParkVerdict(ctx);
+        if (label === "still open") {
+          assert(
+            refusal?.cap === "existing-pr-detected" &&
+              refusal.reason === "77" &&
+              refusal.count === 2 &&
+              refusal.issue === ISSUE,
+            "existing-pr-detected: the PR is still open, so the guard names the cap, the PR and the count",
+          );
+          const refused = await refuseRepeatPark(ctx);
+          assert(
+            typeof refused?.reason === "string" &&
+              refused.reason.startsWith(REPEAT_PARK_REFUSAL_PREFIX) &&
+              refused.reason.includes("existing-pr-detected") &&
+              refused.repeatPark?.cap === "existing-pr-detected" &&
+              refused.repeatPark.issue === ISSUE &&
+              refused.repeatPark.count === 2,
+            "…and refuseRepeatPark turns that into the reason the runner recognises, WITH the record fields on the refusal",
+          );
+        } else {
+          assert(
+            refusal === undefined,
+            "existing-pr-detected: the PR has since been closed — the guard re-reads the forge instead of enforcing a GitHub state it has not looked at",
+          );
+          assert((await refuseRepeatPark(ctx)) === undefined, "…and the start runs");
+        }
+      } finally {
+        rmSync(w.dir, { recursive: true, force: true });
       }
-    } finally {
-      rmSync(w.dir, { recursive: true, force: true });
     }
-  }
+  });
 
   // 4c-bis. The re-check is BOUNDED, and a lookup that cannot answer is not a
   // refusal. It runs before any step is dispatched, so an unbounded
@@ -164,66 +164,72 @@ process.env.PI_ENSEMBLE_FORGE = "none";
         deliveredCount: 2,
       });
 
-      let calls = 0;
-      let deadlineSeen: number | undefined;
-      const timingOut = {
-        ...ctxOf(w, { prList: OPEN_PR }),
-        verifyExecFn: async (_cmd: string, opts?: { timeout?: number }) => {
-          calls++;
-          deadlineSeen = opts?.timeout;
-          throw Object.assign(new Error("command timed out after 45000ms"), {
-            killed: true,
-            timedOutKill: true,
-          });
-        },
-      } as unknown as DriverContext;
-      assert(
-        (await repeatParkVerdict(timingOut)) === undefined,
-        "existing-pr-detected: a `gh pr list` that times out does NOT refuse — the driver still cannot confirm the PR, so it does not get to enforce it",
-      );
-      assert(
-        calls > 0 && deadlineSeen === ISSUE_BODY_TIMEOUT_MS,
-        `…and the re-check ran WITH a deadline (saw ${String(deadlineSeen)}ms, expected ${ISSUE_BODY_TIMEOUT_MS}ms) — an unbounded forge call before the loop is how a start hangs forever`,
-      );
-      assert(
-        (await refuseRepeatPark(timingOut)) === undefined,
-        "…and refuseRepeatPark lets that start run rather than parking it on a state it could not read",
-      );
+      // The forge is named for the whole block: the deadline assertion below is
+      // about the deadline the re-check CARRIES, and with the forge off the lookup
+      // never runs at all, so `deadlineSeen` would stay undefined for a reason
+      // unrelated to the defect this case pins.
+      await withForgeEnv(async () => {
+        let calls = 0;
+        let deadlineSeen: number | undefined;
+        const timingOut = {
+          ...ctxOf(w, { prList: OPEN_PR }),
+          verifyExecFn: async (_cmd: string, opts?: { timeout?: number }) => {
+            calls++;
+            deadlineSeen = opts?.timeout;
+            throw Object.assign(new Error("command timed out after 45000ms"), {
+              killed: true,
+              timedOutKill: true,
+            });
+          },
+        } as unknown as DriverContext;
+        assert(
+          (await repeatParkVerdict(timingOut)) === undefined,
+          "existing-pr-detected: a `gh pr list` that times out does NOT refuse — the driver still cannot confirm the PR, so it does not get to enforce it",
+        );
+        assert(
+          calls > 0 && deadlineSeen === ISSUE_BODY_TIMEOUT_MS,
+          `…and the re-check ran WITH a deadline (saw ${String(deadlineSeen)}ms, expected ${ISSUE_BODY_TIMEOUT_MS}ms) — an unbounded forge call before the loop is how a start hangs forever`,
+        );
+        assert(
+          (await refuseRepeatPark(timingOut)) === undefined,
+          "…and refuseRepeatPark lets that start run rather than parking it on a state it could not read",
+        );
 
-      const stopping = new AbortController();
-      stopping.abort();
-      calls = 0;
-      const interrupted = {
-        ...ctxOf(w, { prList: OPEN_PR }),
-        signal: stopping.signal,
-        verifyExecFn: async () => {
-          calls++;
-          return { stdout: JSON.stringify(OPEN_PR) };
-        },
-      } as unknown as DriverContext;
-      assert(
-        (await repeatParkVerdict(interrupted)) === undefined,
-        "an interrupted cycle is not refused on a PR state — nothing is about to run either way, so the guard has no verdict to defend",
-      );
-      assert(
-        calls === 0,
-        "…and the abort is checked BEFORE the `gh pr list`: the way out of a stopping cycle is not a network call",
-      );
+        const stopping = new AbortController();
+        stopping.abort();
+        calls = 0;
+        const interrupted = {
+          ...ctxOf(w, { prList: OPEN_PR }),
+          signal: stopping.signal,
+          verifyExecFn: async () => {
+            calls++;
+            return { stdout: JSON.stringify(OPEN_PR) };
+          },
+        } as unknown as DriverContext;
+        assert(
+          (await repeatParkVerdict(interrupted)) === undefined,
+          "an interrupted cycle is not refused on a PR state — nothing is about to run either way, so the guard has no verdict to defend",
+        );
+        assert(
+          calls === 0,
+          "…and the abort is checked BEFORE the `gh pr list`: the way out of a stopping cycle is not a network call",
+        );
 
-      // And a lookup that THROWS is a state the driver could not read. `[null]`
-      // parses fine — the throw happens after the lookup's own try blocks, when
-      // the matcher walks the row. A pre-flight gate has no exception path.
-      let lookupThrew = false;
-      let thrown: unknown;
-      try {
-        thrown = await repeatParkVerdict(ctxOf(w, { prList: [null] }));
-      } catch {
-        lookupThrew = true;
-      }
-      assert(
-        !lookupThrew && thrown === undefined,
-        "existing-pr-detected: rows that make the matcher THROW neither refuse nor propagate out of the pre-flight gate",
-      );
+        // And a lookup that THROWS is a state the driver could not read. `[null]`
+        // parses fine — the throw happens after the lookup's own try blocks, when
+        // the matcher walks the row. A pre-flight gate has no exception path.
+        let lookupThrew = false;
+        let thrown: unknown;
+        try {
+          thrown = await repeatParkVerdict(ctxOf(w, { prList: [null] }));
+        } catch {
+          lookupThrew = true;
+        }
+        assert(
+          !lookupThrew && thrown === undefined,
+          "existing-pr-detected: rows that make the matcher THROW neither refuse nor propagate out of the pre-flight gate",
+        );
+      });
     } finally {
       rmSync(w.dir, { recursive: true, force: true });
     }
@@ -243,10 +249,14 @@ process.env.PI_ENSEMBLE_FORGE = "none";
         deliveredCount: 2,
       });
       const ctx = ctxOf(w, { prList: OPEN_PR, continuePr: true });
-      assert(
-        (await refuseRepeatPark(ctx)) === undefined,
-        "--continue-pr with a count-2 open-PR record: the run proceeds — refusing the documented remedy would block the fix",
-      );
+      // Forge named: the waiver is asserted against a re-check that CAN answer —
+      // the flag stands the guard down, it is not that the lookup was unaskable.
+      await withForgeEnv(async () => {
+        assert(
+          (await refuseRepeatPark(ctx)) === undefined,
+          "--continue-pr with a count-2 open-PR record: the run proceeds — refusing the documented remedy would block the fix",
+        );
+      });
     } finally {
       rmSync(w.dir, { recursive: true, force: true });
     }
@@ -262,25 +272,31 @@ process.env.PI_ENSEMBLE_FORGE = "none";
         deliveredCount: 2,
       });
       const ctx = ctxOf(w, { prList: [], continuePr: true });
-      const refused = await refuseRepeatPark(ctx);
-      assert(
-        refused?.repeatPark?.cap === "intent-park" &&
-          refused.reason.startsWith(REPEAT_PARK_REFUSAL_PREFIX),
-        "--continue-pr does NOT waive an intent-park refusal — the flag continues a PR; it does not make the issue say more",
-      );
-      // And the flag still waives nothing when the PR park is not the one that
-      // armed: an intent record beside an open-PR record refuses on the intent.
-      armParkRecord(w, "existing-pr-detected", {
-        reason: "77",
-        fingerprint: here,
-        count: 2,
-        deliveredCount: 2,
+      // The forge is named for the whole block: the intent verdict is asserted
+      // against a guard whose open-PR re-check CAN run and say the PR is open —
+      // otherwise the open-PR record drops out for the unrelated reason that no
+      // forge was configured, and the case would pass without the flag mattering.
+      await withForgeEnv(async () => {
+        const refused = await refuseRepeatPark(ctx);
+        assert(
+          refused?.repeatPark?.cap === "intent-park" &&
+            refused.reason.startsWith(REPEAT_PARK_REFUSAL_PREFIX),
+          "--continue-pr does NOT waive an intent-park refusal — the flag continues a PR; it does not make the issue say more",
+        );
+        // And the flag still waives nothing when the PR park is not the one that
+        // armed: an intent record beside an open-PR record refuses on the intent.
+        armParkRecord(w, "existing-pr-detected", {
+          reason: "77",
+          fingerprint: here,
+          count: 2,
+          deliveredCount: 2,
+        });
+        const both = await refuseRepeatPark(ctxOf(w, { prList: OPEN_PR, continuePr: true }));
+        assert(
+          both?.repeatPark?.cap === "intent-park",
+          "…and with both records armed, --continue-pr stands down only the open-PR one",
+        );
       });
-      const both = await refuseRepeatPark(ctxOf(w, { prList: OPEN_PR, continuePr: true }));
-      assert(
-        both?.repeatPark?.cap === "intent-park",
-        "…and with both records armed, --continue-pr stands down only the open-PR one",
-      );
     } finally {
       rmSync(w.dir, { recursive: true, force: true });
     }
@@ -407,10 +423,14 @@ process.env.PI_ENSEMBLE_FORGE = "none";
         deliveredCount: 2,
       });
       const ctx = ctxOf(w, { prList: OPEN_PR });
-      assert(
-        (await repeatParkVerdict(ctx)) === undefined,
-        `existing-pr-detected with reason ${JSON.stringify(reason)}: the forge re-check cannot run, so the guard fails OPEN (a PR that looks open is not a reason the driver may enforce)`,
-      );
+      // Forge named: the OPEN verdict here must be the reason the case claims —
+      // the reason is not a PR number — not a lookup that could not run.
+      await withForgeEnv(async () => {
+        assert(
+          (await repeatParkVerdict(ctx)) === undefined,
+          `existing-pr-detected with reason ${JSON.stringify(reason)}: the forge re-check cannot run, so the guard fails OPEN (a PR that looks open is not a reason the driver may enforce)`,
+        );
+      });
     } finally {
       rmSync(w.dir, { recursive: true, force: true });
     }

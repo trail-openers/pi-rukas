@@ -51,9 +51,9 @@ export function prPreflightEnabled(): boolean {
 }
 
 /**
- * The named refusal a non-GitHub cycle gets from the two raw-`gh` lookups.
+ * The named refusal a non-GitHub cycle gets from the raw-`gh` body lookups.
  *
- * Both lookups ask a GitHub-specific question — "does the PR's BODY close this
+ * They ask a GitHub-specific question — "does the PR's BODY close this
  * issue?" — through a command the forge adapter does not model (its `prList`
  * requests no `body`), and GitLab's MR list has no body field at all. So on a
  * GitLab project the honest answer is not "no PR matches" (which is what
@@ -141,29 +141,32 @@ export function matchPrForIssue(prs: PrListRow[], issue: number): ExistingPr | u
  *
  * Fails OPEN: any `gh` or parse failure returns undefined so the cycle
  * proceeds. A lookup outage must never block work — the cost of missing a
- * duplicate is one wasted cycle, the cost of a false halt is every cycle.
+ * duplicate is one wasted cycle, the cost of a false halt is every cycle. On a
+ * forge other than GitHub it refuses with a NAMED reason rather than running
+ * `gh` at a repository that has no pull requests.
  */
 export async function findOpenPrForIssue(
   execFn: VerifyExecFn,
   repoRoot: string,
   issue: number,
 ): Promise<ExistingPr | undefined> {
-  // NOTE: this site stays a direct command rather than going through the
-  // forge adapter because the test suite pins the `gh pr list` command
-  // string and the raw-JSON row shape (which does not include `body`,
-  // the field `matchPrForIssue` reads). The forge adapter's `prList` does
-  // not request `body` in its `--json` field list, so routing through it
-  // would break the body-signal half of the matcher. The S4 spec for this
-  // file does not name a forge method for this site either.
+  // The gate and the command both come from the two helpers `findOpenPrForBranch`
+  // uses, so the two raw-`gh` body lookups cannot drift: one cannot ask the forge
+  // while the other issues `gh` unasked. The command is `openPrBodyListCmd`'s
+  // rather than a literal here because that builder is what documents the lookup
+  // as GitHub-only — a caller carrying its own copy of the string leaves the
+  // builder unexercised and the invariant unenforced.
+  const refusal = rawGhLookupRefusal(await rawGhLookupForge(execFn, repoRoot));
+  if (refusal !== undefined) {
+    trace(`pr-preflight: ${refusal} — not looking for an existing PR for #${issue}`);
+    return undefined;
+  }
   let stdout: string;
   try {
-    ({ stdout } = await execFn(
-      "gh pr list --state open --limit 100 --json number,headRefName,body",
-      {
-        cwd: repoRoot,
-        maxBuffer: 4 * 1024 * 1024,
-      },
-    ));
+    ({ stdout } = await execFn(openPrBodyListCmd("open"), {
+      cwd: repoRoot,
+      maxBuffer: 4 * 1024 * 1024,
+    }));
   } catch (err) {
     trace(`pr-preflight: gh pr list failed, proceeding: ${(err as Error).message?.slice(0, 200)}`);
     return undefined;

@@ -509,7 +509,7 @@ What a GitLab cycle supports, and what is GitHub-only by construction:
 | Pre-merge step | On GitLab |
 |---|---|
 | Explore (read the issue) | yes — `glab issue view` |
-| Branch step's "is a PR already open for this issue?" | **refused, with a named reason** — the check reads the PR **body** for a closing keyword, and GitLab's MR list carries no body field. Refusing names the forge; running `gh` there would answer "no PR" from a command that cannot see the repository. |
+| Branch step's "is a PR already open for this issue?" | **refused, with a named reason** — the check reads the PR **body** for a closing keyword, and GitLab's MR list carries no body field. Refusing names the forge; running `gh` there would answer "no PR" from a command that cannot see the repository. The repeat-park guard's re-check of a recorded PR is the same lookup and refuses the same way. |
 | The same check at commit-pr, by branch | refused the same way |
 | `--continue-pr` | **GitHub only** — see [`--continue-pr` for hosts](#--continue-pr-for-hosts) |
 | Draft PR, draft re-arm, PR comments, label work, the handoff post | yes — the GitLab branch of each command |

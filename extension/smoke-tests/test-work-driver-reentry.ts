@@ -19,7 +19,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { mechanizedCommitPr } from "../src/work-driver-commit.ts";
 import { priorHandoffCommentUrl } from "../src/work-driver-handoff.ts";
-import { findOpenPrForBranch } from "../src/work-driver-pr-preflight.ts";
+import { findOpenPrForBranch, findOpenPrForIssue } from "../src/work-driver-pr-preflight.ts";
 import type { WorkEvent, WorkState } from "../src/workflow-state.ts";
 import { appendEvent, initialState } from "../src/workflow-state.ts";
 import { trackedTempDir } from "./lib/git-test-env.ts";
@@ -86,7 +86,13 @@ const GH_REMOTE = "https://github.com/o/r\n";
 }
 
 {
-  // The named refusal: the same lookup against a GitLab repo never runs `gh`.
+  // The named refusal: the two raw-`gh` body lookups against a GitLab repo
+  // never run `gh`. Both read the PR `body` — which is exactly why neither can
+  // be answered on GitLab (its MR list carries no body field), and exactly why
+  // both have to ask the forge first: running `gh` there answers "no PR" from
+  // a command that cannot see the repository, which is how a duplicate PR gets
+  // opened. `findOpenPrForIssue` is the branch-step pre-flight and the
+  // repeat-park re-check; `findOpenPrForBranch` is the commit-pr re-entry guard.
   const cmds: string[] = [];
   const gl: Exec = async (cmd) => {
     cmds.push(cmd);
@@ -94,7 +100,8 @@ const GH_REMOTE = "https://github.com/o/r\n";
       return { stdout: "git@gitlab.example.com:g/r.git\n" };
     }
     if (cmd.includes(".pi/forge")) return { stdout: "" };
-    return { stdout: JSON.stringify([{ number: 12 }]) };
+    // A row that WOULD match, so a failure below cannot be blamed on empty data.
+    return { stdout: JSON.stringify([{ number: 12, headRefName: "x", body: "Closes #9" }]) };
   };
   const repoRoot = trackedTempDir("reentry-gl-");
   mkdirSync(path.join(repoRoot, ".pi"), { recursive: true });
@@ -108,8 +115,38 @@ const GH_REMOTE = "https://github.com/o/r\n";
     "findOpenPrForBranch on a GitLab repo is a NAMED REFUSAL, not a gh call",
   );
   assert(
-    cmds.every((c) => !c.startsWith("gh ") && !c.includes("pr list --state open --head")),
-    `…and no gh lookup ran (${cmds.join(" | ")})`,
+    (await findOpenPrForIssue(gl as never, repoRoot, 9)) === undefined,
+    "findOpenPrForIssue on a GitLab repo is the same NAMED REFUSAL (the duplicate-PR pre-flight)",
+  );
+  assert(
+    cmds.every(
+      (c) =>
+        !c.startsWith("gh ") &&
+        !c.includes("pr list --state open --head") &&
+        !c.includes("pr list --state open --limit 100"),
+    ),
+    `…and neither gh lookup ran (${cmds.join(" | ")})`,
+  );
+}
+
+{
+  // The positive control for the arm above: the SAME exec, with only the
+  // remote's host changed, gets the row. Without it the GitLab refusal above
+  // is indistinguishable from a lookup that never had data to answer with.
+  const cmds: string[] = [];
+  const gh: Exec = async (cmd) => {
+    cmds.push(cmd);
+    if (cmd.includes("remote.origin.url")) return { stdout: GH_REMOTE };
+    return { stdout: JSON.stringify([{ number: 12, headRefName: "x", body: "Closes #9" }]) };
+  };
+  const found = await findOpenPrForIssue(gh as never, "/r", 9);
+  assert(
+    found?.number === 12 && found.matchedBy === "body",
+    "findOpenPrForIssue on a GitHub repo still reads the body signal",
+  );
+  assert(
+    cmds.some((c) => c.startsWith("gh pr list --state open --limit 100")),
+    `…via the pinned gh command the builder documents (${cmds.find((c) => c.startsWith("gh "))})`,
   );
 }
 
