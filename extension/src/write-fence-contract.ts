@@ -53,3 +53,19 @@ export function writeFenceChildEnv(fence: WriteFence | undefined): Record<string
       }
     : {};
 }
+
+/**
+ * The child's own temp root, in every spelling a tool honours (#2241). Set it
+ * LAST, after every other write to the child env — an inherited value must never
+ * win, the placement the `GIT_*` canary in `test-subagent-git-guard.ts` pins for
+ * its own assignments. A child inherited its parent's `TMPDIR`, so its `mktemp`
+ * output and its runner's scratch landed in the SHARED root — which the deletion
+ * rule (#2200) refuses it as a delete target — and what it leaked went where every
+ * other run shares. `TMPDIR` is the one `os.tmpdir()` follows, so a nested
+ * dispatch mkdtemp's under the CHILD's dir; trees that must stay host-wide (the
+ * slot dir, the broker and permission sockets, the reviewer isolation tree) are
+ * resolved in the parent and reach the child as absolute values.
+ */
+export function childTempEnv(childTmp: string): Record<string, string> {
+  return { TMPDIR: childTmp, TMP: childTmp, TEMP: childTmp };
+}
