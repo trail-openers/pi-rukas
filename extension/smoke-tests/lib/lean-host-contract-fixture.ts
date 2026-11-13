@@ -42,6 +42,9 @@ export const DAY = 24 * 60 * 60_000;
 /** The env keys these cases write, restored after every case. */
 export const ENV_KEYS = [
   "PI_ENSEMBLE_CYCLE_DEADLINE",
+  // The verified-handback rule is read at call time and the off/on arms are pinned
+  // with this scope, so it belongs to the set restored after every case.
+  "PI_ENSEMBLE_LEAN_VERIFIED_HANDBACK",
   "PI_ENSEMBLE_CYCLE_BUDGET_MS",
   "PI_ENSEMBLE_HANDOFF_CHANNEL",
   // A case may pin the forge off for its own duration: the post seam is asserted

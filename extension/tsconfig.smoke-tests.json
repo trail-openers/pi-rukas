@@ -311,9 +311,17 @@
     "smoke-tests/test-lean-state-blocked-by.ts",
     "smoke-tests/test-lean-machine-caps.ts",
     "smoke-tests/test-lean-handback-cause.ts",
+    "smoke-tests/lib/lean-verified-handback-fixture.ts",
+    "smoke-tests/lib/lean-verified-handback-repo.ts",
+    "smoke-tests/lib/lean-verified-handback-step.ts",
+    "smoke-tests/test-lean-verified-handback.ts",
+    "smoke-tests/test-lean-verified-handback-report.ts",
+    "smoke-tests/test-lean-verified-handback-rewind.ts",
     "smoke-tests/lib/lean-build-asserts.ts",
     "smoke-tests/lib/lean-build-artifacts.ts",
+    "smoke-tests/lib/lean-state-outcome-rig.ts",
     "smoke-tests/test-lean-state-outcome.ts",
+    "smoke-tests/test-lean-state-outcome-heads.ts",
     "smoke-tests/test-lean-state-base.ts",
     "smoke-tests/lib/budget-progress-harness.ts",
     "smoke-tests/test-budget-progress.ts",
@@ -370,6 +378,7 @@
     "smoke-tests/test-lean-review-spec-split-switch.ts",
     "smoke-tests/test-adversarial-fix-round-criteria.ts",
     "smoke-tests/test-lean-review-deps-criteria-pair.ts",
-    "smoke-tests/lib/headless-env-scan.ts"
+    "smoke-tests/lib/headless-env-scan.ts",
+    "smoke-tests/lib/headless-live-inputs.ts"
   ]
 }

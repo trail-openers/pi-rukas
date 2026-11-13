@@ -26,44 +26,12 @@
  * handler is dispatched.
  */
 
-import { mkdirSync, writeFileSync } from "node:fs";
-import path from "node:path";
 import { REPORTING_STATES } from "../src/lean/state-outcome.ts";
-import { INITIAL_COUNTERS, REPORT_STATES, leanStateFile, loadRun } from "../src/lean/state.ts";
-import { FIXTURE_BASE_SHA, makeAssert, tempDir } from "./lib/lean-engine-fixtures.ts";
+import { REPORT_STATES, loadRun } from "../src/lean/state.ts";
+import { makeAssert, tempDir } from "./lib/lean-engine-fixtures.ts";
+import { CLOCK, STEP, forgedOutcomeField } from "./lib/lean-state-outcome-rig.ts";
 
 const { assert, failures } = makeAssert();
-
-const CLOCK = 1000;
-
-const STEP = (issue: number, state: string, n: number, kind: string) => ({
-  key: `${issue}:${state}:${n}`,
-  state,
-  startedAt: CLOCK,
-  endedAt: CLOCK,
-  outcome: { kind },
-});
-
-/**
- * A seed whose ONLY fault is that one evidence-bearing field sits on a step that
- * never produces it. Everything else is the shape a real run writes, so a
- * refusal that came from anything else would be a false alarm.
- */
-function forgedOutcomeField(dir: string, issue: number, step: Record<string, unknown>): void {
-  mkdirSync(path.dirname(leanStateFile(dir, issue)), { recursive: true });
-  const seed = {
-    schema: 1,
-    issue,
-    version: "test",
-    models: {},
-    baseSha: FIXTURE_BASE_SHA,
-    branch: `feature/issue-${issue}`,
-    state: "handback",
-    counters: INITIAL_COUNTERS,
-    steps: [STEP(issue, "ready", 0, "ok"), step],
-  };
-  writeFileSync(leanStateFile(dir, issue), JSON.stringify(seed, null, 2), "utf8");
-}
 
 for (const [label, issue, step, expect] of [
   [
