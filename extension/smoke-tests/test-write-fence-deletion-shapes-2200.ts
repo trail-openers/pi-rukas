@@ -433,8 +433,10 @@ const allowedShapes: Array<[string, string]> = [
   [`find ${wt} -name 'x' -exec rm {} +`, "a -exec rm narrowed by a name test inside the worktree"],
   // The same `-exec` judged by its operands: with every literal inside the roots it stays allowed,
   // which is what makes the refusal above a judgement about the path and not a blanket ban on the
-  // action.
+  // action. A brace is the match `find` substitutes, never a path, so an `-exec` whose operands are
+  // all braces is judged by the start paths alone.
   [`find ${wt} -exec rm -rf {} +`, "an -exec rm whose only operands are placeholders"],
+  [`find ${wt} -exec rm -rf {} ${wt}/build \;`, "an -exec rm whose literal operand is inside the worktree"],
   ["git status --porcelain", "an ordinary read-only command"],
   ["bun run check", "the project verify"],
   [`node -e 'console.log("${scratch}/notes.txt")'`, "an interpreter that deletes nothing"],

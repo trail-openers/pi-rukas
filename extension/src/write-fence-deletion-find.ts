@@ -124,24 +124,37 @@ function printsNoMatches(producer: Command): boolean {
 }
 
 /**
- * Whether this `find`'s `-exec` runs a remover, or undefined when no command follows the
- * action at all. The command is the FIRST word after it, not the first word that happens not
- * to be an option: `find <tree> -exec -- rm -rf {} +` would otherwise read as an `-exec` of
- * nothing and the reader would see no removal action on a line that deletes. The wrapper in
- * front of the remover is stripped by the same splitter the rest of the rule uses, so
- * `-exec sudo rm -rf {} +` is read as the `rm` it is; an `-exec` of anything else prints its
- * matches instead of removing them. Undefined is the unreadable case the caller refuses.
+ * Whether this `find`'s `-exec` runs a remover, or undefined when the action names no command at
+ * all. The command is the FIRST word after the action, not the first word that happens not to be an
+ * option: `find <tree> -exec -- rm -rf {} +` and `-exec -x rm …` would otherwise read as an `-exec`
+ * of nothing, and the reader would see no removal action on a line that deletes. Whether that first
+ * word is itself a remover or only a wrapper in front of one — `sudo`, or any other — is decided by
+ * stripping it and asking the word behind it, so `-exec sudo rm -rf {} +` is read as the `rm` it is
+ * while `-exec ls` prints its matches instead of removing them.
  */
 function execIsRemover(expr: Word[]): boolean | undefined {
-  // The `-exec` terminator (`;` or `+`) is not part of the command, and the words handed to
-  // the wrapper stop at it rather than reading past the end of the action. A brace on its
-  // own is xargs' placeholder, not an option, so the terminator test comes first.
   const body = expr.slice(0, terminator(expr));
   const cmd = body[0];
   if (cmd === undefined) return undefined;
+  const stripped = stripPrefix(body).words;
+  const command = stripped[0];
+  // No word survived the wrappers, so the action gave a wrapper and no program: it names no command,
+  // which is the unreadable case the caller refuses rather than a pass.
+  if (command === undefined) return undefined;
   // An option is not a program name, so the command this `-exec` runs cannot be read.
-  if (cmd.text.startsWith("-")) return undefined;
-  return stripPrefix(body).words.some((w) => isRemover(commandName(w.text)));
+  if (command.text.startsWith("-")) return undefined;
+  return isRemover(commandName(command.text));
+}
+
+/**
+ * The remover this `-exec` runs, with the words after it, or undefined when the action runs no
+ * remover. The operands are what the caller judges besides the start paths.
+ */
+function execCommand(expr: Word[]): { command: Word; operands: Word[] } | undefined {
+  if (execIsRemover(expr) !== true) return undefined;
+  const stripped = stripPrefix(expr.slice(0, terminator(expr))).words;
+  const command = stripped[0];
+  return command === undefined ? undefined : { command, operands: stripped.slice(1) };
 }
 
 /** The index of this `-exec` expression's terminator, or its length when it has none. */
@@ -179,7 +192,14 @@ function execRemovals(starts: Word[], execExpr: Word[], pipedIntoRemover: boolea
   // without hiding it — judged, like the `-print0 | xargs rm` shape above. With no start
   // path the line names no tree and says nothing the reader can resolve: refused.
   if (starts.length === 0) return [UNNAMED_DIR];
-  return starts;
+  // The remover's own literal operands are judged too: `find <in-tree> -exec rm -rf <outside> \;`
+  // runs that remover once per match with the outside path spliced in verbatim, so an in-tree start
+  // path cannot stand in for the tree it really deletes. A brace is the match `find` substitutes and
+  // the terminator is not an operand, so neither is a path — which is what keeps the ordinary
+  // `find <in-tree> -exec rm -rf {} +` a cleanup rather than a refusal.
+  const literals = execCommand(execExpr);
+  if (literals === undefined) return starts;
+  return [...starts, ...withoutPlaceholder(removalOperands(literals.operands), execExpr)];
 }
 
 /** The start paths and the expression of a `find`'s arguments. */

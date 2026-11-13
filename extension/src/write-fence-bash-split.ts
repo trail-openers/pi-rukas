@@ -67,14 +67,15 @@ const WRAPPERS = new Set([
 
 /**
  * The options of each wrapper that take a SEPARATE value (`nice -n 5`, `timeout -s KILL`),
- * checked against each wrapper's own usage output. Exported because the deletion reader
- * (#2200) re-reads the words the strip left behind with this same table, so the two readers
- * cannot disagree about which word an option swallowed. A boolean flag listed here swallows the
- * next word — the wrapper's command, when the flag comes last — and a remover the reader never
- * saw is a remover the rule never judged. Short namespace flags (`unshare -m`, `nsenter -p`) and
- * tracing flags (`strace -f`) are boolean: their `[=<file>]` form is attached and optional.
- * Long options are listed even where `=` is the usual spelling, since spaced `--class 3` is
- * accepted too.
+ * checked against each wrapper's own usage output. This table belongs to the WRITE fence's strip
+ * alone: the deletion rule (#2200) does not consult it, because an option no row names (`strace -p`)
+ * or one whose value the tool takes optionally (`watch -q [cycles]`, `env -S <split-string>`) makes
+ * the skip count wrong exactly where a remover hides, and no table is complete enough to settle it —
+ * so that side reads the raw words (see `judgedWords` in `write-fence-deletion-positions.ts`). A
+ * boolean flag listed here still swallows the next word of a WRITE, which is why the rows below were
+ * checked against the tools. Short namespace flags (`unshare -m`, `nsenter -p`) and tracing flags
+ * (`strace -f`) are boolean: their `[=<file>]` form is attached and optional. Long options are listed
+ * even where `=` is the usual spelling, since spaced `--class 3` is accepted too.
  */
 export const VALUE_OPTIONS: Record<string, readonly string[]> = {
   env: ["-u", "--unset", "-S", "--split-string"],
@@ -85,8 +86,9 @@ export const VALUE_OPTIONS: Record<string, readonly string[]> = {
   sudo: ["-u", "-g", "-C", "-D", "-p", "-r", "-t", "-U", "--user", "--group", "--chdir"],
   doas: ["-u", "-C"],
   caffeinate: ["-t", "-w"],
-  // `-q`/`--equexit` takes an OPTIONAL value (usage output), so `watch -q rm …` runs `rm` — which
-  // is why the row for it names a cycles value: with no value the option swallows the command.
+  // `-q`/`--equexit` takes an OPTIONAL value (usage output): `watch -q 3 rm …` runs `rm`, `watch -q
+  // rm …` runs `rm` too, and the write strip reads the word after the flag as the cycles value either
+  // way. The deletion rule never asks this table and judges the `rm` in both spellings.
   watch: ["-n", "--interval", "-q", "--equexit"],
   // `strace -U <columns>` takes a value, though its single-letter shape reads as a boolean cluster.
   xargs: [
@@ -165,8 +167,10 @@ export function isRemover(name: string): boolean {
 
 /**
  * Whether a name is one of the wrappers `stripPrefix` consumes to reach the command behind it.
- * Exported for the deletion reader (#2200), which has to tell a surviving program from a word a
- * miscounted wrapper left behind — the answer is this set's, not a second list of names.
+ * Exported for the deletion rule (#2200), which asks it of a segment's FIRST word to decide whether
+ * the line is a wrapper segment at all — the set that says so is this one, not a second list of names.
+ * The rule then judges the first owned command name after the wrapper from the raw words, so nothing
+ * here depends on what any of these wrappers' options take.
  */
 export function isWrapper(name: string): boolean {
   return WRAPPERS.has(name);
