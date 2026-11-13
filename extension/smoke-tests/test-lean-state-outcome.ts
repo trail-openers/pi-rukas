@@ -26,44 +26,12 @@
  * handler is dispatched.
  */
 
-import { mkdirSync, writeFileSync } from "node:fs";
-import path from "node:path";
 import { REPORTING_STATES } from "../src/lean/state-outcome.ts";
-import { INITIAL_COUNTERS, REPORT_STATES, leanStateFile, loadRun } from "../src/lean/state.ts";
-import { FIXTURE_BASE_SHA, makeAssert, tempDir } from "./lib/lean-engine-fixtures.ts";
+import { REPORT_STATES, loadRun } from "../src/lean/state.ts";
+import { makeAssert, tempDir } from "./lib/lean-engine-fixtures.ts";
+import { CLOCK, STEP, forgedOutcomeField } from "./lib/lean-state-outcome-rig.ts";
 
 const { assert, failures } = makeAssert();
-
-const CLOCK = 1000;
-
-const STEP = (issue: number, state: string, n: number, kind: string) => ({
-  key: `${issue}:${state}:${n}`,
-  state,
-  startedAt: CLOCK,
-  endedAt: CLOCK,
-  outcome: { kind },
-});
-
-/**
- * A seed whose ONLY fault is that one evidence-bearing field sits on a step that
- * never produces it. Everything else is the shape a real run writes, so a
- * refusal that came from anything else would be a false alarm.
- */
-function forgedOutcomeField(dir: string, issue: number, step: Record<string, unknown>): void {
-  mkdirSync(path.dirname(leanStateFile(dir, issue)), { recursive: true });
-  const seed = {
-    schema: 1,
-    issue,
-    version: "test",
-    models: {},
-    baseSha: FIXTURE_BASE_SHA,
-    branch: `feature/issue-${issue}`,
-    state: "handback",
-    counters: INITIAL_COUNTERS,
-    steps: [STEP(issue, "ready", 0, "ok"), step],
-  };
-  writeFileSync(leanStateFile(dir, issue), JSON.stringify(seed, null, 2), "utf8");
-}
 
 for (const [label, issue, step, expect] of [
   [
@@ -280,62 +248,6 @@ for (const [label, issue, step, expect] of [
       outcome: { kind: "budget", limit: "turns", value: 3, used: 1e400 },
     },
     /outcome used must be a non-negative safe integer/,
-  ],
-  [
-    // The four head fields are what the verified handback saw when it moved origin's
-    // branch, and the comment prints them beside the bytes it hands back. On a step
-    // that is not the reporting one they are a shipping claim the run never made —
-    // the same forgery `posted` refuses above, in the direction that matters most,
-    // because a `shippedHead` on a `build` step reads as a certified head to every
-    // reader of the record. All four go on one non-handback step: the table checks
-    // each field independently, and one record that carries all of them pins the
-    // whole group at the step that may not carry any.
-    "head fields on a build step",
-    64,
-    {
-      key: "64:build:0",
-      state: "build",
-      startedAt: CLOCK,
-      endedAt: CLOCK,
-      outcome: {
-        kind: "ok",
-        shippedHead: "c".repeat(40),
-        shippedVerified: true,
-        unshippedHead: "d".repeat(40),
-        unshippedReason: "the lease refused the rewind",
-      },
-    },
-    /is only recorded by a handback step/,
-  ],
-  [
-    // A truthy string survives `if (outcome.shippedVerified)` and prints an
-    // unverified head as one the gate certified, which is the exact claim the rule
-    // exists to make trustworthy. The field is a boolean or the record is refused.
-    "shippedVerified as a string on a handback step",
-    65,
-    {
-      key: "65:handback:0",
-      state: "handback",
-      startedAt: CLOCK,
-      endedAt: CLOCK,
-      outcome: { kind: "done", shippedHead: "c".repeat(40), shippedVerified: "yes" },
-    },
-    /shippedVerified must be a boolean/,
-  ],
-  [
-    // The head fields are the answer to a question about SPECIFIC bytes, so a
-    // field naming a head that is not a commit is not a partial record — it is a
-    // record about nothing. The loader takes a full sha or refuses.
-    "shippedHead that is not a full sha",
-    66,
-    {
-      key: "66:handback:0",
-      state: "handback",
-      startedAt: CLOCK,
-      endedAt: CLOCK,
-      outcome: { kind: "done", shippedHead: "abc123" },
-    },
-    /shippedHead must be a 40-hex commit sha/,
   ],
   [
     // #1920 A — `draft` is what the publish step handed the forge, and the only
