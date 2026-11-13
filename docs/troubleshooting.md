@@ -3938,3 +3938,31 @@ The channel: the driver creates a private `0700` temp dir per verify call and pa
 - **Every cycle parks although the base is genuinely red** — the writer and reader have drifted. `bun smoke-tests/test-verify-report-file.ts` section 4 runs the real loop and reads its report back; that is the assertion that catches writer drift a parser unit test cannot see.
 
 The variable is a driver-internal process contract, not operator configuration — deliberately **not** a `PI_ENSEMBLE_*` name and not in `HEADLESS_INPUTS`. There is no supported way to set it by hand, and a relative value is refused with a warning rather than written into the checkout under test.
+
+### Symptom: a lean handback shipped a head the gate never certified
+
+**Symptom:** a `work-lean` run ends `handed-back` (exit 10) on an issue whose PR head has
+no green `verify` behind it. The step log's newest work step is `review` with kind `fixed`
+— the fix wave pushed a new head — and the re-verification that `fixed` routes into never
+ran, because the between-steps deadline, the step cap, a handler throw or a table edge
+stopped the run first. The handback comment names neither the shipped head nor whether it
+was verified.
+
+**Cause:** the handback reported the head origin held without moving it, and origin held
+the fix wave's bytes. `review-git.ts`'s `integrate()` is the only writer of public bytes in
+the review step; once it has pushed, "shipped" and "verified" are two different commits.
+
+**Fix:** the handback now ships the last verified head. It keeps the unverified head
+reachable under `refs/lean/unverified/<issue>`, then rewinds origin's branch to the newest
+decided green `verify`'s head with a lease-pinned push
+(`--force-with-lease=<branch>:<unverified head>`), so it moves the branch only while origin
+still holds exactly the head this run pushed. The step's outcome carries `shippedHead`,
+`shippedVerified`, and when they differ `unshippedHead` and `unshippedReason`; the comment
+body and the host-channel body name them. If the lease refuses (someone moved the branch)
+or the run has no green `verify` at all, nothing is moved and the record says which head
+shipped, that it was not verified, and why. Read `shippedVerified: false` as the reason to
+look before merging. The rule is behind `PI_ENSEMBLE_LEAN_VERIFIED_HANDBACK` (default on;
+`0` restores the pre-rule step that reports and moves nothing). It keys on the step log, so
+it covers every handback whose newest work step is a `fixed` review, whatever stopped the
+run. Source: `lean/handback-heads.ts`, `lean/handback-rewind.ts`, `docs/lean.md` → "The
+verified handback".
