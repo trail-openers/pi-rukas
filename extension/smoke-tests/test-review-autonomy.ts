@@ -471,7 +471,7 @@ const REVIEWED_PATCH_ID = "d".repeat(40);
     struck.verdict === "park" && struck.openPoints?.length === 1,
     "autonomy: a struck-through severity point parks",
   );
-  // [RESOLVED] must sit right after the tag; anywhere else the point still gates.
+  // [RESOLVED] at the end of the line, with no separator and answer after it, still gates.
   const trailing = finaliseSpecVerdict(
     buildable,
     body("[CRITICAL] Who may change the retry timeout \u2014 maintainers only [RESOLVED]"),

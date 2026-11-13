@@ -1,4 +1,8 @@
 #!/usr/bin/env bun
+import { OPEN_POINTS_HEADING } from "../src/open-points-contract.ts";
+import { readOpenPoints } from "../src/open-points-reader.ts";
+import { finalDraftBody } from "../src/plan-gap-disclosure.ts";
+import { oneLine } from "../src/plan-pi-spec-text.ts";
 /**
  * plan-pi-spec — the over-long-criterion guard (#1883, hardened for #2045).
  *
@@ -21,7 +25,6 @@ import {
   neutraliseFenceRuns,
   placePiSpecSection,
 } from "../src/plan-pi-spec.ts";
-import { oneLine } from "../src/plan-pi-spec-text.ts";
 import { assert, draftBody, specExit } from "./lib/plan-pi-spec-fixture.ts";
 
 const form = (bullet: string): string => neutraliseFenceRuns(oneLine(bullet));
@@ -105,6 +108,33 @@ const form = (bullet: string): string => neutraliseFenceRuns(oneLine(bullet));
       /and \d+ more/.test(reason),
     `over-long criteria: the reason is bounded, names what fits and admits the rest (${named} of ${ten.length} named, ${reason.length} chars; got ${JSON.stringify(reason)})`,
   );
+}
+
+{
+  // The omission line never lands inside the Open points section, which the /work intent
+  // gate reads line by line: both omission sites (an over-long criterion, an empty title)
+  // put it above the section, and the filed body reads back with only the real point.
+  const point = { severity: "CRITICAL" as const, description: "who owns it", resolution: "ops" };
+  for (const title of ["t", "  "]) {
+    const filed = finalDraftBody(
+      draftBody([`criterion ${"x".repeat(243)}`]),
+      [],
+      [point],
+      undefined,
+      [],
+      undefined,
+      { risk: undefined, sourceIssue: undefined },
+      { type: "feature", title },
+    );
+    const reading = readOpenPoints(filed);
+    assert(
+      filed.indexOf(PI_SPEC_OMISSION_PREFIX) >= 0 &&
+        filed.indexOf(PI_SPEC_OMISSION_PREFIX) < filed.indexOf(`## ${OPEN_POINTS_HEADING}`) &&
+        reading.unparsed.length === 0 &&
+        reading.points.length === 1,
+      `omission line sits above the Open points section (title ${JSON.stringify(title)}; got ${JSON.stringify(reading)})`,
+    );
+  }
 }
 
 console.log(`${specExit() === 0 ? "PASS" : "FAIL"} test-plan-pi-spec-overlong`);
