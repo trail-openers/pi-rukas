@@ -3994,8 +3994,8 @@ the review step; once it has pushed, "shipped" and "verified" are two different 
 
 **Fix:** the handback now ships the last verified head. It keeps the unverified head
 reachable under `refs/lean/unverified/<issue>`, then rewinds origin's branch to the newest
-decided green `verify`'s head with a lease-pinned push
-(`--force-with-lease=<branch>:<held>` on an UNFORCED branch refspec), where `<held>` is
+decided green `verify`'s head with a lease-pinned atomic push
+(`--atomic --force-with-lease=<branch>:<held>` on an UNFORCED branch refspec), where `<held>` is
 the head this step read off origin: the lease guards the window between that read and the
 push, so a branch moved inside it is refused, while a branch that had already moved before
 the step read it is read at its new value, rewound, and the head it displaced kept under
@@ -4015,8 +4015,8 @@ Where origin already holds the certified head, the step pushed nothing and
 says so, without calling the shipped head unverified. Read `shippedVerified: false` as the reason to
 look before merging. The rule is behind `PI_ENSEMBLE_LEAN_VERIFIED_HANDBACK` (default on;
 `0` restores the pre-rule step that reports and moves nothing), and the unforced refspec
-that makes the lease bind is separately behind `PI_ENSEMBLE_LEAN_REWIND_LEASE_BINDS`
-(default on; `0` puts the leading `+` back, byte for byte). It keys on the step log, so
+and atomic push that make the lease bind are together behind `PI_ENSEMBLE_LEAN_REWIND_LEASE_BINDS`
+(default on; `0` puts the leading `+` back and drops `--atomic`, byte for byte). It keys on the step log, so
 it covers every handback whose newest work step is a `fixed` review, whatever stopped the
 run. Source: `lean/handback-heads.ts`, `lean/handback-rewind.ts`, `docs/lean.md` → "The
 verified handback".
