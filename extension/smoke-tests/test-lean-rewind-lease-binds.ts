@@ -71,11 +71,14 @@
  * The stranger has to REACH origin over a transport (a scratch repo pushes it, from inside
  * the window): a stranger that only ever appears in origin's ref store makes origin name
  * bytes it never received, and the push dies with `bad object` before the lease is read —
- * (b)'s arm, which is what the first draft of this case silently pinned. And the refusal is
- * NOT the atomic one the comment beside the push describes: git refuses the leased ref and
- * writes the unleased keeping-ref, so a lease-refused rewind leaves `refs/lean/unverified/
- * <issue>` naming the head this step read. That is pinned as what happens, not as what is
- * wanted; making the refusal atomic is a change to the push, out of this file's scope.
+ * (b)'s arm, which is what the first draft of this case silently pinned. And a push without
+ * `--atomic` is refused per ref, not as a whole: on git 2.53.0 the leased branch ref was
+ * refused while the UNLEASED keeping-ref still landed, so the refusal left `refs/lean/
+ * unverified/<issue>` naming a head the branch never held here. That partial refusal is what
+ * acceptance criterion 2 forbids, and (c) pins its opposite — the keeping-ref is ABSENT —
+ * which holds only while the on-arm push carries `--atomic`. The off arm has no `--atomic`
+ * and still writes that ref; (a2) pins that argv byte for byte, so the leak staying there is
+ * the switch doing its job, not a gap in the fix.
  * With the switch on the rewind ships nothing and says `the lease refused the rewind`; with
  * it off the same race moves origin to V, which is the defect pinned as the difference.
  *
@@ -203,6 +206,7 @@ function pendingStranger(
   const onArm = [
     ...NO_HOOKS,
     "push",
+    "--atomic",
     `--force-with-lease=${branchRefspec}:${repo.branchHeadSha}`,
     "origin",
     `${repo.baseSha}:${branchRefspec}`,
@@ -236,6 +240,10 @@ function pendingStranger(
   assert(
     args.includes("push") && args.includes("origin"),
     `(a1) and it is still the same push to origin (${args.join(" ")})`,
+  );
+  assert(
+    args.includes("--atomic"),
+    `(a1) and the push is --atomic, so a refusal of either ref moves neither (${args.join(" ")})`,
   );
   assert(
     rewind.shipped && originBranchSha(repo.origin) === repo.baseSha,
@@ -422,23 +430,18 @@ function pendingStranger(
     originBranchSha(repo.origin) === stranger,
     `(c) origin's branch still holds the stranger (${String(originBranchSha(repo.origin))} vs ${stranger})`,
   );
-  // Not what the comment beside the push claims. It says git refuses the WHOLE push when
-  // the lease does not match, so neither ref moves; on git 2.53.0 it refuses the leased ref
-  // and writes the unleased one (`* [new reference] <held> -> refs/lean/unverified/…`), so a
-  // refusal leaves a keeping-ref naming a head the branch never held here. The distinction
-  // is pinned rather than hoped for: this push IS refused by its lease (the row above, and
-  // origin still standing at the stranger), which is what makes the keeping-ref evidence
-  // rather than an accident. Changing the push to make the refusal atomic is out of this
-  // case's scope — but the code comment and the observed ref no longer say the same thing,
-  // and this row is where a reader finds that out.
+  // The keeping-ref must not exist. A push without `--atomic` is refused per ref, and on
+  // git 2.53.0 that is exactly what it did: the leased branch ref came back `! [rejected]
+  // … (stale info)` while the unleased keeping-ref landed as `* [new reference]`, so origin
+  // ended up naming a head no gate certified under the name this step reserves for heads it
+  // displaced — with the branch itself still at the stranger. `--atomic` on the on arm is
+  // what makes git apply all refs or none, so this row is the ref-side half of acceptance
+  // criterion 2 ("refused, with origin unchanged and no keeping-ref written"): the refspec
+  // rows above pin that the option is on the argv, this one pins that git honoured it.
   const keptAfterRefusal = originRefSha(repo.origin, unverifiedRef(ISSUE));
   assert(
-    keptAfterRefusal === undefined || keptAfterRefusal === repo.branchHeadSha,
-    `(c) and the only head a refused rewind left under ${unverifiedRef(ISSUE)} is the one this step read — never the stranger it was refused over (${String(keptAfterRefusal)})`,
-  );
-  assert(
-    keptAfterRefusal !== undefined,
-    `(c) and the refusal is disclosed to be PARTIAL, contrary to the one-transaction claim in handback-rewind.ts: git wrote the keeping-ref and refused only the leased ref (${String(keptAfterRefusal)})`,
+    keptAfterRefusal === undefined,
+    `(c) and a refused rewind wrote NO keeping-ref on origin — origin unchanged, as the acceptance criterion demands (${String(keptAfterRefusal)})`,
   );
 
   // The off arm is the same race, and it MOVES origin to the verified head: git forced the
