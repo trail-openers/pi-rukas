@@ -23,11 +23,14 @@
  *     projection reads is a `Step[]` that a run which just finished never passed
  *     through the loader with. So heads go through `isFullCommitSha` and severities
  *     through the published list again, exactly as `prUrlOf` revalidates a URL.
- *   - **the heads cannot disagree with `prState`.** `handback.head` and
- *     `handback.verified` are produced by the SAME helpers `prStateOf` uses, so one
- *     run cannot tell the host `ready` in one field and ship an uncertified head in
- *     another. A reader that wants the verdict reads `prState`; a reader that wants the
- *     evidence reads these.
+ *   - **the heads cannot disagree with `prState`.** `handback.head` is the head the step
+ *     says it shipped, and `handback.verified` is that head put back through the gate
+ *     `prStateOf` asks — `gateClearedPublishedHead` — rather than the step's own
+ *     `shippedVerified` printed on its word. So one run cannot tell the host `ready` in
+ *     one field and certify an uncertified head in another: a claim the run's newest
+ *     `verify` does not back is published `false`, and only a claim the record never
+ *     made is `null`. A reader that wants the verdict reads `prState`; a reader that
+ *     wants the evidence reads these.
  *
  * The object is additive and switch-owned: absent entirely when
  * `PI_ENSEMBLE_LEAN_RESULT_GATES=0`, and then the document is the one this build wrote
@@ -282,11 +285,12 @@ function reviewGates(steps: Step[]): GatesResult["review"] {
 /**
  * What the handback shipped.
  *
- * `head` and `verified` are the caller's `prState` inputs, computed by the same helpers
- * `prStateOf` reads, so the two fields answer the same question with the same evidence
- * and cannot drift. `reason` is the step's own line for why the run ended where it did;
- * `handoff.body` is the full report, of which this reason is the headline — a host that
- * wants the whole thing reads `handoff`, a host that wants to triage reads this.
+ * `head` is the caller's own `prState` input, and `verified` is the step's claim about
+ * that head tested against the same gate `prStateOf` stands on, so the two fields answer
+ * the same question with the same evidence and cannot drift. `reason` is the step's own
+ * line for why the run ended where it did; `handoff.body` is the full report, of which
+ * this reason is the headline — a host that wants the whole thing reads `handoff`, a host
+ * that wants to triage reads this.
  */
 function handbackGates(steps: Step[], redact: (s: string) => string): GatesResult["handback"] {
   const oc: Outcome | undefined = newestDecided(steps, "handback")?.outcome;
@@ -298,10 +302,18 @@ function handbackGates(steps: Step[], redact: (s: string) => string): GatesResul
   // shipped is no longer what `publish` recorded.
   const own = headOf(oc?.shippedHead);
   if (own !== null) {
+    // The step's `shippedVerified` is what IT believed about its own rewind, and nothing
+    // in the record binds a `true` to a green about the head it names — a log whose every
+    // gate went red would otherwise publish `verified: true` beside `prState: "draft"`,
+    // two fields telling two stories about one commit and the mergeable one the field a
+    // host reads. So the positive claim goes back through the gate `prStateOf` asks; the
+    // cautious arms pass through, because a `false` needs no corroborating and a claim the
+    // record never made is the projection's null, not the gate's answer.
+    const claimed = typeof oc?.shippedVerified === "boolean" ? oc.shippedVerified : null;
     return {
       reason: textOf(oc?.reason, redact),
       head: own,
-      verified: typeof oc?.shippedVerified === "boolean" ? oc.shippedVerified : null,
+      verified: claimed === true ? gateClearedPublishedHead(steps, own) : claimed,
       unshipped: unshippedHead === null ? null : { head: unshippedHead, reason: unshippedReason },
     };
   }
