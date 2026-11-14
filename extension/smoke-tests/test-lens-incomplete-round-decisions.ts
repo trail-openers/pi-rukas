@@ -33,7 +33,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { decideEmptyDelta } from "../src/lens-review-auto-delta.ts";
-import { bumpLensRound } from "../src/review-ledger-round.ts";
+import { bumpLensRound, incompleteHeadSha } from "../src/review-ledger-round.ts";
 import {
   type LedgerEntry,
   appendLedgerEntry,
@@ -281,6 +281,49 @@ function incomplete(over: Partial<LedgerEntry> = {}): LedgerEntry {
   assert(
     afterCarryAndReal.headSha === HEAD_B,
     `(b2) …and the last GENUINELY completed head is still carried forward (${String(afterCarryAndReal.headSha)?.slice(0, 8)})`,
+  );
+
+  // #2223 round 2 — a completed row whose `headSha` is NOT an OID (the documented
+  // pre-#1039 shape, or a hand-edited row) is no more a reviewed head than an
+  // incomplete row is. Every other reader of the field gates it with
+  // `isFullCommitSha`; a scan that only asked truthiness let the ref-name row —
+  // newest by `at` — outrank the genuine OID, and the replace arm in
+  // `appendLedgerEntry` then deleted the truthful row. Mutant: replace the gate
+  // with `!e.headSha` and both assertions below go red.
+  const legacyRef = completed({ headSha: "feature/x", at: 200, round: 3 });
+  const afterLegacy = bumpLensRound(incomplete({ headSha: HEAD_D, at: 300 }), [
+    completed({ headSha: HEAD_A, at: 100, round: 2 }),
+    legacyRef,
+  ]);
+  assert(
+    afterLegacy.headSha === HEAD_A,
+    `(b) a completed row whose headSha is a ref name is no reviewed head — the real OID wins (${String(afterLegacy.headSha)?.slice(0, 8)})`,
+  );
+  assert(
+    reviewedHeadFromEntries([afterLegacy], "feature/x") === HEAD_A,
+    "(b) …so the merged-head proof cannot be handed a ref name the writer just copied",
+  );
+
+  // #2223 round 2 — "newest" is max `at`, the tie-break `latestEntry` and
+  // `dedupeLatest` use, NOT the row's position in the array. A re-read file whose
+  // rows are not `at`-sorted is a real shape (the rename-race fallback concatenates
+  // then dedupes); picking by position made the writer carry the OLDER head while
+  // every reader credited the newer one. Mutant: drop the `e.at >= best.at`
+  // comparison (last match wins) and this arm is red.
+  const unsorted = bumpLensRound(incomplete({ headSha: HEAD_D, at: 400 }), [
+    completed({ headSha: HEAD_C, at: 500, round: 3 }),
+    completed({ headSha: HEAD_A, at: 100, round: 2 }),
+  ]);
+  assert(
+    unsorted.headSha === HEAD_C,
+    `(b) rows out of at-order still carry the greatest-at completed head (${String(unsorted.headSha)?.slice(0, 8)})`,
+  );
+  assert(
+    incompleteHeadSha(
+      [completed({ headSha: HEAD_C, at: 500, round: 3 }), completed({ headSha: HEAD_A, at: 100, round: 2 })],
+      "feature/x",
+    ) === HEAD_C,
+    "(b) …and the scan says so directly, not only through the caller",
   );
 
   // The control that keeps the three arms from being "never keep a head":

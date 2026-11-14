@@ -8,6 +8,7 @@
  * The re-export in review-ledger.ts keeps importers unchanged.
  */
 
+import { isFullCommitSha } from "./review-head-sha.ts";
 import type { LedgerEntry } from "./review-ledger.ts";
 
 /**
@@ -37,6 +38,13 @@ import type { LedgerEntry } from "./review-ledger.ts";
  * reader. Keeping the head on the row would put the correctness of "a head nobody
  * reviewed is not reviewed" in one caller's hands rather than in the data.
  *
+ * "Newest" means the greatest `at`, the SAME tie-break `latestEntry` and
+ * `dedupeLatest` use, and it has to: the ledger file is not guaranteed `at`-sorted
+ * (the rename-race fallback concatenates a re-read with the new row and only
+ * dedupes), so a scan that picked by array position would disagree with every
+ * reader about which review is the latest — the writer would carry an older head
+ * while `latestEntry` credited a newer one.
+ *
  * The walk goes back to the last COMPLETED row rather than asking only the
  * immediate predecessor, and consecutive incomplete runs are why. The first
  * incomplete round carries the completed head forward; if the next round asked its
@@ -46,11 +54,11 @@ import type { LedgerEntry } from "./review-ledger.ts";
  * completed a review. Same rule as the round counter above, which likewise reads
  * the previous round through an incomplete row rather than resetting it.
  */
-function incompleteHeadSha(existing: LedgerEntry[], branch: string): string | undefined {
-  // Scan the key's rows from the oldest forward and keep the newest one that
-  // actually completed a review, so a streak of failed rounds cannot erase the
-  // proof of the last review that happened (see the jsdoc).
-  let head: string | undefined;
+export function incompleteHeadSha(existing: LedgerEntry[], branch: string): string | undefined {
+  // Keep the row with the greatest `at` that actually completed a review, so a
+  // streak of failed rounds cannot erase the proof of the last review that
+  // happened (see the jsdoc).
+  let best: LedgerEntry | undefined;
   for (const e of existing) {
     if (e.branch !== branch || e.kind !== "lens") continue;
     // #1176 — a carry is a copy of a verdict onto a head whose diff nobody read,
@@ -58,10 +66,17 @@ function incompleteHeadSha(existing: LedgerEntry[], branch: string): string | un
     // counter above applies the same marker rule to the row it is handed; a scan
     // that asked only verdict and head-presence would credit an unreviewed head.
     if (e.carriedFrom !== undefined) continue;
-    if (e.detail === "REVIEW_INCOMPLETE" || !e.headSha) continue;
-    head = e.headSha;
+    // #2223 — `isFullCommitSha` is the same gate every other reader of this field
+    // applies (`resolveDeltaSince`, `reviewedHeadFromEntries`, the round-cap path).
+    // Truthiness alone lets a legacy or hand-edited row whose `headSha` is a ref
+    // name outrank the genuine reviewed head, and the row the writer then produces
+    // replaces the truthful one.
+    if (e.detail === "REVIEW_INCOMPLETE" || !e.headSha || !isFullCommitSha(e.headSha)) {
+      continue;
+    }
+    if (!best || e.at >= best.at) best = e;
   }
-  return head;
+  return best?.headSha;
 }
 
 /**
