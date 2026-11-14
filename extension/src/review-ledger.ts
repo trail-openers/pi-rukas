@@ -352,23 +352,11 @@ export async function appendLedgerEntry(
       // Bounded file: keep only the latest entry per (branch, kind) — the
       // guard (latestEntry) reads only the latest anyway, so older entries
       // would be dead weight accumulating one row per review run per clone.
-      // #973 — a lens write advances the branch's round counter in place:
-      // the dedupe above keeps the previous latest lens entry, so its round
+      // #973 — a lens write advances the branch's round counter in place: the
+      // dedupe below keeps the previous latest lens entry, so its round
       // (legacy rows without one count as 1) IS the last recorded round, and
-      // the next is a pure function of the file's previous contents. The
-      // LATEST lens row per branch is what the guard reads; older rows for
-      // the same branch are historical (the guard's latestEntry picks the
-      // highest `at` regardless, so a hand-edited or legacy multi-row file
-      // still counts the most recent round).
+      // the next is a pure function of the file's previous contents.
       entries = dedupeLatest(entries);
-      // #973 — a lens write advances the branch's round counter in place:
-      // the dedupe above keeps the previous latest lens entry, so its round
-      // (legacy rows without one count as 1) IS the last recorded round, and
-      // the next is a pure function of the file's previous contents. The
-      // LATEST lens row per branch is what the guard reads; older rows for
-      // the same branch are historical (the guard's latestEntry picks the
-      // highest `at` regardless, so a hand-edited or legacy multi-row file
-      // still counts the most recent round).
       // #2223 — an INCOMPLETE lens row is never suppressed, and it replaces whatever
       // row the branch held rather than sitting beside it: `bumpLensRound` has
       // already taken that row's completed `headSha` onto the new row, so leaving
