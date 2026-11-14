@@ -149,11 +149,6 @@ export const HEADLESS_INPUTS_A: readonly HostInput[] = [
 // in `inputs-b.ts` (§12 size cap), imported at the top of this file.
 
 /** Every honoured `PI_ENSEMBLE_*` environment input, sorted by name. */
-
-// The rest of the list — every name from PI_ENSEMBLE_DECK_MAX_ROWS on — lives
-// in `inputs-b.ts` (§12 size cap), imported at the top of this file.
-
-/** Every honoured `PI_ENSEMBLE_*` environment input, sorted by name. */
 export const HEADLESS_INPUTS: readonly HostInput[] = [...HEADLESS_INPUTS_A, ...HEADLESS_INPUTS_B];
 
 // The `.pi/*` half of the capabilities answer lives in `files.ts` (§12 size

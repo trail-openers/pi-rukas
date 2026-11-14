@@ -30,13 +30,13 @@ import type { HandlerCtx } from "../../src/lean/engine.ts";
 import type { PublishDeps } from "../../src/lean/publish-deps.ts";
 import { renderPiSpec } from "../../src/lean/spec.ts";
 import type { PiSpec } from "../../src/lean/spec.ts";
-import type { PreexistingTierRecord } from "../../src/lean/state-outcome-maps.ts";
 import { NO_HOOKS } from "../../src/lean/specify-reset.ts";
 import { specifyWorktreePath } from "../../src/lean/specify-tree.ts";
+import type { PreexistingTierRecord } from "../../src/lean/state-outcome-maps.ts";
 import type { LeanRun, Outcome, Step } from "../../src/lean/state.ts";
 import { createRun } from "../../src/lean/state.ts";
 import { netGitEnv } from "../../src/work-driver-net-git.ts";
-import { gitTestEnv } from "./git-test-env.ts";
+import { gitTestEnv, writeCloneMainlineRef } from "./git-test-env.ts";
 import { originHead } from "./lean-publish-asserts.ts";
 import { type FakeForge, fakeForge, fakePr, prWithState } from "./lean-publish-forge.ts";
 import {
@@ -275,6 +275,9 @@ export async function runPublish(o: PublishOpts): Promise<PublishRun> {
   // Origin's mainline keeps the BASE commit: the fixture must not push a main
   // this repo never had, and `assertPublishableBranch` refuses that name anyway.
   git(repoRoot, "push", "-q", "origin", "main");
+  // The clone's own mainline ref, which the publishable-branch guard reads before it
+  // asks origin anything (`writeCloneMainlineRef` says why a rig has to write it).
+  writeCloneMainlineRef(repoRoot, git);
 
   const branch = o.branch ?? `lean/issue-${issue}`;
   const checkout = o.worktreeBranch ?? branch;
@@ -450,7 +453,14 @@ export async function runPublish(o: PublishOpts): Promise<PublishRun> {
       if (cmd === "git" && opts?.argv?.includes("push") === true && o.pushPorcelain !== undefined)
         return { stdout: o.pushPorcelain, stderr: "" };
       const cwd = opts?.cwd ?? wt;
-      const env = opts?.env ?? (cmd === "git" ? netGitEnv(gitTestEnv(), cwd) : gitTestEnv());
+      // The production seam's rule, restated: `git` with no caller-supplied env gets
+      // the driver's net env. The guard's origin probe reaches it in the SHELL form
+      // through `runNetGit`, which supplies that env itself, so the `opts?.env ??`
+      // ahead of this is what the probe actually runs with — and the probe's own env
+      // belongs to the seam, not to the probe.
+      const env =
+        opts?.env ??
+        (cmd === "git" || cmd.startsWith("git ") ? netGitEnv(gitTestEnv(), cwd) : gitTestEnv());
       seenEnvs.push(env);
       return execp(cmd, { ...opts, env, cwd });
     },

@@ -104,6 +104,10 @@ export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   // no-head handback's record. Readers in lean/deadline-handback.ts and
   // lean/verified-handback-switch.ts.
   flag("LEAN_DEADLINE_HANDBACK", true),
+  // The publishable-branch guard's fail-closed arm: a mainline neither the clone
+  // nor origin will name refuses the push instead of passing it. The reader is
+  // `leanGuardFailClosed` in lean/guard-fail-closed-switch.ts.
+  flag("LEAN_GUARD_FAIL_CLOSED", true),
   flag("LEAN_HANDBACK_NOHEAD_RECORD", true),
   // #2171 — show the specify/challenge adversary the issue prose its frozen
   // tests were written from. 0 takes the section back out of both prompts.
