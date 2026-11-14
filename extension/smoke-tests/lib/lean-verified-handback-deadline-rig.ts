@@ -44,8 +44,8 @@ const SHORTFALL_MS = 3 * MINUTE_MS;
 export const NO_HEAD_REASON =
   "the green verify recorded no head, so there is no verified head to ship";
 
-/** The comment body the pre-recording handback posted for the (b) log, captured once
- *  from a detached worktree of the parent commit by `tmp/t/capture-nohead-off-body.ts`. */
+/** The comment body the pre-recording handback posted for the (b) log, captured from
+ *  the handback at commit a3b2bebb2b^ (pre-recording). */
 export const PRE_RECORD_BODY = [
   "work-lean: issue #2242 is handed back — this is still needed:",
   "",

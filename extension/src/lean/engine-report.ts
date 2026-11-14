@@ -18,11 +18,6 @@ import { trace } from "../trace.ts";
 import type { LeanRun, LeanState, Outcome, Step } from "./state.ts";
 import { nextAttempt, stepKey } from "./state.ts";
 
-/** The persist seam: the runner's save, bound to the current drive. */
-export interface ReportDrive {
-  save: (run: LeanRun) => void;
-}
-
 /** The reporting step, as the runner holds it — the `handback` entry of the injected handler table. */
 export type HandbackHandler = (ctx: {
   repoRoot: string;
@@ -35,7 +30,6 @@ export type HandbackHandler = (ctx: {
 
 /** Everything the runner passes to the report, so this module reads none of the runner's state. */
 export interface ReportRequest {
-  drive: ReportDrive;
   repoRoot: string;
   issue: number;
   run: LeanRun;
@@ -83,7 +77,7 @@ export interface ReportRequest {
  * exists; a missing handler is the caller's decision, not this function's.)
  */
 export async function runHandbackReport(req: ReportRequest): Promise<LeanRun | undefined> {
-  const { drive, run, stoppedAt, now, handler } = req;
+  const { run, stoppedAt, now, handler } = req;
   const key = req.keyFor("handback", nextAttempt(run, "handback"));
   const startedAt = now();
   let outcome: Outcome;

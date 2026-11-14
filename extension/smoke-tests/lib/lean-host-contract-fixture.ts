@@ -135,17 +135,14 @@ export function crossingAfter(opts: {
   now: () => number;
   past: number;
   crossed: () => boolean;
-  reads: () => number;
 } {
   const start = Date.now();
   const budget = 240 * 60_000;
   const past = start + budget - (opts.shortfallMs ?? 60_000);
   let armed = false;
   let crossed = false;
-  let reads = 0;
   return {
     now: () => {
-      reads++;
       if (!armed) {
         let standing: LeanState | undefined;
         let decided = -1;
@@ -207,9 +204,6 @@ export function crossingAfter(opts: {
     // Read after the drive: a case whose run never had that verdict recorded cannot
     // read as a deadline case.
     crossed: () => crossed,
-    /** How many times the loop consulted this clock — for a case that has to explain
-     *  a non-crossing rather than merely assert one. */
-    reads: () => reads,
   };
 }
 

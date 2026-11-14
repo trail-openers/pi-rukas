@@ -243,7 +243,6 @@ async function reportRun(
   const handler = opts.handlers.handback as HandbackHandler | undefined;
   if (handler === undefined) return undefined;
   return runHandbackReport({
-    drive,
     repoRoot: opts.repoRoot,
     issue: opts.issue,
     run,

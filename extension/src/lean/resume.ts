@@ -120,11 +120,10 @@ export function foldLog(
       // than the entry being judged, so a record cannot vouch for itself.
       // `seen` has already counted this entry — the loop counts before judging — so the number of
       // `handback` entries PRECEDING it is one less. The loop never enters the report twice, so any earlier
-      // one makes this a fabrication and the exemption is withheld. `decline` is exempted alongside
-      // `handback` because the table already reaches it from a `blocked` review; widening to a state the
-      // engine reaches legitimately costs no new reach, and `isReportRoute` still requires the log to end
-      // on the report entry behind a `fixed` review that the clock outran.
-      const reportedEntry = s.state === "handback" || s.state === "decline";
+      // one makes this a fabrication and the exemption is withheld. The entry is the REPORT's own, so
+      // `handback` is the only state it can belong to: the routing writes that visit and no other, and
+      // `isReportRoute` still requires the log to end on it behind a `fixed` review that the clock outran.
+      const reportedEntry = s.state === "handback";
       const firstReportEntry = (seen[s.state] ?? 1) === 1;
       if (!(reportedEntry && firstReportEntry && isReportRoute(log)))
         at(`step ${s.key} belongs to ${s.state} but the walk stands at ${pos.state}`);
@@ -171,9 +170,8 @@ export function foldLog(
  * Three conditions, none read from the entry being judged, so a log cannot describe its way into being
  * legal:
  *
- *   - it is the run's FIRST report entry, and `decline` is exempted with `handback`: the engine can
- *     arrive at either through the table (a `blocked` review verdict routes to both), and a route to a
- *     state the table already reaches needs no exemption, so widening costs no new reach. The count that
+ *   - it is the run's FIRST report entry, and the entry belongs to `handback`: the routing writes a
+ *     report visit and nothing else, so no other state can be reached by this move. The count that
  *     establishes it lives at the call site, where `seen` is in scope.
  *   - the log still ends where the routing leaves it — on this `handback` entry. A route is written to end
  *     the log, so anything after it is a verdict the routing did not produce;
