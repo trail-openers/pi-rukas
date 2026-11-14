@@ -35,6 +35,9 @@ export const WAVES_MAX = 4;
 export const RED_TIERS_MAX = 4;
 /** How many criterion ids one red gate may attribute. */
 export const RED_CRITERIA_MAX = 64;
+/** How long one criterion id may be on the record — the id rule's own bound, so the
+ * writer clips at the length the validator refuses past rather than at a second literal. */
+export const RED_CRITERIA_MAX_CHARS = 16;
 /** How long one tier name may be on the record. */
 export const RED_TIER_MAX_CHARS = 64;
 
@@ -155,7 +158,7 @@ export function redRecordProblem(value: unknown): string | undefined {
   if (!Array.isArray(rec.criteria)) return "outcome red.criteria must be an array";
   if (rec.criteria.length > RED_CRITERIA_MAX)
     return `outcome red.criteria holds more than ${String(RED_CRITERIA_MAX)} criteria`;
-  if (!rec.criteria.every((c) => isName(c, 16) && /^AC\d+$/.test(c)))
+  if (!rec.criteria.every((c) => isName(c, RED_CRITERIA_MAX_CHARS) && /^AC\d+$/.test(c)))
     return "outcome red.criteria entries must be AC<n> criterion ids";
   return undefined;
 }
