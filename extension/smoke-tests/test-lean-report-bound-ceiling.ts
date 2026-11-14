@@ -249,6 +249,11 @@ import { ROOTS } from "./lib/lean-verified-handback-fixture.ts";
   // exists to perform. Shrinking a shared ceiling instead would bind the non-lean callers
   // that read the same constants, so the headroom is the term that moved.
   const sum = awaits.reduce((total, a) => total + a.ms, 0);
+  /** What the path would spend if the one `Promise.all` on it were serialised: the pair of
+   *  origin reads that decide the rewind's success is counted once in `sum`, because that is
+   *  what the code does. Printed alongside (i) so the parallel-schedule assumption the sum
+   *  rests on is visible rather than buried in a table row that reads `0ms`. */
+  const PARALLEL_EXTRA = quietTimeout();
   // Both numbers read with their env keys ABSENT, so the case measures what a shipped run
   // is cut at rather than what this suite or an operator's shell pins.
   const defaults = await (async () => {
@@ -290,6 +295,13 @@ import { ROOTS } from "./lib/lean-verified-handback-fixture.ts";
   // `PI_ENSEMBLE_CHILD_BOUND_GRACE_MS` below the sum parks this case rather than silently
   // trading a report's verdict for a wrapper's kill. Both read the real constants, and both
   // messages name every number so a reader of a green suite never mistakes silence for a fit.
+  //
+  // ONE CAVEAT THE TABLE CANNOT HIDE, AND THE READER HAS TO CARRY: the pair of origin reads
+  // that decide the rewind's success runs under `Promise.all`, so the sum counts ONE ceiling
+  // for both. Serialised — any build where two concurrent `ls-remote` calls each reach their
+  // own ceiling — the path is `PARALLEL_EXTRA` larger, and at the default constants that
+  // serialised shape no longer fits between the allowance and the grace. (i) is therefore the
+  // parallel-schedule reading of the path, which is what the code actually does.
   assert(
     sum <= defaultBound,
     `(f)(i) every per-call ceiling on the routed report's path must fit inside the bound that cuts it: summed ${String(sum)}ms against the bound ${String(defaultBound)}ms, i.e. the bound leaves ${String(defaultBound - sum)}ms of slack\n${table}`,
@@ -297,6 +309,11 @@ import { ROOTS } from "./lib/lean-verified-handback-fixture.ts";
   assert(
     defaultBound < defaultGrace,
     `(f)(ii) the bound must fire INSIDE the outer limit that would otherwise kill the run: bound ${String(defaultBound)}ms against the child-bound grace ${String(defaultGrace)}ms — at or past it no report ever times out, and every cut one is a kill instead of a handback`,
+  );
+  // The room the bound still has to the grace, printed so a reader who raises a per-call
+  // ceiling sees how much of the window is left before (ii) parks the change.
+  console.log(
+    `(f) bound ${String(defaultBound)}ms sits ${String(defaultGrace - defaultBound)}ms inside the ${String(defaultGrace)}ms grace; serialised worst case ${String(sum + PARALLEL_EXTRA)}ms (the Promise.all pair adds ${String(PARALLEL_EXTRA)}ms)`,
   );
 }
 

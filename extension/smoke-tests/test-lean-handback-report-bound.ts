@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * lean: the routed deadline report is bounded by the handoff allowance (#2269).
+ * lean: the routed deadline report is bounded by the handoff allowance plus headroom (#2269).
  *
  * A deadline stop routes the run into `handback` because the report is the one step
  * `deadlineStopsSteps` exempts (#2268). That exemption is also what left the report
@@ -9,9 +9,9 @@
  * per-call git and forge timeouts inside the handler. A hung await inside the
  * reporting step — a wedged in-process call, a comment poster that never returns —
  * therefore held the run past the allowance it exists to protect, and a wrapper's
- * kill recorded a kill instead of the handback. The bound is
- * `handoffAllowanceMs()` — the allowance the routing spends — raced against the
- * handler, and on overrun the run takes the plain deadline stamp.
+ * kill recorded a kill instead of the handback. The bound is `handoffReportBoundMs()`
+ * — the allowance the routing spends, plus the headroom its own per-call ceilings need —
+ * raced against the handler, and on overrun the run takes the plain deadline stamp.
  *
  *   (a) a hung handler is cut at the bound: the run ends `handed-back` with the
  *       plain deadline stamp, names the bound that fired in BOTH its reason and a
@@ -41,7 +41,11 @@
  *   (e) the overrun's reason is honest about what the bound does NOT cancel: the
  *       rewind's push and the forge comment of a cut report are already in flight and
  *       may still land after the stamp, so the sentence says so — and the settled arm,
- *       which abandoned nothing, says neither word.
+ *       which abandoned nothing, says neither word;
+ *   (f) the bound is wide enough for the awaits inside the real reporting step, AND still
+ *       fires inside the grace that would otherwise kill the run instead. The two live in
+ *       `test-lean-report-bound-ceiling.ts`, which reads the bound from
+ *       `handoffReportBoundMs()` and the outer limit from `childBoundGraceMs()`.
  *
  * The rig is the same one the two deadline suites drive (`driveToDeadline`): the
  * crossing clock, the scripted walk, and the production reporting wiring. Every case
@@ -63,7 +67,7 @@ import {
   state,
 } from "./lib/lean-report-bound-shared.ts";
 import { unverifiedRef } from "../src/lean/handback-rewind.ts";
-import { handoffAllowanceMs } from "../src/lean/deadline.ts";
+import { REPORT_BOUND_HEADROOM_RATIO, handoffReportBoundMs } from "../src/lean/engine-report.ts";
 import { acquireLock } from "../src/lean/lock.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import { captureWarns } from "./lib/lean-review-bound-fixtures.ts";
@@ -83,9 +87,10 @@ import { ROOTS } from "./lib/lean-verified-handback-fixture.ts";
 {
   const repo = repoWithFixHead();
   const hung = hungHandler();
-  // The bound IS the allowance, so this case pins one number for both: the env is
-  // what `handoffAllowanceMs()` reads, and the assertion below compares the run's
-  // disclosure against that helper rather than against a literal.
+  // The bound is the allowance PLUS headroom, so this case pins the allowance and lets the
+  // bound be whatever `handoffReportBoundMs()` derives from it: the env is what
+  // `handoffAllowanceMs()` reads, and every assertion below compares the run's disclosure
+  // against the bound's own helper rather than a copy of the number.
   const ALLOWANCE_MS = 4_000;
   const warns: string[] = [];
   const before = originBranchSha(repo.origin);
@@ -102,7 +107,7 @@ import { ROOTS } from "./lib/lean-verified-handback-fixture.ts";
     // The helper is read INSIDE the env scope: it is the same reader the engine calls
     // when it asks for the bound, so comparing the two is comparing one number rather
     // than a copy of a constant (the shape of `test-lean-ci-tier-budget.ts` (w)).
-    allowanceSeen = handoffAllowanceMs();
+    allowanceSeen = handoffReportBoundMs();
     // `captureWarns` collects into the caller's array and returns nothing (its
     // docstring's own reason: a returned value would not exist yet inside the body
     // that produced it), so the drive is captured by the body itself.
@@ -153,12 +158,12 @@ import { ROOTS } from "./lib/lean-verified-handback-fixture.ts";
       !ran.steps.some((s) => s.state === "handback"),
       `(a) and no report entry reached the log — the bound fired before the visit was written (${ran.steps.map((s) => `${s.key}=${s.outcome?.kind ?? "?"}`).join(",")})`,
     );
-    // THE BOUND'S ARITHMETIC, asserted against the shared helper rather than a copy
-    // of the number: change `PI_ENSEMBLE_HANDOFF_TIMEOUT_MS` and the bound the run
-    // names moves with it, in this assertion and in the code together.
+    // THE BOUND'S ARITHMETIC, asserted against the shared helper rather than a copy of the
+    // number: change `PI_ENSEMBLE_HANDOFF_TIMEOUT_MS` and the bound the run names moves with
+    // it, in this assertion and in the code together.
     assert(
-      allowanceSeen === ALLOWANCE_MS,
-      `(a) the allowance the case pinned is the helper's own answer (${String(allowanceSeen)}, pinned ${String(ALLOWANCE_MS)})`,
+      allowanceSeen === Math.round(ALLOWANCE_MS * (1 + REPORT_BOUND_HEADROOM_RATIO)),
+      `(a) the bound the case measured is the pinned allowance plus the headroom the ratio carries (${String(allowanceSeen)}, pinned allowance ${String(ALLOWANCE_MS)}, ratio ${String(REPORT_BOUND_HEADROOM_RATIO)})`,
     );
     // The overrun's origin is told on the UNGATED `traceWarn` channel — the same one
     // the throw arm beside it uses, for the same reason: the run's outcome changed, so
@@ -275,14 +280,14 @@ import { ROOTS } from "./lib/lean-verified-handback-fixture.ts";
     );
     if (typeof ran !== "string") {
       assert(
-        ran.reason.includes(String(handoffAllowanceMs())),
-        `(b) and it names the allowance the run was cut at — the same helper, the same number (${String(handoffAllowanceMs())}, got ${JSON.stringify(ran.reason)})`,
+        ran.reason.includes(String(handoffReportBoundMs())),
+        `(b) and it names the bound the run was cut at — the same helper, the same number (${String(handoffReportBoundMs())}, got ${JSON.stringify(ran.reason)})`,
       );
       // The cut must land on the bound, not on the guard: a bound read from anything
       // other than the allowance (zero, or the guard) would still return here.
       assert(
-        waited >= handoffAllowanceMs() - 500 && waited < GUARD_MS / 2,
-        `(b) the cut happened AT the allowance rather than at the case's guard (${String(waited)}ms, allowance ${String(handoffAllowanceMs())}ms, guard ${String(GUARD_MS)}ms)`,
+        waited >= handoffReportBoundMs() - 500 && waited < GUARD_MS / 2,
+        `(b) the cut happened AT the bound rather than at the case's guard (${String(waited)}ms, bound ${String(handoffReportBoundMs())}ms, guard ${String(GUARD_MS)}ms)`,
       );
     }
   });
