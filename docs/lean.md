@@ -451,10 +451,15 @@ calling the shipped head unverified. Where the rule fires and the log names no g
 head at all, the step records the head origin holds as read after the step, with
 `shippedVerified: false` and the rule's own `unshippedReason` — behind
 `PI_ENSEMBLE_LEAN_HANDBACK_NOHEAD_RECORD` (default on; only `0` records nothing) — so
-a consumer keys on `shippedVerified` (or `issues[].gates.handback.verified`) and never
-on `shippedHead` alone. Every other handback is unchanged. Behind
-`PI_ENSEMBLE_LEAN_VERIFIED_HANDBACK` (default on; only `0` off), which is read at call
-time; the unforced refspec and the atomic push are together behind `PI_ENSEMBLE_LEAN_REWIND_LEASE_BINDS`
+a consumer keys on `shippedVerified` and never on `shippedHead` alone. The third state is
+the one that switch's `0` restores: where the rule never spoke about a head, `shippedHead`
+is absent and `shippedVerified` is absent with it, which is how a record says "this run's
+handback was not a rewind" rather than "it was one that found no head". The host's own
+reading of the same facts is `issues[].gates.handback.verified`, a `boolean | null` whose
+`null` means the projection has no answer (`work-lean-gates.ts`), present only when
+`features.leanGates` is reported ([headless.md](headless.md)). Every other handback is
+unchanged. The whole rule is behind `PI_ENSEMBLE_LEAN_VERIFIED_HANDBACK` (off arm:
+[configuration.md](configuration.md)), read at call time; the unforced refspec and the atomic push are together behind `PI_ENSEMBLE_LEAN_REWIND_LEASE_BINDS`
 (default on; only `0` puts the leading `+` back and drops `--atomic`, byte for byte,
 restoring the pre-fix push argv exactly).
 
@@ -489,8 +494,9 @@ comes from `resolveCycleForge` with `allowProbe: false` (`lean/io.ts` `forgeFor`
 lean run issues no HTTPS probe at all. The probing callers sit outside lean, where
 `detectForge` is called with no `allowProbe` — `detectForge(ctx.repoRoot, {})` in
 `work-driver-handoff-consolidate.ts` is one — and each then asks a host the known-host
-table does not name at `/api/v4/version`, `/` and `/api/v1/version` unless `CI` is set or
-`PI_ENSEMBLE_FORGE_PROBE=0` (`shouldProbe`, `forge-probe.ts`).
+table does not name at `/api/v4/version`, `/` and `/api/v1/version` unless `CI` is truthy
+— not `0`, `false` or empty — or `PI_ENSEMBLE_FORGE_PROBE=0` (`shouldProbe`,
+`forge-probe.ts`; the switch's own semantics are in [configuration.md](configuration.md)).
 
 What an offline consumer does have to expect on this path is network git, not an HTTPS
 probe: when neither `git symbolic-ref` nor `gh repo view` names the mainline, the guard
