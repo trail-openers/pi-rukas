@@ -21,35 +21,38 @@
  *       compared ARRAY FOR ARRAY against the pre-fix argv — prefix, verb, lease
  *       argument, remote, both refspecs, in that order. An off arm that also renamed
  *       the keeping-ref or reordered the refspecs is still caught by that equality,
- *       which an absence check would not be.
- *   (b) the git CONTRACT, both arms of it. A stranger that the run's clone has never
- *       seen moves origin after the lease value was read: the rewind must report nothing
- *       shipped, origin's branch must stand at the stranger, no keeping-ref may be
- *       written, and the reason must name the lease. The same shape driven with the
- *       switch off — the leading `+` back in the argv — must force-update that very
- *       branch: the defect is pinned as the difference between two arms over the same
- *       repo shape, not as one arm's silence.
- *   (c) the CONTROL on the other side of that line, which is what keeps (b) from
- *       being a case that passes for the wrong reason: the same rewind with a lease
- *       that matches origin still lands, non-fast-forward, and the head it displaced
- *       reaches origin under `refs/lean/unverified/<issue>`. If dropping the `+`
- *       turned every rewind into git's `Everything up-to-date` exit-0 no-op, (b)
- *       would look like a pass while the rule stopped working entirely.
+ *       which an absence check would not be. Both halves were observed red on a
+ *       mutant that put the `+` back unconditionally, so neither is a tautology.
+ *   (b) the moved branch the run's clone cannot supply: the rewind must report nothing
+ *       shipped, origin's branch must stand at the stranger, and no keeping-ref may be
+ *       written. The reason it prints is git's own (`the rewind push failed`, naming the
+ *       head origin holds), not the lease's — git builds the pack from the refspecs
+ *       before it compares the lease, so an object this clone lacks is refused first and
+ *       the lease is never reached. The existing (f) in
+ *       `test-lean-verified-handback-rewind.ts` pins that same distinction; this arm
+ *       reclaims it under the fix, where the push git refused is no longer one git would
+ *       have obeyed.
+ *   (b2) the arm the fix is for: the objects ARE present, on both sides, and origin's
+ *       branch has moved. Same repo shape driven twice, differing only in the leading
+ *       `+`: with the switch on the unforced push is authorised by its lease, rewinds
+ *       the branch non-fast-forward, and keeps the head it displaced under
+ *       `refs/lean/unverified/<issue>`; with the switch off the forced push rewrites a
+ *       branch this step merely read. The defect is therefore pinned as the difference
+ *       between two arms, and the on arm is simultaneously the control that keeps (b)
+ *       from being a pass which only proves the rule stopped working — git's
+ *       `Everything up-to-date` exit-0 no-op, which the code comment used to cite as the
+ *       reason the `+` was necessary, is not what an authorised rewind prints.
  *
- * The two strangers the rig offers are not interchangeable, and the case says which it
- * used. `--force-with-lease=<ref>:<expect>` compares <expect> to the value the push
- * itself reads from origin, so a refusal needs origin to hold something other than what
- * the step's `ls-remote` named — and a control that lands needs origin to hold something
- * it can supply:
+ * The two strangers the rig offers are not interchangeable, and each case says which it
+ * used:
  *
  *   - `strangerOnTop` pushes from a scratch repo, so the branch moved and this clone was
- *       never told and never got the objects. That is (b)'s shape, and it is what
- *       `test-lean-verified-handback-rewind.ts` (f) drives too — with the switch off its
- *       push force-updates, which is the point of the off arm here.
+ *       never told and never got the objects. That is (b)'s shape, and what
+ *       `test-lean-verified-handback-rewind.ts` (f) drives.
  *   - `moveOriginBehindClone` makes the commit IN this clone, carries its objects to
  *       origin on a side ref the rewind never names, and repoints the branch by ref file.
- *       Origin has moved, holds the objects, and the step's read names the stranger, so
- *       the lease matches. That is (c)'s shape.
+ *       Origin has moved, holds the objects, and this clone can supply them. That is
+ *       (b2)'s shape, and the only one where the lease is the sole thing left to decide.
  *
  * The env is pinned only through `lib/env-scope.ts`, which restores exactly what was
  * there: every lean smoke file runs in one bun process, so a leaked `"0"` here would
@@ -200,12 +203,20 @@ function pushArgv(pushes: string[][]): string[] | undefined {
   );
 }
 
-// ── (b) the lease binds: origin moved behind lean's back, and the refusal says so ──
+// ── (b) a moved branch is refused, both by the lease and by what the clone holds ──
 {
-  // Somebody else pushed to the branch after lean's head, and the run's clone has never
-  // seen the stranger — the state a resumed run is really in. `strangerOnTop` is the
-  // only rig that makes it: a stranger made in this clone would leave its objects here,
-  // and the case would be measuring something else entirely.
+  // Somebody else pushed to the branch after lean's head and the run's clone has never
+  // seen the stranger — the state a resumed run is really in, and the only shape
+  // `strangerOnTop` produces. The rewind must refuse it, leave origin where the stranger
+  // left it, and write no keeping-ref for a move that never happened.
+  //
+  // The reason it must print is `the rewind push failed`, NOT `the lease refused`, and
+  // the difference is a fact about git rather than a preference: git builds the pack
+  // from the refspecs before it compares the lease, so a sha whose objects this clone
+  // cannot supply dies naming the object and the lease is never reached. That is
+  // `test-lean-verified-handback-rewind.ts` (f), and this repeats the claim here because
+  // it is the same push. What the fix changes, on this arm, is that the push git refused
+  // is no longer one git would have obeyed had the objects been there — see (b2).
   const repo = repoWithFixHead();
   const stranger = strangerOnTop(repo, repo.branchHeadSha, "someone else's work");
   if (originBranchSha(repo.origin) !== stranger)
@@ -235,21 +246,43 @@ function pushArgv(pushes: string[][]): string[] | undefined {
     argv !== undefined && !argv.some((a) => a.startsWith("+")),
     `(b) the push that was refused carried no forced refspec (${JSON.stringify(argv ?? null)})`,
   );
-  // The reason the lease now binds, stated as the mechanism rather than as a hope:
-  // `--force-with-lease=<ref>:<expect>` compares <expect> to the value the push itself
-  // just read from origin, so naming the sha this step read earlier is what makes a
-  // move-over-somebody-else's-head a refusal at all. With the `+` back (the switch's off
-  // arm, and the shape this file exists for) git never evaluates the lease and the same
-  // push force-updates — which is why the two arms below are the whole case.
   assert(
-    (rewind.reason ?? "").includes("the lease refused"),
-    `(b) the record blames the lease, which is the thing that refused (${String(rewind.reason)})`,
+    (rewind.reason ?? "").includes("the rewind push failed") &&
+      (rewind.reason ?? "").includes(stranger.slice(0, 12)),
+    `(b) the record names git's own reason and the head origin holds (${String(rewind.reason)})`,
   );
-  // The converse half, on its own repo: the SAME push argv with the leading `+` put back
-  // by the switch over the SAME shape of moved branch does rewrite origin. That is the
-  // defect, pinned as a difference between two arms rather than as one arm's silence.
+  assert(
+    !(rewind.reason ?? "").includes("the lease refused"),
+    `(b) and does not blame a lease git never reached (${String(rewind.reason)})`,
+  );
+
+  // ── (b2) the arm the fix is actually for: the objects ARE there, so only the lease
+  // stands between this push and somebody else's commit. Origin holds them, the clone
+  // holds them, and the step's `ls-remote` names the sha origin really holds — so the
+  // lease matches what origin holds and git, with no `+`, still has to decide the move on
+  // the lease alone. The two arms differ in the leading `+` and in nothing else, which is
+  // what makes this the defect pinned as a difference rather than as one arm's silence.
+  const on = repoWithFixHead();
+  const onStranger = commitOnTop(on.repoRoot, on.branchHeadSha, "someone else's work, object-complete");
+  moveOriginBehindClone(on, onStranger);
+  const { exec: onSpy, pushes: onPushes } = capturingExec();
+  const onRewind = await rewinder(onSpy, on.repoRoot)(on.baseSha);
+  const onArgv = pushArgv(onPushes);
+  assert(
+    onArgv !== undefined && !onArgv.some((a) => a.startsWith("+")),
+    `(b2) the on-arm push carried no forced refspec (${JSON.stringify(onArgv ?? null)})`,
+  );
+  assert(
+    onRewind.shipped === true && originBranchSha(on.origin) === on.baseSha,
+    `(b2) with the lease matching origin's own value, the unforced rewind is authorised and lands (${JSON.stringify([onRewind.shipped, onRewind.reason])})`,
+  );
+
   const off = repoWithFixHead();
-  const offStranger = strangerOnTop(off, off.branchHeadSha, "someone else's work");
+  const offStranger = commitOnTop(off.repoRoot, off.branchHeadSha, "someone else's work, object-complete");
+  // Origin is moved to the stranger BEFORE the off-arm rewind, so the step reads the
+  // stranger as origin's value exactly as the on arm above did: same shape, same lease
+  // value, the `+` the only difference.
+  moveOriginBehindClone(off, offStranger);
   const offBefore = originBranchSha(off.origin);
   const { exec: offSpy, pushes: offPushes } = capturingExec();
   let offRewind: Rewind | undefined;
@@ -258,43 +291,14 @@ function pushArgv(pushes: string[][]): string[] | undefined {
   });
   const offArgv = pushArgv(offPushes);
   assert(
-    offArgv !== undefined &&
-      offArgv.includes(`+${off.baseSha}:refs/heads/${BRANCH}`),
-    `(b) off arm: the forced refspec is back in the argv (${JSON.stringify(offArgv ?? null)})`,
+    offArgv !== undefined && offArgv.includes(`+${off.baseSha}:refs/heads/${BRANCH}`),
+    `(b2) off arm: the forced refspec is back in the argv (${JSON.stringify(offArgv ?? null)})`,
   );
   assert(
     offRewind?.shipped === true &&
       originBranchSha(off.origin) === off.baseSha &&
       offBefore === offStranger,
-    `(b) off arm: and that is exactly the arm that force-updates a branch somebody else moved — the defect this fix removes (${JSON.stringify([offRewind?.shipped, originBranchSha(off.origin), offBefore])})`,
-  );
-}
-
-// ── (c) control: a matching lease still rewinds, non-fast-forward ───────────
-{
-  // If git refused every unforced non-fast-forward, (b) would be a pass that says
-  // nothing — every rewind would print a lease refusal and the rule would be dead.
-  // So the same shape with a lease that MATCHES origin must still land.
-  const repo = repoWithFixHead();
-  const stranger = commitOnTop(repo.repoRoot, repo.branchHeadSha, "a head origin was moved to");
-  // The stranger reaches origin on a side ref the rewind never names, and the branch is
-  // then repointed at it by ref file: origin holds the objects, the branch really moved,
-  // and this clone was told nothing. The step's `ls-remote` therefore reads the stranger
-  // and binds the lease to it — the lease matches, which is precisely what makes this
-  // the accepting arm and (b) the refusing one.
-  moveOriginBehindClone(repo, stranger);
-  const rewind = await rewinder(exec, repo.repoRoot)(repo.baseSha);
-  assert(
-    rewind.shipped === true,
-    `(c) control: with a matching lease the rewind lands even though it is non-fast-forward (${JSON.stringify([rewind.shipped, rewind.reason])})`,
-  );
-  assert(
-    originBranchSha(repo.origin) === repo.baseSha,
-    `(c) control: origin's branch stands at the verified head (${String(originBranchSha(repo.origin))})`,
-  );
-  assert(
-    originRefSha(repo.origin, unverifiedRef(ISSUE)) === stranger,
-    `(c) control: and the displaced head is kept on origin, not dropped (${String(originRefSha(repo.origin, unverifiedRef(ISSUE)))})`,
+    `(b2) off arm: and that is the arm that rewrites a branch it only read — the lease git never consulted (${JSON.stringify([offRewind?.shipped, originBranchSha(off.origin), offBefore])})`,
   );
 }
 
