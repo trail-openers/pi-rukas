@@ -51,6 +51,10 @@ export const ENV_KEYS = [
   // whether a deadline stop routes into the report at all.
   "PI_ENSEMBLE_LEAN_HANDBACK_NOHEAD_RECORD",
   "PI_ENSEMBLE_LEAN_DEADLINE_HANDBACK",
+  // The bound on the routed report is read at call time too, and the off/on arms of
+  // `test-lean-handback-report-bound.ts` are pinned with this scope: a pin that leaked
+  // into the next case would quietly test the unbounded await instead of the bound.
+  "PI_ENSEMBLE_LEAN_REPORT_BOUND",
   "PI_ENSEMBLE_CYCLE_BUDGET_MS",
   "PI_ENSEMBLE_HANDOFF_CHANNEL",
   // A case may pin the forge off for its own duration: the post seam is asserted
