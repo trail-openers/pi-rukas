@@ -36,6 +36,7 @@ import {
   leanVerifiedHandbackEnabled,
 } from "../../src/lean/verified-handback-switch.ts";
 import { claimScanEnabled, evidenceSupplyEnabled } from "../../src/lens-evidence.ts";
+import { lensLargeDiffEnabled } from "../../src/lens-large-diff-switch.ts";
 import { lensIncompleteForcesFull } from "../../src/lens-review-incomplete-switch.ts";
 import { lensRoundCap } from "../../src/lens-round-cap.ts";
 import { loopDetectorEnabled } from "../../src/loop-detector.ts";
@@ -197,6 +198,10 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // #2223 — the delta reader's incomplete-row rule. The reader is `v !== "0"`, so
   // the gate's LIVE loop (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LENS_INCOMPLETE_FULL", lensIncompleteForcesFull],
+  // #2261 — the large-diff reads and the bounded lens prompt. The reader is
+  // `v !== "0"`, so the gate's LIVE loop (env deleted) pins "unset means on"; the
+  // truth table and the docs row are pinned by `test-lens-large-diff-switch.ts`.
+  ["PI_ENSEMBLE_LENS_LARGE_DIFF", lensLargeDiffEnabled],
   ["PI_ENSEMBLE_LENS_ROUND_CAP_MERGE", roundCapMergeEnabled],
   ["PI_ENSEMBLE_LOOP_DETECTOR", loopDetectorEnabled],
   ["PI_ENSEMBLE_MERGE_AUTHORITY", mergeAuthorityEnabled],
