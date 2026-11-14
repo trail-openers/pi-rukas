@@ -397,29 +397,17 @@ async function driveLoop(
       // so the two cannot disagree about the shape.
       if (state !== "handback" && deadlineStopShouldReport(run.steps)) {
         // The report runs, and the record it leaves is one the engine's own loader can still open.
-        // Both halves cost something, and the reason is the same for both.
-        //
-        // `resume.ts` re-derives a run by walking its log back through `next()` and refuses a file
-        // whose snapshot the walk cannot reproduce. `review:fixed` is routed by the table to `verify`,
-        // so at the end of the log the walk stands at `verify` — and an entry belonging to `handback`
-        // there is "a verdict for a state the run was never in", which `foldLog` refuses outright. That
-        // is not a gap to patch: the fold's header states it needs no exemptions because the engine
-        // writes one entry per visit, and a routing that reached `handback` without the table's edge
-        // could never be given one honestly. Two shapes tried here — appending the report's entry, and
-        // writing the snapshot beside it — both produced a record `loadRun` refuses, which is worse
-        // than the bug: the refusal happens before the routing's switch is read, so
-        // `PI_ENSEMBLE_LEAN_DEADLINE_HANDBACK=0` recovers nothing and the documented recovery for a
-        // run the clock stopped ("re-run `/work-lean <issue>`") is closed for good.
+        // The fold consequence of writing that record — why `resume.ts` needs its one exemption, and why
+        // a loader refusal there outranks the bug this branch fixes — is `isReportRoute`'s jsdoc in
+        // `resume.ts`; this is the runner's side of that seam and the shape it has to keep producing.
         //
         // So the routing runs the report through the handler, exactly as `runLean`'s crash-resume path
         // would, and lands its verdict on the run through `endRun` — the writer every terminal stamp
-        // already uses — rather than through `apply()` on an entry that cannot exist. The rewind, the
-        // head fields and the comment therefore run on the shape they were written for. The log keeps
-        // the entry the loop wrote ahead for the refused step: the run DID enter the re-verification and
-        // came back with no answer, which is the honest record and the premise `handback-heads.ts` acts
-        // on. A record whose newest entry is undecided is what `foldLog` breaks on, and the snapshot
-        // beside it is `handed-back` with a result — the same pair a plain deadline stop leaves, so a
-        // routed run resumes as a finished run and reports what it earned.
+        // already uses — rather than through `apply()` on an entry the table never routed. The rewind,
+        // the head fields and the comment therefore run on the shape they were written for. The log
+        // keeps the entry the loop wrote ahead for the refused step: the run DID enter the
+        // re-verification and came back with no answer, which is the honest record and the premise
+        // `handback-heads.ts` acts on — which is why the verdict is not written onto that entry.
         //
         // Nothing past this line starts WORK: the only handler reached is the reporting one, which the
         // stop test exempts; `state !== "handback"` keeps this from re-firing, and `endRun` ends the

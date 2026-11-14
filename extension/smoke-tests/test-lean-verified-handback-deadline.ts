@@ -36,13 +36,20 @@
  * base commit (made reachable on origin under `refs/lean/base/<issue>`) and F the fix
  * head origin's branch holds when the drive starts.
  *
- * boundary, which is the only place the premise and the report can both hold: the
- * engine's deadline stop ends the run where it stands and runs no reporting step, and
- * a run whose re-verification ANSWERED is one the rule no longer speaks for. So the
- * queue answers up to and including the review, the table routes `review:fixed` into
- * the re-verification, the stop test refuses to start it, and the report is the run's
- * one surviving step past the line because `deadlineStopsSteps` exempts the reporting
- * states. `PI_ENSEMBLE_HANDOFF_TIMEOUT_MS` is pinned explicitly (it is in the restored
+ * The clock is `crossingAfter({ at: "verify", decidedBefore: "review" })` — the rig's
+ * late instant arrives with the record standing on its decided `review:fixed`, so the
+ * crossing lands on the RE-VERIFICATION's boundary: the stop test refuses to start the
+ * gate the review dispatched, and `handback` — the state the table reaches next — is the
+ * one state `deadlineStopsSteps` never refuses. That exemption is the only place this
+ * premise and that report can both hold: the engine's deadline stop ends a run where it
+ * stands and runs no reporting step, and a run whose re-verification ANSWERED is one the
+ * rule no longer speaks for. Do NOT restore `at: "handback"` — reporting states are
+ * exempt, so the clock would never stop anything and the case would silently become a
+ * no-deadline drive. The crossing, the allowance comparison and `clock.crossed()` all
+ * live in `lib/lean-verified-handback-deadline-rig.ts` (`driveToDeadline`); this file
+ * only asserts what the record and the comment say.
+ *
+ * `PI_ENSEMBLE_HANDOFF_TIMEOUT_MS` is pinned explicitly (it is in the restored
  * `ENV_KEYS` set) and sized under the rig's late position, and the case asserts
  * that never crossed the allowance cannot read as a deadline case.
  *
@@ -60,10 +67,10 @@ import { rmSync } from "node:fs";
 import { MINUTE_MS } from "../src/lean/deadline.ts";
 import { runLean } from "../src/lean/engine.ts";
 import { unverifiedRef } from "../src/lean/handback-rewind.ts";
+import { reportHandlers } from "../src/lean/report-handlers.ts";
 import type { LeanState, Outcome, Step } from "../src/lean/state.ts";
 import { REPORT_STATES } from "../src/lean/state.ts";
 import { loadRun } from "../src/lean/state.ts";
-import { reportHandlers } from "../src/lean/report-handlers.ts";
 import { handoffDispatchTimeoutMs } from "../src/work-driver-handoff.ts";
 import { makeAssert } from "./headless-verb-harness.ts";
 import { recording, withEnv } from "./lib/lean-host-contract-fixture.ts";
@@ -174,7 +181,9 @@ await withEnv(ENV, async () => {
     `(a) the log's newest entry is the report step the routing ran, with its verdict (${String(ran.newest?.state)}:${String(ran.newest?.outcome?.kind ?? "undecided")})`,
   );
   assert(
-    !ran.steps.some((s2) => s2.state === "verify" && s2.outcome !== undefined && s2.key !== "2242:verify:0"),
+    !ran.steps.some(
+      (s2) => s2.state === "verify" && s2.outcome !== undefined && s2.key !== "2242:verify:0",
+    ),
     `(a) and no decided re-verification was fabricated behind the clock (${ran.steps.map((s2) => `${s2.key}=${s2.outcome?.kind ?? "?"}`).join(",")})`,
   );
 

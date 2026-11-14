@@ -54,16 +54,12 @@ export interface ReportRequest {
  * stamped result, so the durable record reads like any other handback's: newest step the report, result
  * stamped from its verdict.
  *
- * The visit needs the fold's one exemption (`resume.ts`, `isReportRoute`), and that need is what the
- * routing costs. `resume.ts` re-derives a run by walking its log back through `next()`, and the table
- * routes `review:fixed` to `verify` — so at the end of this log the walk stands at `verify` and the
- * report's entry belongs to no state the walk reached. Without the exemption the file is refused, and the
- * refusal is worse than the bug this branch fixes: it comes from `loadRun`/`verifiedPosition`, which run
- * before the routing's switch is read, so `PI_ENSEMBLE_LEAN_DEADLINE_HANDBACK=0` recovers nothing and the
- * documented recovery for a timed-out issue ("re-run `/work-lean <issue>`") is shut for good. The
- * exemption is admitted on the WALK and the LOG, never on the entry being judged, and is the narrowest
- * shape the routing can produce — one report visit ever, log ending on it, premise still the `fixed`
- * review with no decided `verify` behind it.
+ * The visit needs the fold's one exemption, and that need is what the routing costs. The rule is
+ * `isReportRoute`'s jsdoc in `resume.ts` — why the fold cannot reproduce this log on its own, why a
+ * refusal there outranks the bug this branch fixes (it comes from `loadRun`/`verifiedPosition`, which run
+ * before the routing's switch is read, so `PI_ENSEMBLE_LEAN_DEADLINE_HANDBACK=0` recovers nothing), and
+ * how narrow the admitted shape is. The routing's side of the seam — what it writes, below — is what has
+ * to keep agreeing with that rule.
  *
  * What the record deliberately does NOT do is put the report's verdict on the gate entry the clock left
  * unanswered. That fold-legal-looking shortcut stamps `verify` with a kind its table has no arrow for, and

@@ -22,14 +22,23 @@ import { childCodemodeEnabled } from "../../src/child-codemode.ts";
 import { commentRetentionEnabled } from "../../src/comment-retention.ts";
 import { COMMENT_RETENTION_PATHS } from "../../src/comment-retention.ts";
 import { hostSpawnCap, hostSpawnWaitMs } from "../../src/host-spawn-slots.ts";
+import { leanDeadlineHandbackEnabled } from "../../src/lean/deadline-handback.ts";
+import { leanBuildIssueProseEnabled, leanIssueProseEnabled } from "../../src/lean/issue-prose.ts";
+import { leanReviewSpecSplitEnabled } from "../../src/lean/review-spec-split.ts";
+import { leanRewindLeaseBinds } from "../../src/lean/rewind-lease-switch.ts";
+import { leanRunnerPreflightEnabled } from "../../src/lean/runner-preflight-switch.ts";
+import {
+  leanHandbackNoHeadRecordEnabled,
+  leanVerifiedHandbackEnabled,
+} from "../../src/lean/verified-handback-switch.ts";
 import { claimScanEnabled, evidenceSupplyEnabled } from "../../src/lens-evidence.ts";
 import { lensRoundCap } from "../../src/lens-round-cap.ts";
 import { loopDetectorEnabled } from "../../src/loop-detector.ts";
 import { roundCapMergeEnabled } from "../../src/merge-guard-round-cap.ts";
 import { pendingShutdownBoundMs } from "../../src/pending-jobs-signal.ts";
 import { planCacheTtlMs } from "../../src/plan-investigation-cache.ts";
+import { adversarialChildBoundMs, reviewSkillReadCap } from "../../src/review-bounds.ts";
 import { lensFixBoundMs, reviewCapMs, reviewWallClockMs } from "../../src/review-budget.ts";
-import { lensFixLandAheadEnabled } from "../../src/work-driver-lens-fix-bound-land.ts";
 import { transcriptRetentionDays } from "../../src/runs-retention.ts";
 import { autoSteerEnabled } from "../../src/slow-notice.ts";
 import { slowThresholds } from "../../src/slow-notice.ts";
@@ -40,7 +49,6 @@ import {
   lensChildBoundMs,
   settledReapMs,
 } from "../../src/spawn-child-bound.ts";
-import { adversarialChildBoundMs, reviewSkillReadCap } from "../../src/review-bounds.ts";
 import { spawnCap } from "../../src/spawn-semaphore.ts";
 import {
   inactivityTimeoutMs,
@@ -66,16 +74,8 @@ import { handoffPostBackoffMs } from "../../src/work-driver-handoff-post-retry.t
 import { handoffDispatchTimeoutMs } from "../../src/work-driver-handoff.ts";
 import { intentCriticalityEnabled } from "../../src/work-driver-intent-criticality.ts";
 import { intentResolutionEnabled } from "../../src/work-driver-intent.ts";
-import {
-  leanBuildIssueProseEnabled,
-  leanIssueProseEnabled,
-} from "../../src/lean/issue-prose.ts";
-import { leanReviewSpecSplitEnabled } from "../../src/lean/review-spec-split.ts";
-import { leanRunnerPreflightEnabled } from "../../src/lean/runner-preflight-switch.ts";
-import { leanHandbackNoHeadRecordEnabled, leanVerifiedHandbackEnabled } from "../../src/lean/verified-handback-switch.ts";
-import { leanDeadlineHandbackEnabled } from "../../src/lean/deadline-handback.ts";
-import { leanRewindLeaseBinds } from "../../src/lean/rewind-lease-switch.ts";
 import { issueImagesEnabled } from "../../src/work-driver-issue-images.ts";
+import { lensFixLandAheadEnabled } from "../../src/work-driver-lens-fix-bound-land.ts";
 import { mergeAuthorityEnabled } from "../../src/work-driver-merge-authority.ts";
 import { NET_GIT_TIMEOUT_DEFAULT_MS } from "../../src/work-driver-net-git.ts";
 import { crossGroupConflictsEnabled } from "../../src/work-driver-path-claims.ts";
@@ -87,8 +87,8 @@ import { policyJudgeEnabled } from "../../src/work-driver-policy.ts";
 import { prPreflightEnabled } from "../../src/work-driver-pr-preflight.ts";
 import { resumeEnabled, sessionReattachEnabled } from "../../src/work-driver-resume.ts";
 import { stepNoticeThresholdMs } from "../../src/work-driver-step-notice.ts";
-import { testDeleteTolerance } from "../../src/work-driver-verify-develop-helpers.ts";
 import { verifyTimeoutMs } from "../../src/work-driver-verify-budget.ts";
+import { testDeleteTolerance } from "../../src/work-driver-verify-develop-helpers.ts";
 import { queueOrderingEnabled } from "../../src/work-queue-scheduler.ts";
 import { queueDeferCapMs, queueHaltOnFailure } from "../../src/work-queue.ts";
 import { tierDefaultReader } from "./verify-tier-pin.ts";
