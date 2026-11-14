@@ -74,6 +74,7 @@ import { leanReviewSpecSplitEnabled } from "../../src/lean/review-spec-split.ts"
 import { leanRunnerPreflightEnabled } from "../../src/lean/runner-preflight-switch.ts";
 import { leanHandbackNoHeadRecordEnabled, leanVerifiedHandbackEnabled } from "../../src/lean/verified-handback-switch.ts";
 import { leanDeadlineHandbackEnabled } from "../../src/lean/deadline-handback.ts";
+import { leanRewindLeaseBinds } from "../../src/lean/rewind-lease-switch.ts";
 import { issueImagesEnabled } from "../../src/work-driver-issue-images.ts";
 import { mergeAuthorityEnabled } from "../../src/work-driver-merge-authority.ts";
 import { NET_GIT_TIMEOUT_DEFAULT_MS } from "../../src/work-driver-net-git.ts";
@@ -170,6 +171,9 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   ["PI_ENSEMBLE_LEAN_VERIFIED_HANDBACK", leanVerifiedHandbackEnabled],
   // The verified-handback rule. The reader is `v !== "0"`, so the gate's LIVE
   // loop (env deleted) pins "unset means on".
+  // #2262 — whether the rewind's branch refspec stays unforced so its lease binds. The
+  // reader is `v !== "0"`, so the gate's LIVE loop (env deleted) pins "unset means on".
+  ["PI_ENSEMBLE_LEAN_REWIND_LEASE_BINDS", leanRewindLeaseBinds],
   ["PI_ENSEMBLE_ISSUE_IMAGES", () => issueImagesEnabled()],
   ["PI_ENSEMBLE_LENS_EVIDENCE", evidenceSupplyEnabled],
   ["PI_ENSEMBLE_LENS_ROUND_CAP_MERGE", roundCapMergeEnabled],

@@ -8,8 +8,9 @@
  * `lean-verified-handback-fixture.ts`, which is where the drive and the scripted
  * walks are.
  *
- * The one design fact worth carrying: a stranger that is meant to defeat a
- * `--force-with-lease` cannot be made in the run's own clone. See `strangerOnTop`.
+ * The one design fact worth carrying: the two strangers here are NOT
+ * interchangeable, and which one a case gets decides whether the lease refuses, accepts,
+ * or never gets asked. See `strangerOnTop` and `moveOriginBehindClone`.
  */
 
 import { spawnSync } from "node:child_process";
@@ -98,11 +99,13 @@ export function repoWithFixHead(): {
  * Two properties the lease cases need together, and only this shape gives them.
  *
  * **Origin has moved and the run's clone has not been told.** A stranger cannot be
- * made in the run's own clone: `--force-with-lease=<ref>:<sha>` checks the sha
- * against the clone's remote-tracking ref, and a commit made and pushed locally
- * leaves that ref in exactly the state that makes a lease on the old head succeed —
- * so a case that moved origin that way would watch the rewind accept a branch
- * somebody else had moved and call it a refusal.
+ * made in the run's own clone and pushed from it: a push refreshes
+ * `refs/remotes/origin/<branch>`, and the rewind's `ls-remote` would then read the
+ * stranger as origin's own value and bind the lease to it — a lease that matches is a
+ * lease that accepts, so a case that moved origin that way would watch the rewind
+ * rewrite somebody else's commit and call it a refusal. The only thing the
+ * expected-value lease compares against is the sha the step read off origin, so
+ * refusing a move needs origin to hold something the step's own read did not name.
  *
  * **The run's clone has never seen the stranger's objects.** A clone of origin
  * would fetch the stranger's chain into the run's own object store, and the rewind's
@@ -130,6 +133,55 @@ export function strangerOnTop(
   const sha = git(other, "rev-parse", "HEAD");
   git(other, "push", "-q", "--force", repo.origin, `HEAD:refs/heads/${BRANCH}`);
   return sha;
+}
+
+/**
+ * Move origin's branch to a commit this clone made, WITHOUT this clone being told.
+ *
+ * The counterpart to `strangerOnTop`, and the reason both exist is that the two
+ * refusal arms a lease case can be in are built by opposite moves. This one builds the
+ * arm where the lease is SATISFIED and the rewind must still land a non-fast-forward
+ * move: origin's branch really has moved, origin really holds the objects, and this
+ * clone was told nothing — so the step's `ls-remote` reads the stranger, binds the
+ * lease to it, and the lease accepts.
+ *
+ * Two operations, because neither alone does the job (each measured on git 2.53.0):
+ *
+ *   - a push FROM this clone to the branch carries the objects but refreshes
+ *     `refs/remotes/origin/<branch>`, so the clone is told — and a `fetch` tells it just
+ *     as well. Pushing to a ref the rewind never names carries the same objects while
+ *     leaving that tracking ref where it was, which is the only way to get objects into
+ *     origin from a repo that holds them without announcing the move;
+ *   - the branch is then repointed at that sha by ref file (`forceOriginRef`) — the half
+ *     that tells nobody. Written on its own it would name bytes origin has never
+ *     received, and the rewind's push would die in transport (`bad object`) before the
+ *     lease was evaluated, which is `strangerOnTop`'s arm.
+ *
+ * So: the objects travel on a side ref, and the branch moves by ref file. Both halves
+ * are read back here rather than assumed — a control that asserted a landed rewind while
+ * origin had not moved, or while the objects were missing, would be pinning an accident.
+ */
+export function moveOriginBehindClone(
+  repo: { repoRoot: string; origin: string },
+  sha: string,
+  branch = BRANCH,
+): void {
+  const before = originBranchSha(repo.origin, branch);
+  // Half one: the objects travel, on a ref the rewind never names, from the clone that
+  // holds them. `--force` because the ref may already exist from an earlier call here.
+  git(repo.repoRoot, "push", "-q", "--force", "origin", `${sha}:refs/lean/stranger/${String(ISSUE)}`);
+  // Half two: the branch is repointed, by ref file, at a sha origin now really holds.
+  forceOriginRef(repo.origin, sha, `refs/heads/${branch}`);
+  if (originBranchSha(repo.origin, branch) !== sha)
+    throw new Error(
+      `origin's ${branch} was not moved: it holds ${String(originBranchSha(repo.origin, branch))}, not ${sha}`,
+    );
+  if (before === sha)
+    throw new Error(`origin's ${branch} already held ${sha}, so this case moved nothing`);
+  if (!cloneHolds(repo.repoRoot, sha))
+    throw new Error(
+      `the run's clone does not hold ${sha.slice(0, 12)}, so the rewind below would die in transport and not land`,
+    );
 }
 
 /** A commit on top of `sha`, detached, so no branch moves. */
