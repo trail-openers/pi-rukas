@@ -378,6 +378,7 @@
     "smoke-tests/test-lean-review-spec-split-switch.ts",
     "smoke-tests/test-adversarial-fix-round-criteria.ts",
     "smoke-tests/test-lean-review-deps-criteria-pair.ts",
-    "smoke-tests/lib/headless-live-inputs.ts"
+    "smoke-tests/lib/headless-live-inputs.ts",
+    "smoke-tests/test-forge-target-privilege-seam.ts"
   ]
 }

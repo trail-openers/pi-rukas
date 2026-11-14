@@ -64,7 +64,7 @@ import { trace, traceWarn } from "./trace.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /** The one host whose repository visibility `gh` can answer for. */
-const GITHUB_HOST = "github.com";
+export const GITHUB_HOST = "github.com";
 
 /** Bound on the visibility question. Generous over a normal `gh api` round trip. */
 export const VISIBILITY_TIMEOUT_MS = 10_000;
@@ -84,6 +84,39 @@ export interface RepoTarget {
 /** `owner/repo`, for the cache key and the one trace line this module writes. */
 export function targetSlug(t: RepoTarget): string {
   return `${t.owner}/${t.repo}`;
+}
+
+/**
+ * Does this target name a repository the host could answer about?
+ *
+ * A `RepoTarget` is a licence: only a positive private answer skips a publish
+ * check, so whoever hands one to `isPrivateTarget` decides whether the scan runs.
+ * That makes the target's SHAPE part of the trust decision, not just its host.
+ * github.com serves one repository per owner, so a slug carrying a separator is
+ * not a slug the host publishes — `gh api repos/group/sub/project` reports on a
+ * path, and a `true` from it is an answer about nothing. The two halves are
+ * checked, not just the owner: `ghVisibility` builds that one endpoint from
+ * `owner` and `repo`, so `"acme" + "corp/widget"` is the same unpublished path as
+ * `"acme/corp" + "widget"`, and an empty half makes the slug carry its own
+ * separator — either half, including an empty one, puts a separator in that
+ * endpoint. Answering such a slug would turn an unverified claim into the one
+ * outcome that stops a check, which is the
+ * direction this module's standing rule refuses: "could not tell" is never
+ * "clean", and here it is never "private" either.
+ *
+ * Every producer of a `RepoTarget` refuses this shape already; the rule is asked
+ * HERE as well because this is the seam that turns an answer into a licence, and
+ * a licence should not depend on the rule holding at every caller. The `host` it
+ * is asked of is the effective host — the one the transport branch below would
+ * ask `gh` about — not `target.host` alone, or a caller supplying `opts.host`
+ * could route a malformed slug into the lookup past the rule. Only GitHub gets
+ * the one-owner rule: a GitLab namespace legitimately nests, and a deep
+ * non-GitHub slug stays checkable — answered without a lookup, as any non-GitHub
+ * host already is.
+ */
+function namesHostedRepo(t: RepoTarget, host: string | undefined): boolean {
+  if ((host ?? GITHUB_HOST) !== GITHUB_HOST) return true;
+  return t.owner !== "" && t.repo !== "" && !t.owner.includes("/") && !t.repo.includes("/");
 }
 
 /**
@@ -191,6 +224,11 @@ export function visibilityLookupCount(): number {
  * non-GitHub host is answered without a lookup, because `gh` has no idea what a
  * GitLab or self-hosted project's visibility is and a wrong `false` there would
  * be an unverified claim rather than a conservative one.
+ *
+ * A slug the host does not serve is refused the same way and for the same
+ * reason — see {@link namesHostedRepo}, which is asked of the same effective
+ * host the lookup below is issued against. It is asked BEFORE the cache, so a
+ * `true` cached under a real slug can never be re-served to a malformed one.
  */
 export function isPrivateTarget(
   target: RepoTarget,
@@ -202,16 +240,27 @@ export function isPrivateTarget(
     timeoutMs?: number;
   } = {},
 ): Promise<boolean> {
+  // A blank host names no forge, so it is read as absent once here: the shape
+  // rule, the transport branch and the cache key all then agree that `""` is
+  // github.com rather than "some other host", which is what let a `host: ""`
+  // target waive the rule and still reach the lookup.
+  const host = (opts.host ?? target.host) || undefined;
   const slug = targetSlug(target);
-  // The caller's host wins; a target that carries its own (a forge adapter, a
-  // parsed remote) supplies it without the caller repeating the fact.
-  const host = opts.host ?? target.host;
+  // Asked before the cache and before the transport: a slug the host does not
+  // serve must not reach `gh`, must not reach an injected resolver, and must not
+  // be served a cached `true` — the answer is refused on its shape alone.
+  if (!namesHostedRepo(target, host)) {
+    traceOnce(
+      `public-hygiene: ${slug} is not a repository ${host ?? GITHUB_HOST} serves — checking`,
+    );
+    return Promise.resolve(false);
+  }
   // A host the resolver could not read is not evidence of github.com: `git
   // remote get-url` can hand back a bare slug or a path, and the resolver leaves
-  // `host` undefined for those rather than guessing. Undefined or blank therefore
+  // `host` undefined for those rather than guessing. An undefined host therefore
   // still asks `gh` (a lookup that fails resolves to "check", so an unknown host
   // is never a pass) but goes through the shared lookup path below.
-  if (host !== undefined && host !== "" && host !== GITHUB_HOST) {
+  if (host !== undefined && host !== GITHUB_HOST) {
     // An explicit "unknown, so check": `gh` has no idea what a GitLab or
     // self-hosted project's visibility is, and a wrong `false` there would be
     // an unverified claim rather than a conservative one. Said once per slug —

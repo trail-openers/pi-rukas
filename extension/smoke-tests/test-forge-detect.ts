@@ -16,12 +16,10 @@ import {
   type ForgeType,
   type ProbeFn,
   detectForge,
-  isCI,
   parseForgeConfig,
-  parseRemoteUrl,
-  shouldProbe,
   stripPort,
 } from "../src/forge-detect.ts";
+import { isCI, shouldProbe } from "../src/forge-probe.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -69,63 +67,6 @@ const noEnv = { PI_ENSEMBLE_FORGE: undefined };
 const noProbe = { probe: (async (): Promise<undefined> => undefined) as ProbeFn };
 const probeGitlab = { probe: (async (): Promise<ForgeType> => "gitlab") as ProbeFn };
 
-// ======================================================================
-// parseRemoteUrl — the 4 URL forms from the spec
-// ======================================================================
-
-console.log("\n--- parseRemoteUrl ---");
-
-eq(
-  parseRemoteUrl("git@github.com:owner/repo.git"),
-  { host: "github.com", owner: "owner", repo: "repo" },
-  "github.com SSH scp-style",
-);
-eq(
-  parseRemoteUrl("https://github.com/owner/repo.git"),
-  { host: "github.com", owner: "owner", repo: "repo" },
-  "github.com HTTPS with .git",
-);
-eq(
-  parseRemoteUrl("https://github.com/owner/repo"),
-  { host: "github.com", owner: "owner", repo: "repo" },
-  "github.com HTTPS without .git",
-);
-eq(
-  parseRemoteUrl("git@gitlab.com:owner/repo.git"),
-  { host: "gitlab.com", owner: "owner", repo: "repo" },
-  "gitlab.com SSH scp-style",
-);
-eq(
-  parseRemoteUrl("https://gitlab.com/owner/repo"),
-  { host: "gitlab.com", owner: "owner", repo: "repo" },
-  "gitlab.com HTTPS",
-);
-eq(
-  parseRemoteUrl("ssh://git@mygitlab.example.com:2222/owner/repo.git"),
-  { host: "mygitlab.example.com", owner: "owner", repo: "repo" },
-  "ssh:// with user and non-standard port",
-);
-eq(
-  parseRemoteUrl("ssh://gitlab.example.com/owner/repo"),
-  { host: "gitlab.example.com", owner: "owner", repo: "repo" },
-  "ssh:// without user",
-);
-eq(
-  parseRemoteUrl("ssh://git@HOST:2222/owner/repo"),
-  { host: "host", owner: "owner", repo: "repo" },
-  "ssh://git@HOST:2222 (spec example, host lowercased)",
-);
-eq(
-  parseRemoteUrl("git://github.com/owner/repo.git"),
-  { host: "github.com", owner: "owner", repo: "repo" },
-  "git:// scheme",
-);
-
-// Fail-closed: unparseable inputs
-eq(parseRemoteUrl(""), undefined, "empty string → undefined");
-eq(parseRemoteUrl("not a url"), undefined, "garbage → undefined");
-eq(parseRemoteUrl("https://github.com"), undefined, "https with no path → undefined");
-eq(parseRemoteUrl("git@github.com:owner"), undefined, "scp-style with no /owner/repo → undefined");
 
 // ======================================================================
 // stripPort
@@ -416,6 +357,33 @@ console.log("\n--- detectForge: config edge cases ---");
   });
   eq(r.forge, "gitlab", "config host match → config applies");
   eq(r.source, "config", "source is config");
+}
+
+// A subgroup remote parses to its host, so the config cross-check fires
+// (#2257): before, a three-segment path parsed to no host at all and a
+// `.pi/forge` naming ANY host was applied regardless.
+{
+  const r = await detectForge("/fake", {
+    ...gitStub({ origin: "git@gitlab.mycompany.com:group/sub/project.git" }),
+    env: noEnv,
+    forgeConfigContent: "type=gitlab\nhost=gitlab.mycompany.com",
+    ...noProbe,
+  });
+  eq(r.forge, "gitlab", "config host match on a subgroup remote → config applies");
+  eq(r.source, "config", "subgroup config: source is config");
+  eq(r.host, "gitlab.mycompany.com", "subgroup config: host is the remote's host");
+}
+
+{
+  const r = await detectForge("/fake", {
+    ...gitStub({ origin: "git@otherhost.example.com:group/sub/project.git" }),
+    env: noEnv,
+    forgeConfigContent: "type=gitlab\nhost=expectedhost.example.com",
+    ...noProbe,
+  });
+  eq(r.forge, "unknown", "a subgroup remote lets the host mismatch be DETECTED");
+  eq(r.source, "unknown", "subgroup mismatch: config refused → unknown");
+  eq(r.host, "otherhost.example.com", "subgroup mismatch: the remote's own host is reported");
 }
 
 // type=github for self-hosted GitHub Enterprise
