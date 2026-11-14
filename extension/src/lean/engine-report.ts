@@ -7,16 +7,16 @@
  * `deadline-handback.ts` decides WHETHER that move happens (`deadlineStopShouldReport`); this module
  * performs it.
  *
- * `Drive` is the persist seam and `HandbackHandler` the injectable report step, both injected rather
- * than reached around: the runner holds `saveRun` and the injected `now`, and the report step is the
- * runner's `handback` handler, passed in so this module never reads the handler table itself and a test
- * can drive it with a reporting step that only records. The three helpers it needs to write a step —
+ * `HandbackHandler` is the injectable report step, injected rather than reached around: the
+ * runner holds the injected `now`, and the report step is the runner's `handback` handler,
+ * passed in so this module never reads the handler table itself and a test can
+ * drive it with a reporting step that only records. The three helpers it needs to write a step —
  * the visit's key, the outcome attach, the terminal stamp — arrive on the request, so the definitions
  * stay private to `engine.ts` and this module writes a step exactly the way the runner does.
  */
 import { trace } from "../trace.ts";
 import type { LeanRun, LeanState, Outcome, Step } from "./state.ts";
-import { nextAttempt, stepKey } from "./state.ts";
+import { nextAttempt } from "./state.ts";
 
 /** The reporting step, as the runner holds it — the `handback` entry of the injected handler table. */
 export type HandbackHandler = (ctx: {
