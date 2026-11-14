@@ -37,7 +37,7 @@
  * variables and blame the delta on one.
  */
 import { fencedIssueBody } from "../adversarial-prompts.ts";
-import { hasSurvivingSpecShapedFence, stripPiSpecBlocks } from "./spec.ts";
+import { hasSurvivingSpecShapedFence, normalizeProse, stripPiSpecBlocks } from "./spec.ts";
 
 /** The section heading. */
 export const LEAN_ISSUE_HEADING = "## The issue";
@@ -74,16 +74,6 @@ export function leanIssueProseEnabled(): boolean {
 export function leanBuildIssueProseEnabled(): boolean {
   const v = process.env.PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE;
   return v !== "0";
-}
-
-/**
- * Collapse a body to the shape a comparison against the spec's own `problem`
- * line can survive: whitespace runs are one space, leading and trailing
- * whitespace goes. The `/plan` problem line is a clipped restatement of the
- * body, so the two differ only in layout for a great many issues.
- */
-function normalizeProse(s: string): string {
-  return s.replace(/\s+/g, " ").trim();
 }
 
 /**

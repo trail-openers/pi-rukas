@@ -36,7 +36,9 @@ import {
   fencedIssuePromptBlock,
 } from "../adversarial-prompts.ts";
 import { renderSpecCriteriaSection } from "./review-criteria.ts";
-import { stripPiSpecBlocks } from "./spec.ts";
+import { leanReviewProblemEnabled } from "./review-problem-switch.ts";
+import { parsePiSpec } from "./spec.ts";
+import { normalizeProse, stripPiSpecBlocks } from "./spec.ts";
 
 /** Whether lean's review seats receive the split rendering. */
 export function leanReviewSpecSplitEnabled(): boolean {
@@ -66,6 +68,15 @@ const CRITERIA_CLAUSE =
  * each print site keeps its copy, because the fixer's rule and a lens's rule are
  * not the same instruction. An absent or blank body yields `""`: no block, and
  * never the string "undefined".
+ *
+ * The prose block is DROPPED when it is the spec's own `problem` restated — the
+ * shape `/plan` files, where the body opens by repeating the statement. The
+ * section below prints that statement under the criteria cap, which is far above
+ * the prose bound, so a second copy here would be a second contract to disagree
+ * with AND a tail the shorter bound already cut. The comparison is the one
+ * `leanIssueSection` applies — both sides whitespace-collapsed BEFORE any bound or
+ * fence — and it is gated on the problem switch, so with `=0` the prose block
+ * always prints exactly as it did today.
  */
 export function renderReviewIssueBlock(rawBody: string | undefined, rule: string): string {
   const prose = renderReviewProse(rawBody);
@@ -76,7 +87,20 @@ export function renderReviewIssueBlock(rawBody: string | undefined, rule: string
   // cannot tell the switch is on, which is what makes the no-spec arm of the
   // on-arm test assertable against the pre-split golden.
   if (criteria === "") return fencedIssuePromptBlock(rawBody, rule, fencedIssueBody);
-  return `\n\n${ISSUE_PROMPT_LEAD} ${ADVERSARIAL_FINDING_RULE}${CRITERIA_CLAUSE} ${rule}\n\n${prose}\n\n${criteria}`;
+  const statementShown =
+    leanReviewProblemEnabled() &&
+    normalizeProse(stripPiSpecBlocks(rawBody ?? "")) === normalizeProse(specProblem(rawBody));
+  return `\n\n${ISSUE_PROMPT_LEAD} ${ADVERSARIAL_FINDING_RULE}${CRITERIA_CLAUSE} ${rule}\n\n${
+    statementShown ? "" : `${prose}\n\n`
+  }${criteria}`;
+}
+
+/** The parsed spec's `problem`, or `""` when the body carries no readable one —
+ * the value the dedupe above compares the stripped prose against. */
+function specProblem(rawBody: string | undefined): string {
+  if (rawBody === undefined) return "";
+  const parsed = parsePiSpec(rawBody);
+  return parsed.ok ? parsed.spec.problem : "";
 }
 
 /**

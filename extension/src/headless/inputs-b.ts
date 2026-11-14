@@ -118,6 +118,12 @@ export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   // is what makes the object safe to ship on by default. Unset or any other value leaves
   // it in. The reader is `leanResultGatesEnabled` in lean/result-gates-switch.ts.
   flag("LEAN_RESULT_GATES", true),
+  // #2265 — open the review seats' criteria section with the spec's `problem`, so
+  // a statement whose tail sits past the prose bound still reaches every seat.
+  // `0` takes the statement out and leaves every brief byte-identical to the
+  // render before it existed; the statement renders only when the split is on too.
+  // The reader is `leanReviewProblemEnabled` in lean/review-problem-switch.ts.
+  flag("LEAN_REVIEW_PROBLEM", true),
   // Show the lean review seats (six lenses, adversarial reviewer, review fixer)
   // the issue's prose and the spec's criteria as two sections, so a long
   // statement cannot cut the criteria by competing with its own block for one

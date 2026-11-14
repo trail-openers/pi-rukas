@@ -20,6 +20,13 @@ import {
   fencedIssueBody,
   fencedIssuePromptBlock,
 } from "../../src/adversarial-prompts.ts";
+import {
+  LEAN_REVIEW_CRITERIA_HEADING,
+  LEAN_REVIEW_CRITERIA_LEAD,
+} from "../../src/lean/review-criteria.ts";
+import { criteriaBlock } from "../../src/lean/spec-blocks.ts";
+import { parsePiSpec } from "../../src/lean/spec.ts";
+import { fenceText } from "../../src/lean/text-fence.ts";
 import { FIXER_DECLINE_RULE } from "../../src/work-driver-lens-issue.ts";
 import {
   MANY_CRITERIA_BODY,
@@ -79,6 +86,92 @@ export function goldenAdversarialIssueBlock(issueBody: string | undefined): stri
   const body = fencedIssueBody(issueBody);
   if (body === "") return "";
   return `\n\n${ISSUE_PROMPT_LEAD} ${ADVERSARIAL_FINDING_RULE}\n\n${body}`;
+}
+
+/** The cap the criteria section is bounded at — the constant the renderer passes
+ * to `fenceText`, restated here because a golden that read the module's own
+ * constant could not catch the module changing it. */
+const GOLDEN_CRITERIA_CAP = 20_000;
+
+/** The same `fenceText` clip notice the live renderer substitutes its marker
+ * for, built by concatenation so this file's own prose cannot be matched by it. */
+const GOLDEN_FENCE_CLIP_NOTICE = new RegExp(`\\[truncated at \\d+ char${"acters"}\\]`);
+
+/** The generic clip notice as a literal, for the assertion that says the section
+ * never carries it. */
+export const GOLDEN_CLIP_NOTICE = `[truncated at ${String(GOLDEN_CRITERIA_CAP)} char${"acters"}]`;
+
+/** The statement's own cap — the bound its block is fenced at, restated here for
+ * the same reason the criteria cap is. */
+const GOLDEN_PROBLEM_CAP = 20_000;
+
+/** What the statement's fence says when IT clipped — never the criteria marker,
+ * because a seat weighing a cut statement and a cut list cannot otherwise tell
+ * which half of its contract it lost. */
+export const GOLDEN_PROBLEM_MARKER = "…(problem truncated)";
+
+/** A statement long enough that the criteria section clips it on its own: a
+ * review seat reads the statement ONLY through that section, so the statement's
+ * own bound is an arm a body can reach without the list being long at all. */
+export const OVER_PROBLEM_BODY: string = (() => {
+  const problem = "The meter must refuse the draw once the quota is spent. ".repeat(
+    Math.ceil(GOLDEN_PROBLEM_CAP / 56) + 60,
+  );
+  const json = JSON.stringify(
+    {
+      problem,
+      criteria: [{ id: "AC1", text: "The meter refuses the draw.", verify: "test" }],
+      size: "M",
+    },
+    null,
+    2,
+  );
+  return `Add a quota check to the meter.\n\n\`\`\`pi-spec v1\n${json}\n\`\`\`\n`;
+})();
+
+/**
+ * The criteria section as it renders today: the heading, the lead, and the
+ * rendered criteria disarmed by `fenceText` — nothing above the list.
+ *
+ * This is the pre-`PI_ENSEMBLE_LEAN_REVIEW_PROBLEM` expression, written here
+ * rather than imported so the off arm's `===` is checked against a copy the
+ * module under change cannot move.
+ */
+export function goldenSpecCriteriaSection(rawBody: string | undefined): string {
+  if (rawBody === undefined || rawBody.trim() === "") return "";
+  const parsed = parsePiSpec(rawBody);
+  if (!parsed.ok) return "";
+  const block = criteriaBlock(parsed.spec);
+  if (block.trim() === "") return "";
+  const overCap = block.length > GOLDEN_CRITERIA_CAP;
+  const disarmed = fenceText(block, GOLDEN_CRITERIA_CAP);
+  return `${LEAN_REVIEW_CRITERIA_HEADING}\n\n${LEAN_REVIEW_CRITERIA_LEAD}\n\n${
+    overCap ? disarmed.replace(GOLDEN_FENCE_CLIP_NOTICE, "…(criteria truncated)") : disarmed
+  }`;
+}
+
+/** A criterion's bullet: the renderer's own shape, id and verify kind together —
+ * the form a seat can only have read from the criteria section. */
+export function criterionLine(id: string): RegExp {
+  return new RegExp(`\\*\\*${id}\\*\\* \\[(test|command|manual)\\]`);
+}
+
+/** A criterion's row AS THE CRITERIA SECTION PRINTS IT, read out of the section
+ * the renderer itself produced for `rawBody`: a seat that printed the RAW block
+ * also carries the id, quoted, and a bare `includes` on the id cannot tell the
+ * two apart. Computed rather than hand-typed, so a fixture that reworded a
+ * criterion cannot quietly make the assertion vacuous. */
+export function renderedCriterionLine(rawBody: string, id: string): string {
+  const section = goldenSpecCriteriaSection(rawBody);
+  const line = section
+    .split("\n")
+    .find((l) => l.includes(`**${id}**`) && criterionLine(id).test(l));
+  if (line === undefined) {
+    throw new Error(
+      `renderedCriterionLine: ${id} is not a row of the criteria section for this body — the arm would be vacuous.`,
+    );
+  }
+  return line;
 }
 
 /**
