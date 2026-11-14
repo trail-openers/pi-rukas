@@ -265,8 +265,9 @@ async function integrate(
   // The push target was already refused at the STEP ENTRY POINT —
   // `reviewOutcome` calls `publish`'s `assertPublishableBranch` beside its
   // `assertSafeRef`, before a child is paid or a tree is touched. It is deliberately
-  // NOT re-asked here: it spawns two subprocesses to resolve the mainline, the
-  // answer cannot change while a step runs, and this function is called once per
+  // NOT re-asked here: on an unresolvable local mainline it asks origin too, so a
+  // re-ask per fix round is a network probe per round for an answer that cannot change
+  // while a step runs, and this function is called once per
   // fix round. What stays here is the cheap charset check beside the argv it
   // protects, below.
   if (!isFullCommitSha(opts.fixHead))

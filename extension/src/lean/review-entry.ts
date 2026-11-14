@@ -24,10 +24,15 @@
  * `review-git.ts`.
  *
  * `assertPublishableBranch` is `publish`'s own decision, REUSED rather than a third
- * validator written for the review push. Its documented FAIL-OPEN travels with it:
- * a clone with no `origin/HEAD` and no `gh` cannot resolve its mainline, that is
- * ordinary, and such a lean push passes quietly. That behaviour is pinned by
- * `test-lean-review-push-guards.ts` (x3) and is not to be tightened here.
+ * validator written for the review push. Its FAIL-CLOSED mainline rule travels with
+ * it: a clone that cannot read its own `origin/HEAD` and has no `gh` no longer skips
+ * the rule, it gets asked of origin over the transport this step's own push uses, and
+ * a mainline neither will name refuses the push. `exec` is the step's executor for
+ * that reason — a guard that probed on a different seam than the push would be
+ * answered by a different machine than the one it is protecting. Pinned by
+ * `test-lean-review-push-guards.ts` (x3), which now asserts the refusal, and by
+ * `test-lean-guard-fail-closed-callers.ts` (r1)/(r2), which assert this step's own
+ * exec is the seam asked.
  */
 
 import { isFullCommitSha } from "../commit-sha.ts";

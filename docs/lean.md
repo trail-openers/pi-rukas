@@ -430,7 +430,8 @@ a legal ref name, so legality is not permission. The guard asks its rules in ord
 the ref's charset, then the `lean/` prefix, then the mainline — and the pushed
 branch must equal the resolved mainline EXACTLY to be refused, so a mainline that
 spells `trunk`, a fork's default, or `lean/trunk` is caught by name rather than by
-prefix.
+prefix (that last case was already correct before the fix — the probe strips only
+`origin/` and the comparison is exact — and is pinned, not claimed as new).
 
 The third rule is fail-CLOSED. The guard first reads the mainline locally (`origin/HEAD`,
 then `gh repo view`); when neither answers it asks origin directly with `git
