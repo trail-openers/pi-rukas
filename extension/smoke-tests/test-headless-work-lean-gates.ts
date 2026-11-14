@@ -32,9 +32,11 @@
  */
 
 import { leanIssueResult, leanResultDocument } from "../src/headless/work-lean-result.ts";
+import { leanGates } from "../src/headless/work-lean-gates.ts";
 import { leanResultGatesEnabled } from "../src/lean/result-gates-switch.ts";
 import { loadRun, saveRun } from "../src/lean/state.ts";
 import { CLOCK, makeAssert, tempDir } from "./lib/lean-engine-fixtures.ts";
+import { REDACTED } from "../src/secret-patterns.ts";
 import { HEAD, URL, driveLean, stepWith } from "./lib/lean-result-fixture.ts";
 import {
   FIX_HEAD,
@@ -53,6 +55,9 @@ import {
 } from "./lib/lean-result-gates-fixture.ts";
 
 const { assert, failures } = makeAssert();
+
+/** A GitHub-token-shaped secret, the shape `secret-patterns` recognises. */
+const SECRET = `ghp_${"a".repeat(36)}`;
 
 /**
  * The env keys these cases pin, restored after every case. The switch is read at
@@ -127,9 +132,12 @@ for (const [value, want] of [
   // on a record whose consumers ignore unknown keys is additive, so the number a
   // host branches on must not move. If it did, every host that pins it would read
   // the off document as a different contract than the one it already handles.
+  // The document's own version stamp is `schemaVersion` — so the comparison asks about
+  // THAT key. `JSON.parse(x).schema` was undefined on both arms, which is `===` for a
+  // document that carried no stamp at all and for one whose stamp moved.
   assert(
-    JSON.parse(off).schema === JSON.parse(on).schema,
-    "the schema stamp does not move between the arms",
+    JSON.parse(off).schemaVersion === JSON.parse(on).schemaVersion,
+    `the schema stamp does not move between the arms (${String(JSON.parse(on).schemaVersion)})`,
   );
 }
 
@@ -307,6 +315,51 @@ for (const [value, want] of [
         unreviewedLanes: REVIEW_BOUND.unreviewedLanes,
       }),
     `review: reviewBound is the record's own, unreviewed lanes included (${JSON.stringify(gatesOf(bound.issue).review?.reviewBound)})`,
+  );
+  // The three rules the reading owes the projection that no driven case can say.
+  const leaky = await driveLean(
+    "handed-back",
+    10,
+    gatesLog({ review: "fixed" }).map((s) =>
+      s.state === "review"
+        ? {
+            ...s,
+            outcome: {
+              ...(s.outcome as object),
+              reviewBound: {
+                wave: "fix" as const,
+                unreviewedLanes: [`adversarial re-review`, `token in a lane ${SECRET}`],
+                reason: `review STEP stopped: a child printed ${SECRET} before its bound`,
+              },
+            } as never,
+          }
+        : s,
+    ),
+  );
+  const leakyDoc = JSON.stringify(leaky.doc);
+  const reviewNode = leakyDoc.match(/"reviewBound":\{.*?\}/)?.[0] ?? "no bound published";
+  assert(
+    !reviewNode.includes(SECRET) &&
+      reviewNode.includes(REDACTED) &&
+      (reviewNode.match(/\[REDACTED\]/g) ?? []).length === 2,
+    // Witnessed from the published node rather than a whole-document scan: the assertion's
+    // own message carries the token, so anything wider would be satisfied by this line.
+    // TWO markers — one for the reason, one for the lane — because a fix that redacted only
+    // one of the two strings is the bug this case exists to catch.
+    `review: a credential-shaped token in reviewBound.reason or an unreviewed lane is redacted out of the whole document (${reviewNode})`,
+  );
+  // The projection called ONCE, so an empty seam is the code path that publishes the
+  // record's bytes verbatim — which is what the two reviewBound strings did before they
+  // went through `textOf` like every other gates string.
+  const rawBound = (
+    leanGates(leaky.run.steps, (s) => s) as unknown as {
+      review: { reviewBound: { reason: string; unreviewedLanes: string[] } | null } | null;
+    }
+  ).review?.reviewBound;
+  assert(
+    rawBound?.reason.includes(SECRET) === true &&
+      rawBound.unreviewedLanes.some((lane) => lane.includes(SECRET)),
+    `review: the record really carries the token in BOTH fields, so the document's silence above is the seam and not an empty lane list (${JSON.stringify(rawBound)})`,
   );
   // A head the record cannot name as an oid is not printed: the projection re-checks
   // rather than trusting what reached it, because a projection is the last place a

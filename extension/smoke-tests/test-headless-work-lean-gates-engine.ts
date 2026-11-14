@@ -14,10 +14,15 @@
  */
 
 import { leanIssueResult } from "../src/headless/work-lean-result.ts";
-import { tempDir } from "./lib/lean-engine-fixtures.ts";
-import { makeAssert } from "./lib/lean-engine-fixtures.ts";
+import { redRecordProblem } from "../src/lean/state-outcome-gates.ts";
+import type { Outcome } from "../src/lean/state.ts";
+import { tempDir, makeAssert } from "./lib/lean-engine-fixtures.ts";
 import { driveEngineGates } from "./lib/lean-gates-engine-drive.ts";
-import { HEAD } from "./lib/lean-result-fixture.ts";
+import { driveRun } from "./lib/lean-real-log-fixture.ts";
+import { gateSteps } from "./lib/lean-result-gates-fixture.ts";
+import { scriptedLog } from "./lib/lean-gates-scripted-log.ts";
+import { runVerify, failTier } from "./lib/lean-verify-fixture.ts";
+import { HEAD, URL } from "./lib/lean-result-fixture.ts";
 import {
   ROUND_1,
   ROUND_2,
@@ -101,6 +106,53 @@ const { assert, failures } = makeAssert();
   assert(
     twice.run.state === "handed-back",
     `engine: a second red pipeline ends the run at the reporting step (${String(twice.run.state)})`,
+  );
+}
+
+// The writer behind `gates.verify[].tiers` / `.criteria`, driven by the REAL gate rather
+// than by a queued outcome. Every other case — here and in the log-reading file — queues
+// a `red` carrying the attribution, so those cases say the projection prints what it is
+// handed and nothing about whether a run can ever RECORD one: a verify step that never
+// writes `red` publishes nulls on every real red, and only the handler that ran the tier
+// knows its name.
+{
+  const ran = await runVerify({
+    issue: 460,
+    config: { fast: failTier("writer") },
+    headTierRedRuns: 2,
+  });
+  assert(
+    ran.outcome?.kind === "red",
+    `writer: the real verify gate went red on its own evidence (${String(ran.outcome?.kind ?? `threw: ${ran.threw?.message}`)})`,
+  );
+  assert(
+    JSON.stringify(ran.outcome?.red?.tiers) === JSON.stringify(["fast"]),
+    `writer: the step that RAN the tier records the tier's name — a fixture cannot supply it (${JSON.stringify(ran.outcome?.red?.tiers)})`,
+  );
+  assert(
+    JSON.stringify(ran.outcome?.red?.criteria) === JSON.stringify(["AC1"]),
+    `writer: the step records the criterion the failing frozen test answers for (${JSON.stringify(ran.outcome?.red?.criteria)})`,
+  );
+  assert(
+    redRecordProblem(ran.outcome?.red) === undefined,
+    `writer: what the gate wrote is a record the loader accepts (${String(redRecordProblem(ran.outcome?.red))})`,
+  );
+  // And it survives the write, the load and the projection: the handler's attribution
+  // goes through `saveRun`, comes back off `loadRun`, and the projection prints the names
+  // it read rather than inventing them from the reason sentence. The engine's scripted
+  // handlers stand in for the child-dispatching steps; `verify` is the real handler here.
+  const gate = gateSteps({
+    verify: [ran.outcome as Outcome, { kind: "green", verifiedHead: HEAD }],
+    publish: { kind: "ok", prUrl: URL },
+    handback: { kind: "done", reason: "handback comment posted", posted: true },
+  });
+  const driven = await driveRun(tempDir("lean-gates-writer").dir, 94, { land: [{ kind: "refused", reason: "the merge guard held" }] } as never, { handlers: scriptedLog(gate) });
+  const projected = (gatesOf(leanIssueResult(driven.run, 94) as unknown as Record<string, unknown>)
+    .verify ?? []) as Record<string, unknown>[];
+  assert(
+    JSON.stringify(projected[0]?.tiers) === JSON.stringify(["fast"]) &&
+      JSON.stringify(projected[0]?.criteria) === JSON.stringify(["AC1"]),
+    `writer: what the gate wrote survives the save, the load and the projection (${JSON.stringify(projected[0])})`,
   );
 }
 
