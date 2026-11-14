@@ -62,14 +62,6 @@ import { frozenFromLog, testsFromLog } from "./build.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import { assertSpecifyWorktreeOwned, specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
-import {
-  RED_CRITERIA_MAX,
-  RED_CRITERIA_MAX_CHARS,
-  RED_TIERS_MAX,
-  RED_TIER_MAX_CHARS,
-  clipNames,
-} from "./state-outcome-gates.ts";
-import type { RedRecord } from "./state-outcome-gates.ts";
 import type { PreexistingTierRecord } from "./state-outcome-maps.ts";
 import type { Outcome, Step } from "./state.ts";
 import { baselineRedArm } from "./verify-baseline-arm.ts";
@@ -87,6 +79,7 @@ import {
   verifyCmdAtHead,
 } from "./verify-reads.ts";
 import { recheckAfterRuns } from "./verify-recheck.ts";
+import { redAttribution } from "./verify-red-attribution.ts";
 import { type FrozenClause, composedTierRed, frozenClause } from "./verify-red-reason.ts";
 import {
   type Executed,
@@ -106,106 +99,6 @@ function firstFailure(...ran: Executed[]): string | undefined {
     if (one.kind === "fail") return one.reason;
   }
   return undefined;
-}
-
-/**
- * The tiers this step ran red.
- *
- * `armTier` is the tier the BASELINE arm settled: that tier is deliberately absent from
- * `tierResults` — the absence is what keeps its own reason from being overwritten by the
- * frozen contract's clause — so its name is carried out of the loop beside the arm's reason
- * rather than read back off a result that was withheld. A tier excused as a flake or over
- * the base contributes nothing: a name the gate let go would send a host to a check this
- * run does not stand on.
- */
-function failedTierNames(ran: readonly Executed[], armTier: string | undefined): string[] {
-  const names = ran
-    .filter((one): one is { kind: "fail"; reason: string } => one.kind === "fail")
-    .map((one) => tierNameOf(one.reason))
-    .filter((name): name is string => name !== undefined);
-  // A tier the arm composed into the reason is the SAME tier `tierResults` holds — the
-  // withheld one is the baseline arm's, whose name the loop carries. Two entries for one
-  // tier would tell a host two of the run's tiers failed.
-  return [...new Set(armTier === undefined ? names : [...names, armTier])];
-}
-
-/** The tier names this step's own reason lines carry, each with its own shape. */
-const TIER_REASON_PATTERNS = [
-  // `runTier`: a project tier red at HEAD.
-  /^verify\.([^ ]+) exited /,
-  // `baselineRedReason`, whole and composed after the frozen contract's clause.
-  /^baseline red: tier ([^ ]+) is red at the base commit /,
-  // `flakeReason`, for the composed arms that carry a flake clause beside a real red.
-  /^verify\.([^ ]+) was red on its first run /,
-];
-
-/**
- * The tier a project tier's own reason names, or `undefined` for a check that is not a tier.
- *
- * Every pattern above matches text THIS step wrote — `runTier`, `baselineRedReason` and
- * `flakeReason` are its own renderers — so the record can never name a tier the reason did
- * not, and a reason that quotes a project's output cannot put a tier on the record.
- */
-function tierNameOf(reason: string): string | undefined {
-  for (const pattern of TIER_REASON_PATTERNS) {
-    const name = pattern.exec(reason)?.[1];
-    if (name !== undefined) return name;
-  }
-  return undefined;
-}
-
-/**
- * The criteria the failing checks of this run's frozen contract answer for.
- *
- * `specify`/`challenge` recorded which test files each criterion owns, so a failing frozen
- * path maps back to the criterion it is the evidence for. A path nobody mapped — a file the
- * contract holds that no criterion claims — contributes nothing, because a criterion the
- * gate cannot point at is not one the gate can accuse.
- */
-function failingCriteria(tests: Executed, testsOfRun: Record<string, string[]>): string[] {
-  if (tests.kind !== "fail") return [];
-  // The failing check's own text, not the step's composed reason: the composition can
-  // carry a tier's tail, and a path quoted inside a test's own output is not evidence
-  // about which criterion failed.
-  const reason = tests.reason;
-  const failing = Object.entries(testsOfRun)
-    .filter(([, files]) => files.some((file) => reason.includes(file)))
-    .map(([id]) => id);
-  // A `command` criterion's failure reason names its own id (`criterion AC2 (command …)`),
-  // and it is the only reason of that shape, so the ids the reason quotes are the criteria
-  // the command tier proved red.
-  const commands = [...reason.matchAll(/criterion (AC\d+) \(command/g)]
-    .map((m) => m[1])
-    .filter((id): id is string => id !== undefined);
-  return [...new Set([...failing, ...commands])];
-}
-
-/**
- * The attribution a red gate records beside its reason.
- *
- * `reason` is a clipped sentence about the FIRST failure and cannot say which tier it came
- * from nor which criterion it answers for — the two questions a host triaging the run asks.
- * The writer clips at the record's own caps (see `state-outcome-gates.ts`) and the step
- * returns nothing at all when it can name neither half, so the field is absent rather than
- * an empty pair of lists that reads as "checked none".
- */
-function redAttribution(opts: {
-  tests: Executed;
-  tiers: readonly Executed[];
-  armTier: string | undefined;
-  testsOfRun: Record<string, string[]>;
-}): RedRecord | undefined {
-  const tiers = clipNames(
-    failedTierNames(opts.tiers, opts.armTier),
-    RED_TIERS_MAX,
-    RED_TIER_MAX_CHARS,
-  );
-  const criteria = clipNames(
-    failingCriteria(opts.tests, opts.testsOfRun),
-    RED_CRITERIA_MAX,
-    RED_CRITERIA_MAX_CHARS,
-  );
-  return tiers.length === 0 && criteria.length === 0 ? undefined : { tiers, criteria };
 }
 
 /**
