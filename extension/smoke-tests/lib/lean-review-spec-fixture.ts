@@ -77,6 +77,14 @@ export const HEAD_CRITERION_IDS = ["AC1", "AC2", "AC3", "AC4", "AC5"];
  * cap, so the list has to pass it for the marker to be observable. */
 export const CRITERIA_OVER_CAP_COUNT = 260;
 
+/** A criterion's bullet: the renderer's own shape, id and verify kind together —
+ * the form a seat can only have read from the criteria section. Lives with the
+ * bodies so every file that asserts "this id reached the child as a rendered row"
+ * reads it off one definition. */
+export function criterionLine(id: string): RegExp {
+  return new RegExp(`\\*\\*${id}\\*\\* \\[(test|command|manual)\\]`);
+}
+
 /** The words a criteria section is opened by, imported by the tests so a brief
  * that prints them is a brief that printed the SECTION and not the raw block. */
 export { LEAN_REVIEW_CRITERIA_HEADING } from "../../src/lean/review-criteria.ts";
@@ -194,11 +202,11 @@ const CRITERIA_CAP = 20_000;
 
 /** One criterion's text for the 40-criterion arm: ~600 characters, so 40 rows
  * clear the 20 000-character criteria cap on their own. */
-const D3_CRITERION = `the reading surface, the record surface and the disclosure surface each state it in one wording the ticket names, the wording is never re-derived per surface, a surface that cannot reach the reader says so in the same wording rather than staying silent, and no reader is left reconciling two versions of the same refusal across three screens at once. `;
+export const D3_CRITERION = `the reading surface, the record surface and the disclosure surface each state it in one wording the ticket names, the wording is never re-derived per surface, a surface that cannot reach the reader says so in the same wording rather than staying silent, and no reader is left reconciling two versions of the same refusal across three screens at once. `;
 
 /** How wide one rendered criterion's text has to be for 40 of them to pass the
  * cap; derived, so the arm cannot drift under the cap without failing here. */
-const D3_TEXT_WIDTH = Math.ceil(CRITERIA_CAP / D3_COUNT) + 400;
+export const D3_TEXT_WIDTH = Math.ceil(CRITERIA_CAP / D3_COUNT) + 400;
 
 /**
  * A body whose `problem` is the statement's tail — the part a 6 000-character

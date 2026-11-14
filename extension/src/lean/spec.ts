@@ -94,6 +94,18 @@ export function closesFenceLine(line: string, char: string, len: number): boolea
 }
 
 /**
+ * Collapse text to the shape a comparison against another rendering of the same
+ * words can survive: whitespace runs are one space, leading and trailing
+ * whitespace goes. The `/plan` problem line is a restatement of the body, so the
+ * two differ only in layout for a great many issues — and the review seats and
+ * the oracle seats must reach the same verdict about that with one rule, not two
+ * spellings of it.
+ */
+export function normalizeProse(s: string): string {
+  return s.replace(/\s+/g, " ").trim();
+}
+
+/**
  * Fenced blocks in a CommonMark body: a run of ≥3 backticks or tildes opens,
  * a run of the same char at least as long closes. Blank lines and indented
  * fences do not break the run, so a spec block may contain either.

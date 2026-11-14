@@ -113,6 +113,12 @@ export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   // tests were written from. 0 takes the section back out of both prompts.
   // The reader is `leanIssueProseEnabled` in lean/issue-prose.ts.
   flag("LEAN_ISSUE_PROSE", true),
+  // #2265 — open the review seats' criteria section with the spec's `problem`, so
+  // a statement whose tail sits past the prose bound still reaches every seat.
+  // `0` takes the statement out and leaves every brief byte-identical to the
+  // render before it existed; the statement renders only when the split is on too.
+  // The reader is `leanReviewProblemEnabled` in lean/review-problem-switch.ts.
+  flag("LEAN_REVIEW_PROBLEM", true),
   // Show the lean review seats (six lenses, adversarial reviewer, review fixer)
   // the issue's prose and the spec's criteria as two sections, so a long
   // statement cannot cut the criteria by competing with its own block for one
