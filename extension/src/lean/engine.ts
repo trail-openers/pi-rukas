@@ -18,17 +18,18 @@
 import { isFullCommitSha } from "../commit-sha.ts";
 import { trace } from "../trace.ts";
 import { type CycleBudgetMs, flagBudgetMs } from "../work-driver-deadline.ts";
-import { deadlineStopShouldReport } from "./deadline-handback.ts";
-import { deadlineReason, deadlineStopsSteps, leanDeadline } from "./deadline.ts";
+import { deadlineStopsSteps, leanDeadline } from "./deadline.ts";
 import { engineFacts } from "./engine-facts.ts";
-import { reportBoundSentence } from "./engine-report-bound.ts";
-import { type HandbackHandler, handoffReportBoundMs, runHandbackReport } from "./engine-report.ts";
+import {
+  type DeadlineStop,
+  type HandbackHandler,
+  runHandbackReport,
+  stopForDeadline,
+} from "./engine-report.ts";
 import { errorOutcome } from "./error-outcome.ts";
-import { leanReportBoundEnabled } from "./handback-report-bound-switch.ts";
 import { acquireLock } from "./lock.ts";
 import { exitCodeFor, hasTransition, next } from "./machine.ts";
 import { verifiedPosition } from "./resume.ts";
-import { type RoutedReport, routeHandbackReport } from "./routed-report.ts";
 import {
   type LeanRun,
   type LeanState,
@@ -223,46 +224,6 @@ function apply(drive: Drive, run: LeanRun, outcome: Outcome): LeanRun {
   return advanced;
 }
 
-/**
- * Route a deadline-stopped run into its report: run the reporting step for real, then end the run with
- * its verdict. The full contract — why the visit needs `resume.ts`'s one fold exemption, and why the
- * report's verdict must not be written onto the gate entry the clock left unanswered — is
- * `engine-report.ts`'s jsdoc; this is the runner's seam into it, and the pair it returns (the ended
- * run and the bound that cut it) is `routed-report.ts`'s. The handler table is the runner's to consult,
- * so the decision to route is taken entirely here: a run with no reporting step built cannot be routed,
- * and the caller stamps it plainly. The three helpers the report needs to write a step are passed in so
- * their definitions stay private to the runner, and the bound on its wall is read here for the
- * same reason: `handoffReportBoundMs()` is the allowance the stop test one boundary earlier
- * compared against, plus the headroom the reporting path's own per-call ceilings need.
- */
-async function reportRun(
-  drive: Drive,
-  opts: RunLeanOpts,
-  run: LeanRun,
-  stoppedAt: LeanState,
-  now: () => number,
-): Promise<RoutedReport> {
-  const handler = opts.handlers.handback as HandbackHandler | undefined;
-  if (handler === undefined) return { run: undefined, boundMs: undefined };
-  // `undefined` is the switch's off arm: the handler is awaited and nothing else, as before #2269.
-  const boundMs = leanReportBoundEnabled() ? handoffReportBoundMs() : undefined;
-  return routeHandbackReport(
-    {
-      repoRoot: opts.repoRoot,
-      issue: opts.issue,
-      run,
-      stoppedAt,
-      now,
-      handler,
-      boundMs,
-      keyFor: (state, n) => stepKey(opts.issue, state, n),
-      attach: withOutcome,
-      finish: (r, state, reason) => endRun(drive, r, state, reason),
-    },
-    runHandbackReport,
-  );
-}
-
 /** Run one handler, record its outcome (or its throw), save once. */
 async function settle(
   drive: Drive,
@@ -278,6 +239,13 @@ async function settle(
     outcome = await handler({
       repoRoot: opts.repoRoot,
       issue: opts.issue,
+      // `run`, not `logged`, is the run the handler sees. `startStep` has already saved the
+      // entry ahead, but its object carries no outcome yet, and `run` is the one the caller
+      // held — the two differ only by that write-ahead entry. What a handler reads is
+      // therefore "the log before this visit", and a handler that counted its own state in
+      // `ctx.run.steps` would be one turn ahead of the step it is writing. `ctx.steps` is
+      // the same array, spelled separately because the reporting handlers take it under that
+      // name; both are this run's log as it stood on entry.
       run,
       steps: run.steps,
       stepKey: key,
@@ -396,53 +364,24 @@ async function driveLoop(
       drive.save(run);
     }
     if (deadline !== undefined && deadlineStopsSteps(deadline, now(), state)) {
-      // The clock stopped a WORKING step. Most such runs have nothing further to
-      // say and are stamped where they stand, as they always were — but a run whose
-      // newest work step is a `fixed` review is holding origin over bytes no gate
-      // certified, and the step that says so (and moves origin back) is `handback`.
-      // Stamping here made that step unreachable, so the run is routed to the report
-      // rather than ended. The predicate reads the same log the reporting step reads,
-      // so the two cannot disagree about the shape.
-      if (state !== "handback" && deadlineStopShouldReport(run.steps)) {
-        // The report runs, and the record it leaves is one the engine's own loader can still open.
-        // The fold consequence of writing that record — why `resume.ts` needs its one exemption, and why
-        // a loader refusal there outranks the bug this branch fixes — is `isReportRoute`'s jsdoc in
-        // `resume.ts`; this is the runner's side of that seam and the shape it has to keep producing.
-        //
-        // So the routing runs the report through the handler, exactly as `runLean`'s crash-resume path
-        // would, and lands its verdict on the run through `endRun` — the writer every terminal stamp
-        // already uses — rather than through `apply()` on an entry the table never routed. The rewind,
-        // the head fields and the comment therefore run on the shape they were written for. The log
-        // keeps the entry the loop wrote ahead for the refused step: the run DID enter the
-        // re-verification and came back with no answer, which is the honest record and the premise
-        // `handback-heads.ts` acts on — which is why the verdict is not written onto that entry.
-        //
-        // Nothing past this line starts WORK: the only handler reached is the reporting one, which the
-        // stop test exempts; `state !== "handback"` keeps this from re-firing, and `endRun` ends the
-        // loop, so there is no path back into the walk. Every other stop takes the stamp below, exactly
-        // as it did before the routing existed.
-        const routed = await reportRun(drive, opts, run, state, now);
-        if (routed.run === undefined) {
-          // The report could not be run at all, or could not be run IN TIME. Either way the run
-          // is stamped where it stands, as it always was — and when the bound is what stopped
-          // it, the stamp says so (`routed-report.ts` says why the bound travels with the run).
-          run = endRun(
-            drive,
-            run,
-            "handed-back",
-            deadlineReason(
-              run.steps,
-              state,
-              deadline,
-              routed.boundMs === undefined ? undefined : reportBoundSentence(routed.boundMs),
-            ),
-          );
-          break;
-        }
-        run = routed.run;
-        break;
-      }
-      run = endRun(drive, run, "handed-back", deadlineReason(run.steps, state, deadline));
+      // One call decides and performs the whole stop; `stopForDeadline`'s jsdoc is the contract,
+      // and `engine-report.ts` is where the routing it performs lives. The loop's side of the seam
+      // is what it has to keep producing — and what it must not do here is start WORK: `endRun`
+      // ends the loop, so there is no path back into the walk past either stop.
+      run = await stopForDeadline({
+        end: (r, reason) => endRun(drive, r, "handed-back", reason),
+        request: {
+          repoRoot: opts.repoRoot,
+          issue: opts.issue,
+          handler: opts.handlers.handback as HandbackHandler | undefined,
+          keyFor: (state, n) => stepKey(opts.issue, state, n),
+          attach: withOutcome,
+        },
+        run,
+        stoppedAt: state,
+        deadline,
+        now,
+      });
       break;
     }
     if (!opts.handlers[state]) {

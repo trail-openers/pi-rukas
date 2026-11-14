@@ -18,6 +18,7 @@
  * baseline the numbers are read against, so no case can move them unnoticed.
  */
 import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   GREEN_TEST,
@@ -58,7 +59,10 @@ const RED_FULL = failTier("repo-wide");
  * arm's own hand-back is the thing that composes. What stays this case's own is which
  * tier is red (an ordinary red `fast` would end the loop before the arm was reached).
  */
-const NAMES = ["FAILED tests/x_test.py::test_a - Assert", "FAILED tests/x_test.py::test_b - Assert"];
+const NAMES = [
+  "FAILED tests/x_test.py::test_a - Assert",
+  "FAILED tests/x_test.py::test_b - Assert",
+];
 
 // --------- (a) frozen red AND a tier red at head: both clauses, at the same cost
 {
@@ -182,7 +186,11 @@ const NAMES = ["FAILED tests/x_test.py::test_a - Assert", "FAILED tests/x_test.p
 
 // ------------------------ (c) a flaky tier beside a red contract: no tier clause
 {
-  const flaky = (n: number): string => flakeTier("flake", join(mkdtempSync(join("/tmp", "lean-flake-")), `n${String(n)}`));
+  // The scratch dir the flake's marker file lives in, off the harness's temp root like
+  // every other fixture dir here — a literal `/tmp` makes the case depend on that one
+  // filesystem having room and on that one path being writable.
+  const flakyScratch = mkdtempSync(join(tmpdir(), "lean-flake-"));
+  const flaky = (n: number): string => flakeTier("flake", join(flakyScratch, `n${String(n)}`));
   const red = await runVerify({
     issue: 603,
     frozenText: RED_ACCEPTANCE_TEST,

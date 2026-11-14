@@ -8,6 +8,14 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.82](https://github.com/trail-openers/pi-rukas/compare/v0.14.81...v0.14.82) (2026-11-14)
+
+
+### Features
+
+* **lean:** record the gate events on the host result ([#2272](https://github.com/trail-openers/pi-rukas/issues/2272)) ([0545948](https://github.com/trail-openers/pi-rukas/commit/05459487603ab2921229208b9865a5d1b2503684))
+* **spawn:** helper children get no forge credentials; reads go through a parent-served broker ([#2214](https://github.com/trail-openers/pi-rukas/issues/2214)) ([2c06e69](https://github.com/trail-openers/pi-rukas/commit/2c06e69f7a29b65307ac16cdd9721ceb4e292c0b))
+
 ## [0.14.81](https://github.com/trail-openers/pi-rukas/compare/v0.14.80...v0.14.81) (2026-11-14)
 
 

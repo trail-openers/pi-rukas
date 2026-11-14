@@ -58,7 +58,7 @@ import { trace } from "../trace.ts";
 import { verifyChildEnv } from "../work-driver-verify-cmd.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import { porcelain } from "./build-git.ts";
-import { frozenFromLog } from "./build.ts";
+import { frozenFromLog, testsFromLog } from "./build.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import { assertSpecifyWorktreeOwned, specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
@@ -79,6 +79,7 @@ import {
   verifyCmdAtHead,
 } from "./verify-reads.ts";
 import { recheckAfterRuns } from "./verify-recheck.ts";
+import { redAttribution } from "./verify-red-attribution.ts";
 import { type FrozenClause, composedTierRed, frozenClause } from "./verify-red-reason.ts";
 import {
   type Executed,
@@ -225,6 +226,14 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
   const frozenClauseForReason: FrozenClause = frozenClause(tests);
   /** Why the tier loop ended on a red the caller still owes the freeze check for. */
   let armRed: string | undefined;
+  /**
+   * The tier the arm settled, carried out beside its reason.
+   *
+   * The arm's tier is the one red result this step WITHHOLDS from `tierResults` (so the
+   * frozen contract's clause cannot overwrite its reason), which means the attribution
+   * below cannot find it among the executed checks.
+   */
+  let armTier: string | undefined;
   for (const [name, cmd] of tiers) {
     const one = await runTier(name, cmd, wt, deps.exec, deps.timeoutMs);
     if (one.kind === "pass") {
@@ -288,6 +297,7 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
         // tier the base already fails can fail on a frozen file this run authored,
         // and the attribution below is what tells those two reds apart.
         armRed = arm.red;
+        armTier = name;
         break;
       }
       if (arm.preexisting !== undefined) {
@@ -303,7 +313,10 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
     // finds the other. `firstFailure` below still picks this same `one` when there is
     // nothing to compose, so a green contract keeps today's reason byte for byte.
     const composed = composedTierRed(frozenClauseForReason, one.reason);
-    if (composed !== undefined) armRed = composed;
+    if (composed !== undefined) {
+      armRed = composed;
+      armTier = name;
+    }
     break;
   }
 
@@ -365,7 +378,22 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
   // The arm's decision outranks the first failure: it is the reason this loop
   // stopped on, and the tier it settled is not in `tierResults` to be found again.
   const red = armRed ?? failed;
-  if (red !== undefined) return { kind: "red", reason: clipReason(red) };
+  if (red !== undefined) {
+    const attribution = redAttribution({
+      tests,
+      tiers: tierResults,
+      armTier,
+      testsOfRun: testsFromLog(ctx.steps),
+      // The `command` renderer's OWN composed string, not a captured stream: an id is
+      // attributed from the line this step wrote, never from text the project printed.
+      commandsReason: commands.failed,
+    });
+    return {
+      kind: "red",
+      reason: clipReason(red),
+      ...(attribution === undefined ? {} : { red: attribution }),
+    };
+  }
 
   // The tiers run as shell commands IN the worktree, and the command tier runs
   // test CODE, so between the checks above and this point a tier may have rewritten

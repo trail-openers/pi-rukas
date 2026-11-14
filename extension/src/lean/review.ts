@@ -111,6 +111,12 @@ import {
   lensBlocks,
 } from "./review-waves.ts";
 import { specifyBranch } from "./specify-tree.ts";
+import {
+  ROUNDS_MAX,
+  type ReviewRoundCounts,
+  WAVES_MAX,
+  roundCounts,
+} from "./state-outcome-gates.ts";
 // The error lives in a leaf module so the extracted predicates can throw it without
 // importing this handler back; re-exported so existing import sites keep working.
 export { ReviewInfraError } from "./review-errors.ts";
@@ -201,13 +207,41 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
   };
   const stopped = (rec: ReviewBoundRecord): ReviewInfraError =>
     Object.assign(new ReviewInfraError(rec.reason, rows), { reviewBound: rec });
-  const withBound = (pass: Outcome): Outcome =>
-    boundRecord === undefined ? pass : { ...pass, reviewBound: boundRecord };
 
   // `rows` accumulates across the WHOLE step, not one pass: the handback must say what
   // every child cost, including the one that failed. Nothing re-derives it per pass.
   const rows: DispatchUsageRow[] = [];
   let head = await reviewedHead(deps, repoRoot, branch, rows);
+  /**
+   * The step's account of what it judged, accumulated across the WHOLE step.
+   *
+   * `rows` is the cost of every child; this is the verdict of every round. Both are
+   * step-wide rather than per-pass for the same reason: a host reading the run's record
+   * asks what the review found in total, and a second pass that overwrote the first
+   * would report a CRITICAL the run fixed as one the run never saw. `waves` holds only
+   * the wave that actually pushed — a pass that cleared on the first round bought no
+   * fixer and records no head.
+   */
+  const rounds: ReviewRoundCounts[] = [];
+  const waves: { wave: "full" | "fix"; head: string }[] = [];
+  /** Fold one judged round's rows into the published tally, at the record's own cap. */
+  const noteRound = (round: LensRound): void => {
+    if (rounds.length < ROUNDS_MAX)
+      rounds.push(roundCounts([...round.reported, ...round.advisory]));
+  };
+  /** Record the head the one fix wave pushed, at the record's own cap. */
+  const noteWave = (wave: "full" | "fix", pushed: string): void => {
+    if (waves.length < WAVES_MAX) waves.push({ wave, head: pushed });
+  };
+  /** Attach what the step judged, so every exit — pass, wave, or stopped mid-wave —
+   *  carries the rounds it actually judged rather than losing them on a stopped arm. */
+  const withRecord = (pass: Outcome): Outcome => ({
+    ...pass,
+    ...(rounds.length === 0 && waves.length === 0
+      ? {}
+      : { review: { rounds: rounds.map((r) => ({ ...r })), waves: waves.map((w) => ({ ...w })) } }),
+    ...(boundRecord === undefined ? {} : { reviewBound: boundRecord }),
+  });
   // This attempt's number, from the log the engine resumes off — see
   // `reviewAttemptFromLog`. Part of the fix tree's name, so read once here.
   const attempt = reviewAttemptFromLog(ctx.steps);
@@ -249,6 +283,10 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
     // A round that did not complete is refused BEFORE either verdict is read, in both
     // directions: not a pass to walk on, not a verdict to fix against. Checking the clean
     // bar first would let `REVIEW_INCOMPLETE` fall through into a `done`.
+    // The round is judged and its rows are in hand: fold it into the tally BEFORE any
+    // verdict is read, so an arm that refuses below still leaves the record saying what
+    // the step saw. A round that did not run is refused and never reaches here.
+    noteRound(review);
     if (LENS_DID_NOT_RUN.includes(review.verdict))
       throw new ReviewInfraError(
         `the six-lens review did not complete (${review.verdict}${review.note === undefined ? "" : `; disclosure: ${review.note}`}) — an incomplete round is not a pass to fix against`,
@@ -264,7 +302,7 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
       // no other consumer: with no wave there is no fixer's brief and no re-review, and the
       // residual post is the LENS layer's, which posts nothing on an APPROVED round. So the
       // gate's words ride the reason, neutralised by `disclosureNote`.
-      return withBound(
+      return withRecord(
         cleanPass(
           review,
           rows,
@@ -316,6 +354,10 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
     // recoverable from anything but this binding.
     const preFixHead = review.head;
     head = await assertFixAdvanced(review.head, fix.head, rows);
+    // The wave pushed, so its head is a fact the record has to carry: the reason line
+    // prints a 12-char prefix, and a host that has to check out what the fixer left
+    // cannot clone a prefix.
+    noteWave("fix", head);
 
     // R2: the fixer pushed, so the head origin holds is one nobody has re-judged. A stop
     // here is `fixed` — not a handback (the fix is already on the branch) and not a `done`
@@ -324,7 +366,7 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
     const preReReview = clock();
     if (preReReview.live) {
       noteStop(preReReview, "fix", unjudgedLenses(review, true));
-      return withBound(cleanPass(review, rows, true));
+      return withRecord(cleanPass(review, rows, true));
     }
 
     // ── pass 2: the re-review. A delta over the fix, or whole-branch when pass 1
@@ -352,13 +394,14 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
         rows,
       );
     assertRan(reReview, rows);
+    noteRound(reReview);
     if (LENS_DID_NOT_RUN.includes(reReview.verdict)) {
       // The clock is read FRESH before spending on a retry: a stop with a pushed fix
       // routes `fixed`, disclosed, and never throws.
       const beforeRetry = clock();
       if (beforeRetry.live) {
         noteStop(beforeRetry, "fix", unjudgedLenses(review, true));
-        return withBound(cleanPass(reReview, rows, true));
+        return withRecord(cleanPass(reReview, rows, true));
       }
       // Only an INCOMPLETE round is re-bought, and once — a cap or a streak is another
       // component's budget, which no child this step pays can answer for.
@@ -390,7 +433,7 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
     // Both the re-review round and the second adversarial pass have run: every lane judged
     // once, so a stop here can only be a disclosure. What the pass disclosed, and each
     // refusal it can still raise, are read by `reviewedPass` off the rounds' own records.
-    return withBound(reviewedPass(reReview, reGate, { threshold, preFixHead, head, rows }));
+    return withRecord(reviewedPass(reReview, reGate, { threshold, preFixHead, head, rows }));
   } finally {
     // One comment, whatever arm closed, and only on the forge channel: `publish` ran before
     // this step, so the PR body cannot carry the disclosure; on

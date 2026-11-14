@@ -24,6 +24,12 @@ import {
   validatedDispatches,
 } from "./state-dispatches.ts";
 import {
+  buildRedRecord,
+  buildReviewRecord,
+  redRecordProblem,
+  reviewRecordProblem,
+} from "./state-outcome-gates.ts";
+import {
   BLOCKED_PATH_CAP,
   BLOCKED_REASON_CAP,
   blockedByProblem,
@@ -163,6 +169,14 @@ const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>>
   // The review step's own clock. On any other step it claims a review stopped short of
   // judging its lanes when no review of this run stopped at all.
   reviewBound: "review",
+  // What the review step judged. `review` alone: a verify step carrying round tallies
+  // would report findings no reviewer of this run ever raised, and a handback carrying a
+  // wave head would claim a fix it did not integrate.
+  review: "review",
+  // Which tier and which criterion a red gate failed on. The two steps that RUN the gate,
+  // and no other: `handback` printing a tier nobody ran would send a host to a check this
+  // run never made.
+  red: ["verify", "ci"],
   // The four head facts of a handback that shipped (or refused to ship) a verified head.
   // `handback` alone: any other step carrying them would claim a move its own step never
   // made, and the rewind is the reporting step's act, not a gate's verdict.
@@ -315,6 +329,17 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
     const problem = reviewBoundProblem(oc.reviewBound);
     if (problem !== undefined) return problem;
   }
+  // The gate events a host reads off the result record. Refused rather than carried: a
+  // round tally naming a fifth severity, or a wave head that is not an oid, would reach
+  // the host contract as an answer nobody judged.
+  if (oc.review !== undefined) {
+    const problem = reviewRecordProblem(oc.review);
+    if (problem !== undefined) return problem;
+  }
+  if (oc.red !== undefined) {
+    const problem = redRecordProblem(oc.red);
+    if (problem !== undefined) return problem;
+  }
   // `prUrl` is the address `handback` prints, so it is refused when it is not https url
   // text; the length bound keeps a blob out of the record.
   if (oc.prUrl !== undefined) {
@@ -380,6 +405,8 @@ export function buildOutcome(oc: Record<string, unknown>): Outcome {
     ...(typeof oc.report === "string" ? { report: oc.report } : {}),
     ...rowsField(validatedDispatches(oc.dispatches)),
     ...(oc.reviewBound === undefined ? {} : { reviewBound: validatedReviewBound(oc.reviewBound) }),
+    ...(oc.review === undefined ? {} : { review: buildReviewRecord(oc.review) }),
+    ...(oc.red === undefined ? {} : { red: buildRedRecord(oc.red) }),
     ...(isBudgetLimit(oc.limit) ? { limit: oc.limit } : {}),
     ...(isCount(oc.value) ? { value: oc.value as number } : {}),
     ...(isCount(oc.used) ? { used: oc.used as number } : {}),

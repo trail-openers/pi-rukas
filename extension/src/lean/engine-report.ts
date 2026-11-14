@@ -2,10 +2,12 @@
  * lean/engine-report — the reporting step a stopped run is routed into.
  *
  * The split from `engine.ts` is by concern, not by size: `engine.ts` owns the runner (load, loop,
- * save); this module owns the one move the runner makes that is not a step the table routes — running
- * the report for a run the clock stopped over an uncertified head, and ending the run with its verdict.
- * `deadline-handback.ts` decides WHETHER that move happens (`deadlineStopShouldReport`); this module
- * performs it.
+ * save); this module owns the one move the runner makes that is not a step the table routes — the
+ * clock stopping a working step, and what the run becomes because of it. `stopForDeadline` is that
+ * whole decision: the plain stamp, or the routing into the report and the stamp it falls back to.
+ * `deadline-handback.ts` decides WHETHER the routing happens (`deadlineStopShouldReport`); this
+ * module performs it and stamps the run either way, so the two records a stopped run can leave are
+ * written by one reader and cannot drift apart.
  *
  * `HandbackHandler` is the injectable report step, injected rather than reached around: the
  * runner holds the injected `now`, and the report step is the runner's `handback` handler,
@@ -15,8 +17,11 @@
  * stay private to `engine.ts` and this module writes a step exactly the way the runner does.
  */
 import { traceWarn } from "../trace.ts";
-import { handoffAllowanceMs } from "./deadline.ts";
+import { deadlineStopShouldReport } from "./deadline-handback.ts";
+import { deadlineReason, handoffAllowanceMs } from "./deadline.ts";
 import { reportBoundSentence } from "./engine-report-bound.ts";
+import { leanReportBoundEnabled } from "./handback-report-bound-switch.ts";
+import { type RoutedReport, routeHandbackReport } from "./routed-report.ts";
 import type { LeanRun, LeanState, Outcome, Step } from "./state.ts";
 import { nextAttempt } from "./state.ts";
 
@@ -139,7 +144,7 @@ export interface ReportRequest {
  * The bound is the report's own wall, and it is what the exemption above makes
  * necessary: the step the clock cannot refuse is a step nothing else bounds. On
  * overrun the handler's result is discarded — no visit, no verdict, no stamp from this
- * function — and the run takes the plain deadline stamp below in `engine.ts`, exactly
+ * function — and the run takes the plain deadline stamp in `stopForDeadline` below, exactly
  * the record it would have been given without the routing. A handler that settles after
  * the bound fired may still run (an in-flight `git push` cannot be recalled) but writes
  * nothing: the only writers of the record are the two `req` calls below, both reached on
@@ -224,4 +229,92 @@ function reportReason(stoppedAt: LeanState, outcome: Outcome): string {
   const said =
     typeof outcome.reason === "string" && outcome.reason !== "" ? outcome.reason : "reported";
   return `${said} (cycle deadline reached at ${stoppedAt})`;
+}
+
+/** What the runner gives the stop: the two writers of the record, and the report's pieces. */
+export interface DeadlineStop {
+  /** Stamp `handed-back` with a reason and persist — the runner's `endRun` on that state. */
+  end: (run: LeanRun, reason: string) => LeanRun;
+  /** Everything the report needs that the runner holds: the handler table's entry and the step writers. */
+  request: {
+    repoRoot: string;
+    issue: number;
+    /** The `handback` handler, or `undefined` — a run with no reporting step built cannot be routed. */
+    handler: HandbackHandler | undefined;
+    keyFor: (state: LeanState, n: number) => string;
+    attach: ReportRequest["attach"];
+  };
+  run: LeanRun;
+  /** The step the clock refused — `verify` or `ci` — named verbatim in the run's reason line. */
+  stoppedAt: LeanState;
+  deadline: number;
+  now: () => number;
+}
+
+/**
+ * Stop a run whose deadline refused a working step, and return the ended run.
+ *
+ * Most such runs have nothing further to say and are stamped where they stand, as they always
+ * were — but a run whose newest work step is a `fixed` review is holding origin over bytes no
+ * gate certified, and the step that says so (and moves origin back) is `handback`. Stamping
+ * there made that step unreachable, so the run is routed to the report rather than ended. The
+ * predicate reads the same log the reporting step reads, so the two cannot disagree about the
+ * shape, and the handler table is the runner's to consult: a run with no reporting step built
+ * cannot be routed and takes the plain stamp too.
+ *
+ * The report runs through the handler, exactly as `runLean`'s crash-resume path would, and
+ * lands its verdict on the run through `end` — the writer every terminal stamp already uses —
+ * rather than through `apply()` on an entry the table never routed. The rewind, the head fields
+ * and the comment therefore run on the shape they were written for. The log keeps the entry the
+ * loop wrote ahead for the refused step: the run DID enter the re-verification and came back
+ * with no answer, which is the honest record and the premise `handback-heads.ts` acts on — which
+ * is why the verdict is not written onto that entry. The fold consequence of writing the report's
+ * own record — why `resume.ts` needs its one exemption, and why a loader refusal there outranks
+ * the bug this branch fixes — is `isReportRoute`'s jsdoc in `resume.ts`.
+ *
+ * Nothing here starts WORK: the only handler reached is the reporting one, which the stop test
+ * exempts, and every arm ends the run, so there is no path back into the walk.
+ *
+ * The bound on the report's wall is read here for the same reason the helpers are injected:
+ * `handoffReportBoundMs()` is the allowance the stop test one boundary earlier compared against,
+ * plus the headroom the reporting path's own per-call ceilings need. `undefined` is the switch's
+ * off arm — the handler is awaited and nothing else, as before the bound existed.
+ */
+export async function stopForDeadline(stop: DeadlineStop): Promise<LeanRun> {
+  const { run, stoppedAt, deadline, now } = stop;
+  if (stoppedAt !== "handback" && deadlineStopShouldReport(run.steps) && stop.request.handler) {
+    const handler = stop.request.handler;
+    const boundMs = leanReportBoundEnabled() ? handoffReportBoundMs() : undefined;
+    const routed: RoutedReport = await routeHandbackReport(
+      {
+        repoRoot: stop.request.repoRoot,
+        issue: stop.request.issue,
+        run,
+        stoppedAt,
+        now,
+        handler,
+        boundMs,
+        keyFor: stop.request.keyFor,
+        attach: stop.request.attach,
+        finish: (r, state, reason) => stop.end(r, reason),
+      },
+      runHandbackReport,
+    );
+    // The report could not be run at all, or could not be run IN TIME. Either way the run is
+    // stamped where it stands, as it always was — and when the bound is what stopped it, the
+    // stamp says so (`routed-report.ts` says why the bound travels with the run).
+    if (routed.run === undefined) {
+      return stop.end(
+        run,
+        deadlineReason(
+          run.steps,
+          stoppedAt,
+          deadline,
+          routed.boundMs === undefined ? undefined : reportBoundSentence(routed.boundMs),
+        ),
+      );
+    }
+    return routed.run;
+  }
+  return stop.end(run, deadlineReason(run.steps, stoppedAt, deadline));
 }
