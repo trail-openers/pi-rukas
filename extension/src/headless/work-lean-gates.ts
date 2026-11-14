@@ -46,18 +46,55 @@ import { type Outcome, type Step, newestDecided } from "../lean/state.ts";
 import { gateClearedPublishedHead, publishedHeadOf } from "./work-lean-pr.ts";
 
 /** How many entries of one list a host may be handed. The record caps its own writes;
- * this is the print cap, and the smaller of the two governs what a host parses. */
-const LIST_MAX = 16;
+ * this is the print cap, and the smaller of the two governs what a host parses.
+ *
+ * Exported because the cap is a published fact and not an implementation detail: a list cut
+ * at it prints exactly `LIST_MAX` entries, and the only thing that tells a host this
+ * happened is the sibling count this module writes beside it. The truncation cases read the
+ * cap from here rather than restating it, so moving it moves the cases with it instead of
+ * quietly turning them into assertions about a number nobody chose. */
+export const LIST_MAX = 16;
 /** How long one published string may be. Same bound the projection applies to the
  * handback reason elsewhere: redact first, then clip, so a cut cannot strand a token. */
 const TEXT_MAX = 500;
 
-/** A red gate's attribution, as published: `null` for a gate that recorded none. */
+/** A list and its pre-cut count, with the pair's null rule: no record, then `null` for
+ * BOTH halves — never a `0` beside a null list, which would be a positive claim that the
+ * run held an empty list, a different fact and the wrong one. */
+interface Cap<T> {
+  items: T[] | null;
+  total: number | null;
+}
+
+/** A list clipped to the print cap beside its pre-cut count — the whole rule in one place,
+ * so no capped field can ship a cut it does not declare. An empty list is the record's
+ * null, as it was before the marker: a field that held nothing published nothing. */
+function clipped<T>(items: T[] | null): Cap<T> {
+  if (items === null || items.length === 0) return { items: null, total: null };
+  return { items: items.slice(0, LIST_MAX), total: items.length };
+}
+
+/**
+ * A gate's verdict and, for a red, the attribution its step recorded.
+ *
+ * `kind` carries three words and the third is not a judgement of the work: `green` and
+ * `red` are the gate's verdicts, and `error` is the engine's record of a gate whose handler
+ * threw (`lean/error-outcome.ts`) — the infrastructure died and nothing was judged. A host
+ * that read an `error` as a red would blame the work for a harness failure and go re-check a
+ * criterion nobody ran, so an error entry publishes null attributions: the gate never named
+ * a tier, and an empty list would say it named none.
+ */
 export interface GatesRed {
   state: "verify" | "ci";
+  /** `green`, `red`, or `error` — an infrastructure throw, which is not a verdict. */
   kind: string;
   tiers: string[] | null;
+  /** The full `tiers` count before the print cut; `null` exactly when `tiers` is. A host
+   * detects a cut with `tiersTotal > tiers.length`. */
+  tiersTotal: number | null;
   criteria: string[] | null;
+  /** The full `criteria` count before the print cut; `null` exactly when `criteria` is. */
+  criteriaTotal: number | null;
 }
 
 /** The review step's account of what it judged, as published. */
@@ -66,6 +103,8 @@ export interface GatesReview {
   /** What the review step judged, published only when the step recorded it (G2). */
   rounds: ReviewRoundCounts[] | null;
   waves: { wave: string; head: string }[] | null;
+  /** The full `waves` count before the print cut; `null` exactly when `waves` is. */
+  wavesTotal: number | null;
   /**
    * The step's own clock, published verbatim from the record beside these counts (G11).
    *
@@ -75,8 +114,21 @@ export interface GatesReview {
    * and everything else in `gates` by the null rule, which is what docs/headless.md
    * states, and what this comment exists to stop a reader guessing.
    */
-  reviewBound: ReviewBoundRecord | null;
+  reviewBound: GatesReviewBound | null;
 }
+
+/** The `review` step's clock as the host sees it: the record's three fields, plus the lane
+ * list's pre-cut count beside the list itself.
+ *
+ * It is `ReviewBoundRecord` and one extra key rather than that type, because the record is
+ * the driver's durable shape — a lane list a writer produces and a loader validates — and
+ * the print count belongs to neither of those. Widening the record's own type would tell a
+ * reader the durable field carries a number no writer ever writes.
+ */
+export type GatesReviewBound = ReviewBoundRecord & {
+  /** The full `unreviewedLanes` count before the print cut; `null` exactly when it is. */
+  unreviewedLanesTotal: number | null;
+};
 
 /** What the handback shipped, and whether its own gate saw it. */
 export interface GatesHandback {
@@ -212,12 +264,6 @@ function challengeGates(steps: Step[]): GatesResult["challenge"] {
  * Every `verify` and `ci` verdict the run recorded, in the order it recorded them, each
  * red with the tier that failed and the criteria the failing checks answer for.
  *
- * Three kinds reach the host, and the third is not a judgement of the code: `green` and
- * `red` are the gate's verdicts, and `error` is what the engine records when a gate's
- * handler threw (`lean/error-outcome.ts`). An entry of that kind attributes nothing — the
- * gate named no tier because it never finished — and a host that read it as a red would go
- * and re-check a criterion nobody ran.
- *
  * A list rather than one field because a run genuinely carries more than one red — a
  * first red, a fix round, and a pipeline that then fails — and a host triaging the run
  * needs to see which gate ended it, not only the last one to speak.
@@ -227,6 +273,10 @@ function challengeGates(steps: Step[]): GatesResult["challenge"] {
  * names come off reason lines this step composed — so the projection is the last place a
  * credential-shaped or oversized name can be stopped before a host parses it, exactly as
  * for the two `reviewBound` strings and the handback reason.
+ *
+ * The `Total` beside each list counts what survives THAT filter, before the cut: a tier name
+ * the seam empties and a criterion id that is not `AC<n>` are in neither number, so
+ * `Total > length` means one thing here — entries this document cut for LENGTH.
  */
 function verifyGates(steps: Step[], redact: (s: string) => string): GatesRed[] {
   const out: GatesRed[] = [];
@@ -235,22 +285,23 @@ function verifyGates(steps: Step[], redact: (s: string) => string): GatesRed[] {
       const kind = step.outcome?.kind;
       if (kind === undefined) continue;
       const red = step.outcome?.red;
-      const tiers = Array.isArray(red?.tiers)
-        ? red.tiers
-            .map((t) => textOf(t, redact))
-            .filter((t): t is string => t !== null)
-            .slice(0, LIST_MAX)
-        : null;
-      const criteria = Array.isArray(red?.criteria)
-        ? red.criteria
-            .filter((c): c is string => typeof c === "string" && /^AC\d+$/.test(c))
-            .slice(0, LIST_MAX)
-        : null;
+      const tiers = clipped(
+        Array.isArray(red?.tiers)
+          ? red.tiers.map((t) => textOf(t, redact)).filter((t): t is string => t !== null)
+          : null,
+      );
+      const criteria = clipped(
+        Array.isArray(red?.criteria)
+          ? red.criteria.filter((c): c is string => typeof c === "string" && /^AC\d+$/.test(c))
+          : null,
+      );
       out.push({
         state,
         kind,
-        tiers: tiers === null || tiers.length === 0 ? null : tiers,
-        criteria: criteria === null || criteria.length === 0 ? null : criteria,
+        tiers: tiers.items,
+        tiersTotal: tiers.total,
+        criteria: criteria.items,
+        criteriaTotal: criteria.total,
       });
     }
   }
@@ -294,7 +345,7 @@ function reviewGates(steps: Step[], redact: (s: string) => string): GatesResult[
       ? roundsArr
       : null;
   const wavesArr = Array.isArray(oc.review?.waves) ? oc.review.waves : null;
-  const waves =
+  const wavesKept =
     wavesArr === null
       ? null
       : // A wave is published only when BOTH halves of its identity are sound: which pass
@@ -302,15 +353,14 @@ function reviewGates(steps: Step[], redact: (s: string) => string): GatesResult[
         // than a partial one — a host that read `waves: []` and `rounds: [...]` could at
         // least ask which, where an entry naming a head it cannot check out is a wrong
         // answer wearing a right one's clothes.
-        wavesArr
-          .filter(
-            (w) =>
-              typeof w?.head === "string" &&
-              isFullCommitSha(w.head) &&
-              (w.wave === "full" || w.wave === "fix"),
-          )
-          .slice(0, LIST_MAX);
-  if (waves !== null && wavesArr !== null && waves.length !== wavesArr.length) return null;
+        wavesArr.filter(
+          (w) =>
+            typeof w?.head === "string" &&
+            isFullCommitSha(w.head) &&
+            (w.wave === "full" || w.wave === "fix"),
+        );
+  if (wavesKept !== null && wavesArr !== null && wavesKept.length !== wavesArr.length) return null;
+  const waves = clipped(wavesKept);
   // The step's own clock, published as the record holds it — the field's own shape rule
   // is the loader's (`reviewBoundProblem`), so the projection publishes the value rather
   // than re-inventing a second judgement of it. What the projection does add is the print
@@ -320,20 +370,28 @@ function reviewGates(steps: Step[], redact: (s: string) => string): GatesResult[
   // so a lane or a reason that quoted a credential would otherwise be the one gate field
   // that ships it.
   const bound = oc.reviewBound;
+  // One pass over the lanes: both halves of the pair come off the same `Cap`, so the count
+  // cannot disagree with the list it stands beside.
+  const lanes = clipped(
+    bound === undefined
+      ? null
+      : bound.unreviewedLanes
+          .map((lane) => textOf(lane, redact) ?? "")
+          .filter((lane) => lane !== ""),
+  );
   return {
     kind,
     rounds: rounds === null || rounds.length === 0 ? null : rounds,
-    waves: waves === null || waves.length === 0 ? null : waves,
+    waves: waves.items,
+    wavesTotal: waves.total,
     reviewBound:
       bound === undefined
         ? null
         : {
             wave: bound.wave,
             reason: textOf(bound.reason, redact) ?? "",
-            unreviewedLanes: bound.unreviewedLanes
-              .map((lane) => textOf(lane, redact) ?? "")
-              .filter((lane) => lane !== "")
-              .slice(0, LIST_MAX),
+            unreviewedLanes: lanes.items ?? [],
+            unreviewedLanesTotal: lanes.total,
           },
   };
 }

@@ -94,10 +94,14 @@ function leakyBoundLog() {
   );
   assert(
     JSON.stringify(gatesOf(plain.issue).review?.reviewBound) ===
+      // The record's fields published as they are named, plus the print count beside the
+      // lane list it counts — the marker is the only thing this projection adds here, and
+      // it comes off the same pass that produced the list.
       JSON.stringify({
         wave: REVIEW_BOUND.wave,
         reason: REVIEW_BOUND.reason,
         unreviewedLanes: REVIEW_BOUND.unreviewedLanes,
+        unreviewedLanesTotal: REVIEW_BOUND.unreviewedLanes.length,
       }),
     `review: a bound with nothing to redact is published field for field (${JSON.stringify(gatesOf(plain.issue).review?.reviewBound)})`,
   );

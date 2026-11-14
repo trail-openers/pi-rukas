@@ -12,25 +12,27 @@
  *
  * Five rules the cases below are built around:
  *
- *   - **the switch** (G12): default on, only the literal `"0"` off, read at CALL
- *     time, and registered as an input and in the docs like every other knob;
- *   - **the off arm is byte-identical to today's document** — proved by comparing the
- *     WHOLE serialised document, key order included. A field-absence check is not
- *     that proof: `gates: undefined` is absent to a field check and present to a host
- *     that string-compares the document;
+ *   - **the switch** (G12) and **the off arm's byte-equality** live together in
+ *     `test-headless-work-lean-gates-switch.ts` — the object is absent entirely under
+ *     `PI_ENSEMBLE_LEAN_RESULT_GATES=0`, and the document is then the one this build wrote
+ *     before the object existed, proved against the WHOLE serialisation, key order included;
  *   - **every field is read from the durable record** (G1), and a field the record
  *     does not answer is an explicit `null`, never an omitted key (G7) — a host must
  *     be able to tell "this run had no challenge" from "this build did not look";
  *   - **the severity vocabulary is the published four** (G2), and a record that
- *     breaks it is refused at load rather than quietly projected (G9);
+ *     breaks it is refused at load rather than quietly projected (G9) — the two refusal
+ *     arms are pinned in `test-headless-work-lean-gates-review-refusal.ts`;
  *   - **the two heads and `prState` cannot disagree** (G10) because the projection
- *     asks the same helpers the PR-state verdict asks.
+ *     asks the same helpers the PR-state verdict asks;
+ *   - **a capped list declares its cut** — every list the projection clips rides a
+ *     `<name>Total` sibling, pinned in `test-headless-work-lean-gates-truncation.ts`.
  *
  * Each reading rule is asserted twice over: once from a hand-built log (what the
  * projection reads) and once from a log the REAL engine wrote and `loadRun` read back
  * (that a handler can write what the projection prints).
  */
 
+import { leanGates } from "../src/headless/work-lean-gates.ts";
 import { leanIssueResult, leanResultDocument } from "../src/headless/work-lean-result.ts";
 import { leanResultGatesEnabled } from "../src/lean/result-gates-switch.ts";
 import { loadRun, saveRun } from "../src/lean/state.ts";
@@ -54,87 +56,10 @@ import {
 
 const { assert, failures } = makeAssert();
 
-/**
- * The env keys these cases pin, restored after every case. The switch is read at
- * call time and the arms are pinned per block, so the set has to be the one the
- * scope clears — a key left set by an earlier block is a switch that silently
- * disables the next file in the same bun process.
- */
-const SWITCH = "PI_ENSEMBLE_LEAN_RESULT_GATES";
-const savedSwitch = process.env[SWITCH];
-async function withSwitch(value: string | undefined, body: () => Promise<void>): Promise<void> {
-  if (value === undefined) delete process.env[SWITCH];
-  else process.env[SWITCH] = value;
-  try {
-    await body();
-  } finally {
-    if (savedSwitch === undefined) delete process.env[SWITCH];
-    else process.env[SWITCH] = savedSwitch;
-  }
-}
-
-// ─── (1) the switch's truth table ───────────────────────────────────────────────
-// G12: only the literal "0" takes the object out. An empty value is a shell that
-// meant nothing, and `false` is a value, not the token the contract names.
-for (const [value, want] of [
-  [undefined, true],
-  ["", true],
-  ["1", true],
-  ["false", true],
-  ["0", false],
-] as const) {
-  await withSwitch(value, async () => {
-    assert(leanResultGatesEnabled() === want, `switch ${JSON.stringify(value)} → ${String(want)}`);
-  });
-}
-
-// ─── (2) THE OFF ARM IS THE SAME DOCUMENT ──────────────────────────────────────
-// The whole serialised document compared, not a field check: this is the claim that
-// lets the object ship on by default without breaking a host that parses the file
-// strictly. The on arm must genuinely differ, or the comparison proves nothing.
-{
-  const steps = gatesLog({
-    challenge: "new-tests",
-    verify: "red",
-    reds: { tiers: ["fast"], criteria: ["AC1"] },
-    review: "fixed",
-    heads: { shippedHead: HEAD, shippedVerified: true },
-  });
-  const seed = await driveLean("handed-back", 10, steps);
-  let on = "";
-  let off = "";
-  await withSwitch(undefined, async () => {
-    on = JSON.stringify(leanResultDocument(seed.run, 10).doc);
-  });
-  await withSwitch("0", async () => {
-    off = JSON.stringify(leanResultDocument(seed.run, 10).doc);
-  });
-  const onIssues = (JSON.parse(on).issues ?? []) as Record<string, unknown>[];
-  const offIssues = (JSON.parse(off).issues ?? []) as Record<string, unknown>[];
-  assert(onIssues[0]?.hasOwnProperty("gates"), "on: the projected issue carries a `gates` key");
-  assert(
-    !offIssues[0]?.hasOwnProperty("gates"),
-    "off: no `gates` key at all — not one holding null, not one holding undefined",
-  );
-  assert(on !== off, "the on arm really differs from the off arm (the comparison is not vacuous)");
-  const stripped = JSON.parse(on) as { issues: Record<string, unknown>[] };
-  delete stripped.issues[0]?.gates;
-  assert(
-    off === JSON.stringify(stripped),
-    "off: the whole serialised document is today's document, key order included",
-  );
-  // The top-level `schema` is the document's own version stamp: a new OPTIONAL key
-  // on a record whose consumers ignore unknown keys is additive, so the number a
-  // host branches on must not move. If it did, every host that pins it would read
-  // the off document as a different contract than the one it already handles.
-  // The document's own version stamp is `schemaVersion` — so the comparison asks about
-  // THAT key. `JSON.parse(x).schema` was undefined on both arms, which is `===` for a
-  // document that carried no stamp at all and for one whose stamp moved.
-  assert(
-    JSON.parse(off).schemaVersion === JSON.parse(on).schemaVersion,
-    `the schema stamp does not move between the arms (${String(JSON.parse(on).schemaVersion)})`,
-  );
-}
+// ─── (2) the switch and its two arms live in `test-headless-work-lean-gates-switch.ts ─
+// The truth table (default on, only the literal `"0"` off, read at CALL time) and the
+// off-arm byte-equality are the pair that owns the knob, so they are pinned together there;
+// the per-field readings below are the other half of this file's subject.
 
 // ─── (3) G5: `specify` — the frozen files, and the tests kept per criterion ─────
 // `build` reads the union of the frozen maps from the log and `handoff` renders the
@@ -213,11 +138,26 @@ for (const [value, want] of [
   assert(
     JSON.stringify(gatesOf(r.issue).verify) ===
       JSON.stringify([
-        { state: "verify", kind: "red", tiers: ["fast", "full"], criteria: ["AC1", "AC2"] },
+        {
+          state: "verify",
+          kind: "red",
+          tiers: ["fast", "full"],
+          tiersTotal: 2,
+          criteria: ["AC1", "AC2"],
+          criteriaTotal: 2,
+        },
         // The run's gate then said what it says about a pipeline the run never ran:
         // `ci` follows `review`, so a run that ended at its gate has a `ci` verdict
-        // nobody gave and this list says so rather than dropping the entry.
-        { state: "ci", kind: "green", tiers: null, criteria: null },
+        // nobody gave and this list says so rather than dropping the entry. Its two
+        // `Total`s are null with their lists — the record named neither.
+        {
+          state: "ci",
+          kind: "green",
+          tiers: null,
+          tiersTotal: null,
+          criteria: null,
+          criteriaTotal: null,
+        },
       ]),
     `verify: the red names its tier and the criteria it failed for (${JSON.stringify(gatesOf(r.issue).verify)})`,
   );
@@ -225,8 +165,22 @@ for (const [value, want] of [
   assert(
     JSON.stringify(gatesOf(bare.issue).verify) ===
       JSON.stringify([
-        { state: "verify", kind: "red", tiers: null, criteria: null },
-        { state: "ci", kind: "green", tiers: null, criteria: null },
+        {
+          state: "verify",
+          kind: "red",
+          tiers: null,
+          tiersTotal: null,
+          criteria: null,
+          criteriaTotal: null,
+        },
+        {
+          state: "ci",
+          kind: "green",
+          tiers: null,
+          tiersTotal: null,
+          criteria: null,
+          criteriaTotal: null,
+        },
       ]),
     `verify: a red that recorded no tier is null for it, never an empty list that reads as "checked none" (${JSON.stringify(gatesOf(bare.issue).verify)})`,
   );
@@ -237,7 +191,16 @@ for (const [value, want] of [
   );
   assert(
     JSON.stringify(gatesOf(green.issue).verify) ===
-      JSON.stringify([{ state: "verify", kind: "green", tiers: null, criteria: null }]),
+      JSON.stringify([
+        {
+          state: "verify",
+          kind: "green",
+          tiers: null,
+          tiersTotal: null,
+          criteria: null,
+          criteriaTotal: null,
+        },
+      ]),
     `verify: the verdict the run ended on is recorded with its kind (${JSON.stringify(gatesOf(green.issue).verify)})`,
   );
   const ci = await driveLean(
@@ -303,39 +266,20 @@ for (const [value, want] of [
   assert(
     JSON.stringify(gatesOf(bound.issue).review?.reviewBound) ===
       // Key order as the projection publishes it: the record's fields, published as they
-      // are named, not as a fixture happened to spell them.
+      // are named, then the print count beside the lane list it counts — and both come
+      // from one pass over the lanes, so neither can disagree with the other.
       JSON.stringify({
         wave: "full",
         reason: REVIEW_BOUND.reason,
         unreviewedLanes: REVIEW_BOUND.unreviewedLanes,
+        unreviewedLanesTotal: REVIEW_BOUND.unreviewedLanes.length,
       }),
     `review: reviewBound is the record's own, unreviewed lanes included (${JSON.stringify(gatesOf(bound.issue).review?.reviewBound)})`,
   );
-  // A head the record cannot name as an oid is not printed: the projection re-checks
-  // rather than trusting what reached it, because a projection is the last place a
-  // malformed value can be stopped before a host parses it.
-  const badHead = await driveLean(
-    "handed-back",
-    10,
-    gatesLog({ review: "fixed" }).map((s) =>
-      s.state === "review"
-        ? {
-            ...s,
-            outcome: {
-              ...s.outcome,
-              review: {
-                rounds: [ROUND_1, ROUND_2].map((r) => ({ ...r })),
-                waves: [{ wave: "fix", head: "nope" }],
-              },
-            } as Outcome,
-          }
-        : s,
-    ),
-  );
-  assert(
-    gatesOf(badHead.issue).review === null,
-    `review: a wave head that is not a full oid is refused at the projection, not printed (${JSON.stringify(gatesOf(badHead.issue).review?.waves)})`,
-  );
+  // A head the record cannot name as an oid, and one malformed round: both refusals, and
+  // the all-or-nothing rule behind them, are pinned in
+  // `test-headless-work-lean-gates-review-refusal.ts` — this file reads a sound record and
+  // that one reads a broken one, which is the seam the §12 size cap asked for.
 }
 
 // ─── (7) G6 + G10: `handback` — reason, both heads, and the verdict they agree with ─

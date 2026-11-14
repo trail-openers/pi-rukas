@@ -27,6 +27,7 @@
  * document a host parses and not a helper's return value.
  */
 
+import { LIST_MAX } from "../src/headless/work-lean-gates.ts";
 import { leanIssueResult } from "../src/headless/work-lean-result.ts";
 import { GATE_SEVERITIES } from "../src/lean/gate-severities.ts";
 import type { Outcome, Step } from "../src/lean/state.ts";
@@ -36,8 +37,7 @@ import { ROUND_1, gatesOf } from "./lib/lean-result-gates-fixture.ts";
 
 const { assert, failures } = makeAssert();
 
-/** The projection's own print cap, restated here so the case breaks when it moves. */
-const LIST_MAX = 16;
+/** The projection's own print cap, read from the projection so the cases move with it. */
 
 /** One more entry than the cap — the smallest log that can prove a cut is visible. */
 function past(n: number): string[] {
@@ -98,9 +98,11 @@ async function gatesOfLog(review: Outcome | undefined, ...verify: Outcome[]) {
   const tiers = Array.from({ length: LIST_MAX + 4 }, (_, i) => `tier-${String(i)}`);
   const criteria = Array.from({ length: LIST_MAX + 7 }, (_, i) => `AC${String(i + 1)}`);
   const lanes = past(LIST_MAX + 3);
+  // One distinct 40-hex head per wave: the projection re-checks every head it prints, so
+  // a fixture that repeated one would be asserting against a list it had already trimmed.
   const waves = Array.from({ length: LIST_MAX + 2 }, (_, i) => ({
     wave: (i % 2 === 0 ? "full" : "fix") as "full" | "fix",
-    head: (i % 2 === 0 ? "a" : "b").repeat(39) + String(i % 10),
+    head: `${i.toString(16).padStart(2, "0")}${"a".repeat(38)}`,
   }));
   const { gates } = await gatesOfLog(reviewOutcome(lanes, waves), redOutcome(tiers, criteria));
 
@@ -181,28 +183,30 @@ async function gatesOfLog(review: Outcome | undefined, ...verify: Outcome[]) {
   const tiers = Array.from({ length: LIST_MAX + 2 }, (_, i) => `tier-${String(i)}`);
   const goodWaves = Array.from({ length: LIST_MAX }, (_, i) => ({
     wave: "fix" as const,
-    head: "d".repeat(39) + String(i % 10),
+    head: `${i.toString(16).padStart(2, "0")}${"d".repeat(38)}`,
   }));
-  // Two malformed waves pushed past the cap: the projection refuses the whole `waves`
-  // field for them, which is the sibling rule (a malformed head publishes nothing rather
-  // than a partial truth) — asserted here so the two rules cannot quietly replace each
-  // other.
-  const { gates } = await gatesOfLog(
+  // The one log for both halves of this case. The malformed wave head it carries refuses
+  // the whole `review` object, not the list alone — a tally naming three of a run's four
+  // rounds would read as a complete count — and the markers must not quietly replace that
+  // rule with "publish what passed the filter".
+  const refused = await gatesOfLog(
     reviewOutcome(past(LIST_MAX), [...goodWaves, { wave: "fix", head: "nope" }]),
     redOutcome(tiers, criteria),
   );
-  const entry = (gates.verify as Record<string, unknown>[]).find(
+  assert(
+    refused.gates.review === null,
+    `review: a malformed wave head refuses the whole field, which the markers must not quietly replace (${JSON.stringify(refused.gates.review)})`,
+  );
+  // And the verify half, where the projection does publish: a criterion id it refuses is in
+  // neither number, so `Total > length` still means "cut for length" and nothing else.
+  const entry = (refused.gates.verify as Record<string, unknown>[]).find(
     (e) => e.state === "verify" && e.kind === "red",
   );
   assert(
     entry?.criteriaTotal === kept.length &&
-      (entry?.criteria as string[]).length === LIST_MAX,
+      (entry?.criteria as string[]).length === LIST_MAX &&
+      entry?.tiersTotal === tiers.length,
     `verify[].criteriaTotal counts the ids this projection keeps, so a refused entry is in neither number (${String(entry?.criteriaTotal)} vs ${String((entry?.criteria as string[] | undefined)?.length)})`,
-  );
-  const review = gates.review as Record<string, unknown> | undefined;
-  assert(
-    review?.waves === null && review?.wavesTotal === null,
-    `review.waves: a malformed head refuses the field, and its Total is null with it — never the count of a list that was not published (${JSON.stringify([review?.waves, review?.wavesTotal])})`,
   );
 }
 
@@ -234,9 +238,14 @@ async function gatesOfLog(review: Outcome | undefined, ...verify: Outcome[]) {
   };
   const reviewed = await gatesOfLog(noBound);
   const review = reviewed.gates.review as Record<string, unknown> | undefined;
+  // `waves: []` on the record is the step's own "no wave was pushed", and the projection
+  // publishes it as its null — so the pair has to be null/null there too, or an empty list
+  // would carry a zero that reads as a count of something.
   assert(
-    review?.reviewBound === null,
-    `review.reviewBound: absent from the record is the field's null (${JSON.stringify(review?.reviewBound)})`,
+    review?.reviewBound === null &&
+      review?.waves === null &&
+      review?.wavesTotal === null,
+    `review: a step that recorded no bound and no wave is null for the field and null for its Total, never null/0 (${JSON.stringify([review?.reviewBound, review?.waves, review?.wavesTotal])})`,
   );
 }
 
@@ -276,9 +285,14 @@ async function gatesOfLog(review: Outcome | undefined, ...verify: Outcome[]) {
 }
 
 // ─── (6) the marker reaches the document, and the vocabulary stays the published four ─
+// A field the projection computes and the verb drops is a field no host sees, so the
+// markers are asserted on the serialised `issues[].gates` and not only on the helper.
+// The verify entry is the log's red one — a log whose gate went green attributes nothing,
+// and its nulls would make the two `verify` markers below unsatisfied for the wrong reason.
 {
   const { issue, gates } = await gatesOfLog(
     reviewOutcome(past(LIST_MAX + 1), [{ wave: "fix", head: "e".repeat(40) }]),
+    redOutcome(["fast", "full"], ["AC1", "AC2"]),
   );
   const doc = JSON.stringify(issue?.gates);
   assert(

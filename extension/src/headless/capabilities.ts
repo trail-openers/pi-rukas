@@ -120,9 +120,15 @@ export const HEADLESS_FEATURES = {
   leanFailureCause: true,
   /**
    * The lean run's GATE EVENTS are on the host's document: `issues[].gates` carries the
-   * frozen files per criterion, the challenge's verdict, every `verify`/`ci` red with its
-   * tier and criterion ids, the review's per-round severity counts and fix-wave heads, and
-   * what the handback shipped.
+   * frozen files per criterion, the challenge's verdict, every `verify`/`ci` verdict
+   * (`green` | `red` | `error`, the third being an infrastructure throw that attributes
+   * nothing), the review's per-round severity counts and fix-wave heads, and what the
+   * handback shipped.
+   *
+   * Every list the projection caps carries a sibling `<name>Total` — the full count before
+   * the cut, `null` exactly when its list is `null` — so a cut list is never
+   * indistinguishable from a complete one. The cap itself, the list names, and the rule are
+   * `docs/headless.md`'s `features.leanGates` row; this flag only says the object exists.
    *
    * A host reads `--capabilities` before it reads a field it may not have: with this flag
    * absent the object is simply not there (a build running
