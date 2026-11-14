@@ -34,6 +34,7 @@
  */
 
 import { ADVERSARIAL_FINDING_RULE } from "../src/adversarial-prompts.ts";
+import { MAX_ISSUE_CHARS } from "../src/adversarial-prompts.ts";
 import {
   LEAN_REVIEW_CRITERIA_HEADING,
   renderSpecCriteriaSection,
@@ -66,17 +67,27 @@ import {
   EMPTY_CRITERIA_BODY,
   FENCE_CHAR,
   GOLDEN_PROBLEM_MARKER,
+  MID_PROBLEM_BODY,
+  MID_PROBLEM_SENTINEL,
+  MID_PROBLEM_STATEMENT,
   OVER_PROBLEM_STATEMENT_BODY,
+  PROBLEM_CAP_KEEP,
   PROBLEM_DIFFERS_BODY,
   PROBLEM_EQUALS_PROSE_BODY,
   PROBLEM_LEAD,
+  PROBLEM_MARKER_FULL,
   PROBLEM_TAIL,
   PROSE_HEAD_LINE,
   SPEC_JSON_KEYS,
+  STATEMENT_OVER_CAP_BODY,
+  STATEMENT_OVER_CAP_SENTINEL,
+  STATEMENT_OVER_CAP_STATEMENT,
   criteriaSpanOf,
   criterionRow,
   fixerArgs,
   fenceLines,
+  keptStatementSpan,
+  keptStatementSpanFor,
   preStatementCriteriaSection,
   preStatementFixerIssueSection,
   preStatementLensContext,
@@ -268,6 +279,66 @@ await withEnv(
         )} delimiters, ${String(
           (clippedSection.match(/^```text$/gm) ?? []).length,
         )} openers, ${String(clippedSection.split(FENCE_CHAR).length - 1)} fence characters)`,
+      );
+    }
+
+    // ── (5b) the statement's cap is pinned by MEASURED length, not by a marker ─
+    // A marker is printed by ANY cap: `MAX_PROBLEM_CHARS = 6 000` (the prose's
+    // bound), `12 000` or `19 999` all leave every marker assertion in this file
+    // green, because the bodies are long enough to pass whatever cap is asked of
+    // them. So the cap is measured here, twice, from opposite sides: the over-cap
+    // arm states the exact number of characters the fence kept, and the arm between
+    // the prose bound and the cap states that nothing was kept away at all.
+    {
+      const overCapSection = renderSpecCriteriaSection(STATEMENT_OVER_CAP_BODY);
+      const kept = keptStatementSpan(overCapSection);
+      // The prose block beside it prints no cut of its own and the criteria list is
+      // three short rows, so this number can only be the statement's own bound.
+      assert(
+        kept === keptStatementSpanFor(STATEMENT_OVER_CAP_STATEMENT),
+        `(5b) the kept statement span is exactly the cap plus the ellipsis plus its own marker — measured ${String(
+          kept.length,
+        )} chars, not merely a section that carries a marker`,
+      );
+      assert(
+        kept.length === PROBLEM_CAP_KEEP + PROBLEM_MARKER_FULL.length + 1 &&
+          kept.length > MAX_ISSUE_CHARS,
+        `(5b) and that span (${String(
+          kept.length,
+        )} chars) is past the prose bound of ${String(
+          MAX_ISSUE_CHARS,
+        )}, so what cut it is the statement's cap rather than the prose's`,
+      );
+      assert(
+        kept.endsWith(`\u2026\n${PROBLEM_MARKER_FULL}`) &&
+          kept.slice(0, PROBLEM_CAP_KEEP - 1) ===
+            STATEMENT_OVER_CAP_STATEMENT.slice(0, PROBLEM_CAP_KEEP - 1) &&
+          kept[PROBLEM_CAP_KEEP - 1] === "\u2026",
+        "(5b) and the span is the statement verbatim up to the cap, the ellipsis `fenceText` appends, and the statement's marker on its own line",
+      );
+      assert(
+        STATEMENT_OVER_CAP_STATEMENT.endsWith(STATEMENT_OVER_CAP_SENTINEL) &&
+          !kept.includes(STATEMENT_OVER_CAP_SENTINEL),
+        "(5b) and what the cap took is the statement's own closing clause — the section says so rather than ending silently",
+      );
+
+      // The other side: a statement past the prose bound and well under its own
+      // cap must reach the seat WHOLE — no marker, every character present.
+      const midSection = renderSpecCriteriaSection(MID_PROBLEM_BODY);
+      const midKept = keptStatementSpan(midSection);
+      assert(
+        midKept === MID_PROBLEM_STATEMENT &&
+          midKept.length > MAX_ISSUE_CHARS &&
+          midKept.length < PROBLEM_CAP_KEEP,
+        `(5b) a statement between the two bounds reaches the section WHOLE: ${String(
+          midKept.length,
+        )} characters kept, past the prose bound, under the statement cap, with no marker at all`,
+      );
+      assert(
+        !midSection.includes(GOLDEN_PROBLEM_MARKER) &&
+          !midKept.includes("\u2026") &&
+          midSection.includes(MID_PROBLEM_SENTINEL),
+        "(5b) and its last characters are present — the absence of the marker is a fact about the cap, not about a body that reached no bound",
       );
     }
 
