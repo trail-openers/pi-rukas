@@ -8,11 +8,20 @@
  * rewind the branch to the newest green `verify`'s head.
  *
  * The move is a lease-pinned push — `--force-with-lease=<branch>:<unverified
- * head>` — so it happens only while origin still holds exactly the head this
- * run pushed. A branch somebody else moved is not this run's to rewrite; the
- * lease refuses and nothing is moved. The same lease `publish` uses, for the
- * same reason: a forced update is legitimate only because it is bound to a sha
- * this step read.
+ * head>` with an UNFORCED branch refspec — so it happens only while origin
+ * still holds exactly the head this run pushed. A branch somebody else moved
+ * is not this run's to rewrite; the lease refuses and nothing is moved. The
+ * same lease `publish` uses, for the same reason: an update is legitimate only
+ * because it is bound to a sha this step read.
+ *
+ * The refspec being unforced is what makes that sentence true. `git push` does
+ * not consult the lease for a refspec it was told to force with a leading `+`,
+ * so the `+` the rewind used to carry turned the lease into decoration —
+ * measured against a real bare origin on git 2.53.0, a stale lease over a
+ * forced refspec exits 0 and moves the branch. The lease alone authorises a
+ * rewind, because a rewind is a non-fast-forward move and the lease names the
+ * value this step just read off origin: exactly that one move, and no other.
+ * `PI_ENSEMBLE_LEAN_REWIND_LEASE_BINDS=0` puts the `+` back byte for byte.
  *
  * The branch it moves is state-file data too, so it gets the same guard the
  * run's two other force-push sites apply before they build an argv —
@@ -33,6 +42,7 @@ import { traceWarn } from "../trace.ts";
 import { netGitEnv, netRefProblem } from "../work-driver-net-git.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { PublishInfraError, assertPublishableBranch } from "./publish-deps.ts";
+import { leanRewindLeaseBinds } from "./rewind-lease-switch.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import { specifyBranch } from "./specify-tree.ts";
 import type { VerifyExec } from "./verify-types.ts";
@@ -105,8 +115,10 @@ export function unverifiedRef(issue: number): string {
  * `--force-with-lease` is enforced on the client: when origin's value for the
  * leased ref is not what this push expected, the porcelain prints `stale info`
  * (and the `! [rejected] … (stale info)` row beside it). That wording is the one
- * this project has observed — `test-lean-verified-handback-rewind.ts` drives a
- * lease that does not match — and it is the ONLY wording admitted. Anything else
+ * this project has observed — `test-lean-rewind-lease-binds.ts` drives a lease
+ * that does not match, against an origin holding objects this clone can supply,
+ * so the lease is the only thing that can refuse — and it is the ONLY wording
+ * admitted. Anything else
  * that made the push fail (an unreachable object, an unpack failure, a transport
  * drop) never reached that check, and labelling it a lease refusal would send the
  * operator to look for someone who moved their branch when the fix is a fetch.
@@ -320,23 +332,30 @@ export async function rewindToVerified(
   // the record would blame the keeping-ref for what was the lease's refusal. The
   // head is named on the command line instead, and origin is what decides.
   //
-  // The branch refspec is FORCED (`+`) because a rewind is a non-fast-forward move
-  // by definition, and an unforced refspec to a branch that has moved ahead is a
-  // NO-OP that exits 0: git prints `Everything up-to-date`, pushes nothing, and a
-  // reader of the exit code alone would record a head origin never received.
-  //
   // The lease carries its EXPECTED value (`<ref>:<held>`). The bare form compares
   // origin against this clone's remote-tracking ref, which only a `fetch` refreshes:
   // on a clone that has not fetched since the fix wave it still names the head this
   // run pushed, and it would accept a rewind of a branch somebody else moved — the
   // exact rewrite V2 forbids. Binding the lease to the sha this step read off origin
-  // makes origin the arbiter, from the same `ls-remote` the record reports.
+  // is what makes origin the arbiter, from the same `ls-remote` the record reports.
+  //
+  // And the branch refspec must NOT be forced for that arbitration to happen: git
+  // skips the lease for a refspec carrying a leading `+`, so the `+` this push used
+  // to carry made the lease unread and a moved branch was rewritten anyway. The
+  // `+` was never what made a rewind work — a rewind is non-fast-forward, and the
+  // lease alone authorises exactly that move of that ref, which
+  // `test-lean-rewind-lease-binds.ts` (c) observes against a real origin. What the
+  // old comment feared (`Everything up-to-date`, exit 0, nothing pushed) is git's
+  // answer to an unforced refspec that is ALREADY a fast-forward-or-equal; it is not
+  // the answer to a rewind whose lease matches, and the same file's (b) pins that
+  // refusal and (c) its opposite. The keeping-ref refspec stays unforced as it always
+  // was, and the switch moves the `+` and nothing else — no new option on either arm.
   const pushArgv = [
     ...NO_HOOKS,
     "push",
     `--force-with-lease=${ref}:${held}`,
     "origin",
-    `+${verifiedHead}:${ref}`,
+    `${leanRewindLeaseBinds() ? "" : "+"}${verifiedHead}:${ref}`,
     `${held}:${unverifiedRef(ctx.issue)}`,
   ];
   // A push that git rejected comes back as the stderr it printed; a push that ran

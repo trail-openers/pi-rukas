@@ -3995,8 +3995,11 @@ the review step; once it has pushed, "shipped" and "verified" are two different 
 **Fix:** the handback now ships the last verified head. It keeps the unverified head
 reachable under `refs/lean/unverified/<issue>`, then rewinds origin's branch to the newest
 decided green `verify`'s head with a lease-pinned push
-(`--force-with-lease=<branch>:<unverified head>`), so it moves the branch only while origin
-still holds exactly the head this run pushed. The step's outcome carries `shippedHead`,
+(`--force-with-lease=<branch>:<unverified head>` on an UNFORCED branch refspec), so it
+moves the branch only while origin still holds exactly the head this run pushed. The
+refspec must be unforced for that to be more than a phrase: git skips the lease for a
+refspec with a leading `+`, and the forced form this replaced rewrote a branch somebody
+else had moved with the lease never consulted. The step's outcome carries `shippedHead`,
 `shippedVerified`, and when they differ `unshippedHead` and `unshippedReason`; the
 comment body names them, and on `PI_ENSEMBLE_HANDOFF_CHANNEL=host` the body the host
 is handed is that same comment. When the push is refused — by the lease, or
@@ -4008,7 +4011,9 @@ head verified, so a state file naming bytes nobody has moves nothing and reads a
 Where origin already holds the certified head, the step pushed nothing and
 says so, without calling the shipped head unverified. Read `shippedVerified: false` as the reason to
 look before merging. The rule is behind `PI_ENSEMBLE_LEAN_VERIFIED_HANDBACK` (default on;
-`0` restores the pre-rule step that reports and moves nothing). It keys on the step log, so
+`0` restores the pre-rule step that reports and moves nothing), and the unforced refspec
+that makes the lease bind is separately behind `PI_ENSEMBLE_LEAN_REWIND_LEASE_BINDS`
+(default on; `0` puts the leading `+` back, byte for byte). It keys on the step log, so
 it covers every handback whose newest work step is a `fixed` review, whatever stopped the
 run. Source: `lean/handback-heads.ts`, `lean/handback-rewind.ts`, `docs/lean.md` → "The
 verified handback".
