@@ -17,6 +17,7 @@
  * everything" — a pass, arrived at by nobody.
  */
 
+import { incompleteLanes } from "../lens-review-incomplete.ts";
 import type { LensRound, ReviewDeps } from "./review-args.ts";
 import { ReviewInfraError } from "./review-errors.ts";
 import { gitQuiet } from "./specify-reset.ts";
@@ -36,7 +37,12 @@ import type { DispatchUsageRow } from "./step-budget.ts";
  *    named no-change cause is a different claim (it is about what the FIXER changed,
  *    which this predicate cannot see).
  *  - no `usage` — the lenses ran but reported nothing, so the step would be told a
- *    round cost nothing and produced a verdict.
+ *    round cost nothing and produced a verdict. Quoting the round's findings is not
+ *    enough to make that refusal actionable: on the shape the review layer produces
+ *    for an unreadable diff (#2261) there are no findings, and the cause — the size
+ *    limit the read hit, the provider that refused the prompt for its size — lives on
+ *    the lane rows. So the arm appends those lanes, rendered by the layer's own
+ *    renderer, and the cause reaches the handback instead of dying on the rows.
  *
  * Checking the clean bar before this one would let `REVIEW_INCOMPLETE` fall through
  * the non-blocking branch into a `done`: a head nobody reviewed, certified by the
@@ -50,11 +56,20 @@ export function assertRan(round: LensRound & { head: string }, rows: DispatchUsa
       }) — a head nobody re-reviewed is not a pass`,
       rows,
     );
-  if (round.usage === undefined)
+  if (round.usage === undefined) {
+    // The lanes the layer says left this round incomplete, in the layer's own words
+    // (`incompleteLanes`, the same renderer the driver's cap-hit event prints — a
+    // second wording here would be two stories about one lane). Derived from the
+    // rows the round already carries rather than from a field the wiring would have
+    // to carry up: the step receives these rows either way, so the cause cannot be
+    // dropped by an adapter that forgot one field (#2261's lean gap was exactly a
+    // reason that survived only on rows nothing rendered).
+    const lanes = incompleteLanes(round.lenses).join("; ");
     throw new ReviewInfraError(
-      `the six-lens review reported ${round.verdict} with no usage from any lens child — that is not a pass: ${round.findings.slice(0, 300)}`,
+      `the six-lens review reported ${round.verdict} with no usage from any lens child — that is not a pass: ${round.findings.slice(0, 300)}${lanes === "" ? "" : ` — lanes: ${lanes.slice(0, 900)}`}`,
       rows,
     );
+  }
 }
 
 /**
