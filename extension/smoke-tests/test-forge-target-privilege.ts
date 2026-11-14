@@ -281,6 +281,51 @@ try {
         .join(", ") || "none"})`,
     );
 
+    // The mirror-image spelling. `owner` and `repo` feed ONE endpoint
+    // (`ghVisibility` builds `repos/OWNER/REPO` from the two fields), so `"acme" +
+    // "corp/widget"` is the very same path github.com publishes nothing at as
+    // `"acme/corp" + "widget"`. A rule that policed `owner` alone called this
+    // second spelling a repository and let it buy the exemption.
+    for (const malformed of [
+      { owner: "acme", repo: "corp/widget", host: "github.com" },
+      { owner: "acme", repo: "corp/widget" },
+      { owner: "acme/corp", repo: "widget/sub", host: "github.com" },
+      { owner: "", repo: "widget", host: "github.com" },
+      { owner: "acme", repo: "", host: "github.com" },
+    ]) {
+      resetVisibilityCacheForTests();
+      const askedMalformed: RepoTarget[] = [];
+      const malformedIsPrivate = await isPrivateTarget(malformed, {
+        lookup: async (t) => {
+          askedMalformed.push(t);
+          return true;
+        },
+      });
+      assert(
+        malformedIsPrivate === false,
+        `${JSON.stringify(malformed)}: the separator is refused wherever it sits (isPrivateTarget said ${malformedIsPrivate})`,
+      );
+      assert(
+        askedMalformed.length === 0,
+        `…with no lookup issued and nothing cached (asked: ${askedMalformed
+          .map((t) => `${t.host ?? "<no host>"}/${t.owner}/${t.repo}`)
+          .join(", ") || "none"})`,
+      );
+    }
+
+    // A GitLab namespace is NOT malformed — nesting is what GitLab serves, so a
+    // deep slug on another host stays checkable (answered `false`, as any
+    // non-GitHub host is) rather than refused on shape by this rule.
+    resetVisibilityCacheForTests();
+    const namespaceIsPrivate = await isPrivateTarget(
+      { owner: "group/sub", repo: "project", host: "gitlab.example.com" },
+      { lookup: async () => false },
+    );
+    assert(
+      namespaceIsPrivate === false,
+      "a deep GitLab namespace stays checkable rather than being refused on shape",
+    );
+
     // The control: an owner that IS one slug keeps its private answer, so the
     // refusal above is about the shape and not a seam that exempts nothing.
     resetVisibilityCacheForTests();
