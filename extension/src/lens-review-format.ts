@@ -12,6 +12,8 @@
 
 import os from "node:os";
 import path from "node:path";
+import type { DiffRange } from "./adversarial-diff-cap.ts";
+import { boundLensPromptDiff } from "./lens-diff-bound.ts";
 import type { SuppressedFinding } from "./lens-residuals.ts";
 import type { ForcedFullReason } from "./lens-review-delta-disclose.ts";
 import { isReviewIncomplete } from "./lens-review-incomplete.ts";
@@ -212,7 +214,24 @@ export function lensPromptFor(
   prior = "",
   skillPath?: string,
   skillBody?: string,
+  /** The ref range `diff` was computed from, when the review computed it. The
+   * bounded prompt mints its reread command from these two refs rather than from
+   * a pre-built string, so the command can be refused for a ref carrying bytes
+   * that would escape the fence (see `adversarial-diff-cap.ts`). */
+  range?: DiffRange,
+  /** The delta arm's full-branch orientation block, which shares the prompt's
+   * ONE budget with the diff rather than riding on top of it (#2261). */
+  fullContext?: string,
 ): string {
+  // #2261 — the diff is the largest thing in this prompt and the only thing in
+  // it that grows without limit with the size of the change. Inlining it whole
+  // is what filled six children's context windows and had every lens die at the
+  // provider with HTTP 400, reported as a bare `exit 1`. The bound returns the
+  // head of the change plus prose naming every file it cut; that notice is
+  // printed AFTER the closing fence, where a reviewed diff that quotes it cannot
+  // impersonate it. At or under the budget the diff comes back unchanged and the
+  // prompt is byte-identical to the unbounded one.
+  const bounded = boundLensPromptDiff({ diff, context, fullContext, range });
   // The other-lenses list is derived from the FULL roster — every other
   // lens in the configured roster, including blocked ones (a blocked lens
   // still has a separate reviewer row, so the claim reflects what the
@@ -261,13 +280,13 @@ ${skillBody.trim()}
   return `You are running the **${lens.name}** review lens.${skillSection}
 Scope discipline — only flag issues that belong to **${lens.name}**. Do NOT report findings that belong to other lenses (${laneList} have separate reviewers; trust them with their own lanes).
 
-Context for this PR: ${context || "(no extra context)"}
+Context for this PR: ${bounded.context || "(no extra context)"}
 
 Diff to review:
 \`\`\`diff
-${diff}
+${bounded.diff}
 \`\`\`
-${evidence ? `\n${evidence}\n` : ""}${prior ? `\n${prior}\n` : ""}
+${bounded.note ? `\n${bounded.note}\n` : ""}${evidence ? `\n${evidence}\n` : ""}${prior ? `\n${prior}\n` : ""}
 ## Your working directory is NOT the branch
 
 Read the supplied content above rather than opening files. Your filesystem is checked out at the **base commit** — the state before this PR — so a file you open yourself shows the code as it was, not as this diff leaves it. Reviewing the diff against a stale file produces contradictions that do not exist. If you need a changed file in full and it is not supplied, say so in your summary instead of guessing.

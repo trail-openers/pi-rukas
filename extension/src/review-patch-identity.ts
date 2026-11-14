@@ -25,6 +25,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { diffReadMaxBytes } from "./review-diff.ts";
 import { trace } from "./trace.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
 
@@ -52,7 +53,16 @@ function parsePatchId(stdout: string, label: string): string | undefined {
   return id;
 }
 
-/** `git diff <range> | git patch-id --stable`. THROWS on a git failure. */
+/**
+ * `git diff <range> | git patch-id --stable`. THROWS on a git failure.
+ *
+ * The `maxBuffer` is the shared review-read ceiling (#2261), not a number of
+ * this module's own: the identity is computed over the same base+head range the
+ * diff read just succeeded on, so a smaller cap here reproduces the whole
+ * large-diff defect one call later — the review reads the diff, then dies
+ * hashing it, and the only thing the operator sees is the identity read's own
+ * 120-character message slice.
+ */
 export async function patchIdOfRange(
   execFn: VerifyExecFn,
   cwd: string,
@@ -61,13 +71,18 @@ export async function patchIdOfRange(
 ): Promise<string | undefined> {
   const { stdout } = await execFn(`git diff ${range} | git patch-id --stable`, {
     cwd,
-    maxBuffer: 1024 * 1024,
+    maxBuffer: diffReadMaxBytes(),
     timeout: LOCAL_GIT_TIMEOUT_MS,
   });
   return parsePatchId(stdout, label);
 }
 
-/** sha256 of `git diff --binary <range>` (whitespace-sensitive). THROWS on a git failure. */
+/**
+ * sha256 of `git diff --binary <range>` (whitespace-sensitive). THROWS on a git
+ * failure. Shares the review-read ceiling with {@link patchIdOfRange} for the
+ * same reason (#2261); the digest is the larger of the two reads, so it takes
+ * the larger of the two bounds and never less than the shared ceiling.
+ */
 export async function diffDigestOfRange(
   execFn: VerifyExecFn,
   cwd: string,
@@ -75,7 +90,7 @@ export async function diffDigestOfRange(
 ): Promise<string> {
   const { stdout } = await execFn(`git diff --binary ${range}`, {
     cwd,
-    maxBuffer: 64 * 1024 * 1024,
+    maxBuffer: Math.max(64 * 1024 * 1024, diffReadMaxBytes()),
     timeout: LOCAL_GIT_TIMEOUT_MS,
   });
   return createHash("sha256").update(stdout).digest("hex");
