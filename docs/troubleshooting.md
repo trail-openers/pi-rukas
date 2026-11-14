@@ -492,7 +492,7 @@ PR: [#1417](https://github.com/trail-openers/pi-rukas/issues/1417)
 1. Every smoke test that can reach `appendLedgerEntry` (directly or via `runLensReview` / `finishLensReview` / `writeLensLedgerEntry` / `runAdversarialLoop` / the lens tool) now self-isolates the ledger via `PI_ENSEMBLE_REVIEW_LEDGER_FILE` (a per-test temp file), a temp git-repo cwd, or a mocked `appendLedgerEntry`. `test-ledger-isolation.ts` enforces this statically and names any non-isolated file as a failure.
 2. The race-fallback merge step is extracted into a pure, fs-free helper (`mergeAfterRace` in `review-ledger-merge.ts`) — push the bumped entry first, then dedupe — and is unit-tested directly without mocking `node:fs`.
 
-**Recovery for an existing corrupted ledger:** re-run the lens review on the branch (`dispatch_lens_review` with `base origin/main` + `head <branch>`). The new entry (with a fresh `at`) becomes the latest and the stale `REVIEW_INCOMPLETE` row is shadowed. If you also see duplicate rows for the same `(branch, kind)` (the pre-fix race-fallback symptom), delete the older row from `.git/review-ledger.json` by hand, then re-run the review.
+**Recovery for an existing corrupted ledger:** re-run the lens review on the branch (`dispatch_lens_review` with `base origin/main` + `head <branch>`). A completed round replaces the `REVIEW_INCOMPLETE` row outright — one row per `(branch, kind)` is the ledger's dedupe invariant, so there is nothing left to shadow (the `at`-tie ordering is what decides which row wins when two writes land in the same millisecond). If you also see duplicate rows for the same `(branch, kind)` (the pre-fix race-fallback symptom), delete the older row from `.git/review-ledger.json` by hand, then re-run the review.
 
 PR: [#1069](https://github.com/trail-openers/pi-rukas/issues/1069)
 
@@ -581,6 +581,14 @@ Every handoff carries three things it previously withheld.
 ### The six-pass review said APPROVED but nothing looks reviewed
 
 A lens that exits 0 without calling `report_finding` used to be indistinguishable from one that reviewed carefully and found nothing, so a silent review reported APPROVED. It now reports `REVIEW_INCOMPLETE` unless every lens produced either findings or a closing summary. If you see REVIEW_INCOMPLETE with no obvious failure, check the lens transcripts under `~/.pi/agent/ensemble-runs/<date>/` — a lens that returned only thinking content is the usual cause.
+
+### `NO REVIEW — no changes since the last lens review` right after a round failed
+
+**Symptom.** A lens round ends `REVIEW_INCOMPLETE` — every lens blocked on a missing skills dir, a spawn that died on a provider quota error, or a killed child. Re-dispatching at the same head with no new commit answers `NO REVIEW — no changes since the last lens review (…)` with no verdict, no findings and no fan-out, and only a `full: true` review recovers.
+
+**Cause (fixed).** The incomplete round recorded a row carrying the head it was invoked at — resolved before the fan-out runs — and the next round's delta base was read from that field. A round that ran no lens had made its head look reviewed, so the follow-up resolved an empty delta and answered with the no-review outcome instead of reviewing the branch. An incomplete row now carries the last **completely** reviewed head forward (or none, on a branch that never completed one), and both delta readers skip an `REVIEW_INCOMPLETE` row before they compare heads: the round after a failed one reviews the whole range.
+
+**The escape hatch.** `PI_ENSEMBLE_LENS_INCOMPLETE_FULL=0` restores the old reading, where an incomplete row is the delta base again and a same-head round gets that refusal back. On (the default) is the right setting for anyone who treats review coverage as the point; off is for a host that decides re-reviewing after a failed round costs more than the coverage it lost. The row is recorded and still counts against the incomplete-round cap either way (`PI_ENSEMBLE_LENS_ROUND_CAP`), so a chronically failing lens cannot be re-run for free.
 
 ### A lens lane finishes unusually fast, or its report says it ran out of turns
 

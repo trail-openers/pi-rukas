@@ -36,6 +36,7 @@ import {
   leanVerifiedHandbackEnabled,
 } from "../../src/lean/verified-handback-switch.ts";
 import { claimScanEnabled, evidenceSupplyEnabled } from "../../src/lens-evidence.ts";
+import { lensIncompleteForcesFull } from "../../src/lens-review-incomplete-switch.ts";
 import { lensRoundCap } from "../../src/lens-round-cap.ts";
 import { loopDetectorEnabled } from "../../src/loop-detector.ts";
 import { roundCapMergeEnabled } from "../../src/merge-guard-round-cap.ts";
@@ -193,6 +194,9 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   ["PI_ENSEMBLE_LEAN_GUARD_FAIL_CLOSED", leanGuardFailClosed],
   ["PI_ENSEMBLE_ISSUE_IMAGES", () => issueImagesEnabled()],
   ["PI_ENSEMBLE_LENS_EVIDENCE", evidenceSupplyEnabled],
+  // #2223 — the delta reader's incomplete-row rule. The reader is `v !== "0"`, so
+  // the gate's LIVE loop (env deleted) pins "unset means on".
+  ["PI_ENSEMBLE_LENS_INCOMPLETE_FULL", lensIncompleteForcesFull],
   ["PI_ENSEMBLE_LENS_ROUND_CAP_MERGE", roundCapMergeEnabled],
   ["PI_ENSEMBLE_LOOP_DETECTOR", loopDetectorEnabled],
   ["PI_ENSEMBLE_MERGE_AUTHORITY", mergeAuthorityEnabled],

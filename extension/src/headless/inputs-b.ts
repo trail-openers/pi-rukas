@@ -159,6 +159,10 @@ export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   // kill that had already committed HALTs with `step-failed:lens-fix` instead of
   // converting to a partial fix the adversarial gate reviews.
   flag("LENS_FIX_LAND_AHEAD", true),
+  // #2223 — an incomplete lens round is no evidence its head was reviewed, so its
+  // row is skipped as the automatic delta base and the next round is full. `0`
+  // restores the pre-fix reading (the reader is `!== "0"`, so the default is on).
+  flag("LENS_INCOMPLETE_FULL", true),
   // Unset or 0: no bound on concurrent lens children per model.
   int("LENS_MODEL_CONCURRENCY", null),
   // The reader's default is the driver's MAX_REVIEW_ROUNDS (lens-round-cap.ts);

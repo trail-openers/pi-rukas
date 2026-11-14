@@ -101,6 +101,37 @@ function ledgerFileFor(c: { dir: string; branch: string }, reviewed: string): st
     ) === MOVED,
     "reviewed head: the LATEST lens row wins — a re-review re-pins the commit",
   );
+  // #2223 — the row an incomplete round leaves behind must never credit the head it
+  // was invoked at, and the issue's binding L1/L4 choose WHERE that lives: the row
+  // shape, "one row shape, no consumer-side skip". So the arm this file can honestly
+  // assert is that the carried-forward row yields no head, and that the reader has
+  // gained NO incomplete-row rule of its own — a skip added here would be the
+  // consumer-side remedy the spec rejects, and it would make a writer that leaked the
+  // head look correct. The writer's own rule is asserted where it lives
+  // (`test-lens-incomplete-full-review.ts`, L1/L4, driven end to end).
+  assert(
+    reviewedHeadFromEntries(
+      lensRow("feature/x", HEAD, {
+        detail: "REVIEW_INCOMPLETE",
+        passed: false,
+        // The row `bumpLensRound` writes: the completed head carried forward by the
+        // writer, which is exactly the head this proof is allowed to name.
+        // `undefined`, not omitted: spreading a key away is not possible, and
+        // `headSha: undefined` is the field shape `bumpLensRound` produces when it
+        // drops the head — the row the reader actually opens after an incomplete
+        // round. The writer's own rule is asserted where it lives
+        // (`test-lens-incomplete-full-review.ts`, L1/L4, driven end to end).
+        headSha: undefined,
+        incompleteRuns: 1,
+      }),
+      "feature/x",
+    ) === undefined,
+    "reviewed head: a row with no headSha records no reviewed head, whatever verdict it carries — the head a branch never completed a round at is never the reviewed commit (#2223)",
+  );
+  assert(
+    reviewedHeadFromEntries(lensRow("feature/x", HEAD), "feature/x") === HEAD,
+    "reviewed head: LENS_ROWS_HERE is the honest shape — a lens row is keyed on a real head (an absent headSha would pass the arm above for the wrong reason)",
+  );
   assert(
     reviewedHeadFromEntries(
       [
