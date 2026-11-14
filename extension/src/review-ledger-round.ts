@@ -36,10 +36,27 @@ import type { LedgerEntry } from "./review-ledger.ts";
  * after the ledger is re-read by another process — none of which calls the delta
  * reader. Keeping the head on the row would put the correctness of "a head nobody
  * reviewed is not reviewed" in one caller's hands rather than in the data.
+ *
+ * The walk goes back to the last COMPLETED row rather than asking only the
+ * immediate predecessor, and consecutive incomplete runs are why. The first
+ * incomplete round carries the completed head forward; if the next round asked its
+ * predecessor alone it would find an incomplete row, answer "no head", and the
+ * streak would have erased the proof that anything was ever reviewed — a branch
+ * that fails two rounds in a row would be indistinguishable from one that never
+ * completed a review. Same rule as the round counter above, which likewise reads
+ * the previous round through an incomplete row rather than resetting it.
  */
-function incompleteHeadSha(prev: LedgerEntry | undefined): string | undefined {
-  if (prev === undefined || prev.detail === "REVIEW_INCOMPLETE") return undefined;
-  return prev.headSha;
+function incompleteHeadSha(existing: LedgerEntry[], branch: string): string | undefined {
+  // Scan the key's rows from the oldest forward and keep the newest one that
+  // actually completed a review, so a streak of failed rounds cannot erase the
+  // proof of the last review that happened (see the jsdoc).
+  let head: string | undefined;
+  for (const e of existing) {
+    if (e.branch !== branch || e.kind !== "lens") continue;
+    if (e.detail === "REVIEW_INCOMPLETE" || !e.headSha) continue;
+    head = e.headSha;
+  }
+  return head;
 }
 
 /**
@@ -87,7 +104,7 @@ export function bumpLensRound(entry: LedgerEntry, existing: LedgerEntry[]): Ledg
   const next = completed ? (prev ? (prev.round ?? 1) : 0) + 1 : (prev?.round ?? 1);
   const incompleteRuns = completed ? 0 : (prev?.incompleteRuns ?? 0) + 1;
   return {
-    ...bumpCarryHead(entry, completed, prev),
+    ...bumpCarryHead(entry, completed, existing),
     round: next,
     incompleteRuns,
   };
@@ -106,10 +123,10 @@ export function bumpLensRound(entry: LedgerEntry, existing: LedgerEntry[]): Ledg
 function bumpCarryHead(
   entry: LedgerEntry,
   completed: boolean,
-  prev: LedgerEntry | undefined,
+  existing: LedgerEntry[],
 ): LedgerEntry {
   if (completed) return entry;
-  const headSha = incompleteHeadSha(prev);
+  const headSha = incompleteHeadSha(existing, entry.branch);
   if (headSha === undefined) {
     const { headSha: _dropped, ...rest } = entry;
     return rest;
