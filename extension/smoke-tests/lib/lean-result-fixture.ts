@@ -213,6 +213,8 @@ export function leanLog(opts: LeanLogOpts): Step[] {
 export interface LeanDrive {
   code: number;
   doc: Record<string, unknown>;
+  /** The record the verb projected — for a case that re-projects it under a switch. */
+  run: LeanRun;
   /** The one projected issue, or undefined on a document that projects none. */
   issue: Record<string, unknown> | undefined;
   /** The shared output contract's verdict — every case asserts this is empty. */
@@ -236,13 +238,14 @@ export async function driveLean(
     ...(opts?.deadlineMs === undefined ? {} : { deadlineMs: opts.deadlineMs }),
   };
   const r = await verbRun(["7"], async () => ({
-    summary: `work-lean #7: ${leanState} (exit ${code})`,
+    summary: `work-lean #7: ${leanState} (exit ${String(code)})`,
     result: { ...base, run },
   }));
   const issues = r.doc.issues as Record<string, unknown>[] | undefined;
   return {
     code: r.code,
     doc: r.doc,
+    run,
     issue: Array.isArray(issues) ? issues[0] : undefined,
     violations: r.violations,
   };
