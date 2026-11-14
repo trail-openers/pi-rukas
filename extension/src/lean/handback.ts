@@ -37,7 +37,10 @@ import { BLOCKED_PATH_CAP, BLOCKED_REASON_CAP, validPrUrl } from "./state-outcom
 import { type Outcome, REPORT_STATES, type Step } from "./state.ts";
 import { budgetSentence, budgetTrio } from "./step-budget.ts";
 import { fenceText, oneLine } from "./text-fence.ts";
-import { leanVerifiedHandbackEnabled } from "./verified-handback-switch.ts";
+import {
+  leanHandbackNoHeadRecordEnabled,
+  leanVerifiedHandbackEnabled,
+} from "./verified-handback-switch.ts";
 import { newestRedVerifyReason } from "./verify-deps.ts";
 
 /** A reason line long enough to be a wall is not a comment a human reads. */
@@ -267,6 +270,14 @@ function headLines(heads: Heads | undefined): string[] | undefined {
     lines.push(
       `Unshipped head: \`${heads.unshippedHead}\` — ${heads.unshippedReason ?? "not shipped"}`,
     );
+  // `unshippedHead` is what carries a reason on the comment today, and the two are
+  // always set together on the rewind's refusal arms. This adds the one shape where
+  // they are not: a step that moved nothing and has no head to name as displaced still
+  // owes the operator WHY the head it shipped was never certified, and the shipped
+  // line alone says only that it was not. The reason is the rule's sentence, so the
+  // comment and the record state the same finding in the same words.
+  if (heads.unshippedHead === undefined && heads.unshippedReason !== undefined)
+    lines.push(`Why nothing was moved: ${heads.unshippedReason}`);
   if (lines.length === 0) return undefined;
   return [...lines, ""];
 }
@@ -302,10 +313,15 @@ interface Heads {
  * record does not declare would be carried by the saved file without ever being
  * judged by the validator. So `render` travels to the body and nowhere else.
  *
- * A handback the rule does not touch records nothing, and neither does one whose
- * rewind had no head to move: the rule fired, found no green `verify`, and so has
- * no head to name — the rule's own wording is not a fact about a head and would
- * read as one, which is the confusion V4 forbids.
+ * A handback the rule does not touch records nothing. A handback whose rewind had no
+ * head to move records the head origin ACTUALLY holds, under
+ * `PI_ENSEMBLE_LEAN_HANDBACK_NOHEAD_RECORD` (see `verified-handback-switch.ts`): off, it
+ * records nothing, as it did before the recording existed, and on, the step says what its
+ * own `NO_HEAD` already knew — that the branch it is reporting shipped an uncertified
+ * head — carrying the RULE's reason rather than the rewind's wording for a move that did
+ * not happen. That distinction is the point: off, "the rule fired and had no head" and
+ * "the rule never spoke" are the same record, and an operator cannot tell a certified
+ * head the step moved back from an uncertified one it left in place.
  *
  * `originHead` is the head the branch holds as this step read it AFTER its own move,
  * which is the only thing `shippedHead` may claim: a landed rewind moved the branch
@@ -325,15 +341,39 @@ interface Heads {
  * step never displaced would make the two halves of the record disagree — the exact
  * failure `test-lean-state-outcome-heads.ts` exists to prevent.
  */
-function headFacts(applies: boolean, rewind: Rewind, originHead: string | undefined): Heads {
+function headFacts(
+  applies: boolean,
+  rewind: Rewind,
+  originHead: string | undefined,
+  noHeadRecords: boolean,
+): Heads {
   if (!applies) return { render: false };
   const shippedHead = originHead ?? rewind.unshippedHead;
-  // Nothing to say about heads: this step read origin and there was no head there
-  // for it to ship or move. The rule's finding is still reported — it is the answer
-  // to the question the operator asks of a handed-back run, "why is what I was sent
-  // not the thing the gate approved?" — but it is reported as the rule's own words
-  // beside the head that actually shipped, never dressed up as a head.
-  if (shippedHead === undefined && rewind.unshippedHead === undefined) return { render: false };
+  // The arm with nothing to move: the rule fired, the log named no green head, and
+  // origin keeps the head the fix wave pushed. Whether that is a fact the record
+  // carries is the switch's question, not this function's; off, it is the same silence
+  // as a handback the rule never touched, which is what the byte-identity arm of the
+  // smoke test pins.
+  if (rewind.unshippedHead === undefined && !rewind.shipped) {
+    if (!noHeadRecords || originHead === undefined) return { render: false };
+    // The rule's words, in the record's OWN reason field rather than only beside a
+    // head: the rewind's own `reason` is a fixed sentence about a push that did not
+    // run, and the operator's question here is why what shipped was never certified.
+    // The rule that judged the log answers that, so it wins wherever it spoke.
+    const why = rewind.noHeadReason ?? rewind.reason;
+    return {
+      render: true,
+      shippedHead: originHead,
+      // False, and unconditionally: nothing moved, so whatever origin holds is what
+      // the fix wave left there and the gate never certified it. `shipped` is false by
+      // construction on this arm, and `alreadyAtVerified` cannot be set on a rewind
+      // that had no head to compare against.
+      shippedVerified: false,
+      // No `unshippedHead`: this step displaced nothing, so naming a head it left
+      // behind would make the record claim a move the reason then denies.
+      ...(why === undefined ? {} : { unshippedReason: why }),
+    };
+  }
   const leftBehind =
     rewind.unshippedHead !== undefined && rewind.unshippedHead !== shippedHead
       ? rewind.unshippedHead
@@ -381,7 +421,13 @@ export async function handbackOutcome(
       ruleOn && heads.verifiedHead !== undefined
         ? await rewind(heads.verifiedHead)
         : ruleOn
-          ? NO_HEAD
+          ? // The rule's reason travels with the shape. It is set alongside `NO_HEAD`'s
+            // own `reason` rather than in place of it: that constant's sentence
+            // describes a push that did not run, and a `{ ...NO_HEAD }` spread would
+            // carry it into a record whose reader is asking a different question — why
+            // what shipped was never certified — which only the rule that judged the
+            // log can answer.
+            { ...NO_HEAD, noHeadReason: heads.reason }
           : SWITCHED_OFF;
     // Where origin's branch stands now, read by this step rather than inferred
     // from the move. A handback the rule never touched has nothing to say about
@@ -389,7 +435,9 @@ export async function handbackOutcome(
     // read was made, and the record must not look like the answer to a question
     // this step never asked.
     const originHead = ruleOn ? await readOrigin(ctx) : undefined;
-    const facts = ruleOn ? headFacts(heads.applies, moved, originHead) : { render: false };
+    const facts = ruleOn
+      ? headFacts(heads.applies, moved, originHead, leanHandbackNoHeadRecordEnabled())
+      : { render: false };
     const { render, ...record } = facts;
     body = handbackBody(ctx.issue, {
       needed: neededFromLog(ctx.steps),

@@ -164,6 +164,106 @@ try {
       (issueThrown as { publicHygiene?: boolean })?.publicHygiene === true,
       "and a public one is refused for the same body",
     );
+
+    // 6. A remote whose path is deeper than `owner/repo` on the PUBLIC host
+    //    (#2257). github.com serves one repository per owner, so such a slug —
+    //    which a clone mislabelled as GitLab produces, via `PI_ENSEMBLE_FORGE`
+    //    or `.pi/forge` — names no repository. Handing it to the visibility
+    //    lookup anyway was the route to an unchecked publish: a `gh` that
+    //    answered `true` for a path it happened to resolve excused every post
+    //    the cycle made. No slug means no target means "unknown, so check".
+    resetVisibilityCacheForTests();
+    resetDenylistCacheForTests();
+    const deepAsked: string[] = [];
+    const deepRec = recorder();
+    const deepForge = createForge(
+      {
+        forge: "gitlab",
+        host: "github.com",
+        remote: "origin",
+        url: "git@github.com:acme/corp/widget.git",
+        source: "env",
+      },
+      {
+        execFn: deepRec.fn,
+        cwd: dir,
+        visibility: async (t) => {
+          deepAsked.push(`${t.host ?? "<no host>"} ${t.owner}/${t.repo}`);
+          return true;
+        },
+      },
+    );
+    let deepThrown: unknown;
+    try {
+      await deepForge.prCreate("ship it", "feature/x", DIRTY_BODY, {});
+    } catch (err) {
+      deepThrown = err;
+    }
+    assert(
+      (deepThrown as { publicHygiene?: boolean })?.publicHygiene === true,
+      "a deep github.com path is checked, not excused by a private answer",
+    );
+    assert(
+      deepAsked.length === 0,
+      `and the visibility question was never asked about a slug github.com does not serve (asked: ${deepAsked.join(", ") || "none"})`,
+    );
+    assert(
+      deepRec.calls.every((c) => !c.includes("pr create")),
+      "and the deep-path adapter posted nothing",
+    );
+
+    // 7. The host the target carries is the one the REMOTE named, never the
+    //    detection result's — on the config leg `det.host` is the operator's
+    //    `host=`, and asking `gh` about a project on another instance is a claim
+    //    it cannot support. A self-hosted remote whose host is not github.com
+    //    must not reach `gh` under github.com's name.
+    resetVisibilityCacheForTests();
+    resetDenylistCacheForTests();
+    const cfgAsked: string[] = [];
+    const cfgGh: string[] = [];
+    const cfgRec = recorder();
+    const cfgForge = createForge(
+      {
+        forge: "gitlab",
+        host: "github.com",
+        remote: "origin",
+        url: "git@forge.internal.example/group/project.git",
+        source: "config",
+      },
+      {
+        // The adapter's own executor is the `gh` transport for the visibility
+        // question too, so spying on it is what distinguishes "the target carried
+        // the remote's host, so the module refused to ask gh" from "a target
+        // carrying github.com got a private answer and skipped the scan".
+        execFn: async (cmd, o) => {
+          cfgGh.push(o?.argv ? [cmd, ...o.argv].join(" ") : cmd);
+          return recorder().fn(cmd, o);
+        },
+        cwd: dir,
+        visibility: async (t) => {
+          cfgAsked.push(`${t.host ?? "<no host>"} ${t.owner}/${t.repo}`);
+          return true;
+        },
+      },
+    );
+    let cfgThrown: unknown;
+    try {
+      await cfgForge.prCreate("ship it", "feature/x", DIRTY_BODY, {});
+    } catch (err) {
+      cfgThrown = err;
+    }
+    assert(
+      (cfgThrown as { publicHygiene?: boolean })?.publicHygiene === true,
+      "a remote on another instance is checked even when .pi/forge names github.com",
+    );
+    assert(
+      cfgGh.every((c) => !c.startsWith("gh api repos/")),
+      `…and no visibility lookup was issued to gh for it (${cfgGh.join(" | ") || "no gh call"})`,
+    );
+    assert(
+      cfgAsked.length === 0,
+      `and no resolver was handed a github.com target (asked: ${cfgAsked.join(", ") || "none"})`,
+    );
   });
 } finally {
   rmSync(dir, { recursive: true, force: true });

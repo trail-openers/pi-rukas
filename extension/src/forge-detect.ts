@@ -35,6 +35,12 @@
  */
 
 import { execp } from "./exec.ts";
+import { defaultProbe, shouldProbe } from "./forge-probe.ts";
+// The segment grammar is imported, not restated: what a remote URL may name and
+// what a plan target may name are the same set of strings, and a second copy of
+// the predicate is a second copy that can drift — the divergence this parser
+// exists to remove.
+import { isSegment } from "./plan-target.ts";
 import { trace } from "./trace.ts";
 
 /**
@@ -129,19 +135,64 @@ export function stripPort(host: string): string {
 }
 
 /**
- * Parse one remote URL into host + path (owner/repo).
+ * A parsed remote: the host it names and every namespace segment of its path,
+ * with any `.git` suffix and trailing separators dropped. `path` is the whole
+ * namespace — `["group", "sub", "project"]`, not a two-field owner/repo — so a
+ * caller that needs the repository slug takes the last segment and the rest.
+ */
+export interface ParsedRemote {
+  host: string;
+  path: string[];
+}
+
+/**
+ * The forge whose depth rule applies to a path. An ASSERTION about the site the
+ * remote points at, not a guess: it can relax the host-derived depth rule — a
+ * remote nothing recognised gets the GitLab depth when the caller knows it is
+ * GitLab — but it NEVER tightens a github.com path below `owner/repo` and never
+ * lets one run deeper, because that bound is a fact about the public host, not a
+ * rule the caller gets to pick. Callers pass only the forge they actually
+ * detected. `undefined` means the caller does not know yet — it gets the host and
+ * the path and applies its own rule.
+ */
+export type ForgeArg = "github" | "gitlab";
+
+/**
+ * The shallowest path that names a repository, and the deepest this parser
+ * accepts. The docs state both bounds (`docs/headless.md`,
+ * `docs/troubleshooting.md`) and `test-forge-subgroup-docs.ts` pins the stated
+ * numbers to these, so a bound change turns that gate red rather than leaving the
+ * operator-facing prose describing a parser that no longer exists.
+ */
+export const MIN_SEGMENTS = 2;
+export const MAX_SEGMENTS = 5;
+
+/**
+ * Parse one remote URL into host + namespace path.
  *
  * Handles the four forms from the spec:
- *   - `https://[user@]HOST[:port]/owner/repo(.git)`
- *   - `git@HOST:owner/repo(.git)`           (scp-style SSH)
- *   - `ssh://[user@]HOST[:port]/owner/repo(.git)`
- *   - `ssh://git@HOST:2222/owner/repo(.git)`
+ *   - `https://[user@]HOST[:port]/path(.git)`
+ *   - `git@HOST:path(.git)`                   (scp-style SSH)
+ *   - `ssh://[user@]HOST[:port]/path(.git)`
+ *   - `ssh://git@HOST:2222/path(.git)`
  *
- * Returns `undefined` for anything that is not one of these — fail-closed.
+ * How deep the path may be is the forge's rule, not the URL's. GitHub
+ * publishes one repository per owner, so a GitHub path is exactly
+ * `owner/repo`; GitLab nests projects under arbitrarily deep subgroups, so a
+ * GitLab (or unknown-host) path may run two to five segments. A caller that
+ * knows the forge passes it; one that does not gets the host and the path and
+ * applies the rule itself — which is what `detectForge` does, since its own
+ * resolution order decides the type only after the host parsed.
+ *
+ * One thing the argument cannot override: a `github.com` path is always exactly
+ * `owner/repo`, whatever the caller believes the forge is. github.com serves no
+ * repository at a deeper path, and a slug it does not serve must not reach the
+ * visibility lookup — see {@link ForgeArg}.
+ *
+ * Returns `undefined` for anything that is not one of these forms, or whose
+ * path fails the depth bound or the segment grammar — fail-closed.
  */
-export function parseRemoteUrl(
-  url: string,
-): { host: string; owner: string; repo: string } | undefined {
+export function parseRemoteUrl(url: string, forge?: ForgeArg): ParsedRemote | undefined {
   const u = url.trim();
   if (!u) return undefined;
 
@@ -151,7 +202,7 @@ export function parseRemoteUrl(
     const rest = scheme[1]; // [user@]host[:port]/path
     // Find the first '/' after the authority — the path starts there.
     const slashIdx = rest.indexOf("/");
-    if (slashIdx < 0) return undefined; // no path — not owner/repo
+    if (slashIdx < 0) return undefined; // no path — not a repository URL
     const authority = rest.slice(0, slashIdx);
     const path = rest.slice(slashIdx + 1);
     // authority = [user@]host[:port]
@@ -159,55 +210,56 @@ export function parseRemoteUrl(
     const hostPort = atIdx >= 0 ? authority.slice(atIdx + 1) : authority;
     const host = stripPort(hostPort).toLowerCase();
     if (!host) return undefined;
-    const or = parseOwnerRepo(path);
-    if (!or) return undefined;
-    return { host, owner: or.owner, repo: or.repo };
+    const segments = parseNamespace(path, forge, host);
+    if (!segments) return undefined;
+    return { host, path: segments };
   }
 
-  // 2. scp-style: user@host:owner/repo(.git)
+  // 2. scp-style: user@host:group/sub/project(.git)
   const scp = u.match(/^[A-Za-z0-9._-]+@([A-Za-z0-9.-]+(?:\.[A-Za-z0-9-]+)*):(.+)$/);
   if (scp && scp[1] !== undefined && scp[2] !== undefined) {
     const host = scp[1].toLowerCase();
-    const or = parseOwnerRepo(scp[2]);
-    if (!or) return undefined;
-    return { host, owner: or.owner, repo: or.repo };
+    const segments = parseNamespace(scp[2], forge, host);
+    if (!segments) return undefined;
+    return { host, path: segments };
   }
 
   return undefined;
 }
 
-/** `owner/repo(.git)` → {owner, repo}. Trailing slash and .git tolerated. */
-function parseOwnerRepo(path: string): { owner: string; repo: string } | undefined {
-  const p = path.replace(/\.git$/i, "").replace(/\/+$/, "");
-  const m = p.match(/^([^/]+)\/([^/]+)$/);
-  if (!m || m[1] === undefined || m[2] === undefined) return undefined;
-  return { owner: m[1], repo: m[2] };
-}
-
 /**
- * Is this a CI environment? Reads `CI` from the given env.
+ * `a/b/c(.git)` → every segment, or `undefined` when the path is not a
+ * repository path on this forge. Trailing slash and `.git` tolerated; a
+ * doubled slash yields an empty segment and therefore nothing.
  *
- * GitHub Actions, GitLab CI, Circle, Jenkins etc. all set `CI=true` (or a
- * similar truthy string). `CI=0`/`CI=false`/empty are treated as "not CI".
- */
-export function isCI(env: Record<string, string | undefined> = process.env): boolean {
-  const v = env.CI;
-  if (v === undefined || v === "") return false;
-  return v !== "0" && v.toLowerCase() !== "false";
-}
-
-/**
- * Should the real (network) probe run?
+ * `host` is needed alongside `forge` because GitHub's one-repository-per-owner
+ * rule is a fact about the site, not about what the caller believes: an
+ * unqualified parse is held to the rule of the host it named, and `forge` only
+ * ever ADDS a rule — it never lifts the `owner/repo` bound off a github.com URL.
+ * A caller that mislabels a github.com remote as GitLab (an exported
+ * `PI_ENSEMBLE_FORGE=gitlab` in a GitHub clone) therefore gets no deep slug for
+ * it, which is what keeps that slug out of the public-repository visibility
+ * lookup that reads a resolvable slug as a licence to skip the publish scan.
  *
- * - `PI_ENSEMBLE_FORGE_PROBE=0` → never (hard off, wins over everything).
- * - `PI_ENSEMBLE_FORGE_PROBE=1` → always (hard on, operator override).
- * - No explicit setting → **on locally, off in CI** (the spec's default).
+ * The separators are stripped before the `.git` suffix, not after it: a remote
+ * whose path ends `.git/` (git tolerates and rewrites these, and they survive a
+ * copy-pasted remote URL) still has to yield `project`, not `project.git` — this
+ * parser is now the single slug source for the forge adapter, the hygiene target
+ * resolver and the plan identity, and a `.git` tail makes each of them name a
+ * repository that does not exist.
  */
-export function shouldProbe(env: Record<string, string | undefined> = process.env): boolean {
-  const v = env.PI_ENSEMBLE_FORGE_PROBE;
-  if (v === "0") return false;
-  if (v === "1") return true;
-  return !isCI(env);
+function parseNamespace(
+  path: string,
+  forge: ForgeArg | undefined,
+  host: string,
+): string[] | undefined {
+  const p = path.replace(/\/+$/, "").replace(/\.git$/i, "");
+  const segments = p.split("/");
+  if (segments.length < MIN_SEGMENTS || segments.length > MAX_SEGMENTS) return undefined;
+  if (!segments.every(isSegment)) return undefined;
+  const githubish = forge === undefined ? host === "github.com" : forge === "github";
+  if ((githubish || host === "github.com") && segments.length !== MIN_SEGMENTS) return undefined;
+  return segments;
 }
 
 /**
@@ -241,61 +293,6 @@ export function parseForgeConfig(content: string): ForgeConfig | undefined {
   if (!type) return undefined;
   return host ? { type, host } : { type };
 }
-
-/**
- * The default (real, network) probe. Only ever called when `shouldProbe`
- * allows AND the host is not in the known table.
- *
- * Tries GitLab first (`/api/v4/version` — the most common self-hosted forge),
- * then GitHub (`X-GitHub-Request-Id` response header on any endpoint),
- * then Gitea/Forgejo (`/api/v1/version`). Any probe that fails to confirm
- * returns `undefined`, so the overall result stays `unknown`.
- *
- * This function is never called in tests — the injected `opts.probe`
- * replaces it wholesale.
- */
-const defaultProbe: ProbeFn = async (
-  host: string,
-  kind: ProbeKind,
-): Promise<ForgeType | undefined> => {
-  // The `kind` param is the caller's *guess* at what's on the host; the
-  // real probe ignores it and tries each endpoint in turn, confirming by
-  // response shape rather than by trust.
-  void kind;
-  // GitLab: GET /api/v4/version → {"version":"17.x", ...}
-  try {
-    const res = await fetch(`https://${host}/api/v4/version`, {
-      signal: AbortSignal.timeout(5000),
-    });
-    if (res.ok) {
-      const body = (await res.json()) as { version?: string };
-      if (typeof body.version === "string") return "gitlab";
-    }
-  } catch {
-    /* not gitlab */
-  }
-  // GitHub (incl. GHE): the X-GitHub-Request-Id response header is
-  // authoritative — gitlab.com does not set it.
-  try {
-    const res = await fetch(`https://${host}/`, { signal: AbortSignal.timeout(5000) });
-    if (res.headers.get("x-github-request-id")) return "github";
-  } catch {
-    /* not github */
-  }
-  // Gitea / Forgejo: GET /api/v1/version → {"version":"1.x"}
-  try {
-    const res = await fetch(`https://${host}/api/v1/version`, {
-      signal: AbortSignal.timeout(5000),
-    });
-    if (res.ok) {
-      const body = (await res.json()) as { version?: string };
-      if (typeof body.version === "string") return "gitea" as ForgeType;
-    }
-  } catch {
-    /* not gitea */
-  }
-  return undefined;
-};
 
 /**
  * Resolve which remote to use: `origin` → `upstream` → first remote.

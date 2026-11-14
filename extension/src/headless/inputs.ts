@@ -37,10 +37,8 @@
  * the wrapper on its container; a host must not), `test` (smoke tests only).
  */
 
-import { SEAMS, isGrandfathered } from "../decision-seam-registry.ts";
-import { LENS_ROSTER } from "../lens-roster.ts";
 import { SHUTDOWN_SETTLE_MS } from "../pending-jobs-signal.ts";
-import { SUBAGENT_ROLE_NAMES } from "../roles.ts";
+import { LENS_MEMBERS, ROLE_MEMBERS, SEAM_MEMBERS } from "./family-members.ts";
 
 export type InputType =
   | "boolean"
@@ -107,18 +105,6 @@ const family = (entry: HostInput, members: readonly string[]): HostInput => ({
   ...entry,
   members,
 });
-
-/** A role, seam or lens name as it appears in an env name. */
-const envId = (id: string) => id.toUpperCase().replaceAll("-", "_");
-/** `<ROLE>`: every spawned role; the parent session takes no per-role env. */
-export const ROLE_MEMBERS: readonly string[] = SUBAGENT_ROLE_NAMES.map(envId);
-/** `<SEAM>`: every registered seam that reads its env config. */
-export const SEAM_MEMBERS: readonly string[] = Object.values(SEAMS)
-  .filter((s) => !isGrandfathered(s))
-  .map((s) => envId(s.id))
-  .sort();
-/** `<LENS>`: the bundled lenses (lens-roster.ts), in roster order. */
-export const LENS_MEMBERS: readonly string[] = [...new Set(LENS_ROSTER.map((e) => e.name))];
 
 /** Every honoured `PI_ENSEMBLE_*` environment input, sorted by name. */
 export const HEADLESS_INPUTS: readonly HostInput[] = [
@@ -243,7 +229,16 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   // also takes it out, since one renderer serves all three seats.
   // The reader is `leanBuildIssueProseEnabled` in lean/issue-prose.ts.
   flag("LEAN_BUILD_ISSUE_PROSE", true),
+  // The deadline stop's route into the reporting step. The reader is
+  // `leanDeadlineHandbackEnabled` in lean/deadline-handback.ts.
+  flag("LEAN_DEADLINE_HANDBACK", true),
+  // The publishable-branch guard's fail-closed arm: a mainline neither the clone
+  // nor origin will name refuses the push instead of passing it. The reader is
+  // `leanGuardFailClosed` in lean/guard-fail-closed-switch.ts.
   flag("LEAN_GUARD_FAIL_CLOSED", true),
+  // The no-head handback's own record. The reader is
+  // `leanHandbackNoHeadRecordEnabled` in lean/verified-handback-switch.ts.
+  flag("LEAN_HANDBACK_NOHEAD_RECORD", true),
   // #2171 — show the specify/challenge adversary the issue prose its frozen
   // tests were written from. 0 takes the section back out of both prompts.
   // The reader is `leanIssueProseEnabled` in lean/issue-prose.ts.
@@ -263,9 +258,7 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   // only on `"0"`, which restores v0.14.71's specify (no probe, no submodule
   // call, exit 11 where the preflight would have handed back at 10).
   flag("LEAN_RUNNER_PREFLIGHT", true),
-  // A handback whose newest work step is a `fixed` review moves origin's branch back
-  // to the newest green verify's head and records which head shipped; `"0"` reports
-  // and moves nothing, the pre-rule behaviour.
+  // The rewind rule itself: reader `leanVerifiedHandbackEnabled`, same module.
   flag("LEAN_VERIFIED_HANDBACK", true),
   // Unset: derived from the host budget (CPUs, memory, pids.max); 0 = unbounded.
   // #1564 — a lens child's run bound (spawn-child-bound.ts).

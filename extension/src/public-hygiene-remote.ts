@@ -35,7 +35,8 @@
  * deliberately narrower than the parser: a scheme, or an `@host:` prefix.
  */
 
-import { parseRemoteUrl } from "./forge-detect.ts";
+import { type ParsedRemote, parseRemoteUrl } from "./forge-detect.ts";
+import { GITHUB_HOST, type RepoTarget } from "./public-hygiene-visibility.ts";
 
 /** The option words whose value arrives as the NEXT word.
  *
@@ -94,20 +95,37 @@ export function pushOptionGluedValue(word: string): string | undefined {
  * spellings identically (verified: `git ls-remote github.com:o/r.git` reaches the
  * host), so a push that names its destination this way is a public push and must
  * not slip past the scan (#1820).
+ *
+ * The target is a `RepoTarget`, which names a repository by `owner`/`repo`. A
+ * GitLab namespace path may run deeper than that, so the shared parse's `path`
+ * is reduced to the slug here — the last segment and the namespace above it —
+ * exactly as `createForge` reduces it. Depth itself is policed only on github.com,
+ * where the host serves `owner/repo` and nothing else: a deeper path there names
+ * no repository `gh` can resolve, so a `RepoTarget` for it would be an owner
+ * containing a slash that the visibility lookup asks about as if it were a slug
+ * (`gh api repos/group/sub/project`). On every other host a deep path is still a
+ * repository that receives bytes, so the slug is kept.
  */
-export function parsePushUrlTarget(
-  word: string,
-): { host: string; owner: string; repo: string } | undefined {
+export function parsePushUrlTarget(word: string): RepoTarget | undefined {
   if (!looksLikeRemoteUrl(word)) return undefined;
   const w = word.trim();
   const viaShared = parseRemoteUrl(w);
-  if (viaShared !== undefined) return viaShared;
+  if (viaShared !== undefined) {
+    if (viaShared.host === GITHUB_HOST && viaShared.path.length !== 2) return undefined;
+    return repoTarget(viaShared);
+  }
   // The one shape the shared parser does not cover: `host:path` with no `user@`.
   const bare = scpHostPath(w);
   if (bare === undefined) return undefined;
   const or = ownerRepo(bare.path);
   if (or === undefined) return undefined;
   return { host: bare.host.toLowerCase(), owner: or.owner, repo: or.repo };
+}
+
+/** A parsed remote → the `owner`/`repo` slug a `RepoTarget` carries. */
+function repoTarget(parsed: ParsedRemote): RepoTarget {
+  const repo = parsed.path[parsed.path.length - 1] ?? "";
+  return { host: parsed.host, owner: parsed.path.slice(0, -1).join("/"), repo };
 }
 
 /** `host:path` with no `user@`; undefined unless the word has that shape. */
