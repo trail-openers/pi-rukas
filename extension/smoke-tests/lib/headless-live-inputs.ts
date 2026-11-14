@@ -25,6 +25,7 @@ import { hostSpawnCap, hostSpawnWaitMs } from "../../src/host-spawn-slots.ts";
 import { leanDeadlineHandbackEnabled } from "../../src/lean/deadline-handback.ts";
 import { leanGuardFailClosed } from "../../src/lean/guard-fail-closed-switch.ts";
 import { leanBuildIssueProseEnabled, leanIssueProseEnabled } from "../../src/lean/issue-prose.ts";
+import { leanReportBoundEnabled } from "../../src/lean/handback-report-bound-switch.ts";
 import { leanReviewSpecSplitEnabled } from "../../src/lean/review-spec-split.ts";
 import { leanRewindLeaseBinds } from "../../src/lean/rewind-lease-switch.ts";
 import { leanRunnerPreflightEnabled } from "../../src/lean/runner-preflight-switch.ts";
@@ -163,6 +164,9 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   ["PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE", leanBuildIssueProseEnabled],
   ["PI_ENSEMBLE_LEAN_DEADLINE_HANDBACK", leanDeadlineHandbackEnabled],
   ["PI_ENSEMBLE_LEAN_HANDBACK_NOHEAD_RECORD", leanHandbackNoHeadRecordEnabled],
+  // The routed deadline report's wall. The reader is `v !== "0"`, so the LIVE loop
+  // (env deleted) pins "unset means on".
+  ["PI_ENSEMBLE_LEAN_REPORT_BOUND", leanReportBoundEnabled],
   // The lean review seats' spec split. The reader is `v !== "0"`, so the LIVE
   // assertion in the gate (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LEAN_REVIEW_SPEC_SPLIT", leanReviewSpecSplitEnabled],

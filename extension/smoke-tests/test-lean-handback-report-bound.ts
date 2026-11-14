@@ -41,11 +41,12 @@
  */
 
 import { readFileSync, rmSync } from "node:fs";
+import path from "node:path";
+import { unverifiedRef } from "../src/lean/handback-rewind.ts";
 import { handoffAllowanceMs } from "../src/lean/deadline.ts";
 import type { LeanHandlers } from "../src/lean/engine.ts";
 import { acquireLock } from "../src/lean/lock.ts";
 import { leanStateFile } from "../src/lean/state.ts";
-import { unverifiedRef } from "../src/lean/handback-rewind.ts";
 import { makeAssert } from "./headless-verb-harness.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import { captureWarns } from "./lib/lean-review-bound-fixtures.ts";
@@ -163,11 +164,16 @@ function greenAt(baseSha: string): ReturnType<typeof walkToReview> {
     throw new Error(`(a)'s origin does not hold the fix head: ${String(before)}`);
   const started = Date.now();
   let ran: Awaited<ReturnType<typeof driveToDeadline>> | string = "NOT_RUN";
+  let allowanceSeen = -1;
   await withEnv(rigEnv(ALLOWANCE_MS), async () => {
+    // The helper is read INSIDE the env scope: it is the same reader the engine calls
+    // when it asks for the bound, so comparing the two is comparing one number rather
+    // than a copy of a constant (the shape of `test-lean-ci-tier-budget.ts` (w)).
+    allowanceSeen = handoffAllowanceMs();
     // `captureWarns` collects into the caller's array and returns nothing (its
     // docstring's own reason: a returned value would not exist yet inside the body
     // that produced it), so the drive is captured by the body itself.
-    await captureWarns("WARN", warns, async () => {
+    await captureWarns("[pi-rukas] WARN", warns, async () => {
       ran = await guarded("a:hung-handler", () =>
         driveToDeadline(repo.repoRoot, greenAt(repo.baseSha), repo.baseSha, {
           handback: hung.handler,
@@ -207,22 +213,29 @@ function greenAt(baseSha: string): ReturnType<typeof walkToReview> {
     );
     // THE BOUND'S ARITHMETIC, asserted against the shared helper rather than a copy
     // of the number: change `PI_ENSEMBLE_HANDOFF_TIMEOUT_MS` and the bound the run
-    // names moves with it, in this assertion and in the code together (the shape of
-    // `test-lean-ci-tier-budget.ts` (w)).
+    // names moves with it, in this assertion and in the code together.
     assert(
-      handoffAllowanceMs() === ALLOWANCE_MS,
-      `(a) the allowance the case pinned is the helper's own answer (${String(handoffAllowanceMs())}, pinned ${String(ALLOWANCE_MS)})`,
+      allowanceSeen === ALLOWANCE_MS,
+      `(a) the allowance the case pinned is the helper's own answer (${String(allowanceSeen)}, pinned ${String(ALLOWANCE_MS)})`,
     );
-    assert(
-      ran.reason.includes(String(handoffAllowanceMs())),
-      `(a) and the reason names the bound that fired, in the helper's own number (got ${JSON.stringify(ran.reason)})`,
-    );
+    // The overrun's origin is told on the UNGATED `traceWarn` channel — the same one
+    // the throw arm beside it uses, for the same reason: the run's outcome changed, so
+    // a warning gated on `PI_ENSEMBLE_DEBUG` would not be a disclosure. It names the
+    // await that timed out and how long it was given, which is what separates this
+    // record from the kill an unbounded run would have left behind.
     assert(
       warns.length === 1 &&
         warns[0]?.includes("WARN") &&
         warns[0].includes("report") &&
-        warns[0].includes(String(handoffAllowanceMs())),
-      `(a) the overrun is disclosed on the ungated traceWarn channel with the bound it hit, so an operator is told without PI_ENSEMBLE_DEBUG (warns ${JSON.stringify(warns)})`,
+        warns[0].includes("handback report timed out") &&
+        warns[0].includes(String(allowanceSeen)),
+      `(a) the overrun is disclosed on the ungated traceWarn channel, naming the report that timed out and the allowance it was cut at (warns ${JSON.stringify(warns)})`,
+    );
+    assert(
+      warns.length === 1 &&
+        String(ran.reason).includes(String(allowanceSeen)) &&
+        String(ran.reason).includes("handback report timed out"),
+      `(a) and the bound rides into the durable record too — the plain deadline stamp names it in the helper's own number, so a reader of the file alone can tell a cut report from an ordinary stop (warns ${JSON.stringify(warns)}, reason ${JSON.stringify(ran.reason)})`,
     );
     // The hung handler hung BEFORE any push, so origin is the arm R4 fixes: origin at
     // F, no keeping-ref. Nothing about the cut moves a ref.
@@ -348,7 +361,7 @@ function greenAt(baseSha: string): ReturnType<typeof walkToReview> {
     async () => {
       const started = Date.now();
       let ran: Awaited<ReturnType<typeof driveToDeadline>> | string = "NOT_RUN";
-      await captureWarns("WARN", warns, async () => {
+      await captureWarns("[pi-rukas] WARN", warns, async () => {
         // Past the bound by more than the bound itself, so the drive cannot have
         // been cut at it and simply waited out the case's own clock.
         const hold = setTimeout(() => hung.release(), ALLOWANCE_MS * 3);
@@ -389,6 +402,38 @@ function greenAt(baseSha: string): ReturnType<typeof walkToReview> {
         );
       }
     },
+  );
+}
+
+// ── (d) the bound's timer cannot hold the process, and cannot outlive the race (R3).
+//
+// A ref'd timer that outlives the run keeps bun alive past the terminal stamp — the
+// failure the suite would show as a green file that never exits — and a timer never
+// cleared is still armed after the run has stopped waiting on it. Both are properties of
+// the source a behavioural case cannot see from outside (a passing drive exits either
+// way), so they are asserted where the precedent in this repo asserts them
+// (`test-host-spawn-lease.ts`), over the race that (a) and (b) show firing.
+{
+  const src = readFileSync(
+    path.resolve(import.meta.dirname, "..", "src", "lean", "engine-report.ts"),
+    "utf8",
+  );
+  const race = src.slice(src.indexOf("Promise.race([call, overrun]"));
+  const timerWindow = src.slice(
+    src.indexOf("const overrun = new Promise"),
+    src.indexOf("const settled = await Promise.race"),
+  );
+  assert(
+    /boundTimer\.unref\?\.\(\)/.test(timerWindow),
+    "(d) the bound timer is unref'd — a cut report cannot be the reason the process stays alive",
+  );
+  assert(
+    /if \(boundTimer\) clearTimeout\(boundTimer\)/.test(src),
+    "(d) and the timer is cleared on the way out of the race, in the arm that settles as well as the one that overruns",
+  );
+  assert(
+    race !== undefined && race.includes("overrun"),
+    "(d) and the handler's promise is what the race runs against — the bound is on the await, not on a copy of it",
   );
 }
 

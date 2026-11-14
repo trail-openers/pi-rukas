@@ -5,7 +5,7 @@
  * A deadline stop that routes into the report leaves step work behind at
  * `deadline − handoffAllowanceMs()`, and the report is the one step the stop test
  * exempts (`deadlineStopsSteps`'s `REPORT_STATES` branch). That exemption is what
- * lets the run still deliver its document — and it is also what leaves the report
+ * lets the run still deliver its document — and it is also what left the report
  * with no wall at all: it is not started through the runner's step machinery, so it
  * gets neither the step budget nor the cycle clamp, and a reporting step that never
  * returns holds the run past the allowance the routing exists to protect. An
@@ -24,15 +24,4 @@
 /** Whether the routed report is bounded by the handoff allowance. */
 export function leanReportBoundEnabled(): boolean {
   return process.env.PI_ENSEMBLE_LEAN_REPORT_BOUND !== "0";
-}
-
-/** The bound's own words, in the reason the overrun's stamp carries.
- *
- * One reader owns both halves of the disclosure — the `traceWarn` line the operator
- * sees and the sentence the record carries — because a reason that says "timed out"
- * without naming WHICH await timed out or after how long is the same sentence a kill
- * would have written, and telling the two apart is the whole point of the bound.
- */
-export function reportBoundSentence(ms: number): string {
-  return `the routed handback report timed out after ${String(ms)}ms`;
 }

@@ -113,6 +113,11 @@ export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   // tests were written from. 0 takes the section back out of both prompts.
   // The reader is `leanIssueProseEnabled` in lean/issue-prose.ts.
   flag("LEAN_ISSUE_PROSE", true),
+  // The routed deadline report's own wall: the report is the step the deadline's stop
+  // test exempts, so without this it is the one step nothing bounds. `0` puts the
+  // unbounded await back byte for byte. The reader is `leanReportBoundEnabled` in
+  // lean/handback-report-bound-switch.ts; the bound itself is `handoffAllowanceMs()`.
+  flag("LEAN_REPORT_BOUND", true),
   // Show the lean review seats (six lenses, adversarial reviewer, review fixer)
   // the issue's prose and the spec's criteria as two sections, so a long
   // statement cannot cut the criteria by competing with its own block for one
