@@ -315,6 +315,7 @@
     "smoke-tests/lib/lean-verified-handback-repo.ts",
     "smoke-tests/lib/lean-verified-handback-step.ts",
     "smoke-tests/test-lean-verified-handback.ts",
+    "smoke-tests/test-lean-verified-handback-deadline.ts",
     "smoke-tests/test-lean-verified-handback-report.ts",
     "smoke-tests/test-lean-verified-handback-rewind.ts",
     "smoke-tests/lib/lean-build-asserts.ts",
@@ -378,6 +379,7 @@
     "smoke-tests/test-lean-review-spec-split-switch.ts",
     "smoke-tests/test-adversarial-fix-round-criteria.ts",
     "smoke-tests/test-lean-review-deps-criteria-pair.ts",
+    "smoke-tests/lib/headless-env-scan.ts",
     "smoke-tests/lib/headless-live-inputs.ts"
   ]
 }

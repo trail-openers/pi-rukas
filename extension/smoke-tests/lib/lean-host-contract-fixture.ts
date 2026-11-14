@@ -107,33 +107,36 @@ export function cleanScratch(): void {
  * `budget − shortfall` late instant `crossing` uses, so the caller's allowance test
  * reads identically.
  */
-export function crossingAfter(
-  opts: {
-    /** The state the run must STAND IN — its newest step is the one whose outcome the
-     *  loop still owes, and hence the state the NEXT boundary's stop test will judge —
-     *  for the clock to go late. */
-    at: LeanState;
-    /** How many entries of `at` the log must hold — decided or not — before the clock may
-     *  go late. The engine writes a step AHEAD of running it, and the loop's later reads
-     *  of the boundary see that entry on the record, so the count is of VISITS and the
-     *  `standing === at` test below is what makes the newest one the undecided head of
-     *  the log. `0` means "the run stands on its FIRST entry of `at`" — which is the
-     *  shape a case that stops a state's first re-entry wants; `1` waits for the second.
-     *  A case that arms one visit late crosses one boundary late, and its step is then
-     *  half-run at the early instant, which no real drive leaves. */
-    after: number;
-    /** A state the run must have gotten PAST: the clock stays early until the log
-     *  holds a decided step of it. A caller that wants the stop to fall on the step
-     *  AFTER `at` passes `at` here too, so the run cannot be found late on its way
-     *  into the very step the premise needs undecided. `undefined` imposes no floor. */
-    decidedBefore?: LeanState;
-    repoRoot: string;
-    issue: number;
-    /** How far short of its budget the late position sits (default: 60 s). See
-     *  {@link crossing}'s `shortfallMs` for why a case picks one. */
-    shortfallMs?: number;
-  },
-): { now: () => number; past: number; crossed: () => boolean } {
+export function crossingAfter(opts: {
+  /** The state the run must STAND IN — its newest step is the one whose outcome the
+   *  loop still owes, and hence the state the NEXT boundary's stop test will judge —
+   *  for the clock to go late. */
+  at: LeanState;
+  /** How many entries of `at` the log must hold — decided or not — before the clock may
+   *  go late. The engine writes a step AHEAD of running it, and the loop's later reads
+   *  of the boundary see that entry on the record, so the count is of VISITS and the
+   *  `standing === at` test below is what makes the newest one the undecided head of
+   *  the log. `0` means "the run stands on its FIRST entry of `at`" — which is the
+   *  shape a case that stops a state's first re-entry wants; `1` waits for the second.
+   *  A case that arms one visit late crosses one boundary late, and its step is then
+   *  half-run at the early instant, which no real drive leaves. */
+  after: number;
+  /** A state the run must have gotten PAST: the clock stays early until the log
+   *  holds a decided step of it. A caller that wants the stop to fall on the step
+   *  AFTER `at` passes `at` here too, so the run cannot be found late on its way
+   *  into the very step the premise needs undecided. `undefined` imposes no floor. */
+  decidedBefore?: LeanState;
+  repoRoot: string;
+  issue: number;
+  /** How far short of its budget the late position sits (default: 60 s). See
+   *  {@link crossing}'s `shortfallMs` for why a case picks one. */
+  shortfallMs?: number;
+}): {
+  now: () => number;
+  past: number;
+  crossed: () => boolean;
+  reads: () => number;
+} {
   const start = Date.now();
   const budget = 240 * 60_000;
   const past = start + budget - (opts.shortfallMs ?? 60_000);
