@@ -20,8 +20,8 @@
 
 import { MINUTE_MS } from "../../src/lean/deadline.ts";
 import { runLean } from "../../src/lean/engine.ts";
-import { MAX_BUILD_ATTEMPTS } from "../../src/lean/machine.ts";
 import type { LeanHandlers } from "../../src/lean/engine.ts";
+import { MAX_BUILD_ATTEMPTS } from "../../src/lean/machine.ts";
 import { reportHandlers } from "../../src/lean/report-handlers.ts";
 import type { LeanState, Outcome, Step } from "../../src/lean/state.ts";
 import { loadRun } from "../../src/lean/state.ts";
