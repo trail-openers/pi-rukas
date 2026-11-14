@@ -23,10 +23,10 @@ import { driveRun } from "./lean-real-log-fixture.ts";
 import { HEAD, URL, stepWith } from "./lean-result-fixture.ts";
 
 /** The head the fix wave pushed — distinct from the one `verify` certified. */
-export const FIX_HEAD = "b".repeat(39) + "2";
+export const FIX_HEAD = `${"b".repeat(39)}2`;
 
 /** The head a rewind left standing, named by the handback's own record. */
-export const UNSHIPPED = "c".repeat(39) + "3";
+export const UNSHIPPED = `${"c".repeat(39)}3`;
 
 /** The frozen contract as `specify` records it: path -> sha256 of the frozen bytes. */
 export const FROZEN: Record<string, string> = {

@@ -31,15 +31,10 @@
  * (that a handler can write what the projection prints).
  */
 
-import { readFileSync } from "node:fs";
-import path from "node:path";
-import { HEADLESS_FEATURES } from "../src/headless/capabilities.ts";
-import { HEADLESS_INPUTS } from "../src/headless/inputs.ts";
 import { leanIssueResult, leanResultDocument } from "../src/headless/work-lean-result.ts";
 import { leanResultGatesEnabled } from "../src/lean/result-gates-switch.ts";
 import { loadRun, saveRun } from "../src/lean/state.ts";
 import { CLOCK, makeAssert, tempDir } from "./lib/lean-engine-fixtures.ts";
-import { driveEngineGates } from "./lib/lean-gates-engine-drive.ts";
 import { HEAD, URL, driveLean, stepWith } from "./lib/lean-result-fixture.ts";
 import {
   FIX_HEAD,
@@ -438,184 +433,10 @@ for (const [value, want] of [
   );
 }
 
-// ─── (8) the record is the source: driven by the real engine, read back by loadRun ─
-// A projection tested only against hand-written logs is a projection that reads what
-// a test author typed. This case asks the engine's own handlers to write the record and
-// `loadRun` to hand it back, so every projected value is one a handler wrote and a
-// validator accepted on the way in.
-{
-  const { run } = await driveEngineGates(tempDir("lean-gates-engine").dir, 91, {
-    challenge: "new-tests",
-    // Two rounds, which is what the table owes a run whose first review bought a fixer:
-    // the wave is re-reviewed before the step may answer, so a record naming one round is
-    // a step that judged two and reported one.
-    review: ["fixed", "done"],
-    record: { rounds: [ROUND_1, ROUND_2], waves: WAVES },
-    // The rewind moved origin back to the last certified head, so what shipped is NOT
-    // what `publish` recorded — which is the one case `shippedVerified` exists to say.
-    publishedHead: UNSHIPPED,
-    heads: { shippedHead: HEAD, shippedVerified: false },
-    land: "refused",
-  });
-  const issue = leanIssueResult(run, 91) as unknown as Record<string, unknown>;
-  const g = gatesOf(issue);
-  assert(
-    run.state === "landed" || run.state === "handed-back",
-    `engine: the drive walked its table to a terminal state, so nothing below is read off a log some scripted step left short (${String(run.state)}, ${String(run.result?.reason)})`,
-  );
-  assert(
-    JSON.stringify(g.review?.rounds) === JSON.stringify([ROUND_1, ROUND_2]),
-    `engine: the review counts survived the write, the load and the projection (${JSON.stringify(g.review?.rounds)})`,
-  );
-  assert(
-    JSON.stringify(g.review?.waves) === JSON.stringify(WAVES),
-    `engine: the fix wave's full head is the handler's own record (${JSON.stringify(g.review?.waves)})`,
-  );
-  assert(
-    g.handback?.head === HEAD && g.handback?.verified === false,
-    `engine: the shipped head and the gate's verdict about it are the handback step's own record (${JSON.stringify(g.handback)})`,
-  );
-  assert(
-    outcomeOf(run, "review")?.review?.rounds !== undefined,
-    "engine: the record itself holds the counts the projection printed — the projection invented none",
-  );
-  // Two reds, both recorded, both projected: the table routes a red `verify` back
-  // through build and a red `ci` through one fix round, so a run genuinely carries
-  // two gate failures and the host must not have to guess which one ended it.
-  const twice = await driveEngineGates(tempDir("lean-gates-engine").dir, 92, {
-    verify: ["red", "green"],
-    reds: { tiers: ["fast"], criteria: ["AC1"] },
-    review: ["done"],
-    ci: ["red", "red"],
-    ciReds: { tiers: ["full"], criteria: ["AC2"] },
-    land: "refused",
-  });
-  const twiceIssue = leanIssueResult(twice.run, 92) as unknown as Record<string, unknown>;
-  const entries = (gatesOf(twiceIssue).verify ?? []) as Record<string, unknown>[];
-  assert(
-    entries.length === 5 &&
-      entries[0]?.kind === "red" &&
-      JSON.stringify(entries[0]?.tiers) === JSON.stringify(["fast"]) &&
-      JSON.stringify(entries[0]?.criteria) === JSON.stringify(["AC1"]) &&
-      entries[2]?.kind === "green" &&
-      entries[3]?.state === "ci" &&
-      JSON.stringify(entries[3]?.tiers) === JSON.stringify(["full"]) &&
-      JSON.stringify(entries[3]?.criteria) === JSON.stringify(["AC2"]) &&
-      entries[4]?.state === "ci" &&
-      entries[4]?.kind === "red",
-    // Five entries, not four: the table gives a red pipeline exactly one fix round, so a
-    // run that fails it twice carries both `ci` verdicts, and a list that collapsed them
-    // would hide which of the two ended the run.
-    `engine: every red the run recorded is in the list, verify's and ci's alike (${JSON.stringify(entries)})`,
-  );
-  assert(
-    twice.run.state === "handed-back",
-    `engine: a second red pipeline ends the run at the reporting step (${String(twice.run.state)})`,
-  );
-}
-
-// ─── (9) G9: a record outside the published severity vocabulary is refused at load ─
-// The list is what the host branches on. Refusing at the load keeps the projection a
-// reader and makes the malformed record a loud one — a projection that tolerated a
-// fifth word would print it and a host would silently miss those findings.
-{
-  const dir = tempDir("lean-gates-sev").dir;
-  const forged = (round: Record<string, number>): Step[] =>
-    gatesLog({ review: "fixed" }).map((s) =>
-      s.state === "review"
-        ? {
-            ...s,
-            outcome: { ...s.outcome, review: { rounds: [round], waves: [] } },
-          }
-        : s,
-    ) as Step[];
-  const load = (steps: Step[], issue: number): Error | undefined => {
-    saveRun(dir, {
-      schema: 1,
-      issue,
-      version: "test",
-      models: {},
-      baseSha: "f".repeat(40),
-      branch: `feature/issue-${String(issue)}`,
-      state: "handed-back",
-      counters: {
-        buildAttempts: 0,
-        challengeDone: false,
-        reviewDone: true,
-        ciFixUsed: false,
-        draft: false,
-      },
-      steps,
-      result: { reason: "test", code: 10 },
-    } as never);
-    try {
-      loadRun(dir, issue);
-      return undefined;
-    } catch (err) {
-      return err as Error;
-    }
-  };
-  // The control first: the record the run's own handler writes, with the four words,
-  // loads. Without it the refusal below could be a refusal of EVERY record.
-  assert(
-    load(forged({ ...ROUND_1 }), 93) === undefined,
-    "G9: the four published severities load, so the refusal below is about the fifth word and nothing else",
-  );
-  const fifth = load(forged({ ...ROUND_1, BLOCKER: 1 } as never), 94);
-  assert(
-    fifth?.name === "LeanStateError",
-    `G9: a round naming a severity outside the published four is refused at load (got: ${String(fifth)})`,
-  );
-  assert(
-    fifth?.message?.includes("review.rounds") === true,
-    `G9: the refusal names the field a host would have read (${String(fifth?.message)})`,
-  );
-  const half = load(forged({ CRITICAL: 1, HIGH: 1 } as never), 95);
-  assert(
-    half?.name === "LeanStateError",
-    `G9: a round missing two of the four is refused too — a partial tally is the silent half of the same bug (got: ${String(half)})`,
-  );
-}
-
-// ─── (10) G8 + G12: the switch is discoverable ─────────────────────────────────
-// A knob that appears in no inventory is a knob that does not exist: `--capabilities`
-// is how a host asks what this build reads and writes, and a field it does not
-// mention is a field no host can code against.
-{
-  assert(
-    HEADLESS_FEATURES.leanGates === true,
-    "features.leanGates is true on a build that writes the object",
-  );
-  const names = HEADLESS_INPUTS.map((i) => i.name);
-  assert(
-    names.includes("PI_ENSEMBLE_LEAN_RESULT_GATES"),
-    "HEADLESS_INPUTS lists PI_ENSEMBLE_LEAN_RESULT_GATES",
-  );
-  // The list's own order is the collation `test-headless-inputs.ts` enforces (the
-  // `__`-to-space localeCompare that mostly ignores the separators), not ASCII order —
-  // so the new entry has to sit where THAT rule puts it, and this is the same rule, not
-  // a second opinion about it.
-  assert(
-    JSON.stringify(
-      [...names].sort((a, b) => a.replace(/_/g, " ").localeCompare(b.replace(/_/g, " "))),
-    ) === JSON.stringify(names),
-    "HEADLESS_INPUTS stays sorted after the new entry",
-  );
-  const entry = HEADLESS_INPUTS.find((i) => i.name === "PI_ENSEMBLE_LEAN_RESULT_GATES");
-  assert(
-    entry?.type === "boolean" && entry.default === true,
-    `the entry is a boolean that defaults to on (${JSON.stringify(entry)})`,
-  );
-  const docText = readFileSync(
-    path.resolve(import.meta.dirname, "..", "..", "docs", "configuration.md"),
-    "utf8",
-  );
-  assert(
-    docText.includes("`PI_ENSEMBLE_LEAN_RESULT_GATES`"),
-    "docs/configuration.md carries a row for the switch",
-  );
-}
-
+// ─── (8) the record is the source: split into `test-headless-work-lean-gates-engine.ts`
+// The same object read off a record the REAL engine wrote and `loadRun` handed back. That
+// file is one half of these cases for the size gate, along the seam the two fixtures drew:
+// this file reads a log, that one drives one.
 // ─── (11) the object is one key, and it holds only the gate events ───────────────
 // The shape a host codes against is a contract, and a contract grows by accretion:
 // every field that arrives because "we already had it here" is a field somebody has

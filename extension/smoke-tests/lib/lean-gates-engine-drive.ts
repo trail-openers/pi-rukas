@@ -33,6 +33,10 @@ export interface EngineGatesRun {
   ciReds?: { tiers?: string[]; criteria?: string[] };
   /** The review's verdicts, and the record each one writes. */
   review?: ("done" | "fixed")[];
+  /** The contract `specify` froze; absent = its step recorded none, which the projection
+   *  publishes as two nulls rather than an empty object. */
+  frozen?: Record<string, string>;
+  tests?: Record<string, string[]>;
   /** What the review step records as what it judged, on every round. */
   record?: { rounds: Record<string, number>[]; waves: { wave: string; head: string }[] };
   /** The head each green gate certifies. */
@@ -90,7 +94,10 @@ export function engineGatesPlan(r: EngineGatesRun): Record<string, Outcome[]> {
       : { red: { tiers: r.ciReds.tiers ?? [], criteria: r.ciReds.criteria ?? [] } };
   return {
     ready: [{ kind: "ok" }],
-    specify: [{ kind: "ok" }],
+    specify:
+      r.frozen === undefined || r.tests === undefined
+        ? [{ kind: "ok" }]
+        : [{ kind: "ok", frozen: r.frozen, tests: r.tests }],
     build: Array.from({ length: buildRounds(r) }, () => ({ kind: "ok" })),
     challenge:
       r.challenge === "budget"

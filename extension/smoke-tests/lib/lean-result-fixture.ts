@@ -31,7 +31,7 @@ import { fakeRun, verbRun } from "./work-lean-verb-fixture.ts";
 export const URL = "https://example.test/pull/7";
 
 /** The commit `verify` judged and `publish` shipped, when a case does not drift it. */
-export const HEAD = "a".repeat(39) + "1";
+export const HEAD = `${"a".repeat(39)}1`;
 
 /** One child the step paid for, with the cost a host adds up. */
 export function row(role: string, usage: Partial<DispatchUsageRow["usage"]>): DispatchUsageRow {
