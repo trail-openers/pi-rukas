@@ -8,6 +8,18 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.83](https://github.com/trail-openers/pi-rukas/compare/v0.14.82...v0.14.83) (2026-11-14)
+
+
+### Features
+
+* **lean:** open the review seats' criteria section with the spec's problem ([#2274](https://github.com/trail-openers/pi-rukas/issues/2274)) ([8c1f0c1](https://github.com/trail-openers/pi-rukas/commit/8c1f0c13d16d83cc3ac472f462026be24ea9a6a3))
+
+
+### Bug Fixes
+
+* **lean:** bound the routed deadline report at the handoff allowance ([#2275](https://github.com/trail-openers/pi-rukas/issues/2275)) ([3dadd7b](https://github.com/trail-openers/pi-rukas/commit/3dadd7b60c3f3c4f60c6900a105878e4a5274a6d))
+
 ## [0.14.82](https://github.com/trail-openers/pi-rukas/compare/v0.14.81...v0.14.82) (2026-11-14)
 
 
