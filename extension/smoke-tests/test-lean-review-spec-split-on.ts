@@ -235,7 +235,10 @@ await withEnv({ PI_ENSEMBLE_LEAN_REVIEW_SPEC_SPLIT: undefined }, async () => {
     // character inside a regex literal reads as the literal's own terminator.
     assert(
       clipped.includes("\u02cb".repeat(3)) &&
-        clipped.split(FENCE_CHAR).length === 7 &&
+        // The statement's fence joins the section, so the fence character now
+        // counts twelve (four delimiters and the payload's own run, the latter
+        // neutralised) rather than the seven a single-payload section carried.
+        clipped.split(FENCE_CHAR).length === 13 &&
         (clipped.match(/\u02cb/g) ?? []).length === 3,
       `(4) and neutralised backticks from the straddling run survive in the clipped region — the arm is not vacuous (modified count ${(clipped.match(/\u02cb/g) ?? []).length}, tail ${JSON.stringify(clipped.slice(-34))})`,
     );
