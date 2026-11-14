@@ -262,6 +262,14 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   // to the newest green verify's head and records which head shipped; `"0"` reports
   // and moves nothing, the pre-rule behaviour.
   flag("LEAN_VERIFIED_HANDBACK", true),
+  // A deadline stop that left a `fixed` review uncertified routes the run into its
+  // report instead of stamping it where it stood; `"0"` restores the direct stamp,
+  // where the reporting step never ran.
+  flag("LEAN_DEADLINE_HANDBACK", true),
+  // A handback whose rewind found no verified head records the head origin really
+  // holds and calls it unverified; `"0"` records none of the head fields, the
+  // pre-recording behaviour.
+  flag("LEAN_HANDBACK_NOHEAD_RECORD", true),
   // Unset: derived from the host budget (CPUs, memory, pids.max); 0 = unbounded.
   // #1564 — a lens child's run bound (spawn-child-bound.ts).
   ms("LENS_BOUND_MS", 1_800_000),

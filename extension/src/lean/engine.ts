@@ -19,6 +19,7 @@ import { isFullCommitSha } from "../commit-sha.ts";
 import { trace } from "../trace.ts";
 import { type CycleBudgetMs, flagBudgetMs } from "../work-driver-deadline.ts";
 import { deadlineReason, deadlineStopsSteps, leanDeadline } from "./deadline.ts";
+import { deadlineStopShouldReport } from "./deadline-handback.ts";
 import { engineFacts } from "./engine-facts.ts";
 import { errorOutcome } from "./error-outcome.ts";
 import { acquireLock } from "./lock.ts";
@@ -351,6 +352,19 @@ async function driveLoop(
       drive.save(run);
     }
     if (deadline !== undefined && deadlineStopsSteps(deadline, now(), state)) {
+      // The clock stopped a WORKING step. Most such runs have nothing further to
+      // say and are stamped where they stand, as they always were — but a run whose
+      // newest work step is a `fixed` review is holding origin over bytes no gate
+      // certified, and the step that says so (and moves origin back) is `handback`.
+      // Stamping here made that step unreachable, so the run was routed INTO the
+      // report rather than ended; `REPORT_STATES` is exempt from the stop test, which
+      // is what makes one more step affordable. The predicate reads the same log the
+      // reporting step reads, so the two cannot disagree about the shape.
+      if (state !== "handback" && deadlineStopShouldReport(run.steps)) {
+        run = { ...run, state: "handback" };
+        drive.save(run);
+        continue;
+      }
       run = endRun(drive, run, "handed-back", deadlineReason(run.steps, state, deadline));
       break;
     }
