@@ -42,10 +42,16 @@
  *       rewind's push and the forge comment of a cut report are already in flight and
  *       may still land after the stamp, so the sentence says so — and the settled arm,
  *       which abandoned nothing, says neither word;
- *   (f) the bound is wide enough for the awaits inside the real reporting step: every
- *       per-call timeout on that path is summed from the constants the calls themselves
- *       read, and the sum must fit inside the default `handoffAllowanceMs()`. A bound
- *       equal to the allowance is only safe while the step's own ceilings are.
+ *   (f) the bound is wide enough for the awaits inside the real reporting step, AND still
+ *       fires inside the grace that would otherwise kill the run instead. Both numbers come
+ *       from the constants the shipped code reads — the bound from `handoffReportBoundMs()`,
+ *       the outer limit from `childBoundGraceMs()` — and the sum of every per-call ceiling on
+ *       the path must fit inside the bound. The bound is `handoffAllowanceMs()` **plus**
+ *       headroom, because the path's own ceilings sum to more than the allowance: a bound
+ *       equal to the allowance cuts a report that was answering every one of its calls, and
+ *       the thing that cut loses is the rewind the routing exists to perform. The second arm
+ *       runs the other way: the bound may not outlast the grace, because then no report ever
+ *       times out and every cut one is a wrapper's kill.
  *
  * The rig is the same one the two deadline suites drive (`driveToDeadline`): the
  * crossing clock, the scripted walk, and the production reporting wiring. Every case
@@ -66,7 +72,9 @@ import {
   rigEnv,
   state,
 } from "./lib/lean-report-bound-shared.ts";
+import { childBoundGraceMs } from "../src/spawn-child-bound.ts";
 import { handoffAllowanceMs } from "../src/lean/deadline.ts";
+import { handoffReportBoundMs } from "../src/lean/engine-report.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import { captureWarns } from "./lib/lean-review-bound-fixtures.ts";
 import { driveToDeadline } from "./lib/lean-verified-handback-deadline-rig.ts";
@@ -233,40 +241,62 @@ import { ROOTS } from "./lib/lean-verified-handback-fixture.ts";
   // literal on its own call site as often as it is an exported constant, and a gate that
   // imports only the exported ones is a gate that misses the literals.
   //
-  // THE ANSWER THIS CASE PRINTS IS A FAILURE, AND IT IS THE HONEST ONE: the ceilings on
-  // this path sum to 570s against the 480s default `handoffAllowanceMs()`, so the bound
-  // equals the whole allowance while the step it bounds can legitimately spend more than
-  // it. A slow-but-progressing report — every git and forge call answering just inside
-  // its own ceiling — is cut before its rewind lands, which is the one thing the routing
-  // exists to perform. The bound therefore needs its own headroom over the allowance, or
-  // the per-call ceilings on this path need shrinking; either way that is a decision with
-  // a cost attached, so this case is left RED rather than pinned to a sum that fits. The
-  // table prints on both the pass and the fail line, so the next reader sees the numbers
-  // and not just the verdict.
+  // THE TABLE IS THE ARITHMETIC, NOT A COMMENT: it prints on both the pass and the fail
+  // line, so a green suite still shows a reader what the bound has to cover and the two
+  // numbers it is measured between. The bound is the allowance PLUS headroom precisely
+  // because this sum is past the allowance: cutting a report whose every git and forge call
+  // answered just inside its own ceiling would lose the rewind, the one thing the routing
+  // exists to perform. Shrinking a shared ceiling instead would bind the non-lean callers
+  // that read the same constants, so the headroom is the term that moved.
   const sum = awaits.reduce((total, a) => total + a.ms, 0);
-  // The allowance the bound takes when the operator has not pinned it — the default arm,
-  // not a case pin. Read with the env key absent so the sum is compared against the
-  // number a shipped run is actually cut at.
-  const defaultAllowance = await (async () => {
-    let value = 0;
-    await withEnv({ PI_ENSEMBLE_HANDOFF_TIMEOUT_MS: undefined }, async () => {
-      value = handoffAllowanceMs();
-    });
-    return value;
+  // Both numbers read with their env keys ABSENT, so the case measures what a shipped run
+  // is cut at rather than what this suite or an operator's shell pins.
+  const defaults = await (async () => {
+    let seen = { bound: 0, allowance: 0, grace: 0 };
+    await withEnv(
+      {
+        PI_ENSEMBLE_HANDOFF_TIMEOUT_MS: undefined,
+        PI_ENSEMBLE_CHILD_BOUND_GRACE_MS: undefined,
+      },
+      async () => {
+        seen = {
+          bound: handoffReportBoundMs(),
+          allowance: handoffAllowanceMs(),
+          grace: childBoundGraceMs(),
+        };
+      },
+    );
+    return seen;
   })();
-
-  const table = awaits.map((a) => `  ${String(a.ms).padStart(7)}ms  ${a.what} [${a.where}]`).join("\n");
-  console.log(
-    `(f) routed report's awaits, worst case:\n${table}\n  ${String(sum).padStart(7)}ms  TOTAL vs default allowance ${String(defaultAllowance)}ms`,
+  const { bound: defaultBound, allowance: defaultAllowance, grace: defaultGrace } = defaults;
+  // The bound is the allowance plus a POSITIVE headroom. Asserted apart from (i): the sum
+  // is over the allowance, so an implementation that quietly dropped the headroom term and
+  // compared against the wrong number would otherwise pass (i) anyway.
+  assert(
+    defaultBound > defaultAllowance,
+    `(f) the bound is the allowance plus headroom, not the allowance itself (bound ${String(defaultBound)}ms, allowance ${String(defaultAllowance)}ms) — the path's ceilings sum past the allowance, so an equal bound cuts a progressing report`,
   );
 
-  // Deliberately RED on the shipped constants: see the block above. Restoring the bound's
-  // headroom (or lowering a ceiling on this path) is what turns this case green, and the
-  // assertion names the two numbers so a reader of a green suite never mistakes the
-  // absence of a failure for a fit.
+  const table = awaits
+    .map((a) => `  ${String(a.ms).padStart(7)}ms  ${a.what} [${a.where}]`)
+    .join("\n");
+  console.log(
+    `(f) routed report's awaits, worst case:\n${table}\n  ${String(sum).padStart(7)}ms  TOTAL vs bound ${String(defaultBound)}ms (allowance ${String(defaultAllowance)}ms + headroom ${String(defaultBound - defaultAllowance)}ms; outer grace ${String(defaultGrace)}ms)`,
+  );
+
+  // (i) A slow-but-progressing report is never cut: every ceiling on the path fits inside
+  // the bound. (ii) The run still stamps before the OUTER limit that would otherwise kill
+  // it: the bound fires inside the child-bound grace, so an operator who set
+  // `PI_ENSEMBLE_CHILD_BOUND_GRACE_MS` below the sum parks this case rather than silently
+  // trading a report's verdict for a wrapper's kill. Both read the real constants, and both
+  // messages name every number so a reader of a green suite never mistakes silence for a fit.
   assert(
-    sum <= defaultAllowance,
-    `(f) DEFERRED — every per-call ceiling on the routed report's path must fit inside the bound that cuts it: summed ${String(sum)}ms against the default allowance ${String(defaultAllowance)}ms, i.e. the bound leaves ${String(defaultAllowance - sum)}ms of headroom\n${table}`,
+    sum <= defaultBound,
+    `(f)(i) every per-call ceiling on the routed report's path must fit inside the bound that cuts it: summed ${String(sum)}ms against the bound ${String(defaultBound)}ms, i.e. the bound leaves ${String(defaultBound - sum)}ms of slack\n${table}`,
+  );
+  assert(
+    defaultBound < defaultGrace,
+    `(f)(ii) the bound must fire INSIDE the outer limit that would otherwise kill the run: bound ${String(defaultBound)}ms against the child-bound grace ${String(defaultGrace)}ms — at or past it no report ever times out, and every cut one is a kill instead of a handback`,
   );
 }
 
