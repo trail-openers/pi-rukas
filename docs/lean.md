@@ -390,10 +390,12 @@ is left holding a head the shipped record cannot vouch for. The handback answers
 from the LOG, not from the stop cause: when its newest work step is `review` with kind
 `fixed` and no later decided `verify` exists, it first keeps the unverified head
 reachable under `refs/lean/unverified/<issue>`, then rewinds origin's branch to the
-newest decided green `verify`'s head with a lease-pinned push
-(`--force-with-lease=<branch>:<held>` on an UNFORCED branch refspec), where `<held>` is
+newest decided green `verify`'s head with a lease-pinned atomic push
+(`--atomic --force-with-lease=<branch>:<held>` on an UNFORCED branch refspec), where `<held>` is
 the head this step read off origin — so the lease guards the window between that read and
-the push, and a branch that moved inside it is refused. A branch that had already moved
+the push, and a branch that moved inside it is refused. `--atomic` is what makes the refusal
+move nothing: without it git applies each ref on its own, so a refusal of the leased branch
+still wrote the unleased keeping-ref. With it, a lease refusal moves neither ref. A branch that had already moved
 before the step read it is read at its new value, so the lease matches and the rewind
 runs, keeping the head it displaced under `refs/lean/unverified/<issue>`. The refspec
 being unforced is what makes that true: `git push` does not consult the lease for a
@@ -415,9 +417,9 @@ moved my branch" from "the clone could not read that commit". Where origin alrea
 holds the certified head the step pushed nothing, and the record says so without
 calling the shipped head unverified. Every other handback is unchanged. Behind
 `PI_ENSEMBLE_LEAN_VERIFIED_HANDBACK` (default on; only `0` off), which is read at call
-time; the unforced refspec is separately behind `PI_ENSEMBLE_LEAN_REWIND_LEASE_BINDS`
-(default on; only `0` puts the leading `+` back, byte for byte, restoring the pre-fix
-push argv exactly).
+time; the unforced refspec and the atomic push are together behind `PI_ENSEMBLE_LEAN_REWIND_LEASE_BINDS`
+(default on; only `0` puts the leading `+` back and drops `--atomic`, byte for byte,
+restoring the pre-fix push argv exactly).
 
 **A handback comment** on the issue, in this order of usefulness: the newest
 budget breach **that no step other than a report (`handback`, `decline`) is newer than** — a `challenge` breach the

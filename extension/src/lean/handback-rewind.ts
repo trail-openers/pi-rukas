@@ -7,13 +7,13 @@
  * written: keep the unverified head reachable under a ref of its own, then
  * rewind the branch to the newest green `verify`'s head.
  *
- * The move is a lease-pinned push — `--force-with-lease=<branch>:<held>` with an
- * UNFORCED branch refspec — where `<held>` is the head THIS STEP read off origin, not
- * the head the run pushed. So the lease guards one window: a branch that moved between
- * this step's `ls-remote` and its push is refused, and nothing of it is moved. A branch
- * that had ALREADY moved before the step read it is a branch this step read at its new
- * value, so the lease matches and the rewind runs — and the head it displaces, which is
- * whatever origin held, is kept under `refs/lean/unverified/<issue>`.
+ * The move is a lease-pinned atomic push — `--atomic` with
+ * `--force-with-lease=<branch>:<held>` and an UNFORCED branch refspec — where `<held>` is
+ * the head THIS STEP read off origin, not the head the run pushed. So the lease guards one
+ * window: a branch that moved between this step's `ls-remote` and its push is refused, and
+ * nothing of it is moved. A branch that had ALREADY moved before the step read it is a
+ * branch this step read at its new value, so the lease matches and the rewind runs — and the
+ * head it displaces, which is whatever origin held, is kept under `refs/lean/unverified/<issue>`.
  *
  * The refspec being unforced is what makes that sentence true. `git push` does
  * not consult the lease for a refspec it was told to force with a leading `+`,
@@ -22,7 +22,9 @@
  * forced refspec exits 0 and moves the branch. The lease alone authorises a
  * rewind, because a rewind is a non-fast-forward move and the lease names the
  * value this step just read off origin: exactly that one move, and no other.
- * `PI_ENSEMBLE_LEAN_REWIND_LEASE_BINDS=0` puts the `+` back byte for byte.
+ * `PI_ENSEMBLE_LEAN_REWIND_LEASE_BINDS=0` puts the `+` back byte for byte, and with it
+ * `--atomic` too: both are what the switch reaches, and the off arm is the pre-fix push in
+ * full.
  *
  * The branch it moves is state-file data too, so it gets the same guard the
  * run's two other force-push sites apply before they build an argv —
@@ -115,9 +117,10 @@ export function unverifiedRef(issue: number): string {
  *
  * `--force-with-lease` is enforced on the client: when origin's value for the
  * leased ref is not what this push expected, the porcelain prints `stale info`
- * (and the `! [rejected] … (stale info)` row beside it). That wording is the one
- * this project has observed — `test-lean-rewind-lease-binds.ts` drives a lease
- * that does not match, against an origin holding objects this clone can supply,
+ * (and the `! [rejected] … (stale info)` row beside it), which under `--atomic`
+ * arrives beside the server's `atomic push failed for ref <ref>` line. That wording
+ * is the one this project has observed — `test-lean-rewind-lease-binds.ts` drives a
+ * lease that does not match, against an origin holding objects this clone can supply,
  * so the lease is the only thing that can refuse — and it is the ONLY wording
  * admitted. Anything else
  * that made the push fail (an unreachable object, an unpack failure, a transport
@@ -324,8 +327,10 @@ export async function rewindToVerified(
   // separate keep push would land whatever it did, since the rewind's lease is bound
   // to the head this step read and by the time a second push ran that lease was
   // already spent, so a refused rewind could still leave a ref on origin naming a
-  // head nothing moved. Git refuses the whole push when the lease does not match,
-  // so neither ref moves and the record says so.
+  // head nothing moved. `--atomic` is what makes git honour that: without it git
+  // applies each ref on its own, and a refusal of the leased branch still wrote the
+  // unleased keeping-ref. With it, a lease refusal moves neither ref and the record
+  // says so.
   //
   // There is deliberately no local `update-ref` before this push. A ref can only be
   // written from an object this clone holds, and on the refusal path the head origin
@@ -350,13 +355,22 @@ export async function rewindToVerified(
   // answer to an unforced refspec that is ALREADY a fast-forward-or-equal; it is not
   // the answer to a rewind whose lease matches, and the same file's (b) pins that
   // refusal and (c) its opposite. The keeping-ref refspec stays unforced as it always
-  // was, and the switch moves the `+` and nothing else — no new option on either arm.
+  // was, and the switch moves the `+`, adds `--atomic`, and nothing else.
+  //
+  // `--atomic` is the other half of "nothing of it is moved". Git's default is to apply
+  // every ref in a push on its own, so a lease refusal rejected the branch and the
+  // unleased keeping-ref landed anyway — origin left naming the displaced head under
+  // `refs/lean/unverified/<issue>` for a rewind that never happened. Atomic asks the
+  // server to apply all refs or none, which is the only reading of this step's own claim.
+  // The off arm does not get it, because the off arm is the pre-fix argv byte for byte.
+  const binds = leanRewindLeaseBinds();
   const pushArgv = [
     ...NO_HOOKS,
     "push",
+    ...(binds ? ["--atomic"] : []),
     `--force-with-lease=${ref}:${held}`,
     "origin",
-    `${leanRewindLeaseBinds() ? "" : "+"}${verifiedHead}:${ref}`,
+    `${binds ? "" : "+"}${verifiedHead}:${ref}`,
     `${held}:${unverifiedRef(ctx.issue)}`,
   ];
   // A push that git rejected comes back as the stderr it printed; a push that ran
