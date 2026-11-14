@@ -79,6 +79,19 @@ interface Scan {
   dynamic: Map<string, string>;
 }
 
+/**
+ * The inventory's own modules, excluded from the read-scan. `inputs.ts` lists
+ * the names; `entry.ts` builds the rows and `prefix.ts` holds the env prefix
+ * (both split out of it for the §12 size cap). A name or prefix spelled in any
+ * of them is the inventory declaring itself, not a read of an input.
+ */
+const INVENTORY_FILES = new Set([
+  path.join("headless", "inputs.ts"),
+  path.join("headless", "inputs-b.ts"),
+  path.join("headless", "entry.ts"),
+  path.join("headless", "prefix.ts"),
+]);
+
 function scanText(text: string, rel: string, out: Scan): void {
   const put = (m: Map<string, string>, name: string) => {
     if (!m.has(name)) m.set(name, rel);
@@ -113,8 +126,15 @@ function scanText(text: string, rel: string, out: Scan): void {
 function scan(root: string): Scan {
   const out: Scan = { exact: new Map(), dynamic: new Map() };
   // The inventory itself is excluded: a name written there must not list itself.
+  // `entry.ts` and `prefix.ts` go with it — they are the inventory's own
+  // modules, split out of it for the §12 size cap, and the prefix they carry
+  // is the bare `PI_ENSEMBLE_` the scan below would otherwise read as a key
+  // built at runtime.
   const files = readdirSync(root, { recursive: true, encoding: "utf8" }).filter(
-    (f) => f.endsWith(".ts") && !f.endsWith(".test.ts") && f !== path.join("headless", "inputs.ts"),
+    (f) =>
+      f.endsWith(".ts") &&
+      !f.endsWith(".test.ts") &&
+      !INVENTORY_FILES.has(f),
   );
   for (const rel of files) scanText(readFileSync(path.join(root, rel), "utf8"), rel, out);
   return out;

@@ -22,6 +22,34 @@
  * token and why it is not a tool. An entry with no sentence behind it is the
  * gate being quietly turned off.
  */
+import { readFileSync } from "node:fs";
+import path from "node:path";
+
+/**
+ * The doctrine's forge-read vocabulary: `forge_read` itself and the verbs its own
+ * schema accepts, read OUT of the source that declares them (`forge-read-tool.ts`)
+ * rather than restated here.
+ *
+ * A role prompt that tells a helper which reads exist has to name the verbs, but a
+ * verb is not a tool, so none of them belongs in the "not tools" block below —
+ * that block has been wrong about real tools before (#995). Deriving the set from
+ * `FORGE_READ_VERBS` keeps the doctrine vocabulary and the tool from disagreeing:
+ * a verb added to the tool is known to the gate automatically, and a verb named in
+ * doctrine that the tool does not accept stays a phantom, which is the true answer.
+ */
+export function forgeReadDoctrineNames(srcDir: string): string[] {
+  const names = ["forge_read"];
+  try {
+    const text = readFileSync(path.join(srcDir, "forge-read-tool.ts"), "utf8");
+    const list = /FORGE_READ_VERBS\s*=\s*\[([\s\S]*?)\]/.exec(text);
+    for (const m of (list?.[1] ?? "").matchAll(/"([a-z_]+)"/g)) names.push(m[1] as string);
+  } catch {
+    // An unreadable source contributes only the tool name: the verbs then read as
+    // phantoms, which is the fail-closed direction for a roster.
+  }
+  return names;
+}
+
 export const ALLOWLIST = new Set<string>([
   // --- Role keys from agents.json (named throughout the doctrine)
   "project-manager",

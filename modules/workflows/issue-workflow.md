@@ -43,9 +43,34 @@ PM creates issues exclusively via the `start_plan_driver` tool. It runs the five
 
 **Specialists (developer, ops, explore, reviewers)**: do NOT run issue-creation commands (the mode-independent guard refuses them in every mode, for every role). Verify the issue exists, then report a missing one to PM in your final message.
 
-## GitHub Issue Command Reference (bare `gh`)
+## Reading and writing an issue
 
-All issue mutations run as bare `gh` commands (raw output — a compressed or indexed summary loses the issue body PM needs to decide). Mutation verbs (`create`, `edit`, `close`, `reopen`) are **PM-only** per the role split above; read verbs (`view`, `list`, `comment`) are shared.
+**A helper child holds no forge login** — the spawn layer deleted the five token
+variables and redirected both CLI config roots — so a `gh`/`glab` read it runs
+itself is unauthenticated: rate-limited, and refused outright on a private repo.
+Read issue content with `forge_read`, which the parent runs with its own
+credential and answers with the forge's own bytes; the PM and ops keep their
+login and their CLI: `forge_read` for a helper, `gh issue view` and `gh issue list` for them.
+
+`forge_read` has no write verb. The mutations below are the PM's, and a helper
+asked to perform one reports it instead of improvising a CLI call it cannot
+authenticate.
+
+### Read an issue
+
+Read issue content with `forge_read` (verb `issue_view`, the issue's `number`) —
+one call shape for either forge, and the read a helper role uses. For the
+discussion the `issue_comments` verb; for a search the `issue_search` verb with
+its search text (the parent bounds that text, so a search is a search rather than
+a dump); for a listing `issue_list`, which may take its `state` filter. The CLI
+equivalents below need a login, so they are the PM's and ops's.
+
+### Writes and reads by the PM (bare `gh`)
+
+All issue mutations run as bare `gh` commands (raw output — a compressed or
+indexed summary loses the issue body PM needs to decide). Mutation verbs
+(`create`, `edit`, `close`, `reopen`) are **PM-only** per the role split above,
+and the CLI reads below are PM and ops — a helper reads with `forge_read`.
 
 **Comment on an issue:**
 
@@ -65,15 +90,17 @@ gh issue close <issue-number>
 gh issue reopen <issue-number>
 ```
 
-**View an issue:**
+**View an issue (PM and ops; a helper reads with `forge_read`):**
 
 ```bash
+# PM and ops only — a helper reads issue content with `forge_read`.
 gh issue view <issue-number>
 ```
 
-**List issues:**
+**List issues (PM and ops; a helper uses `forge_read`'s `issue_list`):**
 
 ```bash
+# PM and ops only — the same listing is `forge_read` with the `issue_list` verb.
 gh issue list --limit 15
 gh issue list --state closed --limit 5
 ```
@@ -93,9 +120,16 @@ gh issue list --state closed --limit 5
 - Link PR to issue: `Closes #123` in the PR body (the `Fixes #123` / `Resolves #123` keywords also work)
 - Commit subjects use an alphabetic subsystem scope (`feat(work): description`); NEVER put the issue number in the scope position — linkage flows through the PR body and the branch slug
 
-## Issue Reading Fallback
+## Issue Reading Fallback (PM and ops)
 
-Use `gh issue view` for reading issue content. If it fails with `repository.issue.projectCards` deprecation errors, fall back to REST API. Do NOT fallback for auth/network/rate limit errors.
+A helper has no fallback to make: its read path is `forge_read` and there is
+nothing below it. The two patterns below belong to a role that holds a login, and
+are what PM and ops reach for when the subcommand's own output is not readable
+enough. Read issue content with `forge_read` (PM and ops: the CLI and REST forms
+below).
+
+Use `gh issue view` for reading issue content, or `forge_read` for the same bytes
+without a login. If it fails with `repository.issue.projectCards` deprecation errors, fall back to REST API. Do NOT fallback for auth/network/rate limit errors.
 
 ### Single Issue Fallback
 
@@ -107,9 +141,10 @@ Two separate bare tool calls — no command substitution, no pipe. Pipelines and
    git remote get-url origin
    ```
 
-2. Fetch the issue with the REST endpoint (run bare — it returns the full JSON, which you then read directly):
+2. Fetch the issue with the REST endpoint (run bare — it returns the full JSON, which you then read directly). PM and ops only: a helper reads the same body with `forge_read`.
 
    ```bash
+   # PM and ops only — a helper reads this body with `forge_read` (`issue_view`).
    gh api repos/{owner}/{repo}/issues/{number}
    ```
 
@@ -120,10 +155,11 @@ REST endpoint `/repos/{owner}/{repo}/issues/{number}` avoids GraphQL `projectCar
 For multiple issues, two separate bare tool calls:
 
 1. Derive `{owner}` and `{repo}` from `git remote get-url origin` (same as above).
-2. List open issues:
+2. List open issues. PM and ops only — a helper lists with `forge_read` (`issue_list`).
 
    ```bash
+   # PM and ops only — the helper's listing is `forge_read` (`issue_list`).
    gh api repos/{owner}/{repo}/issues -f state=open -f per_page=100
    ```
 
-Read the JSON response and extract `number` + `title` per entry from the tool result — no `jq` pipe needed. Use for listing issues when `gh issue list` encounters `projectCards` deprecation errors.
+Read the JSON response and extract `number` + `title` per entry from the tool result — no `jq` pipe needed. Use for listing issues when `gh issue list` encounters `projectCards` deprecation errors; a helper lists the same rows with `forge_read`.

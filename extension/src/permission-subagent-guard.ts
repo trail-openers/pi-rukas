@@ -17,6 +17,7 @@ import { type Socket, createConnection } from "node:net";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { discardsUncommittedWork, rejectsInteractiveGit } from "./bash-command-parser.ts";
 import { enableChildCodemode } from "./child-codemode.ts";
+import { enableChildForgeRead, registerChildForgeReadTool } from "./child-forge-read-activation.ts";
 import { registerOoRewriteGuard } from "./oo-rewrite-guard.ts";
 import type { PermissionRequest } from "./permission-broker.ts";
 import { loadAgentsJson, loadGlobalConfig, loadProjectConfig } from "./permission-config.ts";
@@ -30,7 +31,22 @@ export function registerSubagentGuard(pi: ExtensionAPI): void {
   // appends `codemode` to the active tool set exactly once in every mode.
   pi.on("session_start", () => {
     enableChildCodemode(pi);
+    // #2160 — and the same for `forge_read`: the strict/headless child gets its
+    // only forge surface from the parent's broker, never from a login of its
+    // own. Both child entry points register the tool through the same predicate
+    // this calls, so the roster and the registry agree in every mode about which
+    // children hold a broker to talk to.
+    enableChildForgeRead(pi, process.env.PI_ENSEMBLE_ROLE);
   });
+  // #2160 — registered here as well as in the companion, and Pi de-duplicates
+  // by name, so a strict child that loads BOTH the companion and this forwarded
+  // extension still has exactly one `forge_read`. It sits above the trust and
+  // sandbox short-circuits below for the same reason the guards do: a trust
+  // child has no login, so a child with no forge_read at all could not read the
+  // issue it was dispatched to work on. The predicate it applies is the
+  // companion's — stripped role plus a parent-served broker socket — so neither
+  // site can register the tool into a child activation would leave off.
+  registerChildForgeReadTool(pi);
   registerModeIndependentGuards(pi);
   // #716 — same registration site, same reasoning: the "mandatory oo" rule
   // for verbose runners (pytest, cargo test, bun test, …) is pure prose on the

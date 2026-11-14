@@ -379,8 +379,21 @@ export function wellFormedHandback(): LeanRunOutcome {
   return { summary: "work-lean #7: handed-back (exit 10)", result: base };
 }
 
-/** The verb's own issue number, which no case of this suite drives a record for. */
-const SCRATCH_ISSUE = 9993;
+/**
+ * The record this rig drives — the verb's own issue number, which no case of
+ * this suite otherwise touches, made unique per process.
+ *
+ * `REPO` is a fixed path shared by every runner of this suite, so a fixed issue
+ * number is a collision between them: a record another uid wrote is one this
+ * rig's `rmSync` cannot remove, and `loadRun` then reads that foreign state as
+ * this run's own — which is how a run armed from `--timeout` came back looking
+ * like an expired run that ran no step. A pid-scoped number makes the record
+ * this call writes belong to this call, on any host running two suites at once.
+ */
+const SCRATCH_ISSUE_BASE = 9000;
+/** Kept clear of every issue number any case of the suite drives. */
+const SCRATCH_ISSUE_SPAN = 1000;
+const scratchIssueOf = (): number => SCRATCH_ISSUE_BASE + (process.pid % SCRATCH_ISSUE_SPAN);
 
 /**
  * Drive the verb with the standard reply and report what its injected engine saw.
@@ -418,9 +431,11 @@ export async function verbRun(
       // runs, and the caller would then see "no arm" for a defect that has
       // nothing to do with the clock — so the scratch record is removed first and
       // the arm is read back from a file this call wrote. The issue number is one
-      // no case of this suite drives, so nothing later reads the record this makes.
-      rmSync(leanStateFile(root, SCRATCH_ISSUE), { force: true });
-      const driven = await runWorkLean(root, SCRATCH_ISSUE, opts).catch(() => undefined);
+      // no case of this suite drives, and it is pid-scoped so a co-running runner
+      // cannot leave a record here that this rig reads back as its own state.
+      const scratchIssue = scratchIssueOf();
+      rmSync(leanStateFile(root, scratchIssue), { force: true });
+      const driven = await runWorkLean(root, scratchIssue, opts).catch(() => undefined);
       engine =
         driven === undefined
           ? undefined

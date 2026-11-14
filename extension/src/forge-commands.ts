@@ -6,10 +6,15 @@
  * lets the offline smoke tests assert the EXACT command string the
  * production path would execute — including the load-bearing invariants
  * (e.g. GitLab MR merge MUST carry `--auto-merge=false`).
+ *
+ * The pull-request / merge-request builders live in `forge-commands-pr.ts` and
+ * are re-exported here, so the `cmds.*` call sites (and the argv-pinning tests)
+ * keep one import surface for the whole builder set.
  */
 
 import type { ForgeType } from "./forge-detect.ts";
-import { isFullCommitSha } from "./review-head-sha.ts";
+
+export * from "./forge-commands-pr.ts";
 
 /** Shell-quote a single argument (the command seam is a shell string). */
 export function shq(arg: string): string {
@@ -18,6 +23,24 @@ export function shq(arg: string): string {
 }
 
 // ── Issues ────────────────────────────────────────────────────────────────
+
+/**
+ * The page size every `forge_read` LIST asks for (#2160 lens fix).
+ *
+ * `gh issue/pr list` answers 30 rows and `glab issue/mr list` one page of 20
+ * unless told otherwise, and a short list is indistinguishable, in the bytes
+ * the child reads, from the whole list — the child has nothing to compare the
+ * row count against. So the parent asks for the page the CLI will carry and
+ * `forge-read-execute.ts` discloses a reply that FILLS it. The cap is the
+ * parent's, not a request field: a child that could raise it would be choosing
+ * how much of its own context a read spends.
+ */
+export const FORGE_LIST_LIMIT = 100;
+
+/** The page flag this forge's list subcommand takes (`--limit` / `--per-page`). */
+export function forgeListPageFlag(forge: ForgeType): string {
+  return forge === "github" ? `--limit ${FORGE_LIST_LIMIT}` : `--per-page ${FORGE_LIST_LIMIT}`;
+}
 
 export function issueViewCmd(forge: ForgeType, number: number): string {
   if (forge === "github")
@@ -119,10 +142,25 @@ export function issueSearchCmd(
 ): string {
   if (forge === "github") {
     const state = opts.allStates ? " --state all" : "";
-    return `gh issue list --search ${shq(query)}${state} --json number,title,state,url`;
+    return `gh issue list --search ${shq(query)}${state} ${forgeListPageFlag(forge)} --json number,title,state,url`;
   }
   const state = opts.allStates ? " --all" : "";
-  return `glab issue list --search ${shq(query)}${state} --output json`;
+  return `glab issue list --search ${shq(query)}${state} ${forgeListPageFlag(forge)} --output json`;
+}
+
+/**
+ * The repo's issue list with its state (#2160 — the `forge_read` `issue_list`
+ * verb). Deliberately its own builder rather than a flag on `issueSearchCmd`:
+ * a search and a listing are different questions, the CLI flags that spell
+ * them differ (`--search` versus a bare `--state`), and a caller that wanted
+ * both would get the wrong one from a shared builder.
+ */
+export function issueListCmd(forge: ForgeType, opts: { state?: string } = {}): string {
+  const state = opts.state ? ` --state ${shq(opts.state)}` : "";
+  if (forge === "github")
+    return `gh issue list${state} ${forgeListPageFlag(forge)} --json number,title,state,url`;
+  const all = opts.state === "all" ? " --all" : "";
+  return `glab issue list${all} ${forgeListPageFlag(forge)} --output json`;
 }
 
 /**
@@ -136,208 +174,7 @@ export function issueEditCmd(forge: ForgeType, number: number, bodyFile?: string
   return `glab api -X PUT -f "description=@${shq(bodyFile ?? "")}" /projects/:id/issues/${number}`;
 }
 
-// ── Pull requests / MRs ───────────────────────────────────────────────────
-
-export function prViewCmd(forge: ForgeType, number: number): string {
-  if (forge === "github") {
-    return `gh pr view ${number} --json number,title,body,state,url,headRefName,baseRefName,author,mergeable,mergeStateStatus,isDraft,labels,createdAt,updatedAt`;
-  }
-  return `glab mr view ${number} --output json`;
-}
-
-export function prListCmd(
-  forge: ForgeType,
-  opts: { state?: string; sourceBranch?: string } = {},
-): string {
-  const stateFlag = opts.state ? ` --state ${shq(opts.state)}` : "";
-  if (forge === "github") {
-    const head = opts.sourceBranch ? ` --head ${shq(opts.sourceBranch)}` : "";
-    return `gh pr list${stateFlag}${head} --json number,title,state,url,headRefName,baseRefName,labels`;
-  }
-  const source = opts.sourceBranch ? ` --source-branch ${shq(opts.sourceBranch)}` : "";
-  return `glab mr list${stateFlag}${source} --output json`;
-}
-
-/**
- * The open-PR lookup the classic driver's pre-merge gates issue OUTSIDE the
- * adapter: `gh pr list --state open` carrying the `body` field, which
- * `prListCmd` does not request and `matchPrForIssue` reads.
- *
- * GitHub-only by construction. GitLab's `glab mr list` carries no body field
- * at all (its rows are the mapper's, and none of them is a description), so a
- * GitLab cycle asking this question would read an empty body for every MR and
- * decide "no PR matches" — a wrong answer from a command that exited 0. The
- * caller refuses with this string instead of issuing it. `state` is the caller
- * to supply (`--state` is how gh selects open PRs; an absent state is not
- * "open").
- */
-export function openPrBodyListCmd(state: string): string {
-  return `gh pr list --state ${shq(state)} --limit 100 --json number,headRefName,body`;
-}
-
-/**
- * `gh pr create` does NOT support `--json` (verified: `gh pr create --help`
- * — no `--json` in the flag list, and the doc text explicitly states
- * "Upon success, the URL of the created pull request will be printed").
- * The mapper in `forge.ts` (`prCreate`) already handles the plain-text URL
- * shape via `parsePrNumberFromResponse` + `makeMinimalPr`; the trailing
- * `makeMinimalPr` fallback fills in `url` from the parsed value.
- */
-export function prCreateCmd(
-  forge: ForgeType,
-  title: string,
-  headBranch: string,
-  bodyFile: string,
-  opts: { baseBranch?: string; draft?: boolean } = {},
-): string {
-  // #1292 — both CLIs spell it `--draft`; a draft is still state OPEN/opened.
-  const draftFlag = opts.draft ? " --draft" : "";
-  const baseBranch = opts.baseBranch;
-  if (forge === "github") {
-    const head = baseBranch ? `${shq(baseBranch)}...${shq(headBranch)}` : shq(headBranch);
-    return `gh pr create --title ${shq(title)} --head ${head} --body-file ${shq(bodyFile)}${draftFlag}`;
-  }
-  // GitLab: NO --head flag — the source branch is positional, and the
-  // target is `--target-branch`.
-  const target = baseBranch ? ` --target-branch ${shq(baseBranch)}` : "";
-  return `glab mr create ${shq(headBranch)} -t ${shq(title)} --description-file ${shq(bodyFile)}${target}${draftFlag} --output json`;
-}
-
-/**
- * #1292 — mark a draft PR/MR ready for review. `gh pr ready` on a PR that is
- * already ready warns and exits 0, as does `glab mr update --ready` on an MR
- * without the draft marker, so a repeat is harmless.
- */
-export function prReadyCmd(forge: ForgeType, number: number): string {
-  if (forge === "github") return `gh pr ready ${number}`;
-  return `glab mr update ${number} --ready`;
-}
-
-/**
- * #1398 — the inverse: put a PR/MR back to draft. Verified against the
- * installed CLIs and their docs, and recorded in the PR body:
- *
- *  - GitHub `gh pr ready <N> --undo` (gh 2.102.0 `--help`: "--undo Convert a
- *    pull request to \"draft\""). On an unknown PR it exits 1 with
- *    `GraphQL: Could not resolve to a PullRequest with the number of …` — it
- *    does NOT exit 0 silently, which is why the re-arm can tell a real
- *    success from a no-op (the ready direction cannot: it warns and exits 0).
- *  - GitLab `glab mr update <N> --draft` (docs/source/mr/update.md: "--draft
- *    Mark merge request as a draft", with `--wip` as the documented
- *    alternative). `glab` is not installed in the sandbox image's dev host, so
- *    this form is pinned from the upstream docs rather than a local `--help`.
- *
- * Deliberately NOT a bare extra `prReadyCmd` call: a `gh pr ready` that
- * "succeeds" on an already-ready PR leaves it mergeable and reports nothing,
- * so the re-arm must issue the draft direction and read the forge back.
- */
-export function prDraftCmd(forge: ForgeType, number: number): string {
-  if (forge === "github") return `gh pr ready ${number} --undo`;
-  return `glab mr update ${number} --draft`;
-}
-
-/**
- * MR/PR merge. SAFETY INVARIANT (epic #608): on GitLab this MUST always
- * pass `--auto-merge=false`. `glab mr merge` enables scheduled auto-merge
- * when auto-merge is configured for the MR, deferring the actual merge to a
- * GitLab pipeline trigger — the driver would then record "merged" for a MR
- * that has not merged. `--auto-merge=false` forces the immediate, explicit
- * merge. There is no GitHub analogue (gh pr merge merges immediately).
- */
-/**
- * `--subject` must be a non-empty string: `gh pr merge` has no way to
- * express "use the repository default" (an empty value would become
- * `--subject ''`, which GitHub rejects or treats as a blank subject), so
- * the flag is absent exactly when no subject was provided. The subject
- * must not contain a newline (a shell one-liner argument); callers clip.
- */
-export function prMergeSubjectFlag(subject: string | undefined): string {
-  const s = subject?.trim();
-  if (!s) return "";
-  return ` --subject ${shq(s)}`;
-}
-
-/**
- * #1533 — the head pin, forge-conditional.
- *
- * An approval covers ONE commit. Without the pin the driver's merge acts on
- * whatever head the forge holds when the command runs, so a push landing after
- * the review and before the merge is merged unreviewed. GitHub takes
- * `--match-head-commit <oid>` (gh refuses when the PR head has moved);
- * GitLab's `glab mr merge` has no such flag and takes `--sha <oid>` instead.
- * The two spellings are deliberately named in the tests rather than silently
- * unified — a pin that only exists for one forge is not a pin.
- */
-export function prMergeHeadPinFlag(forge: ForgeType, headOid: string): string {
-  // Fail closed at the single place the pin is written: an OID that is not a
-  // full 40-char SHA would be interpolated into a shell string as-is, and an
-  // abbreviated or non-hex value is exactly the "I meant this commit" claim
-  // the pin exists to make precisely.
-  if (!isFullCommitSha(headOid)) {
-    throw new Error("merge head pin: not a full 40-char commit SHA");
-  }
-  return forge === "github" ? ` --match-head-commit ${shq(headOid)}` : ` --sha ${shq(headOid)}`;
-}
-
-export function prMergeCmd(
-  forge: ForgeType,
-  number: number,
-  // #1533 — the head OID to pin, REQUIRED and declared before the optional
-  // `subject`: a required parameter may not follow an optional one, and this
-  // ordering is what makes an unpinned merge a compile error rather than an
-  // `undefined` that silently produces the old, unpinned command.
-  headOid: string,
-  method: "squash" | "merge" | "rebase" = "squash",
-  subject?: string,
-): string {
-  const subjectFlag = prMergeSubjectFlag(subject);
-  const pin = prMergeHeadPinFlag(forge, headOid);
-  if (forge === "github")
-    return `gh pr merge ${number} --${method} --delete-branch${subjectFlag}${pin}`;
-  return `glab mr merge ${number} --${method} --auto-merge=false${subjectFlag}${pin}`;
-}
-
-export function prDiffCmd(forge: ForgeType, number: number): string {
-  if (forge === "github") return `gh pr diff ${number}`;
-  return `glab mr diff ${number}`;
-}
-
-/**
- * CI checks for a PR/MR.
- *
- * GitHub: `gh pr checks` exits non-zero when any check fails — callers must
- * tolerate that (the existing driver does). The requested fields are pinned
- * to gh 2.98.0 by `smoke-tests/test-gh-argv.ts`; `isRequired` must not be
- * added back — it is not a field this subcommand supports, and requesting it
- * made the whole invocation fail closed on every PR (#745). GitLab:
- * `glab ci lint` is static analysis and NOT run-level checks, so we go
- * through the API: the MR's open pipeline's jobs, via `glab api` against
- * `/projects/:id/merge_requests/:iid/pipelines` (first entry = most recent).
- */
-export function prChecksCmd(forge: ForgeType, number: number): string {
-  if (forge === "github") return `gh pr checks ${number} --json name,state,bucket`;
-  return `glab api "/projects/:id/merge_requests/${number}/pipelines" --output json`;
-}
-
-/**
- * GitHub's authoritative merge verdict for the merge-evidence gate. The
- * driver used to hard-code this field list inline; it lives here so the
- * argv-pinning test (`test-gh-argv.ts`) covers it the same way it covers
- * `prChecksCmd`.
- *
- * `author` rides the SAME read as the merge-author allowlist check (#2181):
- * who opened the PR is judged at the moment the CI verdict is read, and a
- * second `gh pr view` would be a second moment in which the PR could be
- * reassigned. Verified against gh 2.102.0 (`author` is a field of that
- * subcommand; the guard's own identity read already requests it).
- */
-export function mergeEvidenceViewCmd(number: number): string {
-  // #1533 — `headRefOid` is requested HERE rather than in a second read: the
-  // OID the merge is pinned to must be the OID the CI verdict was observed at,
-  // and two reads of a moving PR are two moments, not one. Verified against
-  // gh 2.102.0 (`gh pr view <n> --json …,headRefOid` returns it).
-  return `gh pr view ${number} --json mergeStateStatus,mergeable,state,headRefOid,author`;
-}
+// ── CI runs ───────────────────────────────────────────────────────────────
 
 /**
  * The page size and the three read builders the GitLab arm of the
@@ -346,11 +183,25 @@ export function mergeEvidenceViewCmd(number: number): string {
  * that grades their answers rather than in the forge-wide table below.
  */
 
-// ── CI runs ───────────────────────────────────────────────────────────────
+/**
+ * A CI run/pipeline id: a positive integer, or a refusal that names the id.
+ *
+ * The id reaches a shell string, so it is checked rather than coerced. A builder
+ * that accepted `-1`, `1.5` or `NaN` would interpolate whatever it was handed —
+ * every other target in this file goes through a validator or `shq` for the same
+ * reason, and a numeric argument is not exempt because it is typed `number` at
+ * the call site: the value arrives from a request the child composed.
+ */
+function ciId(id: number, what: string): number {
+  if (typeof id !== "number" || !Number.isInteger(id) || id <= 0) {
+    throw new Error(`forge ci: ${what} must be a positive integer (got ${String(id)})`);
+  }
+  return id;
+}
 
 /** Watch a GitHub Actions run (the CLI does the polling). */
 export function ciWatchCmd(runId: number): string {
-  return `gh run watch ${runId}`;
+  return `gh run watch ${ciId(runId, "run id")}`;
 }
 
 /**
@@ -358,7 +209,7 @@ export function ciWatchCmd(runId: number): string {
  * this is one iteration of it). `:id` is the *project* id — glab expands it.
  */
 export function pipelineViewCmd(pipelineId: number): string {
-  return `glab api /projects/:id/pipelines/${pipelineId} --output json`;
+  return `glab api /projects/:id/pipelines/${ciId(pipelineId, "pipeline id")} --output json`;
 }
 
 /** List the project's pipelines (newest first) — the watch's entry point. */
@@ -467,6 +318,44 @@ export function repoSettingsCmd(forge: ForgeType): string {
   return "glab api /projects/:id --output json";
 }
 
+// ── CI run logs (#2160) ────────────────────────────────────────────────────
+
+/**
+ * The jobs of one CI run / pipeline — the read that decides WHICH log to ask
+ * for. GitHub: the Actions API's jobs endpoint (snake_case rows). GitLab: the
+ * pipeline's jobs (`glab api` expands `:id`, so the command is forge-native).
+ */
+export function ciRunJobsCmd(forge: ForgeType, owner: string, repo: string, id: number): string {
+  // `owner`/`repo` come from the parsed remote URL, which is data the parent
+  // does not author — every other builder in this file quotes its data through
+  // `shq` for the same reason, and a path segment carrying a shell metacharacter
+  // would otherwise reach the exec string unquoted. The run id is checked rather
+  // than quoted: it is a number in the signature, and a value that is not a
+  // positive integer is a caller error, not something to route to the CLI.
+  const runId = ciId(id, "run id");
+  if (forge === "github")
+    return `gh api /repos/${shq(owner)}/${shq(repo)}/actions/runs/${runId}/jobs --paginate`;
+  return `glab api /projects/:id/pipelines/${runId}/jobs --output json`;
+}
+
+/**
+ * The failed-job log text. GitHub: `gh run view --log-failed`, which answers
+ * the concatenated log of every failed job of the run. GitLab has no such
+ * whole-run form, so the caller asks per job with `ciJobTraceCmd`. Neither arm
+ * takes a repo slug — the run/pipeline id is globally addressable, so there is
+ * no `owner` parameter here to keep in step with the caller.
+ */
+export function ciRunLogCmd(forge: ForgeType, id: number): string {
+  const runId = ciId(id, "run id");
+  if (forge === "github") return `gh run view ${runId} --log-failed`;
+  return `glab ci trace ${runId}`;
+}
+
+/** One GitLab job's trace — the per-job arm of the GitLab failed-log read. */
+export function ciJobTraceCmd(jobId: number): string {
+  return `glab api /projects/:id/jobs/${ciId(jobId, "job id")}/trace --output json`;
+}
+
 // ── CI run fetch ──────────────────────────────────────────────────────────────
 
 /** One CI-run fetch (the ciWatch loop body + the direct ciRun call). */
@@ -478,7 +367,12 @@ export function ciRunOnce(
   repo: string,
   id: number,
 ): Promise<string> {
+  // The same id rule as `ciRunJobsCmd`, and the same reason: this seam is a
+  // shell string and the id arrives from a caller outside this file.
+  const runId = ciId(id, "run id");
   const cmd =
-    forge === "github" ? `gh api /repos/${owner}/${repo}/actions/runs/${id}` : pipelineViewCmd(id);
+    forge === "github"
+      ? `gh api /repos/${shq(owner)}/${shq(repo)}/actions/runs/${runId}`
+      : pipelineViewCmd(runId);
   return execFn(cmd, { cwd, maxBuffer: 512 * 1024 }).then(({ stdout }) => stdout);
 }

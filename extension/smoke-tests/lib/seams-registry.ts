@@ -118,7 +118,10 @@ export const SEAMS: Seam[] = [
       // these reach production only once those do.
       searchArgv: "#422 — called by vipuneSearch (and by the offline argv gate)",
     },
-    canary: { symbol: "vipuneChildEnv", importer: "spawn.ts" },
+    // #2160 — the child-env assembly moved to spawn-child-env.ts when spawn.ts
+    // reached the §12 cap; the vipune additions are made there, by the one
+    // builder every spawn path calls.
+    canary: { symbol: "vipuneChildEnv", importer: "spawn-child-env.ts" },
   },
   {
     // Shipped in v0.12.32 with no caller at all. `/audit` is now that caller

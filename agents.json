@@ -396,6 +396,7 @@
         "list": "allow",
         "todowrite": "allow",
         "codemode": "allow",
+        "forge_read": "allow",
         "webfetch": "allow",
         "question": "allow",
         "task": {
@@ -735,6 +736,7 @@
         "list": "allow",
         "todowrite": "allow",
         "codemode": "allow",
+        "forge_read": "allow",
         "webfetch": "allow",
         "task": "deny",
         "report_finding": "allow"
@@ -866,6 +868,7 @@
         "list": "allow",
         "todowrite": "allow",
         "codemode": "allow",
+        "forge_read": "allow",
         "webfetch": "allow",
         "task": "deny",
         "report_workstream": "allow",
@@ -974,7 +977,8 @@
           "*": "deny"
         },
         "webfetch": "deny",
-        "codemode": "allow"
+        "codemode": "allow",
+        "forge_read": "allow"
       }
     }
   }

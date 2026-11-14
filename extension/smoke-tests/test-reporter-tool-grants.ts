@@ -24,11 +24,16 @@
  * loads, does not block a reporter.
  */
 
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { keepsForgeLogin } from "../src/child-forge-env.ts";
 import registerChildGuards from "../src/child-guards.ts";
 import { resolveToolPermission } from "../src/permission-guard.ts";
+import { SUBAGENT_ROLE_NAMES } from "../src/roles.ts";
+
+/** The six roles a specialist is ever dispatched as — the grant set's domain. */
+const SUBAGENT_ROLES: readonly string[] = SUBAGENT_ROLE_NAMES;
 
 let exitCode = 0;
 function assert(cond: boolean, msg: string): void {
@@ -104,7 +109,12 @@ assert(
   delete process.env.PI_ENSEMBLE_SUBAGENT_MODE;
   process.env.PI_ENSEMBLE_ROLE = "explore";
   const handlers: Array<(event: unknown, ctx: unknown) => unknown> = [];
-  const fakePi = { on: (_name: string, fn: (event: unknown, ctx: unknown) => unknown) => handlers.push(fn) };
+  // #2160 — the companion registers `forge_read` on load; this suite asserts the
+  // tool_call verdicts, so the fake absorbs the registration.
+  const fakePi = {
+    on: (_name: string, fn: (event: unknown, ctx: unknown) => unknown) => handlers.push(fn),
+    registerTool: () => undefined,
+  };
   registerChildGuards(fakePi as unknown as Parameters<typeof registerChildGuards>[0]);
   for (const tool of declared) {
     const toolName = tool;
@@ -113,12 +123,39 @@ assert(
       const r = (await h({ toolName, input: {} }, {})) as { block?: boolean } | undefined;
       if (r?.block) blocked = true;
     }
-    assert(!blocked, `${tool} is not blocked for a trust child (the companion never consults agents.json)`);
+    assert(
+      !blocked,
+      `${tool} is not blocked for a trust child (the companion never consults agents.json)`,
+    );
   }
   for (const [k, v] of saved) {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
   }
+}
+
+// #2160 — `forge_read` is the ONLY forge surface a stripped child has. The strip
+// is role-gated on ops alone (child-forge-env.ts), so every non-ops role loses
+// all five tokens; a role whose `forge_read` resolves to `ask` is left with
+// neither `gh` nor the proxy in headless/strict mode — it cannot read the issue
+// it was dispatched to work on. The grant set is derived from the strip's own
+// predicate rather than restated, so a role added to either side fails here.
+{
+  const stripped = SUBAGENT_ROLES.filter((r) => !keepsForgeLogin(r));
+  for (const role of stripped) {
+    const verdict = resolveToolPermission("forge_read", role, {}, {}, agents);
+    assert(
+      verdict === "allow",
+      `forge_read resolves to allow for the stripped role ${role} (got ${verdict}; ask is a headless deny)`,
+    );
+  }
+  // The negative arm: ops keeps its login and must NOT be granted the proxy, and
+  // a role nobody strips must not silently gain it either.
+  assert(
+    resolveToolPermission("forge_read", "ops", {}, {}, agents) !== "allow",
+    "ops is not granted forge_read (it still runs gh/glab itself)",
+  );
+  assert(stripped.length === 4, `four helper roles are stripped (got ${stripped.length})`);
 }
 
 process.exit(exitCode);

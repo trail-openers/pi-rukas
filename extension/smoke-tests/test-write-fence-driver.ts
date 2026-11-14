@@ -80,9 +80,14 @@ assert(
   );
 }
 {
-  const spawn = readFileSync(path.join(SRC, "spawn.ts"), "utf8");
+  // #2160 moved the child-env assembly into spawn-child-env.ts (spawn.ts sits at
+  // the §12 size cap), so the canary follows it: the rule is "the spawn path
+  // builds the child env from the dispatch's writeFence", not the file it sits in.
+  const spawn = readFileSync(path.join(SRC, "spawn-child-env.ts"), "utf8");
+  const spawnEntry = readFileSync(path.join(SRC, "spawn.ts"), "utf8");
   assert(
-    spawn.includes("writeFenceChildEnv(opts.writeFence)"),
+    spawn.includes("writeFenceChildEnv(writeFence)") &&
+      spawnEntry.includes("buildChildEnv(spec.role, permissions, opts.writeFence, tmpDir)"),
     "A: spawn.ts builds the child env from the dispatch's writeFence",
   );
 }
