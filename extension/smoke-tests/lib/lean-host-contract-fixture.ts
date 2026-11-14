@@ -45,6 +45,12 @@ export const ENV_KEYS = [
   // The verified-handback rule is read at call time and the off/on arms are pinned
   // with this scope, so it belongs to the set restored after every case.
   "PI_ENSEMBLE_LEAN_VERIFIED_HANDBACK",
+  // The two switches layered on that rule are read at call time too, and their
+  // off/on arms are pinned with this scope: the recording switch decides whether a
+  // no-head handback names the head it shipped, and the deadline switch decides
+  // whether a deadline stop routes into the report at all.
+  "PI_ENSEMBLE_LEAN_HANDBACK_NOHEAD_RECORD",
+  "PI_ENSEMBLE_LEAN_DEADLINE_HANDBACK",
   "PI_ENSEMBLE_CYCLE_BUDGET_MS",
   "PI_ENSEMBLE_HANDOFF_CHANNEL",
   // A case may pin the forge off for its own duration: the post seam is asserted
@@ -84,6 +90,121 @@ export function scratch(name: string): string {
 }
 export function cleanScratch(): void {
   for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+}
+
+/**
+ * A clock that goes late on the boundary AFTER the run's last decided step of `at`,
+ * keyed on the run's own RECORD rather than on a count of the loop's clock reads.
+ *
+ * `crossing` derives the stop test's read from `reads % 4`, which is exact for a drive
+ * whose handlers each consume the clock once and wrong for one that does not: a step
+ * that reads `ctx.now()` for its own clock (the production `review` step does, twice)
+ * shifts every later boundary, and the case ends up crossing at some other step or
+ * never at all — quietly, since "the report ran" looks the same either way. This form
+ * asks the record where the run stands instead: it arms once the log holds more than
+ * `after` DECIDED steps of `at`, which is the first read of the boundary that would
+ * start the step after that verdict. The position it hands back is the same
+ * `budget − shortfall` late instant `crossing` uses, so the caller's allowance test
+ * reads identically.
+ */
+export function crossingAfter(opts: {
+  /** The state the run must STAND IN — its newest step is the one whose outcome the
+   *  loop still owes, and hence the state the NEXT boundary's stop test will judge —
+   *  for the clock to go late. */
+  at: LeanState;
+  /** How many entries of `at` the log must hold — decided or not — before the clock may
+   *  go late. The engine writes a step AHEAD of running it, and the loop's later reads
+   *  of the boundary see that entry on the record, so the count is of VISITS and the
+   *  `standing === at` test below is what makes the newest one the undecided head of
+   *  the log. `0` means "the run stands on its FIRST entry of `at`" — which is the
+   *  shape a case that stops a state's first re-entry wants; `1` waits for the second.
+   *  A case that arms one visit late crosses one boundary late, and its step is then
+   *  half-run at the early instant, which no real drive leaves. */
+  after: number;
+  /** A state the run must have gotten PAST: the clock stays early until the log
+   *  holds a decided step of it. A caller that wants the stop to fall on the step
+   *  AFTER `at` passes `at` here too, so the run cannot be found late on its way
+   *  into the very step the premise needs undecided. `undefined` imposes no floor. */
+  decidedBefore?: LeanState;
+  repoRoot: string;
+  issue: number;
+  /** How far short of its budget the late position sits (default: 60 s). See
+   *  {@link crossing}'s `shortfallMs` for why a case picks one. */
+  shortfallMs?: number;
+}): {
+  now: () => number;
+  past: number;
+  crossed: () => boolean;
+} {
+  const start = Date.now();
+  const budget = 240 * 60_000;
+  const past = start + budget - (opts.shortfallMs ?? 60_000);
+  let armed = false;
+  let crossed = false;
+  return {
+    now: () => {
+      if (!armed) {
+        let standing: LeanState | undefined;
+        let decided = -1;
+        let gotPast = -1;
+        try {
+          const record = loadRun(opts.repoRoot, opts.issue);
+          const steps = record?.steps ?? [];
+          // The run's own POSITION, read off the record's `state` — not its newest
+          // step. The loop takes its deadline resolution and its stop test BEFORE it
+          // writes the step ahead, so at the read that decides whether a step may start
+          // the record still shows the step that just finished: newest `verify:0` and
+          // `state: verify` is the run standing on its SECOND visit to the gate, which
+          // is exactly the boundary a case wants stopped. Newest-step keying would
+          // instead arm one read later, past the decision, and the step would be
+          // half-run at the early instant — a record no real drive leaves.
+          standing = record?.state;
+          // Entries of `at`, verdict or not — see `after`.
+          decided = steps.filter((s) => s.state === opts.at).length;
+          gotPast =
+            opts.decidedBefore === undefined
+              ? 1
+              : steps.filter((s) => s.state === opts.decidedBefore && s.outcome !== undefined)
+                  .length;
+        } catch {
+          // An unreadable record is not a crossing — the engine's own loader is the
+          // one that refuses a corrupt file, and the clock must not turn that into an
+          // early deadline. Same rule `crossing` applies.
+          standing = undefined;
+          decided = -1;
+          gotPast = -1;
+        }
+        const armedNow = standing === opts.at && decided > opts.after && gotPast > 0;
+        // The read that ARMS is the second of the four the loop takes per step
+        // (`startedAt`, `endedAt`, the deadline resolution, the stop test), which for a
+        // step whose handler is a scripted queue is the STOP TEST's own read. Parity is
+        // not decoration: arming on the read that stamps `startedAt` hands the loop a
+        // late instant at its write-ahead, so the step is half-run at `start` — a
+        // record no real drive could leave, and one whose `startedAt` would disagree
+        // with the arm the case asserts against. Parity is a FLOOR rather than the whole
+        // condition so a case that changes `after` and breaks it fails LOUD (the clock
+        // never crosses) instead of quietly crossing one boundary early.
+        // NO read-parity here, deliberately. `crossing` below pins the stop test to
+        // `reads % 4`, which is exact only while every handler consumes exactly one
+        // read; this rig's whole point is that it does not know what the handlers
+        // between the boundaries consume. The record already says which step the loop
+        // is about to judge — its `state`, plus the entries it holds — so the position
+        // of the read inside the boundary carries no information the record does not.
+        // Arming on the first read that satisfies the condition is therefore arming on
+        // the boundary's deadline resolution, one read before the stop test that acts on
+        // it: the pair answer together, which is the only way the comparison can be
+        // made, and the step is never half-run at one instant and finished at another.
+        if (armedNow) armed = true;
+      }
+      if (!armed) return start;
+      crossed = true;
+      return past;
+    },
+    past,
+    // Read after the drive: a case whose run never had that verdict recorded cannot
+    // read as a deadline case.
+    crossed: () => crossed,
+  };
 }
 
 /**
@@ -129,10 +250,21 @@ export function crossing(opts: {
   issue: number;
   /** Cross after this many boundaries AT `at` (default: the first one). */
   times?: number;
+  /** How far short of its budget the late position sits (default: 60 s).
+   *
+   * The engine resolves and persists its arm on the FIRST boundary it sees and then
+   * judges every later one as `arm − now ≤ allowance`, so the late position has to
+   * land inside the caller's allowance for the stop to be a deadline stop at all —
+   * and outside it for the run's early steps to be allowed to start. A drive whose
+   * steps are few (a scripted walk) reaches its crossing point long before a 60 s
+   * shortfall would bite, and the case silently crosses nothing; naming the gap lets
+   * such a drive put the line where its own boundary is.
+   */
+  shortfallMs?: number;
 }): { now: () => number; past: number; crossed: () => boolean } {
   const start = Date.now();
   const budget = 240 * 60_000;
-  const past = start + budget - 60_000;
+  const past = start + budget - (opts.shortfallMs ?? 60_000);
   let crossed = false;
   let boundariesAtState = 0;
   // Read on EVERY clock read, so the clock cannot go stale against the position

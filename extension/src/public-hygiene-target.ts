@@ -29,6 +29,7 @@ import { parseRemoteUrl } from "./forge-detect.ts";
 import { commandPrefixLength } from "./public-hygiene-prefix.ts";
 import { parsePushUrlTarget, pushRemoteName } from "./public-hygiene-remote.ts";
 import type { RepoTarget } from "./public-hygiene-visibility.ts";
+import { GITHUB_HOST } from "./public-hygiene-visibility.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /** A target the resolution could not name, with the reason a trace may print. */
@@ -404,8 +405,19 @@ export async function resolveCommandTarget(
     }
     // The host travels with the target. `gh` can answer visibility for
     // github.com only, and a caller that never sees the host would either ask
-    // `gh` about a GitLab project or assume something about it.
-    return { owner: parsed.owner, repo: parsed.repo, host: parsed.host };
+    // `gh` about a GitLab project or assume something about it. A namespace
+    // path deeper than `owner/repo` is not a GitHub repository — the only slug
+    // github.com serves — so it names no target rather than a truncated one.
+    if (parsed.host === GITHUB_HOST && parsed.path.length !== 2) {
+      last = { reason: `the ${name} remote URL is not a repository URL` };
+      return last;
+    }
+    const repo = parsed.path[parsed.path.length - 1] ?? "";
+    return {
+      owner: parsed.path.slice(0, -1).join("/"),
+      repo,
+      host: parsed.host,
+    };
   };
 
   for (const argv of simpleCommands(command)) {

@@ -9,9 +9,9 @@
  * `PI_ENSEMBLE_*` name. A new input goes in whichever half its name sorts
  * into; the boundary row is `DECK_MAX_ROWS`.
  *
- * The entry builders live in `entry.ts` and the family member lists in
- * `inputs.ts` — this module holds data only, so the conventions stated in that
- * header (value shapes, `scope` meanings, family placeholders) apply here
+ * The entry builders and the family member lists live in `entry.ts` — this
+ * module holds data only, so the conventions stated in `inputs.ts`'s header
+ * (value shapes, `scope` meanings, family placeholders) apply here
  * unchanged, and `test-headless-inputs.ts` judges both halves identically.
  */
 
@@ -100,6 +100,11 @@ export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   // also takes it out, since one renderer serves all three seats.
   // The reader is `leanBuildIssueProseEnabled` in lean/issue-prose.ts.
   flag("LEAN_BUILD_ISSUE_PROSE", true),
+  // The two handback switches: the deadline stop's route to the report, and the
+  // no-head handback's record. Readers in lean/deadline-handback.ts and
+  // lean/verified-handback-switch.ts.
+  flag("LEAN_DEADLINE_HANDBACK", true),
+  flag("LEAN_HANDBACK_NOHEAD_RECORD", true),
   // #2171 — show the specify/challenge adversary the issue prose its frozen
   // tests were written from. 0 takes the section back out of both prompts.
   // The reader is `leanIssueProseEnabled` in lean/issue-prose.ts.
@@ -110,13 +115,16 @@ export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   // bound. 0 restores the single bounded block. The reader is
   // `leanReviewSpecSplitEnabled` in lean/review-spec-split.ts.
   flag("LEAN_REVIEW_SPEC_SPLIT", true),
+  // #2262 — the rewind's lease: `"0"` puts the leading `+` back on the branch refspec,
+  // which makes git skip the lease and force-update a branch somebody else moved.
+  // Unset or any other value leaves the refspec unforced so the lease binds. The reader
+  // is `leanRewindLeaseBinds` in lean/rewind-lease-switch.ts.
+  flag("LEAN_REWIND_LEASE_BINDS", true),
   // #2212 — #2179's runner preflight and the reset's submodule init, both off
   // only on `"0"`, which restores v0.14.71's specify (no probe, no submodule
   // call, exit 11 where the preflight would have handed back at 10).
   flag("LEAN_RUNNER_PREFLIGHT", true),
-  // A handback whose newest work step is a `fixed` review moves origin's branch back
-  // to the newest green verify's head and records which head shipped; `"0"` reports
-  // and moves nothing, the pre-rule behaviour.
+  // The rewind rule itself: reader `leanVerifiedHandbackEnabled`, same module.
   flag("LEAN_VERIFIED_HANDBACK", true),
   // Unset: derived from the host budget (CPUs, memory, pids.max); 0 = unbounded.
   // #1564 — a lens child's run bound (spawn-child-bound.ts).

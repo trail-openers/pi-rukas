@@ -34,7 +34,9 @@ import {
   LeanStateError,
   type Outcome,
   type Position,
+  REPORT_STATES,
   type RunCounters,
+  type Step,
   stepKey,
 } from "./state.ts";
 
@@ -103,10 +105,42 @@ export function foldLog(
         `${where}: snapshot disagrees with the step log (${m} at step ${i + 1} of ${log.length})`,
       );
     };
-    if (s.state !== pos.state)
-      at(`step ${s.key} belongs to ${s.state} but the walk stands at ${pos.state}`);
-    if (s.key !== stepKey(run.issue, s.state, n))
+    if (s.state !== pos.state) {
+      // The engine's one move that arrives with a visit but no verdict to carry: the deadline's route
+      // into the report (`driveLoop`, gated by `deadlineStopShouldReport`). When the clock refuses the
+      // step whose verdict would have owed the move, the run is moved into `handback` so the comment, the
+      // rewind and the head fields actually run — and there is no verdict to put on an entry for that
+      // visit, because the step that owed it never started. So the report's entry is the log's next one
+      // while the walk, following the table, still stands at the refused step. Refusing it would refuse
+      // the report: the record of a run the clock stopped would be one `loadRun` will not open, and
+      // because this module runs before the routing's switch is read, no env value brings such a run
+      // back — the documented recovery for a timed-out issue would be closed for good.
+      //
+      // `isReportRoute` keeps the exemption as narrow as the move, and reads the WALK and the log rather
+      // than the entry being judged, so a record cannot vouch for itself.
+      // `seen` has already counted this entry — the loop counts before judging — so the number of
+      // `handback` entries PRECEDING it is one less. The loop never enters the report twice, so any earlier
+      // one makes this a fabrication and the exemption is withheld. The entry is the REPORT's own, so
+      // `handback` is the only state it can belong to: the routing writes that visit and no other, and
+      // `isReportRoute` still requires the log to end on it behind a `fixed` review that the clock outran.
+      const reportedEntry = s.state === "handback";
+      const firstReportEntry = (seen[s.state] ?? 1) === 1;
+      if (!(reportedEntry && firstReportEntry && isReportRoute(log)))
+        at(`step ${s.key} belongs to ${s.state} but the walk stands at ${pos.state}`);
+      seen.handback = (seen.handback ?? 1) + 1;
+      // A route is a visit, so the walk takes it: the entry after it is the report's own verdict and must
+      // belong to `handback`. Counters carry across unchanged — `handback` + `done` moves none.
+      before = pos;
+      pos = { state: "handback", counters: pos.counters };
+      // Its key is the report's own — `<issue>:handback:<n>` for the report entries that precede it, which
+      // is `n` as counted above and equals 0 for the route the engine makes — not one for the state the
+      // walk was left in, so the attempt check below is taken with the state check it belongs to. It is not
+      // skipped: a routed visit still has to be the entry the engine's own key rule would have written.
+      if (s.key !== stepKey(run.issue, "handback", n))
+        at(`step ${s.key} is not the ${n}th entry for handback`);
+    } else if (s.key !== stepKey(run.issue, s.state, n)) {
       at(`step ${s.key} is not the ${n}th entry for ${s.state}`);
+    }
     if (s.outcome === undefined) {
       // The write-ahead of the step this run is about to re-run. A drive saves
       // the file at that moment, so the position it persisted is exactly the
@@ -128,6 +162,34 @@ export function foldLog(
     pos = next({ ...run, state: pos.state, counters: pos.counters }, s.outcome);
   }
   return { pos, before, decided: log.length > 0 && log[log.length - 1]?.outcome !== undefined };
+}
+
+/**
+ * Is this `handback` entry the engine's deadline route into the report, rather than an invented visit?
+ *
+ * Three conditions, none read from the entry being judged, so a log cannot describe its way into being
+ * legal:
+ *
+ *   - it is the run's FIRST report entry, and the entry belongs to `handback`: the routing writes a
+ *     report visit and nothing else, so no other state can be reached by this move. The count that
+ *     establishes it lives at the call site, where `seen` is in scope.
+ *   - the log still ends where the routing leaves it — on this `handback` entry. A route is written to end
+ *     the log, so anything after it is a verdict the routing did not produce;
+ *   - the log's newest DECIDED work step is a `fixed` review with no decided `verify` behind it: the
+ *     premise `handback-heads.ts` judged when it said the run is standing over unverified bytes, restated
+ *     here from the same log. Without it a `handback` could be smuggled in behind any verdict, and the
+ *     fold's "no exemptions needed" property is what the whole check exists to keep.
+ */
+function isReportRoute(log: Step[]): boolean {
+  if ((log[log.length - 1] as Step | undefined)?.state !== "handback") return false;
+  const newestWork = [...log]
+    .reverse()
+    .find(
+      (s) => s.outcome !== undefined && !(REPORT_STATES as readonly string[]).includes(s.state),
+    );
+  if (newestWork?.state !== "review" || newestWork.outcome?.kind !== "fixed") return false;
+  const at = log.indexOf(newestWork);
+  return !log.some((s, i) => i > at && s.state === "verify" && s.outcome !== undefined);
 }
 
 /**

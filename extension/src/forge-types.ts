@@ -214,7 +214,8 @@ export interface Forge {
   forge: ForgeType;
   /** The resolved host (from S1). */
   host: string | undefined;
-  /** The owner (first path segment of the remote URL). */
+  /** The owner: every namespace segment above the repo, joined with `/` — one
+   *  segment on GitHub, and `group/sub`-style nesting on a GitLab subgroup. */
   owner: string;
   /** The repo (last path segment of the remote URL). */
   repo: string;

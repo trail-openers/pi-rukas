@@ -727,7 +727,7 @@ The driver reads the cycle's PR before lens-review, lens-fix, ci, and before it 
 **Fix:**
 
 1. `env | grep PI_ENSEMBLE_FORGE` — if it prints `github` or `none`, that variable is the answer, not the repo. Clear it for the session (`env -u PI_ENSEMBLE_FORGE pi`) or set it to the forge you mean; set it to `none` to turn the forge off on purpose.
-2. Write `<project>/.pi/forge` with `type=gitlab` and `host=<the remote's host>`. The `host` must equal the remote's host or the file is not applied: `git remote get-url origin` is what it has to agree with. The remote must carry a host **and** an `owner/repo` path (`group/project`, or a GitLab subgroup `group/sub/project`) — a path deeper than that parses to no host at all, and a config whose host disagrees with a host that never parsed is applied anyway, which is how a cycle ends up with an adapter for an instance its remote never named. Run it through a wrapper (`ssh://…/repo.git`) or an scp-style remote (`git@host:group/repo.git`) — both parse; an ssh *alias* with no hostname in it does not, and leaves the cycle forge-less.
+2. Write `<project>/.pi/forge` with `type=gitlab` and `host=<the remote's host>`. The `host` must equal the remote's host or the file is not applied: `git remote get-url origin` is what it has to agree with. For that comparison to happen at all the remote has to **parse** — it must carry a hostname and a path of two to five segments, each a plain name (`group/project`, or a GitLab subgroup `group/sub/project`). "Hostname" means a string in the host position of the URL, not one that resolves to a machine: the parser reads the remote, not DNS. A remote outside that range parses to no host, and a config whose host disagrees with a host that never parsed is applied anyway, which is how a cycle ends up with an adapter for an instance its remote never named — the widening does not close that for a real project that simply sits past the bound, so keep the path within five segments if you want the `host=` cross-check to run. Run it through a scheme URL (`ssh://git@host.example.net/group/project.git`) or an scp-style remote (`git@host.example.net:group/project.git`) — both parse; an ssh *alias* spelled bare in the host position of either does not carry a hostname the comparison can use, and leaves the cycle forge-less.
 3. `PI_ENSEMBLE_DEBUG=1` traces the resolution with the source that decided it — `env`, `config`, `known-host` or `unknown` — which is how you tell "no remote was read" from "the config's host disagreed with the remote".
 
 Two refusals stay refusals on a correctly-detected GitLab project, and both are the honest answer rather than a bug: the open-PR pre-flight reads the PR **body** for a closing keyword and GitLab's MR list carries no body field, and `--continue-pr` reads GitHub pull requests only. Each names the forge in its reason instead of running `gh`, and the cycle proceeds past the pre-flight (it fails open) — only `--continue-pr` actually caps, as `continue-pr-not-found`.
@@ -3994,9 +3994,15 @@ the review step; once it has pushed, "shipped" and "verified" are two different 
 
 **Fix:** the handback now ships the last verified head. It keeps the unverified head
 reachable under `refs/lean/unverified/<issue>`, then rewinds origin's branch to the newest
-decided green `verify`'s head with a lease-pinned push
-(`--force-with-lease=<branch>:<unverified head>`), so it moves the branch only while origin
-still holds exactly the head this run pushed. The step's outcome carries `shippedHead`,
+decided green `verify`'s head with a lease-pinned atomic push
+(`--atomic --force-with-lease=<branch>:<held>` on an UNFORCED branch refspec), where `<held>` is
+the head this step read off origin: the lease guards the window between that read and the
+push, so a branch moved inside it is refused, while a branch that had already moved before
+the step read it is read at its new value, rewound, and the head it displaced kept under
+`refs/lean/unverified/<issue>`. The
+refspec must be unforced for that to be more than a phrase: git skips the lease for a
+refspec with a leading `+`, and the forced form this replaced rewrote a branch somebody
+else had moved with the lease never consulted. The step's outcome carries `shippedHead`,
 `shippedVerified`, and when they differ `unshippedHead` and `unshippedReason`; the
 comment body names them, and on `PI_ENSEMBLE_HANDOFF_CHANNEL=host` the body the host
 is handed is that same comment. When the push is refused — by the lease, or
@@ -4008,7 +4014,9 @@ head verified, so a state file naming bytes nobody has moves nothing and reads a
 Where origin already holds the certified head, the step pushed nothing and
 says so, without calling the shipped head unverified. Read `shippedVerified: false` as the reason to
 look before merging. The rule is behind `PI_ENSEMBLE_LEAN_VERIFIED_HANDBACK` (default on;
-`0` restores the pre-rule step that reports and moves nothing). It keys on the step log, so
+`0` restores the pre-rule step that reports and moves nothing), and the unforced refspec
+and atomic push that make the lease bind are together behind `PI_ENSEMBLE_LEAN_REWIND_LEASE_BINDS`
+(default on; `0` puts the leading `+` back and drops `--atomic`, byte for byte). It keys on the step log, so
 it covers every handback whose newest work step is a `fixed` review, whatever stopped the
 run. Source: `lean/handback-heads.ts`, `lean/handback-rewind.ts`, `docs/lean.md` → "The
 verified handback".

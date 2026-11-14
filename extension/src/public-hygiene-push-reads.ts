@@ -132,7 +132,12 @@ export function directPushTarget(
   // word that looks like a URL is a destination the command itself carries.
   if (!looksLikeRemoteUrl(slot)) return undefined;
   const parsed = parsePushUrlTarget(slot);
-  if (parsed === undefined) {
+  // `RepoTarget.host` is optional — a target resolved from a `-R` flag knows its
+  // slug but not its site. A URL destination always carries one, so an absent
+  // host here means the word parsed to no site at all, which is the same
+  // "could not be read" as a word that is not a URL: never "not the public
+  // forge", which would excuse the push.
+  if (parsed?.host === undefined) {
     return { kind: "problem", problem: "the push destination URL could not be read" };
   }
   return { kind: "host", host: parsed.host };

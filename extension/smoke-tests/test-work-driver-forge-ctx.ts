@@ -117,27 +117,25 @@ const NO_FORGE_ENV: Record<string, string | undefined> = {};
   dispose();
 }
 
-// ── 2. the config's host only has to agree with a host the remote YIELDS ───
+// ── 2. the config's host has to agree with the host the remote parses ───
 
 {
-  // The subtle one, and the reason a self-hosted clone's remote must name a
-  // host. `detectForge` compares the config's host against the host the remote
-  // URL PARSED, and a URL whose path is not `owner/repo` parses to no host at
-  // all — a bare `git@host:some/deep/path.git` does that. With no parsed host
-  // there is nothing to disagree with, so a `.pi/forge` naming ANOTHER instance
-  // is applied to this remote anyway and the cycle gets an adapter pointed at a
-  // host its remote never named. That is `forge-detect`'s precedence as it stands
-  // (its guard needs a parsed `host` to compare against), NOT a rule this PR
-  // asserts is right: it is pinned as a characterisation, so a later change to the
-  // config leg turns this assertion red rather than letting the behaviour rot
-  // unnoticed. The operator-facing rule ("the remote must carry host/owner/repo")
-  // is the mitigation stated in the docs while it stands.
+  // A subgroup remote on a host the config does NOT name (#2257). Before the
+  // parser accepted a namespace path deeper than two segments, this URL
+  // parsed to no host at all, so `detectForge`'s config leg had nothing to
+  // compare `host=` against and applied a `.pi/forge` pointing at another
+  // instance — the cycle got an adapter for a host its remote never named.
+  // With the path parsed, the mismatch is detected and the config refused.
   const { repoRoot, dispose } = selfHostedRepo(`type=gitlab\nhost=${SELF_HOST}\n`);
-  const { fn } = seam("git@other.example.net:group/sub/project.git");
+  const { fn, calls } = seam("git@other.example.net:group/sub/project.git");
   const forge = await forgeForCycle({ repoRoot }, fn, new Map(), { env: NO_FORGE_ENV });
   assert(
-    forge?.forge === "gitlab",
-    `a .pi/forge whose host disagrees with an unparseable remote host is still applied (${forge?.forge})`,
+    forge === undefined,
+    `a .pi/forge whose host disagrees with a subgroup remote is refused, not applied (${forge?.forge})`,
+  );
+  assert(
+    calls.some((c) => c.includes("remote.origin.url")),
+    "…with the remote read, so the refusal is the config leg's, not a missing remote",
   );
   dispose();
 }
