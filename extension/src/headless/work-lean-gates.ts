@@ -264,6 +264,12 @@ function challengeGates(steps: Step[]): GatesResult["challenge"] {
  * Every `verify` and `ci` verdict the run recorded, in the order it recorded them, each
  * red with the tier that failed and the criteria the failing checks answer for.
  *
+ * Three kinds reach the host, and the third is not a judgement of the code: `green` and
+ * `red` are the gate's verdicts, and `error` is what the engine records when a gate's
+ * handler threw (`lean/error-outcome.ts`). An entry of that kind attributes nothing — the
+ * gate named no tier because it never finished — and a host that read it as a red would go
+ * and re-check a criterion nobody ran.
+ *
  * A list rather than one field because a run genuinely carries more than one red — a
  * first red, a fix round, and a pipeline that then fails — and a host triaging the run
  * needs to see which gate ended it, not only the last one to speak.
