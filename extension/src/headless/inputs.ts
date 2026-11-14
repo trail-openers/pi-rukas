@@ -98,8 +98,7 @@ const ms = (name: string, dflt: number | null, scope?: InputScope) =>
   input(name, "duration-ms", dflt, scope);
 const int = (name: string, dflt: number | null, scope?: InputScope, opt?: Opt) =>
   input(name, "integer", dflt, scope, opt);
-const str = (name: string, dflt: string | null, scope?: InputScope) =>
-  input(name, "string", dflt, scope);
+const str = (n: string, d: string | null, s?: InputScope) => input(n, "string", d, s);
 const dir = (name: string, dflt: string | null, scope: InputScope = "install") =>
   input(name, "path", dflt, scope);
 const list = (name: string, separator: string, dflt: string | null, scope?: InputScope) =>
@@ -244,6 +243,7 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   // also takes it out, since one renderer serves all three seats.
   // The reader is `leanBuildIssueProseEnabled` in lean/issue-prose.ts.
   flag("LEAN_BUILD_ISSUE_PROSE", true),
+  flag("LEAN_GUARD_FAIL_CLOSED", true),
   // #2171 — show the specify/challenge adversary the issue prose its frozen
   // tests were written from. 0 takes the section back out of both prompts.
   // The reader is `leanIssueProseEnabled` in lean/issue-prose.ts.

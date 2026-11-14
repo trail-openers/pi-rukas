@@ -31,6 +31,7 @@
  */
 
 import { isFullCommitSha } from "../commit-sha.ts";
+import type { MainlineExecFn } from "../probe-cause.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import { assertPublishableBranch } from "./publish-deps.ts";
 import { ReviewInfraError } from "./review-errors.ts";
@@ -56,8 +57,9 @@ export async function assertReviewEntry(opts: {
   repoRoot: string;
   branch: string;
   base: string;
+  exec: MainlineExecFn;
 }): Promise<void> {
-  const { repoRoot, branch, base } = opts;
+  const { repoRoot, branch, base, exec } = opts;
   // Legality first: a name git will not accept as a ref is refused before anything
   // is asked of the network, and `base` gets the same treatment because the diff
   // range is built from it.
@@ -75,7 +77,7 @@ export async function assertReviewEntry(opts: {
   // and `+x` is legal and reads as a force), so this is the half `review` never had
   // while `publish` had it all along.
   try {
-    await assertPublishableBranch(repoRoot, branch);
+    await assertPublishableBranch(repoRoot, branch, exec);
   } catch (err) {
     throw new ReviewInfraError((err as Error).message);
   }

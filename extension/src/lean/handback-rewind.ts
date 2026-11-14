@@ -255,7 +255,7 @@ export async function rewindToVerified(
   // names the mainline still gets a comment saying so. `held` is read AFTER the
   // refusal on purpose: a step that moved nothing has no head to name as the one
   // it left behind, which is the same rule `alreadyAtVerified` exists to keep.
-  const pushable = await assertPublishableBranch(ctx.repoRoot, branch).then(
+  const pushable = await assertPublishableBranch(ctx.repoRoot, branch, exec).then(
     () => undefined,
     (err: unknown) =>
       err instanceof PublishInfraError ? err.message : String((err as Error)?.message ?? err),

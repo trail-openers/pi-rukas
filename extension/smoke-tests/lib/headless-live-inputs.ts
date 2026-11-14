@@ -73,6 +73,7 @@ import {
 import { leanReviewSpecSplitEnabled } from "../../src/lean/review-spec-split.ts";
 import { leanRunnerPreflightEnabled } from "../../src/lean/runner-preflight-switch.ts";
 import { leanVerifiedHandbackEnabled } from "../../src/lean/verified-handback-switch.ts";
+import { leanGuardFailClosed } from "../../src/lean/guard-fail-closed-switch.ts";
 import { leanRewindLeaseBinds } from "../../src/lean/rewind-lease-switch.ts";
 import { issueImagesEnabled } from "../../src/work-driver-issue-images.ts";
 import { mergeAuthorityEnabled } from "../../src/work-driver-merge-authority.ts";
@@ -170,6 +171,9 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   ["PI_ENSEMBLE_LEAN_VERIFIED_HANDBACK", leanVerifiedHandbackEnabled],
   // #2262 — whether the rewind's branch refspec stays unforced so its lease binds. The
   // reader is `v !== "0"`, so the gate's LIVE loop (env deleted) pins "unset means on".
+  // The publishable-branch guard's fail-closed arm. The reader is `v !== "0"`, so the
+  // gate's LIVE loop (env deleted) pins "unset means on".
+  ["PI_ENSEMBLE_LEAN_GUARD_FAIL_CLOSED", leanGuardFailClosed],
   ["PI_ENSEMBLE_LEAN_REWIND_LEASE_BINDS", leanRewindLeaseBinds],
   ["PI_ENSEMBLE_ISSUE_IMAGES", () => issueImagesEnabled()],
   ["PI_ENSEMBLE_LENS_EVIDENCE", evidenceSupplyEnabled],

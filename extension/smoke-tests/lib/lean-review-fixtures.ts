@@ -29,12 +29,12 @@ import { ReviewInfraError, reviewOutcome } from "../../src/lean/review.ts";
 import type { Outcome } from "../../src/lean/state.ts";
 import { createRun } from "../../src/lean/state.ts";
 import { FIXER_ROLE } from "../../src/lean/step-budget.ts";
-import { DEFAULT_REVIEW_THRESHOLD } from "../../src/review-severity-default.ts";
 import type { Finding } from "../../src/lens-review-types.ts";
 import type { LensName, LensRunResult } from "../../src/lens-review-types.ts";
 import { aggregateLensUsage } from "../../src/lens-review-usage.ts";
+import { DEFAULT_REVIEW_THRESHOLD } from "../../src/review-severity-default.ts";
 import type { DispatchResult, DispatchSpec } from "../../src/types.ts";
-import { gitTestEnv } from "./git-test-env.ts";
+import { gitTestEnv, writeCloneMainlineRef } from "./git-test-env.ts";
 import { put } from "./lean-build-fixture.ts";
 
 const ROOTS: string[] = [];
@@ -88,6 +88,7 @@ export function makeRepo(): { repoRoot: string; origin: string; baseSha: string 
   git(repoRoot, "commit", "-q", "-m", "base");
   git(repoRoot, "remote", "add", "origin", origin);
   git(repoRoot, "push", "-q", "-u", "origin", "main");
+  writeCloneMainlineRef(repoRoot, git);
   return { repoRoot, origin, baseSha: git(repoRoot, "rev-parse", "HEAD") };
 }
 

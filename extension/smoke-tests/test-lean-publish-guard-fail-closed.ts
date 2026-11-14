@@ -42,16 +42,11 @@
  * Run: cd extension && bun run smoke-tests/test-lean-publish-guard-fail-closed.ts
  */
 
-import { mkdtempSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { PublishInfraError, assertPublishableBranch } from "../src/lean/publish-deps.ts";
-import { makeAssert } from "./lib/lean-engine-fixtures.ts";
-import { originHead } from "./lib/lean-publish-asserts.ts";
-import { git } from "./lib/lean-verify-fixture.ts";
-import { spawnSync } from "node:child_process";
-import { withEnv } from "./lib/env-scope.ts";
-import { gitTestEnv } from "./lib/git-test-env.ts";
 import {
   PROBE,
   guardRealExec,
@@ -59,6 +54,11 @@ import {
   pushCalls,
   symrefReply,
 } from "./fixtures/publish-guard-fixture.ts";
+import { withEnv } from "./lib/env-scope.ts";
+import { gitTestEnv } from "./lib/git-test-env.ts";
+import { makeAssert } from "./lib/lean-engine-fixtures.ts";
+import { originHead } from "./lib/lean-publish-asserts.ts";
+import { git } from "./lib/lean-verify-fixture.ts";
 
 const { assert, failures } = makeAssert();
 
@@ -297,24 +297,57 @@ await withEnv({ PI_ENSEMBLE_LEAN_GUARD_FAIL_CLOSED: "0" }, async () => {
  *
  * The lean publish fixture injects its own executor, so without this case
  * nothing drives the arm a real run takes: a real clone with no
- * `refs/remotes/origin/HEAD`, no `gh` on PATH, and the executor `publishDeps()`
- * actually builds.
+ * `refs/remotes/origin/HEAD`, the production `publishDeps().exec`, and a `gh`
+ * that is not installed.
+ *
+ * "not installed" is a PATH with a `gh` SHIM AND `git` on it, not an empty PATH:
+ * an empty PATH also removes `git`, so the origin probe could not run and the
+ * guard's refusal would be an artefact of the harness rather than the policy.
+ * With `git` reachable and `gh` absent, the local probes fail for the ordinary
+ * reason and the symref probe answers — which is exactly the clone R2 says must
+ * still be allowed to push.
+ *
+ * A `git push` to a local bare repo prints no symref row, so origin is given one
+ * the only way a bare repo can be given one without a client being told: the
+ * `HEAD` ref file, written directly. That is the state a clone pushed with `push
+ * -u` and then fetched produces, and it is the state the probe under test reads.
  */
 {
   const dir = scratch();
   const origin = scratch();
-  git(origin, "init", "-q", "--bare");
+  const shim = scratch();
+  // `-b main` on the BARE repo too: `init --bare` alone points HEAD at `master`,
+  // and a fixture that let origin's default come from the host's
+  // `init.defaultBranch` would make the probe's answer — and so this case's
+  // verdict — a property of the machine.
+  git(origin, "init", "-q", "--bare", "-b", "main");
   git(dir, "init", "-q", "-b", "main");
   git(dir, "remote", "add", "origin", origin);
   git(dir, "commit", "-q", "--allow-empty", "-m", "base");
   // `push origin main`, NOT `push -u`: the upstream form is what writes
   // refs/remotes/origin/HEAD, and this clone must not have it.
   git(dir, "push", "-q", "origin", "main");
+  // Origin's own HEAD: `ls-remote --symref` reports whatever this file says, and a
+  // bare repo created by `init --bare` already points HEAD at the branch it was
+  // initialised with — `main` here. Asserted rather than assumed, because the whole
+  // case rests on origin having an answer to give.
+  const symref = spawnSync("git", ["symbolic-ref", "HEAD"], {
+    cwd: origin,
+    encoding: "utf8",
+    env: gitTestEnv(),
+  });
+  assert(
+    (symref.stdout ?? "").trim() === "refs/heads/main",
+    `(i) precondition: origin's HEAD is refs/heads/main (${(symref.stdout ?? "").trim() || (symref.stderr ?? "").trim()})`,
+  );
   const noHead = refOrEmpty(dir, "refs/remotes/origin/HEAD");
   assert(noHead === "", `(i) precondition: this clone has no refs/remotes/origin/HEAD (${noHead})`);
+  writeFileSync(path.join(shim, "gh"), "#!/bin/sh\necho 'gh: command not found' >&2\nexit 127\n", {
+    mode: 0o755,
+  });
 
   const savedPath = process.env.PATH;
-  process.env.PATH = "/nonexistent-for-this-case";
+  process.env.PATH = `${shim}:${savedPath ?? ""}`;
   let okErr: Error | undefined;
   let mainErr: Error | undefined;
   let wiredErr: Error | undefined;

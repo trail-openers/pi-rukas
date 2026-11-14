@@ -245,6 +245,12 @@ const EXPECTED: Record<string, number> = {
   // killGroup call like every other one: a wedged fetch must not sit on the
   // merge step with no bound.
   "work-driver-merged-identity.ts": 1,
+  // #2255 — the publishable-branch guard's origin probe is a network git read on the
+  // path that decides whether a force-push happens, so it goes through the wrapper
+  // like every other one: the probe's non-interactive env, process-group kill and
+  // bound are what make a wedged probe a refusal rather than a publish that never
+  // answers.
+  "publish-deps.ts": 1,
 };
 
 function sourceFiles(dir: string): string[] {

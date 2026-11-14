@@ -13,6 +13,7 @@
  */
 
 import { execp } from "../../src/exec.ts";
+import { MAINLINE_PROBE_COMMANDS } from "../../src/lean/publish-deps.ts";
 import { gitTestEnv } from "../lib/git-test-env.ts";
 
 /**
@@ -59,9 +60,7 @@ export type FakeAnswer = string | { reject: string } | undefined;
  * that never ran then shows up in `calls` as a call nobody answered, which is
  * how a silently-bypassed probe becomes observable instead of invisible.
  */
-export function mkGuardExec(
-  answer: (line: string) => FakeAnswer = () => undefined,
-): {
+export function mkGuardExec(answer: (line: string) => FakeAnswer = () => undefined): {
   exec: GuardCallerExec;
   calls: FakeCall[];
   /** Every call's command line, in arrival order — the recorder. */
@@ -119,11 +118,21 @@ export function symrefReply(branch: string): string {
   );
 }
 
-/** The command fragments each of the guard's three probes contains. */
+/**
+ * The command fragments each of the guard's three probes contains.
+ *
+ * Derived from `MAINLINE_PROBE_COMMANDS` — production's own list, in production's
+ * own order — rather than written out again here. A fixture that spelled these
+ * strings itself kept passing while the guard asked something else: the case
+ * scripted a probe nobody makes, the guard's real probe went unanswered, and the
+ * "refusal" the case reported came from a hole in the fake rather than from the
+ * rule. Each entry is the fragment that identifies its probe, taken from the
+ * command at the same index.
+ */
 export const PROBE = {
-  symbolicRef: "symbolic-ref",
-  gh: "gh repo view",
-  lsRemote: "ls-remote",
+  symbolicRef: MAINLINE_PROBE_COMMANDS[0].split(" ").slice(0, 2).join(" "),
+  gh: MAINLINE_PROBE_COMMANDS[1].split(" ").slice(0, 3).join(" "),
+  lsRemote: MAINLINE_PROBE_COMMANDS[2].split(" ").slice(0, 2).join(" "),
 } as const;
 
 /** The production executor on the fixture's isolated git view.

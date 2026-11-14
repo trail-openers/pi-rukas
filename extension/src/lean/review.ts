@@ -152,7 +152,7 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
   const base = ctx.run.baseSha;
   // **THE ENTRY GATE, BEFORE ANYTHING IS PAID FOR OR TOUCHED.** The four refusals and the
   // reason their placement matters live in `review-entry.ts`.
-  await assertReviewEntry({ repoRoot, branch, base });
+  await assertReviewEntry({ repoRoot, branch, base, exec: deps.exec });
 
   // The contract, the config and the issue, all read before any child is paid: a step
   // that discovered its spec was unreadable after two passes had spent them for nothing.
