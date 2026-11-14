@@ -227,7 +227,7 @@ function verifyGates(steps: Step[]): GatesRed[] {
  * carried under a fifth — so a round holding anything else publishes nothing rather
  * than publishing a partial truth.
  */
-function reviewGates(steps: Step[]): GatesResult["review"] {
+function reviewGates(steps: Step[], redact: (s: string) => string): GatesResult["review"] {
   const step = newestStep(steps, "review");
   const oc = step?.outcome;
   if (oc === undefined) return null;
@@ -265,7 +265,11 @@ function reviewGates(steps: Step[]): GatesResult["review"] {
   // The step's own clock, published as the record holds it — the field's own shape rule
   // is the loader's (`reviewBoundProblem`), so the projection publishes the value rather
   // than re-inventing a second judgement of it. What the projection does add is the print
-  // cap, and only that.
+  // cap and the redaction, and only those: both strings are child-authored text (the stop's
+  // sentence quotes what the step's own bound said, the lane names come from a skill roster)
+  // and every other published string of this object goes through `redact` before the clip,
+  // so a lane or a reason that quoted a credential would otherwise be the one gate field
+  // that ships it.
   const bound = oc.reviewBound;
   return {
     kind,
@@ -276,8 +280,11 @@ function reviewGates(steps: Step[]): GatesResult["review"] {
         ? null
         : {
             wave: bound.wave,
-            reason: bound.reason,
-            unreviewedLanes: bound.unreviewedLanes.slice(0, LIST_MAX),
+            reason: textOf(bound.reason, redact) ?? "",
+            unreviewedLanes: bound.unreviewedLanes
+              .map((lane) => textOf(lane, redact) ?? "")
+              .filter((lane) => lane !== "")
+              .slice(0, LIST_MAX),
           },
   };
 }
@@ -347,7 +354,7 @@ export function leanGates(steps: Step[], redact: (s: string) => string): GatesRe
     specify: specifyGates(steps),
     challenge: challengeGates(steps),
     verify: verifyGates(steps),
-    review: reviewGates(steps),
+    review: reviewGates(steps, redact),
     handback: handbackGates(steps, redact),
   };
 }
