@@ -4010,7 +4010,11 @@ Both halves are on by default and governed by one switch — [configuration.md](
 - A provider context-length refusal is named in the lane (it says so) and is **not** retried —
   one spawn, not four. Only the provider's own refusal of the request counts: the child's prose
   quoting a 400 out of the diff does not, and neither does a 400 that says something other than
-  "too large" (a quota or rate refusal, which the retry loop is meant to ride out).
+  "too large". A refusal of the moment never ends a lane either, however it is worded — a 429
+  (or any body saying "too many requests", "per minute", "quota", "retry in …") keeps all four
+  attempts even when it says "too many tokens", because that is the wording both classes share
+  and the retry loop exists to ride out the rate one. The discriminator is the status: 400 +
+  unambiguous size wording is terminal, everything else is retryable.
 
 ### What to do
 

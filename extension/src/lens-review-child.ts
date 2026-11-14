@@ -359,19 +359,22 @@ export async function runLensChild(opts: {
         break;
       }
       // ── #2261: a provider refusal of THIS prompt for its size joins the
-      // never-retried classes above. Two conditions, and neither is the child's
+      // never-retried classes above. Three conditions, and none is the child's
       // prose. The lens prompt orders the reviewer to quote the diff, so `text`
       // can carry diff-authored bytes — a fixture line reading `"400 status
       // code"` would otherwise cost a transient lane three of its four attempts
       // and blame the prompt size. So:
       //   - `errorStop` — the provider really refused the REQUEST (the spawn layer
       //     fills it from the final assistant message's `errorMessage`); and
-      //   - that refusal says the PROMPT was too large. A 400 whose body says the
+      //   - the refusal carries an HTTP 400, the status for a request refused on
+      //     its shape. Without the status the loop cannot tell a refusal of the
+      //     prompt from a refusal of the minute, because a 429 says "too many
+      //     tokens" in the same words; and
+      //   - its unambiguous size wording says the PROMPT was too large, with no
+      //     rate/quota wording anywhere in the body. A 400 whose body says the
       //     metered plan is exhausted is a rate refusal that a retry DOES clear,
-      //     so the status code alone never breaks the loop.
-      // The status line itself is not required: a provider that says "maximum
-      // context length" in its `errorStop` is not saying anything else, and
-      // re-spawning that prompt four times is four guaranteed failures.
+      //     so neither the status code alone nor the token vocabulary alone ever
+      //     breaks the loop.
       if (result && isProviderContextLengthFailure(result)) {
         break;
       }

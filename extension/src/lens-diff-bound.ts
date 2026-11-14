@@ -187,13 +187,20 @@ export function boundLensPromptDiff(opts: {
   // means the fixed prose itself has no room — the block then gives, not the note,
   // because a lens with a smaller block is still a lens with a command to read the
   // rest, and a lens with a full block and no command is stuck.
-  if (kept.diff.length + note.length > budget) {
+  //
+  // `room` is re-derived from the note as it was ACTUALLY returned, every pass:
+  // a room computed from a note that then grew (see `trimNote`) is a room that
+  // admits an over-budget pair and never fires this fallback. The loop terminates
+  // because each pass strictly shrinks the block (`cutAtLineBoundary` at a room
+  // that just failed to fit) and re-measures the note, and the block is bounded
+  // below by zero.
+  for (let guard = 0; guard < 4; guard++) {
+    if (kept.diff.length + note.length <= budget) break;
     const room = Math.max(0, budget - note.length);
-    if (kept.diff.length > room) {
-      kept = { ...kept, diff: cutAtLineBoundary(kept.diff, room) };
-      noteParts = buildNoteParts(opts, kept, partial, command);
-      note = trimNote(noteParts, Math.max(0, budget - kept.diff.length));
-    }
+    if (kept.diff.length <= room) break;
+    kept = { ...kept, diff: cutAtLineBoundary(kept.diff, room) };
+    noteParts = buildNoteParts(opts, kept, partial, command);
+    note = trimNote(noteParts, Math.max(0, budget - kept.diff.length));
   }
   return {
     mode: "bounded",
@@ -269,15 +276,6 @@ function buildNoteParts(
   };
 }
 
-function buildNote(
-  opts: { diff: string; range?: DiffRange },
-  kept: WholeFileHead,
-  partial: boolean,
-  command: string | undefined,
-): string {
-  return assemble(buildNoteParts(opts, kept, partial, command));
-}
-
 /**
  * The note shrunk to what the budget has left, by dropping INVENTORY ROWS first
  * and the omitted-path list's overflow second.
@@ -288,27 +286,59 @@ function buildNote(
  * with. The rows are the bulk of the note and the least load-bearing, so they go
  * first, and the notice says the inventory was shortened rather than posing as
  * complete.
+ *
+ * The rows are reserved for the sentence that admits they were shortened: the
+ * reserve is that sentence's OWN rendered length, not an estimate of it. A fixed
+ * reserve shorter than the sentence lets re-assembly re-grow the note past the
+ * room it was just given — which is how a few-thousand-file diff (where the
+ * notice is the larger half: measured, 100 355 note characters against a 19 661
+ * block) rendered block + note past the budget, while the caller's block-gives
+ * fallback sat unreachable because its room came from the note already accepted.
  */
+/** The sentence that admits the inventory table was shortened. Its length varies
+ * only with the digit count of `dropped`, so callers can bound the note by its
+ * widest rendering rather than guessing a reserve. */
+function overflowSentence(dropped: number): string {
+  return `\n…and roughly ${String(dropped)} characters of the per-file inventory dropped to keep this prompt inside its bound.\n\n`;
+}
+
 function trimNote(parts: NoteParts, room: number): string {
   const whole = assemble(parts);
   if (room >= whole.length) return whole;
   // Keep the parts that carry the instruction, in this order: the lead line, the
   // paths, the counts, the command. The table is what is negotiable.
   const essential = `${parts.lead}\n${parts.omittedPaths}${parts.counts}\n${parts.howToRead}`;
-  const roomForRows = room - essential.length;
-  if (roomForRows <= 0) {
-    // Even the essential prose does not fit: keep its head at a line boundary and
-    // say the notice was shortened. This is the tight-budget corner, not the
-    // normal cut, and it still leaves the counts and the command's first line.
+  // The rowless rendering is the floor: anything below it is the tight-budget
+  // corner where even the fixed prose has no room.
+  const floor = assemble({ ...parts, rows: "" });
+  if (room < floor.length) {
+    // Keep the head of the essential prose at a line boundary and let the caller's
+    // block-gives fallback recover the difference. Still leaves the counts and the
+    // command's first line.
     return cutAtLineBoundary(essential, Math.max(0, room - 80));
   }
-  const keptRows = cutAtLineBoundary(parts.rows.trimEnd(), Math.max(0, roomForRows - 70));
-  const dropped = parts.rows.trimEnd().length - keptRows.length;
-  const overflow =
-    dropped > 0
-      ? `\n…and roughly ${String(dropped)} characters of the per-file inventory dropped to keep this prompt inside its bound.\n\n`
-      : "\n\n";
-  return assemble({ ...parts, rows: keptRows === "" ? "" : `${keptRows}${overflow}` });
+  const allRows = parts.rows.trimEnd();
+  // Measured against the real rendering, so the returned note is <= `room` by
+  // construction rather than by how well a reserve was guessed. The overflow
+  // sentence's length depends only on the digit count of `dropped`, so it is
+  // bounded by its own widest rendering — a fixed reserve shorter than the
+  // sentence let re-assembly re-grow the note past the room it had just been
+  // given, which is how a few-thousand-file diff rendered over the budget.
+  const overflowWidth = overflowSentence(allRows.length).length;
+  let keptRows = cutAtLineBoundary(allRows, Math.max(0, room - floor.length - overflowWidth));
+  let dropped = allRows.length - keptRows.length;
+  if (dropped <= 0) return assemble({ ...parts, rows: keptRows === "" ? "" : `${keptRows}\n\n` });
+  // Belt to the measurement above: a note that admits its own shortening must not
+  // be the thing that breaks the bound, so the pair gives a row rather than a
+  // character. The loop terminates because each pass strictly shortens `keptRows`.
+  let rows = `${keptRows}${overflowSentence(dropped)}`;
+  while (assemble({ ...parts, rows }).length > room && keptRows !== "") {
+    const lastNl = keptRows.lastIndexOf("\n");
+    keptRows = lastNl > 0 ? keptRows.slice(0, lastNl) : "";
+    dropped = allRows.length - keptRows.length;
+    rows = keptRows === "" ? "" : `${keptRows}${overflowSentence(dropped)}`;
+  }
+  return assemble({ ...parts, rows });
 }
 
 /** The full-branch orientation block, kept inside the prompt's ONE budget. */

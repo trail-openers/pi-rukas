@@ -432,6 +432,7 @@ try {
       `(7c) and only a genuinely empty block is called EMPTY (block ${String(emptyBound.diff.length)} chars)`,
     );
   }
+
 } finally {
   if (savedSkills === undefined) delete process.env.PI_ENSEMBLE_SKILLS_DIR;
   else process.env.PI_ENSEMBLE_SKILLS_DIR = savedSkills;
