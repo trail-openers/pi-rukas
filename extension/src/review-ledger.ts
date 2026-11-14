@@ -385,7 +385,10 @@ export async function appendLedgerEntry(
       if (bumped.kind !== "lens" || bumped.detail !== "REVIEW_INCOMPLETE") {
         entries.push(bumped);
       } else {
-        entries = [...entries.filter((e) => e.branch !== bumped.branch || e.kind !== "lens"), bumped];
+        entries = [
+          ...entries.filter((e) => e.branch !== bumped.branch || e.kind !== "lens"),
+          bumped,
+        ];
       }
       // #1071 test-only hook: a two-process race (test-review-ledger-lock.ts)
       // straddles the read/rename gap deterministically by injecting a hook
