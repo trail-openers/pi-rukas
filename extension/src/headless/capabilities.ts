@@ -28,6 +28,7 @@
  */
 
 import path from "node:path";
+import { GATE_SEVERITIES } from "../lean/gate-severities.ts";
 import { type ResourceReport, resourceReport } from "../resource-budget.ts";
 import { strictOptIn } from "../work-cycle-trust.ts";
 import { AGENTS_MD_FLAGS } from "./agents-md.ts";
@@ -117,6 +118,19 @@ export const HEADLESS_FEATURES = {
   // #1920 item 6: `failure.cause` where lean recorded one, classified by the
   // same taxonomy `work` uses (undefined where the run recorded nothing).
   leanFailureCause: true,
+  /**
+   * The lean run's GATE EVENTS are on the host's document: `issues[].gates` carries the
+   * frozen files per criterion, the challenge's verdict, every `verify`/`ci` red with its
+   * tier and criterion ids, the review's per-round severity counts and fix-wave heads, and
+   * what the handback shipped.
+   *
+   * A host reads `--capabilities` before it reads a field it may not have: with this flag
+   * absent the object is simply not there (a build running
+   * `PI_ENSEMBLE_LEAN_RESULT_GATES=0`, or one from before the object existed), and a host
+   * that treated its absence as "the run froze nothing" would report a clean contract for
+   * a run nobody looked at. Absent means "do not read `gates`", never "gates is empty".
+   */
+  leanGates: true,
 } as const;
 
 export interface Capabilities {
@@ -129,6 +143,13 @@ export interface Capabilities {
       version: number;
       caps: ReturnType<typeof capVocabulary>;
       failureKinds: typeof FAILURE_KINDS;
+      /**
+       * The severities `gates.review` counts may be keyed by — the vocabulary a host
+       * branches on, published beside the schema whose record it lands on rather than
+       * left to be inferred from one run's JSON. A build without `features.leanGates`
+       * publishes nothing that uses it; a build with it publishes no fifth word.
+       */
+      gateSeverities: readonly string[];
     };
     ndjson: {
       version: number;
@@ -179,6 +200,7 @@ export function buildCapabilities(installRoot: string = INSTALL_ROOT): Capabilit
         version: RESULT_SCHEMA_VERSION,
         caps: capVocabulary(),
         failureKinds: FAILURE_KINDS,
+        gateSeverities: [...GATE_SEVERITIES],
       },
       ndjson: {
         version: NDJSON_VERSION,

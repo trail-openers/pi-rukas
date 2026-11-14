@@ -39,6 +39,7 @@
 
 import { isFullCommitSha } from "../commit-sha.ts";
 import { redactClip } from "../decision-log.ts";
+import { leanResultGatesEnabled } from "../lean/result-gates-switch.ts";
 import { specifyBranch } from "../lean/specify-tree.ts";
 import { validPrUrl } from "../lean/state-outcome.ts";
 import {
@@ -62,6 +63,7 @@ import {
   type StepTiming,
   handoffOf,
 } from "./result.ts";
+import { leanGates } from "./work-lean-gates.ts";
 import { leanHandoff } from "./work-lean-handoff.ts";
 
 /** What `work` reports for a finished PR waiting on a person (#1675's vocabulary). */
@@ -427,6 +429,12 @@ export function leanIssueResult(run: LeanRun, code: number): IssueResult {
   const failure = leanFailure(run);
   const prState = prStateOf(steps, run.counters.draft);
   const cap = leanCap(status, prUrl, prState);
+  // The head this run's PR stands on, worked out ONCE here by the reader `prStateOf`
+  // itself uses. `gates.handback.head` asks a different question — the head that actually
+  // SHIPPED, which after a rewind is no longer this one — so it reads the handback step's
+  // own record, and `verified` is that head put back through the same gate test. One
+  // reader of the rule, two heads: the fields cannot disagree because neither of them
+  // decides the question on its own.
   const result: IssueResult = {
     issue: run.issue,
     status,
@@ -465,6 +473,11 @@ export function leanIssueResult(run: LeanRun, code: number): IssueResult {
   if (prUrl !== undefined) result.prUrl = prUrl;
   const handoff = leanHandoff(run, cap);
   if (handoff !== undefined) result.handoff = handoff;
+  // The gate events, on one switch, and attached whole or not at all. Building the
+  // object separately and deciding here is what makes the off arm the byte-identical
+  // document: a field filled conditionally leaves a key holding `undefined` behind for
+  // a host that string-compares the JSON.
+  if (leanResultGatesEnabled()) result.gates = leanGates(steps, (s) => redactClip(s, TEXT_MAX));
   return result;
 }
 

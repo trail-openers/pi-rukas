@@ -179,6 +179,22 @@ export interface IssueResult {
    * means "fully reviewed", never "unknown". */
   reviewBound?: string;
   /**
+   * The run's gate events, for a host that must not read `.pi/lean-state/<issue>.json`
+   * (the driver's private persistence, no stability promise): the frozen files per
+   * criterion, the challenge's verdict, every red with the tier and criteria it failed
+   * on, the review's per-round severity counts and fix-wave heads, and what the handback
+   * shipped.
+   *
+   * OPTIONAL and lean-only, and it is declared here rather than in `work-lean-result.ts`
+   * because a key the projected object does not declare is a key the saved file would
+   * carry without its shape ever being judged. `work` writes none of it. Absent on a
+   * build running with `PI_ENSEMBLE_LEAN_RESULT_GATES=0`; a host detects the field via
+   * `--capabilities`' `features.leanGates`. Once present, a gates FIELD is `null` when
+   * the record holds no value — the opposite rule to the two above, whose absence is
+   * itself the answer, and docs/headless.md says which governs which.
+   */
+  gates?: unknown;
+  /**
    * The engine that ran the cycle: `classic` for `work`, `lean` for `work-lean`.
    * Absent where no engine ran (`not-started`, a refused start).
    */
