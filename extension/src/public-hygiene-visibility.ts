@@ -87,6 +87,31 @@ export function targetSlug(t: RepoTarget): string {
 }
 
 /**
+ * Does this target name a repository the host could answer about?
+ *
+ * A `RepoTarget` is a licence: only a positive private answer skips a publish
+ * check, so whoever hands one to `isPrivateTarget` decides whether the scan runs.
+ * That makes the target's SHAPE part of the trust decision, not just its host.
+ * github.com serves one repository per owner, so an owner carrying a separator is
+ * not a slug the host publishes — `gh api repos/group/sub/project` reports on a
+ * path, and a `true` from it is an answer about nothing. Answering it would turn
+ * an unverified claim into the one outcome that stops a check, which is the
+ * direction this module's standing rule refuses: "could not tell" is never
+ * "clean", and here it is never "private" either.
+ *
+ * Every producer of a `RepoTarget` refuses this shape already; the rule is asked
+ * HERE as well because this is the seam that turns an answer into a licence, and
+ * a licence should not depend on the rule holding at every caller. Only GitHub
+ * gets the one-owner rule: a GitLab namespace legitimately nests, and a deep
+ * non-GitHub slug stays checkable — answered without a lookup, as any non-GitHub
+ * host already is.
+ */
+function namesHostedRepo(t: RepoTarget): boolean {
+  if ((t.host ?? GITHUB_HOST) !== GITHUB_HOST) return true;
+  return !t.owner.includes("/") && t.owner !== "" && t.repo !== "";
+}
+
+/**
  * Asks whether a repository is private. `true` ONLY on a positive private
  * answer; a resolver that throws or hangs is treated as public (check).
  */
@@ -191,6 +216,10 @@ export function visibilityLookupCount(): number {
  * non-GitHub host is answered without a lookup, because `gh` has no idea what a
  * GitLab or self-hosted project's visibility is and a wrong `false` there would
  * be an unverified claim rather than a conservative one.
+ *
+ * A slug the host does not serve is refused the same way and for the same
+ * reason — see {@link namesHostedRepo}. It is asked BEFORE the cache, so a
+ * `true` cached under a real slug can never be re-served to a malformed one.
  */
 export function isPrivateTarget(
   target: RepoTarget,
@@ -202,10 +231,17 @@ export function isPrivateTarget(
     timeoutMs?: number;
   } = {},
 ): Promise<boolean> {
-  const slug = targetSlug(target);
-  // The caller's host wins; a target that carries its own (a forge adapter, a
-  // parsed remote) supplies it without the caller repeating the fact.
   const host = opts.host ?? target.host;
+  const slug = targetSlug(target);
+  // Asked before the cache and before the transport: a slug the host does not
+  // serve must not reach `gh`, must not reach an injected resolver, and must not
+  // be served a cached `true` — the answer is refused on its shape alone.
+  if (!namesHostedRepo(target)) {
+    traceOnce(
+      `public-hygiene: ${slug} is not a repository ${host ?? GITHUB_HOST} serves — checking`,
+    );
+    return Promise.resolve(false);
+  }
   // A host the resolver could not read is not evidence of github.com: `git
   // remote get-url` can hand back a bare slug or a path, and the resolver leaves
   // `host` undefined for those rather than guessing. Undefined or blank therefore
