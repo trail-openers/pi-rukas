@@ -15,7 +15,9 @@
  * file exists and cannot read it files a finding about a file it never saw. So:
  *
  *   - `diff` is the diff built from the file sections that fit, in order — never
- *     a section cut in half;
+ *     a section cut in half. A section too large for what is left of the budget
+ *     is skipped and named, not a stop signal: the files after it that the budget
+ *     DOES afford still reach the reviewer.
  *   - `note` is prose printed AFTER the closing fence (never inside it, so a
  *     reviewed diff that quotes the notice cannot impersonate it): the per-file
  *     inventory, the character counts, the paths whose bodies were omitted, and
@@ -32,15 +34,12 @@
  */
 
 import {
-  type DiffFileSummary,
   type DiffRange,
   GIT_HEADER,
   MAX_INLINE_DIFF_CHARS,
-  MAX_INVENTORY_ROWS,
   cutAtLineBoundary,
   headerPath,
   inventoryLead,
-  inventoryText,
   rereadCommand,
   rowsText,
   summarizeDiffFiles,
@@ -72,6 +71,18 @@ export function lensDiffBudget(alreadyInlined: number): number {
  * context keeps its own text. `bounded` says the diff was cut to the files that
  * fit and `note` carries what was cut and how to read it.
  */
+/**
+ * What the whole-file walk returns: the joined block of sections that fit, the
+ * paths left out, and the paths whose bodies the block really contains. The last
+ * one is what lets the inventory say `shown` truthfully — the block is a SET of
+ * files, not a prefix, so an offset into the diff cannot tell the two apart.
+ */
+export interface WholeFileHead {
+  diff: string;
+  omitted: string[];
+  inlined: string[];
+}
+
 export interface LensPromptDiff {
   mode: "whole" | "bounded";
   /** What goes inside the fenced diff block. */
@@ -103,23 +114,201 @@ export function boundLensPromptDiff(opts: {
   if (opts.diff.length <= budget) {
     return { mode: "whole", diff: opts.diff, context: appendFullContext(opts, budget) };
   }
-  const head = wholeFileHead(opts.diff, budget);
-  const { files, unattributed } = summarizeDiffFiles(opts.diff, head.diff.length);
   const command = rereadCommand(opts.range);
-  const howToReadRest = command
-    ? `To read what is not inlined here, run \`${command}\` in your working directory — and for a file whose body the notice marks as omitted, read just that file with \`${command} -- <file>\` rather than the whole range.`
-    : "No ref range was supplied with this diff, so the remaining content is not available to you; judge what is shown and say what you could not see rather than guessing at it.";
-  const omitted =
-    head.omitted.length === 0
-      ? ""
-      : `Files whose bodies are NOT inlined here — read each one with the command below: ${head.omitted.map((p) => `\`${p}\``).join(", ")}\n`;
-  const note = `${inventoryText(files, unattributed)}${omitted}… (diff truncated: inlined ${String(head.diff.length)} of ${String(opts.diff.length)} characters — the body above is a PREFIX of the change, not all of it)\n${howToReadRest}`;
+  // The note is part of the prompt, so it is charged to the SAME budget as the
+  // block beside it: a bound that counts the fenced diff and waves the prose
+  // through is the per-field cap this module exists to replace. The note grows
+  // with the number of files it has to name, and the block grows with the number
+  // of files it can afford — both move together as the walk's cap moves, so the
+  // cap is stepped DOWN (whole files leave the block, never more than the budget)
+  // until block + note fit, or the block reaches the floor its prompt must always
+  // be shown and the notice is trimmed to whatever room is left.
+  let cap = budget;
+  let kept: WholeFileHead = wholeFileHead(opts.diff, cap);
+  // Whether the block is a slice that stops INSIDE a file. Only the line-boundary
+  // fallback below ever sets this: the whole-file walk's block is a set of whole
+  // files, so its notice may claim a prefix of the change and print exact
+  // per-file counts, and conflating the two would let a mid-file slice read as a
+  // complete file review.
+  let partial = false;
+  let noteParts = buildNoteParts(opts, kept, partial, command);
+  let note = assemble(noteParts);
+  // The loop terminates because every iteration that continues strictly lowers
+  // `cap`, and it is bounded below by the floor. Lowering the cap drops whole
+  // files out of the block, which shrinks BOTH sides of the sum — the block and
+  // the note's inventory of what is missing — so the sum always comes down. The
+  // loop stops when the pair fits, or at the floor, where the notice is trimmed
+  // instead of the diff.
+  while (kept.diff.length + note.length > budget && cap > LENS_DIFF_BUDGET_FLOOR) {
+    // Step strictly below the current cap, aiming at the budget minus the note.
+    // `Math.min(cap - 1, …)` is what makes this terminate: the earlier form let
+    // `cap` stall where the note could not shrink further, and the block was
+    // handed back over its budget with the notice's reread command already lost.
+    const next = Math.max(LENS_DIFF_BUDGET_FLOOR, Math.min(cap - 1, budget - note.length - 1));
+    if (next >= cap) break;
+    cap = next;
+    kept = wholeFileHead(opts.diff, cap);
+    noteParts = buildNoteParts(opts, kept, partial, command);
+    note = assemble(noteParts);
+  }
+  if (kept.diff.length + note.length > budget) {
+    // The NOTICE gives up bytes before the diff does: the inventory table goes
+    // first, and the reread command, the counts and the omitted-path list are
+    // what survives — a lens with a smaller block and a command to read the rest
+    // is still a lens that can finish its review.
+    note = trimNote(noteParts, Math.max(0, budget - kept.diff.length));
+  }
+  // ── #2261 finding 2: a bounded prompt is never an EMPTY prompt. Whole files
+  // are the preference, and their bodies are what a lens can actually judge, but
+  // when no single section fits the budget — one generated bundle, one lockfile,
+  // one vendored file larger than the whole bound — six lenses spawned to receive
+  // nothing and a notice that called the empty block a prefix of the change. Fall
+  // back to a head cut at a LINE boundary: partial evidence, honestly labelled,
+  // beats an empty fence, and the file it came from is still named below.
+  if (kept.diff.length === 0) {
+    // The fallback block is a slice of the raw diff, not a set of whole files, so
+    // it inlines NO complete body — the inventory marks nothing `shown`, which is
+    // the honest claim for a mid-file slice.
+    kept = {
+      diff: cutAtLineBoundary(opts.diff, Math.max(0, budget - note.length - 1)),
+      omitted: kept.omitted,
+      inlined: [],
+    };
+    partial = true;
+    noteParts = buildNoteParts(opts, kept, partial, command);
+    note = assemble(noteParts);
+    if (kept.diff.length + note.length > budget) {
+      note = trimNote(noteParts, Math.max(0, budget - kept.diff.length));
+    }
+  }
+  // The invariant every caller depends on: the fenced block and the notice printed
+  // after it together never exceed the budget. `trimNote` keeps the reread command
+  // and the counts and gives up the inventory table, so reaching here over budget
+  // means the fixed prose itself has no room — the block then gives, not the note,
+  // because a lens with a smaller block is still a lens with a command to read the
+  // rest, and a lens with a full block and no command is stuck.
+  if (kept.diff.length + note.length > budget) {
+    const room = Math.max(0, budget - note.length);
+    if (kept.diff.length > room) {
+      kept = { ...kept, diff: cutAtLineBoundary(kept.diff, room) };
+      noteParts = buildNoteParts(opts, kept, partial, command);
+      note = trimNote(noteParts, Math.max(0, budget - kept.diff.length));
+    }
+  }
   return {
     mode: "bounded",
-    diff: head.diff,
+    diff: kept.diff,
     note,
     context: appendFullContext(opts, budget),
   };
+}
+
+/**
+ * The note, as its parts rather than one string. The prose is built once and
+ * trimmed by dropping whole rows, so the two pieces a lens can act on — the
+ * omitted-path list and the reread command — can never be the things a budget cut
+ * removes. They are the point of the notice.
+ */
+interface NoteParts {
+  /** The inventory lead line (what the table below claims to be). */
+  lead: string;
+  /** The per-file rows, the first thing to go when the budget is tight. */
+  rows: string;
+  /** The paths whose bodies did not make it into the block. */
+  omittedPaths: string;
+  /** The counts and what the block above actually is. */
+  counts: string;
+  /** How to read what is not inlined, or why it cannot be read here. */
+  howToRead: string;
+}
+
+function assemble(n: NoteParts): string {
+  return `${n.lead}\n${n.rows}${n.omittedPaths}${n.counts}\n${n.howToRead}`;
+}
+
+/** The prose printed after the fence: inventory, omitted paths, counts, reread command. */
+function buildNoteParts(
+  opts: { diff: string; range?: DiffRange },
+  kept: WholeFileHead,
+  partial: boolean,
+  command: string | undefined,
+): NoteParts {
+  // The block is a SET of whole files (or the line-boundary fallback), not a
+  // prefix, so `shown` comes from the paths the walk actually inlined — an offset
+  // test would call a skipped oversized file "shown" and a kept later file "not
+  // shown", which is the inventory lying about the prompt it is printed in.
+  const { files, unattributed } = summarizeDiffFiles(
+    opts.diff,
+    kept.diff.length,
+    new Set(kept.inlined),
+  );
+  const howToRead = command
+    ? `To read what is not inlined here, run \`${command}\` in your working directory — and for a file whose body the notice marks as omitted, read just that file with \`${command} -- <file>\` rather than the whole range.`
+    : "No ref range was supplied with this diff, so the remaining content is not available to you; judge what is shown and say what you could not see rather than guessing at it.";
+  const omittedPaths =
+    kept.omitted.length === 0
+      ? ""
+      : `Files whose bodies are NOT inlined here — read each one with the command below: ${kept.omitted.map((p) => `\`${p}\``).join(", ")}\n`;
+  // What the block above actually is. Calling an EMPTY block "a PREFIX of the
+  // change" is a false claim about a prompt that contains no change at all, and a
+  // lens that believes it reviews a diff it never saw. The PARTIAL form says what
+  // the line-boundary fallback did: the block stops inside a file, which the
+  // reviewer must know it is reading rather than weigh as a complete set of changes.
+  const whatAbove =
+    kept.diff.length === 0
+      ? "the body above is EMPTY — every file's body was omitted, so there is nothing here to review: say so rather than guessing at the change"
+      : partial
+        ? "the body above is PARTIAL — no single file fit this prompt's budget, so it is the head of the diff cut at a line boundary and it may stop in the middle of a file: judge what is shown and say what you could not see"
+        : "the body above is a PREFIX of the change, not all of it";
+  return {
+    lead: inventoryLead(files, unattributed),
+    rows: files.length === 0 ? "" : `${rowsText(files)}\n\n`,
+    omittedPaths,
+    counts: `… (diff truncated: inlined ${String(kept.diff.length)} of ${String(opts.diff.length)} characters — ${whatAbove})`,
+    howToRead,
+  };
+}
+
+function buildNote(
+  opts: { diff: string; range?: DiffRange },
+  kept: WholeFileHead,
+  partial: boolean,
+  command: string | undefined,
+): string {
+  return assemble(buildNoteParts(opts, kept, partial, command));
+}
+
+/**
+ * The note shrunk to what the budget has left, by dropping INVENTORY ROWS first
+ * and the omitted-path list's overflow second.
+ *
+ * Never a tail cut: the counts, the omitted-path list and the reread command are
+ * the only parts a lens can act on, and a bound that clipped them off would leave
+ * a reviewer told about files it cannot locate and given no command to read them
+ * with. The rows are the bulk of the note and the least load-bearing, so they go
+ * first, and the notice says the inventory was shortened rather than posing as
+ * complete.
+ */
+function trimNote(parts: NoteParts, room: number): string {
+  const whole = assemble(parts);
+  if (room >= whole.length) return whole;
+  // Keep the parts that carry the instruction, in this order: the lead line, the
+  // paths, the counts, the command. The table is what is negotiable.
+  const essential = `${parts.lead}\n${parts.omittedPaths}${parts.counts}\n${parts.howToRead}`;
+  const roomForRows = room - essential.length;
+  if (roomForRows <= 0) {
+    // Even the essential prose does not fit: keep its head at a line boundary and
+    // say the notice was shortened. This is the tight-budget corner, not the
+    // normal cut, and it still leaves the counts and the command's first line.
+    return cutAtLineBoundary(essential, Math.max(0, room - 80));
+  }
+  const keptRows = cutAtLineBoundary(parts.rows.trimEnd(), Math.max(0, roomForRows - 70));
+  const dropped = parts.rows.trimEnd().length - keptRows.length;
+  const overflow =
+    dropped > 0
+      ? `\n…and roughly ${String(dropped)} characters of the per-file inventory dropped to keep this prompt inside its bound.\n\n`
+      : "\n\n";
+  return assemble({ ...parts, rows: keptRows === "" ? "" : `${keptRows}${overflow}` });
 }
 
 /** The full-branch orientation block, kept inside the prompt's ONE budget. */
@@ -139,49 +328,46 @@ function appendFullContext(
  * The file bodies a bounded prompt can still afford: the diff text containing
  * ONLY those whole sections, plus the paths whose bodies did not fit.
  *
- * Sections are admitted in order while they fit and the first one that does not
- * fit stops the walk, so no file is ever cut in half.
+ * Sections are admitted in order while they fit, so no file is ever cut in half.
+ * A section that does not fit is skipped, named, and the walk CONTINUES. Stopping
+ * at the first oversized section was the shape that made this module useless on
+ * the input it exists for: the first file in a large diff is often a generated
+ * bundle, lockfile or vendored file bigger than the whole budget, and a latched
+ * stop then handed every lens an EMPTY block — six spawns, no diff, and a notice
+ * that called it a prefix of the change. The later files the budget affords are
+ * evidence; dropping them for nothing was not the safe default.
  */
-export function wholeFileHead(diff: string, cap: number): { diff: string; omitted: string[] } {
-  if (diff.length <= cap) return { diff, omitted: [] };
+export function wholeFileHead(diff: string, cap: number): WholeFileHead {
+  if (diff.length <= cap) {
+    // The whole diff fits: every file is inlined, and none is omitted.
+    const all = new Set<string>();
+    for (const section of diff.split(`\n${GIT_HEADER}`)) {
+      const lead = section.startsWith(GIT_HEADER) ? section : `${GIT_HEADER}${section}`;
+      const p = headerPath(lead.split("\n")[0] ?? "");
+      if (p !== null) all.add(p);
+    }
+    return { diff, omitted: [], inlined: [...all] };
+  }
   const sections = diff.split(`\n${GIT_HEADER}`).map((s, i) => (i === 0 ? s : `${GIT_HEADER}${s}`));
   const kept: string[] = [];
   const omitted: string[] = [];
+  const keptPaths: string[] = [];
+  // The size of the text the walk would JOIN, measured as it is built: sections
+  // rejoined with "\n", so every kept section after the first costs its own length
+  // PLUS the separator. Sizing a section by `length + 1` undercounts once and the
+  // bound is then off by the number of files kept — which is how the block came to
+  // exceed the budget it was handed.
   let size = 0;
-  let stopped = false;
   for (const section of sections) {
     const path = headerPath(section.split("\n")[0] ?? "") ?? "(unattributed file section)";
-    if (stopped) {
-      omitted.push(path);
-      continue;
-    }
-    if (size + section.length + 1 > cap) {
-      stopped = true;
+    const joined = size === 0 ? section.length : size + 1 + section.length;
+    if (joined > cap) {
       omitted.push(path);
       continue;
     }
     kept.push(section);
-    size += section.length + 1;
+    keptPaths.push(path);
+    size = joined;
   }
-  return { diff: kept.join("\n"), omitted };
-}
-
-/**
- * The per-file inventory of a diff whose bodies live ELSEWHERE: the same rows
- * the adversarial bound prints after its fence, with no `shown` claim — every
- * body is omitted from this prompt, so a row that said "shown in full" would be
- * a lie about the prompt it is printed in.
- */
-export function omittedFilesInventory(diff: string): string {
-  const { files, unattributed } = summarizeDiffFiles(diff, 0);
-  if (files.length === 0) return inventoryLead([], unattributed);
-  const lead = `EVERY file this diff changes (${String(files.length)}), with added/removed line counts — none of their bodies are inlined in this prompt.`;
-  const attribution =
-    unattributed > 0 ? ` ${String(unattributed)} line(s) could not be attributed to a file.` : "";
-  const rows: DiffFileSummary[] = files.map((f) => ({ ...f, shown: false }));
-  if (files.length <= MAX_INVENTORY_ROWS) return `${lead}${attribution}\n${rowsText(rows)}`;
-  const kept = [...rows]
-    .sort((a, b) => b.added + b.removed - (a.added + a.removed))
-    .slice(0, MAX_INVENTORY_ROWS);
-  return `${lead}${attribution}\n${rowsText(kept)}\nand ${String(files.length - kept.length)} more file(s) not listed.`;
+  return { diff: kept.join("\n"), omitted, inlined: keptPaths };
 }

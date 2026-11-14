@@ -311,8 +311,13 @@ export async function resolveReviewDiff(opts: {
   };
 }
 
-/** Every `resolveReviewDiff` answer, shared by the delta helpers below. */
-type ReviewDiffOutcome = Awaited<ReturnType<typeof resolveReviewDiff>>;
+/**
+ * Every `resolveReviewDiff` answer. Exported so the head resolver
+ * (`lens-review-head-sha.ts`) discriminates on the REAL union rather than on a
+ * structural stand-in — a new variant must be a compile error there, not a
+ * silent HEAD fallback.
+ */
+export type ReviewDiffOutcome = Awaited<ReturnType<typeof resolveReviewDiff>>;
 
 /**
  * The single place a full-review `ok` outcome is built (#1832 round 2).
@@ -432,46 +437,6 @@ async function emptyAutoDelta(
     },
     undefined,
   );
-}
-
-/**
- * #973 review — the full-branch context for a delta review. When a delta
- * review is also given an explicit base + head, the full `git diff
- * <base>...<head>` range is appended to the lens context for orientation.
- *
- * It is a SEPARATE string rather than a mutation of the caller's context, and
- * that is the point (#2261): the block is diff text wearing a context label, and
- * a field-local cap cannot bound the prompt — the measured field shape was a
- * delta that fit its own bound and still blew six children's windows because a
- * ~100 KB branch block rode in behind it. The caller hands this string to
- * `lensPromptFor`, which folds it into the prompt's ONE budget with the delta.
- *
- * `FULL_CONTEXT_CAP` is the block's own ceiling, kept as the shape the caller
- * used to apply inside this function. It is a cap on the block, not on the
- * prompt: the prompt's bound is `lens-diff-bound.ts`'s, and the block still
- * gets cut again there when the whole prompt cannot afford it.
- *
- * `auto` labels the banner accurately (design decision 6): the delta base
- * is EITHER the automatic one (the latest lens ledger entry's `headSha`)
- * OR an operator-supplied `since` — the banner must say which.
- */
-export const FULL_CONTEXT_CAP = 100 * 1024;
-
-export async function buildDeltaFullContext(
-  cwd: string | undefined,
-  base: string,
-  head: string,
-  since: string,
-  auto: boolean,
-): Promise<string> {
-  const full = await computeRangeDiff(cwd ?? process.cwd(), base, head);
-  if (!full.ok) return "";
-  const fullDiff =
-    full.diff.length > FULL_CONTEXT_CAP
-      ? `${full.diff.slice(0, FULL_CONTEXT_CAP)}\n… (truncated — the full branch diff exceeds ${String(FULL_CONTEXT_CAP)} bytes; the findings below cover the delta only)`
-      : full.diff;
-  const sinceLabel = auto ? "auto: latest lens ledger headSha" : "operator-supplied since";
-  return `FULL BRANCH DIFF (context only — the findings below cover the delta since ${since} (${sinceLabel})):\n${fullDiff}`;
 }
 
 /**

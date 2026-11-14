@@ -51,7 +51,9 @@ const spawnCalls = stubLensSpawn();
 const { runLensReview } = await import("../src/lens-review.ts");
 const { runLensChild } = await import("../src/lens-review-child.ts");
 const { lensPromptFor } = await import("../src/lens-review-format.ts");
-const { buildDeltaFullContext, FULL_CONTEXT_CAP } = await import("../src/lens-review-diff.ts");
+const { buildDeltaFullContext, FULL_CONTEXT_CAP } = await import(
+  "../src/lens-review-full-context.ts"
+);
 const { boundLensPromptDiff } = await import("../src/lens-diff-bound.ts");
 const { computeRangeDiff, computeDeltaDiff } = await import("../src/review-diff.ts");
 const { LENS_ROSTER } = await import("../src/lens-roster.ts");
@@ -128,6 +130,26 @@ function fencedDiff(prompt: string): string {
   const start = open + "```diff\n".length;
   const close = prompt.indexOf("\n```", start);
   return close < 0 ? prompt.slice(start) : prompt.slice(start, close);
+}
+
+/**
+ * The notice: the prose the bound prints after the closing fence, located by its
+ * own lead. Anchored on the notice's unique `… (diff truncated:` marker rather
+ * than on the first fence, because the prompt's own rubric text also mentions a
+ * "fenced diff" and an unanchored search captures it and over-counts the block.
+ */
+function noticeOf(prompt: string): string {
+  const at = prompt.indexOf("\u2026 (diff truncated:");
+  if (at < 0) return "";
+  // Walk back to the inventory lead the bound prints its marker under. The prompt's
+  // own rubric prose mentions a "fenced diff", so the search is anchored on the
+  // leads the bound itself mints — anything earlier is prompt text, not the notice.
+  const leads = ["EVERY file this diff changes", "No `diff --git` file headers were found"];
+  const starts = leads.map((l) => prompt.lastIndexOf(l, at)).filter((n) => n >= 0);
+  if (starts.length === 0) return "";
+  const from = Math.min(...starts);
+  const end = prompt.indexOf("\n\n## ", at);
+  return prompt.slice(from, end > 0 ? end : prompt.length);
 }
 
 /** The serialized stdin envelope `spawn.ts` writes for a prompt: the value that
@@ -224,12 +246,20 @@ try {
       prompts.every((p) => fencedDiff(p).length <= MAX_INLINE_DIFF_CHARS),
       `(2) the delta prompt's fenced diff stays under the bound (got ${JSON.stringify(prompts.map((p) => fencedDiff(p).length))})`,
     );
-    // Added scope (b): the full-context block counts against the SAME budget,
-    // so the whole prompt — delta + full-branch block + skill + rubric — stays
-    // inside a bound tied to the prompt bound rather than the diff's own size.
+    // Added scope (b): the full-branch block counts against the SAME budget as the
+    // delta, so the two diff-bearing parts together never exceed one bound. What is
+    // NOT the bound's business is the lens's own skill body and rubric, which are
+    // fixed per lens (the delivered `--skill` body of #1847) and would let a skill
+    // edit decide whether this suite passes. So the bound is measured on the parts
+    // the module controls: the fenced block plus the notice printed after it.
+    const diffBearing = prompts.map((p) => fencedDiff(p).length + noticeOf(p).length);
     assert(
-      prompts.every((p) => p.length < MAX_INLINE_DIFF_CHARS + 40_000),
-      `(2) the WHOLE prompt stays bounded (got ${JSON.stringify(prompts.map((p) => p.length))})`,
+      diffBearing.every((n) => n <= MAX_INLINE_DIFF_CHARS),
+      `(2) the delta + full-branch block + notice together stay inside the ONE bound (got ${JSON.stringify(diffBearing)}, bound ${String(MAX_INLINE_DIFF_CHARS)})`,
+    );
+    assert(
+      prompts.every((p) => p.length < 260_000),
+      `(2) and the whole prompt is far smaller than the unbounded one the issue reported (~795 KB delta -> six ~911 KB prompts) (got ${JSON.stringify(prompts.map((p) => p.length))})`,
     );
     assert(
       prompts.every((p) => p.includes("grown-0.ts") && p.includes("grown-2.ts")),
@@ -299,57 +329,107 @@ try {
     });
   }
 
-  // ── (5) PROVIDER CONTEXT-LENGTH REFUSAL: not retried, and named.
+  // ── (7) A HUGE FIRST FILE MUST NOT EMPTY THE PROMPT (adversarial round 1, finding 2).
+  // The first file in a large diff is often a generated bundle or lockfile bigger
+  // than the whole budget. A walker that stopped at the first oversized section
+  // gave every lens an empty fenced block whose own notice called it a prefix of
+  // the change — six spawns that reviewed nothing.
   {
-    const dir = path.join(root, "provider", "repo");
-    await mkRepo(dir, { files: 1, lines: 500 });
     const lens = LENS_ROSTER[0] as RosterEntryName;
-    providerAnswer = () => ({
-      ok: false,
-      text: "",
-      toolUses: [],
-      ms: 600,
-      exitCode: 1,
-      errorStop: {
-        reason: "error",
-        message:
-          '400 status code (no body): {"error":{"message":"This model\'s maximum context length is 8192 tokens"}}',
-      },
+    const huge = Array.from(
+      { length: 5_000 },
+      (_u, i) => `export const bundle_${String(i)} = "a generated file far past the budget";`,
+    ).join("\n");
+    const real = Array.from({ length: 40 }, (_u, i) => `export const fix_${String(i)} = 1;`).join(
+      "\n",
+    );
+    const bigFirst =
+      `diff --git a/dist/bundle.js b/dist/bundle.js\nindex 1111111..2222222 100644\n--- /dev/null\n+++ b/dist/bundle.js\n@@ -0,0 +1,5000 @@\n${huge}\n` +
+      `diff --git a/src/fix.ts b/src/fix.ts\nindex 3333333..4444444 100644\n--- /dev/null\n+++ b/src/fix.ts\n@@ -0,0 +1,40 @@\n${real}\n`;
+    assert(
+      bigFirst.length > MAX_INLINE_DIFF_CHARS,
+      `(7) precondition: the fixture diff is past the bound (${String(bigFirst.length)})`,
+    );
+    const prompt = lensPromptFor(lens, bigFirst, "ctx", undefined, [], "", undefined, undefined, {
+      base: "origin/main",
+      head: "HEAD",
     });
-    spawnCalls.length = 0;
-    const result = await runLensChild({
+    const block = fencedDiff(prompt);
+    assert(
+      block.length > 0,
+      `(7) the lens still receives a non-empty diff when the FIRST file alone is past the budget (got ${String(block.length)} characters)`,
+    );
+    assert(
+      block.includes("fix_39") && !block.includes("bundle_4999"),
+      "(7) and what it receives is the file the budget affords, whole — never the oversized one cut in half",
+    );
+    assert(
+      prompt.includes("dist/bundle.js") && prompt.includes("NOT inlined"),
+      "(7) and the oversized file is named as omitted rather than silently absent",
+    );
+    assert(
+      !prompt.includes("the body above is a PREFIX of the change") || block.length > 0,
+      "(7) the notice never calls a non-empty-less block a prefix of the change",
+    );
+
+    // A bounded prompt is never an EMPTY prompt: when no single file fits the
+    // budget, the reviewer gets the head of the diff cut at a LINE boundary and a
+    // notice that says so — the shape the whole change exists to avoid is six
+    // lenses spawned to receive a blank fence.
+    const allHuge =
+      `diff --git a/a.gen b/a.gen\nindex 1111111..2222222 100644\n--- /dev/null\n+++ b/a.gen\n@@ -0,0 +1,5000 @@\n${huge}\n` +
+      `diff --git a/b.gen b/b.gen\nindex 3333333..4444444 100644\n--- /dev/null\n+++ b/b.gen\n@@ -0,0 +1,5000 @@\n${huge}\n`;
+    const partialPrompt = lensPromptFor(
       lens,
-      runId: "run-2261",
-      skillsDir: skills,
-      context: "ctx",
-      roster: [],
-      opts: { diff: "diff --git a/a b/a\n+x", cwd: dir },
-      bumpBatch: () => {},
-    } as never);
-    providerAnswer = () => ({
-      ok: true,
-      text: "Checked the inlined diff; nothing in my lane.",
-      toolUses: [],
-      ms: 10,
-      exitCode: 0,
+      allHuge,
+      "ctx",
+      undefined,
+      [],
+      "",
+      undefined,
+      undefined,
+      { base: "origin/main", head: "HEAD" },
+    );
+    const partialBlock = fencedDiff(partialPrompt);
+    assert(
+      partialBlock.length > 0,
+      `(7b) with NO whole file affordable the block is still not empty (got ${String(partialBlock.length)} characters)`,
+    );
+    assert(
+      partialBlock.length <= MAX_INLINE_DIFF_CHARS &&
+        partialBlock === partialBlock.trimEnd() &&
+        !partialBlock.split("\n").some((l) => l.length === 0 && l !== partialBlock),
+      `(7b) and the fallback is cut at a LINE boundary, never mid-line (${String(partialBlock.length)} chars, ends on a line boundary)`,
+    );
+    assert(
+      partialPrompt.includes("PARTIAL") &&
+        !partialPrompt.includes("the body above is a PREFIX of the change"),
+      `(7b) and the notice says the block is PARTIAL — the head of a diff cut because no file fit — rather than calling it a prefix of the change`,
+    );
+    assert(
+      partialPrompt.includes("a.gen") && partialPrompt.includes("b.gen"),
+      "(7b) and every file whose body was dropped is still named",
+    );
+
+    // The EMPTY wording is reserved for a block that really is empty. Reachable
+    // only when the diff carries no characters to cut at all — a diff of zero
+    // content never gets here (it is the "nothing to review" path, not a bound
+    // one) — so the probe drives the module directly rather than through a
+    // fixture that would have to be unrealistic to trigger it.
+    const emptyBound = boundLensPromptDiff({
+      diff: "x".repeat(MAX_INLINE_DIFF_CHARS + 1),
+      context: " ".repeat(MAX_INLINE_DIFF_CHARS),
+      range: { base: "origin/main", head: "HEAD" },
     });
-    const spawns = spawnCalls.filter((c) => c.role === "code-review-specialist").length;
     assert(
-      result.blocked === true,
-      `(5) the context-length lens is blocked (got blocked=${String(result.blocked)})`,
+      emptyBound.mode === "bounded",
+      `(7c) precondition: a huge diff with no room left is bounded (got ${emptyBound.mode})`,
     );
     assert(
-      providerContextProblem(result.parseError ?? "") !== undefined,
-      `(5) its row names the provider context-length refusal rather than a bare exit code (got: ${String(result.parseError)})`,
-    );
-    assert(
-      spawns === 1,
-      `(5) a context-length refusal is NOT retried — one spawn, not four (got ${String(spawns)})`,
-    );
-    const lanes = incompleteLanes([result]);
-    assert(
-      lanes.some((l) => providerContextProblem(l) !== undefined),
-      `(5) the lane reason names it too (got: ${JSON.stringify(lanes)})`,
+      emptyBound.diff.length === 0
+        ? emptyBound.note !== undefined && emptyBound.note.includes("EMPTY")
+        : !emptyBound.note!.includes("EMPTY"),
+      `(7c) and only a genuinely empty block is called EMPTY (block ${String(emptyBound.diff.length)} chars)`,
     );
   }
 } finally {

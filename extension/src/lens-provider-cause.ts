@@ -38,8 +38,12 @@ const PATTERNS: readonly RegExp[] = [
   /input tokens exceeded/i,
 ];
 
-/** An HTTP 400 carried by the child's own error text — the status a provider
- * uses for a request it refuses to even tokenize. */
+/** An HTTP 400 carried by the provider's OWN error text — the status a provider
+ * uses for a request it refuses to even tokenize. Read only from `errorStop`, the
+ * structured channel the spawn layer fills from the final assistant message's
+ * `errorMessage` (`types.ts`): never from the child's prose, which the prompt
+ * orders to quote the diff verbatim and would let a diff-authored "400 status
+ * code" string decide a retry policy. */
 const HTTP_400 =
   /\b400\b[^\n]{0,200}status code|\bstatus code\b[^\n]{0,40}\b400\b|HTTP\/1\.[01] 400|\b400 Bad Request\b/i;
 
@@ -47,11 +51,11 @@ const HTTP_400 =
  * The named reason for a provider refusal that is really "this prompt is too
  * big", or `undefined` when the text describes something else.
  *
- * `text` is whatever the child left behind — an `errorStop.message`, a stderr
- * tail, or a lane reason already built from one. It is matched case-
- * insensitively and never echoed whole: the returned string is a fixed shape
- * plus the refusal's own first line, clipped, because the raw provider body is
- * untrusted text that has no business in a prompt or a report.
+ * `text` is the provider's own words — an `errorStop.message`, or a lane reason
+ * already built from one. It is matched case-insensitively and never echoed
+ * whole: the returned string is a fixed shape plus the refusal's own first line,
+ * clipped, because the raw provider body is untrusted text that has no business
+ * in a prompt or a report.
  */
 export function providerContextProblem(text: string | undefined): string | undefined {
   if (!text) return undefined;
@@ -69,11 +73,18 @@ export function providerContextProblem(text: string | undefined): string | undef
   return `the ${CONTEXT_LENGTH_HINT} (${hit.source}) — the lens prompt was too large for the model's context window${quote}`;
 }
 
-/** True when the child's own text says the provider refused it with a 400. */
-export function providerRejected400(
-  source: { text?: string; error?: string } | string | undefined,
-): boolean {
-  return HTTP_400.test(joinSources(source));
+/**
+ * True when the provider's OWN error text carried an HTTP 400.
+ *
+ * `message` is the `errorStop.message` the spawn layer recorded, and nothing
+ * else: the child's `text` is the model's prose (resolved as
+ * `text || stderr || "(no output)"` by `spawn-collapse-events.ts`) and the lens
+ * prompt orders the reviewer to quote the diff, so a line of diff text — a
+ * fixture asserting a 400, a test name — is enough to reach `text` and would
+ * otherwise decide a retry policy from content the change under review authored.
+ */
+export function providerRejected400(message: string | undefined): boolean {
+  return message !== undefined && HTTP_400.test(message);
 }
 
 /**
@@ -99,15 +110,21 @@ function joinSources(source: { text?: string; error?: string } | string | undefi
 }
 
 /**
- * Did this child die of a context-length refusal? True when the provider's 400
- * and the context vocabulary appear in the same text, or when the vocabulary
- * alone is unambiguous (a provider that says "maximum context length" is not
- * saying anything else).
+ * Did this child die of a provider refusal it was never going to recover from?
+ *
+ * The provider's own error text must carry the context vocabulary. A child that
+ * died some other way has no `errorStop` and answers false: its `text` is the
+ * model's prose, and the lens prompt orders the reviewer to quote the diff, so a
+ * line of diff text is enough to reach it.
+ *
+ * A 400 is not enough on its own. "Input tokens exceeded the metered plan, retry
+ * in 60s" is a rate refusal — transient, and the retry loop must keep its budget
+ * for it. Only a refusal that says the PROMPT was too large is deterministic in
+ * the prompt and therefore never worth retrying; the caller pairs this with
+ * {@link providerRejected400} to tell the two apart.
  */
 export function isProviderContextLengthFailure(
-  result: { errorStop?: { message?: string }; text?: string } | undefined,
+  result: { errorStop?: { message?: string } } | undefined,
 ): boolean {
-  if (result === undefined) return false;
-  const candidates = [result.errorStop?.message, result.text];
-  return candidates.some((t) => providerContextProblem(t) !== undefined);
+  return providerContextProblem(result?.errorStop?.message) !== undefined;
 }

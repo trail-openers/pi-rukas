@@ -11,19 +11,17 @@
  *
  * It is a module rather than lines in `lens-review.ts` because the rule is a
  * shape rule about a field, and the run function that needs it is already the
- * orchestration of six children, a budget and a ledger write.
+ * orchestration of six children, a budget and a ledger write. The rule is a
+ * discrimination over `ReviewDiffOutcome`, so that is the type it takes: a
+ * structural stand-in (`kind: string`) would let a new `ok` variant carrying its
+ * head outside `delta` compile and silently resolve `headRef ?? "HEAD"` — a
+ * wrong-but-plausible head in the ledger, which is the defect class #1039 closed.
  */
 
+import type { ReviewDiffOutcome } from "./lens-review-diff.ts";
 import { isFullCommitSha, resolveHeadSha } from "./review-head-sha.ts";
 import { trace } from "./trace.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
-
-/** The shape `resolveReviewDiff` returned, narrowed to what the head needs. */
-export interface HeadShaSource {
-  kind: string;
-  diff?: string;
-  delta?: { since: string; head: string; auto?: boolean; fallback?: string };
-}
 
 /** The shared exec seam (`execp`), the same one `resolveHeadSha` takes. */
 export type HeadExec = VerifyExecFn;
@@ -37,7 +35,7 @@ export type HeadExec = VerifyExecFn;
  * why a non-SHA delta head is dropped (and traced) instead of written.
  */
 export async function resolveRoundHeadSha(
-  resolved: HeadShaSource,
+  resolved: ReviewDiffOutcome,
   cwd: string,
   headRef: string | undefined,
   exec: HeadExec,

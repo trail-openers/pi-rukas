@@ -19,11 +19,7 @@ import {
   deltaFallbackNote,
 } from "./lens-review-delta-disclose.ts";
 import { blockedReviewSummary, blockedRowsForRoster } from "./lens-review-diff-blocked.ts";
-import {
-  buildDeltaFullContext,
-  resolveReviewDiff,
-  startPersistentBatch,
-} from "./lens-review-diff.ts";
+import { resolveReviewDiff, startPersistentBatch } from "./lens-review-diff.ts";
 import { resolveReportedFindings } from "./lens-review-findings.ts";
 import { finishLensReview } from "./lens-review-finish.ts";
 import {
@@ -33,6 +29,7 @@ import {
   computeVerdict,
   piSkillsDir,
 } from "./lens-review-format.ts";
+import { buildDeltaFullContext } from "./lens-review-full-context.ts";
 import { resolveRoundHeadSha } from "./lens-review-head-sha.ts";
 import { priorFindingsFor } from "./lens-review-memory.ts";
 import { lensMerge } from "./lens-review-merge.ts";

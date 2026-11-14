@@ -46,23 +46,20 @@ const docs = (file: string): string =>
 
 /** A diff past the prompt bound, with two whole file sections. */
 /**
- * A two-file diff whose first section is too large for the prompt budget.
+ * A two-file diff whose LARGE section comes first.
  *
- * Shaped this way so the bounded arm has a file to NAME as omitted: the walker
- * admits whole sections in order and stops at the first that does not fit, so one
- * oversized section followed by a small one is the smallest input that exercises
- * both the cut and the inventory.
+ * Shaped this way so the bounded arm has a file to NAME as omitted, and so it
+ * pins the shape this switch exists for: the walker admits whole sections while
+ * the budget affords them and SKIPS what it cannot pay for, so an oversized
+ * first section (a generated bundle, a lockfile, a vendored file — the common
+ * case in the field) costs the reviewer nothing but its own body. A walker that
+ * stopped at the first oversized section would hand back an empty block here.
  */
 function oversizedDiff(): string {
   const body = Array.from(
     { length: 4_000 },
     (_u, i) => `export const line_${String(i)} = "padding to make this file genuinely large";`,
   ).join("\n");
-  // `small.ts` comes FIRST so the walker can afford it: the walk stops at the
-  // first section that does not fit, so an oversized section followed by a small
-  // one yields a prompt whose block is EMPTY and whose inventory is one line
-  // about a file nobody read. The shape this switch exists for is the opposite —
-  // the files the budget buys ARE inlined and the rest are named.
   const small = Array.from({ length: 5 }, (_u, i) => `export const small_${String(i)} = 1;`).join(
     "\n",
   );
@@ -201,7 +198,7 @@ for (const [value, want] of [
   );
   assert(
     (on?.diff ?? "").includes("small.ts") && !(on?.diff ?? "").includes("line_3999"),
-    "(4) and it is the SMALL file that survives: whole sections in order, never a section cut in half",
+    "(4) and it is the SMALL file that survives: whole sections, never one cut in half — and it survives DESPITE the oversized file coming first",
   );
   assert(
     (on?.diff.length ?? 0) <= MAX_INLINE_DIFF_CHARS,

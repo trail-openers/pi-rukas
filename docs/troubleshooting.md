@@ -4008,7 +4008,9 @@ Both halves are on by default and governed by one switch — [configuration.md](
   printed after the diff fence, where a reviewed diff that quotes the notice cannot impersonate
   it. The full-branch block shares that same budget instead of adding to it.
 - A provider context-length refusal is named in the lane (it says so) and is **not** retried —
-  one spawn, not four.
+  one spawn, not four. Only the provider's own refusal of the request counts: the child's prose
+  quoting a 400 out of the diff does not, and neither does a 400 that says something other than
+  "too large" (a quota or rate refusal, which the retry loop is meant to ride out).
 
 ### What to do
 

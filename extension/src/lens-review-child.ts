@@ -14,8 +14,8 @@ import type { Writable } from "node:stream";
 import { childHandles, registerChildHandle } from "./async-jobs-registry.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import { extractFindings } from "./lens-findings-extract.ts";
-import { providerRejected400 } from "./lens-provider-cause.ts";
-import { failedLensRow, providerChildText } from "./lens-review-child-failure.ts";
+import { isProviderContextLengthFailure } from "./lens-provider-cause.ts";
+import { failedLensRow } from "./lens-review-child-failure.ts";
 import { lensPromptFor } from "./lens-review-format.ts";
 import { NO_TEXT_PLACEHOLDER } from "./lens-review-incomplete.ts";
 import { LENS_REPORTER_PATH, type LensDef } from "./lens-review.ts";
@@ -358,9 +358,23 @@ export async function runLensChild(opts: {
       ) {
         break;
       }
-      // #2261 — the provider refusing this prompt for its size is deterministic
-      // in the prompt itself, so it joins the never-retried classes above.
-      if (result && providerRejected400(providerChildText(result))) break;
+      // ── #2261: a provider refusal of THIS prompt for its size joins the
+      // never-retried classes above. Two conditions, and neither is the child's
+      // prose. The lens prompt orders the reviewer to quote the diff, so `text`
+      // can carry diff-authored bytes — a fixture line reading `"400 status
+      // code"` would otherwise cost a transient lane three of its four attempts
+      // and blame the prompt size. So:
+      //   - `errorStop` — the provider really refused the REQUEST (the spawn layer
+      //     fills it from the final assistant message's `errorMessage`); and
+      //   - that refusal says the PROMPT was too large. A 400 whose body says the
+      //     metered plan is exhausted is a rate refusal that a retry DOES clear,
+      //     so the status code alone never breaks the loop.
+      // The status line itself is not required: a provider that says "maximum
+      // context length" in its `errorStop` is not saying anything else, and
+      // re-spawning that prompt four times is four guaranteed failures.
+      if (result && isProviderContextLengthFailure(result)) {
+        break;
+      }
       // Backoff before next retry (skipped on last attempt to keep total
       // wall-clock bounded).
       if (attempts < MAX_LENS_ATTEMPTS) {

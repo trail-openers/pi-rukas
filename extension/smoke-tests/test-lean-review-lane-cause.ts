@@ -194,5 +194,42 @@ const FIRST_LENS = LENS_ROSTER[0]?.name ?? "";
   );
 }
 
+// ── (5) the quoted lanes are BOUNDED, and cannot smuggle a provider body ────
+// The handback is an error message that reaches a report and a transcript, so a
+// lane reason must not carry an unbounded provider payload into it. The clip is
+// what makes quoting safe: a lane row whose reason grew must not grow the message.
+{
+  const { repoRoot, baseSha } = makeRepo();
+  await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 5;\n" });
+  const blob = `SECRET-BLOB-${"k".repeat(4000)}`;
+  const loud = blockedRound(SIZE_PROBLEM);
+  const rows = loud.lenses.map((r, i) => ({
+    ...r,
+    // Every lane carrying a maximal, hostile reason — the worst case for the clip.
+    parseError: `${i === 0 ? SIZE_PROBLEM : ""}${blob}`.slice(0, 2000),
+  }));
+  const { threw } = await runStep(
+    ctxFor(repoRoot, baseSha, BRANCH),
+    depsWith({ lens: async () => ({ ...loud, lenses: rows }) }),
+  );
+  assert(
+    threw !== undefined && threw.message.length < 4_000,
+    `(5) the handback stays bounded however long the lanes' reasons are (${String(threw?.message.length)} chars)`,
+  );
+  const quoted = incompleteLanes(rows).join("; ").slice(0, 900);
+  assert(
+    threw !== undefined && quoted !== "" && threw.message.includes(quoted.slice(0, 120)),
+    `(5) and it is still the layer's own words, just clipped to the bound (${quoted.slice(0, 60)})`,
+  );
+  // The clip is a PREFIX, so a byte-for-byte copy of a lane's reason cannot
+  // survive it; what must not survive is an unbounded run of them. The bound is
+  // the whole guarantee here: a lane row that grew cannot grow the handback.
+  const clause = threw?.message.split(" — lanes: ")[1] ?? "";
+  assert(
+    clause !== "" && clause.length <= 900,
+    `(5) and the quoted lanes are clipped to their stated bound rather than carried whole (clause ${String(clause.length)} of a ${String(incompleteLanes(rows).join("; ").length)}-char rendering)`,
+  );
+}
+
 cleanupRoots();
 process.exit(failures());

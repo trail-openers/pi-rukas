@@ -187,11 +187,18 @@ function isUnattributedLine(
  *
  * `headChars` is the length of the head the prompt will inline: a section that
  * ends at or before it is `shown`, so the inventory can say which bodies the
- * reviewer actually has and which it does not.
+ * reviewer actually has and which it does not. That offset rule is right for a
+ * head CUT at a cap (a prefix, so the shown files really are the leading ones)
+ * and wrong for a walk that admits whole files and SKIPS the oversized ones —
+ * there the inlined set is not a prefix, and an offset test marks a skipped
+ * middle file "shown" and a kept later file "not shown". A caller in that shape
+ * passes `shownPaths`, the paths whose bodies it actually inlined, and the offset
+ * rule is not consulted.
  */
 export function summarizeDiffFiles(
   diff: string,
   headChars = diff.length,
+  shownPaths?: ReadonlySet<string>,
 ): { files: DiffFileSummary[]; unattributed: number } {
   const files: DiffFileSummary[] = [];
   let current: DiffFileSummary | null = null;
@@ -236,6 +243,10 @@ export function summarizeDiffFiles(
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
     if (!file) continue;
+    if (shownPaths !== undefined) {
+      file.shown = shownPaths.has(file.path);
+      continue;
+    }
     const next = files[i + 1];
     const end = next ? next.startOffset : diff.length;
     file.shown = end <= headChars;
