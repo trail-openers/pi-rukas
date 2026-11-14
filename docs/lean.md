@@ -447,9 +447,19 @@ other reason before it reached the lease — nothing is moved, and the record na
 head origin holds with git's own reason beside it, so an operator can tell "someone
 moved my branch" from "the clone could not read that commit". Where origin already
 holds the certified head the step pushed nothing, and the record says so without
-calling the shipped head unverified. Every other handback is unchanged. Behind
-`PI_ENSEMBLE_LEAN_VERIFIED_HANDBACK` (default on; only `0` off), which is read at call
-time; the unforced refspec and the atomic push are together behind `PI_ENSEMBLE_LEAN_REWIND_LEASE_BINDS`
+calling the shipped head unverified. Where the rule fires and the log names no green
+head at all, the step records the head origin holds as read after the step, with
+`shippedVerified: false` and the rule's own `unshippedReason` — behind
+`PI_ENSEMBLE_LEAN_HANDBACK_NOHEAD_RECORD` (default on; only `0` records nothing) — so
+a consumer keys on `shippedVerified` and never on `shippedHead` alone. The third state is
+the one that switch's `0` restores: where the rule never spoke about a head, `shippedHead`
+is absent and `shippedVerified` is absent with it, which is how a record says "this run's
+handback was not a rewind" rather than "it was one that found no head". The host's own
+reading of the same facts is `issues[].gates.handback.verified`, a `boolean | null` whose
+`null` means the projection has no answer (`work-lean-gates.ts`), present only when
+`features.leanGates` is reported ([headless.md](headless.md)). Every other handback is
+unchanged. The whole rule is behind `PI_ENSEMBLE_LEAN_VERIFIED_HANDBACK` (off arm:
+[configuration.md](configuration.md)), read at call time; the unforced refspec and the atomic push are together behind `PI_ENSEMBLE_LEAN_REWIND_LEASE_BINDS`
 (default on; only `0` puts the leading `+` back and drops `--atomic`, byte for byte,
 restoring the pre-fix push argv exactly).
 
@@ -477,6 +487,24 @@ only `0` off, read at call time), whose off arm restores the guard that passed a
 branch whose mainline it could not read — the fail-open #2255 is the fix for.
 Pinned by `test-lean-publish-guard-fail-closed.ts` (guard, both arms, and the
 production wiring) and `test-lean-guard-fail-closed-switch.ts`.
+
+The guard path itself resolves the forge through no probe: its mainline rules are
+`resolveMainline` (`mainline.ts`) and `originHeadBranch`, and the adapter a lean run uses
+comes from `resolveCycleForge` with `allowProbe: false` (`lean/io.ts` `forgeFor`), so a
+lean run issues no HTTPS probe at all. The probing callers sit outside lean, where
+`detectForge` is called with no `allowProbe` — `detectForge(ctx.repoRoot, {})` in
+`work-driver-handoff-consolidate.ts` is one — and each then asks a host the known-host
+table does not name at `/api/v4/version`, `/` and `/api/v1/version` unless `CI` is truthy
+— not `0`, `false` or empty — or `PI_ENSEMBLE_FORGE_PROBE=0` (`shouldProbe`,
+`forge-probe.ts`; the switch's own semantics are in [configuration.md](configuration.md)).
+
+What an offline consumer does have to expect on this path is network git, not an HTTPS
+probe: when neither `git symbolic-ref` nor `gh repo view` names the mainline, the guard
+still runs `git ls-remote --symref origin HEAD` (`originHeadBranch`) before it fails
+closed. All three carry the same 30 s `MAINLINE_PROBE_TIMEOUT_MS`, and the network probe
+keeps it — the `runNetGit` ceiling that would otherwise apply is 300 s, so the shorter
+request wins — which is what makes an unreadable mainline a bounded round of calls and a
+refusal rather than a publish step that never answers.
 
 **A handback comment** on the issue, in this order of usefulness: the newest
 budget breach **that no step other than a report (`handback`, `decline`) is newer than** — a `challenge` breach the
