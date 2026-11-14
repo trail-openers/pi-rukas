@@ -29,7 +29,19 @@
  *   (c) `PI_ENSEMBLE_LEAN_REPORT_BOUND=0` awaits the handler with no wall at all:
  *       the same hung handler, and the drive only ends when the handler is let
  *       settle, at a time PAST the bound. The bound's sentence appears nowhere in
- *       the record, and the verdict the bound refused lands.
+ *       the record, and the verdict the bound refused lands;
+ *   (d) the bound's timer is a ref'd timer and is cleared on the way out of the race
+ *       — read off the source, because both properties are invisible to a drive from
+ *       outside (a passing drive exits either way). Ref'd is the direction the timer
+ *       has to go: an unref'd bound timer is not a reason the loop stays alive, so a
+ *       hung handler that holds no handle of its own lets the process exit with the
+ *       run carrying no result at all. The `clearTimeout` in the race's `finally` is
+ *       what keeps the ref'd timer from outliving the run, so the pair is asserted
+ *       together;
+ *   (e) the overrun's reason is honest about what the bound does NOT cancel: the
+ *       rewind's push and the forge comment of a cut report are already in flight and
+ *       may still land after the stamp, so the sentence says so — and the settled arm,
+ *       which abandoned nothing, says neither word.
  *
  * The rig is the same one the two deadline suites drive (`driveToDeadline`): the
  * crossing clock, the scripted walk, and the production reporting wiring. Every case
@@ -40,115 +52,32 @@
  * `allowance` the case knows and pins.
  */
 
-import { readFileSync, rmSync } from "node:fs";
-import path from "node:path";
+import {
+  GUARD_MS,
+  assert,
+  greenAt,
+  guarded,
+  hungHandler,
+  recordBytes,
+  rigEnv,
+  state,
+} from "./lib/lean-report-bound-shared.ts";
 import { unverifiedRef } from "../src/lean/handback-rewind.ts";
 import { handoffAllowanceMs } from "../src/lean/deadline.ts";
-import type { LeanHandlers } from "../src/lean/engine.ts";
 import { acquireLock } from "../src/lean/lock.ts";
-import { leanStateFile } from "../src/lean/state.ts";
-import { makeAssert } from "./headless-verb-harness.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import { captureWarns } from "./lib/lean-review-bound-fixtures.ts";
-import { ENV, driveToDeadline, walkToReview } from "./lib/lean-verified-handback-deadline-rig.ts";
-import { ISSUE, ROOTS } from "./lib/lean-verified-handback-fixture.ts";
+import { driveToDeadline } from "./lib/lean-verified-handback-deadline-rig.ts";
+import { ISSUE } from "./lib/lean-verified-handback-fixture.ts";
 import {
   originBranchSha,
   originRefSha,
   repoWithFixHead,
 } from "./lib/lean-verified-handback-repo.ts";
-
-const { assert, state } = makeAssert();
-
-/** How long a case waits for its drive before it calls the drive hung. Well above
- *  every bound this file pins (the largest is 6 s) and far below the suite's per-test
- *  ceiling, so a regression prints a failure instead of burning the test budget. */
-const GUARD_MS = 20_000;
-
-/** The rig's `ENV` pins `PI_ENSEMBLE_CYCLE_BUDGET_MS` at 240 min — the budget
- *  `crossingAfter` resolves its late position against — and the handoff allowance at
- *  2 min with it. A case that shrinks the allowance to make the bound cheap moves the
- *  arm `resolveCycleDeadline` picks while the clock's late position stays 240 min out,
- *  so the run is stopped at an ordinary boundary and the drive ends on a handler-error
- *  record that tests nothing. Pinning the arm ABSOLUTELY decouples the two: the
- *  crossing stays the deadline stop the shared rig was built to produce, at whatever
- *  allowance the case wants to watch being cut. */
-function rigEnv(allowanceMs: number, extra: Record<string, string | undefined> = {}) {
-  return {
-    ...ENV,
-    PI_ENSEMBLE_HANDOFF_TIMEOUT_MS: String(allowanceMs),
-    PI_ENSEMBLE_CYCLE_BUDGET_MS: undefined,
-    PI_ENSEMBLE_CYCLE_DEADLINE: String(Date.now() + 30 * 60_000),
-    ...extra,
-  };
-}
-
-/** A drive raced against its own guard. The guard is `unref`'d: a passing drive must
- *  not be held open by the timer that was meant to catch it hanging, and the timer is
- *  unref'd so a green file exits. */
-async function guarded<T>(what: string, body: () => Promise<T>): Promise<T | `HUNG:${string}`> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      body(),
-      new Promise<`HUNG:${string}`>((resolve) => {
-        timer = setTimeout(() => resolve(`HUNG:${what}`), GUARD_MS);
-        timer.unref?.();
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
-/** The hung reporting step: pending forever, until the case hands it the key that
- *  lets it settle (used by (c), where "no bound" must be shown as a wait for the
- *  handler rather than as a hang). */
-function hungHandler(): {
-  handler: LeanHandlers["handback"];
-  calls: number;
-  releases: number;
-  release: () => void;
-} {
-  let releases = 0;
-  let calls = 0;
-  let release = (): void => {};
-  const gate = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const handle: LeanHandlers["handback"] = async (ctx) => {
-    calls++;
-    await gate;
-    releases++;
-    return { kind: "done", reason: `posted late for ${ctx.stepKey}` };
-  };
-  return {
-    get calls() {
-      return calls;
-    },
-    get releases() {
-      return releases;
-    },
-    handler: handle,
-    release,
-  };
-}
-
-/** Read the state file's raw bytes: what a second process — or an operator with
- *  `/runs` — reads, and the only witness that settles what the run wrote. */
-function recordBytes(repoRoot: string): string {
-  return readFileSync(leanStateFile(repoRoot, ISSUE), "utf8");
-}
-
-/** The green the deadline walk needs: a decided verify at the base, so the rule's
- *  premise is the certified-head one (case (a)'s origin assertion reads it). */
-function greenAt(baseSha: string): ReturnType<typeof walkToReview> {
-  return walkToReview({
-    kind: "green",
-    verifiedHead: baseSha,
-    reason: `all frozen tests green at ${baseSha}`,
-  });
-}
+import type { Driven } from "./lib/lean-report-bound-shared.ts";
+import { readFileSync, rmSync } from "node:fs";
+import path from "node:path";
+import { ROOTS } from "./lib/lean-verified-handback-fixture.ts";
 
 // ── (a) a hung reporting step is cut at the allowance, and its late settle writes nothing.
 {
@@ -163,7 +92,11 @@ function greenAt(baseSha: string): ReturnType<typeof walkToReview> {
   if (before !== repo.headSha)
     throw new Error(`(a)'s origin does not hold the fix head: ${String(before)}`);
   const started = Date.now();
-  let ran: Awaited<ReturnType<typeof driveToDeadline>> | string = "NOT_RUN";
+  // `Ran` is spelled out rather than derived from the rig's return type: the union's
+  // non-object arm has to be a type, not a value, or the widening to `string` swallows the
+  // object arm and every read below the `typeof` guard is a `never`.
+  type Ran = Driven | `HUNG:${string}` | "NOT_RUN";
+  let ran: Ran = "NOT_RUN";
   let allowanceSeen = -1;
   await withEnv(rigEnv(ALLOWANCE_MS), async () => {
     // The helper is read INSIDE the env scope: it is the same reader the engine calls
@@ -174,20 +107,29 @@ function greenAt(baseSha: string): ReturnType<typeof walkToReview> {
     // docstring's own reason: a returned value would not exist yet inside the body
     // that produced it), so the drive is captured by the body itself.
     await captureWarns("[pi-rukas] WARN", warns, async () => {
-      ran = await guarded("a:hung-handler", () =>
+      // The write goes through a local, not `ran`: the capture body is typed
+      // `() => Promise<void>`, so an assignment in its tail position is where the object
+      // arm gets dropped.
+      const result = await guarded("a:hung-handler", () =>
         driveToDeadline(repo.repoRoot, greenAt(repo.baseSha), repo.baseSha, {
           handback: hung.handler,
         }),
       );
+      ran = result;
     });
   });
   const waited = Date.now() - started;
 
+  // Narrowed ONCE, into a const of the object arm's own type. An `if (typeof ran !==
+  // "string")` guard does not narrow here: the variable is written inside a callback, and
+  // the assertions below are reached with the union emptied to `never`.
+  const drive: Driven | undefined = typeof ran === "object" ? ran : undefined;
   assert(
-    typeof ran === "object",
+    drive !== undefined,
     `(a) the hung reporting step did not hold the run: the drive returned in ${String(waited)}ms instead of hanging (got ${JSON.stringify(ran)})`,
   );
-  if (typeof ran !== "string") {
+  if (drive !== undefined) {
+    const ran = drive as Driven;
     assert(
       ran.crossed,
       `(a) the clock really crossed the handoff allowance during the drive (crossed=${String(ran.crossed)})`,
@@ -225,7 +167,7 @@ function greenAt(baseSha: string): ReturnType<typeof walkToReview> {
     // record from the kill an unbounded run would have left behind.
     assert(
       warns.length === 1 &&
-        warns[0]?.includes("WARN") &&
+        warns[0]?.includes("WARN") === true &&
         warns[0].includes("report") &&
         warns[0].includes("handback report timed out") &&
         warns[0].includes(String(allowanceSeen)),
@@ -360,7 +302,7 @@ function greenAt(baseSha: string): ReturnType<typeof walkToReview> {
     rigEnv(ALLOWANCE_MS, { PI_ENSEMBLE_LEAN_REPORT_BOUND: "0" }),
     async () => {
       const started = Date.now();
-      let ran: Awaited<ReturnType<typeof driveToDeadline>> | string = "NOT_RUN";
+      let ran: Driven | string = "NOT_RUN";
       await captureWarns("[pi-rukas] WARN", warns, async () => {
         // Past the bound by more than the bound itself, so the drive cannot have
         // been cut at it and simply waited out the case's own clock.
@@ -381,7 +323,13 @@ function greenAt(baseSha: string): ReturnType<typeof walkToReview> {
         typeof ran === "object",
         `(c) with the bound off the drive is the drive it always was — it ends when the handler does (got ${JSON.stringify(ran)})`,
       );
-      if (typeof ran !== "string") {
+      const cDrive: Driven | undefined = typeof ran === "object" ? ran : undefined;
+      assert(
+        cDrive !== undefined,
+        `(c) with the bound off the drive ended at all (got ${JSON.stringify(ran)})`,
+      );
+      if (cDrive !== undefined) {
+        const ran = cDrive as Driven;
         assert(
           waited >= ALLOWANCE_MS,
           `(c) and it really waited for the handler past the allowance the ON arm would have cut at (${String(waited)}ms, allowance ${String(ALLOWANCE_MS)}ms)`,
@@ -424,18 +372,84 @@ function greenAt(baseSha: string): ReturnType<typeof walkToReview> {
     src.indexOf("const settled = await Promise.race"),
   );
   assert(
-    /boundTimer\.unref\?\.\(\)/.test(timerWindow),
-    "(d) the bound timer is unref'd — a cut report cannot be the reason the process stays alive",
+    !/\.unref\?\.\(\)|\.unref\(\)/.test(timerWindow),
+    "(d) the bound timer is NOT unref'd — an unref'd bound timer is not a reason the loop stays alive, so a hung handler that holds no handle of its own lets the process exit with the run unstamped",
   );
   assert(
     /if \(boundTimer\) clearTimeout\(boundTimer\)/.test(src),
-    "(d) and the timer is cleared on the way out of the race, in the arm that settles as well as the one that overruns",
+    "(d) and the timer is cleared on the way out of the race, in the arm that settles as well as the one that overruns — that is what keeps a ref'd timer from outliving the run",
   );
   assert(
     race !== undefined && race.includes("overrun"),
     "(d) and the handler's promise is what the race runs against — the bound is on the await, not on a copy of it",
   );
 }
+
+// ── (e) the overrun's reason says what the abandoned handler may still do.
+//
+// The bound abandons the handler; it cannot cancel it. The rewind's `git push` and the
+// forge comment that were already issued go on running — a group kill that recalled them
+// is not available at this layer — and may well complete after the stamp. A reason line
+// that reads as though the report simply never happened is the record that hides a landed
+// push behind a routine stop, so the sentence has to say both halves.
+{
+  const hungRepo = repoWithFixHead();
+  const ALLOWANCE_MS = 2_000;
+  const warns: string[] = [];
+  // `Drive` is the rig's own result type, named once: a `let` whose union carries a string
+  // arm is read back as `never` by a `typeof` guard after an assignment made inside a
+  // callback, so each case narrows into a `const` of this type instead.
+  type Drive = Awaited<ReturnType<typeof driveToDeadline>>;
+  let ran: Drive | string = "NOT_RUN";
+  await withEnv(rigEnv(ALLOWANCE_MS), async () => {
+    await captureWarns("[pi-rukas] WARN", warns, async () => {
+      const result = await guarded("e:hung-handler", () =>
+        driveToDeadline(hungRepo.repoRoot, greenAt(hungRepo.baseSha), hungRepo.baseSha, {
+          handback: () => new Promise(() => {}),
+        }),
+      );
+      ran = result;
+    });
+  });
+  const eDrive: Drive | undefined = typeof ran === "object" ? ran : undefined;
+  assert(
+    eDrive !== undefined,
+    `(e) the hung reporting step was cut (got ${JSON.stringify(ran)})`,
+  );
+  if (eDrive !== undefined) {
+    const ran = eDrive as Driven;
+    assert(
+      ran.reason.includes("may still complete") &&
+        ran.reason.includes("rewind") &&
+        ran.reason.includes("comment") &&
+        ran.reason.includes("handback report timed out"),
+      `(e) the overrun's own sentence says the abandoned handler is not cancelled: its rewind and comment may still land after the stamp (got ${JSON.stringify(ran.reason)})`,
+    );
+    assert(
+      warns.length === 1 &&
+        warns[0]?.includes("may still complete") === true &&
+        warns[0].includes("rewind"),
+      `(e) and the ungated warning tells the operator the same thing the record says — one sentence, two surfaces (warns ${JSON.stringify(warns)})`,
+    );
+  }
+
+  // The settled arm says neither: a report that answered has nothing outstanding, and a
+  // reason that hedged about a landed push would make a clean handback look unfinished.
+  const clean = repoWithFixHead();
+  await withEnv(rigEnv(ALLOWANCE_MS), async () => {
+    const settledRun = await guarded("e:settled", () =>
+      driveToDeadline(clean.repoRoot, greenAt(clean.baseSha), clean.baseSha, {
+        handback: async () => ({ kind: "done", reason: "reported" }),
+      }),
+    );
+    assert(
+      typeof settledRun === "object" &&
+        !String(settledRun.reason).includes("may still complete"),
+      `(e) the settled report's reason says nothing about an abandoned handler — that clause belongs to the overrun alone (got ${JSON.stringify(settledRun)})`,
+    );
+  });
+}
+
 
 for (const dir of ROOTS) rmSync(dir, { recursive: true, force: true });
 process.exit(state.exit);

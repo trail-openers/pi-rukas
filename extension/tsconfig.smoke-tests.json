@@ -318,6 +318,7 @@
     "smoke-tests/test-lean-verified-handback-deadline.ts",
     "smoke-tests/test-lean-handback-report-bound.ts",
     "smoke-tests/test-lean-report-bound-switch.ts",
+    "smoke-tests/test-lean-report-bound-ceiling.ts",
     "smoke-tests/test-lean-verified-handback-report.ts",
     "smoke-tests/test-lean-verified-handback-rewind.ts",
     "smoke-tests/lib/lean-build-asserts.ts",
