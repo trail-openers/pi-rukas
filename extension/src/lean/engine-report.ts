@@ -15,6 +15,7 @@
  * stay private to `engine.ts` and this module writes a step exactly the way the runner does.
  */
 import { traceWarn } from "../trace.ts";
+import { handoffAllowanceMs } from "./deadline.ts";
 import { reportBoundSentence } from "./engine-report-bound.ts";
 import type { LeanRun, LeanState, Outcome, Step } from "./state.ts";
 import { nextAttempt } from "./state.ts";
@@ -29,6 +30,49 @@ export type HandbackHandler = (ctx: {
   now: () => number;
 }) => Promise<Outcome>;
 
+/**
+ * The routed report's own wall: the handoff allowance plus a fraction of headroom.
+ *
+ * The routing fires when the clock comes inside `handoffAllowanceMs()`, so the allowance is
+ * the time the run was already told the report owns. It is not the time the report needs:
+ * every git and forge call on the reporting path carries its own per-call ceiling, and
+ * summed they are well past the allowance — 570 s against the 480 s default. A bound equal
+ * to the allowance therefore cuts a report in which nothing hung, each call answering just
+ * inside its own ceiling, and what the cut loses is the rewind: the one thing the routing
+ * exists to perform. So the bound is the allowance PLUS {@link REPORT_BOUND_HEADROOM_RATIO}
+ * of it — a 20 % headroom: the smallest multiple of the allowance that covers the sum (480 s
+ * × 1.2 = 576 s ≥ 570 s) and still fires strictly before the grace.
+ *
+ * The headroom is a ratio of the allowance rather than a fixed extra because the allowance is
+ * the number an operator moves (`PI_ENSEMBLE_HANDOFF_TIMEOUT_MS`) and the bound is derived
+ * from it: a fixed term would either be lost in the noise at a small allowance or dwarf it at
+ * a large one, and a bound that is not proportional to the time the routing already reserved
+ * is a bound nobody can reason about from the knob they set.
+ *
+ * The headroom is added rather than taken from the path's per-call ceilings because those
+ * ceilings are shared: the `git` and forge timeouts on this path are read by the non-lean
+ * callers too, and shrinking them to fit a lean bound would bind callers this change has no
+ * business constraining.
+ *
+ * The limit on the headroom is the outer wall the bound exists to beat: the child-bound grace
+ * (`PI_ENSEMBLE_CHILD_BOUND_GRACE_MS`), the wrap past the deadline at which the run is killed
+ * and the kill — not the handback — is what gets recorded. The report can start no earlier
+ * than `deadline − allowance` and the kill comes `grace` after the deadline, so a bound under
+ * the grace fires first. `test-lean-report-bound-ceiling.ts` reads both numbers from the
+ * shipped constants and holds the bound strictly inside the grace.
+ */
+export function handoffReportBoundMs(): number {
+  return Math.round(handoffAllowanceMs() * (1 + REPORT_BOUND_HEADROOM_RATIO));
+}
+
+/** What the bound adds to the allowance, as a fraction of it — 20 %. At the default 480 s
+ *  allowance that is 96 s, enough to cover the 570 s the reporting path's awaits sum to
+ *  (480 + 96 = 576 ≥ 570) and still fire 24 s before the 600 s child-bound grace at which the
+ *  run would be killed instead. `test-lean-report-bound-ceiling.ts` reads the ratio against
+ *  both the summed per-call ceilings and the grace: below 18.75 % the bound cuts a progressing
+ *  report, at or above 25 % it meets the grace and turns cuts into kills. */
+export const REPORT_BOUND_HEADROOM_RATIO = 0.2;
+
 /** Everything the runner passes to the report, so this module reads none of the runner's state. */
 export interface ReportRequest {
   repoRoot: string;
@@ -41,11 +85,11 @@ export interface ReportRequest {
   /**
    * The report's own wall, in ms, or `undefined` for no wall.
    *
-   * The runner supplies it — it is `handoffAllowanceMs()`, the number the stop test
-   * one boundary earlier compared against — so this module reads neither the env nor
-   * the deadline module. Present, the handler is raced against it and an overrun ends
-   * the run as the plain deadline stop it would have been without the routing;
-   * absent, the handler is awaited and nothing else.
+   * The runner supplies it — it is `handoffReportBoundMs()`, the allowance the stop test one
+   * boundary earlier compared against plus the headroom that wall needs — so this module's
+   * callers read the deadline module, not this one. Present, the handler is raced against it
+   * and an overrun ends the run as the plain deadline stop it would have been without the
+   * routing; absent, the handler is awaited and nothing else.
    */
   boundMs?: number;
   /** Set by THIS module to the bound it ran out at, and ONLY on that arm.

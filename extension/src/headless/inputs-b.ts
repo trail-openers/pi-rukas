@@ -116,7 +116,8 @@ export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   // The routed deadline report's own wall: the report is the step the deadline's stop
   // test exempts, so without this it is the one step nothing bounds. `0` puts the
   // unbounded await back byte for byte. The reader is `leanReportBoundEnabled` in
-  // lean/handback-report-bound-switch.ts; the bound itself is `handoffAllowanceMs()`.
+  // lean/handback-report-bound-switch.ts; the bound itself is `handoffReportBoundMs()`
+  // in lean/engine-report.ts — `handoffAllowanceMs()` plus REPORT_BOUND_HEADROOM_RATIO.
   flag("LEAN_REPORT_BOUND", true),
   // Show the lean review seats (six lenses, adversarial reviewer, review fixer)
   // the issue's prose and the spec's criteria as two sections, so a long

@@ -19,15 +19,10 @@ import { isFullCommitSha } from "../commit-sha.ts";
 import { trace } from "../trace.ts";
 import { type CycleBudgetMs, flagBudgetMs } from "../work-driver-deadline.ts";
 import { deadlineStopShouldReport } from "./deadline-handback.ts";
-import {
-  deadlineReason,
-  deadlineStopsSteps,
-  handoffAllowanceMs,
-  leanDeadline,
-} from "./deadline.ts";
+import { deadlineReason, deadlineStopsSteps, leanDeadline } from "./deadline.ts";
 import { engineFacts } from "./engine-facts.ts";
 import { reportBoundSentence } from "./engine-report-bound.ts";
-import { type HandbackHandler, runHandbackReport } from "./engine-report.ts";
+import { type HandbackHandler, handoffReportBoundMs, runHandbackReport } from "./engine-report.ts";
 import { errorOutcome } from "./error-outcome.ts";
 import { leanReportBoundEnabled } from "./handback-report-bound-switch.ts";
 import { acquireLock } from "./lock.ts";
@@ -236,8 +231,9 @@ function apply(drive: Drive, run: LeanRun, outcome: Outcome): LeanRun {
  * run and the bound that cut it) is `routed-report.ts`'s. The handler table is the runner's to consult,
  * so the decision to route is taken entirely here: a run with no reporting step built cannot be routed,
  * and the caller stamps it plainly. The three helpers the report needs to write a step are passed in so
- * their definitions stay private to the runner, and the bound on its wall is read here for the same
- * reason: `handoffAllowanceMs()` is the number the stop test one boundary earlier compared against.
+ * their definitions stay private to the runner, and the bound on its wall is read here for the
+ * same reason: `handoffReportBoundMs()` is the allowance the stop test one boundary earlier
+ * compared against, plus the headroom the reporting path's own per-call ceilings need.
  */
 async function reportRun(
   drive: Drive,
@@ -249,7 +245,7 @@ async function reportRun(
   const handler = opts.handlers.handback as HandbackHandler | undefined;
   if (handler === undefined) return { run: undefined, boundMs: undefined };
   // `undefined` is the switch's off arm: the handler is awaited and nothing else, as before #2269.
-  const boundMs = leanReportBoundEnabled() ? handoffAllowanceMs() : undefined;
+  const boundMs = leanReportBoundEnabled() ? handoffReportBoundMs() : undefined;
   return routeHandbackReport(
     {
       repoRoot: opts.repoRoot,

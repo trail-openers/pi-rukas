@@ -1,9 +1,9 @@
 /**
  * The routed report's own wall, told apart from a kill's.
  *
- * The bound is `handoffAllowanceMs()` and the race lives in `engine-report.ts`;
- * this module holds only the sentence the overrun tells, so the `traceWarn` an
- * operator reads and the clause the durable record carries are written by one
+ * The bound is `handoffReportBoundMs()` — the handoff allowance plus headroom — and the race
+ * lives in `engine-report.ts`; this module holds only the sentence the overrun tells, so the
+ * `traceWarn` an operator reads and the clause the durable record carries are written by one
  * reader and cannot drift into saying different things about the same cut.
  *
  * The sentence names the await that ran out and how long it was given, because

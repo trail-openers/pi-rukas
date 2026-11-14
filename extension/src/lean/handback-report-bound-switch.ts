@@ -11,6 +11,9 @@
  * returns holds the run past the allowance the routing exists to protect. An
  * external wrapper's kill then records a kill instead of the handback.
  *
+ * What the bound is — the allowance plus headroom — is `handoffReportBoundMs`'s
+ * contract in `engine-report.ts`; this module reads only the switch.
+ *
  * `PI_ENSEMBLE_LEAN_REPORT_BOUND=0` puts that unbounded await back byte for byte:
  * the engine awaits the reporting handler and nothing else, so a hung report hangs
  * the run exactly as it did before the bound. Only the literal `"0"` turns the
@@ -21,7 +24,7 @@
  * read would let one file's pin silently disable the rule in the next.
  */
 
-/** Whether the routed report is bounded by the handoff allowance. */
+/** Whether the routed report is bounded by a wall of its own. */
 export function leanReportBoundEnabled(): boolean {
   return process.env.PI_ENSEMBLE_LEAN_REPORT_BOUND !== "0";
 }
