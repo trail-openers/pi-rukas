@@ -32,12 +32,18 @@
  */
 
 import { runLean } from "../src/lean/engine.ts";
+import { handbackHeads } from "../src/lean/handback-heads.ts";
 import type { LeanRun, LeanState, Outcome, Step } from "../src/lean/state.ts";
 import { INITIAL_COUNTERS } from "../src/lean/state.ts";
-import { handbackHeads } from "../src/lean/handback-heads.ts";
-import { fixedReviewLog } from "./lib/lean-verified-handback-fixture.ts";
-import { FIXTURE_BASE_SHA, makeAssert, scripted, tempDir, ticking } from "./lib/lean-engine-fixtures.ts";
+import {
+  FIXTURE_BASE_SHA,
+  makeAssert,
+  scripted,
+  tempDir,
+  ticking,
+} from "./lib/lean-engine-fixtures.ts";
 import { driveRun, foldOf, writeForged } from "./lib/lean-real-log-fixture.ts";
+import { fixedReviewLog } from "./lib/lean-verified-handback-fixture.ts";
 
 const { assert, failures } = makeAssert();
 
@@ -180,20 +186,54 @@ function routeEntry(issue: number): Step {
   const issue = 2261;
   const { dir, cleanup } = tempDir();
   try {
-    const { run } = await driveRun(dir, issue);
-    writeForged(dir, {
-      ...run,
-      state: "handback",
-      counters: { ...INITIAL_COUNTERS },
-      result: undefined,
-      steps: [...run.steps, routeEntry(issue)],
-    });
+    const driven = await fixedReviewDriven(issue);
+    // The record the routing leaves, with the ONE fact that makes it a forgery changed: the
+    // newest DECIDED work step behind the report entry is a `review:done` that went on to
+    // `ci:green`, so the gate spoke for the head and no uncertified head is being reported.
+    // The log is cut at the first `review`, answered `done`, and then walked through CI and
+    // the merge with the keys the engine's own attempt rule gives those visits.
+    const clean = driven.slice(0, driven.findIndex((s) => s.state === "review") + 1);
+    clean[clean.length - 1] = { ...(clean[clean.length - 1] as Step), outcome: { kind: "done" } };
+    const visits = (state: LeanState): number => clean.filter((x) => x.state === state).length;
+    const steps: Step[] = [
+      ...clean,
+      {
+        key: key(issue, "ci", visits("ci")),
+        state: "ci",
+        startedAt: 90,
+        endedAt: 91,
+        outcome: { kind: "green" },
+      },
+      {
+        key: key(issue, "land", 0),
+        state: "land",
+        startedAt: 92,
+        endedAt: 93,
+        outcome: { kind: "merged" },
+      },
+      {
+        key: key(issue, "handback", 0),
+        state: "handback",
+        startedAt: 94,
+        endedAt: 95,
+        outcome: { kind: "done" },
+      },
+    ];
+    writeForged(
+      dir,
+      routedSeed(issue, steps, {
+        // `handed-back`, not `handback`: the report entry carries its verdict, so the fold
+        // runs past it and the walk ends where the table leaves a merged run. A snapshot of
+        // `handback` would be refused by the snapshot rule alone, and the case would pass
+        // with the route check disabled.
+        state: "handed-back",
+        counters: foldPos(issue, steps.slice(0, -1)).counters,
+      }),
+    );
     const verdict = await loadVerdict(dir, issue);
     assert(
-      verdict.refused &&
-        /belongs to handback but the walk stands at/.test(verdict.message) &&
-        /snapshot disagrees with the step log/.test(verdict.message),
-      `(a) a report entry behind a clean review:done → ci:green is refused, not excused (${JSON.stringify(verdict)})`,
+      verdict.refused && /belongs to handback but the walk stands at/.test(verdict.message),
+      `(a) a report entry behind a clean review:done → ci:green is refused by the ROUTE check, not only by the snapshot beside it (${JSON.stringify(verdict)})`,
     );
   } finally {
     cleanup();
@@ -236,10 +276,20 @@ function routeEntry(issue: number): Step {
     const { steps: admitted } = await routedLog(DOUBLED, "handback");
     const second: Step[] = [
       ...admitted.slice(0, -1),
-      { ...admitted[admitted.length - 1] as Step, endedAt: admitted.length, outcome: { kind: "done" } },
+      {
+        ...(admitted[admitted.length - 1] as Step),
+        endedAt: admitted.length,
+        outcome: { kind: "done" },
+      },
       { key: key(DOUBLED, "handback", 1), state: "handback", startedAt: admitted.length + 1 },
     ];
-    writeForged(b.dir, routedSeed(DOUBLED, second, { state: "handed-back", counters: foldPos(DOUBLED, admitted).counters }));
+    writeForged(
+      b.dir,
+      routedSeed(DOUBLED, second, {
+        state: "handed-back",
+        counters: foldPos(DOUBLED, admitted).counters,
+      }),
+    );
     const refused = await loadVerdict(b.dir, DOUBLED);
     assert(
       refused.refused && /belongs to handback but the walk stands at/.test(refused.message),

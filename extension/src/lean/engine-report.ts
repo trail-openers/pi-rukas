@@ -14,7 +14,7 @@
  * the visit's key, the outcome attach, the terminal stamp — arrive on the request, so the definitions
  * stay private to `engine.ts` and this module writes a step exactly the way the runner does.
  */
-import { trace } from "../trace.ts";
+import { traceWarn } from "../trace.ts";
 import type { LeanRun, LeanState, Outcome, Step } from "./state.ts";
 import { nextAttempt } from "./state.ts";
 
@@ -89,7 +89,9 @@ export async function runHandbackReport(req: ReportRequest): Promise<LeanRun | u
   } catch (err) {
     // The step's contract is that it answers; a throw is a handler bug, and the run gets the stamp it
     // would have got without the routing rather than one built on a verdict nobody returned.
-    trace(`lean #${String(req.issue)} ${key} threw: ${String((err as Error)?.message ?? err)}`);
+    // `traceWarn`, not `trace`: the throw changes the run's outcome (it loses its report and
+    // takes the plain deadline stamp), so the operator has to see it without `PI_ENSEMBLE_DEBUG`.
+    traceWarn(`lean #${String(req.issue)} ${key} threw: ${String((err as Error)?.message ?? err)}`);
     return undefined;
   }
   // The visit, then its verdict, then the result — one save, one record. `startedAt` is the instant the

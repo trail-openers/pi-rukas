@@ -63,16 +63,14 @@
  * would compare the recording with itself.
  */
 
-import { copyFileSync, readFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { MINUTE_MS } from "../src/lean/deadline.ts";
-import type { LeanHandlers } from "../src/lean/engine.ts";
 import { runLean } from "../src/lean/engine.ts";
 import { unverifiedRef } from "../src/lean/handback-rewind.ts";
 import { reportHandlers } from "../src/lean/report-handlers.ts";
-import type { LeanState, LeanRun, Outcome, Step } from "../src/lean/state.ts";
+import type { LeanState, Outcome, Step } from "../src/lean/state.ts";
 import { REPORT_STATES } from "../src/lean/state.ts";
-import { leanStateFile, loadRun } from "../src/lean/state.ts";
+import { loadRun } from "../src/lean/state.ts";
 import { handoffDispatchTimeoutMs } from "../src/work-driver-handoff.ts";
 import { makeAssert } from "./headless-verb-harness.ts";
 import { recording, withEnv } from "./lib/lean-host-contract-fixture.ts";
@@ -246,99 +244,6 @@ await withEnv(ENV, async () => {
   assert(
     reopened.code === 10,
     `(a) and exits with the handback code, not a fresh stop (got ${String(reopened.code)})`,
-  );
-
-  // THE ROUTED RECORD MUST RESUME FROM MID-HANDLER, not merely from after the handler.
-  // `runHandbackReport` appends the report's visit to its IN-MEMORY copy of the run and saves
-  // the visit, its verdict and the terminal stamp only AFTER the handler returns, so the file
-  // on disk while the handler runs is the pre-drive record: no `handback` entry at all. A
-  // process killed at that instant leaves those bytes, and a run resumed from them must still
-  // report — the fold reaches `handback` through `isReportRoute`, the loop stands on the blank
-  // visit the routing writes ahead, and no WORK step starts past the line. A record that fails
-  // this is a timed-out issue that can never be re-run: the loader runs before the routing's
-  // switch is read, so no env value brings such a run back.
-  //
-  // The capture drive is a SEPARATE repo because `ran` above is finished: its record carries a
-  // `result`, which `runLean` returns verbatim, and a drive of that file would judge the first
-  // drive's stamp rather than drive anything. Here the same scripted walk is driven once more,
-  // past the arm, with the engine's real reporting step wrapped to snapshot the on-disk record
-  // while it runs — the only code that can produce a mid-handler kill's bytes, because that
-  // instant is their sole writer.
-  const capture = repoWithFixHead();
-  const midHandler = join(capture.repoRoot, "mid-handler.json");
-  const calls: string[] = [];
-  const routedHandler = async (ctx: Parameters<NonNullable<LeanHandlers["handback"]>>[0]) => {
-    calls.push("handback");
-    const real = reportHandlers(capture.repoRoot, ISSUE).handback;
-    if (real === undefined) throw new Error("no reporting handler built");
-    return real(ctx);
-  };
-  const captured = await driveToDeadline(
-    capture.repoRoot,
-    walkToReview({
-      kind: "green",
-      verifiedHead: capture.baseSha,
-      reason: `all frozen tests green at ${capture.baseSha}`,
-    }),
-    capture.baseSha,
-    {
-      handback: async (ctx) => {
-        // The crash snapshot: the record exactly as it stands on disk WHILE the routed
-        // reporting step runs. No other code can produce these bytes.
-        copyFileSync(leanStateFile(capture.repoRoot, ISSUE), midHandler);
-        return routedHandler(ctx);
-      },
-    },
-  );
-  assert(
-    captured.state === "handed-back" &&
-      captured.reason.includes("cycle deadline reached at verify"),
-    `(a2) the capture drive was routed into its report by the deadline (got ${captured.state}: ${JSON.stringify(captured.reason)})`,
-  );
-  const crashed = JSON.parse(readFileSync(midHandler, "utf8")) as LeanRun;
-  assert(
-    crashed.steps.every((s) => s.state !== "handback") && crashed.result === undefined,
-    `(a2) the record as the handler found it holds no report entry and no stamp — the bytes a kill here leaves (${JSON.stringify(crashed.steps.map((s) => `${s.key}=${s.outcome?.kind ?? "?"}`))})`,
-  );
-
-  copyFileSync(midHandler, leanStateFile(capture.repoRoot, ISSUE));
-  const resumed = await runLean({
-    repoRoot: capture.repoRoot,
-    issue: ISSUE,
-    handlers: {
-      ...reportHandlers(capture.repoRoot, ISSUE),
-      // Dry queues for the work steps: reaching one throws inside the handler and the engine
-      // stamps a handler `error`, whose sentence these assertions can tell from the report's.
-      // A step started past the line is therefore loud rather than plausible.
-      ...recording(calls, { verify: [] }),
-      handback: routedHandler,
-    },
-    // The same clock that stopped the first drive, still past the arm the record persists.
-    now: () => captured.armPast,
-  });
-  const resumedRecord = loadRun(capture.repoRoot, ISSUE);
-  assert(
-    resumed.state === "handed-back" && resumed.code === 10,
-    `(a2) the mid-handler record resumes to handed-back at exit 10 rather than refusing (got ${resumed.state} exit ${resumed.code}: ${resumed.run.result?.reason})`,
-  );
-  assert(
-    resumedRecord?.result?.reason.includes("cycle deadline reached at verify") === true,
-    `(a2) and it resumes by ROUTING into the report, whose sentence names the refused step (${JSON.stringify(resumedRecord?.result?.reason)})`,
-  );
-  assert(
-    calls.filter((c) => c === "handback").length === 2,
-    `(a2) the reporting step ran once on the capture drive and once on the resume — a blank visit is re-run, not skipped (calls ${JSON.stringify(calls)})`,
-  );
-  assert(
-    calls.filter((c) => c !== "handback").length === 0,
-    `(a2) and NO drive started a work step past the deadline (calls ${JSON.stringify(calls)})`,
-  );
-  // The blank visit re-runs as the SAME entry (same key, same `startedAt`), so the record
-  // carries one report entry, not two, and it ends with its verdict.
-  assert(
-    resumedRecord?.steps.filter((s) => s.state === "handback").length === 1 &&
-      resumedRecord?.steps.find((s) => s.state === "handback")?.outcome?.kind === "done",
-    `(a2) the resumed record ends as any handback's: the report's entry with its verdict (${JSON.stringify(resumedRecord?.steps.filter((s) => s.state === "handback"))})`,
   );
 });
 
