@@ -39,6 +39,30 @@ engine re-reads its own log — the newest decided `verify` **and** `ci` must bo
 be green and no `draft` marker may be standing. Green is the only verdict that
 clears a draft.
 
+Every child lean dispatches — the `developer` seats (adversary, builder, fixer),
+the `code-review-specialist` lenses, and the `adversarial-developer` pass — runs
+with no forge login of its own, whether or not the host holds a token: the process
+that dispatches the child binds a forge-read broker for every role but `ops`
+(`planChildPermissions` → `startForgeBroker`, `spawn-permission.ts`), so on a
+token-less host — an offline trial, a `gh` shim on `PATH` — the child still gets
+`forge_read` and still reaches its dispatcher, which runs the read with **its own**
+`gh`/`glab` and answers with whatever that CLI prints (`runForgeRead` →
+`detectForge` → `executeForgeRead`, `forge-read-broker.ts`). A call that exits
+non-zero comes back as a refusal naming the reason; one that exits 0 is served as
+the read whatever it printed — a shim's canned text or failure message included,
+and `ci_run_log` answers empty when no job failed (`forge-ci-log.ts`). What the
+child cannot do is call the CLI itself as a credentialed client: the five token
+variables are deleted and both config roots point at a per-child empty directory,
+or at nothing at all — both roots are deleted rather than inherited — when no such
+directory could be made (`stripForgeCredentials`, `child-forge-env.ts`). `PATH` is
+left alone, so a child that runs the shim directly gets the shim's own
+unauthenticated answer. No `PI_ENSEMBLE_*` switch governs the strip or the broker.
+`PI_ENSEMBLE_FORGE=none` turns off the **driver's** own forge reads only
+(`resolveCycleForge`, `work-driver-forge-ctx.ts`) — the child's broker still calls
+`detectForge` directly and runs the parent's CLI. The driver's issue read falls
+back to raw `gh` in its own process when no forge resolves (`fetchIssueBody` via
+`forgeFor`, `lean/io.ts`).
+
 ## What an issue needs
 
 The issue body carries **one** fenced block whose info string is exactly
