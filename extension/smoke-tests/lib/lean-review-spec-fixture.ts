@@ -20,6 +20,7 @@
  */
 
 import { criteriaBlock } from "../../src/lean/spec-blocks.ts";
+import { MAX_ISSUE_CHARS } from "../../src/adversarial-prompts.ts";
 import { CONSTRAINT } from "./ticket-issue-fixture.ts";
 
 /** One repeat of the statement, ~90 chars. */
@@ -181,9 +182,62 @@ export const UNTERMINATED_SPEC_BODY = `Add a quota check to the meter.\n\n${TAIL
  * criteria section, which prints its own marker and not the issue's. */
 export const MANY_CRITERIA_BODY = `Add a quota check to the meter.\n\n${TAIL_CONSTRAINT}\n\n${LONG_STATEMENT}\n\n${specBlock(BRIEF_STATEMENT, CRITERIA_OVER_CAP_COUNT)}`;
 
+/** How many criteria the second over-cap arm needs. `D3_COUNT` is the issue's
+ * floor ("at least 40"); the arm is over the cap because of its PER-CRITERION
+ * text, not its count, and the fixture asserts that below at construction. */
+export const D3_COUNT = 40;
+
 /** The character cap the criteria section is bounded at — the same constant
- * `renderSpecCriteriaSection` passes to `fenceText`. */
+ * `renderSpecCriteriaSection` passes to `fenceText`. Declared before the bodies
+ * that measure themselves against it, since they run at module load. */
 const CRITERIA_CAP = 20_000;
+
+/** One criterion's text for the 40-criterion arm: ~600 characters, so 40 rows
+ * clear the 20 000-character criteria cap on their own. */
+const D3_CRITERION = `the reading surface, the record surface and the disclosure surface each state it in one wording the ticket names, the wording is never re-derived per surface, a surface that cannot reach the reader says so in the same wording rather than staying silent, and no reader is left reconciling two versions of the same refusal across three screens at once. `;
+
+/** How wide one rendered criterion's text has to be for 40 of them to pass the
+ * cap; derived, so the arm cannot drift under the cap without failing here. */
+const D3_TEXT_WIDTH = Math.ceil(CRITERIA_CAP / D3_COUNT) + 400;
+
+/**
+ * A body whose `problem` is the statement's tail — the part a 6 000-character
+ * prose bound cuts — and whose 40 criteria alone pass the criteria cap.
+ *
+ * Two things are asserted of it here, because an arm that quietly stopped being
+ * over the cap is a vacuous arm rather than a failing test:
+ *
+ *   - the rendered criteria block PASSES the cap, so the marker is observable;
+ *   - the statement's tail sits PAST `MAX_ISSUE_CHARS` in the body, so the
+ *     problem section is what delivers it to a review seat.
+ */
+export const MANY_CRITERIA_40_BODY: string = (() => {
+  const criteria = Array.from({ length: D3_COUNT }, (_, i) => ({
+    id: `AC${String(i + 1)}`,
+    // The ordinal leads the row so an assertion can name WHICH criterion survived
+    // the cut, and the text repeats a fixed sentence to the derived width so the
+    // block's length is a property of the count, not of any one criterion.
+    text: `AC${String(i + 1)} ${D3_CRITERION.repeat(30).slice(0, D3_TEXT_WIDTH)}`,
+    verify: "test" as const,
+  }));
+  const problem = `${LONG_STATEMENT}\n\n${TAIL_CONSTRAINT}`;
+  const block = criteriaBlock({ problem, criteria, size: "M" });
+  if (block.length <= CRITERIA_CAP) {
+    throw new Error(
+      `MANY_CRITERIA_40_BODY geometry: ${String(D3_COUNT)} criteria render ${String(
+        block.length,
+      )} chars, not past the ${String(CRITERIA_CAP)}-char cap — the arm would be vacuous.`,
+    );
+  }
+  const json = JSON.stringify({ problem, criteria, size: "M" }, null, 2);
+  const body = `Add a quota check to the meter.\n\n${TAIL_CONSTRAINT}\n\n\`\`\`pi-spec v1\n${json}\n\`\`\`\n`;
+  if (body.trim().slice(MAX_ISSUE_CHARS).includes(TAIL_CONSTRAINT)) {
+    throw new Error(
+      "MANY_CRITERIA_40_BODY geometry: the statement's tail already fits under the issue bound, so the problem section proves nothing — the arm would be vacuous.",
+    );
+  }
+  return body;
+})();
 
 /** A body whose criteria list passes the criteria cap AND whose clip falls inside
  * a run of backticks: the last criterion's text ends in a 6-backtick run whose
