@@ -109,9 +109,13 @@ export async function runHandbackReport(req: ReportRequest): Promise<LeanRun | u
   // its own `git` and forge calls, and only this race frees the RUN. A wedged in-process
   // await — a comment-poster seam, a call that never returns — leaves the handler pending
   // whatever those timeouts say, which is the shape that outlived both the deadline and
-  // the child-bound grace. The timer is `unref`'d and cleared: it is what we are waiting
-  // on, and once the run has stopped waiting it must stop being a reason the process
-  // stays alive (`work-driver-handoff-ops.ts` is the precedent for both halves).
+  // the child-bound grace. The timer is REF'd and cleared. Ref'd because a bound the event
+  // loop ignores is not a bound: a hung handler that holds no ref'd handle of its own
+  // leaves an unref'd bound timer the only pending work in the process, the loop empties,
+  // and the run exits carrying no result at all — strictly worse than the hang the bound
+  // replaced. Cleared, in the race's `finally`, because that is the only thing that keeps
+  // a ref'd timer from outliving a run that has stopped waiting on it
+  // (`work-driver-handoff-ops.ts` is the precedent for that half).
   let boundTimer: ReturnType<typeof setTimeout> | undefined;
   let outcome: Outcome;
   try {
@@ -128,7 +132,6 @@ export async function runHandbackReport(req: ReportRequest): Promise<LeanRun | u
     } else {
       const overrun = new Promise<{ overrun: true }>((resolve) => {
         boundTimer = setTimeout(() => resolve({ overrun: true }), boundMs);
-        boundTimer.unref?.();
       });
       // Branded object rather than a sentinel string: `Outcome.kind` is an open `string`,
       // so a `"bound"` marker would type-check against a handler's own verdict and the
