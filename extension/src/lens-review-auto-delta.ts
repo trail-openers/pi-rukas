@@ -87,8 +87,16 @@ export async function resolveDeltaSince(
   // belt to that braces: a row written before the fix, or by a caller that named
   // its own head, is still refused as a base.
   if (lensIncompleteForcesFull() && entry?.detail === "REVIEW_INCOMPLETE") {
+    // The recorded head is only quoted, never trusted — but `validEntries` does not
+    // check this field, so a hand-edited row can carry a ref name or a megabyte of
+    // text. `isFullCommitSha` is the same gate every other reader of this field
+    // applies, and it keeps the trace to the shape the reader will accept.
+    const recorded =
+      entry.headSha !== undefined && isFullCommitSha(entry.headSha)
+        ? ` (recorded at ${entry.headSha.slice(0, 8)})`
+        : "";
     trace(
-      `lens-review: auto since skipped — the latest lens row for ${branch} is REVIEW_INCOMPLETE${entry.headSha === undefined ? "" : ` (recorded at ${entry.headSha.slice(0, 8)})`}; a round that ran no lens reviewed no head (full review)`,
+      `lens-review: auto since skipped — the latest lens row for ${branch} is REVIEW_INCOMPLETE${recorded}; a round that ran no lens reviewed no head (full review)`,
     );
     return undefined;
   }

@@ -60,6 +60,7 @@ function assert(cond: boolean, msg: string): void {
 const HEAD_A = "a".repeat(40);
 const HEAD_B = "b".repeat(40);
 const HEAD_C = "c".repeat(40);
+const HEAD_D = "d".repeat(40);
 
 /** A completed lens row at `headSha`, carrying the identity a carry needs. */
 function completed(over: Partial<LedgerEntry> = {}): LedgerEntry {
@@ -247,6 +248,39 @@ function incomplete(over: Partial<LedgerEntry> = {}): LedgerEntry {
   assert(
     reviewedHeadFromEntries([b3], "feature/x") === undefined,
     "(b3) so the merged-head proof has nothing to credit",
+  );
+
+  // A CARRY row (#1176) is not a review: `writeCarriedEntry` copies a completed
+  // verdict onto a NEW head because `git diff since..head` came back empty, so the
+  // row's `headSha` names a commit no lens ever read — the field testifies about
+  // `carriedFrom`. An incomplete round must not inherit it, or the merged-head
+  // proof would credit a head carried from an ancestor as the reviewed commit
+  // while `resolveDeltaSince` skipped the incomplete row and never re-granted the
+  // carry. Mutant: drop the `carriedFrom` filter from `incompleteHeadSha` and
+  // these three assertions go red together.
+  const carry = {
+    ...completed({ headSha: HEAD_C, at: 120, round: 2 }),
+    carriedFrom: HEAD_B,
+    carryNote: "carried",
+  };
+  const afterCarry = bumpLensRound(incomplete({ headSha: HEAD_D, at: 300 }), [carry]);
+  assert(
+    afterCarry.headSha === undefined,
+    `(b2) an incomplete row whose only completed-looking row is a CARRY carries no head (${String(afterCarry.headSha)?.slice(0, 8)})`,
+  );
+  assert(
+    reviewedHeadFromEntries([afterCarry], "feature/x") === undefined,
+    "(b2) …so the merged-head proof cannot credit the head that carry was written onto",
+  );
+  // Not over-sweeping: the genuine completed row behind the carry is still the
+  // head source, so the rule is about the carry and not about the branch.
+  const afterCarryAndReal = bumpLensRound(incomplete({ headSha: HEAD_D, at: 300 }), [
+    completed({ headSha: HEAD_B, at: 100, round: 1 }),
+    carry,
+  ]);
+  assert(
+    afterCarryAndReal.headSha === HEAD_B,
+    `(b2) …and the last GENUINELY completed head is still carried forward (${String(afterCarryAndReal.headSha)?.slice(0, 8)})`,
   );
 
   // The control that keeps the three arms from being "never keep a head":

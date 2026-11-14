@@ -386,6 +386,7 @@
     "smoke-tests/test-forge-target-privilege-seam.ts",
     "smoke-tests/lib/lens-incomplete-round-fixture.ts",
     "smoke-tests/test-lens-incomplete-full-review.ts",
+    "smoke-tests/test-assert-exit-code-shape.ts",
     "smoke-tests/test-lens-incomplete-full-switch.ts",
     "smoke-tests/test-lean-review-incomplete-round.ts"
   ]

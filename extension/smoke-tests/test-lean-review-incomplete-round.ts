@@ -331,4 +331,4 @@ async function recordIncompleteRound(
 }
 
 cleanupRoots();
-process.exit(failures.length > 0 ? 1 : 0);
+process.exit(failures());

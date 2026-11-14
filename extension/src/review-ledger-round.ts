@@ -53,6 +53,11 @@ function incompleteHeadSha(existing: LedgerEntry[], branch: string): string | un
   let head: string | undefined;
   for (const e of existing) {
     if (e.branch !== branch || e.kind !== "lens") continue;
+    // #1176 — a carry is a copy of a verdict onto a head whose diff nobody read,
+    // so it testifies about `carriedFrom`, never about its own `headSha`. The
+    // counter above applies the same marker rule to the row it is handed; a scan
+    // that asked only verdict and head-presence would credit an unreviewed head.
+    if (e.carriedFrom !== undefined) continue;
     if (e.detail === "REVIEW_INCOMPLETE" || !e.headSha) continue;
     head = e.headSha;
   }
