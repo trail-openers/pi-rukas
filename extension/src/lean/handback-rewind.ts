@@ -7,12 +7,13 @@
  * written: keep the unverified head reachable under a ref of its own, then
  * rewind the branch to the newest green `verify`'s head.
  *
- * The move is a lease-pinned push — `--force-with-lease=<branch>:<unverified
- * head>` with an UNFORCED branch refspec — so it happens only while origin
- * still holds exactly the head this run pushed. A branch somebody else moved
- * is not this run's to rewrite; the lease refuses and nothing is moved. The
- * same lease `publish` uses, for the same reason: an update is legitimate only
- * because it is bound to a sha this step read.
+ * The move is a lease-pinned push — `--force-with-lease=<branch>:<held>` with an
+ * UNFORCED branch refspec — where `<held>` is the head THIS STEP read off origin, not
+ * the head the run pushed. So the lease guards one window: a branch that moved between
+ * this step's `ls-remote` and its push is refused, and nothing of it is moved. A branch
+ * that had ALREADY moved before the step read it is a branch this step read at its new
+ * value, so the lease matches and the rewind runs — and the head it displaces, which is
+ * whatever origin held, is kept under `refs/lean/unverified/<issue>`.
  *
  * The refspec being unforced is what makes that sentence true. `git push` does
  * not consult the lease for a refspec it was told to force with a leading `+`,

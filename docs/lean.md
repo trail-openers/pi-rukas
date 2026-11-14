@@ -391,13 +391,17 @@ from the LOG, not from the stop cause: when its newest work step is `review` wit
 `fixed` and no later decided `verify` exists, it first keeps the unverified head
 reachable under `refs/lean/unverified/<issue>`, then rewinds origin's branch to the
 newest decided green `verify`'s head with a lease-pinned push
-(`--force-with-lease=<branch>:<unverified head>` on an UNFORCED branch refspec), so the
-move happens only while origin still holds exactly the head this run pushed. The refspec
+(`--force-with-lease=<branch>:<held>` on an UNFORCED branch refspec), where `<held>` is
+the head this step read off origin — so the lease guards the window between that read and
+the push, and a branch that moved inside it is refused. A branch that had already moved
+before the step read it is read at its new value, so the lease matches and the rewind
+runs, keeping the head it displaced under `refs/lean/unverified/<issue>`. The refspec
 being unforced is what makes that true: `git push` does not consult the lease for a
 refspec carrying a leading `+`, so a forced rewind force-updates a branch somebody else
 moved whatever the lease says. A rewind is a non-fast-forward move by definition, and the
 lease names the value this step just read off origin, so the lease alone authorises exactly
-that move — which `test-lean-rewind-lease-binds.ts` pins both ways, refusal and landing.
+that move — which `test-lean-rewind-lease-binds.ts` pins three ways: a read-then-move race
+refused by the lease, a moved branch refused by the transport, and a satisfied lease landing.
 Before any arm may call a head
 verified the step asks git that the green's `verifiedHead` is a commit OBJECT this clone
 holds — shape is not existence, and that value arrives from a child's verdict through the

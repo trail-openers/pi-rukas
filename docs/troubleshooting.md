@@ -3995,8 +3995,11 @@ the review step; once it has pushed, "shipped" and "verified" are two different 
 **Fix:** the handback now ships the last verified head. It keeps the unverified head
 reachable under `refs/lean/unverified/<issue>`, then rewinds origin's branch to the newest
 decided green `verify`'s head with a lease-pinned push
-(`--force-with-lease=<branch>:<unverified head>` on an UNFORCED branch refspec), so it
-moves the branch only while origin still holds exactly the head this run pushed. The
+(`--force-with-lease=<branch>:<held>` on an UNFORCED branch refspec), where `<held>` is
+the head this step read off origin: the lease guards the window between that read and the
+push, so a branch moved inside it is refused, while a branch that had already moved before
+the step read it is read at its new value, rewound, and the head it displaced kept under
+`refs/lean/unverified/<issue>`. The
 refspec must be unforced for that to be more than a phrase: git skips the lease for a
 refspec with a leading `+`, and the forced form this replaced rewrote a branch somebody
 else had moved with the lease never consulted. The step's outcome carries `shippedHead`,
