@@ -21,6 +21,7 @@
 import { MINUTE_MS } from "../../src/lean/deadline.ts";
 import { runLean } from "../../src/lean/engine.ts";
 import { MAX_BUILD_ATTEMPTS } from "../../src/lean/machine.ts";
+import type { LeanHandlers } from "../../src/lean/engine.ts";
 import { reportHandlers } from "../../src/lean/report-handlers.ts";
 import type { LeanState, Outcome, Step } from "../../src/lean/state.ts";
 import { loadRun } from "../../src/lean/state.ts";
@@ -149,6 +150,9 @@ export interface DrivenHandback {
   steps: Step[];
   /** The newest step in the log. */
   newest: Step | undefined;
+  /** The late instant this drive's clock reached: a case that re-drives the record past the
+   *  same line reuses it, so the resume's stop test is judged at the instant the stop was. */
+  armPast: number;
 }
 
 /**
@@ -167,6 +171,10 @@ export async function driveToDeadline(
   repoRoot: string,
   plan: Partial<Record<LeanState, Outcome[]>>,
   baseSha: string,
+  /** Handlers layered OVER the production reporting wiring and the scripted walk — a case that
+   *  needs to observe or replace one step (the reporting step, say) passes it here rather than
+   *  reaching around the rig. */
+  extra: Partial<LeanHandlers> = {},
 ): Promise<DrivenHandback> {
   // The late instant arrives with the record standing on its decided review: the next
   // boundary is the re-verification's, which the stop test refuses, and the boundary
@@ -192,6 +200,7 @@ export async function driveToDeadline(
     handlers: {
       ...reportHandlers(repoRoot, ISSUE),
       ...recording(calls, plan),
+      ...extra,
     },
     now: clock.now,
   });
@@ -207,5 +216,6 @@ export async function driveToDeadline(
     outcome: handback?.outcome,
     steps,
     newest: steps[steps.length - 1],
+    armPast: clock.past,
   };
 }
