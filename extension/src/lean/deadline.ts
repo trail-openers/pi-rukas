@@ -150,10 +150,25 @@ export function clampToCycleDeadline(
  * run: what the last step decided, and what was not started. Named rather than
  * left to `ended at <state>` so the document and the host's message say which
  * clock stopped it.
+ *
+ * `why` is the one reader that stopped this run — the plain boundary, or the routed
+ * report's wall (`engine-report.ts`) that gave up on the report and let the run be
+ * stamped where it stands. The clause is appended verbatim so the durable record
+ * says which of the two it was: a run whose report timed out and a run that never
+ * got one read the same in every other field, and telling them apart is what the
+ * bound's disclosure exists for. Omit it and the sentence is exactly the one this
+ * function wrote before the routed report had a bound of its own.
  */
-export function deadlineReason(steps: Step[], state: string, deadline: number): string {
+export function deadlineReason(
+  steps: Step[],
+  state: string,
+  deadline: number,
+  why?: string,
+): string {
   const last = steps[steps.length - 1];
   const lastText =
     last === undefined ? "no step ran" : `${last.key} ended ${last.outcome?.kind ?? "undecided"}`;
-  return `cycle deadline ${deadline} reached at ${state}: ${lastText}, no new step started`;
+  return `cycle deadline ${deadline} reached at ${state}: ${lastText}, no new step started${
+    why === undefined ? "" : `; ${why}`
+  }`;
 }
