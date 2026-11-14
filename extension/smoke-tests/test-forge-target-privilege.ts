@@ -345,6 +345,95 @@ try {
       );
     }
 
+    // A BLANK host is not a host. `""` is what a config `host=` or a URL parse
+    // yields when nobody named one, and on the strength of not being exactly
+    // `github.com` it waived the shape rule AND still read as "unknown, so ask
+    // gh" in the transport branch — so `{owner:"acme/corp",repo:"widget",host:""}`
+    // reached the resolver with the very separator the rule above refuses. A host
+    // that names no forge cannot be the host whose rules are waived, so `""` reads
+    // as absent everywhere `host` is read: github.com for the shape rule, the
+    // transport and the cache key alike.
+    for (const blankHost of [
+      { owner: "acme/corp", repo: "widget", host: "" },
+      { owner: "acme", repo: "corp/widget", host: "" },
+      { owner: "acme/corp", repo: "widget" },
+      { owner: "acme", repo: "corp/widget" },
+    ]) {
+      resetVisibilityCacheForTests();
+      const askedBlankHost: RepoTarget[] = [];
+      const blankHostIsPrivate = await isPrivateTarget(blankHost, {
+        host: "",
+        lookup: async (t) => {
+          askedBlankHost.push(t);
+          return true;
+        },
+      });
+      assert(
+        blankHostIsPrivate === false,
+        `${JSON.stringify(blankHost)} with opts.host "": a blank host waives nothing (isPrivateTarget said ${blankHostIsPrivate})`,
+      );
+      assert(
+        askedBlankHost.length === 0,
+        `…with no lookup issued and nothing cached (asked: ${askedBlankHost
+          .map((t) => `${t.host ?? "<no host>"}/${t.owner}/${t.repo}`)
+          .join(", ") || "none"})`,
+      );
+    }
+
+    // …and the blank stays read as absent when the TARGET carries one but
+    // `opts.host` names github.com: the effective host is still github.com, so
+    // the shape rule still applies.
+    for (const blankOnTarget of [
+      { owner: "acme/corp", repo: "widget", host: "" },
+      { owner: "acme", repo: "corp/widget", host: "" },
+    ]) {
+      resetVisibilityCacheForTests();
+      const askedBlankTargetHost: RepoTarget[] = [];
+      const blankTargetHostIsPrivate = await isPrivateTarget(blankOnTarget, {
+        host: "github.com",
+        lookup: async (t) => {
+          askedBlankTargetHost.push(t);
+          return true;
+        },
+      });
+      assert(
+        blankTargetHostIsPrivate === false,
+        `${JSON.stringify(blankOnTarget)} with opts.host github.com: the effective host is github.com and the separator is refused (isPrivateTarget said ${blankTargetHostIsPrivate})`,
+      );
+      assert(
+        askedBlankTargetHost.length === 0,
+        `…with no lookup issued and nothing cached (asked: ${askedBlankTargetHost
+          .map((t) => `${t.host ?? "<no host>"}/${t.owner}/${t.repo}`)
+          .join(", ") || "none"})`,
+      );
+    }
+
+    // The row the brief names: no host on the target at all, github.com supplied
+    // through `opts.host` — the effective host is github.com, so the shape rule
+    // applies even though `target.host` is absent.
+    resetVisibilityCacheForTests();
+    const askedNoTargetHost: RepoTarget[] = [];
+    const noTargetHostIsPrivate = await isPrivateTarget(
+      { owner: "acme/corp", repo: "widget" },
+      {
+        host: "github.com",
+        lookup: async (t) => {
+          askedNoTargetHost.push(t);
+          return true;
+        },
+      },
+    );
+    assert(
+      noTargetHostIsPrivate === false,
+      `{"acme/corp","widget"} with no target host and opts.host github.com is refused on shape (isPrivateTarget said ${noTargetHostIsPrivate})`,
+    );
+    assert(
+      askedNoTargetHost.length === 0,
+      `…with no lookup issued and nothing cached (asked: ${askedNoTargetHost
+        .map((t) => `${t.host ?? "<no host>"}/${t.owner}/${t.repo}`)
+        .join(", ") || "none"})`,
+    );
+
     // A GitLab namespace is NOT malformed — nesting is what GitLab serves, so a
     // deep slug on another host stays checkable (answered `false`, as any
     // non-GitHub host is) rather than refused on shape by this rule.
