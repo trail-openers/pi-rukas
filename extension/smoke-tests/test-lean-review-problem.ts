@@ -25,7 +25,14 @@
  * `PI_ENSEMBLE_LEAN_REVIEW_PROBLEM=0` is the off arm, and `=0` alone — the split
  * left unset — must leave every brief byte-identical to the pre-split golden
  * (E4). `PI_ENSEMBLE_LEAN_REVIEW_SPEC_SPLIT=0` renders no statement regardless of
- * this switch: the problem half is gated by BOTH readers.
+ * this switch: the problem half is gated by BOTH readers. That arm — every brief
+ * compared against the pre-statement goldens — is
+ * `test-lean-review-problem-off-arm.ts`.
+ *
+ * How much of the statement a seat gets — the cap measured, not merely marked —
+ * is `test-lean-review-problem-statement-cap.ts`. Presence and length are kept
+ * apart because a marker is printed by ANY cap, so a file that only ever asked for
+ * a marker could never see the bound move.
  *
  * `criteria: []` is E1's gate: the statement prints only when the criteria render
  * at least one row, so an empty list keeps today's raw bounded fallback whole.
@@ -34,7 +41,6 @@
  */
 
 import { ADVERSARIAL_FINDING_RULE } from "../src/adversarial-prompts.ts";
-import { MAX_ISSUE_CHARS } from "../src/adversarial-prompts.ts";
 import { ISSUE_TRUNCATION_MARKER as ISSUE_TRUNCATED_MARK } from "../src/adversarial-prompts.ts";
 import {
   LEAN_REVIEW_CRITERIA_HEADING,
@@ -43,7 +49,6 @@ import {
 import { fixPrompt, lensContext } from "../src/lean/review-deps.ts";
 import {
   leanReviewSpecSplitEnabled,
-  renderReviewIssueBlock,
   renderReviewProse,
 } from "../src/lean/review-spec-split.ts";
 import { leanReviewProblemEnabled } from "../src/lean/review-problem-switch.ts";
@@ -58,9 +63,7 @@ import {
   SPEC_BODY,
 } from "./lib/lean-review-spec-fixture.ts";
 import {
-  GOLDEN_BODIES,
   OVER_PROBLEM_BODY,
-  goldenFixIssueSection,
   goldenLensContext,
 } from "./lib/lean-review-spec-split-golden.ts";
 import {
@@ -68,32 +71,18 @@ import {
   EMPTY_CRITERIA_BODY,
   FENCE_CHAR,
   GOLDEN_PROBLEM_MARKER,
-  MID_PROBLEM_BODY,
-  MID_PROBLEM_SENTINEL,
-  MID_PROBLEM_STATEMENT,
   OVER_PROBLEM_STATEMENT_BODY,
-  PROBLEM_CAP_KEEP,
   PROBLEM_DIFFERS_BODY,
   PROBLEM_EQUALS_PROSE_BODY,
   PROBLEM_LEAD,
   PROBLEM_LEAD_ABOVE_CLAIMS,
-  PROBLEM_MARKER_FULL,
   PROBLEM_TAIL,
   PROSE_HEAD_LINE,
   SPEC_JSON_KEYS,
-  STATEMENT_OVER_CAP_BODY,
-  STATEMENT_OVER_CAP_SENTINEL,
-  STATEMENT_OVER_CAP_STATEMENT,
   criteriaSpanOf,
   criterionRow,
   fixerArgs,
   fenceLines,
-  keptStatementSpan,
-  keptStatementSpanFor,
-  preStatementCriteriaSection,
-  preStatementFixerIssueSection,
-  preStatementLensContext,
-  preStatementLensIssueBlock,
   renderedCriterionRow,
   seats,
 } from "./lib/lean-review-problem-golden.ts";
@@ -313,66 +302,6 @@ await withEnv(
       );
     }
 
-    // ── (5b) the statement's cap is pinned by MEASURED length, not by a marker ─
-    // A marker is printed by ANY cap: `MAX_PROBLEM_CHARS = 6 000` (the prose's
-    // bound), `12 000` or `19 999` all leave every marker assertion in this file
-    // green, because the bodies are long enough to pass whatever cap is asked of
-    // them. So the cap is measured here, twice, from opposite sides: the over-cap
-    // arm states the exact number of characters the fence kept, and the arm between
-    // the prose bound and the cap states that nothing was kept away at all.
-    {
-      const overCapSection = renderSpecCriteriaSection(STATEMENT_OVER_CAP_BODY);
-      const kept = keptStatementSpan(overCapSection);
-      // The prose block beside it prints no cut of its own and the criteria list is
-      // three short rows, so this number can only be the statement's own bound.
-      assert(
-        kept === keptStatementSpanFor(STATEMENT_OVER_CAP_STATEMENT),
-        `(5b) the kept statement span is exactly the cap plus the ellipsis plus its own marker — measured ${String(
-          kept.length,
-        )} chars, not merely a section that carries a marker`,
-      );
-      assert(
-        kept.length === PROBLEM_CAP_KEEP + PROBLEM_MARKER_FULL.length + 1 &&
-          kept.length > MAX_ISSUE_CHARS,
-        `(5b) and that span (${String(
-          kept.length,
-        )} chars) is past the prose bound of ${String(
-          MAX_ISSUE_CHARS,
-        )}, so what cut it is the statement's cap rather than the prose's`,
-      );
-      assert(
-        kept.endsWith(`\u2026\n${PROBLEM_MARKER_FULL}`) &&
-          kept.slice(0, PROBLEM_CAP_KEEP - 1) ===
-            STATEMENT_OVER_CAP_STATEMENT.slice(0, PROBLEM_CAP_KEEP - 1) &&
-          kept[PROBLEM_CAP_KEEP - 1] === "\u2026",
-        "(5b) and the span is the statement verbatim up to the cap, the ellipsis `fenceText` appends, and the statement's marker on its own line",
-      );
-      assert(
-        STATEMENT_OVER_CAP_STATEMENT.endsWith(STATEMENT_OVER_CAP_SENTINEL) &&
-          !kept.includes(STATEMENT_OVER_CAP_SENTINEL),
-        "(5b) and what the cap took is the statement's own closing clause — the section says so rather than ending silently",
-      );
-
-      // The other side: a statement past the prose bound and well under its own
-      // cap must reach the seat WHOLE — no marker, every character present.
-      const midSection = renderSpecCriteriaSection(MID_PROBLEM_BODY);
-      const midKept = keptStatementSpan(midSection);
-      assert(
-        midKept === MID_PROBLEM_STATEMENT &&
-          midKept.length > MAX_ISSUE_CHARS &&
-          midKept.length < PROBLEM_CAP_KEEP,
-        `(5b) a statement between the two bounds reaches the section WHOLE: ${String(
-          midKept.length,
-        )} characters kept, past the prose bound, under the statement cap, with no marker at all`,
-      );
-      assert(
-        !midSection.includes(GOLDEN_PROBLEM_MARKER) &&
-          !midKept.includes("\u2026") &&
-          midSection.includes(MID_PROBLEM_SENTINEL),
-        "(5b) and its last characters are present — the absence of the marker is a fact about the cap, not about a body that reached no bound",
-      );
-    }
-
     // ── (6) D3: ≥40 criteria over 20 000 characters, in a real brief ─────────
     {
       const lens = lensContext(7, "full", { issueBody: MANY_CRITERIA_40_BODY });
@@ -461,110 +390,6 @@ await withEnv(
         );
       }
     }
-  },
-);
-
-// ── (9) the OFF arm: `PI_ENSEMBLE_LEAN_REVIEW_PROBLEM=0` is byte-identical ───
-// The split is left UNSET here (E4): this is the arm an operator reaches for to
-// revert the statement alone, and it must land on the pre-split bytes.
-await withEnv(
-  { PI_ENSEMBLE_LEAN_REVIEW_SPEC_SPLIT: undefined, PI_ENSEMBLE_LEAN_REVIEW_PROBLEM: "0" },
-  async () => {
-    assert(
-      !leanReviewProblemEnabled() && leanReviewSpecSplitEnabled(),
-      "(9) the off arm: this switch off, the split still on",
-    );
-    for (const [name, body] of Object.entries(GOLDEN_BODIES)) {
-      // What the lens was handed BEFORE the statement existed: the split's own
-      // golden, plus the criteria section as it read with nothing above the list.
-      // `PROBLEM=0` reverts the statement alone, so the split's own behaviour —
-      // including the prose block it drops when the body restates its statement —
-      // stays, and the golden says so.
-      const lens = lensContext(7, "full", { issueBody: body });
-      // A body with no parsable block has no section, so the statement switch
-      // reaches none of it: that arm belongs to the split's own golden, which
-      // `lensContext` is compared against directly below when the section is empty.
-      const hasSection = preStatementCriteriaSection(body) !== "";
-      const lensGolden = hasSection
-        ? preStatementLensContext(body)
-        : goldenLensContext(body);
-      assert(
-        lensGolden.length > 0 && lens === lensGolden,
-        `(9) off arm: the lens brief for "${name}" is byte-identical (${String(
-          lens.length,
-        )} chars vs ${String(lensGolden.length)})`,
-      );
-      const brief = fixPrompt(fixerArgs(body) as never);
-      const fixGolden = hasSection
-        ? preStatementFixerIssueSection(body)
-        : goldenFixIssueSection(body);
-      // The brief's own section order, read from the print site: the issue block is
-      // followed by the decline section when there is one, and `## The findings`
-      // comes after it. Slicing to the FIRST of the two would cut the decline
-      // section out of the span the golden is supposed to cover.
-      const decline = brief.indexOf("\n## Declining a finding that contradicts the issue");
-      const findings = brief.indexOf("\n## The findings");
-      const fixEnd = findings > 0 ? findings : decline;
-      // The span under test: from the newline that ENDS the brief's own first line
-      // (that newline included) to the next section heading the print site wrote.
-      const fixSection = brief.slice(brief.indexOf("\n"), fixEnd);
-      assert(
-        fixGolden.length > 0 && fixSection === fixGolden,
-        `(9) off arm: the fixer brief's issue section for "${name}" is byte-identical`,
-      );
-      const criteria = renderSpecCriteriaSection(body);
-      assert(
-        criteria === preStatementCriteriaSection(body),
-        `(9) off arm: the criteria section for "${name}" is byte-identical to the render from before the statement was added (${String(
-          criteria.length,
-        )} chars vs ${String(preStatementCriteriaSection(body).length)})`,
-      );
-      // Non-vacuity: a golden that rendered "" for every body would make the four
-      // assertions above pass on a renderer that printed nothing.
-      assert(
-        name === "issue" || name === "over" || criteria.length > 0 || lens.length > 0,
-        `(9) off arm: "${name}" is a real body (${String(lens.length)} lens chars, ${String(
-          criteria.length,
-        )} criteria chars)`,
-      );
-    }
-    // The arm this switch exists for: with `=0` the statement is NOT printed, and
-    // the seat that would have read its tail reads the bounded prose instead —
-    // i.e. it loses it, exactly as it did before the switch.
-    const off = {
-      prose: renderReviewProse(OVER_PROBLEM_STATEMENT_BODY),
-      criteria: renderSpecCriteriaSection(OVER_PROBLEM_STATEMENT_BODY),
-      lens: lensContext(7, "full", { issueBody: OVER_PROBLEM_STATEMENT_BODY }),
-    };
-    assert(
-      !off.criteria.includes("PROBLEM-TAIL-") && !off.lens.includes("PROBLEM-TAIL-"),
-      "(9) with `=0` the statement's tail reaches no seat, as before",
-    );
-    assert(
-      off.lens === preStatementLensContext(OVER_PROBLEM_STATEMENT_BODY),
-      "(9) and that lens brief is byte-identical to the render from before the statement existed",
-    );
-    const offDedupe = {
-      prose: renderReviewProse(PROBLEM_EQUALS_PROSE_BODY),
-      block: renderReviewIssueBlock(PROBLEM_EQUALS_PROSE_BODY, ADVERSARIAL_FINDING_RULE),
-      lens: lensContext(7, "full", { issueBody: PROBLEM_EQUALS_PROSE_BODY }),
-    };
-    assert(
-      // The dedupe belongs to the split, not to this switch: with `=0` the prose
-      // block keeps printing beside the criteria section — the pre-change shape,
-      // where a body that restated its own statement printed it twice.
-      offDedupe.block ===
-        preStatementLensIssueBlock(PROBLEM_EQUALS_PROSE_BODY) &&
-        offDedupe.prose.includes("one fixed sentence") &&
-        !criteriaSpanOf(offDedupe.block).includes("one fixed sentence"),
-      "(9) and with the switch off the prose block prints next to the criteria section, statement and all, as it did before",
-    );
-    assert(
-      offDedupe.lens === preStatementLensContext(PROBLEM_EQUALS_PROSE_BODY),
-      "(9) and that brief is byte-identical too, on the body whose prose restates its own statement",
-    );
-    const offEmpty = renderSpecCriteriaSection(EMPTY_CRITERIA_BODY);
-    assert(offEmpty === "", "(9) and the `criteria: []` fallback holds on the off arm too");
   },
 );
 

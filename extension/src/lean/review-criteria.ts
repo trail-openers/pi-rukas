@@ -59,10 +59,13 @@ export const LEAN_REVIEW_CRITERIA_HEADING = "## The acceptance criteria (pi-spec
 export const LEAN_REVIEW_CRITERIA_LEAD =
   "Every criterion below is a requirement of this issue, printed in full up to its own cap, with its own marker when that cap cut it. A finding whose fix would contradict one is not a finding.";
 
-/** What the seat is told the block above the list is. The statement sits there
- * because the prose block it came from is bounded far shorter. */
+/** What the seat is told the block above the list is, and what to make of the
+ * prose it may have come from. Both halves hold on both shapes: the prose is
+ * always the shorter-bound thing, and on the shape where it only restates this
+ * statement the renderer omits it — so the sentence never claims the brief
+ * contains issue text it does not. */
 export const LEAN_REVIEW_PROBLEM_LEAD =
-  "The statement of the problem this run is for, printed in full up to its own cap, with its own marker when that cap cut it. The issue text above is bounded far shorter, so this is the whole of what the run was asked to do.";
+  "The statement of the problem this run is for, printed in full up to its own cap, with its own marker when that cap cut it. The issue's prose is bounded far shorter, and is omitted when it only restates this, so this is the whole of what the run was asked to do.";
 
 /** The statement's payload: `fenceText`'s disarm at its own cap, with the generic
  * clip notice swapped for a marker that names WHICH payload was cut. Substitution
