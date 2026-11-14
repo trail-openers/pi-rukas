@@ -28,6 +28,41 @@ export const FIX_HEAD = `${"b".repeat(39)}2`;
 /** The head a rewind left standing, named by the handback's own record. */
 export const UNSHIPPED = `${"c".repeat(39)}3`;
 
+/**
+ * A log built from the verdicts one case names, rather than from the option flags
+ * `gatesLog` reads.
+ *
+ * `gatesLog` scripts a WHOLE run — the fields it fills are the ones its options can
+ * ask for — and a case that needs a step whose shape no option spells (two gate
+ * verdicts in sequence, a gate verdict no run would pair with the head the reporting
+ * step names) would be asserting a fixture rather than a record. This takes the
+ * outcomes verbatim and adds only the two steps every log must carry to be loaded at
+ * all, so the ONLY thing a caller controls is what the gates and the reporting step
+ * decided.
+ */
+export function gateSteps(steps: {
+  verify: Outcome[];
+  publish: Outcome;
+  handback: Outcome;
+  ci?: Outcome;
+}): Step[] {
+  let n = 0;
+  const at = (state: Step["state"], outcome: Outcome): Step => ({
+    key: `7:${state}:${String(n++)}`,
+    state,
+    startedAt: CLOCK + n,
+    endedAt: CLOCK + n + 1,
+    outcome,
+  });
+  return [
+    at("ready", { kind: "ok" }),
+    ...steps.verify.map((oc) => at("verify", oc)),
+    at("publish", steps.publish),
+    ...(steps.ci === undefined ? [] : [at("ci", steps.ci)]),
+    at("handback", steps.handback),
+  ];
+}
+
 /** The frozen contract as `specify` records it: path -> sha256 of the frozen bytes. */
 export const FROZEN: Record<string, string> = {
   "tests/AC1-retry.test.sh": "a".repeat(64),
