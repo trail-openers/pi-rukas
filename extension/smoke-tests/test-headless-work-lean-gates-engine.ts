@@ -14,15 +14,20 @@
  */
 
 import { leanIssueResult } from "../src/headless/work-lean-result.ts";
-import { redRecordProblem } from "../src/lean/state-outcome-gates.ts";
+import {
+  RED_CRITERIA_MAX,
+  RED_TIERS_MAX,
+  redRecordProblem,
+} from "../src/lean/state-outcome-gates.ts";
 import type { Outcome } from "../src/lean/state.ts";
-import { tempDir, makeAssert } from "./lib/lean-engine-fixtures.ts";
+import { redAttribution } from "../src/lean/verify-red-attribution.ts";
+import { chattyFrozenTest } from "./lib/lean-chatty-frozen.ts";
+import { makeAssert, tempDir } from "./lib/lean-engine-fixtures.ts";
 import { driveEngineGates } from "./lib/lean-gates-engine-drive.ts";
-import { driveRun } from "./lib/lean-real-log-fixture.ts";
-import { gateSteps } from "./lib/lean-result-gates-fixture.ts";
 import { scriptedLog } from "./lib/lean-gates-scripted-log.ts";
-import { runVerify, failTier } from "./lib/lean-verify-fixture.ts";
+import { driveRun } from "./lib/lean-real-log-fixture.ts";
 import { HEAD, URL } from "./lib/lean-result-fixture.ts";
+import { gateSteps } from "./lib/lean-result-gates-fixture.ts";
 import {
   ROUND_1,
   ROUND_2,
@@ -31,6 +36,7 @@ import {
   gatesOf,
   outcomeOf,
 } from "./lib/lean-result-gates-fixture.ts";
+import { failTier, runVerify } from "./lib/lean-verify-fixture.ts";
 
 const { assert, failures } = makeAssert();
 
@@ -146,7 +152,12 @@ const { assert, failures } = makeAssert();
     publish: { kind: "ok", prUrl: URL },
     handback: { kind: "done", reason: "handback comment posted", posted: true },
   });
-  const driven = await driveRun(tempDir("lean-gates-writer").dir, 94, { land: [{ kind: "refused", reason: "the merge guard held" }] } as never, { handlers: scriptedLog(gate) });
+  const driven = await driveRun(
+    tempDir("lean-gates-writer").dir,
+    94,
+    { land: [{ kind: "refused", reason: "the merge guard held" }] } as never,
+    { handlers: scriptedLog(gate) },
+  );
   const projected = (gatesOf(leanIssueResult(driven.run, 94) as unknown as Record<string, unknown>)
     .verify ?? []) as Record<string, unknown>[];
   assert(
@@ -181,6 +192,29 @@ const { assert, failures } = makeAssert();
   );
 }
 
+// The same attack on the OTHER half of the scanner: the substring rule that maps a
+// failing frozen path back to its criterion. A runner that lists every file it collected
+// puts another criterion's path in this check's own text, and `reason.includes(file)`
+// accused that criterion too — a host re-checking a criterion this run never judged. The
+// chatty file below is what a real runner's collection line looks like.
+{
+  const CHATTY = chattyFrozenTest("tests/AC1-retry.test.sh");
+  const ran = await runVerify({
+    issue: 462,
+    frozenText: CHATTY,
+    // The frozen test is red whatever the tree holds, so the gate ends on the contract.
+    config: { fast: "true" },
+  });
+  assert(
+    ran.outcome?.kind === "red" && (ran.outcome?.red?.criteria ?? []).length > 0,
+    `writer: the chatty frozen test went red on its own evidence, so the list below really was exposed to its output (${String(ran.outcome?.kind)}, ${(ran.outcome?.reason ?? ran.threw?.message ?? "").slice(0, 110)}…)`,
+  );
+  assert(
+    JSON.stringify(ran.outcome?.red?.criteria) === JSON.stringify(["AC1"]),
+    `writer: a criterion is accused only where the run's own contract names the failing file — a mere MENTION of another criterion's path in the check's output is not a failure of it (${JSON.stringify(ran.outcome?.red?.criteria)})`,
+  );
+}
+
 // The one reading the driven case owes the frozen map: `specify` wrote it, so the loaded
 // record carries it and the projection prints it. Paired with the null arm above, which
 // is the same field on a run whose step recorded nothing.
@@ -202,6 +236,50 @@ const { assert, failures } = makeAssert();
   assert(
     outcomeOf(run, "specify")?.frozen !== undefined,
     "engine: the frozen map is on the durable record, so the projection is a reader of it and not a re-derivation",
+  );
+}
+
+// ─── the writer's bounds are the LOADER's bounds ───────────────────────────
+// A resumed run re-reads a red's `red` through `redRecordProblem`, so a writer that
+// emitted past its own caps would make the whole state file unloadable — the run would
+// die at resume over a triage list. The two bounds live in two files, so the only proof
+// they agree is a case that asks both, at each of the four caps.
+{
+  // A contract whose rows exceed the record's cap: the writer must clip rather than
+  // emit a list the loader refuses, and the long id must not survive at full length.
+  const wide = "t".repeat(200);
+  const many = Array.from({ length: RED_CRITERIA_MAX + 1 }, (_, i) => `AC${String(i + 1)}`);
+  const manyTiers = Array.from({ length: RED_TIERS_MAX + 1 }, (_, i) => `t${String(i)}`);
+  const long = `AC${"9".repeat(30)}`;
+  const clipped = redAttribution({
+    tests: {
+      kind: "fail",
+      reason: many.map((id) => `tests/${id}-x.test.sh (exited 1)`).join(", "),
+    },
+    tiers: [],
+    armTier: wide,
+    testsOfRun: Object.fromEntries([
+      ...many.map((id) => [id, [`tests/${id}-x.test.sh`]]),
+      [long, [`tests/${long}-x.test.sh`]],
+    ]),
+  });
+  assert(
+    redRecordProblem(clipped) === undefined,
+    `bounds: what the writer emits is what the loader accepts (${String(redRecordProblem(clipped))})`,
+  );
+  assert(
+    (clipped?.criteria ?? []).length <= RED_CRITERIA_MAX &&
+      (clipped?.tiers ?? []).every((t) => t.length <= 64) &&
+      (clipped?.criteria ?? []).every((c) => c.length <= 16),
+    `bounds: the writer clipped at the caps, not past them (${JSON.stringify(clipped?.tiers)} / ${(clipped?.criteria ?? []).length} criteria)`,
+  );
+  // And the loader really does refuse one past each, or the assertion above would be
+  // satisfied by caps nobody enforces.
+  assert(
+    redRecordProblem({ tiers: [wide.slice(0, 64)], criteria: many }) !== undefined &&
+      redRecordProblem({ tiers: manyTiers, criteria: [] }) !== undefined &&
+      redRecordProblem({ tiers: ["t".repeat(65)], criteria: [] }) !== undefined,
+    "bounds: the loader refuses one past each cap, so agreement above is between two enforced bounds",
   );
 }
 

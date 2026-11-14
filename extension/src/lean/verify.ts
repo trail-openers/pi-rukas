@@ -384,6 +384,9 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
       tiers: tierResults,
       armTier,
       testsOfRun: testsFromLog(ctx.steps),
+      // The `command` renderer's OWN composed string, not a captured stream: an id is
+      // attributed from the line this step wrote, never from text the project printed.
+      commandsReason: commands.failed,
     });
     return {
       kind: "red",

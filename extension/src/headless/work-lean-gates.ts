@@ -215,8 +215,14 @@ function challengeGates(steps: Step[]): GatesResult["challenge"] {
  * A list rather than one field because a run genuinely carries more than one red — a
  * first red, a fix round, and a pipeline that then fails — and a host triaging the run
  * needs to see which gate ended it, not only the last one to speak.
+ *
+ * Every published string here goes through `textOf`, the tier names included. The loader
+ * bounds a tier name's LENGTH but says nothing about its CONTENT, and the writer's tier
+ * names come off reason lines this step composed — so the projection is the last place a
+ * credential-shaped or oversized name can be stopped before a host parses it, exactly as
+ * for the two `reviewBound` strings and the handback reason.
  */
-function verifyGates(steps: Step[]): GatesRed[] {
+function verifyGates(steps: Step[], redact: (s: string) => string): GatesRed[] {
   const out: GatesRed[] = [];
   for (const state of ["verify", "ci"] as const) {
     for (const step of stepsOf(steps, state)) {
@@ -224,7 +230,10 @@ function verifyGates(steps: Step[]): GatesRed[] {
       if (kind === undefined) continue;
       const red = step.outcome?.red;
       const tiers = Array.isArray(red?.tiers)
-        ? red.tiers.filter((t): t is string => typeof t === "string" && t !== "").slice(0, LIST_MAX)
+        ? red.tiers
+            .map((t) => textOf(t, redact))
+            .filter((t): t is string => t !== null)
+            .slice(0, LIST_MAX)
         : null;
       const criteria = Array.isArray(red?.criteria)
         ? red.criteria
@@ -378,7 +387,7 @@ export function leanGates(steps: Step[], redact: (s: string) => string): GatesRe
   return {
     specify: specifyGates(steps),
     challenge: challengeGates(steps),
-    verify: verifyGates(steps),
+    verify: verifyGates(steps, redact),
     review: reviewGates(steps, redact),
     handback: handbackGates(steps, redact),
   };

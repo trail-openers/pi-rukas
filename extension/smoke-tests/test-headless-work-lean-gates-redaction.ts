@@ -150,5 +150,51 @@ function leakyBoundLog() {
   );
 }
 
+// ─── the third surface: `gates.verify[].tiers` ──────────────────────────────
+// The tier list was the one published gates string that reached the document without the
+// seam: the loader bounds a tier NAME's length but says nothing about its content, and
+// `criteria` is re-filtered to `/^AC\d+$/` while `tiers` got neither filter nor clip.
+// A name the projection prints verbatim is a name the host parses, so the record's own
+// shape rule is not the defence — the seam is, here exactly as beside it.
+{
+  const leakyTiers = gatesLog({
+    verify: "red",
+    reds: { tiers: [`tier ${SECRET}`, "fast", "x".repeat(640)], criteria: ["AC1"] },
+  });
+  const r = await driveLean("handed-back", 10, leakyTiers);
+  const doc = JSON.stringify(r.doc);
+  assert(
+    !doc.includes(SECRET),
+    "verify: no credential-shaped byte survives the gates.verify[].tiers projection",
+  );
+  const entry = (gatesOf(r.issue).verify as Record<string, unknown>[])[0];
+  assert(
+    Array.isArray(entry.tiers) &&
+      (entry.tiers as string[]).every((t) => !t.includes(SECRET) && t.length <= 500) &&
+      (entry.tiers as string[]).some((t) => t.includes(REDACTED)),
+    `verify: each tier goes through the seam and the print clip, like every other published string (${JSON.stringify(entry.tiers)})`,
+  );
+  // Not vacuously clean: the same log through an EMPTY redaction seam publishes the token
+  // and the whole oversized name — the code path the missing call was equivalent to.
+  const raw = leanGates(r.run.steps, (s) => s).verify[0];
+  assert(
+    (raw?.tiers ?? []).some((t) => t.includes(SECRET)) === true &&
+      (raw?.tiers ?? []).some((t) => t.length > 500) === true,
+    `verify: the record really carries the token and the oversized name, so the document's silence above is the seam (${JSON.stringify(raw?.tiers)})`,
+  );
+  // `criteria` keeps its own stricter rule — an id is either `AC<n>` or nothing — so a
+  // token-shaped id is refused rather than scrubbed, and this pins that the two lists are
+  // not accidentally given the same treatment.
+  const bogus = await driveLean(
+    "handed-back",
+    10,
+    gatesLog({ verify: "red", reds: { tiers: ["fast"], criteria: [`AC1 ${SECRET}`] } }),
+  );
+  assert(
+    !JSON.stringify(bogus.doc).includes(SECRET),
+    "verify: a criterion id that is not AC<n> is dropped by the id rule, not published scrubbed",
+  );
+}
+
 console.log(`\nexit ${String(failures())}`);
 process.exit(failures());

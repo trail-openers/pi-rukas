@@ -80,30 +80,65 @@ function failedTierNames(ran: readonly Executed[], armTier: string | undefined):
 /**
  * The criteria the failing checks of this run's frozen contract answer for.
  *
- * `specify`/`challenge` recorded which test files each criterion owns, so a failing frozen
- * path maps back to the criterion it is the evidence for. A path nobody mapped — a file the
- * contract holds that no criterion claims — contributes nothing, because a criterion the
- * gate cannot point at is not one the gate can accuse.
+ * Two sources, and each is text this step owns. A failing frozen path is mapped back
+ * through the contract's own criterion→files rows — and a path is only counted where it
+ * stands at a TOKEN BOUNDARY of the check's text, so a test that merely MENTIONS another
+ * criterion's path (a log line, a fixture list) contributes nothing: a runner names the
+ * file it ran after a space, a `(`, a `,`, an `=` or at the line's front. The `commands` half reads the renderer's OWN composed
+ * string, handed in beside the captured check, and nothing else — that line is composed
+ * in `verify-commands.ts` and never by a project's toolchain, so a frozen test that
+ * echoes the renderer's wording cannot put a criterion this run never judged on the list
+ * a host triages on. The `command` renderer runs only AFTER the tiers, so a tier that
+ * ended the run leaves `commandsReason` absent and this reads the contract alone.
  */
-function failingCriteria(tests: Executed, testsOfRun: Record<string, string[]>): string[] {
-  if (tests.kind !== "fail") return [];
+function failingCriteria(
+  tests: Executed,
+  testsOfRun: Record<string, string[]>,
+  commands: readonly string[],
+): string[] {
+  if (tests.kind !== "fail") return [...new Set(commands)];
   // The failing check's own text, not the step's composed reason: the composition can
   // carry a tier's tail, and a path quoted inside a test's own output is not evidence
   // about which criterion failed.
-  const reason = tests.reason;
   const failing = Object.entries(testsOfRun)
-    .filter(([, files]) => files.some((file) => reason.includes(file)))
+    .filter(([, files]) => files.some((file) => namesPath(tests.reason, file)))
     .map(([id]) => id);
-  // A `command` criterion's failure reason NAMES its own id, at the front of the line the
-  // step's renderer wrote it — `criterion AC2 (command tests/AC2-preserve.test.sh) failed: …`.
-  // The anchor and the `failed:` tail are what keep the attribution to the step's own words:
-  // `runTestFile` pastes the failing file's stdout and stderr into the detail, so a scan for
-  // the bare prefix let a frozen test that echoes `criterion AC7 (command …)` add a criterion
-  // this run never judged to the list a host triages on.
-  const commands = [...reason.matchAll(/^criterion (AC\d+) \(command [^)]*\) failed: /gm)]
+  return [...new Set([...failing, ...commands])];
+}
+
+/**
+ * Does this check's text NAME the path, as a path rather than as a word inside one?
+ *
+ * The old rule was `reason.includes(file)`, which accused a criterion whose file the test
+ * only mentioned — a runner that prints its whole fixture list puts every criterion of
+ * the contract in the list. A path counts where it stands at a token boundary: line start
+ * or one of ` \t ( , =` before it (so the `sh` runner's `sh tests/x.test.sh`, pytest's
+ * `FAILED tests/x.test.sh::case`, and a bare path at the front all match), and not
+ * followed by another name character after it.
+ */
+function namesPath(text: string, file: string): boolean {
+  return new RegExp(`(?:^|[\\s(,=])${escapeRegExp(file)}(?:$|[^\\w./-])`).test(text);
+}
+
+/** Escape a repo-relative path for use inside a RegExp. */
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * The criterion ids the step's OWN `command` renderer composed.
+ *
+ * `verify-commands.ts` writes `criterion AC2 (command tests/AC2-preserve.test.sh) failed:
+ * …` itself and hands the string in beside the captured check, so an id found at the
+ * front of THAT string is one this step judged. Scanning the captured stream instead let
+ * a frozen test that echoes the renderer's wording add a criterion the run never judged —
+ * a host triaging `gates.verify[].criteria` would go re-check a criterion that passed.
+ */
+export function commandCriterionIds(reason: string | undefined): string[] {
+  if (reason === undefined) return [];
+  return [...reason.matchAll(/^criterion (AC\d+) \(command [^)]*\) failed: /gm)]
     .map((m) => m[1])
     .filter((id): id is string => id !== undefined);
-  return [...new Set([...failing, ...commands])];
 }
 
 /**
@@ -117,6 +152,8 @@ export function redAttribution(opts: {
   tiers: readonly Executed[];
   armTier: string | undefined;
   testsOfRun: Record<string, string[]>;
+  /** The step's own composed `command`-criterion failure string, if one fired. */
+  commandsReason?: string;
 }): RedRecord | undefined {
   const tiers = clipNames(
     failedTierNames(opts.tiers, opts.armTier),
@@ -124,7 +161,7 @@ export function redAttribution(opts: {
     RED_TIER_MAX_CHARS,
   );
   const criteria = clipNames(
-    failingCriteria(opts.tests, opts.testsOfRun),
+    failingCriteria(opts.tests, opts.testsOfRun, commandCriterionIds(opts.commandsReason)),
     RED_CRITERIA_MAX,
     RED_CRITERIA_MAX_CHARS,
   );
