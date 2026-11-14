@@ -56,6 +56,10 @@ function mockPi() {
     },
     getActiveTools: () => ["read"],
     setActiveTools: () => undefined,
+    // #2160 — the subagent guard registers `forge_read` on load. This suite's
+    // subject is the tool_call verdicts, not the registry, so the fake absorbs
+    // the registration.
+    registerTool: () => undefined,
   };
   return {
     pi: pi as unknown as ExtensionAPI,

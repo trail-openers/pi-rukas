@@ -79,8 +79,11 @@ const secondary = "/home/user/.pi/work-state/1078/issue-body-1079.txt";
     undefined,
   );
   assert(
-    prompt.includes("gh issue view <N>") && prompt.includes("#1078, #1079"),
-    "multi-issue: absent artifact path → the prompt tells the developer to run `gh issue view <N>` for each issue in the list",
+    prompt.includes('forge_read { verb: "issue_view", number: N }') &&
+      prompt.includes("#1078, #1079"),
+    // #2160: the fallback names `forge_read`, not `gh issue view <N>` — a helper
+    // child holds no forge login, so the CLI form is a read it cannot authenticate.
+    "multi-issue: absent artifact path → the prompt tells the developer to run `forge_read` (`issue_view`) for each issue in the list",
   );
   assert(
     prompt.includes("#1078") && prompt.includes("#1079"),

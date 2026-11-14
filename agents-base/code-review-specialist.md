@@ -50,19 +50,23 @@ say so in your report and stop; do not go and find the file yourself.
 
 ## Forge-Native Workflow
 
-**Use your forge CLI for ALL operations.** Determine the forge from the repo's remote (`git remote -v`) — `github.com` → `gh`, `gitlab.com` → `glab`.
+**Read the forge through the `forge_read` tool; use your forge CLI only to write.** You have no forge login of your own, so a `gh`/`glab` read you run yourself is unauthenticated (rate-limited, and refuses on a private repo) — `forge_read` runs it with the parent session's credential and answers the forge's own bytes. Verbs: a PR/MR read (`pr_view`, `pr_diff`, `pr_checks`, `pr_reviews`), an issue read (`issue_view`, `issue_comments`), a CI read (`ci_run`, `ci_run_log`), a list (`issue_list`, `pr_list`), plus `label_list` and `repo_settings`. There is no write verb, so the writes below are the only forge CLI you run, and on GitHub they are the only ones you have.
+
+Determine the forge from the repo's remote (`git remote -v`) — `github.com` → `gh`, `gitlab.com` → `glab`.
+
+The call shape is one JSON object: `forge_read` with a verb and the target. A PR/MR read takes `number`, a CI read takes the run/pipeline id, a list may take `state` (and `pr_list` a `sourceBranch`). Below, `N` is that target.
 
 ### GitHub (`gh`)
-- `gh pr view` - Read PR details
-- `gh pr diff` - View changes
-- `gh pr checks` - Verify CI status
+- Read a PR: `forge_read { verb: "pr_view", number: N }`
+- View the changes: `forge_read { verb: "pr_diff", number: N }`
+- Verify CI status: `forge_read { verb: "pr_checks", number: N }`
 - `gh pr review --approve` - Submit approval
 - `gh pr review --request-changes` - Request changes
 
 ### GitLab (`glab`)
-- `glab mr view` - Read MR details
-- `glab mr diff` - View changes
-- `glab api "/projects/:id/merge_requests/{N}/pipelines" --output json` - Verify CI status (list the MR's pipelines; `glab ci status` is NOT safe in non-interactive contexts)
+- Read an MR: `forge_read { verb: "pr_view", number: N }` (a merge request is a `pr` verb here)
+- View the changes: `forge_read { verb: "pr_diff", number: N }`
+- Verify CI status: `forge_read { verb: "pr_checks", number: N }` (the MR's pipeline jobs; `glab ci status` is NOT safe in non-interactive contexts)
 - GitLab has no CLI `review approve` verb: state your verdict in an MR note (`glab api -X POST -f "body=@<file>" /projects/:id/merge_requests/{N}/notes`) and report `Status: APPROVED` / `CHANGES_REQUESTED` in your final message to PM, who routes the merge decision
 
 **CRITICAL: Official Approval vs Comments (GitHub)**
@@ -72,13 +76,13 @@ say so in your report and stop; do not go and find the file yourself.
 ## Execution Protocol
 
 **Step 0: Load Context** — interactive review only; skip when dispatched with a diff
-1. Read the tracker issue: `gh issue view {NUMBER}` (GitHub) or `glab issue view {NUMBER} --output json` (GitLab)
+1. Read the tracker issue: `forge_read` with the `issue_view` verb and `number: N` (one call serves either forge)
 2. Load project documentation (CONTRIBUTING.md)
 3. Verify requirements alignment
 
 **Step 1: CI/CD Status (MANDATORY FIRST)** — interactive review only; skip when dispatched with a diff
-```bash
-gh pr checks {PR_NUMBER}
+```text
+forge_read {"verb": "pr_checks", "number": PR_NUMBER}
 ```
 - 🔴 ANY failing check = REQUEST CHANGES immediately
 - ✅ All green = Proceed with code review

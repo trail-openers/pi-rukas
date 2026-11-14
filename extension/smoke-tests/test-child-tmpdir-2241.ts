@@ -230,16 +230,33 @@ async function childEnvOf(tag: string, parentEnv: Record<string, string>): Promi
 {
   const SRC = path.resolve(import.meta.dirname, "..", "src");
   const src = readFileSync(path.join(SRC, "spawn.ts"), "utf8");
-  const callIdx = src.indexOf("childTempEnv(tmpDir)");
-  const assignIdx = src.lastIndexOf("applyChildPermissionEnv(childEnv, permissions)");
+  // #2160 moved the child-env assembly into spawn-child-env.ts (spawn.ts sits at
+  // the §12 size cap), so the placement pair is read across the two files: the
+  // builder applies the temp env last, and the spawn site's one builder call is
+  // the only write to the env before `spawn()`.
+  const builder = readFileSync(path.join(SRC, "spawn-child-env.ts"), "utf8");
+  const callIdx = builder.indexOf("childTempEnv(childTmp)");
+  const assignIdx = builder.lastIndexOf("applyChildPermissionEnv(childEnv, plan)");
   const spawnIdx = src.indexOf("env: childEnv,");
   assert(
     callIdx > 0 && assignIdx > 0 && spawnIdx > 0,
-    "canary: spawn.ts builds the child temp env and reaches spawn() with `env: childEnv`",
+    "canary: the child-env builder applies the temp env and spawn.ts reaches spawn() with `env: childEnv`",
   );
   assert(
-    callIdx > assignIdx && callIdx < spawnIdx,
-    "canary: the TMPDIR/TMP/TEMP assignments come after the LAST write to childEnv before spawn(), so no inherited value wins",
+    callIdx > assignIdx &&
+      builder.indexOf("return childEnv", callIdx) > callIdx &&
+      builder.lastIndexOf("childEnv", callIdx) < builder.indexOf("return childEnv", callIdx),
+    "canary: the TMPDIR/TMP/TEMP assignments are the LAST writes to childEnv in the builder, so no inherited value wins",
+  );
+  assert(
+    /const childEnv = buildChildEnv\(spec\.role, permissions, opts\.writeFence, tmpDir\);/.test(src),
+    "canary: spawn.ts builds the child env with the one builder, passing the per-spawn dir",
+  );
+  const buildIdx = src.indexOf("const childEnv = buildChildEnv(spec.role");
+  assert(
+    buildIdx > 0 &&
+      src.indexOf("childEnv", buildIdx) === src.lastIndexOf("childEnv", spawnIdx),
+    "canary: spawn.ts writes nothing to childEnv between the builder call and spawn(), so the temp env cannot be undone",
   );
   const contract = readFileSync(path.join(SRC, "write-fence-contract.ts"), "utf8");
   for (const name of ["TMPDIR", "TMP", "TEMP"]) {

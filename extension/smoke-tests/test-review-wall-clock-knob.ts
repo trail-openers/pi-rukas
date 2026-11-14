@@ -117,7 +117,7 @@ function stateWithClock(elapsedMs: number): WorkState {
 function ctxFor(notices: string[]): DriverContext {
   return {
     host: { sendUserMessage: (t: unknown) => notices.push(String(t)) } as never,
-    repoRoot: "/tmp",
+    repoRoot: `/tmp/pi-rukas-1429-${process.pid}`,
     issue: 1429,
     emitSink: createEmitSink(() => undefined),
   } as unknown as DriverContext;

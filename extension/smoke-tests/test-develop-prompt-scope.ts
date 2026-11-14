@@ -386,8 +386,12 @@ const BRIEF = "Prior memory: #394 calibrated the retrieval floor; do not re-deri
     undefined,
   );
   assert(
-    noArtifact.includes("gh issue view 1078"),
-    "#1078: absent artifact path → falls back to the gh issue view re-fetch",
+    noArtifact.includes('forge_read { verb: "issue_view", number: 1078 }'),
+    // #2160: the fallback is a `forge_read` read. A developer child holds no
+    // forge login, so the `gh issue view` this line used to require is a call the
+    // child cannot authenticate — it answers rate-limited or refused, and the
+    // child proceeds without its acceptance criteria.
+    "#1078: absent artifact path → falls back to the forge_read issue_view re-fetch",
   );
 }
 

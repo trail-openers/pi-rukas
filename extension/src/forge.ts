@@ -12,6 +12,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execp } from "./exec.ts";
+import { forgeChecks } from "./forge-checks.ts";
+import { ciRunLog as ciRunLogImpl } from "./forge-ci-log.ts";
 import { GH_TERMINAL_CI, GL_TERMINAL_CI, terminalCiFor } from "./forge-ci-terminal.ts";
 import { ciRun as ciRunImpl, ciWatch as ciWatchImpl } from "./forge-ci.ts";
 import * as cmds from "./forge-commands.ts";
@@ -19,14 +21,13 @@ import { listIssueComments, listPrComments, postPrComment } from "./forge-commen
 import type { PublicTextCheck } from "./forge-comments.ts";
 import type { ForgeDetection, ForgeType } from "./forge-detect.ts";
 import { type LabelListResult, labelOps } from "./forge-label-ops.ts";
-import { mapIssueSearchReply, mapPrListReply } from "./forge-list.ts";
+import { mapIssueListReply, mapIssueSearchReply, mapPrListReply } from "./forge-list.ts";
 import {
   ForgeFieldError,
   asArray,
   asRecord,
   makeMinimalIssue,
   makeMinimalPr,
-  mapGhChecks,
   mapGhComment,
   mapGhIssue,
   mapGhIssueWithNumber,
@@ -42,12 +43,13 @@ import {
   parsePrNumberFromResponse,
 } from "./forge-mapping.ts";
 import { checkGithubReadiness, checkGitlabReadiness, composeGlReadiness } from "./forge-merge.ts";
-import { glPipelineJobs, glPipelineJobsAt } from "./forge-pipeline.ts";
 import { forgePublishTarget } from "./forge-publish-target.ts";
+import { type NormalizedReview, mapReviews } from "./forge-reviews.ts";
 import type { VisibilityFn } from "./public-hygiene-visibility.ts";
 import { isFullCommitSha } from "./review-head-sha.ts";
 import { forgePublishCheck } from "./work-driver-commit-hygiene.ts";
 export type { CiWatchOpts, CiWatchResult, Forge, ForgeExecFn } from "./forge-types.ts";
+export type { NormalizedReview } from "./forge-reviews.ts";
 import type {
   CiWatchOpts,
   CiWatchResult,
@@ -299,6 +301,18 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
     issueSearch: (query, opts) =>
       run(cmds.issueSearchCmd(forge, query, opts), (stdout) => mapIssueSearchReply(forge, stdout)),
 
+    // The raw-bytes twins of the three list reads. A second exec of the same
+    // command would be two moments of a moving forge presented as one answer,
+    // so the executor asks for the bytes and maps them itself when it needs
+    // rows; these return exactly what `run` handed the mapper.
+    issueSearchRaw: (query, opts) => run(cmds.issueSearchCmd(forge, query, opts), (s) => s),
+
+    // #2160 — the list read the search never covered.
+    issueList: (opts) =>
+      run(cmds.issueListCmd(forge, opts), (stdout) => mapIssueListReply(forge, stdout)),
+
+    issueListRaw: (opts) => run(cmds.issueListCmd(forge, opts), (stdout) => stdout),
+
     // ── Pull requests / MRs ───────────────────────────────────────────────
 
     prView: (number) =>
@@ -319,6 +333,8 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
     // The bare-number tolerance lives in forge-list.ts, not here: it looks like
     // dead defensive code and is not, so it is written where it is visible.
     prList: (opts) => run(cmds.prListCmd(forge, opts), (stdout) => mapPrListReply(forge, stdout)),
+
+    prListRaw: (opts) => run(cmds.prListCmd(forge, opts), (stdout) => stdout),
 
     prCreate: async (title, headBranch, body, opts) => {
       const checkedTitle = (await checkPublicText("pull request title", title)).text;
@@ -386,56 +402,33 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
     prComments: (number) =>
       listPrComments({ forge, run, withBodyFile, checkPublicText: NO_PUBLIC_TEXT_CHECK }, number),
 
+    // #2160 — reviews/approvals. A read, so the public-text check is the
+    // explicit no-op the other read seams pass.
+    prReviews: (number) =>
+      run(cmds.prReviewsCmd(forge, number), (stdout) => mapReviews(forge, stdout)),
+
     // #775 — post a comment on a PR (the in-process handoff fallback seam).
     prComment: (number, body) =>
       postPrComment({ forge, run, withBodyFile, checkPublicText }, number, body),
 
-    prChecks: async (number) => {
-      if (forge === "github") {
-        return run(cmds.prChecksCmd(forge, number), (stdout) => {
-          const parsed = JSON.parse(stdout || "[]");
-          if (!Array.isArray(parsed)) throw new Error("forge: checks not an array");
-          return mapGhChecks(parsed);
-        });
-      }
-      // GitLab: list the MR's pipelines, take the most recent, list its jobs.
-      // A list that ran past the page this read asked for is reported as the
-      // empty set rather than as the page it saw: a caller must never receive a
-      // partial job list it could grade as complete, and every caller already
-      // refuses "no checks reported" as the absence of evidence.
-      const pipelines = await run(
-        `glab api /projects/:id/merge_requests/${number}/pipelines`,
-        (s) => {
-          const parsed = JSON.parse(s || "[]");
-          if (!Array.isArray(parsed)) throw new Error("forge: pipelines not an array");
-          return parsed as Record<string, unknown>[];
-        },
-      );
-      const latest = pipelines[0];
-      if (!latest || typeof latest.id !== "number") return [];
-      const read = await glPipelineJobs(run, latest.id);
-      // A list that ran past the page it read is reported as the empty set rather
-      // than as the page it saw: a caller must never receive a partial job list it
-      // could grade as complete, and every caller already refuses "no checks
-      // reported" as the absence of evidence.
-      return read.truncated ? [] : read.rows;
-    },
-
-    // The job rows of ONE named pipeline, plus the commit that pipeline says it
-    // built — the ONE jobs read a `ci` poll makes. `prChecks` takes the newest row
-    // of the MR's pipelines list and keeps only the rows, so a caller that must say
-    // which commit they ran at — lean's `ci` step, which refuses to grade a foreign
-    // pipeline — needs this arm; the `/pipelines/:id` row carries the `sha` the jobs
-    // list does not. `truncated` says the list ran past its page: the caller refuses
-    // rather than grading an incomplete list.
-    glPipelineJobs: (pipelineId) =>
-      glPipelineJobsAt(run, pipelineId, cmds.pipelineViewCmd(pipelineId)),
+    // ── CI checks ─────────────────────────────────────────────────────────
+    // The family lives in forge-checks.ts (500-line seam) and receives this
+    // same `run` seam, so its argv goes through the same exec defaults.
+    ...forgeChecks({ forge, run }),
 
     // ── CI ────────────────────────────────────────────────────────────────
 
     ciWatch: (runId, watchOpts) => ciWatchImpl(execFn, forge, cwd, owner, repo, runId, watchOpts),
 
     ciRun: (id) => ciRunImpl(execFn, forge, cwd, owner, repo, id),
+
+    // #2160 — the failed-job log. Same exec seam as every other read here, so
+    // the parent's `forge_read` serves it with the parent's own credential.
+    ciRunLog: (id) =>
+      ciRunLogImpl(execFn, forge, cwd, owner, repo, id, {
+        timeout: extraOpts.timeout ?? DEFAULT_EXEC_TIMEOUT_MS,
+        maxBuffer: 512 * 1024,
+      }),
 
     // ── Merge readiness (SAFETY-CRITICAL) ─────────────────────────────────
 

@@ -128,7 +128,11 @@ for (const cmd of [
 
 {
   const SRC = path.resolve(import.meta.dirname, "..", "src");
-  const src = readFileSync(path.join(SRC, "spawn.ts"), "utf8");
+  // #2160: the child-env assembly lives in spawn-child-env.ts (spawn.ts sits at
+  // the §12 size cap), so the seam this section pins is that module — the
+  // assignments and their ORDER relative to the inherited copy, not the file
+  // that calls the builder.
+  const src = readFileSync(path.join(SRC, "spawn-child-env.ts"), "utf8");
   for (const v of ["GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "GIT_TERMINAL_PROMPT", "GIT_PAGER"]) {
     assert(src.includes(`${v} = `), `canary: childEnv sets ${v}`);
   }
@@ -150,15 +154,17 @@ for (const cmd of [
   // a cosmetic edit to childEnv construction must consciously update this
   // test. The behavioural contract (env wins) is proven by the value
   // assertions above plus the guard's own test cases.
-  // #1655 moved the spread into write-fence-contract.ts's childEnvFor (spawn.ts
-  // sits at the size cap), so the canary pins both halves: childEnvFor spreads
-  // the inherited env first, and spawn.ts assigns GIT_* after calling it.
-  const spreadIdx = src.indexOf("childEnvFor(process.env, spec.role)");
+  // #1655 moved the spread into write-fence-contract.ts's childEnvFor and #2160
+  // moved the whole assembly into spawn-child-env.ts (spawn.ts sits at the size
+  // cap), so the canary pins both halves: the inherited env is copied first, and
+  // the builder assigns GIT_* after calling it.
+  const spreadIdx = src.indexOf("childBaseEnv(role, plan.forge)");
   const gitEditorIdx = src.indexOf('GIT_EDITOR = "true"');
-  const envHelper = readFileSync(path.join(SRC, "write-fence-contract.ts"), "utf8");
+  const envHelper = readFileSync(path.join(SRC, "child-forge-env.ts"), "utf8");
   assert(
-    /\{\s*\.\.\.env,\s*PI_ENSEMBLE_ROLE:\s*role\s*\}/.test(envHelper),
-    "canary: childEnvFor starts from the inherited env spread",
+    /for \(const \[k, v\] of Object\.entries\(source\)\)/.test(envHelper) &&
+      /if \(v !== undefined\) env\[k\] = v;/.test(envHelper),
+    "canary: the child env starts from the inherited env copy (child-forge-env.ts, the one construction both spawn paths call)",
   );
   assert(
     spreadIdx > 0 && gitEditorIdx > spreadIdx,

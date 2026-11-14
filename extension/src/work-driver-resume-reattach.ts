@@ -11,6 +11,7 @@
 import { spawn } from "node:child_process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { notifyAgent } from "./agent-message.ts";
+import { forgeReadChildEnv } from "./child-forge-env.ts";
 import { scrubGitLocation } from "./git-env.ts";
 import { emitStepCompleted } from "./lifecycle-events.ts";
 import { getPiInvocation } from "./pi-binary-resolve.ts";
@@ -87,10 +88,13 @@ export async function attemptReattach(
 ): Promise<ReattachResult | { reattach: false }> {
   const resumePromptText = reattachPrompt(step, role);
   const childArgs = ["--mode", "rpc", "--no-extensions", "--session", transcriptPath];
-  const childEnv: Record<string, string> = {};
-  for (const [k, v] of Object.entries(process.env)) {
-    if (v !== undefined) childEnv[k] = v;
-  }
+  // #2160 — the second child-env construction. It calls the SAME helper
+  // spawn.ts calls, because a reattached child is the same helper with the same
+  // credentials: a token delete placed only in the other site would leave this
+  // one fully authenticated. The reattach path has no broker of its own to
+  // hand out, so `forgeReadChildEnv` is called without a socket path and the
+  // child carries no stale socket from a previous spawn either.
+  const childEnv = forgeReadChildEnv(process.env, role);
   scrubGitLocation(childEnv); // #1571 — see git-env.ts
 
   if (spawnReattach !== defaultSpawnReattach) {

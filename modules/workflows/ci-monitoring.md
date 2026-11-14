@@ -22,13 +22,18 @@ gh run view <run-id> --log-failed
 
 ## GitLab: bounded 30s pipeline poll (the CLI does NOT watch)
 
+<!-- forge-cli-scope: PM and ops — a helper child reads the pipeline through the
+`ci_run` verb instead; the two commands below need a forge login a helper does not hold. -->
+
 Unlike GitHub, GitLab has **no non-interactive watch command** (`glab ci status` is not non-interactive-safe). The sanctioned pattern is a bounded poll of the pipeline, matching the driver's `ciWatch` implementation: poll every 30s, stop at a terminal status or the 30-minute cap.
 
 ```bash
-# Step 1: find the newest pipeline (note the pipeline ID from the output)
+# Step 1: find the newest pipeline (note the pipeline ID from the output); a helper
+# reads the same rows with `forge_read` (`ci_run`)
 glab api "/projects/:id/pipelines?per_page=1" --output json
 
-# Step 2: one poll iteration (repeat every 30s with the same command)
+# Step 2: one poll iteration (repeat every 30s with the same command); a helper
+# reads the run's status with `forge_read` (`ci_run`)
 glab api /projects/:id/pipelines/<pipeline-id> --output json
 ```
 

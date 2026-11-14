@@ -257,7 +257,7 @@ initEnv();
 		stamped[0]?.workCycleTrust === true,
 		"#1666 — a headless /work child is dispatched with workCycleTrust",
 	);
-	const plainChild = planChildPermissions({ runId: "g3", role: "developer" });
+	const plainChild = planChildPermissions({ runId: "g3", role: "developer", cwd: "/tmp" });
 	assert(
 		plainChild.trustChild === false && plainChild.subagentGuardEnabled === true,
 		"#1666 — non-/work headless (no stamp, no UI) keeps the strict broker path",

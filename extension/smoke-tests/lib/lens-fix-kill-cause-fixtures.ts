@@ -117,7 +117,12 @@ export function killedByProvider(
  *  so nothing here reaches `dispatchCore` or a child process. */
 export function lensFixCtx(result: DispatchResult): CycleContext {
   return {
-    repoRoot: "/tmp/pi-rukas-1798",
+    // Per-process scratch root, not a fixed global: parallel runners on one host
+    // (sibling `/work` worktrees, other uids) each write this context's work-state
+    // file, and whoever creates the directory first owns it for the rest — every
+    // later runner's atomic write then fails with EACCES on a file it cannot
+    // create. The OS reaps `/tmp`.
+    repoRoot: `/tmp/pi-rukas-1798-${process.pid}`,
     issue: 1798,
     issues: [1798],
     host: {} as unknown as CycleContext["host"],

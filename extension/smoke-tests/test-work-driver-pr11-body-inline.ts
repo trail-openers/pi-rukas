@@ -144,10 +144,21 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       developerPrompt.includes("issue #476") && !developerPrompt.includes("issue #479"),
       `PR11 §B: developer prompt references active issue #476, NOT primary #479 (got headline: "${developerPrompt.split("\n")[0]}")`,
     );
+    // #2160 — the re-fetch instruction is a `forge_read` read, not a `gh` one: a
+    // developer child holds no forge login, so the CLI form was a fallback to a
+    // call the child cannot make authenticated. What this case pins is unchanged
+    // — the instruction names the ACTIVE issue and never the primary — only the
+    // tool it names. Pinned on the re-fetch LINE rather than the whole prompt:
+    // this fixture is a multi-issue cycle, so the prompt header legitimately names
+    // every issue (the primary included), and an unbounded span across the whole
+    // prompt would let a `476` in one line answer for a `479` in another. Observed
+    // red against the pre-#2160 line (`gh issue view 476`) and against the same
+    // line built from the PRIMARY.
+    const reFetchLine =
+      developerPrompt.split("\n").find((l) => /issue_view|gh issue view/.test(l)) ?? "";
     assert(
-      developerPrompt.includes("gh issue view 476") &&
-        !developerPrompt.includes("gh issue view 479"),
-      "PR11 §B: developer prompt's re-fetch instruction targets active issue #476",
+      /forge_read[\s\S]*issue_view[\s\S]*476/.test(reFetchLine) && !/479/.test(reFetchLine),
+      `PR11 §B: developer prompt's re-fetch instruction targets active issue #476 (got: ${JSON.stringify(reFetchLine)})`,
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
