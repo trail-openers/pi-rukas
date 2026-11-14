@@ -212,6 +212,12 @@ function challengeGates(steps: Step[]): GatesResult["challenge"] {
  * Every `verify` and `ci` verdict the run recorded, in the order it recorded them, each
  * red with the tier that failed and the criteria the failing checks answer for.
  *
+ * Three kinds reach the host, and the third is not a judgement of the code: `green` and
+ * `red` are the gate's verdicts, and `error` is what the engine records when a gate's
+ * handler threw (`lean/error-outcome.ts`). An entry of that kind attributes nothing — the
+ * gate named no tier because it never finished — and a host that read it as a red would go
+ * and re-check a criterion nobody ran.
+ *
  * A list rather than one field because a run genuinely carries more than one red — a
  * first red, a fix round, and a pipeline that then fails — and a host triaging the run
  * needs to see which gate ended it, not only the last one to speak.
@@ -259,7 +265,9 @@ function verifyGates(steps: Step[], redact: (s: string) => string): GatesRed[] {
  * but a value that reaches this function without passing through the loader has been
  * judged by nobody, and a host that switches on four names silently misses a finding
  * carried under a fifth — so a round holding anything else publishes nothing rather
- * than publishing a partial truth.
+ * than publishing a partial truth. The WHOLE tally goes, not the bad round: a tally that
+ * named three of a run's four rounds would read as a complete count, which is the same
+ * failure the waves arm refuses by dropping every wave for one malformed head.
  */
 function reviewGates(steps: Step[], redact: (s: string) => string): GatesResult["review"] {
   const step = newestStep(steps, "review");
@@ -268,16 +276,23 @@ function reviewGates(steps: Step[], redact: (s: string) => string): GatesResult[
   const { kind } = oc;
   if (kind !== "done" && kind !== "fixed" && kind !== "error") return null;
   const roundsArr = Array.isArray(oc.review?.rounds) ? oc.review.rounds : null;
+  // All rounds or none. A tally that named two of a run's three rounds is not a shorter
+  // truth, it is a wrong one: a host that sums `rounds` divides the run's findings by the
+  // rounds it was shown and concludes the missing round found nothing. The waves arm below
+  // already refuses its whole field for one malformed head, and a round is the same kind of
+  // claim — so one refused round refuses the tally, while the waves keep publishing because
+  // they were judged on their own terms.
   const rounds =
-    roundsArr === null
-      ? null
-      : roundsArr.filter(
-          (r) =>
-            typeof r === "object" &&
-            r !== null &&
-            Object.keys(r).length === GATE_SEVERITIES.length &&
-            GATE_SEVERITIES.every((s) => Number.isSafeInteger(r[s]) && (r[s] as number) >= 0),
-        );
+    roundsArr === null ||
+    roundsArr.every(
+      (r) =>
+        typeof r === "object" &&
+        r !== null &&
+        Object.keys(r).length === GATE_SEVERITIES.length &&
+        GATE_SEVERITIES.every((s) => Number.isSafeInteger(r[s]) && (r[s] as number) >= 0),
+    )
+      ? roundsArr
+      : null;
   const wavesArr = Array.isArray(oc.review?.waves) ? oc.review.waves : null;
   const waves =
     wavesArr === null
