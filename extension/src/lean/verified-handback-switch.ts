@@ -18,3 +18,26 @@
 export function leanVerifiedHandbackEnabled(): boolean {
   return process.env.PI_ENSEMBLE_LEAN_VERIFIED_HANDBACK !== "0";
 }
+
+/**
+ * Whether a handback that had NO verified head records what it shipped anyway.
+
+ * The rewind rule has a second arm the first one leaves unsaid: the rule fired,
+ * found no green `verify` to take a head from, and moved nothing — so origin still
+ * holds the head the fix wave pushed, and the handback ships it. The step already
+ * knows this (it is the `NO_HEAD` shape `handback-rewind.ts` names), but until now
+ * it kept the knowledge to itself: with no head to move there was no head to name,
+ * and the four head fields stayed absent. That made "the rule fired and had no
+ * head" indistinguishable in the record from "the rule never spoke", which is the
+ * one confusion the recording exists to remove — an operator reading the handed-back
+ * run could not tell a certified head that was moved back from an uncertified one
+ * that was left in place.
+ *
+ * With the switch on, that handback records the head origin really holds, calls it
+ * NOT verified, and carries the rule's own reason. With it off the step reports as
+ * it did before the recording existed: no head fields at all. Only the literal
+ * `"0"` turns it off; unset and any other value leave it on.
+ */
+export function leanHandbackNoHeadRecordEnabled(): boolean {
+  return process.env.PI_ENSEMBLE_LEAN_HANDBACK_NOHEAD_RECORD !== "0";
+}
