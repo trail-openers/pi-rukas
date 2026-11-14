@@ -64,6 +64,15 @@ export interface Rewind {
   /** Why nothing moved, in the record's own words, when `shipped` is false. */
   reason?: string;
   /**
+   * The HEAD RULE's words for why there was no head to move, carried on the arm that
+   * had none. Distinct from `reason` because the two answer different questions:
+   * `reason` explains a push that did not happen, and this explains the FINDING that
+   * there was nothing to push to. The record quotes this one — an operator reading a
+   * handed-back run is asking why what they were sent is not what the gate approved,
+   * and the rule that judged the log is the authority on that.
+   */
+  noHeadReason?: string;
+  /**
    * The head the run pushed is ALREADY the head origin holds — the outcome the rule
    * wants, produced by an earlier step rather than by this one. Distinguishable from
    * a refusal precisely because no head was displaced: the caller must not print the
