@@ -113,6 +113,12 @@ export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   // tests were written from. 0 takes the section back out of both prompts.
   // The reader is `leanIssueProseEnabled` in lean/issue-prose.ts.
   flag("LEAN_ISSUE_PROSE", true),
+  // The routed deadline report's own wall: the report is the step the deadline's stop
+  // test exempts, so without this it is the one step nothing bounds. `0` puts the
+  // unbounded await back byte for byte. The reader is `leanReportBoundEnabled` in
+  // lean/handback-report-bound-switch.ts; the bound itself is `handoffReportBoundMs()`
+  // in lean/engine-report.ts — `handoffAllowanceMs()` plus REPORT_BOUND_HEADROOM_RATIO.
+  flag("LEAN_REPORT_BOUND", true),
   // The gate events on the host's result document (`issues[].gates`). `"0"` writes the
   // document exactly as it read before the object existed — no key, no placeholder — which
   // is what makes the object safe to ship on by default. Unset or any other value leaves
