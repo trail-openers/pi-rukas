@@ -136,29 +136,6 @@ export function strangerOnTop(
 }
 
 /**
- * Move origin's branch to `sha` WITHOUT this clone's remote-tracking ref following.
- *
- * The lease the rewind builds carries its EXPECTED value — `<ref>:<sha this step read
- * off origin>` — so a case that wants the lease to be the thing that refuses has to
- * make origin hold something other than the sha the step will read, and it has to do
- * that without telling this clone. A push from this clone refreshes
- * `refs/remotes/origin/<branch>` and a fetch refreshes it too; either way the case has
- * destroyed the state it claims to pin. A ref written straight into origin's ref store
- * (`forceOriginRef`) does not need a transport, but origin then names bytes nobody can
- * supply, and the push dies in transport (`bad object`) before the lease is evaluated.
- *
- * So the stranger is made in this clone — which is what puts its objects where the
- * rewind's push can supply them — and origin is moved behind the clone's back by
- * rewriting origin's own ref file to the sha the case already knows origin was pushed
- * to. Origin is the fixture's private bare repo, and `ls-remote` — the read the rewind
- * under test makes — reports exactly this value.
- *
- * The case that uses it asserts BOTH halves of its own premise: that the clone holds
- * the stranger's objects (so a refusal is the lease's and not a transport failure),
- * and that the clone's tracking ref still names the head the run pushed (so the lease
- * really is the mismatched one).
- */
-/**
  * Move origin's branch to a commit this clone made, WITHOUT this clone being told.
  *
  * The counterpart to `strangerOnTop`, and the reason both exist is that the two
