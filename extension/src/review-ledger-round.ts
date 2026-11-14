@@ -11,6 +11,38 @@
 import type { LedgerEntry } from "./review-ledger.ts";
 
 /**
+ * #2223 — the head an INCOMPLETE lens row carries.
+ *
+ * The round counter above never touches `headSha`, so an incomplete run wrote the
+ * head it was invoked at. `resolveDeltaSince` reads exactly that field as "where
+ * this branch was last reviewed", and `reviewedHeadFromEntries` reads it as the
+ * merged-head proof — so one round in which no lens started made its head look
+ * reviewed, and the next dispatch at that head answered "no changes since the
+ * last lens review" with no verdict at all. A run that never read a diff cannot
+ * testify about the commit it was pointed at.
+ *
+ * The row therefore carries the previous COMPLETED run's head — `undefined` when
+ * the branch has never completed one, which is the ledger's existing "unknown
+ * head" shape (a legacy row with no `headSha`), so every reader already has a
+ * correct rule for it.
+ *
+ * `undefined` rather than `entry.headSha` is the whole of it, and the reason is the
+ * field's contract: `LedgerEntry.headSha` means "the commit this row's verdict was
+ * reached AT", and `runLensReview` resolves it (#1039) BEFORE the fan-out, so an
+ * incomplete row is handed a real SHA for a head whose diff no lens ever read.
+ * Copying it is the lie. The shape is not redundant with the reader's own check
+ * (`resolveDeltaSince` refuses an incomplete row as a base): this is the row the
+ * MERGED-HEAD proof reads, the round-cap comparison reads, and the next round reads
+ * after the ledger is re-read by another process — none of which calls the delta
+ * reader. Keeping the head on the row would put the correctness of "a head nobody
+ * reviewed is not reviewed" in one caller's hands rather than in the data.
+ */
+function incompleteHeadSha(prev: LedgerEntry | undefined): string | undefined {
+  if (prev === undefined || prev.detail === "REVIEW_INCOMPLETE") return undefined;
+  return prev.headSha;
+}
+
+/**
  * #973 — advance the round counter for a lens write: a COMPLETED review
  * (verdict ISSUES_FOUND, APPROVED or CRITICAL_ISSUES_FOUND) runs as the
  * previous latest lens entry's `round` + 1 (legacy entries without `round`
@@ -54,5 +86,33 @@ export function bumpLensRound(entry: LedgerEntry, existing: LedgerEntry[]): Ledg
   const completed = entry.detail !== "REVIEW_INCOMPLETE";
   const next = completed ? (prev ? (prev.round ?? 1) : 0) + 1 : (prev?.round ?? 1);
   const incompleteRuns = completed ? 0 : (prev?.incompleteRuns ?? 0) + 1;
-  return { ...entry, round: next, incompleteRuns };
+  return {
+    ...bumpCarryHead(entry, completed, prev),
+    round: next,
+    incompleteRuns,
+  };
+}
+
+/**
+ * Apply #2223's head rule to a lens write: an INCOMPLETE row stops claiming the
+ * head it was invoked at, and a COMPLETED row is left exactly as written.
+ *
+ * A one-field copy for one field: spreading `entry` and overwriting `headSha`
+ * would have to spell out "unchanged" for every other field to say it, and
+ * `appendLedgerEntry` stamps the row after this returns — a rebuilt object would
+ * silently choose which of its own fields survive. Deleting a field is only
+ * possible on a copy of `entry`, hence the two arms.
+ */
+function bumpCarryHead(
+  entry: LedgerEntry,
+  completed: boolean,
+  prev: LedgerEntry | undefined,
+): LedgerEntry {
+  if (completed) return entry;
+  const headSha = incompleteHeadSha(prev);
+  if (headSha === undefined) {
+    const { headSha: _dropped, ...rest } = entry;
+    return rest;
+  }
+  return { ...entry, headSha };
 }

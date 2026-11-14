@@ -352,6 +352,14 @@ export async function appendLedgerEntry(
       // Bounded file: keep only the latest entry per (branch, kind) — the
       // guard (latestEntry) reads only the latest anyway, so older entries
       // would be dead weight accumulating one row per review run per clone.
+      // #973 — a lens write advances the branch's round counter in place:
+      // the dedupe above keeps the previous latest lens entry, so its round
+      // (legacy rows without one count as 1) IS the last recorded round, and
+      // the next is a pure function of the file's previous contents. The
+      // LATEST lens row per branch is what the guard reads; older rows for
+      // the same branch are historical (the guard's latestEntry picks the
+      // highest `at` regardless, so a hand-edited or legacy multi-row file
+      // still counts the most recent round).
       entries = dedupeLatest(entries);
       // #973 — a lens write advances the branch's round counter in place:
       // the dedupe above keeps the previous latest lens entry, so its round
@@ -361,7 +369,24 @@ export async function appendLedgerEntry(
       // the same branch are historical (the guard's latestEntry picks the
       // highest `at` regardless, so a hand-edited or legacy multi-row file
       // still counts the most recent round).
-      entries.push(bumpLensRound(stamped, entries));
+      // #2223 — an INCOMPLETE lens row is never suppressed, and it replaces whatever
+      // row the branch held rather than sitting beside it: `bumpLensRound` has
+      // already taken that row's completed `headSha` onto the new row, so leaving
+      // the old one in the file puts a reviewed head back in reach of every reader
+      // that picks by `at` — `latestEntry`, the merged-head proof, the round-cap
+      // comparison — none of which calls the delta reader. `dedupeLatest`'s
+      // per-(branch, kind) bound is what makes one row per branch a property rather
+      // than a favour: same-millisecond writes tie on `at`, and the tie must break
+      // toward the row this write produced. Adversarial rows keep the ordinary push
+      // — they carry no rule that can invalidate a field, and
+      // `test-adversarial-ledger-nonce-roundtrip.ts` depends on two rows for one key
+      // surviving so its decoy stays on disk.
+      const bumped = bumpLensRound(stamped, entries);
+      if (bumped.kind !== "lens" || bumped.detail !== "REVIEW_INCOMPLETE") {
+        entries.push(bumped);
+      } else {
+        entries = [...entries.filter((e) => e.branch !== bumped.branch || e.kind !== "lens"), bumped];
+      }
       // #1071 test-only hook: a two-process race (test-review-ledger-lock.ts)
       // straddles the read/rename gap deterministically by injecting a hook
       // (setLedgerCriticalSectionHookForTests) that awaits here. No-op in

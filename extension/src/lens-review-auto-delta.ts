@@ -30,6 +30,7 @@ import type { LensLedgerOutcome } from "./lens-ledger.ts";
 import type { AutoDeltaVeto, ForcedFullReason } from "./lens-review-delta-disclose.ts";
 import { forcedFullText } from "./lens-review-delta-disclose.ts";
 import type { LensReviewSummary, Verdict } from "./lens-review-format.ts";
+import { lensIncompleteForcesFull } from "./lens-review-incomplete-switch.ts";
 import { branchHasOpenCriticalRow } from "./review-findings-critical-probe.ts";
 import { isFullCommitSha } from "./review-head-sha.ts";
 import {
@@ -75,7 +76,23 @@ export async function resolveDeltaSince(
     file = undefined;
   }
   if (!file) return undefined;
-  const headSha = latestEntry(readLedgerAt(file), branch, "lens")?.headSha;
+  const entry = latestEntry(readLedgerAt(file), branch, "lens");
+  // #2223 — the row a round that ran no lens left behind is not evidence that its
+  // head was reviewed, so it starts no delta. THIS CHECK COMES BEFORE THE HEAD
+  // COMPARISON BELOW, and the order is the rule: a reader that consulted
+  // `headSha === headRef` first reached the same-head "no changes" refusal and
+  // never got here, which is the exact field shape this exists to close (a round
+  // at the head it already recorded). The writer (#2223, review-ledger-round.ts)
+  // now carries the last completed head on such a row instead, so this arm is the
+  // belt to that braces: a row written before the fix, or by a caller that named
+  // its own head, is still refused as a base.
+  if (lensIncompleteForcesFull() && entry?.detail === "REVIEW_INCOMPLETE") {
+    trace(
+      `lens-review: auto since skipped — the latest lens row for ${branch} is REVIEW_INCOMPLETE${entry.headSha === undefined ? "" : ` (recorded at ${entry.headSha.slice(0, 8)})`}; a round that ran no lens reviewed no head (full review)`,
+    );
+    return undefined;
+  }
+  const headSha = entry?.headSha;
   if (!headSha) return undefined;
   // #1039 — a legacy entry whose headSha is a branch name (pre-#1039
   // wrote the raw ref) must be treated as UNKNOWN (full review), never
@@ -217,6 +234,25 @@ export async function decideEmptyDelta(opts: {
     prev = file ? latestEntry(readLedgerAt(file), opts.branch, "lens") : undefined;
   } catch {
     prev = undefined;
+  }
+  // #2223 — the same rule `resolveDeltaSince` applies, checked BEFORE the
+  // same-head comparison below, and for the same reason: an incomplete round
+  // reviewed no head, so its row can neither be a delta base nor the "nothing
+  // changed since the last review" answer. A reader that reached
+  // `prev.headSha === opts.head` first reported the pre-fix refusal, which is how
+  // a round that ran no lens made its head look reviewed. The rule does NOT live
+  // here alone: `resolveDeltaSince` answers the same question one call earlier, on
+  // the arm that gets reached — `resolveReviewDiff` only calls this function once a
+  // delta base has resolved, so a caller that consulted the reader first and this
+  // one second would never have asked. The carry rule's own incomplete check below
+  // stays where it is: it guards the DIFFERENT case of an incomplete row at some
+  // other head being carried onto this one, and its reason string is the one
+  // `test-auto-delta-carry.ts` (E) pins.
+  if (lensIncompleteForcesFull() && prev?.detail === "REVIEW_INCOMPLETE") {
+    return {
+      kind: "full",
+      reason: "the recorded review was incomplete",
+    };
   }
   if (!prev?.headSha || !prev.patchId) {
     return { kind: "full", reason: "no recorded lens entry with a headSha and patch-id" };
