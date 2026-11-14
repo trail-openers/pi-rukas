@@ -3957,6 +3957,70 @@ The first line is the persisted note (`UnfenceRecord.note`, which the state file
 
 **Deferred, and what it still parks on:** `verifyConsolidation`'s `declaredPathInDiff` compares declared paths to `git diff --name-only` literally, the same defect class, at a HALT step — a cycle whose deliverables are declared as globs or `new `-annotated paths can still park as `commit-pr-incomplete-consolidation`. That is a follow-up; the converge-side matcher is fixed here.
 
+## Every lens failed on a large diff (`#2261`)
+
+### The symptom
+
+A `/work` cycle's six-pass review returns `REVIEW_INCOMPLETE` on a big branch, and the only
+number in the output is an exit code:
+
+```
+lens: SECURITY — attempt 1/4: exit 1
+lens: ARCHITECTURE — attempt 1/4: exit 1
+...  (six lanes, each ending in ~0.6 s)
+verdict: REVIEW_INCOMPLETE   cap: review-incomplete
+```
+
+Nothing says the diff was the problem. The plausible reading is flaky infrastructure, and the
+operator goes looking for a spawn bug. On the pre-#2261 shape the review also died one call
+earlier, at the range read, with a reason that named a size but not a limit:
+
+```
+git diff origin/main...origin/feature/huge exceeded the cap
+```
+
+### What was wrong
+
+Two ceilings, both too small and both silent about themselves:
+
+1. **The read could not return the diff.** The tool-side range and delta reads ran under a
+   1 MiB `maxBuffer`, and the overflow surfaced on the ERROR object with an empty `stderr`, so
+   a classifier that matched only `stderr` never saw it and the failure fell through to a
+   generic "`git diff … failed:`" with no size and no limit named. The layer above (`lean`'s
+   precondition read of the same range) allowed 16 MiB, so a diff between the two passed the
+   check that said the branch could be reviewed and then failed inside the review.
+2. **The prompt inlined the whole diff.** Each lens prompt interpolated its diff verbatim, and
+   the delta arm appended a ~100 KB full-branch orientation block on top of that. A ~795 KB
+   delta became six ~911 KB prompts; the provider answered HTTP 400 "maximum context length",
+   and because a refusal is deterministic in the prompt the retry loop spent four attempts and
+   ~4 M input tokens guaranteeing the same failure.
+
+### The fix
+
+Both halves are on by default and governed by one switch — [configuration.md](configuration.md)
+→ `PI_ENSEMBLE_LENS_LARGE_DIFF`.
+
+- Every size-sensitive git read on the base+head path shares **one** ceiling
+  (`REVIEW_DIFF_READ_MAX_BYTES`, 16 MiB), and an over-ceiling read now fails with a reason that
+  names the limit's constant, its value, and how many bytes git actually produced.
+- Each lens prompt carries only the whole files its budget affords. The omitted paths, their
+  added/removed counts, and the `git diff <base>...<head> -- <file>` command that reads them are
+  printed after the diff fence, where a reviewed diff that quotes the notice cannot impersonate
+  it. The full-branch block shares that same budget instead of adding to it.
+- A provider context-length refusal is named in the lane (it says so) and is **not** retried —
+  one spawn, not four.
+
+### What to do
+
+| Situation | Action |
+|---|---|
+| A lane says `provider context-length limit` | The bound is working; the change is simply larger than one prompt. Read the notice's file list and review the omitted files with the command it prints. |
+| The reason says `exceeded the limit REVIEW_DIFF_READ_MAX_BYTES` | The diff is past 16 MiB. Split the branch, or review a narrower range — the limit is deliberate, since six children × the whole range is the cost being bounded. |
+| You want the pre-#2261 behaviour exactly | `PI_ENSEMBLE_LENS_LARGE_DIFF=0`. Restores the 1 MiB reads and unbounded prompts verbatim, including both silent failure modes above. |
+
+Sources: `review-diff.ts`, `lens-diff-bound.ts`, `lens-provider-cause.ts`,
+`lens-review-child-failure.ts`.
+
 ## The offline smoke suite
 
 ### The offline suite is slow, or a test interferes with its neighbours
