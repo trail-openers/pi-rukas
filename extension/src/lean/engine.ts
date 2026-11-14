@@ -270,6 +270,13 @@ async function settle(
     outcome = await handler({
       repoRoot: opts.repoRoot,
       issue: opts.issue,
+      // `run`, not `logged`, is the run the handler sees. `startStep` has already saved the
+      // entry ahead, but its object carries no outcome yet, and `run` is the one the caller
+      // held — the two differ only by that write-ahead entry. What a handler reads is
+      // therefore "the log before this visit", and a handler that counted its own state in
+      // `ctx.run.steps` would be one turn ahead of the step it is writing. `ctx.steps` is
+      // the same array, spelled separately because the reporting handlers take it under that
+      // name; both are this run's log as it stood on entry.
       run,
       steps: run.steps,
       stepKey: key,

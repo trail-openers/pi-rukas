@@ -39,6 +39,7 @@
  */
 
 import { isFullCommitSha } from "../commit-sha.ts";
+import { testsFromLog } from "./build.ts";
 import type { CiDeps } from "./ci-deps.ts";
 import { CI_FULL_TIER, fullTierExcuse } from "./ci-excuse.ts";
 import type { GlForge } from "./ci-forge-gl.ts";
@@ -51,8 +52,16 @@ import type { HandlerCtx } from "./engine.ts";
 import { prNumberFromLog } from "./review-log.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import { specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
+import {
+  RED_CRITERIA_MAX,
+  RED_CRITERIA_MAX_CHARS,
+  RED_TIERS_MAX,
+  RED_TIER_MAX_CHARS,
+  clipNames,
+} from "./state-outcome-gates.ts";
+import type { RedRecord } from "./state-outcome-gates.ts";
 import type { PreexistingTierRecord } from "./state-outcome-maps.ts";
-import type { Outcome } from "./state.ts";
+import type { Outcome, Step } from "./state.ts";
 import { budgetFor } from "./step-budget.ts";
 import { preexistingReason } from "./verify-baseline-excuse.ts";
 import { assertTreeClean } from "./verify-recheck.ts";
@@ -152,6 +161,35 @@ async function assertDiskAtVerifiedHead(
 }
 
 /**
+ * What a red `ci` records about the gate that failed, beside its reason.
+ *
+ * The step has three reds and they are three different failures with three different
+ * owners — no full tier configured, the forge's checks, and the tier itself — so each
+ * names what it ran. The tier's own name is `ci`'s own constant, and its criteria come
+ * from the same criterion→files map `verify` attributes with: the full tier is the
+ * project's whole suite, which is what those frozen tests are.
+ */
+function ciRed(opts: {
+  reason: string;
+  tiers: readonly string[];
+  criteria: readonly string[];
+}): Outcome & { red: RedRecord } {
+  return {
+    kind: "red",
+    reason: opts.reason,
+    red: {
+      tiers: clipNames(opts.tiers, RED_TIERS_MAX, RED_TIER_MAX_CHARS),
+      criteria: clipNames(opts.criteria, RED_CRITERIA_MAX, RED_CRITERIA_MAX_CHARS),
+    },
+  };
+}
+
+/** Every criterion the run's frozen contract maps to any test file at all. */
+function contractCriteria(steps: Step[]): string[] {
+  return Object.keys(testsFromLog(steps));
+}
+
+/**
  * The `ci` step. Returns `green` | `red`; THROWS on infrastructure.
  *
  * The head it observes is the run's own: the newest decided `verify`'s
@@ -186,10 +224,12 @@ export async function ciOutcome(ctx: HandlerCtx, deps: CiDeps): Promise<Outcome>
     : undefined;
   const full = (cfg.verify.full ?? configured ?? "").trim();
   if (full === "")
-    return {
-      kind: "red",
+    return ciRed({
       reason: `no full verify tier is configured (.pi/work.json verify.full, or .pi/verify-cmd at ${verified.slice(0, 12)}): a run must not land on the fast tier plus the frozen tests alone`,
-    };
+      // The tier this step was owed and never got is the fact a host triages the run on.
+      tiers: [CI_FULL_TIER],
+      criteria: contractCriteria(ctx.steps),
+    });
 
   // The forge is resolved by the SAME detection `publish` and `land` obey, so the
   // step cannot read a GitLab MR with GitHub commands. `undefined` is an answer
@@ -227,7 +267,14 @@ export async function ciOutcome(ctx: HandlerCtx, deps: CiDeps): Promise<Outcome>
     // arm where that is already established above.
     forge as GlForge,
   );
-  if (checks !== undefined) return { kind: "red", reason: checks };
+  if (checks !== undefined)
+    return ciRed({
+      reason: checks,
+      // The checks the run's own contract exercises are the ones a red pipeline answers
+      // for; which single row refused is the forge's sentence, not a criterion.
+      tiers: [CI_FULL_TIER],
+      criteria: contractCriteria(ctx.steps),
+    });
 
   // The disk is read AGAIN, immediately before the tier, because the tier runs
   // from disk: see `assertDiskAtVerifiedHead` for the bound this proves (and the
@@ -259,7 +306,12 @@ export async function ciOutcome(ctx: HandlerCtx, deps: CiDeps): Promise<Outcome>
     stream: tier.stream,
     ran: tier.ran,
   });
-  if (excuse === undefined) return { kind: "red", reason: tier.reason };
+  if (excuse === undefined)
+    return ciRed({
+      reason: tier.reason,
+      tiers: [CI_FULL_TIER],
+      criteria: contractCriteria(ctx.steps),
+    });
   return {
     kind: "green",
     reason: `required checks CLEAN at ${verified} — ${preexistingReason([CI_FULL_TIER])}`,

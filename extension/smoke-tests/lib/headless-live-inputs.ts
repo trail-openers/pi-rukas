@@ -25,6 +25,7 @@ import { hostSpawnCap, hostSpawnWaitMs } from "../../src/host-spawn-slots.ts";
 import { leanDeadlineHandbackEnabled } from "../../src/lean/deadline-handback.ts";
 import { leanGuardFailClosed } from "../../src/lean/guard-fail-closed-switch.ts";
 import { leanBuildIssueProseEnabled, leanIssueProseEnabled } from "../../src/lean/issue-prose.ts";
+import { leanResultGatesEnabled } from "../../src/lean/result-gates-switch.ts";
 import { leanReviewSpecSplitEnabled } from "../../src/lean/review-spec-split.ts";
 import { leanReviewProblemEnabled } from "../../src/lean/review-problem-switch.ts";
 import { leanRewindLeaseBinds } from "../../src/lean/rewind-lease-switch.ts";
@@ -180,6 +181,9 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // #2262 — whether the rewind's branch refspec stays unforced so its lease binds. The
   // reader is `v !== "0"`, so the gate's LIVE loop (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LEAN_REWIND_LEASE_BINDS", leanRewindLeaseBinds],
+  // The gate events on the host's result document. The reader is `v !== "0"`, so the
+  // gate's LIVE loop (env deleted) pins "unset means on".
+  ["PI_ENSEMBLE_LEAN_RESULT_GATES", leanResultGatesEnabled],
   // #2255 — the publishable-branch guard's fail-closed arm. The reader is `v !== "0"`,
   // so the gate's LIVE loop (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LEAN_GUARD_FAIL_CLOSED", leanGuardFailClosed],
