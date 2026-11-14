@@ -18,8 +18,8 @@
 import { isFullCommitSha } from "../commit-sha.ts";
 import { trace } from "../trace.ts";
 import { type CycleBudgetMs, flagBudgetMs } from "../work-driver-deadline.ts";
-import { deadlineReason, deadlineStopsSteps, leanDeadline } from "./deadline.ts";
 import { deadlineStopShouldReport } from "./deadline-handback.ts";
+import { deadlineReason, deadlineStopsSteps, leanDeadline } from "./deadline.ts";
 import { engineFacts } from "./engine-facts.ts";
 import { errorOutcome } from "./error-outcome.ts";
 import { acquireLock } from "./lock.ts";

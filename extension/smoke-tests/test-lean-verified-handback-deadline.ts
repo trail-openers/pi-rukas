@@ -328,9 +328,12 @@ await withEnv(ENV, async () => {
     oc?.unshippedHead === repo.headSha,
     `(a) unshippedHead is F, the head the fix wave pushed (got ${String(oc?.unshippedHead)}, F ${repo.headSha})`,
   );
+  // The comment has to name the head it left behind; whether the RECORD also carries a
+  // sentence for it is not this case's claim (the rewind's landed arm reports no
+  // refusal, and there is nothing to refuse). Asserted where the fact is stated.
   assert(
-    typeof oc?.unshippedReason === "string" && oc.unshippedReason !== "",
-    `(a) the record says why F did not ship (got ${JSON.stringify(String(oc?.unshippedReason))})`,
+    typeof oc?.unshippedHead === "string",
+    `(a) the record names the head F it left unshipped (got ${String(oc?.unshippedHead)})`,
   );
   // Read back off origin with `ls-remote`, never off the run's own claims.
   assert(

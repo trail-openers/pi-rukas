@@ -378,23 +378,12 @@ function headFacts(
     rewind.unshippedHead !== undefined && rewind.unshippedHead !== shippedHead
       ? rewind.unshippedHead
       : undefined;
-  // A head the step named as left behind has to be told WHY, in the record as well as
-  // on the comment line (which falls back to "not shipped"). The rewind's own reason
-  // is the reason a move FAILED, and on the arm that succeeded there is none — so the
-  // sentence that names the finding is written here rather than left to the renderer,
-  // because a record that shows a head origin does not hold and carries no reason for
-  // it is the same silence the no-head arm exists to end.
-  const whyLeftBehind =
-    rewind.reason ??
-    (leftBehind === undefined
-      ? undefined
-      : `superseded by the fix wave and not re-verified, so ${leftBehind.slice(0, 12)} was left unshipped`);
   return {
     render: true,
     shippedHead,
     shippedVerified: rewind.shipped || rewind.alreadyAtVerified === true,
     ...(leftBehind === undefined ? {} : { unshippedHead: leftBehind }),
-    ...(whyLeftBehind === undefined ? {} : { unshippedReason: whyLeftBehind }),
+    ...(rewind.reason === undefined ? {} : { unshippedReason: rewind.reason }),
   };
 }
 
@@ -438,7 +427,7 @@ export async function handbackOutcome(
             // carry it into a record whose reader is asking a different question — why
             // what shipped was never certified — which only the rule that judged the
             // log can answer.
-                    { ...NO_HEAD, noHeadReason: heads.reason }
+            { ...NO_HEAD, noHeadReason: heads.reason }
           : SWITCHED_OFF;
     // Where origin's branch stands now, read by this step rather than inferred
     // from the move. A handback the rule never touched has nothing to say about

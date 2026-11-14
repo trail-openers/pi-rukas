@@ -244,6 +244,16 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   // also takes it out, since one renderer serves all three seats.
   // The reader is `leanBuildIssueProseEnabled` in lean/issue-prose.ts.
   flag("LEAN_BUILD_ISSUE_PROSE", true),
+  // A deadline stop that left a `fixed` review uncertified routes the run into its
+  // report instead of stamping it where it stood; `"0"` restores the direct stamp,
+  // where the reporting step never ran. The reader is `leanDeadlineHandbackEnabled`
+  // in lean/deadline-handback.ts.
+  flag("LEAN_DEADLINE_HANDBACK", true),
+  // A handback whose rewind found no verified head records the head origin really
+  // holds and calls it unverified; `"0"` records none of the head fields, the
+  // pre-recording behaviour. The reader is `leanHandbackNoHeadRecordEnabled` in
+  // lean/verified-handback-switch.ts.
+  flag("LEAN_HANDBACK_NOHEAD_RECORD", true),
   // #2171 — show the specify/challenge adversary the issue prose its frozen
   // tests were written from. 0 takes the section back out of both prompts.
   // The reader is `leanIssueProseEnabled` in lean/issue-prose.ts.
@@ -260,16 +270,9 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   flag("LEAN_RUNNER_PREFLIGHT", true),
   // A handback whose newest work step is a `fixed` review moves origin's branch back
   // to the newest green verify's head and records which head shipped; `"0"` reports
-  // and moves nothing, the pre-rule behaviour.
+  // and moves nothing, the pre-rule behaviour. The reader is
+  // `leanVerifiedHandbackEnabled` in lean/verified-handback-switch.ts.
   flag("LEAN_VERIFIED_HANDBACK", true),
-  // A deadline stop that left a `fixed` review uncertified routes the run into its
-  // report instead of stamping it where it stood; `"0"` restores the direct stamp,
-  // where the reporting step never ran.
-  flag("LEAN_DEADLINE_HANDBACK", true),
-  // A handback whose rewind found no verified head records the head origin really
-  // holds and calls it unverified; `"0"` records none of the head fields, the
-  // pre-recording behaviour.
-  flag("LEAN_HANDBACK_NOHEAD_RECORD", true),
   // Unset: derived from the host budget (CPUs, memory, pids.max); 0 = unbounded.
   // #1564 — a lens child's run bound (spawn-child-bound.ts).
   ms("LENS_BOUND_MS", 1_800_000),

@@ -159,17 +159,17 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // #2228 — the builder seat's issue-prose section. The reader is `v !== "0"`, so
   // the gate's LIVE loop (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE", leanBuildIssueProseEnabled],
+  ["PI_ENSEMBLE_LEAN_DEADLINE_HANDBACK", leanDeadlineHandbackEnabled],
+  ["PI_ENSEMBLE_LEAN_HANDBACK_NOHEAD_RECORD", leanHandbackNoHeadRecordEnabled],
   // The lean review seats' spec split. The reader is `v !== "0"`, so the LIVE
   // assertion in the gate (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LEAN_REVIEW_SPEC_SPLIT", leanReviewSpecSplitEnabled],
   // #2212 — #2179's preflight/submodule behaviour. The reader is `v !== "0"`, so
   // the gate's LIVE loop (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT", leanRunnerPreflightEnabled],
+  ["PI_ENSEMBLE_LEAN_VERIFIED_HANDBACK", leanVerifiedHandbackEnabled],
   // The verified-handback rule. The reader is `v !== "0"`, so the gate's LIVE
   // loop (env deleted) pins "unset means on".
-  ["PI_ENSEMBLE_LEAN_VERIFIED_HANDBACK", leanVerifiedHandbackEnabled],
-  ["PI_ENSEMBLE_LEAN_DEADLINE_HANDBACK", leanDeadlineHandbackEnabled],
-  ["PI_ENSEMBLE_LEAN_HANDBACK_NOHEAD_RECORD", leanHandbackNoHeadRecordEnabled],
   ["PI_ENSEMBLE_ISSUE_IMAGES", () => issueImagesEnabled()],
   ["PI_ENSEMBLE_LENS_EVIDENCE", evidenceSupplyEnabled],
   ["PI_ENSEMBLE_LENS_ROUND_CAP_MERGE", roundCapMergeEnabled],
