@@ -254,6 +254,11 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   // bound. 0 restores the single bounded block. The reader is
   // `leanReviewSpecSplitEnabled` in lean/review-spec-split.ts.
   flag("LEAN_REVIEW_SPEC_SPLIT", true),
+  // #2262 — the rewind's lease: `"0"` puts the leading `+` back on the branch refspec,
+  // which makes git skip the lease and force-update a branch somebody else moved.
+  // Unset or any other value leaves the refspec unforced so the lease binds. The reader
+  // is `leanRewindLeaseBinds` in lean/rewind-lease-switch.ts.
+  flag("LEAN_REWIND_LEASE_BINDS", true),
   // #2212 — #2179's runner preflight and the reset's submodule init, both off
   // only on `"0"`, which restores v0.14.71's specify (no probe, no submodule
   // call, exit 11 where the preflight would have handed back at 10).
