@@ -9,7 +9,9 @@
  * counts would silently stop seeing findings. So this file is the record's own list,
  * and `test-headless-work-lean-gates.ts` pins it against the reviewing layer's — the
  * one place the two are allowed to be compared, so a drift is a failing test rather
- * than a host reading half the severities.
+ * than a host reading half the severities. The pin is not a restatement of the list:
+ * it compares against `SEVERITIES` imported from that layer, which is the only thing
+ * that can notice the layer gaining a word this list does not have.
  */
 
 export const GATE_SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW"] as const;

@@ -11,8 +11,10 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { HEADLESS_FEATURES } from "../src/headless/capabilities.ts";
+import { buildCapabilities, HEADLESS_FEATURES } from "../src/headless/capabilities.ts";
 import { HEADLESS_INPUTS } from "../src/headless/inputs.ts";
+import { GATE_SEVERITIES } from "../src/lean/gate-severities.ts";
+import { SEVERITIES } from "../src/review-threshold-types.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 
 const { assert, failures } = makeAssert();
@@ -52,6 +54,52 @@ const { assert, failures } = makeAssert();
   assert(
     docText.includes("`PI_ENSEMBLE_LEAN_RESULT_GATES`"),
     "docs/configuration.md carries a row for the switch",
+  );
+}
+
+// `issues[].gates` is a host-facing surface, and `docs/headless.md` is the host contract
+// — the file a host integrator reads, and the one the projection's own comments cite for
+// which absence rule governs which field. A surface named only in `configuration.md` is
+// a surface no host reading the contract finds.
+{
+  const host = readFileSync(
+    path.resolve(import.meta.dirname, "..", "..", "docs", "headless.md"),
+    "utf8",
+  );
+  assert(
+    host.includes("`issues[].gates`"),
+    "docs/headless.md documents issues[].gates as a host surface",
+  );
+  assert(
+    host.includes("features.leanGates"),
+    "docs/headless.md names the capability a host checks before reading the object",
+  );
+  // The two absence rules are the part a host cannot infer from one run's JSON, and the
+  // projection's comments point here for them rather than restating them.
+  assert(
+    host.includes("NULL rule") && host.includes("OMISSION rule"),
+    "docs/headless.md states which gates fields follow the null rule and which the omission rule",
+  );
+}
+
+// The record's tally is keyed by the words the REVIEWING layer publishes, and the list
+// is restated in `lean/gate-severities.ts` rather than imported (that file's jsdoc says
+// why). The restatement is only safe while something compares it to the original — so
+// this does, against `SEVERITIES` itself. Without it a fifth word at the layer silently
+// drops every finding filed under it from `gates.review.rounds`, which then loads clean
+// and prints as a whole tally.
+{
+  assert(
+    JSON.stringify(GATE_SEVERITIES) === JSON.stringify(SEVERITIES),
+    `GATE_SEVERITIES is the reviewing layer's vocabulary, in its order (record ${JSON.stringify(GATE_SEVERITIES)} vs reviewing layer ${JSON.stringify(SEVERITIES)})`,
+  );
+  // The published capabilities list is the host's copy of the same vocabulary, so a
+  // drift between it and the record's own list is a host coding against a word the
+  // loader refuses.
+  const published = buildCapabilities().contracts.resultSchema.gateSeverities;
+  assert(
+    JSON.stringify(published) === JSON.stringify(GATE_SEVERITIES),
+    `--capabilities publishes the vocabulary the record is keyed by (${JSON.stringify(published)})`,
   );
 }
 
