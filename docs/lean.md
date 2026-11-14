@@ -39,6 +39,24 @@ engine re-reads its own log — the newest decided `verify` **and** `ci` must bo
 be green and no `draft` marker may be standing. Green is the only verdict that
 clears a draft.
 
+Every seat marked *child* in that table is dispatched with no forge login of its
+own, and that is true whether or not the host holds a token: the parent's broker
+binds whenever the role is not `ops` (`planChildPermissions` → `startForgeBroker`,
+`spawn-permission.ts`), so on a token-less host — an offline trial, a `gh` shim on
+`PATH` — the child still gets `forge_read` and still reaches the parent, which runs
+the read with **its own** `gh`/`glab` and answers with whatever that CLI prints
+(`runForgeRead` → `detectForge` → `executeForgeRead`, `forge-read-broker.ts`); a
+failing `gh` comes back as a refusal naming the reason, never as empty output, and a
+shim's canned text is served as the read. What the child cannot do is call the CLI
+itself as a credentialed client — the five token variables are deleted and both
+config roots point at a per-child empty directory (`stripForgeCredentials`,
+`child-forge-env.ts`) — while `PATH` is left alone, so a child that runs the shim
+directly gets the shim's own unauthenticated answer. No `PI_ENSEMBLE_*` switch
+governs the strip or the broker; `PI_ENSEMBLE_FORGE=none` is the lever that turns
+the forge off, and the lean run's own issue reads are made by the driver
+(`fetchIssueBody` via `forgeFor`, `lean/io.ts`), so this surface is live only where
+a child calls `forge_read` itself.
+
 ## What an issue needs
 
 The issue body carries **one** fenced block whose info string is exactly
