@@ -21,6 +21,9 @@
  * helper both construction paths call, so its behaviour is asserted on a literal
  * env too.
  */
+// Must stay first: points the role prompts at a test-owned dir before src/roles.ts
+// resolves them at module load (#1579, same helper as test-child-tmpdir-2241.ts).
+import "./lib/cancel-prompts.ts";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
