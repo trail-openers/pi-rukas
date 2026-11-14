@@ -40,6 +40,7 @@ import { GATE_SEVERITIES } from "../lean/gate-severities.ts";
 import type { ReviewBoundRecord } from "../lean/review-bound.ts";
 import type { ReviewRoundCounts } from "../lean/state-outcome-gates.ts";
 import { type Outcome, type Step, newestDecided } from "../lean/state.ts";
+import { gateClearedPublishedHead, publishedHeadOf } from "./work-lean-pr.ts";
 
 /** How many entries of one list a host may be handed. The record caps its own writes;
  * this is the print cap, and the smaller of the two governs what a host parses. */
@@ -292,18 +293,31 @@ function handbackGates(steps: Step[], redact: (s: string) => string): GatesResul
   const unshippedHead = headOf(oc?.unshippedHead);
   const unshippedReason = textOf(oc?.unshippedReason, redact);
   // The handback's OWN record wins where it spoke. `shippedHead`/`shippedVerified` are
-  // what this step wrote after its rewind settled — including the case the publish-time
+  // what this step wrote after its rewind settled — including the case the publish-side
   // reading cannot see, where the rewind moved origin back to the verified head, so what
-  // shipped is no longer what `publish` recorded. Where the step said nothing (a run that
-  // never reached handback, or one whose rule never fired) the caller's publish-side
-  // reading answers, and that is the same evidence `prState` stands on.
-  const head = headOf(oc?.shippedHead);
-  const verified =
-    head === null ? null : typeof oc?.shippedVerified === "boolean" ? oc.shippedVerified : null;
+  // shipped is no longer what `publish` recorded.
+  const own = headOf(oc?.shippedHead);
+  if (own !== null) {
+    return {
+      reason: textOf(oc?.reason, redact),
+      head: own,
+      verified: typeof oc?.shippedVerified === "boolean" ? oc.shippedVerified : null,
+      unshipped: unshippedHead === null ? null : { head: unshippedHead, reason: unshippedReason },
+    };
+  }
+  // Where the step said nothing — a run that never reached handback, one whose rule never
+  // fired, or one whose no-head recording switch is off — the PUBLISH-SIDE reading answers,
+  // which is the same evidence `prState` stands on: the head the newest DECIDED `publish`
+  // says it shipped, put back through the gate's own test. Both null when there is no PR to
+  // read a head off. A host that read `prState: "ready"` beside `head: null` would be told
+  // the run is mergeable and simultaneously that it shipped nothing, which is two surfaces
+  // telling two stories about one commit — the failure this function's header exists to
+  // prevent, and the reason the fallback is the publish-side head rather than silence.
+  const published = publishedHeadOf(newestDecided(steps, "publish"));
   return {
     reason: textOf(oc?.reason, redact),
-    head,
-    verified,
+    head: published ?? null,
+    verified: published === undefined ? null : gateClearedPublishedHead(steps, published),
     unshipped: unshippedHead === null ? null : { head: unshippedHead, reason: unshippedReason },
   };
 }
@@ -311,10 +325,10 @@ function handbackGates(steps: Step[], redact: (s: string) => string): GatesResul
 /**
  * The whole object for one run.
  *
- * `heads` is passed in rather than computed here so there is exactly ONE reader of
- * "which head did this run ship, and did its gate clear it" in the projection — the
- * caller has already worked it out for `prState`, and two derivations of one fact is how
- * two fields start telling two stories.
+ * The head fields are read through `work-lean-pr`'s helpers rather than re-derived here,
+ * so there is exactly ONE reader of "which head did this run ship, and did its gate clear
+ * it" across this projection and `prState` — two derivations of one fact is how two fields
+ * start telling two stories.
  */
 export function leanGates(steps: Step[], redact: (s: string) => string): GatesResult {
   return {

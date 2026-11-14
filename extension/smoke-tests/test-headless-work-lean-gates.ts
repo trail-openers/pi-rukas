@@ -379,14 +379,38 @@ for (const [value, want] of [
       JSON.stringify({ head: UNSHIPPED, reason: "the rewind's lease refused the push" }),
     `handback: the head it displaced, with the reason beside it (${JSON.stringify(h.unshipped)})`,
   );
-  const still = await driveLean("handed-back", 10, gatesLog({}));
-  const moved = gatesOf(still.issue).handback as Record<string, unknown>;
+  // Two silent hands, one shape. The log's `heads: null` arm is the run whose handback
+  // recorded NO head at all — the rule never fired, or the no-head recording switch is
+  // off — and both head fields still answer, off the publish side: nulls there would read
+  // "shipped nothing" beside `prState: "ready"`, two surfaces telling two stories about one
+  // commit. The log with no `handback` step at all (`review: null`, so nothing reaches the
+  // reporting step) is where four nulls really are the answer.
+  const silent = await driveLean("handed-back", 10, gatesLog({ heads: null }));
+  const moved = gatesOf(silent.issue).handback as Record<string, unknown>;
   assert(
     moved.reason === "handback comment posted" &&
-      moved.head === null &&
-      moved.verified === null &&
+      moved.head === HEAD &&
+      moved.verified === true &&
       moved.unshipped === null,
-    `handback: a handback that moved nothing is four nulls, not four omissions (${JSON.stringify(moved)})`,
+    `handback: a handback that recorded no head still says what its PR stands on, read the way prState reads it (${JSON.stringify(moved)})`,
+  );
+  const never = await driveLean(
+    "handed-back",
+    10,
+    gatesLog({ heads: null, pr: false, ci: null, review: null }),
+  );
+  const none = gatesOf(never.issue).handback as Record<string, unknown>;
+  assert(
+    none.head === null && none.verified === null && none.unshipped === null,
+    `handback: a run that reached no reporting step and opened no PR is nulls, not omissions (${JSON.stringify(none)})`,
+  );
+  const ready = await driveLean("handed-back", 10, gatesLog({ review: "done", draft: false }));
+  const mergeable = gatesOf(ready.issue).handback as Record<string, unknown>;
+  assert(
+    ready.issue?.prState === "ready" &&
+      mergeable.head === HEAD &&
+      mergeable.verified === true,
+    `handback: a run ready to merge never reads "no head" — the publish-side head answers where the step was silent (${JSON.stringify(mergeable)} / ${String(ready.issue?.prState)})`,
   );
   // The drift case, and the agreement it proves: the shipped head is not the head the
   // gate certified, so the run is not ready. `verified` false and `prState` draft are

@@ -121,6 +121,11 @@ export function engineGatesPlan(r: EngineGatesRun): Record<string, Outcome[]> {
     // engine ends a run whose scripted step ran out of verdicts at `review + error`, and a
     // case would then be asserting about a record no review ever wrote. A `fixed` first
     // round is re-reviewed before the step may answer, so the visits are the verdicts.
+    // "The engine wrote this" covers the WALK, not the review's own record: the queue here
+    // scripts the `review` OUTCOME (see `reviewEntry`), so the counts and the wave head on
+    // it are the case's, not the step's. The writer behind them — `noteRound`/`noteWave` in
+    // `src/lean/review.ts` — is driven by the real handler in
+    // `test-lean-review-gate-record.ts`, and only that file can say a run can record them.
     review: Array.from({ length: Math.max(review.length, reviewVisits(publishes)) }, (_, i) =>
       reviewEntry(review[i] ?? "done", r.record),
     ),

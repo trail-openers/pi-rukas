@@ -82,6 +82,15 @@ const { assert, failures } = makeAssert();
     half?.name === "LeanStateError",
     `G9: a round missing two of the four is refused too — a partial tally is the silent half of the same bug (got: ${String(half)})`,
   );
+  // And WHICH rule refused it. Asserting only that a throw came back is satisfied by
+  // any rule in the chain: with the loader's exactness rule deleted, the partial tally
+  // falls through to the count rule below it (or to no rule at all) and this case stays
+  // green while the projection silently drops the round. The message is the identity of
+  // the rule, so the case pins the rule rather than a throw.
+  assert(
+    half?.message?.includes("must name exactly") === true,
+    `G9: the partial tally is refused by the exactness rule, not incidentally by another one (${String(half?.message)})`,
+  );
 }
 
 console.log(`\nexit ${String(failures())}`);
