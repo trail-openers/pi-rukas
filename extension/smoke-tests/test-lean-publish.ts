@@ -40,6 +40,10 @@
  * verdict colours — against the same fixture.
  */
 
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import { tmpdir } from "node:os";
 import { handbackOutcome } from "../src/lean/handback.ts";
 import { PublishInfraError } from "../src/lean/publish-deps.ts";
 import type { PiSpec } from "../src/lean/spec.ts";
@@ -362,12 +366,37 @@ for (const [issue, branch] of [
 
 // ----------------------------------------------------------- (k) the wiring is real
 {
+  // The rig has to be a clone with a mainline, not `/nonexistent`: the guard now
+  // refuses an unresolvable mainline (its own suites pin that), so a bare fake path
+  // would have the step refuse for the RIGHT reason two steps too early and the
+  // assertion below would pass without ever reaching the worktree check. Origin is a
+  // bare repo and the clone carries `refs/remotes/origin/HEAD`; only the worktree is
+  // absent, which is the one fact this case is about.
+  const repoRoot = mkdtempSync(path.join(tmpdir(), "lean-publish-wiring-"));
+  ROOTS.push(repoRoot);
+  const origin = mkdtempSync(path.join(tmpdir(), "lean-publish-wiring-origin-"));
+  ROOTS.push(origin);
+  const g = (root: string, ...args: string[]): string =>
+    execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
+  // `symbolic-ref`, not `update-ref`: the guard's first probe is
+  // `git symbolic-ref --short refs/remotes/origin/HEAD`, which refuses a value stored
+  // as a plain ref, so the clone has to carry the ref the way a real clone does.
+  g(origin, "init", "-q", "--bare");
+  g(repoRoot, "init", "-q", "-b", "main");
+  writeFileSync(path.join(repoRoot, "f.txt"), "x");
+  g(repoRoot, "add", "f.txt");
+  g(repoRoot, "-c", "user.email=t@e", "-c", "user.name=t", "commit", "-q", "-m", "c");
+  g(repoRoot, "remote", "add", "origin", origin);
+  g(repoRoot, "push", "-q", "origin", "main");
+  // A real clone carries it as a symbolic ref (that is what `git clone -b` writes),
+  // so the probe can read it.
+  g(repoRoot, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
   const { phase1Handlers } = await import("../src/lean/command.ts");
-  const handler = phase1Handlers("/nonexistent", 412).publish;
+  const handler = phase1Handlers(repoRoot, 412).publish;
   let message = "no publish handler";
   if (handler) {
     message = await handler({
-      repoRoot: "/nonexistent",
+      repoRoot,
       issue: 412,
       run: { branch: "", counters: { draft: false } },
       steps: [],

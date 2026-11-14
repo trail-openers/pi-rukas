@@ -343,3 +343,31 @@ function ensure(): void {
     );
   }
 }
+
+/**
+ * Give a fixture clone the ref its guard reads, written as its OWN git call.
+ *
+ * The publishable-branch guard (`assertPublishableBranch`) fails closed: a clone
+ * that cannot read its own `refs/remotes/origin/HEAD` and has no `gh` asks origin
+ * over the network, and a fixture whose git children run on this isolated env has no
+ * business depending on what that answers — it just refuses every push. So every
+ * legitimate run in the review, rewind and handback suites needs the ref, and the
+ * two rigs that build a repo write it through this one call.
+ *
+ * Two details are the point and neither is decoration:
+ *
+ *   - `symbolic-ref` rather than `push -u`, because the upstream a clone tracks is
+ *     not what any of these cases are about; only the ref the guard reads is. A
+ *     `push -u` would also be a second network child sitting in the push's seat in
+ *     the suite that reads the LAST git child its executor records as the push.
+ *   - the caller passes the dir, not the env: the writer is the rig's own `git`
+ *     helper, so the ref is written with the same identity and isolation every
+ *     other setup call in that rig gets.
+ */
+export function writeCloneMainlineRef(
+  repoRoot: string,
+  run: (dir: string, ...args: string[]) => string,
+  branch = "main",
+): void {
+  run(repoRoot, "symbolic-ref", "refs/remotes/origin/HEAD", `refs/remotes/origin/${branch}`);
+}

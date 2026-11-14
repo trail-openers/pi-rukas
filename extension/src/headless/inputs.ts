@@ -96,8 +96,7 @@ const ms = (name: string, dflt: number | null, scope?: InputScope) =>
   input(name, "duration-ms", dflt, scope);
 const int = (name: string, dflt: number | null, scope?: InputScope, opt?: Opt) =>
   input(name, "integer", dflt, scope, opt);
-const str = (name: string, dflt: string | null, scope?: InputScope) =>
-  input(name, "string", dflt, scope);
+const str = (n: string, d: string | null, s?: InputScope) => input(n, "string", d, s);
 const dir = (name: string, dflt: string | null, scope: InputScope = "install") =>
   input(name, "path", dflt, scope);
 const list = (name: string, separator: string, dflt: string | null, scope?: InputScope) =>
@@ -230,10 +229,15 @@ export const HEADLESS_INPUTS: readonly HostInput[] = [
   // also takes it out, since one renderer serves all three seats.
   // The reader is `leanBuildIssueProseEnabled` in lean/issue-prose.ts.
   flag("LEAN_BUILD_ISSUE_PROSE", true),
-  // The two handback switches: the deadline stop's route to the report, and the
-  // no-head handback's record. Readers in lean/deadline-handback.ts and
-  // lean/verified-handback-switch.ts.
+  // The deadline stop's route into the reporting step. The reader is
+  // `leanDeadlineHandbackEnabled` in lean/deadline-handback.ts.
   flag("LEAN_DEADLINE_HANDBACK", true),
+  // The publishable-branch guard's fail-closed arm: a mainline neither the clone
+  // nor origin will name refuses the push instead of passing it. The reader is
+  // `leanGuardFailClosed` in lean/guard-fail-closed-switch.ts.
+  flag("LEAN_GUARD_FAIL_CLOSED", true),
+  // The no-head handback's own record. The reader is
+  // `leanHandbackNoHeadRecordEnabled` in lean/verified-handback-switch.ts.
   flag("LEAN_HANDBACK_NOHEAD_RECORD", true),
   // #2171 — show the specify/challenge adversary the issue prose its frozen
   // tests were written from. 0 takes the section back out of both prompts.

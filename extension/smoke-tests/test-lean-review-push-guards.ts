@@ -43,10 +43,10 @@ import {
   gitEnv,
   lensRoundFor,
   makeRepo,
+  passed,
   rejectsThenClears,
   result,
   runStep as run,
-  passed,
   setup,
 } from "./lib/lean-review-fixtures.ts";
 
@@ -395,14 +395,24 @@ for (const { name, bothShip } of UNSAFE) {
   );
   const savedPath = process.env.PATH;
   process.env.PATH = "/nonexistent-for-this-case";
+  // The guard takes the executor it probes through, so this case hands it one that
+  // cannot leave the process: every call it is asked for — the two local probes and
+  // the origin probe alike — fails as though nothing had answered. That is the
+  // clone this case is describing, and the arm #2255 closes: the guard used to
+  // return quietly here and let the push run unchecked.
+  const nothingAnswers = async (cmd: string): Promise<{ stdout: string }> => {
+    probesSeen.push(cmd);
+    throw Object.assign(new Error("nothing answered"), { code: 1, killed: false, signal: null });
+  };
+  const probesSeen: string[] = [];
   let passQuietly: boolean;
   let mainRefused: boolean;
   try {
-    passQuietly = await assertPublishableBranch(repoRoot, BRANCH).then(
+    passQuietly = await assertPublishableBranch(repoRoot, BRANCH, nothingAnswers).then(
       () => true,
       () => false,
     );
-    mainRefused = await assertPublishableBranch(repoRoot, "main").then(
+    mainRefused = await assertPublishableBranch(repoRoot, "main", nothingAnswers).then(
       () => false,
       () => true,
     );
@@ -410,12 +420,16 @@ for (const { name, bothShip } of UNSAFE) {
     process.env.PATH = savedPath;
   }
   assert(
-    passQuietly,
-    "(x3) an unresolvable mainline does NOT refuse a legitimate lean push — the documented fail-open is preserved (tightening it would refuse every fix round on a shallow clone)",
+    !passQuietly,
+    "(x3) an unresolvable mainline REFUSES a legitimate lean push — the guard asks origin through the caller's exec and refuses when that cannot answer either (the fail-open this replaces is pinned off, per arm, by test-lean-guard-fail-closed-switch.ts)",
   );
   assert(
     mainRefused,
-    "(x3) and the fail-open is narrow: the same unresolvable clone still refuses the mainline the prefix rule can see",
+    "(x3) and the same unresolvable clone still refuses the mainline the prefix rule can see",
+  );
+  assert(
+    probesSeen.length > 0,
+    `(x3) and the refusal is the ORIGIN probe's, not a name rule's — the guard asked and nothing answered (${JSON.stringify(probesSeen)})`,
   );
 }
 

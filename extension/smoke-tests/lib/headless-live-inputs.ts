@@ -23,6 +23,7 @@ import { commentRetentionEnabled } from "../../src/comment-retention.ts";
 import { COMMENT_RETENTION_PATHS } from "../../src/comment-retention.ts";
 import { hostSpawnCap, hostSpawnWaitMs } from "../../src/host-spawn-slots.ts";
 import { leanDeadlineHandbackEnabled } from "../../src/lean/deadline-handback.ts";
+import { leanGuardFailClosed } from "../../src/lean/guard-fail-closed-switch.ts";
 import { leanBuildIssueProseEnabled, leanIssueProseEnabled } from "../../src/lean/issue-prose.ts";
 import { leanReviewSpecSplitEnabled } from "../../src/lean/review-spec-split.ts";
 import { leanRewindLeaseBinds } from "../../src/lean/rewind-lease-switch.ts";
@@ -174,6 +175,9 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // #2262 — whether the rewind's branch refspec stays unforced so its lease binds. The
   // reader is `v !== "0"`, so the gate's LIVE loop (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LEAN_REWIND_LEASE_BINDS", leanRewindLeaseBinds],
+  // #2255 — the publishable-branch guard's fail-closed arm. The reader is `v !== "0"`,
+  // so the gate's LIVE loop (env deleted) pins "unset means on".
+  ["PI_ENSEMBLE_LEAN_GUARD_FAIL_CLOSED", leanGuardFailClosed],
   ["PI_ENSEMBLE_ISSUE_IMAGES", () => issueImagesEnabled()],
   ["PI_ENSEMBLE_LENS_EVIDENCE", evidenceSupplyEnabled],
   ["PI_ENSEMBLE_LENS_ROUND_CAP_MERGE", roundCapMergeEnabled],

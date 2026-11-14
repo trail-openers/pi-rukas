@@ -284,8 +284,10 @@ export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promis
   // Before a single git read, let alone a push: the branch is state-file data,
   // and `assertSafeRef` inside the guard only says it is a legal ref — `main`
   // is. The guard lives in publish-deps so the step's decisions stay separate
-  // from what it asks the outside world.
-  await assertPublishableBranch(repoRoot, branch);
+  // from what it asks the outside world. The step's OWN executor is handed to the
+  // guard so the probes it makes go the way the push goes — the same seam a suite
+  // drives, and the same transport origin will be asked over.
+  await assertPublishableBranch(repoRoot, branch, deps.exec);
   const wt = specifyWorktreePath(repoRoot, issue);
   if (!existsSync(wt)) throw new PublishInfraError(`the worktree ${wt} does not exist`);
 
