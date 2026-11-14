@@ -240,7 +240,11 @@ export function isPrivateTarget(
     timeoutMs?: number;
   } = {},
 ): Promise<boolean> {
-  const host = opts.host ?? target.host;
+  // A blank host names no forge, so it is read as absent once here: the shape
+  // rule, the transport branch and the cache key all then agree that `""` is
+  // github.com rather than "some other host", which is what let a `host: ""`
+  // target waive the rule and still reach the lookup.
+  const host = (opts.host ?? target.host) || undefined;
   const slug = targetSlug(target);
   // Asked before the cache and before the transport: a slug the host does not
   // serve must not reach `gh`, must not reach an injected resolver, and must not
@@ -253,10 +257,10 @@ export function isPrivateTarget(
   }
   // A host the resolver could not read is not evidence of github.com: `git
   // remote get-url` can hand back a bare slug or a path, and the resolver leaves
-  // `host` undefined for those rather than guessing. Undefined or blank therefore
+  // `host` undefined for those rather than guessing. An undefined host therefore
   // still asks `gh` (a lookup that fails resolves to "check", so an unknown host
   // is never a pass) but goes through the shared lookup path below.
-  if (host !== undefined && host !== "" && host !== GITHUB_HOST) {
+  if (host !== undefined && host !== GITHUB_HOST) {
     // An explicit "unknown, so check": `gh` has no idea what a GitLab or
     // self-hosted project's visibility is, and a wrong `false` there would be
     // an unverified claim rather than a conservative one. Said once per slug —
