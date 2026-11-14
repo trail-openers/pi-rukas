@@ -92,10 +92,15 @@ export function targetSlug(t: RepoTarget): string {
  * A `RepoTarget` is a licence: only a positive private answer skips a publish
  * check, so whoever hands one to `isPrivateTarget` decides whether the scan runs.
  * That makes the target's SHAPE part of the trust decision, not just its host.
- * github.com serves one repository per owner, so an owner carrying a separator is
+ * github.com serves one repository per owner, so a slug carrying a separator is
  * not a slug the host publishes — `gh api repos/group/sub/project` reports on a
- * path, and a `true` from it is an answer about nothing. Answering it would turn
- * an unverified claim into the one outcome that stops a check, which is the
+ * path, and a `true` from it is an answer about nothing. The two halves are
+ * checked, not just the owner: `ghVisibility` builds that one endpoint from
+ * `owner` and `repo`, so `"acme" + "corp/widget"` is the same unpublished path as
+ * `"acme/corp" + "widget"`, and an empty half makes the slug carry its own
+ * separator — either half, including an empty one, puts a separator in that
+ * endpoint. Answering such a slug would turn an unverified claim into the one
+ * outcome that stops a check, which is the
  * direction this module's standing rule refuses: "could not tell" is never
  * "clean", and here it is never "private" either.
  *
@@ -108,7 +113,7 @@ export function targetSlug(t: RepoTarget): string {
  */
 function namesHostedRepo(t: RepoTarget): boolean {
   if ((t.host ?? GITHUB_HOST) !== GITHUB_HOST) return true;
-  return !t.owner.includes("/") && t.owner !== "" && t.repo !== "";
+  return t.owner !== "" && t.repo !== "" && !t.owner.includes("/") && !t.repo.includes("/");
 }
 
 /**
