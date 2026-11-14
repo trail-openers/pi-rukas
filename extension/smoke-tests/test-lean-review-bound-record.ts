@@ -34,7 +34,7 @@ import type { StepStop } from "../src/lean/review-bound.ts";
 import type { LensRunResult } from "../src/lens-review-types.ts";
 import { LENSES_PER_PASS } from "../src/lean/review-waves.ts";import { loadRun, saveRun } from "../src/lean/state-store.ts";
 import { ReviewInfraError } from "../src/lean/review.ts";
-import { leanIssueResult } from "../src/headless/work-lean-result.ts";
+import { leanIssueResult, leanResultDocument } from "../src/headless/work-lean-result.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import { tempDir } from "./lib/lean-engine-fixtures.ts";
 import { createRun } from "../src/lean/state.ts";
@@ -79,6 +79,19 @@ const onRecord = (r: { kind?: string; reviewBound?: unknown } | undefined): bool
 const onLog = (w: string[]): boolean => w.length > 0 && w.every((x) => /STEP stopped/.test(x));
 const onDocument = (p: Record<string, unknown>): boolean =>
   typeof p.reviewBound === "string" && /STEP stopped/.test(p.reviewBound) && /wave/.test(p.reviewBound);
+/**
+ * The whole document holds no credential-shaped byte, on EITHER of the two surfaces that
+ * print the bound's child-authored strings: the object inside `gates` and the string-valued
+ * `issues[].reviewBound` beside it.
+ *
+ * A secret placed in the record by a child that printed one before its clock fired (the
+ * jsdoc's own scenario for this field) must not reach the host contract, so this is asserted
+ * as an absence on the serialised document rather than a shape on one field. `JSON.stringify`
+ * of the document excludes this call's own assertion message — which is why a scan of the
+ * document is meaningful where a scan of the test's output would not be.
+ */
+const documentClean = (doc: string, secret: string): boolean =>
+  doc.includes("[REDACTED]") && !doc.includes(secret);
 const disclosed = (posts: Posts): boolean =>
   posts.length === 1 &&
   posts[0]?.pr === 42 &&
@@ -168,6 +181,52 @@ const pastItsBudget = () => runNow() + 61 * MIN;
   assert(
     onRecord(stepRecord) && onLog(warns) && onDocument(projected),
     `(e) a pass-1 stop hands back on the engine's error path, records its bound THERE (the only place a stop with no verdict can be read), logs it UNGATED, and the host's document projects the bounded line (${String(stepRecord?.kind)}, ${JSON.stringify(stepRecord?.reviewBound)}, ${warns.length} warn line(s), ${JSON.stringify(projected.reviewBound)})`,
+  );
+}
+
+// ── (e2) the bounded line is a HOST surface, so a credential the child printed before its
+// clock fired is scrubbed from it — the shape the run above records, with a token in each of
+// its two free-text strings. The record's own field bounds (`reviewBoundProblem`) accept
+// these bytes: an 80-char printable lane and a 320-char reason say nothing about what is in
+// them, so the only thing between a token and the host contract is the projection's redaction
+// seam — and it has to be applied on BOTH surfaces that print the two strings, not one.
+{
+  const SECRET = `ghp_${"a".repeat(36)}`;
+  const { repoRoot, baseSha } = makeRepo();
+  await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 4;\n" });
+  const warns: string[] = [];
+  const projected: Record<string, unknown> = {};
+  let doc = "";
+  await captureWarns("STEP stopped", warns, async () => {
+    const run = await runLean({
+      repoRoot,
+      issue: 7,
+      handlers: boundHandlers(pastItsBudget, SHIPPED),
+      now: runNow,
+      seed: { baseSha, branch: BRANCH },
+    });
+    // The stop's own record, then the two strings the child authored, with a token written
+    // into each — exactly the bytes the projection receives when a lens prints a credential
+    // before the bound fires. No fixture hands them over already scrubbed.
+    const step = run.run.steps.find((s) => s.state === "review");
+    if (step?.outcome?.reviewBound !== undefined)
+      step.outcome.reviewBound = {
+        wave: "full",
+        reason: `review STEP stopped: a child printed ${SECRET} before its bound`,
+        unreviewedLanes: [`lens child ${SECRET} in its summary`],
+      };
+    Object.assign(projected, leanIssueResult(run.run, run.code) as unknown as Record<string, unknown>);
+    doc = JSON.stringify(leanResultDocument(run.run, run.code).doc);
+  });
+  assert(
+    typeof projected.reviewBound === "string" &&
+      projected.reviewBound.includes("[REDACTED]") &&
+      !projected.reviewBound.includes(SECRET),
+    `(e2) the top-level issues[].reviewBound line redacts the child-authored strings, not only the gates object beside it (${JSON.stringify(projected.reviewBound)})`,
+  );
+  assert(
+    documentClean(doc, SECRET),
+    `(e2) no credential-shaped byte reaches the host document from either reviewBound surface (${doc.includes(SECRET) ? "the token is published" : "scrubbed"})`,
   );
 }
 

@@ -9,6 +9,7 @@
 
 import type { HandoffChannel } from "../work-driver-handoff-channel.ts";
 import type { ReviewBoundRecord } from "./review-bound.ts";
+import type { RedRecord, ReviewRecord } from "./state-outcome-gates.ts";
 import type { PreexistingTierRecord } from "./state-outcome-maps.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 
@@ -132,6 +133,23 @@ export interface Outcome {
   channel?: HandoffChannel;
   /// `review` only: the step's OWN wall clock stopped it, not one child's budget.
   reviewBound?: ReviewBoundRecord;
+  /**
+   * `review` only: what the step judged — one per-round tally keyed by the four
+   * published severities, and the full head each fix wave pushed. The prose reason
+   * prints a 12-char prefix and a disclosed-row count; a host that has to say WHICH
+   * round raised the CRITICAL, or check out the commit the fixer left, could not
+   * recover either from it. Written by the step that judged the rounds, validated and
+   * rebuilt on load — see `state-outcome-gates.ts`.
+   */
+  review?: ReviewRecord;
+  /**
+   * `verify` and `ci` only, on a RED step: the tier(s) that failed and the criterion
+   * ids the failing checks answer for. The verdict's `reason` is a clipped sentence
+   * about the first failure, which cannot say which tier it came from nor which
+   * criterion it answers for — and those are the two things a host triaging the red
+   * asks. Absent on a green, and on a red whose gate could not name them.
+   */
+  red?: RedRecord;
   /**
    * `handback` only: the head origin's branch holds once this step finished — the
    * verified one it moved back to, or the unverified one it left standing. A run

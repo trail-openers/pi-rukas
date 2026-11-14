@@ -136,6 +136,12 @@ export function handbackHeads(steps: Step[]): HandbackHeads {
       applies: true,
       reason: "no verify step of this run decided anything, so no head is verified",
     };
+  // The rule reads the gate's verdict from the position the review closes off, and
+  // `newestDecidedThrough` is the half that stops there. Its own test —
+  // `test-lean-verified-handback.ts` — drives the red arm; this assertion is the one that
+  // says the walk then SHIPS the green it stopped at, which is the fact the record's head
+  // fields are for, and the only way to see an inverted comparison here is by a record
+  // that shipped nothing when it should have shipped the certified head.
   if (green.step.outcome?.kind !== "green")
     return {
       applies: true,
