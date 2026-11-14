@@ -5,6 +5,10 @@
  * stores no headSha (the round-cap check then fails closed); the
  * adversarial writer stores the resolved headSha too.
  *
+ * The lens arm drives a COMPLETED round: since #2223 an incomplete round
+ * deliberately records no head, so a headSha assertion made on a round whose
+ * lenses were all blocked would be pinning the very thing the fix removes.
+ *
  * Shares the temp-repo setup with the #912 suite via
  * lib/review-ledger-test-helpers.ts (importing test-review-ledger.ts
  * directly would execute its whole test body and its process.exit, which
@@ -25,6 +29,7 @@ import path from "node:path";
 import { waitForLedger } from "./lib/wait-for-ledger.ts";
 import { ledgerFile, setupRepo } from "./lib/review-ledger-test-helpers.ts";
 import { runLensReview } from "../src/lens-review.ts";
+import { installLensSkills } from "./lib/lens-stub-spawn.ts";
 import { writeAdversarialLedgerEntry } from "../src/adversarial-ledger.ts";
 import { isFullCommitSha } from "../src/review-head-sha.ts";
 import type { LedgerEntry } from "../src/review-ledger.ts";
@@ -71,7 +76,42 @@ try {
     try {
       const expectedSha = execSync("git rev-parse feature/x", { cwd: repo, encoding: "utf8" }).trim();
       assert(isFullCommitSha(expectedSha), "the expected SHA is a 40-char OID");
-      await runLensReview({ diff: "a", cwd: repo, branch, head: branch });
+      // A COMPLETED round, on purpose. `PI_ENSEMBLE_SKILLS_DIR` is an empty dir for
+      // this file (the resolution question must not depend on six model children),
+      // and an empty roster is the ONE shape `runLensReview` refuses before its
+      // fan-out — it cannot be answered by a stub, because the stub is never called.
+      // So this arm installs the six lens skills itself: the roster resolves, the
+      // children are stubbed clean, the round COMPLETES, and the row it writes
+      // carries the head #1039 resolves. Asserting a head on a round whose lenses
+      // were all blocked would be pinning the very thing #2223 removes — an
+      // incomplete round records no head, because a run that read no diff cannot
+      // testify about a commit.
+      const skills = mkdtempSync(path.join(os.tmpdir(), "skills-completed-"));
+      installLensSkills(skills);
+      const priorSkills = process.env.PI_ENSEMBLE_SKILLS_DIR;
+      process.env.PI_ENSEMBLE_SKILLS_DIR = skills;
+      try {
+        await runLensReview({
+          diff: "a",
+          cwd: repo,
+          branch,
+          head: branch,
+          lensChildFn: (async (a: { lens: { name: string } }) => ({
+            lens: a.lens.name,
+            ok: true,
+            ms: 1,
+            startMs: Date.now(),
+            findings: [],
+            attempts: 1,
+            blocked: false,
+            summary: "clean",
+          })) as never,
+        });
+      } finally {
+        if (priorSkills === undefined) delete process.env.PI_ENSEMBLE_SKILLS_DIR;
+        else process.env.PI_ENSEMBLE_SKILLS_DIR = priorSkills;
+        rmSync(skills, { recursive: true, force: true });
+      }
       const e = await waitForEntry(ledgerFile(repo), (x) => x.kind === "lens" && x.branch === branch);
       assert(e?.headSha === expectedSha, "branch-name head → stored headSha is the resolved SHA");
       assert(isFullCommitSha(e?.headSha ?? ""), "…matches /^[0-9a-f]{40}$/");
