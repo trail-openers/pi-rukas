@@ -58,10 +58,12 @@
 
 import { rmSync } from "node:fs";
 import { MINUTE_MS } from "../src/lean/deadline.ts";
+import { runLean } from "../src/lean/engine.ts";
 import { unverifiedRef } from "../src/lean/handback-rewind.ts";
 import type { LeanState, Outcome, Step } from "../src/lean/state.ts";
 import { REPORT_STATES } from "../src/lean/state.ts";
 import { loadRun } from "../src/lean/state.ts";
+import { reportHandlers } from "../src/lean/report-handlers.ts";
 import { handoffDispatchTimeoutMs } from "../src/work-driver-handoff.ts";
 import { makeAssert } from "./headless-verb-harness.ts";
 import { recording, withEnv } from "./lib/lean-host-contract-fixture.ts";
@@ -81,6 +83,10 @@ import {
 } from "./lib/lean-verified-handback-repo.ts";
 
 const { assert, state } = makeAssert();
+
+/** The instant the resume's clock returns: any time inside the allowance, since the
+ *  run it is driving is finished and must not be handed a deadline at all. */
+const start = Date.now();
 
 // ── (a) a green verify at V, a `fixed` review at F, the deadline before the redo.
 await withEnv(ENV, async () => {
@@ -157,6 +163,21 @@ await withEnv(ENV, async () => {
     originRefSha(repo.origin, unverifiedRef(ISSUE)) === repo.headSha,
     `(a) and F is still reachable under ${unverifiedRef(ISSUE)} (got ${String(originRefSha(repo.origin, unverifiedRef(ISSUE)))})`,
   );
+  // And the log itself, before anything reads it. The routing runs the report as a step, so the log ends
+  // on the report's own entry carrying its verdict — the shape a normal handback leaves, and the one that
+  // makes the record say in its own words that the run got reported. What must NOT be there is a decided
+  // `verify` after the review: the clock refused that gate, and a verdict for a step that never ran would
+  // both certify bytes nobody checked and tell `handback-heads.ts` the gate had spoken, so a resumed run
+  // would stop rewinding and lose the head fields from its next comment.
+  assert(
+    ran.newest?.state === "handback" && ran.newest.outcome?.kind === "done",
+    `(a) the log's newest entry is the report step the routing ran, with its verdict (${String(ran.newest?.state)}:${String(ran.newest?.outcome?.kind ?? "undecided")})`,
+  );
+  assert(
+    !ran.steps.some((s2) => s2.state === "verify" && s2.outcome !== undefined && s2.key !== "2242:verify:0"),
+    `(a) and no decided re-verification was fabricated behind the clock (${ran.steps.map((s2) => `${s2.key}=${s2.outcome?.kind ?? "?"}`).join(",")})`,
+  );
+
   // The comment, from its one named carrier: the host channel's `outcome.report` IS
   // the delivered body.
   const body = String(oc?.report ?? "");
@@ -167,6 +188,46 @@ await withEnv(ENV, async () => {
   assert(
     body.includes(`Unshipped head: \`${repo.headSha}\``),
     `(a) and names F as the head it left behind (got ${JSON.stringify(body.split("\n").find((l) => l.startsWith("Unshipped head")) ?? "<none>")})`,
+  );
+
+  // THE ROUTED RECORD MUST RESUME. `runLean` re-opens it, folds the log through the table, and
+  // refuses a file whose snapshot the fold cannot reproduce — and because that loader runs before
+  // the routing's switch is read, a record the routing wrote wrongly is unresumable PERMANENTLY:
+  // no env value recovers it, and the documented answer to "a run timed out, re-run it" is closed.
+  // The routing moves the state via `apply()`, which is the writer that keeps state and log in
+  // agreement, so this second drive is the executed evidence of that and not a restatement of it.
+  const reopened = await runLean({
+    repoRoot: repo.repoRoot,
+    issue: ISSUE,
+    handlers: {
+      ...reportHandlers(repo.repoRoot, ISSUE),
+      // A queue the resume can NEVER draw on: the run is finished, and if it drove it would reach
+      // the gate again, find this dry queue, and the engine would end it on a handler `error` — a
+      // `handed-back` these assertions could not tell from the real thing.
+      ...recording([], { verify: [] }),
+    },
+    // A time BEFORE the drive's own arm: the record persists the arm its first round
+    // resolved, so an early clock here keeps every boundary of the resume inside the
+    // allowance and cannot re-stop the run the routing already reported. A late clock
+    // would make the assertions below depend on the routing's `handback` step being
+    // exempt from the stop test rather than on the resume being clean.
+    now: () => start - 10 * MINUTE_MS,
+  });
+  assert(
+    reopened.state === "handed-back",
+    `(a) re-driving the routed run returns rather than refusing it (got ${reopened.state})`,
+  );
+  // The claim the resume's return has to carry, beyond `state`: a run that had re-driven into its
+  // own gate would have been ended by the engine's handler-error or no-handler stamp, and neither
+  // sentence is the report's. Byte-identical to the first drive's reason is the evidence that this
+  // drive ran nothing.
+  assert(
+    reopened.run.result?.reason === ran.reason,
+    `(a) and the resume drove nothing: its reason is still the report's own sentence (${JSON.stringify(reopened.run.result?.reason)}, was ${JSON.stringify(ran.reason)})`,
+  );
+  assert(
+    reopened.code === 10,
+    `(a) and exits with the handback code, not a fresh stop (got ${String(reopened.code)})`,
   );
 });
 

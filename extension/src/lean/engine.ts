@@ -21,6 +21,7 @@ import { type CycleBudgetMs, flagBudgetMs } from "../work-driver-deadline.ts";
 import { deadlineStopShouldReport } from "./deadline-handback.ts";
 import { deadlineReason, deadlineStopsSteps, leanDeadline } from "./deadline.ts";
 import { engineFacts } from "./engine-facts.ts";
+import { type HandbackHandler, runHandbackReport } from "./engine-report.ts";
 import { errorOutcome } from "./error-outcome.ts";
 import { acquireLock } from "./lock.ts";
 import { exitCodeFor, hasTransition, next } from "./machine.ts";
@@ -219,6 +220,42 @@ function apply(drive: Drive, run: LeanRun, outcome: Outcome): LeanRun {
   return advanced;
 }
 
+/**
+ * Route a deadline-stopped run into its report: run the reporting step for real, then end the run with
+ * its verdict. The full contract — why the visit needs `resume.ts`'s one fold exemption, and why the
+ * report's verdict must not be written onto the gate entry the clock left unanswered — is
+ * `engine-report.ts`'s jsdoc; this is the runner's seam into it.
+ *
+ * The handler table is the runner's to consult, so the decision to route is taken entirely here: a run
+ * with no reporting step built cannot be routed and returns `undefined`, and the caller stamps it plainly.
+ * The three helpers the report needs to write a step (the visit's key, the outcome attach, the terminal
+ * stamp) are passed in so their definitions stay private to the runner.
+ */
+async function reportRun(
+  drive: Drive,
+  opts: RunLeanOpts,
+  run: LeanRun,
+  stoppedAt: LeanState,
+  now: () => number,
+): Promise<LeanRun | undefined> {
+  // The handler table is the runner's to consult: a run with no reporting step built cannot be routed,
+  // and the caller stamps it plainly. The decision to route is therefore taken entirely here.
+  const handler = opts.handlers.handback as HandbackHandler | undefined;
+  if (handler === undefined) return undefined;
+  return runHandbackReport({
+    drive,
+    repoRoot: opts.repoRoot,
+    issue: opts.issue,
+    run,
+    stoppedAt,
+    now,
+    handler,
+    keyFor: (state, n) => stepKey(opts.issue, state, n),
+    attach: withOutcome,
+    finish: (r, state, reason) => endRun(drive, r, state, reason),
+  });
+}
+
 /** Run one handler, record its outcome (or its throw), save once. */
 async function settle(
   drive: Drive,
@@ -356,14 +393,48 @@ async function driveLoop(
       // say and are stamped where they stand, as they always were — but a run whose
       // newest work step is a `fixed` review is holding origin over bytes no gate
       // certified, and the step that says so (and moves origin back) is `handback`.
-      // Stamping here made that step unreachable, so the run was routed INTO the
-      // report rather than ended; `REPORT_STATES` is exempt from the stop test, which
-      // is what makes one more step affordable. The predicate reads the same log the
-      // reporting step reads, so the two cannot disagree about the shape.
+      // Stamping here made that step unreachable, so the run is routed to the report
+      // rather than ended. The predicate reads the same log the reporting step reads,
+      // so the two cannot disagree about the shape.
       if (state !== "handback" && deadlineStopShouldReport(run.steps)) {
-        run = { ...run, state: "handback" };
-        drive.save(run);
-        continue;
+        // The report runs, and the record it leaves is one the engine's own loader can still open.
+        // Both halves cost something, and the reason is the same for both.
+        //
+        // `resume.ts` re-derives a run by walking its log back through `next()` and refuses a file
+        // whose snapshot the walk cannot reproduce. `review:fixed` is routed by the table to `verify`,
+        // so at the end of the log the walk stands at `verify` — and an entry belonging to `handback`
+        // there is "a verdict for a state the run was never in", which `foldLog` refuses outright. That
+        // is not a gap to patch: the fold's header states it needs no exemptions because the engine
+        // writes one entry per visit, and a routing that reached `handback` without the table's edge
+        // could never be given one honestly. Two shapes tried here — appending the report's entry, and
+        // writing the snapshot beside it — both produced a record `loadRun` refuses, which is worse
+        // than the bug: the refusal happens before the routing's switch is read, so
+        // `PI_ENSEMBLE_LEAN_DEADLINE_HANDBACK=0` recovers nothing and the documented recovery for a
+        // run the clock stopped ("re-run `/work-lean <issue>`") is closed for good.
+        //
+        // So the routing runs the report through the handler, exactly as `runLean`'s crash-resume path
+        // would, and lands its verdict on the run through `endRun` — the writer every terminal stamp
+        // already uses — rather than through `apply()` on an entry that cannot exist. The rewind, the
+        // head fields and the comment therefore run on the shape they were written for. The log keeps
+        // the entry the loop wrote ahead for the refused step: the run DID enter the re-verification and
+        // came back with no answer, which is the honest record and the premise `handback-heads.ts` acts
+        // on. A record whose newest entry is undecided is what `foldLog` breaks on, and the snapshot
+        // beside it is `handed-back` with a result — the same pair a plain deadline stop leaves, so a
+        // routed run resumes as a finished run and reports what it earned.
+        //
+        // Nothing past this line starts WORK: the only handler reached is the reporting one, which the
+        // stop test exempts; `state !== "handback"` keeps this from re-firing, and `endRun` ends the
+        // loop, so there is no path back into the walk. Every other stop takes the stamp below, exactly
+        // as it did before the routing existed.
+        const reported = await reportRun(drive, opts, run, state, now);
+        if (reported === undefined) {
+          // The report could not be run at all. The run is stamped where it stands, as it always was,
+          // rather than left without a result.
+          run = endRun(drive, run, "handed-back", deadlineReason(run.steps, state, deadline));
+          break;
+        }
+        run = reported;
+        break;
       }
       run = endRun(drive, run, "handed-back", deadlineReason(run.steps, state, deadline));
       break;
