@@ -1,4 +1,3 @@
-import { leanReviewProblemEnabled } from "./review-problem-switch.ts";
 /**
  * lean/review-criteria — the spec's own words as one review section.
  *
@@ -25,6 +24,7 @@ import { leanReviewProblemEnabled } from "./review-problem-switch.ts";
  * today's raw bounded fallback (`readiness()`, not `parsePiSpec()`, is what makes
  * that shape unreachable on a real run).
  */
+import { leanReviewProblemEnabled } from "./review-problem-switch.ts";
 import { criteriaBlock } from "./spec-blocks.ts";
 import { parsePiSpec } from "./spec.ts";
 import { fenceText } from "./text-fence.ts";
@@ -45,11 +45,6 @@ const CRITERIA_TRUNCATION_MARKER = "…(criteria truncated)";
  * reason: a seat cannot weigh a cut contract it cannot locate. */
 const PROBLEM_TRUNCATION_MARKER = "…(problem truncated)";
 
-/** `fenceText`'s own clip notice, which the markers replace: it counts characters
- * kept, not criteria or sentences lost. Concatenated so this file's prose can name
- * the notice without the substitution matching its own description. */
-const FENCE_CLIP_NOTICE = new RegExp(`\\[truncated at \\d+ char${"acters"}\\]`);
-
 /** Names where the ids come from, so a reviewer can cite one back. */
 export const LEAN_REVIEW_CRITERIA_HEADING = "## The acceptance criteria (pi-spec v1)";
 
@@ -67,21 +62,18 @@ export const LEAN_REVIEW_CRITERIA_LEAD =
 export const LEAN_REVIEW_PROBLEM_LEAD =
   "The statement of the problem this run is for, printed in full up to its own cap, with its own marker when that cap cut it. The issue's prose is bounded far shorter, and is omitted when it only restates this, so this is the whole of what the run was asked to do.";
 
-/** The statement's payload: `fenceText`'s disarm at its own cap, with the generic
- * clip notice swapped for a marker that names WHICH payload was cut. Substitution
- * is anchored to this payload, so a criteria clip can never rewrite it (or the
- * other way round). */
+/** The statement's payload: `fenceText`'s disarm at its own cap, whose clip notice
+ * is this payload's own marker. The marker is handed to the renderer rather than
+ * substituted into its output, so issue text that quotes the OTHER payload's marker
+ * cannot be mistaken for this fence's cut — the notice is written once, at the tail,
+ * and no regex reaches back into the kept bytes to choose which occurrence to rewrite. */
 function fenceProblem(problem: string): string {
-  const overCap = problem.length > MAX_PROBLEM_CHARS;
-  const disarmed = fenceText(problem, MAX_PROBLEM_CHARS);
-  return overCap ? disarmed.replace(FENCE_CLIP_NOTICE, PROBLEM_TRUNCATION_MARKER) : disarmed;
+  return fenceText(problem, MAX_PROBLEM_CHARS, PROBLEM_TRUNCATION_MARKER);
 }
 
 /** The criteria's payload, bounded and marked the same way over its own cap. */
 function fenceCriteria(block: string): string {
-  const overCap = block.length > MAX_CRITERIA_CHARS;
-  const disarmed = fenceText(block, MAX_CRITERIA_CHARS);
-  return overCap ? disarmed.replace(FENCE_CLIP_NOTICE, CRITERIA_TRUNCATION_MARKER) : disarmed;
+  return fenceText(block, MAX_CRITERIA_CHARS, CRITERIA_TRUNCATION_MARKER);
 }
 
 /**

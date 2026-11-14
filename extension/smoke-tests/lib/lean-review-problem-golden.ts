@@ -34,21 +34,26 @@ import {
   D3_TEXT_WIDTH,
   SPEC_TAIL_CONSTRAINT,
 } from "./lean-review-spec-fixture.ts";
-
-/** The cap each of the section's two payloads is bounded at — restated rather than
- * imported, for the reason in the header. */
-const GOLDEN_PAYLOAD_CAP = 20_000;
-
-/** `fenceText`'s generic clip notice, which each payload swaps for a marker of its
- * own. Built by concatenation: a file whose prose names the notice must not have
- * that name matched by the substitution it describes. */
-const GOLDEN_CLIP_NOTICE = new RegExp("\\[truncated at \\d+ char" + "acters]");
-
-/** What each payload's fence says when IT clipped. Two markers and never one: a
- * seat weighing a cut statement against a cut list has to be able to tell which
- * half of its contract it lost. */
-export const GOLDEN_PROBLEM_MARKER = ["…(problem", "truncated)"].join(" ");
-const GOLDEN_CRITERIA_MARKER = ["…(criteria", "truncated)"].join(" ");
+// The section's payload constants are restated once, in `lean-review-problem-shape`,
+// and re-exported here so the tests that read them from this file keep working and
+// the quoting fixtures read the same copy the goldens judge the renderer against.
+import {
+  FENCE_CHAR,
+  GOLDEN_CRITERIA_MARKER,
+  GOLDEN_PAYLOAD_CAP,
+  GOLDEN_PROBLEM_MARKER,
+  PROSE_FILLER,
+  THREE_CRITERIA,
+  criteriaFenceOf,
+  specBody,
+  statementFenceOf,
+} from "./lean-review-problem-shape.ts";
+export * from "./lean-review-problem-shape.ts";
+/** The clip line `fenceText` says when its caller named no marker — spelled out
+ * here rather than reached for by rewriting the rendered fence, which is exactly
+ * the mechanism that let one payload's quoted marker masquerade as the other's cut. */
+const GOLDEN_CLIP_NOTICE = (cap: number): string =>
+  `\n[truncated at ${String(cap)} char` + "acters]";
 
 /** The section's heading and lead, restated for the same reason the caps are. */
 const GOLDEN_CRITERIA_HEADING = "## The acceptance criteria" + " (pi-spec v1)";
@@ -74,15 +79,28 @@ const FIXER_RULE =
 /** The scope line `lensContext` prints first for a full-round pass. */
 const FULL_SCOPE_LINE = "/work-lean issue #7, lens-review full review of the branch";
 
-/** One payload: `fenceText`'s disarm at the cap, with the generic notice swapped
- * for the marker naming WHICH payload was cut. Substituted per payload, so a
- * criteria clip can never rewrite the statement's notice or the other way round —
- * the shape `BOTH_PAYLOADS_OVER_CAP_BODY` exists to make observable. */
+/** One payload: the cap's disarm at the tail with the clip line being the marker
+ * that names WHICH payload was cut. Composed from `fenceText`'s parts rather than
+ * by substituting into its output, so a payload that quotes the other payload's
+ * marker cannot be reported as a cut that never happened. The shape
+ * `BOTH_PAYLOADS_OVER_CAP_BODY` exists to make the two markers observable. */
 function fencePayload(text: string, marker: string): string {
-  const overCap = text.length > GOLDEN_PAYLOAD_CAP;
-  const disarmed = fenceText(text, GOLDEN_PAYLOAD_CAP);
-  return overCap ? disarmed.replace(GOLDEN_CLIP_NOTICE, marker) : disarmed;
+  const OPEN = "```text\n";
+  const CLOSE = `\n\`\`\``;
+  // `fenceText` is asked for its neutralised payload directly (notice ""), so the
+  // golden composes the same bytes from the same parts instead of rewriting a
+  // rendered notice: substitution hit the FIRST match, and issue-authored text can
+  // quote a marker, which is how a payload came to be reported as a cut it never
+  // took. `slice` drops the renderer's empty trailing notice line, nothing else.
+  const body = fenceText(text, GOLDEN_PAYLOAD_CAP, "").slice(
+    OPEN.length,
+    -(CLOSE.length + (text.length > GOLDEN_PAYLOAD_CAP ? 1 : 0)),
+  );
+  return text.length <= GOLDEN_PAYLOAD_CAP
+    ? `${OPEN}${body}${CLOSE}`
+    : `${OPEN}${body}\n${marker}${CLOSE}`;
 }
+
 
 /** The criteria section as it rendered with NO statement above the list: heading,
  * lead, and the rendered criteria — nothing else. */
@@ -141,9 +159,6 @@ export function criterionRow(id: string): RegExp {
   return new RegExp(`\\*\\*${id}\\*\\* \\[(test|command|manual)\\]`);
 }
 
-/** The character a fence is built from, as a string: counted with `split` rather
- * than a regex, where an escape for it reads as the literal's own terminator. */
-export const FENCE_CHAR = "\u0060";
 
 /** Count fence lines at the start of a line, so a brief's fences pair. */
 export function fenceLines(text: string): number {
@@ -202,10 +217,6 @@ export function renderedCriterionRow(body: string, id: string): string {
  * rather than wrong — which is why they are computed and self-checking here.
  */
 
-/** The prose filler that makes a body itself pass the issue bound: with the prose
- * cut, the section's copy is the ONLY one a brief can carry. */
-const PROSE_FILLER = SPEC_TAIL_CONSTRAINT.repeat(140);
-
 /** One repeat of the statement, ~90 chars, so the lengths below are a property of
  * a count rather than of a hand-written paragraph. */
 export const SENTENCE =
@@ -214,17 +225,6 @@ export const SENTENCE =
 /** A statement whose tail the prose bound cuts — the seat can read it ONLY through
  * the criteria section, which is the whole claim under test. */
 export const PROBLEM_TAIL = `PROBLEM-TAIL-${"statement ".repeat(300)}`;
-
-/** Three short criteria, so nothing but the statement can be what the section cut. */
-const THREE_CRITERIA = [
-  { id: "AC1", text: "The meter refuses the draw.", verify: "test" },
-  { id: "AC2", text: "The refusal names the quota.", verify: "test" },
-  { id: "AC3", text: "The counter never goes negative.", verify: "manual" },
-];
-
-function specBody(prose: string, spec: unknown): string {
-  return `${prose}\n\n\`\`\`pi-spec v1\n${JSON.stringify(spec, null, 2)}\n\`\`\`\n`;
-}
 
 /** A `problem` over the prose bound, three short criteria, and a prose block long
  * enough that the bound's cut falls in the statement's tail: nothing else in any

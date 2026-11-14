@@ -67,7 +67,6 @@ import {
   goldenLensContext,
 } from "./lib/lean-review-spec-split-golden.ts";
 import {
-  BOTH_PAYLOADS_OVER_CAP_BODY,
   EMPTY_CRITERIA_BODY,
   FENCE_CHAR,
   GOLDEN_PROBLEM_MARKER,
@@ -79,13 +78,20 @@ import {
   PROBLEM_TAIL,
   PROSE_HEAD_LINE,
   SPEC_JSON_KEYS,
+  BOTH_PAYLOADS_OVER_CAP_BODY,
+  criteriaFenceOf,
   criteriaSpanOf,
   criterionRow,
   fixerArgs,
   fenceLines,
   renderedCriterionRow,
   seats,
+  statementFenceOf,
 } from "./lib/lean-review-problem-golden.ts";
+import {
+  CRITERIA_QUOTE_PROBLEM_MARKER_BODY,
+  PROBLEM_QUOTES_CRITERIA_MARKER_BODY,
+} from "./lib/lean-review-problem-quoting.ts";
 
 const { assert, failures } = makeAssert();
 
@@ -278,6 +284,47 @@ await withEnv(
         !/\[truncated at /.test(statementClip) && !/\[truncated at /.test(criteriaClip),
         "(5) and neither payload leaks `fenceText`'s generic clip notice",
       );
+      // The arm that keeps the marker substitution honest. Issue text can QUOTE a
+      // marker, and `fenceText` writes its notice after the backtick neutralisation,
+      // so a quoted marker survives verbatim into the kept window. A renderer that
+      // clipped first and swapped its marker in by rewriting the notice pattern over
+      // the finished fence replaced the FIRST match: the payload's quote kept its
+      // look and the real clip lost its words, so the seat read a truncation notice
+      // for a payload that was never cut. Each body quotes the OTHER payload's marker
+      // inside its own kept window; the section must then say `quoted` exactly ONCE —
+      // the one real clip — and never twice, which is what an unanchored
+      // substitution gives.
+      // The tell-apart invariant, pinned directly. A payload can quote a marker —
+      // issue text is the input — and `fenceText` writes its clip notice LAST, after
+      // the backtick neutralisation, so a quote can never be the line that says a
+      // payload was cut. Each body here quotes the OTHER payload's marker inside its
+      // own kept window; the whole payload's OWN fence must then carry no marker line,
+      // because it never clipped. A count over the whole section cannot say this —
+      // the quoting payload legitimately carries the text — hence the per-fence scope.
+      for (const [name, body, quoted, wholeFenceOf] of [
+        [
+          "a statement quoting the criteria marker",
+          PROBLEM_QUOTES_CRITERIA_MARKER_BODY,
+          "…(criteria truncated)",
+          criteriaFenceOf,
+        ],
+        [
+          "a criterion quoting the statement marker",
+          CRITERIA_QUOTE_PROBLEM_MARKER_BODY,
+          GOLDEN_PROBLEM_MARKER,
+          statementFenceOf,
+        ],
+      ] as const) {
+        const section = renderSpecCriteriaSection(body);
+        const wholeFence = wholeFenceOf(section);
+        assert(
+          wholeFence.length > 0 &&
+            wholeFence.split("\n").filter((l) => l.trim() === quoted).length === 0,
+          `(5) ${name}: the payload that never clipped is not reported as cut — its own fence carries no \`${quoted}\` line (saw ${String(
+            wholeFence.split("\n").filter((l) => l.trim() === quoted).length,
+          )})`,
+        );
+      }
       assert(
         criteriaClip.includes(renderedCriterionRow(MANY_CRITERIA_40_BODY, "AC1")),
         "(5) with the FIRST criterion still printed verbatim — the cut is at the tail, not the head",

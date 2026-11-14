@@ -58,7 +58,7 @@ const HORIZONTAL_ELLIPSIS = "…";
  * is the same family of defect as a gate that cannot fail: a silent truncation is
  * a lie by omission told to the one reader who cannot check.
  */
-const TRUNCATION_MARKER = (max: number): string => `\n[truncated at ${String(max)} characters]`;
+const TRUNCATION_MARKER = (max: number): string => `[truncated at ${String(max)} characters]`;
 
 /** Replace control characters that are not \n or \t with a space. */
 function soften(s: string): string {
@@ -91,13 +91,22 @@ function soften(s: string): string {
  * payload's own text that happens to look like the marker, and can never itself
  * be mangled). A payload at or under `max` gains nothing — the marker's absence
  * is what makes its presence meaningful.
+ *
+ * `notice` is that line's text, for a caller whose readers must be told WHICH
+ * payload was cut: one fence holding two bounded payloads needs two notices, and
+ * the only sound way to get them is for this renderer to write the one it was
+ * given. A caller that instead clipped here and substituted its marker into the
+ * result with a regex over the whole fence hit the *first* match, and a payload
+ * can quote the other payload's marker — issue text is the input — so the real
+ * notice got rewritten and the quoted one survived as a cut that never happened.
+ * Substituted text is never written into a notice; it is written, or not.
  */
-export function fenceText(s: string, max: number): string {
+export function fenceText(s: string, max: number, notice?: string): string {
   let body = soften(s);
   const clipped = body.length > max;
   if (clipped) body = `${body.slice(0, max)}${HORIZONTAL_ELLIPSIS}`;
   body = body.replace(BACKTICK_RUN, (run) => "\u02cb".repeat(run.length));
-  return `\`\`\`text\n${body}${clipped ? TRUNCATION_MARKER(max) : ""}\n\`\`\``;
+  return `\`\`\`text\n${body}${clipped ? `\n${notice ?? TRUNCATION_MARKER(max)}` : ""}\n\`\`\``;
 }
 
 /**
