@@ -8,6 +8,20 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.81](https://github.com/trail-openers/pi-rukas/compare/v0.14.80...v0.14.81) (2026-11-14)
+
+
+### Features
+
+* **lean:** let a deadline stop reach its verified handback ([#2268](https://github.com/trail-openers/pi-rukas/issues/2268)) ([13afb20](https://github.com/trail-openers/pi-rukas/commit/13afb20a4981c39c1df147c824d4eeeded9a47c1))
+
+
+### Bug Fixes
+
+* **lean:** fail the publish guard closed on an unreadable mainline ([#2270](https://github.com/trail-openers/pi-rukas/issues/2270)) ([11aae15](https://github.com/trail-openers/pi-rukas/commit/11aae1594540c5ffa27620deebbe86c4ebe38c8b))
+* **lean:** let the rewind lease bind ([#2266](https://github.com/trail-openers/pi-rukas/issues/2266)) ([bfaad88](https://github.com/trail-openers/pi-rukas/commit/bfaad8805a8f1d81ee6aadea9c25ee39622c845b))
+* **work:** A GitLab remote under a subgroup (group/sub/project)… ([#2260](https://github.com/trail-openers/pi-rukas/issues/2260)) ([d8436dc](https://github.com/trail-openers/pi-rukas/commit/d8436dc3889cf41eec8f442dc5114812d86bc168))
+
 ## [0.14.80](https://github.com/trail-openers/pi-rukas/compare/v0.14.79...v0.14.80) (2026-11-13)
 
 
