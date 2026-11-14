@@ -313,6 +313,38 @@ try {
       );
     }
 
+    console.log("\n--- the shape rule is asked of the host the lookup is about ---");
+
+    // The same malformed slugs, the same refusal, but with the host supplied
+    // through `opts.host` rather than on the target. `opts.host` is what picks the
+    // transport, so it is also the host whose slug rule must apply: a caller that
+    // says `github.com` over a target whose own host is a GitLab box must not get
+    // a malformed slug past the shape rule and into the `gh` lookup.
+    for (const malformed of [
+      { owner: "acme/corp", repo: "widget", host: "gitlab.example.com" },
+      { owner: "acme", repo: "corp/widget", host: "gitlab.example.com" },
+    ]) {
+      resetVisibilityCacheForTests();
+      const askedViaOptsHost: RepoTarget[] = [];
+      const viaOptsHost = await isPrivateTarget(malformed, {
+        host: "github.com",
+        lookup: async (t) => {
+          askedViaOptsHost.push(t);
+          return true;
+        },
+      });
+      assert(
+        viaOptsHost === false,
+        `${JSON.stringify(malformed)} with opts.host github.com: the separator is refused on the host the lookup asks (isPrivateTarget said ${viaOptsHost})`,
+      );
+      assert(
+        askedViaOptsHost.length === 0,
+        `…with no lookup issued and nothing cached (asked: ${askedViaOptsHost
+          .map((t) => `${t.host ?? "<no host>"}/${t.owner}/${t.repo}`)
+          .join(", ") || "none"})`,
+      );
+    }
+
     // A GitLab namespace is NOT malformed — nesting is what GitLab serves, so a
     // deep slug on another host stays checkable (answered `false`, as any
     // non-GitHub host is) rather than refused on shape by this rule.
