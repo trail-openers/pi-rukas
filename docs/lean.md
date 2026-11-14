@@ -483,12 +483,22 @@ branch whose mainline it could not read — the fail-open #2255 is the fix for.
 Pinned by `test-lean-publish-guard-fail-closed.ts` (guard, both arms, and the
 production wiring) and `test-lean-guard-fail-closed-switch.ts`.
 
-**The forge probe an offline consumer has to hold off.** Everything above resolves the
-forge through `detectForge`, which for a host the known-host table does not name issues
-HTTPS probes (`/api/v4/version`, `/`, `/api/v1/version`) unless `CI` is set or
-`PI_ENSEMBLE_FORGE_PROBE=0` (`shouldProbe`, `forge-probe.ts`) — so a consumer with no
-network sets one of those; the driver's own seam passes `allowProbe: false` and never
-probes at all.
+The guard path itself resolves the forge through no probe: its mainline rules are
+`resolveMainline` (`mainline.ts`) and `originHeadBranch`, and the adapter a lean run uses
+comes from `resolveCycleForge` with `allowProbe: false` (`lean/io.ts` `forgeFor`), so a
+lean run issues no HTTPS probe at all. The probing callers sit outside lean, where
+`detectForge` is called with no `allowProbe` — `detectForge(ctx.repoRoot, {})` in
+`work-driver-handoff-consolidate.ts` is one — and each then asks a host the known-host
+table does not name at `/api/v4/version`, `/` and `/api/v1/version` unless `CI` is set or
+`PI_ENSEMBLE_FORGE_PROBE=0` (`shouldProbe`, `forge-probe.ts`).
+
+What an offline consumer does have to expect on this path is network git, not an HTTPS
+probe: when neither `git symbolic-ref` nor `gh repo view` names the mainline, the guard
+still runs `git ls-remote --symref origin HEAD` (`originHeadBranch`) before it fails
+closed. All three carry the same 30 s `MAINLINE_PROBE_TIMEOUT_MS`, and the network probe
+keeps it — the `runNetGit` ceiling that would otherwise apply is 300 s, so the shorter
+request wins — which is what makes an unreadable mainline a bounded round of calls and a
+refusal rather than a publish step that never answers.
 
 **A handback comment** on the issue, in this order of usefulness: the newest
 budget breach **that no step other than a report (`handback`, `decline`) is newer than** — a `challenge` breach the
