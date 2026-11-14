@@ -291,6 +291,21 @@ left falls inside the handoff allowance plus `REVIEW_DEADLINE_RESERVE_MS` (see
 "The review step's own clock" above). Size the step budgets
 under the caller's kill, and pass the deadline so the run reports before it.
 
+The **routed report** is the exception to "nothing runs past the line", and the one
+step that therefore needs its own wall. When the clock stops a working step whose
+newest work entry is a `fixed` review, the run is not stamped where it stands: it is
+routed into `handback`, so the comment, the rewind and the head fields actually run
+(`PI_ENSEMBLE_LEAN_DEADLINE_HANDBACK`). That report is exempt from the stop test and
+is not started through the step machinery, so it is unbounded by both the step
+budgets and the clamp — it is bounded instead at `handoffAllowanceMs()`, the
+allowance the routing spends, raced against the reporting handler. When that bound
+fires the handler's verdict is dropped, no report entry is written, and the run takes
+the plain deadline stamp with the timed-out report named in its reason and warned on
+stderr — the record of a cut report is deliberately distinguishable from an ordinary
+stop and from a kill. `PI_ENSEMBLE_LEAN_REPORT_BOUND=0` puts the unbounded await back
+byte for byte, which is also what a hung report used to do: the run sits in it until
+something outside kills it, and the kill is what gets recorded.
+
 **Who delivers the report.** On `PI_ENSEMBLE_HANDOFF_CHANNEL=host`
 (`features.leanHandoffHost`) neither reporting step posts to the forge: `handback`
 and `decline` still run and still leave their text on the step log, and the
