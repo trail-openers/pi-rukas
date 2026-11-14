@@ -440,6 +440,19 @@ export const BOTH_PAYLOADS_OVER_CAP_BODY: string = (() => {
  * reword out from under it. */
 export const PROBLEM_LEAD = "The statement of the problem this run is for";
 
+/** Every phrase that sends a seat to look for the issue's prose in the brief
+ * ABOVE this block. On the shape where the prose IS the statement — `/plan` files
+ * — the dedupe drops that prose block, so a lead saying so sends a reader to
+ * something the brief does not contain. A lead may say the prose is short, or that
+ * it is omitted when it only restates; it may not assert the prose is there. */
+export const PROBLEM_LEAD_ABOVE_CLAIMS = [
+  "issue text above",
+  "prose above",
+  "text above",
+  "prose block above",
+  "body above",
+] as const;
+
 /** One line of `MANY_CRITERIA_40_BODY`'s prose: its presence says the prose block
  * arrived WHOLE, which is what makes the absence of the prose's truncation marker
  * a fact about the split rather than about a body whose prose printed nothing. */

@@ -35,6 +35,7 @@
 
 import { ADVERSARIAL_FINDING_RULE } from "../src/adversarial-prompts.ts";
 import { MAX_ISSUE_CHARS } from "../src/adversarial-prompts.ts";
+import { ISSUE_TRUNCATION_MARKER as ISSUE_TRUNCATED_MARK } from "../src/adversarial-prompts.ts";
 import {
   LEAN_REVIEW_CRITERIA_HEADING,
   renderSpecCriteriaSection,
@@ -75,6 +76,7 @@ import {
   PROBLEM_DIFFERS_BODY,
   PROBLEM_EQUALS_PROSE_BODY,
   PROBLEM_LEAD,
+  PROBLEM_LEAD_ABOVE_CLAIMS,
   PROBLEM_MARKER_FULL,
   PROBLEM_TAIL,
   PROSE_HEAD_LINE,
@@ -216,6 +218,35 @@ await withEnv(
         s.block.includes(LEAN_REVIEW_CRITERIA_HEADING) &&
           criterionRow("AC1").test(s.block),
         "(3) while the criteria still print beside it",
+      );
+      // The lead sentence is part of what the seat reads, and it makes a claim
+      // about the rest of the brief. On THIS shape the claim is the one thing the
+      // renderer cannot honour: the prose block is gone, so a lead that sends the
+      // reader to issue text above is pointing at nothing.
+      assert(
+        s.block.includes(ISSUE_TRUNCATED_MARK) === false &&
+          s.lens.includes(ISSUE_TRUNCATED_MARK) === false,
+        "(3) non-vacuity for the lead below: no `…(issue truncated)` line anywhere in the brief — the prose block is really absent, not merely short",
+      );
+      const lead = s.criteria.slice(
+        s.criteria.indexOf(PROBLEM_LEAD),
+        s.criteria.indexOf("\n```text", s.criteria.indexOf(PROBLEM_LEAD)),
+      );
+      const claimed = PROBLEM_LEAD_ABOVE_CLAIMS.filter((needle) =>
+        lead.toLowerCase().includes(needle),
+      );
+      assert(
+        lead.startsWith(PROBLEM_LEAD) &&
+          claimed.length === 0,
+        `(3) the lead sends the seat nowhere it cannot read: the prose block is dropped on this shape, yet the lead says ${JSON.stringify(
+          claimed,
+        )}`,
+      );
+      // The other half of the sentence still has to be there — a lead "fixed" by
+      // deleting its claim about the prose would leave the seat told nothing.
+      assert(
+        /omitted|drop/i.test(lead) && /short/i.test(lead),
+        "(3) and the lead still says the prose is the shorter thing and gets omitted when it only restates this",
       );
     }
 
