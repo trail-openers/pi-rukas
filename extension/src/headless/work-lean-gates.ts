@@ -124,6 +124,31 @@ function textOf(value: unknown, redact: (s: string) => string): string | null {
 }
 
 /**
+ * The one-line account of a review that stopped at its own clock, for `issues[].reviewBound`.
+ *
+ * The sentence's shape is the one the host contract has always published (reason, wave, the
+ * lanes named after `unreviewed:`); what this reader adds is the redaction. `reason` and the
+ * lane names are CHILD-authored text — the stop's sentence quotes what the step's bound said,
+ * the lanes come off a skill roster — so each is put through `textOf` SEPARATELY before the
+ * join, exactly as the `gates` copy of the same fact does. Joining first and redacting one
+ * long string would let a credential straddle the `; wave ` boundary this code inserts and
+ * survive the pattern scan; one string per field, one scrub per string, is what makes the two
+ * surfaces of this fact say the same thing.
+ */
+export function reviewBoundSentence(
+  bound: ReviewBoundRecord,
+  redact: (s: string) => string,
+): string {
+  const reason = textOf(bound.reason, redact) ?? "";
+  const lanes = bound.unreviewedLanes
+    .map((lane) => textOf(lane, redact) ?? "")
+    .filter((lane) => lane !== "")
+    .slice(0, LIST_MAX)
+    .join(", ");
+  return `${reason}; wave ${bound.wave}; unreviewed: ${lanes === "" ? "none named" : lanes}`;
+}
+
+/**
  * The frozen contract, from the same two fields every other reader of it uses.
  *
  * `specify` froze the files and named the criterion each one answers for; `challenge`

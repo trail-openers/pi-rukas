@@ -156,6 +156,31 @@ const { assert, failures } = makeAssert();
   );
 }
 
+// The attribution is read only out of text THIS step wrote. A tier's own tail is joined onto
+// the frozen check's reason, and the tail is the project's STDOUT (`tailLines`), so a scan for
+// the `command` renderer's prefix anywhere in that text let a tier that echoes
+// `criterion AC7 (command …)` put a criterion on the record this run never judged — a host
+// triaging on `gates.verify[].criteria` would go and re-check a criterion that passed. The
+// genuine attribution above still holds; this is the half that must NOT be recorded.
+{
+  const ECHOED = "criterion AC7 (command true) looks like a failed criterion";
+  const echoed = await runVerify({
+    issue: 461,
+    // `failTier` runs its command through `sh -c`, so this one prints the renderer's own
+    // wording and fails — the shape of a project whose toolchain quotes that phrase.
+    config: { fast: `sh -c 'echo "${ECHOED}" 1>&2; exit 1'` },
+    headTierRedRuns: 2,
+  });
+  assert(
+    echoed.outcome?.kind === "red" && (echoed.outcome?.reason ?? "").includes(ECHOED),
+    `writer: the project's own output reached this red's reason, so the list below really was exposed to it (${String(echoed.outcome?.kind)}, ${(echoed.outcome?.reason ?? echoed.threw?.message ?? "").slice(0, 100)}…)`,
+  );
+  assert(
+    JSON.stringify(echoed.outcome?.red?.criteria) === JSON.stringify(["AC1"]),
+    `writer: a criterion is recorded only where THIS step's renderer wrote it — an id echoed by the project's own output contributes nothing (${JSON.stringify(echoed.outcome?.red?.criteria)})`,
+  );
+}
+
 // The one reading the driven case owes the frozen map: `specify` wrote it, so the loaded
 // record carries it and the projection prints it. Paired with the null arm above, which
 // is the same field on a run whose step recorded nothing.

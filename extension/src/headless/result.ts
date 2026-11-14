@@ -24,6 +24,7 @@ import { EXIT, exitCodeForState, lastCap, lastCapIndex, lastEvent } from "./exit
 import { failedStepOf } from "./failed-step.ts";
 import { type ResultFailure, failureOf } from "./failure.ts";
 import { recordedPrUrl } from "./pr-url.ts";
+import type { GatesResult } from "./work-lean-gates.ts";
 
 /**
  * Version of the --json result schema. Bump on any change to the result shape.
@@ -193,7 +194,7 @@ export interface IssueResult {
    * the record holds no value — the opposite rule to the two above, whose absence is
    * itself the answer, and docs/headless.md says which governs which.
    */
-  gates?: unknown;
+  gates?: GatesResult;
   /**
    * The engine that ran the cycle: `classic` for `work`, `lean` for `work-lean`.
    * Absent where no engine ran (`not-started`, a refused start).

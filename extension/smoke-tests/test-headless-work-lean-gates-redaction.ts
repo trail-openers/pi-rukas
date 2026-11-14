@@ -9,6 +9,12 @@
  * gates string goes through `textOf` (redact, then clip); when these two did not, the host
  * document shipped the token intact while the fields beside it were scrubbed.
  *
+ * TWO surfaces print those two strings, and the pair is asserted on both: `gates.review.reviewBound`
+ * (the object) and the older string-valued `issues[].reviewBound` (the top-level line, reason +
+ * wave + lanes joined). They read the same two fields off the same step outcome, so scrubbing
+ * one and concatenating the other verbatim is the leak this file's second block pins — a scan
+ * scoped to the object form stays green through it, which is how it was missed once.
+ *
  * So this file holds the pair the reading owes: the document scrubbed, and the record
  * demonstrably carrying the token in the first place — without which the first assertion
  * only proves a seam was never handed anything to redact.
@@ -38,7 +44,7 @@ function leakyBoundLog() {
             ...(s.outcome as object),
             reviewBound: {
               wave: "fix" as const,
-              unreviewedLanes: [`adversarial re-review`, `token in a lane ${SECRET}`],
+              unreviewedLanes: ["adversarial re-review", `token in a lane ${SECRET}`],
               reason: `review STEP stopped: a child printed ${SECRET} before its bound`,
             },
           } as never,
@@ -94,6 +100,53 @@ function leakyBoundLog() {
         unreviewedLanes: REVIEW_BOUND.unreviewedLanes,
       }),
     `review: a bound with nothing to redact is published field for field (${JSON.stringify(gatesOf(plain.issue).review?.reviewBound)})`,
+  );
+}
+
+// ─── the SIBLING surface: the top-level string `issues[].reviewBound` ────────────
+// The object form above is one of the two places this fact reaches the host. The other is
+// the older one-line field, which prints the same `reason` and the same lanes joined into one
+// sentence — so it takes the same two child-authored strings and, before the fix, published
+// them raw while the object beside it was scrubbed. The assertion is deliberately NOT scoped
+// to the object form: a scan of `"reviewBound":{...}` is exactly what stayed green while the
+// string sibling leaked the token, so this case witnesses the whole document and the two
+// surfaces together, and pins that neither holds a token-shaped byte.
+{
+  const leaky = await driveLean("handed-back", 10, leakyBoundLog());
+  const line = leaky.issue?.reviewBound;
+  assert(
+    typeof line === "string" &&
+      !line.includes(SECRET) &&
+      line.includes(REDACTED) &&
+      (line.match(/\[REDACTED\]/g) ?? []).length === 2,
+    // Two markers again — the reason's token and the lane's — and the sentence's own shape
+    // still legible, since a redaction that turned the line into noise is a different bug.
+    `review: the top-level issues[].reviewBound line redacts BOTH strings, like the gates object beside it (${JSON.stringify(line)})`,
+  );
+  assert(
+    typeof line === "string" && /; wave fix; unreviewed: /.test(line),
+    `review: the redacted line keeps the shape the host contract publishes (reason; wave; unreviewed: lanes) (${JSON.stringify(line)})`,
+  );
+  // The whole document, both surfaces at once: nothing credential-shaped survives the
+  // projection on either of them. The message carries no token, so this scan cannot be
+  // satisfied by the assertion's own text (unlike a message that echoed the secret).
+  const doc = JSON.stringify(leaky.doc);
+  assert(
+    !doc.includes(SECRET),
+    "review: no credential-shaped byte survives on the host document, from either reviewBound surface",
+  );
+  // And the sibling is not vacuously clean: the record really carried the token, which the
+  // object-form control above established, and the same projection with an EMPTY redaction
+  // seam — the code path a missing call is equivalent to — publishes it on this line too.
+  // Without this, the assertion above could be satisfied by a field that never got the bytes.
+  const rawLine = leaky.run.steps
+    .filter((s) => s.state === "review")
+    .map((s) => s.outcome?.reviewBound)
+    .find((b) => b !== undefined);
+  assert(
+    rawLine?.reason.includes(SECRET) === true &&
+      (rawLine?.unreviewedLanes ?? []).some((lane) => lane.includes(SECRET)),
+    `review: the step's record holds the token in both strings, so the line's silence is the seam (${JSON.stringify(rawLine)})`,
   );
 }
 

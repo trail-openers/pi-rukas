@@ -94,10 +94,13 @@ function failingCriteria(tests: Executed, testsOfRun: Record<string, string[]>):
   const failing = Object.entries(testsOfRun)
     .filter(([, files]) => files.some((file) => reason.includes(file)))
     .map(([id]) => id);
-  // A `command` criterion's failure reason names its own id (`criterion AC2 (command …)`),
-  // and it is the only reason of that shape, so the ids the reason quotes are the criteria
-  // the command tier proved red.
-  const commands = [...reason.matchAll(/criterion (AC\d+) \(command/g)]
+  // A `command` criterion's failure reason NAMES its own id, at the front of the line the
+  // step's renderer wrote it — `criterion AC2 (command tests/AC2-preserve.test.sh) failed: …`.
+  // The anchor and the `failed:` tail are what keep the attribution to the step's own words:
+  // `runTestFile` pastes the failing file's stdout and stderr into the detail, so a scan for
+  // the bare prefix let a frozen test that echoes `criterion AC7 (command …)` add a criterion
+  // this run never judged to the list a host triages on.
+  const commands = [...reason.matchAll(/^criterion (AC\d+) \(command [^)]*\) failed: /gm)]
     .map((m) => m[1])
     .filter((id): id is string => id !== undefined);
   return [...new Set([...failing, ...commands])];

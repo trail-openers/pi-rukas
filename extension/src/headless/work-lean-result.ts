@@ -55,7 +55,7 @@ import {
   type StepTiming,
   handoffOf,
 } from "./result.ts";
-import { leanGates } from "./work-lean-gates.ts";
+import { leanGates, reviewBoundSentence } from "./work-lean-gates.ts";
 import { leanHandoff } from "./work-lean-handoff.ts";
 import { prStateOf, prUrlOf, publishedHeadOf } from "./work-lean-pr.ts";
 
@@ -346,12 +346,13 @@ export function leanIssueResult(run: LeanRun, code: number): IssueResult {
   // nothing else in this projection says "some lanes were never judged" — and a host
   // deciding whether to merge reads this document, not stderr. Read off the step log
   // (the loader validated it, so it cannot disagree with what a resume reads); absent
-  // means "fully reviewed", the normal case.
+  // means "fully reviewed", the normal case. The sentence is built by the gates module's own
+  // reader so both surfaces that print these two child-authored strings redact them the same
+  // way — see `reviewBoundSentence`.
   for (let i = steps.length - 1; i >= 0; i--) {
     const rec = steps[i]?.state === "review" ? steps[i]?.outcome?.reviewBound : undefined;
     if (rec === undefined) continue;
-    const lanes = rec.unreviewedLanes.join(", ");
-    result.reviewBound = `${rec.reason}; wave ${rec.wave}; unreviewed: ${lanes === "" ? "none named" : lanes}`;
+    result.reviewBound = reviewBoundSentence(rec, (s) => redactClip(s, TEXT_MAX));
     break;
   }
   // `failedStep` is reported ONLY when the cap names it: `capStep()` is the
