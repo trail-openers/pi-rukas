@@ -447,7 +447,12 @@ other reason before it reached the lease — nothing is moved, and the record na
 head origin holds with git's own reason beside it, so an operator can tell "someone
 moved my branch" from "the clone could not read that commit". Where origin already
 holds the certified head the step pushed nothing, and the record says so without
-calling the shipped head unverified. Every other handback is unchanged. Behind
+calling the shipped head unverified. Where the rule fires and the log names no green
+head at all, the step records the head origin holds as read after the step, with
+`shippedVerified: false` and the rule's own `unshippedReason` — behind
+`PI_ENSEMBLE_LEAN_HANDBACK_NOHEAD_RECORD` (default on; only `0` records nothing) — so
+a consumer keys on `shippedVerified` (or `issues[].gates.handback.verified`) and never
+on `shippedHead` alone. Every other handback is unchanged. Behind
 `PI_ENSEMBLE_LEAN_VERIFIED_HANDBACK` (default on; only `0` off), which is read at call
 time; the unforced refspec and the atomic push are together behind `PI_ENSEMBLE_LEAN_REWIND_LEASE_BINDS`
 (default on; only `0` puts the leading `+` back and drops `--atomic`, byte for byte,
@@ -477,6 +482,13 @@ only `0` off, read at call time), whose off arm restores the guard that passed a
 branch whose mainline it could not read — the fail-open #2255 is the fix for.
 Pinned by `test-lean-publish-guard-fail-closed.ts` (guard, both arms, and the
 production wiring) and `test-lean-guard-fail-closed-switch.ts`.
+
+**The forge probe an offline consumer has to hold off.** Everything above resolves the
+forge through `detectForge`, which for a host the known-host table does not name issues
+HTTPS probes (`/api/v4/version`, `/`, `/api/v1/version`) unless `CI` is set or
+`PI_ENSEMBLE_FORGE_PROBE=0` (`shouldProbe`, `forge-probe.ts`) — so a consumer with no
+network sets one of those; the driver's own seam passes `allowProbe: false` and never
+probes at all.
 
 **A handback comment** on the issue, in this order of usefulness: the newest
 budget breach **that no step other than a report (`handback`, `decline`) is newer than** — a `challenge` breach the
