@@ -106,13 +106,16 @@ export function targetSlug(t: RepoTarget): string {
  *
  * Every producer of a `RepoTarget` refuses this shape already; the rule is asked
  * HERE as well because this is the seam that turns an answer into a licence, and
- * a licence should not depend on the rule holding at every caller. Only GitHub
- * gets the one-owner rule: a GitLab namespace legitimately nests, and a deep
+ * a licence should not depend on the rule holding at every caller. The `host` it
+ * is asked of is the effective host — the one the transport branch below would
+ * ask `gh` about — not `target.host` alone, or a caller supplying `opts.host`
+ * could route a malformed slug into the lookup past the rule. Only GitHub gets
+ * the one-owner rule: a GitLab namespace legitimately nests, and a deep
  * non-GitHub slug stays checkable — answered without a lookup, as any non-GitHub
  * host already is.
  */
-function namesHostedRepo(t: RepoTarget): boolean {
-  if ((t.host ?? GITHUB_HOST) !== GITHUB_HOST) return true;
+function namesHostedRepo(t: RepoTarget, host: string | undefined): boolean {
+  if ((host ?? GITHUB_HOST) !== GITHUB_HOST) return true;
   return t.owner !== "" && t.repo !== "" && !t.owner.includes("/") && !t.repo.includes("/");
 }
 
@@ -223,7 +226,8 @@ export function visibilityLookupCount(): number {
  * be an unverified claim rather than a conservative one.
  *
  * A slug the host does not serve is refused the same way and for the same
- * reason — see {@link namesHostedRepo}. It is asked BEFORE the cache, so a
+ * reason — see {@link namesHostedRepo}, which is asked of the same effective
+ * host the lookup below is issued against. It is asked BEFORE the cache, so a
  * `true` cached under a real slug can never be re-served to a malformed one.
  */
 export function isPrivateTarget(
@@ -241,7 +245,7 @@ export function isPrivateTarget(
   // Asked before the cache and before the transport: a slug the host does not
   // serve must not reach `gh`, must not reach an injected resolver, and must not
   // be served a cached `true` — the answer is refused on its shape alone.
-  if (!namesHostedRepo(target)) {
+  if (!namesHostedRepo(target, host)) {
     traceOnce(
       `public-hygiene: ${slug} is not a repository ${host ?? GITHUB_HOST} serves — checking`,
     );
