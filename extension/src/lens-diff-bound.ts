@@ -223,6 +223,9 @@ interface NoteParts {
   rows: string;
   /** The paths whose bodies did not make it into the block. */
   omittedPaths: string;
+  /** How many paths `omittedPaths` lists — the row-drop sentence has to say the
+   * number when it drops the list itself, and the list is not there to count. */
+  omittedCount: number;
   /** The counts and what the block above actually is. */
   counts: string;
   /** How to read what is not inlined, or why it cannot be read here. */
@@ -271,6 +274,7 @@ function buildNoteParts(
     lead: inventoryLead(files, unattributed),
     rows: files.length === 0 ? "" : `${rowsText(files)}\n\n`,
     omittedPaths,
+    omittedCount: kept.omitted.length,
     counts: `… (diff truncated: inlined ${String(kept.diff.length)} of ${String(opts.diff.length)} characters — ${whatAbove})`,
     howToRead,
   };
@@ -327,7 +331,7 @@ function trimNote(parts: NoteParts, room: number): string {
     // cannot hold the list whole, the list goes and the notice says it did.
     const paths = parts.omittedPaths.trimEnd();
     if (paths !== "" && !body.includes(paths)) {
-      const dropped = `… (${String(parts.omitted.length)} omitted path${parts.omitted.length === 1 ? "" : "s"} not listed: too many to name inside this prompt's bound)`;
+      const dropped = `… (${String(parts.omittedCount)} omitted path${parts.omittedCount === 1 ? "" : "s"} not listed: too many to name inside this prompt's bound)`;
       body = cutAtLineBoundary(`${parts.lead}\n${dropped}\n${parts.counts}`, bodyRoom);
       if (!body.includes(parts.lead)) body = parts.lead;
     }
