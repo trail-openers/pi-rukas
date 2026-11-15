@@ -221,6 +221,19 @@ const protectedFailure = (f: string[]) => f.find((x) => /protected path/.test(x)
     offenders.length === 0,
     `canary: the develop gate issues no change-set read of its own — the protected check has exactly one reader per side (${offenders.join(" | ") || "none"})`,
   );
+  // A SECOND module may consult the committed read, but only as a develop-gate
+  // consumer speaking in its own voice: the provenance check reports under
+  // `data provenance:`. If it ever reported under a protected-path failure
+  // string it would be a second protected check with one reader, and this
+  // canary would have gone quiet about it.
+  const provenance = read("work-driver-verify-develop-provenance.ts");
+  assert(
+    /readCommittedProtectedPaths/.test(provenance) &&
+      provenance.includes("data provenance:") &&
+      !/PROTECTED_FAILURE|protected path/.test(provenance),
+    "canary: the provenance consumer speaks only in its own `data provenance:` voice — it is not a second protected check",
+  );
+
   // Every other module that reads a change set is a DIFFERENT consumer, and the
   // protected gate must not have quietly started consulting one of them.
   const importers = readdirSync(srcPath).filter(
@@ -240,6 +253,12 @@ const protectedFailure = (f: string[]) => f.find((x) => /protected path/.test(x)
       !f.startsWith("work-driver-protected-paths-read") &&
       !f.startsWith("work-driver-protected-paths-status") &&
       !f.startsWith("merge-protected-paths") &&
+      // The data-provenance check is a develop-gate consumer, not a second protected
+      // check: it consults the same committed reader through the same seam and reports
+      // under its own `data provenance:` prefix, which its canaries pin. Excluded for
+      // the same reason `merge-protected-paths.ts` is — a legitimate consumer of the
+      // canonical read, not a stray parser.
+      f !== "work-driver-verify-develop-provenance.ts" &&
       /readProtectedStatusPaths|readCommittedProtectedPaths/.test(
         readFileSync(path.join(srcPath, f), "utf8"),
       ),

@@ -35,6 +35,7 @@ import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import { reportBaselineLeg } from "./work-driver-verify-aggregate.ts";
 import { declaredPathsHaveSource } from "./work-driver-verify-cmd.ts";
 import { runDevelopVerifyCommandChain } from "./work-driver-verify-develop-cmd.ts";
+import { runCommandCriteriaGate } from "./work-driver-verify-develop-command-criteria.ts";
 import {
   collectCommentEvidence,
   runContinuePrGate,
@@ -44,6 +45,7 @@ import {
 import { isValidSha, normaliseScopePath } from "./work-driver-verify-develop-helpers.ts";
 import type { VerifyDevelopOutcomeOptions } from "./work-driver-verify-develop-options.ts";
 import { runProtectedPathGate } from "./work-driver-verify-develop-protected.ts";
+import { runProvenanceGate } from "./work-driver-verify-develop-provenance.ts";
 import { planDevelopVerify } from "./work-driver-verify-select-develop.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 
@@ -455,6 +457,25 @@ export async function verifyDevelopOutcome(
   // ratchet/smoke/comment-retention checks.
   options.onBaseHealth?.(baseHealthOut.report ?? {});
 
+  // --- The #2283 gates: data provenance, then the command-criteria tier ---
+  // Both run on EVERY develop call and neither is eligible for gate reuse: a reused verdict
+  // from a pass that skipped one would be a green for a check that never ran. The provenance
+  // gate pins one OID per worktree and judges only added JSON/NDJSON files against it,
+  // disclosing what it cannot see on the sink the caller renders into the PR body. The
+  // criteria tier sits BESIDE the ratchet and smoke gates rather than inside the
+  // verify-command chain, because an undiscoverable `plan.cmd` is exactly the case in which
+  // those criteria are the only thing that runs. Both bodies live in their own modules
+  // (AGENTS.md §12 file-size cap).
+  await runProvenanceGate({ execFn, worktrees, effectiveBaseFor, failures, notes, options });
+  await runCommandCriteriaGate({
+    execFn,
+    ctx,
+    state,
+    worktrees,
+    effectiveBaseFor,
+    failures,
+    notes,
+  });
   await runSkipRatchetGate(execFn, ctx.repoRoot, baseSha, changedWorktrees, failures, notes);
   // #948 — comment-retention gate. Threaded like runFalsilyGreenCheck: per
   // worktree, against that workstream's effective base.

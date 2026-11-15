@@ -710,6 +710,22 @@ A timed-out explore produced an empty reply, and the driver read that as "explor
 
 `PI_ENSEMBLE_PARALLEL_GROUPS` defaults to 1. Measured across 69 cycles, every autonomous merge ran alone, and concurrent cycles ran ~2.4× slower per role — enough to trip the watchdogs — as well as corrupting each other through the shared repo root. Set the env var if you want the old behaviour. *Superseded:* the default went back to 3 once every workstream got its own worktree and integration a single lock (see "Parallel groups" below), and a small host now lowers it ([configuration](configuration.md) → `PI_ENSEMBLE_PARALLEL_GROUPS`).
 
+### `/work` reports `data provenance: … does not exist in commit …` on a record whose source really was measured
+
+**Symptom:** a develop round fails with `data provenance: <file>: <key> names <path>, which does not exist in commit <oid>`, or the PR body carries a *Unverifiable host provenance* row, and the child that wrote the record insists the file it cites exists.
+
+**Cause:** the develop gate reads every JSON/NDJSON file the diff **adds** at the workstream's pinned commit and requires each value under a provenance key (`source`, `sourceFile`, `sourcePath`, `sources`, `input`, `inputFile`, `resultsFile`) to name a path present **in that commit**. The judgement is made against the commit, never the working copy, so a results file that exists only on disk — written by the child and never `git add`ed — reads absent. That is the defect the gate exists for: a child can hand-write a record and synthesise the file it cites from the record's own rows, and a generator that round-trips byte-identically proves only the renderer.
+
+**Fix:** commit the cited source alongside the record. If the source legitimately lives outside the repo (a host path, a URL, a run directory the project does not track), the gate is not failing you — an absolute path, a drive letter, a URL or prose is *disclosed* on the PR body as host provenance this build cannot see, and an unreadable probe is a named *could-not-tell* note. Check the row's reason before assuming a false positive. A file over its 1 MiB read ceiling, or a workstream over 256 unique tokens, is likewise disclosed rather than failed. Set `PI_ENSEMBLE_VERIFY_PROVENANCE=0` to skip the check; only the literal `0` disables it.
+
+### A develop round fails with `command criteria: the issue's spec carries verify:"command" criteria but no verify.test runner template is configured — the criteria cannot be run, so they are not met`
+
+**Symptom:** develop parks at `verify-failed:develop` with that failure, on a project whose `verifyCmdFor` discovers no verify command.
+
+**Cause:** the issue's `pi-spec v1` block carries criteria whose `verify` is `"command"` — text the pipeline is meant to *run* — and the classic `/work` develop gate now executes them the way the lean engine always has. Executing them needs the project's per-file runner template, `.pi/work.json`'s `verify.test`. With none configured there is no way to judge those criteria, and criteria nobody ran are criteria that are not met, so the step fails rather than passing over them. This is deliberately a blocking failure and not a note: before #2283 the classic path ran none of them and reported the step green.
+
+**Fix:** add `verify.test` to `.pi/work.json` (an argv template with one whole-word `{file}` placeholder, e.g. `"sh tests/run.sh {file}"`). A criterion the tier *refuses* — its `command` is not a plain repo-relative file, or its test file changed since base — is never red; it is disclosed as `command criteria: criterion <id> not run: <reason>`. A moved head under the runs keeps any red the project's runner already observed and discards only the green verdicts. Set `PI_ENSEMBLE_VERIFY_COMMAND_CRITERIA=0` to skip the tier; only the literal `0` disables it.
+
 ### A cycle merged even though the full verification failed
 
 **Symptom:** `.pi/verify-cmd-full` fails (typecheck, lint, or a fixture suite) and the cycle still reports MERGED.

@@ -17,6 +17,7 @@
  * absent-on-old-state-files by the same rule, so moving them is additive — the
  * schema version stays 1.
  */
+import type { ProvenanceDisclosure } from "./work-driver-verify-develop-provenance.ts";
 import type { VerifyAttributionRecord } from "./work-driver-verify-shared.ts";
 import type { GatePass, WorkstreamGreen } from "./workflow-state-schema-gate-reuse.ts";
 import type { LensFixFenceSnapshot } from "./workflow-state-schema-lens-fix-fence.ts";
@@ -66,4 +67,14 @@ export interface PipelineStateReviewTail {
    * `workflow-state-schema-base-health.ts`). Absent = never probed.
    */
   baseHealthProbe?: import("./workflow-state-schema-base-health.ts").BaseHealthVerdict;
+  /**
+   * #2283 — what the develop gate's data-provenance check could NOT judge: tokens in an
+   * added JSON/NDJSON record that this build cannot see (an absolute host path, a URL, prose,
+   * a corpus past the read bounds). Written ONLY by a develop pass that executed the gate, so
+   * an absent field never means "the gate ran and found nothing" — a run that declined says so
+   * in a note. The last writing pass wins, which is the scope the disclosure has: it describes
+   * the tree this cycle's develop step last judged. `work-driver-commit.ts` renders it into the
+   * PR body; rule and shape: `work-driver-verify-develop-provenance.ts`.
+   */
+  provenanceDisclosures?: ProvenanceDisclosure[];
 }

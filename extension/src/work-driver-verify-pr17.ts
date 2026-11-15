@@ -19,6 +19,7 @@ import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import type { BaseHealthReport } from "./work-driver-verify-base-health-channels.ts";
 import { mergeBaseHealthReport } from "./work-driver-verify-base-health-channels.ts";
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
+import type { ProvenanceDisclosureSink } from "./work-driver-verify-develop-provenance.ts";
 import { verifyDevelopOutcome } from "./work-driver-verify-develop.ts";
 import { beginVerifyRun, finishVerifyRun } from "./work-driver-verify-events.ts";
 import type { DevelopGateRecord } from "./work-driver-verify-gate-reuse.ts";
@@ -217,6 +218,11 @@ export async function verifyStepOutcome(
     const selectedOut: { record?: SelectedVerifyRecord } = {};
     // #1667 — the verify command gate fills this in place (see VerifyRecordSlot).
     const verifyRecord = newVerifyRecordSlot();
+    // #2283 — the provenance disclosures of THIS gate call, in a holder created here for the
+    // same scope reason as `hangSink`: `verifyStepOutcome` is called up to three times in one
+    // develop step, and a disclosure list that accumulated on the cycle context would put an
+    // earlier round's unverifiable tokens in this round's PR body.
+    const provenanceSink: ProvenanceDisclosureSink = {};
     // The background base probe's report, once the gate read one (see the
     // `baseHealthProbe` / `baseHealthConsulted` fields below): the develop gate is
     // the only reader, so it is also the only writer. An accumulator rather than
@@ -270,6 +276,7 @@ export async function verifyStepOutcome(
       // #1427 round 3 — this call's sink, threaded to every writer below.
       hangSink,
       verifyRecord,
+      provenanceDisclosures: provenanceSink,
       // #1415 — captured and returned: the caller owns the state it lands on.
       onGateRecorded: (pass, greens, refuted) => {
         gateRecord = { pass, greens: [...greens], refuted: [...refuted] };
@@ -309,6 +316,11 @@ export async function verifyStepOutcome(
         : {}),
       ...(selectedOut.record !== undefined ? { selectedVerify: selectedOut.record } : {}),
       verifyRun: verifyRecord.current,
+      // #2283 — only when this run filled it: a run that never executed the gate has nothing
+      // to disclose, and an empty array here would render an empty section header.
+      ...(provenanceSink.disclosures !== undefined && provenanceSink.disclosures.length > 0
+        ? { provenanceDisclosures: [...provenanceSink.disclosures] }
+        : {}),
       // #1427 round 3 — read the sink THIS call created, not the cycle context:
       // the list is exactly the reports this gate run wrote, which is what the
       // cap emit site needs. (It used to read `ctx.gateHangLogPaths`, which

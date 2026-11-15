@@ -46,6 +46,8 @@ import { planCacheTtlMs } from "../../src/plan-investigation-cache.ts";
 import { adversarialChildBoundMs, reviewSkillReadCap } from "../../src/review-bounds.ts";
 import { lensFixBoundMs, reviewCapMs, reviewWallClockMs } from "../../src/review-budget.ts";
 import { transcriptRetentionDays } from "../../src/runs-retention.ts";
+import { verifyCommandCriteriaEnabled } from "../../src/work-driver-verify-develop-command-criteria.ts";
+import { verifyProvenanceEnabled } from "../../src/work-driver-verify-develop-provenance.ts";
 import { autoSteerEnabled } from "../../src/slow-notice.ts";
 import { slowThresholds } from "../../src/slow-notice.ts";
 import {
@@ -224,6 +226,11 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   ["PI_ENSEMBLE_REVIEW_WALL_CLOCK_MS", () => reviewWallClockMs()],
   ["PI_ENSEMBLE_SESSION_REATTACH", sessionReattachEnabled],
   ["PI_ENSEMBLE_TRANSIENT_RETRY", transientRetryEnabled],
+  // #2283 — the two develop-gate tiers. Both readers are `v !== "0"`, so the gate's LIVE
+  // loop (env deleted) pins "unset means on"; the truth tables and the docs rows are pinned
+  // by test-verify-develop-switches.ts.
+  ["PI_ENSEMBLE_VERIFY_PROVENANCE", verifyProvenanceEnabled],
+  ["PI_ENSEMBLE_VERIFY_COMMAND_CRITERIA", verifyCommandCriteriaEnabled],
 ];
 
 /** The switch that would override a dimension's own default is cleared too. */

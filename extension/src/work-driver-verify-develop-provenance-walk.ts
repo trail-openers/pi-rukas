@@ -1,0 +1,207 @@
+/**
+ * work-driver-verify-develop-provenance-walk — one added data file's bytes to the tokens this
+ * gate judges, plus what it declined to judge.
+ *
+ * Split out of `work-driver-verify-develop-provenance.ts` for the 500-line cap, along the seam
+ * the file already had: parsing and walking a record is a pure function of its bytes, and the
+ * gate around it is git reads and verdicts. The split matters for testability more than for
+ * length — a walk that quietly read nothing and reported a clean file is the vacuous-green class
+ * this gate exists to close, and a pure function makes that arm assertable without a repository.
+ *
+ * The rule the walk enforces: a value under one of {@link PROVENANCE_KEYS} that is a string (or
+ * a string inside an array or nested container under such a key) is a candidate token; one whose
+ * shape names no path is disclosed, never exempt. The per-workstream token cap bounds what is
+ * JUDGED and not what is reported — past the cap the remainder is carried as a row, because a
+ * walk that dropped the file entirely would let a 300-row record evade the gate built for
+ * records of exactly that size.
+ */
+
+import {
+  PROVENANCE_KEYS,
+  PROVENANCE_MAX_TOKENS,
+  provenanceTokenId,
+} from "./work-driver-verify-develop-provenance-token.ts";
+
+/** Extensions whose bytes are read as a data record. YAML and every other format is out of
+ * scope: an added file with any other extension is simply not a data record here. Lives with
+ * the walk because the walk is what reads the bytes; the gate asks this module the question. */
+const DATA_SUFFIXES = [".json", ".ndjson"] as const;
+
+/** Does this added path name a file this gate reads as a data record? */
+export function isDataFile(p: string): boolean {
+  const lower = p.toLowerCase();
+  return DATA_SUFFIXES.some((suffix) => lower.endsWith(suffix));
+}
+
+/** A file whose own text is a NDJSON array of rows, one record per line. */
+export const NDJSON_SUFFIX = ".ndjson";
+
+/** A candidate token: the provenance key it sat under and the raw string to probe. */
+export interface ProvenancePair {
+  key: string;
+  token: string;
+}
+
+/** A value under a provenance key whose shape names no path: recorded so the caller discloses
+ * it rather than reading the file as clean. */
+export interface UnjudgableValue {
+  key: string;
+  shape: string;
+}
+
+/** What one file's bytes yielded: the tokens to probe, whether the corpus overflowed the cap,
+ * and the keys whose value had no probeable shape. */
+export interface ParsedTokens {
+  pairs: ProvenancePair[];
+  pastCap: boolean;
+  unjudgable: UnjudgableValue[];
+  /** The workstream's token charge after this file — feed it to the next file's budget so the
+   * cap and the shared dedupe set count the workstream and not each file. */
+  chargedInto: number;
+}
+
+/** Parse one added file's bytes into (key, token) pairs, or say why it cannot be parsed.
+ * NDJSON is line-by-line and one bad line makes the WHOLE file unparsable — a partially
+ * parsed NDJSON would let a truncated tail read as a complete record set. */
+export function tokensOf(
+  content: string,
+  ndjson: boolean,
+  budget?: ProvenanceBudget,
+): ({ ok: true } & ParsedTokens) | { ok: false; why: string } {
+  const values: unknown[] = [];
+  if (ndjson) {
+    for (const line of content.split("\n")) {
+      if (line.trim() === "") continue;
+      let row: unknown;
+      try {
+        row = JSON.parse(line);
+      } catch {
+        return { ok: false, why: "a row is not valid JSON" };
+      }
+      values.push(row);
+    }
+  } else {
+    try {
+      values.push(JSON.parse(content));
+    } catch {
+      return { ok: false, why: "the file is not valid JSON" };
+    }
+  }
+  const pairs: ProvenancePair[] = [];
+  // A value under a provenance key that is neither a string nor a container of strings: a
+  // half-serialised or hand-edited record. Not a pass — see the row's own comment.
+  const unjudgable: UnjudgableValue[] = [];
+  let pastCap = false;
+  const keySet = new Set(PROVENANCE_KEYS);
+  // Dedupe and the cap live with the CALLER, not with the file. The cap is one workstream's
+  // budget for the git probes a review round pays; a set and a counter local to one file made
+  // it a per-file allowance, so N added files bought N × the cap and the bound bounded nothing.
+  const seen = budget?.seen ?? new Set<string>();
+  // The count of record tokens this walk has offered. Kept separate from the caller's charge
+  // because it is the per-file view a reader of ONE file's disclosure row wants, while the
+  // charge is the workstream-wide number the cap is actually drawn against.
+  let offered = 0;
+  /** How many tokens this workstream has already been charged, carried in from earlier files. */
+  let charged = budget?.chargedInto ?? 0;
+  /** Charge the workstream's budget for one token this walk has never seen. Writes through to
+   * the caller's object AS WELL AS the local count: the gate threads the budget through the
+   * executor-mediated reads between files, and a returned field can be dropped along that path
+   * without any type error — the object is the state. `charged` still starts from the carried-in
+   * number rather than the set size, because a set that deduped a repeated token must not be
+   * charged twice for it.
+   *
+   * The cap bounds what is JUDGED, not what is reported: the tokens up to the budget are
+   * probed and the rest are carried as rows the caller discloses. Refusing to add them here
+   * would discard the whole file — and a 300-row record would then leak past the gate that
+   * exists for records of exactly that size. */
+  const charge = (): void => {
+    charged++;
+    if (budget !== undefined) budget.chargedInto = charged;
+  };
+  const offer = (key: string, raw: string): void => {
+    const id = provenanceTokenId(key, raw);
+    if (!seen.has(id)) {
+      // The budget is the WORKSTREAM's, so the carried-in charge is tested first: an earlier
+      // file can have spent it all, and a per-file counter would then happily hand this file
+      // another full allowance — N added files buying N × the cap.
+      if (charged >= PROVENANCE_MAX_TOKENS) {
+        pastCap = true;
+        // Charged all the same: an offered-but-not-judged token is one the workstream ran out
+        // of budget on, and the set is what makes a repeat of it cheap rather than free.
+        charge();
+        return;
+      }
+      seen.add(id);
+      offered++;
+      charge();
+      pairs.push({ key, token: raw });
+      return;
+    }
+    // A token an earlier file of the SAME workstream already offered spent budget that will not
+    // be spent again, and the budget is one workstream's, not one file's: without this row a
+    // corpus repeated across files reported itself as in-budget when the workstream had already
+    // overflowed.
+    if (charged >= PROVENANCE_MAX_TOKENS) pastCap = true;
+  };
+  /** What a non-string value under a provenance key is, in words a reader can act on. */
+  const shapeOf = (raw: unknown): string =>
+    raw === null ? "null" : Array.isArray(raw) ? "an array" : typeof raw;
+  const walk = (value: unknown, depth: number, keyUnderProvenance?: string): boolean => {
+    // Depth ceiling: a self-referential structure cannot occur in parsed JSON (JSON.parse
+    // rejects cycles), so this bounds cost against a pathological fixture, not an attack.
+    if (depth > 32) return false;
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        // A STRING inside an array under a provenance key is a candidate token: `sources:
+        // ["a.json","b.json"]` is the shape a multi-file corpus actually takes, and recursing
+        // past it without reading it judged nothing and reported a pass. A nested container is
+        // walked, because the strings it holds are the record's own provenance.
+        if (typeof item === "string") {
+          if (keyUnderProvenance !== undefined) offer(keyUnderProvenance, item);
+          continue;
+        }
+        if (!walk(item, depth + 1, keyUnderProvenance)) return false;
+      }
+      return true;
+    }
+    if (value === null || typeof value !== "object") return true;
+    for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+      if (typeof raw === "string") {
+        if (keySet.has(key)) offer(key, raw);
+        continue;
+      }
+      if (keySet.has(key) && shapeOf(raw) !== "an array") {
+        // An object, a number or null under a provenance key names no path this gate can
+        // probe, so it can never fail — and it is never exempt either: a value of a shape nobody
+        // wrote is exactly what a synthesised or half-serialised record looks like, and dropping
+        // it silently is the pass-by-silence this gate exists to refuse. An ARRAY is the
+        // exception: its elements are read above, and disclosing it as well would bury the
+        // verdict its own strings earned.
+        unjudgable.push({ key, shape: shapeOf(raw) });
+        continue;
+      }
+      // A container under a provenance key carries no name of its own, so its nested strings
+      // are judged against the key they ultimately sit under — `sources: [{ input: … }]` is a
+      // provenance list whatever its depth.
+      if (!walk(raw, depth + 1, keySet.has(key) ? key : undefined)) return false;
+    }
+    return true;
+  };
+  for (const root of values) {
+    if (!walk(root, 0))
+      return { ok: false, why: "a value is nested past the 32-level walk ceiling" };
+  }
+  // The charge lives on the CALLER's object, so the cap survives however the gate threads the
+  // budget between files; the returned copy is the same number for a caller that passed no
+  // budget at all and needs a count of its own.
+  return { ok: true, pairs, pastCap, unjudgable, chargedInto: charged };
+}
+
+/** The workstream-scoped state a walk shares across the files of one workstream: which
+ * (key, token) identities have already been offered. Optional — a caller with one file needs
+ * neither it nor a cap argument. The cap itself is counted by the walk over the tokens it
+ * offered, so it cannot be desynced from what the walk actually read. */
+export interface ProvenanceBudget {
+  seen: Set<string>;
+  chargedInto: number;
+}

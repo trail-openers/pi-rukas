@@ -62,6 +62,9 @@ import { parsePrNumber } from "./work-driver-merged.ts";
 // (the AGENTS.md §12 500-line cap pushed it out); re-exported here so the
 // existing import path in work-driver.ts is unchanged.
 export { runCommitPr };
+// clipTitle (#507) lives with the PR text builders in
+// work-driver-pr-body-definition.ts; re-exported for existing consumers.
+export { clipTitle } from "./work-driver-pr-body-definition.ts";
 import {
   assumptionsBlockOf,
   carriedFindingsSectionOf,
@@ -78,6 +81,7 @@ import { findOpenPrForBranch } from "./work-driver-pr-preflight.ts";
 import { carried, eventLogSections } from "./work-driver-pr-sections.ts";
 import { protectedGrantSectionOf } from "./work-driver-protected-grant.ts";
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
+import { provenanceDisclosureSectionOf } from "./work-driver-verify-develop-provenance.ts";
 import { verifyConsolidation, verifyStepOutcome } from "./work-driver-verify.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
 import type { WorkEvent } from "./workflow-state-events.ts";
@@ -90,10 +94,6 @@ import type {
 } from "./workflow-state.ts";
 // Tree-killing: commit-pr runs the project's verify on the consolidated tree.
 const execp = execTree;
-
-// clipTitle (#507) lives with the PR text builders in
-// work-driver-pr-body-definition.ts; re-exported for existing consumers.
-export { clipTitle } from "./work-driver-pr-body-definition.ts";
 
 // #539 — the fallback-cause vocabulary lives ONCE in workflow-state-events.ts
 // (the event type that persists it) and is imported above; re-exported for
@@ -421,6 +421,9 @@ export async function mechanizedCommitPr(
       // #792 / #1155 — no-diff and unmeasurable deliverables, each its own section.
       operatorActionsSectionOf(ps.normalisedSpec),
       unmeasurablePathsSectionOf(ps.normalisedSpec),
+      // #2283 — the data-provenance disclosures travel with the unmeasurable-deliverables
+      // warning: both say a gate could not judge this, and neither is a verdict.
+      provenanceDisclosureSectionOf(ps.provenanceDisclosures),
       preExistingSection,
       ...eventLogSections(state.eventLog),
     ]
