@@ -81,6 +81,13 @@ for (const cmd of [
   // Memory + text utilities.
   "vipune search 'pm bash guard'",
   "vipune add 'finding' --memory-type fact",
+  // noni (the operator's direction CLI). Its writers (decide/order/intent)
+  // validate and commit under the private state repo, never contact a tracker
+  // and never push — so PM keeps the direction state current without
+  // dispatching ops for every write.
+  "noni census --repo .noni-state",
+  "noni order --repo .noni-state confirm",
+  "noni brief --repo .noni-state",
   "echo hi",
   "wc -l file.txt",
   "jq .number issue.json",
@@ -190,6 +197,11 @@ for (const cmd of [
   "git -C /x stash pop",
   "git -C /x commit -m x",
   "git -C /x push",
+  // Pushing the state repo stays with ops: refused by the ABSENCE of a row.
+  "git -C .noni-state push",
+  // The `noni *` row is a word-boundary prefix, not a loose prefix — a longer
+  // word must not piggy-back on it.
+  "noniish census",
   // The exact-match row is deliberately NOT a loose prefix: `git -C * branch
   // --show-current` (no trailing `*`) must not also grant `branch -D`.
   "git -C /x branch -D y",
@@ -404,6 +416,7 @@ else process.env.PI_ENSEMBLE_SANDBOX_MODE = prevSandbox;
     ["jq*", "jq .a b.json"],
     ["git -C * log*", "git -C /x log --oneline"],
     ["git -C * branch --show-current", "git -C /x branch --show-current"],
+    ["noni *", "noni census --repo .noni-state"],
   ];
   for (const [pattern, cmd] of samples) {
     assert(bash[pattern] === "allow", `parity: pattern present — ${pattern}`);

@@ -50,6 +50,8 @@ for (const cmd of [
   "git -C /w/.worktrees/issue-131-default status --short || echo missing",
   "git log --oneline -5;",
   "jq -r '.eventLog[] | .type' .pi/work-state/5.json | sort | uniq -c",
+  // Two allowlisted noni calls chained are acceptable under the chain rule.
+  "noni order --repo .noni-state confirm && noni census --repo .noni-state",
 ]) {
   assert((await run(cmd)) === undefined, `passes — ${cmd}`);
 }
@@ -69,6 +71,8 @@ for (const cmd of [
   "cd /repo && git status",
   "git status && git push origin x",
   "git status; rm -rf /",
+  // A chain whose first part is allowlisted and whose second is off-list.
+  "noni census; rm -rf x",
   "git log | sh",
   "git log | xargs rm",
   "git log --oneline | tee notes.txt",

@@ -23,6 +23,7 @@
           "tee*": "allow",
           "jq*": "allow",
           "uuidgen*": "allow",
+          "noni *": "allow",
           "git status*": "allow",
           "git branch*": "allow",
           "git worktree list*": "allow",
