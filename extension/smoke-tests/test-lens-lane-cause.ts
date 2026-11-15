@@ -26,6 +26,7 @@
 
 import { failedLensRow } from "../src/lens-review-child-failure.ts";
 import { CONTEXT_LENGTH_HINT } from "../src/lens-provider-cause.ts";
+import { isReviewIncomplete } from "../src/lens-review-incomplete.ts";
 import type { Finding, LensRunResult } from "../src/lens-review-types.ts";
 import type { DispatchResult } from "../src/types.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
@@ -184,6 +185,58 @@ const DIFF_AUTHORED =
   assert(
     bounded.findings.length === 1,
     `(5) and its findings are kept (got ${String(bounded.findings.length)})`,
+  );
+}
+
+// ── (6) a provider refusal + a self-inflicted cap kill + findings is STILL a
+// refused prompt (#2261 regression, reproduced through the real `runLensChild`).
+// `hasEvidence` once collapsed to `findings.length > 0` for a cap-killed child, so
+// the lane came back `blocked:false` with no reason: `laneReason` never reached the
+// provider clause, `isReviewIncomplete` said the round was covered, and the summary
+// printed "the provider refused this lens's prompt … not retried" beside "(killed:
+// token-budget; not retried: self-inflicted cap)". A lane whose prompt the provider
+// refused is not reviewed, whatever killed the child on top of it; the findings it
+// did file stay attached for disclosure.
+{
+  const r = row(
+    {
+      text: "Reviewing the auth change, the session handler reads the cookie before",
+      thinkingOnly: true,
+      killCause: "token-budget",
+      errorStop: { reason: "error", message: "400 Bad Request: prompt is too long" },
+    },
+    1,
+  );
+  assert(
+    r.blocked === true,
+    `(6) a provider-refused child is blocked even when a cap kill also fired and it filed a finding (blocked=${String(r.blocked)})`,
+  );
+  assert(
+    (r.parseError ?? "").includes(CONTEXT_LENGTH_HINT),
+    `(6) and the lane reason names the provider cause the operator can act on (got: ${String(r.parseError)})`,
+  );
+  assert(
+    isReviewIncomplete([r]) === true,
+    `(6) and the round reads as incomplete — a refused prompt reviewed nothing (isReviewIncomplete=${String(isReviewIncomplete([r]))})`,
+  );
+  assert(
+    r.findings.length === 1,
+    `(6) while its findings stay attached for disclosure (got ${String(r.findings.length)})`,
+  );
+}
+
+// ── (6b) the control: the SAME cap kill and finding with no provider refusal on
+// `errorStop` keeps the #952 behaviour — the partial review is evidence, the lane
+// is not blocked.
+{
+  const r = row({ text: "partial review of my lane", thinkingOnly: true, killCause: "token-budget" }, 1);
+  assert(
+    r.blocked === false,
+    `(6b) a cap-killed child the provider never refused keeps its partial review (blocked=${String(r.blocked)})`,
+  );
+  assert(
+    r.findings.length === 1,
+    `(6b) and its findings are kept (got ${String(r.findings.length)})`,
   );
 }
 
