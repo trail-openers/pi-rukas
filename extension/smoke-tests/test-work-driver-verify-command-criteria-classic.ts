@@ -46,6 +46,13 @@ import {
   type ProvenanceFixture,
   makeProvenanceFixture,
 } from "./lib/verify-develop-provenance-fixture.ts";
+import {
+  GREEN_CRITERION,
+  RUNNER_SCRIPT,
+  RUNNER_TEMPLATE,
+  specBody,
+  workJsonWithRunnerTemplate,
+} from "./lib/verify-develop-criteria-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -55,22 +62,6 @@ function assert(cond: boolean, msg: string): void {
     exit = 1;
   }
 }
-
-/** One criterion's spec block, in the shape `parsePiSpec` accepts. */
-function specBody(criteria: Record<string, unknown>[]): string {
-  return `Add a quota check to the meter.\n\n\`\`\`pi-spec v1\n${JSON.stringify(
-    { problem: "The meter must refuse an over-quota draw.", criteria, size: "S" },
-    null,
-    2,
-  )}\n\`\`\`\n`;
-}
-
-const GREEN_CRITERION = {
-  id: "AC1",
-  text: "The existing suite still passes.",
-  verify: "command",
-  command: "tests/quota.test.ts",
-};
 
 /** The chain's own "nothing to run" note, read rather than restated as a literal a drift in
 `work-driver-verify-develop-cmd.ts` would silently retire. */
@@ -82,15 +73,6 @@ const CHAIN_SKIPPED_NOTE = "no verify command discoverable";
 /** The tier's executed-pass note, asserted with its counts so "ran nothing" can never print
  * the same sentence as "ran everything". */
 const CRITERIA_RAN_NOTE = "command criteria: 1 of 1 command criteria run, none failed";
-
-/** A runner template the config validator accepts: argv form, one whole-word `{file}`. */
-const RUNNER_TEMPLATE = "sh tests/run.sh {file}";
-
-/** The project's per-file runner: exits 0 unless the file's own bytes say FAIL, and echoes
- * the filename on failure — the shape `runTestFile` needs to call a run red rather than
- * "unclear". argv form, so no shell re-parses the criterion's path. */
-const RUNNER_SCRIPT =
-  '#!/bin/sh\nif grep -q FAIL "$1"; then echo "FAILED: $1" >&2; exit 1; fi\nexit 0\n';
 
 interface Run {
   failures: string[];
@@ -118,6 +100,10 @@ async function run(opts: {
   verifyCmd?: string;
   body?: string | null;
   extraDevelopFiles?: Record<string, string>;
+  /** Moves HEAD immediately before the project's verify command runs, so the tier reads one
+   * OID before the runs and a different one after them. The drift the ordering check exists
+   * for — and the arm that decides whether a red survives. */
+  moveHeadDuringRun?: boolean;
 }): Promise<Run> {
   const f = await makeProvenanceFixture({
     issue: 2283,
@@ -126,12 +112,7 @@ async function run(opts: {
         ? {}
         : {
             ".pi/work.json": JSON.stringify(
-              opts.workJson ?? {
-                version: 1,
-                autoMerge: false,
-                budgets: {},
-                verify: { test: RUNNER_TEMPLATE },
-              },
+              opts.workJson ?? workJsonWithRunnerTemplate(),
               null,
               2,
             ),
@@ -149,6 +130,15 @@ async function run(opts: {
     // "" is the caller's own command string, forwarded verbatim so the harness's argv-prefix
     // match never fires and the chain sees exactly what the fixture's .pi/verify-cmd holds.
     verifyCommand: opts.verifyCmd ?? "",
+    // Lets the executor recognise the tier's argv-form runner call and fire the drift hook.
+    runnerTemplate: opts.workJson === null ? undefined : RUNNER_TEMPLATE,
+    ...(opts.moveHeadDuringRun === undefined
+      ? {}
+      : {
+          beforeVerify: async () => {
+            await f.commit("drift/late-commit.ts", "export const late = 1;\n");
+          },
+        }),
   });
   const artifact = writeBodyArtifact(f, opts.criteria, opts.body);
   const failures: string[] = [];
@@ -248,6 +238,61 @@ const cleanup = async (r: Run): Promise<void> => {
     `red: the cap is the ordinary verify-failure cap (got ${verifyCapFor("develop", r.failures)})`,
   );
   await cleanup(r);
+}
+
+// ── 3b. a red survives a head that moved under the runs; only a green loses its licence ────
+{
+  // The drift the ordering check exists for, injected by the harness rather than faked: the
+  // fixture commits while the project's own runner is mid-call, so the tier reads one OID
+  // before the runs and a different one after them. That is exactly the realistic shape — a
+  // develop child, a lens-fix child, or a criterion's own script committing inside the
+  // command tier's window.
+  //
+  // The rule under test is the asymmetry, and both directions are pinned here. A GREEN loses
+  // its licence: it is a claim about a tree that is gone, so the executed-pass note must not
+  // print. A RED keeps it: `outcome.failed` is a non-zero exit the project's runner observed,
+  // evidence AGAINST the work, and a moved head does not make a measured failure untrue.
+  // Collapsing the two — the shape this tier shipped with — turned a verdict it had paid for
+  // into a step that passed over a note.
+  const driftRed = await run({
+    criteria: [GREEN_CRITERION],
+    testFileContent: "FAIL\n",
+    moveHeadDuringRun: true,
+  });
+  assert(
+    driftRed.mine.length === 1 && driftRed.mine[0]?.includes("AC1") === true,
+    `drift + red: the criterion's failure is CARRIED across the head move, naming its id (got: ${driftRed.mine.join(" | ")})`,
+  );
+  assert(
+    verifyCapFor("develop", driftRed.failures) === "verify-failed:develop",
+    `drift + red: and it routes to the ordinary verify-failure cap, not a pass over notes (got ${verifyCapFor("develop", driftRed.failures)})`,
+  );
+  assert(
+    driftRed.notes.some(
+      (n) => n.includes("head moved while the criteria ran") && n.includes("NOT CHECKED"),
+    ) === true,
+    `drift + red: the move is still disclosed as a could-not-tell row, so the reader knows the green verdicts were discarded (got: ${driftRed.notes.filter((n) => n.includes("head moved")).join(" | ")})`,
+  );
+  await cleanup(driftRed);
+
+  // The other direction of the same asymmetry. Without this arm, a wiring that carried every
+  // verdict across drift would satisfy the red assertions above while re-licensing exactly the
+  // green the check exists to refuse.
+  const driftGreen = await run({
+    criteria: [GREEN_CRITERION],
+    moveHeadDuringRun: true,
+  });
+  assert(
+    driftGreen.notes.some((n) => n.includes(CRITERIA_RAN_NOTE)) === false,
+    `drift + green: the executed-pass note never prints for criteria judged against a tree that is gone (got: ${driftGreen.notes.join(" | ")})`,
+  );
+  assert(
+    driftGreen.notes.some(
+      (n) => n.includes("head moved while the criteria ran") && n.includes("NOT CHECKED"),
+    ) === true,
+    `drift + green: and the run says what it discarded rather than going silent (got: ${driftGreen.notes.filter((n) => n.includes("head moved")).join(" | ")})`,
+  );
+  await cleanup(driftGreen);
 }
 
 // ── 4. a missing verify.test template is a named blocking failure ──────────────────────────

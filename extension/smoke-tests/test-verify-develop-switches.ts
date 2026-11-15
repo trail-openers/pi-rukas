@@ -23,7 +23,7 @@
  * anything else falling back to the default.
  */
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
   COMMAND_CRITERIA_CHECKED_NOTE_PREFIX,
@@ -45,6 +45,11 @@ import {
   type ProvenanceFixture,
   makeProvenanceFixture,
 } from "./lib/verify-develop-provenance-fixture.ts";
+import {
+  GREEN_CRITERION,
+  RUNNER_SCRIPT,
+  specBody,
+} from "./lib/verify-develop-criteria-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -93,19 +98,36 @@ function assert(cond: boolean, msg: string): void {
   );
 }
 
-const GREEN_CRITERION = {
-  id: "AC1",
-  text: "The existing suite still passes.",
-  verify: "command",
-  command: "tests/quota.test.ts",
-};
-
-function specBody(criteria: Record<string, unknown>[]): string {
-  return `Add a quota check.\n\n\`\`\`pi-spec v1\n${JSON.stringify(
-    { problem: "The meter must refuse an over-quota draw.", criteria, size: "S" },
-    null,
-    2,
-  )}\n\`\`\`\n`;
+// ── the two switches are discoverable, and their failure strings are explainable ───────────
+{
+  // `test-headless-inputs.ts` checks the roster against the readers and never opens `docs/`,
+  // so a switch that is wired but undocumented is invisible to this suite. Each row is
+  // asserted to say what the gate does AND what the operator does about it, which is the
+  // difference between a named knob and a usable one.
+  const docs = (file: string): string =>
+    readFileSync(path.resolve(import.meta.dirname, "..", "..", "docs", file), "utf8");
+  const conf = docs("configuration.md");
+  for (const [name, needle] of [
+    [VERIFY_PROVENANCE_ENV, "present in that commit"],
+    [VERIFY_COMMAND_CRITERIA_ENV, "verify.test"],
+  ] as const) {
+    assert(
+      conf.includes(`\`${name}\``) && conf.includes(needle),
+      `docs/configuration.md carries a row for ${name} that explains the judgement it makes`,
+    );
+  }
+  // AGENTS.md §11 asks for a symptom → cause → fix entry on a PR that resolves a class of
+  // user-facing failure. Both gates can stop a cycle on a string an operator has to act on,
+  // so both strings have to be findable in troubleshooting.md rather than only in source.
+  const trouble = docs("troubleshooting.md");
+  assert(
+    trouble.includes("data provenance:") && trouble.includes("does not exist in commit"),
+    "docs/troubleshooting.md has an entry for the provenance failure an operator will see",
+  );
+  assert(
+    trouble.includes(MISSING_VERIFY_TEST_TEMPLATE_FAILURE),
+    "and one for the missing-verify.test blocking failure, quoting the string verbatim so a paste finds it",
+  );
 }
 
 interface Drive {
@@ -245,7 +267,7 @@ async function criteriaFixture(): Promise<{ f: ProvenanceFixture; artifact: stri
     baseFiles: {
       // No .pi/work.json at all: with the tier on this is the missing-template blocking
       // failure, which is exactly what the off and absent arms must NOT produce.
-      "tests/run.sh": '#!/bin/sh\nif grep -q FAIL "$1"; then exit 1; fi\nexit 0\n',
+      "tests/run.sh": RUNNER_SCRIPT,
       "tests/quota.test.ts": "ok\n",
     },
     developFiles: { "src/quota.ts": "export const quota = 1;\n" },

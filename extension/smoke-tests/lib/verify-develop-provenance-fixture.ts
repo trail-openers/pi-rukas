@@ -30,13 +30,37 @@ const execFileP = promisify(execFile);
  * project's verify command so a case never pays for a suite it is not about. */
 export function makeProvenanceExec(
   verifyCommand: string,
-  onVerify?: () => void,
+  onVerify?: () => Promise<void> | void,
+  /** The project's `verify.test` template, so the tier's argv-form runner call is
+   * recognisable. Without it an argv arm cannot tell the criteria runner from a git call. */
+  runnerTemplate?: string,
 ): NonNullable<DriverContext["verifyExecFn"]> {
   return async (cmd, o) => {
-    // An empty verify command never matches: `startsWith("")` is true for every command, which
-    // would answer `git` calls with the harness's canned result and break the gate outright.
+    // Two arms, because the project's runner reaches this executor in two shapes and the
+    // original matcher read only one of them.
+    //
+    //  - **shell form** — the discoverable verify chain runs `sh -c "<cmd>"`, and is answered
+    //    with the canned result so a case never pays for a real suite it is not about. Only
+    //    an explicitly configured command matches: `startsWith("")` is true for every command,
+    //    which would answer `git` calls too and break the gate outright.
+    //  - **argv form** — `runTestFile` renders the `verify.test` template as argv and calls
+    //    `exec(bin, { argv: rest })`, so the template arrives SPLIT: `cmd` is the bin and
+    //    `o.argv` is only the remaining args (`"sh"` + `["tests/run.sh", file]`). The full
+    //    rendering is `cmd` followed by `argv`; comparing `argv` alone drops the bin and never
+    //    matches, which is how the drift hook silently never fired. This arm is independent of
+    //    `verifyCommand`, because the criteria tier runs its runner on the very arms where no
+    //    verify command is discoverable at all. It also RUNS the command rather than answering
+    //    it: a red arm is decided by the runner script's own exit, so a canned result here
+    //    would make every red assertion vacuous.
+    const argv = o?.argv;
+    const isCriteriaRunner =
+      argv !== undefined &&
+      argv.length > 0 &&
+      runnerTemplate !== undefined &&
+      `${cmd} ${argv.join(" ")}` === runnerTemplate.replace("{file}", argv.at(-1) ?? "");
+    if (isCriteriaRunner) await onVerify?.();
     if (verifyCommand !== "" && cmd.startsWith(verifyCommand)) {
-      onVerify?.();
+      await onVerify?.();
       return { stdout: "" };
     }
     const { shell, ...rest } = o ?? {};
@@ -109,6 +133,14 @@ export async function makeProvenanceFixture(opts: {
   developFiles?: Record<string, string>;
   verifyCommand?: string;
   onVerify?: () => void;
+  /** The project's `verify.test` template, passed to the executor so it can recognise the
+   * criteria tier's argv-form runner call. Omit it on a case with no command criteria. */
+  runnerTemplate?: string;
+  /** Runs immediately before the project's verify command, so a case can move HEAD between
+   * the two head reads of the criteria tier — the drift the green verdicts must not survive
+   * and a red verdict must. A throw is not swallowed: a case that cannot move the head has
+   * to fail, not quietly run the static-head arm. */
+  beforeVerify?: () => Promise<void> | void;
 }): Promise<ProvenanceFixture> {
   const root = mkdtempSync(path.join(tmpdir(), `pi-prov-${String(opts.issue)}-`));
   // The scratch root is itself inside a git-tracked tree on some hosts (/tmp under a repo,
@@ -142,7 +174,14 @@ export async function makeProvenanceFixture(opts: {
   // commit is a no-op here, not a fixture failure.
   await git(worktree, ["commit", "-q", "-m", "develop"]).catch(() => undefined);
   const headSha = (await git(worktree, ["rev-parse", "HEAD"])).trim();
-  const execFn = makeProvenanceExec(verifyCommand, opts.onVerify);
+  const execFn = makeProvenanceExec(
+    verifyCommand,
+    async () => {
+      await opts.beforeVerify?.();
+      opts.onVerify?.();
+    },
+    opts.runnerTemplate,
+  );
   return {
     root,
     repo,

@@ -30,9 +30,13 @@
  *      constant: it is not the `[toolchain-unsound]` label and carries none of the markers
  *      `verifyCapFor` routes to another cap, so the outcome stays `verify-failed:develop`.
  *   4. **Anything else the tier could not answer is a note.** An unreadable issue artifact, an
- *      unparsable block, a spec that fails `readiness()`, a tree that moved under the runs:
- *      each is a named could-not-tell note, never a pass implied by silence and never a
- *      failure invented by a machine fault.
+ *      unparsable block, a spec that fails `readiness()`: each is a named could-not-tell note,
+ *      never a pass implied by silence and never a failure invented by a machine fault. A tree
+ *      that moved under the runs is the one case where rule 1 outranks this one: the run keeps
+ *      any red it observed and the note says only that the **green** verdicts lost their
+ *      licence. A moved head is a reason to distrust a pass, never a reason to lose a failure
+ *      the project's own runner already measured — lean draws the same line by resolving its
+ *      red before `recheckAfterRuns` runs.
  *
  * The issue body comes from the driver's cached artifact through `readCachedBody`, never over
  * the network: a develop gate that called `gh issue view` would put a 60-second network read
@@ -85,7 +89,6 @@ const MISSING_TEMPLATE_SIGNATURE = "no verify.test runner template is configured
  */
 export const MISSING_VERIFY_TEST_TEMPLATE_FAILURE = `${COMMAND_CRITERIA_PREFIX} the issue's spec carries verify:"command" criteria but ${MISSING_TEMPLATE_SIGNATURE} — the criteria cannot be run, so they are not met`;
 
-/** The note recorded when the tier executed criteria and none of them failed. */
 /** The note that distinguishes an executed pass from a pass that ran nothing: it carries the
  * counts, because "all runnable criteria passed" is also true when none was runnable. */
 export const COMMAND_CRITERIA_CHECKED_NOTE_PREFIX = "command criteria: ";
@@ -186,13 +189,21 @@ export async function runCommandCriteria(opts: {
   const ran = Object.keys(outcome.executed).length;
   const after = await readHeadOid(execFn, cwd);
   if (after === undefined || after !== before) {
-    // The runs judged a tree that is no longer the worktree's head. Discard the verdicts
-    // rather than carry them: a could-not-tell is honest, a green from a dead tree is not.
+    // What the runs judged is no longer the worktree's head, so no GREEN from them may be
+    // carried: a green is a claim about a tree that is gone. A RED is not that kind of claim.
+    // `outcome.failed` is a non-zero exit the project's own runner already observed — evidence
+    // against the work — and the move does not make it untrue. Discarding it here would
+    // convert a verdict this tier paid for into a pass over notes, which is rule 1 inverted
+    // and the false pass a develop child can cause by committing inside the tier's window.
+    // So the green verdicts are discarded and the red is carried. Same ordering lean uses,
+    // where the red is resolved before `recheckAfterRuns` can hand back at all.
+    const failures =
+      outcome.failed === undefined ? [] : [`${COMMAND_CRITERIA_PREFIX} ${outcome.failed}`];
     return {
-      failures: [],
+      failures,
       notes: [
         notChecked(
-          `the worktree's head moved while the criteria ran (${neutraliseMarkdownField(before)} → ${neutraliseMarkdownField(after ?? "unreadable")}) — verdicts discarded`,
+          `the worktree's head moved while the criteria ran (${neutraliseMarkdownField(before)} → ${neutraliseMarkdownField(after ?? "unreadable")}) — the green verdicts were discarded; a red the runner observed is carried`,
         ),
       ],
       notRunnable,
