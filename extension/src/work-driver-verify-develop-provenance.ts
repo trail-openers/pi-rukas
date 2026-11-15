@@ -49,6 +49,7 @@ import type { DriverContext } from "./work-driver-context.ts";
 import { changedPaths, readCommittedProtectedPaths } from "./work-driver-protected-paths-read.ts";
 import type { VerifyDevelopOutcomeOptions } from "./work-driver-verify-develop-options.ts";
 import { classifyToken, code, display } from "./work-driver-verify-develop-provenance-token.ts";
+import { tokensOf } from "./work-driver-verify-develop-provenance-walk.ts";
 
 /** The escape hatch; read at call time, off only for the literal `"0"`. */
 export const VERIFY_PROVENANCE_ENV = "PI_ENSEMBLE_VERIFY_PROVENANCE";
@@ -162,75 +163,6 @@ type ProbeVerdict = "present" | "absent" | "unreadable";
 function isDataFile(p: string): boolean {
   const lower = p.toLowerCase();
   return DATA_SUFFIXES.some((suffix) => lower.endsWith(suffix));
-}
-
-/** Parse one added file's bytes into (key, token) pairs, or say why it cannot be parsed.
- * NDJSON is line-by-line and one bad line makes the WHOLE file unparsable — a partially
- * parsed NDJSON would let a truncated tail read as a complete record set. */
-function tokensOf(
-  content: string,
-  ndjson: boolean,
-):
-  | { ok: true; pairs: { key: string; token: string }[]; pastCap: boolean }
-  | { ok: false; why: string } {
-  const values: unknown[] = [];
-  if (ndjson) {
-    for (const line of content.split("\n")) {
-      if (line.trim() === "") continue;
-      let row: unknown;
-      try {
-        row = JSON.parse(line);
-      } catch {
-        return { ok: false, why: "a row is not valid JSON" };
-      }
-      values.push(row);
-    }
-  } else {
-    try {
-      values.push(JSON.parse(content));
-    } catch {
-      return { ok: false, why: "the file is not valid JSON" };
-    }
-  }
-  const pairs: { key: string; token: string }[] = [];
-  let pastCap = false;
-  const seen = new Set<string>();
-  const keySet = new Set(PROVENANCE_KEYS);
-  const walk = (value: unknown, depth: number): boolean => {
-    // Depth ceiling: a self-referential structure cannot occur in parsed JSON (JSON.parse
-    // rejects cycles), so this bounds cost against a pathological fixture, not an attack.
-    if (depth > 32) return false;
-    if (Array.isArray(value)) {
-      for (const item of value) if (!walk(item, depth + 1)) return false;
-      return true;
-    }
-    if (value === null || typeof value !== "object") return true;
-    for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
-      if (typeof raw === "string") {
-        if (keySet.has(key)) {
-          const id = `${key}\u0000${raw}`;
-          if (!seen.has(id)) {
-            seen.add(id);
-            // The cap bounds what is JUDGED, not what is reported: the first
-            // PROVENANCE_MAX_TOKENS unique tokens are probed and the rest are carried as
-            // rows the caller discloses. Returning false here instead would discard the
-            // whole file — and a 300-row record would then leak past the gate that exists
-            // for records of exactly that size.
-            if (pairs.length < PROVENANCE_MAX_TOKENS) pairs.push({ key, token: raw });
-            else pastCap = true;
-          }
-        }
-        continue;
-      }
-      if (!walk(raw, depth + 1)) return false;
-    }
-    return true;
-  };
-  for (const root of values) {
-    if (!walk(root, 0))
-      return { ok: false, why: "a value is nested past the 32-level walk ceiling" };
-  }
-  return { ok: true, pairs, pastCap };
 }
 
 /** Read one added file at the pinned commit. Absence of the blob is unreadable, not empty. */
@@ -365,6 +297,15 @@ export async function checkWorktreeProvenance(opts: {
       disclosures.push({
         file: displayFile,
         reason: `the file carries more unique provenance tokens than the ${PROVENANCE_MAX_TOKENS} this gate judges for one workstream — the remainder was not judged`,
+      });
+    }
+    for (const { key, shape } of parsed.unjudgable) {
+      // One row per key: a value of a shape the rule does not cover is a value nobody judged,
+      // and the reader has to be able to tell that from a value that was checked and passed.
+      disclosures.push({
+        file: displayFile,
+        key: display(key),
+        reason: `the value under this key is ${shape}, not a path this gate can probe — the claim it makes was not judged`,
       });
     }
     for (const { key, token } of parsed.pairs) {

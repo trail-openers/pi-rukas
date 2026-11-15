@@ -52,6 +52,63 @@ import {
   );
 }
 
+// ── 13b. a non-string value under a provenance key is judged or disclosed, never exempt ────
+{
+  // `sources` is one of the seven keys, and an array is the shape a real record uses for a
+  // multi-file corpus. A walker that recursed into the array without reading its string
+  // elements judged NOTHING and reported a pass — the vacuous-green class this gate exists to
+  // close, and the one a `typeof raw === "string"` guard at the key check silently produces.
+  const arr = await driveProvenanceFixture({
+    "runs/list.json": JSON.stringify({ sources: ["runs/gone.json"] }),
+  });
+  const arrMine = provenanceFailures(arr.failures);
+  assert(
+    arrMine.length === 1 && arrMine[0]?.includes("runs/gone.json") === true,
+    `a string array under a provenance key has its elements judged: one element, one absent verdict (got ${String(arrMine.length)}: ${arrMine.join(" | ")})`,
+  );
+  assert(
+    arr.disclosures.length === 0,
+    `and the judged element is not ALSO disclosed as unverifiable (got: ${JSON.stringify(arr.disclosures)})`,
+  );
+
+  // An object under a provenance key names nothing the gate can probe. It is not a pass either:
+  // a value that is not a string is exactly what a hand-edited or half-serialised record looks
+  // like, and reading it as "nothing to check" is silence-as-pass.
+  const obj = await driveProvenanceFixture({
+    "runs/nested.json": JSON.stringify({ source: { path: "x" } }),
+  });
+  assert(
+    provenanceFailures(obj.failures).length === 0,
+    `an object value never fails on a path the gate could not name (got: ${provenanceFailures(obj.failures).join(" | ")})`,
+  );
+  assert(
+    obj.disclosures.some((d) => d.file === "runs/nested.json" && d.key === "source") === true,
+    `an object value under a provenance key is DISCLOSED, naming the file and the key (got: ${JSON.stringify(obj.disclosures)})`,
+  );
+
+  // The array of objects the walk already reaches: the strings inside are judged and the
+  // container itself is not disclosed as a second, spurious row.
+  const mixed = await driveProvenanceFixture({
+    "runs/rows.json": JSON.stringify({ rows: [{ input: "runs/absent-row.json" }] }),
+  });
+  assert(
+    provenanceFailures(mixed.failures).some((x) => x.includes("runs/absent-row.json")) === true,
+    `a string inside an object inside an array is still judged (got: ${provenanceFailures(mixed.failures).join(" | ")})`,
+  );
+
+  // The non-vacuity pair for the disclosure arm: the same shape whose token IS committed
+  // discloses nothing, so the row above is the value's shape and not a fixture that always
+  // discloses.
+  const ok = await driveProvenanceFixture({
+    "runs/nested.json": JSON.stringify({ source: { path: "x" } }),
+    "x": "row\n",
+  });
+  assert(
+    provenanceFailures(ok.failures).length === 0,
+    `control: a record whose sibling is committed still reddens nothing (got: ${provenanceFailures(ok.failures).join(" | ")})`,
+  );
+}
+
 // ── 17. the switch's truth table, read at call time ───────────────────────────────────────
 {
   const cases: [string | undefined, boolean][] = [
