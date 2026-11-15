@@ -285,7 +285,10 @@ function buildNoteParts(
  * a reviewer told about files it cannot locate and given no command to read them
  * with. The rows are the bulk of the note and the least load-bearing, so they go
  * first, and the notice says the inventory was shortened rather than posing as
- * complete.
+ * complete. In the corner where even the fixed prose has no room the reread command
+ * is RESERVED ahead of the cut rather than being its casualty — the omitted-path
+ * line directs the lens to it, so dropping it there leaves a notice pointing at a
+ * command it never printed.
  *
  * The rows are reserved for the sentence that admits they were shortened: the
  * reserve is that sentence's OWN rendered length, not an estimate of it. A fixed
@@ -305,17 +308,30 @@ function overflowSentence(dropped: number): string {
 function trimNote(parts: NoteParts, room: number): string {
   const whole = assemble(parts);
   if (room >= whole.length) return whole;
-  // Keep the parts that carry the instruction, in this order: the lead line, the
-  // paths, the counts, the command. The table is what is negotiable.
-  const essential = `${parts.lead}\n${parts.omittedPaths}${parts.counts}\n${parts.howToRead}`;
   // The rowless rendering is the floor: anything below it is the tight-budget
   // corner where even the fixed prose has no room.
   const floor = assemble({ ...parts, rows: "" });
   if (room < floor.length) {
-    // Keep the head of the essential prose at a line boundary and let the caller's
-    // block-gives fallback recover the difference. Still leaves the counts and the
-    // command's first line.
-    return cutAtLineBoundary(essential, Math.max(0, room - 80));
+    // The tight-budget corner: even the rowless notice does not fit, so something
+    // has to be cut from the fixed prose. The reread command is what the
+    // omitted-path line above it PROMISES ("read each one with the command
+    // below"), so it is never what the cut removes — its length is reserved first
+    // and whatever room is left is filled at a line boundary, lead first, then the
+    // paths, then the counts. The tail that goes is therefore the counts sentence,
+    // which restates numbers the block already shows, and never the command.
+    const command = parts.howToRead;
+    const bodyRoom = Math.max(0, room - command.length - 1);
+    let body = cutAtLineBoundary(`${parts.lead}\n${parts.omittedPaths}${parts.counts}`, bodyRoom);
+    // A path list is never half-named: a path cut mid-name, or its closing backtick
+    // clipped, is a file the reviewer can neither read nor locate. When the room
+    // cannot hold the list whole, the list goes and the notice says it did.
+    const paths = parts.omittedPaths.trimEnd();
+    if (paths !== "" && !body.includes(paths)) {
+      const dropped = `… (${String(parts.omitted.length)} omitted path${parts.omitted.length === 1 ? "" : "s"} not listed: too many to name inside this prompt's bound)`;
+      body = cutAtLineBoundary(`${parts.lead}\n${dropped}\n${parts.counts}`, bodyRoom);
+      if (!body.includes(parts.lead)) body = parts.lead;
+    }
+    return body === "" ? command : `${body}\n${command}`;
   }
   const allRows = parts.rows.trimEnd();
   // Measured against the real rendering, so the returned note is <= `room` by

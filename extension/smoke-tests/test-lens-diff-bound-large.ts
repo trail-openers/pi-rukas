@@ -136,32 +136,37 @@ for (const files of [1800, 2100, 2500, 3000, 4000, 4250, 5000]) {
   );
 }
 
-// ── (4) the fallback arm's notice keeps the command it points at.
+// ── (4) the tight-budget notice keeps the command the omitted-path line promises.
 //
-// The arm is the one whose block is a LINE-boundary slice — reached only when no whole
-// section fits the budget (a generated bundle, a lockfile, one vendored file bigger
-// than the whole bound). It is also the arm that leaves the notice with the least
-// room, because the slice is sized from a note measured BEFORE it is cut: when the
-// fixed prose no longer fits what the block left, `trimNote` head-cuts it.
+// `trimNote` is handed the room the block left, and when the note's FIXED prose — no
+// inventory rows at all — does not fit that room, the arm below fires and something
+// has to be cut from prose a lens acts on. Pre-fix it head-cut the whole note, so the
+// line that went was the LAST one: the reread command. The line above it went on
+// saying "read each one with the command below", leaving the lens with paths it could
+// name and no command to read them with.
 //
 // The discriminating shape was found by sweeping the arm and is narrow: ~200-character
 // section lines (long enough that no whole-file cap affords a section, short enough
 // that the notice stays small and the block still takes ~119 KB), a SHORT directory (a
 // deep one inflates the note until its fixed prose fits the room and the cut never
-// fires), and TWO sections (with one, the walk still gets its path named). A wider or
-// narrower line, a deeper directory, or three sections all leave the fixed prose
-// inside its room — hence the arm precondition asserted here, not assumed.
+// fires), and TWO sections. What makes the arm reachable at all is that the block is
+// sized from the UNTRIMMED note and then kept, so the room left for the note is
+// smaller than the note the module intends to print — which is what the precondition
+// below asserts rather than assumes: a fixture that never routes through the cut
+// passes for the wrong reason.
 {
-  const b = boundLensPromptDiff({
-    diff: oversizedSections(2, 800, 200),
-    context: "CTX",
-    range: RANGE,
-  });
+  const diff = oversizedSections(2, 800, 200);
+  // The untrimmed note (no rows dropped) is what the caller sizes the block against;
+  // measure the room it leaves, so the precondition names the actual pressure rather
+  // than a rendering detail that the trim itself can change.
+  const b = boundLensPromptDiff({ diff, context: "CTX", range: RANGE });
   const sum = b.diff.length + (b.note?.length ?? 0);
   const note = b.note ?? "";
   assert(
-    b.mode === "bounded" && note.includes("no single file fit this prompt's budget"),
-    `(4) precondition: this diff reaches the line-boundary fallback (mode ${b.mode}, block ${String(b.diff.length)}, note ${String(note.length)})`,
+    b.mode === "bounded" &&
+      diff.length > MAX_INLINE_DIFF_CHARS &&
+      b.diff.length + 1 >= MAX_INLINE_DIFF_CHARS - 1_000,
+    `(4) precondition: the block was sized against an untrimmed note and took almost the whole bound, leaving the fixed prose no room (${String(b.diff.length)} of ${String(MAX_INLINE_DIFF_CHARS)})`,
   );
   assert(
     note.includes("read each one with the command"),
@@ -180,12 +185,13 @@ for (const files of [1800, 2100, 2500, 3000, 4000, 4250, 5000]) {
 // ── (5) the same arm, reached through a wide NOTICE instead of a wide block.
 //
 // A long ref range makes the reread line itself enormous, so the fixed prose is the
-// larger half and the block has to give ~71 KB of itself before the pair fits
-// (measured pre-fix: 71 264 + 511 = 71 775 against the 120 000 bound — the pair fits,
-// and the notice that got there had lost the command). The notice still names both
-// omitted paths, so a command is still owed to the reader. A ref past 4 000 characters
-// is refused outright by `rereadCommand`, so this is the widest notice the module will
-// render at all.
+// larger half of the notice the module INTENDS to print, `trimNote` is handed almost
+// no room, and the block has to give ~71 KB of itself before the pair fits. Pre-fix
+// that produced a 511-character notice over a 71 264-character block — the pair fits,
+// and the notice that got there had lost the command. What the notice is still owed:
+// it names both omitted paths, so it still owes the reader a command. A ref past 4 000
+// characters is refused outright by `rereadCommand`, so this is the widest notice the
+// module will render at all.
 {
   const b = boundLensPromptDiff({
     diff: oversizedSections(2, 800, 200),
@@ -196,9 +202,10 @@ for (const files of [1800, 2100, 2500, 3000, 4000, 4250, 5000]) {
   const note = b.note ?? "";
   assert(
     b.mode === "bounded" &&
-      note.includes("no single file fit this prompt's budget") &&
+      b.diff.length > 40_000 &&
+      note.includes("vendor/f0.gen") &&
       note.includes("read each one with the command"),
-    `(5) precondition: a wide notice and a wide block together reach the tight-budget trim (block ${String(b.diff.length)}, note ${String(note.length)})`,
+    `(5) precondition: the notice still names its omitted paths and points below itself at a command, over a large block (block ${String(b.diff.length)}, note ${String(note.length)})`,
   );
   assert(
     note.includes("git diff"),
