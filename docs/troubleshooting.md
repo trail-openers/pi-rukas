@@ -4006,8 +4006,13 @@ Both halves are on by default and governed by one switch — [configuration.md](
 - Each lens prompt carries only the whole files its budget affords. The omitted paths, their
   added/removed counts, and the `git diff <base>...<head> -- <file>` command that reads them are
   printed after the diff fence, where a reviewed diff that quotes the notice cannot impersonate
-  it. The full-branch block shares that same budget instead of adding to it.
-- A provider context-length refusal is named in the lane (it says so) and is **not** retried —
+  it. When the notice itself has to be cut to fit, the inventory table goes first and the reread
+  command is what survives — a notice that names a file and points at a command never prints
+  half that promise. The full-branch block shares that same budget instead of adding to it.
+- A provider context-length refusal is named in the lane, from the provider's own refusal of the
+  request (its structured error carrying an HTTP 400 and size wording) — never from the child's
+  prose, which quotes the diff and can carry those words from the change under review — and it is
+  **not** retried —
   one spawn, not four. Only the provider's own refusal of the request counts: the child's prose
   quoting a 400 out of the diff does not, and neither does a 400 that says something other than
   "too large". A refusal of the moment never ends a lane either, however it is worded — a 429
@@ -4020,7 +4025,7 @@ Both halves are on by default and governed by one switch — [configuration.md](
 
 | Situation | Action |
 |---|---|
-| A lane says `provider context-length limit` | The bound is working; the change is simply larger than one prompt. Read the notice's file list and review the omitted files with the command it prints. |
+| A lane says `provider context-length limit` | The bound is working; the change is simply larger than one prompt. Read the notice's file list and review the omitted files with the command it prints. The row also says how many attempts the loop made — one, because a refusal of the prompt is not cleared by retrying it. |
 | The reason says `exceeded the limit REVIEW_DIFF_READ_MAX_BYTES` | The diff is past 16 MiB. Split the branch, or review a narrower range — the limit is deliberate, since six children × the whole range is the cost being bounded. |
 | You want the pre-#2261 behaviour exactly | `PI_ENSEMBLE_LENS_LARGE_DIFF=0`. Restores the 1 MiB reads and unbounded prompts verbatim, including both silent failure modes above. |
 
