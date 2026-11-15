@@ -83,6 +83,18 @@ const LISTED = [
   // module's own `ALLOWLIST_TIMEOUT_MS` / `ALLOWLIST_MAX_BUFFER`, and
   // test-merge-author-base-unreadable.ts asserts on `argv`.
   "merge-author-allowlist.ts",
+  // #2283 — the data-provenance gate reads the added file's committed bytes with
+  // `git show --end-of-options <oid>:<path>` under its own named bounds, the ref
+  // always the oid it pinned first. Its test asserts on `argv`, so the read is
+  // under the same discipline as the rest of the develop path.
+  "work-driver-verify-develop-provenance.ts",
+  // #2283 (split for the file cap) — the token classifier and display forms behind that
+  // gate: it issues no git call of its own, and is listed so a future edit that adds one
+  // is checked under the same rule rather than joining the argv discipline by silence.
+  "work-driver-verify-develop-provenance-token.ts",
+  // #2283 — the classic command-criteria tier's head probe (`git rev-parse --verify
+  // HEAD`), argv-form under its own bound, so a moved head is a note rather than a hang.
+  "work-driver-verify-develop-command-criteria.ts",
 ];
 
 /** A git command string handed to an exec call: a `(` then a literal beginning `git `. */

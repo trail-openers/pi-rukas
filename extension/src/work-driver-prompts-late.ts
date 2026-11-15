@@ -25,6 +25,8 @@ import {
 } from "./work-driver-pr-body-definition.ts";
 import { renderLensFindingsSection } from "./work-driver-pr-sections.ts";
 import { protectedGrantSectionOf } from "./work-driver-protected-grant.ts";
+import { provenanceDisclosureSectionOf } from "./work-driver-verify-develop-provenance.ts";
+import type { ProvenanceDisclosure } from "./work-driver-verify-develop-provenance.ts";
 import type { FenceView, Workstream } from "./workflow-state-schema.ts";
 
 /**
@@ -98,6 +100,13 @@ export function inlineCommitPrPrompt(
     workstreams: Record<string, Workstream>;
     draft?: boolean; // #1292 — open the PR with `--draft` (marked ready once the review is done).
     protectedGrant?: readonly string[]; // #1090 — the operator's --allow-protected record.
+    /**
+     * #2283 — the develop gate's data-provenance disclosures, rendered into the fallback PR
+     * body exactly as `work-driver-commit.ts` renders them into the mechanized one. The two
+     * shapes must say the same thing: a disclosure that reaches the body only on the
+     * mechanized path is a disclosure the ops child can omit.
+     */
+    provenanceDisclosures?: readonly ProvenanceDisclosure[];
   },
 ): string {
   const headline = issues.length === 1 ? `issue #${issues[0]}` : `issues #${issues.join(", #")}`;
@@ -125,6 +134,8 @@ export function inlineCommitPrPrompt(
   // #1155 — the unmeasurable-deliverables warning, spliced in alongside the
   // #792 operator-actions section so both PR-body shapes render it.
   const unmeasurableWarning = unmeasurablePathsSectionOf(normalisedSpec);
+  // #2283 — the provenance disclosures, beside the unmeasurable warning in both body shapes.
+  const provenanceSection = provenanceDisclosureSectionOf(fallback?.provenanceDisclosures);
   const bodySections = [
     tldrSectionOf(normalisedSpec), // #1006 — TL;DR at the TOP of the PR body in all three shapes.
     assumptionsBlockOf(normalisedSpec),
@@ -132,6 +143,7 @@ export function inlineCommitPrPrompt(
     carriedFindingsSectionOf(eventLog),
     operatorActions,
     unmeasurableWarning,
+    provenanceSection,
     renderLensFindingsSection(eventLog),
   ]
     .filter((s) => s !== "")

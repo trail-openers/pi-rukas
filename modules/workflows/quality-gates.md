@@ -1,5 +1,9 @@
 # Quality Gates
 
+## Evidence, Not Claims
+
+A criterion that requires an action or a measurement is met only by evidence that it executed. A record that round-trips through its own generator is not that evidence: rendering committed bytes from rows the same file already contains proves the renderer is pure, and says nothing about whether the measurement happened or the source it names ever existed.
+
 ## Coverage Requirements
 
 | Risk Level | Coverage Required | Examples |

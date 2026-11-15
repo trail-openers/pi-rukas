@@ -1,0 +1,217 @@
+/**
+ * lib/verify-develop-provenance-fixture — drives the develop gate's #2283 gates against a
+ * REAL repository.
+ *
+ * The provenance gate's whole claim is that it judges the committed tree, so a fake that
+ * answered `git ls-tree` from a table could not distinguish "the file is not in the commit"
+ * from "the executor did not implement that argv" — the vacuous-fake class. Every git read
+ * here goes to real git in a real worktree; only the project's own verify command is
+ * intercepted, and it is intercepted by name, never by a git argv.
+ *
+ * The two gates this lib serves share one rig because they are wired at the same seam and
+ * must be observed to be independent: a case that needs a red command criterion and an
+ * absent provenance token sets both on the same tree and asserts each gate reports its own.
+ *
+ * Lives in lib/ so the smoke glob never self-executes it.
+ */
+
+import { execFile } from "node:child_process";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { promisify } from "node:util";
+import type { DriverContext } from "../../src/work-driver-context.ts";
+import { initialState } from "../../src/workflow-state.ts";
+import { gitTestEnv } from "./git-test-env.ts";
+
+const execFileP = promisify(execFile);
+
+/** The executor the gate under test uses: real git, and a scripted outcome for the
+ * project's verify command so a case never pays for a suite it is not about. */
+export function makeProvenanceExec(
+  verifyCommand: string,
+  onVerify?: () => void,
+): NonNullable<DriverContext["verifyExecFn"]> {
+  return async (cmd, o) => {
+    // An empty verify command never matches: `startsWith("")` is true for every command, which
+    // would answer `git` calls with the harness's canned result and break the gate outright.
+    if (verifyCommand !== "" && cmd.startsWith(verifyCommand)) {
+      onVerify?.();
+      return { stdout: "" };
+    }
+    const { shell, ...rest } = o ?? {};
+    const opts = {
+      cwd: rest.cwd,
+      maxBuffer: rest.maxBuffer ?? 8 * 1024 * 1024,
+      timeout: rest.timeout,
+      env: o?.env ? { ...gitTestEnv(), ...o.env } : gitTestEnv(),
+    };
+    const { stdout } = o?.argv
+      ? await execFileP(cmd, o.argv, opts)
+      : await execFileP(shell ?? "/bin/sh", ["-c", cmd], opts);
+    return { stdout };
+  };
+}
+
+/** Every git call a fixture makes, with the host's config and identity held constant. */
+async function git(dir: string, args: string[]): Promise<string> {
+  const { stdout } = await execFileP("git", args, {
+    cwd: dir,
+    env: gitTestEnv(),
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  return stdout;
+}
+
+/** A file written relative to a repo, creating parent directories as needed. */
+function put(repo: string, rel: string, content: string): void {
+  const abs = path.join(repo, rel);
+  mkdirSync(path.dirname(abs), { recursive: true });
+  writeFileSync(abs, content);
+}
+
+export interface ProvenanceFixture {
+  /** The scratch root; everything below it lives and dies together. */
+  root: string;
+  /** The clone the cycle runs in — `ctx.repoRoot`. */
+  repo: string;
+  /** The develop child's worktree. */
+  worktree: string;
+  baseSha: string;
+  headSha: string;
+  /** Write a file in the worktree and commit it. Returns nothing; the gate re-reads HEAD. */
+  commit(rel: string, content: string): Promise<void>;
+  /** Commit a pre-staged change (write + `git add` + commit in one step). */
+  commitAll(message: string): Promise<void>;
+  execFn: NonNullable<DriverContext["verifyExecFn"]>;
+  /** The context and state the gate is driven with. `issue` is the case's own number. */
+  ctxFor(): DriverContext;
+  stateFor(extra?: {
+    issueBodyArtifact?: string;
+    workstreams?: Record<
+      string,
+      { id: string; scope: string; paths: string[]; outOfScope: string[] }
+    >;
+  }): ReturnType<typeof initialState>;
+}
+
+/**
+ * Build a repo whose base holds `baseFiles`, plus one detached worktree at the base.
+ *
+ * The caller then commits the develop child's own work through `commit`, and the gate
+ * judges exactly that range. The worktree is detached, as the driver's are: a branch name
+ * in the worktree would let a case pass by naming a ref the gate never reads.
+ */
+export async function makeProvenanceFixture(opts: {
+  issue: number;
+  baseFiles?: Record<string, string>;
+  /** Contents committed on the worktree before the gate runs, in order. */
+  developFiles?: Record<string, string>;
+  verifyCommand?: string;
+  onVerify?: () => void;
+}): Promise<ProvenanceFixture> {
+  const root = mkdtempSync(path.join(tmpdir(), `pi-prov-${String(opts.issue)}-`));
+  // The scratch root is itself inside a git-tracked tree on some hosts (/tmp under a repo,
+  // a worktree-relative tmpdir), and `git init` then refuses — "already a repository".
+  // `--separate-git-dir` writes the metadata where nothing can already hold it.
+  const gitDir = path.join(root, "git");
+  const repo = path.join(root, "repo");
+  mkdirSync(repo, { recursive: true });
+  mkdirSync(path.join(repo, ".pi"), { recursive: true });
+  // A base is never empty: an empty tree has no OID for a gate to pin, and `git commit`
+  // refuses it outright ("nothing to commit"), so a case with no baseFiles would die in the
+  // fixture rather than in the gate under test.
+  put(repo, "README.md", "# provenance fixture\n");
+  for (const [rel, content] of Object.entries(opts.baseFiles ?? {})) put(repo, rel, content);
+  const verifyCommand = opts.verifyCommand ?? "true";
+  if (opts.verifyCommand !== undefined && opts.verifyCommand !== "") {
+    writeFileSync(path.join(repo, ".pi", "verify-cmd"), `${opts.verifyCommand}\n`);
+  }
+  await git(repo, ["init", "-q", `--separate-git-dir=${gitDir}`, "--initial-branch=main"]);
+  await git(repo, ["config", "user.email", "t@example.com"]);
+  await git(repo, ["config", "user.name", "T"]);
+  await git(repo, ["add", "-A"]);
+  await git(repo, ["commit", "-q", "-m", "base"]);
+  const baseSha = (await git(repo, ["rev-parse", "HEAD"])).trim();
+  const worktree = path.join(root, ".worktrees", `issue-${String(opts.issue)}-a`);
+  await git(repo, ["worktree", "add", "-q", "--detach", worktree, baseSha]);
+  for (const [rel, content] of Object.entries(opts.developFiles ?? {})) put(worktree, rel, content);
+  await git(worktree, ["add", "-A"]);
+  // A fixture that stages nothing has nothing to commit, and git exits 1 saying so. The
+  // worktree still sits at the base, which is the shape that case wants — so an empty
+  // commit is a no-op here, not a fixture failure.
+  await git(worktree, ["commit", "-q", "-m", "develop"]).catch(() => undefined);
+  const headSha = (await git(worktree, ["rev-parse", "HEAD"])).trim();
+  const execFn = makeProvenanceExec(verifyCommand, opts.onVerify);
+  return {
+    root,
+    repo,
+    worktree,
+    baseSha,
+    headSha,
+    execFn,
+    async commit(rel: string, content: string) {
+      put(worktree, rel, content);
+      await git(worktree, ["add", "-A"]);
+      await git(worktree, ["commit", "-q", "-m", `add ${rel}`]);
+    },
+    async commitAll(message: string) {
+      await git(worktree, ["add", "-A"]);
+      await git(worktree, ["commit", "-q", "-m", message]);
+    },
+    ctxFor() {
+      return {
+        host: { sendUserMessage: () => {} } as never,
+        repoRoot: repo,
+        issue: opts.issue,
+        verifyExecFn: execFn,
+      } as unknown as DriverContext;
+    },
+    stateFor(extra) {
+      let s = initialState(opts.issue, 1_000_000);
+      s = {
+        ...s,
+        pipelineState: {
+          ...s.pipelineState,
+          branchName: `feature/issue-${String(opts.issue)}`,
+          baseSha,
+          worktrees: { a: worktree },
+          workstreams: extra?.workstreams ?? {
+            a: { id: "a", scope: "the work", paths: [], outOfScope: [] },
+          },
+          ...(extra?.issueBodyArtifact === undefined
+            ? {}
+            : { issueBodyArtifact: extra.issueBodyArtifact }),
+        },
+      };
+      return s;
+    },
+  };
+}
+
+/** The record at the heart of the field case: a results table whose `source` names a file
+ * the same change also synthesises. */
+export const FIELD_RECORD_ROWS = [
+  { task: "t1", seconds: 12 },
+  { task: "t2", seconds: 641 },
+  { task: "t3", seconds: 5 },
+];
+
+/** Render the record the way the field case's generator did — JSON.stringify of a built
+ * object, so the committed bytes and the generator's output are the same bytes by
+ * construction, which is the whole point of the fixture. */
+export function renderRecord(rows: readonly unknown[], source: string): string {
+  return `${JSON.stringify({ source, pass: rows.length, rows }, null, 2)}\n`;
+}
+
+/** The generator that round-trips the record byte-identically from its own rows. */
+export function renderGenerator(source: string, rows: readonly unknown[]): string {
+  return [
+    "// Renders the committed record from the rows below. A pure function of its own input:",
+    "// byte-identity here says nothing about whether `source` ever existed.",
+    "const rows = " + JSON.stringify(rows, null, 2) + ";",
+    `const source = ${JSON.stringify(source)};`,
+    'process.stdout.write(JSON.stringify({ source, pass: rows.length, rows }, null, 2) + "\\n");',
+    "",
+  ].join("\n");
+}

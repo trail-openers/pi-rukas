@@ -94,6 +94,9 @@ export async function dispatchCommitPrFallback(
           workstreams: ps.workstreams ?? {},
           draft,
           protectedGrant: ctx.protectedGrant,
+          // #2283 — the same disclosures the mechanized body carries, read from the state the
+          // fallback dispatch is built from.
+          provenanceDisclosures: ps.provenanceDisclosures,
         },
       ),
     {

@@ -22,6 +22,7 @@ import {
   baseHealthConsultedNote,
 } from "./work-driver-verify-base-health-channels.ts";
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
+import type { ProvenanceDisclosure } from "./work-driver-verify-develop-provenance.ts";
 import { type DevelopGateRecord, gatePassKey } from "./work-driver-verify-gate-reuse.ts";
 import type { SelectedVerifyRecord } from "./work-driver-verify-select-exec.ts";
 import type { VerifyAttributionRecord } from "./work-driver-verify-shared.ts";
@@ -131,6 +132,13 @@ export function recordDevelopGateEvents(
     baseHealthConsulted?: BaseHealthConsulted;
     selectedVerify?: SelectedVerifyRecord;
     fenceLifts?: FenceLift[];
+    /**
+     * #2283 — the data-provenance disclosures of THIS develop pass, recorded onto the state
+     * the caller owns so `work-driver-commit.ts` can render them into the PR body. Recorded
+     * only when the pass produced some: a run that did not execute the gate leaves the field
+     * as it found it rather than clearing an earlier pass's rows.
+     */
+    provenanceDisclosures?: ProvenanceDisclosure[];
   },
 ): WorkState {
   const [started, completed] = gate.verifyEvents ?? [];
@@ -177,10 +185,29 @@ export function recordDevelopGateEvents(
     ...(completed ? [completed] : []),
   ];
   const recorded = foldVerifyAttribution(
-    withBaseHealthProbe(withGateRecord(state, gate.gateRecord), gate.baseHealthProbe),
+    withProvenanceDisclosures(
+      withBaseHealthProbe(withGateRecord(state, gate.gateRecord), gate.baseHealthProbe),
+      gate.provenanceDisclosures,
+    ),
     gate.selectedVerify,
   );
   return events.length === 0 ? recorded : appendEvent(recorded, ...events);
+}
+
+/**
+ * #2283 — record this develop pass's provenance disclosures. Absent leaves the state
+ * untouched: an empty array here would render an empty PR-body section, and a pass that
+ * executed nothing has no disclosures to speak of.
+ */
+function withProvenanceDisclosures(
+  state: WorkState,
+  disclosures: ProvenanceDisclosure[] | undefined,
+): WorkState {
+  if (disclosures === undefined) return state;
+  return {
+    ...state,
+    pipelineState: { ...state.pipelineState, provenanceDisclosures: disclosures },
+  };
 }
 
 /**

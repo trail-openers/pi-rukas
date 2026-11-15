@@ -13,6 +13,10 @@ import type { FenceLift } from "./work-develop-scope-fence-seam.ts";
 import type { GateHangPathSink } from "./work-driver-gate-hang.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import type { BaseHealthConsulted } from "./work-driver-verify-base-health-channels.ts";
+import type {
+  ProvenanceDisclosure,
+  ProvenanceDisclosureSink,
+} from "./work-driver-verify-develop-provenance.ts";
 import type { DevelopGateRecord } from "./work-driver-verify-gate-reuse.ts";
 import type { VerifyCommandRecord } from "./work-driver-verify-record.ts";
 import type { SelectedVerifyRecord } from "./work-driver-verify-select-exec.ts";
@@ -117,4 +121,11 @@ export interface VerifyStepOutcomeResult {
   baseHealthConsulted?: BaseHealthConsulted;
   /** #1667 — what the verify command gate ran, for the corrective-round decision ("not-run" when no command ran). */
   verifyRun?: VerifyCommandRecord;
+  /**
+   * #2283 — what the data-provenance gate could not judge, carried STRUCTURALLY so the PR
+   * body renders it without regexing a note. Emitted only by a run that executed the gate:
+   * a disabled tier or a could-not-tell run produces notes, not disclosures, so a section
+   * here always means a token was seen and declined.
+   */
+  provenanceDisclosures?: ProvenanceDisclosure[];
 }

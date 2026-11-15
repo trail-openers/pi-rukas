@@ -345,6 +345,13 @@ export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   flag("UNFENCE_DOCS_TESTS", true),
   str("USER_EXTENSION", null),
   flag("VERIFY", true),
+  // #2283 — the classic /work command-criteria tier: the spec's verify:"command" criteria,
+  // run beside the ratchet and smoke gates and independently of the discovered verify
+  // command. 0 restores the pre-#2283 behaviour, where a /work cycle ran none of them.
+  // #2283 — the classic /work command-criteria tier: the spec's verify:"command" criteria,
+  // run beside the ratchet and smoke gates and independently of the discovered verify
+  // command. 0 restores the pre-#2283 behaviour, where a /work cycle ran none of them.
+  flag("VERIFY_COMMAND_CRITERIA", true),
   // Unset: derived from the host budget (CPUs, memory, cgroup limits); 0 = unbounded.
   int("VERIFY_CONCURRENCY", null),
   // #1509 — the verify wall clock is resolved PER TIER. Each tier reads its own
@@ -362,10 +369,16 @@ export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   ms("VERIFY_FAST_TIMEOUT_MS", 600_000),
   flag("VERIFY_FULL", true),
   ms("VERIFY_FULL_TIMEOUT_MS", 1_800_000),
+
   // #1415 — reuse of a verify gate the cycle already passed: same tree, same
   // command, same bound → the whole develop pass runs nothing. Default on; `0`
   // restores the pre-#1415 "run it every round" behaviour.
   flag("VERIFY_GATE_REUSE", true),
+  // #2283 — the develop gate's data-provenance check: an added JSON/NDJSON record whose
+  // provenance key names a path absent from the workstream's pinned commit fails the step.
+  // 0 skips it; tokens this gate cannot see are disclosed on both arms, never failed.
+  flag("VERIFY_PROVENANCE", true),
+
   flag("VERIFY_SELECT", true),
   ms("VERIFY_SMOKE_TIMEOUT_MS", 600_000),
   ms("VERIFY_SUITE_TIMEOUT_MS", 1_800_000),

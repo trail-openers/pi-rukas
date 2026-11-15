@@ -14,6 +14,7 @@ import type { CommentEvidence } from "./comment-evidence.ts";
 import type { FenceLift } from "./work-develop-scope-fence-seam.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import type { SpecSlotSource } from "./work-driver-spec-slot-admission.ts";
+import type { ProvenanceDisclosureSink } from "./work-driver-verify-develop-provenance.ts";
 import type { VerifyRecordSlot } from "./work-driver-verify-record.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 
@@ -33,6 +34,14 @@ export interface VerifyDevelopOutcomeOptions {
    * in place; absent = this caller does not route on it.
    */
   verifyRecord?: VerifyRecordSlot;
+  /**
+   * #2283 — out-parameter: what the data-provenance gate could NOT judge. Filled in place
+   * (the `verifyRecord` idiom, not a callback) so the caller reads the same array it handed
+   * in, and the PR body renders it. Emitted only by a run that EXECUTED the gate: an absent
+   * sink means this caller does not route on the disclosures, and a disabled or
+   * could-not-tell run fills nothing here — a note says so instead.
+   */
+  provenanceDisclosures?: ProvenanceDisclosureSink;
   // #782 — fires when the consolidated-verify flake re-run passed.
   onVerifyFlakeRecovered?: (evidenceTail?: string) => void;
   // #814 — out-parameter for structured fence-violation records (see the
