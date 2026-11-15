@@ -48,8 +48,19 @@ import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { changedPaths, readCommittedProtectedPaths } from "./work-driver-protected-paths-read.ts";
 import type { VerifyDevelopOutcomeOptions } from "./work-driver-verify-develop-options.ts";
-import { classifyToken, code, display } from "./work-driver-verify-develop-provenance-token.ts";
-import { tokensOf } from "./work-driver-verify-develop-provenance-walk.ts";
+import {
+  PROVENANCE_KEYS,
+  PROVENANCE_MAX_TOKENS,
+  classifyToken,
+  code,
+  display,
+} from "./work-driver-verify-develop-provenance-token.ts";
+import {
+  NDJSON_SUFFIX,
+  type ProvenanceBudget,
+  isDataFile,
+  tokensOf,
+} from "./work-driver-verify-develop-provenance-walk.ts";
 
 /** The escape hatch; read at call time, off only for the literal `"0"`. */
 export const VERIFY_PROVENANCE_ENV = "PI_ENSEMBLE_VERIFY_PROVENANCE";
@@ -79,37 +90,26 @@ export function verifySwitchOff(raw: string | undefined): boolean {
 }
 
 /**
- * The keys whose string values are read as provenance, at any nesting depth.
+ * The keys whose string values are read as provenance, at any nesting depth — re-exported
+ * from the token module, which is where the constant lives so the walker and this gate read
+ * one set rather than two that can drift.
  *
  * ONE constant, because the field case this gate exists for is a generator that renames
  * the key: a set that lived in config would be a set a child could widen. A key missing
- * here is a gap in this list, not a format the gate failed to detect.
+ * there is a gap in that list, not a format the gate failed to detect.
  */
-export const PROVENANCE_KEYS: readonly string[] = [
-  "source",
-  "sourceFile",
-  "sourcePath",
-  "sources",
-  "input",
-  "inputFile",
-  "resultsFile",
-];
-
-/** Extensions whose bytes are read as JSON / NDJSON. YAML and every other format is out
- * of scope: an added file with any other extension is simply not a data record here. */
-const DATA_SUFFIXES = [".json", ".ndjson"] as const;
-
-/** A file whose own text is a JSON array of rows, one record per line. */
-const NDJSON_SUFFIX = ".ndjson";
+export {
+  PROVENANCE_KEYS,
+  PROVENANCE_MAX_TOKENS,
+} from "./work-driver-verify-develop-provenance-token.ts";
 
 /** The wall clock on this module's own git reads (the OID pin and the added-file range). */
 export const PROVENANCE_GIT_TIMEOUT_MS = 30_000;
-/** Byte ceiling on each of those reads: a ref is one line, a name-status list is not. */
-export const PROVENANCE_GIT_MAX_BUFFER = 8 * 1024 * 1024;
-/** Byte ceiling on one added data file. Past it the file is disclosed, never judged. */
+/** Byte ceiling on one added data file. Past it the file is disclosed, never judged. It is
+ * also the ceiling that read's own executor buffer is set from, plus headroom: the bound is
+ * what makes an over-large record a disclosure rather than a hang, and there is one number so
+ * the two cannot disagree about what the gate is willing to read. */
 export const PROVENANCE_FILE_MAX_BYTES = 1024 * 1024;
-/** Unique tokens judged per workstream. Past it the rest is disclosed, never judged. */
-export const PROVENANCE_MAX_TOKENS = 256;
 
 /** The leading clause every provenance failure carries, so the gate's own rows are
  * findable in a failure list and no cap router can mistake one for a verify verdict. */
@@ -158,12 +158,6 @@ export interface ProvenanceWorkstreamResult {
 
 /** The kinds of read a token probe can decline, kept distinct from "absent". */
 type ProbeVerdict = "present" | "absent" | "unreadable";
-
-/** Does this added path name a file this gate reads as a data record? */
-function isDataFile(p: string): boolean {
-  const lower = p.toLowerCase();
-  return DATA_SUFFIXES.some((suffix) => lower.endsWith(suffix));
-}
 
 /** Read one added file at the pinned commit. Absence of the blob is unreadable, not empty. */
 async function readAddedFile(
@@ -271,6 +265,12 @@ export async function checkWorktreeProvenance(opts: {
     (path, i, all) => all.indexOf(path) === i && isDataFile(path),
   );
   let judged = 0;
+  // One budget for the whole workstream, shared by every file it added: the cap is the number
+  // of git probes ONE review round pays, and a counter reset per file would make it a per-file
+  // allowance and let N files buy N × the cap. The same reasoning puts the dedupe set here —
+  // one token cited by two added files is one claim to probe, not two.
+  const budget: ProvenanceBudget = { seen: new Set<string>(), chargedInto: 0 };
+  let crossFileOverflow = false;
   for (const file of added) {
     const displayFile = display(file);
     const bytes = await readAddedFile(execFn, cwd, oid, file);
@@ -285,11 +285,15 @@ export async function checkWorktreeProvenance(opts: {
       });
       continue;
     }
-    const parsed = tokensOf(bytes.content, file.toLowerCase().endsWith(NDJSON_SUFFIX));
+    const parsed = tokensOf(bytes.content, file.toLowerCase().endsWith(NDJSON_SUFFIX), budget);
     if (!parsed.ok) {
       disclosures.push({ file: displayFile, reason: parsed.why });
       continue;
     }
+    // The workstream's running charge, not this file's: the disclosure at the end of the loop
+    // fires on the budget the whole workstream has drawn, which is what the constant's own
+    // words promise. A per-file counter made the cap a per-file allowance.
+    if (parsed.chargedInto > PROVENANCE_MAX_TOKENS) crossFileOverflow = true;
     if (parsed.pastCap) {
       // One row per file, because the rest of the corpus is the thing to say: the walk
       // stopped judging, and a reader must be able to tell "the gate found nothing wrong"
@@ -337,6 +341,18 @@ export async function checkWorktreeProvenance(opts: {
     }
   }
   result.judged = judged;
+  // The cross-file remainder. `parsed.pastCap` reports the cap binding inside one file, which
+  // is right for a file the walk stopped mid-way through; but a workstream whose tokens only
+  // overflow when its files are counted TOGETHER overflows the bound the constant advertises,
+  // and a reader has to be able to tell "everything was judged" from "the gate ran out of
+  // budget". The charge counts every token the workstream offered — probed and unprobeable
+  // alike — because an unverifiable token is a token nobody examined and still spent budget.
+  if (crossFileOverflow) {
+    disclosures.push({
+      file: "(the workstream's added data files together)",
+      reason: `the workstream carries more unique provenance tokens than the ${PROVENANCE_MAX_TOKENS} this gate judges for one workstream — the remainder was not judged`,
+    });
+  }
   return result;
 }
 

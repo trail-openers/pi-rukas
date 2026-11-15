@@ -16,7 +16,10 @@
  * and a bound that quietly truncated would be exactly that.
  */
 
-import { verifyProvenanceEnabled } from "../src/work-driver-verify-develop-provenance.ts";
+import {
+  PROVENANCE_MAX_TOKENS,
+  verifyProvenanceEnabled,
+} from "../src/work-driver-verify-develop-provenance.ts";
 import { assert, exit } from "./lib/assert-rig.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import {
@@ -106,6 +109,57 @@ import {
   assert(
     provenanceFailures(ok.failures).length === 0,
     `control: a record whose sibling is committed still reddens nothing (got: ${provenanceFailures(ok.failures).join(" | ")})`,
+  );
+}
+
+/** How many probes a run says it asked, read from the run's own executed-pass note. Read
+ * from the note rather than a failure list, because a failure list can be emptied by a bug
+ * and a note that overstates its work is the thing under test. */
+function countJudged(notes: readonly string[]): number {
+  const row = notes.find((n) => n.includes("provenance token(s)")) ?? "";
+  return Number(row.match(/judged (\d+)/)?.[1] ?? "-1");
+}
+
+// ── 13c. the token cap is the WORKSTREAM's budget, not each file's allowance ─────────────
+{
+  // The constant's own words are "this gate judges for one workstream", and the cap exists to
+  // bound the git probes ONE review round will pay. A cap counted per file lets a workstream
+  // add N files and judge N × the cap: the bound is then a per-file courtesy and the cost it
+  // bounds is unbounded. Two files, each alone under the cap, is the smallest witness.
+  const rows = (n: number, prefix: string): string =>
+    JSON.stringify({
+      source: Array.from({ length: n }, (_, i) => `${prefix}/${String(i)}.json`),
+    });
+  const half = Math.floor(PROVENANCE_MAX_TOKENS / 2);
+
+  // Control: the budget split across two files with nothing to spare judges everything and
+  // discloses nothing. Without this arm, a "cap enforced" assertion passes on a gate that
+  // judged nothing at all. The tokens are absent paths, so every probe reddens: the count is
+  // read from the run's own note, not from a failure list that could be emptied by a bug.
+  const exact = await driveProvenanceFixture({
+    "runs/a.json": rows(half, "exact-a"),
+    "runs/b.json": rows(half, "exact-b"),
+  });
+  const exactJudged = countJudged(exact.notes);
+  assert(
+    exactJudged === PROVENANCE_MAX_TOKENS && exact.disclosures.length === 0,
+    `control: two files totalling exactly the cap judge everything and disclose nothing (judged ${String(exactJudged)} of ${String(PROVENANCE_MAX_TOKENS)}, disclosures ${JSON.stringify(exact.disclosures)})`,
+  );
+
+  // The overflow arm: two files whose union exceeds the cap. Each file is individually legal,
+  // so a per-file counter sees two in-budget files; the workstream counter sees the remainder.
+  const spill = await driveProvenanceFixture({
+    "runs/a.json": rows(half + 4, "spill-a"),
+    "runs/b.json": rows(half + 4, "spill-b"),
+  });
+  assert(
+    spill.disclosures.length > 0,
+    "two files whose union passes the cap disclose the remainder — the cap is the workstream's, not each file's allowance",
+  );
+  const judgedCount = countJudged(spill.notes);
+  assert(
+    judgedCount <= PROVENANCE_MAX_TOKENS,
+    `the probes ONE workstream asks never exceed the cap it advertises (judged ${String(judgedCount)} of ${String(2 * (half + 4))}, cap ${String(PROVENANCE_MAX_TOKENS)})`,
   );
 }
 

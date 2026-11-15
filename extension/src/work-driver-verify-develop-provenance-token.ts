@@ -64,3 +64,27 @@ export function display(text: string): string {
 export function code(text: string): string {
   return `\`${display(text).replace(/`/g, "\u02cb")}\``;
 }
+
+/** The keys whose string values this gate treats as claims about committed files. One
+ * constant, so extending the rule is one deliberate source edit and every reader of the gate
+ * sees the same set — the walk and the git-judging gate both import it from here. */
+export const PROVENANCE_KEYS: readonly string[] = [
+  "source",
+  "sourceFile",
+  "sourcePath",
+  "sources",
+  "input",
+  "inputFile",
+  "resultsFile",
+];
+
+/** Unique tokens judged per workstream. Past it the rest is disclosed, never judged. */
+export const PROVENANCE_MAX_TOKENS = 256;
+
+/** The dedupe identity of one candidate token. Key and value are joined with a NUL, which no
+ * JSON string can carry, so two distinct (key, value) pairs can never collapse into one
+ * identity. Shared by the walker and its caller so the budget is counted the same way in both
+ * — a second spelling of this is a second source of truth for what "the same token" means. */
+export function provenanceTokenId(key: string, token: string): string {
+  return `${key}\u0000${token}`;
+}
