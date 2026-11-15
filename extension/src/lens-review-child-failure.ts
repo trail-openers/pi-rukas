@@ -17,7 +17,11 @@
  * (a prompt too large for the model's window) was nowhere in the output.
  */
 
-import { CONTEXT_LENGTH_HINT, providerTurnCapProblem } from "./lens-provider-cause.ts";
+import {
+  CONTEXT_LENGTH_HINT,
+  isProviderContextLengthFailure,
+  providerContextProblem,
+} from "./lens-provider-cause.ts";
 import { NO_TEXT_PLACEHOLDER } from "./lens-review-incomplete.ts";
 import type { Finding, LensRunResult } from "./lens-review-types.ts";
 import type { DispatchResult } from "./types.ts";
@@ -39,22 +43,38 @@ export interface LensFailureInput {
 }
 
 /**
- * Everything a failed child left behind that could carry the provider's own
- * words (#2261). The spawn layer resolves `text` as `text || stderr ||
- * "(no output)"` (`spawn-collapse-events.ts`), so a child that died before
- * printing anything has the provider's refusal in `text`; one that died
- * mid-stream may carry it in `errorStop.message` instead. Both are inspected so
- * the caller never has to know which arm it is in — and neither is echoed whole
- * into a report: the reason built below clips what it quotes.
+ * The lane's provider cause, decided by the SAME predicate the retry loop uses.
+ *
+ * This is the second half of one rule. `runLensChild` breaks its loop on
+ * `isProviderContextLengthFailure` — the provider's own `errorStop` carrying an
+ * HTTP 400 AND unambiguous size wording and no rate vocabulary — so the lane that
+ * ends must tell the operator about the same event, read from the same channel.
+ * Reading the cause off `text` instead (as this module did) let a line of reviewed
+ * source — a test fixture asserting a 400, an error string, a README snippet — stamp
+ * a lane "the provider refused this lens's prompt", and because `hasEvidence`
+ * discounts a refused child, it then DISCARDED that lane's real findings and turned
+ * the lane into blocked / REVIEW_INCOMPLETE while the loop had correctly spent all
+ * four attempts. Two channels, two stories about one child.
+ *
+ * `providerContextProblem` is then applied to the same `errorStop` message only to
+ * render the quoted reason, so the sentence's wording and the decision behind it
+ * cannot disagree.
  */
-export function providerChildText(result: DispatchResult | undefined): string {
-  if (result === undefined) return "";
-  return `${result.text ?? ""}\n${result.errorStop?.message ?? ""}`;
+function laneProviderCause(result: DispatchResult | undefined): string | undefined {
+  if (!isProviderContextLengthFailure(result)) return undefined;
+  return providerContextProblem(result?.errorStop?.message);
 }
 
-/** Did the provider refuse this child's prompt as too large for its window? */
-export function lensProviderRefusal(result: DispatchResult | undefined): string | undefined {
-  return providerTurnCapProblem(providerChildText(result));
+/**
+ * The clause naming what the loop did with this lane, worded from the attempts it
+ * actually made. A provider refusal of the prompt is a never-retried class, so a row
+ * for one says so — but only when the attempt count agrees, because the count is the
+ * evidence: a row that claims "not retried" over four attempts is describing a loop
+ * that ran, and the operator stops trusting the row that misreports it.
+ */
+function retryClause(attempts: number): string {
+  if (attempts <= 1) return "and it was not retried";
+  return `and the loop made ${String(attempts)} attempts before giving up`;
 }
 
 /**
@@ -82,9 +102,11 @@ function selfInflictedCap(killCause: DispatchResult["killCause"]): boolean {
  *
  * The reason is chosen in the order a reader would ask about it — was it bound-
  * ended? did the provider refuse it? was there anything to retry at all? — and
- * a provider refusal is named whatever the retry path decided, because it is the
- * cause the operator can act on (the bound it hit, and the switch that restores
- * the old prompt shape).
+ * a provider refusal is named whatever the retry path decided, from the SAME
+ * predicate and the SAME channel the loop read, because it is the cause the
+ * operator can act on (the bound it hit, and the switch that restores the old
+ * prompt shape). The row's own attempt count is what says whether the lane was
+ * retried — never a fixed sentence about a loop that ran.
  */
 export function failedLensRow(input: LensFailureInput): LensRunResult {
   const { lens, result, attempts, findings, startMs, boundMs, lastError } = input;
@@ -98,13 +120,19 @@ export function failedLensRow(input: LensFailureInput): LensRunResult {
   // reviewed (blocked → REVIEW_INCOMPLETE) even when it reported some findings
   // first, which are kept.
   const bounded = result?.killCause === "child-bound";
-  const providerCause = lensProviderRefusal(result);
+  // Read from the provider's structured refusal, on the same predicate the retry
+  // loop broke on — never from `result.text`, which is the child's prose and can
+  // carry diff-authored bytes (see `laneProviderCause`).
+  const providerCause = laneProviderCause(result);
   // A provider that refused the prompt answered NOTHING — no findings, no
-  // review. Whatever prose reached `text` for such a child is the refusal itself
-  // (the spawn layer's stderr fallback), so the evidence rule above cannot let it
-  // carry the lane: a refusal is not a closing summary, and a lens whose own
-  // provider says "maximum context length" has not reviewed the diff however the
-  // text reads.
+  // review. For a child the provider really did refuse, the prose that reached
+  // `text` is the refusal the spawn layer fell back to (stderr), so the evidence
+  // rule above cannot let it carry the lane: a refusal is not a closing summary,
+  // and a lens whose own provider says "maximum context length" has not reviewed
+  // the diff however the text reads. Because the cause is now the loop's own
+  // predicate, this discount applies to exactly the children that were refused —
+  // and no longer to a lane whose prose merely SOUNDS like a refusal, whose
+  // findings are evidence and stay in the round.
   const hasEvidence =
     findings.length > 0 || (!!summary && textIsReviewOutput && providerCause === undefined);
   return {
@@ -118,7 +146,7 @@ export function failedLensRow(input: LensFailureInput): LensRunResult {
     parseError: bounded
       ? `not reviewed — no verdict within its ${Math.max(1, Math.round(boundMs / 60_000))}-min lens bound (PI_ENSEMBLE_LENS_BOUND_MS, never past the review budget); ended, not retried`
       : providerCause !== undefined
-        ? `${CONTEXT_LENGTH_HINT}: the provider refused this lens's prompt and it was NOT retried — the change is too large for the lens prompt to inline whole (PI_ENSEMBLE_LENS_LARGE_DIFF=0 restores the old unbounded prompt): ${providerCause.slice(0, 160)}`
+        ? `${CONTEXT_LENGTH_HINT}: the provider refused this lens's prompt ${retryClause(attempts)} — the change is too large for the lens prompt to inline whole (PI_ENSEMBLE_LENS_LARGE_DIFF=0 restores the old unbounded prompt): ${providerCause.slice(0, 160)}`
         : hasEvidence
           ? undefined
           : (lastError ?? "unknown failure"),

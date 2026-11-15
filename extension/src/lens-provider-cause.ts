@@ -127,36 +127,6 @@ export function providerRejected400(message: string | undefined): boolean {
 }
 
 /**
- * The named reason for a context-length refusal seen in ANY of the places a
- * failed child leaves its output (#2261).
- *
- * The spawn layer resolves the child's text as `text || stderr || "(no output)"`
- * (`spawn-collapse-events.ts`), so a child that died before printing anything
- * carries the provider's refusal in `text` and has no separate error field;
- * a child that died mid-stream may carry it in either. Checking all the shapes
- * at once is what keeps the caller from having to know which arm it is in.
- *
- * A rate / quota body is excluded even though it shares the token vocabulary:
- * `text` is where a 429 lands when the child printed nothing else, and a lane
- * stamped "your prompt is too large for the model" over a provider that said
- * "slow down" sends the operator after a bound that was never hit — and, in the
- * child that had already written findings, costs the round its only evidence.
- */
-export function providerTurnCapProblem(
-  source: { text?: string; error?: string } | string | undefined,
-): string | undefined {
-  const joined = joinSources(source);
-  if (RATE_OR_QUOTA.test(joined)) return undefined;
-  return providerContextProblem(joined);
-}
-
-function joinSources(source: { text?: string; error?: string } | string | undefined): string {
-  if (typeof source === "string") return source;
-  if (source === undefined) return "";
-  return `${source.text ?? ""}\n${source.error ?? ""}`;
-}
-
-/**
  * Did this child die of a provider refusal it was never going to recover from?
  *
  * Three conditions, all read from the provider's OWN structured error
