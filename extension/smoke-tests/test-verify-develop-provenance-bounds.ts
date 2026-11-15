@@ -114,9 +114,14 @@ import {
 
 /** How many probes a run says it asked, read from the run's own executed-pass note. Read
  * from the note rather than a failure list, because a failure list can be emptied by a bug
- * and a note that overstates its work is the thing under test. */
-function countJudged(notes: readonly string[]): number {
-  const row = notes.find((n) => n.includes("provenance token(s)")) ?? "";
+ * and a note that overstates its work is the thing under test. A run that judged NOTHING
+ * prints no note at all, and "no note" is the same thing the gate would print for a run that
+ * judged nothing by accident — so callers that need to tell those apart pass `whenAbsent`.
+ * The value is the one `judgedLabel` writes, which is why the number in a note cannot drift
+ * from the probes the walk counted. */
+function countJudged(notes: readonly string[], whenAbsent = -1): number {
+  const row = notes.find((n) => n.includes("provenance token(s)"));
+  if (row === undefined) return whenAbsent;
   return Number(row.match(/judged (\d+)/)?.[1] ?? "-1");
 }
 
@@ -160,6 +165,28 @@ function countJudged(notes: readonly string[]): number {
   assert(
     judgedCount <= PROVENANCE_MAX_TOKENS,
     `the probes ONE workstream asks never exceed the cap it advertises (judged ${String(judgedCount)} of ${String(2 * (half + 4))}, cap ${String(PROVENANCE_MAX_TOKENS)})`,
+  );
+
+  // The non-vacuity pair for the budget itself. The two arms above pass on a walk that counted
+  // the tokens it turned into pairs and nothing else — which is not the same population as the
+  // tokens it OFFERED. Here the workstream offers 2 × cap tokens and turns NONE of them into
+  // probes: every value is an absolute host path, so the classifier sets each aside. A budget
+  // charged only at pair-creation would see zero spent, judge nothing, and disclose nothing — a
+  // silent pass bought with unprobeable tokens. The charge is taken for tokens deduped away and
+  // tokens never probeable alike, so this overflows.
+  const unprobeable = (n: number, prefix: string): string =>
+    JSON.stringify({ source: Array.from({ length: n }, (_, i) => `/opt/${prefix}/${String(i)}.json`) });
+  const aside = await driveProvenanceFixture({
+    "runs/a.json": unprobeable(PROVENANCE_MAX_TOKENS, "a"),
+    "runs/b.json": unprobeable(PROVENANCE_MAX_TOKENS, "b"),
+  });
+  assert(
+    countJudged(aside.notes, 0) === 0,
+    `control for the arm below: nothing here is probeable, so nothing is judged (judged ${String(countJudged(aside.notes, 0))})`,
+  );
+  assert(
+    aside.disclosures.some((d) => String(d.reason).includes("the workstream carries")) === true,
+    `a workstream whose tokens are all unprobeable still runs out of budget and says so — a token nobody examined spent budget (got: ${JSON.stringify(aside.disclosures.filter((d) => String(d.reason).includes("workstream carries")))})`,
   );
 }
 
