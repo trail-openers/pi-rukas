@@ -1,135 +1,36 @@
 #!/usr/bin/env bun
 /**
- * #1153 — the driver's git plumbing has one typed entry point, and the
- * "commits ahead of base, and can we tell?" question has one answer.
+ * #1153 — the driver's git plumbing has one typed entry point, and the "commits ahead of
+ * base, and can we tell?" question has one answer.
  *
- * 1. CANARY — no driver git call in the listed modules passes a command
- *    string. Every call goes through `execGit` (argv + timeout). The control
- *    proves the scanner can fail.
- * 2. REAL GIT — `aheadOfBase` returns each of its five kinds against a real
- *    repository, and `refResolves` separates "absent" from "unknown".
- * 3. FIXTURES — a killed/timed-out probe is `unknown`, never `absent` (#1153
- *    review): a `code: 1` produced by the harness says nothing about the ref.
- *    (Its round-3 companion — a probe that EXITS 0 WITHOUT AN OBJECT ID — lives
- *    in test-git-range-object-id-1153.ts, which split off for the file-size cap.)
- * 4. COVERAGE — every module that imports `./git-range.ts` is in the canary's
- *    LISTED set, so a new caller cannot join the "argv only" rule by silence.
+ * 1. CANARY — no driver git call in the listed modules passes a command string. Every call
+ *    goes through `execGit` (argv + timeout). The control proves the scanner can fail.
+ * 2. REAL GIT — `aheadOfBase` returns each of its five kinds against a real repository, and
+ *    `refResolves` separates "absent" from "unknown".
+ * 3. FIXTURES — a killed/timed-out probe is `unknown`, never `absent` (#1153 review): a
+ *    `code: 1` produced by the harness says nothing about the ref. (Its round-3 companion — a
+ *    probe that EXITS 0 WITHOUT AN OBJECT ID — lives in test-git-range-object-id-1153.ts,
+ *    which split off for the file-size cap. The rest of the fixture arms — every killed /
+ *    signalled / exit-1 / wording shape — live in
+ *    test-git-range-probe-failures-1153.ts, which split off for the same cap.)
+ * 4. COVERAGE — every module that imports `./git-range.ts` is in the canary's LISTED set, so a
+ *    new caller cannot join the "argv only" rule by silence.
+ * 5. The #2283 modules' argv shape, asserted on `argv` and not just on "no command string".
  */
 
-import { execFile } from "node:child_process";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
+import { aheadOfBase, execGit, refResolves } from "../src/git-range.ts";
+import { assert, exit } from "./lib/assert-rig.ts";
 import {
-  aheadOfBase,
-  errorText,
-  execGit,
-  refResolves,
-} from "../src/git-range.ts";
-import type { ExecFn } from "../src/worktree.ts";
-
-let exit = 0;
-function assert(cond: boolean, msg: string) {
-  if (cond) console.log(`✓ ${msg}`);
-  else {
-    console.error(`✗ ${msg}`);
-    exit = 1;
-  }
-}
+  LISTED,
+  commandStringLines,
+  gitRangeImporters,
+} from "./lib/git-range-canary-inventory.ts";
+import { realExec } from "./lib/git-range-fixture-exec.ts";
 
 // ── 1. canary ────────────────────────────────────────────────────────────────
-
-const LISTED = [
-  "git-range.ts",
-  "work-driver-diff.ts",
-  // #1634 — the adversarial gate's discriminated diff read. Every call goes
-  // through `execGit` (argv + the module's own timeout + a bounded maxBuffer),
-  // and test-work-driver-adversarial-diff-unreadable.ts asserts on the argv
-  // the fake receives, so this file is under the same discipline as the rest.
-  "work-driver-diff-read.ts",
-  "work-driver-verify.ts",
-  "work-driver-verify-pr17.ts",
-  "comment-retention.ts",
-  // #1378 — the protected-path reads take `DEFAULT_GIT_TIMEOUT_MS` from here so a
-  // hung git cannot hang the develop step; both its git calls are argv-form.
-  "work-driver-protected-paths-read.ts",
-  // #1378 (split for the file cap) — the uncommitted half of that read takes the
-  // same bound from here, and its single git call is argv-form.
-  "work-driver-protected-paths-status.ts",
-  // #1378 (round 3) — the develop gate's `git rev-list --count` read used to have
-  // no timeout at all, so a wedged object store hung the whole step. It now takes
-  // the same bound from here.
-  "work-driver-verify-develop.ts",
-  // #1002 round 2 — the path-existence probe reads git at `origin/<branch>` for
-  // a path that came out of prose, so it takes the argv form (`argv: ["cat-file",
-  // "-e", treeish]`) and this module's own timeout. Its test fakes assert on
-  // `argv`, not on a command string.
-  "lens-evidence.ts",
-  // #1788 — the push scan reads the outgoing range (`git remote`, `rev-parse`,
-  // `log --patch`) to decide whether a push publishes private text. Every call
-  // is argv-form under `PUSH_SCAN_TIMEOUT_MS` / `PUSH_SCAN_MAX_BUFFER`, and
-  // test-public-hygiene-push.ts asserts on `argv` — including that a git which
-  // never returns is a refusal rather than a hang or a pass.
-  "public-hygiene-push.ts",
-  // #2168 — the push scan's repository probe (`git rev-parse --show-toplevel`)
-  // runs in the directory the push itself runs in, so it takes the same argv
-  // form and the caller's own `timeout`/`maxBuffer`: it is the first read of the
-  // scan and the one that must not hang the `tool_call` hook. Its bound is
-  // pinned by test-hygiene-push-segment.ts.
-  "public-hygiene-push-probe.ts",
-  // #2181 — the merge-author allowlist reads the gate file and the author at the
-  // base commit through `git cat-file` / `git show`, both argv-form under this
-  // module's own `ALLOWLIST_TIMEOUT_MS` / `ALLOWLIST_MAX_BUFFER`, and
-  // test-merge-author-base-unreadable.ts asserts on `argv`.
-  "merge-author-allowlist.ts",
-  // #2283 — the data-provenance gate reads the added file's committed bytes with
-  // `git show --end-of-options <oid>:<path>` under its own named bounds, the ref
-  // always the oid it pinned first. Its test asserts on `argv`, so the read is
-  // under the same discipline as the rest of the develop path.
-  "work-driver-verify-develop-provenance.ts",
-  // #2283 (split for the file cap) — the token classifier and display forms behind that
-  // gate: it issues no git call of its own, and is listed so a future edit that adds one
-  // is checked under the same rule rather than joining the argv discipline by silence.
-  "work-driver-verify-develop-provenance-token.ts",
-  // #2283 — the classic command-criteria tier's head probe (`git rev-parse --verify
-  // HEAD`), argv-form under its own bound, so a moved head is a note rather than a hang.
-  "work-driver-verify-develop-command-criteria.ts",
-];
-
-/** A git command string handed to an exec call: a `(` then a literal beginning `git `. */
-const COMMAND_STRING = /\([ \t]*["'`]git[ \t]/;
-
-/**
- * Lines whose `git `-leading literal is operator-facing prose, not a command.
- *
- * The develop gate builds its failure and note text from template literals that
- * open with the word `git` — `` `git status failed in worktree "${id}" …` `` and
- * its `git diff` twin — and the scanner cannot tell those from a command string
- * without parsing the literal. Naming them is deliberate rather than clever: an
- * in-file allowlist with a reason per line fails LOUDLY when one is deleted or
- * reworded (the line stops matching and the string is flagged again), where a
- * "does this read like a sentence?" heuristic fails silently in whichever
- * direction it gets it wrong. Anything genuinely new stays flagged.
- */
-const PROSE_GIT_LITERALS = [
-  "git status failed in worktree",
-  "git status failed in ${id}",
-  "git diff failed in worktree",
-  "git diff failed in ${id}",
-  // Operator guidance, not a call: the develop gate tells a developer what to run
-  // in their worktree when it has uncommitted work and no commit ahead of base.
-  "git add -A && git commit",
-];
-
-function commandStringLines(source: string): string[] {
-  return source.split("\n").filter((line) => {
-    const t = line.trim();
-    if (t.startsWith("//") || t.startsWith("*") || t.startsWith("/*")) return false;
-    if (!COMMAND_STRING.test(line)) return false;
-    return !PROSE_GIT_LITERALS.some((p) => line.includes(p));
-  });
-}
 
 const srcDir = path.join(import.meta.dir, "..", "src");
 for (const f of LISTED) {
@@ -145,13 +46,7 @@ assert(
 // A caller that joins later and is not added to LISTED gets argv discipline
 // by imitation only — nothing fails when it passes a command string.
 {
-  const importers = [];
-  for (const entry of readdirSync(srcDir)) {
-    if (!entry.endsWith(".ts")) continue;
-    const source = readFileSync(path.join(srcDir, entry), "utf8");
-    if (/from "\.\/git-range\.ts"/.test(source)) importers.push(entry);
-  }
-  const unlisted = importers.filter((f) => !LISTED.includes(f));
+  const unlisted = gitRangeImporters(srcDir).filter((f) => !LISTED.includes(f));
   assert(
     unlisted.length === 0,
     `canary covers every git-range importer (unlisted: ${unlisted.join(", ") || "none"})`,
@@ -165,20 +60,9 @@ assert(
 
 // ── 2. real git ──────────────────────────────────────────────────────────────
 
-const execP = promisify(execFile);
-const exec: ExecFn = async (cmd, opts) => {
-  const { stdout, stderr } = await execP(cmd, opts?.argv ?? [], {
-    cwd: opts?.cwd,
-    maxBuffer: opts?.maxBuffer ?? 1024 * 1024,
-    timeout: opts?.timeout,
-    encoding: "utf8",
-  });
-  return { stdout, stderr };
-};
-
 const dir = mkdtempSync(path.join(tmpdir(), "git-range-1153-"));
 const git = (args: string[]) =>
-  execGit(exec, dir, ["-c", "user.name=t", "-c", "user.email=t@t", ...args]);
+  execGit(realExec, dir, ["-c", "user.name=t", "-c", "user.email=t@t", ...args]);
 
 try {
   await git(["init", "-q", "-b", "main"]);
@@ -197,22 +81,22 @@ try {
   }
   await git(["update-ref", "refs/remotes/origin/feat", "HEAD"]);
 
-  const ahead = await aheadOfBase(exec, dir, "origin/main", "origin/feat");
+  const ahead = await aheadOfBase(realExec, dir, "origin/main", "origin/feat");
   assert(
     ahead.kind === "ahead" && ahead.n === 2,
     `ahead: two commits ahead (got ${JSON.stringify(ahead)})`,
   );
 
-  const empty = await aheadOfBase(exec, dir, "origin/feat", "origin/feat");
+  const empty = await aheadOfBase(realExec, dir, "origin/feat", "origin/feat");
   assert(empty.kind === "empty", `empty: head equals base (got ${JSON.stringify(empty)})`);
 
-  const unpushed = await aheadOfBase(exec, dir, "origin/main", "origin/nope");
+  const unpushed = await aheadOfBase(realExec, dir, "origin/main", "origin/nope");
   assert(
     unpushed.kind === "unpushed",
     `unpushed: head ref absent (got ${JSON.stringify(unpushed)})`,
   );
 
-  const unresolved = await aheadOfBase(exec, dir, "origin/nomain", "origin/feat");
+  const unresolved = await aheadOfBase(realExec, dir, "origin/nomain", "origin/feat");
   assert(
     unresolved.kind === "unresolved",
     `unresolved: base ref absent (got ${JSON.stringify(unresolved)})`,
@@ -220,23 +104,23 @@ try {
 
   const notARepo = mkdtempSync(path.join(tmpdir(), "git-range-1153-norepo-"));
   try {
-    const unknown = await aheadOfBase(exec, notARepo, "origin/main", "origin/feat");
+    const unknown = await aheadOfBase(realExec, notARepo, "origin/main", "origin/feat");
     assert(
       unknown.kind === "unknown",
       `unknown: git cannot run in a non-repo (got ${JSON.stringify(unknown)})`,
     );
-    const probe = await refResolves(exec, notARepo, "origin/feat");
+    const probe = await refResolves(realExec, notARepo, "origin/feat");
     assert(probe.state === "unknown", "refResolves: a non-repo is unknown, not absent");
   } finally {
     rmSync(notARepo, { recursive: true, force: true });
   }
 
-  const absent = await refResolves(exec, dir, "origin/nope");
+  const absent = await refResolves(realExec, dir, "origin/nope");
   assert(
     absent.state === "absent",
     `refResolves: a missing ref is absent — git's wording, not the code (got ${JSON.stringify(absent)})`,
   );
-  const resolves = await refResolves(exec, dir, "origin/feat");
+  const resolves = await refResolves(realExec, dir, "origin/feat");
   assert(resolves.state === "resolves", "refResolves: a present ref resolves");
 
   // #1153 fix round — `absent` requires git's OWN WORDS, not just exit 1.
@@ -244,7 +128,8 @@ try {
   // through the wording clause (git printed "not a valid object name"), not
   // through the exit code alone. The non-repo case is asserted once above
   // against a real directory, for both `aheadOfBase` and `refResolves`; the
-  // synthetic half (the exact stderr shapes) is in section 3.
+  // synthetic half (the exact stderr shapes) is in section 3, in
+  // test-git-range-probe-failures-1153.ts.
   assert(
     await refSaysAbsentForMissingRefInFreshRepo(),
     "refResolves: real git — a missing ref in a real repo is absent",
@@ -252,15 +137,6 @@ try {
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }
-
-// ── 3. fixtures: a killed probe is never "absent" ───────────────────────────
-
-/** An exec that rejects with a caller-supplied error shape. */
-const failingExec =
-  (err: unknown): ExecFn =>
-  async () => {
-    throw err;
-  };
 
 /**
  * The real-git half of the wording rule, against a repository created here
@@ -272,206 +148,17 @@ async function refSaysAbsentForMissingRefInFreshRepo(): Promise<boolean> {
   const fresh = mkdtempSync(path.join(tmpdir(), "git-range-1153-fresh-"));
   try {
     const g = (args: string[]) =>
-      execGit(exec, fresh, ["-c", "user.name=t", "-c", "user.email=t@t", ...args]);
+      execGit(realExec, fresh, ["-c", "user.name=t", "-c", "user.email=t@t", ...args]);
     await g(["init", "-q", "-b", "main"]);
     writeFileSync(path.join(fresh, "a.txt"), "a\n");
     await g(["add", "a.txt"]);
     await g(["commit", "-q", "-m", "base"]);
-    const missing = await refResolves(exec, fresh, "refs/remotes/origin/never-pushed");
-    const present = await refResolves(exec, fresh, "HEAD");
+    const missing = await refResolves(realExec, fresh, "refs/remotes/origin/never-pushed");
+    const present = await refResolves(realExec, fresh, "HEAD");
     return missing.state === "absent" && present.state === "resolves";
   } finally {
     rmSync(fresh, { recursive: true, force: true });
   }
-}
-
-{
-  // node's child_process reports a killed child as `code: 1` + `killed: true`
-  // + a `signal`. Reading that as "git says the ref does not exist" would tell
-  // the operator the branch was never pushed, about a ref nobody read.
-  // A killed probe on the real exec: `execFile`'s timeout kills the child,
-  // which lands `code: null` + `killed: true` + a signal — so the code test
-  // alone rejects it. The load-bearing fixture is the one below, where the
-  // harness reports git's OWN numeric code alongside `killed: true`.
-  const killed = await refResolves(
-    failingExec({ code: 1, killed: true, signal: "SIGTERM", message: "killed" }),
-    "/repo",
-    "origin/feat",
-  );
-  assert(
-    killed.state === "unknown",
-    `refResolves: a killed probe is unknown (got ${JSON.stringify(killed)})`,
-  );
-
-  const signalled = await refResolves(
-    failingExec({ code: 1, killed: false, signal: "SIGKILL", message: "signalled" }),
-    "/repo",
-    "origin/feat",
-  );
-  assert(
-    signalled.state === "unknown",
-    `refResolves: a probe that died of a signal is unknown (got ${JSON.stringify(signalled)})`,
-  );
-
-  // No numeric code at all — a spawn failure (`ENOENT`), not a git verdict.
-  const noCode = await refResolves(
-    failingExec({ code: "ENOENT", message: "spawn git ENOENT" }),
-    "/repo",
-    "origin/feat",
-  );
-  assert(
-    noCode.state === "unknown",
-    `refResolves: an error with no numeric code is unknown (got ${JSON.stringify(noCode)})`,
-  );
-
-  // The control: git's OWN exit 1, with nothing killed AND its own wording
-  // saying the ref is missing, IS absent.
-  const gitSaysNo = await refResolves(
-    failingExec({
-      code: 1,
-      killed: false,
-      signal: null,
-      message: "Command failed: git rev-parse",
-      stderr: "fatal: not a valid object name 'origin/feat'\n",
-    }),
-    "/repo",
-    "origin/feat",
-  );
-  assert(
-    gitSaysNo.state === "absent",
-    `control: a clean git exit 1 with the missing-ref wording is absent (got ${JSON.stringify(gitSaysNo)})`,
-  );
-
-  // #1153 fix round — exit 1 alone is NOT absent: git's wording has to say
-  // the ref is missing. An exit 1 with an EMPTY stderr is not evidence about
-  // the ref (node rejects on the code alone, so a silent git would otherwise
-  // be read as "this branch was never pushed").
-  const silentExitOne = await refResolves(
-    failingExec({ code: 1, killed: false, signal: null, message: "Command failed", stderr: "" }),
-    "/repo",
-    "origin/feat",
-  );
-  assert(
-    silentExitOne.state === "unknown",
-    `refResolves: exit 1 with no stderr is unknown, not absent (got ${JSON.stringify(silentExitOne)})`,
-  );
-
-  // Each of git's missing-ref wordings is absent. The fourth is git's own
-  // wording for a name that is not in the object store at all
-  // (`rev-parse --verify` on a non-revision), which the regex matches on
-  // `not a valid object name` — listed here so a future narrowing of the
-  // pattern has to account for it rather than silently dropping it.
-  for (const wording of [
-    "fatal: not a valid object name 'origin/feat'",
-    "fatal: ambiguous argument 'origin/feat': unknown revision or path not in the working tree.",
-    "fatal: needed a single revision",
-    "fatal: Not a valid object name refs/remotes/origin/feat",
-  ]) {
-    const r = await refResolves(
-      failingExec({
-        code: 1,
-        killed: false,
-        signal: null,
-        message: "Command failed",
-        stderr: wording,
-      }),
-      "/repo",
-      "origin/feat",
-    );
-    assert(
-      r.state === "absent",
-      `refResolves: wording "${wording.slice(0, 40)}…" is absent (got ${r.state})`,
-    );
-  }
-
-  // Clone-level failures that DO exit 1 are still about the clone, not the
-  // ref, so they stay unknown. These are the shapes the reviewer named.
-  for (const shape of [
-    "fatal: not a git repository (or any of the parent directories): .git",
-    "fatal: detected dubious ownership in repository at '/home/dev/project'\nTo add an exception for this directory, call:",
-  ]) {
-    const r = await refResolves(
-      failingExec({
-        code: 1,
-        killed: false,
-        signal: null,
-        message: "Command failed",
-        stderr: shape,
-      }),
-      "/repo",
-      "origin/feat",
-    );
-    assert(
-      r.state === "unknown",
-      `refResolves: "${shape.slice(0, 34)}…" on exit 1 is unknown, not absent (got ${JSON.stringify(r)})`,
-    );
-    assert(
-      r.state === "unknown" && r.error.startsWith("fatal:"),
-      `refResolves: the clone-level reason survives in the error text (got ${JSON.stringify(r)})`,
-    );
-  }
-
-  // git exits 128 (not 1) for a non-repo; either way it is unknown. This is
-  // the real-git shape for a non-repo directory. The verdict is the FIRST
-  // line here (git prints no advice after it), which is the other side of the
-  // last-informative-line rule in `errorText`.
-  const notGitRepo = await refResolves(
-    failingExec({
-      code: 128,
-      killed: false,
-      signal: null,
-      message: "Command failed",
-      stderr: "fatal: not a git repository (or any parent up to mount point /)\n",
-    }),
-    "/repo",
-    "origin/feat",
-  );
-  assert(
-    notGitRepo.state === "unknown",
-    `refResolves: exit 128 is unknown (got ${JSON.stringify(notGitRepo)})`,
-  );
-  assert(
-    notGitRepo.state === "unknown" && notGitRepo.error.startsWith("fatal: not a git repository"),
-    `refResolves: the exit-128 reason survives in the error text (got ${JSON.stringify(notGitRepo)})`,
-  );
-
-  // errorText prefers the captured stderr over the generic node message, so
-  // the note the operator reads names git's reason rather than the command.
-  const stderrCarrying = await refResolves(
-    failingExec({
-      code: "ENOENT",
-      message: "Command failed: git rev-parse --verify",
-      stderr: "  fatal: not a git repository (or any of the parent directories): .git  \n",
-    }),
-    "/repo",
-    "origin/feat",
-  );
-  assert(
-    stderrCarrying.state === "unknown" &&
-      stderrCarrying.error.startsWith("fatal: not a git repository") &&
-      !stderrCarrying.error.includes("Command failed"),
-    `errorText: stderr is preferred over message (got ${JSON.stringify(stderrCarrying)})`,
-  );
-
-  // A stderr longer than the bound is sliced, never interpolated whole. Built
-  // through `errorText` directly rather than through a probe: the point here is
-  // the bound, and an all-`fatal:` stream would trip `gitSaysAbsent` into
-  // `absent`, which has no `error` field to measure.
-  const long = errorText({ stderr: "x".repeat(500) });
-  assert(long.length === 200, `errorText: bounded to 200 chars (got ${long.length})`);
-
-  // aheadOfBase propagates the distinction: a killed head probe is unknown,
-  // not the "the branch was not pushed from here" reading `absent` produces.
-  const aheadKilled = await aheadOfBase(
-    failingExec({ code: 1, killed: true, signal: "SIGTERM", message: "killed" }),
-    "/repo",
-    "origin/main",
-    "origin/feat",
-  );
-  assert(
-    aheadKilled.kind === "unknown",
-    `aheadOfBase: a killed probe is unknown, not unpushed (got ${JSON.stringify(aheadKilled)})`,
-  );
 }
 
 // ── 5. the #2283 modules' argv shape, asserted on `argv` and not just on "no command string" ─
@@ -480,17 +167,14 @@ async function refSaysAbsentForMissingRefInFreshRepo(): Promise<boolean> {
 // argv it passes is the right one. For the provenance gate's committed-blob read that gap
 // mattered: `--end-of-options` is inert as written (the ref is always a full 40-hex sha, and
 // the path is glued to it as `<oid>:<file>`), so it is defence-in-depth against a future
-// caller that separates rev from path — and defence-in-depth nothing asserts is defence-
-// in-depth that goes away with the next refactor.
+// caller that separates rev from path — and defence-in-depth nothing asserts is
+// defence-in-depth that goes away with the next refactor.
 {
   const { checkWorktreeProvenance } = await import(
     "../src/work-driver-verify-develop-provenance.ts"
   );
   const calls: { cmd: string; argv?: string[] }[] = [];
-  const recording = async (
-    cmd: string,
-    o?: { argv?: string[] },
-  ): Promise<{ stdout: string }> => {
+  const recording = async (cmd: string, o?: { argv?: string[] }): Promise<{ stdout: string }> => {
     calls.push({ cmd, argv: o?.argv });
     const argv = o?.argv ?? [];
     if (argv.includes("rev-parse")) return { stdout: `${"a".repeat(40)}\n` };
