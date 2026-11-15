@@ -227,11 +227,12 @@ for (const files of [1800, 2100, 2500, 3000, 4000, 4250, 5000]) {
 // full-branch block in one prompt: the bound the lenses die over is a character
 // bound, so the arm that exists to stop HTTP 400 "maximum context length" was
 // under-bound by half a budget on exactly the input that triggers it.
+//
 // The block is diff text wearing a context label, so it is sized against what the
-// prompt has LEFT, not against the budget the walk has already spent in full.
-// Pre-fix `appendFullContext` was handed the whole budget and gave the block half of
-// it, so a delta arm put a ~120 000 fenced diff and a ~60 000 orientation block in
-// one prompt — the bound is a character bound, and this is the arm whose bound decides
+// prompt has LEFT rather than against the budget the walk has already spent in full.
+// Pre-fix `appendFullContext` ran AFTER the walk and was handed the whole budget, so
+// a delta arm put a ~120 000 fenced diff and a ~60 000 orientation block in one
+// prompt — the bound is a character bound, and this is the arm whose bound decides
 // whether the provider answers HTTP 400 "maximum context length".
 {
   // The widest orientation block the delta arm actually builds today
