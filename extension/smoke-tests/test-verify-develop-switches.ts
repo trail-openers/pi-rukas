@@ -117,7 +117,7 @@ interface Drive {
  *
  * The switch is a process env read at call time (each gate reads it per call, so a driver
  * process that inherited a stale value cannot be talked out of it later). An `undefined`
- * value must REMOVE the key: assigning `process.env.X = undefined` stringifies to
+ * value must REMOVE the key: the Bun-1.4 assignment of an undefined value stringifies to
  * `"undefined"`, which is neither the absent arm nor an off arm, and would leave every later
  * case in this file judged by a value nobody set. */
 async function withSwitch(
