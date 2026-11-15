@@ -217,6 +217,57 @@ for (const files of [1800, 2100, 2500, 3000, 4000, 4250, 5000]) {
   );
 }
 
+// ── (6) the delta arm: the full-branch block is charged to the SAME budget as the
+// diff, before the whole-file walk, not added on top of it.
+//
+// The module header claims "ONE budget" and `appendFullContext` says the block is
+// "kept inside the prompt's ONE budget" — but it was handed the budget the walk had
+// ALREADY spent in full, and gave the block half of it. A delta review of a large
+// change therefore put a ~120 000-character fenced diff and a ~60 000-character
+// full-branch block in one prompt: the bound the lenses die over is a character
+// bound, so the arm that exists to stop HTTP 400 "maximum context length" was
+// under-bound by half a budget on exactly the input that triggers it.
+// The block is diff text wearing a context label, so it is sized against what the
+// prompt has LEFT, not against the budget the walk has already spent in full.
+// Pre-fix `appendFullContext` was handed the whole budget and gave the block half of
+// it, so a delta arm put a ~120 000 fenced diff and a ~60 000 orientation block in
+// one prompt — the bound is a character bound, and this is the arm whose bound decides
+// whether the provider answers HTTP 400 "maximum context length".
+{
+  // The widest orientation block the delta arm actually builds today
+  // (`buildDeltaFullContext`'s own cap), so this is a real delta review's shape and
+  // not a made-up size.
+  const fullContext = `FULL BRANCH DIFF\n${`${"o".repeat(79)}\n`.repeat(2_000)}`;
+  assert(
+    fullContext.length > MAX_INLINE_DIFF_CHARS / 2,
+    `(6) precondition: the full-branch block is large enough to matter (${String(fullContext.length)})`,
+  );
+  const b = boundLensPromptDiff({
+    diff: smallFileDiff(4_000),
+    context: "CTX",
+    fullContext,
+    range: RANGE,
+  });
+  assert(
+    b.mode === "bounded" && b.note !== undefined,
+    `(6) precondition: this really is the bounded arm with a notice (mode ${b.mode})`,
+  );
+  const block = b.diff.length;
+  const note = b.note?.length ?? 0;
+  const addedByBlock = b.context.length - "CTX".length;
+  assert(
+    addedByBlock > 40_000,
+    `(6) precondition: the delta arm really appended a large full-branch block (${String(addedByBlock)} characters onto the caller's "CTX")`,
+  );
+  // The single-budget invariant: fenced block + notice + everything the block added
+  // to the caller's context never exceed what the prompt may inline, minus the
+  // caller's own context (which the bound does not charge itself for).
+  assert(
+    block + note + addedByBlock <= MAX_INLINE_DIFF_CHARS - "CTX".length,
+    `(6) block + notice + full-branch block fit the ONE budget the prompt is bounded by (${String(block)} + ${String(note)} + ${String(addedByBlock)} = ${String(block + note + addedByBlock)} <= ${String(MAX_INLINE_DIFF_CHARS - "CTX".length)})`,
+  );
+}
+
 // ── (3) the other large shape: sections all past the floor, so none is affordable
 // whole and the block is the line-boundary fallback. Widens the invariant's
 // coverage; no input found reaches the block-gives rescue, so what is asserted is
