@@ -128,13 +128,16 @@ function runnerScript(echoEnv: string[] | undefined): string {
 }
 
 /** The values the runner reported for the names in `echoEnv`, keyed by name. Read out of the
- * harness's notes rather than a file, so an assertion quotes the runner's own report. */
-function reportedEnv(notes: readonly string[], echoEnv: string[] | undefined): ReportedEnv {
+ * drive's `reported` capture — the executor's own result — and not out of the gate's notes:
+ * the develop gate never forwards a runner's stdout, so notes are not the channel. */
+function reportedEnv(reports: readonly string[], echoEnv: string[] | undefined): ReportedEnv {
   const out: ReportedEnv = {};
-  for (const line of notes) {
-    if (!line.startsWith(REPORT_PREFIX)) continue;
-    const m = /^REPORTED:([^=]+)=(.*)$/.exec(line);
-    if (m) out[m[1] as string] = m[2] as string;
+  for (const text of reports) {
+    for (const line of text.split("\n")) {
+      if (!line.startsWith(REPORT_PREFIX)) continue;
+      const m = /^REPORTED:([^=]+)=(.*)$/.exec(line);
+      if (m) out[m[1] as string] = m[2] as string;
+    }
   }
   if (echoEnv) for (const name of echoEnv) out[name] ??= "MISSING";
   return out;
@@ -150,6 +153,9 @@ function reportedEnv(notes: readonly string[], echoEnv: string[] | undefined): R
  * byte-identical to base.
  */
 export async function runCriteria(opts: CriteriaRunOptions): Promise<CriteriaRun> {
+  // What the project's runner printed, per run. The gate does not forward a runner's stdout,
+  // so the executor is the only observer the child's environment has.
+  const runnerReports: string[] = [];
   const f = await makeProvenanceFixture({
     issue: 2283,
     baseFiles: {
@@ -178,6 +184,13 @@ export async function runCriteria(opts: CriteriaRunOptions): Promise<CriteriaRun
     // Lets the executor recognise the tier's argv-form runner call and fire the drift hook.
     runnerTemplate: opts.workJson === null ? undefined : RUNNER_TEMPLATE,
     ...(opts.workstreams === undefined ? {} : { extraWorkstreams: opts.workstreams }),
+    ...(opts.echoEnv === undefined || opts.echoEnv.length === 0
+      ? {}
+      : {
+          onRunnerOutput: (out: { stdout: string; stderr: string }) => {
+            runnerReports.push(out.stdout, out.stderr);
+          },
+        }),
     ...(opts.moveHeadDuringRun === undefined
       ? {}
       : {
@@ -232,7 +245,7 @@ export async function runCriteria(opts: CriteriaRunOptions): Promise<CriteriaRun
     ok: failures.length === 0,
     f,
     mine: failures.filter((x) => x.includes(COMMAND_CRITERIA_PREFIX)),
-    reported: reportedEnv(notes, opts.echoEnv),
+    reported: reportedEnv(runnerReports, opts.echoEnv),
   };
 }
 

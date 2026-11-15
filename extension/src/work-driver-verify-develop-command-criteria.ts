@@ -42,6 +42,11 @@
  * the network: a develop gate that called `gh issue view` would put a 60-second network read
  * on the critical path of every develop round and let a forge outage decide the verdict.
  *
+ * The runner gets the driver's SCRUBBED env — `verifyChildEnv()`, exactly what lean's
+ * `verifyOutcome` passes — because the thing being run is the project's own test file. The
+ * mirror has to carry that argument: without it `runTestFile` spawns with the ambient
+ * environment and every driver knob the `/work` process holds reaches the project's suite.
+ *
  * Two decisions that read as gaps and are deliberate, both pinned by
  * `test-work-driver-verify-command-criteria-classic.ts`:
  *
@@ -67,6 +72,7 @@ import { readCachedBody } from "./work-develop-scope-fence-seam.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { verifyTimeoutMs } from "./work-driver-verify-budget.ts";
+import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
 import type { VerifyDevelopOutcomeOptions } from "./work-driver-verify-develop-options.ts";
 import { verifySwitchOff } from "./work-driver-verify-develop-provenance.ts";
 import type { WorkState } from "./workflow-state.ts";
@@ -179,7 +185,20 @@ export async function runCommandCriteria(opts: {
   }
   let outcome: CommandCriteriaOutcome;
   try {
-    outcome = await commandCriteriaOutcome(criteria, template, cwd, base, execFn, timeoutMs);
+    // The scrubbed env is part of the mirror, not an extra: lean hands `commandCriteriaOutcome`
+    // `verifyChildEnv()` and the thing under test here is the project's own test file, so a
+    // headless driver's knobs (`PI_ENSEMBLE_HANDOFF_CHANNEL`, `PI_ENSEMBLE_PARALLEL_WORK`, …)
+    // must not decide what it does. Omitting the argument would spawn the runner with the
+    // driver's ambient environment, which is the leak #1064/#1557 closed everywhere else.
+    outcome = await commandCriteriaOutcome(
+      criteria,
+      template,
+      cwd,
+      base,
+      execFn,
+      timeoutMs,
+      verifyChildEnv(),
+    );
   } catch (err) {
     if (err instanceof VerifyInfraError && err.message.includes(MISSING_TEMPLATE_SIGNATURE)) {
       return {

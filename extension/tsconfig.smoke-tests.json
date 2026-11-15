@@ -403,6 +403,7 @@
     "smoke-tests/test-verify-develop-provenance-bounds.ts",
     "smoke-tests/test-verify-develop-switches.ts",
     "smoke-tests/test-work-driver-verify-command-criteria-classic.ts",
+    "smoke-tests/test-work-driver-verify-criteria-env-scrub-classic.ts",
     "smoke-tests/test-git-range-probe-failures-1153.ts"
   ]
 }

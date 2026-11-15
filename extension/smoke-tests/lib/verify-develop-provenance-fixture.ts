@@ -20,6 +20,8 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { HEADLESS_INPUTS } from "../../src/headless/inputs.ts";
+import { buildDriverKnobNames } from "../../src/work-driver-verify-cmd.ts";
 import { createEmitSink, type EmitSink } from "../../src/work-state-emit.ts";
 import type { CycleContext, DriverContext } from "../../src/work-driver-context.ts";
 import type { WorkEvent } from "../../src/workflow-state-events.ts";
@@ -27,6 +29,23 @@ import { initialState } from "../../src/workflow-state.ts";
 import { gitTestEnv } from "./git-test-env.ts";
 
 const execFileP = promisify(execFile);
+
+/**
+ * The fixture's git-isolation env, with the driver's own knobs removed.
+ *
+ * `gitTestEnv()` is built from `process.env`, so it carries whatever `PI_ENSEMBLE_*` the
+ * driving process holds. That is right for the fixture's OWN git calls (they are the driver's
+ * calls, and lean's fixtures rely on it) and wrong as the base under a scrubbed env a
+ * production seam handed down: the spread would then put a knob back that the code under test
+ * had just removed, and a test of the scrub could only ever see the leak. Dropping the names
+ * `verifyChildEnv` owns makes the child's environment answer the question the case is asking.
+ */
+function isolatedBaseWithoutKnobs(): NodeJS.ProcessEnv {
+  const base: NodeJS.ProcessEnv = { ...gitTestEnv() };
+  const knobs = buildDriverKnobNames(HEADLESS_INPUTS);
+  for (const name of knobs) delete base[name];
+  return base;
+}
 
 /** The executor the gate under test uses: real git, and a scripted outcome for the
  * project's verify command so a case never pays for a suite it is not about. */
@@ -36,6 +55,12 @@ export function makeProvenanceExec(
   /** The project's `verify.test` template, so the tier's argv-form runner call is
    * recognisable. Without it an argv arm cannot tell the criteria runner from a git call. */
   runnerTemplate?: string,
+  /** What the runner printed. The project's runner reports the environment it was spawned
+   * with, and the only place those bytes exist is the executor's result — `runTestFile`
+   * discards them on a green and the develop gate never sees them. Without this the child's
+   * environment would be unobservable, which is how an env-scrub assertion could print a
+   * `MISSING` for a knob it never actually looked at. */
+  onRunnerOutput?: (out: { stdout: string; stderr: string }) => void,
 ): NonNullable<DriverContext["verifyExecFn"]> {
   return async (cmd, o) => {
     // Two arms, because the project's runner reaches this executor in two shapes and the
@@ -61,7 +86,12 @@ export function makeProvenanceExec(
       runnerTemplate !== undefined &&
       `${cmd} ${argv.join(" ")}` === runnerTemplate.replace("{file}", argv.at(-1) ?? "");
     if (isCriteriaRunner) await onVerify?.();
-    if (verifyCommand !== "" && cmd.startsWith(verifyCommand)) {
+    // The criteria runner is recognised FIRST and never answered from a can. The project's
+    // discovered verify command is often a prefix of the rendered `verify.test` template
+    // (`sh` matches `sh tests/run.sh <file>`), so testing the canned arm first swallowed the
+    // criteria run, returned an empty result, and the tier reported a pass for a runner that
+    // never ran — which is how every env-observation of this tier was vacuously green.
+    if (!isCriteriaRunner && verifyCommand !== "" && cmd.startsWith(verifyCommand)) {
       await onVerify?.();
       return { stdout: "" };
     }
@@ -70,11 +100,19 @@ export function makeProvenanceExec(
       cwd: rest.cwd,
       maxBuffer: rest.maxBuffer ?? 8 * 1024 * 1024,
       timeout: rest.timeout,
-      env: o?.env ? { ...gitTestEnv(), ...o.env } : gitTestEnv(),
+      // The isolation levers go UNDER the caller's env, never over it. `gitTestEnv()` starts
+      // from `process.env`, so merging it ON TOP of a scrubbed env handed down by the tier
+      // re-admits every driver knob the scrub removed: the child would then show a knob the
+      // production code scrubbed correctly, and an env-scrub assertion could never go green.
+      // Isolation comes from the base, and every name the scrub owns is dropped from that base
+      // so an absent key is genuinely absent in the child.
+      env: o?.env ? { ...isolatedBaseWithoutKnobs(), ...o.env } : gitTestEnv(),
     };
-    const { stdout } = o?.argv
+    const ran = o?.argv
       ? await execFileP(cmd, o.argv, opts)
       : await execFileP(shell ?? "/bin/sh", ["-c", cmd], opts);
+    if (isCriteriaRunner) onRunnerOutput?.({ stdout: ran.stdout, stderr: ran.stderr });
+    const { stdout } = ran;
     return { stdout };
   };
 }
@@ -163,6 +201,9 @@ export async function makeProvenanceFixture(opts: {
   beforeVerify?: () => Promise<void> | void;
   /** Extra workstream ids besides `a`, each with its own worktree at the base. */
   extraWorkstreams?: string[];
+  /** Receives everything the project's `verify.test` runner printed, per run. See
+   * {@link makeProvenanceExec}'s `onRunnerOutput`. */
+  onRunnerOutput?: (out: { stdout: string; stderr: string }) => void;
 }): Promise<ProvenanceFixture> {
   const root = mkdtempSync(path.join(tmpdir(), `pi-prov-${String(opts.issue)}-`));
   // The scratch root is itself inside a git-tracked tree on some hosts (/tmp under a repo,
@@ -222,6 +263,7 @@ export async function makeProvenanceFixture(opts: {
       opts.onVerify?.();
     },
     opts.runnerTemplate,
+    opts.onRunnerOutput,
   );
   const emitted: WorkEvent[] = [];
   const emitSink: EmitSink = createEmitSink((event) => {
