@@ -26,7 +26,27 @@
  *   - `context` is the caller's context with the delta's full-branch block
  *     INSIDE the same budget rather than added on top of it. That block is diff
  *     text wearing a context label, and it is the half that a plain per-field cap
- *     misses: the field stays inside its own limit while the prompt does not.
+ *     misses: the field stays inside its own limit while the prompt does not. It is
+ *     charged FIRST, so the whole-file walk sizes the fenced diff against what the
+ *     budget has left after the block, and the sum of block + fenced diff + notice
+ *     is what stays inside the bound.
+ *
+ * What is actually bounded, exactly: fenced diff + the notice after the fence + the
+ * full-branch block, against `lensDiffBudget(context.length)` — the character bound
+ * minus the caller's own context. Two floors sit inside that, both deliberate, and
+ * both are the only ways the sum can exceed the bound:
+ *
+ *   - `LENS_DIFF_BUDGET_FLOOR` — the diff never shrinks below it, because a prompt
+ *     with a blank fence reviews nothing, so the NOTICE gives up bytes first and a
+ *     notice with nothing left to give can leave the pair over the bound; and
+ *   - the full-branch block's own ceiling, half the budget: it is charged before the
+ *     walk so the fenced diff sizes against what is left (see `appendFullContext`),
+ *     and the block keeps its half even when the diff has already reached the floor.
+ *
+ * Charging the block first is the whole point of it being charged at all: sizing it
+ * against a budget the walk had already spent in full let a delta arm put a ~120 KB
+ * fenced diff and a ~60 KB orientation block in one prompt, which is the shape that
+ * fills a context window.
  *
  * At or under the budget the diff is returned UNCHANGED with no note, so a
  * normal-sized review produces exactly the prompt this module shipped without —
@@ -70,8 +90,7 @@ export function lensDiffBudget(alreadyInlined: number): number {
  * escape hatch set): the diff goes into the fenced block verbatim and the
  * context keeps its own text. `bounded` says the diff was cut to the files that
  * fit and `note` carries what was cut and how to read it.
- */
-/**
+ *//**
  * What the whole-file walk returns: the joined block of sections that fit, the
  * paths left out, and the paths whose bodies the block really contains. The last
  * one is what lets the inventory say `shown` truthfully — the block is a SET of
@@ -97,11 +116,12 @@ export interface LensPromptDiff {
  * Bound the diff a lens prompt may inline, counting everything else the prompt
  * carries against the SAME budget.
  *
- * `fullContext` is the delta arm's full-branch orientation block: it is kept only
- * as far as the budget allows, and what the prompt cannot afford is truncated
- * with a notice rather than appended past the bound. `range` is the ref range the
- * caller actually diffed — the reread command is minted from it here and refused
- * when a ref carries fence-breaking bytes.
+ * `fullContext` is the delta arm's full-branch orientation block. It is charged to
+ * the budget BEFORE the whole-file walk — it gets at most half the budget, the walk
+ * then sizes the fenced diff against what is left — and what the prompt cannot
+ * afford is truncated with a notice rather than appended past the bound. `range` is
+ * the ref range the caller actually diffed — the reread command is minted from it
+ * here and refused when a ref carries fence-breaking bytes.
  */
 export function boundLensPromptDiff(opts: {
   diff: string;
@@ -111,8 +131,15 @@ export function boundLensPromptDiff(opts: {
 }): LensPromptDiff {
   if (!lensLargeDiffEnabled()) return { mode: "whole", diff: opts.diff, context: opts.context };
   const budget = lensDiffBudget(opts.context.length);
-  if (opts.diff.length <= budget) {
-    return { mode: "whole", diff: opts.diff, context: appendFullContext(opts, budget) };
+  // The full-branch block is charged to the budget BEFORE the walk, not after it:
+  // its rendered size is known up front (unlike the notice, which grows with the
+  // files the walk can name), and it is the arm that shipped this module's whole
+  // defect by riding on top. `room` is what the fenced diff + notice may then use.
+  const fullBranch = appendFullContext(opts, budget);
+  const fullBranchChars = Math.max(0, fullBranch.length - opts.context.length);
+  const room = Math.max(0, budget - fullBranchChars);
+  if (opts.diff.length <= room) {
+    return { mode: "whole", diff: opts.diff, context: fullBranch };
   }
   const command = rereadCommand(opts.range);
   // The note is part of the prompt, so it is charged to the SAME budget as the
@@ -123,7 +150,7 @@ export function boundLensPromptDiff(opts: {
   // cap is stepped DOWN (whole files leave the block, never more than the budget)
   // until block + note fit, or the block reaches the floor its prompt must always
   // be shown and the notice is trimmed to whatever room is left.
-  let cap = budget;
+  let cap = room;
   let kept: WholeFileHead = wholeFileHead(opts.diff, cap);
   // Whether the block is a slice that stops INSIDE a file. Only the line-boundary
   // fallback below ever sets this: the whole-file walk's block is a set of whole
@@ -139,24 +166,24 @@ export function boundLensPromptDiff(opts: {
   // the note's inventory of what is missing — so the sum always comes down. The
   // loop stops when the pair fits, or at the floor, where the notice is trimmed
   // instead of the diff.
-  while (kept.diff.length + note.length > budget && cap > LENS_DIFF_BUDGET_FLOOR) {
+  while (kept.diff.length + note.length > room && cap > LENS_DIFF_BUDGET_FLOOR) {
     // Step strictly below the current cap, aiming at the budget minus the note.
     // `Math.min(cap - 1, …)` is what makes this terminate: the earlier form let
     // `cap` stall where the note could not shrink further, and the block was
     // handed back over its budget with the notice's reread command already lost.
-    const next = Math.max(LENS_DIFF_BUDGET_FLOOR, Math.min(cap - 1, budget - note.length - 1));
+    const next = Math.max(LENS_DIFF_BUDGET_FLOOR, Math.min(cap - 1, room - note.length - 1));
     if (next >= cap) break;
     cap = next;
     kept = wholeFileHead(opts.diff, cap);
     noteParts = buildNoteParts(opts, kept, partial, command);
     note = assemble(noteParts);
   }
-  if (kept.diff.length + note.length > budget) {
+  if (kept.diff.length + note.length > room) {
     // The NOTICE gives up bytes before the diff does: the inventory table goes
     // first, and the reread command, the counts and the omitted-path list are
     // what survives — a lens with a smaller block and a command to read the rest
     // is still a lens that can finish its review.
-    note = trimNote(noteParts, Math.max(0, budget - kept.diff.length));
+    note = trimNote(noteParts, Math.max(0, room - kept.diff.length));
   }
   // ── #2261 finding 2: a bounded prompt is never an EMPTY prompt. Whole files
   // are the preference, and their bodies are what a lens can actually judge, but
@@ -170,15 +197,15 @@ export function boundLensPromptDiff(opts: {
     // it inlines NO complete body — the inventory marks nothing `shown`, which is
     // the honest claim for a mid-file slice.
     kept = {
-      diff: cutAtLineBoundary(opts.diff, Math.max(0, budget - note.length - 1)),
+      diff: cutAtLineBoundary(opts.diff, Math.max(0, room - note.length - 1)),
       omitted: kept.omitted,
       inlined: [],
     };
     partial = true;
     noteParts = buildNoteParts(opts, kept, partial, command);
     note = assemble(noteParts);
-    if (kept.diff.length + note.length > budget) {
-      note = trimNote(noteParts, Math.max(0, budget - kept.diff.length));
+    if (kept.diff.length + note.length > room) {
+      note = trimNote(noteParts, Math.max(0, room - kept.diff.length));
     }
   }
   // The invariant every caller depends on: the fenced block and the notice printed
@@ -195,18 +222,18 @@ export function boundLensPromptDiff(opts: {
   // that just failed to fit) and re-measures the note, and the block is bounded
   // below by zero.
   for (let guard = 0; guard < 4; guard++) {
-    if (kept.diff.length + note.length <= budget) break;
-    const room = Math.max(0, budget - note.length);
-    if (kept.diff.length <= room) break;
-    kept = { ...kept, diff: cutAtLineBoundary(kept.diff, room) };
+    if (kept.diff.length + note.length <= room) break;
+    const roomForBlock = Math.max(0, room - note.length);
+    if (kept.diff.length <= roomForBlock) break;
+    kept = { ...kept, diff: cutAtLineBoundary(kept.diff, roomForBlock) };
     noteParts = buildNoteParts(opts, kept, partial, command);
-    note = trimNote(noteParts, Math.max(0, budget - kept.diff.length));
+    note = trimNote(noteParts, Math.max(0, room - kept.diff.length));
   }
   return {
     mode: "bounded",
     diff: kept.diff,
     note,
-    context: appendFullContext(opts, budget),
+    context: fullBranch,
   };
 }
 
@@ -361,7 +388,17 @@ function trimNote(parts: NoteParts, room: number): string {
   return assemble({ ...parts, rows });
 }
 
-/** The full-branch orientation block, kept inside the prompt's ONE budget. */
+/**
+ * The full-branch orientation block, kept inside the prompt's ONE budget.
+ *
+ * Its ceiling is half the budget rather than the whole of it: the block is
+ * orientation for a delta review, the fenced diff is what the lens is asked to
+ * judge, and a block that could take everything would leave a reviewer a notice and
+ * no diff. Half is also what makes the charge well-defined — the walk sizes the diff
+ * against `budget − this block's rendered length`, so block + fenced diff + notice
+ * is bounded by the budget even in the corner where the block alone costs its half
+ * and the diff has already given down to `LENS_DIFF_BUDGET_FLOOR`.
+ */
 function appendFullContext(
   opts: { context: string; fullContext?: string },
   budget: number,
