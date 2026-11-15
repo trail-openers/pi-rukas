@@ -391,6 +391,18 @@
     "smoke-tests/test-lean-review-incomplete-round.ts",
     "smoke-tests/test-lens-diff-large.ts",
     "smoke-tests/test-review-diff-range.ts",
-    "smoke-tests/test-delta-diff.ts"
+    "smoke-tests/test-delta-diff.ts",
+    "smoke-tests/lib/assert-rig.ts",
+    "smoke-tests/lib/git-range-canary-inventory.ts",
+    "smoke-tests/lib/git-range-fixture-exec.ts",
+    "smoke-tests/lib/verify-develop-criteria-fixture.ts",
+    "smoke-tests/lib/verify-develop-criteria-harness.ts",
+    "smoke-tests/lib/verify-develop-provenance-fixture.ts",
+    "smoke-tests/lib/verify-develop-provenance-harness.ts",
+    "smoke-tests/test-verify-develop-data-provenance.ts",
+    "smoke-tests/test-verify-develop-provenance-bounds.ts",
+    "smoke-tests/test-verify-develop-switches.ts",
+    "smoke-tests/test-work-driver-verify-command-criteria-classic.ts",
+    "smoke-tests/test-git-range-probe-failures-1153.ts"
   ]
 }

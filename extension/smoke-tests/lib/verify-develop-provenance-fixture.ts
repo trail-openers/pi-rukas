@@ -20,8 +20,9 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { createEmitSink } from "../../src/work-state-emit.ts";
-import type { DriverContext } from "../../src/work-driver-context.ts";
+import { createEmitSink, type EmitSink } from "../../src/work-state-emit.ts";
+import type { CycleContext, DriverContext } from "../../src/work-driver-context.ts";
+import type { WorkEvent } from "../../src/workflow-state-events.ts";
 import { initialState } from "../../src/workflow-state.ts";
 import { gitTestEnv } from "./git-test-env.ts";
 
@@ -115,9 +116,13 @@ export interface ProvenanceFixture {
   commitAll(message: string): Promise<void>;
   execFn: NonNullable<DriverContext["verifyExecFn"]>;
   /** The context and state the gate is driven with. `issue` is the case's own number.
-   * `withEmitSink` swaps in the `emitSink` a whole-step drive needs (it is only read on
-   * the persist paths, so the gate-only cases leave it off). */
-  ctxFor(opts?: { withEmitSink?: boolean }): DriverContext;
+   * Always returns a `CycleContext`: `verifyDevelopOutcome` takes one, so a fixture that
+   * handed back a bare `DriverContext` could only be passed to the gate by defeating the
+   * compiler. The emit sink is real (built by `createEmitSink`) and its event log is kept on
+   * `emitted`, so a case can read what a drive emitted instead of trusting it to stay empty. */
+  ctxFor(opts?: { withEmitSink?: boolean }): CycleContext;
+  /** Every event the drives of this fixture emitted, in call order. */
+  emitted: WorkEvent[];
   stateFor(
     extra?: {
       issueBodyArtifact?: string;
@@ -218,6 +223,10 @@ export async function makeProvenanceFixture(opts: {
     },
     opts.runnerTemplate,
   );
+  const emitted: WorkEvent[] = [];
+  const emitSink: EmitSink = createEmitSink((event) => {
+    emitted.push(event);
+  });
   return {
     root,
     repo,
@@ -225,6 +234,7 @@ export async function makeProvenanceFixture(opts: {
     worktrees,
     baseSha,
     headSha,
+    emitted,
     execFn,
     async commit(rel: string, content: string) {
       put(worktree, rel, content);
@@ -235,20 +245,20 @@ export async function makeProvenanceFixture(opts: {
       await git(worktree, ["add", "-A"]);
       await git(worktree, ["commit", "-q", "-m", message]);
     },
-    ctxFor(callOpts) {
+    ctxFor() {
+      // The sink is not optional and never was: `CycleContext` requires it, and building it
+      // behind a flag no caller set meant every gate-level drive either failed to type-check
+      // or was handed a context the gate's own signature refuses. One sink per fixture, with
+      // the events accumulated in `emitted` where a case can see them.
       return {
         host: { sendUserMessage: () => {} } as never,
         repoRoot: repo,
         issue: opts.issue,
         verifyExecFn: execFn,
-        ...(callOpts?.withEmitSink === undefined
-          ? {}
-          : {
-              // The shape `persistCycle` reads — a real sink built by `createEmitSink`,
-              // so a whole-step drive does not stub a field the code under test walks.
-              emitSink: createEmitSink(() => {}),
-            }),
-      } as unknown as DriverContext;
+        // The shape `persistCycle` reads — a real sink built by `createEmitSink`, so a
+        // whole-step drive does not stub a field the code under test walks.
+        emitSink,
+      } as unknown as CycleContext;
     },
     stateFor(extra, callOpts) {
       let s = initialState(opts.issue, 1_000_000);

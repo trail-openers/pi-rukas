@@ -437,7 +437,7 @@ const MULTI_ISSUE_NOTE =
 // ── 10. the tier's own wording survives drift against the lean module it mirrors ───────────
 {
   const lean = readFileSync(
-    path.join(import.meta.dir, "..", "src", "lean", "verify-commands.ts"),
+    path.join(import.meta.dirname, "..", "src", "lean", "verify-commands.ts"),
     "utf8",
   );
   assert(
@@ -461,7 +461,7 @@ const MULTI_ISSUE_NOTE =
     "../modules/workflows/quality-gates.md",
   ];
   for (const rel of doctrine) {
-    const text = readFileSync(path.join(import.meta.dir, "..", rel), "utf8");
+    const text = readFileSync(path.join(import.meta.dirname, "..", rel), "utf8");
     assert(
       text.includes("round-trips through its own generator") &&
         text.includes("met only by evidence that it executed"),

@@ -39,6 +39,8 @@ import {
   PROVENANCE_NOT_CHECKED_PREFIX,
   VERIFY_PROVENANCE_ENV,
   verifySwitchOff as parseVerifySwitch,
+  type ProvenanceDisclosure,
+  type ProvenanceDisclosureSink,
 } from "../src/work-driver-verify-develop-provenance.ts";
 import { verifyDevelopOutcome } from "../src/work-driver-verify-develop.ts";
 import {
@@ -133,8 +135,12 @@ function assert(cond: boolean, msg: string): void {
 interface Drive {
   failures: string[];
   notes: string[];
-  /** Filled only by a run that executed the provenance gate and disclosed something. */
-  disclosures: unknown[];
+  /** Filled only by a run that executed the provenance gate and disclosed something. Typed as
+   * the gate's own row rather than `unknown[]`: the assertions below read `file` and `reason`
+   * off these rows, and an `unknown[]` sink made every one of those reads untyped — a gate that
+   * returned rows missing the field a case depended on would have compiled, and the disclosure
+   * count would still have been green. */
+  disclosures: ProvenanceDisclosure[];
 }
 
 /** Set or unset one switch for one arm, and restore it exactly.
@@ -167,11 +173,15 @@ const COMMAND_CRITERIA_ENV = "PI_ENSEMBLE_VERIFY_COMMAND_CRITERIA";
 async function driveProvenance(f: ProvenanceFixture): Promise<Drive> {
   const failures: string[] = [];
   const notes: string[] = [];
-  const sink = { disclosures: [] as unknown[] };
+  const sink: ProvenanceDisclosureSink = { disclosures: [] };
   await verifyDevelopOutcome(f.ctxFor(), f.stateFor(), f.execFn, failures, notes, {
     provenanceDisclosures: sink,
   });
-  return { failures, notes, disclosures: sink.disclosures };
+  // `?? []` because the sink's field is optional by the gate's own declaration — the gate
+  // creates it only when it runs, so "the gate never ran" and "it ran and disclosed nothing"
+  // both arrive as an absent array. Collapsing them here is deliberate and is what the switch
+  // arms below read: they ask whether this run disclosed rows, and both answers mean it did not.
+  return { failures, notes, disclosures: sink.disclosures ?? [] };
 }
 
 async function driveCriteria(f: ProvenanceFixture, artifact: string): Promise<Drive> {
