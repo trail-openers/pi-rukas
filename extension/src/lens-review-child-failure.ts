@@ -124,23 +124,42 @@ export function failedLensRow(input: LensFailureInput): LensRunResult {
   // loop broke on — never from `result.text`, which is the child's prose and can
   // carry diff-authored bytes (see `laneProviderCause`).
   const providerCause = laneProviderCause(result);
+  const refused = providerCause !== undefined;
   // A provider that refused the prompt answered NOTHING — no findings, no
   // review. For a child the provider really did refuse, the prose that reached
   // `text` is the refusal the spawn layer fell back to (stderr), so the evidence
-  // rule above cannot let it carry the lane: a refusal is not a closing summary,
+  // rule below cannot let it carry the lane: a refusal is not a closing summary,
   // and a lens whose own provider says "maximum context length" has not reviewed
   // the diff however the text reads. Because the cause is now the loop's own
   // predicate, this discount applies to exactly the children that were refused —
   // and no longer to a lane whose prose merely SOUNDS like a refusal, whose
   // findings are evidence and stay in the round.
-  const hasEvidence =
-    findings.length > 0 || (!!summary && textIsReviewOutput && providerCause === undefined);
+  //
+  // So `hasEvidence` asks the question the verdict needs — would this row, on its
+  // own, count as a reviewed lane — and a refusal can never answer yes, whatever
+  // else killed the child. That is the case this clause exists for: a lane refused
+  // by its provider AND killed by one of its own caps AND holding a finding used to
+  // come back `blocked:false` with no reason, because the cap-kill arm treated the
+  // findings as a closing summary. `laneReason` then never reached the provider
+  // clause, `isReviewIncomplete` called the round covered, and the summary printed
+  // a provider refusal beside "(killed: token-budget)" for a prompt that was never
+  // answered.
+  const hasEvidence = !refused && (findings.length > 0 || (!!summary && textIsReviewOutput));
+  // Disclosure is a separate question from whether the lane was reviewed. A refused
+  // child's findings are real `report_finding` calls it made before the refusal, so
+  // they are handed to the round rather than thrown away with the lane's claim to
+  // have reviewed it; `model`/`transcriptPath` travel with them for the same reason
+  // (#2040: a HIGH's reproduction is checked against the child that filed it).
+  const kept = refused || hasEvidence ? findings : [];
+  // What the row shows as evidence of this child having worked: a reviewed lane
+  // always, a refused one only once it has findings to disclose.
+  const showsEvidence = hasEvidence || (refused && kept.length > 0);
   return {
     lens,
     ok: false,
     ms: result?.ms ?? 0,
     startMs,
-    findings: hasEvidence ? findings : [],
+    findings: kept,
     attempts,
     blocked: !hasEvidence || bounded,
     parseError: bounded
@@ -157,8 +176,8 @@ export function failedLensRow(input: LensFailureInput): LensRunResult {
     // reads as a child that ran nothing.
     toolUses: result?.toolUses ?? [],
     ...(result?.toolResults ? { toolResults: result.toolResults } : {}),
-    ...(hasEvidence && result ? { model: result.model } : {}),
-    ...(hasEvidence && result?.transcriptPath ? { transcriptPath: result.transcriptPath } : {}),
+    ...(showsEvidence && result ? { model: result.model } : {}),
+    ...(showsEvidence && result?.transcriptPath ? { transcriptPath: result.transcriptPath } : {}),
     ...(result?.killCause ? { killCause: result.killCause } : {}),
     ...(result?.killCause === "loop" && result.loopEvidence
       ? { loopEvidence: result.loopEvidence }
