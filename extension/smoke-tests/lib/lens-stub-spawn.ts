@@ -33,6 +33,28 @@ export interface StubSpawnCall {
   budgetTurns?: number;
 }
 
+/** What the recorder answers a spawn with. Mutable so one suite can make a
+ * single arm of the review fail (a provider refusal, a cap kill) while every
+ * other child still answers normally — the alternative is a second mock over
+ * the same specifier, which Bun does not reliably stack. */
+export type StubSpawnAnswer = (spec: { role: string; prompt: string }) => unknown;
+
+let answer: StubSpawnAnswer = (spec) => ({
+  role: spec.role,
+  ok: true,
+  text: "Checked the inlined diff; nothing in my lane.",
+  toolUses: [],
+  ms: 10,
+  exitCode: 0,
+});
+
+/** Replace what the recorder answers with. Returns the previous answer. */
+export function setStubSpawnAnswer(next: StubSpawnAnswer): StubSpawnAnswer {
+  const prev = answer;
+  answer = next;
+  return prev;
+}
+
 /** Install the recorder over `src/spawn.ts`. Returns the growing call list.
  *
  * The mock must be installed BEFORE the lens modules are imported (the
@@ -53,14 +75,7 @@ export function stubLensSpawn(): StubSpawnCall[] {
         childBoundMs: opts.childBoundMs,
         budgetTurns: opts.budgetTurns,
       });
-      return {
-        role: spec.role,
-        ok: true,
-        text: "Checked the inlined diff; nothing in my lane.",
-        toolUses: [],
-        ms: 10,
-        exitCode: 0,
-      };
+      return answer(spec) as never;
     },
   }));
   return calls;

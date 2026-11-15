@@ -36,7 +36,12 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { resolveMainlineBase } from "./review-delta-hunks.ts";
-import { DIFF_MAX_BUFFER, changedLineRanges, diffOverflow } from "./review-diff.ts";
+import {
+  changedLineRanges,
+  diffOverflow,
+  diffReadMaxBytes,
+  overflowReason,
+} from "./review-diff.ts";
 
 const execFileP = promisify(execFile);
 
@@ -87,20 +92,20 @@ export async function changedRanges(
   const range = `${b}...${head}`;
   try {
     const { stdout } = await execFileP("git", ["-C", cwd, "diff", ...RANGE_ARGS, range], {
-      maxBuffer: DIFF_MAX_BUFFER,
+      maxBuffer: diffReadMaxBytes(),
       timeout: RANGE_TIMEOUT_MS,
     });
     return rangesFromDiff(stdout, range);
   } catch (err) {
-    const e = err as Error & { stderr?: string };
     // A tail cut at the cap is a truncated diff, and a truncated diff would
-    // silently discount the findings past the cut. It is a failed read.
-    if (diffOverflow(e?.stderr ?? "")) {
-      return { ok: false, reason: `git diff ${range} exceeded the ${DIFF_MAX_BUFFER} byte cap` };
+    // silently discount the findings past the cut. It is a failed read, named
+    // with the limit and the size rather than as a generic git failure.
+    if (diffOverflow(err)) {
+      return { ok: false, reason: overflowReason(`git diff ${range}`, err) };
     }
     return {
       ok: false,
-      reason: `git diff ${range} failed: ${(e?.message ?? String(err)).slice(0, 200)}`,
+      reason: `git diff ${range} failed: ${((err as Error)?.message ?? String(err)).slice(0, 200)}`,
     };
   }
 }

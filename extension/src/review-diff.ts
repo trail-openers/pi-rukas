@@ -15,20 +15,65 @@
  * distinct "empty diff" error, never a value a caller can mistake for
  * "nothing to review" (and never an APPROVED verdict).
  *
- * The 1 MiB cap matches `fetchDiff`/`readIntegratedDiff` in
- * work-driver-diff.ts: this feature exists so a ~3.4k-line diff stops
- * bloating the PM's context, so the guard must not be dropped when the
- * diff moves from PM-side to tool-side.
+ * The cap on these reads is {@link REVIEW_DIFF_READ_MAX_BYTES}, ONE ceiling
+ * shared by every size-sensitive git read on the base+head path — the range, the
+ * delta, the changed-line ranges and the patch identity — so a diff that clears
+ * one read clears them all and a review cannot pass its own precondition and then
+ * die inside the layer that reads the same range. {@link DIFF_MAX_BUFFER} is the
+ * pre-#2261 value that one operator switch restores, and {@link diffReadMaxBytes}
+ * is the only function that decides which of the two a read gets.
  */
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { execp } from "./exec.ts";
+import { lensLargeDiffEnabled } from "./lens-large-diff-switch.ts";
 import { resolveHeadSha } from "./review-head-sha.ts";
 
 const execFileP = promisify(execFile);
 
+/** The 1 MiB cap this module shipped with, and the value the switch's `"0"` arm
+ * restores. Named separately from the ceiling it is beside, because the reason
+ * string for the off arm must name the limit that actually stopped the read. */
 export const DIFF_MAX_BUFFER = 1024 * 1024;
+
+/**
+ * The ONE ceiling every size-sensitive git read on the base+head path shares
+ * (#2261): `computeRangeDiff`, `computeDeltaDiff`, `changedRanges`,
+ * `patchIdOfRange` and `diffDigestOfRange`.
+ *
+ * 16 MiB is not an arbitrary multiple. Lean's own precondition read of the SAME
+ * range (`lean/review-git.ts`, through `GIT_MAX_BUFFER`) runs at 16 MiB, and the
+ * layer beneath it read at 1 MiB — so a diff between the two passed lean's check
+ * that the branch could be reviewed and then failed inside the review, with the
+ * cause lost. Matching the precondition's ceiling removes the band rather than
+ * adding a message to it; the two reads are deliberately left as two reads (one
+ * per layer, each owned by its caller) with one agreed size.
+ *
+ * What a diff this large costs the child is a separate question with a separate
+ * answer: the lens prompt inlines only what fits its own bound
+ * (`lens-diff-bound.ts`), so admitting a 16 MiB read does not mean putting 16 MiB
+ * in front of six models.
+ */
+export const REVIEW_DIFF_READ_MAX_BYTES = 16 * 1024 * 1024;
+
+/**
+ * The `maxBuffer` a size-sensitive review git read must pass, read at CALL time
+ * so a test (or a running cycle) that flips `PI_ENSEMBLE_LENS_LARGE_DIFF` gets
+ * the ceiling it asks for rather than the one that was in force when this module
+ * was first imported.
+ */
+export function diffReadMaxBytes(): number {
+  return lensLargeDiffEnabled() ? REVIEW_DIFF_READ_MAX_BYTES : DIFF_MAX_BUFFER;
+}
+
+/** The ceiling's name as it appears in a reason: the constant, not just a byte
+ * count, so an operator reading the reason can find the knob. */
+function limitLabel(effective: number): string {
+  return effective === DIFF_MAX_BUFFER
+    ? `DIFF_MAX_BUFFER (${String(DIFF_MAX_BUFFER)} bytes)`
+    : `REVIEW_DIFF_READ_MAX_BYTES (${String(REVIEW_DIFF_READ_MAX_BYTES)} bytes)`;
+}
 
 export type RangeDiff = { ok: true; diff: string } | { ok: false; reason: string };
 
@@ -39,9 +84,26 @@ export type RangeDiff = { ok: true; diff: string } | { ok: false; reason: string
  */
 export type ChangedRanges = Map<string, Array<[number, number]>>;
 
-/** True when a diff was produced beyond the cap (the tail was cut). */
-export function diffOverflow(stderr: string): boolean {
-  return /E2BIG|exceeded maxBuffer/i.test(stderr);
+/**
+ * True when a diff was produced beyond the cap (the tail was cut).
+ *
+ * Classified from the ERROR OBJECT, not only stderr: `execFile`'s maxBuffer
+ * overflow surfaces as `code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"` with an EMPTY
+ * `stderr` and the words in `message`. A stderr-only match therefore missed the
+ * common runtime and let the overflow fall through to the generic
+ * "`git diff … failed:`" arm — which is how a 1 MiB+ range came to report
+ * nothing but a size it never named. `e2big` is the OTHER shape: a spawn that
+ * died on the OS argument limit (`Linux MAX_ARG_STRLEN`) before git ran.
+ */
+export function diffOverflow(err: unknown): boolean {
+  const e = err as { code?: string | number; message?: string; stderr?: string } | null;
+  if (!e) return false;
+  if (e.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" || e.code === "E2BIG") return true;
+  if (typeof e.code === "number" && Math.abs(e.code) === 7) return true;
+  const haystack = `${e.message ?? ""}\n${e.stderr ?? ""}`;
+  return /E2BIG|exceeded maxBuffer|maxBuffer length exceeded|argument list too long/i.test(
+    haystack,
+  );
 }
 
 function refError(ref: string, err: unknown): { ok: false; reason: string } {
@@ -93,15 +155,11 @@ export async function computeRangeDiff(
   let stdout: string;
   try {
     ({ stdout } = await execFileP("git", ["-C", cwd, "diff", `${base}...${head}`], {
-      maxBuffer: DIFF_MAX_BUFFER,
+      maxBuffer: diffReadMaxBytes(),
     }));
   } catch (err) {
-    const stderr = (err as Error & { stderr?: string })?.stderr ?? "";
-    if (diffOverflow(stderr)) {
-      return {
-        ok: false,
-        reason: `git diff ${base}...${head} exceeded the ${DIFF_MAX_BUFFER} byte cap`,
-      };
+    if (diffOverflow(err)) {
+      return { ok: false, reason: overflowReason(`git diff ${base}...${head}`, err) };
     }
     return {
       ok: false,
@@ -159,15 +217,11 @@ export async function computeDeltaDiff(
   let stdout: string;
   try {
     ({ stdout } = await execFileP("git", ["-C", cwd, "diff", `${since}..${head}`], {
-      maxBuffer: DIFF_MAX_BUFFER,
+      maxBuffer: diffReadMaxBytes(),
     }));
   } catch (err) {
-    const stderr = (err as Error & { stderr?: string })?.stderr ?? "";
-    if (diffOverflow(stderr)) {
-      return {
-        ok: false,
-        reason: `git diff ${since}..${head} exceeded the ${DIFF_MAX_BUFFER} byte cap`,
-      };
+    if (diffOverflow(err)) {
+      return { ok: false, reason: overflowReason(`git diff ${since}..${head}`, err) };
     }
     return {
       ok: false,
@@ -176,6 +230,27 @@ export async function computeDeltaDiff(
   }
   if (!stdout.trim()) return { ok: true, diff: "", empty: true };
   return { ok: true, diff: stdout, empty: false };
+}
+
+/**
+ * The reason a size-bounded read refused: the limit's CONSTANT, its VALUE, and
+ * how much the read actually produced.
+ *
+ * "exceeded the cap" is what the field reported, and it was not actionable — the
+ * operator could not tell a 1 MiB guard from a 16 MiB one, nor whether git had
+ * produced 2 MB or 200 MB. The measured size comes from the error's own partial
+ * buffer when the runtime kept one and from the limit as a floor otherwise, so
+ * the reason never claims a number nobody measured.
+ */
+export function overflowReason(command: string, err: unknown): string {
+  const e = err as { stdout?: string | Buffer; stderr?: string | Buffer } | null;
+  const produced = (e?.stdout?.length ?? 0) + (e?.stderr?.length ?? 0);
+  const effective = diffReadMaxBytes();
+  const measured =
+    produced > 0
+      ? `${command} produced at least ${String(produced)} bytes`
+      : `${command} produced more than ${String(effective)} bytes`;
+  return `${command} exceeded the limit ${limitLabel(effective)} — ${measured}`;
 }
 
 /**

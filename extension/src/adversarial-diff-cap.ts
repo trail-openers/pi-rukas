@@ -116,7 +116,7 @@ export {
   MERGED_DIFF_WORKSTREAM_PREFIX,
 };
 
-const GIT_HEADER = "diff --git ";
+export const GIT_HEADER = "diff --git ";
 
 /**
  * A ref is untrusted text. A control character, a line separator or a backtick
@@ -131,7 +131,7 @@ const UNSAFE_REF = /[\p{Cc}\u2028\u2029`]/u;
  * shape: both prompts inline the whole diff verbatim, no inventory and no
  * notice. Any other value, and an unset variable, keep the bound.
  */
-function diffCapDisabled(): boolean {
+export function diffCapDisabled(): boolean {
   const raw = process.env.PI_ENSEMBLE_ADVERSARIAL_DIFF_CAP;
   if (raw === undefined) return false;
   const v = raw.trim().toLowerCase();
@@ -143,7 +143,7 @@ function diffCapDisabled(): boolean {
  * unusual bytes in a name) is taken verbatim rather than guessed at — the
  * summary only has to NAME the file, and a wrong guess misnames it.
  */
-function headerPath(line: string): string | null {
+export function headerPath(line: string): string | null {
   const rest = line.slice(GIT_HEADER.length);
   if (!rest) return null;
   if (rest.startsWith('"')) return rest;
@@ -187,11 +187,18 @@ function isUnattributedLine(
  *
  * `headChars` is the length of the head the prompt will inline: a section that
  * ends at or before it is `shown`, so the inventory can say which bodies the
- * reviewer actually has and which it does not.
+ * reviewer actually has and which it does not. That offset rule is right for a
+ * head CUT at a cap (a prefix, so the shown files really are the leading ones)
+ * and wrong for a walk that admits whole files and SKIPS the oversized ones —
+ * there the inlined set is not a prefix, and an offset test marks a skipped
+ * middle file "shown" and a kept later file "not shown". A caller in that shape
+ * passes `shownPaths`, the paths whose bodies it actually inlined, and the offset
+ * rule is not consulted.
  */
 export function summarizeDiffFiles(
   diff: string,
   headChars = diff.length,
+  shownPaths?: ReadonlySet<string>,
 ): { files: DiffFileSummary[]; unattributed: number } {
   const files: DiffFileSummary[] = [];
   let current: DiffFileSummary | null = null;
@@ -236,6 +243,10 @@ export function summarizeDiffFiles(
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
     if (!file) continue;
+    if (shownPaths !== undefined) {
+      file.shown = shownPaths.has(file.path);
+      continue;
+    }
     const next = files[i + 1];
     const end = next ? next.startOffset : diff.length;
     file.shown = end <= headChars;
@@ -244,7 +255,7 @@ export function summarizeDiffFiles(
 }
 
 /** The lead line of the per-file inventory, worded for what the diff actually shows. */
-function inventoryLead(files: DiffFileSummary[], unattributed: number): string {
+export function inventoryLead(files: DiffFileSummary[], unattributed: number): string {
   if (files.length === 0) {
     return "No `diff --git` file headers were found in this diff, so a per-file inventory could not be built — judge the body below and say what you could not see:";
   }
@@ -266,7 +277,7 @@ function displayPath(path: string): string {
     : neutral;
 }
 
-function rowsText(files: DiffFileSummary[]): string {
+export function rowsText(files: DiffFileSummary[]): string {
   const rows = files.map((f) => ({
     path: displayPath(f.path),
     counts: `+${f.added} -${f.removed}`,
@@ -278,7 +289,7 @@ function rowsText(files: DiffFileSummary[]): string {
 }
 
 /** The per-file inventory the reviewer sees as prose after the fenced diff. */
-function inventoryText(files: DiffFileSummary[], unattributed: number): string {
+export function inventoryText(files: DiffFileSummary[], unattributed: number): string {
   const lead = `${inventoryLead(files, unattributed)}\n`;
   if (files.length === 0) return `${lead}\n`;
   if (files.length <= MAX_INVENTORY_ROWS) return `${lead}${rowsText(files)}\n\n`;
@@ -297,7 +308,7 @@ function inventoryText(files: DiffFileSummary[], unattributed: number): string {
  * command", so a caller never has to build one somewhere else and second-guess
  * whether it was refused.
  */
-function rereadCommand(range?: DiffRange): string | undefined {
+export function rereadCommand(range?: DiffRange): string | undefined {
   if (!range) return undefined;
   const { base, head } = range;
   if (!base.trim() || !head.trim()) return undefined;
@@ -306,26 +317,12 @@ function rereadCommand(range?: DiffRange): string | undefined {
 }
 
 /** Cut at the cap, landing on a line boundary so the diff block never breaks mid-line. */
-function cutAtLineBoundary(text: string, cap: number): string {
+export function cutAtLineBoundary(text: string, cap: number): string {
   const slice = text.slice(0, cap);
   const nl = slice.lastIndexOf("\n");
   return nl > 0 ? slice.slice(0, nl) : slice;
 }
 
-/**
- * Bound the diff text a prompt may inline.
- *
- * At or under {@link MAX_INLINE_DIFF_CHARS} the diff is returned as `diff` with
- * NO `note`, so the prompt is byte-identical to the pre-bound one. Over it,
- * `diff` is the head cut at a line boundary and `note` carries the inventory,
- * the character counts and — when the caller knows the range it diffed — the
- * command to read the rest. The note is prose, never fenced diff: see the module
- * header.
- *
- * `range` is the ref range the CALLER itself diffed. The command is minted here
- * from the two refs, and refused when a ref carries bytes that would escape the
- * fence — which is why callers pass refs rather than a pre-built command string.
- */
 export function boundDiffForPrompt(diff: string, range?: DiffRange): BoundedDiff {
   if (diffCapDisabled() || diff.length <= MAX_INLINE_DIFF_CHARS) return { diff };
   const head = cutAtLineBoundary(diff, MAX_INLINE_DIFF_CHARS);

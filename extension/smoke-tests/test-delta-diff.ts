@@ -33,11 +33,21 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { resolveDeltaDiff } from "../src/lens-review-diff.ts";
-import { computeDeltaDiff, computeRangeDiff } from "../src/review-diff.ts";
+import { resolveDeltaDiff } from "../src/lens-review-diff.ts";import {
+  DIFF_MAX_BUFFER,
+  REVIEW_DIFF_READ_MAX_BYTES,
+  computeDeltaDiff,
+  computeRangeDiff,
+} from "../src/review-diff.ts";
 import { subtractReviewedHunks } from "../src/review-delta-hunks.ts";
+import { withEnv } from "./lib/env-scope.ts";
 
 const execp = promisify(exec);
+
+/** Added lines of ~64 bytes each, sized against the two ceilings: one past
+ * 16 MiB, one past 1 MiB but under it (the band the lean path used to lose). */
+const OVER_LIMIT_LINES = 260_100;
+const OVER_MIB_LINES = 24_000;
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -253,6 +263,104 @@ async function mkRepo(): Promise<{ dir: string; c0: string; c1: string; c2: stri
   try {
     const r = await computeDeltaDiff(dir, "a", "b");
     assert(!r.ok, "outside a git repo the delta read fails closed");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// --------------------- #2261: an over-ceiling DELTA is a named failure, not a silent one
+
+/** A repo whose `since..head` delta is `lines` added lines of ~64 bytes. */
+async function mkBigRepo(lines: number): Promise<{ dir: string; since: string; head: string }> {
+  const dir = mkdtempSync(path.join(tmpdir(), "pi-delta-big-"));
+  await execp("git init -q -b main", { cwd: dir });
+  await execp('git config user.email "t@t" && git config user.name "T"', {
+    cwd: dir,
+    shell: "/bin/bash",
+  });
+  writeFileSync(path.join(dir, "base.txt"), "hello\n");
+  await execp("git add -A && git commit -q -m base", { cwd: dir, shell: "/bin/bash" });
+  const since = (await execp("git rev-parse HEAD", { cwd: dir })).stdout.trim();
+  await execp("git checkout -qb feature/big", { cwd: dir });
+  const body = Array.from(
+    { length: lines },
+    (_u, i) => `line ${i} with enough filler to make the diff genuinely large`,
+  ).join("\n");
+  writeFileSync(path.join(dir, "big.txt"), `${body}\n`);
+  await execp("git add -A && git commit -q -m big", { cwd: dir, shell: "/bin/bash" });
+  const head = (await execp("git rev-parse HEAD", { cwd: dir })).stdout.trim();
+  await execp("git update-ref refs/remotes/origin/main " + since, { cwd: dir });
+  return { dir, since, head };
+}
+
+{
+  const { dir, since, head } = await mkBigRepo(OVER_LIMIT_LINES);
+  try {
+    const measured = (
+      await execp(`git diff ${since}..${head}`, { cwd: dir, maxBuffer: 64 * 1024 * 1024 })
+    ).stdout;
+    assert(
+      measured.length > REVIEW_DIFF_READ_MAX_BYTES,
+      `precondition: the synthetic delta is past the ceiling (${String(measured.length)} > ${REVIEW_DIFF_READ_MAX_BYTES})`,
+    );
+    const r = await computeDeltaDiff(dir, since, head);
+    assert(!r.ok, "an over-ceiling delta is a FAILURE, never a truncated diff");
+    assert(
+      r.ok === false && r.reason.includes("REVIEW_DIFF_READ_MAX_BYTES"),
+      `the delta reason NAMES the limit constant (got: ${r.ok === false ? r.reason : "ok"})`,
+    );
+    assert(
+      r.ok === false && r.reason.includes(String(REVIEW_DIFF_READ_MAX_BYTES)),
+      "...and its value",
+    );
+    assert(
+      r.ok === false &&
+        /\b\d{7,}\b/.test(r.reason.replace(String(REVIEW_DIFF_READ_MAX_BYTES), "")),
+      `...and the measured size (got: ${r.ok === false ? r.reason : "ok"})`,
+    );
+    // The edge case the spec names: a truncated delta must NEVER read as an
+    // EMPTY delta, which would silently skip the review.
+    assert(
+      r.ok === false,
+      "an over-ceiling delta is not the ok:true empty outcome (a cut tail is never 'nothing to review')",
+    );
+
+    const resolved = await resolveDeltaDiff(since, head, dir);
+    assert(
+      resolved.noReview === false && resolved.problem !== undefined,
+      "resolveDeltaDiff blocks on it rather than returning noReview",
+    );
+    assert(
+      resolved.noReview === false &&
+        (resolved.problem ?? "").includes("REVIEW_DIFF_READ_MAX_BYTES"),
+      "...and the block carries the named reason through to the review",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// ---------------- #2261: the switch-off arm keeps the delta's pre-fix 1 MiB failure
+
+{
+  const { dir, since, head } = await mkBigRepo(OVER_MIB_LINES);
+  try {
+    const measured = (
+      await execp(`git diff ${since}..${head}`, { cwd: dir, maxBuffer: 64 * 1024 * 1024 })
+    ).stdout;
+    assert(
+      measured.length > DIFF_MAX_BUFFER && measured.length < REVIEW_DIFF_READ_MAX_BYTES,
+      `precondition: past 1 MiB, under the shared ceiling (${String(measured.length)})`,
+    );
+    const on = await computeDeltaDiff(dir, since, head);
+    assert(on.ok === true && on.empty === false, "with the switch on a >1 MiB delta reads (AC1)");
+    await withEnv({ PI_ENSEMBLE_LENS_LARGE_DIFF: "0" }, async () => {
+      const off = await computeDeltaDiff(dir, since, head);
+      assert(
+        off.ok === false && /exceeded the limit DIFF_MAX_BUFFER \(1048576 bytes\)/.test(off.reason),
+        `"0" restores the pre-fix 1 MiB delta failure verbatim (got: ${off.ok === false ? off.reason : "ok"})`,
+      );
+    });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

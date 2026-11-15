@@ -19,11 +19,7 @@ import {
   deltaFallbackNote,
 } from "./lens-review-delta-disclose.ts";
 import { blockedReviewSummary, blockedRowsForRoster } from "./lens-review-diff-blocked.ts";
-import {
-  buildDeltaFullContext,
-  resolveReviewDiff,
-  startPersistentBatch,
-} from "./lens-review-diff.ts";
+import { resolveReviewDiff, startPersistentBatch } from "./lens-review-diff.ts";
 import { resolveReportedFindings } from "./lens-review-findings.ts";
 import { finishLensReview } from "./lens-review-finish.ts";
 import {
@@ -33,13 +29,14 @@ import {
   computeVerdict,
   piSkillsDir,
 } from "./lens-review-format.ts";
+import { buildDeltaFullContext } from "./lens-review-full-context.ts";
+import { resolveRoundHeadSha } from "./lens-review-head-sha.ts";
 import { priorFindingsFor } from "./lens-review-memory.ts";
 import { lensMerge } from "./lens-review-merge.ts";
 import { installBlockRowsForRoster, skillsDirUsable } from "./lens-review-skills.ts";
 import { normalExitSummary } from "./lens-review-summary.ts";
 import type { Finding, LensRunResult } from "./lens-review-types.ts";
 import { CLAIM_SCAN, type RosterEntry, buildExpectedRoster } from "./lens-roster.ts";
-import { isFullCommitSha, resolveHeadSha } from "./review-head-sha.ts";
 import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 
@@ -196,7 +193,11 @@ export async function runLensReview(opts: {
    * summary's own `forcedFull` field renders it in the `Mode:` line. */
   let forcedFull: ForcedFullReason | undefined;
   let diff = "";
-  let context: string;
+  let context: string = opts.context ?? "";
+  /** #2261 — the delta arm's full-branch orientation block, kept as its own
+   * string so the lens prompt can count it against the SAME budget as the diff
+   * (see `buildDeltaFullContext`). Empty on every non-delta arm. */
+  let fullContext = "";
   // #1128 — the automatic delta reads the SAME ledger key the round cap
   // budgets under (lens-budget-key.ts). The delta is found when the head
   // commit sits on exactly one local branch (or a PR is given); a purely
@@ -228,51 +229,32 @@ export async function runLensReview(opts: {
       };
     }
     // #973 review — a delta review with an explicit base+head appends the
-    // full base...head range as context for orientation, capped at 100 KB
-    // (buildDeltaFullContext: bound + truncation notice).
-    context =
+    // full base...head range as context for orientation. The block is produced
+    // here and handed to the prompt builder rather than glued onto the context
+    // (see `buildDeltaFullContext`): it is diff text and shares the prompt's one
+    // budget with the delta.
+    fullContext =
       resolved.kind === "ok" && resolved.delta && opts.base && opts.head
         ? await buildDeltaFullContext(
-            opts.context ?? "",
             opts.cwd,
             opts.base,
             opts.head,
             resolved.delta.since,
             resolved.delta.auto === true,
           )
-        : (opts.context ?? "");
+        : "";
     context += deltaFallbackNote(delta);
   } else {
     context = opts.context ?? "";
   }
-  // #1039 — resolve the headSha ONCE, before any early return, so every
-  // ledger write (blocked, empty-roster, aborted, normal) carries the
-  // resolved 40-char SHA. The delta arm's head is normally already a full
-  // SHA (resolveDeltaDiff resolves it via the shared resolver), but the
-  // resolver can fall back to the raw caller ref on a git failure — and a
-  // raw ref must never reach the ledger (it is matched by string equality
-  // against a PR head OID, and a branch name there corrupts the round-cap
-  // comparison). The shape check keeps the invariant on every path; a
-  // non-SHA delta head leaves headSha undefined (the ledger write omits
-  // it; the round-cap check fails closed — conservative by design). The
-  // non-delta arm goes through the shared `resolveHeadSha` (review-head-sha.ts)
-  // for `opts.head ?? "HEAD"`; an unresolvable ref leaves headSha undefined
-  // there too.
-  let headSha: string | undefined;
-  if (resolved.kind === "ok" && resolved.delta) {
-    if (isFullCommitSha(resolved.delta.head)) {
-      headSha = resolved.delta.head;
-    } else {
-      trace(
-        `lens-review: delta head ${resolved.delta.head.slice(0, 40)} is not a 40-char SHA — headSha omitted (the round-cap check fails closed on the absent field)`,
-      );
-    }
-  } else if (resolved.kind === "ok") {
-    headSha = await resolveHeadSha(opts.cwd ?? process.cwd(), opts.head ?? "HEAD", execp);
-  } else {
-    // blocked or noReview: no headSha (no commit was reviewed).
-    headSha = undefined;
-  }
+  // #1039 — the head identity, resolved ONCE before any early return so every
+  // ledger write (blocked, empty-roster, aborted, normal) carries the same
+  // resolved 40-char SHA. `lens-review-head-sha.ts` owns the shape rule: a raw
+  // ref must never reach the ledger, because the field is matched by string
+  // equality against a PR head OID and a branch name there corrupts the
+  // round-cap comparison. An unresolvable or malformed head is absent, and the
+  // round-cap check fails closed on the absence — conservative by design.
+  const headSha = await resolveRoundHeadSha(resolved, opts.cwd ?? process.cwd(), opts.head, execp);
   // #1934 — the one identity, shared by the ledger write and the findings record.
   const identityOf = lensPatchIdentityOf(opts.cwd);
   // #1000 — the single finish path for every exit of this run: the identical
@@ -408,7 +390,23 @@ export async function runLensReview(opts: {
             skillsDir,
             context,
             roster,
-            opts: { ...opts, diff: diff ?? "", priorFindings },
+            opts: {
+              ...opts,
+              diff: diff ?? "",
+              priorFindings,
+              // The range the lenses may re-read the cut part of their diff
+              // from, and the delta arm's orientation block (#2261). Only a
+              // computed range is named: a pasted diff string has no refs behind
+              // it, and a prompt that told a lens to `git diff a...b -- file`
+              // against refs that do not exist would send six children after a
+              // command that cannot answer.
+              ...(resolved.diffSource === "computed" &&
+              resolved.base !== undefined &&
+              resolved.head !== undefined
+                ? { diffRange: { base: resolved.base, head: resolved.head } }
+                : {}),
+              ...(fullContext === "" ? {} : { fullContext }),
+            },
             bumpBatch,
             ...(opts.pi ? { pi: opts.pi } : {}),
           }),

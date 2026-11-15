@@ -163,6 +163,11 @@ export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   // row is skipped as the automatic delta base and the next round is full. `0`
   // restores the pre-fix reading (the reader is `!== "0"`, so the default is on).
   flag("LENS_INCOMPLETE_FULL", true),
+  // #2261 — the large-diff arm of the lens review: reads a base+head range up to
+  // REVIEW_DIFF_READ_MAX_BYTES and bound every lens prompt instead of inlining
+  // the whole diff. `0` is the only off value and restores the pre-#2261 shape
+  // byte-for-byte (1 MiB reads that failed unnamed, unbounded prompts).
+  flag("LENS_LARGE_DIFF", true),
   // Unset or 0: no bound on concurrent lens children per model.
   int("LENS_MODEL_CONCURRENCY", null),
   // The reader's default is the driver's MAX_REVIEW_ROUNDS (lens-round-cap.ts);

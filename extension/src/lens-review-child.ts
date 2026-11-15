@@ -14,6 +14,8 @@ import type { Writable } from "node:stream";
 import { childHandles, registerChildHandle } from "./async-jobs-registry.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import { extractFindings } from "./lens-findings-extract.ts";
+import { isProviderContextLengthFailure } from "./lens-provider-cause.ts";
+import { failedLensRow } from "./lens-review-child-failure.ts";
 import { lensPromptFor } from "./lens-review-format.ts";
 import { NO_TEXT_PLACEHOLDER } from "./lens-review-incomplete.ts";
 import { LENS_REPORTER_PATH, type LensDef } from "./lens-review.ts";
@@ -54,6 +56,13 @@ export async function runLensChild(opts: {
     evidence?: string;
     /** #1105 — the branch's prior-findings DATA block (lens-residuals.ts). */
     priorFindings?: string;
+    /** #2261 — the ref range the review computed `diff` from. The bounded prompt
+     * prints the command that re-reads the cut part of the diff from it, so the
+     * lens can read an omitted file with its read-only tools. */
+    diffRange?: { base: string; head: string };
+    /** #2261 — the delta arm's full-branch orientation block, which shares the
+     * prompt's ONE budget with the diff. */
+    fullContext?: string;
   };
   bumpBatch: () => void;
   /** #799 — the parent pi for the slow-run watch's PM notice (the driver
@@ -171,6 +180,8 @@ export async function runLensChild(opts: {
     runOpts.priorFindings,
     skillPath,
     skill.wrapped,
+    runOpts.diffRange,
+    runOpts.fullContext,
   );
   const boundMs = runOpts.childBoundMs ?? lensChildBoundMs();
   // #2127 — the advisory turn ceiling, computed HERE from the very diff string
@@ -332,6 +343,12 @@ export async function runLensChild(opts: {
       // #1827 — nor a lens ended for re-reading its skill file: the retry
       // would reload the same SKILL.md and re-read it, the exact shape the cap
       // exists to stop.
+      // #2261 — nor a lens the PROVIDER refused for its prompt size: an HTTP 400
+      // "maximum context length" is deterministic in the prompt, so three more
+      // attempts spent the same refusal (measured: 12 children, ~15 minutes, and
+      // ~4 M input tokens charged for nothing) and the review still returned
+      // REVIEW_INCOMPLETE. The retry loop exists for transient causes; this one
+      // is not transient and does not get a budget spent on it.
       if (
         result &&
         (result.killCause === "loop" ||
@@ -339,6 +356,26 @@ export async function runLensChild(opts: {
           result.killCause === "child-bound" ||
           result.killCause === "review-skill-reread")
       ) {
+        break;
+      }
+      // ── #2261: a provider refusal of THIS prompt for its size joins the
+      // never-retried classes above. Three conditions, and none is the child's
+      // prose. The lens prompt orders the reviewer to quote the diff, so `text`
+      // can carry diff-authored bytes — a fixture line reading `"400 status
+      // code"` would otherwise cost a transient lane three of its four attempts
+      // and blame the prompt size. So:
+      //   - `errorStop` — the provider really refused the REQUEST (the spawn layer
+      //     fills it from the final assistant message's `errorMessage`); and
+      //   - the refusal carries an HTTP 400, the status for a request refused on
+      //     its shape. Without the status the loop cannot tell a refusal of the
+      //     prompt from a refusal of the minute, because a 429 says "too many
+      //     tokens" in the same words; and
+      //   - its unambiguous size wording says the PROMPT was too large, with no
+      //     rate/quota wording anywhere in the body. A 400 whose body says the
+      //     metered plan is exhausted is a rate refusal that a retry DOES clear,
+      //     so neither the status code alone nor the token vocabulary alone ever
+      //     breaks the loop.
+      if (result && isProviderContextLengthFailure(result)) {
         break;
       }
       // Backoff before next retry (skipped on last attempt to keep total
@@ -398,65 +435,22 @@ export async function runLensChild(opts: {
   // here would make a stopped reviewer's narration count as a preserved
   // partial review, which is the #966 shape this guard exists to refuse.
   if (!result || !result.ok) {
-    // #534 — a failed lens still flushes usage from whatever turns
-    // completed before it died; count it like any other dispatch-failed.
+    // #534 — a failed lens still flushes usage from whatever turns completed
+    // before it died; count it like any other dispatch-failed. The row itself —
+    // what it kept, whether the lane counts as unreviewed, and the reason the
+    // operator reads — is `lens-review-child-failure.ts`'s judgement, not this
+    // loop's: the classes it separates (bound-ended, provider-refused,
+    // cap-killed-with-a-partial-review, silent) all arrive here as `!ok`.
     const findings = result ? extractFindings(result.toolUses, lens.name).findings : [];
-    const summary = result?.text?.trim() || undefined;
-    const capKill =
-      result?.killCause === "loop" ||
-      result?.killCause === "token-budget" ||
-      // #1827 — `review-skill-reread` belongs in THIS class, not the timeout /
-      // abort class below: it fires only in a child that was actively working
-      // (it opened its own SKILL.md too many times), so its prose is the same
-      // partial review a loop kill preserves.
-      result?.killCause === "review-skill-reread";
-    // #966 — one source for the placeholder: NO_TEXT_PLACEHOLDER
-    // (lens-review-incomplete.ts, where `collapseEvents` declares it).
-    const textIsReviewOutput =
-      !!summary && summary !== NO_TEXT_PLACEHOLDER && (result?.thinkingOnly === true || capKill);
-    const hasEvidence = findings.length > 0 || (!!summary && textIsReviewOutput);
-    // #1564 — a lens ended at its run bound never gave a verdict: its lane is
-    // not reviewed (blocked → REVIEW_INCOMPLETE) even when it reported some
-    // findings first, which are kept.
-    //
-    // #1827 — a lens ended for re-reading its skill file is NOT in that
-    // class. The re-read cap stops a child that was working (it had the
-    // skill loaded N+1 times, so it demonstrably had it); whatever findings
-    // or closing summary it produced before the kill stand as its review,
-    // exactly like a loop/token-budget cap kill (#952), and the lane is not
-    // incomplete because of it. Only a re-read-killed lens with NO evidence
-    // is blocked, which is the same rule as any other failed lens.
-    const bounded = result?.killCause === "child-bound";
-    return {
+    return failedLensRow({
       lens: lens.name,
-      ok: false,
-      ms: result?.ms ?? 0,
-      startMs,
-      findings: hasEvidence ? findings : [],
+      result,
       attempts,
-      blocked: !hasEvidence || bounded,
-      parseError: bounded
-        ? `not reviewed — no verdict within its ${Math.max(1, Math.round(boundMs / 60_000))}-min lens bound (PI_ENSEMBLE_LENS_BOUND_MS, never past the review budget); ended, not retried`
-        : hasEvidence
-          ? undefined
-          : (lastError ?? "unknown failure"),
-      summary: hasEvidence ? summary : undefined,
-      usage: result?.usage,
-      // #2040 — the calls this child made travel with its findings: a HIGH's
-      // reproduction is checked against THIS child, and a row that keeps none
-      // reads as a child that ran nothing.
-      toolUses: result?.toolUses ?? [],
-      ...(result?.toolResults ? { toolResults: result.toolResults } : {}),
-      ...(hasEvidence && result ? { model: result.model } : {}),
-      ...(hasEvidence && result?.transcriptPath ? { transcriptPath: result.transcriptPath } : {}),
-      ...(result?.killCause ? { killCause: result.killCause } : {}),
-      ...(result?.killCause === "loop" && result.loopEvidence
-        ? { loopEvidence: result.loopEvidence }
-        : {}),
-      ...(result?.killCause === "token-budget" && result.tokenBudget
-        ? { tokenBudget: result.tokenBudget }
-        : {}),
-    };
+      findings,
+      startMs,
+      boundMs,
+      lastError,
+    });
   }
 
   const { findings, skipped } = extractFindings(result.toolUses, lens.name);
