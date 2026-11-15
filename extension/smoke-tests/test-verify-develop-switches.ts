@@ -133,6 +133,8 @@ function assert(cond: boolean, msg: string): void {
 interface Drive {
   failures: string[];
   notes: string[];
+  /** Filled only by a run that executed the provenance gate and disclosed something. */
+  disclosures: unknown[];
 }
 
 /** Set or unset one switch for one arm, and restore it exactly.
@@ -165,8 +167,11 @@ const COMMAND_CRITERIA_ENV = "PI_ENSEMBLE_VERIFY_COMMAND_CRITERIA";
 async function driveProvenance(f: ProvenanceFixture): Promise<Drive> {
   const failures: string[] = [];
   const notes: string[] = [];
-  await verifyDevelopOutcome(f.ctxFor(), f.stateFor(), f.execFn, failures, notes, {});
-  return { failures, notes };
+  const sink = { disclosures: [] as unknown[] };
+  await verifyDevelopOutcome(f.ctxFor(), f.stateFor(), f.execFn, failures, notes, {
+    provenanceDisclosures: sink,
+  });
+  return { failures, notes, disclosures: sink.disclosures };
 }
 
 async function driveCriteria(f: ProvenanceFixture, artifact: string): Promise<Drive> {
@@ -180,7 +185,7 @@ async function driveCriteria(f: ProvenanceFixture, artifact: string): Promise<Dr
     notes,
     {},
   );
-  return { failures, notes };
+  return { failures, notes, disclosures: [] };
 }
 
 async function rm(f: ProvenanceFixture): Promise<void> {
@@ -253,11 +258,35 @@ await withSwitch(PROVENANCE_ENV, "off", async () => {
     judged.failures.some((f) => f.includes(PROVENANCE_FAILURE_PREFIX)) === false,
     `a record whose source exists passes (got: ${judged.failures.join(" | ")})`,
   );
+  // The exact row, count included — not the prefix. A prefix match also passes on
+  // `judged 0 provenance token(s)`, which is a note claiming an executed pass over a corpus
+  // the gate never probed, so the number is the assertion here.
+  const JUDGED_1 = `${PROVENANCE_CHECKED_NOTE} 1 provenance token(s) in workstream "a" against its pinned commit`;
   assert(
-    judged.notes.some((n) => n.startsWith(PROVENANCE_CHECKED_NOTE)) === true,
-    `and the run records what it judged — a green that named its corpus (got: ${judged.notes.filter((n) => n.includes("provenance")).join(" | ")})`,
+    judged.notes.some((n) => n === JUDGED_1) === true,
+    `and the run records exactly what it judged — a green that named its corpus (got: ${judged.notes.filter((n) => n.includes("provenance")).join(" | ")})`,
   );
   await rm(clean);
+
+  // The negative arm of the same invariant: a workstream whose added data file the gate
+  // could not read judged NOTHING, so no `judged N` row may print at all — not `judged 0`.
+  const unjudged = await makeProvenanceFixture({
+    issue: 2283,
+    developFiles: {
+      "src/quota.ts": "export const quota = 1;\n",
+      "runs/broken.json": "{ this is not json",
+    },
+  });
+  const unjudgedRun = await driveProvenance(unjudged);
+  assert(
+    unjudgedRun.disclosures.length === 1,
+    `the unparsable file was disclosed rather than skipped (got: ${JSON.stringify(unjudgedRun.disclosures)})`,
+  );
+  assert(
+    unjudgedRun.notes.some((n) => n.startsWith(PROVENANCE_CHECKED_NOTE)) === false,
+    `a run that probed nothing never prints the executed-pass note, not even as \`judged 0\` (got: ${unjudgedRun.notes.filter((n) => n.includes("provenance")).join(" | ")})`,
+  );
+  await rm(unjudged);
 }
 
 // ── the command-criteria switch ────────────────────────────────────────────────────────────

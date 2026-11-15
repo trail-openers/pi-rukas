@@ -30,7 +30,10 @@ import {
   provenanceDisclosureSectionOf,
   runProvenanceGate,
   verifyProvenanceEnabled,
+  type ProvenanceDisclosure,
 } from "../src/work-driver-verify-develop-provenance.ts";
+import { recordDevelopGateEvents } from "../src/work-driver-verify-events.ts";
+import { verifyStepOutcome } from "../src/work-driver-verify-pr17.ts";
 import { verifyDevelopOutcome } from "../src/work-driver-verify-develop.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import {
@@ -355,6 +358,38 @@ const RECORD = renderRecord(FIELD_RECORD_ROWS, ABS);
   await rm(f);
 }
 
+// ── 12b. a backslash token is PROBED, not disclosed — where the command tier would refuse it ─
+{
+  // `\` is a legal byte in a git path, and this gate only ever asks git for the token as an
+  // argv element (`git ls-tree --literal-pathspecs … -- <token>`), never a shell. The
+  // command-criteria tier refuses a backslash `command` because that tier hands text to a
+  // runner; copying that refusal here would disclose a real committed file as host
+  // provenance the build "could not see". So the classifier's backslash arm is load-
+  // bearing, and both directions are pinned: the same token is judged absent when git
+  // has no such entry and passes when it does, differing only by the file's existence.
+  const TOKEN = "data/w\\ird.json";
+  const record = JSON.stringify({ source: TOKEN }, null, 2);
+  const red = await makeFixture({ "runs/weird.json": record });
+  const redRun = await drive(red);
+  assert(
+    provenanceFailures(redRun.failures).some((x) => x.includes("w\\ird.json")) === true &&
+      redRun.disclosures.length === 0,
+    `a backslash token is JUDGED absent, not disclosed as unverifiable (failures: ${provenanceFailures(redRun.failures).join(" | ")}; disclosures: ${JSON.stringify(redRun.disclosures)})`,
+  );
+  await rm(red);
+
+  const green = await makeFixture({
+    "runs/weird.json": record,
+    [TOKEN]: '{"ok":true}\n',
+  });
+  const greenRun = await drive(green);
+  assert(
+    provenanceFailures(greenRun.failures).length === 0 && greenRun.disclosures.length === 0,
+    `the same token passes when the backslash-named file really is in the commit — so the red above is git's answer, not a classifier that refused to ask (failures: ${provenanceFailures(greenRun.failures).join(" | ")}; disclosures: ${JSON.stringify(greenRun.disclosures)})`,
+  );
+  await rm(green);
+}
+
 // ── 13. the gate's own bounds are honoured: a corpus past the ceiling is disclosed ─────────
 {
   const rows = Array.from({ length: 300 }, (_, i) => ({ source: `rows/absent-${String(i)}.json` }));
@@ -421,7 +456,73 @@ const RECORD = renderRecord(FIELD_RECORD_ROWS, ABS);
   await rm(f);
 }
 
-// ── 15. the switch's truth table, read at call time ────────────────────────────────────────
+// ── 16. the disclosure hand-off: gate → gate result → state → PR-body section ─────────────
+//
+// Three separate wirings, none of them visible from the sink-level cases above: the gate
+// result must carry this run's disclosures, the state fold must put them on
+// `pipelineState`, and the section builder must render the rows a reviewer reads. Dropping
+// any one leaves every sink assertion green while the PR body says nothing.
+{
+  // None of the sink-level cases above can see this chain: they read the sink the test
+  // handed in, not the state the driver persists and the PR-body builders read.
+  const f = await makeFixture({
+    "runs/hostile.json": JSON.stringify(
+      { rows: [{ source: "/etc/passwd" }, { source: "https://example.invalid/r.ndjson" }] },
+      null,
+      2,
+    ),
+  });
+  const step = await verifyStepOutcome(f.ctxFor({ withEmitSink: true }), f.stateFor(), "develop");
+  assert(
+    step.provenanceDisclosures !== undefined && step.provenanceDisclosures.length === 2,
+    `the gate result carries this run's disclosures (got: ${JSON.stringify(step.provenanceDisclosures)})`,
+  );
+  const recorded = recordDevelopGateEvents(f.stateFor(), step);
+  const rows = recorded.pipelineState.provenanceDisclosures;
+  assert(
+    rows !== undefined && rows.length === 2,
+    `and the state fold puts them on pipelineState — the field both PR-body builders read (got: ${JSON.stringify(rows)})`,
+  );
+  const section = provenanceDisclosureSectionOf(rows);
+  assert(
+    section.includes("## Data provenance") &&
+      section.includes("/etc/passwd") &&
+      section.includes("https://example.invalid/r.ndjson"),
+    `so the PR body actually carries the rows rather than an absent section (got: ${JSON.stringify(section)})`,
+  );
+  // The paired negative: a run that disclosed nothing returns no field, so an empty array
+  // never reaches the state, and the fold leaves an earlier round's rows alone rather than
+  // clearing them — the two halves of "absent is not this round's answer".
+  const quiet = await makeFixture({ "src/quota.ts": "export const quota = 1;\n" });
+  const quietStep = await verifyStepOutcome(
+    quiet.ctxFor({ withEmitSink: true }),
+    quiet.stateFor(),
+    "develop",
+  );
+  assert(
+    quietStep.provenanceDisclosures === undefined,
+    `a run that disclosed nothing returns no field rather than an empty array (got: ${JSON.stringify(quietStep.provenanceDisclosures)})`,
+  );
+  const carried = recordDevelopGateEvents(
+    {
+      ...quiet.stateFor(),
+      pipelineState: {
+        ...quiet.stateFor().pipelineState,
+        provenanceDisclosures: [{ file: "earlier.json", reason: "from a previous round" }],
+      },
+    },
+    quietStep,
+  );
+  assert(
+    (carried.pipelineState.provenanceDisclosures ?? []).length === 1 &&
+      carried.pipelineState.provenanceDisclosures?.[0]?.file === "earlier.json",
+    `and the fold leaves an earlier round's rows untouched rather than clearing them (got: ${JSON.stringify(carried.pipelineState.provenanceDisclosures)})`,
+  );
+  await rm(quiet);
+  await rm(f);
+}
+
+// ── 17. the switch's truth table, read at call time ───────────────────────────────────────
 {
   const cases: [string | undefined, boolean][] = [
     [undefined, true],

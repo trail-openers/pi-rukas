@@ -74,6 +74,19 @@ const CHAIN_SKIPPED_NOTE = "no verify command discoverable";
  * the same sentence as "ran everything". */
 const CRITERIA_RAN_NOTE = "command criteria: 1 of 1 command criteria run, none failed";
 
+/** One workstream's no-effective-base row, asserted verbatim where it is produced — at the
+ * gate, not in the per-worktree pass — so a note that stopped saying which worktree it
+ * declined would be caught. The primary workstream's id is `a`. */
+const NO_BASE_NOTE = 'command criteria: NOT CHECKED (no effective base for workstream "a")';
+
+/** The same row for the second workstream, which is what the no-base arm has to name when
+ * a cycle's base is unreadable and there is more than one worktree to decline. */
+const NO_BASE_NOTE_FOR_B = 'command criteria: NOT CHECKED (no effective base for workstream "b")';
+
+/** The multi-issue refusal, asserted verbatim for the same reason. */
+const MULTI_ISSUE_NOTE =
+  "command criteria: NOT CHECKED (a multi-issue cycle has no single spec to judge)";
+
 interface Run {
   failures: string[];
   notes: string[];
@@ -104,6 +117,22 @@ async function run(opts: {
    * OID before the runs and a different one after them. The drift the ordering check exists
    * for — and the arm that decides whether a red survives. */
   moveHeadDuringRun?: boolean;
+  /** More than one entry marks the cycle grouped, which the tier refuses to judge: the
+   * cached artifact holds the PRIMARY issue's body, so a sibling's criteria are not in the
+   * text it reads. */
+  issues?: number[];
+  /** The workstream's effective base for EVERY workstream. An invalid sha is how the
+   * no-base note arm is reached — `effectiveBaseFor` answers undefined and the tier
+   * declines the worktree rather than guessing a ref to judge it against. */
+  baseSha?: string;
+  /** An invalid sha for ONE workstream: `workstreamBaseShas` is read per id and falls back
+   * to the cycle base unless the entry is a valid sha, so this is the driver's own shape
+   * for a workstream whose base could not be resolved. */
+  baseShaFor?: Record<string, string>;
+  /** Drive more than one workstream, one per id. Each worktree is the develop child's own
+   * (the fixture creates one), so a two-workstream arm sees the criteria run twice — which
+   * is what makes the note's counts a statement about one workstream and not the cycle. */
+  workstreams?: string[];
 }): Promise<Run> {
   const f = await makeProvenanceFixture({
     issue: 2283,
@@ -132,6 +161,7 @@ async function run(opts: {
     verifyCommand: opts.verifyCmd ?? "",
     // Lets the executor recognise the tier's argv-form runner call and fire the drift hook.
     runnerTemplate: opts.workJson === null ? undefined : RUNNER_TEMPLATE,
+    ...(opts.workstreams === undefined ? {} : { extraWorkstreams: opts.workstreams }),
     ...(opts.moveHeadDuringRun === undefined
       ? {}
       : {
@@ -145,7 +175,28 @@ async function run(opts: {
   const notes: string[] = [];
   await verifyDevelopOutcome(
     f.ctxFor(),
-    f.stateFor(artifact === undefined ? {} : { issueBodyArtifact: artifact }),
+    f.stateFor(
+      {
+        ...(artifact === undefined ? {} : { issueBodyArtifact: artifact }),
+        ...(opts.workstreams === undefined
+          ? {}
+          : {
+              workstreams: Object.fromEntries(
+                opts.workstreams.map((id) => [
+                  id,
+                  { id, scope: `workstream ${id}`, paths: [], outOfScope: [] },
+                ]),
+              ),
+            }),
+        ...(opts.baseShaFor === undefined
+          ? {}
+          : { workstreamBaseShas: opts.baseShaFor }),
+      },
+      {
+        ...(opts.issues === undefined ? {} : { issues: opts.issues }),
+        ...(opts.baseSha === undefined ? {} : { baseSha: opts.baseSha }),
+      },
+    ),
     f.execFn,
     failures,
     notes,
@@ -215,8 +266,11 @@ const cleanup = async (r: Run): Promise<void> => {
     r.notes.some((n) => n.includes(CHAIN_SKIPPED_NOTE)) === true,
     `the verify-command chain really was skipped — no discoverable command in this arm (got: ${r.notes.filter((n) => n.includes("verify command")).join(" | ")})`,
   );
+  // The note is matched as a WHOLE row, counts and all. A substring match on "command
+  // criteria" is satisfied by a NOT CHECKED row or a not-runnable row, and a `0 of 1` row
+  // reads the same to a substring test as `1 of 1`.
   assert(
-    r.notes.some((n) => n.includes(CRITERIA_RAN_NOTE)) === true,
+    r.notes.some((n) => n === CRITERIA_RAN_NOTE) === true,
     `and the criteria ran ANYWAY, which is the whole point of wiring them beside the ratchet gates rather than inside the chain (got: ${r.notes.join(" | ")})`,
   );
   await cleanup(r);
@@ -336,16 +390,96 @@ const cleanup = async (r: Run): Promise<void> => {
     `not-runnable: a refused criterion never fails the step (failures: ${r.failures.join(" | ")})`,
   );
   assert(
-    r.notes.some((n) => n.includes("criterion AC9 not run")) === true,
-    `not-runnable: the refusal is DISCLOSED per criterion, with its reason (got: ${r.notes.filter((n) => n.includes("AC9")).join(" | ")})`,
+    r.notes.some((n) => n.includes("criterion AC9 not run")) === true &&
+      // The whole row, and only the one row: these two are the tier's only channel for a
+      // criterion it declined, so a wiring that pushed them into `failures` (making a spec
+      // defect red) or dropped them (hiding it) has to be visible from here.
+      r.notes.filter((n) => n.includes("criterion AC9 not run")).length === 1 &&
+      r.failures.some((f) => f.includes("AC9")) === false,
+    `not-runnable: the refusal is DISCLOSED as exactly one note per criterion, with its reason and never as a failure (notes: ${r.notes.filter((n) => n.includes("AC9")).join(" | ")}; failures: ${r.failures.join(" | ")})`,
   );
   assert(
-    r.notes.some((n) =>
-      n.includes("command criteria: 1 of 2 command criteria run, none failed"),
-    ) === true,
-    "and the runnable criterion beside it still ran, so a refusal cannot hide a pass or a red (the note counts 1 of 2)",
+    r.notes.some((n) => n === "command criteria: 1 of 2 command criteria run, none failed"),
+    "and the runnable criterion beside it still ran, so a refusal cannot hide a pass or a red (the note counts 1 of 2, matched as a whole row)",
   );
   await cleanup(r);
+}
+
+// ── 5b. the gate's own refusals: a multi-issue cycle, and a workstream with no base ───────
+{
+  // Both rows are emitted by `runCommandCriteriaGate`, below the per-worktree pass, and
+  // both are the difference between "the tier judged and was unclear" and "the tier
+  // declined to judge at all". The first is the arm that can produce a false verdict — a
+  // grouped cycle judged against the PRIMARY issue's cached artifact would report a verdict
+  // on a contract no sibling agreed to — so its absence is asserted as well as its presence.
+  const grouped = await run({ criteria: [GREEN_CRITERION], issues: [2283, 2284] });
+  assert(
+    grouped.notes.some((n) => n === MULTI_ISSUE_NOTE) === true,
+    `multi-issue: the tier refuses rather than judging every workstream against the primary's spec (got: ${grouped.notes.filter((n) => n.includes(COMMAND_CRITERIA_PREFIX)).join(" | ")})`,
+  );
+  assert(
+    grouped.notes.some((n) => n === CRITERIA_RAN_NOTE) === false &&
+      grouped.mine.length === 0,
+    `multi-issue: and it runs nothing — no executed-pass note, no criteria failure (notes: ${grouped.notes.filter((n) => n.includes(COMMAND_CRITERIA_PREFIX)).join(" | ")}; failures: ${grouped.mine.join(" | ")})`,
+  );
+  await cleanup(grouped);
+
+  // The reverse, so the arm cannot be inverted into a refusal that swallows every cycle.
+  const single = await run({ criteria: [GREEN_CRITERION], issues: [2283] });
+  assert(
+    single.notes.some((n) => n === MULTI_ISSUE_NOTE) === false &&
+      single.notes.some((n) => n === CRITERIA_RAN_NOTE) === true,
+    `single-issue (an explicit \`issues: [n]\`): the tier still judges — the guard keys on the count, not on the field being set (got: ${single.notes.filter((n) => n.includes(COMMAND_CRITERIA_PREFIX)).join(" | ")})`,
+  );
+  await cleanup(single);
+
+  // The no-base arm: `effectiveBaseFor` answers undefined for an unreadable base, and the
+  // tier names the workstream it declined rather than guessing a ref to judge it against.
+  const noBase = await run({ criteria: [GREEN_CRITERION], baseSha: "not-a-sha", workstreams: ["a", "b"] });
+  assert(
+    noBase.notes.some((n) => n === NO_BASE_NOTE) === true &&
+      // Both worktrees are declined, each by name: the row is a per-worktree answer, so a
+      // cycle-wide refusal that named only one workstream would hide the other from the
+      // reader (and from the operator deciding whether to re-run).
+      noBase.notes.some((n) => n === NO_BASE_NOTE_FOR_B) === true &&
+      noBase.notes.some((n) => n === CRITERIA_RAN_NOTE) === false,
+    `no base: every workstream is named in its own could-not-tell row, and no criterion claims to have run against a base nobody resolved (got: ${noBase.notes.filter((n) => n.includes(COMMAND_CRITERIA_PREFIX)).join(" | ")})`,
+  );
+  assert(
+    noBase.mine.length === 0,
+    `no base: a missing base is never a criteria failure (got: ${noBase.mine.join(" | ")})`,
+  );
+  await cleanup(noBase);
+
+  // And the per-worktree loop keeps judging past a refusal: `a` has a base and runs, `b`
+  // has none and is declined. A gate that returned on the first missing base (or let one
+  // workstream's note swallow the cycle) prints no executed row at all, and a reader could
+  // not tell "the tier declined here and judged there" from "nothing ran this round".
+  const mixed = await run({ criteria: [GREEN_CRITERION], workstreams: ["a", "b"] });
+  assert(
+    mixed.notes.filter((n) => n === CRITERIA_RAN_NOTE).length === 2 && mixed.mine.length === 0,
+    `two workstreams: each is judged on its own, so the executed-pass row appears once per worktree (got ${String(mixed.notes.filter((n) => n === CRITERIA_RAN_NOTE).length)}: ${mixed.notes.filter((n) => n.includes(COMMAND_CRITERIA_PREFIX)).join(" | ")})`,
+  );
+  await cleanup(mixed);
+
+  // The sibling arm of the no-base row, and the one that keeps the guard honest: a
+  // workstream whose per-workstream base entry is not a valid sha is NOT the missing-base
+  // case — `effectiveBaseFor` falls back to the cycle base whenever that entry is invalid,
+  // so `b` keeps being judged and gets no refusal row. A wiring that read an invalid entry
+  // as "no base" would decline every workstream a dependent cycle has (`workstreamBaseShas`
+  // is written for dependents at #679), which is a false green across the board.
+  const oneBadBase = await run({
+    criteria: [GREEN_CRITERION],
+    workstreams: ["a", "b"],
+    baseShaFor: { b: "not-a-sha" },
+  });
+  assert(
+    oneBadBase.notes.filter((n) => n.includes("no effective base")).length === 0 &&
+      oneBadBase.notes.filter((n) => n === CRITERIA_RAN_NOTE).length === 2 &&
+      oneBadBase.mine.length === 0,
+    `an unresolvable per-workstream base falls back to the cycle base and is still judged — no refusal row, and each worktree gets its own executed row (got: ${oneBadBase.notes.filter((n) => n.includes(COMMAND_CRITERIA_PREFIX)).join(" | ")})`,
+  );
+  await cleanup(oneBadBase);
 }
 
 // ── 6. a criterion whose file changed since base is not-runnable, not red ──────────────────

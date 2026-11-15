@@ -20,6 +20,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { createEmitSink } from "../../src/work-state-emit.ts";
 import type { DriverContext } from "../../src/work-driver-context.ts";
 import { initialState } from "../../src/workflow-state.ts";
 import { gitTestEnv } from "./git-test-env.ts";
@@ -99,8 +100,13 @@ export interface ProvenanceFixture {
   root: string;
   /** The clone the cycle runs in — `ctx.repoRoot`. */
   repo: string;
-  /** The develop child's worktree. */
+  /** The develop child's worktree, for the primary workstream `a`. */
   worktree: string;
+  /** Every worktree path by workstream id, for `stateFor`'s workstreams map. A case that
+   * drives more than one workstream asks for the extra ids up front; each is a second
+   * detached worktree at the base with the develop files committed, so a multi-workstream
+   * arm judges the same shape twice rather than one real and one empty. */
+  worktrees: Record<string, string>;
   baseSha: string;
   headSha: string;
   /** Write a file in the worktree and commit it. Returns nothing; the gate re-reads HEAD. */
@@ -108,15 +114,24 @@ export interface ProvenanceFixture {
   /** Commit a pre-staged change (write + `git add` + commit in one step). */
   commitAll(message: string): Promise<void>;
   execFn: NonNullable<DriverContext["verifyExecFn"]>;
-  /** The context and state the gate is driven with. `issue` is the case's own number. */
-  ctxFor(): DriverContext;
-  stateFor(extra?: {
-    issueBodyArtifact?: string;
-    workstreams?: Record<
-      string,
-      { id: string; scope: string; paths: string[]; outOfScope: string[] }
-    >;
-  }): ReturnType<typeof initialState>;
+  /** The context and state the gate is driven with. `issue` is the case's own number.
+   * `withEmitSink` swaps in the `emitSink` a whole-step drive needs (it is only read on
+   * the persist paths, so the gate-only cases leave it off). */
+  ctxFor(opts?: { withEmitSink?: boolean }): DriverContext;
+  stateFor(
+    extra?: {
+      issueBodyArtifact?: string;
+      /** A per-workstream base that is not a full sha is how the driver itself produces a
+       * workstream with no effective base — `effectiveBaseFor` falls back to the cycle base
+       * only when the entry IS a valid sha. */
+      workstreamBaseShas?: Record<string, string>;
+      workstreams?: Record<
+        string,
+        { id: string; scope: string; paths: string[]; outOfScope: string[] }
+      >;
+    },
+    opts?: { issues?: number[]; baseSha?: string },
+  ): ReturnType<typeof initialState>;
 }
 
 /**
@@ -141,6 +156,8 @@ export async function makeProvenanceFixture(opts: {
    * and a red verdict must. A throw is not swallowed: a case that cannot move the head has
    * to fail, not quietly run the static-head arm. */
   beforeVerify?: () => Promise<void> | void;
+  /** Extra workstream ids besides `a`, each with its own worktree at the base. */
+  extraWorkstreams?: string[];
 }): Promise<ProvenanceFixture> {
   const root = mkdtempSync(path.join(tmpdir(), `pi-prov-${String(opts.issue)}-`));
   // The scratch root is itself inside a git-tracked tree on some hosts (/tmp under a repo,
@@ -174,6 +191,25 @@ export async function makeProvenanceFixture(opts: {
   // commit is a no-op here, not a fixture failure.
   await git(worktree, ["commit", "-q", "-m", "develop"]).catch(() => undefined);
   const headSha = (await git(worktree, ["rev-parse", "HEAD"])).trim();
+  const worktrees: Record<string, string> = { a: worktree };
+  for (const id of opts.extraWorkstreams ?? []) {
+    // `id` is data, not a path: a workstream called `../x` would escape the scratch root
+    // and the `rm` cleanup would follow it. The driver's ids are `a`, `b`, … today; this
+    // is the same `normaliseRelPath` refusal the develop gate applies to every path it reads.
+    // `id` is data, not a path: a workstream called `../x` would escape the scratch root
+    // and the `rm` cleanup would follow it. The driver's ids are `a`, `b`, … today; this
+    // keeps a caller-supplied id from naming a directory outside the scratch root.
+    const safe = id.replace(/[^A-Za-z0-9._-]/g, "_");
+    // The primary's `a` already has its worktree (created above, and the one `commit`
+    // writes to), so it is skipped here rather than duplicated under a second path.
+    if (id === "a") continue;
+    const wt = path.join(root, ".worktrees", `issue-${String(opts.issue)}-ws-${safe}`);
+    await git(repo, ["worktree", "add", "-q", "--detach", wt, baseSha]);
+    for (const [rel, content] of Object.entries(opts.developFiles ?? {})) put(wt, rel, content);
+    await git(wt, ["add", "-A"]);
+    await git(wt, ["commit", "-q", "-m", `develop ${safe}`]).catch(() => undefined);
+    worktrees[id] = wt;
+  }
   const execFn = makeProvenanceExec(
     verifyCommand,
     async () => {
@@ -186,6 +222,7 @@ export async function makeProvenanceFixture(opts: {
     root,
     repo,
     worktree,
+    worktrees,
     baseSha,
     headSha,
     execFn,
@@ -198,26 +235,49 @@ export async function makeProvenanceFixture(opts: {
       await git(worktree, ["add", "-A"]);
       await git(worktree, ["commit", "-q", "-m", message]);
     },
-    ctxFor() {
+    ctxFor(callOpts) {
       return {
         host: { sendUserMessage: () => {} } as never,
         repoRoot: repo,
         issue: opts.issue,
         verifyExecFn: execFn,
+        ...(callOpts?.withEmitSink === undefined
+          ? {}
+          : {
+              // The shape `persistCycle` reads — a real sink built by `createEmitSink`,
+              // so a whole-step drive does not stub a field the code under test walks.
+              emitSink: createEmitSink(() => {}),
+            }),
       } as unknown as DriverContext;
     },
-    stateFor(extra) {
+    stateFor(extra, callOpts) {
       let s = initialState(opts.issue, 1_000_000);
+      // The worktree map is keyed on the ids the case declared, each resolved to its own
+      // detached worktree — with `a` as the one exception: the primary's tree is created
+      // before this map exists and is always present, so a case that declares `a` (every
+      // multi-workstream one does) must not silently re-point it at a second tree.
+      const ids = extra?.workstreams
+        ? Object.keys(extra.workstreams)
+        : Object.keys(worktrees).length > 0
+          ? Object.keys(worktrees)
+          : ["a"];
+      const treeFor = (id: string): string => worktrees[id] ?? worktree;
       s = {
         ...s,
+        ...(callOpts?.issues === undefined || callOpts.issues.length < 2
+          ? {}
+          : { issues: callOpts.issues }),
         pipelineState: {
           ...s.pipelineState,
           branchName: `feature/issue-${String(opts.issue)}`,
-          baseSha,
-          worktrees: { a: worktree },
+          baseSha: callOpts?.baseSha ?? baseSha,
+          worktrees: Object.fromEntries(ids.map((id) => [id, treeFor(id)])),
           workstreams: extra?.workstreams ?? {
             a: { id: "a", scope: "the work", paths: [], outOfScope: [] },
           },
+          ...(extra?.workstreamBaseShas === undefined
+            ? {}
+            : { workstreamBaseShas: extra.workstreamBaseShas }),
           ...(extra?.issueBodyArtifact === undefined
             ? {}
             : { issueBodyArtifact: extra.issueBodyArtifact }),

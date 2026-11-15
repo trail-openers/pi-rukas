@@ -474,4 +474,60 @@ async function refSaysAbsentForMissingRefInFreshRepo(): Promise<boolean> {
   );
 }
 
+// ── 5. the #2283 modules' argv shape, asserted on `argv` and not just on "no command string" ─
+//
+// The canary in part 1 proves a LISTED module passes no command string; it cannot prove the
+// argv it passes is the right one. For the provenance gate's committed-blob read that gap
+// mattered: `--end-of-options` is inert as written (the ref is always a full 40-hex sha, and
+// the path is glued to it as `<oid>:<file>`), so it is defence-in-depth against a future
+// caller that separates rev from path — and defence-in-depth nothing asserts is defence-
+// in-depth that goes away with the next refactor.
+{
+  const { checkWorktreeProvenance } = await import(
+    "../src/work-driver-verify-develop-provenance.ts"
+  );
+  const calls: { cmd: string; argv?: string[] }[] = [];
+  const recording = async (
+    cmd: string,
+    o?: { argv?: string[] },
+  ): Promise<{ stdout: string }> => {
+    calls.push({ cmd, argv: o?.argv });
+    const argv = o?.argv ?? [];
+    if (argv.includes("rev-parse")) return { stdout: `${"a".repeat(40)}\n` };
+    // The committed change-set read the gate shares with the protected-path check: a
+    // name-status stream whose single `A` record names the data file it will then read.
+    if (argv.includes("diff")) return { stdout: "A\u0000runs/gone.json\u0000" };
+    if (argv.includes("ls-tree")) return { stdout: "" }; // absent → one failure, no throw
+    return { stdout: '{"source":"runs/gone.json"}\n' };
+  };
+  await checkWorktreeProvenance({
+    execFn: recording as never,
+    cwd: "/repo",
+    base: "b".repeat(40),
+    id: "a",
+  });
+  const show = calls.find((c) => c.cmd === "git" && c.argv?.includes("show") === true);
+  assert(show !== undefined, "the provenance gate reads the added file through `git show`");
+  assert(
+    show?.argv?.includes("--end-of-options") === true,
+    `the committed-blob read pins the option boundary (argv: ${JSON.stringify(show?.argv)})`,
+  );
+  const shown = (show?.argv ?? []).some((a) => a.startsWith(`${"a".repeat(40)}:`));
+  assert(
+    shown === true,
+    `and reads at the OID it pinned, not a ref it would resolve later (argv: ${JSON.stringify(show?.argv)})`,
+  );
+  const probe = calls.find((c) => c.argv?.includes("ls-tree") === true);
+  assert(
+    probe?.argv?.includes("--end-of-options") === true &&
+      probe?.argv?.includes("--literal-pathspecs") === true,
+    `the token probe keeps its own pathspec boundary (argv: ${JSON.stringify(probe?.argv)})`,
+  );
+  const rendered = JSON.stringify(calls.map((c) => [c.cmd, c.argv?.join(" ")]));
+  assert(
+    calls.every((c) => c.cmd === "git") && calls.every((c) => c.argv !== undefined),
+    `every git read this module issues is argv form (got: ${rendered})`,
+  );
+}
+
 process.exit(exit);

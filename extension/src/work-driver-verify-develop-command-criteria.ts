@@ -41,6 +41,20 @@
  * The issue body comes from the driver's cached artifact through `readCachedBody`, never over
  * the network: a develop gate that called `gh issue view` would put a 60-second network read
  * on the critical path of every develop round and let a forge outage decide the verdict.
+ *
+ * Two decisions that read as gaps and are deliberate, both pinned by
+ * `test-work-driver-verify-command-criteria-classic.ts`:
+ *
+ *   - **A multi-issue cycle is not judged.** The cached artifact holds the PRIMARY issue's
+ *     body, so a grouped cycle's siblings' criteria are not in the text this tier reads.
+ *     `runCommandCriteriaGate` says so and runs nothing rather than handing every workstream
+ *     the primary's contract — a verdict on the wrong spec is worse than no verdict.
+ *   - **A criterion's `command` may contain a backslash where the command tier's own
+ *     `commandCriterionProblem` refuses one.** `\` is a legal byte in a git path, and this
+ *     tier only ever passes a `command` to `runTestFile` as an argv element, so a file
+ *     literally named `w\ird.test.ts` exists and runs. The refusal in
+ *     `lean/verify-commands.ts` belongs to a tier that hands text to a shell; copying it
+ *     here would disclose a real test as unroutable.
  */
 
 import { neutraliseMarkdownField } from "./comment-evidence.ts";
@@ -227,8 +241,13 @@ export async function runCommandCriteria(opts: {
   return { failures: [], notes, notRunnable, ran };
 }
 
-/** One could-not-tell row. Never a failure: see rule 4 in the module header. */
-function notChecked(why: string): string {
+/** One could-not-tell row. Never a failure: see rule 4 in the module header.
+ *
+ * Exported because the rows the gate emits below the per-worktree pass (a multi-issue
+ * cycle, a workstream with no base) are the same class of answer and must be assertable
+ * verbatim: a test that matched them loosely could not tell "the tier refused to judge"
+ * from "the tier judged and was unclear". */
+export function notChecked(why: string): string {
   return `${COMMAND_CRITERIA_PREFIX} NOT CHECKED (${neutraliseMarkdownField(why)})`;
 }
 

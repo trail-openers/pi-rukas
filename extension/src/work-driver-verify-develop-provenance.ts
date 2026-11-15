@@ -40,6 +40,7 @@
  * it — every git read here is argv form under the module's own named bounds.
  */
 
+import { neutraliseMarkdownField } from "./comment-evidence.ts";
 import { isFullCommitSha } from "./commit-sha.ts";
 import { readCommitOid } from "./git-oid-read.ts";
 import { existsInCommit } from "./lean/specify-path.ts";
@@ -147,7 +148,11 @@ export interface ProvenanceWorkstreamResult {
   failures: string[];
   notes: string[];
   disclosures: ProvenanceDisclosure[];
+  /** Probes actually asked of git — how a caller tells an executed pass from a pass that
+   * judged nothing. `judgedLabel` is the only place its sentence is written, so the count
+   * in the note cannot drift from the probes this run asked for. */
   judged: number;
+  judgedLabel: (workstreamId: string) => string;
 }
 
 /** The kinds of read a token probe can decline, kept distinct from "absent". */
@@ -291,6 +296,18 @@ export async function checkWorktreeProvenance(opts: {
   const failures: string[] = [];
   const notes: string[] = [];
   const disclosures: ProvenanceDisclosure[] = [];
+  // The one writer of the executed-pass sentence. `judged` is the probe count and this is
+  // the only place it is rendered, so a note claiming N probes is the same number the walk
+  // counted — there is no second literal for a refactor to buy a green on.
+  const judgedLabel = (workstreamId: string): string =>
+    `${String(result.judged)} provenance token(s) in workstream "${neutraliseMarkdownField(workstreamId)}" against its pinned commit`;
+  const result: ProvenanceWorkstreamResult = {
+    failures,
+    notes,
+    disclosures,
+    judged: 0,
+    judgedLabel,
+  };
   const pinned = await readCommitOid(execFn, cwd, "HEAD", {
     accept: isFullCommitSha,
     timeoutMs: PROVENANCE_GIT_TIMEOUT_MS,
@@ -300,7 +317,7 @@ export async function checkWorktreeProvenance(opts: {
     notes.push(
       `${PROVENANCE_NOTE_PREFIX} NOT CHECKED (head of worktree "${id}" could not be resolved to a full commit sha: ${display(pinned.problem)}) — absence was not judged`,
     );
-    return { failures, notes, disclosures, judged: 0 };
+    return result;
   }
   const oid = pinned.oid;
   const changed = await readCommittedProtectedPaths(execFn, cwd, base, oid, {
@@ -312,7 +329,7 @@ export async function checkWorktreeProvenance(opts: {
     notes.push(
       `${PROVENANCE_NOTE_PREFIX} NOT CHECKED (committed change set of worktree "${id}" is unreadable: ${display(changed.unreadable)})`,
     );
-    return { failures, notes, disclosures, judged: 0 };
+    return result;
   }
   // Added files only, per the binding scope ruling: the `A` records of the committed read,
   // plus a rename/copy whose DESTINATION is a data file git counts as added (`A`), since
@@ -378,7 +395,8 @@ export async function checkWorktreeProvenance(opts: {
       }
     }
   }
-  return { failures, notes, disclosures, judged };
+  result.judged = judged;
+  return result;
 }
 
 /**
@@ -418,10 +436,10 @@ export async function runProvenanceGate(opts: {
     notes.push(...result.notes);
     if (result.judged > 0) {
       // The executed-pass evidence: which worktree, how many probes. A run that judged
-      // nothing says nothing here, so "judged N" is never printed by a run that judged zero.
-      notes.push(
-        `${PROVENANCE_CHECKED_NOTE} ${String(result.judged)} provenance token(s) in workstream "${id}" against its pinned commit`,
-      );
+      // nothing says nothing here, so "judged N" is never printed by a run that judged zero
+      // — and the workstream is named BEFORE the count so a reader (and the test) sees the
+      // clause for the worktree whose probes these are.
+      notes.push(`${PROVENANCE_CHECKED_NOTE} ${result.judgedLabel(id)}`);
     }
     if (sink?.disclosures) sink.disclosures.push(...result.disclosures);
   }
