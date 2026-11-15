@@ -8,6 +8,14 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.84](https://github.com/trail-openers/pi-rukas/compare/v0.14.83...v0.14.84) (2026-11-15)
+
+
+### Bug Fixes
+
+* **review:** a large review diff is read and bounded, never a silent failure ([#2287](https://github.com/trail-openers/pi-rukas/issues/2287)) ([43856d8](https://github.com/trail-openers/pi-rukas/commit/43856d831495c26d16958aa7dcd8b731333eeca1))
+* **review:** an incomplete lens round no longer makes its head look reviewed ([#2278](https://github.com/trail-openers/pi-rukas/issues/2278)) ([6f81845](https://github.com/trail-openers/pi-rukas/commit/6f818453a2ed5db09bc0c50443ae2f6da6940059))
+
 ## [0.14.83](https://github.com/trail-openers/pi-rukas/compare/v0.14.82...v0.14.83) (2026-11-14)
 
 
