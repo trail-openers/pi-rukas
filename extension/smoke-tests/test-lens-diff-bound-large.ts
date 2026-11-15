@@ -1,29 +1,35 @@
 #!/usr/bin/env bun
 /**
- * #2261 (adversarial round 2, finding 1) — the file-count band where the NOTICE
- * becomes the larger half of the prompt, which is the only band the module's
- * central promise can break in.
+ * #2261 (adversarial round 3, finding 1) — the fallback notice keeps the command it
+ * points at.
  *
- * `lens-diff-bound.ts` states that the fenced block and the notice printed after
- * it TOGETHER never exceed the budget. Both halves move with the walk's cap: the
- * block grows with the files it affords, the notice grows with the files it has
- * to NAME. At a handful of files the block dominates and the sum has slack; from
- * roughly two thousand files up the notice dominates — measured, a 3 000-file
- * diff put 100 355 characters in the notice against a 19 661-character block —
- * and that is the band where the reserve `trimNote` keeps for its own
- * "…characters of the per-file inventory dropped…" sentence decides the outcome.
- * That reserve was fixed at 70 characters and the sentence renders ~105, so
- * re-assembling the note re-grew it past the room it had just been handed
- * (120 014–120 026 for a 3 000–4 250 file diff), and the block-gives fallback
- * beneath it could not fire because its room was computed from the oversized note
- * it had already accepted.
+ * `lens-diff-bound.ts` states that the fenced block and the notice printed after it
+ * TOGETHER never exceed the budget, and that the notice's actionable parts — the
+ * omitted-path list and the reread command — are never what a cut removes. Both
+ * halves move with the walk's cap: the block grows with the files it affords, the
+ * notice grows with the files it has to NAME. Below ~1 500 files the block dominates
+ * and the sum has slack; from roughly two thousand files up the notice dominates —
+ * measured, a 3 000-file diff put 100 355 characters in the notice against a
+ * 19 661-character block — and that is where `trimNote`'s reserve for its own
+ * "…characters of the per-file inventory dropped…" sentence decides the outcome. That
+ * reserve was fixed at 70 characters and the sentence renders ~105, so re-assembling
+ * the note re-grew it past the room it had just been handed (120 014–120 026 for a
+ * 3 000–4 250 file diff), and the block-gives fallback beneath it could not fire
+ * because its room came from the oversized note it had already accepted. The suites
+ * that shipped with that fix used 3-file fixtures and stayed green through it.
  *
- * The suites that shipped with the fix used 3-file fixtures and stayed green
- * through the whole defect — the walk reaches the budget before the note ever
- * needs trimming there. So the discriminating assertion is not just the sum: it
- * is the sum taken on a diff that PROVES it trimmed (the admission sentence is
- * present), with a margin below the bound, so a reserve shorter than the sentence
- * cannot pass by a hair.
+ * Round 3 found the other band: the arm of `trimNote` that fires when even the FIXED
+ * prose has no room. It head-cut the note — dropping its LAST line, the reread
+ * command, while the omitted-path line above it went on saying "read each one with
+ * the command below". A lens left holding paths it could name and no command to read
+ * them with. Cases (4) and (5) are that arm reached two ways, and both assert the arm
+ * precondition as well as the outcome: the shapes that reach the cut are narrow (see
+ * (4)), and a fixture that never reaches it passes for the wrong reason.
+ *
+ * The assertions are written as INVARIANTS rather than as the literal the module
+ * renders for a command, because the pre-fix module renders a shorter notice that
+ * also satisfies "it fits" — what has to be pinned is that the notice never keeps the
+ * promise and drops the thing promised.
  *
  * Driven straight at the module rather than through a child: this is a property of
  * the bound, and the end-to-end seam (`runLensReview` → the recorded `spec.prompt`)
@@ -47,14 +53,21 @@ function smallFileDiff(files: number, width = 40, fill = "x"): string {
   }).join("");
 }
 
-/** `sections` vendored-looking sections of `lines` lines each — none affordable whole. */
-function oversizedSections(sections: number, lines: number): string {
+/**
+ * `sections` vendored-looking sections of `lines` `width`-character lines each, under
+ * `dir`. With `width` around 200 no section is affordable whole, so the block becomes
+ * the line-boundary slice — see (4) for why that width, that line count and that
+ * directory depth are the shape that ALSO leaves the notice short enough to need the
+ * cut.
+ */
+function oversizedSections(sections: number, lines: number, width = 65, dir = "vendor"): string {
   return Array.from({ length: sections }, (_u, f) => {
     const body = Array.from(
       { length: lines },
-      (_x, i) => `line ${String(i)} of generated output for vendored file ${String(f)} padding`,
+      (_x, i) =>
+        `line ${String(i)} of generated output for vendored file ${String(f)} ${"p".repeat(width)}`,
     ).join("\n");
-    return `diff --git a/vendor/f${String(f)}.gen b/vendor/f${String(f)}.gen\nindex 1111111..2222222 100644\n--- /dev/null\n+++ b/vendor/f${String(f)}.gen\n@@ -0,0 +1,${String(lines)} @@\n${body}\n`;
+    return `diff --git a/${dir}/f${String(f)}.gen b/${dir}/f${String(f)}.gen\nindex 1111111..2222222 100644\n--- /dev/null\n+++ b/${dir}/f${String(f)}.gen\n@@ -0,0 +1,${String(lines)} @@\n${body}\n`;
   }).join("");
 }
 
@@ -104,7 +117,7 @@ const MEASURED_NOTE = 100_305;
 }
 
 // ── (2) the band itself, walked. The old suites' 3-file fixtures sit far below
-// this: below ~1 500 files the walk reaches the budget before the note needs
+// this: below ~1 500 files the walk reaches the budget before the note ever needs
 // trimming, which is exactly why the defect survived them.
 for (const files of [1800, 2100, 2500, 3000, 4000, 4250, 5000]) {
   const b = boundLensPromptDiff({ diff: smallFileDiff(files, 44), context: "CTX", range: RANGE });
@@ -120,6 +133,80 @@ for (const files of [1800, 2100, 2500, 3000, 4000, 4250, 5000]) {
   assert(
     b.note !== undefined && b.note.includes("f0.ts") && b.note.includes(`f${String(files - 1)}.ts`),
     `(2) ${String(files)} files: and every omitted path is named, first and last`,
+  );
+}
+
+// ── (4) the fallback arm's notice keeps the command it points at.
+//
+// The arm is the one whose block is a LINE-boundary slice — reached only when no whole
+// section fits the budget (a generated bundle, a lockfile, one vendored file bigger
+// than the whole bound). It is also the arm that leaves the notice with the least
+// room, because the slice is sized from a note measured BEFORE it is cut: when the
+// fixed prose no longer fits what the block left, `trimNote` head-cuts it.
+//
+// The discriminating shape was found by sweeping the arm and is narrow: ~200-character
+// section lines (long enough that no whole-file cap affords a section, short enough
+// that the notice stays small and the block still takes ~119 KB), a SHORT directory (a
+// deep one inflates the note until its fixed prose fits the room and the cut never
+// fires), and TWO sections (with one, the walk still gets its path named). A wider or
+// narrower line, a deeper directory, or three sections all leave the fixed prose
+// inside its room — hence the arm precondition asserted here, not assumed.
+{
+  const b = boundLensPromptDiff({
+    diff: oversizedSections(2, 800, 200),
+    context: "CTX",
+    range: RANGE,
+  });
+  const sum = b.diff.length + (b.note?.length ?? 0);
+  const note = b.note ?? "";
+  assert(
+    b.mode === "bounded" && note.includes("no single file fit this prompt's budget"),
+    `(4) precondition: this diff reaches the line-boundary fallback (mode ${b.mode}, block ${String(b.diff.length)}, note ${String(note.length)})`,
+  );
+  assert(
+    note.includes("read each one with the command"),
+    "(4) precondition: and the notice names its omitted paths and points at a command",
+  );
+  assert(
+    note.includes("git diff"),
+    `(4) where the notice points at a command, a command is actually printed (${String(note.length)} chars: ${note})`,
+  );
+  assert(
+    sum <= MAX_INLINE_DIFF_CHARS,
+    `(4) and block + notice still land inside the bound (${String(b.diff.length)} + ${String(note.length)} = ${String(sum)} <= ${String(MAX_INLINE_DIFF_CHARS)})`,
+  );
+}
+
+// ── (5) the same arm, reached through a wide NOTICE instead of a wide block.
+//
+// A long ref range makes the reread line itself enormous, so the fixed prose is the
+// larger half and the block has to give ~71 KB of itself before the pair fits
+// (measured pre-fix: 71 264 + 511 = 71 775 against the 120 000 bound — the pair fits,
+// and the notice that got there had lost the command). The notice still names both
+// omitted paths, so a command is still owed to the reader. A ref past 4 000 characters
+// is refused outright by `rereadCommand`, so this is the widest notice the module will
+// render at all.
+{
+  const b = boundLensPromptDiff({
+    diff: oversizedSections(2, 800, 200),
+    context: "CTX",
+    range: { base: `origin/${"release/".repeat(3_000)}`, head: "HEAD" },
+  });
+  const sum = b.diff.length + (b.note?.length ?? 0);
+  const note = b.note ?? "";
+  assert(
+    b.mode === "bounded" &&
+      note.includes("no single file fit this prompt's budget") &&
+      note.includes("read each one with the command"),
+    `(5) precondition: a wide notice and a wide block together reach the tight-budget trim (block ${String(b.diff.length)}, note ${String(note.length)})`,
+  );
+  assert(
+    note.includes("git diff"),
+    `(5) and a command is still printed for the paths the notice names (${String(note.length)} chars)`,
+  );
+  assert(
+    sum <= MAX_INLINE_DIFF_CHARS,
+    `(5) block + notice stay inside the bound at the widest notice (${String(b.diff.length)} + ${String(note.length)} = ${String(sum)} <= ${String(MAX_INLINE_DIFF_CHARS)})`,
   );
 }
 
