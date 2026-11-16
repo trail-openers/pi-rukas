@@ -154,8 +154,7 @@ export async function adversarialGate(
      * rather than left to re-litigate the whole branch.
      */
     blockingFindings?: string;
-    /** The executed acceptance table, threaded to the reviewer's brief.
-     * See `AdversarialArgs.acceptanceTable`. */
+    /** The executed acceptance table, threaded to the reviewer's brief. */
     acceptanceTable?: string;
     rows: DispatchUsageRow[];
     /** The step's armed budget: the reviewer's bound, abort and progress hook. */
@@ -267,8 +266,7 @@ export async function lensGate(
      * The lens seam itself takes no body — the context string is what the six
      * children read. */
     issueBody: string;
-    /** The executed acceptance table, appended to the lenses' brief by
-     * `lensContext`. See `LensArgs.acceptanceTable`. */
+    /** The executed acceptance table, appended to the lenses' brief by `lensContext`. */
     acceptanceTable?: string;
     /** The run's PR number, threaded to the review layer rather than re-derived. */
     pr: number | undefined;

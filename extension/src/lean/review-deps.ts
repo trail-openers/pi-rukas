@@ -260,10 +260,8 @@ function adversarialContext(
     blockingFindings === undefined || blockingFindings.trim() === ""
       ? ""
       : `\n\nKnown findings the fix was asked to answer (a finding here is not new; a CRITICAL you find in code the fix did not touch is):\n${fenceText(blockingFindings, 20_000)}`;
-  // The table is the step's own composed section, so it is appended whole rather
-  // than re-fenced: `renderAcceptanceSection` already disarmed both payloads with
-  // `fenceText` at its own cap. See `lensContext` for the same rule on the same
-  // value.
+  // The table is the step's own composed section, already fenced and bounded by
+  // `renderAcceptanceSection`, so it is appended whole and never re-fenced.
   const table =
     acceptanceTable === undefined || acceptanceTable.trim() === ""
       ? ""
@@ -310,9 +308,8 @@ export function lensContext(
     );
   const delta = extra.fixDelta?.trim();
   if (delta !== undefined && delta !== "") parts.push(delta);
-  // The acceptance table last: it is the step's own composed section, already
-  // disarmed and bounded by `renderAcceptanceSection`, so it is appended whole and
-  // never re-fenced. One renderer for the section means the six lenses, the
+  // The table last: the step's own composed section, already fenced and bounded, so
+  // it is appended whole and never re-fenced. One renderer means the six lenses, the
   // adversarial seat and the PR comment all read the same bytes.
   const table = extra.acceptanceTable?.trim();
   if (table !== undefined && table !== "") parts.push(table);

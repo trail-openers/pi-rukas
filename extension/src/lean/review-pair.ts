@@ -95,9 +95,8 @@ export async function buyFullReview(
     head: string;
     branch: string;
     issueBody: string;
-    /** The executed acceptance table, handed to BOTH children of the pair so the
-     * six lenses and the adversarial reviewer judge the diff against the same
-     * table. See `LensArgs.acceptanceTable`. */
+    /** The executed acceptance table, handed to BOTH children of the pair so the six
+     * lenses and the adversarial reviewer judge the diff against the same table. */
     acceptanceTable?: string;
     pr: number | undefined;
     threshold: Severity;

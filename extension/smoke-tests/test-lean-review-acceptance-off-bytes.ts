@@ -29,11 +29,7 @@ import { ADVERSARIAL_FINDING_RULE } from "../src/adversarial-prompts.ts";
 import { leanReviewAcceptanceEnabled } from "../src/lean/review-acceptance-switch.ts";
 import { renderSpecCriteriaSection } from "../src/lean/review-criteria.ts";
 import { fixPrompt, lensContext } from "../src/lean/review-deps.ts";
-import {
-  acceptanceRows,
-  renderAcceptanceSection,
-  renderAcceptanceTable,
-} from "../src/lean/review-acceptance.ts";
+import { renderAcceptanceSection } from "../src/lean/review-acceptance.ts";
 import {
   reviewIssueBlock,
   reviewCriteriaSection,
@@ -255,12 +251,10 @@ await withEnv({ PI_ENSEMBLE_LEAN_REVIEW_ACCEPTANCE: undefined }, async () => {
     ...log(),
   ];
   const wideBody = `x\n\n${renderPiSpec({ problem: "p", criteria: wideCriteria, size: "M" })}\n`;
-  // The width that reaches the fence: the renderer's own header and divider plus
-  // one line per row, measured through the module's own `renderAcceptanceTable`
-  // rather than a hand-written copy of a row layout (a copy of a private format is
-  // a fixture that drifts and then measures the wrong thing).
-  const tableWidth = renderAcceptanceTable(acceptanceRows(wideSteps, { criteria: wideCriteria }))
-    .length;
+  // The width that reaches the fence, measured through the rendered section rather than
+  // a hand-written copy of a row layout (a copy of a private format is a fixture that
+  // drifts and then measures the wrong thing).
+  const tableWidth = renderAcceptanceSection(wideSteps, wideBody).length;
   assert(
     tableWidth > CAP,
     `(3) the truncation arm's geometry: ${String(ROWS)} rows render ${String(tableWidth)} chars, which must pass the ${String(CAP)}-char table cap — under it the marker would never print and the two assertions below would prove nothing`,
