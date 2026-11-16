@@ -141,6 +141,14 @@ export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   // is what makes the object safe to ship on by default. Unset or any other value leaves
   // it in. The reader is `leanResultGatesEnabled` in lean/result-gates-switch.ts.
   flag("LEAN_RESULT_GATES", true),
+  // The executed acceptance table in front of the lean review seats and on the run's
+  // PR: each criterion, the frozen test the run recorded for it, and what the
+  // newest green `verify` reported for it at the certified head. `0` renders none
+  // of it — both reviewer briefs are byte-identical to the render before the table,
+  // no comment is posted, and the entry guard that refuses a head the gate never
+  // certified does not run. The reader is `leanReviewAcceptanceEnabled` in
+  // lean/review-acceptance-switch.ts.
+  flag("LEAN_REVIEW_ACCEPTANCE", true),
   // #2265 — open the review seats' criteria section with the spec's `problem`, so
   // a statement whose tail sits past the prose bound still reaches every seat.
   // `0` takes the statement out and leaves every brief byte-identical to the

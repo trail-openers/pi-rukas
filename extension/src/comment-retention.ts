@@ -97,9 +97,10 @@ async function readLinesAtRef(
   try {
     // `-z` ends the file name with a NUL, so a `:` inside a path cannot shift
     // the slice: `ref:file\0content` (or `file\0content` with no ref).
-    // argv (#1134): the ref and paths are never shell-parsed.
+    // argv (#1134): the ref and paths are never shell-parsed. No `--end-of-options`:
+    // git 2.43's `grep` reads it as a revision; `isSafeRef` already refuses a leading `-`.
     const { stdout } = await execFn("git", {
-      argv: ["grep", "-z", "-e", "", ...(ref ? ["--end-of-options", ref] : []), "--", ...paths],
+      argv: ["grep", "-z", "-e", "", ...(ref ? [ref] : []), "--", ...paths],
       cwd,
       timeout: timeoutMs,
       maxBuffer: 64 * 1024 * 1024,
