@@ -43,15 +43,13 @@ export interface LeanSeed {
 /**
  * The seed itself: the version stamp and the proven mainline sha.
  *
- * Never throws: a repo whose mainline cannot be resolved seeds `""`, and `ready`
- * refuses the run with the reason (`why`) it deserves — the seed runs before the
- * run exists, so a seed that threw would take the command down instead of letting
- * the issue be answered. The value is proven with the same `proveBaseSha` `ready`
- * applies — shape, peel and equality — so the record never carries a value that is
- * shaped like an oid but is not the commit the run was seeded with.
+ * Never throws: a repo whose mainline cannot be resolved seeds `""`, and `ready` refuses the run with the
+ * reason (`why`) it deserves — the seed runs before the run exists, so a seed that threw would take the command
+ * down instead of letting the issue be answered. The value is proven with the same `proveBaseSha` `ready`
+ * applies, so the record never carries a value that is shaped like an oid but is not the commit.
  *
- * The catch marks its seed `infra` and it is the only arm that can: every other
- * arm ANSWERS, and only a rejection means the clone could not be read.
+ * The catch marks its seed `infra` and it is the only arm that can: every other arm ANSWERS, and only a
+ * rejection means the clone could not be read.
  */
 export async function leanSeed(repoRoot: string): Promise<LeanSeed> {
   const version = leanVersion();
