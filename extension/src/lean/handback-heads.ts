@@ -9,9 +9,8 @@
  * never ran that re-verification. How it got there changes nothing about what origin holds.
  *
  * The undecided entry a crash left behind is not work the run did: it is the re-verification
- * that never happened. So the newest work step is the last step of a state the run was told
- * something by, which makes the same reading hold for a run whose process died between the
- * write-ahead and the outcome.
+ * that never happened, so the newest work step is the last step of a state the run was told
+ * something by.
  *
  * "We know a head we can ship" is a different claim from "the run once saw a gate", so the
  * newest DECIDED `verify` must be `green` and must name a head.
@@ -58,11 +57,8 @@ function newestDecidedWorkStep(steps: Step[]): { step: Step; at: number } | unde
  * The newest step of `state` sitting after `after`, whether or not it carried a verdict,
  * and WHERE it sits.
  *
- * What the code does: it scans backwards from the end of the log and returns the first entry
- * whose `state` matches, stopping at `after` — decided or undecided, since the undecided shape is
- * the answer the caller wants. It is not `newestDecidedThrough` restricted to one side of the
- * review: the rule needs every gate visit the review closed, and a visit with no verdict is the
- * one it must refuse to ship over.
+ * The undecided shape is the answer the caller wants: the rule needs every gate visit the
+ * review closed, and a visit with no verdict is the one it must refuse to ship over.
  */
 function newestStateStepAfter(
   steps: Step[],
@@ -107,8 +103,8 @@ export function handbackHeads(steps: Step[]): HandbackHeads {
   if (newestWork === undefined) return { applies: false };
   const newest = newestWork.step;
   if (newest?.state !== "review" || newest.outcome?.kind !== "fixed") return { applies: false };
-  // Anything the gate stepped into AFTER the review has to be looked at, verdict or
-  // no verdict, before any older green may speak for the head.
+  // Anything the gate stepped into AFTER the review has to be looked at, verdict or no
+  // verdict, before any older green may speak for the head.
   const trailing = newestStateStepAfter(steps, "verify", newestWork.at);
   if (trailing !== undefined && trailing.step.outcome === undefined)
     return {
@@ -121,9 +117,9 @@ export function handbackHeads(steps: Step[]): HandbackHeads {
       applies: true,
       reason: "no verify step of this run decided anything, so no head is verified",
     };
-  // The rule reads the gate's verdict from the position the review closes off; this is the arm
-  // that says the walk then SHIPS the green it stopped at — an inverted comparison here shows up
-  // only as a record that shipped nothing when it should have shipped the certified head.
+  // This is the arm that says the walk then SHIPS the green it stopped at — an inverted
+  // comparison here shows up only as a record that shipped nothing when it should have shipped
+  // the certified head.
   if (green.step.outcome?.kind !== "green")
     return {
       applies: true,
@@ -131,9 +127,8 @@ export function handbackHeads(steps: Step[]): HandbackHeads {
     };
   const head = green.step.outcome.verifiedHead;
   // The same rule `land.ts` and `ci.ts` apply to this field: a head is a full commit sha, and
-  // anything else is the green having named no head at all. The rewind would refuse a malformed
-  // one too, but by then the rule has committed to shipping a head and the answer the operator
-  // needs is the rule's own, not git's complaint about a refspec.
+  // anything else is the green having named no head at all. The answer the operator needs here
+  // is the rule's own, not git's complaint about a refspec.
   if (typeof head !== "string" || !isFullCommitSha(head))
     return {
       applies: true,
