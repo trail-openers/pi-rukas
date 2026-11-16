@@ -1,11 +1,10 @@
 /**
- * lean/provider-wait — how long lean sits out a transient provider fault before the ONE retry
- * it already has. A 502/503 burst hits every lane at once, so a retry dispatched AT ONCE lands
- * inside the same burst and spends the run's only retry; waiting the ladder `/work`'s step
- * router waits is what makes it count.
+ * lean/provider-wait — how long lean sits out a transient provider fault before the ONE retry it already
+ * has. A 502/503 burst hits every lane at once, so a retry dispatched AT ONCE lands inside the same burst and
+ * spends the run's only retry; waiting the ladder `/work`'s step router waits is what makes it count.
  *
- * Refusals: non-provider-class cause, `PI_ENSEMBLE_TRANSIENT_RETRY=0`, a deadline that cannot
- * fit the wait outside the handoff allowance.
+ * Refusals: non-provider-class cause, `PI_ENSEMBLE_TRANSIENT_RETRY=0`, a deadline that cannot fit the wait
+ * outside the handoff allowance.
  */
 
 import { abortableSleep } from "../dispatch-retry.ts";
@@ -25,8 +24,8 @@ import {
 import { handoffAllowanceMs } from "./deadline.ts";
 
 /**
- * Whether the sleep ran to its full length: `abortableSleep` resolves early on abort and never
- * says so, so a cut-short wait would otherwise be recorded as the rung.
+ * Whether the sleep ran to its full length: `abortableSleep` resolves early on abort and never says so, so a
+ * cut-short wait would otherwise be recorded as the rung.
  */
 async function sleptToCompletion(ms: number, signal?: AbortSignal): Promise<boolean> {
   await abortableSleep(ms, signal);
@@ -57,10 +56,9 @@ export interface ProviderWaitClass {
 }
 
 /**
- * The taxonomy's verdict on a dead child in the wait leaf's shape, or `undefined` when it is not
- * a fault to sit out: a pi-rukas self-kill is never a provider failure, nor is a fault the
- * classifier calls final. Both steps ask THIS function, so a build re-dispatch and a specify
- * re-prompt cannot disagree about the same death.
+ * The taxonomy's verdict on a dead child in the wait leaf's shape, or `undefined` when it is not a fault to
+ * sit out: a pi-rukas self-kill is never a provider failure, nor is a fault the classifier calls final. Both
+ * steps ask THIS function, so a build re-dispatch and a specify re-prompt cannot disagree.
  */
 export function providerFaultOf(result: DispatchResult): ProviderWaitClass | undefined {
   if (result.killCause !== undefined) return undefined;
@@ -75,10 +73,9 @@ export function providerFaultOf(result: DispatchResult): ProviderWaitClass | und
 }
 
 /**
- * The one length formula, so `build` and `specify` cannot disagree about how long the same
- * outage is worth. `attempt` is 1-based; a provider-stated delay is a floor jittered on top, not
- * a target. The clamp is applied AFTER the jitter, so the bound means no single wait at all.
- * `rand` is injectable so a case that bounds a length is not reasoning about a random draw.
+ * The one length formula, so `build` and `specify` cannot disagree about how long the same outage is worth.
+ * `attempt` is 1-based; a provider-stated delay is a floor jittered on top, not a target. The clamp is applied
+ * AFTER the jitter, so the bound means no single wait at all.
  */
 function leanProviderWaitMs(
   cls: ProviderWaitClass,
@@ -107,8 +104,8 @@ export interface ProviderWaitOpts {
 }
 
 /**
- * Wait out the fault, or decline to. 0 is never a failure: the caller proceeds exactly as it
- * did before the wait existed.
+ * Wait out the fault, or decline to. 0 is never a failure: the caller proceeds exactly as it did before the
+ * wait existed.
  */
 export async function waitOutProviderFault(opts: ProviderWaitOpts): Promise<number> {
   if (!transientRetryEnabled()) return 0;
@@ -116,14 +113,14 @@ export async function waitOutProviderFault(opts: ProviderWaitOpts): Promise<numb
   if (!PROVIDER_CLASS_CAUSES.has(opts.cls.cause)) return 0;
   const wait = leanProviderWaitMs(opts.cls, opts.attempt, opts.rand);
   if (wait <= 0) return 0;
-  // The wait must fit outside the allowance the handback needs, or the run sleeps into a death
-  // with no result document.
+  // The wait must fit outside the allowance the handback needs, or the run sleeps into a death with no result
+  // document.
   if (opts.deadlineMs !== undefined && opts.deadlineMs - opts.now - handoffAllowanceMs() < wait) {
     return 0;
   }
   const completed = await sleepFn(wait, opts.signal);
-  // What the caller reports is what this call SLEPT: a wait the signal ended is not a wait of
-  // the rung's length.
+  // What the caller reports is what this call SLEPT: a wait the signal ended is not a wait of the rung's
+  // length.
   return completed && opts.signal?.aborted !== true ? wait : 0;
 }
 
