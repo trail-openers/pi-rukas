@@ -2,24 +2,23 @@
  * lean/verify-steps — the three things the verify step EXECUTES, and the boundary between
  * "the code failed" and "the machine could not answer".
  *
- * That boundary is the whole design of this step. A tier that exits non-zero is a verdict
- * about the work and comes back as `red` with the output tail that says why. A tier that was
- * killed, timed out, or could not be started is not a verdict at all — it is the environment
- * refusing to answer, and the step throws so the engine hands the run back rather than
- * routing a build round on a result nobody observed.
+ * That boundary is the whole design of this step. A tier that exits non-zero is a verdict about the
+ * work and comes back as `red` with the output tail that says why. A tier that was killed, timed out,
+ * or could not be started is not a verdict at all — it is the environment refusing to answer, and the
+ * step throws so the engine hands the run back rather than routing a build round on a result nobody
+ * observed.
  *
  * Three executors, three reasons for their options:
  *
- *   - **the toolchain canary** runs first, before any verdict is recorded: a type-checker
- *     stubbed to `exit 0` produces exactly the green this step must never report;
- *   - **the frozen tests** run through `runTestFile`, which classifies a kill or an
- *     un-startable runner as `infra`; of those, only a runner that could not be started
- *     becomes a throw — a frozen file the head hangs is graded red, because the freeze already
- *     proved it red against the base (see `frozenTestFailure`);
- *   - **the project tiers** run as shell commands with the driver's knobs scrubbed out of the
- *     child env (`verifyChildEnv`), in their own process group (`killGroup`) so a timeout
- *     actually kills the tree of processes a build spawns, and under a wall clock so a hung
- *     suite is an observed timeout rather than a wedged run.
+ *   - **the toolchain canary** runs first, before any verdict is recorded: a type-checker stubbed to
+ *     `exit 0` produces exactly the green this step must never report;
+ *   - **the frozen tests** run through `runTestFile`, which classifies a kill or an un-startable
+ *     runner as `infra`; of those, only a runner that could not be started becomes a throw — a frozen
+ *     file the head hangs is graded red, because the freeze already proved it red against the base
+ *     (see `frozenTestFailure`);
+ *   - **the project tiers** run as shell commands with the driver's knobs scrubbed out of the child
+ *     env (`verifyChildEnv`), in their own process group (`killGroup`) so a timeout actually kills the
+ *     tree of processes a build spawns, and under a wall clock.
  */
 
 import { guardCompilerIntegrity, packageDirFor } from "../work-driver-toolchain-canary.ts";
@@ -36,19 +35,17 @@ export const TIER_TAIL_LINES = 40;
 /**
  * What one executed thing said about the work.
  *
- * `fail` is a VERDICT — something observed the code and the code did not hold. `infra` is not
- * a verdict at all: nothing was observed, and the caller turns it into a throw so the engine
- * hands the run back. Keeping the two apart in the type is what stops a "could not tell" from
- * being read as an `undefined` and then as a green.
+ * `fail` is a VERDICT — something observed the code and the code did not hold. `infra` is not a
+ * verdict at all: nothing was observed, and the caller turns it into a throw so the engine hands the
+ * run back. Keeping the two apart in the type is what stops a "could not tell" from being read as an
+ * `undefined` and then as a green.
  *
- * What counts as "nothing was observed" is narrower than it looks, and `frozenTestFailure` is
- * where the line sits: a frozen test that exits non-zero without echoing its own path is a
- * `fail` (it was proven red at freeze time, so a later non-zero exit is that failure
- * continuing), and so is one the head's code made HANG. The shapes that stay `infra` are the
- * ones where nothing was ever run: a runner that could not be started, and a template with
- * nothing to run. The shell's 126 and 127 for "not executable" and "not found" are NOT a third
- * shape: a real test can exit 127 after printing its own failure, so routing those on the
- * number alone hides genuine reds.
+ * What counts as "nothing was observed" is narrower than it looks, and `frozenTestFailure` is where
+ * the line sits: a frozen test that exits non-zero without echoing its own path is a `fail` (it was
+ * proven red at freeze time), and so is one the head's code made HANG. The shapes that stay `infra`
+ * are the ones where nothing was ever run. The shell's 126 and 127 are NOT a third shape: a real test
+ * can exit 127 after printing its own failure, so routing those on the number alone hides genuine
+ * reds.
  */
 export type Executed =
   | { kind: "pass" }
@@ -74,8 +71,8 @@ export function tailLines(out: string, n: number = TIER_TAIL_LINES): string {
 /**
  * Did the toolchain canary PROVE the compiler unsound?
  *
- * Only `failure` is a throw: `guardCompilerIntegrity` reports an unaskable canary as a `note`,
- * so "could not look" never accuses a compiler.
+ * Only `failure` is a throw: `guardCompilerIntegrity` reports an unaskable canary as a `note`, so
+ * "could not look" never accuses a compiler.
  */
 async function canaryReason(
   cmd: string,
@@ -95,9 +92,8 @@ async function canaryReason(
  * Run every configured tier's compiler-integrity canary.
  *
  * Each tier is canaried at the directory ITS command resolves the pinned compiler against
- * (`packageDirFor`): a tier that opens with `cd extension` runs a different compiler than one
- * that runs at the root, and asking at the root would probe a compiler the tier never
- * executes.
+ * (`packageDirFor`): a tier that opens with `cd extension` runs a different compiler than one that
+ * runs at the root.
  */
 export async function canaryFailure(
   tiers: string[],
@@ -117,23 +113,21 @@ export async function canaryFailure(
  *
  * The red reason is clipped to `RED_REASON_CLIP` and pasted into the next build child's prompt; a
  * reason whose only mention of the hang sat at the end could be clipped away.
- */
-export const FROZEN_TIMEOUT_HEAD = "frozen tests timed out (the head's code may hang):";
+ */export const FROZEN_TIMEOUT_HEAD = "frozen tests timed out (the head's code may hang):";
 
 /**
  * Run the frozen acceptance tests with the project's per-file runner template.
  *
- * EVERY plain verdict is collected: a step that stopped at the first failure would report a
- * different reason tomorrow for a different file, and the fix round would learn about the second
- * failure only after paying for the first. A HANG is the exception, and the exception is a cost
- * bound: after the first wall-clock kill nothing further runs and the reason counts what was
- * skipped, so a hang costs at most ONE bound per verify.
+ * EVERY plain verdict is collected: a step that stopped at the first failure would report a different
+ * reason tomorrow for a different file, and the fix round would learn about the second failure only
+ * after paying for the first. A HANG is the exception, and the exception is a cost bound: after the
+ * first wall-clock kill nothing further runs, so a hang costs at most ONE bound per verify.
  *
  * A wall-clock kill is a RED here, reported with the plain failures already observed. Every file in
- * the contract was proved red against the base before `runTestPipeline` committed it — the only way
- * a file gets frozen — so a head that now hangs it is the code under build failing. The other
- * `infra` shapes stay throws: a runner that never started, a template with nothing to run, and a
- * run whose output flooded past the executor's bound all observed nothing. A flood is not a hang.
+ * the contract was proved red against the base before `runTestPipeline` committed it — the only way a
+ * file gets frozen — so a head that now hangs it is the code under build failing. The other `infra`
+ * shapes stay throws: a runner that never started, a template with nothing to run, and a run whose
+ * output flooded past the executor's bound all observed nothing. A flood is not a hang.
  */
 export async function frozenTestFailure(
   frozen: Record<string, string>,
@@ -155,10 +149,7 @@ export async function frozenTestFailure(
     });
     if (proof.kind === "infra") {
       // Switched on the classifier's own `infraShape` rather than re-derived here, so the halves
-      // cannot disagree about a hang. The `default` is the exhaustiveness check. A `never-started`
-      // proof whose detail reports a deadline is another module's abandoned re-run: still a run
-      // that observed nothing, still a throw. An `overflowed` proof is the executor's maxBuffer
-      // kill — `killed: true`, but the wall clock did not fire.
+      // cannot disagree about a hang. The `default` is the exhaustiveness check.
       switch (proof.infraShape) {
         case "killed": {
           // One bound per verify: the files this kill stopped short of are counted, not run.
@@ -184,7 +175,7 @@ export async function frozenTestFailure(
       }
     }
     // A non-zero exit whose output never named this file is a RED, not infrastructure: the file was
-    // proven red-and-named at freeze time, so a later non-zero exit is that test still failing.
+    // proven red-and-named at freeze time.
     if (proof.kind === "unclear")
       return {
         kind: "fail",
@@ -200,9 +191,9 @@ export async function frozenTestFailure(
  * Run one project verify tier as a shell command in the worktree.
  *
  * `env` is the scrubbed child env: the driver's own knobs are stripped so a headless runner's
- * configuration cannot flip behaviour inside the project's tests. `killGroup` is what makes
- * the timeout real — a build that spawns a grandchild holding stdout keeps the pipe open past
- * Node's own kill.
+ * configuration cannot flip behaviour inside the project's tests. `killGroup` is what makes the
+ * timeout real — a build that spawns a grandchild holding stdout keeps the pipe open past Node's own
+ * kill.
  */
 export async function runTier(
   name: string,
@@ -228,20 +219,18 @@ export async function runTier(
     overflow?: string;
   };
   const out = outputOf([e.stdout, e.stderr, e.message]);
-  // A kill or a timeout means nobody observed the work, so no verdict may be recorded. Both
-  // classifiers below are specify-proof's, imported rather than re-derived here.
+  // A kill or a timeout means nobody observed the work, so no verdict may be recorded.
   if (wasKilled(err))
     throw new VerifyInfraError(
       `the verify.${name} tier was killed or timed out at ${timeoutMs}ms: ${cmd}`,
     );
-  // `execp` stamps `overflow` on the maxBuffer path and does NOT stamp `timedOutKill`, so a
-  // chatty tier is not mistaken for a hung one. Nor is it a verdict: the output was truncated.
+  // `execp` stamps `overflow` on the maxBuffer path and does NOT stamp `timedOutKill`, so a chatty
+  // tier is not mistaken for a hung one. Nor is it a verdict: the output was truncated.
   if (e.overflow !== undefined)
     throw new VerifyInfraError(
       `the verify.${name} tier exceeded its output bound on ${e.overflow}: ${cmd}`,
     );
-  // A command that never started (ENOENT, EACCES) rejects with a string code and no exit
-  // status; a command that ran and failed always carries a number.
+  // A command that never started (ENOENT, EACCES) rejects with a string code and no exit status.
   if (neverStarted(err))
     throw new VerifyInfraError(
       `the verify.${name} tier could not be started: ${cmd}: ${out.slice(0, 300)}`,
@@ -253,12 +242,11 @@ export async function runTier(
 }
 
 /**
- * The tiers this run executes, in order: the configured `fast` then `full`, or the repo's
- * committed `.pi/verify-cmd` when neither is configured.
+ * The tiers this run executes, in order: the configured `fast` then `full`, or the repo's committed
+ * `.pi/verify-cmd` when neither is configured.
  *
  * `verify.full` alone is not a fallback target here — `loadWorkConfig` already fills it from
- * `.pi/verify-cmd` when there is no `.pi/work.json` at all, so "neither set" genuinely means
- * the repository named nothing.
+ * `.pi/verify-cmd` when there is no `.pi/work.json` at all.
  */
 export function tiersOf(
   configured: VerifyTiers,
