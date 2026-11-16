@@ -9,19 +9,22 @@
  *     "elapsed_s of widened-results.ndjson ($S/ops/c5-qual) via scripts/run-c5.sh"
  *
  * — a real claim about two real files, wrapped in enough prose to make the gate decline to
- * look. This suite pins the three things the fix has to get right, and none of them is
- * reachable from the bare-token cases in `test-verify-develop-data-provenance.ts`:
+ * look. The SPLITTER (`proseCandidatesOf`) is pinned on its own, as a pure function, in
+ * `test-verify-develop-provenance-classifier.ts`. This suite pins the four things only a gate run
+ * can show, and none of them is reachable from the bare-token cases in
+ * `test-verify-develop-data-provenance.ts`:
  *
- *   - **the extractor is a pure function** (`proseCandidatesOf`), unit-tested without a
- *     repository: it splits on whitespace and separators, keeps only fragments that carry a
- *     `/` or an extension, refuses a URL, and caps the DEDUPED list per value (a duplicate
- *     fragment spends no budget and produces no row);
  *   - **decision order**: host-context classification runs FIRST, so `$S/ops/c5-qual` is
  *     disclosed with the v0.14.85 host-provenance reason and `a|b|c` is disclosed rather than
  *     probed as `b`;
  *   - **an executed negative answer fails**: the #256 value yields exactly 2 failures and 1
  *     disclosure with neither file present, and passes when the basename is in the head tree or
- *     under a declared `PI_ENSEMBLE_VERIFY_PROVENANCE_ROOT`.
+ *     under a declared `PI_ENSEMBLE_VERIFY_PROVENANCE_ROOT`;
+ *   - **a bare-name pass is not a silent pass**: D3 lets any file of the claimed name in the tree
+ *     satisfy the claim, so the path that satisfied it is DISCLOSED — a decoy the child committed
+ *     is visible to the reviewer who has to judge it;
+ *   - **the two dedupe namespaces stay disjoint**: a fragment claim and a whole-value claim sharing
+ *     bytes are each judged, and neither swallows the other into nothing.
  *
  * The `PI_ENSEMBLE_VERIFY_PROVENANCE_PROSE=0` arm — byte-identity with v0.14.85, the seven-name
  * key set, the v0.14.85 disclosure text and reasons — is pinned in
@@ -36,7 +39,6 @@ import { provenanceDisclosureSectionOf } from "../src/work-driver-verify-develop
 import {
   PROVENANCE_KEYS,
   PROVENANCE_KEYS_V0_14_85,
-  proseCandidatesOf,
 } from "../src/work-driver-verify-develop-provenance-token.ts";
 import { assert, exit } from "./lib/assert-rig.ts";
 import { withEnv } from "./lib/env-scope.ts";
@@ -63,61 +65,18 @@ import { renderProse256Record } from "./lib/verify-develop-provenance-fixture.ts
   );
 }
 
-// ── 2. the extractor, as a pure function: no repository, no git, no fs ─────────────────────
+// ── 2b. a fragment that LOOKS like a path but is arithmetic never becomes a failure ────────
 {
-  // The #256 value verbatim. Three fragments carry a `/` or an extension; `elapsed_s`, `of`
-  // and `via` are prose and must not become candidates (they would each buy a probe and a
-  // failure for a word).
-  const got = proseCandidatesOf(
-    "elapsed_s of widened-results.ndjson ($S/ops/c5-qual) via scripts/run-c5.sh",
-  );
+  // The pure classifier refuses `3/4` as a candidate; this asserts the consequence at the gate —
+  // a record whose prose carries a ratio reddens nothing. The pure arm lives in
+  // `test-verify-develop-provenance-classifier.ts`; the two are the two halves of one claim and
+  // each can be false alone.
+  const ratio = await driveProvenanceFixture({
+    "runs/ratio.json": JSON.stringify({ source: "the ratio 3/4 of rows held" }),
+  });
   assert(
-    JSON.stringify(got) ===
-      JSON.stringify(["widened-results.ndjson", "$S/ops/c5-qual", "scripts/run-c5.sh"]),
-    `the #256 value yields exactly its three path-bearing fragments, in order (got: ${JSON.stringify(got)})`,
-  );
-
-  // Separators, not just spaces: parentheses, commas and semicolons are all split points.
-  // Quotes are deliberately NOT: a quoted path is the fragment the classifier below must refuse
-  // rather than one the splitter silently repairs by stripping its quotes.
-  const seps = proseCandidatesOf("seen in a/x.json, then b/y.json; also (c/z.ndjson)");
-  assert(
-    JSON.stringify(seps) === JSON.stringify(["a/x.json", "b/y.json", "c/z.ndjson"]),
-    `separators are split points (got: ${JSON.stringify(seps)})`,
-  );
-  assert(
-    JSON.stringify(proseCandidatesOf('said "a/x.json" here')) === JSON.stringify(['"a/x.json"']),
-    "a quote-clinging fragment is kept verbatim, so the classifier — not the splitter — decides its fate",
-  );
-
-  // A bare word with no `/` and no extension is not a candidate, however plausible.
-  assert(
-    proseCandidatesOf("measured over the weekend on the build box").length === 0,
-    "a value with no slash-bearing and no extension-bearing fragment yields no candidates",
-  );
-
-  // The URL arm runs on the fragment: `scheme://` is context, never a probe target, and it is
-  // not a candidate at all (the disclosure of the whole value still carries it).
-  assert(
-    proseCandidatesOf("from https://example.invalid/r.ndjson and ftp://h/a").length === 0,
-    "a scheme:// fragment is never a candidate",
-  );
-
-  // Dedupe happens BEFORE the ceiling: eight deduped fragments is the cap, and a fragment that
-  // repeats spends no slot — otherwise a value could fill the ceiling with one path eight times
-  // and hide the seven real claims behind it.
-  const dupes = proseCandidatesOf(
-    ["p/1.json", "p/1.json", "p/1.json", "p/1.json", "p/1.json", "p/1.json", "p/1.json"].concat(
-      ["a.json", "b.json", "c.json", "d.json", "e.json", "f.json", "g.json", "h.json"],
-    ).join(" "),
-  );
-  assert(
-    dupes.length === 8 && dupes[0] === "p/1.json" && dupes[1] === "a.json",
-    `a repeated fragment spends no slot: the eight kept are the deduped ones in first-seen order (got ${String(dupes.length)}: ${dupes.join(" ")})`,
-  );
-  assert(
-    dupes.includes("h.json") === false,
-    "the ninth DISTINCT fragment is the one the per-value ceiling drops, not a duplicate",
+    provenanceFailures(ratio.failures).length === 0,
+    `a ratio typed with a slash never becomes a failure (failures ${String(provenanceFailures(ratio.failures).length)}: ${provenanceFailures(ratio.failures).join(" | ")})`,
   );
 }
 
@@ -166,15 +125,44 @@ import { renderProse256Record } from "./lib/verify-develop-provenance-fixture.ts
 // ── 5. non-vacuity pair: the basename in the head tree, and under a declared root ────────
 {
   // (a) Any path in the tree at the pinned OID with that basename counts — the record named a
-  // bare filename, so the claim is about a file of that name, not about one directory.
+  // bare filename, so the claim is about a file of that name, not about one directory. The green
+  // is not silent: a bare claim answered away from the path the record spelled is DISCLOSED with
+  // the path that satisfied it, because a basename match is a weaker answer than an exact-path one
+  // and is the answer an adversary can buy by committing an unrelated file of the same name.
   const inTree = await driveProvenanceFixture({
     "tasks/record.json": renderProvenanceRecord("widened-results.ndjson"),
     "deep/nested/widened-results.ndjson": '{"task":"t1"}\n',
     "scripts/run-c5.sh": "#!/bin/sh\n",
   });
   assert(
-    provenanceFailures(inTree.failures).length === 0 && inTree.disclosures.length === 0,
+    provenanceFailures(inTree.failures).length === 0,
     `the record passes when both fragments name a file in the head tree — matched by BASENAME, at any depth (got: ${provenanceFailures(inTree.failures).join(" | ")})`,
+  );
+  assert(
+    inTree.disclosures.length === 1 &&
+      String(inTree.disclosures[0]?.token) === "widened-results.ndjson" &&
+      String(inTree.disclosures[0]?.reason).includes("deep/nested/widened-results.ndjson") ===
+        true &&
+      String(inTree.disclosures[0]?.reason).includes("BASENAME") === true,
+    `the basename-satisfied claim is DISCLOSED, naming the tree path that satisfied it — the exact-path claim (scripts/run-c5.sh) is not (got: ${JSON.stringify(inTree.disclosures)})`,
+  );
+  assert(
+    provenanceDisclosureSectionOf(inTree.disclosures)
+      .split("\n")
+      .some((l) => l.startsWith("- ") && l.includes("deep/nested/widened-results.ndjson")) ===
+      true,
+    "and the satisfied path reaches the PR body, so a reviewer sees the basis of the green",
+  );
+  // The control for the row above: a claim whose exact path IS in the tree is answered by the
+  // exact-path read and leaves no row, so the disclosure is the BASENAME arm's and not something
+  // every passing claim carries.
+  const exact = await driveProvenanceFixture({
+    "tasks/record.json": `{"source":"scripts/run-c5.sh"}\n`,
+    "scripts/run-c5.sh": "#!/bin/sh\n",
+  });
+  assert(
+    provenanceFailures(exact.failures).length === 0 && exact.disclosures.length === 0,
+    `control: a claim that names the path it lives at passes with NOTHING disclosed — the row above is the basename arm's out-channel, not a passing-probe receipt (got ${String(exact.disclosures.length)} disclosures: ${JSON.stringify(exact.disclosures)})`,
   );
   assert(
     inTree.notes.some((n) => n.includes("judged 2 provenance token(s)")) === true,
@@ -327,7 +315,7 @@ import { renderProse256Record } from "./lib/verify-develop-provenance-fixture.ts
   );
 }
 
-// ── 8. dedupe identity is the FRAGMENT, not the raw value ──────────────────────────────────
+// ── 8. dedupe identity is the FRAGMENT, and it cannot collide with a whole-value identity ──
 {
   // Two rows whose prose differs but whose absent fragment is the same: one probe, one failure.
   const rows = [
@@ -339,6 +327,69 @@ import { renderProse256Record } from "./lib/verify-develop-provenance-fixture.ts
     provenanceFailures(r.failures).length === 1,
     `one absent fragment named by two DIFFERENT prose values is ONE failure — the dedupe identity is the fragment (got ${String(provenanceFailures(r.failures).length)}: ${provenanceFailures(r.failures).join(" | ")})`,
   );
+
+  // The collision this arm used to lose. `{"source":"run.log","input":"elapsed of run.log …"}`
+  // makes the fragment `run.log` and the whole value `run.log` share one string: with the bare
+  // fragment as its identity, the prose claim was swallowed by its sibling and contributed nothing
+  // to any out-channel. Namespace-separating the two identities means each claim is offered under
+  // its own identity; the two then dedupe to ONE probe, which is right — they are the same file and
+  // git gives one answer — and the run says `judged 1`, so the claim is neither dropped nor counted
+  // twice. The witness that nothing was silently excused is the failure itself: one absent file,
+  // one row naming it.
+  const collide = await driveProvenanceFixture({
+    "runs/collide.json": JSON.stringify({
+      source: "run.log",
+      input: "elapsed of run.log during the run",
+    }),
+  });
+  assert(
+    provenanceFailures(collide.failures).length === 1 &&
+      collide.failures.every((f) => f.includes("run.log")) &&
+      countJudgedFromNote(collide.notes) === 1,
+    `a bare claim and a prose claim naming the SAME absent file are one probe and one failure, and neither is dropped — the fragment identity cannot collide with a whole-value identity (failures ${String(provenanceFailures(collide.failures).length)}, judged ${String(countJudgedFromNote(collide.notes))}: ${collide.failures.join(" | ")})`,
+  );
+  // The witness that the two identities really are separate, which the case above cannot show: one
+  // value is a bare name, the other prose whose ONLY fragment is that same name. Had the fragment
+  // identity been the bare string, the prose claim would have been swallowed by its sibling and
+  // this arm would print one name where it now prints both.
+  const bothNamed = await driveProvenanceFixture({
+    "runs/both.json": JSON.stringify({
+      source: "run.log",
+      input: "elapsed of run.log during the run",
+    }),
+    "docs/notes/deep/inner/run.log": "unrelated\n",
+  });
+  assert(
+    provenanceFailures(bothNamed.failures).length === 0 &&
+      bothNamed.disclosures.length === 1 &&
+      String(bothNamed.disclosures[0]?.token) === "run.log" &&
+      String(bothNamed.disclosures[0]?.reason).includes("docs/notes/deep/inner/run.log") === true,
+    `a decoy basename cannot buy a silent green: the claim is judged and the satisfied path is disclosed (failures ${String(provenanceFailures(bothNamed.failures).length)}, disclosures ${JSON.stringify(bothNamed.disclosures)})`,
+  );
+
+  // And the direction that was the false PASS: a bare claim and a prose claim naming DIFFERENT
+  // absent files are two claims and must redder twice. Under the colliding identity the prose
+  // claim vanished and the record carried one failure where it owed two.
+  const twoFiles = await driveProvenanceFixture({
+    "runs/two.json": JSON.stringify({
+      source: "out.ndjson",
+      input: "elapsed of build/report.json during the run",
+    }),
+  });
+  assert(
+    provenanceFailures(twoFiles.failures).length === 2 &&
+      countJudgedFromNote(twoFiles.notes) === 2 &&
+      twoFiles.failures.some((f) => f.includes("out.ndjson")) &&
+      twoFiles.failures.some((f) => f.includes("build/report.json")),
+    `a bare claim and a prose claim naming DIFFERENT absent files are two probes and two failures — the prose claim is never swallowed by its sibling (failures ${String(provenanceFailures(twoFiles.failures).length)}, judged ${String(countJudgedFromNote(twoFiles.notes))}: ${twoFiles.failures.join(" | ")})`,
+  );
+}
+
+/** The probe count a run reports for itself. Read from the executed-pass note rather than a
+ * failure list, because a failure list can be emptied by the very bug under test. */
+function countJudgedFromNote(notes: readonly string[]): number {
+  const row = notes.find((n) => n.includes("provenance token(s)"));
+  return row === undefined ? -1 : Number(row.match(/judged (\d+)/)?.[1] ?? "-1");
 }
 
 /** A record whose single prose claim names the two files the (a)/(b) arms make present. Kept
@@ -346,6 +397,61 @@ import { renderProse256Record } from "./lib/verify-develop-provenance-fixture.ts
 function renderProvenanceRecord(basename: string): string {
   const value = `elapsed_s of ${basename} and scripts/run-c5.sh`;
   return `{${JSON.stringify("source")}: ${JSON.stringify(value)}}\n`;
+}
+
+// ── 9. the fraud shape #2295 was filed for: decoys cannot buy a SILENT green ────────────
+{
+  // The #256 record verbatim, plus two decoy files placed where nothing about them relates to the
+  // measurement. D3 lets a bare basename be satisfied by ANY file of that name in the pinned tree,
+  // which means an adversary holding the commit can buy that half of the green outright — so the
+  // requirement is not "the decoy fails" (it cannot be, given D3) but "the decoy is visible". Both
+  // satisfied paths must reach the PR body; a green resting on an unrelated file must be a green a
+  // reviewer can see the basis of.
+  const fraud = await driveProvenanceFixture({
+    "tasks/record.json": renderProse256Record(),
+    "docs/unrelated/inner/widened-results.ndjson": '{"note":"other"}\n',
+  });
+  const fraudRows = provenanceDisclosureSectionOf(fraud.disclosures)
+    .split("\n")
+    .filter((l) => l.startsWith("- "))
+    .join("\n");
+  assert(
+    provenanceFailures(fraud.failures).length === 1 &&
+      provenanceFailures(fraud.failures).every((f) => f.includes("scripts/run-c5.sh")),
+    `one decoy satisfies only the bare claim, so the slashed claim still reddens (failures ${String(provenanceFailures(fraud.failures).length)}: ${fraud.failures.join(" | ")})`,
+  );
+  assert(
+    fraudRows.includes("docs/unrelated/inner/widened-results.ndjson") &&
+      fraudRows.includes("BASENAME"),
+    `and the satisfied-by-decoy basis is disclosed in the PR body, path and all (rows: ${JSON.stringify(fraudRows)})`,
+  );
+
+  // A basename with no directory anywhere in the tree still reddens: the basename arm answers from
+  // a real listing, so an absent name is an executed `absent` and not a could-not-tell. Without this
+  // arm the disclosures above could be produced by a gate that answered everything `present`.
+  const noDecoy = await driveProvenanceFixture({
+    "tasks/record.json": renderProse256Record(),
+  });
+  assert(
+    provenanceFailures(noDecoy.failures).length === 2 &&
+      noDecoy.notes.some((n) => n.includes("could not tell")) === false,
+    `control: with no decoy in the tree BOTH claims redder and no could-not-tell appears — the basename read ran and answered absent (failures ${String(provenanceFailures(noDecoy.failures).length)})`,
+  );
+
+  // And the switch that turns the whole arm off still leaves the BARE half of the record judged:
+  // the off arm restores v0.14.85's whole-value walk, which probed a bare path claim with the exact
+  // read — so a decoy at an unrelated depth does NOT satisfy it, and a record cannot buy its way out
+  // of the basename disclosure by disabling prose.
+  await withEnv({ PI_ENSEMBLE_VERIFY_PROVENANCE_PROSE: "0" }, async () => {
+    const off = await driveProvenanceFixture({
+      "tasks/off.json": `{"source":"run.log"}\n`,
+      "docs/notes/deep/inner/run.log": "unrelated\n",
+    });
+    assert(
+      provenanceFailures(off.failures).length === 1 && off.disclosures.length === 0,
+      `under PROSE=0 the bare claim is judged EXACTLY, so an unrelated decoy at depth does not satisfy it and no basename row appears (failures ${String(provenanceFailures(off.failures).length)}, disclosures ${String(off.disclosures.length)})`,
+    );
+  });
 }
 
 console.log(`\nexit ${String(exit)}`);

@@ -182,13 +182,20 @@ async function refSaysAbsentForMissingRefInFreshRepo(): Promise<boolean> {
     // name-status stream whose single `A` record names the data file it will then read.
     if (argv.includes("diff")) return { stdout: "A\u0000runs/gone.json\u0000" };
     if (argv.includes("ls-tree")) return { stdout: "" }; // absent → one failure, no throw
-    return { stdout: '{"source":"runs/gone.json"}\n' };
+    // Two claims, one per probe arm: the slashed `source` is answered by the exact-path read and
+    // the bare `resultsFile` by the whole-tree listing. A record naming only one of them leaves the
+    // other arm's argv unasserted, which is how a canary passes on a read it never made.
+    return { stdout: '{"source":"runs/gone.json","resultsFile":"gone.json"}\n' };
   };
   await checkWorktreeProvenance({
     execFn: recording as never,
     cwd: "/repo",
     base: "b".repeat(40),
     id: "a",
+    // The prose arm on: a BARE basename claim is what drives the whole-tree listing, and that
+    // listing's argv is what this case pins. With the arm off the candidate takes the exact-path
+    // read and the recursive listing is never asked, so the assertion would pass on its absence.
+    prose: true,
   });
   const show = calls.find((c) => c.cmd === "git" && c.argv?.includes("show") === true);
   assert(show !== undefined, "the provenance gate reads the added file through `git show`");
@@ -201,11 +208,42 @@ async function refSaysAbsentForMissingRefInFreshRepo(): Promise<boolean> {
     shown === true,
     `and reads at the OID it pinned, not a ref it would resolve later (argv: ${JSON.stringify(show?.argv)})`,
   );
-  const probe = calls.find((c) => c.argv?.includes("ls-tree") === true);
+  // Two probes, and they must not be conflated: the EXACT-path probe is a per-path `ls-tree` with
+  // `--literal-pathspecs` and a `--` boundary, and the whole-tree listing a bare basename is
+  // answered from is the same subcommand with `-r --full-tree --name-only` and no pathspec at all.
+  // Asserting them apart is the point — a canary that matched "any ls-tree" would let the exact-path
+  // read lose its literal-pathspec guard while the basename read kept passing the same row.
+  const exactProbe = calls.find(
+    (c) =>
+      c.argv?.includes("ls-tree") === true && c.argv?.includes("--literal-pathspecs") === true,
+  );
   assert(
-    probe?.argv?.includes("--end-of-options") === true &&
-      probe?.argv?.includes("--literal-pathspecs") === true,
-    `the token probe keeps its own pathspec boundary (argv: ${JSON.stringify(probe?.argv)})`,
+    exactProbe?.argv?.includes("--end-of-options") === true &&
+      exactProbe?.argv?.includes("--") === true,
+    `the exact-path token probe keeps its own pathspec boundary (argv: ${JSON.stringify(exactProbe?.argv)})`,
+  );
+  // #2295 — the whole-tree listing a bare-basename claim is answered from. It is the one read in
+  // this subsystem whose cost is the size of the TREE rather than of one path, so its argv is
+  // asserted by name: `-r` and `--full-tree` (a listing that quietly stopped being recursive would
+  // answer a bare claim from the top level and report a real file absent), `-z` (a newline in a
+  // path must not split one entry into two), and `--name-only`. `--end-of-options` sits before the
+  // ref, and no `--`/pathspec follows it — the listing must not become pathspec-filtered, or a name
+  // under `deep/nested/` would match nothing.
+  const listing = calls.find(
+    (c) =>
+      c.argv?.includes("ls-tree") === true &&
+      c.argv?.includes("-r") === true &&
+      c.argv?.includes("--literal-pathspecs") === false,
+  );
+  assert(
+    listing !== undefined &&
+      listing.argv?.includes("--full-tree") === true &&
+      listing.argv?.includes("-z") === true &&
+      listing.argv?.includes("--name-only") === true &&
+      listing.argv?.includes("--end-of-options") === true &&
+      listing.argv?.includes("--") === false &&
+      (listing.argv ?? []).some((a) => a === "a".repeat(40)) === true,
+    `the basename arm's whole-tree listing is recursive, NUL-delimited, name-only, option-pinned and unfiltered by pathspec (argv: ${JSON.stringify(listing?.argv)})`,
   );
   const rendered = JSON.stringify(calls.map((c) => [c.cmd, c.argv?.join(" ")]));
   assert(

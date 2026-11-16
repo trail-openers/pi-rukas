@@ -18,3 +18,15 @@ export const PROVENANCE_GIT_TIMEOUT_MS = 30_000;
  * what makes an over-large record a disclosure rather than a hang, and there is one number so
  * the two cannot disagree about what the gate is willing to read. */
 export const PROVENANCE_FILE_MAX_BYTES = 1024 * 1024;
+
+/** The leading clause every provenance failure and every "could not tell" note carries, so the
+ * gate's own rows are findable in a failure list and no cap router can mistake one for a verify
+ * verdict. One constant for both channels: a reader grepping `data provenance:` wants every row
+ * this gate wrote, and the row's own words say which channel it is. Lives here because the modules
+ * that write those rows — the gate and the disclosure renderer — both read this file, and neither
+ * may import the other. */
+export const PROVENANCE_FAILURE_PREFIX = "data provenance:";
+
+/** The leading clause of the gate's "could not tell" notes — the same prefix as a failure, because
+ * the channel is told by the row's words and not by its prefix. */
+export const PROVENANCE_NOTE_PREFIX = PROVENANCE_FAILURE_PREFIX;

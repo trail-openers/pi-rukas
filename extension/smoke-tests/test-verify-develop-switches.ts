@@ -161,6 +161,23 @@ function assert(cond: boolean, msg: string): void {
     trouble.includes(VERIFY_PROVENANCE_PROSE_ENV),
     "and it names the prose switch, which is the hatch for a record whose prose claims cannot be satisfied from the commit",
   );
+  // #2295 round 1 — a bare-name claim is satisfied by ANY file of that name in the tree, which is a
+  // real git answer an unrelated file can buy. The pass is therefore DISCLOSED with the path that
+  // satisfied it, and the operator has to be able to find out what that row means from the same
+  // entry they found the failure in. The pin is on the row's own wording, so a renderer change that
+  // drops the phrase reddens this instead of silently undocumented-ing the behaviour.
+  assert(
+    trouble.includes("judged present because the commit holds") &&
+      trouble.includes("by BASENAME"),
+    "docs/troubleshooting.md explains the basename-satisfied PASS row, quoting the disclosure's own wording so the two cannot drift",
+  );
+  // The false-FAIL class the classifier exists to refuse. Documented, because an operator who hits
+  // it needs to know the gate will not redden on a version number — and the docs row is where the
+  // refusal is stated, so it is pinned to the same words.
+  assert(
+    conf.includes("v1.2.3") && trouble.includes("v1.2.3"),
+    "both docs name the ordinary-English forms the prose arm refuses to probe, so a reviewer can tell a designed refusal from a bug",
+  );
   assert(
     trouble.includes(MISSING_VERIFY_TEST_TEMPLATE_FAILURE),
     "and one for the missing-verify.test blocking failure, quoting the string verbatim so a paste finds it",

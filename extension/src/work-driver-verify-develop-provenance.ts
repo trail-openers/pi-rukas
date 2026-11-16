@@ -73,6 +73,10 @@ import {
   proseCandidatesOf,
 } from "./work-driver-verify-develop-provenance-token.ts";
 import {
+  type CandidateReads,
+  judgeCandidate,
+} from "./work-driver-verify-develop-provenance-verdict.ts";
+import {
   NDJSON_SUFFIX,
   type ProvenanceBudget,
   isDataFile,
@@ -149,13 +153,14 @@ import {
   PROVENANCE_FILE_MAX_BYTES,
   PROVENANCE_GIT_TIMEOUT_MS,
 } from "./work-driver-verify-develop-provenance-limits.ts";
-
-/** The leading clause every provenance failure carries, so the gate's own rows are
- * findable in a failure list and no cap router can mistake one for a verify verdict. */
-export const PROVENANCE_FAILURE_PREFIX = "data provenance:";
-
-/** The leading clause of this gate's "could not tell" notes. */
-export const PROVENANCE_NOTE_PREFIX = "data provenance:";
+/** The leading clause every provenance failure and every note carries. Re-exported from the limits
+ * module, which the gate and the disclosure renderer both read and neither may import the other
+ * from — a row's prefix and the sentence built around it must not be able to drift. */
+export {
+  PROVENANCE_FAILURE_PREFIX,
+  PROVENANCE_NOTE_PREFIX,
+} from "./work-driver-verify-develop-provenance-limits.ts";
+import { PROVENANCE_NOTE_PREFIX } from "./work-driver-verify-develop-provenance-limits.ts";
 /** The prefix of the note an executed pass leaves behind, carrying what it judged. */
 export const PROVENANCE_CHECKED_NOTE = `${PROVENANCE_NOTE_PREFIX} judged`;
 
@@ -339,64 +344,16 @@ export async function checkWorktreeProvenance(opts: {
       });
     }
     for (const { key, token } of parsed.pairs) {
-      const displayKey = display(key);
-      const displayToken = display(token);
-      // Host context is asked FIRST, before the bare-token classifier. The order is binding:
-      // `$S/ops/c5-qual` is host provenance and must be disclosed with the host-provenance
-      // reason, not with the classifier's words about a character that needs quoting — a reader
-      // who sees "quote" looks for a quoting bug, and a reader who sees "host path" looks at
-      // their run directory. A fragment that is not host context then meets the shipped
-      // classifier unchanged, which is why a bar-separated value is disclosed rather than probed
-      // as its middle word.
-      const host = prose ? hostContextProblem(token) : undefined;
-      if (host !== undefined) {
-        disclosures.push({
-          file: displayFile,
-          key: displayKey,
-          token: displayToken,
-          reason: `not a repo-relative path (${host}) — host provenance this gate cannot see`,
-        });
-        continue;
-      }
-      const classified = classifyToken(token);
-      if (classified.kind === "unverifiable") {
-        disclosures.push({
-          file: displayFile,
-          key: displayKey,
-          token: displayToken,
-          reason: `not a repo-relative path (${classified.why}) — host provenance this gate cannot see`,
-        });
-        continue;
-      }
-      judged++;
-      const verdict = await probeCandidate(execFn, cwd, oid, classified.probe, treePaths, prose);
-      if (verdict === "unreadable") {
-        notes.push(
-          `${PROVENANCE_NOTE_PREFIX} could not tell whether ${displayToken} named by ${code(file)}.${displayKey} exists at the pinned commit — not judged`,
-        );
-        continue;
-      }
-      if (verdict === "absent") {
-        // A claim the commit cannot answer may still be one the project satisfied legitimately:
-        // the record's author read the file from a run directory the repository does not track.
-        // That is the operator's `PROVENANCE_ROOT` to declare, and consulting it is the ONLY host
-        // read this gate makes. A candidate that names a path is looked for at that path under the
-        // root; a bare basename is looked for anywhere below it (the root module decides which).
-        // An executed `absent` falls through to the failure; an `unusable` root — unreadable, or
-        // not an absolute path — is a named could-not-tell note, never a verdict, because a root
-        // the gate could not read is not evidence that the file the record cites does not exist.
-        const hostVerdict = await hostRoot(classified.probe);
-        if (hostVerdict.kind === "present") continue;
-        if (hostVerdict.kind === "unusable") {
-          notes.push(
-            `${PROVENANCE_NOTE_PREFIX} could not tell whether ${displayToken} named by ${code(file)}.${displayKey} exists under the declared ${VERIFY_PROVENANCE_ROOT_ENV} (${display(hostVerdict.why)}) — not judged`,
-          );
-          continue;
-        }
-        failures.push(
-          `${PROVENANCE_FAILURE_PREFIX} ${code(file)}: ${code(key)} names ${code(token)}, which does not exist in commit ${oid} — a measurement record must cite a source that was committed, not synthesised after the fact`,
-        );
-      }
+      const outcome = await judgeCandidate(
+        { execFn, cwd, oid, treePaths, hostRoot, prose },
+        file,
+        key,
+        token,
+      );
+      if (outcome.judged) judged++;
+      failures.push(...outcome.failures);
+      notes.push(...outcome.notes);
+      disclosures.push(...outcome.disclosures);
     }
     // No separate row for a value that yielded no fragment: the walk offered such a value as a
     // whole-value pair exactly as v0.14.85 did, so the loop above already classified and disclosed
@@ -475,4 +432,12 @@ export async function runProvenanceGate(opts: {
   }
 }
 
-export { provenanceDisclosureSectionOf } from "./work-driver-verify-develop-provenance-disclosure.ts";
+export {
+  provenanceBasenameDisclosure,
+  provenanceDisclosureSectionOf,
+  provenanceAbsentFailure,
+} from "./work-driver-verify-develop-provenance-disclosure.ts";
+import {
+  provenanceAbsentFailure,
+  provenanceBasenameDisclosure,
+} from "./work-driver-verify-develop-provenance-disclosure.ts";

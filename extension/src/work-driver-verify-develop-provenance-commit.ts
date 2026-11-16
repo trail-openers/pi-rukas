@@ -148,14 +148,28 @@ async function probeToken(
   }
 }
 
-/** Does any path in this listing carry `name` as its final component? Compared component-wise,
- * so `out.ndjson` is named by `deep/nested/out.ndjson` and not by `deep/nested/xout.ndjson`. */
-function basenamePresent(paths: ReadonlySet<string>, name: string): boolean {
+/** Does any path in this listing carry `name` as its final component? Component-wise, so
+ * `out.ndjson` is named by `deep/nested/out.ndjson` and NOT by `deep/nested/xout.ndjson`. Exported
+ * as the predicate and used through {@link basenameMatch}: the whole-tree listing is read once and
+ * then tested per candidate, and a reviewer checking "can a substring ever satisfy a claim" should
+ * read this one line rather than hunt for a `Set.has` that would have been both faster and wrong
+ * about paths at depth. */
+export function basenameNames(paths: ReadonlySet<string>, name: string): boolean {
+  return basenameMatch(paths, name) !== undefined;
+}
+
+/** The first path in this listing whose final component is exactly `name`, or undefined when no
+ * path is. Compared component-wise, so `out.ndjson` is named by `deep/nested/out.ndjson` and not
+ * by `deep/nested/xout.ndjson`. The matched path is RETURNED rather than reduced to a boolean:
+ * the caller discloses it, because a bare claim satisfied at some unrelated depth is a weaker
+ * answer than one satisfied at the path the record spelled out, and a reviewer has to be able to
+ * see which of the two the green rests on. */
+function basenameMatch(paths: ReadonlySet<string>, name: string): string | undefined {
   for (const p of paths) {
     const base = p.slice(p.lastIndexOf("/") + 1);
-    if (base === name) return true;
+    if (base === name) return p;
   }
-  return false;
+  return undefined;
 }
 
 /**
@@ -170,6 +184,13 @@ function basenamePresent(paths: ReadonlySet<string>, name: string): boolean {
  * on the caller's `basenameArm` flag (the prose switch) so the v0.14.85 off arm asks exactly the
  * reads it shipped with; a bare name's claim is the same with or without a split, but the off
  * arm's byte-identity requires the shipped exact-path read for it.
+ *
+ * `via` carries the tree path that satisfied a BARE-name claim, so the caller can disclose that
+ * the commit answered the claim at a path other than the one the record named. It is `undefined`
+ * for every exact-path answer — including a bare claim under `basenameArm: false`, which is
+ * answered exactly, by a read that cannot say where in the tree it matched. It is the gate's
+ * out-channel, so it is a parameter rather than something this module reports itself: this file
+ * judges a candidate, it does not own the PR body.
  */
 export async function probeCandidate(
   execFn: NonNullable<DriverContext["verifyExecFn"]>,
@@ -178,9 +199,16 @@ export async function probeCandidate(
   probe: string,
   treePaths: TreePaths,
   basenameArm: boolean,
+  onBasenameMatch?: (path: string) => void,
 ): Promise<ProbeVerdict> {
   if (probe.includes("/") || !basenameArm) return await probeToken(execFn, cwd, oid, probe);
   const tree = await treePaths();
   if (!tree.ok) return "unreadable";
-  return basenamePresent(tree.paths, probe) ? "present" : "absent";
+  const matched = basenameMatch(tree.paths, probe);
+  if (matched === undefined) return "absent";
+  // Only the tree read can name a path, so only it reports one. `onBasenameMatch` is a void
+  // return: a caller that passed no sink is not receiving the disclosure, which is the off arm's
+  // byte identity, and the judgement it drives is unchanged either way.
+  onBasenameMatch?.(matched);
+  return "present";
 }

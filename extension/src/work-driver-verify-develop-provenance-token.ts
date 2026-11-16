@@ -162,13 +162,54 @@ export const PROVENANCE_MAX_CANDIDATES_PER_VALUE = 8;
  * classifier below must refuse rather than silently repair by stripping its quotes. */
 const FRAGMENT_SEPARATORS = /[\s(),;]+/;
 
-/** Does this fragment name something a filesystem path could be? A `/` is the ordinary case;
- * a trailing extension catches the bare filename a results record cites (`out.ndjson`), which
- * is the shape the #256 record used and the one the tree-wide basename probe exists for. A
- * fragment with neither is prose — `elapsed_s`, `of`, `via` — and probing a word would buy a
- * failure for a word. */
+/** Extensions this gate treats as a data file's own suffix, and therefore as a suffix a bare claim
+ * may carry. Deliberately a list rather than "any dot and up to eight alphanumerics": the general
+ * form turns ordinary English into probes — `v1.2.3` and `3.4.5` (versions), `v2` release tags —
+ * and a probe of a token the record never claimed as data reddens a develop round over prose. A
+ * measurement record cites a corpus or the script that produced it, and that is what this list
+ * holds; prose that points a human at a `README` or a `.md` is a doc reference, not a corpus, so
+ * markdown is deliberately NOT here. A slash still makes a fragment a candidate on its own, so an
+ * unlisted suffix under a directory (`data/metrics.parquet`) is still judged. */
+const DATA_SUFFIXES = [
+  ".json",
+  ".ndjson",
+  ".jsonl",
+  ".tsv",
+  ".csv",
+  ".log",
+  ".txt",
+  ".sh",
+] as const;
+
+/** Is `fragment`'s final component one of {@link DATA_SUFFIXES}, and not a whole name that merely
+ * IS the suffix? A bare `.json` or `.log` is a hidden extension file or a stray dot, never the
+ * basename a measurement record cites, and probing it buys a git read for a punctuation mark. */
+function endsWithDataSuffix(fragment: string): boolean {
+  const base = fragment.slice(fragment.lastIndexOf("/") + 1).toLowerCase();
+  return DATA_SUFFIXES.some((suffix) => base.endsWith(suffix) && base !== suffix);
+}
+
+/** All of a fragment's `/`-separated components digits? `3/4`, `12/16` and `2/3` are how a ratio or
+ * a fraction gets typed in a sentence, and they carry no claim on a file: a slash is path evidence
+ * only when something on one side of it is NOT a bare number. A versioned path (`logs/2024/01/x.ndjson`,
+ * `v2/1/run.log`) fails this test — one component carries letters or a dot — so the rule refuses
+ * arithmetic and never a real path. */
+function allNumericSegments(fragment: string): boolean {
+  const parts = fragment.split("/");
+  return parts.every((part) => /^[0-9]+$/.test(part));
+}
+
+/** Does this fragment name something a filesystem path could be? A `/` is the ordinary case and
+ * is taken on its own — the gate has no basis to guess that `2024/01/summary.ndjson` is not a path,
+ * and refusing a slashed fragment is how a real claim passes silently — except when every component
+ * is a bare number, which is a ratio. A bare word, which carries no directory evidence at all, is
+ * taken only when it ends in a {@link DATA_SUFFIXES} suffix: that catches the bare filename a
+ * results record cites (`out.ndjson`), the shape the #256 record used and the one the tree-wide
+ * basename probe exists for, while leaving `v1.2.3`, `3.4.5` and `README` as the prose they are.
+ * Probing a word buys a failure for a word. */
 function looksLikePathFragment(fragment: string): boolean {
-  return fragment.includes("/") || /\.[A-Za-z0-9]{1,8}$/.test(fragment);
+  if (fragment.includes("/")) return !allNumericSegments(fragment);
+  return endsWithDataSuffix(fragment);
 }
 
 /** A `scheme://` fragment is a URL, and a URL is context rather than a claim: the gate has no
@@ -225,4 +266,19 @@ export function yieldsNoCandidate(value: string): boolean {
  * — a second spelling of this is a second source of truth for what "the same token" means. */
 export function provenanceTokenId(key: string, token: string): string {
   return `${key}\u0000${token}`;
+}
+
+/** The dedupe identity of one extracted FRAGMENT. It is the fragment alone — with no key —
+ * because the claim a fragment makes is about the file it names, not about the key it sat under:
+ * two rows of one corpus that cite the same absent file in different sentences are one claim.
+ *
+ * The `frag\0` prefix is load-bearing, not cosmetic. Without it the bare fragment string is the
+ * identity, and that string is exactly what {@link provenanceTokenId} also produces for the
+ * (key, value) pair whose key is `"frag"` — but worse, a fragment identical to a whole value under
+ * any other key collides with that value's identity and is then never offered at all: the claim
+ * vanishes with no probe, no failure, no note and no disclosure row. Prefixing the identity with a
+ * marker a `key\0value` identity can never start with makes the two namespaces disjoint, so a
+ * fragment and a whole value that carry the same bytes each get judged on their own. */
+export function provenanceFragmentId(fragment: string): string {
+  return `frag\u0000${fragment}`;
 }

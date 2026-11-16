@@ -20,6 +20,7 @@ import {
   PROVENANCE_KEYS,
   PROVENANCE_MAX_CANDIDATES_PER_VALUE,
   PROVENANCE_MAX_TOKENS,
+  provenanceFragmentId,
   provenanceTokenId,
 } from "./work-driver-verify-develop-provenance-token.ts";
 
@@ -132,12 +133,12 @@ export function tokensOf(
   /** How many tokens this workstream has already been charged, carried in from earlier files. */
   let charged = budget?.chargedInto ?? 0;
   /** Charge the workstream's budget for one token this walk has never seen. `id` is the dedupe
-   * identity — the (key, value) pair for a whole value, the fragment alone for a fragment — and
-   * it is a parameter rather than derived here because the two identities are deliberately
-   * different. Writes through to the caller's object AS WELL AS the local count: the gate threads
-   * the budget through the executor-mediated reads between files, and a returned field can be
-   * dropped along that path without any type error — the object is the state. `charged` still
-   * starts from the carried-in number rather than the set size, because a set that deduped a
+   * identity the caller picked — the (key, value) pair for a whole value, the marker-prefixed
+   * fragment for a fragment — and the two live in DISJOINT namespaces on purpose. Writes through to
+   * the caller's object AS WELL AS the local count: the gate threads the budget through the
+   * executor-mediated reads between files, and a returned field can be dropped along that path
+   * without any type error — the object is the state. `charged`
+   * still starts from the carried-in number rather than the set size, because a set that deduped a
    * repeated token must not be charged twice for it.
    *
    * The cap bounds what is JUDGED, not what is reported: the tokens up to the budget are
@@ -150,6 +151,12 @@ export function tokensOf(
     if (budget !== undefined) budget.chargedInto = charged;
   };
   const offer = (key: string, raw: string): void => {
+    // A whole value is judged under its own (key, value) identity and nothing else. It is NOT
+    // deduped against a fragment identity: a fragment in `seen` says some sentence in the corpus
+    // named these bytes, which is not evidence that THIS value was judged, and deduping on it
+    // dropped the claim with no probe, no failure, no note and no row. The one duplication that
+    // costs anything — a value that is nothing but one fragment, which the split offers again as a
+    // fragment — is bounded, cheap, and belongs to the split arm, not here.
     const id = provenanceTokenId(key, raw);
     if (!seen.has(id)) {
       // The budget is the WORKSTREAM's, so the carried-in charge is tested first: an earlier
@@ -181,10 +188,15 @@ export function tokensOf(
    * fragments (the prose arm). Splitting is what #2295 exists for: a claim wrapped in a
    * sentence used to be the pass-by-whitespace this gate never saw.
    *
-   * The fragment identity is the FRAGMENT alone, not the (key, fragment) pair: two rows of one
-   * corpus that cite the same absent file in different sentences are one claim, and probing it
-   * twice buys a duplicate failure. The whole-value identity keeps the pair, which is what the
-   * shipped walk already used — so a value's own row and a fragment of it never collide.
+   * The fragment identity is {@link provenanceFragmentId} — the fragment under a `frag\0` marker,
+   * not the (key, fragment) pair: two rows of one corpus that cite the same absent file in
+   * different sentences are one claim, and probing it twice buys a duplicate failure. The marker
+   * is what keeps that identity from colliding with a whole value's {@link provenanceTokenId}:
+   * the bare fragment string IS a legal value under some other key, and an unmarked identity made
+   * a prose claim sharing bytes with a sibling bare claim get silently dropped — no probe, no
+   * failure, no row. The whole-value identity keeps the pair, which is what the shipped walk used,
+   * and the two namespaces are tested to stay disjoint by
+   * `test-verify-develop-provenance-prose.ts`.
    *
    * A value that yields NO fragment is offered under its key exactly as the shipped walk offered
    * it, so the caller's classifier reaches the same verdict on it it reached before #2295 — a
@@ -196,18 +208,33 @@ export function tokensOf(
     }
     const fragments = extract(raw);
     if (fragments.length === 0) {
+      // The value yielded nothing to split, so it is offered whole exactly as the shipped walk
+      // offered it — and the identity it is tested against is its OWN pair identity, never a
+      // fragment's. A fragment identity in `seen` says some sentence elsewhere in the corpus named
+      // these bytes; it does not say this value was judged, and deduping a whole value against it
+      // dropped the claim with no probe, no failure, no note and no row. `{"source":"run.log",
+      // "input":"elapsed of run.log …"}` is that shape: the second value's only fragment is the
+      // first value's whole self, so the prose claim vanished.
       offer(key, raw);
       return;
     }
     for (const fragment of fragments) {
-      if (!seen.has(fragment)) {
+      // The fragment's own identity, and nothing else. Testing it against a whole-value identity
+      // was the bug: `"run.log"` as a value and `run.log` as a fragment of a SIBLING's sentence are
+      // different claims — the first says "I read this file", the second says "this file fed that
+      // number" — and a hit on the pair identity dropped the fragment with no probe, no failure,
+      // no note and no row. The pair namespace and the fragment namespace are disjoint precisely so
+      // neither can swallow the other; a value that is nothing but one fragment is judged twice at
+      // worst, which is one extra git probe on the same answer, not a wrong one.
+      const id = provenanceFragmentId(fragment);
+      if (!seen.has(id)) {
         if (charged >= PROVENANCE_MAX_TOKENS) {
           pastCap = true;
-          charge(fragment);
+          charge(id);
           continue;
         }
         offered++;
-        charge(fragment);
+        charge(id);
         pairs.push({ key, token: fragment });
       } else if (charged >= PROVENANCE_MAX_TOKENS) {
         pastCap = true;
