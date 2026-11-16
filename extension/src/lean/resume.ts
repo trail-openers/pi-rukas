@@ -1,27 +1,19 @@
 /**
  * lean/resume — deriving where a run actually is, from its step log.
  *
- * The engine loads a run and drives it. The run's `state` and `counters` are a
- * CACHE by state.ts's own contract ("not trusted as truth; `steps` is the
- * record"), and this module is what makes that sentence mean something: it
- * folds the append-only log through the transition table and refuses a file
- * whose snapshot the fold cannot reproduce. It lives beside the engine because
- * the two check different things — the engine drives a run, this decides
- * whether a file may be driven at all — and the check is pure.
+ * The engine loads a run and drives it. The run's `state` and `counters` are a CACHE by state.ts's own
+ * contract ("not trusted as truth; `steps` is the record"), and this module is what makes that sentence mean
+ * something: it folds the append-only log through the transition table and refuses a file whose snapshot the
+ * fold cannot reproduce.
  *
- * THE FOLD ASSUMES ONE PROPERTY OF THE LOG, and it is the engine's, not the
- * reader's: the log is append-only and the engine writes ONE entry ahead for
- * EVERY visit to a state, keyed `<issue>:<state>:<n>` where `n` is the number
- * of earlier entries for that state (see `driveLoop` and `nextAttempt`). So a
- * log a drive wrote has an entry for every state the walk stood in, in order,
- * and this fold needs no exemptions to reproduce it. A step from anywhere else
- * names a verdict for a state the run was never in, and is a refusal.
+ * THE FOLD ASSUMES ONE PROPERTY OF THE LOG, and it is the engine's, not the reader's: the log is append-only
+ * and the engine writes ONE entry ahead for EVERY visit to a state, keyed `<issue>:<state>:<n>` where `n` is
+ * the number of earlier entries for that state. So a log a drive wrote has an entry for every state the walk
+ * stood in, in order, and this fold needs no exemptions to reproduce it.
  *
- * Two positions the snapshot may legitimately hold: the fold's own (`pos`),
- * and the one immediately before its last step (`before`) — a crash that took
- * the process between recording an outcome and applying it. Anything else is a
- * file to be looked at, not silently rewritten, so it throws and `runLean`
- * never touches a handler.
+ * Two positions the snapshot may legitimately hold: the fold's own (`pos`), and the one immediately before its
+ * last step (`before`) — a crash that took the process between recording an outcome and applying it. Anything
+ * else throws and `runLean` never touches a handler.
  */
 
 import { hasTransition, next } from "./machine.ts";
@@ -41,18 +33,15 @@ import {
 /**
  * The position the step log implies, refusing a run whose snapshot disagrees.
  *
- * Each fold consumes the log's next entry in the ORDER IT WAS WRITTEN, which is what picks the
- * right attempt of a state the run entered twice.
+ * Each fold consumes the log's next entry in the ORDER IT WAS WRITTEN, which is what picks the right attempt
+ * of a state the run entered twice.
  *
- * The position is DERIVED, never taken from the snapshot: the snapshot is a cache, and a replay path
- * applies recorded outcomes without running their handlers, so a file whose newest `ci` step was
- * `red` but whose snapshot still said `ci` would replay the older `ci:green` and merge. Refuse the
- * file rather than repair it.
+ * The position is DERIVED, never taken from the snapshot: the snapshot is a cache, and a replay path applies
+ * recorded outcomes without running their handlers. Refuse the file rather than repair it.
  */
 export function verifiedPosition(file: string, run: LeanRun): Position {
   const { pos, before, decided } = foldLog(run, file);
-  // A snapshot may lag the log by exactly one step and no more: the crash
-  // landed after the outcome was written and before the position was applied.
+  // A snapshot may lag the log by exactly one step and no more.
   if (!samePosition(run, pos) && !(decided && samePosition(run, before)))
     throw new LeanStateError(
       `${file}: snapshot disagrees with the step log (snapshot ${run.state} ${JSON.stringify(
@@ -61,17 +50,13 @@ export function verifiedPosition(file: string, run: LeanRun): Position {
         decided ? ` or (one step back) ${before.state} ${JSON.stringify(before.counters)}` : ""
       })`,
     );
-  // The DERIVED position, not the snapshot's — what makes "the snapshot is a cache"
-  // true in the caller rather than only in a comment.
+  // The DERIVED position, not the snapshot's.
   return pos;
 }
 
 /**
- * The fold on its own, without the snapshot judgement.
- *
- * `verifiedPosition` is the only caller in src/; it is exported for the test
- * fixtures, which must write a snapshot a real drive would have written and so
- * have to ask the fold what that is before they can compare.
+ * The fold on its own, without the snapshot judgement. `verifiedPosition` is the only caller in src/; it is
+ * exported for the test fixtures.
  */
 export function foldLog(
   run: LeanRun,
@@ -84,8 +69,8 @@ export function foldLog(
   const log = run.steps;
   let pos: Position = { state: "ready", counters: { ...INITIAL_COUNTERS } };
   let before = pos;
-  // How many entries of each state precede the entry being folded — the
-  // number the engine's own key for that entry carries.
+  // How many entries of each state precede the entry being folded — the number the engine's own key for that
+  // entry carries.
   const seen: Partial<Record<LeanState, number>> = {};
   for (let i = 0; i < log.length; i++) {
     const s = log[i] as (typeof log)[number];
@@ -97,21 +82,14 @@ export function foldLog(
       );
     };
     if (s.state !== pos.state) {
-      // The engine's one move that arrives with a visit but no verdict to carry: the
-      // deadline's route into the report (`driveLoop`, gated by
-      // `deadlineStopShouldReport`). When the clock refuses the step whose verdict would
-      // have owed the move, the run is moved into `handback` so the comment, the rewind and
-      // the head fields actually run — and there is no verdict to put on an entry for that
-      // visit, because the step that owed it never started. Refusing it would refuse the
-      // report: the record of a run the clock stopped would be one `loadRun` will not open,
-      // and because this module runs before the routing's switch is read, no env value
-      // brings such a run back.
+      // The engine's one move that arrives with a visit but no verdict to carry: the deadline's route into the
+      // report (`driveLoop`, gated by `deadlineStopShouldReport`). When the clock refuses the step whose verdict
+      // would have owed the move, the run is moved into `handback` so the comment, the rewind and the head
+      // fields actually run — and there is no verdict to put on an entry for that visit.
       //
-      // `isReportRoute` keeps the exemption as narrow as the move, and reads the WALK and
-      // the log rather than the entry being judged, so a record cannot vouch for itself.
-      // `seen` has already counted this entry, so the number of `handback` entries PRECEDING
-      // it is one less, and the loop never enters the report twice — any earlier one makes
-      // this a fabrication and the exemption is withheld.
+      // `isReportRoute` keeps the exemption as narrow as the move, and reads the WALK and the log rather than
+      // the entry being judged, so a record cannot vouch for itself. Any earlier report entry makes this a
+      // fabrication and the exemption is withheld.
       const reportedEntry = s.state === "handback";
       const firstReportEntry = (seen[s.state] ?? 1) === 1;
       if (!(reportedEntry && firstReportEntry && isReportRoute(log)))
@@ -120,24 +98,22 @@ export function foldLog(
       // A route is a visit, so the walk takes it; counters carry across unchanged.
       before = pos;
       pos = { state: "handback", counters: pos.counters };
-      // Its key is the REPORT's own (`<issue>:handback:<n>`), not one for the state the walk
-      // was left in — but it is not skipped: a routed visit still has to be the entry the
-      // engine's key rule would have written.
+      // Its key is the REPORT's own (`<issue>:handback:<n>`) — but it is not skipped: a routed visit still has
+      // to be the entry the engine's key rule would have written.
       if (s.key !== stepKey(run.issue, "handback", n))
         at(`step ${s.key} is not the ${n}th entry for handback`);
     } else if (s.key !== stepKey(run.issue, s.state, n)) {
       at(`step ${s.key} is not the ${n}th entry for ${s.state}`);
     }
     if (s.outcome === undefined) {
-      // The write-ahead of the step this run is about to re-run: a drive saves the file at
-      // that moment, so the position it persisted is exactly the one the fold stands on.
+      // The write-ahead of the step this run is about to re-run: a drive saves the file at that moment, so the
+      // position it persisted is exactly the one the fold stands on.
       if (i !== log.length - 1) at(`step ${s.key} carries no outcome but is not the newest step`);
       break;
     }
     if (!hasTransition(s.state, s.outcome.kind)) {
-      // A thrown handler or a kind the table has no arrow for: the engine
-      // records it and ends the run itself, so nothing routes it and it is the
-      // last entry the log will ever hold.
+      // A thrown handler or a kind the table has no arrow for: the engine records it and ends the run itself,
+      // so it is the last entry the log will ever hold.
       if (i !== log.length - 1)
         at(`step ${s.key} + ${JSON.stringify(s.outcome.kind)} has no arrow and is not last`);
       if (run.state !== "handed-back" || run.result === undefined)
@@ -153,16 +129,11 @@ export function foldLog(
 /**
  * Is this `handback` entry the engine's deadline route into the report, rather than an invented visit?
  *
- * Three conditions, none read from the entry being judged, so a log cannot describe its way into being
- * legal:
+ * Three conditions, none read from the entry being judged, so a log cannot describe its way into being legal:
  *
- *   - it is the run's FIRST report entry and belongs to `handback`: the routing writes a report
- *     visit and nothing else. The establishing count lives at the call site, where `seen` is in scope;
- *   - the log still ends on this `handback` entry — a route is written to end the log, so anything
- *     after it is a verdict the routing did not produce;
- *   - the log's newest DECIDED work step is a `fixed` review with no decided `verify` behind it: the
- *     premise `handback-heads.ts` judged, restated here from the same log. Without it a `handback`
- *     could be smuggled in behind any verdict.
+ *   - it is the run's FIRST report entry and belongs to `handback`;
+ *   - the log still ends on this `handback` entry — a route is written to end the log;
+ *   - the log's newest DECIDED work step is a `fixed` review with no decided `verify` behind it.
  */
 function isReportRoute(log: Step[]): boolean {
   if ((log[log.length - 1] as Step | undefined)?.state !== "handback") return false;
@@ -177,8 +148,8 @@ function isReportRoute(log: Step[]): boolean {
 }
 
 /**
- * Do a snapshot and a position agree? Field by field, because `JSON.stringify`
- * compares key ORDER as well as value.
+ * Do a snapshot and a position agree? Field by field, because `JSON.stringify` compares key ORDER as well as
+ * value.
  */
 function samePosition(run: LeanRun, pos: Position): boolean {
   return run.state === pos.state && sameCounters(run.counters, pos.counters);
