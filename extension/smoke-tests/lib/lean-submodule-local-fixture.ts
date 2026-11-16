@@ -33,9 +33,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { execp } from "../../src/exec.ts";
-import type { ExecFn } from "../../src/worktree.ts";
-import { defaultConfig, type WorkConfig } from "../../src/lean/config.ts";
+import { type WorkConfig, defaultConfig } from "../../src/lean/config.ts";
 import { gitTestEnv, trackedTempDir } from "./git-test-env.ts";
 
 /** The submodule's mount point, and the file committed inside it. */
@@ -129,7 +127,7 @@ export function plainRepo(tag: string): { repoRoot: string; baseSha: string } {
 }
 
 /** Point one `.gitmodules` entry's `url` at `url`, leaving the rest of the file alone. */
-function retarget(repoRoot: string, name: string, url: string): void {
+export function retarget(repoRoot: string, name: string, url: string): void {
   const file = path.join(repoRoot, ".gitmodules");
   const lines = readFileSync(file, "utf8").split("\n");
   let inside = false;
@@ -158,11 +156,49 @@ export function moduleStore(checkout: string, sub = SUB): string | undefined {
   return undefined;
 }
 
+/**
+ * Make a module store hold its own objects.
+ *
+ * `git submodule add` clones with `--reference`/`--dissoc` (or `--local` when the
+ * source is on this host), and either leaves the new store reading loose objects from
+ * the source it was mounted from — an `objects/info/alternates` file or a
+ * `core.objectsPath` — rather than holding them. A fixture that then deletes the
+ * source still "passes" while git is reading a vanished directory, so a case that
+ * means "the objects are here" has to sever the link and say so: after this, the
+ * store answers for itself or the case fails loudly.
+ */
+export function severAlternates(store: string): void {
+  rmSync(path.join(store, "objects", "info", "alternates"), { force: true });
+  const config = path.join(store, "config");
+  const read = spawnSync("git", ["config", "--file", config, "--get", "core.objectsPath"], {
+    encoding: "utf8",
+    env: gitEnv(),
+  });
+  // git's own exit codes for `--get`: 0 found it, 1 found nothing, >1 the file could
+  // not be read. Probing before unsetting is what makes the "did I have to edit it"
+  // question answerable instead of inferred, and it is the assertion that the store
+  // holds its own objects — which is the whole claim of the `"modules"` shape.
+  if (read.status !== 0 && read.status !== 1)
+    throw new Error(`could not read ${config}: ${(read.stderr ?? "").trim()}`);
+  if (read.status === 0) {
+    const out = spawnSync("git", ["config", "--file", config, "--unset-all", "core.objectsPath"], {
+      encoding: "utf8",
+      env: gitEnv(),
+    });
+    if (out.status !== 0)
+      throw new Error(`could not clear core.objectsPath in ${store}: ${(out.stderr ?? "").trim()}`);
+  }
+}
+
 /** Every git dir `checkout` could be keeping a module store under. */
 function moduleDirs(checkout: string): string[] {
   const dirs = new Set<string>();
   for (const arg of ["--git-common-dir", "--git-dir", "--absolute-git-dir"]) {
-    const r = spawnSync("git", ["rev-parse", arg], { cwd: checkout, encoding: "utf8", env: gitEnv() });
+    const r = spawnSync("git", ["rev-parse", arg], {
+      cwd: checkout,
+      encoding: "utf8",
+      env: gitEnv(),
+    });
     const dir = (r.stdout ?? "").trim();
     if (r.status === 0 && dir !== "") dirs.add(path.resolve(checkout, dir));
   }
@@ -191,12 +227,28 @@ export function repoWithSubmodule(
   const remote = remoteRepo(`${tag}-sub`);
   const submoduleHead = gitIn(remote, "rev-parse", "HEAD");
   const { repoRoot } = plainRepo(tag);
-  gitIn(repoRoot, "-c", "protocol.file.allow=always", "submodule", "add", "-q", "--force", remote, SUB);
+  gitIn(
+    repoRoot,
+    "-c",
+    "protocol.file.allow=always",
+    "submodule",
+    "add",
+    "-q",
+    "--force",
+    remote,
+    SUB,
+  );
   // The module store's own `origin` is the local repo it was mounted from — but the
   // recorded URL is what a `submodule update` asks first, so the origin is set and
   // then the URL is rewritten: the module store keeps a source this host holds,
   // `.gitmodules` keeps the lie the case is about.
-  gitIn(path.join(repoRoot, ".git", "modules", ...SUB.split("/")), "remote", "set-url", "origin", remote);
+  gitIn(
+    path.join(repoRoot, ".git", "modules", ...SUB.split("/")),
+    "remote",
+    "set-url",
+    "origin",
+    remote,
+  );
   retarget(repoRoot, SUB, UNREACHABLE_URL);
   gitIn(
     path.join(repoRoot, ".git", "modules", ...SUB.split("/")),
@@ -205,10 +257,58 @@ export function repoWithSubmodule(
     "origin",
     UNREACHABLE_URL,
   );
-  if (opts.populate === "modules") rmSync(path.join(repoRoot, SUB), { recursive: true, force: true });
+  // Same reason as the nested case: the module store keeps alternates into the
+  // mount it was cloned from, and the case must not depend on that directory.
+  severAlternates(path.join(repoRoot, ".git", "modules", ...SUB.split("/")));
+  // Re-stage the gitlink BEFORE anything is removed, and restore it if the removal
+  // still ate it. `git submodule add` leaves the gitlink STAGED and its checkout
+  // holding files; a `git add -A` taken after the checkout was emptied re-reads that
+  // path — gitlink now gone from the work tree — as an ordinary deletion and drops it
+  // from the index, so the `"modules"` shape silently becomes a base with no submodule
+  // at all. Staging first is not enough on its own (measured: the second `add -A` still
+  // deletes it), so the entry is written back from the commit that `submodule add`
+  // proved, with the recorded gitlink as the value. A base whose tree lost the gitlink
+  // would make every assertion below pass for the wrong reason, so the shape is checked
+  // rather than assumed.
   gitIn(repoRoot, "add", "-A");
+  if (opts.populate === "modules") {
+    rmSync(path.join(repoRoot, SUB), { recursive: true, force: true });
+    gitIn(repoRoot, "add", "-A");
+    restoreGitlink(repoRoot, SUB, submoduleHead);
+  }
   gitIn(repoRoot, "commit", "-q", "-m", "carry the submodule with a URL nothing can reach");
+  if (gitIn(repoRoot, "ls-files", "-s", "--", SUB) === "")
+    throw new Error(`the module-store fixture lost its gitlink at ${SUB}`);
   return { repoRoot, baseSha: gitIn(repoRoot, "rev-parse", "HEAD"), remote, submoduleHead };
+}
+
+/**
+ * The paths one commit of `dir` tracks.
+ *
+ * Used to give the submodule's own commit a directory: a fixture that builds an
+ * absent-submodule base needs a tracked change in that commit, and a path which is
+ * nothing but a gitlink can leave `commit` with nothing to record.
+ */
+function trackedFiles(dir: string, ...args: string[]): string[] {
+  return gitIn(dir, "ls-tree", "-r", "--name-only", "HEAD", ...args)
+    .split("\n")
+    .filter((l) => l !== "");
+}
+
+/**
+ * Put a gitlink back in the index when an `add -A` ate it.
+ *
+ * `git update-index --cacheinfo <mode>,<sha>,<path>` is how git records a submodule
+ * entry without a fetch, which is the same shape `submodule add` had already proven
+ * against the source. Refused unless the entry is genuinely a `160000` gitlink, so a
+ * fixture that wrote a blob here fails loudly instead of building a base with no
+ * submodule in it.
+ */
+function restoreGitlink(repoRoot: string, sub: string, sha: string): void {
+  if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error(`no commit to record for the gitlink at ${sub}`);
+  gitIn(repoRoot, "update-index", "--add", "--cacheinfo", `160000,${sha},${sub}`);
+  if (!gitIn(repoRoot, "ls-files", "-s", "--", sub).startsWith("160000 "))
+    throw new Error(`could not record the gitlink at ${sub}`);
 }
 
 /**
@@ -219,33 +319,75 @@ export function repoWithSubmodule(
  * test is a base with nothing local to initialise from — no module store and no
  * populated path.
  */
-export function repoWithAbsentSubmodule(tag: string): {
+export function repoWithAbsentSubmodule(
+  tag: string,
+  source?: string,
+): {
   repoRoot: string;
   baseSha: string;
   submoduleHead: string;
 } {
-  const remote = remoteRepo(`${tag}-sub`);
+  // A caller that already has the submodule's repo passes it in — the field shape is
+  // a superproject that records a submodule whose source lives SOMEWHERE and was
+  // never cloned here — otherwise the fixture builds one just to read its HEAD.
+  const provided = source !== undefined;
+  const remote = provided ? source : remoteRepo(`${tag}-sub`);
   const submoduleHead = gitIn(remote, "rev-parse", "HEAD");
+  // Read the source's bytes out before it goes: a provided source stays on disk and its
+  // contents are the point of the case, so the fixture must not delete a directory it
+  // was handed.
+  const contents = trackedFiles(remote);
   const { repoRoot } = plainRepo(tag);
-  putIn(repoRoot, ".gitmodules", `[submodule "${SUB}"]\n\tpath = ${SUB}\n\turl = ${UNREACHABLE_URL}\n`);
+  // Materialise the submodule's tree and then delete it again. A tracked path is what a
+  // `git add -A` has to notice, and noticing it is what makes the commit below a real
+  // commit — without a change to stage there is no base commit to reset to, and the case
+  // silently runs against the plain repo instead. The bytes are removed before the
+  // commit, so what the base ends up holding is the gitlink and nothing else.
+  for (const rel of contents) putIn(repoRoot, path.join(SUB, rel), `sabotage filler for ${rel}\n`);
+  putIn(
+    repoRoot,
+    ".gitmodules",
+    `[submodule "${SUB}"]\n\tpath = ${SUB}\n\turl = ${UNREACHABLE_URL}\n`,
+  );
   gitIn(repoRoot, "update-index", "--add", "--cacheinfo", `160000,${submoduleHead},${SUB}`);
   gitIn(repoRoot, "add", "-A");
+  rmSync(path.join(repoRoot, SUB), { recursive: true, force: true });
+  // The gitlink has to be in the index before the removal can be mistaken for an
+  // ordinary deletion of a directory (see `repoWithSubmodule` for the trap).
+  restoreGitlink(repoRoot, SUB, submoduleHead);
   gitIn(repoRoot, "commit", "-q", "-m", "record a submodule this host has never had");
-  // Nothing may be left holding the objects: the case is "absent from the
-  // superproject", and a module store the fixture forgot to delete would make it
-  // a different case that still passed.
-  rmSync(remote, { recursive: true, force: true });
-  for (const dir of moduleDirs(repoRoot)) rmSync(path.join(dir, "modules"), { recursive: true, force: true });
-  return { repoRoot, baseSha: gitIn(repoRoot, "rev-parse", "HEAD"), submoduleHead };
+  // Nothing may be left holding the objects in the SUPERPROJECT: the case is
+  // "absent from the superproject", and a module store the fixture forgot to delete
+  // would make it a different case that still passed. A source the caller supplied
+  // stays where it is — it is outside the superproject and its existence is the
+  // point of the case. The base is then re-committed with the file gone, so the
+  // SUPERPROJECT holds neither store nor checkout, which is the shape under test.
+  if (!provided) rmSync(remote, { recursive: true, force: true });
+  for (const dir of moduleDirs(repoRoot))
+    rmSync(path.join(dir, "modules"), { recursive: true, force: true });
+  // The base must hold NOTHING of the submodule: no module store and no populated path.
+  // The single commit already records exactly that (the filler was deleted before it),
+  // so there is nothing further to stage — and the message is what proves the base is
+  // that commit rather than an earlier one: `commit` exits 1 on a tree with nothing to
+  // stage, and `rev-parse HEAD` would then still name the previous commit quietly.
+  const built = gitIn(repoRoot, "rev-parse", "HEAD");
+  if (gitIn(repoRoot, "log", "-1", "--format=%s") !== "record a submodule this host has never had")
+    throw new Error(`the absent-submodule fixture built no base commit in ${repoRoot}`);
+  return { repoRoot, baseSha: built, submoduleHead };
 }
 
 /**
  * A two-level submodule: the superproject carries `vendor/lib`, and that submodule's
  * own commit carries `nested/deep` at another local repo.
  *
- * The nested level is the point — the initialisation asks git for `--recursive`, so
- * its source is reached through the same per-invocation config the fix sets. A fix
- * that only solved the top level passes the flat cases and dies here.
+ * The nested level is the point, and it is the level the fix deliberately does NOT
+ * seed: the seeding call is per-path and non-recursive, so a deeper submodule is used
+ * only if the superproject already holds it and is otherwise left absent. That is only a
+ * testable claim if the nested level could have been populated by some accident of
+ * construction, so the inner repo is DELETED once the outer one holds its objects — and
+ * the inner checkout inside the outer repo is emptied, so nothing but the module store
+ * holds the nested bytes. A fixture that left the source on disk would let a nested
+ * level appear populated for a reason the step had nothing to do with.
  */
 export function repoWithNestedSubmodule(tag: string): {
   repoRoot: string;
@@ -256,7 +398,25 @@ export function repoWithNestedSubmodule(tag: string): {
   const inner = remoteRepo(`${tag}-inner`);
   const nestedHead = gitIn(inner, "rev-parse", "HEAD");
   const outer = remoteRepo(`${tag}-outer`);
-  gitIn(outer, "-c", "protocol.file.allow=always", "submodule", "add", "-q", "--force", inner, NESTED);
+  // The nested level is mounted, its objects are secured in a module store, and THEN
+  // every record of its source is rewritten to the unreachable URL. Setting the URL
+  // before the mount is the trap: `git submodule add` clones with
+  // `--origin <name>`, and a named origin's URL is written at clone time, so
+  // `remote set-url` afterwards leaves the clone holding `--reference`/`--dissoc`
+  // alternates into the source that is then deleted — and the case goes green while
+  // git reads loose objects from a vanished directory.
+  gitIn(
+    outer,
+    "-c",
+    "protocol.file.allow=always",
+    "submodule",
+    "add",
+    "-q",
+    "--force",
+    inner,
+    NESTED,
+  );
+  severAlternates(path.join(outer, ".git", "modules", ...NESTED.split("/")));
   gitIn(
     path.join(outer, ".git", "modules", ...NESTED.split("/")),
     "remote",
@@ -268,9 +428,33 @@ export function repoWithNestedSubmodule(tag: string): {
   gitIn(outer, "add", "-A");
   gitIn(outer, "commit", "-q", "-m", "carry the nested submodule with an unreachable URL");
   const submoduleHead = gitIn(outer, "rev-parse", "HEAD");
+  // The nested level now lives in the outer repo's module store and nowhere else this
+  // host can fetch from. Emptying the checkout under `nested/deep` is what makes the
+  // nested assertion mean something: without it the file is simply there, and a step
+  // that populated nothing would still see it.
+  rmSync(path.join(outer, NESTED), { recursive: true, force: true });
+  gitIn(outer, "add", "-A");
+  gitIn(outer, "commit", "-q", "-m", "and leave only the module store holding the nested level");
+  if (
+    gitIn(outer, "log", "-1", "--format=%s") !==
+    "and leave only the module store holding the nested level"
+  )
+    throw new Error(`the nested fixture's sabotage produced no commit in ${outer}`);
+  const outerHead = gitIn(outer, "rev-parse", "HEAD");
 
   const { repoRoot } = plainRepo(tag);
-  gitIn(repoRoot, "-c", "protocol.file.allow=always", "submodule", "add", "-q", "--force", outer, SUB);
+  gitIn(
+    repoRoot,
+    "-c",
+    "protocol.file.allow=always",
+    "submodule",
+    "add",
+    "-q",
+    "--force",
+    outer,
+    SUB,
+  );
+  severAlternates(path.join(repoRoot, ".git", "modules", ...SUB.split("/")));
   gitIn(
     path.join(repoRoot, ".git", "modules", ...SUB.split("/")),
     "remote",
@@ -281,121 +465,14 @@ export function repoWithNestedSubmodule(tag: string): {
   retarget(repoRoot, SUB, UNREACHABLE_URL);
   gitIn(repoRoot, "add", "-A");
   gitIn(repoRoot, "commit", "-q", "-m", "carry the outer submodule with an unreachable URL");
-  return { repoRoot, baseSha: gitIn(repoRoot, "rev-parse", "HEAD"), submoduleHead, nestedHead };
-}
-
-/** One git call the recording exec saw. */
-export interface RecordedCall {
-  cmd: string;
-  argv: string[];
-  cwd: string;
-}
-
-/**
- * An `ExecFn` that records every call and refuses anything that could reach the
- * network. The refusal happens before the child spawns, so the argv is the evidence
- * and the host's connectivity is not part of the verdict. See the module header.
- */
-export function offlineExec(): { exec: ExecFn; calls: RecordedCall[]; network: string[] } {
-  const calls: RecordedCall[] = [];
-  const network: string[] = [];
-  const exec: ExecFn = async (cmd, o) => {
-    const argv = o?.argv ?? [];
-    const cwd = o?.cwd ?? process.cwd();
-    calls.push({ cmd, argv: [...argv], cwd });
-    if (isNetworkArgv(argv)) {
-      network.push(`${cmd} ${argv.join(" ")}`);
-      const err = new Error(`offline exec refused a network-shaped call: ${cmd} ${joined}`) as Error & {
-        code?: number;
-      };
-      err.code = 128;
-      throw err;
-    }
-    return execp(cmd, {
-      ...o,
-      env: {
-        ...gitEnv(),
-        GIT_TERMINAL_PROMPT: "0",
-        GIT_PROXY_UNKNOWN_PROTOCOL: "abort",
-        http_proxy: "",
-        https_proxy: "",
-        ...(o?.env ?? {}),
-      },
-    });
+  // The inner source is gone: a nested level that appeared populated afterwards can only
+  // have come from bytes the superproject already held — or from nothing at all, which
+  // is what this fix deliberately leaves it as.
+  rmSync(inner, { recursive: true, force: true });
+  return {
+    repoRoot,
+    baseSha: gitIn(repoRoot, "rev-parse", "HEAD"),
+    submoduleHead: outerHead,
+    nestedHead,
   };
-  return { exec, calls, network };
-}
-
-/**
- * argv shapes that can only mean "ask something off-host".
- *
- * The scheme forms are matched anywhere in the argv — no path on this host is named
- * `http://…`, so a match can only be a remote. The verb forms are matched on the
- * WHOLE argv, not per word, for two reasons: a submodule fetch carries its remote's
- * URL in the same invocation (`fetch --update-shallow -q --progress origin <url>`),
- * and git's own `--recurse-submodules` fetches sit two levels below the verb the
- * caller typed, so judging only the word after `fetch` reads a remote fetch as a
- * local one.
- */
-const REMOTE_SHAPE: readonly RegExp[] = [
-  /\b(?:https?|git|ssh|ftps?):\/\/\S/,
-  /\bgit@\S+:/,
-  /\bssh:\S+@\S/,
-];
-/** The verbs whose whole point is moving commits between hosts. */
-const FETCH_VERB = /^(?:fetch|ls-remote|pull|push|clone)$/;
-
-/**
- * Does this argv ask git for commits this host does not already hold?
- *
- * A scheme, an `scp`-style remote, or an `ssh:` form anywhere is a remote: no path on
- * this host is named `http://…`, so only a remote can match, and the match is made
- * on the word as git received it — a path made absolute here would turn a relative
- * one into something that looks local. Beyond that, a fetch-family verb with any
- * operand that is not an option, a `-c k=v` config assignment, or a path is a remote
- * read: git's own submodule fetches carry the remote's URL among the arguments
- * (`fetch --update-shallow -q origin <url>`), so the scan runs over every word and
- * not only the one after the verb. A local `git clone /abs/path` — what the fix
- * issues — answers false.
- */
-function isNetworkArgv(argv: string[]): boolean {
-  if (argv.some((a) => REMOTE_SHAPE.some((re) => re.test(a)))) return true;
-  if (!argv.some((a) => FETCH_VERB.test(a))) return false;
-  return argv.some((a) => !a.startsWith("-") && !a.includes("=") && a !== "." && !looksLikePath(a));
-}
-
-/** Is `a` a filesystem path rather than a remote name? (Any spelling with a `/`.) */
-function looksLikePath(a: string): boolean {
-  return a.includes("/") || a.includes(path.sep);
-}
-
-/** The submodule's HEAD as the tree reports it, or `undefined` when it has none. */
-export function submoduleHead(dir: string, rel = SUB): string | undefined {
-  const r = spawnSync("git", ["rev-parse", "HEAD"], {
-    cwd: path.join(dir, rel),
-    encoding: "utf8",
-    env: gitEnv(),
-  });
-  if (r.status !== 0) return undefined;
-  const sha = (r.stdout ?? "").trim();
-  return sha === "" ? undefined : sha;
-}
-
-/** Does the tree hold `rel` (a submodule's committed file)? */
-export function populated(dir: string, rel = INSIDE): boolean {
-  return existsSync(path.join(dir, rel));
-}
-
-/** Read a file, or `undefined` when it is not there. */
-export function readOrNull(file: string): string | undefined {
-  try {
-    return readFileSync(file, "utf8");
-  } catch {
-    return undefined;
-  }
-}
-
-/** `git -C`-style helper for a case's own assertions. */
-export function show(dir: string, ...args: string[]): string {
-  return gitIn(dir, ...args);
 }

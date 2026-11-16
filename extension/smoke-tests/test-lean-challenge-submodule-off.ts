@@ -30,13 +30,6 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { withEnv } from "./lib/env-scope.ts";
 import {
-  INSIDE,
-  attachSubmodule,
-  makeSubmoduleUnfetchable,
-  remoteRepo,
-  submoduleCalls,
-} from "./lib/lean-submodule-off-fixture.ts";
-import {
   type ChallengeBuilt,
   challengeFixture,
   put,
@@ -44,6 +37,13 @@ import {
   runChallenge,
   submit,
 } from "./lib/lean-challenge-fixture.ts";
+import {
+  INSIDE,
+  attachSubmodule,
+  makeSubmoduleUnfetchable,
+  remoteRepo,
+  submoduleCalls,
+} from "./lib/lean-submodule-off-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -110,10 +110,7 @@ async function drive(issue: number): Promise<{
       boom = err as Error;
     }
   });
-  assert(
-    boom === undefined,
-    `(a) the off arm ran to completion (${boom?.message ?? "clean"})`,
-  );
+  assert(boom === undefined, `(a) the off arm ran to completion (${boom?.message ?? "clean"})`);
   assert(
     ran?.threw === undefined,
     `(a) the challenge round did not hand back over a submodule it was never asked to fetch (${ran?.threw?.message?.split("\n")[0] ?? "clean"})`,

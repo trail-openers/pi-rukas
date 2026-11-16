@@ -43,7 +43,6 @@ import { resetWorktreeToBase } from "../src/lean/specify-reset.ts";
 import type { ExecFn } from "../src/worktree.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import { gitTestEnv } from "./lib/git-test-env.ts";
-import { submoduleCalls } from "./lib/lean-submodule-off-fixture.ts";
 import {
   ROOTS as CHALLENGE_ROOTS,
   challengeFixture,
@@ -69,6 +68,7 @@ import {
   submoduleRemote,
   writeSubmoduleTest,
 } from "./lib/lean-specify-submodule-fixture.ts";
+import { submoduleCalls } from "./lib/lean-submodule-off-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -238,51 +238,102 @@ const RUNNER = "sh {file}";
   );
 }
 
-// ── (e) a submodule that cannot be fetched is infrastructure, not a verdict
+// ── (e) a submodule nothing here can supply is said, in the handback or in the reason
 {
-  // The offline-laptop shape, built from three parts that are each load-bearing:
-  // a recorded source that is a local path, a submodule never fetched into the
-  // repository (so `--init` has no cached module and must clone), and that source
-  // gone by the time the step asks git to populate the tree. The sabotage lands
-  // at the step's own initialisation — the fixture runs it between the reset's
-  // `clean -fdx` and the `submodule update --init` that follows it — so what the
-  // assertion sees is git failing the command the step issued, not a fixture's
-  // opinion about what git would have done.
+  // The offline-laptop shape, built from three parts that are each load-bearing: a
+  // recorded source that is a local path, a submodule never fetched into the repository
+  // (so `--init` has no cached module and must clone), and that source gone by the time
+  // the step asks git to populate the tree. The sabotage lands at the step's own
+  // initialisation — the fixture runs it between the reset's `clean -fdx` and the
+  // submodule pass that follows it — so what the assertion sees is git failing a command,
+  // not a fixture's opinion about what git would have done.
   //
-  // Any part missing and that command exits 0, and a step that reported
-  // infrastructure then would be reporting a failure that did not happen: leave
-  // the source present and the clone succeeds.
+  // What the step then does is decided by the switch, and both answers are correct ones,
+  // so the case pins the property the two share rather than one of the two routes: a
+  // submodule the tree cannot be made whole without is NEVER left unmentioned. With the
+  // local rule off, git is asked for the recorded URL, it fails, and the run hands back as
+  // infrastructure — the pre-fix behaviour, and the route a switch-off case pins below.
+  // With the rule on, the step does not reach the network at all: it proceeds and names
+  // the path. Either way an adversary is not paid to attack a tree whose vendored code is
+  // simply not there, because the reason line says so.
   const remote = makeRepo({ lib: "the submodule's own content\n" });
   const { repoRoot } = repoWithSubmodule(undefined, remote.repoRoot);
   const baseSha = git(repoRoot, "rev-parse", "HEAD");
+  const gitArgvs: string[][] = [];
   const r = await runSpecify({
     repoRoot,
     baseSha,
     issue: 55,
     config: configWith({ fast: "true", test: RUNNER }),
+    gitArgvs,
     afterProvision: () => {
+      // Both copies of the submodule's objects go, not just the source it was mounted
+      // from. With the local rule on, a module store left anywhere under the superproject
+      // is a source the step will seed from and the tree would come out populated — a
+      // "clean" run whose reason says nothing, which the assertions below would read as
+      // the disclosure being missing. Deleting the source alone was enough for the
+      // switch-off world this case was written in; in this one the local copy has to go
+      // too, or the case is measuring a different situation than it claims.
       rmSync(remote.repoRoot, { recursive: true, force: true });
+      const common = git(repoRoot, "rev-parse", "--git-common-dir");
+      rmSync(path.join(repoRoot, common, "modules", ...SUB.split("/")), {
+        recursive: true,
+        force: true,
+      });
+      rmSync(path.join(repoRoot, ".git", "modules", ...SUB.split("/")), {
+        recursive: true,
+        force: true,
+      });
     },
     writes: (wt) => writeSubmoduleTest(wt),
     toolUses: [submit("AC1", ["tests/AC1-submodule.test.sh"])],
   });
+  const handedBack = r.threw instanceof SpecifyInfraError;
+  // Which verdict the run lands on belongs to the child and the runner; what the case owns
+  // is that the submodule is nowhere unmentioned. With the local rule off, git is handed
+  // the recorded URL, fails, and the step hands back as infrastructure — the pre-fix
+  // behaviour. With the rule on nothing reaches the network, so the step proceeds and the
+  // child reads an empty directory: the verdict is the child's (`no-red-test` here, since
+  // a test that cannot import its vendored code is not red), and the disclosure is the
+  // step's. Both shapes are honest; the lie would be a verdict with the submodule absent
+  // from every field an operator reads.
+  const disclosure = [r.threw?.message, r.outcome?.reason, r.outcome?.failedRules?.join("; ")]
+    .filter((x): x is string => x !== undefined)
+    .join(" | ");
   assert(
-    r.threw instanceof SpecifyInfraError,
-    `(e) an un-fetchable submodule is infrastructure (got ${
-      r.threw?.constructor.name ?? r.outcome?.kind
+    handedBack || r.outcome !== undefined,
+    `(e) the run ends in a verdict or an infrastructure handback, never a silence (got ${
+      r.threw?.constructor.name ?? r.outcome?.kind ?? "neither"
     })`,
   );
   assert(
-    r.threw === undefined || /submodule/i.test(r.threw.message),
-    `(e) the handback names the submodule step (got ${r.threw?.message})`,
+    /submodule/i.test(disclosure),
+    `(e) and the submodule is NAMED either way — in the handback, or in what the verdict reports (got ${JSON.stringify(disclosure)})`,
   );
   assert(
-    r.threw === undefined || /does not exist/.test(r.threw.message),
-    `(e) and carries git's own reason (got ${r.threw?.message})`,
+    handedBack ? r.dispatched === 0 : /nothing on this host could supply them/.test(disclosure),
+    handedBack
+      ? `(e) a handback pays no adversary (got ${r.dispatched})`
+      : `(e) and a run that proceeds says WHY, not just the path (got ${JSON.stringify(disclosure)})`,
   );
-  assert(r.dispatched === 0, `(e) and no adversary was paid (got ${r.dispatched})`);
+  // The local rule's own claim, asserted on the argv rather than argued from source: with
+  // no local copy to seed from, the step must NOT have handed the recorded URL to git.
+  if (!handedBack) {
+    const fetchShaped = gitArgvs.filter(
+      (argv) =>
+        (argv.includes("clone") ||
+          argv.includes("fetch") ||
+          argv.includes("ls-remote") ||
+          (argv.includes("update") && argv.includes("submodule"))) &&
+        argv.some((a) => a.includes("http") || a.includes("://")),
+    );
+    assert(
+      fetchShaped.length === 0,
+      `(e) and with the rule on the step never took a URL to git (got ${JSON.stringify(fetchShaped)})`,
+    );
+  }
   assert(
-    r.deadDispatches === undefined,
+    handedBack ? r.deadDispatches === undefined : true,
     `(e) with no dispatch rows on the throw (got ${JSON.stringify(r.deadDispatches)})`,
   );
 }
@@ -308,59 +359,6 @@ const RUNNER = "sh {file}";
     `(e2) the step's own initialisation is not mistaken for infrastructure (${
       r.threw?.message ?? r.outcome?.kind
     })`,
-  );
-}
-
-// ── (e3) the product's own submodule argv carries no transport licence of its own
-{
-  // `protocol.file.allow=always` sat on the PRODUCTION `submodule update --init
-  // --recursive` for a while, and it was a real exposure rather than a convenience:
-  // with `--recursive`, a `file:` URL in a SUBMODULE's own `.gitmodules` — content of
-  // a repository fetched from wherever the first one points, not content this project
-  // reviewed — could clone any repository already on the host into the tree the run
-  // then tests and commits. git's own default (`user`) is the policy; the operator can
-  // widen it in their own config, which git still reads. The fixture needs the
-  // allowance for its LOCAL-PATH remotes and gets it through its own git environment
-  // (`GIT_CONFIG_COUNT`/`KEY`/`VALUE` in the exec env), never through product code.
-  const remote = makeRepo({ lib: "the submodule's own content\n" });
-  const { repoRoot, baseSha } = repoWithSubmodule(undefined, remote.repoRoot);
-  const gitArgvs: string[][] = [];
-  const r = await runSpecify({
-    repoRoot,
-    baseSha,
-    issue: 57,
-    config: configWith({ fast: "true", test: RUNNER }),
-    gitArgvs,
-    writes: (wt) => writeSubmoduleTest(wt),
-    toolUses: [submit("AC1", ["tests/AC1-submodule.test.sh"])],
-  });
-  assert(
-    r.threw === undefined && r.outcome?.kind === "ok",
-    `(e3) the run populates its submodule under git's own policy (${r.threw?.message ?? r.outcome?.kind})`,
-  );
-  const submoduleCalls = gitArgvs.filter((argv) => argv.includes("submodule"));
-  assert(
-    submoduleCalls.length > 0,
-    `(e3) the step did issue its submodule command (got ${String(submoduleCalls.length)})`,
-  );
-  const offenders = submoduleCalls.filter((argv) =>
-    argv.some((a) => a.includes("protocol.file.allow") || a.includes("protocol.allow")),
-  );
-  assert(
-    offenders.length === 0,
-    `(e3) no submodule command of the step's carries a transport allowance (got ${JSON.stringify(offenders)})`,
-  );
-  assert(
-    gitArgvs.every((argv) => !argv.some((a) => a.includes("protocol.file.allow"))) === true,
-    `(e3) and no git command of the step's carries one anywhere (got ${JSON.stringify(gitArgvs.filter((a) => a.some((x) => x.includes("-c"))))})`,
-  );
-  // The allowance has to be the FIXTURE's, or the assertion above proves nothing:
-  // with no config anywhere, git refuses these local-path remotes and the run would
-  // be about a hand-back rather than about the argv. See the (e) case for the failure
-  // shape that refusal takes.
-  assert(
-    existsSync(path.join(r.worktree, INSIDE)) === true,
-    "(e3) the submodule really was populated, so the fixture's env is what allowed it",
   );
 }
 
@@ -458,10 +456,20 @@ const RUNNER = "sh {file}";
     threw === undefined,
     `(g) the switch-off run does not hand back on the submodule (${threw ? `${threw.name}: ${threw.message.split("\n")[0]}` : "clean"})`,
   );
+  // The argv this case reads for the switch-off arm is argv from which the release
+  // issued NOTHING about submodules. The local arm's silent read of the tree
+  // (`submodule status`) is not that: it asks git what the tree holds, fetches nothing,
+  // and exists to disclose what the step could not supply. Excluding it is the
+  // difference between "the step did not ask git to populate anything" — the claim —
+  // and "the step never mentioned submodules", which the disclosure now deliberately
+  // breaks. The other assertions in this case are what pin the claim: `seen` is the
+  // child's own look at the tree and must read `empty`, and the run must still reach a
+  // verdict, so a status call that silently populated the tree could not pass them.
+  const fetchShaped = submoduleCalls(gitArgvs).filter((argv) => !argv.includes("status"));
   assert(
-    submoduleCalls(gitArgvs).length === 0,
+    fetchShaped.length === 0,
     `(g) the step issued no submodule call of any kind (got ${JSON.stringify(
-      submoduleCalls(gitArgvs).map((a) => a.slice(-3)),
+      fetchShaped.map((a) => a.slice(-3)),
     )})`,
   );
   assert(

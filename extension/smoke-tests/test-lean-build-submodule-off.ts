@@ -23,18 +23,20 @@
  * restatement of (a).
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import path from "node:path";
 import { withEnv } from "./lib/env-scope.ts";
+import { buildFixture, runBuild } from "./lib/lean-build-fixture.ts";
 import {
   INSIDE,
+  SUB,
   attachSubmodule,
   makeSubmoduleUnfetchable,
+  moduleStores,
   putIn,
   remoteRepo,
   submoduleCalls,
 } from "./lib/lean-submodule-off-fixture.ts";
-import { buildFixture, runBuild } from "./lib/lean-build-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -58,17 +60,47 @@ async function drive(issue: number): Promise<{
 }> {
   const built = buildFixture(issue);
   const remote = remoteRepo("build-off");
-  // The gitlink joins the run's BRANCH at `headBefore` — the commit the fold
-  // resets to and the commit it commits its kept files on top of — so the reset is
-  // the thing that has to put the submodule back, and it is committed where the
-  // fold's `reset --hard headBefore` will find it.
   attachSubmodule(built.worktree, remote, "add the vendored submodule");
-  const headWithSub = gitHead(built.worktree);
+  // The commit the fold resets to is the gitlink's own commit — read BEFORE anything is
+  // taken away, because `makeSubmoduleUnfetchable` removes the bytes that make the
+  // gitlink's tree checkable, and a head read after it would be a head the fixture could
+  // not verify. Nothing else here commits, so the branch tip stays this commit and the
+  // reset rebuilds a tree that carries the submodule entry.
+  const headBefore = gitHead(built.worktree);
+  if (headBefore === built.headBefore)
+    throw new Error(
+      `the build submodule fixture's gitlink commit is not the branch tip the fold resets to (${headBefore})`,
+    );
+  if (git(built.worktree, "ls-tree", headBefore, SUB).split(" ")[0] !== "160000")
+    throw new Error(
+      `the build submodule fixture's base holds no gitlink at ${SUB} in ${headBefore} — both arms would test nothing`,
+    );
+  if (git(built.worktree, "rev-parse", "HEAD") !== headBefore)
+    throw new Error(
+      `the build submodule fixture read its head from a tree the run does not work in (${headBefore})`,
+    );
+  // The sabotage, and it has to be complete before the switch's control arm runs: the
+  // source deleted, the checkout emptied, and the SUPERPROJECT's own copy of the objects
+  // gone too. Any local copy left behind and the seeding arm of #2319 restores the
+  // submodule, the fold does not throw, and the control below reads "no throw" as though
+  // the step had recovered — the opposite of what this file exists to pin.
   makeSubmoduleUnfetchable(remote, built.worktree);
+  // The seeding arm of #2319 looks in the SUPERPROJECT, not the run's worktree: a linked
+  // tree's `rev-parse` answers name its own gitdir, and the operator's copy of the
+  // objects lives under the superproject's shared store. Deleting only what the worktree
+  // names therefore leaves a control that silently seeds, does not throw, and reports "no
+  // throw" as though the step had recovered — the precise opposite of what (b) pins. So
+  // both trees are swept, and the check is asked of both.
+  const swept = new Set([...moduleStores(built.worktree), ...moduleStores(built.repoRoot)]);
+  for (const dir of swept) rmSync(path.join(dir, "modules"), { recursive: true, force: true });
+  if ([...swept].some((dir) => existsSync(path.join(dir, "modules", "vendor"))))
+    throw new Error(
+      `the build submodule fixture left a module store behind in ${built.repoRoot} — the control would seed instead of failing`,
+    );
 
   const r = await runBuild({
     issue,
-    built: { ...built, headBefore: headWithSub },
+    built: { ...built, headBefore },
     // The child commits its work itself, so `classify` finds a change and the fold
     // reaches its reset. The fold forgives a great deal: a child that produced
     // nothing ends in `exhausted`, a child that broke the contract ends in `blocked`,

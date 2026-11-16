@@ -28,19 +28,12 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { withEnv } from "./lib/env-scope.ts";
-import {
-  INSIDE,
-  attachSubmodule,
-  makeSubmoduleUnfetchable,
-  remoteRepo,
-  submoduleCalls,
-} from "./lib/lean-submodule-off-fixture.ts";
 import { put } from "./lib/lean-build-fixture.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import {
   BRANCH,
-  FIXER_ROLE,
   type DispatchSpec,
+  FIXER_ROLE,
   cleanupRoots,
   ctxFor,
   depsWith,
@@ -52,6 +45,13 @@ import {
   runStep as run,
   setup,
 } from "./lib/lean-review-fixtures.ts";
+import {
+  INSIDE,
+  attachSubmodule,
+  makeSubmoduleUnfetchable,
+  remoteRepo,
+  submoduleCalls,
+} from "./lib/lean-submodule-off-fixture.ts";
 
 const { assert, failures } = makeAssert();
 
@@ -100,16 +100,13 @@ async function drive(tag: string) {
       return result({ role: FIXER_ROLE });
     },
   });
-  const { outcome, threw } = await run(
-    ctxFor(repoRoot, baseSha, BRANCH),
-    {
-      ...inner,
-      exec: (cmd, o) => {
-        if (cmd === "git" && o?.argv !== undefined) argvs.push([...o.argv]);
-        return inner.exec(cmd, o);
-      },
+  const { outcome, threw } = await run(ctxFor(repoRoot, baseSha, BRANCH), {
+    ...inner,
+    exec: (cmd, o) => {
+      if (cmd === "git" && o?.argv !== undefined) argvs.push([...o.argv]);
+      return inner.exec(cmd, o);
     },
-  );
+  });
   return {
     outcome,
     threw,
