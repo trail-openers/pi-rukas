@@ -45,4 +45,12 @@ export interface NormaliseReport {
   removed: Array<{ path: string; why: string }>;
   /** Paths with no regular file behind them, deleted by the child. */
   deleted: string[];
+  /**
+   * The clause naming a submodule the reset's pass could not populate, or `undefined`
+   * when every one of them came from disk. Carried on the report rather than traced:
+   * the step that owns the reason line is the one that has to be able to say it, and a
+   * fold whose commit was built against a tree with no submodule in it is a commit no
+   * later run can reproduce. `build` folds it into its `ok` reason verbatim.
+   */
+  submodules?: string;
 }

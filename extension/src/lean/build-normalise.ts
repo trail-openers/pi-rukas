@@ -56,6 +56,7 @@ import {
 import type { BuildExec, NormaliseReport } from "./build-types.ts";
 import { CaptureBudget, readOneDescriptor } from "./specify-capture.ts";
 import { resetWorktreeToBase, writeCaptured } from "./specify-reset.ts";
+import { type SubmoduleNote, submoduleNoteClause } from "./specify-submodules.ts";
 
 /**
  * Is `rel` a path whose contents decide what verification means? The canonical
@@ -167,9 +168,14 @@ export async function normaliseBuild(opts: {
   // 4. RESET — child commits, staging, untracked files, ignore tricks and the
   //    dependency links all go; frozen and protected files come back exactly as
   //    at `headBefore`; provisioning rebuilds what the clean removed. `branch`
-  //    empty resets DETACHED, for a tree that owns no branch of its own.
+  //    empty resets DETACHED, for a tree that owns no branch of its own. What the
+  //    reset's submodule pass could not supply is kept on the report: `build` owns the
+  //    reason the operator reads, and a fold that restored a tree with no submodule in
+  //    it is a fold whose commit cannot be reproduced.
+  let submoduleNotes: readonly SubmoduleNote[] = [];
   try {
-    await resetWorktreeToBase(exec, wt, headBefore, branch);
+    submoduleNotes = await resetWorktreeToBase(exec, wt, headBefore, branch);
+    report.submodules = submoduleNoteClause(submoduleNotes);
   } catch (err) {
     throw new BuildInfraError(
       `could not reset the worktree to ${headBefore}: ${(err as Error).message}`,

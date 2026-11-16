@@ -155,12 +155,19 @@ exception table, no `pytest`-specific case.
 **Fix:** read the command and the excerpt in the hand-back — they are the runner's own words, run in
 the run's own worktree. The usual four:
 
-- **A submodule directory that is empty.** The step initialises submodules after every reset it makes
-  (`git submodule update --init --recursive`; a `clean -fdx` de-populates them, which is why the
-  initialisation is on the reset path and not only the create path), so a hand-back naming the
-  submodule is a network or a remote problem: the URL in the base commit's own `.gitmodules`, the
-  remote's availability, or an offline host. Fix the remote or the checkout; there is no flag that
-  makes an un-populated submodule testable.
+- **A submodule directory that is empty.** The step populates submodules after every reset it makes
+  (a `clean -fdx` de-populates them, which is why the population is on the reset path and not only
+  the create path), and by default it takes them from the SUPERPROJECT — its module store under
+  `.git/modules/<path>`, else its populated checkout — so an offline host, a dead remote or a
+  URL nothing can reach is no longer a reason a run hands back: the bytes come from the tree the
+  base commit's own verify ran against. `PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL=0` puts the old
+  behaviour back (`git submodule update --init --recursive` from the URL the base's `.gitmodules`
+  records), and that is the arm on which a hand-back naming the submodule IS a network or a
+  remote problem — the URL, the remote's availability, or an offline host: fix the remote or the
+  checkout. With the rule on there is nothing left to fix when the superproject simply never
+  held that submodule: the run proceeds and the path is disclosed — named in the step's reason,
+  the hand-back's message and the run record — because the base commit's verify ran without it
+  too. Check which arm you are on before debugging a remote.
 - **A missing environment variable the suite needs.** The probe runs in the run's own
   ambient environment — the same environment the red proof runs the frozen tests in —
   so a variable the suite requires is missing here exactly as it will be at prove time.
@@ -187,10 +194,14 @@ project with no test runner configures the template as
 `"verify": { "test": "sh {file}" }` — caveats in [lean.md](lean.md).
 Note also that the probe is not the only place this step can hand back on the environment: a base
 whose submodules cannot be populated fails earlier, in the worktree preparation that runs
-before it. Both are `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` away: with that switch at `0` no
-lean reset asks git to populate a submodule — not specify's, not `build`'s fold, not the
-review fix round's — and a runner that dies on the probe-shaped file is graded by the red
-proof alone, exactly as v0.14.71 graded it.
+before it. Both are `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` away, and that switch is the OUTER
+gate — with it at `0` no lean reset asks git to populate a submodule at all (not specify's, not
+`build`'s fold, not the review fix round's), so `PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL` decides
+nothing there: it is read only when preflight is on. With preflight on, the submodule half has
+its own knob: `PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL=0` restores the remote-cloning call, and with
+the default the run is seeded from the superproject instead — so on the default an
+un-populated submodule is a DISCLOSURE naming the path, not a hand-back. A runner that dies on
+the probe-shaped file is graded by the red proof alone, exactly as v0.14.71 graded it.
 
 ### Symptom: a lean run hands back with `baseline red: tier <name> is red at the base commit`
 

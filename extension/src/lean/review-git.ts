@@ -49,6 +49,7 @@ import {
 import type { ReviewDeps } from "./review.ts";
 import { type FixRunId, ReviewInfraError } from "./review.ts";
 import { gitQuiet, resetWorktreeToBase } from "./specify-reset.ts";
+import { type SubmoduleNote, submoduleNoteClause } from "./specify-submodules.ts";
 import { assertSpecifyWorktreeOwned, specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
 import type { BudgetArms, BudgetFired, DispatchUsageRow } from "./step-budget.ts";
 
@@ -282,6 +283,7 @@ async function integrate(
   // The tree is only the vehicle for a ref update here, so the ownership claim
   // runs first (it is what refuses a tree another run owns) and the move happens
   // by reset, which also drops any uncommitted sloppiness the child left behind.
+  let notes: readonly SubmoduleNote[] = [];
   try {
     await assertSafeRef(branch);
     await assertSpecifyWorktreeOwned(deps.exec, {
@@ -293,7 +295,7 @@ async function integrate(
     // The one primitive `specify` and `build` use for this, called directly.
     // `resetWorktreeToBase` does the `-B`, the `--hard`, the `clean` and the proof the
     // tree really got there, pointed at the fixer's head.
-    await resetWorktreeToBase(deps.exec, wt, opts.fixHead, branch);
+    notes = await resetWorktreeToBase(deps.exec, wt, opts.fixHead, branch);
   } catch (err) {
     return await fail(
       `the run's worktree ${wt} is not usable for the fix round: ${(err as Error)?.message ?? String(err)}`,
@@ -307,6 +309,13 @@ async function integrate(
   // a `node_modules` that `clean -fdx` deleted and nothing rebuilt is a verify
   // that fails for the shape of the tree, not for the diff.
   const provision = await provisionWorktree(deps.exec, repoRoot, wt);
+  // Both notes go to the trace here, and the submodule one ALSO reaches the operator:
+  // this step's reason is what a fix round is judged by, and a fix pushed from a tree
+  // whose submodule was never populated is a fix nobody can re-run. Provisioning keeps
+  // its own wording and its own line, as it always had.
+  const submodules = submoduleNoteClause(notes);
+  if (submodules !== undefined)
+    traceWarn(`lean review #${String(issue)}: run worktree after the fix reset — ${submodules}`);
   if (provision.problem !== undefined)
     traceWarn(
       `lean review #${String(issue)}: run worktree after the fix reset — ${provision.problem}`,

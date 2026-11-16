@@ -314,9 +314,17 @@ export async function runTestPipeline(
   // run blocks nothing but is disclosed below either way.
   let baseCheck: FreezeCheck | undefined;
   let baseCheckRan = false;
+  // What the preparation's submodule pass could not supply. The reset above and the
+  // `prepare` below are where an unseeded gitlink is discovered, and this is the last
+  // place before the commit that will be built on that tree — so the caveat has to ride
+  // out on the reason, where the operator and the next step both read it. A step that
+  // knew the tree was incomplete and reported a clean `ok` is the failure this guards:
+  // the child's red would then read as a failing feature rather than a missing vendored
+  // import, and the commit would be reproduced against bytes nobody has.
+  let treeProblem: string | undefined;
   try {
     await resetWorktreeToBase(exec, wt, headBefore, branch);
-    await args.prepare();
+    treeProblem = (await args.prepare()).problem;
     if (args.freezeCheck !== undefined && captured.size > 0) {
       baseCheckRan = true;
       baseCheck = await runFreezeCheck(
@@ -471,6 +479,7 @@ export async function runTestPipeline(
     droppedNote,
     dropNote(dropped),
     checkNote,
+    treeProblem ?? "",
   ]
     .filter((s) => s !== "")
     .join("; ");

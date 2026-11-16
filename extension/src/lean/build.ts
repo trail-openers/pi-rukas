@@ -429,6 +429,12 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
         ? `removed: ${report.removed.map((r) => `${r.path} (${r.why})`).join(", ")}`
         : "",
       report.deleted.length > 0 ? `deleted: ${report.deleted.join(", ")}` : "",
+      // Said in the fold's own reason, not only in the trace: the commit this step made
+      // was built against a tree with no submodule at that path, so a reader judging the
+      // commit needs to know the tree it came from was incomplete. The clause names every
+      // kind but `seeded`, including `failure` — git itself refused the pass, which is as
+      // much a caveat on this commit as a submodule this step could not find locally.
+      report.submodules ?? "",
       waitNote(),
     ]),
     dispatches: rows,

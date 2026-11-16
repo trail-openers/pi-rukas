@@ -62,6 +62,7 @@ import { testCriteria } from "./specify-prompt.ts";
 import type { TestRunLimits } from "./specify-proof.ts";
 import { SpecifyResetError, resetWorktreeToBase } from "./specify-reset.ts";
 import { SpecifyInfraError, noteClause, runTestPipeline } from "./specify-run.ts";
+import { type SubmoduleNote, submoduleNoteClause } from "./specify-submodules.ts";
 import { changedPaths } from "./specify-tree.ts";
 import {
   assertSpecifyWorktreeOwned,
@@ -163,13 +164,22 @@ async function resetAndProvision(
   // One outcome for the pair: a failed reset leaves a provision of a tree nobody
   // cleaned, and `verify` refuses that dirty. (The budget stop below runs the two
   // moves as two `try`s, each with its own message, and names nothing.)
+  let notes: readonly SubmoduleNote[] = [];
   try {
-    await resetWorktreeToBase(deps.exec, wt, ref, branch);
+    notes = await resetWorktreeToBase(deps.exec, wt, ref, branch);
     await provisionWorktree(deps.exec, repoRoot, wt);
   } catch (err) {
     throw new ChallengeInfraError(`could not reset the challenge tree: ${(err as Error).message}`);
   }
-  return dirty.length === 0 && head === ref ? "" : clause === "" ? "" : ` ${clause}`;
+  // A submodule the reset could not populate is said HERE, in the round's own reason,
+  // and not only in the trace: this is the step that pays an adversary to attack tests
+  // it may not be able to collect, so "the tree had no submodule at `vendor/x`" belongs
+  // beside the verdict rather than in another step's log.
+  const submodule = submoduleNoteClause(notes);
+  return [
+    dirty.length === 0 && head === ref ? "" : clause === "" ? "" : ` ${clause}`,
+    submodule === undefined ? "" : ` ${submodule}`,
+  ].join("");
 }
 
 /**
