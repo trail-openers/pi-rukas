@@ -200,13 +200,11 @@ export function deriveBudget(config?: WorkConfig): Budget {
 }
 
 /**
- * Derive the contract for one issue from its title and body.
- *
- * Every outcome but a usable spec throws {@link SpecDeriveError} naming its own
- * cause — a dead child, a ceiling, an empty or unparsable reply, a contract that
- * is not ready — because "the child said no" would leave the operator to work out
- * which of the five it was, and only one of them is a prompt problem. The child's
- * cost rows ride on every throw: a child that died still cost tokens.
+ * Derive the contract for one issue from its title and body. Every outcome but a
+ * usable spec throws {@link SpecDeriveError} naming its own cause (the five
+ * causes are listed in this file's header), so the operator is never left to work
+ * out which one it was. The child's cost rows ride on every throw: a child that
+ * died still cost tokens.
  */
 export async function deriveSpec(
   input: DeriveInput,

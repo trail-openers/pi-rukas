@@ -99,6 +99,20 @@ export function newestDecided(steps: Step[], state: LeanState): Step | undefined
   return decided[decided.length - 1];
 }
 
+/**
+ * The newest decided `verify`'s full head, or `undefined` when it named none.
+ *
+ * The one reader of "which commit did this run's own gate certify", shared by every
+ * step that must act on the certified tree (`ci` runs its full tier against it, `land`
+ * pins the merge to it) so they cannot disagree about what was verified. An outcome
+ * that named no full sha — or a verify that never decided — is `undefined`, never a
+ * fallback to whatever HEAD happens to be checked out.
+ */
+export function newestVerifiedHead(steps: Step[]): string | undefined {
+  const head = newestDecided(steps, "verify")?.outcome?.verifiedHead;
+  return typeof head === "string" && isFullCommitSha(head) ? head : undefined;
+}
+
 export interface RunCounters {
   buildAttempts: number;
   challengeDone: boolean;

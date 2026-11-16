@@ -182,11 +182,9 @@ async function reviewPass(
   const issueBody = await deps.fetchIssueBody(repoRoot, issue).catch((err: unknown) => {
     throw new ReviewInfraError(`could not read the issue: ${(err as Error).message}`);
   });
-  // The executed acceptance table, composed ONCE per step from the run's own step log
-  // (read, never re-executed — `verify` already ran the frozen files at this head) and
-  // handed to both passes of both gates and to the PR comment, so six lens briefs, one
-  // adversarial brief per pass and one comment all carry the SAME bytes. `undefined`
-  // rather than `""` when there is none, which is what makes the off arm byte-identical.
+  // The executed acceptance table, composed ONCE per step and handed to both passes
+  // of both gates and the PR comment, so every brief and the comment carry the SAME
+  // bytes. `undefined` rather than `""` when there is none, the off arm's byte-identity.
   const acceptanceTable = acceptanceSection(ctx.steps, issueBody, ctx.run);
   // The blocking bar, resolved ONCE for the whole step at the run's base commit for the
   // same reason: it is a fact the step needs before it pays for a pass. Never per pass —

@@ -10,18 +10,14 @@
  * spec, `testsFromLog`, and the newest green `verify`'s `verifiedHead`,
  * `commandCriteria` and `commandNotRunnable`. Executed evidence, not model output.
  *
- * A `command` cell reads the gate's OWN per-criterion record and never the gate's
- * overall verdict, which is a claim about the tier rather than about that file. A
- * `test` criterion the log records no frozen test for says `could-not-run`:
- * `specify` answers `uncovered` and hands back before a criterion rides this far,
- * and a renderer that guessed "pass" for an absent map entry would be the loudest
- * lie this file could tell.
- *
- * Both payloads are disarmed at the print site by `fenceText` — a criterion's text
- * is issue authorship and a `commandNotRunnable` reason is prose out of a path
- * check, and this section goes into six lens briefs, one adversarial brief and a
- * public PR comment. The table is bounded to the spec's own criteria count.
- *
+ * A `command` cell reads the gate's OWN per-criterion record, never the gate's
+ * overall verdict (a claim about the tier, not that file). A `test` criterion the
+ * log records no frozen test for says `could-not-run`: `specify` answers
+ * `uncovered` before a criterion rides this far, and a renderer guessing "pass"
+ * for an absent entry would be the loudest lie this file could tell. Both payloads
+ * are disarmed at the print site by `fenceText` (a criterion's text is issue
+ * authorship; a `commandNotRunnable` reason is path-check prose) because this
+ * section reaches six lens briefs, an adversarial brief and a public PR comment.
  * `leanReviewAcceptanceEnabled` gates all of it; this module never consults it, so
  * the step's call sites stay the only place the switch is read.
  */

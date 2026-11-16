@@ -48,17 +48,11 @@ import { authorFromRead, evidenceAuthorRead, heldForMergeAuthor } from "./../mer
 import type { HandlerCtx } from "./engine.ts";
 import type { LandDeps } from "./land-deps.ts";
 import { specifyBranch } from "./specify-tree.ts";
-import type { Outcome } from "./state.ts";
+import { type Outcome, newestVerifiedHead } from "./state.ts";
 
 /** The newest decided `verify`'s head, which is what the merge must be about. */
 function verifiedHead(ctx: HandlerCtx): string | undefined {
-  for (let i = ctx.steps.length - 1; i >= 0; i--) {
-    const step = ctx.steps[i];
-    if (step?.state !== "verify" || step.outcome === undefined) continue;
-    const head = step.outcome.verifiedHead;
-    return typeof head === "string" && isFullCommitSha(head) ? head : undefined;
-  }
-  return undefined;
+  return newestVerifiedHead(ctx.steps);
 }
 
 /** The `land` step. Returns `merged` | `refused`; never throws. */
