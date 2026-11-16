@@ -113,7 +113,7 @@ export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   // network-git wrapper: non-interactive env, process-group kill, bounded wait. `0` puts
   // every one of them back on the executor in its pre-fix shape — caller's env, no group
   // kill — for an origin that needs an interactive credential helper. The reader is
-  // `leanHandbackNetGitEnabled` in lean-handback-net-git-switch.ts; the push is not in
+  // `leanHandbackNetGitEnabled` in lean/handback-net-git-switch.ts; the push is not in
   // scope, `LEAN_REWIND_LEASE_BINDS` owns that argv.
   flag("LEAN_HANDBACK_NET_GIT", true),
   flag("LEAN_HANDBACK_NOHEAD_RECORD", true),

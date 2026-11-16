@@ -41,7 +41,7 @@
  */
 
 import { isFullCommitSha } from "../commit-sha.ts";
-import { leanHandbackNetGitEnabled } from "../lean-handback-net-git-switch.ts";
+import { leanHandbackNetGitEnabled } from "./handback-net-git-switch.ts";
 import { traceWarn } from "../trace.ts";
 import { netGitEnv, netRefProblem, runNetGit } from "../work-driver-net-git.ts";
 import type { HandlerCtx } from "./engine.ts";

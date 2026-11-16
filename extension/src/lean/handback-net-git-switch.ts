@@ -1,5 +1,5 @@
 /**
- * lean-handback-net-git-switch — the ONE reader of the switch that decides whether the
+ * lean/handback-net-git-switch — the ONE reader of the switch that decides whether the
  * verified handback's origin reads go through the driver's network-git wrapper.
  *
  * `lean/handback-rewind.ts` asks origin four times on a rewind that pushes — the branch

@@ -280,7 +280,6 @@ import { ROOTS } from "./lib/lean-verified-handback-fixture.ts";
       where: "lean/handback-rewind.ts lsRemoteSha ls-remote, refusal arm",
       ms: lsRemoteCeiling(SINGLE_READ, "post-refusal origin read"),
       excluded: true,
-      excluded: true,
     },
     {
       what: "handback-rewind: does this clone hold the verified head (git cat-file -e)",

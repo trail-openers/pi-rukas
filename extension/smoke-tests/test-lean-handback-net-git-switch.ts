@@ -20,7 +20,7 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { leanHandbackNetGitEnabled } from "../src/lean-handback-net-git-switch.ts";
+import { leanHandbackNetGitEnabled } from "../src/lean/handback-net-git-switch.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 
