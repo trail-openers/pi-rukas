@@ -20,9 +20,9 @@
  *      sha BEFORE any other read, and that one value is the `head` of the added-file read
  *      and the ref of every existence probe. A gate that resolved its ref twice could
  *      judge a file list from one commit against a token set from another.
- *   2. **Only an executed `absent` fails.** `existsInCommit` throws for a non-full-sha ref
- *      and for any git fault, and reads an empty tree entry as absence; a probe that could
- *      not answer is a note, never a verdict — the split `specify-path.ts` itself draws.
+ *   2. **Only an executed `absent` fails.** A commit read throws for a non-full-sha ref and
+ *      for any git fault; a probe that could not answer is a note, never a verdict — the split
+ *      the commit-read module draws.
  *   3. **The tokens are untrusted.** Every path, key and reason reaching a failure string
  *      or the PR body goes through `neutraliseMarkdownField`, which collapses newlines and
  *      neutralises marker and heading shapes: this gate reads a file the child authored and
@@ -35,19 +35,25 @@
  *      `sourceFile` is the evasion that constant exists to close: extending the set is a
  *      source edit, never config drift.
  *
- * The module is a leaf by policy: it imports no other develop-gate module, so adding this
- * check cannot widen the develop gate's dependency graph. `test-git-range-1153.ts` lists
- * it — every git read here is argv form under the module's own named bounds.
+ * The commit reads (blob, exact-path entry, tree listing) live in
+ * `work-driver-verify-develop-provenance-commit.ts` and the single host-file read in
+ * `work-driver-verify-develop-provenance-root.ts`; this module is the walk, the classifier call
+ * order, and the verdicts. `test-git-range-1153.ts` lists every git read across them as argv
+ * form under the modules' own named bounds.
  */
 
 import { neutraliseMarkdownField } from "./comment-evidence.ts";
 import { isFullCommitSha } from "./commit-sha.ts";
 import { readCommitOid } from "./git-oid-read.ts";
-import { existsInCommit } from "./lean/specify-path.ts";
-import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { changedPaths, readCommittedProtectedPaths } from "./work-driver-protected-paths-read.ts";
 import type { VerifyDevelopOutcomeOptions } from "./work-driver-verify-develop-options.ts";
+import {
+  type TreePaths,
+  probeCandidate,
+  readAddedFile,
+  readTreePaths,
+} from "./work-driver-verify-develop-provenance-commit.ts";
 import {
   type HostRootProbe,
   type HostRootVerdict,
@@ -136,13 +142,13 @@ export {
   PROVENANCE_MAX_TOKENS,
 } from "./work-driver-verify-develop-provenance-token.ts";
 
-/** The wall clock on this module's own git reads (the OID pin and the added-file range). */
-export const PROVENANCE_GIT_TIMEOUT_MS = 30_000;
-/** Byte ceiling on one added data file. Past it the file is disclosed, never judged. It is
- * also the ceiling that read's own executor buffer is set from, plus headroom: the bound is
- * what makes an over-large record a disclosure rather than a hang, and there is one number so
- * the two cannot disagree about what the gate is willing to read. */
-export const PROVENANCE_FILE_MAX_BYTES = 1024 * 1024;
+// The two read ceilings live in the limits module, which both this gate and the commit-read
+// module import, so the disclosure text, the OID-pin timeout and the executor buffer all read one
+// number rather than three that can drift.
+import {
+  PROVENANCE_FILE_MAX_BYTES,
+  PROVENANCE_GIT_TIMEOUT_MS,
+} from "./work-driver-verify-develop-provenance-limits.ts";
 
 /** The leading clause every provenance failure carries, so the gate's own rows are
  * findable in a failure list and no cap router can mistake one for a verify verdict. */
@@ -156,25 +162,18 @@ export const PROVENANCE_CHECKED_NOTE = `${PROVENANCE_NOTE_PREFIX} judged`;
 /** The prefix of the note a run that could not judge leaves behind. */
 export const PROVENANCE_NOT_CHECKED_PREFIX = `${PROVENANCE_NOTE_PREFIX} NOT CHECKED`;
 
-/** The worktree-side read this gate issues. Absent = this caller does not route on it. */
-export type ProvenanceDisclosureSink = {
-  /** Filled IN PLACE, as `verifyRecord` is, so the caller reads the same array it handed
-   * in after the gate ran. Each entry is one judgement this gate could not make. */
-  disclosures?: ProvenanceDisclosure[];
-};
-
-/** One judgement the gate declined to make, for the PR body. */
-export interface ProvenanceDisclosure {
-  /** The added data file, repo-relative, as a display field. */
-  file: string;
-  /** The provenance key the value sat under, as a display field; absent for a whole-file
-   * refusal (unparsable bytes, a corpus over the bounds). */
-  key?: string;
-  /** The token as a display field, absent for a whole-file refusal. */
-  token?: string;
-  /** Why the gate declined. Its own words, never an interpolated raw token. */
-  reason: string;
-}
+// The disclosure record and its PR-body renderer live in
+// `work-driver-verify-develop-provenance-disclosure.ts`, re-exported here so callers that name
+// this module for the gate's own API keep resolving, and the section heading lives with its one
+// renderer rather than beside the walk that fills the rows.
+export type {
+  ProvenanceDisclosure,
+  ProvenanceDisclosureSink,
+} from "./work-driver-verify-develop-provenance-disclosure.ts";
+import type {
+  ProvenanceDisclosure,
+  ProvenanceDisclosureSink,
+} from "./work-driver-verify-develop-provenance-disclosure.ts";
 
 /** What one workstream's run produced. `judged` is the count of probes actually asked of
  * git; it is how a test tells an executed pass from a pass that ran nothing. */
@@ -187,157 +186,6 @@ export interface ProvenanceWorkstreamResult {
    * in the note cannot drift from the probes this run asked for. */
   judged: number;
   judgedLabel: (workstreamId: string) => string;
-}
-
-/** The kinds of read a token probe can decline, kept distinct from "absent". */
-type ProbeVerdict = "present" | "absent" | "unreadable";
-
-/** Read one added file at the pinned commit. Absence of the blob is unreadable, not empty. */
-async function readAddedFile(
-  execFn: NonNullable<DriverContext["verifyExecFn"]>,
-  cwd: string,
-  oid: string,
-  file: string,
-): Promise<{ ok: true; content: string } | { ok: false; why: string }> {
-  try {
-    const ran = await execFn("git", {
-      argv: [
-        "-c",
-        "core.hooksPath=/dev/null",
-        "-c",
-        "core.fsmonitor=false",
-        "show",
-        "--end-of-options",
-        `${oid}:${file}`,
-      ],
-      cwd,
-      timeout: PROVENANCE_GIT_TIMEOUT_MS,
-      maxBuffer: PROVENANCE_FILE_MAX_BYTES + 64 * 1024,
-    });
-    return { ok: true, content: ran.stdout ?? "" };
-  } catch (err) {
-    return {
-      ok: false,
-      why: `could not read the committed blob (${(err as Error).message?.slice(0, 100)})`,
-    };
-  }
-}
-
-async function probeToken(
-  execFn: NonNullable<DriverContext["verifyExecFn"]>,
-  cwd: string,
-  oid: string,
-  probe: string,
-): Promise<ProbeVerdict> {
-  try {
-    return (await existsInCommit(execFn, cwd, oid, probe)) ? "present" : "absent";
-  } catch (err) {
-    trace(`provenance: probe failed for ${probe.slice(0, 80)}: ${(err as Error).message}`);
-    return "unreadable";
-  }
-}
-
-/** Byte ceiling on the whole-tree listing a bare-basename probe is answered from. Generous
- * against a real repository's path list (a path name costs a fraction of the file it names, so
- * this holds far more entries than the file ceiling holds bytes) and small enough that the read
- * is bounded work rather than an unbounded walk of an enormous tree. */
-export const PROVENANCE_TREE_MAX_BYTES = 8 * 1024 * 1024;
-
-/** How one candidate is looked for in the pinned commit.
- *
- * A candidate that spells a directory out claims a PATH and is answered by the shipped
- * exact-path read. A candidate with no directory component claims only that a file of that
- * name was read — which is how a measurement record cites its own results file (`out.ndjson`,
- * `summary.json`) — and is answered from the pass's cached tree listing. The two are not
- * interchangeable: an exact-path probe of a name that lives under `deep/nested/` reports
- * absence, and failing a record for a directory it never named would be the gate inventing a
- * requirement. The rule is not gated on the prose switch, because the claim a bare name makes
- * is the same claim whether or not the value was split out of a sentence.
- */
-async function probeCandidate(
-  execFn: NonNullable<DriverContext["verifyExecFn"]>,
-  cwd: string,
-  oid: string,
-  probe: string,
-  treePaths: () => Promise<{ ok: true; paths: Set<string> } | { ok: false; why: string }>,
-  basenameArm: boolean,
-): Promise<ProbeVerdict> {
-  if (probe.includes("/") || !basenameArm) return await probeToken(execFn, cwd, oid, probe);
-  const tree = await treePaths();
-  if (!tree.ok) return "unreadable";
-  return basenamePresent(tree.paths, probe) ? "present" : "absent";
-}
-
-/** Does any path in this listing carry `name` as its final component? Compared component-wise,
- * so `out.ndjson` is named by `deep/nested/out.ndjson` and not by `deep/nested/xout.ndjson`. */
-function basenamePresent(paths: ReadonlySet<string>, name: string): boolean {
-  for (const p of paths) {
-    const base = p.slice(p.lastIndexOf("/") + 1);
-    if (base === name) return true;
-  }
-  return false;
-}
-
-/**
- * The pinned tree's paths, read ONCE per workstream and cached — the read a bare-basename probe
- * is answered from.
- *
- * A bare basename claims only that a file of that name was read; answering it with a pathspec
- * would be wrong, because git filters a `ls-tree <ref> -- <pathspec>` from the tree root and a
- * name that lives under `deep/nested/` matches nothing. So a basename claim is answered by a
- * tree-wide listing, and a listing is read ONCE: the alternative is one recursive `ls-tree` per
- * candidate, and a record citing a dozen file names would buy a dozen full-tree walks.
- *
- * The cost ceiling is deliberate and it fails closed toward disclosure. A tree whose entry bytes
- * exceed it is not partially listed and not silently truncated: the pass says it could not tell
- * and the candidates a basename probe would have answered stay unjudged. A listing that stopped
- * halfway and then reported absence would fail a record for a file the gate never looked at, and
- * an unreadable listing is never a verdict in either direction.
- */
-async function readTreePaths(
-  execFn: NonNullable<DriverContext["verifyExecFn"]>,
-  cwd: string,
-  oid: string,
-): Promise<{ ok: true; paths: Set<string> } | { ok: false; why: string }> {
-  if (!isFullCommitSha(oid))
-    return { ok: false, why: `\`${oid.slice(0, 20)}\` is not a full commit sha` };
-  try {
-    const ran = await execFn("git", {
-      argv: [
-        "-c",
-        "core.hooksPath=/dev/null",
-        "-c",
-        "core.fsmonitor=false",
-        "ls-tree",
-        "-r",
-        "-z",
-        "--full-tree",
-        "--name-only",
-        "--end-of-options",
-        oid,
-      ],
-      cwd,
-      timeout: PROVENANCE_GIT_TIMEOUT_MS,
-      maxBuffer: PROVENANCE_TREE_MAX_BYTES,
-    });
-    const stdout = ran.stdout ?? "";
-    if (Buffer.byteLength(stdout, "utf8") >= PROVENANCE_TREE_MAX_BYTES) {
-      return {
-        ok: false,
-        why: `the tree listing exceeds the ${PROVENANCE_TREE_MAX_BYTES}-byte ceiling this gate reads`,
-      };
-    }
-    const paths = new Set<string>();
-    for (const entry of stdout.split("\0")) {
-      if (entry !== "") paths.add(entry);
-    }
-    return { ok: true, paths };
-  } catch (err) {
-    return {
-      ok: false,
-      why: `the tree listing could not be read (${(err as Error).message?.slice(0, 100)})`,
-    };
-  }
 }
 
 /** The production {@link HostRootProbe}: consult the operator's declared root, or say the gate
@@ -414,7 +262,7 @@ export async function checkWorktreeProvenance(opts: {
   // workstream. Lazy, because the common record names its files by path and never needs it: a
   // pass that judges only path claims asks exactly the reads the shipped gate asked.
   let treeCache: Promise<{ ok: true; paths: Set<string> } | { ok: false; why: string }> | undefined;
-  const treePaths = (): Promise<{ ok: true; paths: Set<string> } | { ok: false; why: string }> => {
+  const treePaths: TreePaths = () => {
     if (treeCache === undefined) treeCache = readTreePaths(execFn, cwd, oid);
     return treeCache;
   };
@@ -627,27 +475,4 @@ export async function runProvenanceGate(opts: {
   }
 }
 
-/**
- * The disclosure section for the PR body. Returns `""` when the run disclosed nothing, so
- * the section is absent rather than empty — the same contract as every sibling section.
- *
- * Only a run that EXECUTED the gate emits disclosures: the caller builds this from the
- * sink the gate filled, never from a state field that could outlive the run.
- */
-export function provenanceDisclosureSectionOf(
-  disclosures: readonly ProvenanceDisclosure[] | undefined,
-): string {
-  if (!disclosures || disclosures.length === 0) return "";
-  return [
-    "",
-    "## Data provenance (warning — not blocking)",
-    "",
-    "The develop gate judged the data files this change adds and could not verify these tokens against the committed tree. The work may well be sound — the gate simply could not see what these values name, so a reviewer should:",
-    "",
-    ...disclosures.map((d) => {
-      const where = d.key === undefined ? `\`${d.file}\`` : `\`${d.file}\` → \`${d.key}\``;
-      const named = d.token === undefined ? "" : ` value \`${d.token}\``;
-      return `- ${where}${named}: ${d.reason}`;
-    }),
-  ].join("\n");
-}
+export { provenanceDisclosureSectionOf } from "./work-driver-verify-develop-provenance-disclosure.ts";
