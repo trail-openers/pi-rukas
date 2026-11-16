@@ -10,10 +10,18 @@
  *
  * So this file compares against shipped bytes, not a paraphrase. `lib/v0-14-85/` is a copy of
  * the three provenance modules AS THEY WERE AT v0.14.85, committed untouched (arm 1 below
- * re-reads them from the tag and asserts that), and its module specifiers are redirected into
- * the current tree's unchanged dependencies. Each arm then drives the same fixture through the
- * v0.14.85 gate and through the current gate, and compares the three out-channels — failures,
- * notes, and the rendered PR-body disclosure section — for byte equality.
+ * hashes them against the digests recorded from the tag), and its module specifiers are
+ * redirected into the current tree's unchanged dependencies. Each arm then drives the same
+ * fixture through the v0.14.85 gate and through the current gate, and compares the three
+ * out-channels — failures, notes, and the rendered PR-body disclosure section — for byte
+ * equality.
+ *
+ * The copy is pinned by DIGEST, not by tag lookup: CI's checkout is shallow and carries no
+ * tags, so a check that shelled out to `git show v0.14.85:…` died there with `fatal: invalid
+ * object name` and the proof was simply never made in the place it is checked. A digest read
+ * of the working tree needs no git object at all, so it runs green or red on CI exactly as it
+ * does here. Recovering those digests is one command, stated once beside the constants, and a
+ * retagging or a reissue of the tag has to show up there.
  *
  * The comparison is only meaningful if the two runs asked git the same questions, so the argv
  * stream of both gates is collected and compared too: a run that matched the verdicts by
@@ -25,9 +33,8 @@
  * `test-verify-develop-switches.ts`.
  */
 
-import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync, rmSync } from "node:fs";
-import path from "node:path";
 import {
   type ProvenanceDisclosure,
   provenanceDisclosureSectionOf as currentSection,
@@ -39,7 +46,53 @@ import { makeProvenanceFixtureWith } from "./lib/verify-develop-provenance-harne
 import { renderProse256Record } from "./lib/verify-develop-provenance-fixture.ts";
 import { runProvenanceGate as v85RunProvenanceGate } from "./lib/v0-14-85/work-driver-verify-develop-provenance.ts";
 
-const EXT = path.resolve(import.meta.dirname, "..");
+/** The three shipped modules whose v0.14.85 bytes `lib/v0-14-85/` must be, in the tag's order. */
+const V85_FILES = [
+  "work-driver-verify-develop-provenance.ts",
+  "work-driver-verify-develop-provenance-token.ts",
+  "work-driver-verify-develop-provenance-walk.ts",
+] as const;
+
+/** A copy's `from "…"` specifiers rewritten to one placeholder. A copy under `smoke-tests/lib/`
+ * cannot sit beside the modules it imports, so its specifiers point into `../../../src/` and
+ * `../../../src/lean/` — a relocation, not an edit, and the only difference from the shipped
+ * bytes this proof tolerates. Every other byte — the classifier arms, the reason strings, the
+ * section text — is what the digest below covers. */
+function relocateImportSpecifiers(source: string): string {
+  return source
+    .split("\n")
+    .map((line) =>
+      /^import[ ({]/.test(line) ? line.replace(/from "[^"]*"/, 'from "<relocated>"') : line,
+    )
+    .join("\n");
+}
+
+const sha256 = (text: string): string => createHash("sha256").update(text).digest("hex");
+
+/** The digest of each file AS SHIPPED AT THE TAG, with its import specifiers relocated exactly
+ * the way {@link relocateImportSpecifiers} relocates the copy's, so the two hashes are hashes of
+ * the same text. Recomputed locally from a clone that holds the tag — there is nothing to
+ * recompute in CI, which is the whole point:
+ *
+ * ```sh
+ * for f in work-driver-verify-develop-provenance.ts \
+ *          work-driver-verify-develop-provenance-token.ts \
+ *          work-driver-verify-develop-provenance-walk.ts; do
+ *   git show v0.14.85:extension/src/$f | sed -E '/^import[ ({]/ s|from "[^"]*"|from "<relocated>"|' \
+ *     | sha256sum
+ * done
+ * ```
+ *
+ * A copy edited to agree with a new implementation hashes elsewhere, every arm below turns from
+ * a byte-identity proof into a tautology, and this is the row that reddens first. */
+const V85_SHIPPED_SHA256: Record<(typeof V85_FILES)[number], string> = {
+  "work-driver-verify-develop-provenance.ts":
+    "ea510824793caa072052baa560a56401bf46387f181cbf3fd2ce63cd1d00f627",
+  "work-driver-verify-develop-provenance-token.ts":
+    "645b4e0203b128ea0a735f7c975474270e174d77acf28e953b5430815a14484e",
+  "work-driver-verify-develop-provenance-walk.ts":
+    "2d5844e0fa57f9783576900c9b70218c1cf4b66444f2b6530fa87f8669dc2cc1",
+};
 
 type Fixture = Awaited<ReturnType<typeof makeProvenanceFixtureWith>>;
 type Exec = Fixture["execFn"];
@@ -139,39 +192,14 @@ const OFF_CORPUS: Record<string, string> = {
 {
   // A comparison against a copy nobody is allowed to edit. If the copy were edited to agree
   // with a new implementation, every arm below would turn from a byte-identity proof into a
-  // tautology, so the copy is checked against the tag itself before any of them counts.
-  for (const name of [
-    "work-driver-verify-develop-provenance.ts",
-    "work-driver-verify-develop-provenance-token.ts",
-    "work-driver-verify-develop-provenance-walk.ts",
-  ]) {
-    const shipped = execFileSync("git", ["show", `v0.14.85:extension/src/${name}`], {
-      cwd: path.resolve(EXT, ".."),
-      encoding: "utf8",
-      maxBuffer: 8 * 1024 * 1024,
-    });
-    const local = readFileSync(path.join(EXT, "smoke-tests", "lib", "v0-14-85", name), "utf8");
-    // The copy's only permitted difference from the shipped bytes is the `from "…"` specifier
-    // on each of its imports: a copy in `smoke-tests/lib/` cannot sit beside the modules it
-    // imports, and re-pointing those specifiers is a relocation, not an edit. Every other byte
-    // — the classifier arms, the reason strings, the section text — must match the tag.
-    const shippedImports = shipped
-      .split("\n")
-      .filter((l) => /^import[ ({]/.test(l) || /^} from "\.\//.test(l))
-      .map((l) => l.replace(/from "[^"]*"/, 'from "<relocated>"'));
-    const localImports = local
-      .split("\n")
-      .filter((l) => /^import[ ({]/.test(l) || /^} from "(\.|\.\.\/\.\.\/\.\.\/)/.test(l))
-      .map((l) => l.replace(/from "[^"]*"/, 'from "<relocated>"'));
+  // tautology, so the copy is hashed against the tag's own recorded digest before any of them
+  // counts. No git object is consulted: CI's checkout has neither the tag nor its blobs.
+  for (const name of V85_FILES) {
+    const copy = readFileSync(new URL(`./lib/v0-14-85/${name}`, import.meta.url), "utf8");
+    const digest = sha256(relocateImportSpecifiers(copy));
     assert(
-      local === shipped ||
-        JSON.stringify(shippedImports) === JSON.stringify(localImports) &&
-          shipped.split("\n").length === local.split("\n").length &&
-          local
-            .split("\n")
-            .filter((l, i) => l !== shipped.split("\n")[i])
-            .every((l) => /^import[ ({].*from "|} from "|^\/\*|^ \*/.test(l)),
-      `lib/v0-14-85/${name} differs from \`git show v0.14.85:extension/src/${name}\` only in its relocated import specifiers — every judgement, reason string and section byte is the shipped one`,
+      digest === V85_SHIPPED_SHA256[name],
+      `lib/v0-14-85/${name} hashes to the bytes v0.14.85 shipped under \`extension/src/\`, once its import specifiers are relocated — every judgement, reason string and section byte is the shipped one (got ${digest}; shipped ${V85_SHIPPED_SHA256[name]})`,
     );
   }
 }
