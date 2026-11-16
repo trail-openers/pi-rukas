@@ -4,12 +4,9 @@
  * `verify` routes every tier `red` into a build round, which is only right when the tier was green before the
  * change existed. Two questions, both asked only AFTER a tier has gone red (a green tier pays nothing):
  *
- *   - **a re-run at HEAD** — {@link confirmTierRed}: green on the second run means the first observed nothing
- *     stable, so the tier counts green and the flake rides in the PR body's reason;
- *   - **a probe at the run's base commit** — {@link probeTierAtBase}: the run's frozen tests' BYTES compared
- *     against what the run froze, then the tier's command once, both in a throwaway detached worktree at
- *     `baseSha`. A base that holds other bytes at the frozen paths AND fails the tier has a red gate the change
- *     did not author, so the caller hands the run back BEFORE any build round.
+ *   - **a re-run at HEAD** — `confirmTierRedFrom` over the re-run's child: green on the second
+ *     run means the first observed nothing stable, so the tier counts green and the flake rides
+ *     in the PR body's reason;
  *
  * The probe runs at `baseSha` and never at HEAD: probing at HEAD would let the builder's own commit decide what
  * counts as pre-existing.
@@ -99,16 +96,6 @@ async function tierCode(
  * asked for positively — the executor's kill, timeout, overflow and `ENOENT` rejections all carry a non-numeric
  * `code`. {@link classifyBaseRun} asks the same question the same way.
  */
-export async function confirmTierRed(opts: {
-  name: string;
-  cmd: string;
-  wt: string;
-  exec: VerifyExec;
-  timeoutMs: number;
-}): Promise<boolean> {
-  return confirmTierRedFrom(await tierCode(opts.exec, opts.cmd, opts.wt, opts.timeoutMs));
-}
-
 /** What the base tier run printed alongside its colour — see `probeTierAtBase`. */
 export type BaseProbeOutcome = BaseProbe & { stream?: string };
 
@@ -343,11 +330,10 @@ export function baselineUnusableError(reason: string): VerifyInfraError {
   return new VerifyInfraError(reason);
 }
 /**
- * The judgement {@link confirmTierRed} makes about a re-run it did not itself spawn.
+ * The judgement `verify` makes about the tier re-run it spawns through `tierRunStream`.
  *
  * `verify` needs the re-run's OUTPUT as well as its colour, so it spawns the child once
- * through `tierRunStream` and asks this. One predicate for both callers keeps "a kill is not
- * a pass" from meaning two things.
+ * there and asks this of the result. "A kill is not a pass" has exactly one reading.
  */
 export function confirmTierRedFrom(ran: unknown): boolean {
   // An excuse needs a re-run that SAW the work and came back clean: two positive facts, not

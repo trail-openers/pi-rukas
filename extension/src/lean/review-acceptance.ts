@@ -28,6 +28,7 @@
 
 import { isFullCommitSha } from "../commit-sha.ts";
 import { testsFromLog } from "./build.ts";
+import { leanReviewAcceptanceEnabled } from "./review-acceptance-switch.ts";
 import type { ReviewDeps } from "./review-args.ts";
 import { ReviewInfraError } from "./review-errors.ts";
 import { specFor } from "./spec-for.ts";
@@ -92,25 +93,27 @@ export interface AcceptanceRow {
   result: string;
 }
 
-/** Did any decided `verify` of this run come back green at all? The renderer's
- * anchor line asks this to tell "a later gate came back red" apart from "no gate
- * ever ran", and the two are different facts for the operator reading the comment.
- * `newestGreenVerify` cannot answer it — it reads the NEWEST decided verify alone. */
-function anyGreenVerify(steps: Step[]): boolean {
-  return steps.some((s) => s.state === "verify" && s.outcome?.kind === "green");
-}
-
-/** The newest DECIDED `verify` whose verdict was green, or `undefined`: a red or
- * errored verify says nothing about a head, and an undecided tail is the engine's
- * replay marker, which says less. */
-function newestGreenVerify(steps: Step[]): Step | undefined {
-  const v = newestDecided(steps, "verify");
-  return v?.outcome?.kind === "green" ? v : undefined;
+/**
+ * What the run's own gate recorded, in the two shapes the table asks for.
+ *
+ * Both read the NEWEST decided `verify` and nothing else: a red or errored verify
+ * says nothing about a head, and an undecided tail is the engine's replay marker,
+ * which says less. `any` is the second question — did ANY decided verify of this
+ * run come back green — and the renderer needs it to tell "a later gate came back
+ * red" apart from "no gate ever ran", two different facts for the operator reading
+ * the comment and one the newest verdict alone cannot distinguish.
+ */
+function greenVerify(steps: Step[]): { step: Step | undefined; any: boolean } {
+  const step = newestDecided(steps, "verify");
+  return {
+    step: step?.outcome?.kind === "green" ? step : undefined,
+    any: steps.some((x) => x.state === "verify" && x.outcome?.kind === "green"),
+  };
 }
 
 /** The head the gate certified, as a full sha or nothing. */
 function certifiedHead(steps: Step[]): string | undefined {
-  const head = newestGreenVerify(steps)?.outcome?.verifiedHead;
+  const head = greenVerify(steps).step?.outcome?.verifiedHead;
   return typeof head === "string" && isFullCommitSha(head) ? head : undefined;
 }
 
@@ -151,7 +154,7 @@ export function acceptanceRows(
   spec: { criteria: { id: string; text: string; verify: AcceptanceRow["verify"] }[] },
 ): AcceptanceRow[] {
   const head = certifiedHead(steps);
-  const green = newestGreenVerify(steps);
+  const green = greenVerify(steps).step;
   const tests = testsFromLog(steps);
   return spec.criteria.map((c) => {
     const paths = tests?.[c.id] ?? [];
@@ -187,6 +190,24 @@ function rowLine(row: AcceptanceRow): string {
 const HEADER = "| Criterion | Requirement | Verify | Frozen tests | Result at head |";
 const DIVIDER = "| --- | --- | --- | --- | --- |";
 
+/** The section a review seat reads, or `undefined` when it has nothing to say — the
+ * switch's off arm, and an unparsable spec. Read ONCE per step.
+ *
+ * Lives beside the renderer it wraps, because the two rules are one rule: the switch
+ * is read here and never inside `renderAcceptanceSection`, so the step's call sites
+ * stay the only place the switch is consulted, and "no table" is one answer (`undefined`)
+ * rather than two (`""` and a missing key) a caller could conflate.
+ */
+export function acceptanceSection(
+  steps: Step[],
+  issueBody: string | undefined,
+  run: { derivedSpec?: DerivedSpec },
+): string | undefined {
+  if (!leanReviewAcceptanceEnabled()) return undefined;
+  const section = renderAcceptanceSection(steps, issueBody, run);
+  return section === "" ? undefined : section;
+}
+
 /** The section a review seat reads, or `""` when it has nothing to say: no body, no
  * parsable block, no criteria. A body whose spec cannot be parsed has no criteria,
  * and a table invented from prose would be a contract nothing enforces. */
@@ -209,7 +230,7 @@ export function renderAcceptanceSection(
   // is one: a run whose newest decided verify came back RED (the shape a CI-fix round
   // leaves) and a run that never verified anything both name no head, and a comment
   // that called the first the second would send the operator looking at the wrong gate.
-  const red = head === undefined && anyGreenVerify(steps);
+  const red = head === undefined && greenVerify(steps).any;
   const anchor =
     head === undefined
       ? red

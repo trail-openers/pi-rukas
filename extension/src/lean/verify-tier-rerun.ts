@@ -15,7 +15,7 @@ import type { VerifyExec } from "./verify-types.ts";
 /**
  * The same tier command, run once more in the same tree, WITH its output.
  *
- * It is the SAME child call `confirmTierRed` makes — same scrubbed env, same bound, same
+ * It is the SAME child call a HEAD re-run makes — same scrubbed env, same bound, same
  * `killGroup` — so a tier this step excused was run by a real process this step observed.
  */
 export async function tierRunStream(

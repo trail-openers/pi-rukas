@@ -18,12 +18,10 @@
  *     passes), because that block is what every later step re-parses.
  *
  * Every failure — a dead child, a ceiling, an unparsable reply, a contract that
- * is not ready — throws {@link SpecDeriveError}, which the engine turns into a
- * handback naming its own cause. Never a partial spec, and never a `decline`:
- * the issue was not at fault, the model call was.
- *
- * Every outside call is a field of {@link DeriveDeps}, so a case drives the whole
- * boundary with a stubbed reply and no model is contacted.
+ * is not ready — throws {@link SpecDeriveError} (the engine's handback, naming its
+ * own cause). Never a partial spec, never a `decline`: the model call failed, not
+ * the issue. Every outside call is a field of {@link DeriveDeps}, so a case drives
+ * the whole boundary with a stubbed reply and no model is contacted.
  */
 
 import { execp } from "../exec.ts";
@@ -46,11 +44,7 @@ export const DERIVE_ROLE = "explore";
 /** The `budgets` key that bounds this child — its own row, not a step's. */
 export const DERIVE_BUDGET_KEY = "derive";
 
-/**
- * The shipped ceiling, re-exported from `lean/derive-budget.ts` — the leaf the
- * config's `budgets.derive` row names it in, so the number is declared once and
- * the two readers of it do not import each other.
- */
+// Re-exported from its leaf so the number is declared once for `config.ts` too.
 export { DERIVE_DEFAULT_BUDGET } from "./derive-budget.ts";
 
 /**

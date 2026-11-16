@@ -110,10 +110,6 @@ function fencedBlocks(body: string): { info: string; content: string }[] {
 }
 
 /**
- * The line number (1-based) of the last opening fence that never closed, or undefined when every fence closed.
- * Separate from `fencedBlocks` so the parse result stays "no block" and only the message gains the line.
- */
-/**
  * The line number (1-based) of the last opening fence that never closed, or
  * undefined when every fence closed. Separate from `fencedBlocks` so the parse
  * result stays "no block" and only the message gains the truncated line.

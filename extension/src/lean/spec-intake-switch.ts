@@ -73,15 +73,6 @@ export function resolveSpecIntake(config?: WorkConfig): SpecIntake {
 }
 
 /**
- * The mode the env alone decides, for a caller that has no config in hand yet.
- * A read that exists so a case (and the headless flag check) can ask the env
- * half of the resolution without loading a config first.
- */
-export function specIntakeFromEnv(config?: WorkConfig): SpecIntake {
-  return resolveSpecIntake(config);
-}
-
-/**
  * Apply the `--spec-intake <mode>` verb flag for one headless run; returns the
  * refusal text, or `undefined` when the flag was absent or valid.
  *

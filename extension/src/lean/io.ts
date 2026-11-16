@@ -161,6 +161,18 @@ export function setLeanCommentPoster(
   };
 }
 
+/** Get `body` in front of a human: the seam when one is installed, else the forge.
+ * The seam is consulted BEFORE `forgeFor` so a recorded count cannot depend on a
+ * forge a temp repo does not have (two network probes would sit in front of it).
+ * `what` names the comment in the refusal, since a run with no adapter has to say
+ * which of its promises it could not keep. */
+async function deliverComment(repoRoot: string, issue: number, body: string, what: string) {
+  if (commentPoster !== undefined) return commentPoster(issue, body);
+  const forge = await forgeFor(repoRoot);
+  if (!forge) throw new Error(`no forge adapter: cannot post the ${what} comment`);
+  await forge.issueComment(issue, body);
+}
+
 /**
  * Post one comment listing the failed rules. Throws so the caller can report it: a run that could not tell the
  * operator why it refused is a worse failure than one that says so in the summary line.
@@ -179,12 +191,7 @@ export async function postNotReady(
     "",
     "Fix the `pi-spec v1` block, or run /plan to regenerate it, then start the run again.",
   ].join("\n");
-  // The seam is consulted BEFORE the forge is resolved: the seam exists so a case can count posts without a
-  // forge, and resolving one first puts two network probes in front of every recording call.
-  if (commentPoster !== undefined) return commentPoster(issue, body);
-  const forge = await forgeFor(repoRoot);
-  if (!forge) throw new Error("no forge adapter: cannot post the not-ready comment");
-  await forge.issueComment(issue, body);
+  return deliverComment(repoRoot, issue, body, "not-ready");
 }
 
 /**
@@ -193,10 +200,7 @@ export async function postNotReady(
  * caller, and it never lets that throw end the run.
  */
 export async function postHandback(repoRoot: string, issue: number, body: string): Promise<void> {
-  if (commentPoster !== undefined) return commentPoster(issue, body);
-  const forge = await forgeFor(repoRoot);
-  if (!forge) throw new Error("no forge adapter: cannot post the handback comment");
-  await forge.issueComment(issue, body);
+  return deliverComment(repoRoot, issue, body, "handback");
 }
 
 /**
@@ -206,7 +210,6 @@ export async function postHandback(repoRoot: string, issue: number, body: string
  * moment it is made, fenced exactly as an author would write it and with the model
  * named — the two things needed to notice a bad derivation before the merge.
  */
-
 export async function postDerivedSpec(
   repoRoot: string,
   issue: number,
@@ -225,8 +228,5 @@ export async function postDerivedSpec(
     `- derived by ${model === "" ? "the run's default model" : `\`${model}\``}`,
     `- ${String(spec.criteria.length)} criteria, size ${spec.size}`,
   ].join("\n");
-  if (commentPoster !== undefined) return commentPoster(issue, body);
-  const forge = await forgeFor(repoRoot);
-  if (!forge) throw new Error("no forge adapter: cannot post the derived-spec comment");
-  await forge.issueComment(issue, body);
+  return deliverComment(repoRoot, issue, body, "derived-spec");
 }
