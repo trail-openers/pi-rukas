@@ -3,8 +3,8 @@
  * were RUN with, not only what they were asked to run.
  *
  * `src/lean/handback-rewind.ts` reads origin's branch with `git ls-remote` on the
- * injected executor: `originBranchHead`, and `quiet()` behind `originRef()` — the
- * pre-push held read and the post-push pair. A hung read keeps its ssh grandchild
+ * injected executor: `originBranchHead`, and `originRead` for the pre-push held head, the
+ * refusal's re-read and the post-push pair. A hung read keeps its ssh grandchild
  * alive when the call carries no `killGroup`, because the non-group path kills only
  * the direct child; and it keeps prompting for a passphrase when the call carries no
  * non-interactive env. Both are facts about the CALL, so the assertion has to be made

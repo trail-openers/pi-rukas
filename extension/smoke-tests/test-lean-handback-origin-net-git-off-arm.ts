@@ -4,8 +4,8 @@
  * an escape hatch makes is that the arm it restores is the arm that shipped.
  *
  * The four origin reads in `src/lean/handback-rewind.ts` (`originBranchHead`, and
- * `quiet()` behind `originRef()` for the held head, the branch after the push and the
- * keeping-ref) go through the driver's network-git wrapper when the switch is on. With
+ * `originRead` for the held head, the branch after the push and the keeping-ref) go
+ * through the driver's network-git wrapper when the switch is on. With
  * `"0"` each one is handed to the executor in the shape it had at the base commit: the
  * same argv, no `env` at all, no `killGroup`, the same 60 s `timeout`, the same 4 MiB
  * `maxBuffer`. That is the off arm's whole contract, and it is the reason the switch can
@@ -32,9 +32,7 @@ import {
   PINNED_SSH,
   READ_MAX_BUFFER,
   READ_TIMEOUT_MS,
-  describeRead,
   driveReads,
-  expectedNetEnv,
   readRefs,
 } from "./lib/lean-handback-net-git-cases.ts";
 import { ROOTS } from "./lib/lean-verified-handback-fixture.ts";
@@ -51,11 +49,13 @@ const NO_HOOKS = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"
  * The base commit's call shape for one origin read — the off arm's golden value.
  *
  * `env` is spelled as the two arms of the shipped code produce it, not as one rule:
- * the three reads the rewind makes go through `assertPublishableBranch`'s seam
- * (`lean/publish-deps.ts`), which hands `netGitEnv(process.env, cwd)` to every `git` call
- * that arrives without one, while `originBranchHead` — the handback step's own read —
- * supplies no env at all. A case that asserted "no env" for both would be asserting a
- * shape the pre-fix code never had, and would go red on a fix that changed nothing.
+ * the three reads the rewind makes name no env of their own, so on a `net: true` drive
+ * they are forwarded the very env the rewind hands its push — `pushEnv`, which
+ * `handback-rewind.ts` computes as `netGitEnv(process.env, repoRoot)` and the recorder
+ * captures from the push itself — while `originBranchHead`, driven with no opts at all,
+ * supplies no env whatever the arm. A case that asserted "no env" for both would be
+ * asserting a shape the pre-fix code never had, and would go red on a fix that changed
+ * nothing.
  */
 function baseShape(ref: string, env: NodeJS.ProcessEnv | undefined): RecordedCall {
   return {
@@ -106,11 +106,18 @@ await withEnv(
     PI_ENSEMBLE_LEAN_HANDBACK_NET_GIT: "0",
   },
   async () => {
-    const driven = await driveReads();
-    // Derived inside the pinned block, from the drive's own repo, so the expectation is
-    // `netGitEnv` over the env the reads actually ran in — the same call `publish-deps`'s
-    // seam makes for every git call that reaches it without one.
-    const guardEnv = expectedNetEnv(driven.repo.repoRoot);
+    const driven = await driveReads({ net: true });
+    // The env the rewind's three reads are judged against, READ off this drive rather than
+    // re-derived: with `net: true` the rewind hands its push the non-interactive env it
+    // computed for the step, and the reads that name no env of their own are forwarded
+    // alongside it. So the push's own recorded env is the step env these calls carry, and
+    // an expectation typed out from `netGitEnv` would be a second definition of what the
+    // rig handed rather than an observation of it.
+    const stepEnv = driven.push?.env;
+    assert(
+      stepEnv !== undefined && stepEnv.GIT_TERMINAL_PROMPT === "0",
+      `the drive's push carries the step env the rewind's reads are forwarded alongside, so there is one to judge them against (got ${JSON.stringify(stepEnv === undefined ? undefined : Object.keys(stepEnv).slice(0, 6))})`,
+    );
     assert(
       driven.rewind.shipped === true,
       `the off arm still performs the rewind, so the reads are the real ones (${JSON.stringify(driven.rewind)})`,
@@ -125,8 +132,8 @@ await withEnv(
       .forEach((read, i) =>
         compare(
           read,
-          baseShape(OFF_ARM_REFS[i] as string, guardEnv),
-          `read #${String(i + 1)} (rewind arm, through the guard's seam)`,
+          baseShape(OFF_ARM_REFS[i] as string, stepEnv),
+          `read #${String(i + 1)} (rewind arm, the read the step handed with no env of its own)`,
           (env) => env !== undefined && env.GIT_TERMINAL_PROMPT === "0",
         ),
       );

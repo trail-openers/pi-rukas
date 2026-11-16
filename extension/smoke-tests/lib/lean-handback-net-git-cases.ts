@@ -2,20 +2,32 @@
  * lib/lean-handback-net-git-cases — the shared drive and the table the origin reads are judged on.
  *
  * `src/lean/handback-rewind.ts` reads origin four times on a rewind that pushes: the
- * branch before the push (`originRef` → `quiet`), the branch and its keeping-ref after
- * it (the `Promise.all` pair), and `originBranchHead`, the read the handback step makes
- * for its record. Each is one network `git ls-remote` carrying the same requested
- * ceiling and buffer. A read with no `killGroup` leaves its ssh grandchild holding
- * stdout past that ceiling — the non-group path kills only the direct child — and a
- * read with no non-interactive env lets ssh read a passphrase from /dev/tty. Both are
- * facts about the call, so both are asserted on the call.
+ * held head before the push, the branch and its keeping-ref after it (the `Promise.all`
+ * pair), and `originBranchHead`, the read the handback step makes for its record. All of
+ * them go through the file's single `originRead` helper, so each is one network
+ * `git ls-remote` carrying the same requested ceiling and buffer. A read with no
+ * `killGroup` leaves its ssh grandchild holding stdout past that ceiling — the non-group
+ * path kills only the direct child — and a read with no non-interactive env lets ssh
+ * read a passphrase from /dev/tty. Both are facts about the call, so both are asserted on
+ * the call.
  *
  * Both arms drive `rewindToVerified` and `originBranchHead` with one recorder
  * (lib/lean-handback-recording-exec.ts) over one real bare origin, so the reads answer
- * for real and the recorder can be asked what it was handed. The expected env is
- * derived by calling the same `netGitEnv` production calls — an expectation typed out
- * by hand would be a second definition of the wrapper — and `GIT_SSH_COMMAND`/`GIT_SSH`
- * are pinned by the caller before the drive so the derivation has one answer.
+ * for real and the recorder can be asked what it was handed. The expected env is derived
+ * by calling the same `netGitEnv` production calls — an expectation typed out by hand
+ * would be a second definition of the wrapper — and `GIT_SSH_COMMAND`/`GIT_SSH` are
+ * pinned by the caller before the drive so the derivation has one answer.
+ *
+ * WHICH ENV THE OFF ARM IS JUDGED AGAINST. The three reads the rewind makes name no env
+ * of their own when the drive supplies none, so the value that reaches them is the step
+ * env `lib/lean-verified-handback-step.ts` hands its executor — `stepGitEnv()`, recorded
+ * from the drive's own push so the expectation is what was actually handed rather than a
+ * re-derivation of it. The guard's own origin probe (`publish-deps.ts`) does route
+ * through the wrapper, but it is a shell-form `git ls-remote --symref origin HEAD`: it is
+ * not one of the four reads, and it must not be mistaken for the supplier of their env.
+ * The on-arm case drives the rewind with `net: false` for the same reason — with
+ * production's `net: true` every read arrives carrying `netGitEnv` before the switch is
+ * consulted, and only `killGroup` is left to discriminate.
  *
  * The arms live in one module because they share the drive and the expectation table,
  * and an off arm that drifts from the call shape it is supposed to reproduce is exactly
@@ -70,35 +82,36 @@ export interface DrivenReads {
   repo: HandbackRepo;
   /** Every `ls-remote` the drive made — the in-scope origin reads, pre- and post-push. */
   reads: RecordedCall[];
-  /** The rewind's push, which this module never rewrites. */
+  /** The one rewind push, or `undefined` when the arm pushed nothing. */
   push: RecordedCall | undefined;
   /** What the rewind settled on — the cases assert it shipped, so the reads are real. */
   rewind: Rewind;
   /** What the record read back off origin after the move. */
   head: string | undefined;
+  /** The recorder behind `reads`/`push`, exposed so a case can name the calls it judged. */
+  recorder: RecordingExec;
 }
 
 /**
  * Drive the rewind and the record's read over one real origin with one recorder.
  *
- * `net: true` because that is how production drives it (`rewindFor` in
- * `lean/report-handlers.ts`), which is also what makes the pushed head reachable: the
- * rewind's own push carries the objects, so the post-push reads answer.
+ * `opts.net` is passed to `rewindToVerified` verbatim, because whether the rewind's reads
+ * arrive with an env already on them decides what the drive can prove: with `net: true`
+ * production's net env is on every read before the switch is consulted, and only the
+ * `killGroup` is left to discriminate.
+ *
+ * The pushed head is reachable either way: the rewind's own push carries the objects, so
+ * the post-push reads answer whatever the reads themselves were handed.
  */
-export async function driveReads(): Promise<DrivenReads> {
+export async function driveReads(opts: { net: boolean } = { net: true }): Promise<DrivenReads> {
   const repo = repoWithFixHead();
   const recorder = recordingExec();
   const ctx = { repoRoot: repo.repoRoot, issue: ISSUE, run: { branch: BRANCH } };
   const rewind = await rewindToVerified(recorder.exec, ctx as never, repo.baseSha, {
-    net: true,
+    net: opts.net,
   });
   const head = await originBranchHead(recorder.exec, ctx as never);
-  return { repo, reads: recorder.lsRemote(), push: recorder.push(), rewind, head };
-}
-
-/** The in-scope read of one ref: the branch pre-push, or either ref of the post-push pair. */
-export function readForRef(reads: RecordedCall[], ref: string): RecordedCall | undefined {
-  return reads.find((r) => r.argv?.includes(ref) === true);
+  return { repo, reads: recorder.lsRemote(), push: recorder.push(), rewind, head, recorder };
 }
 
 /** A read named the way a reader would name it: the command line it ran. */
@@ -115,18 +128,6 @@ export function expectedReadRefs(issue: number = ISSUE): string[] {
 /** Every ref the drive was asked to read, in the order the recorder saw them. */
 export function readRefs(driven: DrivenReads): string[] {
   return driven.reads.map((r) => r.argv?.[r.argv.length - 1] ?? "<no ref>");
-}
-
-/**
- * Whether a read carried no env of its own — the off arm's shape.
- *
- * `execp` forwards `opts.env` and never merges `process.env` into it, so the value that
- * reaches git from an env-less call is nothing at all. Only a read the step handed an env
- * can be judged against `netGitEnv`, which is why the off-arm case asserts absence and
- * the on-arm case asserts the wrapper's answer.
- */
-export function hasNoEnv(env: NodeJS.ProcessEnv | undefined): boolean {
-  return env === undefined;
 }
 
 export { BRANCH, ISSUE };
