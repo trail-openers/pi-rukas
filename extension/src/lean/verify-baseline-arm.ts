@@ -1,28 +1,24 @@
 /**
  * lean/verify-baseline-arm — what `verify` does with a tier the BASE commit already fails.
  *
- * The step has established that one project tier is red at HEAD twice and that a probe of the
- * run's `baseSha` answered `red` for the same command. Three outcomes are possible and only one
- * of them is the ordinary red:
+ * The step has established that one project tier is red at HEAD twice and that a probe of the run's
+ * `baseSha` answered `red` for the same command. Three outcomes are possible and only one of them is the
+ * ordinary red:
  *
- *   - **the run is graded GREEN for that tier**, with its failures recorded, when every failure
- *     line the head run printed also appears among the base run's and the run's own frozen
- *     contract passes here — a gate the mainline authored, which no build round can fix (the
- *     rule itself is `baselineExcuse`);
- *   - **a RED that hands the run back**: any other answer from the excuse, or a re-run that
- *     observed nothing;
- *   - **a RED whose first clause is the frozen contract**, which is the case this module exists
- *     for.
+ *   - **the run is graded GREEN for that tier**, with its failures recorded, when every failure line the
+ *     head run printed also appears among the base run's and the run's own frozen contract passes here — a
+ *     gate the mainline authored, which no build round can fix (the rule itself is `baselineExcuse`);
+ *   - **a RED that hands the run back**: any other answer from the excuse, or a re-run that observed
+ *     nothing;
+ *   - **a RED whose first clause is the frozen contract**, which is the case this module exists for.
  *
- * The frozen verdict is asked FIRST, on purpose: the ordinary `firstFailure` in the step never
- * sees it once this arm returns, so a run whose own acceptance tests are red must not be graded
- * green on the strength of a tier the base also fails. A RED the step already observed before
- * the tiers ran is REUSED rather than re-run — re-running the contract would pay the per-file
- * wall clock a second time in one verify. A GREEN `tests` is no evidence about the contract here
- * (a tier may have rewritten the tree since it ran), so that case re-runs it.
+ * The frozen verdict is asked FIRST, on purpose: the ordinary `firstFailure` in the step never sees it once
+ * this arm returns, so a run whose own acceptance tests are red must not be graded green on the strength of
+ * a tier the base also fails. A RED the step already observed before the tiers ran is REUSED rather than
+ * re-run — re-running the contract would pay the per-file wall clock a second time in one verify. A GREEN
+ * `tests` is no evidence about the contract here, so that case re-runs it.
  *
- * The reason a red comes back with is composed by `verify-red-reason.ts`: the contract's clause
- * leads and the arm's `baseline red:` sentence rides beside it.
+ * The reason a red comes back with is composed by `verify-red-reason.ts`.
  */
 
 import type { PreexistingTierRecord } from "./state-outcome-maps.ts";
@@ -47,9 +43,8 @@ export interface BaselineRedArm {
 /**
  * Settle a tier that is red at HEAD twice and red at the base.
  *
- * `tests` is the contract's verdict from the pass that ran BEFORE the tiers; when it was green
- * the contract is re-run here, which is why `frozen`, `verifyTest`, `wt`, `exec` and `timeoutMs`
- * are passed through rather than a single colour.
+ * `tests` is the contract's verdict from the pass that ran BEFORE the tiers; when it was green the
+ * contract is re-run here.
  */
 export async function baselineRedArm(opts: {
   frozen: Record<string, string>;
@@ -84,10 +79,9 @@ export async function baselineRedArm(opts: {
     return { red: reason ?? baselineRedReason(name, cmd, baseSha) };
   }
   if (frozenRan.kind === "infra") return { throwReason: frozenRan.reason };
-  // The excuse reads the re-run's OUTPUT, so the re-run must have OBSERVED the work. A kill, an
-  // overflow or an un-startable command still arrives with a `stdout` — the text the tier printed
-  // before the signal — and that text can name the very tests the base printed. An excuse built
-  // from it would grade a green over a tier nobody saw fail twice.
+  // The excuse reads the re-run's OUTPUT, so the re-run must have OBSERVED the work. A kill, an overflow
+  // or an un-startable command still arrives with a `stdout` — the text the tier printed before the signal
+  // — and that text can name the very tests the base printed.
   if (!tierObserved(opts.rerun.ran)) return {};
   const excuse = baselineExcuse({
     tierName: name,
