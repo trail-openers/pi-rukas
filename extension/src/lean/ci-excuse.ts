@@ -5,7 +5,7 @@
  * already had those failures — in a throwaway sibling checkout of the run's
  * `baseSha` — and excuses only on what that probe printed. `verify`'s recorded base
  * set is not replayed: a comparison should rest on evidence a later reader can
- * re-derive. The accepted cost is one extra full-tier run per red full tier.
+ * re-derive. The accepted cost is one extra full-tier run per red full tier. The accepted cost is one extra full-tier run per red full tier.
  *
  * Neither half may rest on a run that observed nothing: the head side arrives
  * through {@link tierFailure}, which turns a kill, an overflow or an un-startable

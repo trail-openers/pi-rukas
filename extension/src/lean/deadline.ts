@@ -4,10 +4,12 @@
  * `work` stops STARTING steps once its deadline is inside the handoff allowance and hands off. A
  * lean run had no such boundary, so a host's `--timeout` killed the container mid-step with no
  * result document. The reporting exemption is the rule this module states:
- * `test-lean-deadline-host-channel.ts` (e) drives a run that ARRIVES at `handback` with its
- * deadline already gone, so deleting the `REPORT_STATES` branch turns that case red.
+ * `test-lean-cycle-arm.ts` (e) drives a run that ARRIVES at `handback` with its deadline already
+ * gone, and `test-lean-verified-handback-deadline.ts` drives the same exemption through a real
+ * origin. Deleting the `REPORT_STATES` branch turns both red.
  *
- * Both rules read the SAME helper `work` uses, so one env contract drives both engines:
+ * Both rules read the helpers `work` reads — `resolveCycleDeadline` (`work-driver-deadline.ts`) and
+ * `handoffDispatchTimeoutMs` (`work-driver-handoff.ts`) — so one env contract drives both engines:
  * `leanDeadline` resolves the host's `--timeout`, `PI_ENSEMBLE_CYCLE_BUDGET_MS` and
  * `PI_ENSEMBLE_CYCLE_DEADLINE` to one absolute epoch ONCE, persisted so a resume keeps the clock;
  * `deadlineStopsSteps` ends step work at `deadline − PI_ENSEMBLE_HANDOFF_TIMEOUT_MS` and never

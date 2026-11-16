@@ -55,13 +55,14 @@ function newestDecidedWorkStep(steps: Step[]): { step: Step; at: number } | unde
 }
 
 /**
- * The newest step of one state after `after`, decided or not, and WHERE it sits.
+ * The newest step of `state` sitting after `after`, whether or not it carried a verdict,
+ * and WHERE it sits.
  *
- * Not `newestDecided` over the whole log: that reads the newest step of a state that ANSWERED,
- * which is right for the land and publish gates but not here. This rule asks whether the gate
- * decided BEFORE the review whose fix wave is being handed back, and a gate visit the run never
- * finished is the one thing the rule exists to refuse to ship over. So the scan starts at the
- * newest work step and walks back; what it finds after that point cannot be ignored.
+ * What the code does: it scans backwards from the end of the log and returns the first entry
+ * whose `state` matches, stopping at `after` — decided or undecided, since the undecided shape is
+ * the answer the caller wants. It is not `newestDecidedThrough` restricted to one side of the
+ * review: the rule needs every gate visit the review closed, and a visit with no verdict is the
+ * one it must refuse to ship over.
  */
 function newestStateStepAfter(
   steps: Step[],

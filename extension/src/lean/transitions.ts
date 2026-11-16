@@ -1,8 +1,9 @@
 /**
  * lean/transitions — the counter arithmetic behind every edge in the table.
  *
- * Split from `machine.ts` so the table stays one function in one file; how a transition
- * computes the next counters is a separate concern. The two rules worth reading carefully:
+ * Split from `machine.ts` at the 500-line cap `test-file-size-limit.ts` enforces, so the table
+ * stays one function in one file; how a transition computes the next counters is a separate
+ * concern. The two rules worth reading carefully:
  *
  *   - `viaBuild` spends exactly one build attempt, and an attempt is a round DISPATCHED: only
  *     an edge whose destination is `build` may call it. An edge LEAVING build (to `challenge`,

@@ -1,8 +1,6 @@
 /**
- * The routed report's own wall, told apart from a kill's.
- *
- * The bound is `handoffReportBoundMs()` — the handoff allowance × (1 + headroom ratio), because the
- * routed path's per-call ceilings sum below it — and the race lives in `engine-report.ts`;
+ * The routed report's own wall, told apart from a kill's. The bound itself is
+ * `handoffReportBoundMs()` — its derivation lives in `engine-report.ts` and
  * `test-lean-report-bound-ceiling.ts` is the witness. This module holds only the sentence the
  * overrun tells, so the `traceWarn` an operator reads and the clause the durable record carries are
  * written by one reader. It names the await that ran out and how long it was given, because the

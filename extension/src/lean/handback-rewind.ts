@@ -14,7 +14,8 @@
  *
  * Being unforced is what makes the lease real: `git push` does not consult the lease for a refspec
  * carrying a leading `+`, and a rewind is a non-fast-forward move the lease alone authorises.
- * `PI_ENSEMBLE_LEAN_REWIND_LEASE_BINDS=0` puts the `+` and `--atomic` back byte for byte.
+ * `PI_ENSEMBLE_LEAN_REWIND_LEASE_BINDS=0` puts BOTH the `+` and `--atomic` back byte for byte: both
+ * are what the switch reaches, and the off arm is the pre-fix argv in full.
  *
  * The branch is state-file data, so it gets `assertPublishableBranch`: `main` is a legal ref and
  * legality is not permission.
@@ -223,7 +224,7 @@ export async function rewindToVerified(
   // env, as `publish`'s push is; the reads that only ask origin for a sha keep the caller's env.
   const netEnv = opts.net === true ? netGitEnv(process.env, ctx.repoRoot) : undefined;
   const pushEnv = opts.env ?? netEnv;
-  // A branch name is state-file data, and `assertSafeRef` only says it is a legal git name — `+x`
+  // A branch name is state-file data, and `netRefProblem` only says it is a legal git name — `+x`
   // and `a:b` are too, which git reads as a force or a refspec.
   const unsafe = netRefProblem(ref);
   if (unsafe !== undefined)

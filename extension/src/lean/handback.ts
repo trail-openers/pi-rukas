@@ -244,6 +244,9 @@ interface Heads {
 
 /**
  * The head facts one handback records, from the head origin holds and what the rewind settled on.
+ * `shippedHead` comes from the post-move read this step takes after the rewind, so it says where
+ * origin stands now; `unshippedHead` is the rewind's own pre-move read — the head it displaced —
+ * which this step could not have produced itself because it never saw origin before the move.
  * `render` is the renderer flag and travels to the body only; the four head fields are
  * `Outcome`'s, rebuilt on reload and judged by the validator.
  *
@@ -322,7 +325,7 @@ export async function handbackOutcome(
             // different question — why what shipped was never certified.
             { ...NO_HEAD, noHeadReason: heads.reason }
           : SWITCHED_OFF;
-    // Read by this step rather than inferred from the move; a handback the rule never touched
+    // Read AFTER the rewind, so it is origin's post-move value; a handback the rule never touched
     // reads nothing.
     const originHead = ruleOn ? await readOrigin(ctx) : undefined;
     const facts = ruleOn

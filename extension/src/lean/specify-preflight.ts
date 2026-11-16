@@ -156,9 +156,11 @@ export async function assertRunnerCanRunTests(
   });
   try {
     // ONE rule, no per-runner table: an empty file must not be what the runner dies
-    // on. Any other outcome — the collection error that exits 4, the kill of a hung
-    // runner, the flood, the runner that never started — observed nothing, and the
-    // step must not spend an adversary on a toolchain that cannot answer.
+    // on. Healthy is exit 0 — a runner that ran the file and found nothing to say — or
+    // exit 5, pytest's "collected 0 items". Any other outcome — the collection error that
+    // exits 4, the kill of a hung runner, the flood, the runner that never started —
+    // observed nothing, and the step must not spend an adversary on a toolchain that
+    // cannot answer.
     if (probeHealthy(proof)) return;
     throw new SpecifyInfraError(
       `the test runner could not run a test file: ${proof.cmd} — ${trim(proof.detail)}`,

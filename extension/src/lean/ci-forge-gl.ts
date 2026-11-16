@@ -29,7 +29,8 @@
  *      that runs tag- or schedule-pipelines its rows can belong to another commit.
  *      The step reads the jobs of the pipeline **the MR reply itself named** and keeps
  *      them only when that pipeline reports the head as its own commit. A list known
- *      to continue is refused, not graded.
+ *      to continue is refused, not graded. The adapter's own `prChecks` lookup is off this
+ *      path: its rows carry no commit, so they cannot answer the head question at all.
  *
  * Both reads are the ADAPTER's (`mergeReadiness`, `glPipelineJobs`), so their argv and
  * the composition stay the adapter's; the MR reply the head and pipeline id come from

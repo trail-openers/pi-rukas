@@ -3,8 +3,10 @@
  *
  * One per-state ceiling becomes three levers: **minutes** → `childBoundMs`, whose kill arrives as
  * `killCause: "child-bound"`; **turns / tokens** → an `AbortController` off the progress stream.
- * A breach is a VERDICT, so the step returns `{kind: "budget"}` to be routed — callers ask
- * {@link readDispatched} BEFORE their infra throw.
+ * A breach is a VERDICT — the child worked and the ceiling stopped it — so the step returns
+ * `{kind: "budget"}` to be routed by the table. That is why callers ask {@link readDispatched}
+ * BEFORE their infra throw: a stop that is read as an infra failure never reaches the routing
+ * and the run loses the cause the ceiling produced.
  */
 
 import type { LensRunResult } from "../lens-review-types.ts";

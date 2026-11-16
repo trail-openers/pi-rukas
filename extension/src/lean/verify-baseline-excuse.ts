@@ -18,7 +18,7 @@
  * must equal a base line verbatim (trimmed, its own tree's prefix out), the two trees must
  * be two trees, and a base red shaped like a missing dependency tree is the probe's
  * provisioning, not the commit's. "Could not tell" is never an excuse; the caller keeps the
- * `verify-baseline.ts` hand-back.
+ * `verify-baseline.ts` hand-back. What is left fails only toward the hand-back.
  */
 
 import { realpathSync } from "node:fs";
