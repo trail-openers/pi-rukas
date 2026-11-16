@@ -42,7 +42,7 @@
  * through silently; it is handed to the gate with more information.
  */
 
-import { readEnumMarker } from "./reply-markers.ts";
+import { readAdversarialVerdict } from "./adversarial-verdict-read.ts";
 import type { AdversarialVerdict, AdversarialVerdictStatus, DispatchResult } from "./types.ts";
 
 /**
@@ -79,9 +79,17 @@ export type LoopAction = "pass" | "fix" | "reject" | "incomplete";
  * The default is still `ISSUES_FOUND` — another review round is the safe
  * direction. Under the terminal rule below that is no longer fatal, so the safe
  * direction has stopped costing a cycle.
+ *
+ * #2312 — the read itself moved to `adversarial-verdict-read.ts`, which decides
+ * verdict from the reply's CANDIDATE LINES rather than from its last match
+ * anywhere. A reply that quotes `VERDICT: APPROVED` after its real verdict — in
+ * inline code, a fence, a quote, a table cell, or as the brief's own menu — is
+ * not signing that verdict, and a whole-reply reader cannot tell the difference.
+ * `findings` and `raw` stay the WHOLE reply: only which line is the verdict
+ * changed, not what the reviewer's report is.
  */
 export function parseVerdict(text: string): AdversarialVerdict {
-  const status = readEnumMarker(text, "VERDICT", VERDICT_STATUSES);
+  const status = readAdversarialVerdict(text);
   if (status) return { status, findings: text, raw: text, verdictParsed: true };
   return {
     status: "ISSUES_FOUND",

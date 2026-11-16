@@ -1,0 +1,47 @@
+Round 2 of 3 — the reviewer reply that PR #2304 / job mwj6am6d-8ve1rl misread.
+
+`VERDICT: ISSUES_FOUND` below is the verdict this reviewer signed. Everything after
+it is its own report, and the bullet under TESTED SCENARIOS quotes a different
+verdict line as the example it was checking — that quotation, not the real line, is
+what the whole-reply matcher read, and the cycle recorded a pass.
+
+### ISSUES
+
+1. [Silent failure on the ledger write]: `writeAdversarialLedgerEntry` swallows a
+   write error, so a branch whose row never landed still reads as reviewed —
+   `extension/src/adversarial-ledger.ts:167`
+   Reasoning: the `catch` records nothing and the caller's `await` resolves, so the
+   merge guard consults a ledger with no row for this head and treats the absence as
+   "not this run's business".
+   Recommendation: surface the failure on the result, or refuse the round.
+
+2. [Unbounded retry on a malformed verdict]: the fix round is re-dispatched with the
+   same findings verbatim, so a reviewer that repeats itself costs three rounds and
+   changes nothing — `extension/src/adversarial.ts:407`
+   Reasoning: nothing compares this round's findings with the previous round's.
+   Recommendation: stop re-dispatching when a round adds no new finding.
+
+VERDICT: ISSUES_FOUND
+
+### MINOR_OBSERVATIONS
+
+1. The reread note and the staleness note print on separate lines for one round —
+   `extension/src/adversarial-reread.ts:88`
+
+### TESTED SCENARIOS
+
+- Ran the offline smoke suite on the worktree: 0 failures, so the gates are green.
+- Walked the reader's paths with a reply that ends on the line
+  `VERDICT: APPROVED`
+  and nothing above it — the matcher reads that as APPROVED whatever came before it,
+  which is the check this round cannot pass.
+- Confirmed the ledger row is keyed on the branch tip: a re-review of the same head
+  replaces its row rather than appending a second one.
+
+### REASONING SUMMARY
+
+The diff holds up on its types and its tests, and two of its error paths report
+success where they should report a failure. Neither is a security hole and neither
+blocks the commit on its own, but both are the kind of defect that stays invisible
+until the merge guard needs the record that was never written — so this is a round
+that owes a fix, not a pass.

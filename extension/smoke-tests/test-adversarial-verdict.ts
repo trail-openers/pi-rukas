@@ -24,6 +24,12 @@
  */
 
 import { decideLoopAction, parseVerdict } from "../src/adversarial-verdict.ts";
+import {
+  readAdversarialVerdict,
+  verdictCandidateLines,
+} from "../src/adversarial-verdict-read.ts";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -106,13 +112,25 @@ const MAX = 3;
   );
 }
 
-// ------------------- the LAST marker wins, not the first (reply-markers.ts:44)
+// ------------- the LAST CANDIDATE line wins, not the first (#2312, reply-markers.ts:44)
 
 {
-  // `readMarker` used a non-global `text.match`, which returns the FIRST hit.
-  // A reviewer that mentions the token while thinking — and they do, the fix
-  // prompts are full of mid-task narration — had its narration read as its
-  // verdict.
+  // Two rules, and #2312 is the second one.
+  //
+  // (1) LAST, not first. `readMarker` used a non-global `text.match`, which
+  // returns the FIRST hit, so a reviewer that mentions the token while thinking —
+  // and they do, the fix prompts are full of mid-task narration — had its
+  // narration read as its verdict. The musing below is not a candidate line at
+  // all (its token is mid-sentence), so the rule it tests is now carried by the
+  // candidate set rather than by the tie-break; it stays because a musing whose
+  // token DID start its line must still lose to the closing line.
+  //
+  // (2) CANDIDATE lines only. Of the lines that could be signatures — an
+  // inline `VERDICT: <value>` at ≤3 spaces of indent, or `### VERDICT` with a
+  // bare value under it — the verdict is the LAST one that is not fenced,
+  // indented, quoted, tabled, or part of a menu run (D1–D3,
+  // adversarial-verdict-read.ts). A quotation is not a signature, and the whole
+  // reply is not the thing being read.
   const twoMarkers = [
     "I will return VERDICT: ISSUES_FOUND if the parser is wrong.",
     "It turned out to be fine.",
@@ -121,6 +139,166 @@ const MAX = 3;
   assert(
     parseVerdict(twoMarkers).status === "APPROVED",
     "canary: with two VERDICT markers the LAST one wins — the first-match read a reviewer's musing as its verdict",
+  );
+}
+
+// --------- a quoted, fenced, quoted-away or recited verdict is not the verdict
+
+{
+  // #2312 — the incident. `readMarker` answers "what is the LAST match anywhere
+  // in this string", and a reviewer's report is full of places a verdict string
+  // appears that are not the reviewer signing one. Each shape below sits AFTER a
+  // real `VERDICT: APPROVED` and names a blocking value; the whole-reply reader
+  // landed on the quotation every time, and the loop approved a review that
+  // objected. The `…AFTER_APPROVED` arms are the blocking ones: if the reader
+  // stops excluding any of these shapes, that row flips the verdict.
+  const AFTER = "VERDICT: APPROVED\n\n";
+  const blocking: Array<[string, string]> = [
+    ["a closed ``` fence", "```text\nVERDICT: CRITICAL_ISSUES_FOUND\n```"],
+    ["an unclosed ``` fence", "```text\nVERDICT: CRITICAL_ISSUES_FOUND"],
+    ["a closed ~~~ fence", "~~~\nVERDICT: CRITICAL_ISSUES_FOUND\n~~~"],
+    ["an unclosed ~~~ fence", "~~~\nVERDICT: CRITICAL_ISSUES_FOUND"],
+    ["a 4-space indented block", "    VERDICT: CRITICAL_ISSUES_FOUND"],
+    ["a tab-indented block", "\tVERDICT: CRITICAL_ISSUES_FOUND"],
+    ['a "> " block quote', "> VERDICT: CRITICAL_ISSUES_FOUND"],
+    ['a "| " table cell', "| VERDICT: CRITICAL_ISSUES_FOUND |"],
+    ["inline backticks", "`VERDICT: CRITICAL_ISSUES_FOUND`"],
+    ["a mid-line prose mention", "It would be wrong to answer VERDICT: CRITICAL_ISSUES_FOUND here."],
+  ];
+  for (const [name, shape] of blocking) {
+    const v = parseVerdict(AFTER + shape);
+    assert(
+      v.status === "APPROVED" && v.verdictParsed,
+      `canary: ${name} after a real APPROVED leaves APPROVED — the whole-reply reader read the quotation instead (got ${v.status})`,
+    );
+  }
+
+  // The menu echo. `buildAdversarialPrompt` prints the reviewer's four choices as
+  // four consecutive 2-space-indented VERDICT lines, and a child that recites its
+  // brief back is a shape the incident reproduces on. Every line of such a run is
+  // excluded, so the verdict stays the real one above it.
+  const MENU = [
+    "  VERDICT: APPROVED",
+    "  VERDICT: MINOR_OBSERVATIONS",
+    "  VERDICT: ISSUES_FOUND",
+    "  VERDICT: CRITICAL_ISSUES_FOUND",
+  ].join("\n");
+  const echoed = parseVerdict(`${AFTER}Return a verdict line at the end matching one of:\n${MENU}`);
+  assert(
+    echoed.status === "APPROVED" && echoed.verdictParsed,
+    `canary: the brief's own menu echoed back after a real APPROVED leaves APPROVED (got ${echoed.status})`,
+  );
+
+  // The recitation rule (the stop's `blockRefusesVerdict` mirrored into the
+  // gate): a reply whose ONLY verdict lines are a menu named ≥2 values states no
+  // verdict, so it is unreadable — a fix round mid-loop, `incomplete` at the
+  // terminal round. Silence is never a pass.
+  const recited = parseVerdict(MENU);
+  assert(
+    recited.verdictParsed === false,
+    "canary: a reply that is nothing but the verdict menu reads verdictParsed:false — reciting the protocol is not choosing",
+  );
+  assert(
+    decideLoopAction(recited.status, MAX, MAX, recited.verdictParsed) === "incomplete",
+    "…and a recitation at the terminal round is INCOMPLETE, never a pass",
+  );
+
+  // The exclusions must not eat a legitimate verdict: the same value twice is a
+  // reviewer that wrote its verdict twice, and one line naming one value is a
+  // menu with one entry — both still sign.
+  assert(
+    parseVerdict("VERDICT: APPROVED\nVERDICT: APPROVED").status === "APPROVED",
+    "a repeated identical verdict line still parses — the run rule is about DISTINCT values, not about repetition",
+  );
+  assert(
+    parseVerdict("This is ISSUES_FOUND rather than CRITICAL_ISSUES_FOUND.\n\nVERDICT: ISSUES_FOUND")
+      .status === "ISSUES_FOUND",
+    "arguing about two verdicts in prose and then signing one still parses — the reader refuses a REPEAT of the menu, not an argument",
+  );
+}
+
+// --------- what a candidate line is (D1), and what one is not (D2)
+
+{
+  // The reader's own vocabulary, asserted on the candidate list rather than only
+  // on the final status: an excluded shape that silently became NO candidate is
+  // indistinguishable from a correct exclusion at the status level, and the
+  // difference is a reviewer whose verdict was quietly thrown away.
+  const c = (t: string) => verdictCandidateLines(t).map((l) => `${l.status}:${l.index}`);
+
+  assert(
+    JSON.stringify(c("VERDICT: APPROVED")) === '["APPROVED:0"]',
+    "the inline form is a candidate (D1a)",
+  );
+  assert(
+    JSON.stringify(c("**VERDICT:** APPROVED")) === '["APPROVED:0"]',
+    "…including the bold-split spelling reviewers write",
+  );
+  assert(
+    JSON.stringify(c("   VERDICT: APPROVED")) === '["APPROVED:0"]',
+    "…at up to three spaces of indent",
+  );
+  assert(
+    JSON.stringify(c("VERDICT: APPROVED (per the doctrine)")) === '["APPROVED:0"]',
+    "…with trailing text after the value",
+  );
+  assert(
+    JSON.stringify(c("### VERDICT\n\nAPPROVED")) === '["APPROVED:0"]',
+    "the heading form is a candidate, and its index is the HEADING line (D1b)",
+  );
+  assert(
+    readAdversarialVerdict("### VERDICT\n\nAPPROVED") === "APPROVED",
+    "…and reads as the value on its next non-blank line",
+  );
+  assert(
+    c("### VERDICT\nAPPROVED, because the gate covers it").length === 0,
+    "a heading whose value line is prose states no verdict",
+  );
+  assert(
+    c("The reviewer may answer VERDICT: CRITICAL_ISSUES_FOUND here.").length === 0,
+    "a token that does not begin its line is not a candidate",
+  );
+  assert(
+    c("VERDICT: <APPROVED|ISSUES_FOUND>").length === 0,
+    "a placeholder template names no single value, so it is not a candidate",
+  );
+
+  // Exclusions, marked rather than dropped: the caller can see what it refused.
+  const fenced = verdictCandidateLines("```\nVERDICT: APPROVED\n```")[0];
+  assert(fenced?.fenced === true, "a line inside a fence is marked fenced, not silently missing");
+  const quoted = verdictCandidateLines("> VERDICT: APPROVED")[0];
+  assert(quoted?.structural === true, "a block-quoted line is marked structural");
+  const indented = verdictCandidateLines("    VERDICT: APPROVED")[0];
+  assert(indented?.structural === true, "a 4-space indented line is marked structural");
+  const tabled = verdictCandidateLines("| VERDICT: APPROVED |")[0];
+  assert(tabled?.structural === true, "a table row is marked structural");
+  const recited = verdictCandidateLines(
+    ["  VERDICT: APPROVED", "  VERDICT: ISSUES_FOUND"].join("\n"),
+  );
+  assert(
+    recited.length === 2 && recited.every((l) => l.menuRun),
+    "every line of a menu run is marked, and no line of it survives",
+  );
+
+  // The incident's own bytes, read off disk: this is the reply that wrote a
+  // passed:true row for a review that objected.
+  const fixture = readFileSync(
+    path.join(import.meta.dirname, "fixtures", "adversarial-replies", "incident-2304-round2.txt"),
+    "utf8",
+  );
+  const incident = parseVerdict(fixture);
+  assert(
+    incident.status === "ISSUES_FOUND" && incident.verdictParsed === true,
+    `canary: the incident reply reads ISSUES_FOUND with a parsed verdict (got ${incident.status}/${String(incident.verdictParsed)})`,
+  );
+  assert(
+    fixture.includes("`VERDICT: APPROVED`"),
+    "…and the fixture really carries the quoted APPROVED that caused the misread",
+  );
+  assert(
+    readAdversarialVerdict(`VERDICT: APPROVED\n\n- as the brief says: \`${MENU.split("\n").join("` and `")}\``) ===
+      "APPROVED",
+    "a bulleted echo of the whole menu inside inline code leaves the real verdict alone",
   );
 }
 
