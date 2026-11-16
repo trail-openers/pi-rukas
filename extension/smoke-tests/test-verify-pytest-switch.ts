@@ -405,7 +405,7 @@ function assert(cond: boolean, msg: string): void {
       );
       assert(
         gate.verifyRun?.status === "ran" && gate.verifyRun.command === PY_CMD,
-        `on: the recorded run says it ran the discovered command (got ${JSON.stringify(gate.verifyRun?.status)}/${JSON.stringify(gate.verifyRun?.command)})`,
+        `on: the recorded run says it ran the discovered command (got ${JSON.stringify(gate.verifyRun)})`,
       );
       assert(
         gate.ok === true,

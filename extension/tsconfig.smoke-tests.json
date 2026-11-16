@@ -404,6 +404,10 @@
     "smoke-tests/test-verify-develop-switches.ts",
     "smoke-tests/test-work-driver-verify-command-criteria-classic.ts",
     "smoke-tests/test-work-driver-verify-criteria-env-scrub-classic.ts",
-    "smoke-tests/test-git-range-probe-failures-1153.ts"
+    "smoke-tests/test-git-range-probe-failures-1153.ts",
+    "smoke-tests/lib/verify-pytest-switch.ts",
+    "smoke-tests/test-verify-pytest-frontend-skip.ts",
+    "smoke-tests/test-verify-pytest-switch.ts",
+    "smoke-tests/test-work-driver-verify-pytest-discovery.ts"
   ]
 }

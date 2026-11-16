@@ -37,6 +37,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DriverContext } from "../src/work-driver-context.ts";
+import { createEmitSink } from "../src/work-state-emit.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify.ts";
 import { initialState } from "../src/workflow-state.ts";
 import { commandOf } from "./lib/argv-shell.ts";
@@ -64,13 +65,22 @@ const GLOBS = ".css,.html,.svg,.woff,.woff2,.ttf,.otf";
 // derived and therefore eligible for the skip.
 const pyRoot = pythonRepo({ prefix: "verify-pytest-cls-" });
 
-const mkCtx = (exec: NonNullable<DriverContext["verifyExecFn"]>): DriverContext =>
+/** The gate's own parameter type, derived rather than transcribed (the shape
+ * `test-verify-run-events.ts` uses for the same call): `verifyStepOutcome` takes
+ * a `CycleContext`, whose one required field beyond `DriverContext` is the
+ * cycle's emit sink — so the sink is a real one from `createEmitSink`, drained
+ * to nothing. A `DriverHost` is structural (`sendUserMessage` + `emit`) and a
+ * test host records nothing on either, so it satisfies the type as written. */
+const mkCtx = (
+  exec: NonNullable<DriverContext["verifyExecFn"]>,
+): Parameters<typeof verifyStepOutcome>[0] =>
   ({
-    host: { sendUserMessage: () => {} },
+    host: { sendUserMessage: () => {}, emit: () => {} },
     issue: 2282,
     repoRoot: pyRoot,
     verifyExecFn: exec,
-  }) as unknown as DriverContext;
+    emitSink: createEmitSink(() => undefined),
+  }) as Parameters<typeof verifyStepOutcome>[0];
 
 const clsState = () => {
   const s = initialState(2282, 1_000_000);
