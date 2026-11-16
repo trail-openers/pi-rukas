@@ -414,6 +414,13 @@
     "smoke-tests/test-agents-md-pyproject-predicates.ts",
     "smoke-tests/test-verify-pytest-frontend-skip.ts",
     "smoke-tests/test-verify-pytest-switch.ts",
-    "smoke-tests/test-work-driver-verify-pytest-discovery.ts"
+    "smoke-tests/test-work-driver-verify-pytest-discovery.ts",
+    "smoke-tests/lib/forge-read-off-arm.ts",
+    "smoke-tests/test-forge-read-off.ts",
+    "smoke-tests/test-forge-read-off-arm.ts",
+    "smoke-tests/test-forge-read-off-child-text.ts",
+    "smoke-tests/test-forge-read-off-guard-switch.ts",
+    "smoke-tests/test-forge-read-off-docs.ts",
+    "smoke-tests/test-forge-off-predicate.ts"
   ]
 }

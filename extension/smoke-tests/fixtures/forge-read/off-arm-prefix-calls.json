@@ -1,0 +1,17 @@
+{
+  "note": "Pre-fix call log for the #2284 `forge_read` off-guard test. Captured ONCE from the pre-fix broker (extension/src/forge-read-broker.ts at 2c06e69f7a, which had no PI_ENSEMBLE_FORGE read) driven by lib/forge-read-off-arm.ts under PI_ENSEMBLE_FORGE=none and PI_ENSEMBLE_FORGE_READ_OFF_GUARD=0, with the recorded executor standing where the parent's own executor would have run. The reply's proof fields (mac/nonce/echo) are excluded: they carry fresh random nonces and cannot be compared. The `opts` entries are the exec options each recorded command was issued with.",
+  "request": { "verb": "issue_view", "number": 42 },
+  "reply": {
+    "type": "forge-read-response",
+    "ok": true,
+    "output": "{\n  \"number\": 42,\n  \"title\": \"T\",\n  \"body\": \"B\",\n  \"state\": \"OPEN\",\n  \"url\": \"https://github.com/acme/widget/issues/42\",\n  \"author\": \"dev\",\n  \"labels\": [],\n  \"createdAt\": \"2026-09-01T00:00:00Z\",\n  \"updatedAt\": \"2026-09-02T00:00:00Z\"\n}"
+  },
+  "calls": [
+    "git config --get remote.origin.url",
+    "gh issue view 42 --json number,title,body,state,url,author,labels,createdAt,updatedAt"
+  ],
+  "opts": [
+    { "cwd": "/parent/repo", "maxBuffer": 65536, "timeout": 5000 },
+    { "cwd": "/parent/repo", "maxBuffer": 524288, "timeout": 5000 }
+  ]
+}
