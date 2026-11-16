@@ -131,6 +131,44 @@ function stat(root: string, rel: string): boolean {
   }
 }
 
+/**
+ * Does this repository hold a pytest suite? One predicate, two callers.
+ *
+ * `fromPython` renders it into AGENTS.md's Testing Standards section, and
+ * `verifyCmdFor` (work-driver-verify-cmd.ts) discovers a Python repo's verify
+ * command from it — the SAME question asked of the SAME files, so the two
+ * sites must not grow two regex sets that can drift. The caller supplies the
+ * `pyproject.toml` bytes it already read plus the root the conventional
+ * filenames sit under. The content is a parameter rather than a read inside
+ * this predicate for exactly that reason: the verify gate that shares it reads
+ * every file asynchronously and must not import a sync read, while
+ * {@link stat} stays this module's own sync convention.
+ *
+ * pytest counts when the manifest names it in any shape — a dependency, an
+ * `[tool.pytest.*]` table, a `pytest.ini` mention — or when either of its two
+ * conventional files sits at the root. A dependency entry counts because a
+ * project that declares pytest runs pytest: that is the manifest speaking.
+ */
+export function pyprojectNamesPytest(pyprojectContent: string, root: string): boolean {
+  return (
+    /pytest|pytest\.ini|^\s*\[tool\.pytest/.test(pyprojectContent) ||
+    stat(root, "pytest.ini") ||
+    stat(root, "conftest.py")
+  );
+}
+
+/**
+ * Does this repository configure ruff? The sibling of
+ * {@link pyprojectNamesPytest}, and carried over from `fromPython` unchanged —
+ * including that `^ruff` is not multiline-anchored, so it matches a manifest
+ * that STARTS with the word and a `[tool.ruff]` table, not an indented
+ * dependency entry. Widening it here would change AGENTS.md's Testing
+ * Standards section as well as this arm, so it is not this resolver's call.
+ */
+export function pyprojectConfiguresRuff(pyprojectContent: string, root: string): boolean {
+  return /^ruff|\[tool\.ruff\]/.test(pyprojectContent) || stat(root, "ruff.toml");
+}
+
 function listWorkflows(root: string): string[] {
   const dir = path.join(root, ".github", "workflows");
   try {
@@ -217,14 +255,10 @@ function fromPython(root: string): DetectedFacts {
   const py = tryRead(path.join(root, "pyproject.toml")) ?? "";
   const commands: Command[] = [];
   // pytest is present if pyproject or a tests dir names it; otherwise omit.
-  if (
-    /pytest|pytest\.ini|^\s*\[tool\.pytest/.test(py) ||
-    stat(root, "pytest.ini") ||
-    stat(root, "conftest.py")
-  ) {
+  if (pyprojectNamesPytest(py, root)) {
     commands.push(cmd("pytest", "pytest", "test", "uv"));
   }
-  if (/^ruff|\[tool\.ruff\]/.test(py) || stat(root, "ruff.toml")) {
+  if (pyprojectConfiguresRuff(py, root)) {
     commands.push(cmd("ruff", "ruff check .", "lint", "uv"));
   }
   return {

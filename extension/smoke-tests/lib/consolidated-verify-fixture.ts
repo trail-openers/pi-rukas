@@ -31,7 +31,13 @@ export async function fixture(
   await git(repo, ["config", "user.email", "t@example.com"]);
   await git(repo, ["config", "user.name", "T"]);
   writeFileSync(path.join(repo, "tracked.txt"), "base\n");
-  for (const [rel, body] of Object.entries(seed)) writeFileSync(path.join(repo, rel), body);
+  for (const [rel, body] of Object.entries(seed)) {
+    // Seed paths may be nested (`tests/test_ok.py`); the caller declares the
+    // tree, and a seed that silently ENOENTed would leave a repo whose files are
+    // half-present and whose gate result means nothing.
+    mkdirSync(path.dirname(path.join(repo, rel)), { recursive: true });
+    writeFileSync(path.join(repo, rel), body);
+  }
   await git(repo, ["add", "."]);
   await git(repo, ["commit", "-q", "-m", "base"]);
   await git(repo, ["remote", "add", "origin", originDir]);

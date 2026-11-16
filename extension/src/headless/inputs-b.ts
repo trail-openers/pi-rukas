@@ -378,6 +378,14 @@ export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   // provenance key names a path absent from the workstream's pinned commit fails the step.
   // 0 skips it; tokens this gate cannot see are disclosed on both arms, never failed.
   flag("VERIFY_PROVENANCE", true),
+  // #2282 — the Python arm of `verifyCmdFor`'s discovery: a `pyproject.toml`
+  // that names pytest yields `uv run pytest -q` (a `uv.lock` is present) or
+  // `python3 -m pytest -q`, each prefixed with its ruff half when ruff is
+  // configured. `"0"` is the only off value and restores the pre-#2282
+  // discovery byte for byte — same resolved command, same no-command note — so
+  // a Python repo goes back to running nothing in the develop gate. Read at
+  // call time by `verifyPytestDisabled`.
+  flag("VERIFY_PYTEST", true),
 
   flag("VERIFY_SELECT", true),
   ms("VERIFY_SMOKE_TIMEOUT_MS", 600_000),

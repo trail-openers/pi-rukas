@@ -46,6 +46,7 @@ import { planCacheTtlMs } from "../../src/plan-investigation-cache.ts";
 import { adversarialChildBoundMs, reviewSkillReadCap } from "../../src/review-bounds.ts";
 import { lensFixBoundMs, reviewCapMs, reviewWallClockMs } from "../../src/review-budget.ts";
 import { transcriptRetentionDays } from "../../src/runs-retention.ts";
+import { verifyPytestDisabled } from "../../src/work-driver-verify-cmd.ts";
 import { verifyCommandCriteriaEnabled } from "../../src/work-driver-verify-develop-command-criteria.ts";
 import { verifyProvenanceEnabled } from "../../src/work-driver-verify-develop-provenance.ts";
 import { autoSteerEnabled } from "../../src/slow-notice.ts";
@@ -231,6 +232,10 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // by test-verify-develop-switches.ts.
   ["PI_ENSEMBLE_VERIFY_PROVENANCE", verifyProvenanceEnabled],
   ["PI_ENSEMBLE_VERIFY_COMMAND_CRITERIA", verifyCommandCriteriaEnabled],
+  // #2282 — the Python verify arm. The reader is `=== "0"`, so the gate's LIVE
+  // loop (env deleted) pins "unset means on"; the truth table, the docs row and
+  // the off-arm byte-identity are pinned by test-verify-pytest-switch.ts.
+  ["PI_ENSEMBLE_VERIFY_PYTEST", () => !verifyPytestDisabled()],
 ];
 
 /** The switch that would override a dimension's own default is cleared too. */
