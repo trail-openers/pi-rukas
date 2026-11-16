@@ -8,22 +8,32 @@
  * has had its way with them.
  *
  * Scope is the lean tree (`extension/src/lean`, at any depth) against a base ref,
- * default `origin/main`. Files present on only one side are reported too — a
- * comment-only change neither adds nor deletes a file.
+ * default `origin/main`. The head side is read from the working tree, so the check
+ * judges the bytes about to be committed rather than the last commit. Files present
+ * on only one side are reported too — a comment-only change neither adds nor deletes
+ * a file.
  */
 
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 
-import ts from "typescript";
+import type ts from "typescript";
 
 const LEAN_SCOPE = "extension/src/lean";
 const DEFAULT_BASE = "origin/main";
 
 const require = createRequire(import.meta.url);
 const EXTENSION_ROOT = path.join(import.meta.dirname, "..");
-const typescript = require(path.join(EXTENSION_ROOT, "node_modules", "typescript", "lib", "typescript.js")) as typeof ts;
+const TYPESCRIPT_ENTRY = path.join(
+  EXTENSION_ROOT,
+  "node_modules",
+  "typescript",
+  "lib",
+  "typescript.js",
+);
+const typescript = require(TYPESCRIPT_ENTRY) as typeof ts;
 
 function git(args: string[]): string {
   return execFileSync("git", args, { encoding: "utf8" });
@@ -35,6 +45,13 @@ function changedLeanFiles(base: string, repoRoot: string): string[] {
 }
 
 function contentAt(rev: string, file: string, repoRoot: string): string | undefined {
+  if (rev === "WORKING") {
+    try {
+      return readFileSync(path.join(repoRoot, file), "utf8");
+    } catch {
+      return undefined;
+    }
+  }
   try {
     return git(["-C", repoRoot, "show", `${rev}:${file}`]);
   } catch {
@@ -60,7 +77,7 @@ const differing: string[] = [];
 
 for (const file of files) {
   const before = contentAt(base, file, repoRoot);
-  const after = contentAt("HEAD", file, repoRoot);
+  const after = contentAt("WORKING", file, repoRoot);
   if (before === undefined || after === undefined) {
     differing.push(`${file}: present on only one side of the diff`);
     continue;
@@ -68,7 +85,9 @@ for (const file of files) {
   const outBefore = transpile(before);
   const outAfter = transpile(after);
   if (outBefore !== outAfter) {
-    differing.push(`${file}: transpiled output differs (${outBefore.length} → ${outAfter.length} bytes)`);
+    differing.push(
+      `${file}: transpiled output differs (${outBefore.length} → ${outAfter.length} bytes)`,
+    );
   }
 }
 
