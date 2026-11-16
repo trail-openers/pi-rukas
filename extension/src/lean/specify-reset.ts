@@ -317,7 +317,7 @@ export async function resetWorktreeToBase(
   //   - nothing seeded: with no populating call there is no pass to disbelieve. A tree nobody
   //     populated needs no disclosure either — the pass said so itself, with an `absent` note
   //     for every path it could not supply — and a read would put a submodule command on a run
-  //     that issued none, which is the claim `test-lean-specify-submodule.ts` (g) reads off
+  //     that issued none, which is the claim `test-lean-specify-submodule-steps.ts` (g) reads off
   //     the argv. The test is asked of the pass's OWN account rather than of the file system:
   //     whether something was seeded is what this step knows about its own work, and asking
   //     the tree whether anything arrived is the question the read below exists to answer — a

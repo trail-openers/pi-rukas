@@ -50,7 +50,13 @@ function assert(cond: boolean, msg: string): void {
 /**
  * One build round over a base whose submodule has no source left.
  */
-async function drive(issue: number): Promise<{
+async function drive(
+  issue: number,
+  // Which arm of the inner rule the fold runs on. `undefined` keeps the shipped default (local
+  // seeding); `"0"` selects the release's single `submodule update --init --recursive` — the
+  // only arm that hands a recorded URL to git, and so the only one (b) can control.
+  local?: "0",
+): Promise<{
   threw?: Error;
   outcome?: { kind?: string };
   submoduleArgv: readonly (readonly string[])[];
@@ -98,24 +104,28 @@ async function drive(issue: number): Promise<{
       `the build submodule fixture left a module store behind in ${built.repoRoot} — the control would seed instead of failing`,
     );
 
-  const r = await runBuild({
-    issue,
-    built: { ...built, headBefore },
-    // The child commits its work itself, so `classify` finds a change and the fold
-    // reaches its reset. The fold forgives a great deal: a child that produced
-    // nothing ends in `exhausted`, a child that broke the contract ends in `blocked`,
-    // and neither route reaches a throw — so the control arm cannot be "a child that
-    // changed nothing", it has to be a round that WOULD have committed.
-    child: (wt) => {
-      write(wt, "src/feature.ts", "export const f = 1;\n");
-      commit(wt, "build: the child's work");
-    },
-  });
+  let r: Awaited<ReturnType<typeof runBuild>> | undefined;
+  const run = async (): Promise<void> => {
+    r = await runBuild({
+      issue,
+      built: { ...built, headBefore },
+      // The child commits its work itself, so `classify` finds a change and the fold
+      // reaches its reset. The fold forgives a great deal: a child that produced
+      // nothing ends in `exhausted`, a child that broke the contract ends in `blocked`,
+      // and neither route reaches a throw — so the control arm cannot be "a child that
+      // changed nothing", it has to be a round that WOULD have committed.
+      child: (wt) => {
+        write(wt, "src/feature.ts", "export const f = 1;\n");
+        commit(wt, "build: the child's work");
+      },
+    });
+  };
+  await (local === undefined ? run() : withEnv({ PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL: local }, run));
   return {
-    threw: r.threw,
-    outcome: r.outcome,
-    submoduleArgv: submoduleCalls(r.gitArgvs),
-    committed: r.headAfter,
+    threw: r?.threw,
+    outcome: r?.outcome,
+    submoduleArgv: submoduleCalls(r?.gitArgvs ?? []),
+    committed: r?.headAfter ?? "",
     // Read after the step returned, so it is the OUTCOME of the reset rather than
     // a claim about it: the switch-on arm's call ran and did not put the file back.
     insideAfter: existsSync(path.join(built.worktree, INSIDE)),
@@ -171,9 +181,14 @@ function commit(wt: string, message: string): void {
   );
 }
 
-// ── (b) the control: the same fold throws, naming the submodule step
+// ── (b) the control: the same fold on the arm that asks git, throwing
 {
-  const on = await drive(912);
+  // (a) is the OUTER switch at `0` — the claim being that the step then issues nothing about
+  // submodules. The control has to be the same fold on the arm that DOES ask git. Under #2319's
+  // local rule a sabotaged submodule with no local copy is a disclosure, not a failure, so a
+  // local-arm fold that quietly succeeds separates nothing; `=0` selects the release's single
+  // `submodule update --init --recursive`, which is handed the recorded URL and must fail on it.
+  const on = await drive(912, "0");
   assert(
     on.threw !== undefined && /submodule/i.test(on.threw.message),
     `(b) the same fold DOES throw with the switch on (${on.threw?.constructor.name}: ${on.threw?.message.split("\n")[0] ?? "no throw"})`,

@@ -216,7 +216,7 @@ const agreeToEverything =
     ...gitTestEnv(),
     // The fixture's remotes are local paths and git's `file` policy is the operator's to
     // set — the product adds its own for the one call whose source it computed, which
-    // (e3) of `test-lean-specify-submodule` pins from the other side.
+    // (e3) of `test-lean-submodule-local-source` pins from the other side.
     GIT_CONFIG_COUNT: "1",
     GIT_CONFIG_KEY_0: "protocol.file.allow",
     GIT_CONFIG_VALUE_0: "always",

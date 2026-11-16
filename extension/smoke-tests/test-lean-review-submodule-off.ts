@@ -64,7 +64,7 @@ const { assert, failures } = makeAssert();
  * the submodule is in every commit the reset can land on and the step's `clean
  * -fdx` is what empties it.
  */
-async function drive(tag: string) {
+async function drive(tag: string, local?: "0") {
   const { repoRoot, baseSha } = makeRepo();
   await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 2;\n" });
   // The submodule's source is deleted before ANY checkout of it exists — the run's
@@ -100,13 +100,20 @@ async function drive(tag: string) {
       return result({ role: FIXER_ROLE });
     },
   });
-  const { outcome, threw } = await run(ctxFor(repoRoot, baseSha, BRANCH), {
-    ...inner,
-    exec: (cmd, o) => {
-      if (cmd === "git" && o?.argv !== undefined) argvs.push([...o.argv]);
-      return inner.exec(cmd, o);
-    },
-  });
+  let outcome: Awaited<ReturnType<typeof run>>["outcome"] | undefined;
+  let threw: Awaited<ReturnType<typeof run>>["threw"];
+  const round = async (): Promise<void> => {
+    ({ outcome, threw } = await run(ctxFor(repoRoot, baseSha, BRANCH), {
+      ...inner,
+      exec: (cmd, o) => {
+        if (cmd === "git" && o?.argv !== undefined) argvs.push([...o.argv]);
+        return inner.exec(cmd, o);
+      },
+    }));
+  };
+  // The inner switch selects WHICH submodule call the integration's reset makes; `undefined`
+  // keeps the shipped local arm, `"0"` the release's own. See (b) for why the control needs it.
+  await (local === undefined ? round() : withEnv({ PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL: local }, round));
   return {
     outcome,
     threw,
@@ -151,9 +158,14 @@ async function drive(tag: string) {
   );
 }
 
-// ── (b) the control: the same round throws, naming the submodule step
+// ── (b) the control: the same round on the arm that asks git, throwing
 {
-  const on = await drive("on");
+  // (a) is the OUTER switch at `0`, whose claim is that the step then issues nothing about
+  // submodules; the control has to be the same round on the arm that DOES ask git. Under #2319's
+  // local rule a sabotaged submodule with no local copy is a disclosure rather than a failure,
+  // so a local-arm round that succeeds separates nothing. `=0` selects the release's single
+  // `submodule update --init --recursive`, which is handed the recorded URL and must fail on it.
+  const on = await drive("on", "0");
   assert(
     on.threw !== undefined && /submodule/i.test(on.threw.message),
     `(b) the same round DOES throw with the switch on (${on.threw?.constructor.name}: ${on.threw?.message.split("\n")[0] ?? "no throw"})`,

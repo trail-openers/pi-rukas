@@ -13,7 +13,7 @@
  * it can be seen — `test-lean-submodule-local-source.ts` (the seeding, the no-network argv,
  * the disclosure, the depth rule, and the switch-off arm against origin/main's argv),
  * `test-lean-submodule-disclosure.ts` (the disclosure reaching a reason), and
- * `test-lean-specify-submodule.ts` (e3: the transport licence confined to one call).
+ * `test-lean-submodule-local-source.ts` (the transport licence confined to one call).
  *
  * Two things this row has to say, because the switch is not a peer of its outer gate:
  * `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` WINS over it — with the runner untrusted no submodule

@@ -336,6 +336,13 @@ export async function runTestPipeline(
     }
     writeCaptured(wt, captured);
   } catch (err) {
+    // A handback this window already named keeps its own words. The submodule pass raises
+    // `SpecifyInfraError` naming the command and git's reason for refusing it, and re-wrapping
+    // that here as "could not rewrite the captured tests" would attribute a transport failure
+    // to the file write that ran after it — the operator would repair the wrong thing. Only an
+    // error this window genuinely owns (a write that failed, a freeze check that could not run)
+    // is wrapped.
+    if (err instanceof SpecifyInfraError) throw err;
     if (err instanceof SpecifyResetError) throw new SpecifyInfraError(err.message);
     throw new SpecifyInfraError(
       `could not rewrite the captured tests in ${wt}: ${(err as Error).message}`,
