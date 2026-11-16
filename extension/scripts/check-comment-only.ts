@@ -61,19 +61,20 @@ const GIT_TIMEOUT_MS = 60_000;
  * inherited inside worktrees and hook environments, where they would point
  * `git show` at some repository other than this one.
  */
-const GIT_ENV = (() => {
-  const env = { ...process.env, GIT_TERMINAL_PROMPT: "0", HOME: process.env.HOME ?? "/" };
-  for (const key of [
-    "GIT_DIR",
-    "GIT_WORK_TREE",
-    "GIT_INDEX_FILE",
-    "GIT_OBJECT_DIRECTORY",
-    "GIT_CONFIG_GLOBAL",
-  ]) {
-    delete env[key];
-  }
-  return env;
-})();
+const GIT_ENV: Record<string, string | undefined> = {
+  ...process.env,
+  GIT_TERMINAL_PROMPT: "0",
+  HOME: process.env.HOME ?? "/",
+};
+for (const key of [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_INDEX_FILE",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_CONFIG_GLOBAL",
+]) {
+  delete GIT_ENV[key];
+}
 
 const USAGE = [
   "usage: bun extension/scripts/check-comment-only.ts [<base> <head>]",
@@ -187,9 +188,8 @@ function parseDiagnosticsOf(source: string, file: string, side: string): string[
   const sourceFile = typescript.createSourceFile(file, source, ts.ScriptTarget.ESNext, true);
   // `parseDiagnostics` is populated by `createSourceFile` but is not in the public
   // .d.ts; the narrow cast names the one internal field this tool reads.
-  const diagnostics = (
-    sourceFile as unknown as { parseDiagnostics?: readonly ts.Diagnostic[] }
-  ).parseDiagnostics;
+  const diagnostics = (sourceFile as unknown as { parseDiagnostics?: readonly ts.Diagnostic[] })
+    .parseDiagnostics;
   return (diagnostics ?? []).map(
     (diagnostic) =>
       `${file} (${side}): ${ts.flattenDiagnosticMessageText(diagnostic.messageText, " ")}`,
