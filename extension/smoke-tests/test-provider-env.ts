@@ -28,7 +28,7 @@ writeFileSync(
 process.env.PI_CODING_AGENT_DIR = agentDir;
 const KEY = "key-value-that-must-not-be-echoed";
 process.env.PI_ENSEMBLE_API_KEY_PROXY_X = KEY;
-const { providerOverrides } = await import("../src/provider-env.ts");
+const { agentDir: resolveAgentDir, providerOverrides } = await import("../src/provider-env.ts");
 const { buildCapabilities } = await import("../src/headless/capabilities.ts");
 
 const caps = buildCapabilities(path.resolve(import.meta.dirname, "../.."));
@@ -57,6 +57,19 @@ assert(
       ["lab.box", { baseUrl: "http://env", apiKey: "${PI_ENSEMBLE_API_KEY_LAB_BOX}" }],
     ]),
   `a set pair registers the URL and a reference to the key, never its value (${JSON.stringify(set)})`,
+);
+
+// The agent dir is read as Pi reads it: empty is unset, a leading `~` is home.
+const home = os.homedir();
+assert(
+  resolveAgentDir({ PI_CODING_AGENT_DIR: "" }) === path.join(home, ".pi", "agent") &&
+    resolveAgentDir({}) === path.join(home, ".pi", "agent"),
+  "an empty or absent PI_CODING_AGENT_DIR is the default agent dir",
+);
+assert(
+  resolveAgentDir({ PI_CODING_AGENT_DIR: "~/agent" }) === path.join(home, "agent") &&
+    resolveAgentDir({ PI_CODING_AGENT_DIR: "~" }) === home,
+  "a leading ~ in PI_CODING_AGENT_DIR is the home dir",
 );
 
 rmSync(agentDir, { recursive: true, force: true });

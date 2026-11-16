@@ -17,7 +17,8 @@
  *
  * Registered by the parent extension and by the child-guards companion, so the
  * PM session and every spawned child resolve the provider the same way; the
- * child inherits the two variables with the rest of its environment.
+ * child inherits the two variables with the rest of its environment, so a
+ * child's tools and the commands it runs can read the key too.
  */
 
 import { readFileSync } from "node:fs";
@@ -28,9 +29,21 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 /** A provider name as it appears in an env name. */
 export const providerEnvId = (name: string) => name.toUpperCase().replace(/[^A-Z0-9]/g, "_");
 
+/**
+ * Pi's agent dir, resolved as Pi's `getAgentDir` does: an empty value is unset
+ * and a leading `~` is the home dir. A different reading would look for a
+ * `models.json` Pi does not use and drop every override without a word.
+ */
+export function agentDir(env: NodeJS.ProcessEnv = process.env): string {
+  const dir = env.PI_CODING_AGENT_DIR;
+  if (!dir) return path.join(os.homedir(), ".pi", "agent");
+  if (dir === "~") return os.homedir();
+  return dir.startsWith("~/") ? path.join(os.homedir(), dir.slice(2)) : dir;
+}
+
 /** The provider names in Pi's `models.json`; none when it is absent or unreadable. */
 export function modelsJsonProviders(env: NodeJS.ProcessEnv = process.env): string[] {
-  const dir = env.PI_CODING_AGENT_DIR ?? path.join(os.homedir(), ".pi", "agent");
+  const dir = agentDir(env);
   try {
     const parsed = JSON.parse(readFileSync(path.join(dir, "models.json"), "utf8"));
     return Object.keys(parsed?.providers ?? {}).sort();
