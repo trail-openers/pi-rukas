@@ -65,6 +65,14 @@ export function hollowSubmoduleRepo(tag: string): {
   store: string;
   /** The operator's checkout of the base, submodule populated — the seeding's source. */
   operatorTree: string;
+  /**
+   * A file this fixture proved the recorded commit holds and then DELETED from the run's
+   * submodule checkout, with git's own answers as witness: `tracked` is the commit's
+   * inventory naming it, `deleted` is the submodule's `status` reporting it gone while its
+   * index still carries it. A case asserts against this pair instead of re-deriving an
+   * emptiness that may never have existed.
+   */
+  withheld: { path: string; tracked: boolean; deleted: boolean };
 } {
   const remote = remoteRepo(`${tag}-sub`);
   const { repoRoot } = plainRepo(tag);
@@ -136,7 +144,36 @@ export function hollowSubmoduleRepo(tag: string): {
   rmSync(remote, { recursive: true, force: true });
   if (holds(wt, INSIDE))
     throw new Error(`the hollow fixture left submodule content in the run's tree at ${wt}`);
-  return { repoRoot, baseSha, wt, recorded, store, operatorTree };
+  const submoduleDir = path.join(wt, SUB);
+  const relative = INSIDE.slice(SUB.length + 1);
+  // The witness is taken from the module store BEFORE the tree is emptied: git's own
+  // inventory of the commit the base records names the file, so anything the case below
+  // asserts about an empty checkout is a contradiction between a commit that holds a path and
+  // a tree that does not, rather than a submodule that never had files. `deleted` is then
+  // this fixture's own `rmSync`, and it is checked immediately — the emptiness the case
+  // asserts is created here and verified here, never assumed.
+  const tracked = gitIn(store, "ls-tree", "-r", "--name-only", recorded)
+    .split("\n")
+    .includes(relative);
+  if (!tracked)
+    throw new Error(
+      `the hollow fixture's recorded commit ${recorded} holds no ${relative}, so an emptied checkout would prove nothing`,
+    );
+  rmSync(path.join(submoduleDir, relative), { recursive: true, force: true });
+  const deleted = !existsSync(path.join(submoduleDir, relative));
+  if (!deleted)
+    throw new Error(
+      `the hollow fixture could not empty ${relative} from ${submoduleDir} — the seeding would have content to copy and the case below would assert about a populated tree`,
+    );
+  return {
+    repoRoot,
+    baseSha,
+    wt,
+    recorded,
+    store,
+    operatorTree,
+    withheld: { path: INSIDE, tracked, deleted },
+  };
 }
 
 /**

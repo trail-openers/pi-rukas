@@ -192,13 +192,26 @@ const agreeToEverything =
   // The argv is then dropped, which IS the pass's claim of success: git was asked to fill
   // the path and nothing complained.
   //
+  // The stand-in registers its git dir with the superproject and is verified as a checkout
+  // BEFORE the files are taken away. Both matter: a `vendor/lib/.git` directory the seeding
+  // never wrote is read by git's clean-tree proof as a modified gitlink, so the reset would
+  // refuse the tree and the case would report a clean seed that never happened; and a
+  // checkout whose emptiness was never git's own answer about a full index would let the
+  // case assert about a directory that was empty for a reason nobody asked git about.
+  //
   // The alternative route to this state is unavailable, and knowing why is what makes the
   // case honest: emptying the SOURCE cannot produce it, because `firstTrackedFile` reads the
   // source to decide what to look for and rightly reports `undefined` for a commit with no
   // files — so the expectation would be absent, no disclosure would be owed, and the case
   // would pass while testing nothing. Hence intercepting the one command whose job is to
   // write the directory.
-  const { wt, baseSha, recorded, store } = hollowSubmoduleRepo("hollow");
+  const { wt, baseSha, recorded, store, withheld } = hollowSubmoduleRepo("hollow");
+  // The precondition the whole case rests on, read off the fixture's own witness rather than
+  // assumed: the recorded commit holds a file, and the run's checkout does not.
+  assert(
+    withheld.tracked && withheld.deleted && withheld.path === INSIDE,
+    `(b) the fixture witnessed a file the recorded commit holds deleted from the run's submodule checkout (tracked ${String(withheld.tracked)}, deleted ${String(withheld.deleted)})`,
+  );
   const env: Record<string, string> = {
     ...gitTestEnv(),
     // The fixture's remotes are local paths and git's `file` policy is the operator's to
@@ -209,29 +222,29 @@ const agreeToEverything =
     GIT_CONFIG_VALUE_0: "always",
   };
   const populate = (dir: string): void => {
+    // Re-create exactly what `clean -fdx` would have removed — the module store's git dir
+    // registered with the superproject, and the checkout git itself writes there. A
+    // `vendor/lib/.git` left in place instead is read as a modified gitlink, and the
+    // clean-tree proof rightly refuses the tree before any judgement of the notes runs.
     rmSync(dir, { recursive: true, force: true });
     mkdirSync(dir, { recursive: true });
-    gitAsk(dir, "init", "-q");
-    gitAsk(dir, "fetch", "-q", store, "+refs/heads/*:refs/remotes/origin/*");
-    gitAsk(dir, "update-ref", "HEAD", recorded);
-    gitAsk(dir, "read-tree", "--empty");
-    gitAsk(dir, "checkout-index", "-a", "-f");
-    // The stand-in proves its own shape, or the case below would be asserting about a
-    // directory that is empty for a reason git was never asked about: at the commit the base
-    // names, git's own inventory lists files, and git's own `status` reports them gone.
+    writeFileSync(path.join(dir, ".git"), `gitdir: ${store}\n`);
+    gitAsk(dir, "read-tree", "-m", recorded);
+    gitAsk(dir, "checkout", "-f", "--detach", "HEAD");
+    // The emptiness the case asserts is the FIXTURE's, created and verified before this call
+    // ever ran; the stand-in restores only the checkout, so it withholds the same path again.
+    // Asserting an emptiness this file created would have the case examine its own artefact
+    // and pass on it — git was never asked.
+    rmSync(path.join(dir, INSIDE), { recursive: true, force: true });
     if (gitAsk(dir, "rev-parse", "HEAD") !== recorded)
       throw new Error(`the case's stand-in checkout is not at the recorded commit ${recorded}`);
-    if (gitAsk(dir, "ls-tree", "-r", "--name-only", "HEAD") === "")
+    if (gitAsk(dir, "ls-tree", "-r", "--name-only", "HEAD").split("\n").includes(withheld.path.slice(SUB.length + 1)) === false)
       throw new Error(
-        `the case's stand-in checkout holds no commit with files, so an empty work tree there proves nothing (${dir})`,
+        `the case's stand-in checkout's commit holds no ${INSIDE}, so its emptiness there proves nothing (${dir})`,
       );
-    if (
-      gitAsk(dir, "status", "--porcelain")
-        .split("\n")
-        .filter((l) => l.trimStart().startsWith("D ")).length === 0
-    )
+    if (existsSync(path.join(dir, INSIDE)))
       throw new Error(
-        `the case's stand-in checkout is not a populated submodule emptied of its files (${dir})`,
+        `the case's stand-in did not withhold ${INSIDE} from the checkout it built (${dir})`,
       );
   };
   const exec: ExecFn = async (cmd, o) => {
