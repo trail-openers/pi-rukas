@@ -251,6 +251,13 @@ const EXPECTED: Record<string, number> = {
   // bound are what make a wedged probe a refusal rather than a publish that never
   // answers.
   "publish-deps.ts": 1,
+  // #2279 — the handback's origin reads are `git ls-remote` calls on the reporting
+  // step's path, three in the rewind (the held head, then the branch and its
+  // keeping-ref) and one for the record. Four call sites, no shared helper: each keeps
+  // its own `runNetGit(` so the count here is the count of reads that can hang, and a
+  // routed-but-collapsed helper would hide one. Without the wrapper a wedged read keeps
+  // its ssh grandchild alive past its own ceiling and the trial is lost.
+  "handback-rewind.ts": 4,
 };
 
 function sourceFiles(dir: string): string[] {
