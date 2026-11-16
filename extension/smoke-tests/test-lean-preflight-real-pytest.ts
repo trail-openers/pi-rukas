@@ -20,6 +20,11 @@
  *       {file}` with `PYTHONPATH=.pi` and a plugin module at `.pi/<plugin>.py`.
  *       A template that loads a conftest-less plugin is the shape a real Python
  *       project configures, and it is the shape whose probe the old name refused;
+ *   (2b) a plain pytest repo with NO plugin at all, whose tests sit DEEP inside a
+ *       nested `testDir` (`test/units/modules/network/`) with a source tree on
+ *       `PYTHONPATH=lib:.`. Nothing is imported and no project plugin is loaded,
+ *       so the only reason this shape could hand back is the probe's own name —
+ *       which is exactly the field report this case exists to pin;
  *   (3) POSITIVE CONTROL, so (1) cannot be green because pytest was never really
  *       asked: a sibling file holding a failing test, run through the same
  *       template, exits 1 — the runner the probe trusted does report on files;
@@ -36,7 +41,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { PY_PROBE, runPreflight } from "./lib/lean-preflight-probe-fixture.ts";
+import { PY_PROBE, pythonUserEnv, runPreflight } from "./lib/lean-preflight-probe-fixture.ts";
 import { ROOTS } from "./lib/lean-specify-fixture.ts";
 
 let passed = 0;
@@ -51,9 +56,19 @@ function assert(cond: boolean, msg: string): void {
   }
 }
 
-/** Is pytest importable by the interpreter the case would use? */
+/** Is pytest importable by the interpreter the case would use?
+ *
+ * Asked with the REAL home, not the fixture's isolated one: the skip gate is a
+ * question about the host, and it is asked before any git fixture exists, so the
+ * ambient `HOME` may or may not have been replaced by whichever helper ran first.
+ * A gate that inherits that accident would SKIP on a host that does have pytest.
+ */
 function pytestAvailable(python: string): boolean {
-  const r = spawnSync(python, ["-c", "import pytest"], { encoding: "utf8", timeout: 30_000 });
+  const r = spawnSync(python, ["-c", "import pytest"], {
+    encoding: "utf8",
+    timeout: 30_000,
+    env: { ...process.env, ...pythonUserEnv() },
+  });
   return r.status === 0;
 }
 
@@ -67,9 +82,36 @@ function pythonRepo(): { dir: string; pyproject: string } {
   return { dir, pyproject };
 }
 
+/**
+ * A repo whose tests live DEEP under a nested `testDir`, with the source tree on
+ * `PYTHONPATH` — the shape a large Python project (an Ansible collection layout:
+ * `lib/` for the modules, `test/units/<area>/<sub>/` for the suites) really has.
+ *
+ * Every package directory carries an `__init__.py`, which is what makes pytest
+ * treat the tree as packages and resolve the probe by IMPORTING it rather than by
+ * matching a path: with packages on the tree, a name pytest cannot match answers 4
+ * with "no match in any of [<Package …>]" — the hand-back this case pins.
+ */
+function nestedPkgRepo(): { dir: string; testDir: string; nested: string } {
+  const dir = mkdtempSync(path.join(tmpdir(), "lean-pytest-nested-"));
+  ROOTS.push(dir);
+  const nested = "test/units/modules/network";
+  mkdirSync(path.join(dir, "lib"), { recursive: true });
+  mkdirSync(path.join(dir, nested), { recursive: true });
+  for (const pkg of ["lib", "test", "test/units", "test/units/modules", nested]) {
+    writeFileSync(path.join(dir, pkg, "__init__.py"), "");
+  }
+  writeFileSync(
+    path.join(dir, nested, "test_x.py"),
+    "def test_x():\n    assert True\n",
+  );
+  return { dir, testDir: "test/units", nested };
+}
+
 // The skip gate is asked BEFORE any assertion, so a host without pytest cannot
 // contribute a single green to this file's tally.
 const PYTHON = process.env.PI_ENSEMBLE_PYTEST_PYTHON ?? "python3";
+
 if (!pytestAvailable(PYTHON)) {
   console.log("SKIP: pytest not installed");
   console.log(`(probed \`${PYTHON} -c 'import pytest'\`; ${passed + failed} assertions run)`);
@@ -91,10 +133,11 @@ if (!pytestAvailable(PYTHON)) {
     wt: dir,
     template: `${PYTHON} -m pytest {file}`,
     testLocation: { testDir: "tests", testGlob: "test_*.py" },
+    limits: { timeoutMs: 60_000 },
   });
   assert(
     got.threw === undefined,
-    `(1) real pytest accepts the probe: ${got.written[0] ?? "<nothing run>"}`,
+    `(1) real pytest accepts the probe: ${got.written[0] ?? "<nothing run>"}${got.threw === undefined ? "" : ` — ${got.threw.message.split("\n")[0] ?? ""}`}`,
   );
   assert(
     got.written[0] === `tests/${PY_PROBE}`,
@@ -130,7 +173,10 @@ if (!pytestAvailable(PYTHON)) {
     wt: dir,
     template: `${PYTHON} -m pytest -q -p leanprobe_plugin {file}`,
     testLocation: { testDir: "tests", testGlob: "test_*.py" },
-    limits: { timeoutMs: 60_000, env: { ...process.env, PYTHONPATH: ".pi" } },
+    limits: {
+      timeoutMs: 60_000,
+      env: { ...process.env, ...pythonUserEnv(), PYTHONPATH: ".pi" },
+    },
   });
   assert(
     got.threw === undefined,
@@ -140,6 +186,67 @@ if (!pytestAvailable(PYTHON)) {
     !existsSync(path.join(dir, ".pi", PY_PROBE)) &&
       !existsSync(path.join(dir, "tests", PY_PROBE)),
     "(2) and no probe byte survives it, in the folder or outside it",
+  );
+}
+
+// ── (2b) a plain repo with NO plugin, tests deep under a nested testDir
+{
+  const { dir, testDir, nested } = nestedPkgRepo();
+  // No plugin, no conftest, no ini file: the runner is handed nothing but the file,
+  // and `PYTHONPATH=lib:.` is the source-tree import the project's own CI sets. So
+  // if this hands back, the only thing it can be blamed on is the probe's name.
+  const got = await runPreflight({
+    wt: dir,
+    template: `${PYTHON} -m pytest -q -p no:cacheprovider -p no:randomly {file}`,
+    testLocation: { testDir, testGlob: "test_*.py" },
+    limits: {
+      timeoutMs: 60_000,
+      env: {
+        ...process.env,
+        ...pythonUserEnv(),
+        PYTHONPATH: "lib:.",
+      },
+    },
+  });
+  assert(
+    got.threw === undefined,
+    `(2b) a plain no-plugin repo with a nested testDir passes preflight: ${got.written[0] ?? "<nothing run>"} — ${got.threw?.message.split("\n")[0] ?? ""}`,
+  );
+  assert(
+    got.written[0] === `${testDir}/${PY_PROBE}`,
+    `(2b) and the probe sat inside the configured testDir, where the package tree lets pytest import it (got ${got.written[0] ?? "<none>"})`,
+  );
+  assert(
+    got.note === undefined,
+    `(2b) with no plugin loaded the answer is still healthy, not a rejection (got ${got.note})`,
+  );
+  assert(
+    !existsSync(path.join(dir, testDir, PY_PROBE)),
+    "(2b) and no probe byte survives it in the testDir",
+  );
+
+  // The field report, stated as a fact about pytest on THIS host rather than about
+  // the step: the shipped dotfile name at the same path answers 4 — the status the
+  // preflight used to read as "the runner could not run a test file".
+  writeFileSync(path.join(dir, nested, ".lean-runner-probe.test"), "");
+  const old = spawnSync(
+    PYTHON,
+    ["-m", "pytest", "-q", "-p", "no:cacheprovider", "-p", "no:randomly", `${nested}/.lean-runner-probe.test`],
+    {
+      cwd: dir,
+      encoding: "utf8",
+      timeout: 120_000,
+      env: {
+        ...process.env,
+        ...pythonUserEnv(),
+        PYTHONPATH: "lib:.",
+      },
+    },
+  );
+  rmSync(path.join(dir, nested, ".lean-runner-probe.test"), { force: true });
+  assert(
+    old.status === 4,
+    `(2b) the shipped dotfile name in the same nested package is refused by pytest with exit 4, the hand-back status (got ${String(old.status)})`,
   );
 }
 
@@ -154,7 +261,7 @@ if (!pytestAvailable(PYTHON)) {
   const direct = spawnSync(
     PYTHON,
     ["-m", "pytest", "-q", "tests/test_control_fails.py"],
-    { cwd: dir, encoding: "utf8", timeout: 120_000 },
+    { cwd: dir, encoding: "utf8", timeout: 120_000, env: { ...process.env, ...pythonUserEnv() } },
   );
   assert(
     direct.status === 1,
@@ -172,6 +279,7 @@ if (!pytestAvailable(PYTHON)) {
     cwd: dir,
     encoding: "utf8",
     timeout: 120_000,
+    env: { ...process.env, ...pythonUserEnv() },
   });
   rmSync(path.join(dir, "tests", PY_PROBE), { force: true });
   assert(
@@ -185,6 +293,7 @@ if (!pytestAvailable(PYTHON)) {
     cwd: dir,
     encoding: "utf8",
     timeout: 120_000,
+    env: { ...process.env, ...pythonUserEnv() },
   });
   rmSync(path.join(dir, "tests", ".lean-runner-probe.test"), { force: true });
   assert(
