@@ -22,6 +22,7 @@ import { childCodemodeEnabled } from "../../src/child-codemode.ts";
 import { commentRetentionEnabled } from "../../src/comment-retention.ts";
 import { COMMENT_RETENTION_PATHS } from "../../src/comment-retention.ts";
 import { hostSpawnCap, hostSpawnWaitMs } from "../../src/host-spawn-slots.ts";
+import { leanHandbackNetGitEnabled } from "../../src/lean/handback-net-git-switch.ts";
 import { leanDeadlineHandbackEnabled } from "../../src/lean/deadline-handback.ts";
 import { leanGuardFailClosed } from "../../src/lean/guard-fail-closed-switch.ts";
 import { leanBuildIssueProseEnabled, leanIssueProseEnabled } from "../../src/lean/issue-prose.ts";
@@ -196,6 +197,11 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // #2255 — the publishable-branch guard's fail-closed arm. The reader is `v !== "0"`,
   // so the gate's LIVE loop (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LEAN_GUARD_FAIL_CLOSED", leanGuardFailClosed],
+  // #2279 — the handback's origin reads through the network-git wrapper. The reader is
+  // `v !== "0"`, so the gate's LIVE loop (env deleted) pins "unset means on"; the truth
+  // table, the docs row and the off-arm call shape are pinned by
+  // test-lean-handback-net-git-switch.ts.
+  ["PI_ENSEMBLE_LEAN_HANDBACK_NET_GIT", leanHandbackNetGitEnabled],
   ["PI_ENSEMBLE_ISSUE_IMAGES", () => issueImagesEnabled()],
   ["PI_ENSEMBLE_LENS_EVIDENCE", evidenceSupplyEnabled],
   // #2223 — the delta reader's incomplete-row rule. The reader is `v !== "0"`, so

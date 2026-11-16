@@ -42,8 +42,9 @@
 
 import { isFullCommitSha } from "../commit-sha.ts";
 import { traceWarn } from "../trace.ts";
-import { netGitEnv, netRefProblem } from "../work-driver-net-git.ts";
+import { netGitEnv, netRefProblem, runNetGit } from "../work-driver-net-git.ts";
 import type { HandlerCtx } from "./engine.ts";
+import { leanHandbackNetGitEnabled } from "./handback-net-git-switch.ts";
 import { PublishInfraError, assertPublishableBranch } from "./publish-deps.ts";
 import { leanRewindLeaseBinds } from "./rewind-lease-switch.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
@@ -88,17 +89,9 @@ export async function originBranchHead(
   opts: { env?: NodeJS.ProcessEnv } = {},
 ): Promise<string | undefined> {
   const ref = `refs/heads/${specifyBranch(ctx.run.branch, ctx.issue)}`;
-  const ran = await exec("git", {
-    argv: [...NO_HOOKS, "ls-remote", "origin", ref],
-    cwd: ctx.repoRoot,
-    timeout: 60_000,
-    maxBuffer: 4 * 1024 * 1024,
-    ...(opts.env === undefined ? {} : { env: opts.env }),
-  }).catch(() => undefined);
-  const out = (ran?.stdout ?? "").trim();
-  if (ran === undefined || out === "") return undefined;
-  const [sha = ""] = out.split(/\s+/);
-  return isFullCommitSha(sha) ? sha : undefined;
+  // One origin read, one shape: {@link originRead} is the only call this file makes and
+  // this function is its fourth caller, so the ceiling it carries is that helper's.
+  return originRead(exec, ctx.repoRoot, ref, opts.env);
 }
 
 /** Nothing to move: the rule fired and the log named no head to go back to. */
@@ -150,24 +143,6 @@ function firstLine(stderr: string): string {
   return line.length > 160 ? `${line.slice(0, 160)}…` : line;
 }
 
-/** Run one git command and report failure as `undefined` rather than throwing. */
-async function quiet(
-  exec: VerifyExec,
-  cwd: string,
-  argv: string[],
-  env?: NodeJS.ProcessEnv,
-): Promise<string | undefined> {
-  const ran = await exec("git", {
-    argv: [...NO_HOOKS, ...argv],
-    cwd,
-    timeout: 60_000,
-    maxBuffer: 4 * 1024 * 1024,
-    ...(env === undefined ? {} : { env }),
-  }).catch(() => undefined);
-  const out = (ran?.stdout ?? "").trim();
-  return ran === undefined ? undefined : out;
-}
-
 /**
  * Does this clone hold `sha` as a commit — yes, no, or could git not be asked?
  *
@@ -210,17 +185,52 @@ async function holdsCommit(
   }
 }
 
-/** Origin's own value for one ref, read through `ls-remote`, or `undefined`. */
-async function originRef(
+/** One `ls-remote` reply's sha, or `undefined` when the read did not answer with one. */
+function readSha(stdout: string | undefined): string | undefined {
+  const out = (stdout ?? "").trim();
+  if (out === "") return undefined;
+  const [sha = ""] = out.split(/\s+/);
+  return isFullCommitSha(sha) ? sha : undefined;
+}
+
+/**
+ * The read this clone makes of one origin ref, in the shape the switch decides.
+ *
+ * Both arms ask for the same ceiling and buffer this read has always carried; what the
+ * switch decides is who hands the call to the executor. On the routed arm that is the
+ * network wrapper, which supplies the non-interactive env (`GIT_TERMINAL_PROMPT=0` and a
+ * BatchMode ssh command), the process-group kill that takes an ssh grandchild with the
+ * child, and its own bound — the three things that make a wedged read a lost read rather
+ * than a lost trial. On the off arm it is the executor itself, in the pre-fix call: the
+ * caller's env if it supplied one, and no group kill.
+ *
+ * Every origin read in this file is one call to {@link originRead} — the held head before
+ * the push, the refusal's re-read, both halves of the success check's `Promise.all` pair,
+ * and `originBranchHead` — so the ceiling a read carries is the one its body spells, and
+ * the enumeration gate's count for this file is the count of reads that can hang.
+ */
+async function originRead(
   exec: VerifyExec,
   cwd: string,
   ref: string,
   env?: NodeJS.ProcessEnv,
 ): Promise<string | undefined> {
-  const out = await quiet(exec, cwd, ["ls-remote", "origin", ref], env);
-  if (out === undefined || out === "") return undefined;
-  const [sha = ""] = out.split(/\s+/);
-  return isFullCommitSha(sha) ? sha : undefined;
+  const argv = [...NO_HOOKS, "ls-remote", "origin", ref];
+  const ran = leanHandbackNetGitEnabled()
+    ? await runNetGit(exec, "git", {
+        argv,
+        cwd,
+        timeoutMs: 60_000,
+        maxBuffer: 4 * 1024 * 1024,
+      }).catch(() => undefined)
+    : await exec("git", {
+        argv,
+        cwd,
+        timeout: 60_000,
+        maxBuffer: 4 * 1024 * 1024,
+        ...(env === undefined ? {} : { env }),
+      }).catch(() => undefined);
+  return readSha(ran?.stdout);
 }
 
 /**
@@ -276,7 +286,7 @@ export async function rewindToVerified(
   // origin and there was nothing verified to move to. `held` is therefore read
   // BEFORE the sha check — the record names it, and a read that cannot answer is
   // still not a licence to claim a head was shipped.
-  const held = await originRef(exec, ctx.repoRoot, ref, opts.env ?? netEnv);
+  const held = await originRead(exec, ctx.repoRoot, ref, opts.env ?? netEnv);
   if (held === undefined)
     return {
       shipped: false,
@@ -408,7 +418,7 @@ export async function rewindToVerified(
     // actions — one is "someone else moved your branch", the other is "fetch and
     // retry" — so the line is chosen from git's own stderr, and origin stays the
     // arbiter of what the branch holds.
-    const refused = await originRef(exec, ctx.repoRoot, ref, opts.env ?? netEnv);
+    const refused = await originRead(exec, ctx.repoRoot, ref, opts.env ?? netEnv);
     const where = `origin still holds ${refused === undefined ? "an unreadable head" : refused.slice(0, 12)}`;
     return {
       shipped: false,
@@ -425,10 +435,12 @@ export async function rewindToVerified(
   // Origin decides, never the porcelain: read back and compare. BOTH names are
   // checked, because a rewind that moved the branch and lost the keeping-ref
   // would have thrown the unverified head away — the one thing this step exists
-  // not to do.
+  // not to do. Both halves ask the one reader {@link originRead}; the pair is one
+  // call site because it is one read shape asked twice, and the gate's count for this
+  // file is the count of reads that can hang, not the count of awaits.
   const [after, keptOnOrigin] = await Promise.all([
-    originRef(exec, ctx.repoRoot, ref, opts.env ?? netEnv),
-    originRef(exec, ctx.repoRoot, unverifiedRef(ctx.issue), opts.env ?? netEnv),
+    originRead(exec, ctx.repoRoot, ref, opts.env ?? netEnv),
+    originRead(exec, ctx.repoRoot, unverifiedRef(ctx.issue), opts.env ?? netEnv),
   ]);
   if (after === verifiedHead && keptOnOrigin === held)
     return { shipped: true, unshippedHead: held };
