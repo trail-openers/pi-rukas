@@ -1,12 +1,16 @@
 /**
  * lean/io — the three things a lean run asks the outside world for.
  *
- * Split from `command.ts` for the brief's 250-line cap, and the split earns its keep beyond the size:
- * `command.ts` is registration and handler wiring, this file is the seam where a lean run touches the forge
- * and git. A phase that swaps the adapter for an API client changes one file and leaves the handler set
- * alone; a test that wants to fake the outside world replaces this module rather than the command.
+ * Split from `command.ts` for the brief's 250-line cap, and the split earns
+ * its keep beyond the size: `command.ts` is registration and handler wiring,
+ * this file is the seam where a lean run touches the forge and git. A phase
+ * that swaps the adapter for an API client, or adds a retry, changes one file
+ * and leaves the handler set alone; a test that wants to fake the outside
+ * world replaces this module rather than the command.
  *
  * Every call is argv-form, so `gh` and `git` never see a shell string here.
+ * An issue title or a provider error message cannot become a word the shell
+ * re-parses.
  */
 
 import { execp } from "../exec.ts";
@@ -16,10 +20,14 @@ import { resolveCycleForge } from "../work-driver-forge-ctx.ts";
 import { oneLine } from "./text-fence.ts";
 
 /**
- * The forge adapter for this repo, or undefined when it cannot be resolved. Resolution goes through the
- * driver's one guarded detection so a lean run and a `/work` cycle give the same answer for the same repo.
+ * The forge adapter for this repo, or undefined when it cannot be resolved.
  *
- * Exported because `publish` asks for the same adapter in a narrower shape.
+ * Resolution goes through the driver's one guarded detection so a lean run and
+ * a `/work` cycle give the same answer for the same repo.
+ *
+ * Exported because `publish` asks for the same adapter in a narrower shape
+ * (`PublishForge` is a `Pick` of `Forge`), and a second lookup here would be
+ * a second detection path with its own failure modes.
  */
 export async function forgeFor(repoRoot: string): Promise<Forge | undefined> {
   return resolveCycleForge(repoRoot, { traceLabel: "lean" });
@@ -47,18 +55,26 @@ export async function fetchIssueBody(repoRoot: string, issue: number): Promise<s
 const MAINLINE_REFS = ["origin/HEAD", "origin/main", "main"] as const;
 
 /**
- * The fixed tail for a mainline that resolved to nothing and gave no cause. Lives beside the probe list it
- * names, because the two must move together: `lean/base-proof.ts` renders the empty-base rule and needs a
- * tail that is never empty, and a clause that quotes refs this function never asked is worse than no clause
- * at all.
+ * The fixed tail for a mainline that resolved to nothing and gave no cause.
+ *
+ * Lives beside the probe list it names, because the two must move together:
+ * `lean/base-proof.ts` renders the empty-base rule and needs a tail that is
+ * never empty, and a clause that quotes refs this function never asked is
+ * worse than no clause at all. `detectMainline` (the fallback probe below) adds
+ * `origin/<name>` for whatever branch it resolves — which on a GitHub clone is
+ * usually `master` — so the clause names the three deterministic refs plus that
+ * remote spelling and says plainly that no ref resolved.
  */
 export const NO_MAINLINE_WHY = "no mainline ref resolved (origin/HEAD, origin/main, origin/master)";
 
 /**
  * What a mainline probe returned: the sha, or the reason there is none.
  *
- * A failure CAUSE travels back with the answer rather than sitting in a module global: the global version
- * read the LAST probe's causes, so a second probe after a failure reported one run's cause against another's.
+ * A failure CAUSE travels back with the answer rather than sitting in a
+ * module global. The global version (`mainlineShaFailure`) read the LAST
+ * probe's causes, so a second probe after a failure — a retry, or two issues
+ * checked in one process — reported one run's cause against another's, and
+ * the comment on the issue said something git never did.
  */
 interface MainlineSha {
   sha?: string;
@@ -66,10 +82,13 @@ interface MainlineSha {
 }
 
 /**
- * The mainline sha: `origin/HEAD`, then `origin/main`, then `main`, then the branch `detectMainline` resolves.
- * `{}` for none, with `why` saying what was probed and why each probe failed — so the sha the whole cycle
- * reads its config at never comes back as a bare empty string that reads like "no such branch" when it
- * actually meant "git broke". These are LOCAL refs: no fetch happens here.
+ * The mainline sha: `origin/HEAD`, then `origin/main`, then `main`, then the
+ * branch `detectMainline` resolves (which falls back to `gh repo view` when
+ * `origin/HEAD` is unset). `{}` for none, with `why` saying what was probed
+ * and why each probe failed — so the sha the whole cycle reads its config at
+ * never comes back as a bare empty string that reads like "no such branch"
+ * when it actually meant "git broke". Note also that these are LOCAL refs: no
+ * fetch happens here, so the sha is the tip the clone last saw.
  */
 export async function mainlineSha(repoRoot: string): Promise<MainlineSha> {
   const causes: string[] = [];
@@ -87,8 +106,10 @@ export async function mainlineSha(repoRoot: string): Promise<MainlineSha> {
       causes.push(`${ref}: ${oneLine((err as Error)?.message ?? String(err), 60)}`);
     }
   }
-  // No local ref resolved: ask the same detector the old driver asks, whose `gh repo view` fallback covers a
-  // clone whose origin/HEAD was never set. The name it returns is probed bare and as `origin/<name>`.
+  // No local ref resolved: ask the same detector the old driver asks, whose
+  // `gh repo view` fallback covers a clone whose origin/HEAD was never set.
+  // The name it returns is probed bare and as `origin/<name>`, since the
+  // detector gives a branch name and the tip usually lives on the remote.
   const detected = await resolveMainlineBranch(repoRoot);
   if (!detected)
     return { why: `${causes.join("; ")}${causes.length > 0 ? "; " : ""}${NO_MAINLINE_WHY}` };
@@ -108,7 +129,8 @@ export async function mainlineSha(repoRoot: string): Promise<MainlineSha> {
       );
     }
   }
-  // The tail is the one thing this answer always has — see `NO_MAINLINE_WHY`.
+  // The tail is the one thing this answer always has, even when every probe
+  // answered so quietly it left no cause behind — see `NO_MAINLINE_WHY`.
   const causesText = causes.length > 0 ? `${causes.join("; ")}; ` : "";
   return { why: `${causesText}${NO_MAINLINE_WHY}` };
 }
@@ -132,18 +154,25 @@ async function resolveMainlineBranch(repoRoot: string): Promise<string | undefin
 }
 
 /**
- * The seam both reporting steps post through, and the witness the host-channel cases read. A test installs a
- * recorder; `undefined` is the forge adapter.
+ * The seam both reporting steps post through, and the witness the host-channel
+ * cases read. A test installs a recorder; `undefined` is the forge adapter.
  *
- * Why a seam at all, when `handbackOutcome` already takes a `post`: the claim under test is that the HOST
- * CHANNEL POSTS NOTHING, and that claim is only falsifiable if the FORGE channel's post is observable. The
- * recorder makes the two answers two different counts: 0 on `host`, 1 on `forge`.
+ * Why a seam at all, when `handbackOutcome` already takes a `post`: the claim
+ * under test is that the HOST CHANNEL POSTS NOTHING, and that claim is only
+ * falsifiable if the FORGE channel's post is observable. `phase1Handlers` wires
+ * the forge branch to `postHandback`/`postNotReady`, and both resolve a forge
+ * adapter a temp repo does not have — so with no seam here the two answers,
+ * "the host channel posted nothing" and "the forge channel tried to post and had
+ * no forge", leave identical records and the case asserts nothing. The recorder
+ * makes them two different counts: 0 on `host`, 1 on `forge`.
  */
 let commentPoster: ((issue: number, body: string) => Promise<void>) | undefined;
 
 /**
- * Install `poster` and hand back the undo. Scoped to a test on purpose: a leaked recorder would swallow every
- * later run's post. The returned function is idempotent.
+ * Install `poster` and hand back the undo. Scoped to a test on purpose: this is
+ * the one place a lean run's comment leaves the process, so a case that swaps it
+ * must put the forge back — a leaked recorder would swallow every later run's
+ * post. The returned function is idempotent.
  */
 export function setLeanCommentPoster(
   poster: ((issue: number, body: string) => Promise<void>) | undefined,
@@ -155,7 +184,9 @@ export function setLeanCommentPoster(
 }
 
 /**
- * Post one comment listing the failed rules. Throws so the caller can report it.
+ * Post one comment listing the failed rules. Throws so the caller can report
+ * it: a run that could not tell the operator why it refused is a worse
+ * failure than one that says so in the summary line.
  */
 export async function postNotReady(
   repoRoot: string,
@@ -171,8 +202,10 @@ export async function postNotReady(
     "",
     "Fix the `pi-spec v1` block, or run /plan to regenerate it, then start the run again.",
   ].join("\n");
-  // The seam is consulted BEFORE the forge is resolved: the seam exists so a case can count posts without a
-  // forge, and resolving one first makes the recorded count depend on a forge a temp repo does not have.
+  // The seam is consulted BEFORE the forge is resolved: the seam exists so a case
+  // can count posts without a forge, and resolving one first puts two network
+  // probes (`detectForge`, `gh repo view`) in front of every recording call and
+  // makes the recorded count depend on a forge a temp repo does not have.
   if (commentPoster !== undefined) return commentPoster(issue, body);
   const forge = await forgeFor(repoRoot);
   if (!forge) throw new Error("no forge adapter: cannot post the not-ready comment");
@@ -182,8 +215,11 @@ export async function postNotReady(
 /**
  * Post the handback comment: what the run still needs.
  *
- * The same adapter and the same public-text check `postNotReady` goes through. It throws so the caller can
- * record that nobody was told; `handback` is the caller, and it never lets that throw end the run.
+ * The same adapter and the same public-text check `postNotReady` goes through —
+ * `forge.issueComment` runs the body past the public-hygiene gate and returns
+ * the bytes it judged, so what is checked and what is posted are one string.
+ * It throws so the caller can record that nobody was told; `handback` is the
+ * caller, and it never lets that throw end the run.
  */
 export async function postHandback(repoRoot: string, issue: number, body: string): Promise<void> {
   if (commentPoster !== undefined) return commentPoster(issue, body);
