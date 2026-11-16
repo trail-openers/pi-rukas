@@ -8,6 +8,7 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
+import { pyprojectConfiguresRuff, pyprojectNamesPytest } from "./agents-md/detect.ts";
 import { HEADLESS_INPUTS } from "./headless/inputs.ts";
 import { trace } from "./trace.ts";
 
@@ -116,6 +117,21 @@ export function readFirstConfigLine(content: string): string | undefined {
     .split("\n")
     .map((l) => l.trim())
     .find((l) => l.length > 0 && !l.startsWith("#"));
+}
+
+/** The Python arm's knob. Read at call time, so a driver process cannot be
+ * talked out of it after load by a value it inherited. */
+export const VERIFY_PYTEST_ENV = "PI_ENSEMBLE_VERIFY_PYTEST";
+
+/**
+ * Did the operator take the Python verify arm out? Only the exact string `"0"`
+ * is an off switch — the same rule every other `PI_ENSEMBLE_*` kill-switch in
+ * the driver answers, so a misspelled disable (`false`, `off`, a padded ` 0 `)
+ * can never read as a deliberate one. Everything else, absent value included,
+ * leaves the arm on.
+ */
+export function verifyPytestDisabled(): boolean {
+  return process.env[VERIFY_PYTEST_ENV] === "0";
 }
 
 /**
@@ -337,7 +353,19 @@ export async function shouldSkipVerifyForFrontendOnly(
  *      `test` script — a Rust repo with a tooling package.json (docs
  *      build, hooks) must not run `npm run test` as its gate.
  *   4. `package.json` `test` script (non-Rust repos only).
- *   5. Nothing found → undefined; the gate skips command verification
+ *   5. A Python repo: `pyproject.toml` whose manifest (or a root `pytest.ini`
+ *      / `conftest.py`) names pytest. `uv.lock` present → `uv run pytest -q`
+ *      (prefixed `uv run ruff check . && ` when ruff is configured); otherwise
+ *      `python3 -m pytest -q` (prefixed `ruff check . && `). The interpreter
+ *      form is fixed: never a bare `python`, which is absent on python3-only
+ *      hosts, where such a command exits 127 without judging anything. A
+ *      missing prerequisite (no interpreter, no pytest, no ruff) is a gate
+ *      FAILURE carrying the executor's own error text — the command runs and
+ *      its non-zero exit is the verdict, never a skip.
+ *      `PI_ENSEMBLE_VERIFY_PYTEST=0` takes this arm out, restoring the
+ *      pre-#2282 discovery byte-for-byte. A DERIVED command, so the #1012
+ *      frontend-only skip covers it exactly like `cargo check --quiet`.
+ *   6. Nothing found → undefined; the gate skips command verification
  *      and checks diff/commit/PR evidence only (note emitted).
  */
 export async function verifyCmdFor(repoRoot: string): Promise<string | undefined> {
@@ -381,5 +409,45 @@ export async function verifyCmdFor(repoRoot: string): Promise<string | undefined
     // No package.json or malformed — fall through.
   }
   if (isRust) return "cargo check --quiet";
+  const pythonCmd = await pythonVerifyCmdFor(repoRoot);
+  if (pythonCmd !== undefined) return pythonCmd;
   return undefined;
+}
+
+/**
+ * The Python arm's command, or `undefined` when this repo is not a pytest
+ * project or the operator took the arm out.
+ *
+ * Two reads decide the string, both from files already known to exist or
+ * already read: `uv.lock` picks the interpreter form (a `uv` project runs its
+ * tools through `uv run`, which is how the pinned environment is the one
+ * judged), and ruff's configuration decides whether the lint half is in the
+ * command. Predicates come from `agents-md/detect.ts` — the same site that
+ * renders AGENTS.md's Testing Standards section — so a repo cannot be a pytest
+ * project to one seam and not to the other.
+ */
+async function pythonVerifyCmdFor(repoRoot: string): Promise<string | undefined> {
+  if (verifyPytestDisabled()) return undefined;
+  let py: string;
+  try {
+    py = await fs.readFile(path.join(repoRoot, "pyproject.toml"), "utf8");
+  } catch {
+    // No pyproject.toml: no Python manifest to speak for the repo. A bare
+    // `conftest.py` with no manifest is not a discoverable gate — the manifest
+    // is the signal every arm of this resolver reads.
+    return undefined;
+  }
+  if (!pyprojectNamesPytest(py, repoRoot)) return undefined;
+  const viaUv = await fs
+    .access(path.join(repoRoot, "uv.lock"))
+    .then(() => true)
+    .catch(() => false);
+  // One interpreter form, both halves of the command. A uv project runs each
+  // tool through `uv run` so the pinned environment is the one judged;
+  // otherwise pytest is invoked as `python3 -m pytest`, never a bare `python`,
+  // which does not exist on a python3-only host — there such a command exits
+  // 127 and the gate reports a verdict on nothing while looking like a gate.
+  const pytest = viaUv ? "uv run pytest -q" : "python3 -m pytest -q";
+  const lint = viaUv ? "uv run ruff check ." : "ruff check .";
+  return pyprojectConfiguresRuff(py, repoRoot) ? `${lint} && ${pytest}` : pytest;
 }

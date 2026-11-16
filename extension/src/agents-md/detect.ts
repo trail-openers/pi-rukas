@@ -18,6 +18,7 @@
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
+import { pyprojectConfiguresRuff, pyprojectNamesPytest } from "./pyproject.ts";
 
 export interface Command {
   name: string; // human label
@@ -131,6 +132,20 @@ function stat(root: string, rel: string): boolean {
   }
 }
 
+/**
+ * Does this repository hold a pytest suite? One predicate, two callers:
+ * `fromPython` renders it into AGENTS.md's Testing Standards section, and
+ * `verifyCmdFor` (work-driver-verify-cmd.ts) discovers a Python repo's verify
+ * command from it — the SAME question asked of the SAME files, so the two sites
+ * must not grow two regex sets that can drift. Both live in `./pyproject.ts`,
+ * which also owns the TOML walk that keeps a `# run pytest for the helpers`
+ * comment or a `keywords = ["pytest"]` value from reading as a test suite. The
+ * content is a parameter rather than a read inside the predicate because the
+ * verify gate reads every file asynchronously and must not import a sync read,
+ * while {@link stat} stays this module's own sync convention.
+ */
+export { pyprojectConfiguresRuff, pyprojectNamesPytest };
+
 function listWorkflows(root: string): string[] {
   const dir = path.join(root, ".github", "workflows");
   try {
@@ -217,14 +232,10 @@ function fromPython(root: string): DetectedFacts {
   const py = tryRead(path.join(root, "pyproject.toml")) ?? "";
   const commands: Command[] = [];
   // pytest is present if pyproject or a tests dir names it; otherwise omit.
-  if (
-    /pytest|pytest\.ini|^\s*\[tool\.pytest/.test(py) ||
-    stat(root, "pytest.ini") ||
-    stat(root, "conftest.py")
-  ) {
+  if (pyprojectNamesPytest(py, root)) {
     commands.push(cmd("pytest", "pytest", "test", "uv"));
   }
-  if (/^ruff|\[tool\.ruff\]/.test(py) || stat(root, "ruff.toml")) {
+  if (pyprojectConfiguresRuff(py, root)) {
     commands.push(cmd("ruff", "ruff check .", "lint", "uv"));
   }
   return {

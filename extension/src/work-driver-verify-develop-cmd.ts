@@ -25,7 +25,7 @@ import type {
   VerifyCommandGateBaseHealth,
 } from "./work-driver-verify-base-health-channels.ts";
 import { developTierTimeouts } from "./work-driver-verify-budget.ts";
-import { shouldSkipVerifyForFrontendOnly } from "./work-driver-verify-cmd.ts";
+import { shouldSkipVerifyForFrontendOnly, verifyPytestDisabled } from "./work-driver-verify-cmd.ts";
 import type { VerifyDevelopOutcomeOptions } from "./work-driver-verify-develop-options.ts";
 import type { SelectedVerifyPlan } from "./work-driver-verify-select-develop.ts";
 import { runVerifyCommandGate } from "./work-driver-verify-verify-cmd.ts";
@@ -35,6 +35,23 @@ import type { WorkState } from "./workflow-state.ts";
 export interface DevelopBaselineLeg {
   red: boolean;
   established: boolean;
+}
+
+/**
+ * The note the develop gate emits when discovery found nothing, so the step
+ * says plainly that it ran no project command rather than implying a pass.
+ *
+ * The manifest list is the operator's route to a fix — it names every source
+ * `verifyCmdFor` reads — so it has to agree with that resolver on both arms of
+ * the Python switch. With `PI_ENSEMBLE_VERIFY_PYTEST=0` the Python arm is not
+ * a source, and the note names only what the resolver consults, which is the
+ * pre-#2282 string byte-for-byte.
+ */
+export function noVerifyCmdNote(): string {
+  const manifests = verifyPytestDisabled()
+    ? ".pi/verify-cmd, package.json scripts, Cargo.toml"
+    : ".pi/verify-cmd, package.json scripts, Cargo.toml, pyproject.toml/pytest";
+  return `no verify command discoverable (${manifests}) — diff evidence only`;
 }
 
 export async function runDevelopVerifyCommandChain(opts: {
@@ -84,9 +101,7 @@ export async function runDevelopVerifyCommandChain(opts: {
   } = options;
   const cmd = plan.cmd;
   if (!cmd) {
-    notes.push(
-      "no verify command discoverable (.pi/verify-cmd, package.json scripts, Cargo.toml) — diff evidence only",
-    );
+    notes.push(noVerifyCmdNote());
   } else {
     // #1012 — frontend-only diffs skip the DERIVED verify chain (package.json
     // scripts, Cargo.toml cargo check): a CSS-only change must not trigger a

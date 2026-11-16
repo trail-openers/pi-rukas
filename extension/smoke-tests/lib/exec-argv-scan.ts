@@ -6,6 +6,92 @@
  * Both return `"<line>: <code>"` entries, so a failure names the site.
  */
 
+/**
+ * The code of `line`, with string bodies replaced by `""` and any trailing
+ * comment cut away, so prose never reads as a use of a binding.
+ *
+ * The comment is found by a scan, not by `replace(/\s\/\/.*$/, "")`: that strip
+ * needs only whitespace before the slashes, and a regex literal body satisfies
+ * it. `const seg = p.split(/\//); …` truncated at the `//` inside `\//` and the
+ * hand-on sharing the line was deleted with the "comment" — which is how the
+ * scan went blind to a real argv-dropping executor. A scan finds a comment only
+ * where neither a string nor a regex is open, so the slashes of `"https://x"`
+ * and of `/\//` both stay code.
+ *
+ * A `/` opens a regex where one can syntactically start — after `= , : [ { ; ! ?
+ * | }`, after `return`, or at the head of the line. `&` and `+` are deliberately
+ * absent: after `a & b` a slash is division, and `const m = a & b; // run` must
+ * still lose its comment. The literal runs to the first `/` outside a character
+ * class, keeps its flags, and is emitted verbatim so the code after it stays
+ * visible. A `/` with no closing slash is not a literal, so it is kept as the
+ * ordinary character it is — swallowing the tail there would hide a hand-on that
+ * follows an open `/a//b`. Each line is judged on its own, so a multi-line
+ * template literal opens its quote on one line and closes it on the next;
+ * template bodies are stripped as strings and are not tracked across lines.
+ */
+function scannableCode(line: string): string {
+  let out = "";
+  let quote: string | null = null;
+  // The last kept code character: a `/` opens a regex only after one of these.
+  let prev = "";
+  const regexStarts = () => prev === "" || "=,:[{;!?|}".includes(prev) || /\breturn\s$/.test(out);
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i] ?? "";
+    if (quote !== null) {
+      if (c === "\\") i++;
+      else if (c === quote) {
+        quote = null;
+        out += '""';
+      }
+      continue;
+    }
+    if (c === "#" || (c === "/" && line[i + 1] === "/" && regexStarts())) break;
+    if (c === '"' || c === "'" || c === "`") {
+      quote = c;
+      prev = c;
+      continue;
+    }
+    if (c === "/" && regexStarts()) {
+      // A regex body cannot hold a bare `/`, so the literal ends at the first
+      // `/` outside a character class. Backslashes are deliberately not honoured
+      // as escapes here: treating `\/` as a unit would swallow the closing
+      // slash, and the most a literal written that way can suffer is an early
+      // end — it can never hide the code that follows it.
+      let j = i + 1;
+      let cls = false;
+      while (j < line.length) {
+        const d = line[j] ?? "";
+        if (cls && d === "]") cls = false;
+        else if (!cls && d === "[") cls = true;
+        else if (d === "/" && !cls) break;
+        j++;
+      }
+      if (j >= line.length) {
+        // No closing slash, so this is not a literal — a stray slash, or a
+        // multi-line regex the scan cannot see past. Keeping the `/` (and its
+        // own character as the next `prev`) is what makes a following `//` a
+        // comment again: swallowing the tail here would hide a hand-on sitting
+        // after an unterminated `/a//b`, which is code, never a regex.
+        out += c;
+        prev = c;
+        continue;
+      }
+      // Flags start past the closing slash, so only letters are taken as flags:
+      // a scan started on the slash itself would swallow the `;` of `/\//);` and
+      // leave the comment position unrecognised.
+      let k = j + 1;
+      while (k < line.length && /[a-z]/.test(line[k] ?? "")) k++;
+      out += line.slice(i, k);
+      prev = "/";
+      i = k - 1;
+      continue;
+    }
+    out += c;
+    if (!/\s/.test(c)) prev = c;
+  }
+  return out.trim();
+}
+
 /** Every place `source` hands a bare `promisify(exec)` on instead of calling it. */
 export function shellOnlyEscapes(source: string): string[] {
   const escapes: string[] = [];
@@ -14,8 +100,14 @@ export function shellOnlyEscapes(source: string): string[] {
   for (const def of source.matchAll(defRe)) {
     const use = new RegExp(`(?<!typeof\\s)\\b${def[1]}\\b(?!\\s*\\()`);
     lines.forEach((line, i) => {
-      // String contents are prose, not uses ("refusing shell interpolation").
-      const code = line.trim().replace(/(["'`])(?:\\.|(?!\1).)*\1/g, '""');
+      // String contents are prose, not uses ("refusing shell interpolation"),
+      // and a trailing `//` comment is prose too — `defRe` accepts any
+      // `promisify(exec*)`, so the bound name is often an ordinary English word,
+      // and `const run = promisify(execFile)` plus one prose "run" was read as a
+      // hand-on. The leading-marker checks below only catch a comment that STARTS
+      // the line, so a `{ // …` opener needs the comment removed — by
+      // `scannableCode`, which tells a comment apart from a regex or a URL.
+      const code = scannableCode(line);
       if (code.startsWith("//") || code.startsWith("*") || code.startsWith("/*")) return;
       // An import binds a name; it hands nothing on.
       if (code.startsWith("import ")) return;
@@ -57,10 +149,10 @@ function arrowBody(source: string, from: number): string {
  * (lib/argv-shell.ts), is argv-aware. A second parameter typed `string` (a
  * fixture's own `sh(cmd, cwd)`) is not an executor and is skipped.
  *
- * Scope — arrow functions with exactly two parameters (`(cmd, opts) => …`)
- * only. NOT caught: `function` declarations, one-parameter (cmd-only) stubs,
- * and anything that forwards `cmd` to a shared executor such as `realExec`
- * (that executor is checked where it is defined, lib/exec-fake.ts).
+ * Scope — arrow functions with exactly two parameters `(cmd, opts) => …` only.
+ * NOT caught: `function` declarations, one-parameter (cmd-only) stubs, and
+ * anything that forwards `cmd` to a shared executor such as `realExec` (that
+ * executor is checked where it is defined, lib/exec-fake.ts).
  */
 export function argvDroppingFakes(source: string): string[] {
   const shells = ["exec"];
