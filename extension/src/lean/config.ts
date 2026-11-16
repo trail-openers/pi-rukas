@@ -1,18 +1,16 @@
 /**
  * lean/config — `.pi/work.json`, read at the cycle's base commit.
  *
- * Same rule as the driver's doctrine read: configuration that decides what a run may do is
- * read with `git show <baseSha>:.pi/work.json`, never from the working tree — a run that
- * edited its own config would otherwise be judged by the bytes it wrote.
+ * Same rule as the driver's doctrine read: configuration that decides what a run may do is read with
+ * `git show <baseSha>:.pi/work.json`, never from the working tree — a run that edited its own config would
+ * otherwise be judged by the bytes it wrote.
  *
  * Two outcomes for a missing file and a broken one, kept deliberately apart:
  *   - absent  → defaults (a repo with no config is normal)
- *   - invalid → `LeanConfigError` (a typo'd budget must not silently become "no budget",
- *     which is the expensive direction to be wrong)
+ *   - invalid → `LeanConfigError` (a typo'd budget must not silently become "no budget")
  *
- * The shipped table has a row for every state the machine can visit, including `review` and
- * `ci`. A key that is not in the table is refused at load, so there is no such thing as a
- * budget for an unbuilt state.
+ * The shipped table has a row for every state the machine can visit. A key that is not in the table is refused
+ * at load.
  */
 
 import type { execp } from "../exec.ts";
@@ -29,15 +27,11 @@ export interface WorkConfig {
   version: 1;
   autoMerge: boolean;
   /**
-   * `test` is the per-file runner template the `specify` step uses to prove a test red on the
-   * base: it must contain exactly one whole-word `{file}`, replaced with the test file's path.
-   * It is executed as an executable plus argv, never through a shell, so `validateTestRunner`
-   * refuses the shell-shaped strings.
+   * `test` is the per-file runner template the `specify` step uses to prove a test red on the base: it must
+   * contain exactly one whole-word `{file}`. It is executed as an executable plus argv, never through a shell.
    *
-   * `testDir` is a repo-relative DIRECTORY and `testGlob` a basename pattern with exactly one
-   * `*`: where the adversary's acceptance tests live and what they are called. Both absent —
-   * the default — means the child may write its tests anywhere in the worktree. When both are
-   * set the prompts name the folder and the boundary refuses a submitted test outside it.
+   * `testDir` is a repo-relative DIRECTORY and `testGlob` a basename pattern with exactly one `*`. Both absent
+   * — the default — means the child may write its tests anywhere in the worktree.
    */
   verify: {
     fast?: string;
@@ -46,10 +40,9 @@ export interface WorkConfig {
     testDir?: string;
     testGlob?: string;
     /**
-     * A shell command the project runs over the whole tree to judge test-file CONTENT. `specify`
-     * /`challenge` run it before freezing the candidate tests, and `verify` runs it when a
-     * project tier is red at HEAD — because a frozen file a build round may not edit is a
-     * contract nobody can repair. Unset: nothing runs. Mechanism: `lean/freeze-check.ts`.
+     * A shell command the project runs over the whole tree to judge test-file CONTENT. `specify`/`challenge`
+     * run it before freezing the candidate tests, and `verify` runs it when a project tier is red at HEAD.
+     * Unset: nothing runs. Mechanism: `lean/freeze-check.ts`.
      */
     freezeCheck?: string;
   };
@@ -62,16 +55,14 @@ export class LeanConfigError extends Error {
 }
 
 /**
- * The placeholder a `verify.test` template carries. ONE name for it: the validator here, the
- * prompt that explains it and the renderer that substitutes it all read this constant.
+ * The placeholder a `verify.test` template carries. ONE name for it: the validator here, the prompt that
+ * explains it and the renderer that substitutes it all read this constant.
  */
 export const TEST_RUNNER_PLACEHOLDER = "{file}";
 
 /**
- * The one spelling of the config's path, for a gate that wants to read the same bytes the
- * loader does (`test-lean-work-config-committed.ts`). `loadWorkConfig` deliberately does NOT
- * interpolate it: the ref it passes to `gitShow` is a literal, so the read stays visible to
- * `test-headless-inputs.ts`.
+ * The one spelling of the config's path, for a gate that wants to read the same bytes the loader does.
+ * `loadWorkConfig` deliberately does NOT interpolate it: the ref it passes to `gitShow` is a literal.
  */
 export const WORK_CONFIG_FILE = ".pi/work.json";
 
@@ -82,22 +73,18 @@ export type ConfigExec = typeof execp;
 const GIT_SHOW_MAX_BUFFER = 1024 * 1024;
 
 /**
- * Characters a runner template may never contain. Each is a shell metacharacter or a newline:
- * present anywhere, they say the author meant the template for a shell, which is not how the
- * step executes it. Refusing them at the config boundary is what makes "no shell" a fact.
+ * Characters a runner template may never contain. Each is a shell metacharacter or a newline: present anywhere,
+ * they say the author meant the template for a shell, which is not how the step executes it.
  */
 const TEST_RUNNER_FORBIDDEN = /[;&|`$<>"'\\\n\r]/;
 
 /**
- * Why this `verify.test` template is not usable, or undefined when it is.
- *
- * Three rules, all mechanical: it must carry {@link TEST_RUNNER_PLACEHOLDER} EXACTLY once;
- * every occurrence must be a WHOLE whitespace-separated word (so `bun run test-{file}.ts` is
- * refused rather than silently renaming the file); and no shell metacharacter anywhere.
+ * Why this `verify.test` template is not usable, or undefined when it is. Three rules, all mechanical: it must
+ * carry {@link TEST_RUNNER_PLACEHOLDER} EXACTLY once; every occurrence must be a WHOLE whitespace-separated
+ * word; and no shell metacharacter anywhere.
  */
 export function validateTestRunner(template: string): string | undefined {
-  // The metacharacter rule FIRST: a template carrying one is one its author meant for a shell,
-  // and saying so is the useful diagnosis even when the placeholder is also glued to something.
+  // The metacharacter rule FIRST: a template carrying one is one its author meant for a shell.
   if (TEST_RUNNER_FORBIDDEN.test(template))
     return ".pi/work.json verify.test is run without a shell: ; & | ` $ < > \" ' \\ and newline are not allowed";
   const count = template.split(TEST_RUNNER_PLACEHOLDER).length - 1;
@@ -145,16 +132,13 @@ async function gitType(
 }
 
 /**
- * Per-state ceilings, each bounding ONE CHILD and never a step's total. `tokens` counts all
- * usage including cache re-reads (~150k per turn measured), which is why the 400-turn rows
- * carry 60M: each row's tokens sit at or above its turns × ~150k, so the turn ceiling binds no
- * later than the token ceiling. A child's own bound knob can only lower `minutes`, never raise
- * it. `ci`'s minutes is the verify tier timeout, not a child bound; the review row bounds the
- * lens and fixer children and has no wall clock of its own.
+ * Per-state ceilings, each bounding ONE CHILD and never a step's total. `tokens` counts all usage including
+ * cache re-reads (~150k per turn measured), which is why the 400-turn rows carry 60M. A child's own bound knob
+ * can only lower `minutes`, never raise it. `ci`'s minutes is the verify tier timeout, not a child bound.
  *
- * `0` means "no bound" for turns and tokens. An operator's `budgets.ci.minutes` of `0` would be
- * an immediately-expired wait — the opposite of the generous setting every other `0` here says
- * — so `ciMinutes` in `lean/ci.ts` takes a non-positive `ci` minutes as the shipped default.
+ * `0` means "no bound" for turns and tokens. An operator's `budgets.ci.minutes` of `0` would be an
+ * immediately-expired wait, so `ciMinutes` in `lean/ci.ts` takes a non-positive `ci` minutes as the shipped
+ * default.
  */
 export const DEFAULT_BUDGETS: Readonly<Record<string, Budget>> = Object.freeze({
   specify: Object.freeze({ turns: 400, tokens: 60_000_000, minutes: 20 }),
@@ -183,17 +167,15 @@ function firstLine(content: string): string | undefined {
 }
 
 /**
- * The shipped defaults plus the own, validated keys of the file's `budgets`. Assembles by
- * copying the three named fields rather than spreading, which is what keeps a
- * prototype-polluting key out of the result even if one got past validation some other way.
+ * The shipped defaults plus the own, validated keys of the file's `budgets`. Assembles by copying the three
+ * named fields rather than spreading, which is what keeps a prototype-polluting key out of the result.
  */
 function mergeBudgets(
   overrides: Partial<Record<string, Budget>> | undefined,
 ): WorkConfig["budgets"] {
   const merged: Record<string, Budget> = {};
-  // `DEFAULT_BUDGETS` is typed as a `Record<string, Budget>`, so an index read is `Budget` by
-  // declaration yet `undefined` at runtime for an unknown key — these keys all come from
-  // `Object.keys`, so they are all present.
+  // `DEFAULT_BUDGETS` is typed as a `Record<string, Budget>`, so an index read is `Budget` by declaration yet
+  // `undefined` at runtime for an unknown key — these keys all come from `Object.keys`.
   for (const state of Object.keys(DEFAULT_BUDGETS)) {
     const base = DEFAULT_BUDGETS[state] as Budget;
     merged[state] = { turns: base.turns, tokens: base.tokens, minutes: base.minutes };
@@ -202,8 +184,7 @@ function mergeBudgets(
     const base = DEFAULT_BUDGETS[state] as Budget | undefined;
     if (!Object.hasOwn(DEFAULT_BUDGETS, state) || budget === undefined || base === undefined)
       continue;
-    // Explicit fields, each defaulted to the shipped number: the schema lets a budget omit any
-    // of the three, so an omitted member means "keep the default", not "undefined".
+    // Explicit fields, each defaulted to the shipped number: an omitted member means "keep the default".
     merged[state] = {
       turns: budget.turns ?? base.turns,
       tokens: budget.tokens ?? base.tokens,
@@ -243,8 +224,8 @@ function validate(obj: unknown): string | undefined {
       if (v[key] !== undefined && typeof v[key] !== "string")
         return `.pi/work.json verify.${key} must be a string`;
     }
-    // The test location is a PAIR: prompts name both the folder and the naming pattern, and the
-    // boundary refuses on both. One without the other says half of what it means.
+    // The test location is a PAIR: prompts name both the folder and the naming pattern, and the boundary
+    // refuses on both.
     if (v.testDir !== undefined && v.testGlob === undefined)
       return ".pi/work.json verify.testDir requires verify.testGlob (the file-name pattern, e.g. test-*.ts)";
     if (v.testGlob !== undefined && v.testDir === undefined)
@@ -257,9 +238,8 @@ function validate(obj: unknown): string | undefined {
       const reason = validateTestGlob(v.testGlob);
       if (reason !== undefined) return reason;
     }
-    // The runner template is a template: without exactly one whole-word placeholder the step
-    // cannot name the file it is running, and would run the same command for every test and
-    // call the result a proof.
+    // The runner template is a template: without exactly one whole-word placeholder the step cannot name the
+    // file it is running.
     if (typeof v.test === "string") {
       const reason = validateTestRunner(v.test);
       if (reason !== undefined) return reason;
@@ -269,11 +249,8 @@ function validate(obj: unknown): string | undefined {
     if (typeof o.budgets !== "object" || o.budgets === null || Array.isArray(o.budgets))
       return ".pi/work.json budgets must be an object";
     for (const [state, budget] of Object.entries(o.budgets as Record<string, unknown>)) {
-      // The KEY is validated too. A budget is read by exact state name (`budgetFor`), so a
-      // typo'd key is a valid object that silently does nothing while the real state keeps the
-      // default. `Object.hasOwn`, not `in`: `in` walks the prototype chain, so `__proto__`,
-      // `constructor` and `toString` would all "exist" and pass a check whose job is to refuse
-      // an inert key.
+      // The KEY is validated too: a budget is read by exact state name, so a typo'd key is a valid object that
+      // silently does nothing. `Object.hasOwn`, not `in`: `in` walks the prototype chain.
       if (!Object.hasOwn(DEFAULT_BUDGETS, state)) {
         const known = Object.keys(DEFAULT_BUDGETS).join(", ");
         return `.pi/work.json budgets.${state} is not a lean state (known: ${known})`;
@@ -288,10 +265,9 @@ function validate(obj: unknown): string | undefined {
 /**
  * Read one blob at a commit. `undefined` for "that path is not in that commit".
  *
- * "Not in that commit" has three shapes git reports differently, and all three mean the same
- * thing to a caller that wants defaults: the path is absent, the path is a *tree* (which would
- * otherwise reach the JSON parser and be reported as a typo'd config), and the path is a
- * symlink. `cat-file -t` is asked first because it separates the second from the first.
+ * "Not in that commit" has three shapes git reports differently — the path is absent, the path is a *tree*, and
+ * the path is a symlink — and all three mean defaults to the caller. `cat-file -t` is asked first because it
+ * separates the second from the first.
  */
 async function gitShow(
   exec: ConfigExec,
@@ -310,14 +286,12 @@ async function gitShow(
     });
     return stdout;
   } catch (err) {
-    // A blob the reader could not hold is an infra failure, not a config problem: a 2 MB
-    // committed file must not be reported as "not valid JSON".
+    // A blob the reader could not hold is an infra failure, not a config problem.
     if (isBufferOverflow(err))
       throw new LeanConfigError(
         `could not read ${ref}: larger than the ${GIT_SHOW_MAX_BUFFER} byte read limit`,
       );
-    // Exit 128 with "does not exist" is an absent file; anything else (a bad sha, no git, a
-    // locked index) is a real failure the caller must see.
+    // Exit 128 with "does not exist" is an absent file; anything else is a real failure the caller must see.
     const e = err as { code?: number | null; stderr?: string; message?: string };
     const detail = `${e.stderr ?? ""}${e.message ?? ""}`;
     if (e.code === 128 || /does not exist|exists on disk|not in this repository/i.test(detail))
@@ -327,11 +301,8 @@ async function gitShow(
 }
 
 /**
- * Load the run's config from the base commit.
- *
- * `baseSha` is required rather than "current": the caller resolved the mainline sha for the
- * cycle and every read in the run is against that one commit, so config, doctrine and code all
- * describe the same tree.
+ * Load the run's config from the base commit. `baseSha` is required rather than "current": every read in the
+ * run is against that one commit, so config, doctrine and code all describe the same tree.
  */
 export async function loadWorkConfig(
   exec: ConfigExec,
