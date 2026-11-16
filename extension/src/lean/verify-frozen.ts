@@ -15,8 +15,7 @@
  *     `porcelain` scan plus an existence probe.
  *
  * The shape half of the on-disk check reuses `fileProblem` from `specify-path.ts`, which already
- * refuses a symlink, a non-regular file, an `nlink > 1` hard link and a realpath escape. All
- * findings are reported together when several apply.
+ * refuses a symlink, a non-regular file, an `nlink > 1` hard link and a realpath escape.
  */
 
 import { existsSync, lstatSync, readFileSync } from "node:fs";
@@ -97,8 +96,7 @@ export async function frozenTamperReason(
   if (atHead.tampered.length > 0) parts.push(`frozen tests altered: ${atHead.tampered.join(", ")}`);
 
   // The tree half, per file: changed, gone, a link rather than a file, or bytes that are not the
-  // frozen bytes. All four say the same thing to the reader, and the whole-tree scan only says WHICH
-  // files — so each file that scan flagged is not hashed as well.
+  // frozen bytes. The whole-tree scan only says WHICH files, so a file it flagged is not hashed too.
   const moved = await dirtyFrozen(exec, wt, names);
   const seen = new Set(moved);
   const bad = [...moved];
