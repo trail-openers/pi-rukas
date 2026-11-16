@@ -13,11 +13,11 @@
  * the host already holds: in the submodule's checkout, or in the module store under
  * `.git/modules/<name>`. The local rule asks for the same thing with one word changed — the
  * source is the superproject's own copy, COMPUTED HERE from paths of this superproject and
- * never read out of repo content (`.gitmodules` is content of the base, and the submodule's
- * own `.gitmodules` is content of ANOTHER repository, so neither says where to fetch).
- * Nothing on disk is rewritten: `.gitmodules` keeps the base's URL and the superproject keeps
- * its own config, because a step that fixed the next run by mutating the repository it was
- * handed would be hiding that it could.
+ * never read out of repo content (`.gitmodules` is content of the base, and the submodule's own
+ * `.gitmodules` is content of ANOTHER repository, so neither says where to fetch). Nothing on
+ * disk is rewritten: `.gitmodules` keeps the base's URL and the superproject keeps its own
+ * config, because a step that fixed the next run by mutating the repository it was handed would
+ * be hiding that it could.
  *
  * DEPTH keeps the transport licence narrow: only the first level is seeded, and only the one
  * `git submodule update` carrying a URL computed here gets `protocol.file.allow` —
@@ -80,7 +80,10 @@ export interface SubmoduleNote {
    * leaves the tree holding an empty gitlink exactly as `absent` does.
    */
   kind: "seeded" | "absent" | "failure";
-  /** For a seeded one, the source git was pointed at; for an absent one, why. */
+  /**
+   * For a seeded one, the source git was pointed at. An absent or failed path is disclosed by
+   * PATH — the only form an operator can act on — so those carry nothing here.
+   */
   detail: string;
   /**
    * The file that must exist inside a seeded submodule for its checkout to be usable.
@@ -117,13 +120,10 @@ export interface SubmoduleNote {
 
 /**
  * The reason-line clause for what a reset's submodule pass could not supply, or `undefined`
- * when there is nothing to say.
- *
- * Empty for a seeded tree and for a tree with no submodules at all, so a caller folds it
- * into a `joinNotes` list unconditionally. Every kind but `seeded` is named: a seeded
- * submodule is the step working, not a caveat. `failure` — git refused the pass, for a
- * reason this step did not classify — counts as unpopulated, because that is what the tree
- * is left holding.
+ * when there is nothing to say — empty for a seeded tree and for one with no submodules at
+ * all, so a caller folds it into a `joinNotes` list unconditionally. Every kind but `seeded`
+ * is named: a seeded submodule is the step working, not a caveat, and `failure` counts as
+ * unpopulated because an unclassified refusal leaves the tree holding exactly that.
  */
 export function submoduleNoteClause(notes: readonly SubmoduleNote[]): string | undefined {
   // `notesFor` is what git reported rather than what the pass reported, and it is the one
@@ -141,18 +141,12 @@ export function submoduleNoteClause(notes: readonly SubmoduleNote[]): string | u
 }
 
 /**
- * Unpopulated notes for paths git itself says have no git dir behind them.
- *
- * The other half of the pair with {@link submoduleState}: this turns what git printed
- * into the same notes the pass produces, so a disclosure can be written from git's own
- * answer when the step's own account has none.
+ * Unpopulated notes for paths git itself says have no git dir behind them — the other half of
+ * the pair with {@link submoduleState}, turning what git printed into the same notes the pass
+ * produces so a disclosure can be written from git's answer when the step's account has none.
  */
 export function notesFor(unpopulated: readonly string[]): SubmoduleNote[] {
-  return unpopulated.map((p) => ({
-    path: p,
-    kind: "failure" as const,
-    detail: "git reports no git dir behind this gitlink",
-  }));
+  return unpopulated.map((p) => ({ path: p, kind: "failure" as const, detail: "" }));
 }
 
 /**
@@ -167,12 +161,11 @@ export interface WorktreeSubmoduleState {
 }
 
 /**
- * Ask the tree what it holds, for the case that must not be taken on trust.
- *
- * Where {@link submoduleNoteClause} reports what THIS step did, this reports what git can
- * see — and only a control that reads the tree can tell a seeded submodule from one the pass
- * merely claimed. `submodule status` is git's own answer: `U` marks a gitlink with no git dir
- * behind it, exactly the state an unseeded submodule has to be left in.
+ * Ask the tree what it holds, for the case that must not be taken on trust. Where
+ * {@link submoduleNoteClause} reports what THIS step did, this reports what git can see — and
+ * only a control that reads the tree can tell a seeded submodule from one the pass merely
+ * claimed. `submodule status` is git's own answer: `U` marks a gitlink with no git dir behind
+ * it, exactly the state an unseeded submodule has to be left in.
  */
 export async function submoduleState(
   exec: ExecFn,
@@ -233,69 +226,31 @@ export async function initSubmodules(
   await beforeInit?.(wt);
   if (!leanSubmodulesLocalEnabled()) return updateFromRemote(exec, wt);
   const notes = await seedFromSuperproject(exec, wt, listed);
-  // A submodule this run's own tree CREATED — added on the run's branch, so its store sits under
-  // THIS tree's gitdir and its files were put there by the child, not by anyone who verified
-  // them — is neither seeded (this step cloned nothing) nor fairly absent (bytes do stand at the
-  // path). It is refused. `clean -fdx` does not recurse into a submodule git has no shared record
-  // of, so a run that merely LEFT one checked out reaches this line too and is refused for the
-  // same reason: the only source on this host is the tree under test, so no verdict about those
-  // bytes is evidence. A path nothing here could supply at all is the ordinary `absent` note
-  // below, and stays a disclosure — the two are told apart by whether anything stands at the
-  // path, which is git's answer rather than this step's account of its own work.
-  const created = await createdInRunTree(exec, wt, notes);
-  if (created.length > 0)
-    throw new SpecifyInfraError(
-      `the submodule${created.length > 1 ? "s" : ""} at ${created.join(", ")} ${created.length > 1 ? "were" : "was"} added inside this run's own worktree, so this superproject never held ${created.length > 1 ? "them" : "it"}: the only source on this host is the tree under test, and bytes nobody verified cannot carry a verdict. Seed the submodule in the superproject, or turn the local rule off with PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL=0 and let git fetch the URL the base records.`,
-    );
-  // The seeding arm's defining claim is negative: it never hands a recorded URL to git.
-  // A negative is not observable from a passing run, so when a submodule had nothing to
-  // seed from — a superproject whose copy is gone, or a smoke test's sabotage — the step
-  // asks git what the path holds and compares git's answer against the tree. An unseeded
-  // gitlink is a gitlink with no git dir behind it (`U` in git's own output); anything
-  // else means something populated it, and the only thing that could have is a fetch. A
-  // case asserting "no network" therefore has an observation rather than an absence, and
-  // a step that quietly reached for the recorded URL would be red with the argv that
-  // proves it. Costs one local call, and only on the path that already had nothing to do.
+  // The seeding arm's defining claim is negative: it never hands a recorded URL to git, and a
+  // negative is not observable from a passing run. So where a submodule had nothing to seed
+  // from, the step asks git what the path holds — one call per absent path, two questions:
+  //
+  //   - did something FETCH it? An unseeded gitlink has no git dir behind it (`U` in git's own
+  //     output); anything else means something populated it, and on this arm the only thing
+  //     that could is a fetch from the recorded URL. A case asserting "no network" therefore
+  //     has an observation, and a step that quietly reached for the URL is red with the argv.
+  //   - or did the RUN create it? A store filed under this tree's own gitdir is invisible to
+  //     `clean -fdx`, so a submodule the run added on its own branch arrives as a populated path
+  //     nobody seeded — the child's own bytes, never verified. Refused too, or a verdict lands on
+  //     vendored code that came from nowhere anybody checked.
+  //
+  // An unreadable line is evidence of neither, and "could not tell" proceeds with the ordinary
+  // disclosure, which stays honest in the other direction. One local call, on the path that
+  // already had nothing to do.
   for (const note of notes.filter((n) => n.kind === "absent")) {
     const status = await ask(exec, wt, [...NO_HOOKS, "submodule", "status", "--", note.path]);
-    // An unreadable status is not evidence of a fetch, and "could not tell" is never
-    // grounds to fail a run over a submodule this host never held: proceed with the
-    // disclosure, which is the honest outcome the case below still asserts.
     const line = (status?.stdout ?? "").split("\n")[0] ?? "";
     if (line === "" || line.startsWith("U") || line.startsWith("-")) continue;
     throw new SpecifyInfraError(
-      `the submodule at ${note.path} is not held by this superproject, so nothing here could populate it — yet git reports it populated, which only a fetch from the URL the base records could have done: ${trim(line)}`,
+      `the submodule at ${note.path} is not held by this superproject, so nothing here could populate it — yet git reports it populated, which means either the run's own tree added it or something fetched the URL the base records: ${trim(line)}`,
     );
   }
   return notes;
-}
-
-/**
- * The absent notes whose path git reports as POPULATED, i.e. a checkout nobody here seeded.
- *
- * On the local arm a path is populated because this step cloned it from the superproject, or it
- * is not populated at all. The third way — a checkout already sitting there — belongs to a
- * submodule the run's own tree created, because the reset's `clean -fdx` reaches the submodule
- * contents of anything git has a shared record for, and a store filed under this tree's gitdir
- * is exactly the case where it has none. Such a path is never evidence: its bytes are the run's
- * own, and the alternative to refusing it is to hand the operator a verdict on a tree whose
- * vendored code came from nowhere anybody checked. The status line is asked per path, and an
- * unreadable status is not grounds to accuse anything — "could not tell" proceeds with the
- * ordinary disclosure, which stays honest in the other direction.
- */
-async function createdInRunTree(
-  exec: ExecFn,
-  wt: string,
-  notes: readonly SubmoduleNote[],
-): Promise<string[]> {
-  const created: string[] = [];
-  for (const note of notes.filter((n) => n.kind === "absent")) {
-    const status = await ask(exec, wt, [...NO_HOOKS, "submodule", "status", "--", note.path]);
-    const line = (status?.stdout ?? "").split("\n")[0] ?? "";
-    if (line === "" || line.startsWith("U") || line.startsWith("-")) continue;
-    created.push(note.path);
-  }
-  return created;
 }
 
 /**
@@ -333,21 +288,19 @@ async function seedFromSuperproject(
   wt: string,
   listed: SubmoduleEntry[],
 ): Promise<SubmoduleNote[]> {
-  // The SUPERPROJECT, asked of git (`superprojectRoot`) rather than assumed from the
-  // caller's path, and every git dir of that superproject (`gitDirsOf`): a linked worktree's
-  // own gitdir holds only what THIS tree cloned, while the shared store under the
-  // superproject holds what the operator's checkout populated — the bytes the base's verify
-  // ran against.
+  // The SUPERPROJECT, asked of git (`superprojectRoot`) rather than assumed from the caller's
+  // path, and its git dirs (`gitDirsOf`): a linked worktree's own gitdir holds only what THIS
+  // tree cloned, while the shared store under the superproject holds what the operator's
+  // checkout populated — the bytes the base's verify ran against.
   const superproject = await superprojectRoot(exec, wt);
   const superGitDirs = await gitDirsOf(exec, superproject);
-  // git dirs the seeding may read a module store from. The superproject's own answers come
-  // first. This tree's `--git-common-dir` is then admitted ONLY when it is byte-for-byte one of
-  // the superproject's answers — which is git saying "this is the shared store", not the run
-  // naming a directory it wants trusted. What is never admitted is a git dir unique to the run
-  // tree: a submodule added inside a linked worktree is filed there, holding only what this
-  // run's tree committed, and seeding from it would call a path the superproject never held
-  // `seeded`. `localSource` refuses such a store as well, at the one place a store is read —
-  // the guard here means a probe this step issues cannot even offer it.
+  // The git dirs the seeding may read a store from: the superproject's own answers, plus this
+  // tree's `--git-common-dir` ONLY when it is byte-for-byte one of them — git saying "this is
+  // the shared store", not the run naming a directory it wants trusted. A git dir unique to the
+  // run tree is never admitted: a submodule added inside a linked worktree is filed there, holds
+  // only what this run committed, and seeding from it would call a path the superproject never
+  // held `seeded`. `localSource` refuses the same store where it is read; this is the guard that
+  // keeps a probe this step issues from even offering it.
   const readDirs = new Set<string>(superGitDirs);
   for (const dir of await gitDirsOf(exec, wt)) {
     if (superGitDirs.includes(dir)) readDirs.add(dir);
@@ -357,10 +310,9 @@ async function seedFromSuperproject(
   for (const entry of listed) {
     const source = localSource(superproject, gitDirs, entry.path, { wt });
     if (source === undefined) {
-      // No network for a submodule this host never had. The run proceeds and the path
-      // is named: "the base commit's verify ran without it" is the truth a reader can
-      // act on, and it is what distinguishes this from a submodule the step failed to
-      // restore — which throws.
+      // Nothing on this host held the submodule: the run proceeds and the clause names the path,
+      // which is what distinguishes this from a submodule the step FAILED to restore — that one
+      // throws.
       notes.push({
         path: entry.path,
         kind: "absent",
@@ -368,12 +320,11 @@ async function seedFromSuperproject(
       });
       continue;
     }
-    // Three commands, and the split is the point — the WHY of each, of the licence, and of
-    // `set-url` over a `-c` override is the switch header's (`submodules-local-switch.ts`).
-    // What the code has to hold locally: the licence is command-line `-c`, so it cannot
-    // outlive an invocation, and it appears on the two calls that consume the source THIS
-    // module named — never on a call whose URL came from repo content, and never with
-    // `--recursive`, so no level below the one named here is ever cloned.
+    // Three commands. The WHY of each, of the licence and of `set-url` over a `-c` override is
+    // the switch header's (`submodules-local-switch.ts`); what this code has to hold locally is
+    // that the licence is command-line `-c`, so it cannot outlive an invocation, and that it
+    // appears only on the calls consuming a source THIS module named — never one from repo
+    // content, and never with `--recursive`, so no level below the one named is cloned.
     //
     // `set-url` REWRITES `.gitmodules` in this work tree; `resetWorktreeToBase` restores the
     // file from the base commit when the pass seeded anything, so the seed leaves nothing

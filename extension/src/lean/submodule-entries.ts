@@ -188,11 +188,10 @@ function unquoteGitConfig(token: string): string | undefined {
 }
 
 /**
- * The URL `.gitmodules` records for one submodule name, or `undefined` when it names
- * none.
+ * The URL `.gitmodules` records for one submodule name, or `undefined` when it names none.
  *
- * Read only to be handed back to git as the value to look up when retargeting the entry
- * (see {@link SubmoduleEntry}); never used as a fetch source.
+ * Read only to be handed back to git as the value to look up when retargeting (see
+ * {@link SubmoduleEntry}); never used as a fetch source.
  */
 async function recordedUrl(exec: ExecFn, wt: string, name: string): Promise<string | undefined> {
   const r = await exec("git", {
@@ -221,31 +220,17 @@ export function localSource(
   const parts = sub.split("/").filter((p) => p !== "" && p !== "." && !path.isAbsolute(p));
   if (parts.length === 0) return undefined;
   const superprojectResolved = path.resolve(superproject);
-  // The run's own tree is refused as a source, by its PATH rather than by its git dirs — a
-  // seed must come from bytes the OPERATOR'S superproject holds, the ones the base commit's
-  // verify ran against, so nothing this run could have written itself counts. Asked of the
-  // PATH rather than of `gitDirs`, because a linked worktree's `--git-common-dir` points at
-  // the shared store: comparing git dirs there would refuse the shared store for EVERY run
-  // whose worktree lives under the superproject, which is the normal layout, and would turn
-  // this fix into a rule that makes every submodule absent.
-  const refused = [path.resolve(run.wt)];
-  for (const dir of refused) {
-    if (dir === path.resolve(superproject)) return undefined;
-    if (path.resolve(superproject).startsWith(dir + path.sep)) return undefined;
-  }
-  // A git dir under the RUN TREE is skipped as a store location. The committed checkout is
-  // refused above by PATH, which is the right test for a checkout: a linked worktree's
-  // `--git-common-dir` answers the SUPERPROJECT's `.git`, so refusing on the tree's own paths
-  // would refuse the shared store for every run whose worktree lives under the superproject —
-  // the normal layout — and turn this rule into "every submodule is absent". A store cannot be
-  // refused that way, because git files one under the tree that added the submodule: for a
-  // linked worktree that is `<common>/.git/worktrees/<name>/modules/<path>`, below the run's
-  // own root. Such a store records what THIS run's tree committed, so seeding from it would
-  // let a branch be judged against bytes no verify ever ran on, and would call the path seeded
-  // while the superproject still holds no copy of it — the exact dishonesty the disclosure
-  // exists to prevent. Skipping it does not skip the shared store, which sits above the run's
-  // root and is asked by name.
   const runTree = path.resolve(run.wt);
+  // Both halves of one rule — a seed comes from bytes the OPERATOR'S superproject holds, the
+  // ones the base's verify ran against, so nothing this run wrote counts — asked two ways
+  // because the two kinds of source are identified differently. The CHECKOUT is refused by
+  // PATH: a linked worktree's `--git-common-dir` answers the SHARED store, so comparing dirs
+  // there would refuse it for every run under the superproject (the normal layout) and make
+  // every submodule absent. A STORE needs the dir test, because git files one under the tree
+  // that added it — `<common>/.git/worktrees/<name>/modules/<path>` — holding only what THIS run
+  // committed. The shared store sits above the run's root and is still asked by name.
+  if (runTree === superprojectResolved || superprojectResolved.startsWith(runTree + path.sep))
+    return undefined;
   for (const dir of gitDirs) {
     if (dir !== superprojectResolved && dir.startsWith(runTree + path.sep)) continue;
     const store = path.join(dir, "modules", ...parts);
@@ -266,26 +251,23 @@ export function localSource(
  *
  * `--show-toplevel` is the wrong question here, and the field bug is the reason: asked inside
  * a linked worktree it answers with THAT worktree, so a step seeding "from the superproject"
- * would actually be seeding from the very tree it is about to populate — a clone of a
- * repository into itself, which ends not in an error but in a checkout that quietly holds
- * nothing. `--git-common-dir` answers with the shared store (which for a linked tree is the
- * superproject's `.git`, not the tree's own), and its parent is the main checkout: the one
- * tree on this host whose submodule content the base commit's verify actually ran against,
- * and the only one no run of this harness can have written.
+ * would be seeding from the very tree it is about to populate — a clone of a repository into
+ * itself, which ends not in an error but in a checkout that quietly holds nothing.
+ * `--git-common-dir` answers with the shared store (for a linked tree, the superproject's
+ * `.git` rather than the tree's own) and its parent is the main checkout: the one tree whose
+ * submodule content the base's verify ran against, and the only one no run of this harness can
+ * have written.
  *
- * git's own answer is then read for its SHAPE — `<…>/.git`, or `<…>/.git/worktrees/<name>` —
- * and the main checkout is taken from THAT, never from the path the caller handed this step.
- * Counting components off the caller's `wt` is the trap: the run's worktree lives under
- * `<repo>/.worktrees/lean-<issue>`, three deep like a linked tree's gitdir, so an answer
- * derived from it points at `<repo>/.worktrees` — a directory that exists, so an existence
- * check cannot catch it, and which then gets asked to supply the submodule the run is
- * populating. Reading git's shape is what makes a run's own scaffolding unpayable as a
- * source: `rev-parse` answers `<…>/.worktrees/lean-1` (or echoes an unrecognised `--git-*`
- * question back verbatim, which is what a smoke test's recording exec hands it) and neither
- * answer has the shape of a common dir, so the step refuses instead of seeding from a
- * directory nobody populated. The same rule is what lets a case stub git and still exercise
- * this path: a stub answers the question the step asks, and the step answers for anything it
- * cannot recognise.
+ * The main checkout is then derived from git's SHAPE — `<…>/.git`, or `<…>/.git/worktrees/<name>`
+ * — never from the caller's path. Counting components off `wt` is the trap the field fell into:
+ * a run's worktree lives at `<repo>/.worktrees/lean-<issue>`, as deep as a linked tree's gitdir,
+ * so an answer derived from it points at `<repo>/.worktrees` — a directory that exists, so no
+ * existence check catches it, and which is then asked to supply the submodule the run is
+ * populating. Reading the shape makes a run's scaffolding unpayable as a source: `rev-parse`
+ * answers `<…>/.worktrees/lean-1` (or echoes an unrecognised `--git-*` question back, which is
+ * what a recording exec hands it) and neither has the shape of a common dir, so the step refuses
+ * rather than seeding from a directory nobody populated — and a case can stub git, answer the
+ * question the step asks, and still exercise this path.
  */
 export async function superprojectRoot(exec: ExecFn, wt: string): Promise<string> {
   const r = await exec("git", {
@@ -296,12 +278,10 @@ export async function superprojectRoot(exec: ExecFn, wt: string): Promise<string
   }).catch(() => undefined);
   const raw = trim((r as { stdout?: string } | undefined)?.stdout ?? "");
   const dir = raw === "" ? "" : path.isAbsolute(raw) ? raw : path.resolve(wt, raw);
-  // The two shapes git's `--git-common-dir` can answer with, matched as PATHS rather than as
-  // substrings: `<repo>/.git` for a normal checkout, and `<repo>/.git/worktrees/<name>` for a
-  // LINKED one, whose main checkout therefore sits three components up. Both are asked, and
-  // both are decided by git's own answer — a bare repository, a `GIT_DIR` pointed at some
-  // unrelated directory, or a probe that echoed the question back has neither shape here and
-  // is refused rather than guessed at.
+  // git's two answers, matched as PATHS rather than substrings: `<repo>/.git` for a normal
+  // checkout, `<repo>/.git/worktrees/<name>` for a LINKED one (main checkout three up). Anything
+  // else — a bare repository, a stray `GIT_DIR`, a probe that echoed its own question — has
+  // neither shape and is refused rather than guessed at.
   const main =
     path.basename(dir) === ".git"
       ? path.dirname(dir)

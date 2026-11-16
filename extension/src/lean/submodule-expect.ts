@@ -8,12 +8,12 @@
  * command, whether it appeared.
  *
  * TWO inventories of the same recorded commit, in two repositories, and the pair is the
- * point. The superproject's MODULE STORE answers whether the commit has content at all: of
+ * point. The superproject's MODULE STORE answers whether the commit has content at all — of
  * the checkout alone it cannot, since the checkout is filled FROM that store, so a source
  * emptied by whoever cleaned the host answers “nothing”, the expectation comes back empty,
  * and the disclosure whose job is to catch a clone that filled nothing goes silent for the
  * case it exists for. The SOURCE this step named answers it again from the bytes the checkout
- * was built out of — requiring both keeps either from vouching for the other.
+ * was built out of; requiring both keeps either from vouching for the other.
  *
  * A repo that cannot answer, or a commit holding no files, yields `undefined` and the reset
  * checks nothing: an absent expectation is never a defect, so this read cannot become a way to
