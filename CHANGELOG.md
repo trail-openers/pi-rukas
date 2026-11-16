@@ -8,6 +8,14 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.85](https://github.com/trail-openers/pi-rukas/compare/v0.14.84...v0.14.85) (2026-11-16)
+
+
+### Bug Fixes
+
+* **work:** discover a Python verify command from pyproject.toml ([#2292](https://github.com/trail-openers/pi-rukas/issues/2292)) ([2b6bc80](https://github.com/trail-openers/pi-rukas/commit/2b6bc804cce72d93831ed3d4e0977f6f1f87bbb9))
+* **work:** verify the provenance a committed record claims and run command criteria in classic /work ([#2290](https://github.com/trail-openers/pi-rukas/issues/2290)) ([533a52e](https://github.com/trail-openers/pi-rukas/commit/533a52ef5300ea353df91f9b7290f67e240d3039))
+
 ## [0.14.84](https://github.com/trail-openers/pi-rukas/compare/v0.14.83...v0.14.84) (2026-11-15)
 
 
