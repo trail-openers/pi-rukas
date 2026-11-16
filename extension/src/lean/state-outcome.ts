@@ -157,10 +157,9 @@ const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>>
   // issue, and a derived spec licenses every later step to execute a contract no
   // author wrote. A step that never ran the deriving child has no evidence for it.
   derivedSpec: "ready",
-  // …and the same for the settings the run was judged by and the commit they were
-  // read at. A step stamping its own `config` would put settings on the record
-  // that the loader never validated and `ready` never approved.
-  config: "ready",
+  // …and the same for the commit the run was judged at. A step stamping its own
+  // `baseSha` would anchor a diff, a config read and a verify verdict to a commit the
+  // run never seeded.
   baseSha: "ready",
   verifiedHead: "verify",
   commandCriteria: "verify",

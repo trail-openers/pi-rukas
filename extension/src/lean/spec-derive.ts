@@ -314,22 +314,3 @@ export function deriveDeps(headless: boolean): DeriveDeps {
       }),
   };
 }
-
-/**
- * Trace a derived contract whose comment could not be posted.
- *
- * Separate from {@link traceDeriveRefusal} because the two say opposite things
- * about the same run: one is "no contract was produced", the other is "the
- * contract exists and nobody on the issue can see it". Collapsing them would
- * make a posting failure read as a derivation failure, which is the one mistake
- * an operator cannot afford to make while deciding whether to re-run.
- */
-export function traceDerivePostFailure(issue: number, why: string): void {
-  try {
-    traceWarn(
-      `lean/spec-derive #${String(issue)}: derived spec posted nowhere: ${oneLine(why, 240)}`,
-    );
-  } catch {
-    /* a sink we cannot write to cannot be written to */
-  }
-}

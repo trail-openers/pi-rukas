@@ -51,6 +51,18 @@ export function derivedSpecProblem(value: unknown): string | undefined {
     return "derivedSpec.spec does not round-trip through its own rendering";
   const unready = readiness(back.spec);
   if (unready.length > 0) return `derivedSpec.spec is not ready: ${unready.join("; ")}`;
+  // Two rules the ENGINE adds to the contract's own, stated here because a persisted
+  // derived contract is the only document nine steps execute that no author signed:
+  // every criterion is a `test`, and there is no `scope`. The mapper
+  // (`pi-spec-map.ts`) makes both true by construction, so the engine cannot produce
+  // either shape — which is exactly why a record that carries one is corruption or a
+  // hand edit rather than a derivation. A `command` row would license `verify` to
+  // execute a string no human wrote; a `scope` would name paths no gate enforces.
+  for (const c of back.spec.criteria)
+    if (c.verify !== "test")
+      return `derivedSpec.spec criterion ${c.id} verifies by "${c.verify}" — a derived contract is tests only`;
+  if (back.spec.scope !== undefined)
+    return "derivedSpec.spec declares a scope — a derived contract has none";
   return undefined;
 }
 

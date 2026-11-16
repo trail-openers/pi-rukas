@@ -20,7 +20,6 @@
  */
 
 import { isFullCommitSha } from "../commit-sha.ts";
-import type { WorkConfig } from "./config.ts";
 import { assertDeadline } from "./deadline-record.ts";
 import { type DerivedSpec, assertDerivedSpec, derivedSpecProblem } from "./state-derived-spec.ts";
 // The verdict SHAPE is re-exported so every caller of the record keeps one
@@ -146,13 +145,6 @@ export interface LeanRun {
    * of `require` mode, so old state files keep loading — same schema version.
    */
   derivedSpec?: DerivedSpec;
-  /**
-   * The run's config, as `ready` loaded it at the run's base. Written only from
-   * `ready`'s verdict (see `applyReadyFacts`), so a step reads the settings the
-   * run was JUDGED by rather than whatever `.pi/work.json` says now — which for a
-   * resumed run may be a different commit's file entirely.
-   */
-  config?: WorkConfig;
 }
 
 export const INITIAL_COUNTERS: RunCounters = {
@@ -345,11 +337,6 @@ export function assertRunFile(obj: unknown, file: string): LeanRun {
     ...(r.result !== undefined ? { result: assertResult(r.result, bad) } : {}),
     ...(r.deadlineMs === undefined ? {} : { deadlineMs: assertDeadline(r.deadlineMs) }),
     ...(r.derivedSpec === undefined ? {} : { derivedSpec: assertDerivedSpec(r.derivedSpec) }),
-    // Carried so a resumed run executes under the settings `ready` judged it by. Not
-    // re-validated and not trusted: consumers go through the config accessor, which
-    // re-reads the committed file at the run's base, so a hand-edited snapshot here
-    // cannot reach a step. Written only by `ready` (`OWNER_OF_FIELD`).
-    ...(r.config === undefined ? {} : { config: r.config as WorkConfig }),
   };
 }
 

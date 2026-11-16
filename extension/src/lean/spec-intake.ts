@@ -91,12 +91,13 @@ export async function contractOf(
  * given it — both of which hold only while this read stays non-fatal.
  */
 export async function configAtBase(
+  load: (repoRoot: string, baseSha: string) => Promise<WorkConfig>,
   repoRoot: string,
   base: Pick<LeanSeed, "baseSha">,
 ): Promise<WorkConfig | undefined> {
   if (base.baseSha === "") return undefined;
   try {
-    return await loadWorkConfig(execp, repoRoot, base.baseSha);
+    return await load(repoRoot, base.baseSha);
   } catch {
     return undefined;
   }

@@ -144,15 +144,16 @@ function withOutcome(run: LeanRun, key: string, outcome: Outcome, endedAt: numbe
 }
 
 /**
- * Copy `ready`'s three run-level fields off its verdict onto the run — field by
+ * Copy `ready`'s two run-level fields off its verdict onto the run — field by
  * field, and only from `ready`, because each is owned by that step's verdict
  * (`OWNER_OF_FIELD`) and a step that cannot own a field on the record cannot put
- * it there either.
+ * it there either. The config is NOT one of them: every step reads it through the
+ * loader at the run's base, so a snapshot on the record would be a second answer
+ * to one question, and one a hand edit could change.
  */
 function applyReadyFacts(run: LeanRun, outcome: Outcome): LeanRun {
   return {
     ...run,
-    ...(outcome.config === undefined ? {} : { config: outcome.config }),
     ...(outcome.baseSha === undefined || run.baseSha !== "" ? {} : { baseSha: outcome.baseSha }),
     ...(outcome.derivedSpec === undefined ? {} : { derivedSpec: outcome.derivedSpec }),
   };
@@ -229,9 +230,8 @@ async function settle(
     outcome = errorOutcome(state, err);
   }
   const logged = withOutcome(run, key, outcome, now());
-  // `ready`'s verdict also has to land on the RUN, not only its step record: the
-  // config is what later steps execute under and `derivedSpec` is the only copy of a
-  // contract that exists on no issue.
+  // `ready`'s verdict also has to land on the RUN, not only its step record:
+  // `derivedSpec` is the only copy of a contract that exists on no issue.
   const withFacts = key === "ready" ? applyReadyFacts(logged, outcome) : logged;
   if (outcome.kind === "error") {
     drive.save(withFacts);

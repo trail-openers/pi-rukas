@@ -81,6 +81,19 @@ function runWith(derived?: DerivedSpec) {
     !malformed.ok && malformed.reason !== "no pi-spec v1 block",
     `a malformed block is refused even for a derived run (got ${JSON.stringify(malformed)})`,
   );
+  // The same arm for a body that was CUT OFF inside the fence: `parsePiSpec` calls
+  // that "no pi-spec v1 block", which is the ONE reason the record stands in for,
+  // so without a fence check of its own the accessor would silently replace a
+  // truncated author's contract with the machine's. `require` mode refuses this
+  // body; `derive` must refuse it the same way.
+  const truncated = specFor(
+    '```pi-spec v1\n{"problem": "p", "criteria": [{"id": "AC1"',
+    { derivedSpec: DERIVED },
+  );
+  assert(
+    !truncated.ok && truncated.reason !== "no pi-spec v1 block",
+    `an unterminated spec fence is the author's defect, not the record's (got ${JSON.stringify(truncated)})`,
+  );
   assert(
     specSource({}) === "issue" && specSource({ derivedSpec: DERIVED }) === "derived",
     "specSource reads the record, so a resumed run reports provenance too",
@@ -122,6 +135,43 @@ function runWith(derived?: DerivedSpec) {
     bad({ spec: { ...SPEC, size: "L" }, model: "m", at: 1 }).includes("ready"),
     "…a not-ready contract is refused on load",
   );
+  // The three shapes the engine's own mapper can never emit — a `command` row, a
+  // `manual` row, a `scope` — are refused on load rather than carried. A `command`
+  // criterion licenses `verify` to execute it, and `scope` names paths no gate
+  // enforces; neither may reach a step by way of a hand-edited record.
+  for (const [label, smuggled] of [
+    [
+      "a command criterion",
+      {
+        ...SPEC,
+        criteria: [
+          { id: "AC1", text: "a", verify: "command" as const, command: "true" },
+          ...SPEC.criteria.slice(1),
+        ],
+      },
+    ],
+    [
+      "a manual criterion",
+      {
+        ...SPEC,
+        criteria: [
+          { id: "AC1", text: "a", verify: "manual" as const },
+          ...SPEC.criteria.slice(1),
+        ],
+      },
+    ],
+    ["a declared scope", { ...SPEC, scope: { paths: ["src/**"] } }],
+  ] as const) {
+    const reason = bad({ spec: smuggled, model: "m", at: 1 });
+    assert(
+      reason !== "" && !reason.includes("round-trip"),
+      `…${label} smuggled into the record is refused, not round-tripped (${JSON.stringify(reason)})`,
+    );
+    assert(
+      derivedSpecProblem({ spec: smuggled, model: "m", at: 1 }) !== undefined,
+      `…and the shared validator refuses ${label} too`,
+    );
+  }
   assert(
     derivedSpecProblem({ spec: SPEC, model: "m", at: 1 }) === undefined,
     "the shared validator accepts what the run validator accepts",

@@ -16,7 +16,7 @@
  *   (r) handback reads ONLY the declared `prUrl`, and a malformed one is refused
  */
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { phase1Handlers } from "../src/lean/command.ts";
@@ -149,11 +149,19 @@ function assert(cond: boolean, msg: string): void {
           key: "304:verify:0",
           state: "verify",
           startedAt: 1,
-          outcome: { kind: "green", verifiedHead: bad },
+          outcome: { kind: "green", verifiedHead: "c".repeat(40) },
         },
       ],
     };
-    saveRun(dir, run);
+    // The malformed value is planted AFTER the save, in the bytes on disk. `saveRun`
+    // validates on write, so writing it through the API would assert the write-time
+    // refusal instead — and this case is about the reader: a record that reached disk
+    // by some other route must still be refused when the engine opens it. The
+    // write-time half is pinned by the writer's own suite.
+    const file = leanStateFile(dir, 304);
+    mkdirSync(path.dirname(file), { recursive: true });
+    const badStep = { ...run.steps[0], outcome: { kind: "green", verifiedHead: bad } };
+    writeFileSync(file, JSON.stringify({ ...run, steps: [badStep] }));
     let refused = "";
     try {
       loadRun(dir, 304);
@@ -202,7 +210,8 @@ function assert(cond: boolean, msg: string): void {
   );
 
   // And the record refuses a `prUrl` that is not https text, so the comment can
-  // never be handed a fake link.
+  // never be handed a fake link. Planted on disk after the save for the same reason
+  // as (q): this is the reader's rule, and `saveRun` refuses the same bytes earlier.
   const dir = mkdtempSync(path.join(tmpdir(), "lean-prurl-"));
   ROOTS.push(dir);
   for (const bad of ["not a url", "http://insecure.test/pr/1", "x".repeat(501)]) {
@@ -230,7 +239,9 @@ function assert(cond: boolean, msg: string): void {
         },
       ],
     };
-    saveRun(dir, run);
+    const file = leanStateFile(dir, 305);
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify(run));
     let refused = "";
     try {
       loadRun(dir, 305);
