@@ -128,6 +128,9 @@ import { ROOTS } from "./lib/lean-verified-handback-fixture.ts";
     /** Where the number lives — an export, or `file:line` for a call-site literal. */
     readonly where: string;
     readonly ms: number;
+    /** Set on a row that documents a call no single run takes — an arm exclusive with another
+     *  row — so the table still names it while the sum counts the path once. */
+    readonly excluded?: boolean;
   }
 
   /** A call-site timeout literal, read back out of the source that carries it, searched
@@ -142,12 +145,15 @@ import { ROOTS } from "./lib/lean-verified-handback-fixture.ts";
     label: string,
     occurrence = 0,
     stop?: string,
+    stopOccurrence = 0,
   ): number => {
     const src = readSource(file);
     let at = src.indexOf(needle);
     for (let n = 0; n < occurrence; n++) at = src.indexOf(needle, at + 1);
     assert(at >= 0, `(f) ${label}: ${file} still contains ${JSON.stringify(needle)}`);
-    const stopAt = stop === undefined ? -1 : src.indexOf(stop, at);
+    let stopAt = stop === undefined ? -1 : src.indexOf(stop, at);
+    for (let n = 0; stop !== undefined && n < stopOccurrence; n++)
+      stopAt = stopAt < 0 ? -1 : src.indexOf(stop, stopAt + 1);
     assert(
       stop === undefined || stopAt > at,
       `(f) ${label}: ${JSON.stringify(stop)} still follows ${JSON.stringify(needle)} in ${file}`,
@@ -175,9 +181,78 @@ import { ROOTS } from "./lib/lean-verified-handback-fixture.ts";
     return reader === undefined ? 0 : reader();
   };
 
-  /** `quiet()`'s own per-call ceiling — the one every `ls-remote` the rewind makes carries. */
-  const quietTimeout = (): number =>
-    callTimeout("lean/handback-rewind.ts", "async function quiet(", "quiet() ceiling");
+  /** The ceiling an `ls-remote` origin read carries, read from the routed arm of the helper
+   *  its row names. `needle` is the call the site makes and `stop` the boundary of that
+   *  helper's own body, so the window holds exactly one `runNetGit` options object and the
+   *  number can only be that read's ceiling — a search that walked past its own helper would
+   *  print the first routed read's number under every row while looking distinct, and a read
+   *  whose ceiling was deleted would keep the sum looking right while the bound was proven
+   *  against a shorter path than the one a run takes. The routed arm is what the wrapper
+   *  caps, so it is what the bound has to cover. A row that reads no ceiling fails rather
+   *  than contributing 0, which would lower the sum without anyone noticing. */
+  const lsRemoteCeiling = (needle: string, label: string, stop = OFF_ARM): number => {
+    const src = readSource("lean/handback-rewind.ts");
+    const at = src.indexOf(needle);
+    const boundary = src.indexOf(stop, at);
+    // The routed arm is what the wrapper caps, so it is what the bound has to cover: the
+    // window from the row's needle to its boundary must CONTAIN a `runNetGit` call, and the
+    // timeout read inside that window is the ceiling. The two halves are asserted apart
+    // because each fails on a different edit — an arm deleted, a window widened, a number
+    // removed — and one combined failure would not say which happened.
+    const routed = src.indexOf('runNetGit(exec, "git"', at);
+    assert(
+      at >= 0 && boundary > at,
+      `(f) ${label}: ${JSON.stringify(needle)} is still a call whose window reaches ${JSON.stringify(stop)}`,
+    );
+    assert(
+      routed > at && routed < boundary,
+      `(f) ${label}: a runNetGit routed arm still lies between ${JSON.stringify(needle)} and ${JSON.stringify(stop)} — without it this row has no ceiling to report`,
+    );
+    const found = src.slice(at, boundary).match(/timeout(?:Ms)?:\s*(\d[\d_]*)/);
+    assert(
+      found !== undefined,
+      `(f) ${label}: a timeout is readable inside the window from ${JSON.stringify(needle)} to ${JSON.stringify(stop)} — a routed read that spells none is uncapped`,
+    );
+    const ms = Number((found?.[1] ?? "0").replace(/_/g, ""));
+    assert(ms > 0, `(f) ${label}: read no ceiling from ${JSON.stringify(needle)}`);
+    return ms;
+  };
+
+  /** The options the single and paired helpers hand the wrapper — identical bodies, which is
+   *  why every row anchors on its own helper's DECLARATION rather than on this text: two rows
+   *  anchored here would print the same number while looking distinct. */
+  const ROUTED_BODY =
+    'const ran = leanHandbackNetGitEnabled()\n' +
+    '    ? await runNetGit(exec, "git", {\n' +
+    '        argv: [...NO_HOOKS, "ls-remote", "origin", ref],\n' +
+    "        cwd,\n        timeoutMs";
+
+  /** The rewind's single-read helper, declared. Both of its single origin reads reach this
+   *  one call — the head before the push, and the re-read after a refused push — so both rows
+   *  anchor here, and the second is left out of the sum for the same reason. */
+  const SINGLE_READ =
+    "async function lsRemoteSha(\n" +
+    "  exec: VerifyExec,\n" +
+    "  cwd: string,\n" +
+    "  ref: string,\n" +
+    "  env?: NodeJS.ProcessEnv,\n" +
+    "): Promise<string | undefined> {\n  " +
+    ROUTED_BODY;
+
+  /** Where a shared helper's body ends: the call its off arm hands the executor. A row that
+   *  anchors inside the helper's own text closes here, so its ceiling can only come from the
+   *  routed arm on the near side of that boundary. */
+  const OFF_ARM = "offArmRead(exec";
+
+  /** The paired helper, declared — anchored on its declaration for the same reason. */
+  const PAIRED_READ =
+    "async function lsRemoteShaParallel(\n" +
+    "  exec: VerifyExec,\n" +
+    "  cwd: string,\n" +
+    "  ref: string,\n" +
+    "  env?: NodeJS.ProcessEnv,\n" +
+    "): Promise<string | undefined> {\n  " +
+    ROUTED_BODY;
 
   const awaits: ReportAwait[] = [
     {
@@ -192,8 +267,20 @@ import { ROOTS } from "./lib/lean-verified-handback-fixture.ts";
     },
     {
       what: "handback-rewind: origin read of the branch before the push",
-      where: "lean/handback-rewind.ts quiet() ls-remote",
-      ms: quietTimeout(),
+      where: "lean/handback-rewind.ts lsRemoteSha ls-remote",
+      ms: lsRemoteCeiling(SINGLE_READ, "pre-push origin read"),
+    },
+    {
+      // The refusal's re-read is the fourth routed read, and it belongs in the table: an
+      // operator reading a green suite should see that a failed push re-asks origin. It is
+      // NOT summed, because it shares its call with the row above — the two are arms of one
+      // helper, and only the second is taken, when the push itself said no. Summing both
+      // would bill the same read twice and fail (i) for a path no run walks.
+      what: "handback-rewind: the refusal's re-read of the branch after a failed push (exclusive with the row above, not summed)",
+      where: "lean/handback-rewind.ts lsRemoteSha ls-remote, refusal arm",
+      ms: lsRemoteCeiling(SINGLE_READ, "post-refusal origin read"),
+      excluded: true,
+      excluded: true,
     },
     {
       what: "handback-rewind: does this clone hold the verified head (git cat-file -e)",
@@ -207,13 +294,36 @@ import { ROOTS } from "./lib/lean-verified-handback-fixture.ts";
     },
     {
       what: "handback-rewind: the two origin reads that decide success (branch + keeping-ref, in parallel)",
-      where: "lean/handback-rewind.ts quiet() ls-remote, Promise.all",
-      ms: callTimeout("lean/handback-rewind.ts", "const [after, keptOnOrigin]", "post-push origin reads"),
+      where: "lean/handback-rewind.ts lsRemoteShaParallel ls-remote, Promise.all",
+      ms: lsRemoteCeiling(PAIRED_READ, "post-push origin reads"),
     },
     {
-      what: "handback: originBranchHead — where the branch stands after the move",
+      // Named, not summed. This read is made by the `handback` step on the OTHER side of the
+      // rewind seam (`handback.ts`'s `readOrigin` default), not by `rewindToVerified`: the
+      // path this table bounds — `rewindFor` → `rewindToVerified` — never calls it, and an
+      // earlier revision of this file billed it to the rewind and failed (i) for a read no
+      // rewind makes. It still belongs in the table because an operator reading a green run
+      // should see that a handback asks origin where the branch stands, and should be able to
+      // see the ceiling that read carries rather than take it on faith.
+      what: "handback: originBranchHead — where the branch stands after the move (made by the handback step, outside the rewind's bounded path; not summed)",
       where: "lean/handback-rewind.ts originBranchHead",
-      ms: callTimeout("lean/handback-rewind.ts", "export async function originBranchHead", "originBranchHead"),
+      ms: lsRemoteCeiling(
+        'export async function originBranchHead(\n' +
+          "  exec: VerifyExec,\n" +
+          "  ctx: Pick<HandlerCtx, \"repoRoot\" | \"issue\" | \"run\">,\n" +
+          "  opts: { env?: NodeJS.ProcessEnv } = {},\n" +
+          "): Promise<string | undefined> {\n" +
+          "  const ref = `refs/heads/${specifyBranch(ctx.run.branch, ctx.issue)}`;\n" +
+          "  // A read of origin is a NETWORK read, so the wrapper owns its env, its group kill and\n" +
+          "  // its bound; the requested ceiling and buffer stay this call's. With the switch off the\n" +
+          "  // call is handed to the executor exactly as it was before the fix.\n" +
+          '  const ran = leanHandbackNetGitEnabled()\n' +
+          '    ? await runNetGit(exec, "git", {\n' +
+          '        argv: [...NO_HOOKS, "ls-remote", "origin", ref],\n' +
+          "        cwd: ctx.repoRoot,\n        timeoutMs",
+        "originBranchHead",
+      ),
+      excluded: true,
     },
     {
       what: "postHandback → forgeFor: detectForge, up to three remote reads", 
@@ -248,12 +358,12 @@ import { ROOTS } from "./lib/lean-verified-handback-fixture.ts";
   // answered just inside its own ceiling would lose the rewind, the one thing the routing
   // exists to perform. Shrinking a shared ceiling instead would bind the non-lean callers
   // that read the same constants, so the headroom is the term that moved.
-  const sum = awaits.reduce((total, a) => total + a.ms, 0);
+  const sum = awaits.reduce((total, a) => total + (a.excluded === true ? 0 : a.ms), 0);
   /** What the path would spend if the one `Promise.all` on it were serialised: the pair of
    *  origin reads that decide the rewind's success is counted once in `sum`, because that is
    *  what the code does. Printed alongside (i) so the parallel-schedule assumption the sum
    *  rests on is visible rather than buried in a table row that reads `0ms`. */
-  const PARALLEL_EXTRA = quietTimeout();
+  const PARALLEL_EXTRA = lsRemoteCeiling(PAIRED_READ, "the serialised half of the post-push pair");
   // Both numbers read with their env keys ABSENT, so the case measures what a shipped run
   // is cut at rather than what this suite or an operator's shell pins.
   const defaults = await (async () => {

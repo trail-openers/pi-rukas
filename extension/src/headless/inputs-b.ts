@@ -108,6 +108,14 @@ export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   // nor origin will name refuses the push instead of passing it. The reader is
   // `leanGuardFailClosed` in lean/guard-fail-closed-switch.ts.
   flag("LEAN_GUARD_FAIL_CLOSED", true),
+  // #2279 — the handback's four origin reads (`ls-remote` for the record's head, the held
+  // head, and the branch/keeping-ref pair that decide success) go through the driver's
+  // network-git wrapper: non-interactive env, process-group kill, bounded wait. `0` puts
+  // every one of them back on the executor in its pre-fix shape — caller's env, no group
+  // kill — for an origin that needs an interactive credential helper. The reader is
+  // `leanHandbackNetGitEnabled` in lean-handback-net-git-switch.ts; the push is not in
+  // scope, `LEAN_REWIND_LEASE_BINDS` owns that argv.
+  flag("LEAN_HANDBACK_NET_GIT", true),
   flag("LEAN_HANDBACK_NOHEAD_RECORD", true),
   // #2171 — show the specify/challenge adversary the issue prose its frozen
   // tests were written from. 0 takes the section back out of both prompts.

@@ -34,6 +34,7 @@ import {
   READ_TIMEOUT_MS,
   describeRead,
   driveReads,
+  expectedNetEnv,
   readRefs,
 } from "./lib/lean-handback-net-git-cases.ts";
 import { ROOTS } from "./lib/lean-verified-handback-fixture.ts";
@@ -46,12 +47,21 @@ const { assert, failures } = makeAssert();
 /** The three `-c` flags every lean git call carries, spelled as the call site spells them. */
 const NO_HOOKS = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"];
 
-/** The base commit's call shape for one origin read — the off arm's golden value. */
-function baseShape(ref: string): RecordedCall {
+/**
+ * The base commit's call shape for one origin read — the off arm's golden value.
+ *
+ * `env` is spelled as the two arms of the shipped code produce it, not as one rule:
+ * the three reads the rewind makes go through `assertPublishableBranch`'s seam
+ * (`lean/publish-deps.ts`), which hands `netGitEnv(process.env, cwd)` to every `git` call
+ * that arrives without one, while `originBranchHead` — the handback step's own read —
+ * supplies no env at all. A case that asserted "no env" for both would be asserting a
+ * shape the pre-fix code never had, and would go red on a fix that changed nothing.
+ */
+function baseShape(ref: string, env: NodeJS.ProcessEnv | undefined): RecordedCall {
   return {
     cmd: "git",
     argv: [...NO_HOOKS, "ls-remote", "origin", ref],
-    env: undefined,
+    env,
     killGroup: undefined,
     timeout: READ_TIMEOUT_MS,
     maxBuffer: READ_MAX_BUFFER,
@@ -59,7 +69,12 @@ function baseShape(ref: string): RecordedCall {
 }
 
 /** One field at a time, so a failure names the field that moved rather than the object. */
-function compare(call: RecordedCall, want: RecordedCall, what: string): void {
+function compare(
+  call: RecordedCall,
+  want: RecordedCall,
+  what: string,
+  readEnv: (env: NodeJS.ProcessEnv | undefined) => boolean,
+): void {
   for (const key of ["cmd", "killGroup", "timeout", "maxBuffer"] as const) {
     assert(
       call[key] === want[key],
@@ -70,9 +85,12 @@ function compare(call: RecordedCall, want: RecordedCall, what: string): void {
     JSON.stringify(call.argv) === JSON.stringify(want.argv),
     `${what}: argv is byte-for-byte the base call (got ${JSON.stringify(call.argv)})`,
   );
+  // The env assertion is about what the CALL supplied, and it is made on the recorder's
+  // copy — the rig forwards untouched, so an env the code did not supply cannot appear.
   assert(
-    call.env === undefined,
-    `${what}: no env is supplied with the switch off, exactly as the base call supplied none (got ${JSON.stringify(call.env === undefined ? undefined : Object.keys(call.env ?? {}))})`,
+    readEnv(call.env) &&
+      JSON.stringify(Object.keys(call.env ?? {})) === JSON.stringify(Object.keys(want.env ?? {})),
+    `${what}: the env is the base call's (got ${JSON.stringify(call.env === undefined ? undefined : Object.keys(call.env).slice(0, 6))})`,
   );
 }
 
@@ -89,6 +107,10 @@ await withEnv(
   },
   async () => {
     const driven = await driveReads();
+    // Derived inside the pinned block, from the drive's own repo, so the expectation is
+    // `netGitEnv` over the env the reads actually ran in — the same call `publish-deps`'s
+    // seam makes for every git call that reaches it without one.
+    const guardEnv = expectedNetEnv(driven.repo.repoRoot);
     assert(
       driven.rewind.shipped === true,
       `the off arm still performs the rewind, so the reads are the real ones (${JSON.stringify(driven.rewind)})`,
@@ -100,12 +122,25 @@ await withEnv(
 
     driven.reads
       .slice(0, OFF_ARM_REFS.length)
-      .forEach((read, i) => compare(read, baseShape(OFF_ARM_REFS[i] as string), `read #${String(i + 1)}`));
+      .forEach((read, i) =>
+        compare(
+          read,
+          baseShape(OFF_ARM_REFS[i] as string, guardEnv),
+          `read #${String(i + 1)} (rewind arm, through the guard's seam)`,
+          (env) => env !== undefined && env.GIT_TERMINAL_PROMPT === "0",
+        ),
+      );
 
-    // The handback step's own read — the one that produces the record's `shippedHead`.
+    // The handback step's own read — the one that produces the record's `shippedHead`. It
+    // is driven through `originBranchHead` directly, which supplies no env: on both arms
+    // of the switch it is an env-less call, and that is the half of the off arm's promise
+    // no guard-seam env can stand in for.
     const record = driven.reads[driven.reads.length - 1];
     if (record === undefined) assert(false, "the record's origin read was made");
-    else compare(record, baseShape(`refs/heads/${BRANCH}`), "originBranchHead (the record's read)");
+    else
+      compare(record, baseShape(`refs/heads/${BRANCH}`, undefined), "originBranchHead (the record's read)", (
+        env,
+      ) => env === undefined);
 
     // Independence from the lease switch: the push is what `binds` renders, on both arms.
     const push = driven.push;

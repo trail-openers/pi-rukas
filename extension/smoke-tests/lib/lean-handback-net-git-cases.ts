@@ -40,7 +40,13 @@ export const READ_MAX_BUFFER = 4 * 1024 * 1024;
 /** The ssh command both arms pin, so the derived env has one answer rather than the host's. */
 export const PINNED_SSH = "/usr/bin/ssh -i /dev/null";
 
-/** The env a routed read must carry: `netGitEnv` over the pinned env, from the wrapper itself. */
+/**
+ * The env a routed read must carry: `netGitEnv` over the pinned env, from the wrapper itself.
+ *
+ * `runNetGit` derives it from `process.env`, so the two ssh keys below must already be
+ * pinned when this is called — the expectation is then the same function's answer, not a
+ * transcription of it.
+ */
 export function expectedNetEnv(cwd: string): NodeJS.ProcessEnv {
   return netGitEnv(process.env, cwd);
 }
@@ -109,6 +115,18 @@ export function expectedReadRefs(issue: number = ISSUE): string[] {
 /** Every ref the drive was asked to read, in the order the recorder saw them. */
 export function readRefs(driven: DrivenReads): string[] {
   return driven.reads.map((r) => r.argv?.[r.argv.length - 1] ?? "<no ref>");
+}
+
+/**
+ * Whether a read carried no env of its own — the off arm's shape.
+ *
+ * `execp` forwards `opts.env` and never merges `process.env` into it, so the value that
+ * reaches git from an env-less call is nothing at all. Only a read the step handed an env
+ * can be judged against `netGitEnv`, which is why the off-arm case asserts absence and
+ * the on-arm case asserts the wrapper's answer.
+ */
+export function hasNoEnv(env: NodeJS.ProcessEnv | undefined): boolean {
+  return env === undefined;
 }
 
 export { BRANCH, ISSUE };

@@ -21,7 +21,7 @@
  */
 
 import type { VerifyExec } from "../../src/lean/verify-types.ts";
-import { exec } from "./lean-verified-handback-fixture.ts";
+import { execp } from "../../src/exec.ts";
 
 /** One executor call, as the code under test handed it to the seam. */
 export interface RecordedCall {
@@ -67,7 +67,7 @@ export function recordingExec(): RecordingExec {
       timeout: opts?.timeout,
       maxBuffer: opts?.maxBuffer,
     });
-    return exec(cmd, opts);
+    return execp(cmd, opts ?? {});
   }) as VerifyExec;
   return {
     exec: spy,
