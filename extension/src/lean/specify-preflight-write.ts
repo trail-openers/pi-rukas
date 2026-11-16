@@ -12,13 +12,11 @@
  * put a probe — nor is it a probe the runner would run.
  */
 
-import { existsSync, lstatSync, unlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Proof } from "./specify-proof.ts";
 import { SpecifyInfraError } from "./specify-reset.ts";
-
-/** A probe file the runner can parse and collect nothing from, in any language. */
-const PROBE_CONTENT = "";
+import { oneLine } from "./text-fence.ts";
 
 /**
  * The disclosure this step records when the runner ran and refused the probe file.
@@ -29,9 +27,68 @@ const PROBE_CONTENT = "";
  */
 export const PROBE_REJECTED = "the runner rejected the probe file (exit 4)";
 
-/** The disclosure line for one proof — the note names the rendered command. */
+/**
+ * How much of the rendered command the disclosure quotes, and the length the whole
+ * note may reach.
+ *
+ * The sibling clip in `publish-body.ts` is what a printed command gets there
+ * (`PREEXISTING_COMMAND_CLIP`); this is the same bound for the same reason — the
+ * template is project-authored text, it lands in a reason line the operator reads,
+ * and the interesting part is the front of it.
+ *
+ * `PROBE_NOTE_MAX_CHARS` is the second bound and the one a caller needs: the note is
+ * JOINED onto the step's own reason, so the clause this step contributes to someone
+ * else's sentence has to be as bounded as the sentence it is added to. It is the
+ * whole rendered note INCLUDING the ellipsis `oneLine` appends when it cuts — a
+ * bound the writer states has to be one its output actually satisfies, or the
+ * assertion on it is a number nobody measured. All of it lives with the writer, so a
+ * widening is one edit rather than two that can disagree.
+ */
+/**
+ * How much of the rendered command the disclosure quotes.
+ *
+ * The sibling clip in `publish-body.ts` is what a printed command gets there
+ * (`PREEXISTING_COMMAND_CLIP`); this is the same bound for the same reason — the
+ * template is project-authored text, it lands in a reason line the operator reads,
+ * and the interesting part is the front of it.
+ */
+const REJECTED_COMMAND_CLIP = 119;
+
+/** The note's own worst case: the prefix, the separator, and a command at its clip width. */
+const probeNoteWorstCase = (): string => `${PROBE_REJECTED}: ${"a".repeat(REJECTED_COMMAND_CLIP)}`;
+
+/** The bound handed to `oneLine` for one note: prefix, separator, command at its clip width. */
+const PROBE_NOTE_SLICE_BOUND = REJECTED_COMMAND_CLIP + PROBE_REJECTED.length + ": ".length;
+
+/**
+ * The longest note this renderer can return.
+ *
+ * DERIVED by running the renderer on its worst case, not declared from arithmetic
+ * over its parts. `oneLine` appends its ellipsis AFTER the slice, so a note it
+ * clipped measures one character past the bound it was handed, and it trims and
+ * collapses runs of spaces too — all of which change the length a sum over
+ * `PROBE_REJECTED.length + ": ".length + CLIP` would predict. Every one of those is
+ * `text-fence.ts`'s business, so a bound copied out of it by hand is a number that
+ * goes stale the day that module changes its clip marker. Measuring the renderer
+ * here keeps the bound true by construction, and lets the assertion that reads it
+ * fail on a real widening rather than on someone's arithmetic.
+ */
+export const PROBE_NOTE_MAX_CHARS = oneLine(probeNoteWorstCase(), PROBE_NOTE_SLICE_BOUND).length;
+
+/**
+ * The disclosure line for one proof — the note names the rendered command, clipped
+ * to the bound above, which is a RENDERED length and so already carries the
+ * ellipsis.
+ *
+ * `oneLine` and not a bare interpolation, because `proof.cmd` is the project's own
+ * `verify.test` template with the probe path substituted: a template with a
+ * newline in it would end the reason line this note is joined onto, and a `|`
+ * would open a column in the table it is eventually printed in. Same reason the
+ * sibling renderers clip: the payload is outside this process. The bound is the
+ * whole note rather than just the command, since the note is what gets joined.
+ */
 export function probeRejected(proof: Proof): string {
-  return `${PROBE_REJECTED}: ${proof.cmd}`;
+  return oneLine(`${PROBE_REJECTED}: ${proof.cmd}`, PROBE_NOTE_MAX_CHARS - 1);
 }
 
 /**
@@ -42,8 +99,12 @@ export function probeRejected(proof: Proof): string {
  * `isSymbolicLink()` before `isFile()` — because this is the step's own rule, not
  * the platform's: a base-carried symlink at the probe path is never written
  * through, whatever `open(2)` with `wx` would have happened to do with it.
+ *
+ * Module-private: the only caller is `probeWrite`, and a rule about where this step
+ * may write that can be called from elsewhere is a rule someone will call from
+ * elsewhere.
  */
-export function isPlainProbe(abs: string): boolean {
+function isPlainProbe(abs: string): boolean {
   try {
     const st = lstatSync(abs);
     return !st.isSymbolicLink() && st.isFile();
@@ -55,23 +116,42 @@ export function isPlainProbe(abs: string): boolean {
 /**
  * Write the empty probe at `rel`, or hand back naming why it could not.
  *
- * `wx`, so a name that appeared between the check and the write is refused rather
- * than opened — the check before it exists to give the operator a message that
- * names the path, which `wx`'s EEXIST does not.
+ * The guard asks `lstatSync` whether ANYTHING is at the name — not `existsSync`,
+ * which follows links and so reports a dangling symlink as nothing there. That
+ * difference is the whole guard: for a dangling link `existsSync` says "clear" and
+ * `wx` then answers `EEXIST` (the kernel opens `O_EXCL` against the link itself),
+ * and the operator is handed a raw `EEXIST` naming a file that appears not to
+ * exist. Asked this way, every existing inode that is not a plain file — link,
+ * dangling or not, directory, fifo, socket — is the named refusal, which is also
+ * the rule this module states.
+ *
+ * `wx` still carries the race: a name that appeared between the check and the
+ * write is refused rather than opened. The check before it exists to give the
+ * operator a message that names the path, which `wx`'s EEXIST does not.
  */
 export function probeWrite(wt: string, rel: string): void {
   const abs = path.join(wt, rel);
-  if (existsSync(abs) && !isPlainProbe(abs)) {
+  if (lstatExists(abs) && !isPlainProbe(abs)) {
     throw new SpecifyInfraError(
       `the runner preflight could not write its probe file: ${rel} already exists in ${wt} and is not a plain file`,
     );
   }
   try {
-    writeFileSync(abs, PROBE_CONTENT, { flag: "wx", mode: 0o644 });
+    writeFileSync(abs, "", { flag: "wx", mode: 0o644 });
   } catch (err) {
     throw new SpecifyInfraError(
       `the runner preflight could not write its probe file: ${(err as Error).message}`,
     );
+  }
+}
+
+/** Is there any inode at `abs`, following no links? ENOENT is the only "no". */
+function lstatExists(abs: string): boolean {
+  try {
+    lstatSync(abs);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -85,7 +165,7 @@ export function probeWrite(wt: string, rel: string): void {
  */
 export function removeProbe(wt: string, rel: string): void {
   const abs = path.join(wt, rel);
-  if (!existsSync(abs)) return;
+  if (!lstatExists(abs)) return;
   try {
     unlinkSync(abs);
   } catch {

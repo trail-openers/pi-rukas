@@ -448,7 +448,9 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
   // The probe's disclosure, last: the runner ran and refused the PROBE file, which
   // is a fact about this step's filename and not a verdict about the issue, so it
   // rides on the reason the step records and cannot be mistaken for one. Placed
-  // after every other clause so a decline or a wait still reads first.
+  // after every other clause so a decline or a wait still reads first — and clipped
+  // to the bound its writer enforces on itself, so the clause this step adds to
+  // someone else's reason can never be the thing that widens it.
   const disclosed =
     probeNote === undefined
       ? withWait

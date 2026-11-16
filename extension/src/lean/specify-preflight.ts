@@ -108,11 +108,8 @@ const PROBE_BASENAME = ".lean-runner-probe.test";
  */
 const PY_PROBE_BASENAME = "_lean_runner_probe.py";
 
-/** A probe file the runner can parse and collect nothing from, in any language. */
-const PROBE_CONTENT = "";
-
 /**
- * The probe's worktree-relative path, and why it sits there.
+ * The probe's worktree-relative path, the placement it chose, and why it sits there.
  *
  * Two facts must hold at once: the probe must not be mistaken for an acceptance
  * test, and writing it must not change the tree — no directory created, nothing
@@ -132,12 +129,22 @@ const PROBE_CONTENT = "";
  * against the project's own pattern: a repo whose `testGlob` matches
  * `_lean_runner_probe.py` would have the runner collect the probe as one of its
  * tests, so this refuses rather than writing a probe the CI would grade.
+ *
+ * `py` is reported here and read nowhere else: the reading of exit 4 is a fact
+ * about the NAME the probe ends up carrying, so it is decided once, at placement,
+ * and handed down — see {@link runProbeAt}.
  */
 function probeRelative(wt: string, testLocation?: TestLocation): { rel: string; py: boolean } {
   // The boundary's own matcher, so "would this project's CI collect the probe?" is
   // answered by the same predicate that refuses a submitted test for it — and asked
   // wherever the probe would go, since a name the CI grades is refused whether it
   // sits in the folder or at the root.
+  //
+  // It names the placement it ACTUALLY chose, because the refusal is the only thing
+  // an operator has to go on: "the probe would go to the root" and "the probe would
+  // go inside the folder" are different diagnoses — one means the configured folder
+  // is not on this tree — and a message that says the other one sends someone to the
+  // wrong file.
   const refuses = (loc: TestLocation, dir: string): void => {
     if (!globMatches(loc.testGlob, PY_PROBE_BASENAME)) return;
     throw new SpecifyInfraError(
@@ -150,7 +157,8 @@ function probeRelative(wt: string, testLocation?: TestLocation): { rel: string; 
       // A Python probe has to be a file the runner can IMPORT, so it goes INSIDE
       // the folder — at the root only when that folder is not on the tree at all.
       const inside = existsSync(path.join(wt, testLocation.testDir));
-      refuses(testLocation, inside ? testLocation.testDir : ".");
+      const dir = inside ? testLocation.testDir : ".";
+      refuses(testLocation, dir);
       return {
         rel: inside ? `${testLocation.testDir}/${PY_PROBE_BASENAME}` : PY_PROBE_BASENAME,
         py: true,
@@ -162,13 +170,11 @@ function probeRelative(wt: string, testLocation?: TestLocation): { rel: string; 
   if (testLocation === undefined) return { rel: PROBE_BASENAME, py: false };
   const parent = path.posix.dirname(testLocation.testDir);
   if (parent === ".") return { rel: PROBE_BASENAME, py: false };
-  return {
-    rel: existsSync(path.join(wt, parent)) ? `${parent}/${PROBE_BASENAME}` : PROBE_BASENAME,
-    py: false,
-  };
+  return existsSync(path.join(wt, parent))
+    ? { rel: `${parent}/${PROBE_BASENAME}`, py: false }
+    : { rel: PROBE_BASENAME, py: false };
 }
 
-/**
 /**
  * The probe's parent directory, only if it is really a directory OF THIS WORKTREE.
  *
@@ -181,21 +187,28 @@ function probeRelative(wt: string, testLocation?: TestLocation): { rel: string; 
  * resolved or cannot contain its own probe is infrastructure rather than a
  * question to ask the runner.
  *
- * Returns "" for "use the root": a configured parent that fails the check falls
- * back rather than handing back, because a project whose test folder is a link
- * outside the tree still has a root this step owns.
+ * The probe's NAME is part of what this returns, not just its directory: when the
+ * configured folder fails the check the probe falls back to the root, and the root's
+ * probe is the hidden extensionless one whatever the config asked for. Returning
+ * only the directory would leave the exit-4 reading keyed to a name that is no
+ * longer on the file — see {@link assertRunnerCanRunTests}.
  */
-function containedParent(wt: string, rel: string): string {
-  if (!leanPreflightProbeContainEnabled()) return rel;
-  const parent = path.posix.dirname(rel);
+function containedParent(
+  wt: string,
+  placed: { rel: string; py: boolean },
+): {
+  rel: string;
+  py: boolean;
+} {
+  if (!leanPreflightProbeContainEnabled()) return placed;
   const root = real(wt);
   // The directory the write would actually go into, resolved through every link of
   // its own. `realpath` on the parent NAME — not on a path rebuilt from the
   // configured string — because the link this check exists to catch sits exactly at
   // that name, and joining the name back onto a resolved root would resolve the
   // root and then trust the link.
-  const dir = real(path.dirname(path.join(wt, rel)));
-  if (root !== "" && dir !== "" && within(root, dir)) return rel;
+  const dir = real(path.dirname(path.join(wt, placed.rel)));
+  if (root !== "" && dir !== "" && within(root, dir)) return placed;
   // Anywhere outside this worktree is no place for the probe. The worktree root is
   // the one directory the step made itself, so a probe whose folder fails the check
   // falls back to it — and a root that cannot even be resolved leaves nowhere to
@@ -205,7 +218,9 @@ function containedParent(wt: string, rel: string): string {
     throw new SpecifyInfraError(
       `the runner preflight could not place its probe inside the worktree: ${wt} does not contain its own root`,
     );
-  return PROBE_BASENAME;
+  // The hidden root name, and with it `py: false`: the file that is actually written
+  // carries no `.py`, so pytest's "no collector" would be true about it.
+  return { rel: PROBE_BASENAME, py: false };
 }
 
 /** `realpathSync`, "" when it cannot be resolved — the caller decides what absence means. */
@@ -242,6 +257,8 @@ export async function assertRunnerCanRunTests(
     testLocation?: TestLocation;
     limits?: TestRunLimits;
   },
+  /** Test-only override of the run call, so a case can make the RUN itself raise. */
+  seams: { runFile?: RunProbeFile } = {},
 ): Promise<string | undefined> {
   // The switch's ONE gate: off, the probe is never written and the runner is
   // never asked, so none of this file's throws can be reached. Read at call
@@ -249,33 +266,50 @@ export async function assertRunnerCanRunTests(
   if (!leanRunnerPreflightEnabled()) return;
   // One placement decision, then ONE sequence: write, run, classify, remove. The
   // placement and the READING of a 4 are decided together — both are facts about
-  // the name the probe carries — so the decision is passed down, not re-derived.
+  // the name the probe carries — so the decision is made once, here, and passed
+  // down: a probe that containment moved to the hidden root name is not read as a
+  // file pytest could have imported.
   const placed = probeRelative(opts.wt, opts.testLocation);
-  return runProbeAt(exec, opts, containedParent(opts.wt, placed.rel), placed.py);
+  return runProbeAt(exec, opts, containedParent(opts.wt, placed), seams);
 }
+
+/** The run call's shape, so a case can substitute one that raises. */
+export type RunProbeFile = (file: string) => Promise<Proof>;
 
 /**
  * The whole probe sequence for one worktree-relative path: refuse a dirty name,
  * write empty, run the template, classify, and remove the file on every path.
+ *
+ * The `try` opens as soon as the bytes exist. A `finally` that starts after the
+ * runner call leaves a throw from the run itself — an executor that died rather than
+ * answered — with the probe sitting in the worktree, and "removed on every path" is
+ * the claim this step makes about a tree it does not own. `runFile` exists so that
+ * claim is observable: {@link runTestFile} is `never throws` by contract and folds
+ * every exec rejection into a classified `Proof`, so no rejection an exec can produce
+ * reaches the path this `finally` is here for.
  */
 async function runProbeAt(
   exec: ExecFn,
   opts: { wt: string; template: string; limits?: TestRunLimits },
-  rel: string,
-  pyProbe: boolean,
+  placed: { rel: string; py: boolean },
+  seams: { runFile?: RunProbeFile },
 ): Promise<string | undefined> {
+  const { rel, py: pyProbe } = placed;
   probeWrite(opts.wt, rel);
-  const proof = await runTestFile(exec, {
-    wt: opts.wt,
-    template: opts.template,
-    file: rel,
-    limits: opts.limits ?? { timeoutMs: PROBE_TIMEOUT_MS },
-  });
   try {
+    const proof = await (seams.runFile?.(rel) ??
+      runTestFile(exec, {
+        wt: opts.wt,
+        template: opts.template,
+        file: rel,
+        limits: opts.limits ?? { timeoutMs: PROBE_TIMEOUT_MS },
+      }));
     if (probeHealthy(proof)) return;
     // The reading is a fact about the PROBE's name, so it belongs to the probe that
-    // carries the collectable name and not to the switch in the abstract: a
-    // non-Python repo keeps today's exit-4 hand-back whatever the switch says.
+    // carries the collectable name and not to the switch in the abstract: `pyProbe`
+    // is the answer for the name that was actually written, and a non-Python repo —
+    // or a Python one whose probe fell back to the hidden root name — keeps today's
+    // exit-4 hand-back whatever the switch says.
     if (
       pyProbe &&
       leanPreflightProbeCollectableEnabled() &&

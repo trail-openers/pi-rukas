@@ -180,8 +180,10 @@ means defaults.** An invalid file is *not* defaulted: it raises
   120 s. The probe it renders into is a hidden dotfile for every language family
   but Python, where the runner has to be able to IMPORT the file: a `.py`
   `testGlob` gets a visible `_lean_runner_probe.py` inside `verify.testDir`, and an
-  exit 4 on either is disclosed as the runner rejecting the probe rather than
-  handed back (`PI_ENSEMBLE_LEAN_PREFLIGHT_PROBE_COLLECTABLE=0` and
+  exit 4 on THAT python probe is disclosed as the runner rejecting the probe rather
+  than handed back — on the hidden probe an exit 4 stays the hand-back, because a
+  file with no extension really is one the runner was shown and would not run
+  (`PI_ENSEMBLE_LEAN_PREFLIGHT_PROBE_COLLECTABLE=0` and
   `PI_ENSEMBLE_LEAN_PREFLIGHT_PROBE_CONTAIN=0` put the old name and the old
   reading back). `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` restores v0.14.71, where
   neither is paid. A project that configures no `verify.test` keeps its ordinary

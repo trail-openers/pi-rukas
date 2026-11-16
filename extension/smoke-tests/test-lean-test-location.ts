@@ -34,6 +34,7 @@
 import { execp } from "../src/exec.ts";
 import { challengePrompt } from "../src/lean/challenge-prompt.ts";
 import {
+  globNamesPythonFiles,
   testLocationOf,
   testLocationProblem,
   validateTestDir,
@@ -360,6 +361,57 @@ import { assert, LOC, SPEC, WT, testLocationExit } from "./lib/lean-test-locatio
       `${name}: the criterion-id naming rule is still stated without a configured folder`,
     );
   }
+}
+
+// ─────────────────── (3) which `testGlob` counts as a PYTHON project
+
+{
+  // The runner probe's shape hangs on this one predicate: a `.py` glob gets the
+  // visible, importable `_lean_runner_probe.py` and the separate reading of exit 4;
+  // anything else keeps the hidden extensionless dotfile and today's hand-back. So
+  // the classifier is judged as a table, not by the one case that motivated it.
+  //
+  // A real project's CI runs `test_*.PY` exactly as happily as `test_*.py` (git on
+  // a case-insensitive checkout treats them as the same name, and pytest's own
+  // collection default is `test_*.py*` — any suffix), and pytest's prepend import
+  // mode refuses a leading dot whatever the extension's CASE. A case-sensitive
+  // comparison therefore drops a whole Python repo back onto a probe its own runner
+  // cannot even read, for a reason that is the probe's name and not the bench.
+  //
+  // `.pyi` and `.pyw` are the deliberate exclusions: `.pyi` is a stub declaration
+  // file rather than an executable test module, and `.pyw` is a distinct extension
+  // that no project's test runner collects by the `test_*.py` pattern. A probe named
+  // for either is a file the runner was never going to read, which is the same false
+  // negative the hidden dotfile was.
+  //
+  // The pinned choice a reviewer could dispute is `test_*py.py`: a strict
+  // last-dot reading calls it Python (its final extension IS `.py`), and the
+  // projection reading it as "whatever follows the `*`" calls it not. The strict
+  // reading wins because it is the conservative one: such a project really does
+  // collect `.py` files, so a false positive costs one extra probe run while a false
+  // negative costs a Python repo the importable name it needs.
+  const table: Array<[string, boolean, string]> = [
+    ["test_*.py", true, "the ordinary pytest pattern"],
+    ["test_*.PY", true, "upper-case extension, same language"],
+    ["*_test.Py", true, "mixed-case extension and the other pytest stem order"],
+    ["*.py", true, "a bare extension pattern"],
+    ["test_*.pyi", false, "a stub declaration file is not an executable test module"],
+    ["test_*.pyw", false, "a windowed script is a different extension, not `.py`"],
+    ["test_*.py.", false, "a trailing dot is not an extension python recognises"],
+    ["test_*.pytest.js", false, "the extension is the tail, not a dot inside it"],
+    ["test_*.ts", false, "a typescript project keeps the hidden probe"],
+    ["*.test.ts", false, "the sibling typescript shape"],
+    ["test_*", false, "no extension at all"],
+    ["test.py", false, "no wildcard, so no basename pattern to read"],
+    ["test_*py.py", true, "pinned: the final extension decides, so the probe errs toward python"],
+  ];
+  for (const [glob, want, why] of table)
+    assert(
+      globNamesPythonFiles(glob) === want,
+      `globNamesPythonFiles(\`${glob}\`) is ${String(want)} — ${why} (got ${String(
+        globNamesPythonFiles(glob),
+      )})`,
+    );
 }
 
 console.log(testLocationExit() === 0 ? "\nConfigured test location rules are pinned." : "\nFAILED");

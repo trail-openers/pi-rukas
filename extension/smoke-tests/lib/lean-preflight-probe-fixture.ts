@@ -13,16 +13,17 @@
  * Split from `lib/lean-specify-fixture.ts` for the AGENTS §12 line cap.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { userInfo } from "node:os";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { execp } from "../../src/exec.ts";
 import type { TestLocation } from "../../src/lean/config-test-location.ts";
-import type { TestRunLimits } from "../../src/lean/specify-proof.ts";
+import type { Proof, TestRunLimits } from "../../src/lean/specify-proof.ts";
 import { assertRunnerCanRunTests } from "../../src/lean/specify-preflight.ts";
 import type { SpecifyDeps } from "../../src/lean/specify.ts";
 import { gitTestEnv } from "./git-test-env.ts";
+import type { VerifyExecFn } from "../../src/work-driver-git.ts";
 import { ROOTS } from "./lean-specify-fixture.ts";
 
 /** The probe's name at the worktree root, as `specify-preflight.ts` names it today. */
@@ -119,36 +120,78 @@ export function runner(dir: string, name: string, ...body: string[]): string {
  * file last. `note` is the disclosure the step recorded for a runner that rejected
  * the probe. A throw comes back as `threw` rather than ending the file, for the same
  * reason `runSpecify` returns `threw`.
+ * `opts.throwOnRun` is the seam that lets the RUN call itself fail instead of
+ * answering. A record with a `code` is the rejection the real executor answers for a
+ * runner that RAN and exited non-zero, so a case can watch the step classify a status
+ * it never executed. `{ raises: true }` is the rejection for a call that could not be
+ * delivered at all — see {@link RunnerRejection} for why that one has to be raised
+ * from inside the run rather than returned by the exec.
  */
 export async function runPreflight(opts: {
   wt: string;
   template: string;
   testLocation?: TestLocation;
   limits?: TestRunLimits;
+  throwOnRun?: (file: string) => RunnerRejection;
+  /**
+   * Replace the RUN call itself — the only way a case makes the run RAISE, since
+   * {@link runTestFile} folds every exec rejection into a classified `Proof` and is
+   * `never throws` by contract.
+   */
+  run?: (file: string) => Promise<Proof>;
 }): Promise<{ threw?: Error; written: string[]; note?: string }> {
   const written: string[] = [];
-  const exec: SpecifyDeps["exec"] = async (cmd, o) => {
-    if (o?.argv !== undefined) written.push(o.argv[o.argv.length - 1] ?? "");
-    return execp(cmd, { ...o, env: { ...gitTestEnv(), ...(o?.env ?? {}) } });
-  };
-  // The env every runner of this run gets: git's isolated view, plus the one entry a
-  // real interpreter needs to find the user site-packages the operator installed
-  // (see `pythonUserEnv`) — the isolated `HOME` `gitTestEnv()` installs is exactly
-  // what makes `import pytest` fail for a `pip install --user` pytest, and a case
-  // that passes no `limits` must not have to know that. A case's own `limits.env`
-  // overrides it, and the runner is not a git call, so git isolation stays intact.
+  // The env every runner of this run gets, built ONCE. `gitTestEnv()` isolates git
+  // behind an empty `HOME`, and CPython derives its *user* site-packages from
+  // `$HOME`, so a real `pip install --user` pytest is unimportable in that env — see
+  // `pythonUserEnv`. Building it once, and spreading that one map into both the exec
+  // and the caller's `limits`, is what keeps the runner's env and the exec's fallback
+  // the same answer: an env assembled twice is two chances for them to disagree.
   const runnerEnv: NodeJS.ProcessEnv = { ...gitTestEnv(), ...pythonUserEnv() };
+  const exec: SpecifyDeps["exec"] = async (cmd, o) => {
+    const file = o?.argv?.[o.argv.length - 1] ?? "";
+    if (o?.argv !== undefined) written.push(file);
+    const raised = opts.throwOnRun?.(file);
+    if (raised === undefined) return execp(cmd, { ...o, env: { ...runnerEnv, ...(o?.env ?? {}) } });
+    if ("raises" in raised) throw new Error(raised.message);
+    // The rejection Node's executor answers for a runner that RAN and exited
+    // non-zero: an Error stamped with a numeric `code`, `signal: null`, and the
+    // captured streams — the shape `runTestFile` reads as a status rather than a kill.
+    throw Object.assign(new Error(`Command failed: ${cmd}`), {
+      code: raised.code ?? null,
+      signal: null,
+      killed: false,
+      timedOutKill: false,
+      stdout: raised.stdout ?? "",
+      stderr: raised.stderr ?? "",
+    });
+  };
   try {
     const limits =
       opts.limits === undefined
         ? undefined
-        : { ...opts.limits, env: { ...runnerEnv, ...opts.limits.env, ...pythonUserEnv() } };
-    const note = await assertRunnerCanRunTests(exec, {
-      wt: opts.wt,
-      template: opts.template,
-      ...(opts.testLocation === undefined ? {} : { testLocation: opts.testLocation }),
-      ...(limits === undefined ? {} : { limits }),
-    });
+        : { ...opts.limits, env: { ...runnerEnv, ...opts.limits.env } };
+    // A substituted run still records the path it was handed, so `written` answers
+    // "where was the probe placed" on the throw path too — which is the half of that
+    // question a removal case cannot infer from the absence it is asserting on.
+    const run = opts.run;
+    const runFile =
+      run === undefined
+        ? undefined
+        : (file: string): Promise<Proof> => {
+            written.push(file);
+            return run(file);
+          };
+    const note = await assertRunnerCanRunTests(
+      exec,
+      {
+        wt: opts.wt,
+        template: opts.template,
+        ...(opts.testLocation === undefined ? {} : { testLocation: opts.testLocation }),
+        ...(limits === undefined ? {} : { limits }),
+      },
+      runFile === undefined ? {} : { runFile },
+    );
     return { written, ...(note === undefined ? {} : { note }) };
   } catch (err) {
     return { threw: err as Error, written };
@@ -159,3 +202,33 @@ export async function runPreflight(opts: {
 export function exists(wt: string, rel: string): boolean {
   return existsSync(path.join(wt, rel));
 }
+
+/**
+ * Is there ANY inode at `rel`, including a dangling symlink?
+ *
+ * `existsSync` follows links and so answers `false` for a symlink whose target is
+ * gone — which is exactly the read the write guard must not make. A case that wants
+ * to know whether the step touched the NAME asks `lstat`.
+ */
+export function existsAnyInode(wt: string, rel: string): boolean {
+  try {
+    lstatSync(path.join(wt, rel));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * What the exec seam may do instead of running the command.
+ *
+ * A record with a `code` is what the real executor answers for a runner that RAN and
+ * exited non-zero. `{ raises: true }` is the rejection for a call that was never
+ * delivered — but an exec that merely REJECTS cannot make the step's run throw, so
+ * `runTestFile` swallows it into a classified `Proof`: the function is `never throws`
+ * by contract and routes every rejection through `.catch`. A case that wants the run
+ * itself to raise therefore passes {@link runPreflight}'s `run` seam, not this.
+ */
+export type RunnerRejection =
+  | { stdout?: string; stderr?: string; code?: number }
+  | { raises: true; message: string };

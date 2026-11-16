@@ -149,16 +149,34 @@ export function validateTestGlob(glob: string): string | undefined {
  * whose import step refuses a file it cannot import, so the probe's NAME (not its
  * content) decides whether the runner reaches the point where it can report.
  * See `specify-preflight.ts`.
+ *
+ * Why the comparison folds CASE: the question is which LANGUAGE the project's tests
+ * are written in, and a project whose CI runs `test_*.PY` collects those files
+ * exactly as happily as `test_*.py` — git treats the two as one name on a
+ * case-insensitive checkout, and pytest's own default pattern is `test_*.py*`, any
+ * suffix. The refusal this predicate exists to avoid — pytest's prepend import mode
+ * dying on a leading dot — has nothing to do with the extension's case. A
+ * case-sensitive comparison therefore sent a Python repo back onto the hidden
+ * extensionless probe its own runner cannot read, and the run handed back for a
+ * reason that was this step's filename rather than the project's toolchain.
+ *
+ * Why `.py` in its cased form is still the only thing counted once case is folded:
+ * `.pyi` is a stub declaration file rather than an executable test module, so naming
+ * a probe for it would hand the runner a file it never imports — the same false
+ * negative as the dotfile, arrived at by a different route — and the trailing dot of
+ * `test_*.py.` is no extension any interpreter recognises.
  */
 export function globNamesPythonFiles(glob: string): boolean {
   const star = glob.indexOf("*");
   if (star < 0) return false;
-  const tail = glob.slice(star + 1);
+  // Folded once, here, so the comparison below has one spelling to mean.
+  const tail = glob.slice(star + 1).toLowerCase();
   if (!(tail.length >= ".py".length && tail.endsWith(".py"))) return false;
   // The tail is what the `*` may be followed by, so the extension has to be the
-  // part of it after the LAST dot — `*_test.py` and `test_*.py` name `.py` files;
-  // `test_*py.py` does not, whatever its suffix claims, and neither does the
-  // degenerate `*.py`-looking tail a pattern like `foo.*py` would produce.
+  // part of it after the LAST dot — `*_test.py` and `test_*.py` name `.py` files,
+  // and so does `test_*py.py`, whose final extension really is `.py`: the runner
+  // collects those files, so the probe errs toward the importable name, where the
+  // opposite reading would cost a real Python repo the dotfile refusal again.
   const lastDot = tail.lastIndexOf(".");
   return lastDot >= 0 && tail.slice(lastDot) === ".py";
 }
@@ -184,8 +202,12 @@ export function testLocationOf(verify: {
  * `pattern` with its single `*` turned into a regex, anchored and escaped.
  * `test-*.ts` becomes `^test-[^/]*\.ts$` — a basename pattern, which is what
  * the boundary matches a submitted file's last segment against.
+ *
+ * Module-private: every caller asks the question in the form `globMatches` asks
+ * it, and a second exported entry point is a second shape for the same rule to
+ * drift in.
  */
-export function globToRegex(pattern: string): RegExp {
+function globToRegex(pattern: string): RegExp {
   const source = pattern
     .split("*")
     .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, (c) => `\\${c}`))
