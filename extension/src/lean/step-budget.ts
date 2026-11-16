@@ -2,11 +2,10 @@
  * lean/step-budget — make a `.pi/work.json` budget real.
  *
  * One per-state ceiling becomes three levers: **minutes** → `childBoundMs`, whose kill arrives as
- * `killCause: "child-bound"`; **turns / tokens** → an `AbortController` off the progress stream.
- * A breach is a VERDICT — the child worked and the ceiling stopped it — so the step returns
- * `{kind: "budget"}` to be routed by the table. That is why callers ask {@link readDispatched}
- * BEFORE their infra throw: a stop that is read as an infra failure never reaches the routing
- * and the run loses the cause the ceiling produced.
+ * `killCause: "child-bound"`; **turns / tokens** → an `AbortController` off the progress stream. A breach is
+ * a VERDICT — the child worked and the ceiling stopped it — so the step returns `{kind: "budget"}` to be
+ * routed by the table. That is why callers ask {@link readDispatched} BEFORE their infra throw: a stop read
+ * as an infra failure never reaches the routing and the run loses the cause the ceiling produced.
  */
 
 import type { LensRunResult } from "../lens-review-types.ts";
@@ -26,8 +25,8 @@ export interface BudgetFired {
 }
 
 /**
- * The arms a dispatch accepts, a subset of `SpawnOptions`. `budgetTurns` is the turns ceiling in
- * its own field: `armChildBounds` reads it as the denominator of the budget-progress steer.
+ * The arms a dispatch accepts, a subset of `SpawnOptions`. `budgetTurns` is the turns ceiling in its own
+ * field: `armChildBounds` reads it as the denominator of the budget-progress steer.
  */
 export interface BudgetOpts {
   childBoundMs?: number;
@@ -38,7 +37,7 @@ export interface BudgetOpts {
 
 /**
  * The cost of one dispatch, as the dispatching steps record it. `usage` is the child's report;
- * `role`/`ms`/`ok` are what the step observed. One type for the row builders and `usage-sum.ts`.
+ * `role`/`ms`/`ok` are what the step observed.
  */
 export interface DispatchUsageRow {
   role: string;
@@ -50,8 +49,8 @@ export interface DispatchUsageRow {
 }
 
 /**
- * A fixer row's tree identity: decimal epoch milliseconds, as DATA — a number is what `Number()`
- * turns a malformed id into `NaN` on the way into the durable record. Validated by `isRunId`.
+ * A fixer row's tree identity: decimal epoch milliseconds, as DATA — a number is what `Number()` turns a
+ * malformed id into `NaN` on the way into the durable record. Validated by `isRunId`.
  */
 export type FixRunId = string & { readonly __fixRunId: unique symbol };
 
@@ -60,8 +59,8 @@ const CHILD_BOUND_CAUSE = "child-bound";
 
 /**
  * The proof a seam hands back INSTEAD of a `DispatchResult` when the ceiling ended the child. A
- * module-private symbol, not a boolean field: a replayed child result carrying a boolean marker
- * would become this step's verdict.
+ * module-private symbol, not a boolean field: a replayed child result carrying a boolean marker would
+ * become this step's verdict.
  */
 const STOP: unique symbol = Symbol("lean.budgetStop");
 
@@ -87,8 +86,8 @@ function minutesUsed(ms: number): number {
 }
 
 /**
- * The typed trio a budget outcome must carry before any caller states it. Every reader of a
- * recorded breach goes through this check.
+ * The typed trio a budget outcome must carry before any caller states it. Every reader of a recorded breach
+ * goes through this check.
  */
 export function budgetTrio(oc: Outcome | undefined): BudgetFired | undefined {
   if (oc?.kind !== "budget") return undefined;
@@ -152,8 +151,8 @@ export function armBudget(b: Budget | undefined): BudgetArms {
     // A turns / tokens breach the hook measured outranks anything read from the cause.
     if (hit !== undefined) return hit;
     if (result.killCause !== CHILD_BOUND_CAUSE) return undefined;
-    // The minutes lever, inferred from the cause `applyChildBound` stamps — or, when no wall
-    // clock was armed, named by the turns / tokens signal.
+    // The minutes lever, inferred from the cause `applyChildBound` stamps — or, when no wall clock was
+    // armed, named by the turns / tokens signal.
     if (boundMs === undefined) {
       if (turns <= 0 && tokens <= 0) return undefined;
       return turns > 0
@@ -178,8 +177,7 @@ export function armBudget(b: Budget | undefined): BudgetArms {
   const controller = new AbortController();
   // The trace lines print once per ARM, not per tick: the hook runs once per child turn.
   let hookFailureTraced = false;
-  // The sink sits on BOTH arms of this hook — a `traceWarn` inside a `catch` escapes it — so
-  // every write goes through one catcher.
+  // The sink sits on BOTH arms of this hook, so every write goes through one catcher.
   const traceOnce = (msg: string): void => {
     try {
       traceWarn(msg);
@@ -192,8 +190,8 @@ export function armBudget(b: Budget | undefined): BudgetArms {
     hookFailureTraced = true;
     traceOnce(`lean budget: progress hook failed: ${(err as Error).message}`);
   };
-  // `spawn.ts` calls this from its stdout handler on the same tick it parses a child line: an
-  // exception here costs the dispatch. Nothing may escape, and the ABORT comes BEFORE the trace.
+  // `spawn.ts` calls this from its stdout handler on the same tick it parses a child line: an exception here
+  // costs the dispatch. Nothing may escape, and the ABORT comes BEFORE the trace.
   const onProgress = (s: RunningState): void => {
     let breach: BudgetFired | undefined;
     try {
@@ -215,8 +213,7 @@ export function armBudget(b: Budget | undefined): BudgetArms {
       ...(boundMs === undefined ? {} : { childBoundMs: boundMs }),
       signal: controller.signal,
       onProgress,
-      // The steer's denominator, present only when a turns ceiling exists: `armChildBounds`
-      // reads `<= 0` as no lever.
+      // The steer's denominator, present only when a turns ceiling exists.
       ...(turns > 0 ? { budgetTurns: turns } : {}),
     },
     fired,
@@ -230,9 +227,8 @@ export function budgetFor(cfg: WorkConfig, state: LeanState): Budget | undefined
 }
 
 /**
- * The one row a dispatching step records for one child it paid for. A child that never started
- * reports no cost, which is the truth; `ok` is the step's own judgement — a child that exited 0
- * with a kill cause or a provider error did not succeed.
+ * The one row a dispatching step records for one child it paid for. A child that never started reports no
+ * cost, which is the truth; `ok` is the step's own judgement.
  */
 export function dispatchUsageRow(result: DispatchResult): DispatchUsageRow {
   return {
@@ -262,9 +258,8 @@ export const LENS_ROLE = "code-review-specialist";
 export const FIXER_ROLE = "developer";
 
 /**
- * One six-lens round's cost, as one row per lens child that ran — NOT one synthetic row for the
- * round, which would lose five children's wall clock and halve the child count a host compares
- * against the frozen driver's per-lens events.
+ * One six-lens round's cost, as one row per lens child that ran — NOT one synthetic row for the round, which
+ * would lose five children's wall clock and halve the child count a host compares against.
  */
 export function lensRows(lenses: LensRunResult[]): DispatchUsageRow[] {
   return lenses.map((lens) => ({
@@ -282,8 +277,8 @@ export function budgetSentence(state: LeanState, fired: BudgetFired): string {
 }
 
 /**
- * The verdict for a step that ran out of budget, not out of ideas. Callers ask
- * {@link readDispatched} before their infra throw, or this never gets to route.
+ * The verdict for a step that ran out of budget, not out of ideas. Callers ask {@link readDispatched} before
+ * their infra throw, or this never gets to route.
  */
 function budgetVerdict(state: LeanState, fired: BudgetFired): Outcome {
   return {
@@ -296,9 +291,9 @@ function budgetVerdict(state: LeanState, fired: BudgetFired): Outcome {
 }
 
 /**
- * The budget verdict carrying the rows of every dispatch the step paid for, so a stopped round's
- * tokens reach the host. Clipped HERE to the validator's cap keeping the newest: over the cap
- * `dispatchesProblem` refuses the whole array, so an unbounded verdict is no record at all.
+ * The budget verdict carrying the rows of every dispatch the step paid for, so a stopped round's tokens reach
+ * the host. Clipped HERE to the validator's cap keeping the newest: over the cap `dispatchesProblem` refuses
+ * the whole array, so an unbounded verdict is no record at all.
  */
 export function budgetVerdictWithRows(
   state: LeanState,
