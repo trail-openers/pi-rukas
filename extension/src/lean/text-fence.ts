@@ -8,8 +8,7 @@
  * list is read back from a durable state file. Printed raw, a `### heading`
  * inside any of them is a heading of the comment — or, in a fixer's brief, a
  * section of the prompt the step never wrote. A ``` inside a reason closes
- * whatever fence the poster opened — so the rest of the log becomes the
- * poster's markdown. AGENTS.md's public-text discipline is about not leaking;
+ * whatever fence the poster opened. Public-text discipline is about not leaking;
  * this is about not being spoofed.
  *
  * Three shapes because the three fields need different guarantees: a reason is
@@ -18,9 +17,8 @@
  * newlines a fence would keep; and a value that goes inside backticks must stay
  * one line without the markdown escaping a cell needs.
  *
- * The fourth export is the other direction: `joinNotes` composes a step's own
- * reason from the clauses it happened to have, so no step writes its own
- * separator-joining rule and a clause it lacked leaves no bare `; ` behind.
+ * `joinNotes` is the other direction: it composes a step's reason from the
+ * clauses it happened to have, so a clause it lacked leaves no bare `; ` behind.
  */
 
 /** Control characters that still read as text inside a fence: newline and tab. */
@@ -38,25 +36,20 @@ const ANY_CONTROL = /[\p{Cc}\u2028\u2029\u0085]/gu;
  *
  * Backticks only, because the block `fenceText` opens is a BACKTICK fence and
  * CommonMark requires a closing fence to use the same character as its opener: a run
- * of tildes cannot close or reopen this block, so neutralising one buys nothing and
- * the look-alike swap costs the payload its own bytes. `lean/spec.ts`'s
- * `closesFenceLine` applies the same same-character rule to the readers here, and this
- * module is the one place the fence's own character is decided.
+ * of tildes cannot close or reopen this block. `lean/spec.ts`'s `closesFenceLine`
+ * applies the same rule to the readers here, and this is the one place the fence's
+ * own character is decided.
  */
 const BACKTICK_RUN = /`{3,}/g;
 const HORIZONTAL_ELLIPSIS = "…";
 /**
  * The line a clipped fence says instead of stopping dead.
  *
- * A fence is the one shape in this module that keeps newlines, so the reader is
- * reading it as a document — and a document that simply ends is indistinguishable
- * from a complete one. A single `…` at the end of 20 KB of prose is decoration:
- * it does not say a bound was applied, what the bound was, or that more existed.
- * The findings block a lens reviewer weighs as EVIDENCE is exactly the payload
- * where "nothing else" and "cut off" must not read the same way, so the cut is
- * stated inside the fence, on its own line, with the number that caused it. This
- * is the same family of defect as a gate that cannot fail: a silent truncation is
- * a lie by omission told to the one reader who cannot check.
+ * A fence is the one shape here that keeps newlines, so the reader reads it as a
+ * document — and a document that simply ends is indistinguishable from a complete
+ * one. A bare `…` does not say a bound was applied or what it was, so the cut is
+ * stated inside the fence, on its own line, with the number that caused it: a
+ * silent truncation is a lie by omission told to the one reader who cannot check.
  */
 const TRUNCATION_MARKER = (max: number): string => `[truncated at ${String(max)} characters]`;
 
@@ -95,11 +88,9 @@ function soften(s: string): string {
  * `notice` is that line's text, for a caller whose readers must be told WHICH
  * payload was cut: one fence holding two bounded payloads needs two notices, and
  * the only sound way to get them is for this renderer to write the one it was
- * given. A caller that instead clipped here and substituted its marker into the
- * result with a regex over the whole fence hit the *first* match, and a payload
- * can quote the other payload's marker — issue text is the input — so the real
- * notice got rewritten and the quoted one survived as a cut that never happened.
- * Substituted text is never written into a notice; it is written, or not.
+ * given. Substituting a marker into the result with a regex hits the *first*
+ * match, and a payload can quote the other payload's marker — issue text is the
+ * input. Substituted text is never written into a notice; it is written, or not.
  */
 export function fenceText(s: string, max: number, notice?: string): string {
   let body = soften(s);
@@ -129,15 +120,13 @@ export function oneLine(s: string, max: number): string {
  *
  * `oneLine` is almost it, but not quite: it escapes `|`, which is right in a table
  * cell and wrong inside backticks where the backslash now reads as part of the
- * path. What a prompt actually needs refused is the *structure*: a `\n` that opens
- * a new heading, a `\r` that rewrites the line, the Unicode separators some
- * renderers treat as line breaks. So every control character goes — none is kept,
- * as `fenceText` keeps newline — and nothing else is rewritten, because a fenced
- * bullet cannot become a heading without one.
+ * path. What a prompt needs refused is the *structure* — a `\n` that opens a new
+ * heading, a `\r` that rewrites the line — so every control character goes (none is
+ * kept, as `fenceText` keeps newline) and nothing else is rewritten.
  *
- * This is not cosmetic for the fixer's brief. Its frozen-path list is read back
- * from the durable state file and its gate label comes out of a reviewer's reply;
- * either could otherwise open a section of the prompt the step never wrote.
+ * Not cosmetic for the fixer's brief: its frozen-path list is read back from the
+ * durable state file and its gate label comes out of a reviewer's reply; either
+ * could otherwise open a section of the prompt the step never wrote.
  */
 export function promptText(s: string, max: number): string {
   let out = s.replace(ANY_CONTROL, " ").replace(/ {2,}/g, " ").trim();
