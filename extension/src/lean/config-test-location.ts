@@ -134,6 +134,36 @@ export function validateTestGlob(glob: string): string | undefined {
 }
 
 /**
+ * Whether `glob` names Python files — the one question the runner probe asks of
+ * a `testGlob`, and the only place the extension is read off a pattern.
+ *
+ * A glob is a basename pattern whose `*` opens the wildcard, so the extension is
+ * the text after it: `test_*.py` names `.py` files and `*.py` names nothing else.
+ * The extension has to be the SUFFIX of that tail, not merely a dot-something in
+ * the middle — `test_*.pytest.js` names `.js` files, and a probe chosen for it
+ * would be the wrong file in the wrong language. `validateTestGlob` already
+ * refuses a pattern with no dot after the `*`, so an empty tail cannot reach
+ * here; the guard is there because this is called on a hand-built config too.
+ *
+ * Why the language matters at all: pytest is the only runner in the common set
+ * whose import step refuses a file it cannot import, so the probe's NAME (not its
+ * content) decides whether the runner reaches the point where it can report.
+ * See `specify-preflight.ts`.
+ */
+export function globNamesPythonFiles(glob: string): boolean {
+  const star = glob.indexOf("*");
+  if (star < 0) return false;
+  const tail = glob.slice(star + 1);
+  if (!(tail.length >= ".py".length && tail.endsWith(".py"))) return false;
+  // The tail is what the `*` may be followed by, so the extension has to be the
+  // part of it after the LAST dot — `*_test.py` and `test_*.py` name `.py` files;
+  // `test_*py.py` does not, whatever its suffix claims, and neither does the
+  // degenerate `*.py`-looking tail a pattern like `foo.*py` would produce.
+  const lastDot = tail.lastIndexOf(".");
+  return lastDot >= 0 && tail.slice(lastDot) === ".py";
+}
+
+/**
  * The configured test location, or undefined when the project has not chosen
  * one. Absent-by-default is today's behaviour.
  *
@@ -155,12 +185,23 @@ export function testLocationOf(verify: {
  * `test-*.ts` becomes `^test-[^/]*\.ts$` — a basename pattern, which is what
  * the boundary matches a submitted file's last segment against.
  */
-function globToRegex(pattern: string): RegExp {
+export function globToRegex(pattern: string): RegExp {
   const source = pattern
     .split("*")
     .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, (c) => `\\${c}`))
     .join("[^/]*");
   return new RegExp(`^${source}$`);
+}
+
+/**
+ * Does this project's `verify.testGlob` match the basename `name`? The one
+ * matcher, exported because a second caller has to ask the SAME question the
+ * boundary asks: `specify-preflight.ts` refuses to write a probe whose name the
+ * project's CI would collect, and a probe-check with its own matcher is a rule
+ * that can drift from the rule it is meant to agree with.
+ */
+export function globMatches(pattern: string, name: string): boolean {
+  return globToRegex(pattern).test(name);
 }
 
 /**
@@ -179,7 +220,7 @@ export function testLocationProblem(loc: TestLocation, rel: string): string | un
   const dir = segments.slice(0, -1).join("/");
   if (dir !== loc.testDir)
     return `test ${rel} is not directly inside the configured test directory ${loc.testDir}/ (.pi/work.json verify.testDir)`;
-  if (!globToRegex(loc.testGlob).test(base))
+  if (!globMatches(loc.testGlob, base))
     return `test ${rel} does not match the configured test name pattern ${loc.testGlob} (.pi/work.json verify.testGlob)`;
   return undefined;
 }

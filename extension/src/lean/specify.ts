@@ -343,7 +343,7 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
   //     prints nothing naming the file, and the step would decline on the work
   //     it never judged. A configured runner that cannot run an EMPTY test file
   //     throws here — no dispatch, no model call, no rows.
-  await assertRunnerCanRunTests(deps.exec, {
+  const probeNote = await assertRunnerCanRunTests(deps.exec, {
     wt,
     template: runnerTemplate,
     ...(testLocation === undefined ? {} : { testLocation }),
@@ -445,8 +445,22 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
   // tokens. A budget verdict is no exception: its own attempt is the last
   // dispatch, so the merge is its rows plus any earlier attempt's. `undefined`
   // when no attempt dispatched, so a step that paid for nothing records no key.
+  // The probe's disclosure, last: the runner ran and refused the PROBE file, which
+  // is a fact about this step's filename and not a verdict about the issue, so it
+  // rides on the reason the step records and cannot be mistaken for one. Placed
+  // after every other clause so a decline or a wait still reads first.
+  const disclosed =
+    probeNote === undefined
+      ? withWait
+      : {
+          ...withWait,
+          reason: joinNotes([
+            ...(withWait.reason === undefined ? [] : [withWait.reason]),
+            probeNote,
+          ]),
+        };
   const dispatches = mergedRows(allRows);
-  return dispatches === undefined ? withWait : { ...withWait, dispatches };
+  return dispatches === undefined ? disclosed : { ...disclosed, dispatches };
 }
 
 /**

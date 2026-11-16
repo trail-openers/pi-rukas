@@ -123,13 +123,30 @@ restores v0.14.71, which ran no probe and no submodule initialisation at all —
 `not-ready` at exit 11 with the ordinary decline.
 
 **Cause:** the step asked the project's own runner one question before paying an adversary — *can you
-run a test file at all?* — and the runner could not. It is handed an EMPTY test file (hidden, at the
-worktree root or just outside the configured `verify.testDir`, and removed again on every path), and
-the answer is read from one exit status: **0 or 5 is healthy**, anything else is not. So this hand-back
-is what a runner that dies *before* collection looks like from the outside: a `pytest` that exits 4 on
-an import error, a suite that needs an environment variable the run's environment does not carry, an
-empty directory where a git submodule should have been populated, or a runner that could not be
-started at all. Before this check existed, none of those printed anything naming the file, so the red
+run a test file at all?* — and the runner could not. It is handed an EMPTY test file (removed again on
+every path; hidden and at the worktree root or just outside the configured `verify.testDir`, except for
+a Python project — whose `verify.testGlob` names `.py` files — where it is a visible, dot-free
+`_lean_runner_probe.py` inside `verify.testDir`, because a runner that has to import the file cannot
+import one whose name starts with a dot), and the answer is read from one exit status: **0 or 5 is
+healthy**, anything else is not — with one exception, below. So this hand-back is what a runner that
+dies *before* collection looks like from the outside: a `pytest` that exits 4 on an import error, a
+suite that needs an environment variable the run's environment does not carry, an empty directory where
+a git submodule should have been populated, or a runner that could not be started at all.
+
+**The shape this hand-back used to produce falsely: every pytest repo.** The probe was first written
+as a hidden dotfile, and pytest's default prepend import mode cannot import a module whose name starts
+with a dot — so an EMPTY hidden `.py` exits 2 and the path pytest cannot even match exits 4, neither of
+which is a healthy answer. A healthy pytest bench therefore handed back at `specify` with this message,
+and the reason was the probe's own name rather than anything about the project's toolchain. Fixed in
+`extension/src/lean/specify-preflight.ts`: a `.py` glob is probed with a visible `_lean_runner_probe.py`
+inside `verify.testDir` (checked against the project's own `testGlob` so the runner can never collect
+the probe as one of its tests), and an exit 4 there is read as *the runner rejected the probe file* —
+recorded on the step's reason and the run goes on to the adversary, since the bench answered and this
+step's filename is what did not. **On an older release the workaround is
+`PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0`**, which runs no probe at all: the run is then judged by the red
+proof alone and ends `not-ready` at exit 11 with the ordinary decline rather than handing back at 10.
+`PI_ENSEMBLE_LEAN_PREFLIGHT_PROBE_COLLECTABLE=0` restores only the old name and the old exit-4 reading,
+and `PI_ENSEMBLE_LEAN_PREFLIGHT_PROBE_CONTAIN=0` only the probe parent's containment check. Before this check existed, none of those printed anything naming the file, so the red
 proof graded the run "unclear", `specify` declined with `criterion ACn has no red test`, and the issue
 was refused for an environment nothing had tested. The preflight costs one runner invocation —
 bounded at 120 s — and no model call, and it never guesses at a runner's flavour: no per-runner
