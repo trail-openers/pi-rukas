@@ -57,9 +57,16 @@ or at nothing at all — both roots are deleted rather than inherited — when n
 directory could be made (`stripForgeCredentials`, `child-forge-env.ts`). `PATH` is
 left alone, so a child that runs the shim directly gets the shim's own
 unauthenticated answer. No `PI_ENSEMBLE_*` switch governs the strip or the broker.
-`PI_ENSEMBLE_FORGE=none` turns off the **driver's** own forge reads only
-(`resolveCycleForge`, `work-driver-forge-ctx.ts`) — the child's broker still calls
-`detectForge` directly and runs the parent's CLI. The driver's issue read falls
+`PI_ENSEMBLE_FORGE=none` turns the forge off for **both** readers of it: the
+**driver's** own forge reads (`resolveCycleForge`, `work-driver-forge-ctx.ts`) and
+the **child's broker** — `handleLine` asks `forgeEnvIsOff` (`forge-off.ts`) once the
+line has proved itself and answers
+`the forge is off: PI_ENSEMBLE_FORGE=none`, so the parent runs no `gh`/`glab` and no
+`git config --get remote.*` / `git remote` on a helper child's behalf (`handleLine`,
+`forge-read-broker.ts`). The socket still binds and the tool still registers, so the
+child reads a reason rather than finding no tool; `PI_ENSEMBLE_FORGE_READ_OFF_GUARD=0`
+restores the pre-fix broker, where the read goes on to `detectForge` whatever the
+environment says ([configuration.md](configuration.md)). The driver's issue read falls
 back to raw `gh` in its own process when no forge resolves (`fetchIssueBody` via
 `forgeFor`, `lean/io.ts`).
 

@@ -30,10 +30,15 @@
  * against a broker whose off arm drifted is the record comparison.
  */
 
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { forgeReadOffGuardEnabled } from "../src/forge-read-off-switch.ts";
-import { OFF_ARM_REQUEST, driveProvedRead, offArmExec } from "./lib/forge-read-off-arm.ts";
+import {
+  OFF_ARM_REQUEST,
+  driveProvedRead,
+  fixtureRepoRoot,
+  offArmExec,
+} from "./lib/forge-read-off-arm.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 
@@ -48,6 +53,8 @@ const FIXTURE = path.resolve(
 
 interface PrefixRecord {
   request: { verb: string; number: number };
+  /** The root the pre-fix trace ran in — a fixture dir this case recreates. */
+  cwd: string;
   reply: { type?: unknown; ok?: unknown; output?: unknown; reason?: unknown };
   calls: string[];
   opts: Array<Record<string, unknown> | undefined>;
@@ -71,13 +78,25 @@ assert(
 // ── the off arm: guard=0 + forge=none is the pre-fix broker
 {
   const exec = offArmExec();
+  // The record names the root its trace ran in, and its exec options carry that
+  // cwd. Running the off arm in a freshly made dir would compare the fixture's
+  // temp layout rather than the broker's behaviour, so both arms use the name the
+  // record was captured with.
+  const root = fixtureRepoRoot("record");
+  rmSync(root, { recursive: true, force: true });
+  mkdirSync(root, { recursive: true });
+  const recorded = (want?.opts ?? []).map((o) => ({ ...(o ?? {}), cwd: root }));
   let run: Awaited<ReturnType<typeof driveProvedRead>> | undefined;
   let threw: Error | undefined;
   await withEnv(
     { PI_ENSEMBLE_FORGE: "none", PI_ENSEMBLE_FORGE_READ_OFF_GUARD: "0" },
     async () => {
+      assert(
+        forgeReadOffGuardEnabled() === false,
+        "(off) this arm runs with the guard off, read at call time",
+      );
       try {
-        run = await driveProvedRead({ execFn: exec.fn }, OFF_ARM_REQUEST);
+        run = await driveProvedRead({ execFn: exec.fn, cwd: root }, OFF_ARM_REQUEST);
       } catch (err) {
         threw = err as Error;
       }
@@ -88,10 +107,6 @@ assert(
     `(off) the broker accepted the harness's recorder and served the read (${
       threw?.message ?? "clean"
     })`,
-  );
-  assert(
-    forgeReadOffGuardEnabled() === false,
-    "(off) and this arm ran with the guard off",
   );
   if (run !== undefined && want !== undefined) {
     assert(
@@ -105,16 +120,16 @@ assert(
       `(off) which is a SERVED read, not a refusal (${JSON.stringify(run.fields)})`,
     );
     assert(
-      JSON.stringify(run.calls) === JSON.stringify(want.calls),
+      JSON.stringify(exec.calls) === JSON.stringify(want.calls),
       `(off) the recorded command list is the pre-fix list, in order\n    captured: ${JSON.stringify(
         want.calls,
-      )}\n    run:     ${JSON.stringify(run.calls)}`,
+      )}\n    run:     ${JSON.stringify(exec.calls)}`,
     );
     assert(
-      JSON.stringify(run.opts) === JSON.stringify(want.opts),
-      `(off) and each command was issued with the pre-fix exec options\n    captured: ${JSON.stringify(
-        want.opts,
-      )}\n    run:     ${JSON.stringify(run.opts)}`,
+      JSON.stringify(exec.opts) === JSON.stringify(recorded),
+      `(off) and each command was issued with the pre-fix exec options (the record's own cwd, rewritten to this run's fixture root)\n    captured: ${JSON.stringify(
+        recorded,
+      )}\n    run:     ${JSON.stringify(exec.opts)}`,
     );
     // Non-vacuity: an empty captured list would make the two comparisons above
     // pass on a broker that ran nothing at all.
@@ -130,11 +145,12 @@ assert(
 // ── the control: the same request with the guard unset refuses and records nothing
 {
   const exec = offArmExec();
+  const onArmRoot = fixtureRepoRoot("on-arm");
   let run: Awaited<ReturnType<typeof driveProvedRead>> | undefined;
   await withEnv(
     { PI_ENSEMBLE_FORGE: "none", PI_ENSEMBLE_FORGE_READ_OFF_GUARD: undefined },
     async () => {
-      run = await driveProvedRead({ execFn: exec.fn }, OFF_ARM_REQUEST);
+      run = await driveProvedRead({ execFn: exec.fn, cwd: onArmRoot }, OFF_ARM_REQUEST);
     },
   );
   assert(

@@ -36,7 +36,9 @@
  * one arm into the next.
  */
 
-import { FORGE_READ_OFF_REASON } from "../src/forge-read-broker.ts";
+import { existsSync } from "node:fs";
+import { FORGE_READ_OFF_REASON } from "../src/forge-read-off-switch.ts";
+import { bindForgeReadSocket } from "../src/forge-read-broker.ts";
 import {
   OFF_ARM_REQUEST,
   driveProvedRead,
@@ -110,15 +112,21 @@ async function main(): Promise<void> {
     // ~35 offline suites expect a live socket path from planChildPermissions; the
     // fix changes what a served read DOES, never whether the socket exists. A
     // child of an operator who set `none` therefore reads a reason it can act on
-    // rather than discovering the tool was never there.
+    // rather than discovering the tool was never there. The dial below reaching a
+    // refusal at all is the evidence: an unbound socket answers nothing.
     const exec = offArmExec();
     let run: Awaited<ReturnType<typeof driveProvedRead>> | undefined;
+    let bound = false;
     await withEnv({ PI_ENSEMBLE_FORGE: "none" }, async () => {
+      const handle = await bindForgeReadSocket("/parent/repo", { execFn: exec.fn });
+      bound = existsSync(handle.socketPath);
+      handle.stop();
       run = await driveProvedRead({ execFn: exec.fn });
     });
+    assert(bound, "the broker bound a real socket file under none");
     assert(
       run !== undefined && run.fields.ok === false,
-      "the dial itself succeeded, which is only possible on a bound socket",
+      "and a read on it came back refused rather than silent",
     );
   });
 

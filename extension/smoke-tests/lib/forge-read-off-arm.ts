@@ -26,6 +26,9 @@
  */
 
 import { createConnection } from "node:net";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { forgeReadMac, newForgeReadNonce, newForgeReadSecret } from "../../src/forge-read-auth.ts";
 import { type ForgeReadBrokerOptions, bindForgeReadSocket } from "../../src/forge-read-broker.ts";
 import { mkExec } from "../forge-fixtures.ts";
@@ -45,6 +48,8 @@ export interface OffArmRun {
   calls: string[];
   /** The exec options each recorded command was issued with, positionally aligned. */
   opts: Array<Record<string, unknown> | undefined>;
+  /** The root the broker resolved the read against — in the record, for comparison. */
+  cwd: string;
 }
 
 /** The canned `gh issue view 42` answer the fixture repo's issue 42 replies with. */
@@ -71,6 +76,22 @@ export function offArmExec(): ReturnType<typeof mkExec> {
 export const OFF_ARM_REQUEST = { verb: "issue_view", number: 42 } as const;
 
 /**
+ * The repo root every case binds its broker on: an EMPTY directory of our own.
+ *
+ * Not the suite's own checkout, and not `/nonexistent`. The first would let the
+ * unset and `github` arms resolve this repository's real remote and shell a real
+ * `gh` from a smoke test; the second would make them fail for a reason the test
+ * has nothing to do with (a `posix_spawn` of `/bin/sh` in a cwd that is not there),
+ * which is how the control arm came to be confounded the first time this was
+ * written. An empty dir is the honest fixture remote: `detectForge` finds no
+ * `.pi/forge` and no remote of its own, and the recorded executor is the only
+ * thing that answers for either.
+ */
+export function fixtureRepoRoot(tag = "repo"): string {
+  return mkdtempSync(join(tmpdir(), `forge-read-off-${tag}-`));
+}
+
+/**
  * Drive one proved `forge_read` through a real bound broker whose read is the
  * production `runForgeRead`, and report the reply plus every command the parent
  * issued.
@@ -79,15 +100,16 @@ export const OFF_ARM_REQUEST = { verb: "issue_view", number: 42 } as const;
  * replace the read is in the wrong file.
  */
 export async function driveProvedRead(
-  opts: { execFn?: ForgeReadBrokerOptions["execFn"]; timeoutMs?: number } = {},
+  opts: { execFn?: ForgeReadBrokerOptions["execFn"]; timeoutMs?: number; cwd?: string } = {},
   request: Record<string, unknown> = OFF_ARM_REQUEST,
 ): Promise<OffArmRun> {
   const withRead = opts as Record<string, unknown>;
   if ("runRead" in withRead) {
     throw new Error("driveProvedRead refuses a runRead: it would bypass runForgeRead");
   }
+  const cwd = opts.cwd ?? FIXTURE_REPO;
   const secret = newForgeReadSecret();
-  const bound = await bindForgeReadSocket("/parent/repo", {
+  const bound = await bindForgeReadSocket(cwd, {
     secret,
     timeoutMs: opts.timeoutMs ?? 5_000,
     ...(opts.execFn === undefined ? {} : { execFn: opts.execFn }),
@@ -101,7 +123,7 @@ export async function driveProvedRead(
     })}\n`;
     const res = await askRaw(bound.socketPath, line);
     const { mac: _mac, nonce: _rn, echo: _echo, ...fields } = res;
-    return { fields: fields as ReplyFields, ...drainCommands(opts) };
+    return { fields: fields as ReplyFields, cwd, ...drainCommands(opts) };
   } finally {
     bound.stop();
   }
@@ -112,9 +134,22 @@ function drainCommands(opts: { execFn?: ForgeReadBrokerOptions["execFn"] }): {
   calls: string[];
   opts: Array<Record<string, unknown> | undefined>;
 } {
-  const rec = opts.execFn as { calls?: string[]; opts?: Array<Record<string, unknown> | undefined> };
+  const rec = opts.execFn as {
+    calls?: string[];
+    opts?: Array<Record<string, unknown> | undefined>;
+  };
   return { calls: rec?.calls ?? [], opts: rec?.opts ?? [] };
 }
+
+/** One empty fixture repo, made once and removed on process exit. */
+const FIXTURE_REPO = fixtureRepoRoot("shared");
+process.on("exit", () => {
+  try {
+    rmSync(FIXTURE_REPO, { recursive: true, force: true });
+  } catch {
+    /* the temp root is another process's to empty */
+  }
+});
 
 /** One raw JSON line to a socket, returning the parsed reply line. */
 export function askRaw(socketPath: string, line: string): Promise<Record<string, unknown>> {

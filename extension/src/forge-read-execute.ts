@@ -21,7 +21,7 @@ import type { ForgeDetection } from "./forge-detect.ts";
 import { listRowCount } from "./forge-mapping.ts";
 import type { ForgeReadRequest } from "./forge-read-tool.ts";
 import { validateForgeRead } from "./forge-read-tool.ts";
-import type { Forge } from "./forge-types.ts";
+import type { Forge, ForgeExecFn } from "./forge-types.ts";
 import { type CreateForgeOpts, createForge } from "./forge.ts";
 
 /** The seam that turns a detection into a `Forge`. Tests replace it wholesale. */
@@ -36,12 +36,15 @@ const defaultBuildForge: BuildForge = (det, opts) => createForge(det, opts);
  * that decides WHICH factory builds the forge the reads run through, and a
  * factory is a function that gets called. The broker passes this object
  * literally, built from its own config, so no value that came off the child's
- * socket can ever reach it. `timeoutMs` is the caller's bound; `buildForge`
- * exists for the offline tests and is unreachable from the wire.
+ * socket can ever reach it. `timeoutMs` is the caller's bound; `buildForge` and
+ * `execFn` exist for the offline tests and are unreachable from the wire —
+ * `execFn` is the seam the broker threads its own options through, so a caller
+ * can watch every command the read path issues rather than replace it.
  */
 export interface ForgeReadExecuteOptions {
   timeoutMs?: number;
   buildForge?: BuildForge;
+  execFn?: ForgeExecFn;
 }
 
 /**
@@ -67,6 +70,7 @@ export async function executeForgeRead(
   // whose `gh` outran it.
   const forge = (opts.buildForge ?? defaultBuildForge)(det, {
     cwd,
+    ...(opts.execFn === undefined ? {} : { execFn: opts.execFn }),
     ...(opts.timeoutMs === undefined ? {} : { execOpts: { timeout: opts.timeoutMs } }),
   });
   const run = <T>(value: Promise<T>): Promise<string> => value.then((v) => render(v));

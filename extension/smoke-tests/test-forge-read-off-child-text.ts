@@ -21,8 +21,8 @@ import {
   FORGE_READ_SOCKET_ENV,
 } from "../src/child-forge-read-activation.ts";
 import { forgeReadChildEnv } from "../src/child-forge-env.ts";
-import { FORGE_READ_OFF_REASON } from "../src/forge-read-broker.ts";
 import { bindForgeReadSocket } from "../src/forge-read-broker.ts";
+import { FORGE_READ_OFF_REASON } from "../src/forge-read-off-switch.ts";
 import { pair, callChildTool, withTrace } from "./lib/forge-read-auth-fixture.ts";
 import { offArmExec } from "./lib/forge-read-off-arm.ts";
 import { withEnv } from "./lib/env-scope.ts";

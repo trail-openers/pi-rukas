@@ -18,7 +18,7 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { FORGE_READ_OFF_REASON } from "../src/forge-read-broker.ts";
+import { FORGE_READ_OFF_REASON } from "../src/forge-read-off-switch.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 
 const { assert, failures } = makeAssert();

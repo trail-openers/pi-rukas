@@ -40,6 +40,7 @@ import { claimScanEnabled, evidenceSupplyEnabled } from "../../src/lens-evidence
 import { lensLargeDiffEnabled } from "../../src/lens-large-diff-switch.ts";
 import { lensIncompleteForcesFull } from "../../src/lens-review-incomplete-switch.ts";
 import { lensRoundCap } from "../../src/lens-round-cap.ts";
+import { forgeReadOffGuardEnabled } from "../../src/forge-read-off-switch.ts";
 import { loopDetectorEnabled } from "../../src/loop-detector.ts";
 import { roundCapMergeEnabled } from "../../src/merge-guard-round-cap.ts";
 import { pendingShutdownBoundMs } from "../../src/pending-jobs-signal.ts";
@@ -212,6 +213,11 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // truth table and the docs row are pinned by `test-lens-large-diff-switch.ts`.
   ["PI_ENSEMBLE_LENS_LARGE_DIFF", lensLargeDiffEnabled],
   ["PI_ENSEMBLE_LENS_ROUND_CAP_MERGE", roundCapMergeEnabled],
+  // #2284 — the broker's forge-off refusal. The reader is `v !== "0"`, so the
+  // gate's LIVE loop (env deleted) pins "unset means on"; the truth table, the
+  // docs row and the call-time read are pinned by
+  // test-forge-read-off-guard-switch.ts.
+  ["PI_ENSEMBLE_FORGE_READ_OFF_GUARD", forgeReadOffGuardEnabled],
   ["PI_ENSEMBLE_LOOP_DETECTOR", loopDetectorEnabled],
   ["PI_ENSEMBLE_MERGE_AUTHORITY", mergeAuthorityEnabled],
   ["PI_ENSEMBLE_PLAN_CONTRACT", planContractEnabled],
