@@ -30,12 +30,10 @@ export function checkoutHolds(wt: string, sub: string, file: string): boolean {
 }
 
 /**
- * The three places a rejected child's reason can live, in the release's own order.
- *
- * `execp` rejects with an error that carries whatever the child wrote, and the handback an
- * operator reads has to contain it: a `submodule update` that failed because git could not
- * reach a URL says so on stderr, and a message that dropped that line left the operator
- * with an infrastructure error and no way to tell a dead network from a broken base.
+ * The three places a rejected child's reason can live, in the release's own order. `execp`
+ * rejects with an error carrying whatever the child wrote, and the handback an operator reads
+ * has to contain it: a `submodule update` that failed because git could not reach a URL says so
+ * on stderr, and dropping that line leaves no way to tell a dead network from a broken base.
  */
 export function describe(err: unknown): string {
   const e = err as { stdout?: unknown; stderr?: unknown; message?: unknown };

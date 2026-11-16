@@ -228,7 +228,7 @@ export async function initSubmodules(
   const notes = await seedFromSuperproject(exec, wt, listed);
   // The seeding arm's defining claim is negative: it never hands a recorded URL to git, and a
   // negative is not observable from a passing run. So where a submodule had nothing to seed
-  // from, the step asks git what the path holds — one call per absent path, two questions:
+  // from, one `submodule status` per absent path settles two questions at once:
   //
   //   - did something FETCH it? An unseeded gitlink has no git dir behind it (`U` in git's own
   //     output); anything else means something populated it, and on this arm the only thing
@@ -237,31 +237,29 @@ export async function initSubmodules(
   //   - or did the RUN create it? A store filed under this tree's own gitdir is invisible to
   //     `clean -fdx`, so a submodule the run added on its own branch arrives as a populated path
   //     nobody seeded — the child's own bytes, never verified. Refused too, or a verdict lands on
-  //     vendored code that came from nowhere anybody checked.
+  //     vendored code from nowhere anybody checked; git's line rides on the message.
   //
   // An unreadable line is evidence of neither, and "could not tell" proceeds with the ordinary
-  // disclosure, which stays honest in the other direction. One local call, on the path that
-  // already had nothing to do.
+  // disclosure, which stays honest in the other direction. One local call, on a path that had
+  // nothing to do.
   for (const note of notes.filter((n) => n.kind === "absent")) {
     const status = await ask(exec, wt, [...NO_HOOKS, "submodule", "status", "--", note.path]);
     const line = (status?.stdout ?? "").split("\n")[0] ?? "";
     if (line === "" || line.startsWith("U") || line.startsWith("-")) continue;
     throw new SpecifyInfraError(
-      `the submodule at ${note.path} is not held by this superproject, so nothing here could populate it — yet git reports it populated, which means either the run's own tree added it or something fetched the URL the base records: ${trim(line)}`,
+      `the submodule at ${note.path} was added inside this run's own worktree, so this superproject never held it: the only source on this host is the tree under test, and bytes nobody verified cannot carry a verdict. Seed it in the superproject, or set PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL=0 and let git fetch the URL the base records. git's line, which tells this from a fetch: ${trim(line)}`,
     );
   }
   return notes;
 }
 
 /**
- * The switch-off arm: the release's own call, unchanged.
- *
- * One `submodule update --init --recursive` with no `-c` beyond the hook refusals, so
- * git applies its OWN transport policy, and its failure is the handback this message
- * has always carried — including the words of the command, which the case asserting
- * byte-for-byte equality with the pre-fix code depends on. The listing probe has
- * already run by then, as it did then, so the argv the operator sees is the argv of
- * that release.
+ * The switch-off arm: the release's own call, unchanged. One `submodule update --init
+ * --recursive` with no `-c` beyond the hook refusals, so git applies its OWN transport policy,
+ * and its failure is the handback this message has always carried — including the words of the
+ * command, which the case asserting byte-for-byte equality with the pre-fix code depends on.
+ * The listing probe has already run by then, as it did then, so the argv the operator sees is
+ * the argv of that release.
  */
 async function updateFromRemote(exec: ExecFn, wt: string): Promise<SubmoduleNote[]> {
   const failed = await run(exec, wt, [...NO_HOOKS, "submodule", "update", "--init", "--recursive"]);
@@ -270,16 +268,13 @@ async function updateFromRemote(exec: ExecFn, wt: string): Promise<SubmoduleNote
 }
 
 /**
- * The local arm: every submodule comes from this superproject, or is named as absent —
- * never from the network.
- *
- * Per submodule, in this order: the module store under the superproject's git dir
- * (`<common>/.git/modules/<path>`, and the per-worktree form for a tree git made with
- * `worktree add`), then the superproject's own populated checkout, then nothing. Either
- * is the same bytes the base's verify ran against, so the worktree's tests see what the
- * base's saw. The first level only: the call that carries a source computed here is the
- * one call given the `file` licence, and a nested level is reached through it only
- * because this superproject already holds it.
+ * The local arm: every submodule comes from this superproject, or is named as absent — never
+ * from the network. Per submodule, in order: the module store under the superproject's git dir
+ * (`<common>/.git/modules/<path>`, and the per-worktree form for a tree git made with `worktree
+ * add`), then the superproject's own populated checkout, then nothing. Either is the same bytes
+ * the base's verify ran against, so the worktree's tests see what the base's saw. The first
+ * level only: the call carrying a source computed here is the one call given the `file` licence,
+ * and a nested level is reached through it only because this superproject already holds it.
  *
  * All of it is argv: a path is a git argument here, never a word a shell re-parses.
  */
