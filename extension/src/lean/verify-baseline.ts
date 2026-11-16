@@ -196,7 +196,8 @@ export async function probeTierAtBase(opts: {
     return stream === "" ? verdict : { ...verdict, stream };
   } finally {
     // Not swallowed: a tree git still holds makes the NEXT probe at this path refuse its add.
-    await remove().catch((err: unknown) =>      traceWarn(
+    await remove().catch((err: unknown) =>
+      traceWarn(
         `verify-baseline: probe tree cleanup failed — ${(err as Error)?.message ?? String(err)}`,
       ),
     );
