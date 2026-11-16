@@ -12,17 +12,29 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { gitTestEnv } from "./git-test-env.ts";
 
+/** One criterion as a fixture states it: a bare sentence, or one with an id. */
+export type SpecBullet = string | { id?: string; text?: string };
+
 /** A `PiSpec` block in the shape `parsePiSpec` accepts, as one fenced string. */
-export function specBlock(criteria: { id: string; text: string }[], problem: string): string {
-  return `\`\`\`pi-spec v1\n${JSON.stringify(
-    { problem, criteria: criteria.map((c) => ({ ...c, verify: "test" })), size: "S" },
-    null,
-    2,
-  )}\n\`\`\``;
+export function specBlock(criteria: SpecBullet[], problem: string): string {
+  // The fields are written EXPLICITLY rather than spread from the caller's
+  // object: a spread of a bare `{ text }` produced `{"0": "a"}`, which
+  // `parsePiSpec` rightly refuses and every case then failed on the fixture
+  // instead of the code.
+  const body = {
+    problem,
+    criteria: criteria.map((c, i) => ({
+      id: typeof c === "string" ? `AC${String(i + 1)}` : (c.id ?? `AC${String(i + 1)}`),
+      text: typeof c === "string" ? c : c.text,
+      verify: "test",
+    })),
+    size: "S",
+  };
+  return "```pi-spec v1\n" + JSON.stringify(body, null, 2) + "\n```";
 }
 
 /** The child's reply: the fenced block a derived spec arrives in. */
-export function deriveReply(criteria: { id: string; text: string }[], problem = "the problem"): string {
+export function deriveReply(criteria: SpecBullet[], problem = "the problem"): string {
   return ["Here is the contract.", specBlock(criteria, problem), "Done."].join("\n");
 }
 

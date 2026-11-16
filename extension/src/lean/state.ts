@@ -21,6 +21,7 @@
 
 import { isFullCommitSha } from "../commit-sha.ts";
 import { assertDeadline } from "./deadline-record.ts";
+import { parsePiSpec, type PiSpec, readiness, renderPiSpec } from "./spec.ts";
 // The verdict SHAPE is re-exported so every caller of the record keeps one
 // import site: `state.ts` says what a run IS, `state-outcome-record.ts` says
 // what a step may report into it, `state-store.ts` says where it lives.
@@ -136,6 +137,32 @@ export interface LeanRun {
    *  as NO arm: the run keeps working and the caller's own kill ends it — a loud, bounded
    *  failure, never a wrong park. */
   deadlineMs?: number;
+  /**
+   * The contract this run DERIVED for itself, in `derive` intake mode, when its
+   * issue carried no `pi-spec v1` block.
+   *
+   * Persisted rather than recomputed: a step that ran after a crash must build
+   * against the same criteria its earlier steps did, and a resume must not bill
+   * a second drafting child for a contract the run already holds. The three
+   * fields say what was derived, which model drafted it, and when — the
+   * provenance an operator needs when a derived contract looks wrong.
+   *
+   * Absent is the normal case and the whole of `require` mode, so old state
+   * files keep loading: the schema version is unchanged and this field is
+   * optional.
+   */
+  derivedSpec?: DerivedSpec;
+}
+
+/**
+ * The persisted derivation: the spec, the model that drafted it, and the epoch
+ * ms at which the run derived it. The spec is the parsed-and-validated contract,
+ * so what a later step reads is exactly what `ready` accepted.
+ */
+export interface DerivedSpec {
+  spec: PiSpec;
+  model: string;
+  at: number;
 }
 
 export const INITIAL_COUNTERS: RunCounters = {
@@ -327,7 +354,49 @@ export function assertRunFile(obj: unknown, file: string): LeanRun {
     steps,
     ...(r.result !== undefined ? { result: assertResult(r.result, bad) } : {}),
     ...(r.deadlineMs === undefined ? {} : { deadlineMs: assertDeadline(r.deadlineMs) }),
+    ...(r.derivedSpec === undefined ? {} : { derivedSpec: assertDerivedSpec(r.derivedSpec, bad) }),
   };
+}
+
+/**
+ * The persisted derivation, validated and RE-EMITTED field by field.
+ *
+ * A derived spec is the contract nine steps execute, so a record carrying half
+ * of one would have those steps build against a document `parsePiSpec` could
+ * never have produced. The same two judgements `ready` made before it persisted
+ * the spec are made again on read — the file is untrusted input, exactly like
+ * the issue body was — so a hand-edited record cannot smuggle in a contract the
+ * run never validated.
+ */
+function assertDerivedSpec(value: unknown, bad: (msg: string) => never): DerivedSpec {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    bad("derivedSpec must be an object");
+  const d = value as Record<string, unknown>;
+  if (typeof d.model !== "string") bad("derivedSpec.model must be a string");
+  if (typeof d.at !== "number" || !Number.isFinite(d.at)) bad("derivedSpec.at must be a number");
+  const spec = d.spec as Record<string, unknown> | undefined;
+  if (spec === undefined || typeof spec !== "object" || spec === null || Array.isArray(spec))
+    bad("derivedSpec.spec must be an object");
+  // Round-trip the candidate through the contract's own reader: the shape check
+  // and the render check are `spec.ts`'s, and restating them here would drift.
+  const rendered = renderPiSpecSafe(spec as unknown as PiSpec);
+  if (rendered === undefined) bad("derivedSpec.spec is not a renderable pi-spec");
+  const back = parsePiSpec(rendered);
+  if (!back.ok) bad(`derivedSpec.spec does not parse: ${back.reason}`);
+  if (JSON.stringify(back.spec) !== JSON.stringify(spec))
+    bad("derivedSpec.spec does not round-trip through its own rendering");
+  const unready = readiness(back.spec);
+  if (unready.length > 0) bad(`derivedSpec.spec is not ready: ${unready.join("; ")}`);
+  return { spec: back.spec, model: d.model as string, at: d.at as number };
+}
+
+/** `renderPiSpec` on a value that may not be one: undefined rather than a throw. */
+function renderPiSpecSafe(spec: PiSpec): string | undefined {
+  try {
+    return renderPiSpec(spec);
+  } catch {
+    return undefined;
+  }
 }
 
 /** The terminal stamp: an int code and a string reason, or nothing. */
