@@ -33,6 +33,10 @@ import { leanReviewProblemEnabled } from "../../src/lean/review-problem-switch.t
 import { leanReviewAcceptanceEnabled } from "../../src/lean/review-acceptance-switch.ts";
 import { leanReviewSpecSplitEnabled } from "../../src/lean/review-spec-split.ts";
 import { leanRewindLeaseBinds } from "../../src/lean/rewind-lease-switch.ts";
+import {
+  leanPreflightProbeCollectableEnabled,
+  leanPreflightProbeContainEnabled,
+} from "../../src/lean/preflight-probe-switch.ts";
 import { leanRunnerPreflightEnabled } from "../../src/lean/runner-preflight-switch.ts";
 import {
   leanHandbackNoHeadRecordEnabled,
@@ -176,6 +180,11 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // the gate's LIVE loop (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE", leanBuildIssueProseEnabled],
   ["PI_ENSEMBLE_LEAN_DEADLINE_HANDBACK", leanDeadlineHandbackEnabled],
+  // #2202 — the probe's collectable name and its exit-4 reading, and the probe
+  // parent's containment check. Both readers are `v !== "0"`, so the gate's LIVE
+  // loop (env deleted) pins "unset means on".
+  ["PI_ENSEMBLE_LEAN_PREFLIGHT_PROBE_COLLECTABLE", leanPreflightProbeCollectableEnabled],
+  ["PI_ENSEMBLE_LEAN_PREFLIGHT_PROBE_CONTAIN", leanPreflightProbeContainEnabled],
   ["PI_ENSEMBLE_LEAN_HANDBACK_NOHEAD_RECORD", leanHandbackNoHeadRecordEnabled],
   // The routed deadline report's wall. The reader is `v !== "0"`, so the LIVE loop
   // (env deleted) pins "unset means on".
