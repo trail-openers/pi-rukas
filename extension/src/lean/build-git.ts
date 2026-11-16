@@ -2,12 +2,10 @@
  * lean/build-git — the git probes and mutations the build step's normalisation needs,
  * each answering a question only git can answer.
  *
- * `build` holds a worktree a model has just been loose in, and every claim the step makes about that
- * tree is a git claim: does HEAD still descend from the commit I recorded, what changed since, does this
- * frozen blob still hash to its record, is the tree clean. The two failure kinds are kept apart
- * deliberately — a git refusal that MEANS something (exit 1 from `merge-base --is-ancestor` is "no, it
- * does not descend") is a value, while a git that could not run at all is a `BuildInfraError`. Collapsing
- * those two is how a driver builds on a tree it never verified.
+ * `build` holds a worktree a model has just been loose in, and every claim the step makes about that tree is
+ * a git claim. The two failure kinds are kept apart deliberately — a git refusal that MEANS something (exit 1
+ * from `merge-base --is-ancestor` is "no, it does not descend") is a value, while a git that could not run at
+ * all is a `BuildInfraError`. Collapsing those two is how a driver builds on a tree it never verified.
  */
 
 import { BuildInfraError } from "./build-errors.ts";
