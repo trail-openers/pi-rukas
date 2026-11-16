@@ -14,6 +14,7 @@
 
 import { SEAMS, isGrandfathered } from "../decision-seam-registry.ts";
 import { LENS_ROSTER } from "../lens-roster.ts";
+import { modelsJsonProviders, providerEnvId } from "../provider-env.ts";
 import { SUBAGENT_ROLE_NAMES } from "../roles.ts";
 // The prefix every host input name carries, written once in `prefix.ts` so the
 // builders restate nothing.
@@ -96,3 +97,5 @@ export const SEAM_MEMBERS: readonly string[] = Object.values(SEAMS)
   .sort();
 /** `<LENS>`: the bundled lenses (lens-roster.ts), in roster order. */
 export const LENS_MEMBERS: readonly string[] = [...new Set(LENS_ROSTER.map((e) => e.name))];
+/** `<PROVIDER>`: the providers of Pi's `models.json`, as this process sees it. */
+export const PROVIDER_MEMBERS: readonly string[] = modelsJsonProviders().map(providerEnvId);

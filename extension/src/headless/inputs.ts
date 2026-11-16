@@ -20,9 +20,12 @@
  *   - `enum`        — one of `values` (case-insensitive where the reader folds case).
  *   - `default: null` — unset by default; the behaviour without it is the
  *                     documented fallback (docs/configuration.md).
- *   - a name containing `<ROLE>`, `<SEAM>` or `<LENS>` is a family: `<ROLE>`
- *     is a role name, `<SEAM>` a decision-seam id and `<LENS>` a code-review
- *     lens name (`SECURITY`, `ERROR_HANDLING`), upper-cased with `-` → `_`.
+ *   - a name containing `<ROLE>`, `<SEAM>`, `<LENS>` or `<PROVIDER>` is a
+ *     family: `<ROLE>` is a role name, `<SEAM>` a decision-seam id and
+ *     `<LENS>` a code-review lens name (`SECURITY`, `ERROR_HANDLING`),
+ *     upper-cased with `-` → `_`; `<PROVIDER>` is a provider name from Pi's
+ *     `models.json`, upper-cased with every other non-alphanumeric → `_`, its
+ *     `members` read from that file when the answer is built.
  *     `members` lists the ids the build reads (#1369), derived from the role
  *     list, the seam registry and the bundled lens roster, so it cannot
  *     drift; any other member is ignored. A seam that takes no env config
@@ -63,6 +66,7 @@ export {
 import {
   type HostInput,
   LENS_MEMBERS,
+  PROVIDER_MEMBERS,
   ROLE_MEMBERS,
   SEAM_MEMBERS,
   dir,
@@ -96,6 +100,9 @@ export const HEADLESS_INPUTS_A: readonly HostInput[] = [
   flag("ALLOW_LIVE_SPAWN", false, "test"),
   flag("ALLOW_UNREVIEWED_MERGE", false),
   list("ALLOWED_ROOTS", ":", null, "sandbox"),
+  // Read from the environment at request time and never written anywhere; the
+  // value is an env reference to Pi, so no answer or log carries the key.
+  family(str("API_KEY_<PROVIDER>", null), PROVIDER_MEMBERS),
   flag("AUTO_STEER", true),
   flag("AUTOSAVE", false, "interactive"),
   // #1730 A — the PM's private-backlog reminder. `0` stops the per-turn probe
@@ -103,6 +110,7 @@ export const HEADLESS_INPUTS_A: readonly HostInput[] = [
   // docs/configuration.md. `interactive`: like the other PM-session knobs, it
   // is the operator's switch in a running session, not a cycle setting.
   flag("BACKLOG_REMINDER", true, "interactive"),
+  family(str("BASE_URL_<PROVIDER>", null), PROVIDER_MEMBERS),
   ms("CAP_KILL_GRACE_MS", 300_000),
   // #1560 — the per-child run bound: wrap-up steer at the bound, kill this long after.
   ms("CHILD_BOUND_GRACE_MS", 600_000),

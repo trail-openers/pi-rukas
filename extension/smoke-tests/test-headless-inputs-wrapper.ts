@@ -41,7 +41,11 @@ const same = (a: readonly string[] | undefined, b: readonly string[]) =>
 {
   const families = HEADLESS_INPUTS.filter((e) => e.name.includes("<"));
   assert(families.length >= 8, `the inventory has its families (${families.length})`);
-  const bare = families.filter((e) => !(e.members && e.members.length > 0));
+  // `<PROVIDER>` members are this process's models.json providers, empty when it
+  // lists none; test-provider-env.ts pins them, and the scrub matches by prefix.
+  const bare = families.filter(
+    (e) => !e.name.endsWith("<PROVIDER>") && !(e.members && e.members.length > 0),
+  );
   assert(
     bare.length === 0,
     `every family lists its members${bare.length ? ` — none: ${bare.map((e) => e.name).join(", ")}` : ""}`,

@@ -52,7 +52,7 @@ import { HEADLESS_INPUTS } from "../src/headless/inputs.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import {
   VERIFY_PYTEST_ENV,
-  buildDriverKnobNames,
+  buildDriverKnobMatcher,
   verifyChildEnv,
   verifyPytestDisabled,
 } from "../src/work-driver-verify-cmd.ts";
@@ -131,7 +131,7 @@ function assert(cond: boolean, msg: string): void {
   // The verify env scrub builds its drop-list from this inventory, so an entry
   // missing here would leak the DRIVER's switch into the project's pytest run.
   assert(
-    buildDriverKnobNames(HEADLESS_INPUTS).has(VERIFY_PYTEST_ENV),
+    buildDriverKnobMatcher(HEADLESS_INPUTS)(VERIFY_PYTEST_ENV),
     "the knob is in the scrub list: the project's own pytest never sees the driver's switch",
   );
   assert(

@@ -43,6 +43,7 @@ Compat flags worth knowing:
 - **1Password CLI** — store the credential in 1Password, then in `models.json`: `"apiKey": "!op read 'op://Private/<vault-item>/credential'"` (Pi re-executes the reference on each request)
 - **Env var** — `export MY_LLM_KEY="..."` in your shell rc, then `"apiKey": "$MY_LLM_KEY"`
 - **Plaintext** — paste the key directly into the `apiKey` field. Pi creates `models.json` with `0600` perms; fine for personal machines, not for shared hosts
+- **Per run, no file** — set `PI_ENSEMBLE_API_KEY_<PROVIDER>` (and, to move the endpoint too, `PI_ENSEMBLE_BASE_URL_<PROVIDER>`) in the run's environment; it overrides the `models.json` value for that run only and is never written anywhere. See [configuration.md](configuration.md).
 
 **Step 3 — use it.** Three ways depending on how broadly you want it applied:
 

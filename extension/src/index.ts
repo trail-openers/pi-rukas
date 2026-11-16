@@ -23,6 +23,7 @@ import { registerPermissionGuard } from "./permission-guard.ts";
 import { registerPlanTool } from "./plan-tool.ts";
 import { setPmActive } from "./pm-active.ts";
 import { registerPmModePersistence } from "./pm-mode-persist.ts";
+import { registerProviderEnvOverrides } from "./provider-env.ts";
 import { registerQuestionTool } from "./question-tool.ts";
 import { registerResearchTool } from "./research-tool.ts";
 import { warnIfRetryConfigTooLow } from "./retry-config-check.ts";
@@ -66,6 +67,8 @@ export default async function (pi: ExtensionAPI) {
   // #1260 — a child that leads its own process group is outside the
   // terminal's reach, so reap every live group when this process exits.
   armGroupReaper();
+  // The run's own provider endpoint and key, over models.json (provider-env.ts).
+  registerProviderEnvOverrides(pi);
   // Load persisted model overrides BEFORE any spawn can ask for a model.
   await loadOverrides();
   // The whole retry story assumes a provider's `retry-after` is honoured. That
