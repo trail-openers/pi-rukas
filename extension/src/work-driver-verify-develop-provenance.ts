@@ -49,11 +49,22 @@ import type { DriverContext } from "./work-driver-context.ts";
 import { changedPaths, readCommittedProtectedPaths } from "./work-driver-protected-paths-read.ts";
 import type { VerifyDevelopOutcomeOptions } from "./work-driver-verify-develop-options.ts";
 import {
+  type HostRootProbe,
+  type HostRootVerdict,
+  VERIFY_PROVENANCE_ROOT_ENV,
+  declaredProvenanceRoot,
+  probeHostRoot,
+} from "./work-driver-verify-develop-provenance-root.ts";
+import {
   PROVENANCE_KEYS,
+  PROVENANCE_KEYS_V0_14_85,
+  PROVENANCE_MAX_CANDIDATES_PER_VALUE,
   PROVENANCE_MAX_TOKENS,
   classifyToken,
   code,
   display,
+  hostContextProblem,
+  proseCandidatesOf,
 } from "./work-driver-verify-develop-provenance-token.ts";
 import {
   NDJSON_SUFFIX,
@@ -65,11 +76,32 @@ import {
 /** The escape hatch; read at call time, off only for the literal `"0"`. */
 export const VERIFY_PROVENANCE_ENV = "PI_ENSEMBLE_VERIFY_PROVENANCE";
 
+/** The prose arm's switch. Its name is exported rather than inlined so the docs row, the headless
+ * input registration and the tests all name one string. */
+export const VERIFY_PROVENANCE_PROSE_ENV = "PI_ENSEMBLE_VERIFY_PROVENANCE_PROSE";
+
+// The host-root knob's name lives with the seam that reads it (the root module); re-exported
+// here so the gate's two #2295 knobs and the whole-value switch are named from one module, which
+// is where docs/configuration.md, headless/inputs-b.ts and the switch tests all look.
+export { VERIFY_PROVENANCE_ROOT_ENV } from "./work-driver-verify-develop-provenance-root.ts";
+
 /** True unless the operator set {@link VERIFY_PROVENANCE_ENV} to exactly `"0"`. */
 export function verifyProvenanceEnabled(): boolean {
   return !verifySwitchOff(process.env[VERIFY_PROVENANCE_ENV]);
 }
 
+/** The prose arm's own switch, read at call time like the gate's. On unless the operator set
+ * {@link VERIFY_PROVENANCE_PROSE_ENV} to exactly `"0"`, which restores the v0.14.85 walk — the
+ * seven-name key set and no splitting — so the arm can be turned off without turning off the
+ * gate that catches a bare absent path. */
+export function verifyProvenanceProseEnabled(): boolean {
+  return !verifySwitchOff(process.env[VERIFY_PROVENANCE_PROSE_ENV]);
+}
+
+/** The note the prose arm leaves when its switch says off. A disabled arm is never a silent
+ * green: this row is what distinguishes "the sentences were not judged" from "they passed". */
+export const PROVENANCE_PROSE_DISABLED_NOTE =
+  "PI_ENSEMBLE_VERIFY_PROVENANCE_PROSE=0 — prose claims in provenance fields were not judged";
 /** The note {@link verifyProvenanceEnabled} answers with when the gate is off. An off run is
  * never a silent green: this row is what distinguishes it from a judged one. */
 export const PROVENANCE_DISABLED_NOTE =
@@ -100,6 +132,7 @@ export function verifySwitchOff(raw: string | undefined): boolean {
  */
 export {
   PROVENANCE_KEYS,
+  PROVENANCE_KEYS_V0_14_85,
   PROVENANCE_MAX_TOKENS,
 } from "./work-driver-verify-develop-provenance-token.ts";
 
@@ -204,12 +237,139 @@ async function probeToken(
   }
 }
 
+/** Byte ceiling on the whole-tree listing a bare-basename probe is answered from. Generous
+ * against a real repository's path list (a path name costs a fraction of the file it names, so
+ * this holds far more entries than the file ceiling holds bytes) and small enough that the read
+ * is bounded work rather than an unbounded walk of an enormous tree. */
+export const PROVENANCE_TREE_MAX_BYTES = 8 * 1024 * 1024;
+
+/** How one candidate is looked for in the pinned commit.
+ *
+ * A candidate that spells a directory out claims a PATH and is answered by the shipped
+ * exact-path read. A candidate with no directory component claims only that a file of that
+ * name was read — which is how a measurement record cites its own results file (`out.ndjson`,
+ * `summary.json`) — and is answered from the pass's cached tree listing. The two are not
+ * interchangeable: an exact-path probe of a name that lives under `deep/nested/` reports
+ * absence, and failing a record for a directory it never named would be the gate inventing a
+ * requirement. The rule is not gated on the prose switch, because the claim a bare name makes
+ * is the same claim whether or not the value was split out of a sentence.
+ */
+async function probeCandidate(
+  execFn: NonNullable<DriverContext["verifyExecFn"]>,
+  cwd: string,
+  oid: string,
+  probe: string,
+  treePaths: () => Promise<{ ok: true; paths: Set<string> } | { ok: false; why: string }>,
+  basenameArm: boolean,
+): Promise<ProbeVerdict> {
+  if (probe.includes("/") || !basenameArm) return await probeToken(execFn, cwd, oid, probe);
+  const tree = await treePaths();
+  if (!tree.ok) return "unreadable";
+  return basenamePresent(tree.paths, probe) ? "present" : "absent";
+}
+
+/** Does any path in this listing carry `name` as its final component? Compared component-wise,
+ * so `out.ndjson` is named by `deep/nested/out.ndjson` and not by `deep/nested/xout.ndjson`. */
+function basenamePresent(paths: ReadonlySet<string>, name: string): boolean {
+  for (const p of paths) {
+    const base = p.slice(p.lastIndexOf("/") + 1);
+    if (base === name) return true;
+  }
+  return false;
+}
+
+/**
+ * The pinned tree's paths, read ONCE per workstream and cached — the read a bare-basename probe
+ * is answered from.
+ *
+ * A bare basename claims only that a file of that name was read; answering it with a pathspec
+ * would be wrong, because git filters a `ls-tree <ref> -- <pathspec>` from the tree root and a
+ * name that lives under `deep/nested/` matches nothing. So a basename claim is answered by a
+ * tree-wide listing, and a listing is read ONCE: the alternative is one recursive `ls-tree` per
+ * candidate, and a record citing a dozen file names would buy a dozen full-tree walks.
+ *
+ * The cost ceiling is deliberate and it fails closed toward disclosure. A tree whose entry bytes
+ * exceed it is not partially listed and not silently truncated: the pass says it could not tell
+ * and the candidates a basename probe would have answered stay unjudged. A listing that stopped
+ * halfway and then reported absence would fail a record for a file the gate never looked at, and
+ * an unreadable listing is never a verdict in either direction.
+ */
+async function readTreePaths(
+  execFn: NonNullable<DriverContext["verifyExecFn"]>,
+  cwd: string,
+  oid: string,
+): Promise<{ ok: true; paths: Set<string> } | { ok: false; why: string }> {
+  if (!isFullCommitSha(oid))
+    return { ok: false, why: `\`${oid.slice(0, 20)}\` is not a full commit sha` };
+  try {
+    const ran = await execFn("git", {
+      argv: [
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "core.fsmonitor=false",
+        "ls-tree",
+        "-r",
+        "-z",
+        "--full-tree",
+        "--name-only",
+        "--end-of-options",
+        oid,
+      ],
+      cwd,
+      timeout: PROVENANCE_GIT_TIMEOUT_MS,
+      maxBuffer: PROVENANCE_TREE_MAX_BYTES,
+    });
+    const stdout = ran.stdout ?? "";
+    if (Buffer.byteLength(stdout, "utf8") >= PROVENANCE_TREE_MAX_BYTES) {
+      return {
+        ok: false,
+        why: `the tree listing exceeds the ${PROVENANCE_TREE_MAX_BYTES}-byte ceiling this gate reads`,
+      };
+    }
+    const paths = new Set<string>();
+    for (const entry of stdout.split("\0")) {
+      if (entry !== "") paths.add(entry);
+    }
+    return { ok: true, paths };
+  } catch (err) {
+    return {
+      ok: false,
+      why: `the tree listing could not be read (${(err as Error).message?.slice(0, 100)})`,
+    };
+  }
+}
+
+/** The production {@link HostRootProbe}: consult the operator's declared root, or say the gate
+ * has no root to consult. An unset root is not an unusable one — the claim is simply absent from
+ * the host, which is what a record that named nothing outside the commit gets. */
+function probeHostRootFromEnv(): HostRootProbe {
+  return (fragment: string): HostRootVerdict => {
+    const declared = declaredProvenanceRoot();
+    if (declared.kind === "unset") return { kind: "absent" };
+    if (declared.kind === "invalid") {
+      return {
+        kind: "unusable",
+        why: `${VERIFY_PROVENANCE_ROOT_ENV} is \`${declared.raw.slice(0, 120)}\` and ${declared.why}`,
+      };
+    }
+    return probeHostRoot(declared.raw, fragment);
+  };
+}
+
 /**
  * Judge one worktree's added data files against its own pinned head.
  *
  * The OID is resolved FIRST and re-used for every read below; an unresolvable HEAD is a
  * named could-not-tell note (never a pass, never a provenance failure), because a gate
  * that cannot say which commit it is judging has no basis for an absence verdict.
+ *
+ * `prose` selects the arm #2295 added: on, the walk splits a whitespace-bearing value into
+ * fragments and judges each, and the key set is the current nine names; off, the walk is the
+ * v0.14.85 one — seven names, whole values only. `hostRoot` is the seam that consults the
+ * operator's declared root; production passes {@link probeHostRootFor} and a test passes a table.
+ * Both are parameters because the two arms are compared against each other by name, and a gate
+ * that read both from the environment at every layer could not be driven through one of them.
  */
 export async function checkWorktreeProvenance(opts: {
   execFn: NonNullable<DriverContext["verifyExecFn"]>;
@@ -217,8 +377,12 @@ export async function checkWorktreeProvenance(opts: {
   /** The workstream's effective base — the other end of the added-file range. */
   base: string;
   id: string;
+  prose?: boolean;
+  hostRoot?: HostRootProbe;
 }): Promise<ProvenanceWorkstreamResult> {
   const { execFn, cwd, base, id } = opts;
+  const prose = opts.prose ?? verifyProvenanceProseEnabled();
+  const hostRoot = opts.hostRoot ?? probeHostRootFromEnv();
   const failures: string[] = [];
   const notes: string[] = [];
   const disclosures: ProvenanceDisclosure[] = [];
@@ -246,6 +410,14 @@ export async function checkWorktreeProvenance(opts: {
     return result;
   }
   const oid = pinned.oid;
+  // The tree listing a bare-basename probe is answered from, read at most once for this
+  // workstream. Lazy, because the common record names its files by path and never needs it: a
+  // pass that judges only path claims asks exactly the reads the shipped gate asked.
+  let treeCache: Promise<{ ok: true; paths: Set<string> } | { ok: false; why: string }> | undefined;
+  const treePaths = (): Promise<{ ok: true; paths: Set<string> } | { ok: false; why: string }> => {
+    if (treeCache === undefined) treeCache = readTreePaths(execFn, cwd, oid);
+    return treeCache;
+  };
   const changed = await readCommittedProtectedPaths(execFn, cwd, base, oid, {
     timeout: PROVENANCE_GIT_TIMEOUT_MS,
   });
@@ -285,7 +457,13 @@ export async function checkWorktreeProvenance(opts: {
       });
       continue;
     }
-    const parsed = tokensOf(bytes.content, file.toLowerCase().endsWith(NDJSON_SUFFIX), budget);
+    const parsed = tokensOf(
+      bytes.content,
+      file.toLowerCase().endsWith(NDJSON_SUFFIX),
+      budget,
+      prose ? PROVENANCE_KEYS : PROVENANCE_KEYS_V0_14_85,
+      prose ? proseCandidatesOf : undefined,
+    );
     if (!parsed.ok) {
       disclosures.push({ file: displayFile, reason: parsed.why });
       continue;
@@ -315,6 +493,23 @@ export async function checkWorktreeProvenance(opts: {
     for (const { key, token } of parsed.pairs) {
       const displayKey = display(key);
       const displayToken = display(token);
+      // Host context is asked FIRST, before the bare-token classifier. The order is binding:
+      // `$S/ops/c5-qual` is host provenance and must be disclosed with the host-provenance
+      // reason, not with the classifier's words about a character that needs quoting — a reader
+      // who sees "quote" looks for a quoting bug, and a reader who sees "host path" looks at
+      // their run directory. A fragment that is not host context then meets the shipped
+      // classifier unchanged, which is why a bar-separated value is disclosed rather than probed
+      // as its middle word.
+      const host = prose ? hostContextProblem(token) : undefined;
+      if (host !== undefined) {
+        disclosures.push({
+          file: displayFile,
+          key: displayKey,
+          token: displayToken,
+          reason: `not a repo-relative path (${host}) — host provenance this gate cannot see`,
+        });
+        continue;
+      }
       const classified = classifyToken(token);
       if (classified.kind === "unverifiable") {
         disclosures.push({
@@ -326,7 +521,7 @@ export async function checkWorktreeProvenance(opts: {
         continue;
       }
       judged++;
-      const verdict = await probeToken(execFn, cwd, oid, classified.probe);
+      const verdict = await probeCandidate(execFn, cwd, oid, classified.probe, treePaths, prose);
       if (verdict === "unreadable") {
         notes.push(
           `${PROVENANCE_NOTE_PREFIX} could not tell whether ${displayToken} named by ${code(file)}.${displayKey} exists at the pinned commit — not judged`,
@@ -334,10 +529,40 @@ export async function checkWorktreeProvenance(opts: {
         continue;
       }
       if (verdict === "absent") {
+        // A claim the commit cannot answer may still be one the project satisfied legitimately:
+        // the record's author read the file from a run directory the repository does not track.
+        // That is the operator's `PROVENANCE_ROOT` to declare, and consulting it is the ONLY host
+        // read this gate makes. A candidate that names a path is looked for at that path under the
+        // root; a bare basename is looked for anywhere below it (the root module decides which).
+        // An executed `absent` falls through to the failure; an `unusable` root — unreadable, or
+        // not an absolute path — is a named could-not-tell note, never a verdict, because a root
+        // the gate could not read is not evidence that the file the record cites does not exist.
+        const hostVerdict = await hostRoot(classified.probe);
+        if (hostVerdict.kind === "present") continue;
+        if (hostVerdict.kind === "unusable") {
+          notes.push(
+            `${PROVENANCE_NOTE_PREFIX} could not tell whether ${displayToken} named by ${code(file)}.${displayKey} exists under the declared ${VERIFY_PROVENANCE_ROOT_ENV} (${display(hostVerdict.why)}) — not judged`,
+          );
+          continue;
+        }
         failures.push(
           `${PROVENANCE_FAILURE_PREFIX} ${code(file)}: ${code(key)} names ${code(token)}, which does not exist in commit ${oid} — a measurement record must cite a source that was committed, not synthesised after the fact`,
         );
       }
+    }
+    // No separate row for a value that yielded no fragment: the walk offered such a value as a
+    // whole-value pair exactly as v0.14.85 did, so the loop above already classified and disclosed
+    // it — an extra row here would disclose the same value twice, which a reader cannot tell apart
+    // from the record having two distinct claims. The only NEW disclosure this arm adds is a value
+    // split past its per-value ceiling, below: its un-probed remainder is genuinely unreported by
+    // any other row.
+    for (const { key, token } of parsed.truncated) {
+      disclosures.push({
+        file: displayFile,
+        key: display(key),
+        token: display(token),
+        reason: `the value carries more path-shaped fragments than the ${PROVENANCE_MAX_CANDIDATES_PER_VALUE} this gate probes out of one value — the remainder was not judged`,
+      });
     }
   }
   result.judged = judged;
