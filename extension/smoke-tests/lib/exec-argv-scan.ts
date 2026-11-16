@@ -14,8 +14,18 @@ export function shellOnlyEscapes(source: string): string[] {
   for (const def of source.matchAll(defRe)) {
     const use = new RegExp(`(?<!typeof\\s)\\b${def[1]}\\b(?!\\s*\\()`);
     lines.forEach((line, i) => {
-      // String contents are prose, not uses ("refusing shell interpolation").
-      const code = line.trim().replace(/(["'`])(?:\\.|(?!\1).)*\1/g, '""');
+      // String contents are prose, not uses ("refusing shell interpolation"),
+      // and a trailing `//` comment is prose too. The order matters: strings are
+      // stripped first so a `//` inside a string cannot start a comment that
+      // deletes real code. The comment strip is load-bearing because `defRe`
+      // accepts any `promisify(exec*)`, so the bound name is often an ordinary
+      // English word — `const run = promisify(execFile)` plus one prose "run"
+      // was read as a hand-on. The leading-marker checks below only catch a
+      // comment that STARTS the line, so a `{ // …` block opener needs this.
+      const code = line
+        .trim()
+        .replace(/(["'`])(?:\\.|(?!\1).)*\1/g, '""')
+        .replace(/\/\/.*$/, "");
       if (code.startsWith("//") || code.startsWith("*") || code.startsWith("/*")) return;
       // An import binds a name; it hands nothing on.
       if (code.startsWith("import ")) return;

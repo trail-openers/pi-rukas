@@ -113,5 +113,30 @@ assert(
   "an import line naming the same binding is not a hand-on",
 );
 
+// defRe matches any promisify(exec*), so the bound name is often an ordinary
+// English word. A name that merely APPEARS in prose is not a hand-on: the
+// 2282 suite bound a run/promisify(execFile) pair and one prose "run" in a
+// comment on a brace line read as a value use, because a leading-marker comment
+// check does not cover a comment that trails code. The two positives below keep
+// that from being fixed by narrowing the scan until it misses real ones.
+assert(
+  shellOnlyEscapes(
+    "const run = promisify(execFile);\n{ // The interpreter form, run under a PATH without it.",
+  ).length === 0,
+  "the English word matching a promisify(execFile) binding name in a trailing comment is not a hand-on",
+);
+assert(
+  shellOnlyEscapes(
+    "const run = promisify(execFile);\nconst ctx = { verifyExecFn: run }; // counted per run",
+  ).length === 1,
+  "a real hand-on is still caught on a line whose trailing comment also names the binding",
+);
+assert(
+  shellOnlyEscapes(
+    'const execp = promisify(exec);\nconst note = "pass // through";\nconst ctx = { verifyExecFn: execp };',
+  ).length === 1,
+  "a // inside a string literal does not start a comment that could hide a hand-on",
+);
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);
