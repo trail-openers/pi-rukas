@@ -80,9 +80,8 @@ function terminalCause(steps: Step[]): string | undefined {
 }
 
 /**
- * The newest budget breach the log records, and FIRST in {@link neededFromLog}: the breach is why
- * the run stopped, and it counts only when nothing that did work is newer. Rendered through
- * {@link budgetTrio}, so a half-record falls through to the next cause.
+ * The newest budget breach the log records, and FIRST in {@link neededFromLog}: the breach
+ * is why the run stopped, and it counts only when nothing that did work is newer.
  */
 /** The newest step that was WORK — a report state is how a run ended, not work. */
 function newestWorkStep(steps: Step[]): Step | undefined {
@@ -108,7 +107,7 @@ function budgetCause(steps: Step[]): string | undefined {
 /**
  * The build step's named unsatisfiable contract, and FIRST in {@link neededFromLog}: the
  * builder's `blocked` verdict is the one cause that names the files and the contradiction.
- * Same positional test as {@link budgetCause}; rendered from the typed `blockedBy` map.
+ * Same positional test as {@link budgetCause}.
  */
 function blockedCause(steps: Step[]): string | undefined {
   const step = newestWorkStep(steps);
@@ -136,7 +135,7 @@ export function neededFromLog(steps: Step[]): string {
     budgetCause(steps) ??
     newestRedVerifyReason(steps) ??
     newestReason(steps, "ci", "red") ??
-    // Nothing ever went red: fall through to the last verdict of either gate before the cause.
+    // Nothing ever went red: fall through to the last verdict of either gate.
     newestReason(steps, "verify", "green") ??
     newestReason(steps, "ci", "green") ??
     terminalCause(steps) ??
@@ -147,14 +146,14 @@ export function neededFromLog(steps: Step[]): string {
 /**
  * A path with a control character is not a line the comment may print. The class is ASSEMBLED
  * from code points because suppressing `noControlCharactersInRegex` is the bypass AGENTS.md forbids.
- */
-const CONTROL_CHARS = new RegExp(
+ */const CONTROL_CHARS = new RegExp(
   `[${String.fromCharCode(0x00)}-${String.fromCharCode(0x1f)}${String.fromCharCode(0x7f)}]`,
 );
 
 /**
  * The frozen acceptance tests, from the same log `build` and `verify` read. A key with a control
- * character is dropped rather than clipped: the comment is markdown, so a `\n` in a path ends the bullet.
+ * character is dropped rather than clipped: the comment is markdown, so a `\n` in a path ends the
+ * bullet.
  */
 function frozenList(steps: Step[]): string[] {
   return Object.keys(frozenFromLog(steps))
@@ -170,8 +169,7 @@ function prUrlFromLog(steps: Step[]): string | undefined {
     if (step?.state !== "publish") continue;
     // `Outcome.prUrl` is the one field a publish step may carry a URL in, and `state.ts` refuses
     // to load one that is not https text. Re-checked here rather than trusted.
-    const url = step.outcome?.prUrl;
-    const valid = validPrUrl(url);
+    const url = step.outcome?.prUrl;    const valid = validPrUrl(url);
     if (valid === undefined) continue;
     return valid;
   }
@@ -243,18 +241,17 @@ interface Heads {
 }
 
 /**
- * The head facts one handback records, from the head origin holds and what the rewind settled on.
- * `shippedHead` comes from the post-move read this step takes after the rewind, so it says where
- * origin stands now; `unshippedHead` is the rewind's own pre-move read — the head it displaced —
- * which this step could not have produced itself because it never saw origin before the move.
- * `render` is the renderer flag and travels to the body only; the four head fields are
- * `Outcome`'s, rebuilt on reload and judged by the validator.
+ * The head facts one handback records, from the head origin holds and what the rewind settled
+ * on. `shippedHead` comes from the post-move read this step takes after the rewind, so it says
+ * where origin stands now; `unshippedHead` is the rewind's own pre-move read — the head it
+ * displaced — which this step could not have produced itself. `render` is the renderer flag and
+ * travels to the body only.
  *
  * A rewind with no head to move records the head origin ACTUALLY holds under
  * `PI_ENSEMBLE_LEAN_HANDBACK_NOHEAD_RECORD`: off it records nothing; on it carries the rule's
- * reason, not the rewind's wording for a move that did not happen. `shippedVerified` is
- * `rewind.shipped` plus `alreadyAtVerified` — origin held the certified head already, so printing
- * it as `NOT verified` would send the operator to inspect bytes the gate certified.
+ * reason. `shippedVerified` includes `alreadyAtVerified` — origin held the certified head
+ * already, so printing it as `NOT verified` would send the operator to inspect bytes the gate
+ * certified.
  */
 function headFacts(
   applies: boolean,
@@ -297,8 +294,7 @@ function headFacts(
  *
  * `post` is the seam the test drives: production hands it `postHandback`, which goes through the
  * forge adapter and the public-hygiene check. On the host channel the caller passes a post that
- * posts nothing, so `posted` is false with `channel: "host"` on the step. `report` carries the
- * comment either way.
+ * posts nothing, so `posted` is false with `channel: "host"`.
  */
 export async function handbackOutcome(
   ctx: HandlerCtx,
@@ -321,12 +317,11 @@ export async function handbackOutcome(
       ruleOn && heads.verifiedHead !== undefined
         ? await rewind(heads.verifiedHead)
         : ruleOn
-          ? // `NO_HEAD`'s own `reason` describes a push that did not run; this answers a
-            // different question — why what shipped was never certified.
+          ? // `NO_HEAD`'s own `reason` describes a push that did not run; this answers why what
+            // shipped was never certified.
             { ...NO_HEAD, noHeadReason: heads.reason }
           : SWITCHED_OFF;
-    // Read AFTER the rewind, so it is origin's post-move value; a handback the rule never touched
-    // reads nothing.
+    // Read AFTER the rewind, so it is origin's post-move value.
     const originHead = ruleOn ? await readOrigin(ctx) : undefined;
     const facts = ruleOn
       ? headFacts(heads.applies, moved, originHead, leanHandbackNoHeadRecordEnabled())
@@ -341,7 +336,6 @@ export async function handbackOutcome(
     });
     await post(ctx.repoRoot, ctx.issue, body);
     // `posted: true` is the only place the claim lives: the kind is `done` either way.
-    // `record` is LAST and `render` is stripped — the record carries only what `Outcome` declares.
     return {
       kind: "done",
       reason: "handback comment posted",
