@@ -35,34 +35,28 @@ import { newestDecided } from "./state.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 import { fenceText, oneLine } from "./text-fence.ts";
 
-/** The heading the section opens with, in a seat's brief and in the PR comment
- * alike, so both cite the same words for the same table. */
+/** The heading the section opens with, in a seat's brief and the PR comment alike. */
 export const LEAN_REVIEW_ACCEPTANCE_HEADING =
   "## The acceptance table (executed by the gate at the head)";
 
-/** What the seat is told the table is: every cell came from the step that ran it,
- * at the head named in the same section. */
+/** What the seat is told the table is: every cell came from the step that ran it. */
 export const LEAN_REVIEW_ACCEPTANCE_LEAD =
   "Each row is one acceptance criterion of this issue, the frozen test the run recorded for it, and the result the verify step REPORTED for it at the head named below — read off that step's own record, not from a model. `pass at <head>` means that gate executed it there; `could-not-run` and `manual` are the gate's own answers, not this step's guesses. A finding whose fix would contradict a row is not a finding.";
 
-/** The table's own cap and its own clip notice — the bound the criteria and
- * carried-findings blocks at these print sites carry, in words that say WHICH
- * payload was cut (see `review-criteria.ts`). */
+/** The table's cap and clip notice — the bound these print sites carry, naming
+ * WHICH payload was cut (see `review-criteria.ts`). */
 const MAX_TABLE_CHARS = 20_000;
 const TABLE_TRUNCATION_MARKER = "…(acceptance table truncated)";
 
-/** Head clips to the 12 every other lean reason line prints; the reason bound is
- * the one the durable record puts on `commandNotRunnable`, so a cell never carries
- * more than the record could hold. */
+/** Head clips to the 12 every lean reason line prints; the reason bound is the one
+ * the durable record puts on `commandNotRunnable`, so a cell never outgrows the record. */
 const HEAD_CLIP = 12;
 const REASON_MAX_CHARS = 300;
 
-/** The PR comment's own cap on the head it names: a 40-hex oid, with room for the
- * tree-ish a caller may hold. */
+/** The comment's cap on the head it names: a 40-hex oid, with room for a tree-ish. */
 const HEAD_MAX_CHARS = 64;
 
-/** Print bounds per field. The text bound is the one the PR body's criteria table
- * puts on the same field; the branch bound is the fixer's brief's. */
+/** Per-field print bounds, matching the PR body's criteria table and the fixer brief. */
 const ID_MAX_CHARS = 40;
 const TEXT_MAX_CHARS = 200;
 const PATH_MAX_CHARS = 200;

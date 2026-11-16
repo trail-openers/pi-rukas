@@ -60,10 +60,10 @@ export function validateSpecIntake(
 }
 
 /**
- * The resolved mode: env when set, else the run's committed config, else
- * `require`. `config` is what `loadWorkConfig` returned for this run's base —
- * the loader already refused a value outside the two, so a read here cannot
- * invent a mode a file could not carry.
+ * The resolved mode: env when set, else the run's committed config, else `require`.
+ * `config` is what `loadWorkConfig` returned for this run's base — the loader already
+ * refused a value outside the two, so a read here cannot invent a mode a file could
+ * not carry. Env first means an operator's word beats a repo that set `derive`.
  */
 export function resolveSpecIntake(config?: WorkConfig): SpecIntake {
   const env = validateSpecIntake(process.env[SPEC_INTAKE_ENV]);
@@ -73,14 +73,11 @@ export function resolveSpecIntake(config?: WorkConfig): SpecIntake {
 }
 
 /**
- * Apply the `--spec-intake <mode>` verb flag for one headless run; returns the
- * refusal text, or `undefined` when the flag was absent or valid.
- *
- * Written to the env the switch reads, and as late as the parser allows: `process.env`
- * is process-wide, so a value written early (or left) would arm the next run in this
- * host, including an interactive one that never asked. Validated here rather than
- * left to the switch so a `--spec-intake derve` typo is an argument error the host
- * sees, not a run that declined every ticket it was meant to take.
+ * Apply the `--spec-intake <mode>` verb flag for one headless run; returns the refusal
+ * text, or `undefined` when the flag was absent or valid. Written to the env the switch
+ * reads, and validated here rather than left to it, so a `--spec-intake derve` typo is
+ * an argument error the host sees, not a run that declined every ticket. `process.env`
+ * is process-wide, so the write happens as late as the parser allows (see the header).
  */
 export function applySpecIntakeFlag(value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
