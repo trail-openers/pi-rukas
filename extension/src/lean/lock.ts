@@ -3,19 +3,16 @@
  *
  * The engine has no other concurrency control, and the absence is not
  * theoretical: two `runLean` calls on one issue started together both drove
- * the whole table, both ran `land`, and the second merge (or the second
- * comment, or the second branch) happened anyway. The step log makes a
- * *resumed* run safe; nothing made a *concurrent* one safe, because both
- * processes read the same file before either wrote it.
+ * the whole table, both ran `land`, and the second merge happened anyway. The
+ * step log makes a *resumed* run safe; nothing makes a *concurrent* one safe,
+ * because both processes read the same file before either wrote it.
  *
  * The lock is `<repoRoot>/.pi/lean-state/<issue>.lock` and it is taken
  * ATOMICALLY WITH ITS OWNER INSIDE: the bytes are written to a unique temp
  * file in the same directory and then `link`ed into place, so the moment the
  * lock exists it names the pid that created it. The old shape — `open(O_EXCL)`
- * and then `write` the pid — had a window between those two calls in which a
- * concurrent reader saw a lock with NO pid in it, called it unreadable, and
- * either refused a legitimate takeover or (worse, under the old stale rule)
- * deleted a lock that was being taken.
+ * and then `write` the pid — had a window in which a concurrent reader saw a
+ * lock with NO pid in it and called it unreadable.
  *
  * Stealing is what the rename is for. A stale lock is first renamed to a
  * unique `<lock>.stale-<pid>-<rand>` and only then unlinked: two stealers that
@@ -31,11 +28,8 @@
  *
  * The body is an identity rather than a bare pid for the reason
  * `process-liveness.ts` gives: a pid read in a pid namespace this process
- * cannot see into proves nothing either way, so a container fleet would call
- * every live sibling a corpse and reap it. The policy is the one
- * `host-spawn-slots.ts` applies to slot files — `formatIdentity` / `parseIdentity`
- * / `judgeOwner`, with `alive`, `foreign`, `unknown` and an unreadable body all
- * refused and only `dead` reclaimed.
+ * cannot see into proves nothing either way. The policy is the one
+ * `host-spawn-slots.ts` applies to slot files.
  */
 
 import { randomUUID } from "node:crypto";
@@ -50,15 +44,11 @@ import { leanLockFile } from "./state.ts";
  * A TYPE and not a message: the headless `work-lean` verb has to tell "a live
  * run already holds this issue" (exit 40 — re-running now only collides again)
  * from "the engine blew up" (exit 30). Reading that distinction out of prose
- * left the verb matching a regex over somebody else's words, so a lock refusal
- * that arrived wrapped or reworded became a crash, and a schema violation whose
- * message happened to mention a lock became a refusal.
+ * left the verb matching a regex over somebody else's words.
  *
- * EVERY refusal `acquireLock` raises is one of these — a live, foreign or
- * otherwise unjudgeable holder, an unreadable body, a `link` that failed for a
- * reason other than EEXIST, and a stale lock it could not clear. A plain
- * `LeanStateError` is therefore NOT a refusal, which is what lets the verb map
- * a schema violation to 30 while this maps to 40.
+ * EVERY refusal `acquireLock` raises is one of these. A plain `LeanStateError`
+ * is therefore NOT a refusal, which is what lets the verb map a schema
+ * violation to 30 while this maps to 40.
  */
 export class LeanLockError extends Error {
   override readonly name = "LeanLockError";
@@ -74,24 +64,21 @@ export function acquireLock(repoRoot: string, issue: number): () => void {
   mkdirSync(dirname(file), { recursive: true });
   const own = formatIdentity(selfIdentity());
   // One attempt, then one more after a stale sweep; a second EEXIST means
-  // somebody took the lock between the check and here, and looping further
-  // would turn contention into a hang.
+  // somebody took the lock between the check and here.
   for (let attempt = 0; attempt < 2; attempt++) {
     if (tryLink(file, own)) return releaser(file, own);
     const body = readLockBody(file);
     if (body === "unreadable") throw new LeanLockError(`lock unreadable: ${file}`);
     if (body !== undefined) {
-      // Only a holder this process can PROVE dead may be cleared. `alive`,
-      // `foreign` (another host, another pid namespace, half an identity) and
-      // an unparseable body — which `judgeOwner` answers `foreign` for — all
-      // mean "somebody's run I cannot judge", and the safe answer to that is
-      // to refuse rather than to drive the same issue twice.
+      // Only a holder this process can PROVE dead may be cleared: `alive`,
+      // `foreign` and an unparseable body all mean "somebody's run I cannot
+      // judge", and the safe answer is to refuse rather than drive twice.
       if (judgeOwner(parseIdentity(body), selfIdentity()) !== "dead")
         throw new LeanLockError(`run already in progress (${body}) for issue ${issue}`);
       stealStale(file);
     } else {
-      // The path is there but cannot be read at all — a permission or I/O
-      // problem, not a stale run. Refuse rather than sweep what we cannot see.
+      // The path is there but cannot be read at all — a permission or I/O problem,
+      // not a stale run.
       throw new LeanLockError(`lock unreadable: ${file}`);
     }
   }
@@ -104,10 +91,9 @@ export function acquireLock(repoRoot: string, issue: number): () => void {
 /**
  * Link a pid-bearing temp file into the lock path. True means we hold it.
  *
- * `link` fails with EEXIST when the target exists and with nothing else we
- * care about here, so every other errno is a real error and is reported as
- * one. The temp file is the caller's own (unique name, in the same directory
- * so the link never crosses a filesystem) and is always unlinked.
+ * `link` fails with EEXIST when the target exists; every other errno is a real
+ * error and is reported as one. The temp file is the caller's own (unique name,
+ * in the same directory so the link never crosses a filesystem).
  */
 function tryLink(file: string, body: string): boolean {
   const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
@@ -121,8 +107,8 @@ function tryLink(file: string, body: string): boolean {
       throw new LeanLockError(`cannot lock ${file}: ${(err as Error).message}`);
     }
   } finally {
-    // Only ever our own file at a path we generated; the lock, if it exists,
-    // is a separate directory entry that this unlink cannot touch.
+    // Only ever our own file at a path we generated; the lock, if it exists, is a
+    // separate directory entry that this unlink cannot touch.
     try {
       unlinkSync(tmp);
     } catch {
@@ -153,8 +139,8 @@ function stealStale(file: string): void {
   try {
     unlinkSync(moved);
   } catch {
-    /* a leftover `.stale-*` file is inert — nothing reads it, and it is named
-     * for the pid that left it, so it is greppable when one wonders */
+    /* a leftover `.stale-*` file is inert — nothing reads it, and it is named for
+     * the pid that left it */
   }
 }
 
@@ -167,11 +153,9 @@ function releaser(file: string, own: string): () => void {
     } catch {
       return;
     }
-    // A lock that now names somebody else was taken after ours went stale and
-    // was cleared: deleting it would release a run that is not ours. Compared
-    // against the very bytes we linked, so the rule is "still us" and not
-    // "still this pid" — a recycled pid is exactly what the identity's start
-    // time exists to tell apart.
+    // A lock that now names somebody else was taken after ours went stale and was
+    // cleared: deleting it would release a run that is not ours. Compared against the
+    // very bytes we linked, so the rule is "still us" and not "still this pid".
     if (current.trim() !== own.trim()) return;
     try {
       unlinkSync(file);
@@ -186,10 +170,8 @@ function releaser(file: string, own: string): () => void {
  *
  * Two answers, deliberately distinct: the trimmed bytes (an identity for
  * `judgeOwner` to pronounce on) and `"unreadable"` (the path exists but its
- * bytes cannot be read or are empty, which is a different complaint an
- * operator should see verbatim). No judgement happens here: whether a body IS
- * an identity is `parseIdentity`'s question, and whether this process may call
- * its holder dead is `judgeOwner`'s.
+ * bytes cannot be read or are empty — a different complaint an operator should
+ * see verbatim). No judgement happens here.
  */
 function readLockBody(file: string): string | "unreadable" | undefined {
   let raw: string;
