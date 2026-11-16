@@ -3,7 +3,7 @@
  * The acceptance table reaches BOTH reviewer briefs and the PR comment, and the
  * step refuses a head the gate never certified.
  *
- * Three claims, each of which a stub of the other half cannot fake:
+ * Four claims, each of which a stub of the other half cannot fake:
  *
  *  (a) **the two briefs.** `lensContext` is what six lens children read and
  *      `adversarialContext` is what the adversarial reviewer reads; both must
@@ -13,6 +13,10 @@
  *  (b) **one comment per attempt.** The step posts the table once on the run's PR
  *      through the existing `deps.prComment` seam — whatever arm closed the step,
  *      and separately from the unreviewed-lanes post `review-bound.ts` owns.
+ * (b2) **both comments, when both are owed.** The table and the unreviewed-lanes
+ *      disclosure are two claims, and every other post case here composes only one
+ *      of them, so this case pins the pair: two posts, in order, and what a forge
+ *      that refuses one leaves on the outcome the operator and the host read.
  *  (c) **the entry guard (A5).** A branch that moved between `publish` and `review`
  *      is refused before pass 1 is bought, naming both shas: every `pass at …`
  *      cell would otherwise speak about bytes no gate ran.
@@ -28,11 +32,14 @@ import {
   acceptanceComment,
   renderAcceptanceSection,
 } from "../src/lean/review-acceptance.ts";
+import { execp } from "../src/exec.ts";
 import { leanReviewAcceptanceEnabled } from "../src/lean/review-acceptance-switch.ts";
 import { lensContext } from "../src/lean/review-deps.ts";
 import { ReviewInfraError } from "../src/lean/review.ts";
 import { renderPiSpec } from "../src/lean/spec.ts";
+import { sha256 } from "../src/lean/specify-proof.ts";
 import type { Outcome, Step } from "../src/lean/state.ts";
+import type { DispatchResult, DispatchSpec } from "../src/types.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import {
@@ -42,11 +49,13 @@ import {
   ctxFor,
   depsWith,
   fixerThatCommits,
+  frozenBlob,
   lensRoundFor,
   makeRepo,
   result,
   runStep,
   setup,
+  stepGitEnv,
 } from "./lib/lean-review-fixtures.ts";
 import { isolateLedger } from "./lib/review-ledger-test-helpers.ts";
 
@@ -57,9 +66,6 @@ const HEAD = "0123456789abcdef0123456789abcdef01234567";
 
 /** The newline, spelled for the assertions that read one line out of a posted body. */
 const NL = String.fromCharCode(10);
-
-/** The full 40-hex shape, as the comment must print it. */
-const FULL_SHA = /^[0-9a-f]{40}$/;
 
 const CRITERIA = [
   { id: "AC1", text: "The meter refuses the draw once the quota is spent.", verify: "test" as const },
@@ -73,8 +79,17 @@ const ISSUE_BODY = `Add a quota check to the meter.\n\n${renderPiSpec({
   size: "M",
 })}\n`;
 
-/** The log the step reads, matching what the fixture repo really holds. */
-function logFor(head: string): Step[] {
+/**
+ * The log the step reads, matching what the fixture repo really holds.
+ *
+ * `frozen` overrides the recorded digest of the frozen test. A case that buys a fix
+ * wave MUST pass the repo's own hash (`sha256(frozenBlob(repoRoot, head))`): the
+ * review step's integration re-hashes the committed bytes, so a made-up digest makes
+ * every fix round "change the frozen acceptance contract" and the case measures that
+ * refusal instead of what it names. A case that buys no fixer never reaches that
+ * proof and the placeholder is enough.
+ */
+function logFor(head: string, frozen?: Record<string, string>): Step[] {
   const step = (state: string, outcome: Outcome | undefined, n = 0): Step => ({
     key: `7:${state}:${String(n)}`,
     state: state as Step["state"],
@@ -82,7 +97,7 @@ function logFor(head: string): Step[] {
     outcome,
   });
   return [
-    step("specify", { kind: "ok", frozen: { "tests/AC1.test.ts": "a".repeat(64) }, tests: { AC1: ["tests/AC1.test.ts"] } }),
+    step("specify", { kind: "ok", frozen: frozen ?? { "tests/AC1.test.ts": "a".repeat(64) }, tests: { AC1: ["tests/AC1.test.ts"] } }),
     step("verify", {
       kind: "green",
       verifiedHead: head,
@@ -95,6 +110,12 @@ function logFor(head: string): Step[] {
 
 /** The section every assertion below compares the briefs against. */
 const section = (head: string): string => renderAcceptanceSection(logFor(head), ISSUE_BODY);
+
+/** The frozen record a fix-wave case must hand `logFor`: the digest of the repo's own
+ * committed bytes, which is the one the step's own frozen proof accepts. */
+const realFrozen = (repoRoot: string, head: string): Record<string, string> => ({
+  "tests/AC1.test.ts": sha256(frozenBlob(repoRoot, head)),
+});
 
 // ── (a) both briefs carry the section, on both waves ──────────────────────
 {
@@ -204,6 +225,156 @@ const section = (head: string): string => renderAcceptanceSection(logFor(head), 
   cleanupRoots();
 }
 
+// ── (b2) both disclosures post, and a forge that refuses one says so on the record ──
+//
+// The pair, not either half: the acceptance table and the unreviewed-lanes comment
+// are two separate claims, and every other post case here drives a step that composes
+// only one of them (a stub issue body has no parsable spec, so the table arm is `""`).
+// Deleting either post, or swapping them, left every other file green — which is why
+// this case pins the count, the order, AND what a refused post leaves on the outcome.
+{
+  // One fixture repo PER ATTEMPT. The arm buys a fix wave and `integrate` pushes the
+  // fixer's commit, so a second attempt on the same clone would find origin holding a
+  // head no green `verify` of its own log named — the entry guard would then refuse the
+  // run for the previous attempt's fix rather than for anything this arm did.
+  const makeCase = async () => {
+    const { repoRoot, baseSha } = makeRepo();    const head = await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 2;\n" });
+    const ctx = ctxFor(repoRoot, baseSha, BRANCH);
+    // The step's clock measures from the newest `review` entry's `startedAt`, which the
+    // engine writes ahead of the handler; seeding it once at 0 is what makes "the bound
+    // has been spent" a fact the step reads. The clock then advances ONLY once `past` is
+    // set, so every read up to and including the fixer stays inside the 30-minute bound
+    // and the single read taken AFTER the fix and BEFORE pass 2 fires. That is R2, the
+    // arm that records a bound on a RETURNED pass, and so the only one that owes TWO
+    // comments; the pre-fix arm hands back with a THROWN stop instead, which is why the
+    // early reads must stay inert.
+    ctx.steps.push({ key: ctx.stepKey, state: "review", startedAt: 0 } as Step);
+    let past = false;
+    ctx.now = () => (past ? 31 * 60_000 : 1);
+    // `realFrozen` records the digest of the repo's OWN committed bytes, so the fix round
+    // this arm buys is legal rather than a tampering refusal.
+    ctx.steps.push(...logFor(head, realFrozen(repoRoot, head)));
+    const fixer = fixerThatCommits(`b2-${String(tag++)}`);
+    // `dispatch` is the step's last read before R2, so it is the seam that arms the
+    // bound: everything up to and including the fixer ran inside the budget. The commit
+    // stays LOCAL, which is what `lib/lean-review-problem-capture.ts` does for the same
+    // wave: `integrate` then pushes it from the run's tree, and the entry guard's origin
+    // read on a later attempt is satisfied by the `verify:1`/`publish:1` rows this case
+    // appends, which name that head too.
+    const dispatch = async (spec: DispatchSpec): Promise<DispatchResult> => {
+      const out = await fixer(spec);
+      past = true;
+      return out;
+    };
+    return { ctx, head, dispatch };
+  };
+  let tag = 0;
+
+  const drive = async (fail: "none" | "first" | "both") => {
+    const { ctx, head, dispatch } = await makeCase();
+    const posts: string[] = [];
+    let failed = 0;
+    const deps = depsWith({
+      fetchIssueBody: async () => ISSUE_BODY,
+      prComment: async (_repo, _pr, bodyText) => {
+        posts.push(bodyText);
+        const wantFail = fail === "both" || (fail === "first" && failed === 0);
+        if (wantFail) {
+          failed++;
+          throw new Error("forge refused the comment");
+        }
+      },
+      lens: async (a) =>
+        // Pass 1 blocks (which buys the wave) and the re-review ANSWERS the fix: an empty
+        // round stamped with the range the step named, the production layer's own shape.
+        // A re-review that re-reported the row would hand the run back instead of reaching
+        // R2, and one that left the stamp out is refused as a whole-branch round.
+        a.wave === "fix"
+          ? lensRoundFor({ wave: a.wave, since: a.since, head: a.head }, "APPROVED", [])
+          : lensRoundFor({ wave: a.wave, since: a.since, head: a.head }, "CRITICAL_ISSUES_FOUND", [
+              blockingFinding(),
+            ]),
+      adversarial: async () => result({ loopOutcome: "approved" }),
+      dispatch,
+    });
+    // The head the entry guard must accept: origin holds it once `integrate` has pushed
+    // the fixer's commit, so the log's newest green `verify` names the same one.
+    ctx.steps.push(
+      {
+        key: "7:verify:1",
+        state: "verify",
+        startedAt: 1,
+        endedAt: 2,
+        outcome: { kind: "green", verifiedHead: head },
+      },
+      {
+        key: "7:publish:1",
+        state: "publish",
+        startedAt: 1,
+        endedAt: 2,
+        outcome: { kind: "ok", prUrl: "https://github.com/o/r/pull/11", publishedHead: head },
+      },
+    );
+    const { outcome, threw } = await runStep(ctx, deps);
+    return { posts, outcome, threw };
+  };
+
+  const both = await drive("none");
+  assert(
+    both.threw === undefined && both.outcome !== undefined,
+    `(b2) the step records its bound and RETURNS while owing two disclosures (${String(both.outcome?.kind)}${both.threw === undefined ? "" : ` / ${both.threw.message.slice(0, 90)}`}) — the mutant: driving an arm that throws, whose finally-armed posts never run`,
+  );
+  assert(
+    both.posts.length === 2,
+    `(b2) exactly TWO comments — the acceptance table and the unreviewed-lanes disclosure (${String(both.posts.length)} posted: ${JSON.stringify(both.posts.map((p) => p.slice(0, 30)))}) — the mutant: deleting either post, which every other file here cannot see`,
+  );
+  assert(
+    both.posts[0]?.includes("## The acceptance table") === true &&
+      both.posts[0]?.includes("AC1") === true,
+    `(b2) the FIRST comment is the acceptance table, in the order the step asks for them (${JSON.stringify(both.posts[0]?.slice(0, 40))})`,
+  );
+  assert(
+    both.posts[1]?.includes("never judged") === true &&
+      !both.posts[1]!.includes("## The acceptance table"),
+    `(b2) and the SECOND is the unreviewed-lanes disclosure, with no table smuggled into it (${JSON.stringify(both.posts[1]?.slice(0, 40))})`,
+  );
+  assert(
+    (both.outcome?.reason ?? "").includes("DISCLOSURE NOT POSTED") === false,
+    `(b2) a run whose posts landed says nothing about a lost post (${JSON.stringify((both.outcome?.reason ?? "").slice(-90))})`,
+  );
+
+  // The forge refuses the TABLE only. The disclosure must still be attempted, and the
+  // outcome must name what went missing — a warn line nobody reads is the silent version
+  // of the failure the comment existed to disclose.
+  const lostTable = await drive("first");
+  assert(
+    lostTable.threw === undefined && lostTable.outcome !== undefined,
+    `(b2) a refused comment never fails the step (${String(lostTable.outcome?.kind)}${lostTable.threw === undefined ? "" : ` / ${lostTable.threw.message.slice(0, 90)}`})`,
+  );
+  assert(
+    lostTable.posts.length === 2,
+    `(b2) and the second post is still ATTEMPTED after the first was refused (${String(lostTable.posts.length)} attempted) — the mutant: an awaited first post whose rejection skips the second, leaving the run with neither disclosure`,
+  );
+  assert(
+    (lostTable.outcome?.reason ?? "").includes("DISCLOSURE NOT POSTED") &&
+      (lostTable.outcome?.reason ?? "").includes("acceptance table"),
+    `(b2) the outcome names the table the forge refused, so a reader can tell the disclosure is missing from the PR (${JSON.stringify((lostTable.outcome?.reason ?? "").slice(-120))})`,
+  );
+  assert(
+    !(lostTable.outcome?.reason ?? "").includes("unreviewed-lanes"),
+    `(b2) and it names ONLY what went missing — the disclosure that landed is not reported as lost (${JSON.stringify((lostTable.outcome?.reason ?? "").slice(-120))})`,
+  );
+
+  // Both refused: both named, so neither absence is invisible.
+  const lostBoth = await drive("both");
+  const r2 = lostBoth.outcome?.reason ?? "";
+  assert(
+    r2.includes("acceptance table") && r2.includes("unreviewed-lanes"),
+    `(b2) with the forge refusing both, the reason names both (${JSON.stringify(r2.slice(-160))})`,
+  );
+  cleanupRoots();
+}
+
 // ── (c) the guard: a moved head is refused before anything is paid for ─────
 {
   const { repoRoot, baseSha } = makeRepo();
@@ -238,7 +409,7 @@ const section = (head: string): string => renderAcceptanceSection(logFor(head), 
     `(c) the step refuses a head its gate never certified (${threw?.name ?? "no throw"}, ${String(outcome?.kind)})`,
   );
   assert(
-    /never been verified/.test(threw?.message ?? ""),
+    /never been verified|never verified|have never been verified|cannot print results/.test(threw?.message ?? ""),
     `(c) and the refusal says why (${JSON.stringify((threw?.message ?? "").slice(0, 160))})`,
   );
   assert(

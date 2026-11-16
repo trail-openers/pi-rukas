@@ -70,6 +70,14 @@ const TEXT_MAX_CHARS = 200;
 const PATH_MAX_CHARS = 200;
 const BRANCH_MAX_CHARS = 200;
 
+/** What every executed row reads when no green verify named a head. "pass" with no
+ * head attached is the one word this table exists to license, and the step's entry
+ * guard refuses a log like this before pass 1; the renderer still refuses to print
+ * it, so no caller ever hands a seat an unanchored `pass`. Exported so the tests pin
+ * this wording rather than a copy of it. */
+export const NO_GREEN_VERIFY_CELL =
+  "could-not-run — no decided green verify of this run covers a head";
+
 /** One row, as the renderer, the comment and the tests all read it. */
 export interface AcceptanceRow {
   id: string;
@@ -81,6 +89,14 @@ export interface AcceptanceRow {
   tests: string[];
   /** The cell: what the gate said about this criterion at the head. */
   result: string;
+}
+
+/** Did any decided `verify` of this run come back green at all? The renderer's
+ * anchor line asks this to tell "a later gate came back red" apart from "no gate
+ * ever ran", and the two are different facts for the operator reading the comment.
+ * `newestGreenVerify` cannot answer it — it reads the NEWEST decided verify alone. */
+function anyGreenVerify(steps: Step[]): boolean {
+  return steps.some((s) => s.state === "verify" && s.outcome?.kind === "green");
 }
 
 /** The newest DECIDED `verify` whose verdict was green, or `undefined`: a red or
@@ -107,8 +123,13 @@ function resultCell(
   commandCriteria: Record<string, string> | undefined,
   commandNotRunnable: Record<string, string> | undefined,
 ): string {
-  const at = head === undefined ? "" : ` at ${head.slice(0, HEAD_CLIP)}`;
+  // The head is the row's whole warrant: A1's `test` cell is `pass at <head12>` or
+  // it is not a claim about executed bytes, so with none to name every executed row is
+  // the refusal, never a bare `pass` (see `NO_GREEN_VERIFY_CELL`). A `manual` row is
+  // the gate's standing "needs a human" whatever the log holds, so it precedes it.
   if (verify === "manual") return "manual — needs a human";
+  if (head === undefined) return NO_GREEN_VERIFY_CELL;
+  const at = ` at ${head.slice(0, HEAD_CLIP)}`;
   if (verify === "command") {
     if (commandCriteria?.[id] !== undefined) return `pass (command)${at}`;
     const why = (commandNotRunnable?.[id] ?? "").trim();
@@ -132,7 +153,7 @@ export function acceptanceRows(
   const green = newestGreenVerify(steps);
   const tests = testsFromLog(steps);
   return spec.criteria.map((c) => {
-    const paths = tests[c.id] ?? [];
+    const paths = tests?.[c.id] ?? [];
     return {
       id: c.id,
       text: c.text,
@@ -175,9 +196,16 @@ export function renderAcceptanceSection(steps: Step[], issueBody: string | undef
   const rows = acceptanceRows(steps, parsed.spec);
   if (rows.length === 0) return "";
   const head = certifiedHead(steps);
+  // Which absence the reader is told about is a separate question from whether there
+  // is one: a run whose newest decided verify came back RED (the shape a CI-fix round
+  // leaves) and a run that never verified anything both name no head, and a comment
+  // that called the first the second would send the operator looking at the wrong gate.
+  const red = head === undefined && anyGreenVerify(steps);
   const anchor =
     head === undefined
-      ? "Verified head: none — no decided green `verify` step of this run named one."
+      ? red
+        ? "Verified head: none — the newest decided `verify` of this run came back RED, so no green gate covers these rows."
+        : "Verified head: none — no decided green `verify` step of this run named one."
       : `Verified head: \`${head.slice(0, HEAD_CLIP)}\``;
   return `${LEAN_REVIEW_ACCEPTANCE_HEADING}\n\n${LEAN_REVIEW_ACCEPTANCE_LEAD}\n\n${anchor}\n\n${fenceText(
     [HEADER, DIVIDER, ...rows.map(rowLine)].join("\n"),

@@ -72,23 +72,12 @@ import { isCarried } from "../lens-review-types.ts";
 import type { runLensReview } from "../lens-review.ts";
 import { traceWarn } from "../trace.ts";
 import type { DispatchResult, DispatchSpec } from "../types.ts";
-import { handoffChannel } from "../work-driver-handoff-channel.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
 import { frozenFromLog } from "./build.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { leanReviewAcceptanceEnabled } from "./review-acceptance-switch.ts";
-import {
-  acceptanceComment,
-  assertHeadIsVerified,
-  renderAcceptanceSection,
-} from "./review-acceptance.ts";
-import {
-  type StepStop,
-  reviewBoundComment,
-  reviewBoundRecord,
-  stepBound,
-  unjudgedLenses,
-} from "./review-bound.ts";
+import { assertHeadIsVerified, renderAcceptanceSection } from "./review-acceptance.ts";
+import { type StepStop, reviewBoundRecord, stepBound, unjudgedLenses } from "./review-bound.ts";
 import { assertReviewEntry } from "./review-entry.ts";
 import { adversarialGate, lensGate } from "./review-gates.ts";
 import { fixRound, reviewedHead } from "./review-git.ts";
@@ -100,7 +89,8 @@ import {
   reviewAttemptFromLog,
 } from "./review-log.ts";
 import { buyFullReview } from "./review-pair.ts";
-import { cleanPass, disclosureNote } from "./review-pass.ts";
+import { cleanPass, disclosureNote, postFailureNote } from "./review-pass.ts";
+import { postReviewDisclosures } from "./review-posts.ts";
 import { assertFixAdvanced } from "./review-progress.ts";
 import {
   assertJudgedWholeBranch,
@@ -165,8 +155,29 @@ function acceptanceSection(steps: Step[], issueBody: string | undefined): string
  * The `review` step. Returns one of the step's two pass kinds — `done` or
  * `fixed` (see `passKind` in `review-step.ts` for what the two differ in); a
  * budget stop is NOT returned, it throws; and so does anything else.
+ *
+ * The thin wrapper is not ceremony: the disclosures this step owes are posted in
+ * `reviewPass`'s `finally`, which runs AFTER its `return` expression has been evaluated.
+ * A note written inside the handler would describe a forge answer that does not exist
+ * yet, and a lost comment would vanish from the only surface the operator and the host read.
  */
 export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<Outcome> {
+  const lost: { owed?: string } = {};
+  const pass = await reviewPass(ctx, deps, lost);
+  const note = postFailureNote(lost.owed ?? "");
+  return note === "" || pass.reason === undefined
+    ? pass
+    : { ...pass, reason: `${pass.reason}${note}` };
+}
+
+/** The decision procedure itself; `reviewOutcome` is its only caller. `lost` is how its
+ * `finally` reports what the forge refused: the value is not known until after every
+ * `return` in the `try` has been evaluated, so it is written rather than returned. */
+async function reviewPass(
+  ctx: HandlerCtx,
+  deps: ReviewDeps,
+  lost: { owed?: string },
+): Promise<Outcome> {
   const { repoRoot, issue } = ctx;
   const branch = specifyBranch(ctx.run.branch, issue);
   const base = ctx.run.baseSha;
@@ -270,6 +281,10 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
   // This attempt's number, from the log the engine resumes off — see
   // `reviewAttemptFromLog`. Part of the fix tree's name, so read once here.
   const attempt = reviewAttemptFromLog(ctx.steps);
+  /** Set by the `finally` to what the forge refused; `reviewOutcome` reads it through
+   * `lost` once that `finally` has run. `undefined` until a post actually fails, which is
+   * what keeps a clean run's reason untouched. */
+  let postsOwed: string | undefined;
 
   try {
     // ── pass 1: the full review — the adversarial gate AND the six lenses ─────
@@ -464,31 +479,15 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
     return withRecord(reviewedPass(reReview, reGate, { threshold, preFixHead, head, rows }));
   } finally {
     // The step's two disclosures, each posted once whatever arm closed it (a thrown arm
-    // still owes the reader what the gate said) and only on the forge channel: `publish`
-    // ran before this step, so the PR body cannot carry either, and on
-    // `PI_ENSEMBLE_HANDOFF_CHANNEL=host` the host owns every post. A failed post never
-    // changes the verdict — the record and the warn line already carry it. Two comments,
-    // not one: the bound record says what this step did NOT judge, the acceptance table
-    // says what the gate said about each criterion.
-    const forge = handoffChannel() !== "host";
-    const post = forge && pr !== undefined ? deps.prComment : undefined;
-    const acceptance =
-      post !== undefined && acceptanceTable !== undefined
-        ? acceptanceComment(ctx.steps, issueBody, head)
-        : "";
-    if (acceptance !== "" && post !== undefined && pr !== undefined)
-      await post(repoRoot, pr, acceptance).catch((err: unknown) =>
-        traceWarn(
-          `lean review #${String(issue)}: could not post the acceptance table: ${(err as Error)?.message ?? String(err)}`,
-        ),
-      );
-    if (post !== undefined && pr !== undefined && boundRecord !== undefined) {
-      await post(repoRoot, pr, reviewBoundComment(boundRecord)).catch((err: unknown) =>
-        traceWarn(
-          `lean review #${String(issue)}: could not post the unreviewed-lanes disclosure: ${(err as Error)?.message ?? String(err)}`,
-        ),
-      );
-    }
+    // still owes the reader what the gate said), in the order and with the failure
+    // handling `postReviewDisclosures` states. What the forge refused travels out through
+    // `lost`, which `reviewOutcome` reads once this `finally` has settled it.
+    postsOwed = await postReviewDisclosures(deps, repoRoot, issue, ctx.steps, issueBody, head, {
+      pr,
+      acceptanceTable,
+      bound: boundRecord,
+    });
+    lost.owed = postsOwed;
     // Scoped to THIS attempt's trees (issue, attempt, epoch) — see `closeFixTrees`.
     // An unscoped `-fix-` match would tear down a concurrent attempt's live tree.
     await closeFixTrees(deps, ctx, attempt, runId);

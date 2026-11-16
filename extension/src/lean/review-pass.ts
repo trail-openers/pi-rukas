@@ -18,7 +18,7 @@ import { DISPATCHES_MAX_ROWS } from "./state-outcome.ts";
 import type { Outcome } from "./state.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 
-export { disclosureNote, cleanPass };
+export { disclosureNote, cleanPass, postFailureNote };
 
 /**
  * The bounded summary a fixed pass owes the operator for what it DISCLOSED.
@@ -44,6 +44,22 @@ function disclosureNote(disclosedRows: number, gateText: string): string {
     parts.push(`${String(disclosedRows)} below-bar ${disclosedRows === 1 ? "row" : "rows"}`);
   if (gate !== "") parts.push(`adversarial (non-blocking): ${gate}`);
   return `; DISCLOSED: ${parts.join("; ")}`;
+}
+
+/**
+ * What the STEP'S OWN disclosures say when the forge refused one of them.
+ * `cleanPass` already carries the lens layer's account of a failed residual post;
+ * this is the sibling for the two comments the review step posts itself (the executed
+ * acceptance table and the unreviewed-lanes disclosure, both in `review.ts`'s
+ * `finally`). A comment the forge refused never changes the verdict — but a reader
+ * who cannot see it is missing a disclosure with nothing saying so, so the names of
+ * what went missing ride the reason, bounded and neutralised like every other
+ * model-authored field on a stored surface. `""` means every post landed.
+ */
+function postFailureNote(owed: string): string {
+  const what = neutraliseEvidence(owed);
+  if (what === "") return "";
+  return `; DISCLOSURE NOT POSTED: ${what}`;
 }
 
 /**

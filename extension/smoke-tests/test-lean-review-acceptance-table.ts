@@ -32,6 +32,7 @@
 import {
   LEAN_REVIEW_ACCEPTANCE_HEADING,
   LEAN_REVIEW_ACCEPTANCE_LEAD,
+  NO_GREEN_VERIFY_CELL,
   acceptanceRows,
   renderAcceptanceSection,
 } from "../src/lean/review-acceptance.ts";
@@ -179,15 +180,28 @@ function body(
 
 // ── (4) no green verify: the table says so rather than speaking unanchored ───
 {
-  const criteria = [{ id: "AC1", text: "The meter refuses.", verify: "test" as const }];
+  const criteria = [
+    { id: "AC1", text: "The meter refuses.", verify: "test" as const },
+    { id: "AC2", text: "The script still exits 0.", verify: "command" as const },
+    { id: "AC3", text: "The wording reads well.", verify: "manual" as const },
+  ];
   // No decided `verify` at all: the log's undecided tail is the engine's replay
-  // marker, so it says nothing, and there is no head for a cell to name.
+  // marker, so it says nothing, and there is no head for a cell to name — and a
+  // `pass` that names no head is exactly the claim A1 refuses to license.
   const rows = acceptanceRows(log(undefined, { AC1: ["tests/AC1.test.ts"] }), {
     criteria,
   });
   assert(
-    rows[0]?.result === "pass",
-    `(4a) with no decided green verify there is no head to name, and the cell says pass and nothing else (${JSON.stringify(rows[0]?.result)}) — the mutant: an invented head, or the head of a RED verify, would be a claim about a commit nobody certified`,
+    rows[0]?.result === NO_GREEN_VERIFY_CELL,
+    `(4a) with no decided green verify a test criterion is NOT a bare "pass" — with no head to name there is no executed evidence to report (${JSON.stringify(rows[0]?.result)}) — the mutant: an invented head, the head of a RED verify, or a "pass" that cites no commit at all`,
+  );
+  assert(
+    rows[1]?.result === NO_GREEN_VERIFY_CELL,
+    `(4a2) and so is a command criterion — the green record is the only one that could have answered it (${JSON.stringify(rows[1]?.result)})`,
+  );
+  assert(
+    rows[2]?.result === "manual — needs a human",
+    `(4a3) while a manual row keeps the gate's standing answer whatever the log holds (${JSON.stringify(rows[2]?.result)})`,
   );
   const section = renderAcceptanceSection(
     log(undefined, { AC1: ["tests/AC1.test.ts"] }),
@@ -199,15 +213,53 @@ function body(
       section.split("\n").find((l) => l.startsWith("Verified head")) ?? "",
     )})`,
   );
-  // A red verify says nothing about a head either, and must not lend its own.
-  const red = log(
-    { kind: "red", verifiedHead: OTHER, reason: "the frozen contract failed" },
-    { AC1: ["tests/AC1.test.ts"] },
-  );
+  // The log a run actually walks after a CI fix round: `verify:0 green@HEAD`,
+  // `publish` ok, `ci` red, then `verify:1 red@OTHER` — `machine.ts` routes a red
+  // `ci` back through `verify` and `review` re-enters with the WHOLE log, so the
+  // newest DECIDED verify is red while an older green still sits in the log. No row
+  // may read `pass` there, and `anyGreenVerify` is what lets the anchor say "a later
+  // gate came back red" rather than "no gate ever ran".
+  const red = [
+    ...log(greenVerify(), { AC1: ["tests/AC1.test.ts"] }),
+    step("ci", { kind: "red", reason: "the suite failed on the merge queue" }),
+    step("verify", { kind: "red", verifiedHead: OTHER, reason: "the frozen contract failed" }, 1),
+  ];
   const redRows = acceptanceRows(red, { criteria });
   assert(
-    !redRows[0]!.result.includes(OTHER.slice(0, 12)),
-    `(4c) a RED verify's head is never the table's head (${JSON.stringify(redRows[0]?.result)})`,
+    !redRows[0]!.result.includes(OTHER.slice(0, 12)) && redRows[0]!.result === NO_GREEN_VERIFY_CELL,
+    `(4c) a RED verify's head is never the table's head, and its rows are not passes (${JSON.stringify(redRows[0]?.result)})`,
+  );
+  assert(
+    !redRows[0]!.result.includes(HEAD.slice(0, 12)),
+    `(4c2) nor is an EARLIER green's head once a newer verify came back red over it — the newest decided gate is the only one a row may cite (${JSON.stringify(redRows[0]?.result)})`,
+  );
+  const redSection = renderAcceptanceSection(red, body(criteria));
+  const redAnchor = redSection.split("\n").find((l) => l.startsWith("Verified head")) ?? "";
+  assert(
+    redAnchor.includes("came back RED") &&
+      !redAnchor.includes("no decided green `verify` step"),
+    `(4d) a log whose newest verify is RED says so, rather than the wording a run that never verified gets (${JSON.stringify(redAnchor)}) — the mutant: one anchor line for both facts, which cannot tell a red gate from no gate`,
+  );
+  // The two absences the anchor distinguishes are the only two a real log can hold:
+  // `state-outcome.ts` refuses a `verify` whose `verifiedHead` is not a full sha, so a
+  // decided green ALWAYS names one — the arms are "a newer verify came back red" and
+  // "no decided green verify at all", never "a green that forgot to name a head".
+  assert(
+    acceptanceRows(log(undefined, { AC1: ["tests/AC1.test.ts"] }), { criteria })[0]?.result ===
+      NO_GREEN_VERIFY_CELL,
+    `(4e) the no-gate-at-all log reads the same refusal as the red one — neither has executed evidence to cite (${JSON.stringify(
+      acceptanceRows(log(undefined, { AC1: ["tests/AC1.test.ts"] }), { criteria })[0]?.result,
+    )})`,
+  );
+  // And the anchor wording does not leak between them: the no-gate log must not claim a
+  // gate came back red, which would send an operator looking for a verdict that never was.
+  const noGateAnchor =
+    renderAcceptanceSection(log(undefined, { AC1: ["tests/AC1.test.ts"] }), body(criteria))
+      .split("\n")
+      .find((l) => l.startsWith("Verified head")) ?? "";
+  assert(
+    noGateAnchor.includes("no decided green `verify` step") && !noGateAnchor.includes("RED"),
+    `(4e) and the no-gate wording says no gate ran, not that one failed (${JSON.stringify(noGateAnchor)})`,
   );
 }
 
