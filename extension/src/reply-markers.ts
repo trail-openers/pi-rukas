@@ -126,8 +126,12 @@ export const MARKER_CONTRACTS: readonly MarkerContract[] = [
     // echoes the prompt's menu). The row names the loop's consumer; the live
     // stop's own absence policy is "do not stop", stated in its module header.
     consumer: "adversarial-verdict.ts",
+    // #2312 — the loop's read is line-level, not whole-reply: the candidate rule
+    // and its consequence are the row's content, and test-marker-contracts.ts
+    // checks the token and every value against the consumer's source (which lives
+    // in `VERDICT_STATUSES`, plus the reader this row now points at).
     onAbsence:
-      "verdictParsed=false → fix round mid-loop, `incomplete` at the terminal round (never pass, never reject)",
+      "no candidate line — the last signature in the reply, which must start at column 0, excluding fenced/indented/quoted/bulleted/table rows and any line of a run of consecutive token lines naming 2+ values — → verdictParsed=false → fix round mid-loop, `incomplete` at the terminal round (never pass, never reject)",
   },
   {
     token: "VERDICT",
