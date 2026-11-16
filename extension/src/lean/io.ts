@@ -201,21 +201,12 @@ export async function postHandback(repoRoot: string, issue: number, body: string
 
 /**
  * Post the derived-contract comment: the criteria this run read out of a prose
- * ticket and is now building to.
- *
- * Why it exists: a `derive` run puts a machine-written contract on a human's
- * issue and then spends hours building to it. Silence would leave the author
- * reading a PR whose acceptance criteria nobody approved, and it would leave no
- * record on the ISSUE of what the model actually claimed. So the derivation is
- * published at the moment it is made, fenced exactly as the author would write
- * it, with the model named — the two things needed to notice a bad derivation
- * before the merge rather than after.
- *
- * Posted once, by `ready`, on the same step-log guarantee every other comment
- * has: a step that posted never runs twice, so a resume does not re-post, and a
- * run that re-reads a persisted `derivedSpec` never posts again because it never
- * re-derives.
+ * ticket and is now building to. Silence here would leave an author reading a PR
+ * whose acceptance criteria nobody approved, so the derivation is published the
+ * moment it is made, fenced exactly as an author would write it and with the model
+ * named — the two things needed to notice a bad derivation before the merge.
  */
+
 export async function postDerivedSpec(
   repoRoot: string,
   issue: number,

@@ -199,6 +199,14 @@ export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   // code runs at all. The reader is `leanSubmodulesLocalEnabled` in
   // lean/submodules-local-switch.ts.
   flag("LEAN_SUBMODULES_LOCAL", true),
+  // Where a lean run's contract comes from when its issue carries no `pi-spec v1`
+  // block: `require` (the default) declines, exactly as every run before this knob
+  // existed; `derive` sends the prose to one bounded read-only child, which returns
+  // a block the run then validates as though an author had written it. An invalid
+  // value is a refusal, never the default — a typo that quietly fell back to
+  // `require` would decline tickets the operator meant to run. The reader is
+  // `resolveSpecIntake` in lean/spec-intake-switch.ts.
+  input("LEAN_SPEC_INTAKE", "enum", null, "cycle", { values: ["require", "derive"] }),
   // The rewind rule itself: reader `leanVerifiedHandbackEnabled`, same module.
   flag("LEAN_VERIFIED_HANDBACK", true),
   // Unset: derived from the host budget (CPUs, memory, pids.max); 0 = unbounded.

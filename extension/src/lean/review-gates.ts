@@ -147,7 +147,7 @@ export async function adversarialGate(
     head: string;
     branch: string;
     issueBody: string;
-    /** The run's derived contract, threaded so the brief's criteria follow the run. */
+    /** See `AdversarialArgs.derivedSpec`. */
     derivedSpec?: DerivedSpec;
     /** Which pass of the one wave this is. */
     wave: "full" | "fix";
@@ -270,7 +270,7 @@ export async function lensGate(
      * The lens seam itself takes no body — the context string is what the six
      * children read. */
     issueBody: string;
-    /** The run's derived contract, threaded so the brief's criteria follow the run. */
+    /** See `AdversarialArgs.derivedSpec`. */
     derivedSpec?: DerivedSpec;
     /** The executed acceptance table, appended to the lenses' brief by `lensContext`. */
     acceptanceTable?: string;

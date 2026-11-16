@@ -145,14 +145,9 @@ export interface SpecifyDeps {
  */
 export { SpecifyInfraError } from "./specify-run.ts";
 
-/**
- * The rules a spec fails on re-read, or [] when it still holds.
- *
- * The read goes through `specFor`, so a run whose contract the engine DERIVED is
- * re-read against the contract it is actually executing rather than declined for
- * an issue that never carried a block. A body whose block is malformed still
- * reports its own reason, unchanged: that is the author's defect, and the
- * accessor never papers over one.
+/** The rules a spec fails on re-read, or [] when it still holds. Read through the
+ * accessor, so a derived run is re-read against the contract it is executing; a
+ * malformed block still reports its own reason, because that is the author's defect.
  */
 function specRules(body: string, run: LeanRun): { spec?: PiSpec; rules: string[] } {
   const read = specFor(body, run);

@@ -71,30 +71,18 @@ export interface Outcome {
    */
   blockedBy?: Record<string, string>;
   /**
-   * `ready` only: the run's config, as `ready` loaded it at the run's base. The
-   * engine copies it onto the run so later steps and the report read the settings
-   * the run was judged by, rather than re-reading a file that could have moved
-   * under a resume. Typed by the loader, not by a loose `unknown`: a config the
-   * validator could not describe is a config no step should execute.
+   * The three fields `ready` owns and the engine copies onto the RUN (see
+   * `applyReadyFacts`): the config the run was judged by, the commit it was read
+   * at, and — for a `derive` run — the contract the engine drafted for it. The
+   * derived spec is the one that has to be durable: an authored contract can be
+   * re-read from the issue on a resume, but a derived one exists nowhere else, and
+   * re-deriving would pay a second child for a document that could come back
+   * DIFFERENT, with every later step building criteria the earlier ones never saw.
+   * Checked on load against the contract's own rules (`state-derived-spec.ts`), so
+   * no record can carry a document `parsePiSpec` could never have produced.
    */
   config?: WorkConfig;
-  /**
-   * `ready` only: the commit that config was read at, kept beside it so a record
-   * says which tree its settings describe.
-   */
   baseSha?: string;
-  /**
-   * `ready` only (kind `ok`, `derive` intake mode): the contract the run derived
-   * for itself, because its issue carried no `pi-spec v1` block. No other step
-   * writes it, and it is what makes a derived contract part of the durable record
-   * rather than a fact that lived in one process's memory: every later step reads
-   * its spec off the run, and a resume must neither re-derive nor pay a second
-   * drafting child for a contract the run already holds.
-   *
-   * The value is checked on load against the contract's own rules (see
-   * `assertDerivedSpec`), so a record cannot carry a document `parsePiSpec` could
-   * never have produced.
-   */
   derivedSpec?: DerivedSpec;
   /**
    * `verify` and `ci` only: the tiers this step found red at HEAD whose every

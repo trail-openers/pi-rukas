@@ -80,3 +80,21 @@ export function resolveSpecIntake(config?: WorkConfig): SpecIntake {
 export function specIntakeFromEnv(config?: WorkConfig): SpecIntake {
   return resolveSpecIntake(config);
 }
+
+/**
+ * Apply the `--spec-intake <mode>` verb flag for one headless run; returns the
+ * refusal text, or `undefined` when the flag was absent or valid.
+ *
+ * Written to the env the switch reads, and as late as the parser allows: `process.env`
+ * is process-wide, so a value written early (or left) would arm the next run in this
+ * host, including an interactive one that never asked. Validated here rather than
+ * left to the switch so a `--spec-intake derve` typo is an argument error the host
+ * sees, not a run that declined every ticket it was meant to take.
+ */
+export function applySpecIntakeFlag(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  if (!SPEC_INTAKE_VALUES.includes(value as SpecIntake))
+    return `--spec-intake must be one of ${SPEC_INTAKE_VALUES.join(", ")}`;
+  process.env[SPEC_INTAKE_ENV] = value;
+  return undefined;
+}

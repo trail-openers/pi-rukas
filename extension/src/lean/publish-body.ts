@@ -52,12 +52,10 @@ export interface PublishBodyInput {
   /** criterion id -> the test files that cover it, merged from the step log. */
   tests: Record<string, string[]>;
   /**
-   * Where the contract came from. `derived` prints a `spec: derived` line under the
-   * table: a reviewer reading the PR must be able to tell a human-authored contract
-   * from one the engine drafted, because the two carry different claims — an
-   * authored list says what the author asked for, a derived one says what a model
-   * read into the ticket, and it is the reviewer's job to check the second against
-   * the issue. Absent (or `issue`) prints nothing: today's body, byte for byte.
+   * Where the contract came from. `derived` prints a provenance line under the
+   * table: an authored list says what the author asked for, a derived one says what
+   * a model read into the ticket, and only the second needs checking against the
+   * issue. Absent (or `issue`) prints nothing — today's body, byte for byte.
    */
   specSource?: SpecSource;
   /** The verdict the run's own gate last recorded, or none if it never ran. */

@@ -2,32 +2,28 @@
  * lean/spec-derive — one bounded read-only child turns a prose ticket into a
  * `pi-spec v1` contract (`derive` intake mode).
  *
- * The problem this solves: a team that writes tickets by hand gets `decline`
- * ("no pi-spec v1 block") and has no way into the engine short of running
- * `/plan`. Deriving the contract inside the run must not weaken what the spec
- * gives the run, so the shape here is deliberately narrow:
+ * The shape is deliberately narrow, because deriving a contract must not weaken
+ * what the contract gives the run:
  *
- *   - ONE child, `explore`, read-only, on its own budget row (`derive`), so an
- *     operator can price and bound it without touching a step's ceiling;
- *   - the child sees the issue's TITLE and BODY fenced as untrusted data
- *     (`text-fence`), never raw, and returns a neutral problem line plus at most
- *     {@link DERIVE_MAX_CRITERIA} testable bullets in one `pi-spec v1` block;
- *   - the reply is read by a DETERMINISTIC parser — a model never decides what
- *     the contract is, it only drafts the bullets;
- *   - the mapping is `pi-spec-map.ts`, the same one `/plan` files from, so the
- *     two producers cannot bound, neutralise, or size differently;
- *   - the result is validated on the RENDERED BLOCK only:
- *     `parsePiSpec(renderPiSpec(spec))` must deep-equal the spec and `readiness`
- *     must pass. A size-`L` or criteria-less derivation is refused, with the
- *     rendered block quoted so the operator can see what was derived.
+ *   - ONE child, `explore`, read-only, on its own `budgets.derive` row;
+ *   - the issue's TITLE and BODY reach it fenced as untrusted data
+ *     (`text-fence`), never raw, and it returns a neutral problem line plus at
+ *     most {@link DERIVE_MAX_CRITERIA} testable bullets;
+ *   - a DETERMINISTIC parser reads the reply — a model drafts bullets, it never
+ *     decides what the contract is;
+ *   - the bullets are mapped by `pi-spec-map.ts`, the same mapper `/plan` files
+ *     from, so the two producers cannot bound or neutralise differently;
+ *   - the result is validated on the RENDERED BLOCK only
+ *     (`parsePiSpec(renderPiSpec(spec))` deep-equals the spec, `readiness`
+ *     passes), because that block is what every later step re-parses.
  *
- * A child that fails, times out, exceeds its budget, or returns nothing
- * parsable throws {@link SpecDeriveError}, which the engine turns into a
- * handback naming its own cause — never a partial spec, and never a `decline`:
+ * Every failure — a dead child, a ceiling, an unparsable reply, a contract that
+ * is not ready — throws {@link SpecDeriveError}, which the engine turns into a
+ * handback naming its own cause. Never a partial spec, and never a `decline`:
  * the issue was not at fault, the model call was.
  *
- * Every outside call is a field of {@link DeriveDeps}, so a case drives the
- * whole boundary with a stubbed reply and no model is contacted.
+ * Every outside call is a field of {@link DeriveDeps}, so a case drives the whole
+ * boundary with a stubbed reply and no model is contacted.
  */
 
 import { execp } from "../exec.ts";
@@ -37,6 +33,7 @@ import { traceWarn } from "../trace.ts";
 import type { DispatchResult, DispatchSpec } from "../types.ts";
 import { leanChildOpts } from "./child-opts.ts";
 import { type Budget, type WorkConfig, loadWorkConfig } from "./config.ts";
+import { DERIVE_DEFAULT_BUDGET } from "./derive-budget.ts";
 import type { PiSpec } from "./spec.ts";
 import { parsePiSpec, readiness, renderPiSpec } from "./spec.ts";
 import { type BudgetArms, armBudget, budgetFor, dispatchUsageRow } from "./step-budget.ts";
@@ -50,15 +47,11 @@ export const DERIVE_ROLE = "explore";
 export const DERIVE_BUDGET_KEY = "derive";
 
 /**
- * The shipped ceiling for the deriving child: one short read-only pass over
- * text it was handed. Deliberately far below a step's row — this child drafts
- * bullets from what is already in its prompt and has no repository to explore.
+ * The shipped ceiling, re-exported from `lean/derive-budget.ts` — the leaf the
+ * config's `budgets.derive` row names it in, so the number is declared once and
+ * the two readers of it do not import each other.
  */
-export const DERIVE_DEFAULT_BUDGET: Budget = Object.freeze({
-  turns: 30,
-  tokens: 2_000_000,
-  minutes: 10,
-});
+export { DERIVE_DEFAULT_BUDGET } from "./derive-budget.ts";
 
 /**
  * The most criteria the deriving child may return: {@link SIZE_MEDIUM_MAX}, the
@@ -103,10 +96,10 @@ export type DeriveDispatch = (
 ) => Promise<DispatchResult>;
 
 /**
- * The brief. The issue text arrives fenced and disarmed, and the child is told
- * plainly it is DATA: a ticket whose text says "ignore your instructions" is the
- * shape this boundary must survive, and the cheapest way to survive it is never
- * to let the text sit at the prompt's own level.
+ * The brief. The issue text arrives fenced and disarmed and is labelled DATA: a
+ * ticket whose own text says "ignore your instructions" is the shape this boundary
+ * must survive, and the cheapest way to survive it is never to let that text sit at
+ * the prompt's own level.
  */
 export function derivePrompt(input: DeriveInput): string {
   return [
@@ -216,13 +209,10 @@ export function deriveBudget(config?: WorkConfig): Budget {
  * Derive the contract for one issue from its title and body.
  *
  * Every outcome but a usable spec throws {@link SpecDeriveError} naming its own
- * cause — a dead child, a budget stop, an empty reply, a reply with no parsable
- * block, or a block that is not a runnable contract — because a handback that
- * said only "the child said no" would leave the operator to work out which of
- * the five happened, and only one of them is a prompt problem.
- *
- * The rows of the child this call paid for ride on every throw: a child that
- * died still cost tokens, and the throw is the only path back to the record.
+ * cause — a dead child, a ceiling, an empty or unparsable reply, a contract that
+ * is not ready — because "the child said no" would leave the operator to work out
+ * which of the five it was, and only one of them is a prompt problem. The child's
+ * cost rows ride on every throw: a child that died still cost tokens.
  */
 export async function deriveSpec(
   input: DeriveInput,
@@ -260,14 +250,11 @@ export async function deriveSpec(
 }
 
 /**
- * The derivation as the command drives it: the title read through the forge,
- * the budget read at the run's base, and one child.
- *
- * A title the forge cannot supply is not fatal — the body is the substance and
- * the mapper's problem line comes from the child's own statement, so an empty
- * title degrades the brief rather than the run. A config that cannot be read
- * DOES throw: the same rule `ready` applies, since a blanket default here would
- * hand the child a budget nobody configured.
+ * The derivation as the command drives it: the title read through the forge, the
+ * budget read at the run's base, one child. A missing title is not fatal (the body
+ * is the substance and the problem line comes from the child's own statement); a
+ * config that cannot be read DOES throw — the same rule `ready` applies, since a
+ * blanket default would hand the child a budget nobody configured.
  */
 export async function deriveSpecForRun(
   deps: DeriveDeps,
@@ -287,10 +274,18 @@ export async function deriveSpecForRun(
   });
 }
 
-/** Trace a derivation that refused, so stderr says which one and why. */
-export function traceDeriveRefusal(issue: number, why: string): void {
+/**
+ * Trace one derivation event so stderr says what happened and to which issue.
+ *
+ * `stage` separates the two things an operator must not conflate — `refused`
+ * ("no contract was produced") and `unposted` ("the contract exists and nobody on
+ * the issue can see it"). Collapsing them would make a posting failure read as a
+ * derivation failure, the one mistake an operator cannot afford while deciding
+ * whether to re-run.
+ */
+export function traceDerive(issue: number, stage: "refused" | "unposted", why: string): void {
   try {
-    traceWarn(`lean/spec-derive #${String(issue)}: ${oneLine(why, 300)}`);
+    traceWarn(`lean/spec-derive #${String(issue)} ${stage}: ${oneLine(why, 300)}`);
   } catch {
     /* a sink we cannot write to cannot be written to */
   }
@@ -309,16 +304,12 @@ export function deriveDeps(headless: boolean): DeriveDeps {
     loadConfig: (repoRoot, baseSha) => loadWorkConfig(execp, repoRoot, baseSha),
     dispatch: (spec, arms) =>
       spawnSpecialist(spec, {
-        // The ceiling must bind the CHILD: `childBoundMs` is its wall clock, the
-        // signal is the turns/tokens kill, and `budgetTurns` is the denominator
-        // of the budget-progress steer. A seam that read the arms key by key and
-        // dropped one would leave the child unbounded on that lever.
+        // All three arms, spread whole: dropping one would leave the child unbounded
+        // on that lever while the budget still claimed to have armed it.
         ...arms.opts,
-        // The headless run's children need the /work-cycle trust stamp, or the
-        // headless permission path hard-denies their every tool call.
+        // The /work-cycle trust stamp, or the headless permission path denies every call.
         ...leanChildOpts(headless),
-        // The budget's kill goes through `killProcessTree`, which only reaches
-        // the child's tool tree when the child leads its own group.
+        // The budget's kill reaches the child's tool tree only via its own group.
         processGroup: true,
       }),
   };

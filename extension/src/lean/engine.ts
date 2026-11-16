@@ -144,14 +144,10 @@ function withOutcome(run: LeanRun, key: string, outcome: Outcome, endedAt: numbe
 }
 
 /**
- * Copy `ready`'s three run-level fields off its verdict and onto the run.
- *
- * Field by field, and only on `ready`: each is owned by that step's verdict (see
- * `OWNER_OF_FIELD`), and a step that cannot own a field on the record cannot put
- * it there either. A resumed run re-runs `ready` before anything else, so the
- * fields are re-established from the same source on every entry — the record is
- * never the only place they were ever written, except for `derivedSpec`, which is
- * precisely why it is written here.
+ * Copy `ready`'s three run-level fields off its verdict onto the run — field by
+ * field, and only from `ready`, because each is owned by that step's verdict
+ * (`OWNER_OF_FIELD`) and a step that cannot own a field on the record cannot put
+ * it there either.
  */
 function applyReadyFacts(run: LeanRun, outcome: Outcome): LeanRun {
   return {
@@ -233,11 +229,9 @@ async function settle(
     outcome = errorOutcome(state, err);
   }
   const logged = withOutcome(run, key, outcome, now());
-  // `ready` is the one step whose verdict has to land on the RUN and not only on
-  // its step record: `config` is what later steps execute under, `baseSha` is the
-  // commit that config was read at, and `derivedSpec` is the only copy of a
-  // contract that exists on no issue. Without this the run would carry its own
-  // settings to the steps that need them and the process would die holding them.
+  // `ready`'s verdict also has to land on the RUN, not only its step record: the
+  // config is what later steps execute under and `derivedSpec` is the only copy of a
+  // contract that exists on no issue.
   const withFacts = key === "ready" ? applyReadyFacts(logged, outcome) : logged;
   if (outcome.kind === "error") {
     drive.save(withFacts);

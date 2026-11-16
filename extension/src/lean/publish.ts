@@ -291,10 +291,9 @@ export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promis
       `could not read the issue: ${(err as Error)?.message ?? String(err)}`,
     );
   });
-  // Read through the accessor. This is the step that prints the contract onto the
-  // PR, so it is where a derived run would most visibly be told it has none: the
-  // body must describe the criteria the run was actually built and verified
-  // against, which for a derived run is the record's, not the issue's.
+  // The accessor: this step prints the contract onto the PR, so the body must
+  // describe the criteria the run was built and verified against — for a derived
+  // run those live on the record, not on the issue.
   const read = specFor(fetched, ctx.run);
   if (!read.ok) throw new PublishInfraError(`the issue's spec is unusable: ${read.reason}`);
   const spec = read.spec;
@@ -346,8 +345,7 @@ export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promis
     publishBody({
       issue,
       spec,
-      // Provenance, read off the RECORD and not from a closure: a resumed run that
-      // never derived still says `derived`, because the record is the fact.
+      // Provenance off the RECORD, so a resumed run reports it too.
       specSource: specSource(ctx.run),
       tests: testsFromLog(ctx.steps),
       verifyKind,

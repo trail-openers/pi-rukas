@@ -28,6 +28,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { execp } from "../src/exec.ts";
+import { WORK_LEAN_FLAGS, WORK_LEAN_VALUE_FLAGS } from "../src/headless/work-lean.ts";
 import { LeanConfigError, loadWorkConfig } from "../src/lean/config.ts";
 import {
   SPEC_INTAKE_VALUES,
@@ -35,6 +36,7 @@ import {
   resolveSpecIntake,
   validateSpecIntake,
 } from "../src/lean/spec-intake-switch.ts";
+import { applySpecIntakeFlag } from "../src/lean/spec-intake-switch.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import { gitTestEnv } from "./lib/git-test-env.ts";
 import { worktreeCommit } from "./lib/lean-spec-intake-fixtures.ts";
@@ -249,6 +251,55 @@ for (const [body, needle] of [
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }
+}
+
+// ── the headless verb's `--spec-intake` flag: the host's word, and only for the
+// run that asked. Two ways this could be wrong, both expensive: a typo that fell
+// through to the default (the host meant `derive`, every prose ticket declined),
+// and a flag that leaked into the process (the NEXT run, interactive or not,
+// derives contracts nobody asked it to derive).
+{
+  await withEnv({ PI_ENSEMBLE_LEAN_SPEC_INTAKE: undefined }, async () => {
+    assert(applySpecIntakeFlag(undefined) === undefined, "no flag is no refusal");
+    assert(
+      resolveSpecIntake(undefined) === "require",
+      "…and leaves the mode at the default it was before",
+    );
+
+    assert(applySpecIntakeFlag("derive") === undefined, "derive is accepted");
+    assert(resolveSpecIntake(undefined) === "derive", "…and takes effect for the run that asked");
+
+    const refusal = applySpecIntakeFlag("derve");
+    assert(
+      typeof refusal === "string" && refusal.includes("require"),
+      `a typo is an argument error naming the values (got ${JSON.stringify(refusal)})`,
+    );
+    assert(
+      resolveSpecIntake(undefined) === "derive",
+      "…and the accepted value stands: a refusal never overwrote it",
+    );
+
+    assert(applySpecIntakeFlag("require") === undefined, "require is accepted too");
+    assert(resolveSpecIntake(undefined) === "require", "…and puts the mode back");
+  });
+
+  // The flag is a per-run arm, not a process-wide one: the verb writes the env the
+  // switch reads, so a case must see the value go away when the run's own scope
+  // ends. `withEnv` restores it; the assertion is that nothing else kept a copy.
+  await withEnv({ PI_ENSEMBLE_LEAN_SPEC_INTAKE: undefined }, async () => {
+    applySpecIntakeFlag("derive");
+  });
+  assert(
+    resolveSpecIntake(undefined) === "require",
+    "the flag does not outlive the run that set it",
+  );
+
+  // The verb declares the flag, so `--spec-intake` is not silently dropped by the
+  // parser as an unknown token (which is how a host's intent becomes a no-op).
+  assert(
+    WORK_LEAN_FLAGS.includes("--spec-intake") && WORK_LEAN_VALUE_FLAGS.includes("--spec-intake"),
+    "the verb lists --spec-intake among its value flags",
+  );
 }
 
 process.exit(failed);

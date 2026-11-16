@@ -1,42 +1,26 @@
 /**
  * lean/spec-intake — where a run's contract comes from.
  *
- * `ready` used to have one answer to that question (the issue body, or nothing),
- * and the answer lived inline in `command.ts`. It now has two, and the decision
- * is load-bearing enough to sit on its own: it is the point where a run chooses
- * between quoting a human's document and paying a model to draft one, and the
- * rule that decides must be readable without reading the whole handler table.
- *
- * The rule, in one place:
- *
- *   - the body's own `pi-spec v1` block always wins — an issue that carries a
- *     contract runs on the contract its author wrote, whatever intake mode says;
- *   - a block that is PRESENT but malformed is reported exactly as `require`
- *     mode reports it, in both modes. The author already took a position on the
- *     contract and wrote it wrong; that is theirs to fix, and a model silently
- *     writing a better one over their mistake would hide the defect;
- *   - a body with NO block is where the switch applies. `require` (the shipped
- *     default) declines, byte for byte as before. `derive` sends the prose to one
- *     bounded read-only child — unless the body is blank, which is a ticket with
- *     nothing in it rather than prose, and is declined without billing a child;
- *   - a derivation that fails is an `infra` verdict, never a decline: the issue
- *     was not at fault, the model call was, and that difference is what keeps the
- *     run retryable instead of telling an author their ticket is unready.
- *
- * The mode itself is resolved by `spec-intake-switch.ts`: the operator's env
- * first, then the repo's committed `lean.specIntake`, then `require`.
+ * `ready` used to have one answer (the issue body, or nothing) and it lived inline
+ * in `command.ts`. It has two now, and the decision is load-bearing enough to sit
+ * alone: it is where a run chooses between quoting a human's document and paying a
+ * model to draft one. The rule: a block that PARSES always wins; a block present
+ * but malformed is reported exactly as `require` reports it in both modes (the
+ * author took a position and wrote it wrong — a model quietly writing a better one
+ * would hide the defect); a body with NO block is where the switch applies, with
+ * `require` declining byte-for-byte as before and `derive` sending the prose to one
+ * bounded child, unless the body is blank, which is a ticket with nothing in it and
+ * is declined without billing a child. A failed derivation is an `infra` verdict,
+ * never a decline — that difference is what keeps the run retryable. The mode
+ * itself is `spec-intake-switch.ts`'s: env, then the committed `lean.specIntake`,
+ * then `require`.
  */
 
 import { execp } from "../exec.ts";
 import { resolveModel } from "../models.ts";
 import { type WorkConfig, loadWorkConfig } from "./config.ts";
 import type { LeanSeed } from "./seed.ts";
-import {
-  type DeriveDeps,
-  SpecDeriveError,
-  deriveSpecForRun,
-  traceDeriveRefusal,
-} from "./spec-derive.ts";
+import { type DeriveDeps, SpecDeriveError, deriveSpecForRun, traceDerive } from "./spec-derive.ts";
 import { type SpecIntake, resolveSpecIntake } from "./spec-intake-switch.ts";
 import type { PiSpec } from "./spec.ts";
 import { parsePiSpec } from "./spec.ts";
@@ -76,22 +60,19 @@ export async function contractOf(
   const parsed = parsePiSpec(body);
   if (parsed.ok) return { spec: parsed.spec };
   if (parsed.reason !== NO_BLOCK_RULE) return { rule: parsed.reason };
-  // The env is the operator's word and wins; the committed `lean.specIntake` is
-  // the repo's word, consulted only when the env is silent. A config that named a
-  // value the loader would have refused cannot reach here — the loader throws, so
-  // `readyOutcome` reports the config unusable.
+  // Env first (the operator's word), then the committed field, then `require`. A
+  // config naming a value the loader would refuse cannot reach here — it throws.
   const intake: SpecIntake = resolveSpecIntake(config);
   if (intake !== "derive" || derive === undefined) return { rule: NO_BLOCK_RULE };
-  // A blank ticket is not "prose to derive from". `decline` naming the missing
-  // block is the honest answer, and the cheap one: no child is billed for a
-  // blank page, and a child given one would invent a contract from the title.
+  // A blank ticket is not "prose to derive from": decline, and bill no child for a
+  // blank page a model would fill in from the title.
   if (body.trim() === "") return { rule: NO_BLOCK_RULE };
   try {
     const spec = await deriveSpecForRun(derive, repoRoot, issue, base.baseSha, body);
     return { spec, derived: { spec, model: deriveModel(), at: Date.now() } };
   } catch (err) {
     if (!(err instanceof SpecDeriveError)) throw err;
-    traceDeriveRefusal(issue, err.message);
+    traceDerive(issue, "refused", err.message);
     // Clipped: the derivation's cause is a model's text put into a rule an
     // operator reads verbatim on the issue's handback comment.
     return { rule: `spec derivation failed: ${oneLine(err.message, 240)}`, infra: true };

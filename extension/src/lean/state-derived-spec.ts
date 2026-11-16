@@ -2,18 +2,14 @@
  * lean/state-derived-spec — the derived contract, and the rules for trusting one
  * that came off disk.
  *
- * The same document is read in two places: on the run record (`ready` wrote it)
- * and on `ready`'s own step outcome (the durable verdict that produced it). Both
- * reads are of untrusted bytes, so both go through {@link assertDerivedSpec} —
- * one rule, one implementation, no chance for the two readers to diverge on what
- * a valid contract is.
- *
- * The judgement is not a shape check restated from `spec.ts`; it is the contract's
- * OWN reader applied to the contract's OWN rendering, plus the readiness rules
- * `ready` applied before persisting. A record whose spec would not survive that
- * round trip is a document the run never validated, and it is refused at load —
- * the same place every other form of corruption is refused — rather than executed
- * by nine steps that would each read it differently.
+ * The same document is read in two places, the run record and `ready`'s own step
+ * outcome, and both reads are of untrusted bytes, so both go through
+ * {@link derivedSpecProblem}: one rule, one implementation, no way for the readers
+ * to drift. The judgement is `spec.ts`'s own reader applied to the contract's own
+ * rendering plus the readiness rules `ready` applied before persisting; a spec that
+ * would not survive that round trip is one the run never validated, and it is
+ * refused at load like any other corruption rather than executed by nine steps that
+ * would each read it differently.
  */
 
 import { type PiSpec, parsePiSpec, readiness, renderPiSpec } from "./spec.ts";

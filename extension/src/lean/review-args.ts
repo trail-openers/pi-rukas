@@ -85,13 +85,8 @@ export interface AdversarialArgs {
   cwd: string;
   issue: number;
   issueBody: string;
-  /**
-   * The run's derived contract, when its issue carried no `pi-spec v1` block and
-   * intake mode derived one. Threaded so the criteria section a seat is judged
-   * against is the criteria the run was actually built to — a seat handed an issue
-   * with no block would otherwise see no criteria at all and grade the branch
-   * against nothing. Absent is every authored-spec run, and the render is
-   * unchanged.
+  /** The contract the run was built to, so a seat never grades a branch against
+   * nothing when the block lives on the record. Absent is every authored run.
    */
   derivedSpec?: DerivedSpec;
   wave: ReviewWave;

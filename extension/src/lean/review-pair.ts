@@ -96,7 +96,7 @@ export async function buyFullReview(
     head: string;
     branch: string;
     issueBody: string;
-    /** The run's derived contract, threaded to both seats of the pair. */
+    /** See `AdversarialArgs.derivedSpec`. */
     derivedSpec?: DerivedSpec;
     /** The executed acceptance table, handed to BOTH children of the pair so the six
      * lenses and the adversarial reviewer judge the diff against the same table. */

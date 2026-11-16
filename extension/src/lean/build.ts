@@ -204,9 +204,8 @@ async function specOf(
   } catch (err) {
     throw new BuildInfraError(`could not read the issue: ${(err as Error).message}`);
   }
-  // Read through the accessor: a run whose contract the engine derived has no
-  // block on its issue, and a step that demanded one there would hand back over
-  // a contract the run already holds and `ready` already validated.
+  // The accessor: a derived run has no block on its issue, and demanding one here
+  // would hand back over a contract `ready` already validated.
   const read = specFor(body, run);
   if (!read.ok) throw new BuildInfraError(`the issue's spec is unusable: ${read.reason}`);
   return { spec: read.spec, body };

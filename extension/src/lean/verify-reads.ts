@@ -112,10 +112,9 @@ export async function specCriteriaFor(
       `could not read the issue's spec for the command criteria: ${(err as Error)?.message ?? String(err)}`,
     );
   });
-  // The accessor, so a derived run is graded against its own criteria; the
-  // accessor returns the missing-block reason unchanged when the record holds no
-  // derivation, which is the one reason this reader treats as "nothing to run"
-  // rather than as a fault — that arm and its trace line are today's.
+  // The accessor, so a derived run is graded against its own criteria. The one
+  // reason this reader treats as "nothing to run" stays the missing-block reason,
+  // and its trace line is today's.
   const read = specFor(body, run);
   if (!read.ok) {
     if (read.reason !== NO_BLOCK_RULE)

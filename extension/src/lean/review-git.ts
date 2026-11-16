@@ -184,8 +184,7 @@ export async function fixRound(
     findings: string;
     /** The run's issue, printed into the fixer's brief (see `ReviewFixArgs`). */
     issueBody: string;
-    /** The run's derived contract, so the fixer's brief names the requirements it
-     * may not contradict as the run understood them. */
+    /** See `AdversarialArgs.derivedSpec`. */
     derivedSpec?: DerivedSpec;
     gate: string;
     wave: ReviewWave;

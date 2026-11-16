@@ -358,6 +358,9 @@ const EXPECTED_BUDGETS: Record<string, Budget> = {
   challenge: { turns: 400, tokens: 60_000_000, minutes: 15 },
   review: { turns: 400, tokens: 60_000_000, minutes: 30 },
   ci: { turns: 0, tokens: 0, minutes: 30 },
+  // The spec-intake child: one bounded drafting pass, its own row so an operator
+  // can price it without touching a step's ceiling.
+  derive: { turns: 30, tokens: 2_000_000, minutes: 10 },
 };
 
 assert(

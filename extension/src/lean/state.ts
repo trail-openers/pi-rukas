@@ -139,18 +139,11 @@ export interface LeanRun {
    *  failure, never a wrong park. */
   deadlineMs?: number;
   /**
-   * The contract this run DERIVED for itself, in `derive` intake mode, when its
-   * issue carried no `pi-spec v1` block.
-   *
-   * Persisted rather than recomputed: a step that ran after a crash must build
-   * against the same criteria its earlier steps did, and a resume must not bill
-   * a second drafting child for a contract the run already holds. The three
-   * fields say what was derived, which model drafted it, and when — the
-   * provenance an operator needs when a derived contract looks wrong.
-   *
-   * Absent is the normal case and the whole of `require` mode, so old state
-   * files keep loading: the schema version is unchanged and this field is
-   * optional.
+   * The contract this run DERIVED for itself (`derive` mode, no block on its
+   * issue). Persisted, not recomputed: a step resuming after a crash must build
+   * against the criteria its earlier steps were graded on, and a resume must not
+   * bill a second drafting child for a contract the run holds. Absent is the whole
+   * of `require` mode, so old state files keep loading — same schema version.
    */
   derivedSpec?: DerivedSpec;
   /**
@@ -352,12 +345,10 @@ export function assertRunFile(obj: unknown, file: string): LeanRun {
     ...(r.result !== undefined ? { result: assertResult(r.result, bad) } : {}),
     ...(r.deadlineMs === undefined ? {} : { deadlineMs: assertDeadline(r.deadlineMs) }),
     ...(r.derivedSpec === undefined ? {} : { derivedSpec: assertDerivedSpec(r.derivedSpec) }),
-    // The config is carried so a resumed run executes under the settings `ready`
-    // judged it by. It is NOT re-validated here and is not trusted either: every
-    // consumer goes through the `Config` accessor, which re-reads the committed
-    // file at the run's base and applies the loader's full judgement — so a
-    // hand-edited snapshot here cannot reach a step. It is kept only because the
-    // report reads it, and only written by `ready` (`OWNER_OF_FIELD`).
+    // Carried so a resumed run executes under the settings `ready` judged it by. Not
+    // re-validated and not trusted: consumers go through the config accessor, which
+    // re-reads the committed file at the run's base, so a hand-edited snapshot here
+    // cannot reach a step. Written only by `ready` (`OWNER_OF_FIELD`).
     ...(r.config === undefined ? {} : { config: r.config as WorkConfig }),
   };
 }

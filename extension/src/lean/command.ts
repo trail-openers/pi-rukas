@@ -37,7 +37,7 @@ import { reportHandlers } from "./report-handlers.ts";
 import { reviewDeps } from "./review-deps.ts";
 import { reviewOutcome } from "./review.ts";
 import { type LeanSeed, leanSeed } from "./seed.ts";
-import { type DeriveDeps, deriveDeps, traceDerivePostFailure } from "./spec-derive.ts";
+import { type DeriveDeps, deriveDeps, traceDerive } from "./spec-derive.ts";
 import { specFor } from "./spec-for.ts";
 import { type DerivedRecord, configAtBase, contractOf } from "./spec-intake.ts";
 import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
@@ -54,17 +54,17 @@ import { leanVersion } from "./version.ts";
 // a caller that wants the stamp reaches for it where it reaches for the command.
 export { leanVersion } from "./version.ts";
 
+// Re-exported so the seed stays a leaf: consumers reach for the run's base here.
+export { leanSeed } from "./seed.ts";
+
 /** What `ready` learned: kept for the run's seed and for the not-ready comment. */
 interface ReadyFacts {
   spec?: PiSpec;
   config?: WorkConfig;
   baseSha?: string;
   failedRules: string[];
-  /**
-   * A derivation FAILED — the issue was not at fault, the model call was. The
-   * handler routes this to `handback` (which carries an `infra` outcome) rather
-   * than `decline`, so a transient model problem stays a retryable handback and
-   * the issue is not told its own ticket is unready.
+  /** A derivation FAILED: the issue was not at fault, the model call was, so the
+   * handler routes to `handback` rather than `decline` and the run stays retryable.
    */
   infra?: boolean;
   /**
@@ -296,23 +296,18 @@ export function phase1Handlers(
     // child for a document that could come back DIFFERENT — every step after that
     // building against criteria the earlier ones never saw.
     if (kind === "ok") {
-      // The derived contract is PUBLISHED where it is minted. A `derive` run puts a
-      // machine-written acceptance table on a human's issue, and the author has to
-      // see it before the run spends a build cycle on it — after the merge is too
-      // late to be a review. The host channel owns its own delivery, so on `host`
-      // this posts nothing and the body travels with the result: the rule the two
-      // reporting steps already follow.
-      //
-      // Posted by `ready`, which the step log guarantees runs at most once with an
-      // outcome: a resume re-reads the persisted contract, never re-derives, and so
-      // never re-posts. A failed post does not end the run — the operator learns of
-      // it from stderr and the summary line, and a run is not destroyed because a
-      // comment could not be written.
+      // The derived contract is published where it is minted: a `derive` run puts a
+      // machine-written acceptance table on a human's issue and the author has to see
+      // it before the run spends a build cycle on it. `ready` posts it, which the step
+      // log guarantees runs at most once with an outcome, so a resume that re-reads
+      // the persisted contract never re-posts. The host channel owns its delivery, so
+      // nothing posts there — the rule the two reporting steps already follow. A
+      // failed post is traced, not fatal: a run is not destroyed over a comment.
       if (facts.derived !== undefined && handoffChannel() !== "host") {
         try {
           await postDerivedSpec(repoRoot, issue, facts.derived.spec, facts.derived.model);
         } catch (err) {
-          traceDerivePostFailure(issue, (err as Error).message);
+          traceDerive(issue, "unposted", (err as Error).message);
         }
       }
       return {

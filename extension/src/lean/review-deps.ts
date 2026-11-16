@@ -283,7 +283,7 @@ export function lensContext(
     carried?: string;
     fixDelta?: string;
     issueBody?: string;
-    /** See `AdversarialArgs.derivedSpec` — the same record, threaded to the block. */
+    /** See `AdversarialArgs.derivedSpec`. */
     derivedSpec?: DerivedSpec;
     full?: boolean;
     acceptanceTable?: string;
@@ -337,8 +337,7 @@ export interface ReviewFixArgs {
   /** The run's issue body, printed into the brief so the fixer cannot "fix" a finding by
    * violating a stated requirement. Threaded from the one `issueBody` the step read. */
   issueBody?: string;
-  /** See `AdversarialArgs.derivedSpec` — the fixer's brief names the requirements it
-   * may not contradict, so it must read them from the contract the run actually ran. */
+  /** See `AdversarialArgs.derivedSpec`. */
   derivedSpec?: DerivedSpec;
   /** Absolute path of the disposable tree the child works in. */
   worktree: string;

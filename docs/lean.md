@@ -137,6 +137,75 @@ reads the block back through the real parser before filing. Any `pi-spec v1`
 fence already in the drafted prose is renamed to `pi-spec-example v1`, so a
 quoted example can never become the contract.
 
+## Spec intake
+
+A run's contract normally comes from its issue's `pi-spec v1` block, and an issue
+without one is declined. **Spec intake** is the switch that lets a prose ticket in:
+`require` (the shipped default, and byte-for-byte the behaviour every run before it
+had) declines; `derive` sends the ticket to one bounded read-only child that
+returns a block, which the run then validates as though an author had written it.
+
+The mode resolves in one order — **env > `.pi/work.json` `lean.specIntake` >
+`require`** — through `resolveSpecIntake` (`lean/spec-intake-switch.ts`). An invalid
+value on either side is a **refusal, never the default**: a `PI_ENSEMBLE_LEAN_SPEC_INTAKE=derve`
+that quietly fell back to `require` would decline the very tickets the operator set
+the knob to take.
+
+What `derive` does **not** relax, because a derived contract has to be worth what
+an authored one is worth:
+
+- **The block is still the only contract.** The child replies with one fenced
+  `pi-spec v1` block and a **deterministic parser** reads it — a model drafts the
+  bullets, it never decides what the contract is. The bullets then go through
+  `pi-spec-map.ts`, the same mapper `/plan` files from, so the two producers cannot
+  bound, neutralise or size differently.
+- **The result is validated on the rendered block.** `parsePiSpec(renderPiSpec(spec))`
+  must deep-equal the spec and `readiness()` must pass — the same gate an authored
+  block meets, including the `size: "L"` refusal. A brief therefore asks for at most
+  **8** criteria, the count at which the mapper still calls the change `M`; a child
+  that returns 9 anyway gets the size-`L` refusal with the rendered block quoted, and
+  the list is **never silently truncated** to make the gate green.
+- **Three shapes stay `require`'s refusal, in both modes**, because in each the
+  issue is genuinely at fault and no model call should be billed for it: a body with
+  no block at all, a body that is blank (a ticket with nothing in it is not prose to
+  derive from), and a block that is present but **malformed** — the author took a
+  position on the contract and wrote it wrong, and a model quietly writing a better
+  one would hide the defect.
+- **A failed derivation is a handback, not a decline.** A dead child, a fired
+  budget, an empty reply or an unparsable reply all `handback` naming their own
+  cause (`ready`'s `infra` verdict, exit 10) rather than posting "your ticket is not
+  ready" on an issue that did nothing wrong — which is also what keeps the run
+  retryable.
+- **The child is bounded and read-only.** One `explore` child (no write tools), on
+  its own `budgets.derive` row, seeing the title and body **fenced as untrusted
+  data** and told so: a ticket whose own text says "ignore your instructions" is the
+  shape that boundary exists to survive.
+
+**Where the derived contract lives.** `ready` persists it on the run record
+(`derivedSpec: {spec, model, at}`), and every step reads its contract through
+`specFor` (`lean/spec-for.ts`): the body's own block wins whenever it parses, and the
+record stands in **only** for the `no pi-spec v1 block` reason. So a step never
+re-derives, a resume never pays a second child, and a run cannot read a contract that
+changed under it mid-flight. `saveRun` re-validates the field on the way out, and the
+loader validates it on the way in (`lean/state-derived-spec.ts`) — a state file
+carrying a contract the engine could never have produced is refused at load.
+
+**What is published.** When `ready` mints a derivation it posts it to the issue as a
+fenced `pi-spec v1` block, naming the model that drafted it and the criteria count —
+the author has to see the table before the run spends a build cycle on it, not after
+the merge. The run's PR body carries a `spec: derived` line under the criteria table,
+read off the record (so a resumed run still says it), which is how a reviewer tells
+"this is what the author asked for" from "this is what a model read into the ticket"
+— the second is the one worth checking against the issue. On
+`PI_ENSEMBLE_HANDOFF_CHANNEL=host` neither is posted: the host owns that channel and
+the body travels with the result instead, as with the two reporting steps. A comment
+that cannot be posted is traced, not fatal.
+
+**Headless.** `pi-rukas-headless work-lean <issue> --spec-intake require|derive`
+overrides both the env and the committed field for the one run; an invalid value is
+an argument error. It is written to the env as late as the parser allows, because
+`process.env` is process-wide and a stale value would arm the next run in the host.
+
 ## Configuration
 
 Full field-by-field reference — including every `verify.*` rule, the
@@ -243,6 +312,13 @@ pins the table against literals, so changing a number is a deliberate edit):
 | `challenge` | 400 | 60M | 15 |
 | `review` | 400 | 60M | 30 |
 | `ci` | 0 | 0 | 30 |
+| `derive` | 30 | 2M | 10 |
+
+`derive` is not a state — it is the spec-intake child's row (see **Spec intake**
+below), and it exists so an operator can price and bound a drafting pass without
+touching a step's ceiling. The figure is declared in `lean/derive-budget.ts`, the
+leaf both `config.ts` and `spec-derive.ts` read, so the ceiling and the code that
+arms the child with it cannot drift.
 
 **When a budget fires.** `turns` and `tokens` abort at once at a turn boundary.
 `minutes` arms the child bound (`spawn-child-bound.ts`): a **wrap-up steer at the

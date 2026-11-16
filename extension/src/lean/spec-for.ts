@@ -1,29 +1,16 @@
 /**
  * lean/spec-for — the ONE way a step reads its contract.
  *
- * Nine steps re-read the issue body and parsed it for themselves. That was fine
- * while the body was the only place a spec could come from, and it stopped being
- * fine the moment `derive` intake mode put a second source on the record: a step
- * that kept calling `parsePiSpec(body)` would go on declining a run whose
- * contract the run already held, at the exact step where a decline is expensive
- * (tests frozen, code built, PR open).
- *
- * So every caller asks this module, and one rule decides for all of them:
- *
- *   - the body's own block wins whenever it parses — an issue that carries a
- *     contract is running on the contract its author wrote, whatever else the
- *     record holds;
- *   - the persisted `derivedSpec` is used ONLY for the one reason
- *     `"no pi-spec v1 block"`, because that is the only shape `derive` mode
- *     derived for; every other parse failure returns today's failure unchanged
- *     so each caller keeps its own existing error arm (a malformed block is the
- *     author's fault and must still read as one);
- *   - with neither, the parse result is handed back verbatim — including the
- *     reason, which is what `decline` posts.
- *
- * A resumed run therefore reuses the spec it derived: nothing here re-derives,
- * and a run cannot pay for a second draft or read a contract that changed under
- * it mid-flight.
+ * Nine steps re-parsed the issue body themselves, which was fine while the body
+ * was the only source and stopped being fine the moment `derive` put a second one
+ * on the record: a step still calling `parsePiSpec(body)` would decline a run
+ * whose contract the run already held, at the step where a decline is expensive.
+ * Every caller asks this module instead, and one rule decides for all of them: the
+ * body's block wins whenever it parses; the persisted `derivedSpec` stands in ONLY
+ * for the `no pi-spec v1 block` reason, so every other failure returns unchanged
+ * and a malformed block stays its author's fault; with neither, the parse failure
+ * comes back verbatim. A resume reuses the contract it derived — nothing here
+ * re-derives.
  */
 
 import { type ParseResult, type PiSpec, parsePiSpec } from "./spec.ts";
@@ -54,27 +41,9 @@ export function specFor(body: string, run: LeanRun | Pick<LeanRun, "derivedSpec"
 }
 
 /**
- * A step's read that cannot fail on a derived run: the spec, or the failure
- * text the caller already knows how to report. `specFor` is the judgement and
- * this is its two-line use, written once so nine callers do not each invent a
- * different way of unwrapping the same union.
- */
-export function specOrThrow(
-  body: string,
-  run: LeanRun | Pick<LeanRun, "derivedSpec">,
-  prefix: string,
-): { spec: PiSpec; source: SpecSource } {
-  const read = specFor(body, run);
-  if (!read.ok) throw new Error(`${prefix}${read.reason}`);
-  return { spec: read.spec, source: read.source };
-}
-
-/**
- * `specSource` is `"derived"` exactly when the record carries a derived spec.
- *
- * Read off the record rather than a closure, so a resumed run — which never ran
- * the derivation — still says where its contract came from, and a `require`-mode
- * run can never print `spec: derived` on its PR.
+ * `"derived"` exactly when the record carries a derived spec — read off the record
+ * rather than a closure, so a resumed run still says where its contract came from
+ * and a `require` run can never print `spec: derived` on its PR.
  */
 export function specSource(run: Pick<LeanRun, "derivedSpec">): SpecSource {
   return run.derivedSpec === undefined ? "issue" : "derived";

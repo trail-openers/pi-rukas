@@ -132,9 +132,7 @@ async function specOf(
   } catch (err) {
     throw new ChallengeInfraError(`could not read the issue: ${(err as Error).message}`);
   }
-  // Read through the accessor: a run whose contract the engine derived has no
-  // block on its issue, and a step that demanded one there would hand back over
-  // a contract the run already holds and `ready` already validated.
+  // The accessor: same reason as `build`'s re-read.
   const read = specFor(body, run);
   if (!read.ok) throw new ChallengeInfraError(`the issue's spec is unusable: ${read.reason}`);
   // The SAME readiness judgement `specify` gates the run on, applied on re-read. The
