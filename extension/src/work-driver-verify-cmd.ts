@@ -17,38 +17,33 @@ import { trace } from "./trace.ts";
 // covers every knob this build consumes. Built on first use, not at import,
 // because headless/inputs.ts is part of an import cycle with this module's
 // callers.
-let driverKnobs: ReadonlySet<string> | undefined;
+let driverKnobs: ((key: string) => boolean) | undefined;
 
 /**
- * Expand the inventory into the concrete names to scrub. A `<…>` family with no
- * `members` throws: an unexpanded family would scrub nothing, silently, so a
- * new family must declare its members before the scrub can be trusted.
+ * A matcher for the inventory's names: a plain name matches exactly, a `<…>`
+ * family matches every name with its prefix. A family is matched by prefix, not
+ * expanded from `members`, because some families' members are only known at run
+ * time (`<PROVIDER>` comes from models.json) and a member missing from this
+ * process's list must still be scrubbed — `API_KEY_<PROVIDER>` carries a secret.
  */
-export function buildDriverKnobNames(
-  entries: ReadonlyArray<{ name: string; members?: readonly string[] }>,
-): ReadonlySet<string> {
+export function buildDriverKnobMatcher(
+  entries: ReadonlyArray<{ name: string }>,
+): (key: string) => boolean {
   const names = new Set<string>();
-  for (const entry of entries) {
-    const i = entry.name.indexOf("<");
-    if (i < 0) {
-      names.add(entry.name);
-      continue;
-    }
-    if (!entry.members || entry.members.length === 0) {
-      throw new Error(
-        `driver knob family ${entry.name} has no members: the scrub cannot expand it`,
-      );
-    }
-    for (const m of entry.members) names.add(entry.name.slice(0, i) + m);
+  const prefixes: string[] = [];
+  for (const { name } of entries) {
+    const i = name.indexOf("<");
+    if (i < 0) names.add(name);
+    else prefixes.push(name.slice(0, i));
   }
-  return names;
+  return (key) => names.has(key) || prefixes.some((p) => key.startsWith(p));
 }
 
 const tracedDrops = new Set<string>();
 
-function driverKnobNames(): ReadonlySet<string> {
-  driverKnobs ??= buildDriverKnobNames(HEADLESS_INPUTS);
-  return driverKnobs;
+function isDriverKnob(key: string): boolean {
+  driverKnobs ??= buildDriverKnobMatcher(HEADLESS_INPUTS);
+  return driverKnobs(key);
 }
 
 /**
@@ -93,12 +88,11 @@ export function verifyHostEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.Pro
  * scrub exists to close.
  */
 export function verifyChildEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const knobs = driverKnobNames();
   const env: NodeJS.ProcessEnv = {};
   const dropped: string[] = [];
   for (const [key, value] of Object.entries(base)) {
     if (value === undefined) continue;
-    if (knobs.has(key)) dropped.push(key);
+    if (isDriverKnob(key)) dropped.push(key);
     else env[key] = value;
   }
   // Names only, never values; each name traced once per process so a verify

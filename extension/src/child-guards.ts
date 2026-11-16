@@ -45,6 +45,7 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { enableChildCodemode } from "./child-codemode.ts";
 import { enableChildForgeRead, registerChildForgeReadTool } from "./child-forge-read-activation.ts";
+import { registerProviderEnvOverrides } from "./provider-env.ts";
 import { registerModeIndependentGuards } from "./subagent-guard-guards.ts";
 import { trace } from "./trace.ts";
 import { registerDeletionGuard } from "./write-fence-deletion.ts";
@@ -122,6 +123,9 @@ export default function registerChildGuards(pi: ExtensionAPI): void {
   // parent-served broker socket — so the tool is never present in a child that
   // could not get an answer out of it (an ops child, or one whose bind failed).
   registerChildForgeReadTool(pi);
+  // The run's own provider endpoint and key reach every child, strict or trust:
+  // the full extension registers them only in the parent.
+  registerProviderEnvOverrides(pi);
   if (process.env.PI_ENSEMBLE_SUBAGENT_MODE === "1") {
     trace(
       "child-guards: PI_ENSEMBLE_SUBAGENT_MODE=1 — full pi-rukas extension registers the guards; no-op",

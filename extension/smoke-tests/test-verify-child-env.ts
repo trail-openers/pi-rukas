@@ -15,7 +15,7 @@
  */
 
 import { readFileSync } from "node:fs";
-import { buildDriverKnobNames, verifyChildEnv } from "../src/work-driver-verify-cmd.ts";
+import { buildDriverKnobMatcher, verifyChildEnv } from "../src/work-driver-verify-cmd.ts";
 import { execp as verifyExecp } from "../src/work-driver-verify.ts";
 
 let failures = 0;
@@ -89,19 +89,20 @@ for (const [file, text] of sources) {
   assert(!inherit.test(text), `${file} has no env that inherits process.env`);
 }
 
-console.log("4. the knob-family expansion refuses a family with no members");
+console.log("4. a knob family is scrubbed by prefix, whatever this process's members are");
+const isKnob = buildDriverKnobMatcher([{ name: "PI_X_<ROLE>" }, { name: "PI_Y" }]);
+assert(isKnob("PI_X_ANY") && isKnob("PI_Y"), "a family member and a plain knob match");
 assert(
-  [...buildDriverKnobNames([{ name: "PI_X_<ROLE>", members: ["A", "B"] }])].join() ===
-    "PI_X_A,PI_X_B",
-  "a family expands to its members",
+  !isKnob("PI_YZ") && !isKnob("PI_X"),
+  "neither a longer plain name nor the bare stem matches",
 );
-let threw = false;
-try {
-  buildDriverKnobNames([{ name: "PI_X_<ROLE>" }]);
-} catch {
-  threw = true;
-}
-assert(threw, "a family with no members throws, so it cannot scrub nothing silently");
+assert(
+  !(
+    "PI_ENSEMBLE_API_KEY_NOT_IN_MODELS_JSON" in
+    verifyChildEnv({ PI_ENSEMBLE_API_KEY_NOT_IN_MODELS_JSON: "k" })
+  ),
+  "a provider key is scrubbed even for a provider this process's models.json does not list",
+);
 
 console.log(
   failures === 0

@@ -21,9 +21,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { HEADLESS_INPUTS } from "../../src/headless/inputs.ts";
-import { buildDriverKnobNames } from "../../src/work-driver-verify-cmd.ts";
-import { createEmitSink, type EmitSink } from "../../src/work-state-emit.ts";
 import type { CycleContext, DriverContext } from "../../src/work-driver-context.ts";
+import { buildDriverKnobMatcher } from "../../src/work-driver-verify-cmd.ts";
+import { type EmitSink, createEmitSink } from "../../src/work-state-emit.ts";
 import type { WorkEvent } from "../../src/workflow-state-events.ts";
 import { initialState } from "../../src/workflow-state.ts";
 import { gitTestEnv } from "./git-test-env.ts";
@@ -42,8 +42,8 @@ const execFileP = promisify(execFile);
  */
 function isolatedBaseWithoutKnobs(): NodeJS.ProcessEnv {
   const base: NodeJS.ProcessEnv = { ...gitTestEnv() };
-  const knobs = buildDriverKnobNames(HEADLESS_INPUTS);
-  for (const name of knobs) delete base[name];
+  const isKnob = buildDriverKnobMatcher(HEADLESS_INPUTS);
+  for (const name of Object.keys(base)) if (isKnob(name)) delete base[name];
   return base;
 }
 
