@@ -1,17 +1,15 @@
 #!/usr/bin/env bun
 /**
- * lean/scripts/check-comment-only — prove a comment-only branch changed no code.
+ * scripts/check-comment-only — prove a comment-only branch changed no code.
  *
  * A trim that touches an executable token is a behaviour change wearing a docs
  * label. The only honest evidence is the transpiled output: two files that
- * differ solely in comments compile to identical bytes once `removeComments`
- * has had its way with them.
+ * differ solely in comments compile to identical bytes once comments are stripped.
  *
  * Scope is the lean tree (`extension/src/lean`, at any depth) against a base ref,
  * default `origin/main`. The head side is read from the working tree, so the check
- * judges the bytes about to be committed rather than the last commit. Files present
- * on only one side are reported too — a comment-only change neither adds nor deletes
- * a file.
+ * judges the bytes about to be committed. Files present on only one side are
+ * reported too — a comment-only change neither adds nor deletes a file.
  */
 
 import { execFileSync } from "node:child_process";
