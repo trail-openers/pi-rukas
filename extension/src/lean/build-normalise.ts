@@ -1,49 +1,40 @@
 /**
  * lean/build-normalise — CAPTURE, RESET, REWRITE for the build step.
  *
- * The developer child is a model. It may commit, edit a frozen acceptance test,
- * write into `.pi/` or `.github/`, or hand the tree a symlink and a hard link.
- * The specify step already owns an algorithm that survives exactly that: read
- * the bytes you intend to keep, reset the tree to a known commit, write those
- * bytes back. `build` uses the same shape, so there is ONE design for "the tree
- * is not trustworthy" in this step family rather than two, and per-path
- * restore, unlink and hard-link bookkeeping never exist to get wrong.
+ * The developer child is a model: it may commit, edit a frozen acceptance test, write
+ * into `.pi/` or `.github/`, or hand the tree a symlink and a hard link. `specify`
+ * already owns an algorithm that survives exactly that — read the bytes you intend to
+ * keep, reset the tree to a known commit, write those bytes back — and `build` uses
+ * the same shape, so there is ONE design for "the tree is not trustworthy" in this
+ * step family rather than two.
  *
- *   1. HEAD must still descend from `headBefore`. A child that reset HEAD is
- *      refused outright — that is the `merge-base --is-ancestor` check, read
- *      before anything is mutated.
+ *   1. HEAD must still descend from `headBefore`. A child that reset HEAD is refused
+ *      outright — the `merge-base --is-ancestor` check, read before anything mutates.
  *   2. The changed set is `git diff --name-only -z headBefore` unioned with
- *      `git ls-files --others --exclude-standard -z`: tracked edits, deletions
- *      and the child's own commits, plus untracked files.
- *   3. Each path is classified. A frozen or protected path in that set is
- *      IGNORED — stage 4 is what undoes it — and only recorded, so the handback
- *      can say what was put back. Anything else is looked at with `lstat` at
- *      every step (`entryAt`): only a name with nothing at it, nothing in its
- *      way, is a DELETION. A link, a device, a directory, or a name behind one
- *      is REMOVED with its reason and never followed. A regular file is CAPTURED
- *      through `readOneDescriptor`, the same single-descriptor read `specify`
- *      uses; a refusal (hard link, swapped inode, over the size ceiling) also
- *      removes the path rather than committing it.
- *   4. `resetWorktreeToBase` puts the tree back to `headBefore` — commits,
- *      index, untracked files, ignore tricks and dependency links all go — and
- *      provisioning rebuilds the links. Frozen and protected files are now
- *      exactly as at `headBefore`, because git put them there, not this file.
- *   5. The captured bytes go back through `writeCaptured` (no symlinked
- *      ancestor, temp file plus rename), executable bits are restored, and the
- *      deletions are applied with `rmSync`.
- *   6. Nothing captured and nothing the commit must delete is the honest answer
- *      to "did the developer change anything": `files: []`, and the caller
- *      routes `exhausted`.
- *   7. One commit, with an EXPLICIT pathspec: `git add -- <paths>` and
- *      `git commit -- <paths>`, never `add -A`, so the commit holds the kept
- *      paths and the deletions the commit must carry, and nothing else the
- *      tree happens to hold. Then four claims are proved about it: parent is
- *      `headBefore`; its diff names no frozen and no protected path; the tree
- *      is clean; every frozen blob at the new head hashes to its record.
+ *      `git ls-files --others --exclude-standard -z`.
+ *   3. Each path is classified. A frozen or protected path in that set is IGNORED —
+ *      stage 4 undoes it — and only recorded, so the handback can say what was put
+ *      back. Anything else is inspected with `lstat` at every step (`entryAt`): only a
+ *      name with nothing at it, nothing in its way, is a DELETION. A link, device,
+ *      directory, or a name behind one is REMOVED with its reason and never followed.
+ *      A regular file is CAPTURED through `readOneDescriptor`, the same
+ *      single-descriptor read `specify` uses; a refusal also removes the path.
+ *   4. `resetWorktreeToBase` puts the tree back to `headBefore` — commits, index,
+ *      untracked files, ignore tricks and dependency links all go — and provisioning
+ *      rebuilds the links. Frozen and protected files are then exactly as at
+ *      `headBefore`, because git put them there, not this file.
+ *   5. The captured bytes go back through `writeCaptured` (no symlinked ancestor, temp
+ *      file plus rename), executable bits are restored, and deletions are applied.
+ *   6. Nothing captured and nothing to delete is the honest answer to "did the
+ *      developer change anything": `files: []`, and the caller routes `exhausted`.
+ *   7. One commit with an EXPLICIT pathspec — `git add -- <paths>` and `git commit --
+ *      <paths>`, never `add -A`. Then four claims are proved about it: parent is
+ *      `headBefore`; its diff names no frozen and no protected path; the tree is
+ *      clean; every frozen blob at the new head hashes to its record.
  *
- * Every git call here goes through `build-git.ts`, which carries the hook and
- * fsmonitor guard (`NO_HOOKS`). Anything unproven throws — the step's output is
- * a commit the run merges.
+ * Every git call goes through `build-git.ts`, which carries the hook and fsmonitor
+ * guard (`NO_HOOKS`). Anything unproven throws — the step's output is a commit the
+ * run merges.
  */
 
 import { chmodSync, rmSync } from "node:fs";
@@ -69,8 +60,8 @@ import { resetWorktreeToBase, writeCaptured } from "./specify-reset.ts";
 /**
  * Is `rel` a path whose contents decide what verification means? The canonical
  * set in `work-driver-doctrine.ts` covers `agents.json`, `CODEOWNERS` at any
- * depth, and `.pi/` / `.github/`. It lacks `.gitmodules`, which moves the tree a
- * verify run sees, so that one is added here.
+ * depth, and `.pi/` / `.github/`; `.gitmodules` moves the tree a verify run sees,
+ * so that one is added here.
  */
 function isProtectedPath(rel: string): boolean {
   return canonicalProtectedPath(rel) || rel === ".gitmodules";
@@ -84,8 +75,8 @@ interface Classified {
 
 /**
  * Sort the child's changed paths into kept, restored, reverted, removed, deleted.
- * Frozen and protected paths are only RECORDED here — the reset undoes them — which
- * is why this runs first: after the reset, "what the child did" is unrecoverable.
+ * Frozen and protected paths are only RECORDED here — the reset undoes them — so
+ * this runs first: after the reset, "what the child did" is unrecoverable.
  */
 function classify(
   wt: string,

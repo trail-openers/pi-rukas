@@ -1,34 +1,25 @@
 /**
  * lean/specify-proof — runs one captured test file and reads its verdict.
  *
- * The step's whole claim is "these tests are red on the code as it stands",
- * and that claim is only worth anything if something executed the file. This
- * module runs the project's `verify.test` template with `{file}` replaced and
- * classifies the result. There are four kinds and they do NOT all mean the
- * same thing to the caller:
+ * The step's claim is "these tests are red on the code as it stands", and that is worth
+ * nothing unless something executed the file. This module runs the project's `verify.test`
+ * template with `{file}` replaced and classifies the result. Four kinds, and they do NOT
+ * all mean the same thing:
  *
- *   - `red`    — non-zero exit AND the output named this file (its path or
- *                its basename). The only kind that counts as proof.
- *   - `green`  — exit 0 on the base commit. Not a test of the feature, so the
- *                file is dropped and its criterion goes uncovered.
- *   - `unclear`— non-zero without naming the file: something else failed and
- *                the output never mentioned this test. Dropped with a reason.
- *   - `infra`  — the ONLY kind that throws, and only these shapes of it: the
- *                runner was killed by the wall clock (`infraShape: "killed"`), the
- *                runner flooded its output past the executor's bound and was killed
- *                for it (`"overflowed"` — a chatty run, not a hung one), the runner
- *                could not be STARTED at all (the rejection carries a non-numeric
- *                `code` and no exit status — `ENOENT`, `EACCES`), or the template
- *                named nothing to run — refused before any spawn.
+ *   - `red`     — non-zero exit AND the output named this file (path or basename). The
+ *                 only kind that counts as proof.
+ *   - `green`   — exit 0 on the base commit. Not a test of the feature, so the file is
+ *                 dropped and its criterion goes uncovered.
+ *   - `unclear` — non-zero without naming the file. Dropped with a reason.
+ *   - `infra`   — the ONLY kind that throws: killed by the wall clock (`"killed"`),
+ *                 flooded its output past the executor's bound (`"overflowed"` — a
+ *                 chatty run, not a hung one), could not be STARTED (non-numeric
+ *                 `code`), or the template named nothing to run.
  *
- * There is deliberately no third `infra` shape: a classifier that threw the run on any
- * output containing `node_modules` or `Cannot find module` would punish the canonical
- * TDD red, which is precisely what a test prints when it imports a module the
- * implementation has not written yet. A missing module in a test's own output is a
- * legitimate red.
- * Whether the TOOLCHAIN works at all is answered once, before the child is
- * dispatched, by the base-health check in specify.ts; a red never has to
- * answer that question for itself.
+ * There is deliberately no fifth shape: a classifier that threw on any output containing
+ * `Cannot find module` would punish the canonical TDD red — what a test prints when it
+ * imports a module not written yet. Whether the TOOLCHAIN works at all is answered once,
+ * before the child is dispatched, by the base-health check in specify.ts.
  */
 
 import { createHash } from "node:crypto";
@@ -58,9 +49,9 @@ export interface TestRunLimits {
   /**
    * The child's environment. The command-criteria tier passes the driver's
    * scrubbed env (`verifyChildEnv()`) so a headless runner's own knobs cannot
-   * change what the project's tests see; absent, the ambient env — which is what
-   * the freeze-time proof runs want, since they judge the tree as the developer
-   * sees it.
+   * change what the project's tests see; absent, the ambient env — what the
+   * freeze-time proof runs want, since they judge the tree as the developer sees
+   * it.
    */
   env?: NodeJS.ProcessEnv;
 }
@@ -72,19 +63,17 @@ const TEST_MAX_BUFFER = 8 * 1024 * 1024;
  * The shape of a run that produced no verdict, as `runTestFile` classified it.
  *
  * The four say different things to the caller and must not be collapsed: a
- * wall-clock kill means the code under test never returned (and for a FROZEN file,
- * one already proven red at freeze time, that is a verdict — see
- * `verify-steps.ts`'s `frozenTestFailure`), while an output flood, a runner that
- * could not be started and a template that named nothing to run observed nothing at
- * all and stay infrastructure. An overflow is a kill (`killed: true`) but NOT a hang:
- * the executor stamps `timedOutKill: false` and names the stream in `overflow`, and a
- * caller that asked only "was it killed?" sent a chatty test back to the builder as a
- * hang. `runTestFile` classifies the shape once, from the rejection's own
- * stamps; a caller that re-derived it from the returned `Proof` would find no
- * `killed`/`timedOutKill`/`code` on it — a `Proof` is a value, not the rejection —
- * and would read every kill as a template problem. Hence the shape is carried out,
- * and carried out REQUIRED: an `infra` proof nobody classified would otherwise be a
- * `Proof` that reads as a red to a `kind` switch and as nothing to a shape switch.
+ * wall-clock kill means the code under test never returned (and for a FROZEN file
+ * already proven red at freeze time, that is a verdict — `frozenTestFailure` in
+ * `verify-steps.ts`), while an output flood, a runner that could not be started and
+ * a template that named nothing observed nothing at all. An overflow is a kill
+ * (`killed: true`) but NOT a hang: the executor stamps `timedOutKill: false` and
+ * names the stream in `overflow`.
+ *
+ * `runTestFile` classifies the shape once, from the rejection's own stamps, and the
+ * shape is carried out REQUIRED: a caller that re-derived it from the returned
+ * `Proof` would find no `killed`/`timedOutKill`/`code` on it — a `Proof` is a value,
+ * not the rejection — and would read every kill as a template problem.
  */
 type ProofInfraShape = "killed" | "overflowed" | "never-started" | "nothing-to-run";
 
@@ -167,16 +156,15 @@ export function renderTestCommand(template: string, file: string): string {
 /**
  * Run one test file in `wt` and classify the outcome.
  *
- * Never throws: a kill, a timeout and a runner that could not be started all
- * come back as `kind: "infra"`, and it is the caller that decides throwing is
- * the right response to a toolchain it cannot trust.
+ * Never throws: a kill, a timeout and a runner that could not be started all come
+ * back as `kind: "infra"`, and the caller decides whether throwing is the right
+ * response to a toolchain it cannot trust.
  *
- * `killGroup` is what makes a timeout classify at all: the runner is spawned
- * in its own process group so the timeout SIGKILLs the whole group and stamps
- * the rejection `killed` + `timedOutKill`. Without it, Node's plain exec
- * timeout kills only the direct child — and when that child is `sh` running a
- * script that itself spawned something holding stdout, the callback never
- * fires, so the run neither times out nor finishes. Either way a hang must be
+ * `killGroup` is what makes a timeout classify at all: the runner is spawned in its
+ * own process group so the timeout SIGKILLs the whole group and stamps the rejection
+ * `killed` + `timedOutKill`. Without it, Node's plain exec timeout kills only the
+ * direct child — and when that child is `sh` running a script that itself spawned
+ * something holding stdout, the callback never fires. Either way a hang must be
  * infra, never read as a red or a green.
  */
 export async function runTestFile(
@@ -213,8 +201,7 @@ export async function runTestFile(
   if (err === undefined) return { kind: "green", cmd, code: 0, detail: "exited 0 on base" };
   const out = outputOf((ran as { stdout?: string })?.stdout, err);
   // Overflow is asked before the kill, because an overflow IS a kill: `killed: true`
-  // with `timedOutKill: false` and the stream named in `overflow`. Asked the other way
-  // round a test that floods its own output was graded a hang.
+  // with `timedOutKill: false` and the stream named in `overflow`.
   if (outputOverflowed(err))
     return {
       kind: "infra",
@@ -237,10 +224,9 @@ export async function runTestFile(
       infraShape: "never-started",
     };
   const code = exitCodeOf(err);
-  // The submitted PATH is what a runner echoes when it could not run the
-  // file at all, and the BASENAME is what it echoes when the file ran and
-  // its own assertions failed. Either counts as "the output named this
-  // file"; requiring the basename alone read every real test as unclear.
+  // The submitted PATH is what a runner echoes when it could not run the file at
+  // all, the BASENAME what it echoes when the file ran and its assertions failed.
+  // Either counts as "the output named this file".
   if (!out.includes(base) && !out.includes(opts.file))
     return { kind: "unclear", cmd, code, detail: `exited ${String(code)} without naming ${base}` };
   return { kind: "red", cmd, code, detail: `exited ${String(code)}` };

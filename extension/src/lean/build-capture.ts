@@ -2,15 +2,12 @@
  * lean/build-capture — the one look at a changed path that is not a read of its
  * bytes.
  *
- * The bytes `normaliseBuild` keeps are read by `readOneDescriptor` in
- * `specify-capture.ts`: the single-descriptor read `specify` makes of its
- * submitted tests, so there is one implementation of "read a file you do not
- * trust" in this step family rather than two. What remains here is the question
- * that read cannot answer for a path: what is at this name, without following a
- * link? Only a name with nothing at it at all is a deletion the commit must
- * carry. A link, a device, a directory, or a name reached through a link or a
- * non-directory is something the step will not follow, so it is refused, and
- * the reset clears it.
+ * The bytes themselves come from `readOneDescriptor` in `specify-capture.ts`, so
+ * "read a file you do not trust" has one implementation in this step family.
+ * What remains here is what that read cannot answer: what is at this name,
+ * without following a link? Only a name with nothing at it at all is a deletion
+ * the commit must carry. A link, device, directory, or a name reached through a
+ * link or non-directory is refused, and the reset clears it.
  */
 
 import { lstatSync } from "node:fs";
@@ -26,10 +23,8 @@ function codeOf(err: unknown): string | undefined {
 
 /**
  * What is at `rel` in `wt`, read with `lstat` at every step so no link is ever
- * followed. Every ancestor is checked first: a missing one means the path is
- * genuinely absent; a link or a non-directory in the way means the path is
- * NOT known to be absent, so it is `other`, never a deletion to apply through
- * that link.
+ * followed. A missing ancestor means the path is genuinely absent; a link or
+ * non-directory in the way is `other`, never a deletion to apply through it.
  */
 export function entryAt(wt: string, rel: string): Entry {
   const segments = rel.split("/");

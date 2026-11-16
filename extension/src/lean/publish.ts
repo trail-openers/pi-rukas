@@ -1,39 +1,35 @@
 /*
  * lean/publish — push the run's branch and open its PR.
  *
- * The step is the first one that writes OUTSIDE the clone, so its whole design
- * is "do not act on a claim you did not read". In order:
+ * The step is the first one that writes OUTSIDE the clone, so its whole design is
+ * "do not act on a claim you did not read". In order:
  *
- *   1. the tree is the run's, at a real commit, on its branch, and CLEAN — a
- *      dirty tree would be published as bytes no commit holds;
- *   2. the spec is re-read from the forge, because the body's criterion map is
- *      a claim about a contract that is editable while the run goes on;
- *   3. the newest DECIDED `verify` verdict is read from the step log, and a
- *      green that was decided about a different commit than the one about to be
- *      pushed is REFUSED before the push — "green" is a claim about a named
- *      tree, and pushing something else under it is the one lie this step
- *      cannot take back;
+ *   1. the tree is the run's, at a real commit, on its branch, and CLEAN — a dirty
+ *      tree would be published as bytes no commit holds;
+ *   2. the spec is re-read from the forge, because the body's criterion map is a
+ *      claim about a contract that is editable while the run goes on;
+ *   3. the newest DECIDED `verify` verdict is read from the step log, and a green
+ *      decided about a different commit than the one about to be pushed is REFUSED
+ *      before the push — "green" is a claim about a named tree, and pushing
+ *      something else under it is the one lie this step cannot take back;
  *   4. origin is read first (`remoteBranchSha`), an OPEN PR on the branch is
- *      refused with its URL, and the push ALWAYS carries a lease bound to the
- *      sha that read returned — so a rewrite is legitimate only because it was
- *      bound to an observed sha and survived the PR check; success is decided
- *      afterwards by reading origin again, never by parsing porcelain;
- *   5. the forge is asked for an OPEN PR on the branch FIRST and only then told
- *      to create one. A `prList` that throws aborts the step: creating without
- *      looking is how a resumed run opens a second PR for the same work.
+ *      refused with its URL, and the push ALWAYS carries a lease bound to the sha
+ *      that read returned — so a rewrite is legitimate only because it was bound to
+ *      an observed sha and survived the PR check; success is decided afterwards by
+ *      reading origin again, never by parsing porcelain;
+ *   5. the forge is asked for an OPEN PR on the branch FIRST and only then told to
+ *      create one. A `prList` that throws aborts the step: creating without looking
+ *      is how a resumed run opens a second PR for the same work.
  *
- * Everything the step cannot observe is a `PublishInfraError` — the engine turns
- * a throw into a handed-back run, which is the honest answer to "nobody looked".
- * Once the push has landed, every such error names the head and says the push
- * succeeded, because a handoff that reads "could not open the PR" over a branch
- * origin now holds would send the next run to look in the wrong place.
- * The recorded outcome carries `prUrl` and nothing else: `state-outcome.ts`
- * refuses that field on any other step, so it stays the run's only evidence
- * that a PR exists at an address.
+ * Everything the step cannot observe is a `PublishInfraError` — the engine turns a
+ * throw into a handed-back run, the honest answer to "nobody looked". Once the push
+ * has landed, every such error names the head and says the push succeeded, so a
+ * handoff never sends the next run looking in the wrong place. The recorded outcome
+ * carries `prUrl` and nothing else: `state-outcome.ts` refuses that field on any
+ * other step, so it stays the run's only evidence that a PR exists at an address.
  *
- * The step's own preconditions read the run's persisted state, so the push
- * target is data rather than a decision — `assertPublishableBranch` in
- * `publish-deps.ts` is what refuses a branch that is not the run's to push.
+ * The step's own preconditions read the run's persisted state, so the push target is
+ * data rather than a decision — `assertPublishableBranch` in `publish-deps.ts`.
  */
 import { existsSync } from "node:fs";
 import type { NormalizedPullRequest } from "../forge-types.ts";
@@ -118,28 +114,26 @@ async function remoteBranchSha(
 }
 
 /**
- * The head pushed to origin's branch under a lease bound to `remote` — the sha
- * this step read from origin moments before, or `""` when the read said the
- * branch is absent (git then requires the ref to STILL not exist).
+ * The head pushed to origin's branch under a lease bound to `remote` — the sha this
+ * step read from origin moments before, or `""` when the read said the branch is
+ * absent (git then requires the ref to STILL not exist).
  *
  * A forced update is legitimate here for exactly one reason: the lease binds the
- * rewrite to the sha we observed and the open-PR check passed on that same
- * branch, so nothing moves that this step did not read and clear. Hence no
- * `--no-verify`, no unconditional `--force`, and no `rev-list` heuristic about
- * how many commits separate the two tips — a realistic stale branch is 2-6
- * commits deep, and a count gate that admits only 1 never replaces one.
+ * rewrite to the sha we observed and the open-PR check passed on that same branch,
+ * so nothing moves that this step did not read and clear. Hence no `--no-verify`, no
+ * unconditional `--force`, and no `rev-list` heuristic about how far apart the tips
+ * are — a realistic stale branch is 2-6 commits deep, and a count gate admitting only
+ * 1 never replaces one.
  *
  * Success is origin, read back after the push — never porcelain. `git push
- * --porcelain` prints a fast-forward UNBRACKETED (`abc..def`), so flag regexes
- * have already been observed reporting a push that landed as "no success flag",
- * and a rejection exits 0. So origin decides: origin at head is success whatever
- * the porcelain says, and the porcelain travels only as a diagnostic when it
- * does not.
+ * --porcelain` prints a fast-forward UNBRACKETED (`abc..def`), so flag regexes have
+ * been observed reporting a landed push as "no success flag", and a rejection exits 0.
+ * Origin decides; the porcelain travels only as a diagnostic.
  *
- * The ref name is checked with the driver's own `netRefProblem` BEFORE the
- * command line: `branch` is state-file data, and `assertSafeRef` only says it is
- * a legal git name — `+x`, `a:b` and `-f` all are, and git parses them as a
- * refspec, a force, or an option (see `netRefProblem`).
+ * The ref name is checked with the driver's own `netRefProblem` BEFORE the command
+ * line: `branch` is state-file data, and `assertSafeRef` only says it is a legal git
+ * name — `+x`, `a:b` and `-f` all are, and git parses them as a refspec, a force, or
+ * an option.
  */
 async function pushHead(
   deps: PublishDeps,
@@ -237,18 +231,17 @@ async function listOpenPrs(f: PublishForge, branch: string): Promise<NormalizedP
 }
 
 /**
- * What origin's branch points at, as the lease's expected value: `""` when the
- * ref is absent, `head` when it already matches (the push is then skipped).
+ * What origin's branch points at, as the lease's expected value: `""` when the ref is
+ * absent, `head` when it already matches (the push is then skipped).
  *
- * Any OTHER sha means this step is about to rewrite a branch, so it first asks
- * the forge whether that branch is under review — and the check FAILS CLOSED:
- * the list was asked for THIS branch, so ANY row it returns blocks unless its
- * state positively reads CLOSED or MERGED once uppercased, whatever its
- * `headRefName`. A lowercase `"open"`, an empty string or a missing head branch
- * must refuse, not read as "no PR": `mapPrListReply` in `forge-list.ts`
- * synthesises `state: ""` for a forge that answered with one bare number, and an
- * exact `=== "OPEN"` comparison — or a head-branch match this step cannot rely
- * on — would force-push over a branch somebody is reviewing.
+ * Any OTHER sha means this step is about to rewrite a branch, so it first asks the
+ * forge whether that branch is under review — and the check FAILS CLOSED: the list
+ * was asked for THIS branch, so ANY row it returns blocks unless its state positively
+ * reads CLOSED or MERGED once uppercased, whatever its `headRefName`. A lowercase
+ * `"open"`, an empty string or a missing head branch must refuse, not read as "no PR":
+ * `mapPrListReply` in `forge-list.ts` synthesises `state: ""` for a forge that
+ * answered with one bare number, and an exact `=== "OPEN"` comparison would
+ * force-push over a branch somebody is reviewing.
  */
 async function pushLeaseTarget(
   deps: PublishDeps,

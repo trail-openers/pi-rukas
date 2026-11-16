@@ -1,10 +1,9 @@
 /**
  * lean/ci-deps — the outside world `lean/ci` reaches, in production form.
  *
- * Same seam as `publish-deps.ts`: the step body is the algorithm and its
- * preconditions, this file is the wiring to the forge CLI and the project's
- * verify tier. A test drives the step by injecting a recorder here and stays
- * offline — no PR is created and nothing is merged by the suite.
+ * As in `publish-deps.ts`: the step body is the algorithm and its preconditions,
+ * this file is the wiring to the forge CLI and the project's verify tier. A test
+ * injects a recorder here and stays offline.
  */
 
 import { execp } from "../exec.ts";
@@ -20,62 +19,55 @@ export interface CiDeps {
   /**
    * The executor seam (`execp` in production): argv form when `argv` is given.
    * A `killGroup` run is the one form that does not reach a shell, so a test can
-   * answer a kill-group command while every other command still runs for real.
+   * answer a kill-group command while the rest run for real.
    */
   exec: VerifyExec;
   /**
-   * The project's config, read at the run's base sha — the doctrine rule
-   * `config.ts` enforces. Injected so a case can name a full tier without
-   * rewriting the commit the frozen tests were hashed at.
+   * The project's config, read at the run's base sha — the doctrine rule `config.ts`
+   * enforces. Injected so a case can name a full tier without rewriting the commit the
+   * frozen tests were hashed at.
    */
   loadConfig: (repoRoot: string, baseSha: string) => Promise<WorkConfig>;
   /**
-   * The committed `.pi/verify-cmd` at the head CI observes, or `undefined` when
-   * the project keeps its command there rather than in `.pi/work.json`. The
-   * production reader is `verify.ts`'s own `verifyCmdAtHead`; a test injects the
-   * line its case needs.
+   * The committed `.pi/verify-cmd` at the head CI observes, or `undefined` when the
+   * project keeps its command in `.pi/work.json`. Production reads it through
+   * `verify.ts`'s `verifyCmdAtHead`.
    */
   readVerifyCmd?: (wt: string, head: string) => Promise<string | undefined>;
   /** The head the run's gate certified — the commit `readVerifyCmd` reads at. */
   head?: string;
   /**
-   * The full tier's wall clock, in ms. Production leaves it unset and the step
-   * takes the `ci` budget's minutes (the one `ciMinutes` it loads from the
-   * config), so a hung suite is an observed timeout rather than a wedged run.
-   * It bounds the TIER alone — the forge wait has its own bound of the same
-   * size ({@link CiDeps.waitTimeoutMs}) and the two run in sequence, so waiting
-   * out 18 minutes of CI cannot leave the tier no time to run.
+   * The full tier's wall clock, in ms. Production leaves it unset and the step takes
+   * the `ci` budget's minutes, so a hung suite is an observed timeout rather than a
+   * wedged run. It bounds the TIER alone: the forge wait has its own bound of the
+   * same size ({@link CiDeps.waitTimeoutMs}) and the two run in sequence.
    */
   tierTimeoutMs?: number;
   /**
-   * The wait between two forge reads. Defaults to a REAL timer — a poll loop
-   * whose sleep degenerates to a no-op hammers `gh` for the whole budget, and
-   * every offline test injects an advancing no-op, so only the production
-   * default can be wrong in that direction. Same shape as `ciWatch`'s `sleep`.
+   * The wait between two forge reads. Defaults to a REAL timer — a poll loop whose
+   * sleep degenerates to a no-op hammers `gh` for the whole budget. Offline tests
+   * inject an advancing no-op, so only the production default can be wrong that way.
    */
   sleep: (ms: number) => Promise<void>;
   /**
    * The poll's clock, in epoch ms, advanced only by {@link CiDeps.sleep} in a
-   * test. The wait bound is `now() - start`, so a clock that never moves can
-   * never exhaust the budget: the injected pair must move together.
+   * test. The wait bound is `now() - start`, so the injected pair must move
+   * together or the budget can never be exhausted.
    */
   now: () => number;
   /**
-   * Override for the wait bound, in ms. Production leaves it unset and the
-   * step reads `budgets.ci.minutes` through `budgetFor`; a test sets it so a
-   * 30-minute budget does not take 30 minutes of injected sleeps.
+   * Override for the wait bound, in ms. Production leaves it unset and the step
+   * reads `budgets.ci.minutes` through `budgetFor`; a test sets it so a 30-minute
+   * budget does not take 30 minutes of injected sleeps.
    */
   waitTimeoutMs?: number;
   /**
    * The forge adapter for the run's repository, or `undefined` when none can be
    * resolved. Production is `io.ts`'s ONE detection seam (`detectForge` →
-   * `createForge`, `undefined` for `unknown`), so the step obeys the same answer
-   * `publish` and `land` obey — the `gh` reads below are the GitHub branch of
-   * that answer, never a default. `undefined` is an ANSWER ("this clone has no
-   * forge the harness can drive") and the step refuses on it rather than
-   * falling back to `gh`, which is how a GitLab project whose detection failed
-   * would otherwise be graded on GitHub commands it never ran. A test injects
-   * the adapter its case needs and stays offline.
+   * `createForge`), so the step obeys the same answer `publish` and `land` obey.
+   * `undefined` is an ANSWER — the step refuses rather than falling back to `gh`,
+   * which is how a GitLab project whose detection failed would be graded on GitHub
+   * commands it never ran.
    */
   forge: (repoRoot: string) => PromiseLike<Forge | undefined>;
 }
@@ -101,20 +93,15 @@ export function ciDeps(): CiDeps {
 /**
  * The two `gh` reads the CI verdict is made of, in their pinned argv form.
  *
- * ONE read carries both `mergeStateStatus` and `headRefOid` (and `mergeable`,
- * the field `gh pr view --json` actually exposes — `isMergeable` is not a field
- * of that subcommand), because the head and the verdict must come from the same
- * moment: two reads of a moving PR are two moments, and a green about another
- * head is no evidence about this one. That is `mergeEvidenceViewCmd`, the same
- * read the driver's merge-evidence gate runs.
+ * ONE read carries `mergeStateStatus`, `headRefOid` and `mergeable` — the fields
+ * `gh pr view --json` actually exposes — so head and verdict come from the same moment:
+ * a green about another head is no evidence about this one. That is
+ * `mergeEvidenceViewCmd`, the read the merge-evidence gate runs too.
  *
- * The check rows are a SEPARATE read, and `--json` is load-bearing on it:
- * `gh pr checks` without `--json` prints a human table, which is not parseable,
- * so every row would be discarded and the `skipped`/`neutral` treatment would be
- * unreachable through production code. `prChecksCmd` requests the fields `gh`
- * supports (`name,state,bucket` — `conclusion` is not one of them, and the
- * field list is pinned by `test-gh-argv.ts` alongside the rule that
- * `isRequired` must never come back).
+ * The check rows are a SEPARATE read, and `--json` is load-bearing: without it
+ * `gh pr checks` prints a human table, every row is discarded, and the
+ * `skipped`/`neutral` treatment is unreachable from production code. `prChecksCmd`
+ * requests only `name,state,bucket`.
  */
 export function ghReads(prNumber: number): { view: string; checks: string } {
   return {

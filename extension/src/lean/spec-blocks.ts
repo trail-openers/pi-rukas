@@ -1,10 +1,9 @@
 /**
  * lean/spec-blocks — the two prompt sections rendered straight from a `PiSpec`.
  *
- * One definition, three readers: `build-prompt.ts`, `specify-prompt.ts` and
- * `challenge-prompt.ts` all print the criteria list, and build and specify print
- * the scope list. The rendering is the contract those prompts are pinned on, so a
- * second copy could drift into the three children reading different criteria text.
+ * One definition shared by `build-prompt.ts`, `specify-prompt.ts` and
+ * `challenge-prompt.ts`: the rendering is the text those prompts are pinned on,
+ * so a second copy could drift into the children reading different criteria.
  */
 
 import type { PiSpec } from "./spec.ts";

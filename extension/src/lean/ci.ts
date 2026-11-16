@@ -1,41 +1,35 @@
 /**
  * lean/ci — the step that OBSERVES the pipeline: required checks plus the full tier.
  *
- * A child's prose ("CI looks fine") is not an outcome here. `green` is granted
- * only when two executed things agree about one named commit:
+ * A child's prose ("CI looks fine") is not an outcome here. `green` is granted only
+ * when two executed things agree about one named commit:
  *
- *   1. the forge's own required-check verdict — `gh pr view`'s
- *      `mergeStateStatus` (which already encodes the repo's required-check
- *      rules) plus `gh pr checks`' rows, both read at the PR head. Both are
- *      re-read every minute while a row is still running: a check that has not
- *      finished is not a check that failed, and grading one as red spends a
- *      build round on code that is not broken;
- *   2. the project's FULL-tier verify command, run locally in the run's own
- *      worktree at the head the run's gate certified.
+ *   1. the forge's own required-check verdict — `gh pr view`'s `mergeStateStatus`
+ *      (which already encodes the repo's required-check rules) plus `gh pr checks`'
+ *      rows, both read at the PR head, and both re-read every minute while a row is
+ *      still running: an unfinished check is not a failed one;
+ *   2. the project's FULL-tier verify command, run locally in the run's own worktree
+ *      at the head the run's gate certified.
  *
- * The second half is the reason `land` may trust `ci` at all: a run must not
- * reach the merge on the fast tier plus the frozen tests alone. With no full
- * tier configured this step returns `red` naming that gap — it fails closed
- * rather than reporting a green it did not observe.
+ * The second half is the reason `land` may trust `ci` at all: a run must not reach
+ * the merge on the fast tier plus the frozen tests alone. With no full tier
+ * configured this step returns `red` naming that gap — it fails closed rather than
+ * reporting a green it did not observe.
  *
- * A red is a verdict and the machine routes it (one fix round, then handback).
- * A throw is infrastructure — an unreadable `gh`, a killed or un-startable tier,
- * checks that never finished inside the wait's bound, a worktree that is no
- * longer the tree the gate certified — which the engine turns into handed-back
- * rather than a build round, because a result nobody observed is not evidence
- * that the code is wrong.
+ * A red is a verdict and the machine routes it (one fix round, then handback). A
+ * throw is infrastructure — an unreadable `gh`, a killed or un-startable tier, checks
+ * that never finished inside the wait's bound, a worktree that is no longer the tree
+ * the gate certified — which the engine turns into handed-back rather than a build
+ * round, because a result nobody observed is not evidence the code is wrong.
  *
  * **The architectural bound.** Between `build`/`verify` and this handler nothing is
  * pushed, so the code the run produced exists ONLY in this worktree, and `ci`
  * necessarily executes its full tier FROM DISK. "The full tier ran at the frozen
- * head" is therefore NOT achievable by this shape — no frozen checkout happens here
- * (it never calls `checkout`, `switch`, `reset`, `clean` or `stash`). What the green
- * actually claims is that **the disk still matches the head the record says was
- * built**: before the tier runs, the worktree's HEAD is re-read against the newest
- * decided `verify`'s `verifiedHead`, HEAD must still sit on the run's branch, and the
- * tree must pass lean's single clean-tree gate (`assertTreeClean` in
- * `verify-recheck.ts`). Anything else throws. Proving the disk matches the head it
- * claims is the deliverable.
+ * head" is therefore NOT achievable by this shape — it never calls `checkout`,
+ * `switch`, `reset`, `clean` or `stash`. What the green actually claims is that
+ * **the disk still matches the head the record says was built**: HEAD is re-read
+ * against the newest decided `verify`'s `verifiedHead`, HEAD must still sit on the
+ * run's branch, and the tree must pass lean's clean-tree gate (`assertTreeClean`).
  */
 
 import { isFullCommitSha } from "../commit-sha.ts";
@@ -70,15 +64,14 @@ import { VerifyInfraError } from "./verify-types.ts";
 export { CI_POLL_MS };
 
 /**
- * The `ci` budget's minutes for one loaded config. One number feeds BOTH bounds of
- * the step — the forge wait and the full tier — so neither can drift from the other
- * or from what `.pi/work.json` says; `DEFAULT_BUDGETS` is the fallback only where
- * the config carries no `ci` row at all.
+ * The `ci` budget's minutes for one loaded config. One number feeds BOTH bounds of the
+ * step — the forge wait and the full tier — so neither drifts from the other or from
+ * `.pi/work.json`; `DEFAULT_BUDGETS` is the fallback only where the config carries no
+ * `ci` row at all.
  *
- * A `0` here is the shipped default, not a bound of zero: elsewhere in a budget `0`
- * means "no bound", but here the same number is a timeout handed to the forge wait
- * and to the tier, so `0` would read as "expire immediately" and every run would
- * hand back at once. So `<= 0` takes the shipped number.
+ * A `0` here is the shipped default, not a bound of zero: elsewhere a budget `0` means
+ * "no bound", but this number is a timeout handed to both the wait and the tier, so `0`
+ * would read as "expire immediately". So `<= 0` takes the shipped number.
  */
 function ciMinutes(cfg: WorkConfig): number {
   const configured = budgetFor(cfg, "ci")?.minutes ?? 0;
@@ -100,18 +93,17 @@ function verifiedHead(ctx: HandlerCtx): string | undefined {
  * Is the disk still the head this run was certified at?
  *
  * `ci` runs its full tier as a shell command IN the worktree, so the tree it judges is
- * whatever is on disk when the handler starts. Nothing is pushed between the
- * build/verify gate and here, so the only way to make "the full tier ran at the
- * verified head" honest is to PROVE the disk still holds that head — with the same
- * reads `verify-recheck.ts` makes after every tier:
+ * whatever is on disk when the handler starts, and nothing is pushed between the
+ * build/verify gate and here. The only way to make "the full tier ran at the verified
+ * head" honest is to PROVE the disk still holds that head, with the same reads
+ * `verify-recheck.ts` makes after every tier:
  *
- *   - HEAD is re-read and must equal `verified` — a `git checkout` of anything else
- *     (or a commit made since the gate) is refused here rather than graded;
- *   - HEAD must still sit on the run's own branch — `git checkout --detach` leaves
- *     the same sha on no branch, and everything after this step pushes the branch;
- *   - the tree must be clean, through lean's single clean-tree gate
- *     ({@link assertTreeClean}) — a rewritten or untracked file means the tier would
- *     run over bytes no commit holds.
+ *   - HEAD must equal `verified` — a `git checkout` of anything else, or a commit made
+ *     since the gate, is refused here rather than graded;
+ *   - HEAD must still sit on the run's own branch — `--detach` leaves the same sha on
+ *     no branch, and everything after this step pushes the branch;
+ *   - the tree must be clean, through {@link assertTreeClean} — a rewritten or
+ *     untracked file means the tier would run over bytes no commit holds.
  *
  * Every refusal throws: this is the machine having moved, not the code being wrong.
  */
@@ -163,11 +155,10 @@ async function assertDiskAtVerifiedHead(
 /**
  * What a red `ci` records about the gate that failed, beside its reason.
  *
- * The step has three reds and they are three different failures with three different
- * owners — no full tier configured, the forge's checks, and the tier itself — so each
- * names what it ran. The tier's own name is `ci`'s own constant, and its criteria come
- * from the same criterion→files map `verify` attributes with: the full tier is the
- * project's whole suite, which is what those frozen tests are.
+ * The step has three reds — no full tier configured, the forge's checks, and the
+ * tier itself — three different failures with three different owners, so each names
+ * what it ran. The tier's name is `ci`'s own constant, and its criteria come from
+ * the same criterion→files map `verify` attributes with.
  */
 function ciRed(opts: {
   reason: string;
@@ -192,12 +183,11 @@ function contractCriteria(steps: Step[]): string[] {
 /**
  * The `ci` step. Returns `green` | `red`; THROWS on infrastructure.
  *
- * The head it observes is the run's own: the newest decided `verify`'s
- * `verifiedHead`, which is also what `land` later compares to the PR head. A ci
- * green recorded over a tree nobody ran the full tier at is the shape this step
- * exists to make unreachable, so an absent head throws rather than falling back
- * to whatever the worktree happens to hold — and so does a worktree that has
- * moved off it since (`assertDiskAtVerifiedHead`).
+ * The head it observes is the run's own: the newest decided `verify`'s `verifiedHead`,
+ * which `land` later compares to the PR head. A green recorded over a tree nobody ran
+ * the full tier at is the shape this step exists to make unreachable, so an absent head
+ * throws rather than falling back to the worktree's — and so does one that has moved
+ * since (`assertDiskAtVerifiedHead`).
  */
 export async function ciOutcome(ctx: HandlerCtx, deps: CiDeps): Promise<Outcome> {
   const verified = verifiedHead(ctx);

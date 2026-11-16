@@ -1,26 +1,26 @@
 /**
- * lean/build-blocked — the anti-forgery gate for the build child's "these
- * frozen tests cannot all pass together" report.
+ * lean/build-blocked — the anti-forgery gate for the build child's "these frozen tests
+ * cannot all pass together" report.
  *
- * The child's report is narration, not executed evidence (AGENTS.md §7 rule 1). A
- * builder that could end a run by naming a conflict would end runs whose contract it
- * never read, or one that is satisfiable — the shape of a child that gave up. So the
- * driver honours the report only when BOTH hold, and the second is its own command:
+ * The child's report is narration, not executed evidence (AGENTS.md §7 rule 1). A builder
+ * that could end a run by naming a conflict would end runs whose contract it never read,
+ * or one that is satisfiable. So the driver honours the report only when BOTH hold, and
+ * the second is its own command:
  *
  *   1. **every named path is in the run's frozen map** — read off the same
- *      `frozenFromLog` every other reader of the contract uses, so a file the
- *      child merely imagined is not evidence;
- *   2. **at least one named frozen test comes back red on the child's tree**,
- *      run with the project's own `verify.test` template through the same
- *      runner `verify` and `specify` use (`runTestFile`, argv form, no shell).
+ *      `frozenFromLog` every other reader of the contract uses, so a file the child
+ *      merely imagined is not evidence;
+ *   2. **at least one named frozen test comes back red on the child's tree**, run with
+ *      the project's own `verify.test` template through the same runner `verify` and
+ *      `specify` use (`runTestFile`, argv form, no shell).
  *
- * A runner that could not be started or was killed is NOT a red — it observed
- * nothing — and the report is ignored rather than honoured on a toolchain fault.
- * A green named test is not a conflict either. When ignored, the caller traces the
- * reason and continues its ordinary path: there is no third verdict.
+ * A runner that could not be started or was killed is NOT a red — it observed nothing —
+ * so the report is ignored rather than honoured on a toolchain fault, and a green named
+ * test is not a conflict either. When ignored, the caller traces the reason and continues
+ * its ordinary path: there is no third verdict.
  *
- * The entry and reason bounds here are the DURABLE record's, so an entry that could
- * not be persisted is refused before anything is spent running it.
+ * The entry and reason bounds here are the DURABLE record's, so an entry that could not be
+ * persisted is refused before anything is spent running it.
  */
 
 import { trace, traceWarn } from "../trace.ts";
@@ -54,9 +54,8 @@ const BLOCKED_CAUSE_CAP = BLOCKED_PATH_CAP + BLOCKED_REASON_CAP + 44;
 
 /**
  * The child's reported conflicts, filtered to entries the record could hold, in the
- * child's own order: `blockedProved` runs them in it and stops at the first red, so a
- * re-sorted list would prove a file the builder never feared. Illegal frozen keys are
- * dropped here, before any `git`/runner call.
+ * child's own order: `blockedProved` runs them in it and stops at the first red.
+ * Illegal frozen keys are dropped here, before any `git`/runner call.
  */
 function usableConflicts(rows: Array<{ path: string; reason: string }>): string[] {
   const seen = new Set<string>();
@@ -81,14 +80,14 @@ export type BlockedVerdict =
  *
  * `wt` is the child's tree, before any reset, so the red is a fact about the child's
  * work. Hence each named file is hashed before its runner starts: a builder that
- * rewrote a frozen file into one that fails would otherwise be handed a red the
- * driver watched. Only what `ran` lists may be recorded.
+ * rewrote a frozen file into one that fails would otherwise be handed a red the driver
+ * watched. Only what `ran` lists may be recorded.
  *
- * One wall clock bounds the WHOLE loop, not each runner: a report naming the 32
- * files the tool may ask for would otherwise cost 32 ceilings, and the step's own
- * budget is no substitute because the re-run happens after the child is paid
- * ({@link runFrozen}). A file whose runner could not start or was killed is skipped,
- * not fatal; no red means the claim is not honoured.
+ * One wall clock bounds the WHOLE loop, not each runner: a report naming the 32 files
+ * the tool may ask for would otherwise cost 32 ceilings, and the step's budget is no
+ * substitute because the re-run happens after the child is paid ({@link runFrozen}). A
+ * file whose runner could not start or was killed is skipped, not fatal; no red means
+ * the claim is not honoured.
  */
 export async function blockedProved(opts: {
   exec: BuildExec;

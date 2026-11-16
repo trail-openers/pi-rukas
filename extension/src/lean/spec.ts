@@ -2,18 +2,13 @@
  * lean/spec — the pi-spec v1 contract between /plan and /work-lean.
  *
  * An issue body carries ONE fenced block whose info string is exactly
- * `pi-spec v1`. Its content is JSON of shape `PiSpec`. The block is the whole
- * contract: the driver does not infer scope, criteria, or size from prose, so
- * an issue that does not carry one is not ready and says so.
+ * `pi-spec v1`, holding JSON of shape `PiSpec`. The block is the whole contract:
+ * the driver infers no scope, criteria, or size from prose, so an issue without
+ * one is not ready and says so.
  *
- * Three exports, each with one job:
- *   - `parsePiSpec`  — read the block, or name the reason it is unusable.
- *   - `readiness`    — the rules a well-formed spec can still fail.
- *   - `renderPiSpec` — write the block (`/plan` uses it); round-trips with parse.
- *
- * Every failure names itself. "No block", "two blocks", "invalid JSON" and
- * "wrong type" are four distinct reasons, because an operator fixing an issue
- * needs to know which of the four they are looking at.
+ * Every failure names itself — "no block", "two blocks", "invalid JSON" and
+ * "wrong type" are four distinct reasons, so an operator fixing an issue knows
+ * which of the four they are looking at.
  */
 
 /** How a criterion is checked. `command` criteria additionally carry a command. */
@@ -58,34 +53,19 @@ const SIZES: readonly string[] = ["S", "M", "L"];
 const FENCE_LINE = /^(?: {0,3})(?<run>`{3,}|~{3,})(?<rest>.*)$/;
 
 /**
- * Whether the whole LINE `line` closes a sample opened by `char`/`len` — the one
- * predicate every reader of a drafted or filed body calls, because it is the whole
- * CommonMark condition and not part of it: up to 3 leading spaces, a run of the
- * same character at least as long as the opener's, and NOTHING but whitespace after
- * the run (a closer carries no info string).
+ * Whether the whole LINE `line` closes a sample opened by `char`/`len`: up to 3
+ * leading spaces, a run of the same character at least as long as the opener's,
+ * and NOTHING but whitespace after the run (a closer carries no info string).
  *
- * THE closing rule of this module's walkers below, and the one rule its readers
- * must agree on: `fencedBlocks` decides what `parsePiSpec` can read,
- * `stripPiSpecBlocks` decides what an oracle seat is shown, and
- * `plan-pi-spec-descriptor.ts`'s section walker imports this for its own look-ahead.
- * Where they disagree the same body reads two ways — a strip that keeps a block the
- * parser dropped, or a section that ends where a strip kept going.
+ * The one closing rule every reader of a drafted or filed body shares —
+ * `fencedBlocks`, `stripPiSpecBlocks` and the `/plan` section walker all decide
+ * boundaries with it, and where they disagree the same body reads two ways.
  *
- * The take-the-whole-line shape is the point, and why there is deliberately no
- * exported "does this RUN close it" half next to it: a run-only predicate leaves
- * the "nothing but the run" condition to each caller, and callers that supply it
- * differently (a `\s*$` anchor versus a trimmed tail) make the same line a boundary
- * in one reader and content in the other — a sample the strip called closed (and so
- * removed from the oracle seat) while the section walker was still inside it, which
- * carried the sample's quoted `## ` line as the boundary that ended the section
- * early. Zero criteria is a legitimate draft, so the draft filed NO machine block at
- * all and said nothing while doing it. One predicate, one tail test; a fourth
- * line-by-line fence walker, or a second spelling of either half, is the drift to
- * refuse.
- *
- * The tail test is `rest.trim() === ""` and not a `\s*$` anchor: JS treats U+2028
- * and U+2029 as line terminators, so `.` does not match them while `\s` does, and
- * the two spellings are not the same class of line.
+ * The whole-line shape is the predicate: a run-only half would leave the
+ * "nothing but the run" condition to each caller, and two spellings of that
+ * condition are not equivalent — JS treats U+2028 and U+2029 as line
+ * terminators, so a dot excludes them while the whitespace class includes them.
+ * The tail test here is a trimmed comparison for exactly that reason.
  */
 export function closesFenceLine(line: string, char: string, len: number): boolean {
   const g = FENCE_LINE.exec(line)?.groups;
@@ -96,22 +76,18 @@ export function closesFenceLine(line: string, char: string, len: number): boolea
 /**
  * Collapse text to the shape a comparison against another rendering of the same
  * words can survive: whitespace runs are one space, leading and trailing
- * whitespace goes. The `/plan` problem line is a restatement of the body, so the
- * two differ only in layout for a great many issues — and the review seats and
- * the oracle seats must reach the same verdict about that with one rule, not two
- * spellings of it.
+ * whitespace goes. The `/plan` problem line restates the body, so the two
+ * differ only in layout, and review and oracle seats must reach one verdict.
  */
 export function normalizeProse(s: string): string {
   return s.replace(/\s+/g, " ").trim();
 }
 
 /**
- * Fenced blocks in a CommonMark body: a run of ≥3 backticks or tildes opens,
- * a run of the same char at least as long closes. Blank lines and indented
- * fences do not break the run, so a spec block may contain either.
- *
- * The pi-spec reader below is its only caller here; the closing rule it applies
- * is {@link closesFenceLine}, the one the other readers share.
+ * Fenced blocks in a CommonMark body: a run of ≥3 backticks or tildes opens, a
+ * run of the same char at least as long closes. Blank lines and indented fences
+ * do not break the run, so a spec block may contain either. Closes with
+ * {@link closesFenceLine}, the rule the other readers share.
  */
 function fencedBlocks(body: string): { info: string; content: string }[] {
   const lines = body.split(/\r?\n/);
@@ -147,9 +123,8 @@ function fencedBlocks(body: string): { info: string; content: string }[] {
 
 /**
  * The line number (1-based) of the last opening fence that never closed, or
- * undefined when every fence closed. CommonMark drops such a fence, so this
- * is deliberately separate from `fencedBlocks`: the parse result stays
- * "no block", and only the message gains the line that was truncated.
+ * undefined when every fence closed. Separate from `fencedBlocks` so the parse
+ * result stays "no block" and only the message gains the truncated line.
  */
 function unterminatedFenceLine(body: string): number | undefined {
   const lines = body.split(/\r?\n/);
@@ -214,28 +189,22 @@ export function readPiSpecBlockInfo(body: string): string | undefined {
 }
 
 /**
- * The body with its TERMINATED `pi-spec v1` fence removed, for a child that is
- * shown the issue as the task statement and must not be handed the contract
- * twice (`lean/specify-prompt.ts`, `lean/challenge-prompt.ts`).
+ * The body with its TERMINATED `pi-spec v1` fence removed, for a child shown the
+ * issue as its task statement that must not be handed the contract twice
+ * (`lean/specify-prompt.ts`, `lean/challenge-prompt.ts`).
  *
- * The rule is exactly {@link closesFenceLine}'s — same fence character, a run at
- * least as long, a closer that carries no info string — and only a fence whose
- * info string trims to `SPEC_INFO` is dropped. Everything else survives
- * byte-for-byte, including the shapes that LOOK like a spec: a fence whose info
- * merely starts with it, a tilde fence, an indented fence, and a `pi-spec v1`
- * block that was never closed. The unterminated case is the one that matters:
- * a truncated body keeps its prose rather than losing half of it to a strip,
- * and `parsePiSpec` still reports the missing closer for that same body.
+ * Only a fence whose info string trims to `SPEC_INFO` is dropped; everything
+ * else survives byte-for-byte, including the shapes that LOOK like a spec — a
+ * prefixed info string, a tilde fence, an indented fence, and an unterminated
+ * `pi-spec v1` block, which keeps its prose while `parsePiSpec` still reports
+ * the missing closer.
  *
  * What goes is the opening line, the content and the closer, plus AT MOST ONE
- * blank — the blank line the block needed to be a block at all. A spec block is
- * normally flanked by blanks, so taking its three lines and nothing else would
- * leave the oracle seat a double blank inside the fence, a gap the issue never
- * had. Bounded that way rather than as a general trim: one blank, only when a
- * blank survived on each side of the removal, so a body with nothing to strip —
- * and a body whose block sat directly against its prose — come back byte-identical.
- * The line SPLITS on `\r?\n` and rejoins on `\n`, which is what `fencedBlocks`
- * already does to the same body.
+ * flanking blank: a spec block is normally flanked by blanks, so taking only its
+ * three lines would leave a double blank the issue never had. Bounded to one,
+ * and only when a blank survived on each side, so bodies with nothing to strip
+ * come back byte-identical. Splits on `\r?\n` and rejoins on `\n`, as
+ * `fencedBlocks` does.
  */
 export function stripPiSpecBlocks(body: string): string {
   const lines = body.split(/\r?\n/);
@@ -291,19 +260,14 @@ export function stripPiSpecBlocks(body: string): string {
 }
 
 /**
- * Whether a fence OPENS the contract: an opening fence whose info string is
- * {@link SPEC_INFO} as a WHOLE WORD — the exact info, or the exact info followed by
- * whitespace.
+ * Whether a fence OPENS the contract: info string equal to {@link SPEC_INFO}, or
+ * that exact info followed by a space.
  *
- * A prefix test is not this predicate, and the difference is not academic: `/plan`
- * renames every drafted `pi-spec v1` opener to `pi-spec v1-example`
- * (`PI_SPEC_EXAMPLE_INFO` in `plan-pi-spec.ts`) precisely so a body that QUOTES the
- * block format can never be read as a contract. Such a fence is therefore present in
- * every `/plan`-filed body that illustrates the format, and counting it as a second
- * spec silently removed the issue section from every seat for every one of them.
- * `pi-spec v1` PLUS a space is the shape that genuinely carries a second contract
- * (`fencedBlocks` reads its info as `pi-spec v1 extra`, so the strip and the parser
- * both refuse it) and still counts.
+ * A prefix test is not this predicate: `/plan` renames every drafted opener to
+ * `pi-spec v1-example` (`PI_SPEC_EXAMPLE_INFO` in `plan-pi-spec.ts`) so a body
+ * that QUOTES the block format is never read as a contract, and such a fence is
+ * present in every `/plan`-filed body that illustrates the format. `pi-spec v1`
+ * plus a space is the shape that genuinely carries a second contract.
  */
 function opensSpecFence(info: string): boolean {
   return info === SPEC_INFO || info.startsWith(`${SPEC_INFO}${String.fromCharCode(32)}`);
@@ -312,11 +276,9 @@ function opensSpecFence(info: string): boolean {
 /**
  * A line that OPENS a fence: the run, its character, and its info string.
  *
- * CommonMark's opener condition, and narrower than {@link closesFenceLine}'s — an
- * opener CARRIES an info string while a closer may carry nothing but whitespace.
- * Three spaces of indent is the most a fence may take, so the 4-space-indented
- * look-alike is indented code: a line the shape test below cannot tell from an
- * opener, and the reason this is a predicate rather than a regex at the call site.
+ * Narrower than {@link closesFenceLine}: an opener CARRIES an info string while a
+ * closer may carry nothing but whitespace. Three spaces of indent is the most a
+ * fence may take, so the 4-space-indented look-alike is indented code.
  */
 function openingFence(line: string): { char: string; len: number; info: string } | undefined {
   const g = FENCE_LINE.exec(line)?.groups;
@@ -326,31 +288,21 @@ function openingFence(line: string): { char: string; len: number; info: string }
 }
 
 /**
- * Whether a fence shaped like the spec block SURVIVED in this body: an OPENING
- * fence line at depth 0 whose info string is {@link SPEC_INFO} as a whole word
+ * Whether a spec-shaped fence SURVIVED in this body: an OPENING fence line at
+ * depth 0 whose info string is {@link SPEC_INFO} as a whole word
  * ({@link opensSpecFence}) — the shape a second spec block would take.
  *
- * `stripPiSpecBlocks` recognises exactly `pi-spec v1` and no other info string —
- * the same exactness rule `parsePiSpec` applies, so a fence whose info is the spec
- * info followed by a space (```` ```pi-spec v1 extra ````) is neither stripped nor read
- * as a spec. Such a fence is the one spec-shaped text that survives the strip, and a
- * seat shown the stripped body would be handed a second copy of a contract nothing
- * enforces. A substring test over the whole body is NOT the same predicate: prose that
- * merely names the block format (a `/plan` drafter quoting it in its own text, or
- * restating its own `Descriptor:` line) is ordinary prose and must keep its section,
- * so only an OPENING FENCE LINE counts — and only one whose info is not merely
- * PREFIXED by the spec info, which is what {@link opensSpecFence} refuses.
+ * `stripPiSpecBlocks` recognises exactly `pi-spec v1`, so a fence whose info is
+ * the spec info followed by a space is neither stripped nor read as a spec, and
+ * a seat shown the stripped body would be handed a second copy of a contract
+ * nothing enforces. Prose that merely names the block format is ordinary prose
+ * and keeps its section, so only an OPENING FENCE LINE counts.
  *
- * Which is why this walks the body the way `stripPiSpecBlocks` walks it, on the
- * same predicate, rather than testing lines one at a time. A stateless line test
- * cannot tell an opener from a line that merely LOOKS like one — a `pi-spec v1`
- * line quoted inside a tilde sample, a 4-backtick or 4-space-indented look-alike,
- * an inline code span alone on its line — and refuses the WHOLE section for text
- * the strip kept as content. `parsePiSpec` still reads those bodies as a spec, so
- * the seat silently loses its prose on an issue that is well-formed: the same
- * silent-empty-section failure #2228 exists to close, on a different shape. Lines
- * inside another open fence never count (they are that fence's content, and cannot
- * reopen the contract), and an inline code span is not an opener at all.
+ * Walks the body the way `stripPiSpecBlocks` does, on the same predicate: a
+ * stateless line test cannot tell an opener from a line that merely LOOKS like
+ * one — a quoted `pi-spec v1` inside a tilde sample, a 4-backtick or
+ * 4-space-indented look-alike, an inline code span alone on its line — and would
+ * refuse the WHOLE section for text the strip kept as content.
  */
 export function hasSurvivingSpecShapedFence(body: string): boolean {
   let open: { char: string; len: number } | undefined;
@@ -398,10 +350,8 @@ export function parsePiSpec(body: string): ParseResult {
 /**
  * The rules a structurally valid spec can still fail. Empty means ready.
  *
- * Separated from `parsePiSpec` on purpose: parse answers "is this the shape
- * we can read", readiness answers "can a run actually be attempted from it".
- * The first is a fact about the bytes, the second is a judgement about the
- * work, and only the second one gets an operator-facing comment.
+ * Separate from `parsePiSpec`: parse answers "is this the shape we can read",
+ * readiness answers "can a run be attempted from it".
  */
 export function readiness(spec: PiSpec): string[] {
   const failed: string[] = [];

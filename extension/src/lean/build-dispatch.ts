@@ -1,15 +1,12 @@
 /**
- * lean/build-dispatch — the one child the build step pays for, and the throw a
- * dead child deserves.
+ * lean/build-dispatch — the one child the build step pays for, and the throw a dead child
+ * deserves.
  *
- * `build` dispatches a single `developer` fenced to the run's worktree. A child
- * that died mid-stream is infrastructure, not a verdict about the work: it is
- * never `exhausted` (which would route the machine onward as though the
- * developer had tried and produced nothing) and never `ok`. ONE child is not:
- * a child that died before its first turn is handed back for a single free
- * re-dispatch, and the taxonomy — not this module — decides which deaths
- * qualify. The prompt itself is assembled in `build-prompt.ts` so this module
- * owns only the seam.
+ * `build` dispatches a single `developer` fenced to the run's worktree. A child that died
+ * mid-stream is infrastructure, not a verdict about the work: never `exhausted` (which
+ * routes the machine onward as though the developer had tried and produced nothing) and
+ * never `ok`. A child that died before its first turn gets one free re-dispatch; the
+ * taxonomy decides which deaths qualify. The prompt lives in `build-prompt.ts`.
  */
 
 import { stat } from "node:fs/promises";
@@ -42,9 +39,8 @@ export interface BuildDispatchOpts {
   /** The project's `verify.test` runner template (e.g. `bun run {file}`), if configured. */
   testRunner?: string;
   /**
-   * The issue body the step already read to parse the spec. Threaded to the
-   * prompt so the builder sees the prose the criteria summarise (#2228); the
-   * step never fetches twice to get it.
+   * The issue body the step already read to parse the spec, threaded to the
+   * prompt so the builder sees the prose the criteria summarise.
    */
   issueBody?: string;
   /** Why this round exists: the `verify:red` or `ci:red` reason, if any. */
@@ -60,9 +56,8 @@ export interface BuildDispatchOpts {
   budget: BudgetArms;
   /**
    * The stat the companion preflight runs; `fs/promises.stat` in production.
-   * Injectable the way `specify`/`challenge` inject it, so a case can fail the
-   * check without touching the filesystem — and the preflight's own named error
-   * is what the case observes, not a stand-in for it.
+   * Injectable so a case can fail the check without touching the filesystem and
+   * observe the preflight's own named error.
    */
   statReporter?: (p: string) => Promise<unknown>;
 }
@@ -70,12 +65,10 @@ export interface BuildDispatchOpts {
 /**
  * A builder that died before doing any work, which the step may re-dispatch.
  *
- * dispatchBuilder is the only site holding the child's DispatchResult, so it
- * is the only site that can tell a child that did nothing from one that died
- * mid-flight; the caller sees only the row, which keeps no toolUses. A kill or
- * a terminal provider fault never becomes this: `providerFaultOf` declines it.
- * The classification it took to say so rides along, so the wait site never
- * classifies the same death twice.
+ * dispatchBuilder is the only site holding the child's DispatchResult, so it is
+ * the only site that can tell a child that did nothing from one that died
+ * mid-flight. A kill or a terminal provider fault never becomes this:
+ * `providerFaultOf` declines it.
  */
 interface NoWorkCrash {
   readonly noWorkCrash: true;
@@ -102,16 +95,13 @@ export function didNoWork(result: DispatchResult): boolean {
 
 /**
  * Dispatch one developer. A budget breach comes back as {@link BudgetStop}, a
- * dead-but-idle child the taxonomy calls transient as {@link NoWorkCrash};
- * every other dead child — killed, quota-stopped, or one that worked — is still
- * infrastructure and throws.
+ * dead-but-idle child the taxonomy calls transient as {@link NoWorkCrash}; every other
+ * dead child — killed, quota-stopped, or one that worked — is infrastructure and
+ * throws.
  *
- * The second element of the pair is the row this dispatch cost, and it is
- * returned on every path that RECEIVED a `DispatchResult` — the ok path, the
- * budget stop, and the infra throw built from that result. A throw from before
- * the result arrived (the dispatch seam rejecting, for instance) saw no child
- * and carries no row. A child that died mid-stream spent its tokens before
- * anybody knew, and the caller has no way to build the row after a throw.
+ * The row this dispatch cost is returned on every path that RECEIVED a `DispatchResult`:
+ * a child that died mid-stream spent its tokens before anybody knew, and the caller
+ * cannot build the row after a throw.
  */
 export async function dispatchBuilder(
   dispatch: BuildDispatch,
@@ -152,10 +142,8 @@ export async function dispatchBuilder(
   // Before the throw below: the step's own ceiling ending the child is a verdict.
   const fired = opts.budget.fired(result);
   if (fired !== undefined) return [budgetStop(fired), row];
-  // Before the shared tail: a child that provably did nothing is a re-dispatch,
-  // not a verdict, so it comes back as a row rather than a throw. `providerFaultOf`
-  // is the only answer that declines a cap — a kill and a terminal provider fault
-  // (spend cap, quota window, undated 429, missing model) both come back undefined.
+  // Before the shared tail: a child that provably did nothing is a re-dispatch, not
+  // a verdict, so it comes back as a row rather than a throw.
   if (!result.ok || result.killCause !== undefined || result.errorStop !== undefined) {
     const cls = didNoWork(result) ? providerFaultOf(result) : undefined;
     if (cls !== undefined)

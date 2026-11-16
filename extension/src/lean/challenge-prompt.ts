@@ -1,29 +1,25 @@
 /**
  * lean/challenge-prompt — the adversary's instructions for the challenge step.
  *
- * `specify` pays an adversary to write tests NOBODY has implemented. `challenge`
- * pays one to break a builder that claims it finished: the frozen tests are
- * committed, the code now claims to pass them, and the child's job is to find
- * the case that still fails. That difference is the whole prompt, and every
- * sentence below exists to keep the child from doing the two things that make
- * the round worthless — rewriting an existing test, or writing one that already
- * passes.
+ * `specify` pays an adversary to write tests NOBODY has implemented. `challenge` pays
+ * one to break a builder that claims it finished: the frozen tests are committed, the
+ * code now claims to pass them, and the child's job is to find the case that still
+ * fails. That difference is the whole prompt, and every sentence below exists to keep
+ * the child from the two things that make the round worthless — rewriting an existing
+ * test, or writing one that already passes.
  *
- * Naming the frozen tests is load-bearing, not courtesy. A child that cannot see
- * what already exists duplicates it (the parent drops the duplicate, but the
- * round is spent) or, worse, edits it to green — which destroys the only evidence
- * the run holds about the builder's work. So the paths are listed individually
- * and named as untouchable, exactly as `build-prompt.ts` does for its builder.
+ * Naming the frozen tests is load-bearing, not courtesy: a child that cannot see what
+ * exists duplicates it (the round is spent) or edits it to green, which destroys the
+ * only evidence the run holds about the builder's work. The paths are listed
+ * individually and named as untouchable, as `build-prompt.ts` does.
  *
- * The spec's problem and criteria go in VERBATIM, as in the other two prompts:
- * a paraphrase would be a second spec, and each edge case would be tested against
- * the paraphrase rather than the contract the gate reads.
+ * The spec's problem and criteria go in VERBATIM — a paraphrase would be a second
+ * spec, and each edge case would be tested against the paraphrase rather than the
+ * contract the gate reads.
  *
- * An edge case that turns out to pass is worse than not writing it: the parent
- * runs every submitted file against the current head and keeps only the ones that
- * FAIL there, so an always-failing stub and an already-green test both buy the
- * child nothing. That asymmetry is stated plainly rather than hinted at, because
- * a child optimising for "submitted something" produces exactly those two shapes.
+ * An edge case that turns out to pass is worse than not writing it: the parent keeps
+ * only the submitted files that FAIL at the current head, so an always-failing stub and
+ * an already-green test both buy the child nothing.
  */
 
 import type { TestLocation } from "./config-test-location.ts";
@@ -53,11 +49,11 @@ export interface ChallengePromptOpts {
    */
   testLocation?: TestLocation;
   /**
-   * The issue body the step re-read from the forge. The frozen tests were
-   * written from this text, so an edge case the issue never asked for is not a
-   * finding — this is the sentence that says so in the only form the adversary
-   * can check. Absent, blank, or with `PI_ENSEMBLE_LEAN_ISSUE_PROSE=0`, the
-   * section is not rendered and the prompt is the pre-section shape byte for byte.
+   * The issue body the step re-read from the forge. The frozen tests were written
+   * from this text, so an edge case the issue never asked for is not a finding —
+   * the sentence the adversary can check. Absent, blank, or with
+   * `PI_ENSEMBLE_LEAN_ISSUE_PROSE=0`, the section is not rendered and the prompt
+   * is the pre-section shape byte for byte.
    */
   issueBody?: string;
 }
@@ -102,9 +98,9 @@ export function challengePrompt(opts: ChallengePromptOpts): string {
     "",
     namingLine(opts.testLocation),
     // Same rule `specify` states: the worktree is a checkout of the head, so a
-    // tracked test that is already there is reachable and looks like a file to
-    // submit. The frozen list above names only the run's OWN contract; every
-    // OTHER pre-existing file is refused by the base-commit check too.
+    // tracked test already there looks like a file to submit. The frozen list above
+    // names only the run's OWN contract; every OTHER pre-existing file is refused by
+    // the base-commit check too.
     "Every file you submit must be one YOU CREATE. The parent refuses any path that already exists in the run's base commit — whether you left it untouched or rewrote it — so do not submit a tracked test you found in the tree.",
     opts.testLocation === undefined ? "" : testLocationInstruction(opts.testLocation),
     "",

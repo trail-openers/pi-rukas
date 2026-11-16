@@ -1,9 +1,8 @@
 /**
  * lean/challenge-types — the seams `challenge.ts` injects.
  *
- * Split out for the same reason `build-types.ts` is: the orchestrator's seams
- * must be importable by the modules it orchestrates (`challenge-dispatch.ts`)
- * without importing the step back.
+ * As in `build-types.ts`: the orchestrator's seams must be importable by
+ * `challenge-dispatch.ts` without importing the step back.
  */
 
 import type { DispatchResult, DispatchSpec } from "../types.ts";

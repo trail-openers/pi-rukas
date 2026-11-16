@@ -3,47 +3,35 @@
  * adversary is paid: can it run a test file at all?
  *
  * The step's refusal vocabulary cannot answer this. A runner that dies before
- * collection — pytest's exit 4, an empty git submodule where a test imports
- * from one, a suite that needs an environment variable this tree does not have
- * — prints nothing that names the file, so the red proof classifies the run
- * `unclear` (`exited 4 without naming <base>`) and the step declines with
- * `criterion ACn has no red test`. That is a VERDICT about work the toolchain
- * never got to judge, and it blamed the adversary for the environment.
+ * collection — pytest's exit 4, an empty git submodule a test imports from, a suite
+ * needing an environment variable this tree lacks — prints nothing that names the
+ * file, so the red proof classifies the run `unclear` and the step declines with
+ * `criterion ACn has no red test`: a VERDICT about work the toolchain never judged,
+ * blaming the adversary for the environment.
  *
  * So the step asks the runner directly, once, before the first dispatch:
  *
- *   - the configured `verify.test` template, rendered with the path of an
- *     EMPTY test file written under the worktree root and outside any
- *     configured `verify.testDir`, so the probe cannot be mistaken for an
- *     acceptance test by the boundary's location rule;
- *   - executed by `runTestFile` with its own process group, so a hang is a
- *     kill and a kill is infrastructure — the same classifier the red proof
- *     uses, never a second one, and the same `code` it read off the rejection;
- *   - exit 0, or pytest's "collected 0 items" (5), is healthy: the runner
- *     started, parsed the file and reached the point where it reports on
- *     tests. Any other status, a kill, an output flood, or a runner that never
- *     started is a `SpecifyInfraError` naming the rendered command and a
- *     bounded excerpt of what it printed — the same handback shape
- *     `verify`'s `VerifyInfraError` carries. There is deliberately no
- *     runner-specific detection and no per-runner exception table: the exit
- *     status alone decides, so a runner that reports "no tests" as an error is
- *     refused rather than guessed at.
+ *   - the configured `verify.test` template, rendered with the path of an EMPTY test
+ *     file written under the worktree root and outside any configured
+ *     `verify.testDir`, so the probe cannot be mistaken for an acceptance test;
+ *   - executed by `runTestFile` with its own process group, so a hang is a kill and a
+ *     kill is infrastructure — the same classifier the red proof uses;
+ *   - exit 0, or pytest's "collected 0 items" (5), is healthy: the runner started,
+ *     parsed the file and reached the point where it reports on tests. Any other
+ *     status, a kill, an output flood, or a runner that never started is a
+ *     `SpecifyInfraError` naming the rendered command and a bounded excerpt. There is
+ *     deliberately no runner-specific detection or exception table: the exit status
+ *     alone decides.
  *
- * It costs one runner invocation and no model call, and the probe file is
- * removed on every path — including the throw — so the worktree at dispatch
- * holds exactly what it held before the probe. The retry does NOT re-probe: a
- * runner that broke between attempts is caught by the shared pipeline's own
- * per-file infra throw (`assertRan`), which stays the only infra rule for a
- * run already mid-step.
+ * It costs one runner invocation and no model call, and the probe file is removed on
+ * every path — including the throw. The retry does NOT re-probe: a runner that broke
+ * between attempts is caught by the shared pipeline's per-file infra throw
+ * (`assertRan`).
  *
- * `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` returns before any of it — no probe
- * written, no runner asked, nothing to throw — so a runner that dies on an empty
- * file is judged by the red proof alone, exactly as v0.14.71 judged it. The whole
- * check lives in this file so the switch has exactly one gate to close.
- *
- * An empty git submodule is one of the shapes this catches, and it is fixed
- * where it is caused: `initSubmodules` in `specify-reset.ts` runs inside every
- * reset, before that reset proves its tree clean — behind the same switch.
+ * `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` returns before any of it. The whole check
+ * lives here so the switch has exactly one gate to close. An empty git submodule is
+ * one of the shapes this catches, fixed where it is caused: `initSubmodules` in
+ * `specify-reset.ts`, behind the same switch.
  */
 
 import { existsSync, lstatSync, unlinkSync, writeFileSync } from "node:fs";
@@ -61,16 +49,12 @@ const PYTEST_NO_TESTS = 5;
 /**
  * The two statuses this probe accepts, and nothing else.
  *
- * Both say the same thing in a different dialect: the runner started, parsed the
- * file, and reported on it — 0 meaning "ran, nothing to say", 5 meaning pytest's
- * "collected 0 items" (a `green` is exit 0 read as a verdict, so the status test
- * subsumes it). The status decides, NOT the proof's classification:
- * `runTestFile` calls a non-zero exit that named the file `red`, and a pytest
- * collection error prints the file it could not collect, so the very failure
- * this probe exists to catch arrives as a `red`. Reading classifications here
- * would grade that run healthy. It also says nothing about the runner's flavour
- * — no detection, no exception table — only which exit statuses mean "nothing
- * was judged".
+ * Both say the runner started, parsed the file and reported on it — 0 meaning "ran,
+ * nothing to say", 5 meaning pytest's "collected 0 items". The status decides, NOT the
+ * proof's classification: `runTestFile` calls a non-zero exit that named the file
+ * `red`, and a pytest collection error prints the file it could not collect, so the
+ * very failure this probe exists to catch arrives as a `red`. Nothing here speaks of
+ * the runner's flavour — only which exit statuses mean "nothing was judged".
  */
 function probeHealthy(proof: Proof): boolean {
   return proof.kind === "green" || (proof.kind !== "infra" && proof.code === PYTEST_NO_TESTS);
@@ -88,22 +72,18 @@ const PROBE_CONTENT = "";
 /**
  * The probe's worktree-relative path, and why it sits there.
  *
- * Two facts have to hold at once: the probe must not be mistaken for an
- * acceptance test (so it is hidden, and no `testGlob` may start with `.`), and
- * writing it must not change the tree — no directory created, nothing left
- * behind for the reset's clean-tree assertion or the acceptance-test commit to
- * explain. The worktree root satisfies both whatever the config says: it always
- * exists, and a probe inside a configured `verify.testDir` is exactly the byte
- * the boundary's location rule is built to refuse.
+ * Two facts must hold at once: the probe must not be mistaken for an acceptance test
+ * (so it is hidden, and no `testGlob` may start with `.`), and writing it must not
+ * change the tree — no directory created, nothing left behind for the clean-tree
+ * assertion or the acceptance-test commit to explain. The worktree root satisfies
+ * both whatever the config says.
  *
- * A project that keeps its tests in a SUBDIRECTORY (`testDir` deeper than the
- * root) has a directory free of that constraint already — `testDir`'s parent —
- * and the config vouches that it exists, since every acceptance test the run
- * freezes has to sit under it. That is where the probe goes, and the preflight
- * confirms it on the tree rather than trusting the config: no `mkdir`, because
- * an uncreated directory would be an untracked byte the step then has to
- * account for. A parent that is not on the tree falls back to the root, which
- * always is — so the probe always has a place, and this never answers "no".
+ * A project whose tests live in a SUBDIRECTORY has a directory free of that
+ * constraint already — `testDir`'s parent — and the config vouches it exists, since
+ * every frozen acceptance test sits under it. The preflight confirms it on the tree
+ * rather than trusting the config: no `mkdir`, because an uncreated directory would
+ * be an untracked byte the step then accounts for. A parent not on the tree falls
+ * back to the root.
  */
 function probeRelative(wt: string, testLocation?: TestLocation): string {
   if (testLocation === undefined) return PROBE_BASENAME;
@@ -116,11 +96,10 @@ function probeRelative(wt: string, testLocation?: TestLocation): string {
  * Is `abs` an ordinary file this probe may claim (rather than a link, dir or fifo)?
  *
  * `lstat`, never `stat`: the question is what sits AT the name, not what the name
- * resolves to, and a `stat` of a link to a regular file answers "a file" for a byte
- * the step does not own. The link is then refused by name rather than by inference —
- * `isSymbolicLink()` before `isFile()` — because this is the step's own rule and not
- * the platform's: a base-carried symlink at the probe path is never written through,
- * whatever `open(2)` with `wx` would have happened to do with it.
+ * resolves to. The link is refused by name rather than by inference —
+ * `isSymbolicLink()` before `isFile()` — because this is the step's own rule, not
+ * the platform's: a base-carried symlink at the probe path is never written
+ * through, whatever `open(2)` with `wx` would have happened to do with it.
  */
 function isPlainProbe(abs: string): boolean {
   try {
@@ -176,20 +155,17 @@ export async function assertRunnerCanRunTests(
     limits: opts.limits ?? { timeoutMs: PROBE_TIMEOUT_MS },
   });
   try {
-    // ONE rule, no per-runner table: an empty file must not be what the runner
-    // dies on. Exit 0 is a runner that ran the file and found nothing to say;
-    // exit 5 is pytest's `collected 0 items`, the same fact in its own dialect.
-    // Any other outcome — the collection error that exits 4, the kill of a hung
-    // runner, the flood, the runner that never started — observed nothing, and
-    // the step must not spend an adversary on a toolchain that cannot answer.
+    // ONE rule, no per-runner table: an empty file must not be what the runner dies
+    // on. Any other outcome — the collection error that exits 4, the kill of a hung
+    // runner, the flood, the runner that never started — observed nothing, and the
+    // step must not spend an adversary on a toolchain that cannot answer.
     if (probeHealthy(proof)) return;
     throw new SpecifyInfraError(
       `the test runner could not run a test file: ${proof.cmd} — ${trim(proof.detail)}`,
     );
   } finally {
-    // Every path, throw included: a probe left in the tree is an untracked
-    // byte the reset's clean-tree assertion and the acceptance-test commit both
-    // have to explain, and the runner's own status would report it.
+    // Every path, throw included: a probe left in the tree is an untracked byte the
+    // reset's clean-tree assertion and the acceptance-test commit both have to explain.
     if (existsSync(abs)) {
       try {
         unlinkSync(abs);

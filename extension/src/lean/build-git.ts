@@ -1,17 +1,15 @@
 /**
- * lean/build-git — the git probes and mutations the build step's normalisation
- * needs, each one answering a question git can answer and no amount of reading
- * the working tree can.
+ * lean/build-git — the git probes and mutations the build step's normalisation needs,
+ * each answering a question only git can answer.
  *
- * `build` holds a worktree a model has just been loose in, and every claim the
- * step makes about that tree is a git claim: does HEAD still descend from the
- * commit I recorded, what changed since then, does this frozen blob still hash
- * to its record, is the tree clean. Each function here is one such claim, and
- * the two failure kinds are kept apart deliberately — a git refusal that MEANS
- * something (exit 1 from `merge-base --is-ancestor` is "no, it does not
+ * `build` holds a worktree a model has just been loose in, and every claim the step
+ * makes about that tree is a git claim: does HEAD still descend from the commit I
+ * recorded, what changed since, does this frozen blob still hash to its record, is the
+ * tree clean. The two failure kinds are kept apart deliberately — a git refusal that
+ * MEANS something (exit 1 from `merge-base --is-ancestor` is "no, it does not
  * descend") is a value, while a git that could not run at all is a
- * `BuildInfraError`. Collapsing those two is how a driver builds on a tree it
- * never actually verified.
+ * `BuildInfraError`. Collapsing those two is how a driver builds on a tree it never
+ * verified.
  */
 
 import { BuildInfraError } from "./build-errors.ts";
@@ -91,9 +89,9 @@ export async function headDescendsFrom(exec: BuildExec, wt: string, sha: string)
 
 /**
  * The committed blob of `rel` at `ref`, byte for byte; `undefined` when git
- * refuses it. `latin1` is read back with `Buffer.from(…, "latin1")`, the one
- * text encoding that keeps every byte: a frozen test holding invalid UTF-8
- * must hash to the record the freeze made, and utf8 would rewrite it.
+ * refuses it. `latin1` is read back with `Buffer.from(…, "latin1")`, the one text
+ * encoding that keeps every byte: a frozen test holding invalid UTF-8 must hash to
+ * the record the freeze made, and utf8 would rewrite it.
  */
 export async function blobAt(
   exec: BuildExec,
@@ -118,11 +116,10 @@ export async function blobAt(
  * A zero-byte blob is never a frozen test, whatever its record says: a record of
  * the empty hash would otherwise vouch for a test that tests nothing.
  *
- * `build` reads a git refusal as "altered": its normalisation is about to
- * rewrite the tree, and a blob it cannot read is one it cannot vouch for. The
- * lean `verify` step reads the same refusal the other way — a git that could not
- * run is infrastructure, never a verdict — so it calls
- * {@link frozenTamperedAtHead} rather than sharing this judgement.
+ * `build` reads a git refusal as "altered": its normalisation is about to rewrite
+ * the tree, and a blob it cannot read is one it cannot vouch for. The lean
+ * `verify` step reads the same refusal the other way — a git that could not run is
+ * infrastructure, never a verdict — so it calls {@link frozenTamperedAtHead}.
  */
 export async function frozenMatches(
   exec: BuildExec,
@@ -139,14 +136,14 @@ export async function frozenMatches(
 }
 
 /**
- * Which of `frozen`'s committed blobs at `ref` hash differently from their
- * records — and nothing else. A git read that FAILS is not an answer here: this
- * returns only what a successful read proved, and {@link blobAt} returning
- * `undefined` is the caller's signal that the probe itself broke.
+ * Which of `frozen`'s committed blobs at `ref` hash differently from their records —
+ * and nothing else. A git read that FAILS is not an answer here: this returns only
+ * what a successful read proved, and {@link blobAt} returning `undefined` is the
+ * caller's signal that the probe itself broke.
  *
- * The lean `verify` step needs this split because its `green` is the run's own
- * verdict: reporting a tamper because one `git show` timed out would send a
- * developer to "fix" a contract nobody managed to read.
+ * The lean `verify` step needs this split because its `green` is the run's own verdict:
+ * reporting a tamper because one `git show` timed out would send a developer to "fix"
+ * a contract nobody managed to read.
  */
 export async function frozenTamperedAtHead(
   exec: BuildExec,

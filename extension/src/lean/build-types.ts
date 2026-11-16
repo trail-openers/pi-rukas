@@ -2,9 +2,8 @@
  * lean/build-types — the seams `build.ts` injects and `build-normalise.ts`
  * calls through.
  *
- * Split out because the normalisation now spans three modules (`build-git`,
- * `build-capture`, `build-normalise`) and an orchestrator's types must be
- * importable by the things it orchestrates without importing it back.
+ * An orchestrator's types must be importable by the modules it orchestrates
+ * (`build-git`, `build-capture`, `build-normalise`) without importing it back.
  */
 
 import type { DispatchResult, DispatchSpec } from "../types.ts";
@@ -15,9 +14,8 @@ import type { BudgetOpts } from "./step-budget.ts";
 /**
  * The dispatch seam: one child, one result. `spawnSpecialist` in production.
  *
- * `BudgetOpts` is what lets the step arm its ceiling on the actual child: the
- * three budget levers are spawn options, so a seam that could not carry them
- * could only enforce a budget by refusing to dispatch at all.
+ * `BudgetOpts` carries the three budget levers, which are spawn options — a
+ * seam without them could only enforce a budget by refusing to dispatch.
  */
 export type BuildDispatch = (
   spec: DispatchSpec,

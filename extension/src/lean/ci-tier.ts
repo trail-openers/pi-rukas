@@ -1,16 +1,13 @@
 /**
- * The `ci` step's two outside reads: the project's full verify tier, and the
- * forge's own answer about the PR/MR.
+ * The `ci` step's two outside reads: the project's full verify tier, and the forge's
+ * own answer about the PR/MR.
  *
- * Split out of `ci.ts` because the step grew a second question to answer about a
- * red tier — was every test it named already red at the base commit, or not — and
- * the two questions have different owners. This file owns running the tier and
- * turning a failed exec into either an infrastructure throw or a red reason;
- * {@link fullTierExcuse} in `ci-excuse.ts` owns the base-commit question, and
- * `ci.ts` decides which answer the step records. The forge half lives here too for
- * the same reason and in the same shape: `readForge` is the step's other outside
- * read, it owns both forges' argv and row grading, and `ci.ts` keeps the
- * decision — what a red means, what is waited on, and what a green may claim.
+ * Split out of `ci.ts` because the step grew a second question about a red tier — was
+ * every test it named already red at the base commit — and the two questions have
+ * different owners. This file runs the tier and turns a failed exec into an
+ * infrastructure throw or a red reason; {@link fullTierExcuse} in `ci-excuse.ts` owns
+ * the base-commit question, and `ci.ts` records the answer. The forge half is here so
+ * `readForge` owns both forges' argv and row grading while `ci.ts` keeps the decision.
  */
 import { isFullCommitSha } from "../commit-sha.ts";
 import { verifyHostEnv } from "../work-driver-verify-cmd.ts";
@@ -45,12 +42,12 @@ export async function ciConfig(deps: CiDeps, ctx: HandlerCtx): Promise<WorkConfi
  * Run the full tier in the worktree.
  *
  * `undefined` is a pass. A kill, a timeout or a command that never started is an
- * infrastructure fault — the tier never got to answer a question about the code, so
- * the run hands back rather than taking a build round. Anything else that exits
- * non-zero is a real red, returned with both the reason (what a red step records),
- * the combined stream (what the baseline excuse parses test names from) and the
- * executor's own result object (what `ciTierObserved` decides the excuse's admissibility
- * from — the stream alone cannot tell a full run from one truncated at its buffer).
+ * infrastructure fault — the tier never got to answer a question about the code, so the
+ * run hands back rather than taking a build round. Anything else exiting non-zero is a
+ * real red, returned with the reason a red step records, the combined stream the
+ * baseline excuse parses test names from, and the executor's own result object
+ * `ciTierObserved` decides admissibility from — the stream alone cannot tell a full run
+ * from one truncated at its buffer.
  */
 export async function tierFailure(
   deps: CiDeps,
@@ -86,12 +83,11 @@ export async function tierFailure(
 }
 
 /**
- * `gh pr checks` exits **8** while checks are still pending (`gh pr checks
- * --help`, gh 2.103.3: `8: Checks pending`). The shared executor rejects on any
- * non-zero exit, so without this the pending reply — which is the whole point of
- * the poll — would read as an infra throw and a poll could never observe the
- * waiting state it exists for. stdout still carries the JSON rows, so the exit
- * is a signal about WHERE the checks are, not about whether the read worked.
+ * `gh pr checks` exits **8** while checks are still pending (gh 2.103.3:
+ * `8: Checks pending`). The shared executor rejects on any non-zero exit, so
+ * without this the pending reply — the whole point of the poll — would read as an
+ * infra throw. stdout still carries the JSON rows, so the exit is a signal about
+ * WHERE the checks are, not whether the read worked.
  */
 const GH_CHECKS_PENDING_EXIT = 8;
 
@@ -214,19 +210,17 @@ function json(text: string, why: string): unknown {
 /**
  * One read of the forge, from ONE moment: the verdict and the head it is about.
  *
- * GitHub: the PR's own verdict and its check rows, the head coming out of the
- * same `gh pr view` as the verdict itself — two reads of a moving PR are two
- * moments, and a green about another head is no evidence about this one.
+ * GitHub: the verdict and the check rows, the head out of the same `gh pr view` as the
+ * verdict — two reads of a moving PR are two moments, and a green about another head is
+ * no evidence about this one.
  *
- * GitLab: the adapter's readiness path composes `mergeStateStatus` from
- * `detailed_merge_status` and its three cross-checks, and the head is
- * `diff_refs.head_sha` read out of the same reply (`ci-forge-gl.ts`). An MR has
- * no `state` field for this step to read, and none is needed: the composition
- * already refuses an MR that is not `opened`.
+ * GitLab: `mergeStateStatus` is composed from `detailed_merge_status` and its three
+ * cross-checks, and the head is `diff_refs.head_sha` from the same reply
+ * (`ci-forge-gl.ts`). An MR needs no `state` field here: the composition already
+ * refuses an MR that is not `opened`.
  *
- * The gh exit-8 pending tolerance is a `gh` contract and stays on the gh path
- * alone — `glab api` has no such code, so a failed glab read is the infra throw
- * it is, never pending data with a plausible stdout.
+ * The gh exit-8 pending tolerance is a `gh` contract and stays on the gh path alone —
+ * `glab api` has no such code, so a failed glab read is the infra throw it is.
  */
 async function readForge(
   deps: CiDeps,
@@ -267,27 +261,25 @@ async function readForge(
 }
 
 /**
- * The forge's required-check verdict for this PR, POLLED until the checks are
- * terminal, the bound expires, or the run's cycle deadline arrives.
+ * The forge's required-check verdict for this PR, POLLED until the checks are terminal,
+ * the bound expires, or the run's cycle deadline arrives.
  *
- * A still-running CI makes `mergeStateStatus` UNSTABLE, and a step that reads once
- * right after publish grades that as red and spends a build round on code that is not
- * broken. So a pending (or unrecognised) row is WAITED, and red is reserved for a row
- * that actually failed. Every iteration re-issues BOTH reads — including the head — so
- * a PR that moves off the verified head mid-wait is caught on the iteration that sees
- * it. An empty rows list stays an immediate red: "no checks reported" is the absence of
+ * A still-running CI makes `mergeStateStatus` UNSTABLE, and a step that reads once right
+ * after publish grades that as red and spends a build round on code that is not broken.
+ * So a pending (or unrecognised) row is WAITED, and red is reserved for a row that
+ * actually failed. Every iteration re-issues BOTH reads — including the head — so a PR
+ * that moves off the verified head mid-wait is caught on the iteration that sees it. An
+ * empty rows list stays an immediate red: "no checks reported" is the absence of
  * evidence, not evidence of green.
  *
- * The two bounds are SEQUENTIAL and separate: this wait gets the `ci` budget's minutes,
- * and the full tier keeps its own bound of the same size afterwards — clamped to the
- * time the cycle's deadline still leaves, which is what {@link ciTierBudgetMs} does.
- * Still pending when the wait expires is a handback (`VerifyInfraError`), never a red.
+ * The two bounds are SEQUENTIAL and separate: the wait gets the `ci` budget's minutes,
+ * and the full tier keeps its own bound of the same size afterwards, clamped to the
+ * deadline ({@link ciTierBudgetMs}). Still pending when the wait expires is a handback
+ * (`VerifyInfraError`), never a red.
  *
- * On GitLab the same arms serve the composed readiness: `UNKNOWN` (GitLab's
- * `checking`, the one retryable status) arrives as a word that is not `CLEAN`
- * and is waited on the same bound, so a status still being computed minutes after
- * publish is never a red spent on code that is not broken. `DIRTY` is red, with
- * the composition's own detail as the reason.
+ * On GitLab the same arms serve the composed readiness: `UNKNOWN` (`checking`, the one
+ * retryable status) arrives as a word that is not `CLEAN` and waits on the same bound;
+ * `DIRTY` is red with the composition's own detail.
  */
 export async function checksRedReason(
   deps: CiDeps,
