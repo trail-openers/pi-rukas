@@ -8,6 +8,22 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.86](https://github.com/trail-openers/pi-rukas/compare/v0.14.85...v0.14.86) (2026-11-16)
+
+
+### Features
+
+* **lean:** give lean review an acceptance table built from verify's record ([#2302](https://github.com/trail-openers/pi-rukas/issues/2302)) ([6d9ad01](https://github.com/trail-openers/pi-rukas/commit/6d9ad019f7f25a199cc959656f8a205685e7b8b7))
+* **model:** per-run provider base URL and API key from PI_ENSEMBLE_* env ([#2311](https://github.com/trail-openers/pi-rukas/issues/2311)) ([1debc5b](https://github.com/trail-openers/pi-rukas/commit/1debc5b84bcc7af638f10a0279882638f538404a))
+
+
+### Bug Fixes
+
+* **comment-retention:** drop --end-of-options from git grep for git 2.43 ([#2307](https://github.com/trail-openers/pi-rukas/issues/2307)) ([f56c9fc](https://github.com/trail-openers/pi-rukas/commit/f56c9fc633ff0212f71dcdb37afa0ca71f6b6170)), closes [#2305](https://github.com/trail-openers/pi-rukas/issues/2305)
+* **forge:** PI_ENSEMBLE_FORGE=none stops the forge_read broker ([#2301](https://github.com/trail-openers/pi-rukas/issues/2301)) ([6d7e754](https://github.com/trail-openers/pi-rukas/commit/6d7e75436dda671ace09e50f7f1ac5fa0c0034b5))
+* **lean:** route the handback's origin reads through the network-git wrapper ([#2296](https://github.com/trail-openers/pi-rukas/issues/2296)) ([5ce9058](https://github.com/trail-openers/pi-rukas/commit/5ce90582d72c177dff511967a3a916139371206c))
+* **work:** judge path fragments embedded in provenance prose ([#2304](https://github.com/trail-openers/pi-rukas/issues/2304)) ([74b2fe9](https://github.com/trail-openers/pi-rukas/commit/74b2fe99d3bded3d2ac225224e50c06b171ea6be))
+
 ## [0.14.85](https://github.com/trail-openers/pi-rukas/compare/v0.14.84...v0.14.85) (2026-11-16)
 
 
