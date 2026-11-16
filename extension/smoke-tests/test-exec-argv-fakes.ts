@@ -137,6 +137,21 @@ assert(
   ).length === 1,
   "a // inside a string literal does not start a comment that could hide a hand-on",
 );
+// The comment strip must not eat a regex literal. `\/\/.*$/` (an unanchored
+// marker) truncated `const rx = /a\//; …` to `const rx = /a`, which hid a real
+// hand-on sharing the line — the exact shape a path-splitting helper writes.
+assert(
+  shellOnlyEscapes(
+    "const execp = promisify(exec);\nconst rx = /\\/\\//; const ctx = { verifyExecFn: execp };",
+  ).length === 1,
+  "a regex literal containing // on the same line as a hand-on does not hide it",
+);
+assert(
+  shellOnlyEscapes(
+    "const run = promisify(execFile);\nconst seg = p.split(/\\//); const ctx = { verifyExecFn: run };",
+  ).length === 1,
+  "a trailing-slash regex on the hand-on's line does not hide it",
+);
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);

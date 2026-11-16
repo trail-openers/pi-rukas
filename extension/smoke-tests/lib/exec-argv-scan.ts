@@ -22,10 +22,16 @@ export function shellOnlyEscapes(source: string): string[] {
       // English word — `const run = promisify(execFile)` plus one prose "run"
       // was read as a hand-on. The leading-marker checks below only catch a
       // comment that STARTS the line, so a `{ // …` block opener needs this.
+      //
+      // The comment marker must be whitespace-preceded: `/\/\/.*/` erases a
+      // regex literal on the same line as a hand-on — `const rx = /a\//;`
+      // truncates the line to `const rx = /a` — and the scan goes blind to a
+      // real hand-on. A real comment is always preceded by whitespace; a regex
+      // body is not.
       const code = line
         .trim()
         .replace(/(["'`])(?:\\.|(?!\1).)*\1/g, '""')
-        .replace(/\/\/.*$/, "");
+        .replace(/\s\/\/.*$/, "");
       if (code.startsWith("//") || code.startsWith("*") || code.startsWith("/*")) return;
       // An import binds a name; it hands nothing on.
       if (code.startsWith("import ")) return;

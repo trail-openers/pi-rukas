@@ -75,19 +75,44 @@ function assert(cond: boolean, msg: string): void {
       (await verifyCmdFor(pyDir)) === "ruff check . && python3 -m pytest -q",
       "verifyCmdFor: ruff.toml at the root adds the lint half",
     );
-    // And the predicate is the one `fromPython` has always used, carried
-    // over untouched rather than widened here: an indented
-    // `dependencies = ["ruff"]` entry does NOT match (`^ruff` is not
-    // multiline-anchored), and widening it would move AGENTS.md's Testing
-    // Standards section too, which is not this resolver's call.
+    // A `ruff` dependency entry configures the lint half: a project that
+    // installs ruff runs ruff, and this is the spelling a uv/poetry manifest
+    // actually uses (`dependencies = ["ruff>=0.6"]`).
     fsSync.rmSync(path.join(pyDir, "ruff.toml"));
     fsSync.writeFileSync(
       path.join(pyDir, "pyproject.toml"),
-      '[project]\ndependencies = ["ruff"]\n\n[tool.pytest.ini_options]\n',
+      '[project]\ndependencies = ["ruff>=0.6"]\n\n[tool.pytest.ini_options]\n',
     );
     assert(
-      (await verifyCmdFor(pyDir)) === "python3 -m pytest -q",
-      "verifyCmdFor: a ruff dependency entry alone adds no lint half (the shared predicate's rule, unchanged)",
+      (await verifyCmdFor(pyDir)) === "ruff check . && python3 -m pytest -q",
+      "verifyCmdFor: a ruff dependency entry adds the lint half",
+    );
+    // A mention in PROSE is not a dependency: a comment or a metadata value
+    // that merely names the tool must not install a gate the project never
+    // asked for.
+    fsSync.writeFileSync(
+      path.join(pyDir, "pyproject.toml"),
+      "# run pytest for the python helpers\n[build-system]\nrequires = ['setuptools']\n",
+    );
+    assert(
+      (await verifyCmdFor(pyDir)) === undefined,
+      "verifyCmdFor: a pyproject that only MENTIONS pytest in a comment → no invented gate",
+    );
+    fsSync.writeFileSync(
+      path.join(pyDir, "pyproject.toml"),
+      '[project]\nkeywords = ["pytest", "cli"]\nreadme = "pytest.md"\n',
+    );
+    assert(
+      (await verifyCmdFor(pyDir)) === undefined,
+      "verifyCmdFor: pytest in metadata VALUES only → no invented gate",
+    );
+    fsSync.writeFileSync(
+      path.join(pyDir, "pyproject.toml"),
+      '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n\n[tool.ruff.lint]\nselect = ["E"]\n',
+    );
+    assert(
+      (await verifyCmdFor(pyDir)) === "ruff check . && python3 -m pytest -q",
+      "verifyCmdFor: [tool.ruff.lint] without a bare [tool.ruff] still configures the lint half",
     );
     fsSync.writeFileSync(
       path.join(pyDir, "pyproject.toml"),

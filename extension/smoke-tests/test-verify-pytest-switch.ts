@@ -147,12 +147,24 @@ function assert(cond: boolean, msg: string): void {
     assert(row?.includes(needle) === true, `the docs row says ${why} (looks for ${needle})`);
   }
   // The coupling sentence the #2282 gap gate asked for: what the derived skip
-  // covers has to be what `verifyCmdFor` actually derives.
+  // covers has to be what `verifyCmdFor` actually derives — the chain list in
+  // the same row included, since a reader acts on that list.
   const coupling = docs.split("\n").find((l) => l.includes("PI_ENSEMBLE_FRONTEND_ONLY_GLOBS"));
   assert(
-    coupling?.includes("pyproject.toml") === true && coupling?.includes("`go.mod` derives no command") === true,
-    "the PI_ENSEMBLE_FRONTEND_ONLY_GLOBS coupling row names pyproject.toml as derived and says go.mod is not",
+    coupling?.includes("pyproject.toml") === true &&
+      coupling?.includes("`go.mod` derives no command") === true &&
+      coupling?.includes("pyproject.toml pytest") === true,
+    "the PI_ENSEMBLE_FRONTEND_ONLY_GLOBS row names pyproject.toml as derived in BOTH its chain list and its coupling sentence, and says go.mod is not",
   );
+  // The ruff claim in the row must be the one the predicate honours. `^ruff`
+  // with no `m` flag matched only a manifest that STARTS with the word, so the
+  // row used to advertise a dependency line nobody detected.
+  for (const [needle, why] of [
+    ["a `ruff` dependency entry", "names the ruff spelling the predicate actually reads"],
+    ["`.ruff.toml`", "names ruff's per-directory config filename"],
+  ] as const) {
+    assert(row?.includes(needle) === true, `the docs row says ${why} (looks for ${needle})`);
+  }
 }
 
 // ── the off arm is byte-identical to the pre-#2282 strings ───────────────────

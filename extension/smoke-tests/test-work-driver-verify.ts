@@ -130,8 +130,6 @@ process.env.PI_ENSEMBLE_FRONTEND_ONLY_GLOBS = "";
       } finally {
         rmSync(rustDir, { recursive: true, force: true });
       }
-
-
     }
 
     // #751 — shared-source coupling: gate and prompt resolve the same string.
