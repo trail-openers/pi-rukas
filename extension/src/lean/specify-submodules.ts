@@ -14,10 +14,12 @@
  * `.git/modules/<name>`. The local rule asks for the same thing with one word changed — the
  * source is the superproject's own copy, COMPUTED HERE from paths of this superproject and
  * never read out of repo content (`.gitmodules` is content of the base, and the submodule's own
- * `.gitmodules` is content of ANOTHER repository, so neither says where to fetch). Nothing on
- * disk is rewritten: `.gitmodules` keeps the base's URL and the superproject keeps its own
- * config, because a step that fixed the next run by mutating the repository it was handed would
- * be hiding that it could.
+ * `.gitmodules` is content of ANOTHER repository, so neither says where to fetch). Nothing in the
+ * repository is rewritten: the source reaches git ONLY as `-c` on the one invocation that needs
+ * it, so the seed leaves no durable write — not in `.gitmodules` (which keeps the base's URL) and
+ * not in the SUPERPROJECT's shared `.git/config`, which a `git submodule set-url` would otherwise
+ * move and never move back. A step that fixed the next run by mutating the repository it was
+ * handed would be hiding that it could.
  *
  * DEPTH keeps the transport licence narrow: only the first level is seeded, and only the one
  * `git submodule update` carrying a URL computed here gets `protocol.file.allow` —
@@ -315,30 +317,31 @@ async function seedFromSuperproject(
       });
       continue;
     }
-    // Three commands. The WHY of each, of the licence and of `set-url` over a `-c` override is
-    // the switch header's (`submodules-local-switch.ts`); what this code has to hold locally is
-    // that the licence is command-line `-c`, so it cannot outlive an invocation, and that it
-    // appears only on the calls consuming a source THIS module named — never one from repo
-    // content, and never with `--recursive`, so no level below the one named is cloned.
-    //
-    // `set-url` REWRITES `.gitmodules` in this work tree; `resetWorktreeToBase` restores the
-    // file from the base commit when the pass seeded anything, so the seed leaves nothing
-    // behind that the clean-tree proof would (rightly) refuse the tree for.
+    // Two commands. The WHY of the pair, of the licence and of the depth rule is the switch
+    // header's (`submodules-local-switch.ts`); what this code has to hold locally is that the
+    // source and the licence are BOTH command-line `-c`, so neither can outlive the invocation
+    // that used it, and that the licence appears only on a call consuming a source THIS module
+    // named — never one from repo content, and never with `--recursive`, so no level below the
+    // one named is cloned.
     const registered = await run(exec, wt, [...NO_HOOKS, "submodule", "init", "--", entry.path]);
     if (registered !== undefined)
       throw handback(wt, registered, `git submodule init -- ${entry.path}`);
-    const retargeted = await run(exec, wt, [
-      ...NO_HOOKS,
-      "submodule",
-      "set-url",
-      "--",
-      entry.path,
-      source,
-    ]);
-    if (retargeted !== undefined)
-      throw handback(wt, retargeted, `git submodule set-url -- ${entry.path}`);
+    // The source is named as a `-c` on the very call that reads it, NOT by `submodule set-url`.
+    // Measured with git 2.53: run from a linked worktree, `set-url` writes `submodule.<name>.url`
+    // into `<superproject>/.git/config` — the SHARED config, not the worktree-local one — which
+    // every later git in the operator's own checkout then consults (`submodule status`, a
+    // `submodule update` they run, `fetch --recurse-submodules`), and the work-tree restore in
+    // `resetWorktreeToBase` reaches only `.gitmodules`, never that key. A per-invocation `-c`
+    // answers the same question git would otherwise read from config, dies with the process, and
+    // cannot leak a harness-chosen path into the repository the step was handed. The key is
+    // `entry.name` as git spelled it in `submodule-entries.ts` — one `submodule.` prefix, because
+    // a name that carried it twice names a key git never consults and the entry would silently
+    // seed from the base's recorded URL. Like every other path here it is argv: git's own key
+    // parser splits the assignment, so the value is never a word a shell re-parses.
     const failed = await run(exec, wt, [
       ...NO_HOOKS,
+      "-c",
+      `submodule.${entry.name}.url=${source}`,
       "-c",
       // The licence for THIS call only, and only because the source is a path this
       // module computed rather than a URL some repo's content named. See the header.

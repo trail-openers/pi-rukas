@@ -59,7 +59,6 @@ import {
   repoWithNestedSubmodule,
   repoWithSubmodule,
 } from "./lib/lean-submodule-local-fixture.ts";
-
 const { assert, failures } = makeAssert();
 
 /** origin/main's submodule call, transcribed — the off arm must match it exactly. */
@@ -74,17 +73,19 @@ const MAIN_SUBMODULE_ARGV = [
   "--recursive",
 ];
 /**
- * The local arm's three calls, transcribed from the implementation the same way — a
+ * The local arm's two calls, transcribed from the implementation the same way — a
  * control that reads the current code agrees with itself, so each is pinned as a
  * literal and compared against the argv the step actually issued.
  *
- * The `file` licence appears on the two calls that move bytes from the computed source —
- * `set-url`, whose operand IS that source, and the `update` that clones from it — and on
- * nothing else: no `-c` outside those two invocations, and no `--recursive` anywhere on
- * the local arm, so the nested level is never seeded. That is the depth rule rather than
- * an oversight, and it is also what bounds the licence: git consults the transport policy
- * only where it performs a fetch, and every fetch this arm performs has a source this
- * module named on its own argv.
+ * The source and the `file` licence are BOTH command-line `-c` on the one call that consumes
+ * them, and that is what bounds the pair: neither can outlive the invocation, so neither is ever
+ * written into the superproject's shared `.git/config` (a `git submodule set-url` would have put
+ * the harness-chosen path there, where every later git in the operator's checkout reads it and
+ * nothing in this harness ever restores it). No `-c` appears on any other invocation, and no
+ * `--recursive` appears anywhere on the local arm, so the nested level is never seeded. That is
+ * the depth rule rather than an oversight, and it is also what bounds the licence: git consults
+ * the transport policy only where it performs a fetch, and every fetch this arm performs has a
+ * source this module named on its own argv.
  */
 const LOCAL_INIT_ARGV = [
   "-c",
@@ -96,26 +97,19 @@ const LOCAL_INIT_ARGV = [
   "--",
   SUB,
 ];
-/** The argv that names the source: the computed path is the command's own operand. */
-const seedArgv = (source: string): string[] => [
-  "-c",
-  "core.hooksPath=/dev/null",
-  "-c",
-  "core.fsmonitor=false",
-  "-c",
-  "protocol.file.allow=always",
-  "submodule",
-  "set-url",
-  "--",
-  SUB,
-  source,
-];
-/** The one call the `file` licence rides on. */
+/** The `-c` argument that names the source, for a seeding that read it from `source`. */
+const sourceOverride = (source: string): string => `submodule.${SUB}.url=${source}`;
+/** The one call the `file` licence and the source override ride on. */
 const LOCAL_UPDATE_ARGV = [
   "-c",
   "core.hooksPath=/dev/null",
   "-c",
   "core.fsmonitor=false",
+  "-c",
+  // Keyed by the submodule's NAME, spelled as git spells it — one `submodule.` prefix. A name
+  // that still carried the prefix would build `submodule.submodule.…`, a key git never consults,
+  // and the seeding would fall back to the base's recorded URL while every case below stayed green.
+  `submodule.${SUB}.url=<source>`,
   "-c",
   "protocol.file.allow=always",
   "submodule",
@@ -123,6 +117,17 @@ const LOCAL_UPDATE_ARGV = [
   "--",
   SUB,
 ];
+
+/**
+ * The step's populating call for the seeding of `source`, in the shape the reset issues it.
+ *
+ * Pinned as a literal rather than read back from the code: a control that imported the
+ * implementation's own argv builder would agree with it by construction and separate nothing.
+ */
+const expectedUpdate = (source: string): string[] =>
+  LOCAL_UPDATE_ARGV.map((a) =>
+    a === `submodule.${SUB}.url=<source>` ? `submodule.${SUB}.url=${source}` : a,
+  );
 /** The opening of origin/main's handback for a submodule it could not populate. */
 const MAIN_HANDBACK = "the worktree's submodules could not be initialised in";
 
@@ -144,7 +149,7 @@ function sourceArgv(calls: Calls): readonly string[] | undefined {
     (c) =>
       c.cmd === "git" &&
       c.argv.includes("submodule") &&
-      (c.argv.includes("set-url") || c.argv.some((a) => a.startsWith(`submodule.${SUB}.url=`))),
+      c.argv.some((a) => a.startsWith(`submodule.${SUB}.url=`)),
   )?.argv;
 }
 
@@ -201,39 +206,17 @@ const carryingText = (calls: Calls, a: string): readonly (readonly string[])[] =
     readOrNull(path.join(repoRoot, ".gitmodules"))?.includes(UNREACHABLE_URL) === true,
     "(a) .gitmodules still records the base's own URL — nothing was rewritten",
   );
-  // The SUPERPROJECT's own files are untouched. The seeding rewrites `.gitmodules`
-  // inside the tree it is preparing (git's own `submodule set-url` does that, and the
-  // reset restores the file from the base — see `resetWorktreeToBase`), and it is the
-  // superproject's copy that a later `submodule update` outside any run would read, so
-  // the assertion asks git what THAT file holds, with the case's own per-invocation
-  // override supplying the value `.gitmodules` records: that is the value a clean check
-  // of "rewritten?" compares, and it reads the file rather than trusting the step.
-  const superUrl =
-    readOrNull(path.join(repoRoot, ".git", "modules", ...SUB.split("/"), "config")) ?? "";
-  const superRecorded = gitIn(
-    repoRoot,
-    "config",
-    "--file",
-    ".gitmodules",
-    "--get",
-    `submodule.${SUB}.url`,
-  );
+  // The two calls, each pinned as a literal: the rule under test read off the argv
+  // rather than inferred from the green. The computed path is a `-c` value on the one
+  // call that consumes it — never a `set-url` operand, which is what wrote the
+  // harness-chosen path into the shared config (see `specify-submodules.ts`) — and never a
+  // value taken from `.gitmodules`, whose URL the step does not use as a source.
+  const seeding = sourceArgv(calls);
   assert(
-    superRecorded === UNREACHABLE_URL && !superUrl.includes(`${path.sep}.git${path.sep}modules`),
-    `(a) the superproject's own records still name the base's URL (got .gitmodules=${superRecorded}, module store config holds a local seed=${
-      superUrl.includes(`${path.sep}.git${path.sep}modules`) ? "yes" : "no"
-    })`,
-  );
-  // The three calls, each pinned as a literal: the rule under test read off the argv
-  // rather than inferred from the green. The computed path is the SET-URL command's own
-  // operand — not a `-c` value, which is how the first cut leaked the module store's
-  // path into the submodule's `origin` (see `specify-submodules.ts`), and not a value
-  // taken from `.gitmodules`, whose URL the step never uses as a source.
-  const setUrl = sourceArgv(calls);
-  assert(
-    setUrl?.at(-1)?.startsWith(`${repoRoot}${path.sep}`) === true,
+    seeding?.some((a) => a === sourceOverride(`${repoRoot}${path.sep}${SUB}`)) === true ||
+      seeding?.some((a) => a.startsWith(`submodule.${SUB}.url=${repoRoot}${path.sep}`)) === true,
     `(a) the submodule's source was named as an argument and was a path inside the superproject (got ${String(
-      setUrl,
+      seeding,
     )})`,
   );
   assert(
@@ -242,15 +225,18 @@ const carryingText = (calls: Calls, a: string): readonly (readonly string[])[] =
       carrying(calls, "submodule"),
     )})`,
   );
+  const seededSource = seeding
+    ?.find((a) => a.startsWith(`submodule.${SUB}.url=`))
+    ?.slice(`submodule.${SUB}.url=`.length);
   assert(
-    carrying(calls, "submodule").some((a) => sameArgv(a, LOCAL_UPDATE_ARGV)),
-    `(a) and the populating call is the pinned per-path update (got ${JSON.stringify(
+    seededSource !== undefined &&
+      carrying(calls, "submodule").some((a) => sameArgv(a, expectedUpdate(seededSource))),
+    `(a) and the populating call is the pinned per-path update, with the source as a -c on that same call (got ${JSON.stringify(
       carrying(calls, "submodule"),
     )})`,
   );
-  // Exactly one call carries the licence and it is the populating one; `set-url` needs no
-  // transport at all (it writes a config value) and the reads need none either, so the
-  // licence is confined to the single invocation that moves bytes.
+  // Exactly one call carries the licence and it is the populating one; the reads need none,
+  // so the licence is confined to the single invocation that moves bytes.
   const licensed = carrying(calls, "protocol.file.allow=always");
   assert(
     licensed.length === 1 &&
@@ -309,9 +295,12 @@ const carryingText = (calls: Calls, a: string): readonly (readonly string[])[] =
   );
   const seeded = sourceArgv(calls);
   assert(
-    seeded !== undefined &&
-      seeded.at(-1)?.includes(`${path.sep}.git${path.sep}modules${path.sep}`) === true,
-    `(b) the source was the module store under .git/modules, named as the command's operand (got ${String(
+    seeded?.some(
+      (a) =>
+        a.startsWith(`submodule.${SUB}.url=`) &&
+        a.includes(`${path.sep}.git${path.sep}modules${path.sep}`),
+    ) === true,
+    `(b) the source was the module store under .git/modules, named as the -c the populating call reads (got ${String(
       seeded,
     )})`,
   );

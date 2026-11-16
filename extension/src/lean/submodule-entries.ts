@@ -29,18 +29,16 @@ import { NO_HOOKS, SpecifyInfraError } from "./specify-reset.ts";
 const QUICK_GIT_MS = 30_000;
 
 /**
- * One registered submodule: the name `.gitmodules` files it under, its path, and the URL the
- * base records.
+ * One registered submodule: the name `.gitmodules` files it under, and its path.
  *
- * The URL is read for one purpose — to be handed BACK to git as the value it should look up
- * when retargeting an entry, so the step never invents a `submodule.<name>.url` a later reader
- * could mistake for a source this step chose. It is never a place to fetch from; a seeded
- * submodule's source is always a path of the superproject.
+ * `name` is the key git printed with its `submodule.` prefix and `.path` suffix removed, so
+ * `submodule.<name>.url` is a key git answers — the seeding names its source under exactly that
+ * key. The URL the base records is deliberately NOT held: no arm of the pass may use it as a
+ * fetch source, and a value nobody may read is safest not read at all.
  */
 export interface SubmoduleEntry {
   name: string;
   path: string;
-  url?: string;
 }
 
 /**
@@ -82,7 +80,15 @@ export async function listSubmodules(
     // argument and the path into a `git submodule` argument, so the value git MEANT is
     // what has to be handed back, and a token this cannot unquote is the step not
     // understanding its base — the same refusal as a file it could not read.
-    const hit = /^(?:"((?:[^"\\]|\\.)*)"|([^\s]+))\.path\s+(.*)$/.exec(line.trim());
+    //
+    // git prints the WHOLE KEY — `submodule.<name>.path <path>` — so the name is the key with
+    // its `submodule.` prefix and its `.path` suffix both taken off, and the step then hands
+    // that same key back as `-c submodule.<name>.url=…`. A name that still carried the prefix
+    // would build `submodule.submodule.<name>.url`, a key git never consults: the entry would
+    // seed from whatever URL `.gitmodules` records and the whole offline rule would go quiet
+    // while every case stayed green. Requiring the prefix is what makes that readable as an
+    // answer this step understands rather than a line it half-parsed.
+    const hit = /^submodule\.(?:"((?:[^"\\]|\\.)*)"|([^\s]+?))\.path\s+(.*)$/u.exec(line.trim());
     const rawName = hit?.[1] ?? hit?.[2];
     const rawValue = hit?.[3];
     if (rawName === undefined || rawValue === undefined) continue;
@@ -92,7 +98,7 @@ export async function listSubmodules(
       throw new SpecifyInfraError(
         `could not read the submodule list of ${wt}: git config --file .gitmodules --get-regexp path printed ${JSON.stringify(line.trim())}`,
       );
-    entries.push({ name, path: value, url: await recordedUrl(exec, wt, name) });
+    entries.push({ name, path: value });
   }
   return entries.length === 0 ? undefined : entries;
 }
@@ -185,23 +191,6 @@ function unquoteGitConfig(token: string): string | undefined {
     }
   }
   return out;
-}
-
-/**
- * The URL `.gitmodules` records for one submodule name, or `undefined` when it names none.
- *
- * Read only to be handed back to git as the value to look up when retargeting (see
- * {@link SubmoduleEntry}); never used as a fetch source.
- */
-async function recordedUrl(exec: ExecFn, wt: string, name: string): Promise<string | undefined> {
-  const r = await exec("git", {
-    argv: [...NO_HOOKS, "config", "--file", ".gitmodules", "--get", `submodule.${name}.url`],
-    cwd: wt,
-    timeout: QUICK_GIT_MS,
-    maxBuffer: 64 * 1024,
-  }).catch(() => undefined);
-  const value = trim((r as { stdout?: string } | undefined)?.stdout ?? "");
-  return value === "" ? undefined : value;
 }
 
 /**

@@ -14,12 +14,14 @@
  *
  * With the switch on, each first-level submodule is SEEDED from the superproject: its module
  * store under `.git/modules/<name>` when it has one, else its populated checkout. The
- * seeding runs as THREE commands and that split is the security property: `submodule init`
- * registers the entry under git's own rules, a per-path `submodule set-url` points that
- * entry at the path computed here, and `submodule update` fills it from where the step said.
- * The `file`-transport licence rides on the update call whose URL this module computed;
- * nothing is widened for a nested level, and nothing is taken from a `.gitmodules` file,
- * which is base content and — one level down — content of an entirely different repository.
+ * seeding runs as TWO commands and both halves of that split are load-bearing: `submodule
+ * init` registers the entry under git's own rules, and `submodule update` fills it from a
+ * source named as a command-line `-c submodule.<name>.url=<path>` on that one invocation, with
+ * the `file`-transport licence on the same call. Neither assignment is durable — a `git
+ * submodule set-url` would have written the harness-chosen path into the superproject's shared
+ * `.git/config`, where it outlives the run and every later git in the operator's checkout reads
+ * it — and nothing is taken from a `.gitmodules` file, which is base content and — one level
+ * down — content of an entirely different repository.
  *
  * A submodule the superproject never had is left alone and disclosed by path — the step does
  * not reach for the network for it, because a trial host has no network to reach.

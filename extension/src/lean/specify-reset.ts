@@ -353,12 +353,17 @@ export async function resetWorktreeToBase(
         : first === undefined
           ? notesFor(unproven)
           : [{ ...first, unproven }, ...withContent.slice(1)];
-  // Retargeting a submodule's URL rewrites `.gitmodules` in the work tree, which is the
-  // one file the seed is allowed to touch and the one file the proof below would
-  // otherwise (correctly, on its own terms) refuse the tree for. Restoring it from the
-  // base commit costs one local `checkout`, is exactly the bytes `reset --hard` had
-  // already put there before the clean, and leaves the pass writing nothing that
-  // survives it. Restored ONLY where the pass seeded something: a tree it never touched
+  // The seeding's ONLY durable write is the submodule's own checkout, which is what the step was
+  // asked to create, and which the clean-tree proof below is entitled to see. Retargeting an
+  // entry by `submodule set-url` is what used to leave residue: it rewrites `.gitmodules` in this
+  // work tree AND writes `submodule.<name>.url` into the superproject's shared `.git/config`
+  // (measured, git 2.53, from a linked worktree), and only the first of the two was ever put
+  // back. Both assignments are now command-line `-c` on the one call that reads them, so the
+  // pass leaves nothing behind for this block to undo. It stays because it is the proof's own
+  // guarantee, not a repair: whatever a future form of this pass writes at that tracked path,
+  // the tree the child is handed is the tree the base records, and a step that had to restore a
+  // file it had dirtied would be saying so here rather than failing the clean-tree check below.
+  // Restored ONLY where the pass seeded something: a tree it never touched
   // must stay dirty-if-dirty, or the proof would be forgiving a child's edit.
   if (withContent.some((n) => n.kind === "seeded")) {
     try {
