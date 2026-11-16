@@ -108,12 +108,14 @@ function traceBreach(fired: BudgetFired, phrase: string): void {
   }
 }
 
-/** The arms a step hands its dispatch seam: what the child gets, and the reader. */
+/**
+ * The arms a step hands its dispatch seam: what the child gets, and the reader.
+ */
 export type BudgetArms = {
   opts: BudgetOpts;
   /**
-   * The verdict this arm saw: the turns/tokens the progress hook froze, else the minutes lever
-   * inferred from a `child-bound` kill cause.
+   * The verdict this arm saw: the turns/tokens the progress hook froze, else the minutes lever inferred from
+   * a `child-bound` kill cause.
    */
   fired: (result: DispatchResult) => BudgetFired | undefined;
   /** Set when a wall clock was armed that the runtime will not enforce (`PI_ENSEMBLE_DISPATCH_CAPS=0`). */
@@ -123,8 +125,8 @@ export type BudgetArms = {
 /**
  * Arm the three levers of one state's budget, or nothing when it has none.
  *
- * The `minutes` lever is `childBoundMs`, enforced by `spawn-child-bound.ts` — so the kill lands
- * AFTER its grace period and the reported `ms` overshoots; {@link minutesUsed} rounds that up.
+ * The `minutes` lever is `childBoundMs`, enforced by `spawn-child-bound.ts` — so the kill lands AFTER its
+ * grace period and the reported `ms` overshoots; {@link minutesUsed} rounds that up.
  */
 export function armBudget(b: Budget | undefined): BudgetArms {
   const minutes = b?.minutes ?? 0;
@@ -293,7 +295,7 @@ function budgetVerdict(state: LeanState, fired: BudgetFired): Outcome {
 /**
  * The budget verdict carrying the rows of every dispatch the step paid for, so a stopped round's tokens reach
  * the host. Clipped HERE to the validator's cap keeping the newest: over the cap `dispatchesProblem` refuses
- * the whole array, so an unbounded verdict is no record at all.
+ * the whole array.
  */
 export function budgetVerdictWithRows(
   state: LeanState,
