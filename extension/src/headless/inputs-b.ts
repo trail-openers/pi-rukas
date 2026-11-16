@@ -54,6 +54,8 @@ export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   flag("FIX_PASS_STRAY_REVERT", true),
   flag("FORBID_LIVE_SPAWN", false, "test"),
   input("FORGE", "enum", null, "cycle", { values: ["github", "gitlab"] }),
+  // Unset: probe an unknown forge host unless CI is set.
+  flag("FORGE_PROBE", null),
   // #2284 — the parent's `forge_read` broker honours `PI_ENSEMBLE_FORGE=none`: a
   // proved read comes back `the forge is off: PI_ENSEMBLE_FORGE=none` and the
   // parent runs no `gh`/`glab` and no remote read for a child. `0` puts the
@@ -63,8 +65,6 @@ export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   // `forgeReadOffGuardEnabled` in forge-read-off-switch.ts; the off decision
   // itself is `forgeEnvIsOff` in forge-off.ts, which the driver shares.
   flag("FORGE_READ_OFF_GUARD", true),
-  // Unset: probe an unknown forge host unless CI is set.
-  flag("FORGE_PROBE", null),
   // #2160 — the parent's per-spawn `forge_read` broker pair, both set by the
   // spawn layer and both read by the child's tool. `internal`: the parent mints
   // them, so a host never sets either, and an absent pair means the child has no
