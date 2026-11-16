@@ -109,25 +109,25 @@ export async function canaryFailure(
 }
 
 /**
- * The head's code may hang, named first in the reason and never only in its tail.
- *
- * The red reason is clipped to `RED_REASON_CLIP` and pasted into the next build child's prompt; a
- * reason whose only mention of the hang sat at the end could be clipped away.
- */export const FROZEN_TIMEOUT_HEAD = "frozen tests timed out (the head's code may hang):";
+ * The head's code may hang, named first in the reason and never only in its tail. The red reason is clipped
+ * and pasted into the next build child's prompt; a reason whose only mention of the hang sat at the end could
+ * be clipped away.
+ */
+export const FROZEN_TIMEOUT_HEAD = "frozen tests timed out (the head's code may hang):";
 
 /**
  * Run the frozen acceptance tests with the project's per-file runner template.
  *
- * EVERY plain verdict is collected: a step that stopped at the first failure would report a different
- * reason tomorrow for a different file, and the fix round would learn about the second failure only
- * after paying for the first. A HANG is the exception, and the exception is a cost bound: after the
- * first wall-clock kill nothing further runs, so a hang costs at most ONE bound per verify.
+ * EVERY plain verdict is collected: a step that stopped at the first failure would report a different reason
+ * tomorrow for a different file, and the fix round would learn about the second failure only after paying for
+ * the first. A HANG is the exception, and the exception is a cost bound: after the first wall-clock kill
+ * nothing further runs, so a hang costs at most ONE bound per verify.
  *
- * A wall-clock kill is a RED here, reported with the plain failures already observed. Every file in
- * the contract was proved red against the base before `runTestPipeline` committed it — the only way a
- * file gets frozen — so a head that now hangs it is the code under build failing. The other `infra`
- * shapes stay throws: a runner that never started, a template with nothing to run, and a run whose
- * output flooded past the executor's bound all observed nothing. A flood is not a hang.
+ * A wall-clock kill is a RED here, reported with the plain failures already observed. Every file in the
+ * contract was proved red against the base before `runTestPipeline` committed it, so a head that now hangs it
+ * is the code under build failing. The other `infra` shapes stay throws: a runner that never started, a
+ * template with nothing to run, and a run whose output flooded past the executor's bound all observed nothing.
+ * A flood is not a hang.
  */
 export async function frozenTestFailure(
   frozen: Record<string, string>,
