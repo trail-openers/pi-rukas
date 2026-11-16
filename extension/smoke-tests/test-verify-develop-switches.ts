@@ -38,6 +38,9 @@ import {
   PROVENANCE_FAILURE_PREFIX,
   PROVENANCE_NOT_CHECKED_PREFIX,
   VERIFY_PROVENANCE_ENV,
+  verifyProvenanceProseEnabled,
+  VERIFY_PROVENANCE_PROSE_ENV,
+  VERIFY_PROVENANCE_ROOT_ENV,
   verifySwitchOff as parseVerifySwitch,
   type ProvenanceDisclosure,
   type ProvenanceDisclosureSink,
@@ -54,6 +57,11 @@ import {
 } from "./lib/verify-develop-criteria-fixture.ts";
 
 let exit = 0;
+
+/** The heading `provenanceDisclosureSectionOf` writes into the PR body. Spelled out rather than
+ * imported from the module under test: the docs pin below is meant to fail when the emitted
+ * heading and the documented one disagree, which a shared constant can never do. */
+const PROVENANCE_DISCLOSURE_HEADING = "## Data provenance (warning — not blocking)";
 function assert(cond: boolean, msg: string): void {
   if (cond) console.log(`✓ ${msg}`);
   else {
@@ -112,10 +120,25 @@ function assert(cond: boolean, msg: string): void {
   for (const [name, needle] of [
     [VERIFY_PROVENANCE_ENV, "present in that commit"],
     [VERIFY_COMMAND_CRITERIA_ENV, "verify.test"],
+    [VERIFY_PROVENANCE_PROSE_ENV, "path-bearing fragment"],
+    [VERIFY_PROVENANCE_ROOT_ENV, "realpath"],
   ] as const) {
     assert(
       conf.includes(`\`${name}\``) && conf.includes(needle),
       `docs/configuration.md carries a row for ${name} that explains the judgement it makes`,
+    );
+  }
+  // #2295: the prose switch's off arm is defined as "v0.14.85 byte-for-byte", and the only
+  // operator-facing statement of what that arm does lives in these two files. Both rows name
+  // the switch and both name the value that turns it off, so a reader who finds the failure in
+  // the PR body can find the escape hatch from the same place.
+  for (const [needle] of [
+    ["PI_ENSEMBLE_VERIFY_PROVENANCE_PROSE"],
+    ["PI_ENSEMBLE_VERIFY_PROVENANCE_ROOT"],
+  ] as const) {
+    assert(
+      conf.includes(needle),
+      `docs/configuration.md names ${needle} — the two #2295 knobs an operator has to be able to find`,
     );
   }
   // AGENTS.md §11 asks for a symptom → cause → fix entry on a PR that resolves a class of
@@ -125,6 +148,18 @@ function assert(cond: boolean, msg: string): void {
   assert(
     trouble.includes("data provenance:") && trouble.includes("does not exist in commit"),
     "docs/troubleshooting.md has an entry for the provenance failure an operator will see",
+  );
+  // #2295 D5 / Resolution 9: the disclosure section's heading is the string a reviewer pastes
+  // when a row looks wrong, and #2295 makes prose claims land in failures rather than only in
+  // that section. The row's Symptom text therefore carries the heading verbatim, and the pin
+  // below is what keeps the two from drifting apart.
+  assert(
+    trouble.includes(PROVENANCE_DISCLOSURE_HEADING),
+    `docs/troubleshooting.md quotes the emitted disclosure heading \`${PROVENANCE_DISCLOSURE_HEADING}\` verbatim, so an operator searching the PR body's heading finds the entry (pin: the heading string emitted by provenanceDisclosureSectionOf)`,
+  );
+  assert(
+    trouble.includes(VERIFY_PROVENANCE_PROSE_ENV),
+    "and it names the prose switch, which is the hatch for a record whose prose claims cannot be satisfied from the commit",
   );
   assert(
     trouble.includes(MISSING_VERIFY_TEST_TEMPLATE_FAILURE),
@@ -297,6 +332,39 @@ await withSwitch(PROVENANCE_ENV, "off", async () => {
     `a run that probed nothing never prints the executed-pass note, not even as \`judged 0\` (got: ${unjudgedRun.notes.filter((n) => n.includes("provenance")).join(" | ")})`,
   );
   await rm(unjudged);
+}
+
+// ── the prose switch: same truth table, and its name is the documented one ─────────────────
+{
+  // #2295 D6. The prose arm ships ON and the one disable is the literal "0", so the same
+  // narrower-than-truthy rule governs it; a wider parser would let a develop child switch the
+  // gate off by putting a value in an environment it controls.
+  for (const raw of [undefined, "", "1", "false", "no", "off", " 0 ", "00 ", "maybe"]) {
+    assert(
+      parseVerifySwitch(raw) === false,
+      `prose switch: ${JSON.stringify(raw)} does NOT disable the prose arm — only the literal "0" does`,
+    );
+  }
+  // The reader itself, on both arms: unset is on, and the literal "0" is off. The reader is
+  // what `runProvenanceGate` consults at call time, so pinning it here is what stops a switch
+  // that parses correctly and is then never consulted.
+  await withSwitch(VERIFY_PROVENANCE_PROSE_ENV, undefined, async () => {
+    assert(
+      verifyProvenanceProseEnabled() === true,
+      "the prose arm is ON when its variable is unset — the shipped default",
+    );
+  });
+  await withSwitch(VERIFY_PROVENANCE_PROSE_ENV, "0", async () => {
+    assert(
+      verifyProvenanceProseEnabled() === false,
+      "the prose arm is OFF on the literal \"0\" — the one disable",
+    );
+  });
+  assert(
+    VERIFY_PROVENANCE_PROSE_ENV === "PI_ENSEMBLE_VERIFY_PROVENANCE_PROSE" &&
+      VERIFY_PROVENANCE_ROOT_ENV === "PI_ENSEMBLE_VERIFY_PROVENANCE_ROOT",
+    "the two #2295 knob names are the ones docs/configuration.md, headless/inputs-b.ts and LIVE_INPUTS all name",
+  );
 }
 
 // ── the command-criteria switch ────────────────────────────────────────────────────────────

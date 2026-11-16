@@ -355,6 +355,21 @@ export function renderRecord(rows: readonly unknown[], source: string): string {
   return `${JSON.stringify({ source, pass: rows.length, rows }, null, 2)}\n`;
 }
 
+/** The record shape the field case #2295 was reported from: the measured number, then the
+ * results file it came from named INSIDE PROSE, with a shell variable naming the run directory
+ * and the script that produced it. v0.14.85 classified the whole value as "text containing
+ * whitespace" — unverifiable host provenance, disclosed and never failed — which is the gap
+ * #2295 closes. */
+export const PROSE_256_SOURCE =
+  "elapsed_s of widened-results.ndjson ($S/ops/c5-qual) via scripts/run-c5.sh";
+
+/** One provenance key holding {@link PROSE_256_SOURCE} in a record of the #256 shape. `key`
+ * is a parameter because the requirement is that `source`, `provenance` and `inputs` fail the
+ * SAME way, and a fixture that hard-coded one key could only ever pin one of them. */
+export function renderProse256Record(key: string = "source"): string {
+  return `{${JSON.stringify(key)}: ${JSON.stringify(PROSE_256_SOURCE)}}\n`;
+}
+
 /** The generator that round-trips the record byte-identically from its own rows. */
 export function renderGenerator(source: string, rows: readonly unknown[]): string {
   return [
