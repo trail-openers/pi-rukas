@@ -1,18 +1,17 @@
 /**
  * lean/verify-red-attribution — what a RED says about WHICH gate broke.
  *
- * A red `verify` returns `reason`, one clipped sentence about the FIRST failure, and the host
- * document publishes two lists beside it: which tier went red and which criterion it answers for.
- * The projection reads the record rather than parsing prose, so the step that ran the checks has
- * to write the two lists, and only it can.
+ * A red `verify` returns `reason`, one clipped sentence about the FIRST failure, and the host document
+ * publishes two lists beside it: which tier went red and which criterion it answers for. The projection
+ * reads the record rather than parsing prose, so the step that ran the checks has to write the two
+ * lists, and only it can.
  *
- * The rule that keeps the record honest is that a name is read only out of text THIS step wrote:
- * `runTier`, `baselineRedReason` and `flakeReason` are its own renderers, and the criteria come
- * from the contract's own criterion→files rows matched against the failing check's own text. A
- * project's output quoted into a reason cannot put anything on the record.
+ * The rule that keeps the record honest is that a name is read only out of text THIS step wrote: the
+ * criteria come from the contract's own criterion→files rows matched against the failing check's own
+ * text. A project's output quoted into a reason cannot put anything on the record.
  *
- * The record is omitted, not emptied, when neither half can be named: `red: { tiers: [],
- * criteria: [] }` would read as "the gate checked these and found none".
+ * The record is omitted, not emptied, when neither half can be named: `red: { tiers: [], criteria: [] }`
+ * would read as "the gate checked these and found none".
  */
 
 import type { RedRecord } from "./state-outcome-gates.ts";
@@ -47,10 +46,9 @@ function tierNameOf(reason: string): string | undefined {
 /**
  * The tiers this step ran red.
  *
- * `armTier` is the tier the BASELINE arm settled: deliberately absent from the executed results,
- * so its name is carried in beside the arm's reason. A tier excused as a flake or over the base
- * contributes nothing: a name the gate let go would send a host to a check this run does not stand
- * on.
+ * `armTier` is the tier the BASELINE arm settled: deliberately absent from the executed results, so its
+ * name is carried in beside the arm's reason. A tier excused as a flake or over the base contributes
+ * nothing: a name the gate let go would send a host to a check this run does not stand on.
  */
 function failedTierNames(ran: readonly Executed[], armTier: string | undefined): string[] {
   const names = ran
@@ -64,10 +62,9 @@ function failedTierNames(ran: readonly Executed[], armTier: string | undefined):
 /**
  * The criteria the failing checks of this run's frozen contract answer for.
  *
- * A failing frozen path is mapped back through the contract's own criterion→files rows — and a
- * path is only counted where it stands at a TOKEN BOUNDARY of the check's text, so a test that
- * merely MENTIONS another criterion's path contributes nothing. The `commands` half reads the
- * renderer's OWN composed string, handed in beside the captured check, and nothing else.
+ * A failing frozen path is mapped back through the contract's own criterion→files rows — and a path is
+ * only counted where it stands at a TOKEN BOUNDARY of the check's text, so a test that merely MENTIONS
+ * another criterion's path contributes nothing.
  */
 function failingCriteria(
   tests: Executed,
@@ -75,9 +72,8 @@ function failingCriteria(
   commands: readonly string[],
 ): string[] {
   if (tests.kind !== "fail") return [...new Set(commands)];
-  // The failing check's own text, not the step's composed reason: the composition can
-  // carry a tier's tail, and a path quoted inside a test's own output is not evidence
-  // about which criterion failed.
+  // The failing check's own text, not the step's composed reason: the composition can carry a tier's
+  // tail, and a path quoted inside a test's own output is not evidence about which criterion failed.
   const failing = Object.entries(testsOfRun)
     .filter(([, files]) => files.some((file) => namesPath(tests.reason, file)))
     .map(([id]) => id);
@@ -100,11 +96,8 @@ function escapeRegExp(value: string): string {
 }
 
 /**
- * The criterion ids the step's OWN `command` renderer composed.
- *
- * `verify-commands.ts` writes `criterion AC2 (command tests/AC2-preserve.test.sh) failed: …`
- * itself and hands the string in beside the captured check, so an id found at the front of THAT
- * string is one this step judged.
+ * The criterion ids the step's OWN `command` renderer composed. An id found at the front of that string
+ * is one this step judged.
  */
 export function commandCriterionIds(reason: string | undefined): string[] {
   if (reason === undefined) return [];
@@ -116,8 +109,7 @@ export function commandCriterionIds(reason: string | undefined): string[] {
 /**
  * The attribution a red gate records beside its reason, or nothing it cannot support.
  *
- * The writer clips at the record's own caps (see `state-outcome-gates.ts`), so the bounds the
- * loader enforces are the bounds the step writes to.
+ * The writer clips at the record's own caps (see `state-outcome-gates.ts`).
  */
 export function redAttribution(opts: {
   tests: Executed;
