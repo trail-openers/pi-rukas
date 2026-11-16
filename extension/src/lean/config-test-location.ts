@@ -100,7 +100,7 @@ export function validateTestGlob(glob: string): string | undefined {
     return `.pi/work.json verify.testGlob must not start with ".": a leading dot is a hidden file, which is not a test file the project's CI runs (${glob})`;
   // `*` opens the wildcard and the extension is what follows it — so a pattern whose `*` is the last
   // character names no file type at all.
-  if (!glob.slice(glob.indexOf("*") + 1).includes(".""))
+  if (!glob.slice(glob.indexOf("*") + 1).includes("."))
     return `.pi/work.json verify.testGlob must name a file extension after the "*" — a pattern like \`test-*\` matches files with no extension, which no test runner executes (${glob})`;
   return undefined;
 }
