@@ -181,18 +181,30 @@ import { ROOTS } from "./lib/lean-verified-handback-fixture.ts";
     return reader === undefined ? 0 : reader();
   };
 
-  /** The ceiling an `ls-remote` origin read carries, read from the routed arm of the helper
-   *  its row names. `needle` is the call the site makes and `stop` the boundary of that
-   *  helper's own body, so the window holds exactly one `runNetGit` options object and the
-   *  number can only be that read's ceiling — a search that walked past its own helper would
+  /** The ceiling an `ls-remote` origin read carries, read from the routed arm inside the
+   *  window its row names. `needle` is the call site the row bills and `stop` the boundary
+   *  of that body, so the window holds exactly one `runNetGit` options object and the
+   *  number can only be that read's ceiling — a search that walked past its own body would
    *  print the first routed read's number under every row while looking distinct, and a read
    *  whose ceiling was deleted would keep the sum looking right while the bound was proven
    *  against a shorter path than the one a run takes. The routed arm is what the wrapper
    *  caps, so it is what the bound has to cover. A row that reads no ceiling fails rather
-   *  than contributing 0, which would lower the sum without anyone noticing. */
+   *  than contributing 0, which would lower the sum without anyone noticing.
+   *
+   *  Every origin read now shares one helper, so a row whose needle is the helper's own
+   *  declaration reports the helper's routed ceiling — correct for each read that reaches
+   *  it, and named in its `where` by the call it bills. A row whose needle is a distinct
+   *  call site (the excluded `originBranchHead` row) still has to find a routed arm inside
+   *  its own window: a site that no longer routes says so here rather than reading the
+   *  number out of the helper two hundred lines below it. */
   const lsRemoteCeiling = (needle: string, label: string, stop = OFF_ARM): number => {
     const src = readSource("lean/handback-rewind.ts");
     const at = src.indexOf(needle);
+    // `stop` is a function of where the needle landed, not of the source from the top: the
+    // needle can sit PAST the first copy of the boundary (the file holds three `exec("git")`
+    // calls, and the excluded `originBranchHead` row sits above all of them). Searching for
+    // the boundary from 0 instead made that window end behind its own routed arm, and the
+    // row reported a ceiling it had not looked for.
     const boundary = src.indexOf(stop, at);
     // The routed arm is what the wrapper caps, so it is what the bound has to cover: the
     // window from the row's needle to its boundary must CONTAIN a `runNetGit` call, and the
@@ -218,41 +230,32 @@ import { ROOTS } from "./lib/lean-verified-handback-fixture.ts";
     return ms;
   };
 
-  /** The options the single and paired helpers hand the wrapper — identical bodies, which is
-   *  why every row anchors on its own helper's DECLARATION rather than on this text: two rows
-   *  anchored here would print the same number while looking distinct. */
-  const ROUTED_BODY =
-    'const ran = leanHandbackNetGitEnabled()\n' +
-    '    ? await runNetGit(exec, "git", {\n' +
-    '        argv: [...NO_HOOKS, "ls-remote", "origin", ref],\n' +
-    "        cwd,\n        timeoutMs";
+  /** The routed arm of the single origin-read helper, spelled as the source spells it. The
+   *  helper's DECLARATION ends here, which is also where a row's window opens: the ceiling
+   *  is read inside the routed arm's own options object and nothing else. */
+  const ROUTED_ARM = '    ? await runNetGit(exec, "git", {';
 
-  /** The rewind's single-read helper, declared. Both of its single origin reads reach this
-   *  one call — the head before the push, and the re-read after a refused push — so both rows
-   *  anchor here, and the second is left out of the sum for the same reason. */
-  const SINGLE_READ =
-    "async function lsRemoteSha(\n" +
+  /** The single origin-read helper, declared up to its routed arm. Every origin read in the
+   *  file is one call to it — the held head before the push, the refusal's re-read, both
+   *  halves of the success check's pair, and `originBranchHead` — so each row below anchors
+   *  on the CALL SITE it bills rather than on this body: rows anchored on one shared body
+   *  would all print the same number while looking distinct, which is the failure this
+   *  file's windowing exists to prevent. */
+  const READ_HELPER =
+    "async function originRead(\n" +
     "  exec: VerifyExec,\n" +
     "  cwd: string,\n" +
     "  ref: string,\n" +
     "  env?: NodeJS.ProcessEnv,\n" +
-    "): Promise<string | undefined> {\n  " +
-    ROUTED_BODY;
+    "): Promise<string | undefined> {\n" +
+    '  const argv = [...NO_HOOKS, "ls-remote", "origin", ref];\n' +
+    "  const ran = leanHandbackNetGitEnabled()\n" +
+    ROUTED_ARM;
 
-  /** Where a shared helper's body ends: the call its off arm hands the executor. A row that
-   *  anchors inside the helper's own text closes here, so its ceiling can only come from the
-   *  routed arm on the near side of that boundary. */
-  const OFF_ARM = "offArmRead(exec";
-
-  /** The paired helper, declared — anchored on its declaration for the same reason. */
-  const PAIRED_READ =
-    "async function lsRemoteShaParallel(\n" +
-    "  exec: VerifyExec,\n" +
-    "  cwd: string,\n" +
-    "  ref: string,\n" +
-    "  env?: NodeJS.ProcessEnv,\n" +
-    "): Promise<string | undefined> {\n  " +
-    ROUTED_BODY;
+  /** Where a call site's window ends: the off arm's call to the executor, which only the
+   *  helper's own body carries. A row whose needle lies inside that body closes here, so
+   *  its ceiling can only come from the routed arm on the near side of the boundary. */
+  const OFF_ARM = ": await exec(\"git\", {";
 
   const awaits: ReportAwait[] = [
     {
@@ -267,18 +270,18 @@ import { ROOTS } from "./lib/lean-verified-handback-fixture.ts";
     },
     {
       what: "handback-rewind: origin read of the branch before the push",
-      where: "lean/handback-rewind.ts lsRemoteSha ls-remote",
-      ms: lsRemoteCeiling(SINGLE_READ, "pre-push origin read"),
+      where: "lean/handback-rewind.ts originRead (held head, before the push)",
+      ms: lsRemoteCeiling(READ_HELPER, "pre-push origin read"),
     },
     {
       // The refusal's re-read is the fourth routed read, and it belongs in the table: an
       // operator reading a green suite should see that a failed push re-asks origin. It is
-      // NOT summed, because it shares its call with the row above — the two are arms of one
-      // helper, and only the second is taken, when the push itself said no. Summing both
-      // would bill the same read twice and fail (i) for a path no run walks.
+      // NOT summed, because it is the same call as the row above — one helper, one routed
+      // body, reached again only when the push itself said no. Summing both would bill the
+      // same read twice and fail (i) for a path no run walks.
       what: "handback-rewind: the refusal's re-read of the branch after a failed push (exclusive with the row above, not summed)",
-      where: "lean/handback-rewind.ts lsRemoteSha ls-remote, refusal arm",
-      ms: lsRemoteCeiling(SINGLE_READ, "post-refusal origin read"),
+      where: "lean/handback-rewind.ts originRead (refusal re-read)",
+      ms: lsRemoteCeiling(READ_HELPER, "post-refusal origin read"),
       excluded: true,
     },
     {
@@ -293,33 +296,34 @@ import { ROOTS } from "./lib/lean-verified-handback-fixture.ts";
     },
     {
       what: "handback-rewind: the two origin reads that decide success (branch + keeping-ref, in parallel)",
-      where: "lean/handback-rewind.ts lsRemoteShaParallel ls-remote, Promise.all",
-      ms: lsRemoteCeiling(PAIRED_READ, "post-push origin reads"),
+      where: "lean/handback-rewind.ts originRead, Promise.all (branch + keeping-ref)",
+      ms: lsRemoteCeiling(READ_HELPER, "post-push origin reads"),
     },
     {
-      // Named, not summed. This read is made by the `handback` step on the OTHER side of the
-      // rewind seam (`handback.ts`'s `readOrigin` default), not by `rewindToVerified`: the
-      // path this table bounds — `rewindFor` → `rewindToVerified` — never calls it, and an
-      // earlier revision of this file billed it to the rewind and failed (i) for a read no
-      // rewind makes. It still belongs in the table because an operator reading a green run
-      // should see that a handback asks origin where the branch stands, and should be able to
-      // see the ceiling that read carries rather than take it on faith.
+      // Named, not summed, and read through the helper it delegates to. `originBranchHead`
+      // is NOT one of the rewind's awaits: it is made by the `handback` step on the other
+      // side of the seam (`handback.ts`'s `readOrigin` default), and the path this table
+      // bounds — `rewindFor` → `rewindToVerified` — never calls it; an earlier revision of
+      // this file billed it to the rewind and failed (i) for a read no rewind makes. It
+      // still belongs in the table because an operator reading a green run should see that
+      // a handback asks origin where the branch stands, and should see the ceiling that
+      // read carries rather than take it on faith. That ceiling is the routed arm of
+      // `originRead`, which is what the row anchors on: `originBranchHead` spells no
+      // `runNetGit` of its own any more, and a needle that jumped from the caller to the
+      // helper would be a string no source line contains — a row that never matched is a
+      // row reporting a number it never read. Its `where` names the call it bills, as the
+      // three rewind rows do.
       what: "handback: originBranchHead — where the branch stands after the move (made by the handback step, outside the rewind's bounded path; not summed)",
       where: "lean/handback-rewind.ts originBranchHead",
       ms: lsRemoteCeiling(
-        'export async function originBranchHead(\n' +
-          "  exec: VerifyExec,\n" +
-          "  ctx: Pick<HandlerCtx, \"repoRoot\" | \"issue\" | \"run\">,\n" +
-          "  opts: { env?: NodeJS.ProcessEnv } = {},\n" +
-          "): Promise<string | undefined> {\n" +
-          "  const ref = `refs/heads/${specifyBranch(ctx.run.branch, ctx.issue)}`;\n" +
-          "  // A read of origin is a NETWORK read, so the wrapper owns its env, its group kill and\n" +
-          "  // its bound; the requested ceiling and buffer stay this call's. With the switch off the\n" +
-          "  // call is handed to the executor exactly as it was before the fix.\n" +
-          '  const ran = leanHandbackNetGitEnabled()\n' +
-          '    ? await runNetGit(exec, "git", {\n' +
-          '        argv: [...NO_HOOKS, "ls-remote", "origin", ref],\n' +
-          "        cwd: ctx.repoRoot,\n        timeoutMs",
+        // One anchor, one window: this row bills the read the handback step makes, and the
+        // only ceiling that read can carry is the routed arm of the helper it delegates to.
+        // `originBranchHead` spells no `runNetGit` of its own any more, so the row anchors
+        // on the helper and its `where` names the call it bills — which is exactly how the
+        // three rewind rows work, and for the same reason: an anchor that jumped from the
+        // caller to the helper would be a needle no source line contains, and a row that
+        // never matched is a row that reports a number it never read.
+        READ_HELPER,
         "originBranchHead",
       ),
       excluded: true,
@@ -362,7 +366,7 @@ import { ROOTS } from "./lib/lean-verified-handback-fixture.ts";
    *  origin reads that decide the rewind's success is counted once in `sum`, because that is
    *  what the code does. Printed alongside (i) so the parallel-schedule assumption the sum
    *  rests on is visible rather than buried in a table row that reads `0ms`. */
-  const PARALLEL_EXTRA = lsRemoteCeiling(PAIRED_READ, "the serialised half of the post-push pair");
+  const PARALLEL_EXTRA = lsRemoteCeiling(READ_HELPER, "the serialised half of the post-push pair");
   // Both numbers read with their env keys ABSENT, so the case measures what a shipped run
   // is cut at rather than what this suite or an operator's shell pins.
   const defaults = await (async () => {

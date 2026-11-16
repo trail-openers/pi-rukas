@@ -252,13 +252,17 @@ const EXPECTED: Record<string, number> = {
   // answers.
   "publish-deps.ts": 1,
   // #2279 — the handback's origin reads are `git ls-remote` calls on the reporting
-  // step's path, four of them on a rewind that pushes: the branch read on the record's
-  // behalf, the held head before the push, the refusal re-read, and one of the branch and
-  // its keeping-ref that decide success. Each keeps its own `runNetGit(` call rather than
-  // sharing a helper, so the count here is the count of reads that can hang — a helper
-  // that collapsed them would hide one. Without the wrapper a wedged read keeps its ssh
-  // grandchild alive past its own ceiling and the trial is lost.
-  "handback-rewind.ts": 5,
+  // step's path, and every one of them reaches the wrapper through the file's single
+  // `originRead` helper: the branch read on the record's behalf, the held head before the
+  // push, the refusal re-read, and the branch/keeping-ref pair that decide success — four
+  // reads, one routed call site. The row is the count of call sites the sweep can find,
+  // which is what makes a call site that skips the wrapper fail here: the RAW sweep
+  // refuses any `exec("git", { argv: ["ls-remote"… ] })` issued directly, so a read that
+  // stopped routing could not hide in this number. What the wrapper supplies — the
+  // non-interactive env, the process-group kill and the bound — is what makes a wedged
+  // read a lost read rather than a lost trial, and the reads that carry them are pinned
+  // per call by test-lean-handback-origin-net-git-env.ts.
+  "handback-rewind.ts": 1,
 };
 
 function sourceFiles(dir: string): string[] {
