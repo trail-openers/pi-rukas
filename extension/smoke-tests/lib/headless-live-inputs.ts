@@ -30,6 +30,7 @@ import { leanReportBoundEnabled } from "../../src/lean/handback-report-bound-swi
 import { leanBuildIssueProseEnabled, leanIssueProseEnabled } from "../../src/lean/issue-prose.ts";
 import { leanResultGatesEnabled } from "../../src/lean/result-gates-switch.ts";
 import { leanReviewProblemEnabled } from "../../src/lean/review-problem-switch.ts";
+import { leanReviewAcceptanceEnabled } from "../../src/lean/review-acceptance-switch.ts";
 import { leanReviewSpecSplitEnabled } from "../../src/lean/review-spec-split.ts";
 import { leanRewindLeaseBinds } from "../../src/lean/rewind-lease-switch.ts";
 import { leanRunnerPreflightEnabled } from "../../src/lean/runner-preflight-switch.ts";
@@ -179,6 +180,9 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // The lean review seats' spec split. The reader is `v !== "0"`, so the LIVE
   // assertion in the gate (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LEAN_REVIEW_SPEC_SPLIT", leanReviewSpecSplitEnabled],
+  // The executed acceptance table at the lean review seats and on the run's PR. The
+  // reader is `v !== "0"`, so the gate's LIVE loop (env deleted) pins "unset means on".
+  ["PI_ENSEMBLE_LEAN_REVIEW_ACCEPTANCE", leanReviewAcceptanceEnabled],
   // #2265 — the statement the criteria section opens with. The reader is
   // `v !== "0"`, so the LIVE assertion in the gate (env deleted) pins "unset
   // means on".

@@ -73,7 +73,7 @@ export function reviewDeps(headless: boolean): ReviewDeps {
           base: a.base,
           head: a.head,
           workCwd: a.cwd,
-          context: adversarialContext(a.issue, a.wave, a.blockingFindings),
+          context: adversarialContext(a.issue, a.wave, a.blockingFindings, a.acceptanceTable),
           issueBody: seatIssueBody(a.issueBody),
           // The split's criteria section, rendered HERE — the only seam that sets
           // it. The /work driver and the `adversarial_loop` tool leave the loop's
@@ -250,6 +250,7 @@ function adversarialContext(
   issue: number,
   wave: ReviewWave,
   blockingFindings: string | undefined,
+  acceptanceTable?: string,
 ): string {
   const scope =
     wave === "full"
@@ -259,7 +260,15 @@ function adversarialContext(
     blockingFindings === undefined || blockingFindings.trim() === ""
       ? ""
       : `\n\nKnown findings the fix was asked to answer (a finding here is not new; a CRITICAL you find in code the fix did not touch is):\n${fenceText(blockingFindings, 20_000)}`;
-  return `/work-lean issue #${String(issue)}: gating the run's committed head before it merges (review step, one fix wave — this pass is ${scope}). What you report here is the last the step will pay a fixer for.${known}`;
+  // The table is the step's own composed section, so it is appended whole rather
+  // than re-fenced: `renderAcceptanceSection` already disarmed both payloads with
+  // `fenceText` at its own cap. See `lensContext` for the same rule on the same
+  // value.
+  const table =
+    acceptanceTable === undefined || acceptanceTable.trim() === ""
+      ? ""
+      : `\n\n${acceptanceTable.trim()}`;
+  return `/work-lean issue #${String(issue)}: gating the run's committed head before it merges (review step, one fix wave — this pass is ${scope}). What you report here is the last the step will pay a fixer for.${known}${table}`;
 }
 
 /**
@@ -271,7 +280,13 @@ function adversarialContext(
 export function lensContext(
   issue: number,
   wave: ReviewWave,
-  extra: { carried?: string; fixDelta?: string; issueBody?: string; full?: boolean } = {},
+  extra: {
+    carried?: string;
+    fixDelta?: string;
+    issueBody?: string;
+    full?: boolean;
+    acceptanceTable?: string;
+  } = {},
 ): string {
   // The range wording FOLLOWS THE ARM the step bought, not the delta section printed
   // beside it: `fixDelta` returns a section on BOTH arms, so it cannot say which this is —
@@ -295,6 +310,12 @@ export function lensContext(
     );
   const delta = extra.fixDelta?.trim();
   if (delta !== undefined && delta !== "") parts.push(delta);
+  // The acceptance table last: it is the step's own composed section, already
+  // disarmed and bounded by `renderAcceptanceSection`, so it is appended whole and
+  // never re-fenced. One renderer for the section means the six lenses, the
+  // adversarial seat and the PR comment all read the same bytes.
+  const table = extra.acceptanceTable?.trim();
+  if (table !== undefined && table !== "") parts.push(table);
   return parts.join("\n\n");
 }
 

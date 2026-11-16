@@ -77,6 +77,11 @@ import type { WriteFence } from "../write-fence-contract.ts";
 import { frozenFromLog } from "./build.ts";
 import type { HandlerCtx } from "./engine.ts";
 import {
+  composeAcceptanceTable,
+  guardAcceptanceHead,
+  postAcceptanceComment,
+} from "./review-acceptance-step.ts";
+import {
   type StepStop,
   reviewBoundComment,
   reviewBoundRecord,
@@ -175,6 +180,11 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
   const issueBody = await deps.fetchIssueBody(repoRoot, issue).catch((err: unknown) => {
     throw new ReviewInfraError(`could not read the issue: ${(err as Error).message}`);
   });
+  // The executed acceptance table, composed ONCE per step (A1: read, never
+  // re-executed) and handed to both passes of both gates and to the PR comment. The
+  // three points of the step's life that touch it — compose, guard, post — live in
+  // `review-acceptance-step.ts`, which says why each sits where it does.
+  const acceptanceTable = composeAcceptanceTable(ctx.steps, issueBody);
   // The blocking bar, resolved ONCE for the whole step at the run's base commit for the
   // same reason: it is a fact the step needs before it pays for a pass. Never per pass —
   // see `ReviewDeps.reviewThreshold`.
@@ -212,6 +222,9 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
   // every child cost, including the one that failed. Nothing re-derives it per pass.
   const rows: DispatchUsageRow[] = [];
   let head = await reviewedHead(deps, repoRoot, branch, rows);
+  // **The head the gates are about to read is the head the gate certified** (A5),
+  // asked once before pass 1 is bought; see `guardAcceptanceHead`.
+  await guardAcceptanceHead(deps, ctx.steps, repoRoot, branch, head, rows, acceptanceTable);
   /**
    * The step's account of what it judged, accumulated across the WHOLE step.
    *
@@ -265,6 +278,7 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
       head,
       branch,
       issueBody,
+      acceptanceTable,
       pr,
       threshold,
       rows,
@@ -378,6 +392,7 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
       branch,
       wave: "fix" as const,
       issueBody,
+      acceptanceTable,
       pr,
       carried,
       // `full` names the layer's own opt-out from its automatic delta base, which no
@@ -422,6 +437,7 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
       head,
       branch,
       issueBody,
+      acceptanceTable,
       wave: "fix",
       // The CRITICAL bar the second pass judges against: the rows the fix range itself is
       // allowed to introduce, read off the list the lenses were given.
@@ -435,6 +451,20 @@ export async function reviewOutcome(ctx: HandlerCtx, deps: ReviewDeps): Promise<
     // refusal it can still raise, are read by `reviewedPass` off the rounds' own records.
     return withRecord(reviewedPass(reReview, reGate, { threshold, preFixHead, head, rows }));
   } finally {
+    // The executed acceptance table, posted ONCE per attempt, whatever arm closed the
+    // step — and a separate comment from the bound stop's unreviewed-lanes post below.
+    // See `postAcceptanceComment` for why it posts on a thrown arm too and why a failed
+    // post never changes the verdict.
+    await postAcceptanceComment(
+      deps,
+      ctx.steps,
+      issue,
+      repoRoot,
+      pr,
+      issueBody,
+      head,
+      acceptanceTable,
+    );
     // One comment, whatever arm closed, and only on the forge channel: `publish` ran before
     // this step, so the PR body cannot carry the disclosure; on
     // `PI_ENSEMBLE_HANDOFF_CHANNEL=host` the host owns every post. A failed post never
