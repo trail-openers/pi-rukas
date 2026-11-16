@@ -120,6 +120,7 @@ import { assert, exit } from "./lib/assert-rig.ts";
   try {
     writeFileSync(path.join(outside, "looted.ndjson"), '{"x":1}\n');
     writeFileSync(path.join(outside, "looted.sh"), "#!/bin/sh\n");
+    writeFileSync(path.join(outside, "nested.ndjson"), '{"n":1}\n');
     mkdirSync(path.join(root, "runs", "c5"), { recursive: true });
     writeFileSync(path.join(root, "runs", "c5", "widened.ndjson"), '{"t":1}\n');
     writeFileSync(path.join(root, "top.json"), "{}\n");
@@ -163,6 +164,60 @@ import { assert, exit } from "./lib/assert-rig.ts";
       probeHostRoot(root, "linked/looted.ndjson").kind === "absent",
       "a linked PARENT directory cannot walk a claim out of the root",
     );
+    // (e2) The round-2 finding claimed this shape was answered `present` from bytes outside the
+    // root, on the premise that `regularInside` realpathed only the LEAF. The premise is false: the
+    // leaf realpath resolves every parent component, so a linked parent that points outside is
+    // refused for a path claim, a bare-name claim, and a claim nested below a real directory. These
+    // three rows are the pin for that claim — each goes red the moment the leaf realpath is dropped
+    // (verified by mutating `regularInside` to the leaf-only check the finding describes).
+    assert(
+      probeHostRoot(root, "linked/nested.ndjson").kind === "absent",
+      "a path claim through a symlinked PARENT that points outside is absent, not present",
+    );
+    assert(
+      probeHostRoot(root, "nested.ndjson").kind === "absent",
+      "a bare name whose only copy sits behind an outward symlinked parent is absent",
+    );
+    mkdirSync(path.join(root, "d"), { recursive: true });
+    symlinkSync(outside, path.join(root, "d", "link"));
+    assert(
+      probeHostRoot(root, "d/link/nested.ndjson").kind === "absent",
+      "a symlinked parent one level below a real directory is still refused (the reviewer's t9/d/link shape)",
+    );
+    // (e3) A linked parent that points at ANOTHER DIRECTORY INSIDE the root is not an escape: the
+    // claim is still answered by a regular file inside the declared tree, so the seam keeps
+    // answering `present`. The jsdoc refuses a linked parent that "walks out of" the tree, and D4
+    // refuses a symlink ESCAPING the root — neither refuses a link that stays in it, and the single
+    // realpath comparison is what distinguishes the two.
+    writeFileSync(path.join(root, "real", "inside.ndjson"), "{}\n");
+    symlinkSync(path.join(root, "real"), path.join(root, "link")); // an IN-ROOT linked parent
+    assert(
+      probeHostRoot(root, "real/inside.ndjson").kind === "present",
+      "the real path of an in-root linked target is itself satisfied",
+    );
+    assert(
+      probeHostRoot(root, "link/inside.ndjson").kind === "present",
+      "a symlinked parent whose target is INSIDE the root still satisfies the claim (D4 refuses escapes, not links)",
+    );
+    // (e4) The ROOT ITSELF reached through a symlink: the declared root is a link to the real
+    // directory. A parent-realpath check written against the RAW root (rather than `realpath(root)`,
+    // which is what `regularInside` receives) would answer these two absent, so they pin the fix
+    // option that the check be made against the resolved root.
+    const linkParent = mkdtempSync(path.join(tmpdir(), "pi-2295-linkparent-"));
+    const declaredViaLink = path.join(linkParent, "root-link");
+    symlinkSync(root, declaredViaLink);
+    try {
+      assert(
+        probeHostRoot(declaredViaLink, "runs/c5/widened.ndjson").kind === "present",
+        "a regular file under a root declared AS a symlink is still present (comparison is against realpath(root))",
+      );
+      assert(
+        probeHostRoot(declaredViaLink, "widened.ndjson").kind === "present",
+        "a bare name is still satisfied when the declared root is itself a symlink",
+      );
+    } finally {
+      rmSync(linkParent, { recursive: true, force: true });
+    }
     // (f) A slashed claim whose path holds no file is `absent` — the depth bound never applies to a
     // claim that named where it lives, so a decoy of the same name elsewhere cannot mute it.
     mkdirSync(path.join(root, "decoy"), { recursive: true });
