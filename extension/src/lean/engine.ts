@@ -1,18 +1,13 @@
 /**
  * lean/engine — the runner. Small on purpose: load, loop, save.
  *
- * The invariant everything else rests on: **a step that has an outcome is never re-run.** The
- * step log is the record, so resuming a run means finding the step for the current state — if it
- * exists with an outcome, apply `next()`; if it exists without one (the process died between the
- * write-ahead and the outcome), run that one step again. Nothing else replays, so a crash cannot
- * double-bill a build or re-post a comment.
+ * The invariant everything else rests on: **a step that has an outcome is never re-run.** Resuming
+ * finds the step for the current state — with an outcome, apply `next()`; without one, run that
+ * one step again. Nothing else replays, so a crash cannot double-bill a build.
  *
- * The engine knows nothing about models, git or the forge — those live in the handlers. The
- * engine's only clock is the injected `now`, so a test can advance time without waiting for it.
- *
- * Handler calls are awaited strictly serially — one at a time, each settled before the next state
- * is considered, because a step's outcome is what its log line claims actually happened. A throw
- * becomes its error outcome in `error-outcome.ts`, where a throw's dispatch rows join the record.
+ * The engine knows nothing about models, git or the forge, and its only clock is the injected
+ * `now`. Handlers are awaited strictly serially; a throw becomes its error outcome in
+ * `error-outcome.ts`.
  */
 
 import { isFullCommitSha } from "../commit-sha.ts";
@@ -51,16 +46,11 @@ export interface HandlerCtx {
   repoRoot: string;
   issue: number;
   /**
-   * The log as of BEFORE this step ran, so a handler can read what earlier steps decided. The log
-   * is what handlers are given: it is what the resume checks derive from and it survives a crash.
-   * Handlers must not mutate it.
+   * The log as of BEFORE this step ran, so a handler can read what earlier steps decided. It
+   * survives a crash. Handlers must not mutate it.
    */
   run: LeanRun;
-  /**
-   * The same array as `run.steps`, named separately because the handlers that need it need only
-   * it. Reading a verdict out of the log rather than a closure is the difference between a resumed
-   * run that reproduces what the crashed one decided and one that reports "never ran".
-   */
+  /** The same array as `run.steps`, named for the reporting handlers that take it under this name. */
   steps: Step[];
   /** The step being executed, already written ahead with its startedAt. */
   stepKey: string;
@@ -70,27 +60,23 @@ export interface HandlerCtx {
 
 export type LeanHandler = (ctx: HandlerCtx) => Promise<Outcome>;
 
-/** One handler per non-terminal state. A missing handler ends the run handed-back. */
+/** One handler per non-terminal state; a missing handler ends the run handed-back. */
 export type LeanHandlers = Partial<Record<LeanState, LeanHandler>>;
 
 export interface RunLeanOpts {
   repoRoot: string;
   issue: number;
   handlers: LeanHandlers;
-  /** Injected clock. Default `Date.now`, and the engine's only clock. */
+  /** Injected clock; the engine's only clock. */
   now?: () => number;
-  /**
-   * Fields a brand-new run starts with. Ignored when a state file exists, so the seed is where a
-   * run-start fact belongs: a resumed run keeps what its first round recorded.
-   */
+  /** Fields a brand-new run starts with; ignored when a state file exists. */
   seed?: Partial<Pick<LeanRun, "version" | "models" | "baseSha" | "branch">>;
   /** Safety net for a table that loops on a bug of its own. Never a feature. */
   maxSteps?: number;
   /**
-   * The caller's whole-cycle arm, as a DURATION the shared reader resolves to an epoch once
-   * (`flagBudgetMs`): the lean verb's `--timeout <minutes>`, threaded as a value rather than
-   * written to `process.env`. `PI_ENSEMBLE_CYCLE_DEADLINE` and `PI_ENSEMBLE_CYCLE_BUDGET_MS` both
-   * outrank it, and a resumed run keeps the arm its first round persisted.
+   * The caller's whole-cycle arm as a DURATION resolved to an epoch once (`flagBudgetMs`): the
+   * lean verb's `--timeout <minutes>`. `PI_ENSEMBLE_CYCLE_DEADLINE` and
+   * `PI_ENSEMBLE_CYCLE_BUDGET_MS` both outrank it.
    */
   budgetMs?: CycleBudgetMs;
 }
@@ -108,14 +94,9 @@ const DEFAULT_MAX_STEPS = 100;
 /**
  * A first run: `ready`, plus whatever the caller already knows.
  *
- * The issue number is validated here rather than left to `loadRun`. A run is addressed by
- * `<repoRoot>/.pi/lean-state/<issue>.json`, so a number the file system cannot round-trip writes
- * a file whose `issue` does not parse back, and a completed run then refuses to load. `assertRun`
- * already refuses that shape on the read path; this is the same rule on the write path.
- *
- * The seed's base is validated on the same principle: `createRun` does not consult `assertRun` for
- * a run it just built, so this is the ONLY place a hand-built seed is judged. `""` (no mainline
- * found) is legitimate and the one value passing without the shape check.
+ * The issue number and seed base sha are validated here because `createRun` does not consult
+ * `assertRun` for a run it just built — this is the only place a hand-built seed is judged.
+ * `""` (no mainline found) passes without the shape check.
  */
 function newRun(opts: RunLeanOpts): LeanRun {
   if (!Number.isInteger(opts.issue) || opts.issue <= 0)
@@ -134,15 +115,14 @@ function newRun(opts: RunLeanOpts): LeanRun {
   });
 }
 
-/** Persist a run at the root the current drive was started with. */
 interface Drive {
   repoRoot: string;
   save: (run: LeanRun) => void;
-  /** The resolved deadline, kept on the drive so each boundary reads one value. */
+  /** The resolved deadline, so each boundary reads one value. */
   deadlineMs?: number;
 }
 
-/** Stamp the terminal result and persist. The only place `result` is written. */
+/** Stamp the terminal result and persist — the only place `result` is written. */
 function endRun(drive: Drive, run: LeanRun, state: LeanState, reason: string): LeanRun {
   const done: LeanRun = { ...run, state, result: { code: exitCodeFor(state), reason } };
   drive.save(done);
@@ -155,7 +135,7 @@ function ended(drive: Drive, run: LeanRun, state: LeanState, reason: string): Ru
   return { run: done, code: done.result?.code ?? exitCodeFor(state), state };
 }
 
-/** Attach an outcome to one step without disturbing any other. */
+/** Attach an outcome to one step, leaving the others alone. */
 function withOutcome(run: LeanRun, key: string, outcome: Outcome, endedAt: number): LeanRun {
   return {
     ...run,
@@ -164,32 +144,21 @@ function withOutcome(run: LeanRun, key: string, outcome: Outcome, endedAt: numbe
 }
 
 /**
- * Has this run earned the merge? Its own record must currently say so: the newest DECIDED `verify`
- * AND the newest DECIDED `ci` both green, and no `draft` marker left standing. Two readers call
- * it: `apply()` on the ARRIVAL (the irreversible act), and `runLean` when a resumed run's DERIVED
- * state is already `land` — the fold reached it through `next()`, never through `apply()`.
+ * Has this run earned the merge? The newest DECIDED `verify` AND `ci` both green, and no `draft`
+ * left standing. Rules live in `engine-facts.ts`, shared with the stamp check.
  */
 const landEarned = engineFacts.landEarned;
 
 /** The reason the record gives for refusing the merge, for the handback line. */
 const landRefusal = engineFacts.landRefusal;
 
-/**
- * Why a stamped `result` is not the answer its own step log gives, or `undefined` when it is. The
- * rules are `engine-facts.ts`'s, so the stamp is judged by the same gate the arrival is.
- */
+/** Why a stamped `result` is not the answer its own step log gives, or `undefined` when it is. */
 const stampedResultRefusal = engineFacts.stampedResultRefusal;
 
 /**
  * Apply the table, then enforce the two arrival rules a (state, kind) pair cannot express:
- *
- * 1. `land` is entered by `ci` + `green` and nothing else.
- * 2. `land` is entered only by a run whose OWN record currently says green. The pair check cannot
- *    say this — the replay path re-applies a recorded `ci:green` without asking what the log before
- *    it recorded — and the merge is the irreversible act, so the gate sits on the arrival.
- *
- * The exhaustive pair enumeration and the reachability walk in `test-lean-machine.ts` are the
- * offline halves of the same guarantee.
+ * `land` is entered by `ci` + `green` and nothing else, and only by a run whose OWN record
+ * currently says green — the merge is the irreversible act, so the gate sits on the arrival.
  */
 function apply(drive: Drive, run: LeanRun, outcome: Outcome): LeanRun {
   const moved = next(run, outcome);
@@ -202,17 +171,13 @@ function apply(drive: Drive, run: LeanRun, outcome: Outcome): LeanRun {
         `illegal arrival at land from ${run.state} + ${JSON.stringify(outcome.kind)}`,
       );
     }
-    // `lastCi` is the outcome `next()` just routed on, so it is green by construction here —
-    // asking the log anyway is what makes the gate a reading of the record rather than a
-    // restatement of the pair.
+    // Asking the log even though this outcome is green by construction is what makes the gate
+    // a reading of the record rather than a restatement of the pair.
     if (!landEarned(run)) return endRun(drive, run, "handed-back", landRefusal(run));
   }
   const advanced: LeanRun = { ...run, state: moved.state, counters: moved.counters };
-  // Every terminal state, `not-ready` included, is the end of the road and stamps immediately.
-  // The step that reports a refusal is `decline`, a state like any other.
   if (isTerminal(advanced.state)) {
-    // `advanced`, not `run`: the step that just carried the run here is on the log only in the
-    // advanced copy, and the reason for a failed report is read from the verdict step beside it.
+    // `advanced`, not `run`: the step that carried the run here is on the log only in that copy.
     return endRun(
       drive,
       advanced,
@@ -239,13 +204,7 @@ async function settle(
     outcome = await handler({
       repoRoot: opts.repoRoot,
       issue: opts.issue,
-      // `run`, not `logged`, is the run the handler sees. `startStep` has already saved the
-      // entry ahead, but its object carries no outcome yet, and `run` is the one the caller
-      // held — the two differ only by that write-ahead entry. What a handler reads is
-      // therefore "the log before this visit", and a handler that counted its own state in
-      // `ctx.run.steps` would be one turn ahead of the step it is writing. `ctx.steps` is
-      // the same array, spelled separately because the reporting handlers take it under that
-      // name; both are this run's log as it stood on entry.
+      // The handler sees the caller's copy: what a handler reads is "the log before this visit".
       run,
       steps: run.steps,
       stepKey: key,
@@ -264,8 +223,7 @@ async function settle(
       `handler error at ${state}: ${String(outcome.message ?? "")}`,
     );
   }
-  // An outcome the table does not list is a handler bug, whatever the state. Nothing intercepts
-  // any kind: a failed post is a routed outcome with its own arrow, not a step the engine re-drives.
+  // An outcome the table does not list is a handler bug, whatever the state.
   if (!hasTransition(state, outcome.kind)) {
     drive.save(logged);
     return endRun(
@@ -279,10 +237,8 @@ async function settle(
 }
 
 /**
- * Drive a run to a terminal state.
- *
- * A handler that throws does NOT retry: the step records `{kind: "error", message}` and the run
- * ends `handed-back`. Retrying a handler that threw would loop a run whose handler is broken.
+ * Drive a run to a terminal state. A handler that throws does NOT retry: the step records
+ * `{kind: "error", message}` and the run ends `handed-back`.
  */
 export async function runLean(opts: RunLeanOpts): Promise<RunLeanResult> {
   const now = opts.now ?? Date.now;
@@ -291,9 +247,7 @@ export async function runLean(opts: RunLeanOpts): Promise<RunLeanResult> {
   try {
     const file = leanStateFile(opts.repoRoot, opts.issue);
     const loaded = loadRun(opts.repoRoot, opts.issue);
-    // The drive carries the deadline once, so every boundary reads the same value the first one
-    // resolved (a budget resolved twice would restart the clock and never park). The record is the
-    // only caller-side source: a resume must keep the arm its first round wrote there.
+    // The drive carries the deadline once, so every boundary reads one value.
     const drive: Drive = {
       repoRoot: opts.repoRoot,
       save: (run) => saveRun(opts.repoRoot, run),
@@ -303,28 +257,22 @@ export async function runLean(opts: RunLeanOpts): Promise<RunLeanResult> {
     if (loaded === undefined) {
       run = newRun(opts);
     } else {
-      // Drive from the DERIVED position, never the snapshot: `verifiedPosition` refuses a file whose
-      // log does not fold to its snapshot and returns the position the log implies.
+      // Drive from the DERIVED position, never the snapshot.
       const position = verifiedPosition(file, loaded);
       run = { ...loaded, state: position.state, counters: position.counters };
       const derivedState = position.state;
       if (run.result !== undefined) {
-        // The log folds to a terminal state and the record already carries its result — a second
-        // `/work-lean` on a finished issue. Nothing runs and nothing is written.
-        //
-        // The verbatim return is only for a record whose result its OWN log earned: `result` is a
-        // cache like `state` and `counters`, so a stamp that grants a merge the fold refused must
-        // not win by being read first.
+        // A second `/work-lean` on a finished issue. The verbatim return is only for a record
+        // whose result its OWN log earned: `result` is a cache, not the record.
         const refusal = stampedResultRefusal(file, derivedState, run);
         if (refusal !== undefined) throw new LeanStateError(refusal);
         return { run, code: run.result.code, state: run.state };
       }
       if (run.state === "land" && !landEarned(run))
-        // The fold reached `land` through `next()`, which is the edge check, not the arrival check.
+        // The fold reached `land` through `next()`, the edge check, not the arrival check.
         return ended(drive, run, "handed-back", landRefusal(run));
       if (run.state === "landed" && !landEarned(run))
-        // The log's newest step is `land + merged`, so `apply()` never saw this outcome. Both shapes
-        // must be refused, or a record could assert its own merge by writing the step that says so.
+        // Otherwise a record could assert its own merge by writing the step that says so.
         return ended(drive, run, "handed-back", landRefusal(run));
     }
     return await driveLoop(drive, opts, run, now, maxSteps);
@@ -341,8 +289,7 @@ async function driveLoop(
   maxSteps: number,
 ): Promise<RunLeanResult> {
   let iterations = 0;
-  // The loop's current position, not the parameter: biome's noParameterAssign forbids reassigning
-  // `initial`, and each step below returns a whole new run.
+  // The loop's current position, not the parameter: biome's noParameterAssign forbids reassigning.
   let run = initial;
 
   while (run.result === undefined) {
@@ -351,12 +298,8 @@ async function driveLoop(
       break;
     }
     const state = run.state;
-    // The caller's deadline, resolved once and carried on the drive. Resolved BEFORE the handler
-    // test below so a run the clock stops says so in its own words rather than in
-    // `no handler for state …`, which blames a missing step for what a clock decided.
-    //
-    // `flagBudgetMs` re-derives the value rather than taking a cast at the call site: `budgetMs` is
-    // branded, and this is the one place the flag becomes an arm.
+    // Resolved BEFORE the handler test below so a run the clock stops says so in its own words
+    // rather than in `no handler for state …`.
     const deadline =
       drive.deadlineMs ?? leanDeadline(run.deadlineMs, now(), flagBudgetMs(opts.budgetMs));
     if (deadline !== undefined && deadline !== run.deadlineMs) {
@@ -364,10 +307,8 @@ async function driveLoop(
       drive.save(run);
     }
     if (deadline !== undefined && deadlineStopsSteps(deadline, now(), state)) {
-      // One call decides and performs the whole stop; `stopForDeadline`'s jsdoc is the contract,
-      // and `engine-report.ts` is where the routing it performs lives. The loop's side of the seam
-      // is what it has to keep producing — and what it must not do here is start WORK: `endRun`
-      // ends the loop, so there is no path back into the walk past either stop.
+      // One call decides and performs the whole stop; `stopForDeadline`'s jsdoc is the contract.
+      // This side of the seam must not start WORK here: `endRun` ends the loop.
       run = await stopForDeadline({
         end: (r, reason) => endRun(drive, r, "handed-back", reason),
         request: {
@@ -385,33 +326,27 @@ async function driveLoop(
       break;
     }
     if (!opts.handlers[state]) {
-      // Every state the table routes through has a handler and every state without one is terminal,
-      // so this is the engine's one way to stop on a state nobody built.
+      // Every state the table routes through has a handler, so this is a state nobody built.
       run = endRun(drive, run, "handed-back", `no handler for state ${state}`);
       break;
     }
 
     const pending = run.steps.find((s) => s.state === state && s.outcome === undefined);
     if (pending) {
-      // Crash mid-step: same key, same startedAt, so the re-run is visibly the same step and not a
-      // second one.
+      // Crash mid-step: same key, same startedAt, so the re-run is visibly the same step.
       run = await settle(drive, opts, run, pending.key, state, now);
       continue;
     }
 
-    // There is deliberately no "this entry already decided something, apply it" branch here: the
-    // position the loop drives from is DERIVED by folding the log (`verifiedPosition`), which
-    // consumes one entry per visit, so the loop never stands in a state whose entry it has already
-    // consumed.
+    // No "already decided, apply it" branch: the position the loop drives from is DERIVED by
+    // folding the log, which consumes one entry per visit.
     run = await startStep(drive, opts, run, state, now);
   }
 
   return { run, code: run.result?.code ?? exitCodeFor(run.state), state: run.state };
 }
 
-/**
- * Write one step ahead and run it: the half of the loop's body that touches the record.
- */
+/** Write one step ahead and run it: the half of the loop's body that touches the record. */
 async function startStep(
   drive: Drive,
   opts: RunLeanOpts,
@@ -421,12 +356,11 @@ async function startStep(
 ): Promise<LeanRun> {
   const key = stepKey(opts.issue, state, nextAttempt(run, state));
   // Write-ahead BEFORE the handler runs: a process that dies here leaves a step with no outcome,
-  // which is exactly the "re-run this one" signal.
+  // which is the "re-run this one" signal.
   const started = { ...run, steps: [...run.steps, { key, state, startedAt: now() }] };
   drive.save(started);
-  // A line at each boundary: a lean run drives a model per step and can sit inside one for twenty
-  // minutes, and without both an operator watching stderr cannot tell a working step from a hung
-  // one. Stderr, gated like every other trace line, because stdout is the JSON stream in `-p` mode.
+  // A line at each boundary: a step can sit inside one model call for twenty minutes. Stderr,
+  // because stdout is the JSON stream in `-p` mode.
   trace(`lean #${opts.issue} ${key} start`);
   const done = await settle(drive, opts, started, key, state, now);
   const verdict = newestDecided(done.steps, state)?.outcome?.kind ?? "undecided";

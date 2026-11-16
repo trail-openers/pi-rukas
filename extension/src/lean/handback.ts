@@ -1,23 +1,12 @@
 /**
  * lean/handback — the step that tells the operator what the run still needs.
  *
- * A run reaches `handback` when its own gate said red twice, when CI disagreed twice, when the land
- * gate refused the merge, or when a handler threw. The run is over and the only useful thing left is
- * a sentence on the issue that says what is missing, built from the record rather than from a
- * model's recollection.
+ * A run reaches `handback` when its gate said red twice, when CI disagreed twice, when the
+ * land gate refused, or when a handler threw. What is left is a sentence on the issue built
+ * from the record: what failed, the frozen contract, and where the work is.
  *
- * Three facts, each read out of the step log so a resumed run posts the same comment a crashed one
- * would have:
- *
- *   - **what failed** — the newest red `verify` reason, else the newest red `ci`, else the newest
- *     `error` the log holds;
- *   - **the frozen contract** — the acceptance tests the run was held to;
- *   - **where the work is** — the run's branch, and the PR URL if a publish step recorded one
- *     ("no PR yet" otherwise).
- *
- * It NEVER throws. The run is ending whatever this step says, and a comment that failed to post is
- * information in the record, not a reason to change the verdict — a refused publish comes back as
- * `done` with a reason that says the comment never went out.
+ * It NEVER throws: a comment that failed to post is information in the record, not a reason
+ * to change the verdict.
  */
 
 import { execp } from "../exec.ts";
@@ -46,11 +35,7 @@ import { newestRedVerifyReason } from "./verify-deps.ts";
 /** A reason line long enough to be a wall is not a comment a human reads. */
 const REASON_CLIP = 2000;
 
-/**
- * The `Branch:` line, or nothing when the branch is not a printable ref. A ref carrying a newline is
- * not a branch name — it is a line of the comment's markdown written by whoever set the field.
- * `assertSafeRef` is the same rule the git call sites apply; here it decides whether the line prints.
- */
+/** The `Branch:` line, or nothing when the branch is not a printable ref. */
 function branchLine(branch: string): string[] {
   try {
     assertSafeRef(branch);
@@ -60,10 +45,7 @@ function branchLine(branch: string): string[] {
   return [`Branch: \`${branch}\``];
 }
 
-/**
- * How much of the frozen contract a comment lists. The full set lives in the step log and on the
- * branch; a wall of paths buries the line the operator came for.
- */
+/** How much of the frozen contract a comment lists; the full set lives in the step log. */
 const FROZEN_LIST_CAP = 20;
 
 /** How many conflicting files a cause line names; the rest live in the step log. */
@@ -99,18 +81,8 @@ function terminalCause(steps: Step[]): string | undefined {
 
 /**
  * The newest budget breach the log records, and FIRST in {@link neededFromLog}: the breach is why
- * the run stopped; an earlier red is only why it was trying.
- *
- * A breach only counts when NOTHING that did work is newer than it — the one true test is position,
- * not prose. A `challenge` breach is a CONTINUATION the table routes on, so a budget step whose
- * verdict the table carried past is not why the run ended. `handback` and `decline` entries are
- * excluded from that scan: they are the run REPORTING how it ended, not work it went on to do.
- * A step with no outcome that is not a report still counts as newer — undecided work after a breach
- * means the breach did not end the run.
- *
- * Rendered from the typed fields (`limit` / `value` / `used`) through {@link budgetTrio}, the same
- * check every reader of a recorded breach makes, so a breach missing a field falls through to the
- * next cause rather than printing a half-sentence.
+ * the run stopped, and it counts only when nothing that did work is newer. Rendered through
+ * {@link budgetTrio}, so a half-record falls through to the next cause.
  */
 /** The newest step that was WORK — a report state is how a run ended, not work. */
 function newestWorkStep(steps: Step[]): Step | undefined {
@@ -121,6 +93,7 @@ function newestWorkStep(steps: Step[]): Step | undefined {
   return undefined;
 }
 
+/** The newest WORK step's budget breach, if it carries a complete one. */
 function budgetCause(steps: Step[]): string | undefined {
   const step = newestWorkStep(steps);
   const fired = step === undefined ? undefined : budgetTrio(step.outcome);
@@ -133,15 +106,9 @@ function budgetCause(steps: Step[]): string | undefined {
 }
 
 /**
- * The build step's named unsatisfiable contract, and FIRST in {@link neededFromLog}.
- *
- * The builder's `blocked` verdict is the one cause in the log that names the FILES and the
- * contradiction. Position decides whether it may speak, the same test {@link budgetCause} uses: the
- * cause counts only when the `blocked` step IS the newest working step. A stale `blockedBy` from a
- * round the run carried past is not the run's cause.
- *
- * Rendered from the typed `blockedBy` map, never from prose: a `blocked` step missing the map falls
- * through to the next cause rather than printing a fragment.
+ * The build step's named unsatisfiable contract, and FIRST in {@link neededFromLog}: the
+ * builder's `blocked` verdict is the one cause that names the files and the contradiction.
+ * Same positional test as {@link budgetCause}; rendered from the typed `blockedBy` map.
  */
 function blockedCause(steps: Step[]): string | undefined {
   const step = newestWorkStep(steps);
@@ -160,10 +127,8 @@ function blockedCause(steps: Step[]): string | undefined {
 }
 
 /**
- * Why the run is ending, in the record's own words.
- *
- * The order is the order of USEFULNESS, not of recency: what the run's own gate complained about is
- * the thing a developer can act on, and it stays the answer even after a later round's CI red.
+ * Why the run is ending, in the record's own words. The order is the order of USEFULNESS,
+ * not recency: what the run's own gate complained about is what a developer can act on.
  */
 export function neededFromLog(steps: Step[]): string {
   const reason =
@@ -171,8 +136,7 @@ export function neededFromLog(steps: Step[]): string {
     budgetCause(steps) ??
     newestRedVerifyReason(steps) ??
     newestReason(steps, "ci", "red") ??
-    // Nothing ever went red: the run ended for a reason only the log's own error steps carry, so
-    // fall through to the last verdict of either gate before the cause.
+    // Nothing ever went red: fall through to the last verdict of either gate before the cause.
     newestReason(steps, "verify", "green") ??
     newestReason(steps, "ci", "green") ??
     terminalCause(steps) ??
@@ -181,20 +145,16 @@ export function neededFromLog(steps: Step[]): string {
 }
 
 /**
- * A path holding a control character is not a path anyone skims — and it is not a line the comment
- * may print. The class is ASSEMBLED from code points rather than written as a regex literal with the
- * bytes in it, because suppressing `noControlCharactersInRegex` is the bypass AGENTS.md forbids.
+ * A path with a control character is not a line the comment may print. The class is ASSEMBLED
+ * from code points because suppressing `noControlCharactersInRegex` is the bypass AGENTS.md forbids.
  */
 const CONTROL_CHARS = new RegExp(
   `[${String.fromCharCode(0x00)}-${String.fromCharCode(0x1f)}${String.fromCharCode(0x7f)}]`,
 );
 
 /**
- * The frozen acceptance tests, from the same log `build` and `verify` read.
- *
- * A key with a control character in it is dropped rather than clipped: the comment is markdown, so a
- * `\n` inside a path ends the bullet and starts a new line of the poster's choosing. This list is the
- * last place a key is looked at before a human reads it.
+ * The frozen acceptance tests, from the same log `build` and `verify` read. A key with a control
+ * character is dropped rather than clipped: the comment is markdown, so a `\n` in a path ends the bullet.
  */
 function frozenList(steps: Step[]): string[] {
   return Object.keys(frozenFromLog(steps))
@@ -208,11 +168,9 @@ function prUrlFromLog(steps: Step[]): string | undefined {
   for (let i = steps.length - 1; i >= 0; i--) {
     const step = steps[i];
     if (step?.state !== "publish") continue;
-    // `Outcome.prUrl` is the one field a publish step may carry a URL in, and `state.ts` refuses to
-    // load one that is not https text. Nothing is scraped out of a reason line.
+    // `Outcome.prUrl` is the one field a publish step may carry a URL in, and `state.ts` refuses
+    // to load one that is not https text. Re-checked here rather than trusted.
     const url = step.outcome?.prUrl;
-    // Re-checked here with the load-time rule rather than trusted: the loader is not the only thing
-    // that hands a `Step[]` over, and a value that broke the shape would be a line of markdown.
     const valid = validPrUrl(url);
     if (valid === undefined) continue;
     return valid;
@@ -249,15 +207,8 @@ export function handbackBody(
 }
 
 /**
- * The head lines of the comment, or `undefined` when this run has nothing to say
- * about heads — a handback the rule never touched, or one whose rewind had no head
- * to move, prints no head section at all. A section naming a head this step never
- * read would be the forged claim V4 exists to keep out of the record.
- *
- * Where there IS a head, both halves are stated whether or not the rewind landed —
- * which head shipped, whether verify saw it, and which head was left with its
- * reason — because the case the operator came to read is the one where the shipped
- * head is NOT the verified one.
+ * The head lines of the comment, or `undefined` when this run has nothing to say about heads.
+ * Where there IS a head, both halves are stated whether or not the rewind landed.
  */
 function headLines(heads: Heads | undefined): string[] | undefined {
   if (heads === undefined) return undefined;
@@ -270,25 +221,14 @@ function headLines(heads: Heads | undefined): string[] | undefined {
     lines.push(
       `Unshipped head: \`${heads.unshippedHead}\` — ${heads.unshippedReason ?? "not shipped"}`,
     );
-  // `unshippedHead` is what carries a reason on the comment today, and the two are
-  // always set together on the rewind's refusal arms. This adds the one shape where
-  // they are not: a step that moved nothing and has no head to name as displaced still
-  // owes the operator WHY the head it shipped was never certified, and the shipped
-  // line alone says only that it was not. The reason is the rule's sentence, so the
-  // comment and the record state the same finding in the same words.
+  // A step that moved nothing still owes the operator why the head it shipped was never certified.
   if (heads.unshippedHead === undefined && heads.unshippedReason !== undefined)
     lines.push(`Why nothing was moved: ${heads.unshippedReason}`);
   if (lines.length === 0) return undefined;
   return [...lines, ""];
 }
 
-/**
- * The head facts of one handback, in the shape the comment reads them.
- *
- * One shape for both surfaces because they are ONE fact: the comment the forge is
- * handed and the body the host is handed are the same string, and the step's typed
- * fields are that string's evidence.
- */
+/** The head facts of one handback, in the shape the comment reads them. */
 interface Heads {
   /** True when the rule spoke for this handback, whether or not it read a head. */
   render: boolean;
@@ -303,43 +243,15 @@ interface Heads {
 }
 
 /**
- * The head facts one handback records, from the head origin holds and what the
- * rewind settled on, plus the one thing the comment needs that the record does
- * not: whether the rule spoke at all.
+ * The head facts one handback records, from the head origin holds and what the rewind settled on.
+ * `render` is the renderer flag and travels to the body only; the four head fields are
+ * `Outcome`'s, rebuilt on reload and judged by the validator.
  *
- * The pair is kept apart deliberately. The four head fields are `Outcome`'s —
- * owned, shaped, rebuilt on reload — and the render decision is none of them: a
- * boolean that says "print a head section" is a renderer's flag, and a key the
- * record does not declare would be carried by the saved file without ever being
- * judged by the validator. So `render` travels to the body and nowhere else.
- *
- * A handback the rule does not touch records nothing. A handback whose rewind had no
- * head to move records the head origin ACTUALLY holds, under
- * `PI_ENSEMBLE_LEAN_HANDBACK_NOHEAD_RECORD` (see `verified-handback-switch.ts`): off, it
- * records nothing, as it did before the recording existed, and on, the step says what its
- * own `NO_HEAD` already knew — that the branch it is reporting shipped an uncertified
- * head — carrying the RULE's reason rather than the rewind's wording for a move that did
- * not happen. That distinction is the point: off, "the rule fired and had no head" and
- * "the rule never spoke" are the same record, and an operator cannot tell a certified
- * head the step moved back from an uncertified one it left in place.
- *
- * `originHead` is the head the branch holds as this step read it AFTER its own move,
- * which is the only thing `shippedHead` may claim: a landed rewind moved the branch
- * to the verified head, so origin answers "the verified one", and a refused one left
- * the run's own push there, so origin answers "the unverified one".
- *
- * `unshippedHead` is the head the run pushed that origin no longer holds — the
- * rewind's own pre-move read, which the step could not have produced itself. On a
- * refusal origin still holds it, so there is nothing unshipped to name and only the
- * reason speaks.
- *
- * `shippedVerified` is `rewind.shipped`, with ONE exception stated by the rewind
- * rather than inferred here: `alreadyAtVerified` means origin held the certified
- * head before this step ran, so the head it ships IS the verified one even though
- * this step pushed nothing. Printing that head as `NOT verified` would send the
- * operator to inspect bytes the gate certified, and naming an unshipped head this
- * step never displaced would make the two halves of the record disagree — the exact
- * failure `test-lean-state-outcome-heads.ts` exists to prevent.
+ * A rewind with no head to move records the head origin ACTUALLY holds under
+ * `PI_ENSEMBLE_LEAN_HANDBACK_NOHEAD_RECORD`: off it records nothing; on it carries the rule's
+ * reason, not the rewind's wording for a move that did not happen. `shippedVerified` is
+ * `rewind.shipped` plus `alreadyAtVerified` — origin held the certified head already, so printing
+ * it as `NOT verified` would send the operator to inspect bytes the gate certified.
  */
 function headFacts(
   applies: boolean,
@@ -349,28 +261,18 @@ function headFacts(
 ): Heads {
   if (!applies) return { render: false };
   const shippedHead = originHead ?? rewind.unshippedHead;
-  // The arm with nothing to move: the rule fired, the log named no green head, and
-  // origin keeps the head the fix wave pushed. Whether that is a fact the record
-  // carries is the switch's question, not this function's; off, it is the same silence
-  // as a handback the rule never touched, which is what the byte-identity arm of the
-  // smoke test pins.
+  // The arm with nothing to move: the rule fired, the log named no green head, and origin keeps
+  // the head the fix wave pushed.
   if (rewind.unshippedHead === undefined && !rewind.shipped) {
     if (!noHeadRecords || originHead === undefined) return { render: false };
-    // The rule's words, in the record's OWN reason field rather than only beside a
-    // head: the rewind's own `reason` is a fixed sentence about a push that did not
-    // run, and the operator's question here is why what shipped was never certified.
-    // The rule that judged the log answers that, so it wins wherever it spoke.
+    // The rule's words: the operator's question is why what shipped was never certified.
     const why = rewind.noHeadReason ?? rewind.reason;
     return {
       render: true,
       shippedHead: originHead,
-      // False, and unconditionally: nothing moved, so whatever origin holds is what
-      // the fix wave left there and the gate never certified it. `shipped` is false by
-      // construction on this arm, and `alreadyAtVerified` cannot be set on a rewind
-      // that had no head to compare against.
+      // Nothing moved, so origin holds what the fix wave left and the gate never certified it.
       shippedVerified: false,
-      // No `unshippedHead`: this step displaced nothing, so naming a head it left
-      // behind would make the record claim a move the reason then denies.
+      // This step displaced nothing.
       ...(why === undefined ? {} : { unshippedReason: why }),
     };
   }
@@ -392,10 +294,8 @@ function headFacts(
  *
  * `post` is the seam the test drives: production hands it `postHandback`, which goes through the
  * forge adapter and the public-hygiene check. On the host channel the caller passes a post that
- * posts nothing, and `posted` is then false with `channel: "host"` on the step — a run that reported
- * a comment it never sent would double the report a host posts itself.
- *
- * `report` carries the comment either way, so the host channel is handed the run's actual report.
+ * posts nothing, so `posted` is false with `channel: "host"` on the step. `report` carries the
+ * comment either way.
  */
 export async function handbackOutcome(
   ctx: HandlerCtx,
@@ -408,32 +308,22 @@ export async function handbackOutcome(
 ): Promise<Outcome> {
   let body: string | undefined;
   try {
-    // Inside the try: this step's contract is that it never throws, and a body
-    // that failed to build has to be reported the same way a refused post is.
+    // This step never throws, so a body that failed to build is reported like a refused post.
     const prUrl = prUrlFromLog(ctx.steps);
     const heads = handbackHeads(ctx.steps);
-    // ONE call time read of the switch, so the arm that moves origin and the arm
-    // that only reports cannot disagree with each other.
+    // ONE read of the switch, so the arm that moves origin and the arm that only reports agree.
     const ruleOn = heads.applies && leanVerifiedHandbackEnabled();
-    // The rewind happens BEFORE the body is built, so the comment states where
-    // origin's branch stands after the move rather than where it stood before it.
+    // The rewind runs BEFORE the body is built, so the comment states where origin stands after it.
     const moved =
       ruleOn && heads.verifiedHead !== undefined
         ? await rewind(heads.verifiedHead)
         : ruleOn
-          ? // The rule's reason travels with the shape. It is set alongside `NO_HEAD`'s
-            // own `reason` rather than in place of it: that constant's sentence
-            // describes a push that did not run, and a `{ ...NO_HEAD }` spread would
-            // carry it into a record whose reader is asking a different question — why
-            // what shipped was never certified — which only the rule that judged the
-            // log can answer.
+          ? // `NO_HEAD`'s own `reason` describes a push that did not run; this answers a
+            // different question — why what shipped was never certified.
             { ...NO_HEAD, noHeadReason: heads.reason }
           : SWITCHED_OFF;
-    // Where origin's branch stands now, read by this step rather than inferred
-    // from the move. A handback the rule never touched has nothing to say about
-    // heads and reads nothing: `SWITCHED_OFF` carries no head precisely because no
-    // read was made, and the record must not look like the answer to a question
-    // this step never asked.
+    // Read by this step rather than inferred from the move; a handback the rule never touched
+    // reads nothing.
     const originHead = ruleOn ? await readOrigin(ctx) : undefined;
     const facts = ruleOn
       ? headFacts(heads.applies, moved, originHead, leanHandbackNoHeadRecordEnabled())
@@ -447,12 +337,8 @@ export async function handbackOutcome(
       ...(render ? { heads: facts } : {}),
     });
     await post(ctx.repoRoot, ctx.issue, body);
-    // `posted: true` is the only place the claim lives: the kind is `done` either way, so without the
-    // field a refused post and a delivered one are the same record to a later reader.
-    // `record` is deliberately LAST: the four head fields are the record's head
-    // facts and nothing above them may speak for a head. `render` is stripped rather
-    // than spread — it is the renderer's flag, and the record carries only what
-    // `Outcome` declares and the validator judges.
+    // `posted: true` is the only place the claim lives: the kind is `done` either way.
+    // `record` is LAST and `render` is stripped — the record carries only what `Outcome` declares.
     return {
       kind: "done",
       reason: "handback comment posted",

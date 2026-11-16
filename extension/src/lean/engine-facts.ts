@@ -27,12 +27,9 @@ export function reasonFor(
   if (state === "landed") return "merged";
   const rules = outcome?.failedRules;
   if (Array.isArray(rules) && rules.length > 0) return (rules as unknown[]).join("; ");
-  // A refusal reaches here as the outcome of its REPORTING step, which carries
-  // the rules it posted (or failed to post) — `ready`'s and `specify`'s own
-  // outcomes live in the log, so they are read back from there rather than
-  // copied onto the run. One fact, two readers: the rules alone for a comment
-  // that went out, and the rules plus the delivery failure for one that did
-  // not, so a summary line never reads as a clean verdict somebody was told.
+  // A refusal reaches here as the outcome of its REPORTING step, which carries the rules it
+  // posted (or failed to post). One fact, two readers: the rules alone for a comment that went
+  // out, and the rules plus the delivery failure for one that did not.
   if (state === "not-ready") {
     const judged = lastFailedRules(steps);
     if (Array.isArray(judged) && judged.length > 0) {
@@ -50,10 +47,8 @@ export function reasonFor(
 }
 
 /**
- * Has this run earned the merge? Its own record must currently say so: the newest
- * DECIDED `verify` AND the newest DECIDED `ci` both green, and no `draft` marker
- * left standing. `ci`'s green is what the table routes on and `verify`'s is what
- * the run's own gate said.
+ * Has this run earned the merge? Its own record must currently say so: the newest DECIDED
+ * `verify` AND the newest DECIDED `ci` both green, and no `draft` marker left standing.
  */
 function landEarned(run: LeanRun): boolean {
   if (run.counters.draft) return false;
@@ -73,21 +68,16 @@ function landRefusal(run: LeanRun): string {
 }
 
 /**
- * Why a stamped `result` is not the answer its own step log gives, or
- * `undefined` when it is.
+ * Why a stamped `result` is not the answer its own step log gives, or `undefined` when it is.
  *
- * `result` is written only by `endRun`, and `endRun` writes exactly three things: a
- * terminal state, the code `exitCodeFor` gives that state, and a reason. A resumed run
- * therefore has to be able to say the stamp it holds could not have come from there, or
- * the durable verdict is whatever the last writer of those fields chose — and `state.ts`
- * says plainly that the snapshot fields are a cache, not the record. The check:
+ * `result` is written only by `endRun`, which writes a terminal state, the code `exitCodeFor`
+ * gives it, and a reason. The snapshot fields are a cache, not the record, so a resumed run has
+ * to be able to say the stamp it holds could not have come from there. The check:
  *
- *   - the fold must actually have reached a terminal state (a stamp on a non-terminal
- *     position describes a run nobody ended);
+ *   - the fold must actually have reached a terminal state;
  *   - the code must be the one that state exits with;
- *   - `landed` additionally needs the merge gate to hold of the log, so the merge a
- *     stamp claims is the merge the record earned — the rule that matters, since a
- *     stamp on the file is read before either `land` gate runs.
+ *   - `landed` additionally needs the merge gate to hold of the log — the rule that matters,
+ *     since a stamp on the file is read before either `land` gate runs.
  */
 function stampedResultRefusal(
   file: string,

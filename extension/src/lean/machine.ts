@@ -1,77 +1,49 @@
 /**
  * lean/machine — the whole transition table, in one pure function.
  *
- * `next(run, outcome)` is the only place a run decides where it goes. It reads
- * the run and the outcome and returns the next state plus the next counters.
- * No clock, no I/O, no model call, no randomness: given the same pair it
- * returns the same answer forever, which is what lets the step log be the
- * record of a run rather than a hint at one.
+ * `next(run, outcome)` is the only place a run decides where it goes. No clock, no I/O, no
+ * randomness: the same pair always returns the same answer, which is what lets the step log be
+ * the record of a run. Every (state, kind) pair a handler may return is listed here;
+ * `test-lean-machine.ts` enumerates them and fails on any pair the table misses.
  *
- * Every (state, outcome kind) pair a handler may legally return is listed here,
- * and `test-lean-machine.ts` enumerates them and fails on any pair the table does
- * not cover. A handler that returns an unlisted kind is a bug in the handler, and
- * the table says so rather than defaulting somewhere quiet.
- *
- * The loop guards: `buildAttempts` caps how many build rounds a run may DISPATCH,
- * billed once on entering `build` and never on leaving it; `challengeDone` and
- * `reviewDone` make each step run at most once — so a CI fix round re-verifies
- * without re-rehearsing the review, and the re-verification a review fix earns
- * publishes on to `ci`; `ciFixUsed` gives a red CI exactly one fix round. All four
- * are counters in the run, so a resumed run sees the same caps a live one did.
+ * Loop guards, all counters in the run so a resumed run sees the same caps: `buildAttempts`
+ * caps build rounds DISPATCHED (billed on entering `build`, never leaving); `challengeDone`
+ * and `reviewDone` make each step run at most once; `ciFixUsed` gives a red CI one fix round.
  */
 
 import type { LeanRun, LeanState, Outcome } from "./state.ts";
 import { type Transition, to, viaBuild } from "./transitions.ts";
 
-/** Outcome kinds per state. The handler for a state may return only these; the
- * pair enumeration in `test-lean-machine.ts` asserts each entry equals the set of
- * `kind`s the registry gives that state arrows. */
+/** Outcome kinds per state. The handler for a state may return only these; the pair
+ * enumeration in `test-lean-machine.ts` asserts each entry equals the registry's set. */
 export const OUTCOME_KINDS = {
   ready: ["ok", "fail"],
   specify: ["ok", "no-red-test", "budget"],
-  // `blocked` is the child's own "these frozen tests cannot all pass together",
-  // honoured only after the driver re-ran the named tests itself. It is not
-  // `exhausted`: the builder did not fail to produce a change, it stopped on a
-  // contract the run cannot satisfy, and the route must never reach `publish`.
+  // `blocked` is the child's own "these frozen tests cannot all pass together", honoured
+  // only after the driver re-ran the named tests itself. It is not `exhausted`: the route
+  // must never reach `publish`.
   build: ["ok", "exhausted", "budget", "blocked"],
   challenge: ["new-tests", "none", "budget"],
   verify: ["green", "red"],
   publish: ["ok"],
-  // Two kinds, and the difference is whether the step moved the head:
-  //
-  //   - `done` — both gates cleared without a fix round. Nothing was pushed, the
-  //     newest `verify` still describes the head, and the run goes to `ci`.
-  //   - `fixed` — a fix round integrated commits, which `integrate` PUSHES. The
-  //     newest `verify` now certifies a commit that is no longer the head, and `ci`
-  //     refuses exactly that, so routing it to `ci` ended the run at exit 10 with
-  //     the fix commits never verified. A `fixed` run goes back through `verify`.
-  //
-  // `viaBuild` is deliberately NOT used: no build round is owed here and the cap is
-  // a build-round budget, not a re-verification budget. Both kinds set `reviewDone`,
-  // and the re-verification arm is the one that needs it asserted: the green verify
-  // publishes again, and a publish that did not see `reviewDone` would route back
-  // through the six lenses and loop review forever buying a fixer each pass.
+  // Two kinds; the difference is whether the step moved the head. `done` pushed nothing, so `ci`
+  // runs; `fixed` integrated commits that `integrate` PUSHES, so the newest `verify` certifies a
+  // commit that is no longer the head and `ci` refuses it — a `fixed` run goes back through `verify`.
+  // Both set `reviewDone`, which the re-verification arm needs: without it a publish would route
+  // back through the six lenses and loop review forever.
   review: ["done", "fixed"],
   ci: ["green", "red"],
   land: ["merged", "refused"],
   handback: ["done"],
-  // The report of a refusal. It is a step, not a verdict: `ready + fail` and
-  // `specify + no-red-test` decide the run is not buildable, and this state only
-  // says so on the issue. Both kinds land on the terminal `not-ready` (exit 11);
-  // the difference is only in what the step log records — `done` means the comment
-  // went out, `report-failed` says the forge never took it. Listed here rather than
-  // intercepted by the engine because a terminal state cannot carry an outcome.
+  // The report of a refusal — a step, not a verdict. Both kinds land on terminal `not-ready`
+  // (exit 11); the difference is only what the log records. Listed here rather than intercepted
+  // by the engine because a terminal state cannot carry an outcome.
   decline: ["done", "report-failed"],
 } as const satisfies Partial<Record<LeanState, readonly string[]>>;
 
 export type OutcomeKind<S extends keyof typeof OUTCOME_KINDS> = (typeof OUTCOME_KINDS)[S][number];
 
-/**
- * The states a run can be driven through: exactly the keys of the registry
- * above, which are exactly the states with a handler. A terminal state is absent
- * from both, so the engine ends a run for "no handler" the moment it arrives at
- * one.
- */
+/** The states a run can be driven through: exactly the states with a handler. */
 export const HANDLER_STATES = Object.keys(OUTCOME_KINDS) as (keyof typeof OUTCOME_KINDS)[];
 
 /** What a run exits with. Chosen so a shell can branch on it without parsing. */
@@ -97,10 +69,7 @@ export const REPORT_FAILED_KIND = "report-failed";
 /** A step's own budget ended the child: a verdict, not a crash. */
 const BUDGET_KIND = "budget";
 
-/**
- * Is this pair in the table? `next()` throws on a pair it does not have, so
- * callers that must not throw (the engine, the table test) ask first.
- */
+/** Is this pair in the table? `next()` throws on a pair it does not have, so ask first. */
 export function hasTransition(state: LeanState, kind: string): boolean {
   const kinds = (OUTCOME_KINDS as Partial<Record<LeanState, readonly string[]>>)[state];
   return kinds?.includes(kind) ?? false;
@@ -112,12 +81,8 @@ export function outcomeKindsFor(state: LeanState): readonly string[] {
 }
 
 /**
- * The table. One branch per state; one case per legal outcome kind.
- *
- * `run` is read, never mutated — the caller owns the object and applies the
- * returned counters alongside the appended step. A terminal state has no case
- * at all: its handler set is empty, so no outcome ever reaches the table with
- * its name on it, and `next()` refusing one is a bug in a caller.
+ * The table. One branch per state, one case per legal kind. `run` is read, never mutated; a
+ * terminal state has no case at all, and `next()` refusing one is a bug in a caller.
  */
 export function next(run: LeanRun, outcome: Outcome): Transition {
   const c = run.counters;
@@ -135,19 +100,14 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
     case "specify":
       switch (outcome.kind) {
         case "ok":
-          // The contract holds, so the run earns its builder — and this edge
-          // DISPATCHES it, so this is where build's first round is billed. Every
-          // edge whose destination is `build` bills one and nothing else does, so
-          // the counter means rounds dispatched and no edge leaving build can
-          // spend a round on the way out.
+          // The contract holds, so the run earns its builder — and this edge DISPATCHES it, so
+          // this is where build's first round is billed.
           return viaBuild(run, "build");
         case BUDGET_KIND:
-          // Out of budget before the contract was written: nothing was proved, so
-          // there is nothing to build against.
+          // Out of budget before the contract was written.
           return to(run, "handback");
         case "no-red-test":
-          // A spec with no falsifiable test is not buildable from. Same refusal and
-          // same exit as an unreadable spec.
+          // A spec with no falsifiable test is not buildable from.
           return to(run, "decline");
       }
       break;
@@ -155,40 +115,23 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
     case "build":
       switch (outcome.kind) {
         case "ok":
-          // The cap-spending round reported clean, so there is no round left to
-          // buy: the gate decides the run. The check sits on this edge as well as
-          // the edges that buy a round because a run can ARRIVE at build with the
-          // cap already spent, and the alternative is `viaBuild` writing 4, 5, 6
-          // and letting the fold derive a counter no drive ever saved. The round
-          // this edge reports was paid for on the way IN.
+          // The cap-spending round came back clean, so the gate decides the run. The check sits
+          // on this edge too because a run can ARRIVE with the cap already spent.
           if (c.buildAttempts >= MAX_BUILD_ATTEMPTS) return to(run, "verify");
-          // The first build ever earns a challenge round; a build that came back
-          // from one goes to verify. That challenge is a round the run has NOT
-          // dispatched, so the edge leaving build bills nothing.
+          // The first build ever earns a challenge round; this edge bills nothing.
           return to(run, c.challengeDone ? "verify" : "challenge");
         case BUDGET_KIND:
-          // The same edges as `ok`: the ceiling cut work short, it did not judge it,
-          // and the round already paid for itself on the way INTO build.
+          // The ceiling cut work short, it did not judge it.
           if (c.buildAttempts >= MAX_BUILD_ATTEMPTS) return to(run, "verify");
           return to(run, c.challengeDone ? "verify" : "challenge");
         case "blocked":
-          // Straight to `handback`, never through the `exhausted` route: publishing
-          // a PR over tests the run's own builder proved unsatisfiable is the one
-          // shape where a contract nobody satisfied reaches `land`. `to()` rather
-          // than `viaBuild()` — no round was earned here.
+          // Never through the `exhausted` route: publishing a PR over tests the builder proved
+          // unsatisfiable is the one shape where an unsatisfied contract reaches `land`.
           return to(run, "handback");
         case "exhausted":
-          // Whether this is a degradation or a defeat depends on the last verdict
-          // the run's own gate returned: `draft` set means `verify` said RED and the
-          // run has nothing left to try — publishing would open a PR whose CI can
-          // go green without ever reading the acceptance criteria. No draft means
-          // the code was green and the run simply ran out of rounds, and a draft is
-          // the honest degradation there.
-          //
-          // A draft is not a thing a run gets to acquire twice: a second exhausted
-          // build means the round after the draft produced nothing verifiable
-          // either, and without this a run could re-draft its way past the one gate
-          // that called it red.
+          // `draft` set means `verify` said RED — publishing would open a PR whose CI can go
+          // green without reading the acceptance criteria. No draft means the code was green and
+          // the run ran out of rounds. A run does not acquire a draft twice.
           if (c.draft) return to(run, "handback");
           return viaBuild(run, "publish", true);
       }
@@ -197,21 +140,15 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
     case "challenge":
       switch (outcome.kind) {
         case "new-tests":
-          // New tests mean new red. One more build, and only one: the flag is
-          // charged HERE, on the branch that re-enters build, so the build it earns
-          // cannot offer a second challenge round on the way out. The ROUND is
-          // billed by `viaBuild` as always — at the cap the adversary's new tests
-          // have nothing left to buy and the run goes to its gate.
+          // New tests mean new red. One more build, and only one: the flag is charged on the
+          // branch that re-enters build, so the build it earns cannot offer a second round.
           if (!c.challengeDone && c.buildAttempts < MAX_BUILD_ATTEMPTS)
             return viaBuild(run, "build", undefined, { challengeDone: true });
           return to(run, "verify", { challengeDone: true });
-        // The adversary ran out of budget mid-round, so it added nothing: the
-        // counters are exactly `none`'s, and both end the optional round alike.
         case BUDGET_KIND:
         case "none":
-          // A budget stop ends the optional round rather than the run — the contract
-          // was written and paid for by `specify`, and whether it HOLDS is `verify`'s
-          // question, which still runs every frozen test.
+          // A budget stop ends the optional round rather than the run — whether the contract
+          // HOLDS is `verify`'s question.
           return to(run, "verify", { challengeDone: true });
       }
       break;
@@ -219,19 +156,14 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
     case "verify":
       switch (outcome.kind) {
         case "green":
-          // Green is the only verdict that clears the red marker: it is the run's own
-          // gate re-reading the criteria. `build + ok` and `ci + green` do not — a
-          // model claiming it implemented the spec and a pipeline running whatever
-          // the repo named are neither of them a criteria check.
+          // Green is the only verdict that clears the red marker: it is the run's own gate
+          // re-reading the criteria.
           return to(run, "publish", { draft: false });
         case "red":
-          // A red verify AFTER the CI fix round is the cycle ending, not a third
-          // build: the run and its own gate have disagreed twice.
+          // A red verify AFTER the CI fix round ends the cycle: run and gate disagreed twice.
           if (c.ciFixUsed) return to(run, "handback");
-          // The attempt cap is NOT an escape hatch out of a red verdict: a draft
-          // still walked publish → review → ci → land, so a run that ran out of
-          // build rounds could merge work its gate had just called red. The cap
-          // only decides WHETHER to try again.
+          // The cap is not an escape hatch out of a red verdict — a draft still walked publish →
+          // review → ci → land. It only decides WHETHER to try again.
           if (c.buildAttempts < MAX_BUILD_ATTEMPTS)
             return viaBuild(run, "build", undefined, { draft: true });
           return to(run, "handback");
@@ -239,9 +171,8 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
       break;
 
     case "publish":
-      // A run that has already been reviewed does not go back for a second
-      // review: the only way to reach publish twice is a CI fix round, and
-      // that re-verification is `ci`'s job, not a repeat of the six lenses.
+      // The only way to reach publish twice is a CI fix round, whose re-verification is `ci`'s
+      // job, not a repeat of the six lenses.
       if (outcome.kind === "ok") return to(run, c.reviewDone ? "ci" : "review");
       break;
 
@@ -253,27 +184,20 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
     case "ci":
       switch (outcome.kind) {
         case "green":
-          // The only edge into `land`. Nothing else may enter it, which is what
-          // makes "the tests were green at CI" a fact about this run rather than an
-          // assertion. The table cannot express the other half of that claim (the
-          // log's newest `verify` must itself be green) because `next()` sees one
-          // outcome, not the sequence: the engine's `apply()` refuses the arrival
-          // when the record says otherwise.
+          // The only edge into `land`. The other half of the claim — the log's newest `verify`
+          // must be green — is not expressible here because `next()` sees one outcome, not the
+          // sequence; `apply()` refuses the arrival when the record says otherwise.
           return to(run, "land");
         case "red":
-          // Exactly one fix round: a second red means the run and CI disagree about
-          // something a third round will not settle.
+          // One fix round: a second red is a disagreement a third round will not settle.
           if (!c.ciFixUsed) return viaBuild(run, "build", undefined, { ciFixUsed: true });
           return to(run, "handback");
       }
       break;
 
     case "land":
-      // `land` is entered by exactly one edge — `ci` + `green` — which is a
-      // property of the table, not an arrival flag: an arrival check would make a
-      // legal (state, kind) pair throw, which is a gate that breaks a call rather
-      // than one that blocks an illegal arrival. The graph is enumerated instead,
-      // twice over, by `test-lean-machine.ts`.
+      // `land` is entered by exactly one edge, which is a property of the table rather than an
+      // arrival flag: a flag would make a legal pair throw instead of blocking an illegal arrival.
       switch (outcome.kind) {
         case "merged":
           return to(run, "landed");
@@ -287,9 +211,8 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
       break;
 
     case "decline":
-      // Both kinds land on the same terminal verdict. The reporting step never
-      // chooses the exit code, so neither may route to `handback`: that would
-      // relabel a refusal to build (11) as a driver fault (10).
+      // Neither kind may route to `handback`: that would relabel a refusal to build (11) as a
+      // driver fault (10).
       if (outcome.kind === "done" || outcome.kind === REPORT_FAILED_KIND)
         return to(run, "not-ready");
       break;

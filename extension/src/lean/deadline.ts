@@ -1,45 +1,20 @@
 /**
- * lean/deadline — the caller's whole-cycle deadline, read the way `work` reads
- * it.
+ * lean/deadline — the caller's whole-cycle deadline, read the way `work` reads it.
  *
- * `work` stops STARTING steps once its deadline is inside the handoff allowance
- * (`work-driver-deadline.ts`'s step boundary) and hands off. A lean run had no
- * such boundary: only a step's own budget bounded it, so a host's
- * `--timeout`/deadline killed the container mid-step with no result document.
+ * `work` stops STARTING steps once its deadline is inside the handoff allowance and hands off. A
+ * lean run had no such boundary, so a host's `--timeout` killed the container mid-step with no
+ * result document. The reporting exemption is the rule this module states:
+ * `test-lean-deadline-host-channel.ts` (e) drives a run that ARRIVES at `handback` with its
+ * deadline already gone, so deleting the `REPORT_STATES` branch turns that case red.
  *
- * The reporting exemption is the rule this module states and the suite must
- * keep: `test-lean-deadline-host-channel.ts` case (e) drives a real run that
- * ARRIVES at `handback` with its deadline already gone — the crossing is placed
- * by the step the run stands in, not by a tick count — so deleting the
- * `REPORT_STATES` branch below turns that case red. A regression there is loud,
- * not silent.
+ * Both rules read the SAME helper `work` uses, so one env contract drives both engines:
+ * `leanDeadline` resolves the host's `--timeout`, `PI_ENSEMBLE_CYCLE_BUDGET_MS` and
+ * `PI_ENSEMBLE_CYCLE_DEADLINE` to one absolute epoch ONCE, persisted so a resume keeps the clock;
+ * `deadlineStopsSteps` ends step work at `deadline − PI_ENSEMBLE_HANDOFF_TIMEOUT_MS` and never
+ * stops the reporting states.
  *
- * Two rules, both read from the SAME helper `work` uses, so one exported
- * constant (`MINUTE_MS`) and one env contract drive both engines:
- *
- *   - `leanDeadline` is `resolveCycleDeadline` over the environment and the
- *     arm this record already carries: the host's `--timeout <minutes>`, the
- *     exported `PI_ENSEMBLE_CYCLE_BUDGET_MS` and the exported
- *     `PI_ENSEMBLE_CYCLE_DEADLINE` resolve to one absolute epoch ONCE, which the
- *     engine persists on its own record so a resume keeps the clock the first
- *     run resolved;
- *   - `deadlineStopsSteps` is `work`'s boundary answer restated for a lean step
- *     (no per-step `MIN_USEFUL_MS` floors — lean has no develop or lens-fix
- *     step to size): step work ends at `deadline − PI_ENSEMBLE_HANDOFF_TIMEOUT_MS`,
- *     and the step that reports the run (`handback`/`decline`) is never stopped,
- *     exactly as `work` never parks its own handoff.
- *
- * What this module does NOT do is bound a child already running: `work` does
- * that through the AsyncLocalStorage cycle clock (`cycle-deadline-clock.ts`),
- * and lean has no frame to open — its children are built by `lean/build.ts`
- * through `spawnSpecialist`, and the step's own `WorkConfig.budgets` bound
- * `childBoundMs` is what stops them. The deadline therefore decides only when a
- * step may START. A lean child bounded by the caller's deadline is a separate
- * change, not a claim this module or its suite makes.
- *
- * A run stopped at the deadline is not a crash and not a signal: it is the same
- * answer `work` gives a cycle its deadline cut off, so it ends `handed-back` at
- * exit 10 with a result document.
+ * What this module does NOT do is bound a child already running — that is the step's own
+ * `WorkConfig.budgets` `childBoundMs`. The deadline decides only when a step may START.
  */
 
 import { type CycleBudgetMs, resolveCycleDeadline } from "../work-driver-deadline.ts";
@@ -51,21 +26,12 @@ import { VerifyInfraError } from "./verify-types.ts";
 export const MINUTE_MS = 60_000;
 
 /**
- * The run's absolute deadline: the host's arm and the env resolved once, or the
- * one this record already carries. The record wins while a budget is still set —
- * which is the shared reader's own rule, so a resume cannot restart the clock.
+ * The run's absolute deadline: the host's arm and the env resolved once, or the one this record
+ * carries — the record wins while a budget is set, so a resume cannot restart the clock.
  *
- * `flagMs` is the `--timeout` arm (`flagBudgetMs` mints it in
- * `work-driver-deadline.ts`); it is passed as a VALUE, so no caller writes the
- * environment. The env is read here and only here, which is
- * what keeps one contract for both engines: a bare `PI_ENSEMBLE_CYCLE_DEADLINE`
- * still stops a lean run, and a bare `PI_ENSEMBLE_CYCLE_BUDGET_MS` still stops
- * it, with no second copy of the parsing rules.
- *
- * The shared `resolveCycleDeadline` is called with the record's own value and
- * no cycle state at all: a lean run has no cycle state, and minting a fake
- * `WorkState` to reach the shared rules is how a reader of the record starts
- * disagreeing with the writer about its shape.
+ * `flagMs` is the `--timeout` arm, passed as a VALUE so no caller writes the environment; the env
+ * is read here and only here. The shared reader gets no cycle state at all: minting a fake
+ * `WorkState` is how a reader of the record starts disagreeing with the writer about its shape.
  */
 export function leanDeadline(
   persisted: number | undefined,
@@ -76,10 +42,8 @@ export function leanDeadline(
 }
 
 /**
- * Has step work's end arrived? True means start no NEW step: the loop stops as
- * though there were no handler left, and the run ends handed-back with its
- * document. `handback`/`decline` are exempt — they are the report, and a run
- * that could not write it would leave the host with no result at all.
+ * Has step work's end arrived? True means start no NEW step; the run ends handed-back with its
+ * document. `handback`/`decline` are exempt — without them the host gets no result at all.
  */
 export function deadlineStopsSteps(
   deadline: number | undefined,
@@ -92,37 +56,23 @@ export function deadlineStopsSteps(
 }
 
 /**
- * The handoff allowance itself — `deadlineStopsSteps`'s threshold as a NUMBER.
- *
- * A caller that must fit work INSIDE the deadline needs the allowance to
- * subtract, not just the boundary answer, and re-reading
- * `PI_ENSEMBLE_HANDOFF_TIMEOUT_MS` at the caller is how the two start disagreeing
- * about where step work ends. `lean/ci` subtracts this before starting its full
- * tier, so the tier can never be given the time the handback still needs.
+ * The handoff allowance itself — `deadlineStopsSteps`'s threshold as a NUMBER, so a caller that
+ * must fit work inside the deadline does not re-read the env and disagree about where step work ends.
  */
 export function handoffAllowanceMs(): number {
   return handoffDispatchTimeoutMs();
 }
 
 /**
- * Bound a long piece of work that runs AFTER something else in the same step,
- * given the run's whole-cycle deadline: the time the deadline still leaves,
- * minus the allowance the handback needs.
+ * Bound a long piece of work that runs AFTER something else in the same step: the time the deadline
+ * still leaves, minus the allowance the handback needs. The engine consults the cycle arm only
+ * BETWEEN steps, so one step with two long runs — `lean/ci`'s forge wait then its verify tier —
+ * would otherwise outlive the deadline by the whole second run.
  *
- * The engine consults the cycle arm only BETWEEN steps, so one step that
- * contains two long runs — `lean/ci`'s forge wait and then its full verify tier
- * — can outlive the host's deadline by the whole second run and die with no
- * result document. This is the number the second run may be given, and the
- * handback naming the deadline is thrown INSTEAD of a number whenever the run
- * may not start at all: inside the allowance, or with nothing left outside it.
- *
- * `work` is what is being bounded, named by `what` so the message says which
- * run refused to start. `full` is the bound that run would have been given with
- * no deadline in play, which is the answer returned when there is none: there is
- * nothing to clamp against, and an absent deadline is never a reason to shrink a
- * timeout. The allowance subtracted is {@link handoffAllowanceMs} — the same
- * number {@link deadlineStopsSteps} compares against, so a caller can never be
- * handed time the engine's own boundary says the run does not have.
+ * Throws the handback-naming `VerifyInfraError` whenever the run may not start at all. `full` is
+ * returned when there is no deadline: an absent deadline is never a reason to shrink a timeout.
+ * The allowance subtracted is {@link handoffAllowanceMs}, the number {@link deadlineStopsSteps}
+ * compares against.
  */
 export function clampToCycleDeadline(
   deadline: number | undefined,
@@ -146,18 +96,10 @@ export function clampToCycleDeadline(
 }
 
 /**
- * The reason line the engine stamps when the clock, not a verdict, ended the
- * run: what the last step decided, and what was not started. Named rather than
- * left to `ended at <state>` so the document and the host's message say which
- * clock stopped it.
+ * The reason line the engine stamps when the clock, not a verdict, ended the run.
  *
- * `why` is the one reader that stopped this run — the plain boundary, or the routed
- * report's wall (`engine-report.ts`) that gave up on the report and let the run be
- * stamped where it stands. The clause is appended verbatim so the durable record
- * says which of the two it was: a run whose report timed out and a run that never
- * got one read the same in every other field, and telling them apart is what the
- * bound's disclosure exists for. Omit it and the sentence is exactly the one this
- * function wrote before the routed report had a bound of its own.
+ * `why` is the reader that stopped it — the plain boundary, or the routed report's wall — appended
+ * verbatim so the record says which. Omit it and the sentence is the plain one.
  */
 export function deadlineReason(
   steps: Step[],

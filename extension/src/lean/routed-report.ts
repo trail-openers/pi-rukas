@@ -1,16 +1,14 @@
 /**
  * lean/routed-report — the runner's half of the routed deadline report.
  *
- * `engine-report.ts` performs the report: it runs the handler, writes the visit, and ends
- * the run with its verdict. This module holds the fact the RUNNER has to carry alongside the
- * ended run and the reporting step has no reason to know about: that this particular plain
- * deadline stamp is the answer to a report that ran out of wall, and how long that wall was.
+ * `engine-report.ts` performs the report; this module holds the fact the RUNNER has to carry
+ * alongside the ended run: that this plain deadline stamp is the answer to a report that ran
+ * out of wall, and how long that wall was.
  *
  * Why a value and not a sentinel: `runHandbackReport` returns `undefined` for a report that
  * threw, and the run stamps the plain deadline reason for a throw and an overrun alike. Those
- * two records are not the same fact to an operator — one run had no report to lose, the other
- * lost one to a hung forge post or a wedged in-process call — so the overrun's bound travels
- * beside the ended run rather than being inferred from prose a reader would have to guess at.
+ * are not the same fact to an operator — one run had no report to lose, the other lost one to a
+ * hung forge post — so the bound travels beside the ended run rather than being inferred from prose.
  */
 
 import type { ReportRequest } from "./engine-report.ts";
@@ -27,14 +25,12 @@ export interface RoutedReport {
 /**
  * Route a run into its report and report back what the routing cost.
  *
- * The report is injected rather than imported, so the dependency runs one way — from the
- * runner's seam to the report — and a test can drive this move with a reporting step that
- * never returns. Nothing here decides WHETHER to route: that is `deadline-handback.ts`'s
- * answer, already taken by the time this is called.
+ * The report is injected rather than imported, so the dependency runs one way and a test can
+ * drive this move with a reporting step that never returns. Nothing here decides WHETHER to
+ * route: that is `deadline-handback.ts`'s answer, already taken.
  *
- * The overrun is read back off the request the report fills on its bound arm alone
- * (`ReportRequest.boundFiredMs`), which keeps the pair — the run and the bound that cut it —
- * the return of one call. A report that answered, or threw, leaves it unset.
+ * The overrun is read back off the request the report fills on its bound arm alone, which keeps
+ * the pair — the run and the bound that cut it — the return of one call.
  */
 export async function routeHandbackReport(
   req: ReportRequest,
