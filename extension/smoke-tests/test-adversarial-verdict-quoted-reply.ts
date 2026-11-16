@@ -27,7 +27,9 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { BLOCK_THEN_APPROVE, stubAdversarialChildren } from "./lib/classic-caller-harness.ts";
+import { stubAdversarialChildren } from "./lib/classic-caller-harness.ts";
+import { VERDICT_STATUSES } from "../src/adversarial-verdict.ts";
+import { readEnumMarker } from "../src/reply-markers.ts";
 // The harness mocks `adversarial-ledger.ts`'s writer, so this run never touches
 // the real per-clone ledger; the isolation is named HERE as well because #1069's
 // static scan reads THIS file for a marker, and the exposure — a loop driven at
@@ -70,16 +72,14 @@ assert(
 // The pre-fix whole-reply read, reconstructed here so the test can say what it
 // is actually refuting: of the two verdict strings in the fixture, the LAST one
 // in the text is the quotation. If that ever stops being true the fixture has
-// drifted and the arms below prove nothing.
-const lastWholeReplyMatch = [
-  ...INCIDENT.matchAll(
-    /VERDICT\s*:?\s*\**\s*:?\s*(CRITICAL_ISSUES_FOUND|ISSUES_FOUND|MINOR_OBSERVATIONS|APPROVED)\b/gi,
-  ),
-].pop();
+// drifted and the arms below prove nothing. The OLD reader is called, not
+// re-implemented: a hand-written regex here would drift from the reader whose
+// behaviour this canary claims to reproduce.
+const lastWholeReplyMatch = readEnumMarker(INCIDENT, "VERDICT", VERDICT_STATUSES);
 assert(
-  lastWholeReplyMatch?.[1]?.toUpperCase() === "APPROVED",
+  lastWholeReplyMatch === "APPROVED",
   "canary: the whole-reply reader's last match in the fixture is APPROVED — this is the misread, reproduced from the fixture's own bytes",
-  lastWholeReplyMatch?.[1],
+  lastWholeReplyMatch,
 );
 
 // The child queue is consumed per dispatch and EMPTY means the stub answers
@@ -101,7 +101,7 @@ const result = await runAdversarialLoop(
     context: "#2312 incident",
     workCwd: process.cwd(),
     branch: "feature/2312",
-  } as never,
+  },
   new AbortController().signal,
   "job-2312-incident",
 );
@@ -173,7 +173,7 @@ assert(
       context: "clean after fix",
       workCwd: process.cwd(),
       branch: "feature/2312-clean",
-    } as never,
+    },
     new AbortController().signal,
     "job-2312-clean",
   );
@@ -216,7 +216,7 @@ assert(
       context: "quoted only",
       workCwd: process.cwd(),
       branch: "feature/2312-quoted",
-    } as never,
+    },
     new AbortController().signal,
     "job-2312-quoted",
   );

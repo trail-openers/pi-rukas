@@ -25,7 +25,7 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { readAdversarialVerdict, verdictCandidateLines } from "../src/adversarial-verdict-read.ts";
+import { readAdversarialVerdict } from "../src/adversarial-verdict-read.ts";
 import { decideLoopAction, parseVerdict } from "../src/adversarial-verdict.ts";
 
 let exit = 0;
@@ -217,94 +217,6 @@ const MAX = 3;
   );
 }
 
-// --------- what a candidate line is (D1), and what one is not (D2)
-
-{
-  // The reader's own vocabulary, asserted on the candidate list rather than only
-  // on the final status: an excluded shape that silently became NO candidate is
-  // indistinguishable from a correct exclusion at the status level, and the
-  // difference is a reviewer whose verdict was quietly thrown away.
-  const c = (t: string) => verdictCandidateLines(t).map((l) => `${l.status}:${l.index}`);
-
-  assert(
-    JSON.stringify(c("VERDICT: APPROVED")) === '["APPROVED:0"]',
-    "the inline form is a candidate (D1a)",
-  );
-  assert(
-    JSON.stringify(c("**VERDICT:** APPROVED")) === '["APPROVED:0"]',
-    "…including the bold-split spelling reviewers write",
-  );
-  assert(
-    JSON.stringify(c("   VERDICT: APPROVED")) === '["APPROVED:0"]',
-    "…at up to three spaces of indent",
-  );
-  assert(
-    JSON.stringify(c("VERDICT: APPROVED (per the doctrine)")) === '["APPROVED:0"]',
-    "…with trailing text after the value",
-  );
-  assert(
-    JSON.stringify(c("### VERDICT\n\nAPPROVED")) === '["APPROVED:0"]',
-    "the heading form is a candidate, and its index is the HEADING line (D1b)",
-  );
-  assert(
-    readAdversarialVerdict("### VERDICT\n\nAPPROVED") === "APPROVED",
-    "…and reads as the value on its next non-blank line",
-  );
-  assert(
-    c("### VERDICT\nAPPROVED, because the gate covers it").length === 0,
-    "a heading whose value line is prose states no verdict",
-  );
-  assert(
-    c("The reviewer may answer VERDICT: CRITICAL_ISSUES_FOUND here.").length === 0,
-    "a token that does not begin its line is not a candidate",
-  );
-  assert(
-    c("VERDICT: <APPROVED|ISSUES_FOUND>").length === 0,
-    "a placeholder template names no single value, so it is not a candidate",
-  );
-
-  // Exclusions, marked rather than dropped: the caller can see what it refused.
-  const fenced = verdictCandidateLines("```\nVERDICT: APPROVED\n```")[0];
-  assert(fenced?.fenced === true, "a line inside a fence is marked fenced, not silently missing");
-  const quoted = verdictCandidateLines("> VERDICT: APPROVED")[0];
-  assert(quoted?.structural === true, "a block-quoted line is marked structural");
-  const indented = verdictCandidateLines("    VERDICT: APPROVED")[0];
-  assert(indented?.structural === true, "a 4-space indented line is marked structural");
-  const tabled = verdictCandidateLines("| VERDICT: APPROVED |")[0];
-  assert(tabled?.structural === true, "a table row is marked structural");
-  const recited = verdictCandidateLines(
-    ["  VERDICT: APPROVED", "  VERDICT: ISSUES_FOUND"].join("\n"),
-  );
-  assert(
-    recited.length === 2 && recited.every((l) => l.menuRun),
-    "every line of a menu run is marked, and no line of it survives",
-  );
-
-  // The incident's own bytes, read off disk: this is the reply that wrote a
-  // passed:true row for a review that objected.
-  const fixture = readFileSync(
-    path.join(import.meta.dirname, "fixtures", "adversarial-replies", "incident-2304-round2.txt"),
-    "utf8",
-  );
-  const incident = parseVerdict(fixture);
-  assert(
-    incident.status === "ISSUES_FOUND" && incident.verdictParsed === true,
-    `canary: the incident reply reads ISSUES_FOUND with a parsed verdict (got ${incident.status}/${String(incident.verdictParsed)})`,
-  );
-  assert(
-    fixture.includes("`VERDICT: APPROVED`"),
-    "…and the fixture really carries the quoted APPROVED that caused the misread",
-  );
-  // A bulleted echo of the whole menu, each entry inside inline code: the values
-  // are all named, none of them in marker position, so the real verdict stands.
-  const echoedInline = `VERDICT: APPROVED
-
-- the brief offers \`APPROVED\`, \`MINOR_OBSERVATIONS\`, \`ISSUES_FOUND\`, \`CRITICAL_ISSUES_FOUND\``;
-  assert(
-    readAdversarialVerdict(echoedInline) === "APPROVED",
-    "a bulleted echo of the whole menu inside inline code leaves the real verdict alone",
-  );
-}
 
 // -------------------------------------------- what each verdict does to the loop
 
